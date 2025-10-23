@@ -17,6 +17,17 @@ import triton
 import triton.language as tl
 from torch.nn import functional as F
 import math
+
+try:
+    from transformers.integrations.finegrained_fp8 import FP8Linear
+except ImportError:
+    raise ImportError("Unsloth: FP8 models need importing FP8Linear from `transformers.integrations.finegrained_fp8` but we don't see it.")
+
+try:
+    from transformers.integrations.fbgemm_fp8 import FbgemmFp8Linear
+except ImportError:
+    raise ImportError("Unsloth: FP8 models need importing FbgemmFP8Linear from `transformers.integrations.fbgemm_fp8` but we don't see it.")
+
 try:
     from fbgemm_gpu.experimental.gemm.triton_gemm.fp8_gemm import triton_quantize_fp8_block
 except ImportError:
@@ -329,7 +340,7 @@ class FP8BlockQuantLinear(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         W_deq = weight_dequant(ctx.weight, ctx.weight_scale)
-        grad_X = torch_matmul(grad_output, W_deq.t())
+        grad_X = torch_matmul(grad_output, W_deq)
         del W_deq
         return grad_X, None, None
 
@@ -338,7 +349,7 @@ def fp8_block_quant_forward(X, weight, weight_scale):
     return FP8BlockQuantLinear.apply(X, weight, weight_scale)
 
 
-class FbgemmFp8Linear(torch.autograd.Function):
+class FbgemmFp8Linear_matmul(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, x, weight, weight_scale, bias=None):
@@ -393,13 +404,13 @@ class FbgemmFp8Linear(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         W_deq = weight_dequant(ctx.weight, ctx.weight_scale)
-        grad_X = torch_matmul(grad_output, W_deq.t())
+        grad_X = torch_matmul(grad_output, W_deq)
         del W_deq
         return grad_X, None, None, None, None
 
 @torch_compile
 def fbgemm_fp8_linear(X, weight, weight_scale, bias=None, ):
-    return FbgemmFp8Linear.apply(X, weight, weight_scale, bias)
+    return FbgemmFp8Linear_matmul.apply(X, weight, weight_scale, bias)
 
 
 class FP8_torch_linear(torch.autograd.Function):
@@ -444,7 +455,7 @@ class FP8_torch_linear(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         W_deq = weight_dequant(ctx.weight, ctx.weight_scale)
-        grad_X = torch_matmul(grad_output, W_deq.t())
+        grad_X = torch_matmul(grad_output, W_deq)
         del W_deq
         return grad_X, None, None, None, None
 
@@ -466,3 +477,14 @@ def fp8_linear(X, weight, weight_scale, bias=None):
         # Row quantized FP8
         out = fbgemm_fp8_linear(X, weight, weight_scale, bias)
     return out
+
+
+def module_forward_patch(forward_function, scale_attr='weight_scale'):
+    def patched_forward(self, X):
+        return forward_function(X, self.weight, getattr(self, scale_attr))
+    return patched_forward
+
+
+# Patch the forward functions of the layers (for compiled models)
+FbgemmFp8Linear.forward = module_forward_patch(fbgemm_fp8_linear, 'weight_scale')
+FP8Linear.forward = module_forward_patch(fp8_block_quant_forward, 'weight_scale_inv')
