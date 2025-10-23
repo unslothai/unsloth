@@ -73,6 +73,7 @@ __all__ = [
     "patch_peft_fast_inference",
     "error_out_no_vllm",
     "dequantize_module_weight",
+    "patch_hf_quantizer",
 ]
 
 import torch
@@ -1814,3 +1815,24 @@ def _prepare_model_for_qat(model: torch.nn.Module, qat_scheme: Union[str, TorchA
     quantize_(model, QATConfig(base_config, step = "prepare"), filter_fn = filter_fn)
     return model
 pass
+
+def patch_hf_quantizer():
+    # To tell hf trainer that the quantized model is trainable
+    def make_trainable(self):
+        return True
+    try:
+        from transformers.quantizers.quantizer_finegrained_fp8 import FineGrainedFP8HfQuantizer
+        FineGrainedFP8HfQuantizer.is_trainable = property(make_trainable)
+        FineGrainedFP8HfQuantizer.is_qat_trainable = property(make_trainable)
+    except Exception as e:
+        logger.warning(f"Failed to patch FineGrainedFP8HfQuantizer. Error {e}")
+
+    try:
+        from transformers.quantizers.quantizer_fbgemm_fp8 import FbgemmFp8HfQuantizer
+        FbgemmFp8HfQuantizer.is_trainable = property(make_trainable)
+        FbgemmFp8HfQuantizer.is_qat_trainable = property(make_trainable)
+    except Exception as e:
+        logger.warning(f"Failed to patch FbgemmFp8HfQuantizer. Error {e}")
+pass
+
+patch_hf_quantizer()
