@@ -158,3 +158,12 @@ def patch_ipykernel_hf_xet():
         disable_progress_bars()
     pass
 pass
+
+def patch_trackio():
+    # Set some environment variables to customize the Trackio dashboard for experiment tracking
+    # See https://github.com/unslothai/notebooks/pull/110
+    os.environ["TRACKIO_LOGO_LIGHT_URL"] = "https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20logo%20black%20text.png"
+    os.environ["TRACKIO_LOGO_DARK_URL"] = "https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20logo%20white%20text.png"
+    os.environ["TRACKIO_PLOT_ORDER"] = "train/reward"
+    pass
+pass
