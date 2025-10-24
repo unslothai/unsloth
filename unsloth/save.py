@@ -13,7 +13,9 @@
 # limitations under the License.
 
 from unsloth_zoo.utils import Version
+from importlib.metadata import version as importlib_version
 from unsloth_zoo.hf_utils import dtype_from_config, HAS_TORCH_DTYPE
+from unsloth_zoo.llama_cpp import convert_to_gguf, quantize_gguf, use_local_gguf, install_llama_cpp, check_llama_cpp, _download_convert_hf_to_gguf
 from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
 from peft.tuners.lora import Linear4bit as Peft_Linear4bit
 from peft.tuners.lora import Linear as Peft_Linear
@@ -32,6 +34,9 @@ import psutil
 import re
 from transformers.models.llama.modeling_llama import logger
 from .tokenizer_utils import fix_sentencepiece_gguf
+from .models.loader_utils import get_model_name
+from .ollama_template_mappers import OLLAMA_TEMPLATES, MODEL_TO_OLLAMA_TEMPLATE_MAPPER
+from transformers import ProcessorMixin
 from huggingface_hub import HfApi
 try:
     from huggingface_hub import get_token
@@ -44,6 +49,7 @@ except:
     pass
 pass
 from pathlib import Path
+from peft import PeftModelForCausalLM, PeftModel
 
 __all__ = [
     "print_quantization_methods",
@@ -950,19 +956,27 @@ pass
 
 
 def save_to_gguf(
+    model_name           : str,
     model_type           : str,
     model_dtype          : str,
     is_sentencepiece     : bool = False,
     model_directory      : str = "unsloth_finetuned_model",
     quantization_method  = "fast_quantized", # Can be a list of options! ["q4_k_m", "q8_0", "q5_k_m"]
     first_conversion     : str = None,
-    _run_installer = None, # Non blocking install of llama.cpp
+    is_vlm               : bool = False,
+    is_gpt_oss           : bool = False,
 ):
-    # logger.warning(
-    #     "NOTICE: llama.cpp GGUF conversion is currently unstable, since llama.cpp is\n"\
-    #     "undergoing some major bug fixes as at 5th of May 2024. This is not an Unsloth issue.\n"\
-    #     "Please be patient - GGUF saving should still work, but might not work as well."
-    # )
+    """
+    Orchestrates the complete GGUF conversion process.
+    Handles installation, conversion, and quantization.
+    """
+    # print_output True only if UNSLOTH_ENABLE_LOGGING=1
+    if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") == "1":
+        print_output = True
+    else:
+        print_output = False
+
+    # Validate model dtype
     assert(model_dtype == "float16" or model_dtype == "bfloat16")
     model_dtype = "f16" if model_dtype == "float16" else "bf16"
 
@@ -994,16 +1008,8 @@ def save_to_gguf(
             raise RuntimeError("Unsloth: Currently iq2 type quantizations aren't supported yet - sorry!")
     pass
 
-    # Careful convert.py is only for Llama / Mistral based archs
-    use_fast_convert = False
-    if not is_sentencepiece:      use_fast_convert = False # Llama-3
-    elif model_type == "llama":   use_fast_convert = True
-    elif model_type == "mistral": use_fast_convert = True
-    pass
-    logger.warning_once(f"Unsloth: Converting {model_type} model. Can use fast conversion = {use_fast_convert}.")
-
     # Map quant methods
-    new_quantization_method = []
+    new_quantization_methods = []
     for quant_method in quantization_method:
         if   quant_method == "not_quantized":  quant_method = model_dtype
         elif quant_method == "fast_quantized": quant_method = "q8_0"
@@ -1018,303 +1024,186 @@ def save_to_gguf(
             raise RuntimeError(error)
         pass
 
-        new_quantization_method.append(quant_method)
+        new_quantization_methods.append(quant_method)
     pass
-    quantization_method = new_quantization_method
+    quantization_method = new_quantization_methods
 
+    # Determine optimal first_conversion
+    if is_gpt_oss:
+        print("Unsloth: GPT-OSS model detected - using special conversion settings")
+        first_conversion = "None"  # No quantization for GPT-OSS
+        # Only keep one conversion method since GPT-OSS doesn't quantize
+        quantization_method = ["None"]
+    else:
+        if first_conversion is None:
+            # Check if q8_0 is the ONLY quantization method requested
+            if len(quantization_method) == 1 and quantization_method[0] == "q8_0":
+                first_conversion = "None"  # Let llama-quantize do the direct conversion
+            else:
+                # For all other cases, choose the highest precision format
+                # that can be requantized to all requested formats
+                strength = 0
+                for quant_method in quantization_method:
+                    if   quant_method == "f32":  strength = max(strength, 3)
+                    elif quant_method == "f16":  strength = max(strength, 2)
+                    elif quant_method == "bf16": strength = max(strength, 1)
+                    # Note: we don't set strength for q8_0 here since we handle it above
+
+                if   strength >= 3: first_conversion = "f32"
+                elif strength >= 2: first_conversion = "f16"
+                elif strength >= 1: first_conversion = "bf16"
+                else: first_conversion = "bf16" # requantizing from q8_0 disallowed in new llama.cpp default to bf16.
+
+    # Check bfloat16 support again for first_conversion
+    if first_conversion == "bf16" and not torch.cuda.is_bf16_supported():
+        logger.warning("Unsloth: Switching bf16 to f16 due to hardware limitations")
+        first_conversion = "f16"
+
+    first_conversion_dtype = "" if first_conversion == "None" else first_conversion
+    # Print conversion info
     print_info = \
-        f"==((====))==  Unsloth: Conversion from QLoRA to GGUF information\n"\
+        f"==((====))==  Unsloth: Conversion from HF to GGUF information\n"\
         f"   {chr(92)}{chr(92)}   /|    [0] Installing llama.cpp might take 3 minutes.\n"\
-        f"O^O/ {chr(92)}_/ {chr(92)}    [1] Converting HF to GGUF 16bits might take 3 minutes.\n"\
-        f"{chr(92)}        /    [2] Converting GGUF 16bits to {quantization_method} might take 10 minutes each.\n"\
+        f"O^O/ {chr(92)}_/ {chr(92)}    [1] Converting HF to GGUF {first_conversion_dtype} might take 3 minutes.\n"\
+        f"{chr(92)}        /    [2] Converting GGUF {first_conversion_dtype} to {quantization_method} might take 10 minutes each.\n"\
         f' "-____-"     In total, you will have to wait at least 16 minutes.\n'
     print(print_info)
 
-    # Check first_conversion format
-    if   first_conversion == "f16"  : pass
-    elif first_conversion == "bf16" : pass
-    elif first_conversion == "f32"  : pass
-    elif first_conversion == "q8_0" : pass
-    else:
-        raise RuntimeError(
-            f"Unsloth: `first_conversion` can only be one of ['f16', 'bf16', 'f32', 'q8_0'] and not `{first_conversion}`."
-        )
-    pass
-
-    # Determine whether the system already has llama.cpp installed and the scripts are executable
-    quantize_location = get_executable(["llama-quantize", "quantize", "llama-quantize.exe", "quantize.exe"])
-    convert_location  = get_executable(["convert-hf-to-gguf.py", "convert_hf_to_gguf.py"])
-
-    error = 0
-    if quantize_location is not None and convert_location is not None:
-        print("Unsloth: llama.cpp found in the system. We shall skip installation.")
-    else:
+    # Step 1: Ensure llama.cpp is installed
+    try:
+        quantizer_location, converter_location = check_llama_cpp()
+        print("Unsloth: llama.cpp found in the system. Skipping installation.")
+    except:
         print("Unsloth: Installing llama.cpp. This might take 3 minutes...")
-        if _run_installer is not None:
-            _run_installer, IS_CMAKE = _run_installer
-
-            error = _run_installer.wait()
-            # Check if successful
-            if error != 0:
-                print(f"Unsloth: llama.cpp error code = {error}.")
-                install_llama_cpp_old(-10)
-            pass
-
-            if IS_CMAKE:
-                # CMAKE needs to do some extra steps
-                print("Unsloth: CMAKE detected. Finalizing some steps for installation.")
-
-                check = os.system("cp llama.cpp/build/bin/llama-* llama.cpp")
-                if check != 0: raise RuntimeError("Failed compiling llama.cpp. Please report this ASAP!")
-                check = os.system("rm -rf llama.cpp/build")
-                if check != 0: raise RuntimeError("Failed compiling llama.cpp. Please report this ASAP!")
-            pass
-        else:
-            error = 0
-            install_llama_cpp_blocking()
-        pass
-
-        # Careful llama.cpp/quantize changed to llama.cpp/llama-quantize
-        # and llama.cpp/main changed to llama.cpp/llama-cli
-        # See https://github.com/ggerganov/llama.cpp/pull/7809
-        quantize_location = None
-        if os.path.exists("llama.cpp/quantize.exe"):
-            quantize_location = "llama.cpp/quantize.exe"
-        elif os.path.exists("llama.cpp/quantize"):
-            quantize_location = "llama.cpp/quantize"
-        elif os.path.exists("llama.cpp/llama-quantize.exe"):
-            quantize_location = "llama.cpp/llama-quantize.exe"
-        elif os.path.exists("llama.cpp/llama-quantize"):
-            quantize_location = "llama.cpp/llama-quantize"
-        elif os.path.exists("llama.cpp/build/bin/llama-quantize"):
-            quantize_location = "llama.cpp/build/bin/llama-quantize"
-        elif os.path.exists("llama.cpp/build/bin/quantize"):
-            quantize_location = "llama.cpp/build/bin/quantize"
-        else:
-            raise RuntimeError(
-                "Unsloth: The file 'llama.cpp/llama-quantize' or `llama.cpp/quantize` does not exist.\n"\
-                "We've also double checked the building directory under 'llama.cpp/build/bin/'.\n"\
-                "But we expect this file to exist! Check if the file exists under llama.cpp and investigate the building process of llama.cpp (make/cmake)!"
+        if IS_KAGGLE_ENVIRONMENT:
+            # Kaggle: no CUDA support due to environment limitations
+            quantizer_location, converter_location = install_llama_cpp(
+                gpu_support=False,
+                print_output=print_output
             )
-        pass
-
-        # See https://github.com/unslothai/unsloth/pull/730
-        # Filenames changed again!
-        convert_location = None
-        if os.path.exists("llama.cpp/convert-hf-to-gguf.py"):
-            convert_location = "llama.cpp/convert-hf-to-gguf.py"
-        elif os.path.exists("llama.cpp/convert_hf_to_gguf.py"):
-            convert_location = "llama.cpp/convert_hf_to_gguf.py"
         else:
-            raise RuntimeError(
-                "Unsloth: The file 'llama.cpp/convert-hf-to-gguf.py' or 'llama.cpp/convert_hf_to_gguf.py' does not exist.\n"\
-                "But we expect this file to exist! Maybe the llama.cpp developers changed the name?"
+            quantizer_location, converter_location = install_llama_cpp(
+                gpu_support=False,  # GGUF conversion doesn't need CUDA
+                print_output=print_output
             )
-        pass
-    pass
 
-    # Determine maximum first_conversion state
-    if   first_conversion == "f32"  : strength = 3
-    elif first_conversion == "f16"  : strength = 2
-    elif first_conversion == "bf16" : strength = 1
-    elif first_conversion == "q8_0" : strength = 0
+    # Step 2: Download and patch converter script
+    print("Unsloth: Preparing converter script...")
+    with use_local_gguf():
+        converter_path, supported_text_archs, supported_vision_archs = _download_convert_hf_to_gguf()
 
-    for quant_method in quantization_method:
-        if   quant_method == "f32":  strength = max(strength, 3)
-        elif quant_method == "f16":  strength = max(strength, 2)
-        elif quant_method == "bf16": strength = max(strength, 1)
-        elif quant_method == "q8_0": strength = max(strength, 0)
-        else:
-            # Quantized models must have f16 as the default argument
-            if   first_conversion == "f32"  : pass
-            elif first_conversion == "f16"  : pass
-            elif first_conversion == "bf16" : pass
-            elif first_conversion == "q8_0":
-                logger.warning_once(
-                    "Unsloth: Using q8_0 for the `first_conversion` will lose a bit of accuracy, "\
-                    "but saves disk space!"
-                )
-                # first_conversion = "f16"
-            pass
-        pass
-    pass
+        # Step 3: Initial GGUF conversion
+        print(f"Unsloth: [1] Converting model into {first_conversion_dtype} GGUF format.")
+        print(f"This might take 3 minutes...")
 
-    # If only q8_0:
-    if len(quantization_method) == 1 and quantization_method[0] == "q8_0":
-        strength = 0
-    pass
-
-    if   strength >= 3: first_conversion = "f32"
-    elif strength >= 2: first_conversion = "f16"
-    elif strength >= 1: first_conversion = "bf16"
-    else: first_conversion = "q8_0"
-
-    # Non llama/mistral needs can only use f32 or f16
-    if not use_fast_convert and \
-        (first_conversion != "f16" or first_conversion != "bf16" or first_conversion != "f32"):
-
-        pass
-        # Latest llama.cpp works for all models for q8_0!
-
-        # logger.warning_once("Unsloth: We must use f16 for non Llama and Mistral models.")
-        # first_conversion = "f16"
-    pass
-
-    # Check if bfloat16 is supported
-    if first_conversion == "bf16" and not torch.cuda.is_bf16_supported():
-        logger.warning(
-            "Unsloth: Cannot convert to bf16 GGUF since your computer doesn't support it.\n"\
-            "We shall switch instead to f16."
+        initial_files, is_vlm_update = convert_to_gguf(
+            model_name=model_name,
+            input_folder=model_directory,
+            model_dtype = model_dtype,
+            quantization_type=first_conversion,
+            converter_location=converter_path,
+            supported_text_archs=supported_text_archs,
+            supported_vision_archs=supported_vision_archs,
+            is_vlm=is_vlm,
+            is_gpt_oss=is_gpt_oss,
+            max_shard_size="50GB",
+            print_output=print_output,
         )
-        first_conversion = "f16"
-    pass
+    # update is_vlm switch
+    is_vlm = is_vlm_update
+    # Check conversion success
+    for file in initial_files:
+        if not os.path.exists(file):
+            if IS_KAGGLE_ENVIRONMENT:
+                raise RuntimeError(
+                    f"Unsloth: Conversion failed for {file}\n"
+                    "You are in a Kaggle environment with limited disk space (20GB).\n"
+                    "Try saving to /tmp for more space or use a smaller model.\n"
+                    "Alternatively, save the 16bit model first, then convert manually."
+                )
+            else:
+                raise RuntimeError(
+                    f"Unsloth: Conversion failed for {file}\n"
+                    "Please check disk space and try again."
+                )
 
+    print(f"Unsloth: Initial conversion completed! Files: {initial_files}")
+
+    # Step 4: Additional quantizations using llama-quantize
+    all_saved_locations = initial_files.copy()
+
+    # Get CPU count for quantization
     n_cpus = psutil.cpu_count()
     if n_cpus is None: n_cpus = 1
     n_cpus *= 2
-    # Concurrency from https://rentry.org/llama-cpp-conversions#merging-loras-into-a-model
 
-    final_location = str((Path(model_directory) / f"unsloth.{first_conversion.upper()}.gguf").absolute())
+    if not is_gpt_oss:
+        base_gguf = initial_files[0]
+        quants_created = False
+        for quant_method in quantization_method:
+            if quant_method != first_conversion:
+                print(f"Unsloth: [2] Converting GGUF {first_conversion_dtype} into {quant_method}. This might take 10 minutes...")
+                output_location = f"{model_name}.{quant_method.upper()}.gguf"
 
-    print(f"Unsloth: [1] Converting model at {model_directory} into {first_conversion} GGUF format.\n"\
-          f"The output location will be {final_location}\n"\
-          "This might take 3 minutes...")
-
-    # We first check if tokenizer.model exists in the model_directory
-    if os.path.exists(f"{model_directory}/tokenizer.model"):
-        vocab_type = "spm,hfft,bpe"
-        # Fix Sentencepiece model as well!
-        fix_sentencepiece_gguf(model_directory)
-    else:
-        vocab_type = "bpe"
-    pass
-
-    # convert.py is deprecated!
-    use_fast_convert = False
-    if use_fast_convert:
-        command = f"python llama.cpp/convert.py {model_directory} "\
-            f"--outfile {final_location} --vocab-type {vocab_type} "\
-            f"--outtype {first_conversion} --concurrency {n_cpus} --pad-vocab"
-    else:
-        # Fix up conversion script is possible
-        with open(convert_location, "rb") as f: converter_latest = f.read()
-        # Fix metadata
-        converter_latest = re.sub(
-            rb"(self\.metadata \= .+?\(.+?\)"\
-            rb"[\n]{1,}([\s]{4,}))",
-            rb"\1"\
-            rb"if hasattr(self.metadata, 'quantized_by'): self.metadata.quantized_by = 'Unsloth'\n"\
-            rb"\2if hasattr(self.metadata, 'repo_url'): self.metadata.repo_url = 'https://huggingface.co/unsloth'\n"\
-            rb"\2if hasattr(self.metadata, 'tags'): self.metadata.tags = ['unsloth', 'llama.cpp']\n"\
-            rb"\2",
-            converter_latest,
-        )
-
-        # Make mistral_common optional for now
-        # from x import y
-        converter_latest = re.sub(
-            rb"(from mistral_common[^\n\(]{1,})[\s]{0,}\n",
-            rb"try:\n    \1\nexcept:\n    pass\n",
-            converter_latest,
-        )
-        # from x import (y, z,)
-        converter_latest = re.sub(
-            rb"(from mistral_common[^\n\(]{1,}[\s]{0,}\(.+?\))",
-            rb"try:\n    \1\nexcept:\n    pass\n",
-            converter_latest,
-            flags = re.MULTILINE | re.DOTALL,
-        )
-
-        try:
-            # Write file
-            with open(convert_location, "wb") as file:
-                file.write(converter_latest)
-        except:
-            pass
-        command = f"python {convert_location} {model_directory} "\
-            f"--outfile {final_location} "\
-            f"--outtype {first_conversion}"
-    pass
-
-    try_execute([command,], force_complete = True)
-
-    # Check if quantization succeeded!
-    if not os.path.isfile(final_location):
-        if IS_KAGGLE_ENVIRONMENT:
-            if not Path(final_location).resolve().is_relative_to(Path('/tmp').resolve()):
-                raise RuntimeError(
-                    f"Unsloth: Quantization failed for {final_location}\n"\
-                    "You are in a Kaggle environment, which might be the reason this is failing.\n"\
-                    "Kaggle only provides 20GB of disk space in the working directory.\n"\
-                    "Merging to 16bit for 7b models use 16GB of space.\n"\
-                    "This means using `model.{save_pretrained/push_to_hub}_merged` works, but\n"\
-                    "`model.{save_pretrained/push_to_hub}_gguf will use too much disk space.\n"\
-                    "You can try saving it to the `/tmp` directory for larger disk space.\n"\
-                    "I suggest you to save the 16bit model first, then use manual llama.cpp conversion."
-                )
-        else:
-            raise RuntimeError(
-                f"Unsloth: Quantization failed for {final_location}\n"\
-                "You might have to compile llama.cpp yourself, then run this again.\n"\
-                "You do not need to close this Python program. Run the following commands in a new terminal:\n"\
-                "You must run this in the same folder as you're saving your model.\n"\
-                "git clone --recursive https://github.com/ggerganov/llama.cpp\n"\
-                "cd llama.cpp && make clean && make all -j\n"\
-                "Once that's done, redo the quantization."
-            )
-        pass
-    pass
-    print(f"Unsloth: Conversion completed! Output location: {final_location}")
-
-    full_precision_location = final_location
-
-    all_saved_locations = [full_precision_location,]
-    # Convert each type!
-    for quant_method in quantization_method:
-        if quant_method != first_conversion:
-            print(f"Unsloth: [2] Converting GGUF 16bit into {quant_method}. This might take 20 minutes...")
-            final_location = str((Path(model_directory) / f"unsloth.{quant_method.upper()}.gguf").absolute())
-
-            command = f"./{quantize_location} {full_precision_location} "\
-                f"{final_location} {quant_method} {n_cpus}"
-
-            try_execute([command,], force_complete = True)
-
-            # Check if quantization succeeded!
-            if not os.path.isfile(final_location):
-                if IS_KAGGLE_ENVIRONMENT:
-                    if not Path(final_location).resolve().is_relative_to(Path('/tmp').resolve()):
+                try:
+                    # Use the quantize_gguf function we created
+                    quantized_file = quantize_gguf(
+                        input_gguf=base_gguf,
+                        output_gguf=output_location,
+                        quant_type=quant_method,
+                        quantizer_location=quantizer_location,
+                        print_output=print_output
+                    )
+                    all_saved_locations.append(quantized_file)
+                    quants_created = True
+                except Exception as e:
+                    if IS_KAGGLE_ENVIRONMENT:
                         raise RuntimeError(
-                            f"Unsloth: Quantization failed for {final_location}\n"\
+                            f"Unsloth: Quantization failed for {output_location}\n"\
                             "You are in a Kaggle environment, which might be the reason this is failing.\n"\
                             "Kaggle only provides 20GB of disk space in the working directory.\n"\
                             "Merging to 16bit for 7b models use 16GB of space.\n"\
                             "This means using `model.{save_pretrained/push_to_hub}_merged` works, but\n"\
                             "`model.{save_pretrained/push_to_hub}_gguf will use too much disk space.\n"\
                             "You can try saving it to the `/tmp` directory for larger disk space.\n"\
-                            "I suggest you to save the 16bit model first, then use manual llama.cpp conversion."
+                            "I suggest you to save the 16bit model first, then use manual llama.cpp conversion.\n"\
+                            "Error: {e}"
                         )
-                else:
-                    raise RuntimeError(
-                        "Unsloth: Quantization failed! You might have to compile llama.cpp yourself, then run this again.\n"\
-                        "You do not need to close this Python program. Run the following commands in a new terminal:\n"\
-                        "You must run this in the same folder as you're saving your model.\n"\
-                        "git clone --recursive https://github.com/ggerganov/llama.cpp\n"\
-                        "cd llama.cpp && make clean && make all -j\n"\
-                        "Once that's done, redo the quantization."
-                    )
+                    else:
+                        raise RuntimeError(
+                            f"Unsloth: Quantization failed for {output_location}\n"\
+                            "You might have to compile llama.cpp yourself, then run this again.\n"\
+                            "You do not need to close this Python program. Run the following commands in a new terminal:\n"\
+                            "You must run this in the same folder as you're saving your model.\n"\
+                            "git clone --recursive https://github.com/ggerganov/llama.cpp\n"\
+                            "cd llama.cpp && make clean && make all -j\n"\
+                            "Once that's done, redo the quantization.\n"\
+                            "Error: {e}"
+                        )
+                    pass
                 pass
             pass
-
-            print(f"Unsloth: Conversion completed! Output location: {final_location}")
-            all_saved_locations.append(final_location)
         pass
+        print("Unsloth: Model files cleanup...")
+        if quants_created:
+            all_saved_locations.remove(base_gguf)
+            Path(base_gguf).unlink()
+
+            # flip the list to get [text_model, mmproj] order. for text models stays the same.
+            all_saved_locations.reverse()
+    else:
+        print("Unsloth: GPT-OSS model - skipping additional quantizations")
     pass
 
-    # Finally check if first_conversion (f16, bf16 etc) was in the list of actual quant methods
-    full_precision_seen = first_conversion in frozenset(quantization_method)
+    if is_gpt_oss:
+        want_full_precision = True
+    else:
+        want_full_precision = first_conversion in frozenset(quantization_method)
 
-    return all_saved_locations, full_precision_seen
+    print(f"Unsloth: All GGUF conversions completed successfully!")
+    print(f"Generated files: {all_saved_locations}")
+
+    return all_saved_locations, want_full_precision, is_vlm
 pass
 
 
@@ -1615,13 +1504,21 @@ def fix_tokenizer_bos_token(tokenizer):
 pass
 
 
-def create_ollama_modelfile(tokenizer, gguf_location):
+def create_ollama_modelfile(tokenizer, base_model_name, model_location):
     """
         Creates an Ollama Modelfile.
         Use ollama.create(model = "new_ollama_model", modelfile = modelfile)
     """
-    modelfile = getattr(tokenizer, "_ollama_modelfile", None)
-    if modelfile is None: return None
+    ollama_template_name = MODEL_TO_OLLAMA_TEMPLATE_MAPPER.get(base_model_name)
+    if not ollama_template_name:
+        print(f"Unsloth: No Ollama template mapping found for model '{base_model_name}'. Skipping Ollama Modelfile")
+        return None
+    ollama_modelfile = OLLAMA_TEMPLATES.get(ollama_template_name)
+    if not ollama_modelfile:
+        print(f"Unsloth: No Ollama template mapping found for model '{base_model_name}'. Skipping Ollama Modelfile")
+        return None
+    tokenizer._ollama_modelfile = ollama_modelfile  # This comes from the unpacking above
+    modelfile = ollama_modelfile
 
     FILE_LOCATION_REPLACER = "⚫@✅#🦥__FILE_LOCATION__⚡@🦥#⛵"
     EOS_TOKEN_REPLACER     = "⚫@✅#🦥__EOS_TOKEN__⚡@🦥#⛵"
@@ -1643,12 +1540,12 @@ def create_ollama_modelfile(tokenizer, gguf_location):
 
     if "__EOS_TOKEN__" in modelfile:
         modelfile = modelfile.format(
-            __FILE_LOCATION__  = gguf_location,
+            __FILE_LOCATION__  = model_location,
             __EOS_TOKEN__      = tokenizer.eos_token,
         )
     else:
         modelfile = modelfile.format(
-            __FILE_LOCATION__  = gguf_location,
+            __FILE_LOCATION__  = model_location,
         )
     pass
 
@@ -1769,7 +1666,7 @@ def unsloth_save_pretrained_gguf(
     self,
     save_directory       : Union[str, os.PathLike],
     tokenizer            = None,
-    quantization_method  : str = "fast_quantized",
+    quantization_method  = "fast_quantized",
     first_conversion     : str = None,
     push_to_hub          : bool = False,
     token                : Optional[Union[str, bool]] = None,
@@ -1819,99 +1716,165 @@ def unsloth_save_pretrained_gguf(
     if tokenizer is None:
         raise ValueError("Unsloth: Saving to GGUF must have a tokenizer.")
 
+    try:
+        base_model_name = get_model_name(self.config._name_or_path, load_in_4bit=False)
+        model_name = base_model_name.split("/")[-1]
+    except:
+        base_model_name = self.config._name_or_path
+        model_name = base_model_name.split("/")[-1]
+
+    # Check if push_to_hub is requested
+    if push_to_hub:
+        raise ValueError(
+            "Unsloth: Please use .push_to_hub_gguf() instead of .save_pretrained_gguf() with push_to_hub=True"
+        )
+
+    # Step 1: Check if this is a VLM (Vision-Language Model) and check if gpt-oss
+    is_vlm = False
+    if hasattr(self, 'config') and hasattr(self.config, 'architectures'):
+        is_vlm = any(
+            x.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
+            for x in self.config.architectures
+        )
+        is_vlm = is_vlm or hasattr(self.config, "vision_config")
+
+    is_processor = is_vlm and isinstance(tokenizer, ProcessorMixin)
+
+    is_gpt_oss = True if (hasattr(self.config, "architectures") and self.config.architectures == "GptOssForCausalLM") or (hasattr(self.config, "model_type") and self.config.model_type in ["gpt-oss", "gpt_oss"]) else False
+    # Step 2: Prepare arguments for model saving
     arguments = dict(locals())
     arguments["model"]        = self
     arguments["tokenizer"]    = tokenizer
-    arguments["push_to_hub"]  = False # We save ourselves
-    arguments["save_method"] = "merged_16bit" # Must be 16bit
+    arguments["push_to_hub"]  = False # We handle upload ourselves
+    # GPT-OSS needs mxfp4 save method
+    if is_gpt_oss:
+        arguments["save_method"] = "mxfp4"
+    else:
+        arguments["save_method"] = "merged_16bit"
     del arguments["self"]
     del arguments["quantization_method"]
     del arguments["first_conversion"]
+    del arguments["is_vlm"]
+    del arguments["is_gpt_oss"]
+    del arguments["model_name"]
+    del arguments["base_model_name"]
+    del arguments["is_processor"]
 
-    # Fix tokenizer adding an extra BOS token at the front
-    fix_bos_token, old_chat_template = fix_tokenizer_bos_token(tokenizer)
-
-    # Non blocking install GGUF first
-    if not os.path.exists("llama.cpp"):
-
-        if IS_KAGGLE_ENVIRONMENT:
-            # Kaggle is weird - no blocking installs, and no CUDA?
-            python_install = install_python_non_blocking(["gguf", "protobuf"])
-            python_install.wait()
-            install_llama_cpp_blocking(use_cuda = False)
-            new_save_directory, old_username = unsloth_save_model(**arguments)
-            makefile = None
-        else:
-            git_clone = install_llama_cpp_clone_non_blocking()
-            python_install = install_python_non_blocking(["gguf", "protobuf"])
-            git_clone.wait()
-            makefile = install_llama_cpp_make_non_blocking()
-            new_save_directory, old_username = unsloth_save_model(**arguments)
-            python_install.wait()
-        pass
+    # Step 3: Fix tokenizer BOS token if needed
+    if is_processor:
+        fix_bos_token, old_chat_template = fix_tokenizer_bos_token(tokenizer.tokenizer)
     else:
-        try:
-            new_save_directory, old_username = unsloth_save_model(**arguments)
-            makefile = None
-        except:
-            # Retry by recloning llama.cpp
-            if IS_KAGGLE_ENVIRONMENT:
-                # Kaggle is weird - no blocking installs, and no CUDA?
-                python_install = install_python_non_blocking(["gguf", "protobuf"])
-                python_install.wait()
-                install_llama_cpp_blocking(use_cuda = False)
-                new_save_directory, old_username = unsloth_save_model(**arguments)
-                makefile = None
-            else:
-                git_clone = install_llama_cpp_clone_non_blocking()
-                python_install = install_python_non_blocking(["gguf", "protobuf"])
-                git_clone.wait()
-                makefile = install_llama_cpp_make_non_blocking()
-                new_save_directory, old_username = unsloth_save_model(**arguments)
-                python_install.wait()
-            pass
-        pass
-    pass
+        fix_bos_token, old_chat_template = fix_tokenizer_bos_token(tokenizer)
+
+    # Step 4: Save/merge model to 16-bit format
+    print(f'Unsloth: Merging model weights to {"mxfp4" if is_gpt_oss else "16-bit"} format...')
+    try:
+        # Call unsloth_generic_save directly (it's in the same file)
+        unsloth_generic_save(**arguments)
+
+    except Exception as e:
+        raise RuntimeError(f"Failed to save/merge model: {e}")
+
+    if is_processor:
+        tokenizer = tokenizer.tokenizer
 
     # Use old chat template if the bos is removed
     if fix_bos_token:
         tokenizer.chat_template = old_chat_template
     pass
 
+    # Step 6: Clean up memory
     for _ in range(3):
+        import gc
         gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
-    model_dtype = dtype_from_config(self.config)
-    model_type  = self.config.model_type
-    if type(model_dtype) is str:
-        assert(model_dtype == "float16" or model_dtype == "bfloat16")
-    elif model_dtype == torch.float16:
+    # Step 7: Get model dtype and type
+    try:
+        model_dtype = dtype_from_config(self.config)
+        model_type  = self.config.model_type
+        if type(model_dtype) is str:
+            assert(model_dtype == "float16" or model_dtype == "bfloat16")
+        elif model_dtype == torch.float16:
+            model_dtype = "float16"
+        elif model_dtype == torch.bfloat16:
+            model_dtype = "bfloat16"
+        else:
+            raise TypeError("Unsloth: Model dtype can only be float16 or bfloat16")
+    except Exception as e:
+        # Fallback if dtype_from_config fails
+        print(f"Unsloth: Could not determine dtype ({e}), defaulting to float16")
         model_dtype = "float16"
-    elif model_dtype == torch.bfloat16:
-        model_dtype = "bfloat16"
-    else:
-        raise TypeError("Unsloth: Model dtype can only be float16 or bfloat16")
-    pass
 
-    is_sentencepiece_model = check_if_sentencepiece_model(self)
+    # Step 8: Convert to GGUF format
+    print("Unsloth: Converting to GGUF format...")
 
-    # Save to GGUF
-    all_file_locations, want_full_precision = save_to_gguf(
-        model_type, model_dtype, is_sentencepiece_model,
-        new_save_directory, quantization_method, first_conversion, makefile,
-    )
-
-    # Save Ollama modelfile
-    modelfile = create_ollama_modelfile(tokenizer, all_file_locations[0])
-    modelfile_location = None
-    if modelfile is not None:
-        modelfile_location = os.path.join(new_save_directory, "Modelfile")
-        with open(modelfile_location, "w", encoding = "utf-8") as file:
-            file.write(modelfile)
+    # Convert quantization_method to list if string
+    # Use old style quantization_method
+    quantization_methods = []
+    if quantization_method is not None:
+        # Convert quantization_method to list
+        if   isinstance(quantization_method, list):  pass
+        elif isinstance(quantization_method, str):   quantization_method = [ quantization_method, ]
+        elif isinstance(quantization_method, tuple): quantization_method = list(quantization_method)
+        else:
+            raise TypeError("Unsloth: quantization_method can only be a string or a list of strings")
         pass
-        print(f"Unsloth: Saved Ollama Modelfile to {modelfile_location}")
+        for i, quant_method in enumerate(quantization_method):
+            quant_method = quant_method.lower()
+            if   quant_method == "not_quantized":  quant_method = "f16"
+            elif quant_method == "fast_quantized": quant_method = "q8_0"
+            elif quant_method == "quantized":      quant_method = "q4_k_m"
+            elif quant_method is None:             quant_method = "q8_0"
+            quantization_methods.append(quant_method.lower())
+        pass
     pass
 
+    try:
+        all_file_locations, want_full_precision, is_vlm_update = save_to_gguf(
+            model_name=model_name,
+            model_type=model_type,
+            model_dtype=model_dtype,
+            is_sentencepiece=False,
+            model_directory=save_directory,
+            quantization_method=quantization_methods,
+            first_conversion=first_conversion,
+            is_vlm=is_vlm,  # Pass VLM flag
+            is_gpt_oss = is_gpt_oss, # Pass gpt_oss Flag
+        )
+    except Exception as e:
+        if IS_KAGGLE_ENVIRONMENT:
+            raise RuntimeError(
+                f"Unsloth: GGUF conversion failed in Kaggle environment.\n"
+                f"This is likely due to the 20GB disk space limit.\n"
+                f"Try saving to /tmp directory or use a smaller model.\n"
+                f"Error: {e}"
+            )
+        else:
+            raise RuntimeError(f"Unsloth: GGUF conversion failed: {e}")
+
+    # Step 9: Create Ollama modelfile
+    modelfile_location = None
+    ollama_success = False
+    if all_file_locations:
+        try:
+            if is_vlm_update:
+                modelfile = create_ollama_modelfile(tokenizer, base_model_name, ".")
+            else:
+                modelfile = create_ollama_modelfile(tokenizer, base_model_name, all_file_locations[0])
+            if modelfile is not None:
+                if is_vlm_update:
+                    modelfile_location = os.path.join(save_directory, "Modelfile")
+                else:
+                    modelfile_location = os.path.join(os.getcwd(), "Modelfile")
+                with open(modelfile_location, "w", encoding = "utf-8") as file:
+                    file.write(modelfile)
+                ollama_success = True
+        except Exception as e:
+            print(f"Warning: Could not create Ollama modelfile: {e}")
+
+    # Step 10: Show BOS token warning if applicable
     if fix_bos_token:
         logger.warning(
             "Unsloth: ##### The current model auto adds a BOS token.\n"\
@@ -1919,32 +1882,29 @@ def unsloth_save_pretrained_gguf(
         )
     pass
 
-    if push_to_hub:
-        print("Unsloth: Uploading GGUF to Huggingface Hub...")
+    if is_vlm_update:
+        print("\n")
+        print(f"Unsloth: example usage for Multimodal LLMs: llama-mtmd-cli -m {all_file_locations[0]} --mmproj {all_file_locations[-1]}")
+        print("Unsloth: load image inside llama.cpp runner: /image test_image.jpg")
+        print("Unsloth: Prompt model to describe the image")
+    else:
+        print(f'Unsloth: example usage for text only LLMs: llama-cli --model {all_file_locations[0]} -p "why is the sky blue?"')
+    if ollama_success and is_vlm_update:
+        print(f"Unsloth: Saved Ollama Modelfile to {modelfile_location}")
+        print("Unsloth: convert model to ollama format by running - ollama create model_name -f ./Modelfile - inside save directory.")
+    if ollama_success and not is_vlm_update:
+        print("Unsloth: Saved Ollama Modelfile to current directory")
+        print("Unsloth: convert model to ollama format by running - ollama create model_name -f ./Modelfile - inside current directory.")
 
-        # If not needing full precision, skip the first
-        if not want_full_precision: all_file_locations = all_file_locations[1:]
-
-        for file_location in all_file_locations:
-            username = upload_to_huggingface(
-                self, save_directory, token,
-                "GGUF converted", "gguf", file_location, old_username, private,
-            )
-            link = f"{username}/{new_save_directory.lstrip('/.')}" \
-                if username not in new_save_directory else \
-                new_save_directory.lstrip('/.')
-            print(f"Saved GGUF to https://huggingface.co/{link}")
-        pass
-
-        # Save modelfile
-        if modelfile_location is not None:
-            username = upload_to_huggingface(
-                self, save_directory, token,
-                "GGUF converted", "gguf", modelfile_location, old_username, private,
-            )
-            print(f"Saved Ollama Modelfile to https://huggingface.co/{link}")
-        pass
-    pass
+    #Return a dict with all needed info for push_to_hub
+    return {
+        "save_directory": save_directory,
+        "gguf_files": all_file_locations,
+        "modelfile_location": modelfile_location,
+        "want_full_precision": want_full_precision,
+        "is_vlm": is_vlm_update,
+        "fix_bos_token": fix_bos_token,
+    }
 pass
 
 
@@ -1952,7 +1912,7 @@ def unsloth_push_to_hub_gguf(
     self,
     repo_id              : str,
     tokenizer            = None,
-    quantization_method  : str = "fast_quantized",
+    quantization_method  = "fast_quantized",
     first_conversion     : str = None,
     use_temp_dir         : Optional[bool] = None,
     commit_message       : Optional[str] = "Trained with Unsloth",
@@ -1995,133 +1955,222 @@ def unsloth_push_to_hub_gguf(
     if tokenizer is None:
         raise ValueError("Unsloth: Saving to GGUF must have a tokenizer.")
 
-    arguments = dict(locals())
-    arguments["model"]          = self
-    arguments["tokenizer"]      = tokenizer
-    arguments["save_directory"] = repo_id
-    arguments["push_to_hub"]    = False # We save ourselves
-    arguments["save_method"]   = "merged_16bit" # Must be 16bit
-    del arguments["self"]
-    del arguments["repo_id"]
-    del arguments["quantization_method"]
-    del arguments["first_conversion"]
+    # Step 1: Determine save directory
+    model_name = repo_id.split("/")[-1] if "/" in repo_id else repo_id
 
-    # Fix tokenizer adding an extra BOS token at the front
-    fix_bos_token, old_chat_template = fix_tokenizer_bos_token(tokenizer)
+    if use_temp_dir or use_temp_dir is None:
+        import tempfile
+        temp_dir = tempfile.mkdtemp(prefix="unsloth_gguf_")
+        save_directory = temp_dir
+        cleanup_temp = True
+    else:
+        save_directory = model_name  # Use model name, not repo_id
+        cleanup_temp = False
 
-    # Non blocking install GGUF first
-    if not os.path.exists("llama.cpp"):
+    # Step 2: Call save_pretrained_gguf to do the conversion
+    print(f"Unsloth: Converting model to GGUF format...")
 
-        if IS_KAGGLE_ENVIRONMENT:
-            # Kaggle is weird - no blocking installs, and no CUDA?
-            python_install = install_python_non_blocking(["gguf", "protobuf"])
-            python_install.wait()
-            install_llama_cpp_blocking(use_cuda = False)
-            new_save_directory, old_username = unsloth_save_model(**arguments)
-            makefile = None
+    try:
+        # Call save_pretrained_gguf - it returns all the info we need
+        result = unsloth_save_pretrained_gguf(
+            self=self,
+            save_directory=save_directory,
+            tokenizer=tokenizer,
+            quantization_method=quantization_method,
+            first_conversion=first_conversion,
+            push_to_hub=False,  # Never push from here
+            token=None,  # Don't need token for local save
+            max_shard_size=max_shard_size,
+            safe_serialization=safe_serialization,
+            temporary_location=temporary_location,
+            maximum_memory_usage=maximum_memory_usage,
+        )
+
+        # Extract results
+        all_file_locations = result["gguf_files"]
+        modelfile_location = result["modelfile_location"]
+        want_full_precision = result["want_full_precision"]
+        is_vlm = result["is_vlm"]
+        fix_bos_token = result["fix_bos_token"]
+        actual_save_directory = result["save_directory"]
+
+    except Exception as e:
+        if cleanup_temp:
+            import shutil
+            try:
+                shutil.rmtree(save_directory)
+            except:
+                pass
+        raise RuntimeError(f"Failed to convert model to GGUF: {e}")
+    pass
+
+    # Step 3: Upload to HuggingFace Hub
+    print("Unsloth: Uploading GGUF to Huggingface Hub...")
+
+    try:
+        from huggingface_hub import HfApi
+        api = HfApi(token=token)
+
+        # Get full repo id
+        if "/" not in repo_id:
+            username = api.whoami()["name"]
+            full_repo_id = f"{username}/{repo_id}"
         else:
-            git_clone = install_llama_cpp_clone_non_blocking()
-            python_install = install_python_non_blocking(["gguf", "protobuf"])
-            git_clone.wait()
-            makefile = install_llama_cpp_make_non_blocking()
-            new_save_directory, old_username = unsloth_save_model(**arguments)
-            python_install.wait()
-        pass
-    else:
-        try:
-            new_save_directory, old_username = unsloth_save_model(**arguments)
-            makefile = None
-        except:
-            # Retry by recloning llama.cpp
-            if IS_KAGGLE_ENVIRONMENT:
-                # Kaggle is weird - no blocking installs, and no CUDA?
-                python_install = install_python_non_blocking(["gguf", "protobuf"])
-                python_install.wait()
-                install_llama_cpp_blocking(use_cuda = False)
-                new_save_directory, old_username = unsloth_save_model(**arguments)
-                makefile = None
+            full_repo_id = repo_id
+
+        # Create repo
+        api.create_repo(
+            repo_id=full_repo_id,
+            repo_type="model",
+            private=private,
+            exist_ok=True,
+        )
+
+        # Upload GGUF files
+        for file_location in all_file_locations:
+            original_name = os.path.basename(file_location)
+            # Replace temp directory name with proper model name
+            if cleanup_temp and "unsloth_gguf_" in original_name:
+                # Extract the quantization part (e.g., ".Q8_0.gguf" or ".Q8_0-mmproj.gguf")
+                quant_suffix = original_name.split(".", 1)[1] if "." in original_name else original_name
+                proper_name = f"{model_name}.{quant_suffix}"
             else:
-                git_clone = install_llama_cpp_clone_non_blocking()
-                python_install = install_python_non_blocking(["gguf", "protobuf"])
-                git_clone.wait()
-                makefile = install_llama_cpp_make_non_blocking()
-                new_save_directory, old_username = unsloth_save_model(**arguments)
-                python_install.wait()
+                proper_name = original_name.replace(os.path.basename(save_directory), model_name)
+
+            print(f"Uploading {proper_name}...")
+
+            api.upload_file(
+                path_or_fileobj=file_location,
+                path_in_repo=proper_name,
+                repo_id=full_repo_id,
+                repo_type="model",
+                commit_message=commit_message,
+                commit_description=commit_description,
+                create_pr=create_pr,
+                revision=revision,
+            )
+        pass
+
+        # Upload config.json if exists
+        config_path = os.path.join(actual_save_directory, "config.json")
+        if os.path.exists(config_path):
+            print("Uploading config.json...")
+            api.upload_file(
+                path_or_fileobj=config_path,
+                path_in_repo="config.json",
+                repo_id=full_repo_id,
+                repo_type="model",
+                commit_message=f"{commit_message} - config",
+                create_pr=create_pr,
+                revision=revision,
+            )
+
+        # Upload Modelfile if exists
+        if modelfile_location and os.path.exists(modelfile_location):
+            print("Uploading Ollama Modelfile...")
+            api.upload_file(
+                path_or_fileobj=modelfile_location,
+                path_in_repo="Modelfile",
+                repo_id=full_repo_id,
+                repo_type="model",
+                commit_message=f"{commit_message} - Ollama Modelfile",
+                create_pr=create_pr,
+                revision=revision,
+            )
+
+        # Create and upload README
+        readme_content = f"""---
+tags:
+- gguf
+- llama.cpp
+- unsloth
+{"- vision-language-model" if is_vlm else ""}
+---
+
+# {repo_id.split("/")[-1]} - GGUF
+
+This model was finetuned and converted to GGUF format using [Unsloth](https://github.com/unslothai/unsloth).
+
+**Example usage**:
+- For text only LLMs:    **llama-cli** **--hf** repo_id/model_name **-p** "why is the sky blue?"
+- For multimodal models: **llama-mtmd-cli** **-m** model_name.gguf **--mmproj** mmproj_file.gguf
+
+## Available Model files:
+"""
+        for file in all_file_locations:
+            # Fix filename in README too
+            original_name = os.path.basename(file)
+            if cleanup_temp and "unsloth_gguf_" in original_name:
+                quant_suffix = original_name.split(".", 1)[1] if "." in original_name else original_name
+                proper_name = f"{model_name}.{quant_suffix}"
+            else:
+                proper_name = original_name.replace(os.path.basename(save_directory), model_name)
+            readme_content += f"- `{proper_name}`\n"
+
+        # Special note for VLM with Modelfile
+        if is_vlm and modelfile_location:
+            readme_content += "\n## ⚠️ Ollama Note for Vision Models\n"
+            readme_content += "**Important:** Ollama currently does not support separate mmproj files for vision models.\n\n"
+            readme_content += "To create an Ollama model from this vision model:\n"
+            readme_content += "1. Place the `Modelfile` in the same directory as the finetuned bf16 merged model\n"
+            readme_content += "3. Run: `ollama create model_name -f ./Modelfile`\n"
+            readme_content += "   (Replace `model_name` with your desired name)\n\n"
+            readme_content += "This will create a unified bf16 model that Ollama can use.\n"
+        elif modelfile_location:
+            readme_content += "\n## Ollama\n"
+            readme_content += "An Ollama Modelfile is included for easy deployment.\n"
+
+
+        if fix_bos_token:
+            readme_content += "\n## Note\n"
+            readme_content += "The model's BOS token behavior was adjusted for GGUF compatibility.\n"
+
+        readme_path = os.path.join(actual_save_directory, "README.md")
+        with open(readme_path, "w") as f:
+            f.write(readme_content)
+
+        api.upload_file(
+            path_or_fileobj=readme_path,
+            path_in_repo="README.md",
+            repo_id=full_repo_id,
+            repo_type="model",
+            commit_message="Add README",
+            create_pr=create_pr,
+            revision=revision,
+        )
+
+        print(f"Unsloth: Successfully uploaded GGUF to https://huggingface.co/{full_repo_id}")
+
+        # Add tags
+        if tags is None:
+            tags = []
+        tags.extend(["gguf", "llama-cpp", "unsloth"])
+        if is_vlm:
+            tags.append("vision-language-model")
+
+        try:
+            api.add_tags(
+                repo_id=full_repo_id,
+                tags=tags,
+                repo_type="model",
+            )
+        except:
             pass
-        pass
-    pass
 
-    # Use old chat template if the bos is removed
-    if fix_bos_token:
-        tokenizer.chat_template = old_chat_template
-    pass
+    except Exception as e:
+        raise RuntimeError(f"Failed to upload to Hugging Face Hub: {e}")
 
-    for _ in range(3):
-        gc.collect()
+    finally:
+        # Clean up temporary directory
+        if cleanup_temp and os.path.exists(save_directory):
+            print("Unsloth: Cleaning up temporary files...")
+            import shutil
+            try:
+                shutil.rmtree(save_directory)
+            except:
+                pass
 
-    model_dtype = dtype_from_config(self.config)
-    model_type  = self.config.model_type
-    if type(model_dtype) is str:
-        assert(model_dtype == "float16" or model_dtype == "bfloat16")
-    elif model_dtype == torch.float16:
-        model_dtype = "float16"
-    elif model_dtype == torch.bfloat16:
-        model_dtype = "bfloat16"
-    else:
-        raise TypeError("Unsloth: Model dtype can only be float16 or bfloat16")
-    pass
-
-    is_sentencepiece_model = check_if_sentencepiece_model(self)
-
-    # Save to GGUF
-    all_file_locations, want_full_precision = save_to_gguf(
-        model_type, model_dtype, is_sentencepiece_model,
-        new_save_directory, quantization_method, first_conversion, makefile,
-    )
-
-    # Save Ollama modelfile
-    modelfile = create_ollama_modelfile(tokenizer, all_file_locations[0])
-    modelfile_location = None
-    if modelfile is not None:
-        modelfile_location = os.path.join(new_save_directory, "Modelfile")
-        with open(modelfile_location, "w", encoding = "utf-8") as file:
-            file.write(modelfile)
-        pass
-        print(f"Unsloth: Saved Ollama Modelfile to {modelfile_location}")
-    pass
-
-    # If not needing full precision, skip the first
-    if not want_full_precision: all_file_locations = all_file_locations[1:]
-
-    for file_location in all_file_locations:
-        print("Unsloth: Uploading GGUF to Huggingface Hub...")
-        username = upload_to_huggingface(
-            self, repo_id, token,
-            "GGUF converted", "gguf", file_location, old_username, private,
-        )
-        link = f"{username}/{new_save_directory.lstrip('/.')}" \
-            if username not in new_save_directory else \
-            new_save_directory.lstrip('/.')
-
-        print(f"Saved GGUF to https://huggingface.co/{link}")
-    pass
-
-    # Save modelfile
-    if modelfile_location is not None:
-        username = upload_to_huggingface(
-            self, repo_id, token,
-            "GGUF converted", "gguf", modelfile_location, old_username, private,
-        )
-        print(f"Saved Ollama Modelfile to https://huggingface.co/{link}")
-    pass
-
-    if fix_bos_token:
-
-        logger.warning(
-            "Unsloth: ##### The current model auto adds a BOS token.\n"\
-            "Unsloth: ##### We removed it in GGUF's chat template for you."
-        )
-    pass
+    return full_repo_id
 pass
 
 
@@ -2516,13 +2565,20 @@ def unsloth_save_pretrained_torchao(
     """
     # first merge the lora weights
     arguments = dict(locals())
-    arguments["model"]        = self
-    arguments["tokenizer"]    = tokenizer
-    arguments["push_to_hub"]  = False # We save ourselves
-    arguments["save_method"]  = "merged_16bit" # Must be 16bit
+    arguments["model"]       = self
+    arguments["tokenizer"]   = tokenizer
+    arguments["push_to_hub"] = False # We save ourselves
+    arguments["save_method"] = "merged_16bit" # Must be 16bit
     del arguments["self"]
     del arguments["torchao_config"]
-    unsloth_generic_save(**arguments)
+
+    if token is None and push_to_hub: token = get_token()
+
+    if not isinstance(self, PeftModelForCausalLM) and not isinstance(self, PeftModel):
+        self.save_pretrained(save_directory)
+        tokenizer.save_pretrained(save_directory)
+    else:
+        unsloth_generic_save(**arguments)
     for _ in range(3):
         gc.collect()
 
@@ -2530,14 +2586,17 @@ def unsloth_save_pretrained_torchao(
     from torchao import quantize_
     if torchao_config is None:
         from torchao.quantization import Int8DynamicActivationInt8WeightConfig
+        print("Unsloth: You did not specify a `torchao_config`, so defaulting to `Int8DynamicActivationInt8WeightConfig`")
         torchao_config = Int8DynamicActivationInt8WeightConfig()
     quantization_config = TorchAoConfig(quant_type = torchao_config)
 
     tokenizer = AutoTokenizer.from_pretrained(arguments["save_directory"])
+
+    # TorchAO must only use bfloat16 for loading (float16 fails)
     if HAS_TORCH_DTYPE:
-        kwargs = {"torch_dtype" : "auto"}
+        kwargs = {"torch_dtype" : torch.bfloat16}
     else:
-        kwargs = {"dtype" : "auto"}
+        kwargs = {"dtype" : torch.bfloat16}
     model = AutoModel.from_pretrained(
         arguments["save_directory"],
         device_map = "auto",
@@ -2547,13 +2606,15 @@ def unsloth_save_pretrained_torchao(
 
     torchao_save_directory = save_directory + "-torchao"
 
+    # TorchAO does not support safe_serialization right now 0.14.0 seems broken!
+    safe_serialization = Version(importlib_version("torchao")) > Version("0.14.0")
+    safe_serialization = False
     if push_to_hub:
         if token is None and push_to_hub: token = get_token()
-        # torchao does not support safe_serialization right now
-        model.push_to_hub(torchao_save_directory, safe_serialization = False, token = token)
+        model.push_to_hub(torchao_save_directory, safe_serialization = safe_serialization, token = token)
         tokenizer.push_to_hub(torchao_save_directory, token = token)
     else:
-        model.save_pretrained(torchao_save_directory, safe_serialization=False)
+        model.save_pretrained(torchao_save_directory, safe_serialization = safe_serialization)
         tokenizer.save_pretrained(torchao_save_directory)
     pass
     for _ in range(3):
@@ -2658,21 +2719,21 @@ def patch_saving_functions(model, vision = False):
     if not vision:
         if hasattr(model, "config"):
             # Counteract tokenizers
-            model.push_to_hub_merged     = types.MethodType(unsloth_generic_push_to_hub_merged,            model)
-            model.save_pretrained_merged = types.MethodType(unsloth_generic_save_pretrained_merged,        model)
-            model.push_to_hub_gguf       = types.MethodType(unsloth_push_to_hub_gguf,                      model)
-            model.save_pretrained_gguf   = types.MethodType(unsloth_save_pretrained_gguf,                  model)
-            model.save_pretrained_torchao   = types.MethodType(unsloth_save_pretrained_torchao,            model)
-            model.push_to_hub_ggml       = types.MethodType(unsloth_convert_lora_to_ggml_and_push_to_hub,  model)
-            model.save_pretrained_ggml   = types.MethodType(unsloth_convert_lora_to_ggml_and_save_locally, model)
+            model.push_to_hub_merged      = types.MethodType(unsloth_generic_push_to_hub_merged,            model)
+            model.save_pretrained_merged  = types.MethodType(unsloth_generic_save_pretrained_merged,        model)
+            model.push_to_hub_gguf        = types.MethodType(unsloth_push_to_hub_gguf,                      model)
+            model.save_pretrained_gguf    = types.MethodType(unsloth_save_pretrained_gguf,                  model)
+            model.save_pretrained_torchao = types.MethodType(unsloth_save_pretrained_torchao,               model)
+            model.push_to_hub_ggml        = types.MethodType(unsloth_convert_lora_to_ggml_and_push_to_hub,  model)
+            model.save_pretrained_ggml    = types.MethodType(unsloth_convert_lora_to_ggml_and_save_locally, model)
         pass
     else:
         # Vision only 1 option
-        model.push_to_hub_merged     = types.MethodType(unsloth_generic_push_to_hub_merged,     model)
-        model.save_pretrained_merged = types.MethodType(unsloth_generic_save_pretrained_merged, model)
-        model.push_to_hub_gguf       = types.MethodType(save_to_gguf_generic,                   model)
-        model.save_pretrained_gguf   = types.MethodType(save_to_gguf_generic,                   model)
-        model.save_pretrained_torchao = types.MethodType(unsloth_save_pretrained_torchao,       model)
+        model.push_to_hub_merged      = types.MethodType(unsloth_generic_push_to_hub_merged,     model)
+        model.save_pretrained_merged  = types.MethodType(unsloth_generic_save_pretrained_merged, model)
+        model.push_to_hub_gguf        = types.MethodType(unsloth_push_to_hub_gguf,               model)
+        model.save_pretrained_gguf    = types.MethodType(unsloth_save_pretrained_gguf,           model)
+        model.save_pretrained_torchao = types.MethodType(unsloth_save_pretrained_torchao,        model)
     pass
     return model
 pass

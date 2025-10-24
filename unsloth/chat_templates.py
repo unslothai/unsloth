@@ -883,7 +883,7 @@ PARAMETER min_p 0.1
 '''
 
 qwen25_template_eos_token = "eos_token"
-qwen25_default_system_message = "You are Qwen, created by Alibaba Cloud. You are a helpful assistant." 
+qwen25_default_system_message = "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."
 CHAT_TEMPLATES["qwen-2.5"] = (qwen25_template, qwen25_template_eos_token, False, qwen25_ollama,)
 DEFAULT_SYSTEM_MESSAGE["qwen-2.5"] = qwen25_default_system_message # No system message in Qwen 2.5
 
@@ -1241,7 +1241,8 @@ gemma3n_template = \
 # Ollama from https://ollama.com/library/gemma3n/blobs/e0a42594d802
 gemma3n_ollama = \
 '''
-{{- range $i, $_ := .Messages }}
+FROM {__FILE_LOCATION__}
+TEMPLATE """{{- range $i, $_ := .Messages }}
 {{- $last := eq (len (slice $.Messages $i)) 1 }}
 {{- if or (eq .Role "user") (eq .Role "system") }}<start_of_turn>user
 {{ .Content }}<end_of_turn>
@@ -1251,7 +1252,7 @@ gemma3n_ollama = \
 {{ .Content }}{{ if not $last }}<end_of_turn>
 {{ end }}
 {{- end }}
-{{- end }}
+{{- end }}"""
 '''
 
 gemma3n_template_eos_token = "<end_of_turn>"
@@ -1617,7 +1618,9 @@ gptoss_template = \
 
 # Ollama from https://ollama.com/library/gemma3n/blobs/e0a42594d802
 gptoss_ollama = \
-'''<|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+'''
+FROM {__FILE_LOCATION__}
+TEMPLATE """<|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
 Knowledge cutoff: 2024-06
 Current date: {{ currentDate }}
 {{- if and .IsThinkSet .Think (ne .ThinkLevel "") }}
@@ -1789,7 +1792,11 @@ type {{ .Function.Name }} = () => any;
 {{- end -}}
 {{- if not (or $prefillingContent $prefillingThinkingOnly) -}}
 <|start|>assistant
-{{- end -}}'''
+{{- end -}}"""
+PARAMETER temperature 1.0
+PARAMETER top_k 0
+PARAMETER top_p 1.0
+'''
 
 gptoss_template_template_eos_token = "<|return|>"
 CHAT_TEMPLATES["gpt-oss"] = (gptoss_template, gptoss_template_template_eos_token, False, gptoss_ollama,)
@@ -1891,7 +1898,8 @@ qwen3_instruct_template = \
 # Ollama from https://ollama.com/library/qwen3/blobs/53e4ea15e8f5
 qwen3_ollama = \
 '''
-
+FROM {__FILE_LOCATION__}
+TEMPLATE """
 {{- $lastUserIdx := -1 -}}
 {{- range $idx, $msg := .Messages -}}
 {{- if eq $msg.Role "user" }}{{ $lastUserIdx = $idx }}{{ end -}}
@@ -1942,6 +1950,7 @@ For each function call, return a json object with function name and arguments wi
 {{- if and (ne .Role "assistant") $last }}<|im_start|>assistant
 {{ end }}
 {{- end }}
+"""
 '''
 
 qwen3_template_eos_token = "<|im_end|>"
@@ -2044,9 +2053,82 @@ DEFAULT_SYSTEM_MESSAGE["qwen3-thinking"] = None # No system message in Qwen3
 
 pass
 
+# =========================================== Liquid-LFM2
+liquid_lfm2_template = \
+'''
+{{bos_token}}{% for message in messages %}{{'<|im_start|>' + message['role'] + '
+' + message['content'] + '<|im_end|>' + '
+'}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant
+' }}{% endif %}'''
+
+liquid_lfm2_template_eos_token = "<|im_end|>"
+CHAT_TEMPLATES["lfm-2"] = (liquid_lfm2_template, liquid_lfm2_template_eos_token, False, None)
+DEFAULT_SYSTEM_MESSAGE["lfm-2"] = None # No system message in Phi-3
+
+pass
+
+# =========================================== Starling-LM
+
+starling_template = \
+"""{{ bos_token }}
+{%- for message in messages %}
+    {{ 'GPT4 Correct ' + message['role'].title() + ': ' + message['content'] + '<|end_of_turn|>' }}
+{%- endfor %}
+{%- if add_generation_prompt %}
+    {{ 'GPT4 Correct Assistant:' }}
+{%- endif %}"""
+
+# Ollama from https://ollama.com/library/starling-lm:7b/blobs/4b21bfc435b4
+starling_ollama = \
+'''
+FROM {__FILE_LOCATION__}
+TEMPLATE """{{ if .System }}GPT4 Correct System: {{ .System }}<|end_of_turn|>
+{{ end }}{{ if .Prompt }}GPT4 Correct User: {{ .Prompt }}<|end_of_turn|>
+{{ end }}GPT4 Correct Assistant: {{ .Response }}<|end_of_turn|>"""
+PARAMETER stop "<|end_of_turn|>"
+PARAMETER stop "GPT4 Correct User:"
+PARAMETER stop "GPT4 Correct Assistant:"
+PARAMETER stop "GPT4 Correct System:"
+PARAMETER temperature 1.5
+PARAMETER min_p 0.1
+'''
+
+starling_template_eos_token = "<|end_of_turn|>"
+CHAT_TEMPLATES["starling"] = (starling_template, starling_template_eos_token, False, starling_ollama)
+DEFAULT_SYSTEM_MESSAGE["starling"] = None
+
+pass
+
+# =========================================== Yi-chat
+
+yi_chat_template = \
+"""
+{% if not add_generation_prompt is defined %}{% set add_generation_prompt = false %}{% endif %}{% for message in messages %}{{'<|im_start|>' + message['role'] + '
+' + message['content'] + '<|im_end|>' + '
+'}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant
+' }}{% endif %}
+"""
+
+# Ollama from https://ollama.com/library/yi:34b-chat/blobs/62fbfd9ed093
+yi_chat_ollama = \
+'''
+FROM {__FILE_LOCATION__}
+TEMPLATE """{{ if .System }}<|im_start|>system
+{{ .System }}<|im_end|>
+{{ end }}{{ if .Prompt }}<|im_start|>user
+{{ .Prompt }}<|im_end|>
+{{ end }}<|im_start|>assistant
+{{ .Response }}<|im_end|>"""
+'''
+
+yi_chat_template_eos_token = "<|endoftext|>"
+CHAT_TEMPLATES["yi-chat"] = (yi_chat_template, yi_chat_template_eos_token, False, yi_chat_ollama)
+DEFAULT_SYSTEM_MESSAGE["yi-chat"] = None
+pass
+
 def _change_system_message(template: str, type_chat_template: str, system_message: str = None):
     system_message_pattern = r"\{system_message\}"
-    
+
     # For predefined templates, check if default system message exists
     default_system_message = DEFAULT_SYSTEM_MESSAGE.get(f"{type_chat_template}", None)
     if default_system_message is None:
@@ -2058,24 +2140,24 @@ def _change_system_message(template: str, type_chat_template: str, system_messag
             )
         return template, system_message
     pass
-    
+
     # For custom templates
     if type_chat_template is None:
         has_placeholder = re.search(system_message_pattern, template) is not None
-        
+
         if has_placeholder:
             if system_message is None:
                 raise ValueError("Unsloth: You need to provide a system message for custom templates.")
             new_template = re.sub(system_message_pattern, system_message, template)
             return new_template, system_message
-        
+
         return template, system_message
     pass
-        
+
     # For predefined templates with default system message
     message_to_use = system_message if system_message is not None else default_system_message
     new_template = re.sub(system_message_pattern, message_to_use, template)
-    
+
     return new_template, message_to_use
 pass
 
@@ -2113,7 +2195,7 @@ def get_chat_template(
 
     same_padding_token = False
     type_chat_template = None
-    
+
     if type(chat_template) in (list, tuple,):
         # For changing system message later
         # Since it's not supported yet, we will raise an error first!
@@ -2573,7 +2655,7 @@ chat_template = """<|begin_of_text|><|start_header_id|>system<|end_header_id|>
 {INPUT}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
 
 {OUTPUT}<|eot_id|>""",
-    
+
 default_system_message = \
     "Below are some instructions that describe some tasks. Write responses that appropriately complete each request.",
 
@@ -2819,7 +2901,7 @@ extra_eos_tokens = None,
             partial_system = partial_system.replace(tokenizer.bos_token, "", 1)
             system_part    = system_part   .replace(tokenizer.bos_token, "", 1)
         pass
-        
+
         partial_system = \
             "{% if messages[0]['role'] == 'system' %}"\
                 "{{ " + partial_system + " }}"\
@@ -2891,10 +2973,10 @@ def test_construct_chat_template():
 {INPUT}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
 
 {OUTPUT}<|eot_id|>"""
-    
+
     default_system_message = \
         "Below are some instructions that describe some tasks. Write responses that appropriately complete each request."
-      
+
     extra_eos_tokens = None
 
     modelfile, jinja_template, _, _ = construct_chat_template(
@@ -2936,12 +3018,12 @@ chat_template = """<|begin_of_text|><|start_header_id|>system<|end_header_id|>
 {INPUT}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
 
 {OUTPUT}<|eot_id|>""",
-    
+
 default_system_message = \
     "Below are some instructions that describe some tasks. Write responses that appropriately complete each request.",
-  
+
 extra_eos_tokens = None,
-  
+
 ):
     """
     Creates a Ollama modelfile and a HF Jinja template from a custom
@@ -3149,7 +3231,7 @@ def test_hf_gguf_equivalence(tokenizer, gguf_model = "./model-unsloth.F16.gguf")
         prompt = remove_special_tokens(tokenizer, prompt)
         prompts.append(prompt)
     pass
-    
+
     for prompt in prompts:
         command = f"./llama.cpp/llama-cli -m {gguf_model} -n 0 --temp 0.0 --verbose-prompt "\
             f"--check-tensors -p '{prompt}'"

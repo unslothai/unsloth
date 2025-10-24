@@ -26,7 +26,14 @@ import torch
 import inspect
 from collections import defaultdict
 from unsloth_zoo.rl_replacements import RL_REPLACEMENTS, left_pack_padding
-from unsloth import DEVICE_TYPE
+from ..device_type import (
+    is_hip,
+    get_device_type,
+    DEVICE_TYPE,
+    DEVICE_TYPE_TORCH,
+    DEVICE_COUNT,
+    ALLOW_PREQUANTIZED_MODELS,
+)
 import textwrap
 
 RL_EXTRA_ARGS      = defaultdict(list)
@@ -174,40 +181,6 @@ RL_FUNCTIONS["sft_trainer"].append(sft_trainer_compute_loss)
 def grpo_trainer__prepare_inputs(function_name, function):
     if  function_name != "_prepare_inputs": return function
 
-    import re
-    # This matches the function signature, decorators and any comments immediately following
-    pattern = r"(\s*@profiling_decorator\s*\n\s*def _prepare_inputs\s*\([^\)]*\)\s*(->\s*[^:]+)?\s*:\s*\n(?:[ ]*#[^\n]*\n)*)"
-
-    match = re.search(pattern, function)
-    insert = (
-        "        if hasattr(self, 'llm'):\n"
-        "           if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
-        "               self.llm.wake_up()\n"
-    )
-    if match:
-        header_and_comments = match.group(1)
-        # Find where the code block starts after comments
-        code_start_index = match.end(1)
-        rest_of_function = function[code_start_index:]
-
-        # Remove any old wake_up call that might be at the start of the function body
-        rest_of_function = re.sub(
-            r"^\s*if hasattr\(self, 'llm'\):.*?self\.llm\.wake_up\(\).*?\n",
-            "",
-            rest_of_function,
-            flags=re.DOTALL | re.MULTILINE
-        )
-
-        # We also need to remove the old wake up call from the beginning of the function
-        # since it's injected before the comments.
-        header_and_comments = re.sub(
-            r"(:\s*\n)\s*if hasattr\(self, 'llm'\):.*?self\.llm\.wake_up\(\).*?\n",
-            r"\1",
-            header_and_comments,
-            flags=re.DOTALL | re.MULTILINE
-        )
-
-        function = header_and_comments + insert + rest_of_function
     # Add mixed precision training
     function = function.replace(
         "with torch.inference_mode():",
@@ -221,16 +194,6 @@ def grpo_trainer__prepare_inputs(function_name, function):
         "self.accelerator.unwrap_model(self.model)",
         "self.accelerator.unwrap_model(self.model, keep_fp32_wrapper = False)",
     )
-    sleep_and_cache = (
-        "if hasattr(self, 'llm'):\n"
-        "            if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
-        "                self.llm.sleep(os.environ.get('VLLM_SLEEP_MODE', 1))\n"
-        "        "
-    )
-    if re.search(r"\n\s*return ", function):
-        function = re.sub(r"(\n\s*)return ", f"\\1{sleep_and_cache}return ", function, count=1)
-    else:
-        function = function.rstrip() + "\n    " + sleep_and_cache
     return function
 pass
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__prepare_inputs)
@@ -295,6 +258,34 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         # Generate completions using either vLLM or regular generation
         if self.use_vllm:"""
             function = function.replace(replace_part, new_replacement)
+
+    if 'wake_up()' not in function:
+        # Sleep functionality has been added to trl in v0.23.0. We do not want to redo this.
+        # https://github.com/huggingface/trl/commit/edbe8234bc7e528f72ac76607de9d3e4753e2709
+
+        pattern = re.compile(r'.*self\.llm\.generate\(.*\).*', re.MULTILINE)
+        matches = list(pattern.finditer(function))
+        patched = function
+
+        # Generally there's only one match. But this is just to make sure we don't miss any.
+        for match in reversed(matches):
+            line = match.group(0)
+            indent_match = re.match(r'(\s*)', line)
+            indent = indent_match.group(1) if indent_match else ''
+
+            wrapped = (
+                f"{indent}if hasattr(self, 'llm'):\n"
+                f"{indent}    if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
+                f"{indent}        self.llm.wake_up()\n"
+                f"{line}\n\n"
+                f"{indent}if hasattr(self, 'llm'):\n"
+                f"{indent}    if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
+                f"{indent}        self.llm.sleep(os.environ.get('VLLM_SLEEP_MODE', 1))\n"
+            )
+
+            patched = patched[:match.start()] + wrapped + patched[match.end():]
+
+        function = patched
 
     return function
 pass
@@ -411,13 +402,13 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
     if function_name != "_get_per_token_logps_and_entropies": return function
 
     # Just copy over from _get_per_token_logps replacement function above. For now this returns None anyway
-    def _get_per_token_logps_and_entropies(self, model, input_ids, attention_mask, logits_to_keep, batch_size = None, 
+    def _get_per_token_logps_and_entropies(self, model, input_ids, attention_mask, logits_to_keep, batch_size = None,
                                            compute_entropy = False, compute_efficient = False, *args, **kwargs):
         # if True: # os.environ.get('UNSLOTH_USE_NEW_MODEL', '0') == '0':
         #     return None, None  # logps, entropies Unsloth efficient GRPO
         if compute_efficient:
             return None, None
-        else: 
+        else:
             # Otherwise, calculate normally:
             if not hasattr(self, '_autocast_dtype'):
                 self._autocast_dtype = torch.float16 if os.environ.get('ACCELERATE_MIXED_PRECISION', 'fp16') == 'fp16' else torch.bfloat16
@@ -427,12 +418,12 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             pixel_attention_mask, image_sizes = kwargs.get('pixel_attention_mask',None), kwargs.get('image_sizes',None)
 
             os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
-           
+
             unwrapped_model = self.accelerator.unwrap_model(model, keep_fp32_wrapper=False)
 
             with torch.amp.autocast(device_type = 'cuda', dtype = self._autocast_dtype):
                 with torch.inference_mode():
-                    if pixel_values is None: 
+                    if pixel_values is None:
                         attention_mask =  input_ids != self.processing_class.pad_token_id
                         attention_mask = attention_mask.to(attention_mask.dtype)
                         # We add 1 to `logits_to_keep` because the last logits of the sequence is later excluded
@@ -455,7 +446,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             image_sizes = image_sizes,
                             logits_to_keep = logits_to_keep + 1,
                         ).logits
-                    
+
 
                 entropies = None
                 if compute_entropy:
@@ -545,7 +536,7 @@ def grpo_trainer_compute_loss(function_name, function):
         # per_token_loss = -(per_token_loss - self.beta * per_token_kl)
         # loss = ((per_token_loss * completion_mask).sum(dim=1) / completion_mask.sum(dim=1)).mean()
         old_hidden_states = inputs.get("old_per_token_logps", None)
-        
+
         input_ids = input_ids[:, -logits_to_keep:]
 
         # Get logit softcapping and logit scale

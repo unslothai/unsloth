@@ -135,3 +135,35 @@ def ignore_logger_messages():
     except:
         pass
 pass
+
+def patch_ipykernel_hf_xet():
+    # HF-XET == 1.1.10 and ipykernel == 7.0.0 causes issues
+    # See https://github.com/huggingface/xet-core/issues/526
+    # 2025-10-13T20:37:33.028737Z ERROR  Python exception updating progress:, error: PyErr { type: <class 'LookupError'>, value: LookupError(<ContextVar name='shell_parent' at 0x7535b4cebd80>), traceback: Some(<traceback object at 0x753408489f40>) }, caller: "src/progress_update.rs:313"
+    # at /home/runner/work/xet-core/xet-core/error_printer/src/lib.rs:28
+    if importlib.util.find_spec("hf_xet") is None: return
+    if importlib.util.find_spec("ipykernel") is None: return
+    if importlib.util.find_spec("huggingface_hub") is None: return
+    if (
+        Version(importlib_version("hf_xet")) == Version("1.1.10")
+    ) and (
+        Version(importlib_version("ipykernel")) > Version("6.30.1")
+    ):
+        print(
+            "#### Unsloth: `hf_xet==1.1.10` and `ipykernel>6.30.1` breaks progress bars. Disabling for now in XET.\n"\
+            "#### Unsloth: To re-enable progress bars, please downgrade to `ipykernel==6.30.1` or wait for a fix to\n"\
+            "https://github.com/huggingface/xet-core/issues/526"
+        )
+        from huggingface_hub.utils import disable_progress_bars
+        disable_progress_bars()
+    pass
+pass
+
+def patch_trackio():
+    # Set some environment variables to customize the Trackio dashboard for experiment tracking
+    # See https://github.com/unslothai/notebooks/pull/110
+    os.environ["TRACKIO_LOGO_LIGHT_URL"] = "https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20logo%20black%20text.png"
+    os.environ["TRACKIO_LOGO_DARK_URL"] = "https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20logo%20white%20text.png"
+    os.environ["TRACKIO_PLOT_ORDER"] = "train/reward"
+    pass
+pass

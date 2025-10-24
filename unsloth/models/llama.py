@@ -27,7 +27,14 @@ from transformers import __version__ as transformers_version
 from unsloth_zoo.utils import Version, _get_dtype
 from unsloth_zoo.hf_utils import dtype_from_config, add_dtype_kwargs, fix_lora_auto_mapping
 from unsloth_zoo.peft_utils import SKIP_QUANTIZATION_MODULES
-from unsloth import DEVICE_TYPE, DEVICE_COUNT
+from ..device_type import (
+    is_hip,
+    get_device_type,
+    DEVICE_TYPE,
+    DEVICE_TYPE_TORCH,
+    DEVICE_COUNT,
+    ALLOW_PREQUANTIZED_MODELS,
+)
 
 transformers_version = Version(transformers_version)
 # Transformers moved rotary embeddings out of all attention layers
@@ -732,7 +739,7 @@ def LlamaModel_fast_forward(
         position_ids = torch.arange(
             past_key_values_length, seq_length + past_key_values_length,
             dtype  = torch.int32,
-            device = f"{DEVICE_TYPE}:0",
+            device = f"{DEVICE_TYPE_TORCH}:0",
         )
         position_ids = position_ids.unsqueeze(0).view(-1, seq_length)
     elif position_ids is not None:
@@ -905,13 +912,13 @@ def LlamaModel_fast_forward(
                     is_causal = True,
                     sliding_window = self.config.sliding_window,
                 )\
-                    .to_causal_4d(1, n, n, dtype = inputs_embeds.dtype, device = DEVICE_TYPE,)\
+                    .to_causal_4d(1, n, n, dtype = inputs_embeds.dtype, device = DEVICE_TYPE_TORCH,)\
                     .squeeze(0).squeeze(0)
 
                 self.GA_mask = AttentionMaskConverter(
                     is_causal = True,
                 )\
-                    .to_causal_4d(1, n, n, dtype = inputs_embeds.dtype, device = DEVICE_TYPE,)\
+                    .to_causal_4d(1, n, n, dtype = inputs_embeds.dtype, device = DEVICE_TYPE_TORCH,)\
                     .squeeze(0).squeeze(0)
             pass
         pass
@@ -1028,11 +1035,11 @@ def _LlamaModel_fast_forward_inference(attention_fast_forward_inference=LlamaAtt
         bsz, q_len, hd = X.shape
         assert(q_len == 1)
         # Get saved buffers to reduce memory movement
-        residual = torch.empty((bsz, q_len, hd), dtype = torch.float32, device = f"{DEVICE_TYPE}:0")
-        _XX = torch.empty((2, bsz, q_len, hd), dtype = torch.float32, device = f"{DEVICE_TYPE}:0")
+        residual = torch.empty((bsz, q_len, hd), dtype = torch.float32, device = f"{DEVICE_TYPE_TORCH}:0")
+        _XX = torch.empty((2, bsz, q_len, hd), dtype = torch.float32, device = f"{DEVICE_TYPE_TORCH}:0")
         XX, XX2 = _XX[0], _XX[1]
-        variance = torch.empty((bsz, q_len, 1), dtype = torch.float32, device = f"{DEVICE_TYPE}:0")
-        temp_mlp = torch.empty((2, bsz, 1, mlp_size), dtype = X.dtype, device = f"{DEVICE_TYPE}:0")
+        variance = torch.empty((bsz, q_len, 1), dtype = torch.float32, device = f"{DEVICE_TYPE_TORCH}:0")
+        temp_mlp = torch.empty((2, bsz, 1, mlp_size), dtype = X.dtype, device = f"{DEVICE_TYPE_TORCH}:0")
         temp_gates, temp_ups = tuple(temp_mlp[0].to(torch.device(x)) for x in range(DEVICE_COUNT)), tuple(temp_mlp[1].to(torch.device(x)) for x in range(DEVICE_COUNT))
 
         seq_len = past_key_values[0][0].shape[-2]
@@ -1196,16 +1203,23 @@ def CausalLM_fast_forward(fast_forward_inference):
         else:
             RETURN_LOGITS = os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1"
             # < 1024 Normal Unsloth uses less VRAM!
-            if bsz*q_len <= 1024: RETURN_LOGITS = True
+            if DEVICE_TYPE == "hip":
+                # [TODO] AMD GPUs fail on chunked_cross_entropy loss!
+                # RuntimeError: Triton Error [HIP]: Code: 1, Messsage: invalid argument
+                RETURN_LOGITS = False
+            elif bsz*q_len <= 1024:
+                # Uses 800MB more VRAM it seems than fused CE Loss
+                RETURN_LOGITS = False
 
             if not RETURN_LOGITS and labels is not None:
-
                 n_items = kwargs.get("num_items_in_batch", None)
                 if n_items is None: n_items = kwargs.get("n_items", None)
 
                 if self.config.model_type == "falcon_h1":
                     hidden_states = hidden_states * self.config.lm_head_multiplier
 
+                ### DISABLED since T4 breaks
+                # OutOfResources: out of resource: shared memory, Required: 98304, Hardware limit: 65536. Reducing block sizes or `num_stages` may help.
                 # loss = fused_linear_cross_entropy(
                 #     hidden_states      = hidden_states,
                 #     lm_weight          = lm_head,
@@ -1231,11 +1245,11 @@ def CausalLM_fast_forward(fast_forward_inference):
                     return (loss,) + output if loss is not None else output
 
                 output = CausalLMOutputWithPast(
-                    loss=loss,
-                    logits=EMPTY_LOGITS,
-                    past_key_values=outputs.past_key_values,
-                    hidden_states=outputs.hidden_states,
-                    attentions=outputs.attentions,
+                    loss = loss,
+                    logits = EMPTY_LOGITS,
+                    past_key_values=  outputs.past_key_values,
+                    hidden_states = outputs.hidden_states,
+                    attentions = outputs.attentions,
                 )
                 return output
             pass
@@ -1374,7 +1388,7 @@ class LlamaRotaryEmbedding(torch.nn.Module):
             partial_rotary_factor = config.partial_rotary_factor if hasattr(config, "partial_rotary_factor") else 1.0
             dim = getattr(config, "head_dim", None)
             if dim is None: dim = int((config.hidden_size // config.num_attention_heads))
-            device = DEVICE_TYPE
+            device = DEVICE_TYPE_TORCH
             max_position_embeddings = config.max_position_embeddings
         pass
 
@@ -1486,7 +1500,7 @@ class LlamaExtendedRotaryEmbedding(torch.nn.Module):
             base = config.rope_theta
             partial_rotary_factor = config.partial_rotary_factor if hasattr(config, "partial_rotary_factor") else 1.0
             dim = int((config.hidden_size // config.num_attention_heads))
-            device = DEVICE_TYPE
+            device = DEVICE_TYPE_TORCH
             max_position_embeddings = config.max_position_embeddings
         pass
 
@@ -1606,7 +1620,7 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
             base = config.rope_theta
             partial_rotary_factor = config.partial_rotary_factor if hasattr(config, "partial_rotary_factor") else 1.0
             dim = int((config.hidden_size // config.num_attention_heads))
-            device = DEVICE_TYPE
+            device = DEVICE_TYPE_TORCH
             max_position_embeddings = config.max_position_embeddings
         pass
 
@@ -1760,7 +1774,7 @@ def unsloth_fast_generate(
     kwargs["pad_token_id"] = kwargs.pop("pad_token_id", model_eos_token_id)
 
     # Mixed precision autocast
-    with torch.inference_mode(), torch.autocast(device_type = DEVICE_TYPE, dtype = dtype):
+    with torch.inference_mode(), torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = dtype):
         output = self._old_generate(*args, **kwargs)
     pass
 
@@ -1911,7 +1925,8 @@ class FastLlamaModel:
         if old_hf_transfer != "0": os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 
         model_patcher.pre_patch()
-        get_statistics() # For debugging - we use a download counter to see if environments are not breaking
+         # For debugging - we use a download counter to see if environments are not breaking or if HF is down
+        get_statistics(kwargs.get("local_files_only", False))
 
         if dtype is None:
             dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
@@ -1930,6 +1945,7 @@ class FastLlamaModel:
             token = token,
             attn_implementation = "sdpa",
         )
+        model_config.model_name = model_name
         model_max_seq_length = model_config.max_position_embeddings
 
         # Check if RoPE Scaling is even allowed
@@ -2383,7 +2399,7 @@ class FastLlamaModel:
                     pass
 
                     model.get_input_embeddings().modules_to_save.default\
-                        .to(device = DEVICE_TYPE, dtype = new_dtype, non_blocking = True)
+                        .to(device = DEVICE_TYPE_TORCH, dtype = new_dtype, non_blocking = True)
                     model.get_input_embeddings().modules_to_save.default.requires_grad_(True)
 
                     # [TODO] Move old embed_tokens to CPU - should be disk!
@@ -2403,7 +2419,7 @@ class FastLlamaModel:
                     pass
 
                     model.get_output_embeddings().modules_to_save.default\
-                        .to(device = DEVICE_TYPE, dtype = new_dtype, non_blocking = True)
+                        .to(device = DEVICE_TYPE_TORCH, dtype = new_dtype, non_blocking = True)
                     model.get_output_embeddings().modules_to_save.default.requires_grad_(True)
 
                     # [TODO] Move old lm_head to CPU - should be disk!
@@ -2672,7 +2688,7 @@ class FastLlamaModel:
             pass
 
             model.get_input_embeddings().modules_to_save.default\
-                .to(device = DEVICE_TYPE, dtype = new_dtype, non_blocking = True)
+                .to(device = DEVICE_TYPE_TORCH, dtype = new_dtype, non_blocking = True)
             model.get_input_embeddings().modules_to_save.default.requires_grad_(True)
         pass
 
@@ -2688,7 +2704,7 @@ class FastLlamaModel:
             pass
 
             model.get_output_embeddings().modules_to_save.default\
-                .to(device = DEVICE_TYPE, dtype = new_dtype, non_blocking = True)
+                .to(device = DEVICE_TYPE_TORCH, dtype = new_dtype, non_blocking = True)
             model.get_output_embeddings().modules_to_save.default.requires_grad_(True)
         pass
 

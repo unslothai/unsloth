@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.9.11"
+__version__ = "2025.10.9"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -82,11 +82,19 @@ platform_system = platform_system()
 import numpy as np
 import contextlib
 import re
+from dataclasses import dataclass, field
 import functools
 import warnings, subprocess, re, inspect, psutil, os, math
 from unsloth_zoo.utils import Version
 from importlib.metadata import version as importlib_version
-from unsloth import DEVICE_TYPE, DEVICE_COUNT
+from ..device_type import (
+    is_hip,
+    get_device_type,
+    DEVICE_TYPE,
+    DEVICE_TYPE_TORCH,
+    DEVICE_COUNT,
+    ALLOW_PREQUANTIZED_MODELS,
+)
 from unsloth_zoo.log import logger
 from unsloth_zoo.tokenizer_utils import (
     patch_tokenizer as _patch_tokenizer,
@@ -155,7 +163,6 @@ warnings.filterwarnings(action = "ignore", category = FutureWarning,  module = "
 warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "multiprocessing")
 warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "multiprocess")
 warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "triton")
-
 # Stop "Special tokens have been added in the vocabulary, ..."
 import logging
 logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.CRITICAL+1)
@@ -205,6 +212,12 @@ if os.environ.get('UNSLOTH_ENABLE_LOGGING', '0') != '1':
         from vllm.lora.models import logger as vllm_lora_model_logger
         vllm_lora_model_logger.addFilter(HideLoggingMessage("Regarding multimodal models, vLLM currently only supports adding"))
         del vllm_lora_model_logger
+    except:
+        pass
+    try:
+        from vllm.attention.utils.fa_utils import logger as vllm_attention_utils_fa_utils_logger
+        vllm_attention_utils_fa_utils_logger.addFilter(HideLoggingMessage("Cannot use FA version"))
+        del vllm_attention_utils_fa_utils_logger
     except:
         pass
 pass
@@ -336,6 +349,14 @@ try:
 except:
     pass
 
+# We detected that you are using `from_pretrained` with a meta device context manager or `torch.set_default_device('meta')
+try:
+    from transformers.modeling_utils import logger as modeling_utils_logger
+    modeling_utils_logger.addFilter(HideLoggingMessage("anti-pattern"))
+    del modeling_utils_logger
+except:
+    pass
+
 # Errors out on
 # Some weights of Gemma3nForConditionalGeneration were not initialized from the model checkpoint
 from transformers.modeling_utils import logger as transformers_logger
@@ -348,7 +369,8 @@ class _RaiseUninitialized(logging.Handler):
             ("score.weight" not in record_lower) and \
             ("classifier.weight" not in record_lower) and \
             ("cls.predictions" not in record_lower) and \
-            ("predictions.decoder" not in record_lower):
+            ("predictions.decoder" not in record_lower) and \
+            (os.environ.get("UNSLOTH_WARN_UNINITIALIZED", "1") == "1"):
             raise Exception(
                 f"Unsloth: Critical error since some weights are not initialized.\n"\
                 f"Please try updating Unsloth, transformers and timm via:\n"\
@@ -432,7 +454,12 @@ try:
 except:
     pass
 from transformers import __version__ as transformers_version
-from transformers import PretrainedConfig
+
+try:
+    from transformers import PreTrainedConfig
+except:
+    from transformers import PretrainedConfig
+
 model_architectures = ["llama", "mistral", "gemma", "gemma2", "qwen2", "granite", "qwen3", "qwen3_moe", "falcon_h1"]
 
 for model_name in model_architectures:
@@ -878,6 +905,26 @@ if Version(peft_version) < Version("0.12.0"):
 pass
 
 # =============================================
+import importlib
+global USE_MODELSCOPE
+USE_MODELSCOPE = os.environ.get("UNSLOTH_USE_MODELSCOPE", "0") == "1"
+if USE_MODELSCOPE:
+    if importlib.util.find_spec("modelscope") is None:
+        raise ImportError(f'You are using the modelscope hub, please install modelscope by `pip install modelscope -U`')
+    pass
+pass
+
+import socket
+@functools.lru_cache(1)
+def has_internet(host = "8.8.8.8", port = 53, timeout = 3):
+    if os.environ.get("TRANSFORMERS_OFFLINE", "0") == "1": return False
+    try:
+        socket.setdefaulttimeout(timeout)
+        socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect((host, port))
+        return True
+    except socket.error as ex:
+        return False
+pass
 
 import psutil
 def _get_statistics(statistics = None, force_download = True):
@@ -885,61 +932,81 @@ def _get_statistics(statistics = None, force_download = True):
     # We simply download a README.md file from HF - all data is made public.
     # This is simply so we can check if some envs are broken or not.
     # You can disable this by commenting the below out
-    try:
-        n_cpus = psutil.cpu_count(logical = False)
-        keynames = "\n" + "\n".join(os.environ.keys())
-        if statistics is not None: pass
-        elif "\nCOLAB_"  in keynames and n_cpus == 1: statistics = "colab"
-        elif "\nCOLAB_"  in keynames: statistics = "colabpro"
-        elif "\nKAGGLE_" in keynames: statistics = "kaggle"
-        elif "\nRUNPOD_" in keynames: statistics = "runpod"
-        elif "\nAWS_"    in keynames: statistics = "aws"
-        elif "\nAZURE_"  in keynames: statistics = "azure"
-        # elif "\nK_" in keynames or "\nFUNCTION_" in keynames: statistics = "gcp"
-        elif "\nINVOCATION_ID" in keynames: statistics = "lambda"
-        # else: statistics = "other"
-        else:
-            def try_vllm_check():
-                vendor_files = (
-                    "/sys/class/dmi/id/product_version",
-                    "/sys/class/dmi/id/bios_vendor",
-                    "/sys/class/dmi/id/product_name",
-                    "/sys/class/dmi/id/chassis_asset_tag",
-                    "/sys/class/dmi/id/sys_vendor",
-                )
-                from pathlib import Path
-                for vendor_file in vendor_files:
-                    path = Path(vendor_file)
-                    if path.is_file():
-                        file_content = path.read_text().lower()
-                        if   "amazon"                in file_content: return "aws"
-                        elif "microsoft corporation" in file_content: return "azure"
-                        elif "google"                in file_content: return "gcp"
-                return "other"
-            pass
-            try:    statistics = try_vllm_check()
-            except: statistics = "other"
-        pass
-        if statistics is not None:
-            from transformers import AutoModelForCausalLM
-            stats_model = AutoModelForCausalLM.from_pretrained(
-                f"unslothai/{statistics}",
-                force_download = force_download,
+    n_cpus = psutil.cpu_count(logical = False)
+    keynames = "\n" + "\n".join(os.environ.keys())
+    # Check modelscope for down detection
+    global USE_MODELSCOPE
+    USE_MODELSCOPE = os.environ.get("UNSLOTH_USE_MODELSCOPE", "0") == "1"
+
+    if statistics is not None: pass
+    elif "\nCOLAB_"  in keynames and n_cpus == 1: statistics = "colab"
+    elif "\nCOLAB_"  in keynames: statistics = "colabpro"
+    elif "\nKAGGLE_" in keynames: statistics = "kaggle"
+    elif "\nRUNPOD_" in keynames: statistics = "runpod"
+    elif "\nAWS_"    in keynames: statistics = "aws"
+    elif "\nAZURE_"  in keynames: statistics = "azure"
+    # elif "\nK_" in keynames or "\nFUNCTION_" in keynames: statistics = "gcp"
+    elif "\nINVOCATION_ID" in keynames: statistics = "lambda"
+    # else: statistics = "other"
+    else:
+        def try_vllm_check():
+            vendor_files = (
+                "/sys/class/dmi/id/product_version",
+                "/sys/class/dmi/id/bios_vendor",
+                "/sys/class/dmi/id/product_name",
+                "/sys/class/dmi/id/chassis_asset_tag",
+                "/sys/class/dmi/id/sys_vendor",
             )
-            del stats_model
+            from pathlib import Path
+            for vendor_file in vendor_files:
+                path = Path(vendor_file)
+                if path.is_file():
+                    file_content = path.read_text().lower()
+                    if   "amazon"                in file_content: return "aws"
+                    elif "microsoft corporation" in file_content: return "azure"
+                    elif "google"                in file_content: return "gcp"
+            return "other"
         pass
-    except:
+        try:    statistics = try_vllm_check()
+        except: statistics = "other"
+    pass
+    if statistics is not None:
+        import tempfile
+        from huggingface_hub import snapshot_download
+        from unsloth_zoo.rl_environments import execute_with_time_limit
+        if has_internet():
+            @execute_with_time_limit(120)
+            def stats_check():
+                with tempfile.TemporaryDirectory(ignore_cleanup_errors = True) as f:
+                    snapshot_download(f"unslothai/{statistics}", force_download = True, cache_dir = f, local_dir = f)
+            try:
+                stats_check()
+            except TimeoutError:
+                raise TimeoutError(
+                    "Unsloth: HuggingFace seems to be down after trying for 120 seconds :(\n"\
+                    "Check https://status.huggingface.co/ for more details.\n"\
+                    "As a temporary measure, use modelscope with the same model name ie:\n"\
+                    "```\n"\
+                    "pip install modelscope\n"\
+                    "import os; os.environ['UNSLOTH_USE_MODELSCOPE'] = '1'\n"\
+                    "from unsloth import FastLanguageModel\n"\
+                    "model = FastLanguageModel.from_pretrained('unsloth/gpt-oss-20b')\n"\
+                    "```"
+                )
         pass
+    pass
 pass
 
 
-def get_statistics():
+def get_statistics(local_files_only = False):
     # We log some basic stats about which environment is being used.
+    # This is also to check if HuggingFace is down or not!
     # We simply download a README.md file from HF - all data is made public.
     # This is simply so we can check if some envs are broken or not.
     # You can disable this by setting UNSLOTH_DISABLE_STATISTICS
     import os
     if "UNSLOTH_DISABLE_STATISTICS" in os.environ: return
+    if local_files_only: return
     from huggingface_hub.utils import disable_progress_bars, enable_progress_bars, are_progress_bars_disabled
     disabled = False
     if not are_progress_bars_disabled():
@@ -948,24 +1015,17 @@ def get_statistics():
     pass
     _get_statistics(None)
     _get_statistics("repeat", force_download = False)
-    try:
-        vram = torch.cuda.get_device_properties(0).total_memory / 1024 / 1024 / 1024
-        if   vram <= 8 : vram = 8
-        elif vram <= 16: vram = 16
-        elif vram <= 20: vram = 20
-        elif vram <= 24: vram = 24
-        elif vram <= 40: vram = 40
-        elif vram <= 48: vram = 48
-        elif vram <= 80: vram = 80
-        else: vram = 96
-        _get_statistics(f"vram-{vram}")
-    except:
-        pass
-    pass
-    try:
-        _get_statistics(f"{DEVICE_COUNT if DEVICE_COUNT <= 8 else 9}")
-    except:
-        pass
+    vram = torch.cuda.get_device_properties(0).total_memory / 1024 / 1024 / 1024
+    if   vram <= 8 : vram = 8
+    elif vram <= 16: vram = 16
+    elif vram <= 20: vram = 20
+    elif vram <= 24: vram = 24
+    elif vram <= 40: vram = 40
+    elif vram <= 48: vram = 48
+    elif vram <= 80: vram = 80
+    else: vram = 96
+    _get_statistics(f"vram-{vram}")
+    _get_statistics(f"{DEVICE_COUNT if DEVICE_COUNT <= 8 else 9}")
     if disabled: enable_progress_bars()
 pass
 
@@ -1325,6 +1385,7 @@ pass
 
 def patch_gradient_accumulation_fix(Trainer):
     # Fixes gradient accumulation
+    # Fixes Output 0 of UnslothFusedLossBackward is a view and is being modified inplace.
     import inspect
     if hasattr(Trainer, "get_batch_samples"):
         if Trainer.get_batch_samples.__name__ == "_unsloth_get_batch_samples": return
@@ -1340,6 +1401,32 @@ def patch_gradient_accumulation_fix(Trainer):
 
             # Also fix passing in num_items_in_batch
             if not hasattr(Trainer, "_old_compute_loss"):
+
+                # Fix transformers 4.57.0 causing `Output 0 of UnslothFusedLossBackward is a view and is being modified inplace.`
+                function = inspect.getsource(Trainer.compute_loss)
+                if "loss *=" in function or "loss*=" in function:
+                    where = function.find("def")
+                    function = function.split("\n")
+                    function = "\n".join(x[where:] for x in function)
+
+                    # Import all variables that need importing
+                    import transformers.trainer
+                    items_in_trainer = dir(transformers.trainer)
+                    good_items = []
+                    for item in items_in_trainer:
+                        if item in function: good_items.append(item)
+                    pass
+                    exec("from transformers.trainer import (" + ", ".join(x for x in good_items) + ")", globals())
+
+                    # Replace loss*= with loss = loss *
+                    function = re.sub(
+                        r"loss[\s]{0,}\*\=",
+                        "loss = loss *",
+                        function,
+                    )
+                    exec(function, globals())
+                    Trainer.compute_loss = compute_loss
+                pass
                 Trainer._old_compute_loss = Trainer.compute_loss
                 Trainer.compute_loss = _unsloth_pre_compute_loss
             pass
@@ -1538,14 +1625,6 @@ for j, function in enumerate(functions):
         except: continue
 pass
 
-import importlib
-USE_MODELSCOPE = os.environ.get("UNSLOTH_USE_MODELSCOPE", "0") == "1"
-if USE_MODELSCOPE:
-    if importlib.util.find_spec("modelscope") is None:
-        raise ImportError(f'You are using the modelscope hub, please install modelscope by `pip install modelscope -U`')
-    pass
-pass
-
 
 def validate_loftq_config(loftq_config, lora_dropout, bias, init_lora_weights, model):
     from peft import LoraConfig
@@ -1646,7 +1725,32 @@ def error_out_no_vllm(*args, **kwargs):
     raise NotImplementedError("Unsloth: vLLM is not yet supported for fast inference for this model! Please use `.generate` instead")
 
 
-def _prepare_model_for_qat(model: torch.nn.Module, qat_scheme: str) -> torch.nn.Module:
+try:
+    from torchao.core.config import AOBaseConfig
+    try:
+        from torchao.quantization import Int4WeightOnlyConfig
+    except:
+        print("Unsloth: TorchAO changed `torchao.quantization.Int4WeightOnlyConfig`")
+        Int4WeightOnlyConfig = None
+    pass
+except:
+    AOBaseConfig = None
+    Int4WeightOnlyConfig = None
+    pass
+@dataclass
+class TorchAOConfig:
+    qat_scheme : str = "int4"
+    base_config : AOBaseConfig = field(
+        default_factory = lambda: Int4WeightOnlyConfig(group_size = 128)
+    )
+    group_size : int = 128
+    filter_fn: Optional[Callable] = None
+    def __post_init__(self):
+        if self.filter_fn is None:
+            self.filter_fn = lambda m, _: isinstance(m, torch.nn.Linear) and m.in_features >= self.group_size
+pass
+
+def _prepare_model_for_qat(model: torch.nn.Module, qat_scheme: Union[str, TorchAOConfig]) -> torch.nn.Module:
     """
     Transform a model for Quantization-Aware Training (QAT) during fine-tuning.
 
@@ -1657,34 +1761,56 @@ def _prepare_model_for_qat(model: torch.nn.Module, qat_scheme: str) -> torch.nn.
     QAT can be optionally combined with LoRA fine-tuning to for additional throughput improvement.
     For more details: https://dev-discuss.pytorch.org/t/speeding-up-qat-by-1-89x-with-lora/2700
     """
-    from torchao.quantization import (
-        Float8DynamicActivationInt4WeightConfig,
-        Float8DynamicActivationFloat8WeightConfig,
-        Int8DynamicActivationIntxWeightConfig,
-        Int4WeightOnlyConfig,
-        PerRow,
-        quantize_,
-    )
+    from torchao.quantization import PerRow, quantize_
     from torchao.quantization.granularity import PerGroup
     from torchao.quantization.qat import QATConfig
-    filter_fn = None
-    if qat_scheme == "fp8-int4":
-        group_size = 128
-        base_config = Float8DynamicActivationInt4WeightConfig()
-        filter_fn = lambda m, _: isinstance(m, torch.nn.Linear) and m.in_features >= group_size
-    elif qat_scheme == "fp8-fp8":
-        base_config = Float8DynamicActivationFloat8WeightConfig(granularity=PerRow())
-    elif qat_scheme == "int8-int4":
-        group_size = 32
-        base_config = Int8DynamicActivationIntxWeightConfig(weight_dtype=torch.int4, weight_granularity=PerGroup(group_size))
-        filter_fn = lambda m, _: isinstance(m, torch.nn.Linear) and m.in_features >= group_size
-    elif qat_scheme == "int4":
-        group_size = 128
-        base_config = Int4WeightOnlyConfig(group_size=group_size)
-        filter_fn = lambda m, _: isinstance(m, torch.nn.Linear) and m.in_features >= group_size
+
+    if not isinstance(qat_scheme, TorchAOConfig):
+        filter_fn = None
+        group_size = None
+        base_config = None
+        if qat_scheme == "fp8-int4":
+            from torchao.quantization import Float8DynamicActivationInt4WeightConfig
+            group_size = 128
+            base_config = Float8DynamicActivationInt4WeightConfig()
+            filter_fn = lambda m, _: isinstance(m, torch.nn.Linear) and m.in_features >= group_size
+        elif qat_scheme == "fp8-fp8":
+            from torchao.quantization import Float8DynamicActivationFloat8WeightConfig
+            base_config = Float8DynamicActivationFloat8WeightConfig(granularity = PerRow())
+        elif qat_scheme == "int8-int4":
+            from torchao.quantization import Int8DynamicActivationIntxWeightConfig
+            group_size = 32
+            base_config = Int8DynamicActivationIntxWeightConfig(weight_dtype = torch.int4, weight_granularity = PerGroup(group_size))
+            filter_fn = lambda m, _: isinstance(m, torch.nn.Linear) and m.in_features >= group_size
+        elif qat_scheme == "int4":
+            from torchao.quantization import Int4WeightOnlyConfig
+            group_size = 128
+            base_config = Int4WeightOnlyConfig(group_size = group_size)
+            filter_fn = lambda m, _: isinstance(m, torch.nn.Linear) and m.in_features >= group_size
+        else:
+            raise ValueError(f"Unexpected QAT scheme {qat_scheme}")
+        pass
+        # Save TorchAO schemes
+        torchao_config = TorchAOConfig(
+            qat_scheme = qat_scheme,
+            base_config = base_config,
+            group_size = group_size,
+            filter_fn = filter_fn,
+        )
     else:
-        raise ValueError(f"Unexpected QAT scheme {qat_scheme}")
-    pass
-    quantize_(model, QATConfig(base_config, step="prepare"), filter_fn=filter_fn)
+        torchao_config = qat_scheme
+        qat_scheme  = torchao_config.qat_scheme
+        base_config = torchao_config.base_config
+        group_size  = torchao_config.group_size
+        filter_fn   = torchao_config.filter_fn
+
+    # Save Torchao metadata everywhere
+    inner_model = model
+    while hasattr(inner_model, "model"):
+        inner_model._torchao_config = torchao_config
+        inner_model = inner_model.model
+    inner_model._torchao_config = torchao_config
+    # Quantize with TorchAO
+    quantize_(model, QATConfig(base_config, step = "prepare"), filter_fn = filter_fn)
     return model
 pass
