@@ -604,17 +604,17 @@ cu130-ampere-torch280 = [
     "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
     "unsloth[cu130onlytorch280]",
 ]
-cu126-ampere-torch280 = [
+cu126-ampere-torch290 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
     "unsloth[cu126onlytorch290]",
 ]
-cu128-ampere-torch280 = [
+cu128-ampere-torch290 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
     "unsloth[cu128onlytorch290]",
 ]
-cu130-ampere-torch280 = [
+cu130-ampere-torch290 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
     "unsloth[cu130onlytorch290]",
