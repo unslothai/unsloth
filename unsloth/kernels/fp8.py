@@ -17,16 +17,19 @@ import triton
 import triton.language as tl
 from torch.nn import functional as F
 import math
+from unsloth_zoo.log import logger
 
 try:
     from transformers.integrations.finegrained_fp8 import FP8Linear
 except ImportError:
-    raise ImportError("Unsloth: FP8 models need importing FP8Linear from `transformers.integrations.finegrained_fp8` but we don't see it.")
+    FP8Linear = None
+    logger.log("Unsloth: FP8 models need importing FP8Linear from `transformers.integrations.finegrained_fp8` but we don't see it.")
 
 try:
     from transformers.integrations.fbgemm_fp8 import FbgemmFp8Linear
 except ImportError:
-    raise ImportError("Unsloth: FP8 models need importing FbgemmFP8Linear from `transformers.integrations.fbgemm_fp8` but we don't see it.")
+    FbgemmFp8Linear = None
+    logger.log("Unsloth: FP8 models need importing FbgemmFP8Linear from `transformers.integrations.fbgemm_fp8` but we don't see it.")
 
 try:
     from fbgemm_gpu.experimental.gemm.triton_gemm.fp8_gemm import triton_quantize_fp8_block
@@ -486,5 +489,7 @@ def module_forward_patch(forward_function, scale_attr='weight_scale'):
 
 
 # Patch the forward functions of the layers (for compiled models)
-FbgemmFp8Linear.forward = module_forward_patch(fbgemm_fp8_linear, 'weight_scale')
-FP8Linear.forward = module_forward_patch(fp8_block_quant_forward, 'weight_scale_inv')
+if FbgemmFp8Linear is not None:
+    FbgemmFp8Linear.forward = module_forward_patch(fbgemm_fp8_linear, 'weight_scale')
+if FP8Linear is not None:
+    FP8Linear.forward = module_forward_patch(fp8_block_quant_forward, 'weight_scale_inv')
