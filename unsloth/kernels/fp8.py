@@ -23,19 +23,19 @@ torch_matmul = torch.matmul
 
 try:
     from transformers.integrations.finegrained_fp8 import FP8Linear
-except ImportError:
+except:
     FP8Linear = None
     logger.log("Unsloth: FP8 models need importing FP8Linear from `transformers.integrations.finegrained_fp8` but we don't see it.")
 
 try:
     from transformers.integrations.fbgemm_fp8 import FbgemmFp8Linear
-except ImportError:
+except:
     FbgemmFp8Linear = None
     logger.log("Unsloth: FP8 models need importing FbgemmFP8Linear from `transformers.integrations.fbgemm_fp8` but we don't see it.")
 
 try:
     from fbgemm_gpu.experimental.gemm.triton_gemm.fp8_gemm import triton_quantize_fp8_block
-except ImportError:
+except:
     triton_quantize_fp8_block = None
     logger.log("Unsloth: Could not find fbgemm_gpu.experimental.gemm.triton_gemm.fp8_gemm.triton_quantize_fp8_block")
 
@@ -43,7 +43,7 @@ try:
     from torchao.prototype.blockwise_fp8_inference.blockwise_quantization import (
         blockwise_fp8_gemm as torchao_blockwise_gemm,
     )
-except ImportError:
+except:
     torchao_blockwise_gemm = None
     logger.log("Unsloth: Could not find torchao.prototype.blockwise_fp8_inference.blockwise_quantization.blockwise_fp8_gemm")
 
