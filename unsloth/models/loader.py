@@ -587,6 +587,12 @@ except:
 
 
 class FastModel(FastBaseModel):
+
+    @classmethod
+    def _prepare_for_qat(model, qat_scheme):
+        model = _prepare_model_for_qat(model, qat_scheme)
+        return model
+
     @staticmethod
     def from_pretrained(
         model_name = "unsloth/Llama-3.2-11B-Vision-Instruct-bnb-4bit",
@@ -1136,7 +1142,8 @@ class FastModel(FastBaseModel):
         # Apply QAT if specified
         if qat_scheme is not None:
             print("Unsloth: Applying QAT to mitigate quantization degradation")
-            model = _prepare_model_for_qat(model, qat_scheme)
+            model = FastModel._prepare_for_qat(model, qat_scheme)
+        pass
 
         return model, tokenizer
 

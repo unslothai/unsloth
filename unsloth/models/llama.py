@@ -2047,6 +2047,11 @@ def unsloth_fast_generate(
 
 class FastLlamaModel:
     @staticmethod
+    def _prepare_for_qat(cls, model, qat_scheme):
+        model = _prepare_model_for_qat(model, qat_scheme)
+        return model
+
+    @staticmethod
     def pre_patch():
         init_name, function = patch_llama_rope_scaling(
             model_name = "llama",
@@ -3007,7 +3012,9 @@ class FastLlamaModel:
         # Apply QAT + LoRA if specified
         if qat_scheme is not None:
             print("Unsloth: Applying QAT to mitigate quantization degradation")
-            model = _prepare_model_for_qat(model, qat_scheme)
+            model = FastLlamaModel._prepare_for_qat(model, qat_scheme)
+            
+        pass
 
         model._saved_temp_tokenizer = _saved_temp_tokenizer
 
