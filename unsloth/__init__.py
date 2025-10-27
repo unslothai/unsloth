@@ -202,7 +202,7 @@ elif DEVICE_TYPE == "hip":
     # NO-OP for rocm device
     pass
 elif DEVICE_TYPE == "xpu":
-    # currently intel xpu will not support bnb, will add support in the future
+    import bitsandbytes as bnb
     # TODO: check triton for intel installed properly.
     pass
 
