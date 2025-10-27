@@ -217,6 +217,8 @@ from unsloth_zoo.rl_environments import (
     create_locked_down_function,
     execute_with_time_limit,
     Benchmarker,
+    is_port_open,
+    launch_openenv,
 )
 
 # Patch TRL trainers for backwards compatibility
