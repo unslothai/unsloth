@@ -1203,12 +1203,8 @@ def CausalLM_fast_forward(fast_forward_inference):
         else:
             RETURN_LOGITS = os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1"
             # < 1024 Normal Unsloth uses less VRAM!
-            if DEVICE_TYPE == "hip":
-                # [TODO] AMD GPUs fail on chunked_cross_entropy loss!
-                # RuntimeError: Triton Error [HIP]: Code: 1, Messsage: invalid argument
-                RETURN_LOGITS = False
-            elif bsz*q_len <= 1024:
-                # Uses 800MB more VRAM it seems than fused CE Loss
+            if bsz * q_len <= 1024 and not RETURN_LOGITS:
+                # Use unsloth_fused_ce_loss which actually calculates the best chunk size to reduce VRAM usage
                 RETURN_LOGITS = False
 
             if not RETURN_LOGITS and labels is not None:
