@@ -762,7 +762,7 @@ flashattentiontorch240abiTRUEcu12x = [
     "flash-attn @ https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.4cxx11abiTRUE-cp312-cp312-linux_x86_64.whl ; ('linux' in sys_platform) and python_version == '3.12'",
     "flash-attn @ https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.4cxx11abiTRUE-cp313-cp313-linux_x86_64.whl ; ('linux' in sys_platform) and python_version == '3.13'",
 ]
-intel-gpu-torch260 = [
+intelgputorch260 = [
     "unsloth_zoo[intelgpu]",
     "unsloth[huggingfacenotorch]",
 
@@ -778,7 +778,10 @@ intel-gpu-torch260 = [
     "torch @ https://download.pytorch.org/whl/xpu/torch-2.6.0%2Bxpu-cp312-cp312-linux_x86_64.whl#sha256=c4c5c67625cdacf35765c2b94e61fe166e3c3f4a14521b1212a59ad1b3eb0f2e ; ('linux' in sys_platform) and python_version == '3.12' and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
     "torch @ https://download.pytorch.org/whl/xpu/torch-2.6.0%2Bxpu-cp313-cp313-linux_x86_64.whl#sha256=e6864f7a60a5ecc43d5d38f59a16e5dd132384f73dfd3a697f74944026038f7b ; ('linux' in sys_platform) and python_version == '3.13' and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 ]
-intel-gpu-torch270 = [
+intel-gpu-torch260 = [
+    "unsloth[intelgputorch260]"
+]
+intelgputorch270 = [
     "unsloth_zoo[intelgpu]",
     "unsloth[huggingfacenotorch]",
 
@@ -794,7 +797,10 @@ intel-gpu-torch270 = [
     "torch @ https://download.pytorch.org/whl/xpu/torch-2.7.0%2Bxpu-cp312-cp312-linux_x86_64.whl#sha256=c806d44aa2ca5d225629f6fbc6c994d5deaac2d2cde449195bc8e3522ddd219a ; ('linux' in sys_platform) and python_version == '3.12' and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
     "torch @ https://download.pytorch.org/whl/xpu/torch-2.7.0%2Bxpu-cp313-cp313-linux_x86_64.whl#sha256=25d8277b7f01d42e2e014ccbab57a2692b6ec4eff8dcf894eda1b297407cf97a ; ('linux' in sys_platform) and python_version == '3.13' and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 ]
-intel-gpu-torch280 = [
+intel-gpu-torch270 = [
+    "unsloth[intelgputorch270]"
+]
+intelgputorch280 = [
     "unsloth_zoo[intelgpu]",
     "unsloth[huggingfacenotorch]",
 
@@ -818,7 +824,10 @@ intel-gpu-torch280 = [
     "torchvision @ https://download.pytorch.org/whl/xpu/torchvision-0.23.0%2Bxpu-cp312-cp312-manylinux_2_28_x86_64.whl#sha256=0acec355b80c3899841184084f365df336c508602812e34a44007b8b60d53af4 ; platform_system == 'Linux' and python_version == '3.12' and platform_machine == 'x86_64'",
     "torchvision @ https://download.pytorch.org/whl/xpu/torchvision-0.23.0%2Bxpu-cp313-cp313-manylinux_2_28_x86_64.whl#sha256=e2109ae773dad27b98ca17681044b4f876563c37f2382b75de3a371399edcff8 ; platform_system == 'Linux' and python_version == '3.13' and platform_machine == 'x86_64'",
 ]
-intel-gpu-torch290 = [
+intel-gpu-torch280 = [
+    "unsloth[intelgputorch280]"
+]
+intelgputorch290 = [
     "unsloth_zoo[intelgpu]",
     "unsloth[huggingfacenotorch]",
 
@@ -838,6 +847,12 @@ intel-gpu-torch290 = [
     "torchvision @ https://download.pytorch.org/whl/xpu/torchvision-0.24.0%2Bxpu-cp311-cp311-manylinux_2_28_x86_64.whl#sha256=044fa36ef4b6b43edcd490b75c853fa4b3eb033c2bded29f8fbcf27734713c67 ; platform_system == 'Linux' and python_version == '3.11' and platform_machine == 'x86_64'",
     "torchvision @ https://download.pytorch.org/whl/xpu/torchvision-0.24.0%2Bxpu-cp312-cp312-manylinux_2_28_x86_64.whl#sha256=4b91e4bec1d740a6211f02578a79888550b73f3a4e1383035f8f6d72f587212c ; platform_system == 'Linux' and python_version == '3.12' and platform_machine == 'x86_64'",
     "torchvision @ https://download.pytorch.org/whl/xpu/torchvision-0.24.0%2Bxpu-cp313-cp313-manylinux_2_28_x86_64.whl#sha256=88239e73ca37254bec84f29cd5887e10ff712de7edbbda3fbb3609cd6190d99e ; platform_system == 'Linux' and python_version == '3.13' and platform_machine == 'x86_64'",
+]
+intel-gpu-torch290 = [
+    "unsloth[intelgputorch290]"
+]
+intel = [
+    "unsloth[intelgputorch280]",
 ]
 amd = [
     "unsloth[huggingfacenotorch]",
