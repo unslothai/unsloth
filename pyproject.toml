@@ -55,11 +55,11 @@ huggingfacenotorch = [
     "hf_transfer",
     "diffusers",
     "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,<=4.56.2",
-    "trl>=0.7.9,!=0.9.0,!=0.9.1,!=0.9.2,!=0.9.3,!=0.15.0,!=0.19.0,<=0.23.0",
+    "trl>=0.18.2,!=0.19.0,<=0.23.0",
 ]
 huggingface = [
     "unsloth[huggingfacenotorch]",
-    "unsloth_zoo>=2025.10.8",
+    "unsloth_zoo>=2025.10.10",
     "torchvision",
     "unsloth[triton]",
 ]
@@ -461,7 +461,7 @@ colab-ampere-torch220 = [
     "flash-attn>=2.6.3 ; ('linux' in sys_platform)",
 ]
 colab-new = [
-    "unsloth_zoo>=2025.10.8",
+    "unsloth_zoo>=2025.10.10",
     "packaging",
     "tyro",
     "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,<=4.56.2",
@@ -479,7 +479,7 @@ colab-new = [
 ]
 colab-no-deps = [
     "accelerate>=0.34.1",
-    "trl>=0.7.9,!=0.9.0,!=0.9.1,!=0.9.2,!=0.9.3,!=0.15.0,!=0.19.0,<=0.23.0",
+    "trl>=0.18.2,!=0.19.0,<=0.23.0",
     "peft>=0.7.1",
     "xformers ; ('linux' in sys_platform or sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
     "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
