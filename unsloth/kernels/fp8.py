@@ -357,7 +357,7 @@ class FbgemmFp8Linear_matmul(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, weight, weight_scale, bias=None):
 
-        if weight.shape[0] == weight_scale.shape[0] and (weight.shape[0]%8==0 and weight.shape[1]%8==0):
+        if weight.shape[0] == weight_scale.shape[0] and (weight.shape[0] % 8 == 0 and weight.shape[1] % 8 == 0):
             # Edit: The kernel seems to expect that the weight has dimensions divisible by 8. Otherwise it throws `RuntimeError: cutlass cannot implement`
             # One thing we can do is to pad the weight and weight scale to multiple of 8 and perform a F8F8BF16 operation.
             # I tried benchmarking that for speed but observed that dequantize+bf16 matmul is significantly faster than padding+f8f8bf16 matmul. So we'll go that route.
@@ -389,7 +389,7 @@ class FbgemmFp8Linear_matmul(torch.autograd.Function):
             output = output.to(x.device, x.dtype)
             output = output.reshape(output_shape)
             del x_quantized, x_scale
-        elif (weight.shape[0] != weight_scale.shape[0] and weight.shape[1] == weight_scale.shape[0]) or (weight.shape[0]//8!=0 or weight.shape[1]//8!=0):
+        elif (weight.shape[0] != weight_scale.shape[0] and weight.shape[1] == weight_scale.shape[0]) or (weight.shape[0] // 8 != 0 or weight.shape[1] // 8 != 0):
             # Either the weight/scale is transposed or its shape is not divisible by 8. Both cases, dequantizing is the preferred way.
             # The transpose case is generally noticed in backward pass when we do dY@W instead of @W.T as we do for forward.
             # The shape case, I noticed to happen in MLP of Qwen 2.5 VL 7B where the gate proj is of shape (3420, 1280) and 3420/8=427.5
@@ -412,7 +412,7 @@ class FbgemmFp8Linear_matmul(torch.autograd.Function):
         return grad_X, None, None, None, None
 
 @torch_compile
-def fbgemm_fp8_linear(X, weight, weight_scale, bias=None, ):
+def fbgemm_fp8_linear(X, weight, weight_scale, bias=None):
     return FbgemmFp8Linear_matmul.apply(X, weight, weight_scale, bias)
 
 
