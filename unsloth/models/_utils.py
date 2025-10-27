@@ -1014,7 +1014,8 @@ def get_statistics(local_files_only = False):
     pass
     _get_statistics(None)
     _get_statistics("repeat", force_download = False)
-    vram = torch.cuda.get_device_properties(0).total_memory / 1024 / 1024 / 1024
+    total_memory = torch.xpu.get_device_properties(0).total_memory if DEVICE_TYPE == "xpu" else torch.cuda.get_device_properties(0).total_memory
+    vram = total_memory / 1024 / 1024 / 1024
     if   vram <= 8 : vram = 8
     elif vram <= 16: vram = 16
     elif vram <= 20: vram = 20
