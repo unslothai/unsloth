@@ -44,6 +44,7 @@ from .fast_lora import (
     apply_lora_o,
     fast_lora_forward,
 )
+from .fp8 import * # This step is to ensure that we patch the FbgmemFP8Linear and FP8Linear's forward functions before the execution of model creation so that this applies to compiled non fast inference models as well
 from .utils import fast_dequantize, fast_gemv, QUANT_STATE, fast_linear_forward, matmul_lora
 
 from .flex_attention import (

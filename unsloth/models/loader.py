@@ -202,7 +202,8 @@ class FastLanguageModel(FastLlamaModel):
         pass
         # Check if 4bit is allowed specifically for AMD
         if not ALLOW_BITSANDBYTES and not use_exact_model_name:
-            print("Unsloth: AMD currently is not stable with 4bit bitsandbytes. Disabling for now.")
+            if load_in_4bit or load_in_8bit or model_name.lower().endswith("-bnb-4bit"):
+                print("Unsloth: AMD currently is not stable with 4bit bitsandbytes. Disabling for now.")
             load_in_4bit = False
 
         old_model_name = model_name
@@ -650,7 +651,8 @@ class FastModel(FastBaseModel):
             )
         # Check if 4bit is allowed specifically for AMD
         if not ALLOW_BITSANDBYTES and not use_exact_model_name:
-            print("Unsloth: AMD currently is not stable with 4bit bitsandbytes. Disabling for now.")
+            if load_in_4bit or load_in_8bit or model_name.lower().endswith("-bnb-4bit"):
+                print("Unsloth: AMD currently is not stable with 4bit bitsandbytes. Disabling for now.")
             load_in_4bit = False
 
         old_model_name = model_name
