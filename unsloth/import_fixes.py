@@ -147,7 +147,7 @@ def patch_ipykernel_hf_xet():
     if (
         Version(importlib_version("hf_xet")) == Version("1.1.10")
     ) and (
-        Version(importlib_version("ipykernel")) > Version("6.30.1")
+        Version(importlib_version("ipykernel")) == Version("7.0.0")
     ):
         print(
             "#### Unsloth: `hf_xet==1.1.10` and `ipykernel>6.30.1` breaks progress bars. Disabling for now in XET.\n"\
