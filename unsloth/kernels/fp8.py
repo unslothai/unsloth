@@ -18,6 +18,8 @@ import triton.language as tl
 from torch.nn import functional as F
 import math
 from unsloth_zoo.log import logger
+from unsloth_zoo.temporary_patches.common import torch_compile
+torch_matmul = torch.matmul
 
 try:
     from transformers.integrations.finegrained_fp8 import FP8Linear
@@ -35,6 +37,7 @@ try:
     from fbgemm_gpu.experimental.gemm.triton_gemm.fp8_gemm import triton_quantize_fp8_block
 except ImportError:
     triton_quantize_fp8_block = None
+    logger.log("Unsloth: Could not find fbgemm_gpu.experimental.gemm.triton_gemm.fp8_gemm.triton_quantize_fp8_block")
 
 try:
     from torchao.prototype.blockwise_fp8_inference.blockwise_quantization import (
@@ -42,10 +45,8 @@ try:
     )
 except ImportError:
     torchao_blockwise_gemm = None
+    logger.log("Unsloth: Could not find torchao.prototype.blockwise_fp8_inference.blockwise_quantization.blockwise_fp8_gemm")
 
-from unsloth_zoo.temporary_patches.common import torch_compile
-
-torch_matmul = torch.matmul
 
 @triton.jit
 def weight_dequant_kernel(x_ptr, s_ptr, y_ptr, M, N, BLOCK_SIZE: tl.constexpr):
@@ -60,6 +61,7 @@ def weight_dequant_kernel(x_ptr, s_ptr, y_ptr, M, N, BLOCK_SIZE: tl.constexpr):
     s = tl.load(s_ptr + pid_m * n + pid_n)
     y = x * s
     tl.store(y_ptr + offs, y, mask=mask)
+pass
 
 
 def weight_dequant_block(x: torch.Tensor, s: torch.Tensor, block_size: int = 128, dtype=torch.bfloat16) -> torch.Tensor:
@@ -73,6 +75,7 @@ def weight_dequant_block(x: torch.Tensor, s: torch.Tensor, block_size: int = 128
     grid = lambda meta: (triton.cdiv(M, meta['BLOCK_SIZE']), triton.cdiv(N, meta['BLOCK_SIZE']))
     weight_dequant_kernel[grid](x, s, y, M, N, BLOCK_SIZE=block_size)
     return y
+pass
 
 def weight_dequant(x: torch.Tensor, s: torch.Tensor, dtype=torch.bfloat16):
     if s.shape[1] == 1:
@@ -89,7 +92,7 @@ def weight_dequant(x: torch.Tensor, s: torch.Tensor, dtype=torch.bfloat16):
     else:
         # this is block quantized weight
         return weight_dequant_block(x, s, dtype=dtype)
-
+pass
 
 # Copied from https://huggingface.co/deepseek-ai/DeepSeek-V3/blob/main/inference/kernel.py
 @triton.jit
@@ -106,6 +109,7 @@ def act_quant_kernel(x_ptr, y_ptr, s_ptr, BLOCK_SIZE: tl.constexpr):
     y = y.to(y_ptr.dtype.element_ty)
     tl.store(y_ptr + offs, y)
     tl.store(s_ptr + pid, s)
+pass
 
 def act_quant(x: torch.Tensor, block_size: int = 128) -> tuple[torch.Tensor, torch.Tensor]:
     if not x.is_contiguous():
@@ -119,7 +123,7 @@ def act_quant(x: torch.Tensor, block_size: int = 128) -> tuple[torch.Tensor, tor
 
     act_quant_kernel[grid](x, y, s, BLOCK_SIZE = block_size)
     return y, s
-
+pass
 
 # Adapted from https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/layers/quantization/fp8_kernel.py
 @triton.jit
@@ -205,7 +209,7 @@ def _w8a8_block_fp8_matmul(
     c_ptrs = C + stride_cm * offs_cm[:, None] + stride_cn * offs_cn[None, :]
     c_mask = (offs_cm[:, None] < M) & (offs_cn[None, :] < N)
     tl.store(c_ptrs, c, mask = c_mask)
-
+pass
 
 def w8a8_block_fp8_matmul_triton(
     A: torch.Tensor,
@@ -284,6 +288,7 @@ def w8a8_block_fp8_matmul_triton(
         GROUP_SIZE_M = 8,
     )
     return C
+pass
 
 def torchao_block_matmul(
     act_q: torch.Tensor,
@@ -301,6 +306,7 @@ def torchao_block_matmul(
         block_size=block_size[1],
     )
     return out.to(output_dtype)
+pass
 
 # This torchao FP8 matmul seems to be ~3x faster than the w8a8_block_fp8_matmul_triton. Though this is 15-30% slower than fbgemm implementation.
 # But this gives very comparable results when it comes to training loss, so we prefer using it when available.
