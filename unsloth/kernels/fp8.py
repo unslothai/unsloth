@@ -17,6 +17,20 @@ import triton
 import triton.language as tl
 from torch.nn import functional as F
 import math
+from unsloth_zoo.log import logger
+
+try:
+    from transformers.integrations.finegrained_fp8 import FP8Linear
+except ImportError:
+    FP8Linear = None
+    logger.log("Unsloth: FP8 models need importing FP8Linear from `transformers.integrations.finegrained_fp8` but we don't see it.")
+
+try:
+    from transformers.integrations.fbgemm_fp8 import FbgemmFp8Linear
+except ImportError:
+    FbgemmFp8Linear = None
+    logger.log("Unsloth: FP8 models need importing FbgemmFP8Linear from `transformers.integrations.fbgemm_fp8` but we don't see it.")
+
 try:
     from fbgemm_gpu.experimental.gemm.triton_gemm.fp8_gemm import triton_quantize_fp8_block
 except ImportError:
@@ -329,7 +343,7 @@ class FP8BlockQuantLinear(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         W_deq = weight_dequant(ctx.weight, ctx.weight_scale)
-        grad_X = torch_matmul(grad_output, W_deq.t())
+        grad_X = torch_matmul(grad_output, W_deq)
         del W_deq
         return grad_X, None, None
 
@@ -338,20 +352,17 @@ def fp8_block_quant_forward(X, weight, weight_scale):
     return FP8BlockQuantLinear.apply(X, weight, weight_scale)
 
 
-class FbgemmFp8Linear(torch.autograd.Function):
+class FbgemmFp8Linear_matmul(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, x, weight, weight_scale, bias=None):
-        if weight.shape[0] != weight_scale.shape[0]:
-            if weight.shape[1] == weight_scale.shape[0]:
-                # This is generally the case when we do backward pass. The only way is to dequantize as there is no column wise fp8 matmul
-                W_deq = weight_dequant(weight, weight_scale).T
-                x = torch_matmul(x, W_deq)
-                del W_deq
-                return x
-            else:
-                raise ValueError(f"Shapes are incompatible {weight.shape=}, {weight_scale.shape=}, {x.shape=}")
-        else:
+
+        if weight.shape[0] == weight_scale.shape[0] and (weight.shape[0] % 8 == 0 and weight.shape[1] % 8 == 0):
+            # Edit: The kernel seems to expect that the weight has dimensions divisible by 8. Otherwise it throws `RuntimeError: cutlass cannot implement`
+            # One thing we can do is to pad the weight and weight scale to multiple of 8 and perform a F8F8BF16 operation.
+            # I tried benchmarking that for speed but observed that dequantize+bf16 matmul is significantly faster than padding+f8f8bf16 matmul. So we'll go that route.
+            # So essentially, f8f8bf16_rowise only happens when shapes are proper (no transposes) and divisible by 8.
+
             # quantize_fp8_per_row will squash the leading dimensions, so save the desired shape here
             output_shape = (*x.shape[:-1], -1)
             # x_quantized and x_scale are not necessarily on the same device as x, this is an issue.
@@ -378,6 +389,16 @@ class FbgemmFp8Linear(torch.autograd.Function):
             output = output.to(x.device, x.dtype)
             output = output.reshape(output_shape)
             del x_quantized, x_scale
+        elif (weight.shape[0] != weight_scale.shape[0] and weight.shape[1] == weight_scale.shape[0]) or (weight.shape[0] // 8 != 0 or weight.shape[1] // 8 != 0):
+            # Either the weight/scale is transposed or its shape is not divisible by 8. Both cases, dequantizing is the preferred way.
+            # The transpose case is generally noticed in backward pass when we do dY@W instead of @W.T as we do for forward.
+            # The shape case, I noticed to happen in MLP of Qwen 2.5 VL 7B where the gate proj is of shape (3420, 1280) and 3420/8=427.5
+
+            W_deq = weight_dequant(weight, weight_scale).T
+            output = torch_matmul(x, W_deq)
+            del W_deq
+        else:
+            raise ValueError(f"Shapes are incompatible {weight.shape=}, {weight_scale.shape=}, {x.shape=}")
 
         ctx.weight = weight
         ctx.weight_scale = weight_scale
@@ -386,13 +407,13 @@ class FbgemmFp8Linear(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         W_deq = weight_dequant(ctx.weight, ctx.weight_scale)
-        grad_X = torch_matmul(grad_output, W_deq.t())
+        grad_X = torch_matmul(grad_output, W_deq)
         del W_deq
         return grad_X, None, None, None, None
 
 @torch_compile
-def fbgemm_fp8_linear(X, weight, weight_scale, bias=None, ):
-    return FbgemmFp8Linear.apply(X, weight, weight_scale, bias)
+def fbgemm_fp8_linear(X, weight, weight_scale, bias=None):
+    return FbgemmFp8Linear_matmul.apply(X, weight, weight_scale, bias)
 
 
 class FP8_torch_linear(torch.autograd.Function):
@@ -437,7 +458,7 @@ class FP8_torch_linear(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         W_deq = weight_dequant(ctx.weight, ctx.weight_scale)
-        grad_X = torch_matmul(grad_output, W_deq.t())
+        grad_X = torch_matmul(grad_output, W_deq)
         del W_deq
         return grad_X, None, None, None, None
 
@@ -459,3 +480,16 @@ def fp8_linear(X, weight, weight_scale, bias=None):
         # Row quantized FP8
         out = fbgemm_fp8_linear(X, weight, weight_scale, bias)
     return out
+
+
+def module_forward_patch(forward_function, scale_attr='weight_scale'):
+    def patched_forward(self, X):
+        return forward_function(X, self.weight, getattr(self, scale_attr))
+    return patched_forward
+
+
+# Patch the forward functions of the layers (for compiled models)
+if FbgemmFp8Linear is not None:
+    FbgemmFp8Linear.forward = module_forward_patch(fbgemm_fp8_linear, 'weight_scale')
+if FP8Linear is not None:
+    FP8Linear.forward = module_forward_patch(fp8_block_quant_forward, 'weight_scale_inv')
