@@ -14,8 +14,12 @@
 
 import warnings, importlib, sys
 from packaging.version import Version
-import os, re, subprocess, inspect
+import os, re, subprocess, inspect, functools
 import numpy as np
+
+# Fix some issues before importing other packages
+from .import_fixes import fix_message_factory_issue
+fix_message_factory_issue(); del fix_message_factory_issue;
 
 # Check if modules that need patching are already imported
 critical_modules = ['trl', 'transformers', 'peft']
@@ -53,6 +57,7 @@ os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 # Log Unsloth is being used
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
+# Try importing PyTorch and check version
 try:
     import torch
 except ModuleNotFoundError:
@@ -64,75 +69,50 @@ except Exception as exception:
     raise exception
 pass
 
-def get_device_type():
-    if hasattr(torch, "cuda") and torch.cuda.is_available():
-        return "cuda"
-    elif hasattr(torch, "xpu") and torch.xpu.is_available():
-        return "xpu"
-    raise NotImplementedError("Unsloth currently only works on NVIDIA GPUs and Intel GPUs.")
-pass
-DEVICE_TYPE : str = get_device_type()
-
-def get_device_count():
-    if DEVICE_TYPE == "cuda":
-        return torch.cuda.device_count()
-    elif DEVICE_TYPE == "xpu":
-        return torch.xpu.device_count()
-    else:
-        return 1
-pass
-
-DEVICE_COUNT : int = get_device_count()
-
-# Reduce VRAM usage by reducing fragmentation
-# And optimize pinning of memory
-if DEVICE_TYPE == "cuda" and os.environ.get("UNSLOTH_VLLM_STANDBY", "0")=="0":
-    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = \
-        "expandable_segments:True,"\
-        "roundup_power2_divisions:[32:256,64:128,256:64,>:32]"
-
-# We support Pytorch 2
-# Fixes https://github.com/unslothai/unsloth/issues/38
-torch_version = str(torch.__version__).split(".")
-major_torch, minor_torch = torch_version[0], torch_version[1]
-major_torch, minor_torch = int(major_torch), int(minor_torch)
-if (major_torch < 2):
-    raise ImportError("Unsloth only supports Pytorch 2 for now. Please update your Pytorch to 2.1.\n"\
-                      "We have some installation instructions on our Github page.")
-elif (major_torch == 2) and (minor_torch < 2):
-    # Disable expandable_segments
-    del os.environ["PYTORCH_CUDA_ALLOC_CONF"]
-pass
-
-# Fix Xformers performance issues since 0.0.25
 import importlib.util
 from pathlib import Path
 from importlib.metadata import version as importlib_version
-from packaging.version import Version
+# Check for unsloth_zoo
 try:
-    xformers_version = importlib_version("xformers")
-    if Version(xformers_version) < Version("0.0.29"):
-        xformers_location = importlib.util.find_spec("xformers").origin
-        xformers_location = os.path.split(xformers_location)[0]
-        cutlass = Path(xformers_location) / "ops" / "fmha" / "cutlass.py"
-
-        if cutlass.exists():
-            with open(cutlass, "r+") as f:
-                text = f.read()
-                # See https://github.com/facebookresearch/xformers/issues/1176#issuecomment-2545829591
-                if "num_splits_key=-1," in text:
-                    text = text.replace("num_splits_key=-1,", "num_splits_key=None,")
-                    f.seek(0)
-                    f.write(text)
-                    f.truncate()
-                    print("Unsloth: Patching Xformers to fix some performance issues.")
-                pass
-            pass
-        pass
-    pass
+    unsloth_zoo_version = importlib_version("unsloth_zoo")
+    if Version(unsloth_zoo_version) < Version("2025.10.4"):
+        print(
+            "Unsloth: Please update Unsloth and Unsloth-Zoo to the latest version!\n"\
+            "Do this via `pip install --upgrade --force-reinstall --no-cache-dir --no-deps unsloth unsloth_zoo`"
+        )
+        # if os.environ.get("UNSLOTH_DISABLE_AUTO_UPDATES", "0") == "0":
+        #     try:
+        #         os.system("pip install --upgrade --no-cache-dir --no-deps unsloth_zoo")
+        #     except:
+        #         try:
+        #             os.system("pip install --upgrade --no-cache-dir --no-deps --user unsloth_zoo")
+        #         except:
+        #             raise ImportError("Unsloth: Please update unsloth_zoo via `pip install --upgrade --no-cache-dir --no-deps unsloth_zoo`")
+    import unsloth_zoo
 except:
-    pass
+    raise ImportError("Unsloth: Please install unsloth_zoo via `pip install unsloth_zoo`")
 pass
+
+from unsloth_zoo.device_type import (
+    is_hip,
+    get_device_type,
+    DEVICE_TYPE,
+    DEVICE_TYPE_TORCH,
+    DEVICE_COUNT,
+    ALLOW_PREQUANTIZED_MODELS,
+)
+
+# Fix other issues
+from .import_fixes import fix_xformers_performance_issue
+fix_xformers_performance_issue(); del fix_xformers_performance_issue;
+from .import_fixes import fix_vllm_aimv2_issue
+fix_vllm_aimv2_issue(); del fix_vllm_aimv2_issue;
+from .import_fixes import ignore_logger_messages
+ignore_logger_messages(); del ignore_logger_messages;
+from .import_fixes import patch_ipykernel_hf_xet
+patch_ipykernel_hf_xet(); del patch_ipykernel_hf_xet;
+from .import_fixes import patch_trackio
+patch_trackio(); del patch_trackio;
 
 # Torch 2.4 has including_emulation
 if DEVICE_TYPE == "cuda":
@@ -148,12 +128,13 @@ if DEVICE_TYPE == "cuda":
         def is_bf16_supported(): return SUPPORTS_BFLOAT16
         torch.cuda.is_bf16_supported = is_bf16_supported
     pass
+elif DEVICE_TYPE == "hip":
+    SUPPORTS_BFLOAT16 = torch.cuda.is_bf16_supported()
 elif DEVICE_TYPE == "xpu":
     # torch.xpu.is_bf16_supported() does not have including_emulation
     # set SUPPORTS_BFLOAT16 as torch.xpu.is_bf16_supported()
     SUPPORTS_BFLOAT16 = torch.xpu.is_bf16_supported()
 pass
-
 
 # For Gradio HF Spaces?
 # if "SPACE_AUTHOR_NAME" not in os.environ and "SPACE_REPO_NAME" not in os.environ:
@@ -166,7 +147,10 @@ if DEVICE_TYPE == "cuda":
     else: from triton.common.build import libcuda_dirs
 
     # Try loading bitsandbytes and triton
-    import bitsandbytes as bnb
+    try:
+        import bitsandbytes as bnb
+    except:
+        print("Unsloth: `bitsandbytes` is not installed - 4bit QLoRA unallowed, but 16bit and full finetuning works!")
     try:
         cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
         libcuda_dirs()
@@ -214,31 +198,13 @@ if DEVICE_TYPE == "cuda":
                 "Unsloth will still run for now, but maybe it might crash - let's hope it works!"
             )
     pass
+elif DEVICE_TYPE == "hip":
+    # NO-OP for rocm device
+    pass
 elif DEVICE_TYPE == "xpu":
-    # currently intel xpu will not support bnb, will add support in the future
+    import bitsandbytes as bnb
     # TODO: check triton for intel installed properly.
     pass
-
-# Check for unsloth_zoo
-try:
-    unsloth_zoo_version = importlib_version("unsloth_zoo")
-    if Version(unsloth_zoo_version) < Version("2025.8.1"):
-        print(
-            "Unsloth: Please update Unsloth and Unsloth-Zoo to the latest version!\n"\
-            "Do this via `pip install --upgrade --force-reinstall --no-cache-dir --no-deps unsloth unsloth_zoo`"
-        )
-        # if os.environ.get("UNSLOTH_DISABLE_AUTO_UPDATES", "0") == "0":
-        #     try:
-        #         os.system("pip install --upgrade --no-cache-dir --no-deps unsloth_zoo")
-        #     except:
-        #         try:
-        #             os.system("pip install --upgrade --no-cache-dir --no-deps --user unsloth_zoo")
-        #         except:
-        #             raise ImportError("Unsloth: Please update unsloth_zoo via `pip install --upgrade --no-cache-dir --no-deps unsloth_zoo`")
-    import unsloth_zoo
-except:
-    raise ImportError("Unsloth: Please install unsloth_zoo via `pip install unsloth_zoo`")
-pass
 
 from .models import *
 from .models import __version__
@@ -246,6 +212,14 @@ from .save import *
 from .chat_templates import *
 from .tokenizer_utils import *
 from .trainer import *
+from unsloth_zoo.rl_environments import (
+    check_python_modules,
+    create_locked_down_function,
+    execute_with_time_limit,
+    Benchmarker,
+    is_port_open,
+    launch_openenv,
+)
 
 # Patch TRL trainers for backwards compatibility
 _patch_trl_trainer()

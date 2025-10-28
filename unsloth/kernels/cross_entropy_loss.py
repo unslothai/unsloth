@@ -21,6 +21,7 @@ from .utils import (
     triton_tanh,
     triton_cast,
     torch_gpu_device,
+    is_cdna,
 )
 from transformers.models.llama.modeling_llama import logger
 from packaging.version import Version
@@ -299,6 +300,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
         if n_chunks == 1:
             # For small vocabs <= 65336 like Llama, Mistral
             BLOCK_SIZE, num_warps = calculate_settings(vocab_size)
+            if is_cdna(): num_warps = num_warps // 2
             logsumexp = torch.empty(n_rows, dtype = torch.float32, device = device)
 
             with torch_gpu_device(device):
@@ -332,7 +334,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
                     SOFTCAP          = logit_softcapping,
                     DO_LOGIT_SCALING = DO_LOGIT_SCALING,
                     LOGIT_SCALE      = logit_scaling,
-                    num_warps        = 32,
+                    num_warps        = 32 if not is_cdna() else 16,
                 )
             # logsumexp(chunked_logsumexp) - x
             # Do the -x separately

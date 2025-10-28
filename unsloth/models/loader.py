@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from ._utils import (
+    _prepare_model_for_qat,
     is_bfloat16_supported,
     is_vLLM_available,
     HAS_FLASH_ATTENTION,
@@ -44,9 +45,19 @@ except:
 pass
 from huggingface_hub import HfFileSystem
 import importlib.util
+from ..device_type import (
+    is_hip,
+    get_device_type,
+    DEVICE_TYPE,
+    DEVICE_TYPE_TORCH,
+    DEVICE_COUNT,
+    ALLOW_PREQUANTIZED_MODELS,
+    ALLOW_BITSANDBYTES,
+)
 
 # https://github.com/huggingface/transformers/pull/26037 allows 4 bit loading!
 from unsloth_zoo.utils import Version, _get_dtype
+from unsloth_zoo.hf_utils import dtype_from_config
 transformers_version = Version(transformers_version)
 SUPPORTS_FOURBIT   = transformers_version >= Version("4.37")
 SUPPORTS_GEMMA     = transformers_version >= Version("4.38")
@@ -76,13 +87,31 @@ from ._utils import (
     patch_compiled_autograd,
     process_vision_info,
     unsloth_compile_transformers,
+    fast_inference_setup,
 )
 
 global FORCE_FLOAT32
+# Forces float32 precision since float16 goes to infinity
 FORCE_FLOAT32 = [
-    "gemma3",
-    "gptoss",
+    "gemma3,", # Add comma bc gemma3 will match gemma3n
+    "gemma3n",
+    "gpt_oss",
 ]
+
+global DISABLE_COMPILE_MODEL_NAMES
+# Must be alphabetically sorted for each entry
+DISABLE_COMPILE_MODEL_NAMES = [
+    "aya_vision",
+    "modernbert",
+    "granite,llava_next", # Granite-vision 3
+]
+
+global DISABLE_SDPA_MODEL_NAMES
+# Disables some SDPA modules since it's wrong
+DISABLE_SDPA_MODEL_NAMES = [
+    "gemma3,", # Add comma bc gemma3 will match gemma3n
+]
+
 
 class FastLanguageModel(FastLlamaModel):
     @staticmethod
@@ -90,8 +119,9 @@ class FastLanguageModel(FastLlamaModel):
         model_name                 = "unsloth/Llama-3.2-1B-Instruct",
         max_seq_length             = 2048,
         dtype                      = None,
-        load_in_4bit               = True,
-        load_in_8bit               = False,
+        load_in_4bit               = True,  # 4bit QLoRA
+        load_in_8bit               = False, # 8bit  LoRA
+        load_in_16bit              = False, # 16bit LoRA
         full_finetuning            = False,
         token                      = None,
         device_map                 = "sequential",
@@ -102,6 +132,7 @@ class FastLanguageModel(FastLlamaModel):
         resize_model_vocab         = None,
         revision                   = None,
         use_exact_model_name       = False,
+        offload_embedding          = False,
 
         fast_inference             = False, # uses vLLM
         gpu_memory_utilization     = 0.5,
@@ -109,15 +140,25 @@ class FastLanguageModel(FastLlamaModel):
         random_state               = 3407,
         max_lora_rank              = 64,
         disable_log_stats          = True,
+        qat_scheme                 = None,
         *args, **kwargs,
     ):
-        if load_in_8bit or full_finetuning:
+        # Login to allow private models
+        if token is None: token = get_token()
+        if token is not None:
+            try:
+                from huggingface_hub import login
+                login(token = token)
+            except:
+                pass
+        if load_in_8bit or full_finetuning or qat_scheme is not None:
             return FastModel.from_pretrained(
                 model_name                 = model_name,
                 max_seq_length             = max_seq_length,
                 dtype                      = dtype,
                 load_in_4bit               = load_in_4bit,
                 load_in_8bit               = load_in_8bit,
+                load_in_16bit              = load_in_16bit,
                 full_finetuning            = full_finetuning,
                 token                      = token,
                 device_map                 = device_map,
@@ -130,6 +171,17 @@ class FastLanguageModel(FastLlamaModel):
                 return_logits              = False, # Return logits
                 fullgraph                  = True, # No graph breaks
                 use_exact_model_name       = use_exact_model_name,
+                offload_embedding          = offload_embedding,
+
+                # Pass vLLM/inference parameters
+                fast_inference             = fast_inference,
+                gpu_memory_utilization     = gpu_memory_utilization,
+                float8_kv_cache            = float8_kv_cache,
+                random_state               = random_state,
+                max_lora_rank              = max_lora_rank,
+                disable_log_stats          = disable_log_stats,
+
+                qat_scheme                 = qat_scheme,
                 *args, **kwargs,
             )
         pass
@@ -137,10 +189,8 @@ class FastLanguageModel(FastLlamaModel):
         if token is None: token = get_token()
         if isinstance(dtype, str) and dtype in ["float16", "bfloat16"]:
             dtype = getattr(torch, dtype)
-        assert (dtype is None or dtype == torch.float16 or dtype == torch.bfloat16)
-
-        if use_gradient_checkpointing == "unsloth":
-            patch_unsloth_smart_gradient_checkpointing(dtype = dtype)
+        assert (dtype is None or dtype == torch.float16 or dtype == torch.bfloat16
+                or dtype == torch.float32)
 
         if fast_inference:
             if importlib.util.find_spec("vllm") is None:
@@ -150,10 +200,25 @@ class FastLanguageModel(FastLlamaModel):
                 )
             pass
         pass
-        
+        # Check if 4bit is allowed specifically for AMD
+        if not ALLOW_BITSANDBYTES and not use_exact_model_name:
+            if load_in_4bit or load_in_8bit or model_name.lower().endswith("-bnb-4bit"):
+                print("Unsloth: AMD currently is not stable with 4bit bitsandbytes. Disabling for now.")
+            load_in_4bit = False
+
         old_model_name = model_name
         if not use_exact_model_name:
             model_name = get_model_name(model_name, load_in_4bit)
+        # Check if pre-quantized models are allowed
+        # For eg AMD GPUs need blocksize = 128, but our pre-quants are blocksize = 64
+        if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(("-unsloth-bnb-4bit", "-bnb-4bit")):
+            model_name = model_name.lower().removesuffix("-unsloth-bnb-4bit")
+            model_name = model_name.lower().removesuffix("-bnb-4bit")
+        # Change -BF16 to all False for 4bit, 8bit etc
+        if model_name.lower().endswith("-bf16"):
+            load_in_4bit = False
+            load_in_8bit = False
+            load_in_16bit = True
 
         if USE_MODELSCOPE and not os.path.exists(model_name):
             from modelscope import snapshot_download
@@ -167,6 +232,8 @@ class FastLanguageModel(FastLlamaModel):
 
         autoconfig_error = None
         peft_error = None
+        model_config = None
+        peft_config = None
         try:
             model_config = AutoConfig.from_pretrained(
                 model_name,
@@ -177,6 +244,11 @@ class FastLanguageModel(FastLlamaModel):
             is_model = True
         except Exception as error:
             autoconfig_error = str(error)
+            if "architecture" in autoconfig_error:
+                raise ValueError(
+                    f"`{model_name}` is not supported yet in `transformers=={transformers_version}`.\n"\
+                    f"Please update transformers via `pip install --upgrade transformers` and try again."
+                )
             is_model = False
         try:
             peft_config = PeftConfig.from_pretrained(
@@ -188,13 +260,33 @@ class FastLanguageModel(FastLlamaModel):
             is_peft = True
         except Exception as error:
             peft_error = str(error)
+            if "architecture" in peft_error:
+                raise ValueError(
+                    f"`{model_name}` is not supported yet in `transformers=={transformers_version}`.\n"\
+                    f"Please update transformers via `pip install --upgrade transformers` and try again."
+                )
             is_peft = False
         pass
 
-        # Both config.json and adapter_config.json should not exist!
-
         # Old transformers versions check
         both_exist = (is_model and is_peft) and not SUPPORTS_LLAMA32
+
+        # Error out if both LoRA and normal model config exists.
+        if both_exist:
+            raise RuntimeError(
+                "Unsloth: Your repo has a LoRA adapter and a base model.\n"\
+                "You have 2 files `config.json` and `adapter_config.json`.\n"\
+                "We must only allow one config file.\n"\
+                "Please separate the LoRA and base models to 2 repos."
+            )
+        model_types = get_transformers_model_type(
+            peft_config if peft_config is not None else model_config
+        )
+        if len(model_types) == 1:
+            model_type = model_types[0]
+        else:
+            # Leave as tuple if more than one arch
+            model_type = model_types
 
         # New transformers need to check manually.
         if SUPPORTS_LLAMA32:
@@ -206,24 +298,15 @@ class FastLanguageModel(FastLlamaModel):
             else:
                 # Because HfFileSystem assumes linux paths, we need to set the path with forward slashes, even on Windows.
                 files = HfFileSystem(token = token).glob(f"{model_name}/*.json")
-                files = (os.path.split(x)[-1] for x in files)
+                files = list(os.path.split(x)[-1] for x in files)
                 if sum(x == "adapter_config.json" or x == "config.json" for x in files) >= 2:
                     both_exist = True
                 pass
             pass
         pass
 
-        # Error out if both LoRA and normal model config exists.
-        if both_exist:
-            raise RuntimeError(
-                "Unsloth: Your repo has a LoRA adapter and a base model.\n"\
-                "You have 2 files `config.json` and `adapter_config.json`.\n"\
-                "We must only allow one config file.\n"\
-                "Please separate the LoRA and base models to 2 repos."
-            )
-
-        elif not is_model and not is_peft:
-            error = autoconfig_error or peft_error
+        if not is_model and not is_peft:
+            error = autoconfig_error if autoconfig_error is not None else peft_error
             # Old transformers version
             if "rope_scaling" in error.lower() and not SUPPORTS_LLAMA31:
                 raise ImportError(
@@ -231,7 +314,7 @@ class FastLanguageModel(FastLlamaModel):
                     f"This includes Llama 3.1. The minimum required version is 4.43.2\n"\
                     f'Try `pip install --upgrade "transformers>=4.43.2"`\n'\
                     f"to obtain the latest transformers build, then restart this session."\
-                ) 
+                )
             # Create a combined error message showing both failures
             combined_error = (
                 "Unsloth: Failed to load model. Both AutoConfig and PeftConfig loading failed.\n\n"
@@ -247,6 +330,17 @@ class FastLanguageModel(FastLlamaModel):
             model_name = peft_config.base_model_name_or_path
             if not use_exact_model_name:
                 model_name = get_model_name(model_name, load_in_4bit)
+            # Check if pre-quantized models are allowed
+            # For eg AMD GPUs need blocksize = 128, but our pre-quants are blocksize = 64
+            if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(("-unsloth-bnb-4bit", "-bnb-4bit")):
+                model_name = model_name.lower().removesuffix("-unsloth-bnb-4bit")
+                model_name = model_name.lower().removesuffix("-bnb-4bit")
+            # Change -BF16 to all False for 4bit, 8bit etc
+            if model_name.lower().endswith("-bf16"):
+                load_in_4bit = False
+                load_in_8bit = False
+                load_in_16bit = True
+
             model_config = AutoConfig.from_pretrained(
                 model_name,
                 token = token,
@@ -255,8 +349,6 @@ class FastLanguageModel(FastLlamaModel):
         pass
 
         if not was_disabled: enable_progress_bars()
-
-        model_type = model_config.model_type
 
         if model_type == "llama":
             scaling_type = None
@@ -308,7 +400,7 @@ class FastLanguageModel(FastLlamaModel):
                     "To update flash-attn, do the below:\n"\
                     '\npip install --no-deps --upgrade "flash-attn>=2.6.3"'
                 )
-            
+
             dispatch_model = FastGemma2Model
         elif model_type == "qwen2":
             dispatch_model = FastQwen2Model
@@ -338,11 +430,12 @@ class FastLanguageModel(FastLlamaModel):
         #     dispatch_model = FastGraniteModel
         else:
             return FastModel.from_pretrained(
-                model_name                 = model_name,
+                model_name                 = old_model_name,
                 max_seq_length             = max_seq_length,
                 dtype                      = dtype,
                 load_in_4bit               = load_in_4bit,
                 load_in_8bit               = load_in_8bit,
+                load_in_16bit              = load_in_16bit,
                 full_finetuning            = full_finetuning,
                 token                      = token,
                 device_map                 = device_map,
@@ -355,9 +448,22 @@ class FastLanguageModel(FastLlamaModel):
                 return_logits              = False, # Return logits
                 fullgraph                  = True, # No graph breaks
                 use_exact_model_name       = use_exact_model_name,
+                offload_embedding          = offload_embedding,
+
+                # Pass vLLM/inference parameters
+                fast_inference             = fast_inference,
+                gpu_memory_utilization     = gpu_memory_utilization,
+                float8_kv_cache            = float8_kv_cache,
+                random_state               = random_state,
+                max_lora_rank              = max_lora_rank,
+                disable_log_stats          = disable_log_stats,
+
                 *args, **kwargs,
             )
         pass
+
+        if use_gradient_checkpointing == "unsloth":
+            patch_unsloth_smart_gradient_checkpointing(dtype = dtype)
 
         # Check if this is local model since the tokenizer gets overwritten
         if  os.path.exists(os.path.join(old_model_name, "tokenizer_config.json")) and \
@@ -366,30 +472,11 @@ class FastLanguageModel(FastLlamaModel):
 
             tokenizer_name = old_model_name
         else:
-            tokenizer_name = None
+            tokenizer_name = kwargs.pop("tokenizer_name", None)
         pass
 
         if fast_inference:
-            if not is_vLLM_available():
-                print("Unsloth: vLLM is not installed! Will use Unsloth inference!")
-                fast_inference = False
-            pass
-            from unsloth_zoo.vllm_utils import (
-                patch_vllm, 
-                vllm_dynamic_quant_supported,
-            )
-            patch_vllm()
-            if model_name.endswith("unsloth-bnb-4bit"):
-                if not vllm_dynamic_quant_supported(model_name, model_config):
-                    # Instead use -bnb-4bit variant
-                    print(
-                        f"Unsloth: Switching from Unsloth dynamic quant to normal quant since\n"\
-                        f"we do not yet support fast inference for {model_name}"
-                    )
-                    model_name = model_name[:-len("unsloth-bnb-4bit")] + "bnb-4bit"
-                pass
-            pass
-        pass
+            fast_inference, model_name = fast_inference_setup(model_name, model_config)
 
         model, tokenizer = dispatch_model.from_pretrained(
             model_name        = model_name,
@@ -413,7 +500,7 @@ class FastLanguageModel(FastLlamaModel):
             disable_log_stats = disable_log_stats,
             *args, **kwargs,
         )
-        
+
         if resize_model_vocab is not None:
             model.resize_token_embeddings(resize_model_vocab)
         pass
@@ -428,10 +515,11 @@ class FastLanguageModel(FastLlamaModel):
 
         if load_in_4bit:
             # Fix up bitsandbytes config
+            compute_dtype = dtype_from_config(model.config)
             quantization_config = \
             {
-                # Sometimes torch_dtype is not a string!!
-                "bnb_4bit_compute_dtype"           : model.config.to_dict()["torch_dtype"],
+                # Sometimes compute_dtype is not a string!!
+                "bnb_4bit_compute_dtype"           : compute_dtype,
                 "bnb_4bit_quant_type"              : "nf4",
                 "bnb_4bit_use_double_quant"        : True,
                 "llm_int8_enable_fp32_cpu_offload" : False,
@@ -479,12 +567,6 @@ except:
     from transformers import AutoModelForVision2Seq
 pass
 
-DISABLE_COMPILE_MODEL_NAMES = [
-    "aya-vision",
-    "modernbert",
-    "granite-vision",
-]
-
 
 class FastModel(FastBaseModel):
     @staticmethod
@@ -492,8 +574,9 @@ class FastModel(FastBaseModel):
         model_name                 = "unsloth/Llama-3.2-11B-Vision-Instruct-bnb-4bit",
         max_seq_length             = 2048,
         dtype                      = None,
-        load_in_4bit               = True,
-        load_in_8bit               = False,
+        load_in_4bit               = True,  # 4bit QLoRA
+        load_in_8bit               = False, # 8bit  LoRA
+        load_in_16bit              = False, # 16bit LoRA
         full_finetuning            = False,
         token                      = None,
         device_map                 = "sequential",
@@ -510,9 +593,27 @@ class FastModel(FastBaseModel):
         whisper_language           = None,
         whisper_task               = None,
         unsloth_force_compile      = False,
+        offload_embedding          = False,
+
+        # Add the missing vLLM/inference parameters
+        fast_inference             = False, # uses vLLM
+        gpu_memory_utilization     = 0.5,
+        float8_kv_cache            = False,
+        random_state               = 3407,
+        max_lora_rank              = 64,
+        disable_log_stats          = True,
+
+        qat_scheme                 = None,
         *args, **kwargs,
     ):
         if token is None: token = get_token()
+        # Login to allow private models
+        if token is not None:
+            try:
+                from huggingface_hub import login
+                login(token = token)
+            except:
+                pass
         if whisper_language is not None: assert(type(whisper_language) is str)
         if whisper_task is not None: assert(type(whisper_task) is str)
         SUPPORTS_BFLOAT16 = is_bfloat16_supported()
@@ -528,97 +629,47 @@ class FastModel(FastBaseModel):
 
         if full_finetuning and (load_in_4bit or load_in_8bit):
             print("Unsloth: You selected full finetuning support, but 4bit / 8bit is enabled - disabling LoRA / QLoRA.")
-            load_in_4bit = False
-            load_in_8bit = False
+            load_in_4bit  = False
+            load_in_8bit  = False
+            load_in_16bit = False
         pass
 
-        if load_in_4bit and load_in_8bit:
+        if int(load_in_4bit) + int(load_in_8bit) + int(load_in_16bit) >= 2:
             raise RuntimeError(
-                "Unsloth: Can only load in 4bit or 8bit, not both!\n"\
+                "Unsloth: Can only load in 4bit or 8bit or 16bit, not a combination!\n"\
                 "Also, we by default set `load_in_4bit = True`.\n"\
-                "If you want 8bit finetuning, set both `load_in_4bit = False` and `load_in_8bit = True`"
+                "If you want 8bit finetuning, set both `load_in_4bit = False` and `load_in_8bit = True`\n"\
+                "If you want 16bit LoRA finetuning, set `load_in_16bit = True`"
             )
         pass
+
+        if qat_scheme is not None and not full_finetuning:
+            raise ValueError(
+                "Specifying `qat_scheme` in `FastLanguageModel.from_pretrained(...)` is only "
+                "compatible with `full_finetuning=True`. If you wish to use QAT with LoRA, "
+                "please pass in `qat_scheme` in `FastLanguageModel.get_peft_model(...)` instead."
+            )
+        # Check if 4bit is allowed specifically for AMD
+        if not ALLOW_BITSANDBYTES and not use_exact_model_name:
+            if load_in_4bit or load_in_8bit or model_name.lower().endswith("-bnb-4bit"):
+                print("Unsloth: AMD currently is not stable with 4bit bitsandbytes. Disabling for now.")
+            load_in_4bit = False
 
         old_model_name = model_name
         if not use_exact_model_name:
             model_name = get_model_name(model_name, load_in_4bit)
+        # Check if pre-quantized models are allowed
+        # For eg AMD GPUs need blocksize = 128, but our pre-quants are blocksize = 64
+        if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(("-unsloth-bnb-4bit", "-bnb-4bit")):
+            model_name = model_name.lower().removesuffix("-unsloth-bnb-4bit")
+            model_name = model_name.lower().removesuffix("-bnb-4bit")
+        # Change -BF16 to all False for 4bit, 8bit etc
+        if model_name.lower().endswith("-bf16"):
+            load_in_4bit = False
+            load_in_8bit = False
+            load_in_16bit = True
 
-        # Check versions
-        lowered_model_name = model_name.lower()
-        os.environ["UNSLOTH_MODEL_NAME"] = lowered_model_name
-        LATEST  = '\nPlease use transformers via `pip install --no-deps git+https://github.com/huggingface/transformers.git`'
-        NIGHTLY = '\nPlease use nightly transformers via pip install --upgrade "transformers>=4.49.0"`'
-        # Pixtral
-        if "pixtral" in lowered_model_name and transformers_version < Version("4.49.0"):
-            raise RuntimeError("Unsloth: Pixtral only works on transformers >= 4.49.0." + LATEST)
-        # Qwen 2.5
-        elif "qwen2.5" in lowered_model_name and transformers_version < Version("4.49.0"):
-            raise RuntimeError("Unsloth: Qwen 2.5 only works on transformers >= 4.49.0." + LATEST)
-        # Gemma 3
-        elif "gemma-3" in lowered_model_name and transformers_version < Version("4.50.0.dev0"):
-            raise RuntimeError("Unsloth: Gemma 3 only works on transformers >= 4.50.0." + NIGHTLY)
-        # Cohere
-        elif "c4ai-command-a-03-2025" in lowered_model_name and transformers_version < Version("4.50.0.dev0"):
-            raise RuntimeError("Unsloth: Cohere's Command model only works on transformers >= 4.50.0." + NIGHTLY)
-        # Sesame
-        elif "csm-1b" in lowered_model_name:
-            os.environ["UNSLOTH_COMPILE_DISABLE"] = "1" # Inference is too slow
-            os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1" # Sesame fails
-            os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
-                "all;torch.float32;torch.float16;"\
-                "if name.endswith(('_proj', 'fc1', 'fc2', 'codebook', 'head')): module.to(torch.float16);"
-        # Granite 4
-        elif 'granite-4' in lowered_model_name:
-            # granite-4 rms norms are stored as 16 bit, but we upcast
-            os.environ["UNSLOTH_UPCAST_LAYERNORM"] = "1"
-            os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
-        # Olmo 2
-        elif "olmo-2" in lowered_model_name and transformers_version < Version("4.50.0.dev0"):
-            raise RuntimeError("Unsloth: OLMo-2 only works on transformers >= 4.50.0." + NIGHTLY)
-        # Gemma 3N
-        elif "gemma-3n" in lowered_model_name:
-            os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
-            os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
-                "float16;torch.float16;torch.float16;"\
-                "if name.endswith(('.conv')): module;"\
-                "from unsloth_zoo.temporary_patches.gemma3n import patch_Gemma3nConvNormAct_forward; patch_Gemma3nConvNormAct_forward()"
-            
-            if transformers_version < Version("4.53.0"):
-                raise RuntimeError("Unsloth: Gemma 3N only works on transformers >= 4.53.0" + LATEST)
-        elif "falcon-h1" in lowered_model_name:
-            os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
-                "float16;torch.float32;torch.float16;"\
-                "if name.endswith(('q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj', 'head')): module.to(torch.float16); "\
-                "os.environ['TRITON_F32_DEFAULT'] = 'ieee';"
-        elif "gpt-oss" in lowered_model_name:
-            os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
-            # CCE fails on Tesla T4
-            # OutOfResources: out of resource: shared memory, Required: 98304, Hardware limit: 65536. Reducing block sizes or `num_stages`
-            os.environ["UNSLOTH_ENABLE_CCE"] = "0"
-            if not load_in_4bit:
-                # Only upcast MoE biases for MXFP4, not BnB
-                os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
-                    "all;None;None;"\
-                    "x = 'gate_up_proj_bias'\n"\
-                    "if hasattr(module, x): setattr(module, x, torch.nn.Parameter(getattr(module, x).to(torch.float32)) if isinstance(getattr(module, x), torch.nn.Parameter) else getattr(module, x).to(torch.float32))\n"\
-                    "x = 'down_proj_bias'\n"\
-                    "if hasattr(module, x): setattr(module, x, torch.nn.Parameter(getattr(module, x).to(torch.float32)) if isinstance(getattr(module, x), torch.nn.Parameter) else getattr(module, x).to(torch.float32))\n;"
-        else:
-            for check_model_name in DISABLE_COMPILE_MODEL_NAMES:
-                if check_model_name in lowered_model_name:
-                    os.environ["UNSLOTH_COMPILE_DISABLE"] = "1"
-                    os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
-                    if transformers_version < Version("4.50.0.dev0"):
-                        raise RuntimeError(f"Unsloth: {check_model_name} only works on transformers >= 4.50.0." + NIGHTLY)
-                    break
-        pass
-
-        if auto_model is not None:
-            # All other models need to disable static cache
-            os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
-        pass
-
+        # Check modelscope
         if USE_MODELSCOPE and not os.path.exists(model_name):
             from modelscope import snapshot_download
             model_name = snapshot_download(model_name)
@@ -631,6 +682,8 @@ class FastModel(FastBaseModel):
 
         autoconfig_error = None
         peft_error = None
+        model_config = None
+        peft_config = None
         try:
             model_config = AutoConfig.from_pretrained(
                 model_name,
@@ -641,6 +694,11 @@ class FastModel(FastBaseModel):
             is_model = True
         except Exception as error:
             autoconfig_error = str(error)
+            if "architecture" in autoconfig_error:
+                raise ValueError(
+                    f"`{model_name}` is not supported yet in `transformers=={transformers_version}`.\n"\
+                    f"Please update transformers via `pip install --upgrade transformers` and try again."
+                )
             is_model = False
         try:
             peft_config = PeftConfig.from_pretrained(
@@ -652,13 +710,137 @@ class FastModel(FastBaseModel):
             is_peft = True
         except Exception as error:
             peft_error = str(error)
+            if "architecture" in peft_error:
+                raise ValueError(
+                    f"`{model_name}` is not supported yet in `transformers=={transformers_version}`.\n"\
+                    f"Please update transformers via `pip install --upgrade transformers` and try again."
+                )
             is_peft = False
         pass
-
-        # Both config.json and adapter_config.json should not exist!
-
         # Old transformers versions check
         both_exist = (is_model and is_peft) and not SUPPORTS_LLAMA32
+        # Error out if both LoRA and normal model config exists.
+        if both_exist:
+            raise RuntimeError(
+                "Unsloth: Your repo has a LoRA adapter and a base model.\n"\
+                "You have 2 files `config.json` and `adapter_config.json`.\n"\
+                "We must only allow one config file.\n"\
+                "Please separate the LoRA and base models to 2 repos."
+            )
+        model_types = get_transformers_model_type(
+            peft_config if peft_config is not None else model_config
+        )
+        model_types_all = ",".join(model_types) + ","
+
+        # Save model types and loading method
+        lowered_model_name = model_name.lower()
+        string = os.environ.get("UNSLOTH_MODEL_NAME", "") + model_types_all
+        if load_in_4bit:  string += "_load_in_4bit_"
+        if load_in_8bit:  string += "_load_in_8bit_"
+        if load_in_16bit: string += "_load_in_16bit_"
+        os.environ["UNSLOTH_MODEL_NAME"] = string
+
+        # Check versions
+        LATEST  = '\nPlease use transformers via `pip install --no-deps git+https://github.com/huggingface/transformers.git`'
+        NIGHTLY = '\nPlease use nightly transformers via pip install --upgrade "transformers>=4.49.0"`'
+        # Pixtral
+        if "pixtral" in model_types_all and transformers_version < Version("4.49.0"):
+            raise RuntimeError("Unsloth: Pixtral only works on transformers >= 4.49.0." + LATEST)
+        # Qwen 2.5
+        elif "qwen2_5" in model_types_all and transformers_version < Version("4.49.0"):
+            raise RuntimeError("Unsloth: Qwen 2.5 only works on transformers >= 4.49.0." + LATEST)
+        # Gemma 3N must be before Gemma 3
+        elif "gemma3n" in model_types_all:
+            if transformers_version < Version("4.53.0"):
+                raise RuntimeError("Unsloth: Gemma 3N only works on transformers >= 4.53.0" + LATEST)
+            os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
+            os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
+                "float16;torch.float16;torch.float16;"\
+                "if name.endswith('norm'): "\
+                "module._pre_set_compute_dtype = torch.float32\n"\
+                ";"\
+                "from unsloth_zoo.temporary_patches.gemma3n import patch_Gemma3nConv_Embed_forwards; patch_Gemma3nConv_Embed_forwards()"
+            # Set norms to float32 since anyways they get upcasted to float32
+            # common in both gemma-3 and gemma-3n
+            os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"
+        # Gemma 3
+        elif "gemma3" in model_types_all:
+            if transformers_version < Version("4.50.0.dev0"):
+                raise RuntimeError("Unsloth: Gemma 3 only works on transformers >= 4.50.0." + NIGHTLY)
+            # Set norms to float32 since anyways they get upcasted to float32
+            # common in both gemma-3 and gemma-3n
+            os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"
+        # Cohere
+        elif "cohere2" in model_types_all and transformers_version < Version("4.50.0.dev0"):
+            raise RuntimeError("Unsloth: Cohere's Command model only works on transformers >= 4.50.0." + NIGHTLY)
+        # Sesame
+        elif "csm" in model_types_all:
+            os.environ["UNSLOTH_COMPILE_DISABLE"] = "partial" # Inference is too slow
+            os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1" # Sesame fails
+            os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
+                "all;torch.float32;torch.float16;"\
+                "if name.endswith(('_proj', 'fc1', 'fc2', 'codebook', 'head')): module.to(torch.float16)"\
+                ";"
+        # Granite 4
+        elif 'granitemoehybrid' in model_types_all:
+            # Granite-4 rms norms are stored as 16 bit, but we upcast
+            os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"
+            os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
+        # Olmo 2
+        elif "olmo2" in model_types_all and transformers_version < Version("4.50.0.dev0"):
+            raise RuntimeError("Unsloth: OLMo-2 only works on transformers >= 4.50.0." + NIGHTLY)
+        elif "falcon_h1" in model_types_all:
+            # Falcon must use float32 Triton ie TRITON_F32_DEFAULT = 'ieee'
+            # since Mamba kernels error out on using lower precision
+            os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
+                "float16;torch.float32;torch.float16;"\
+                "if name.endswith(('q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj', 'head')): module.to(torch.float16)"\
+                ";"\
+                "os.environ['TRITON_F32_DEFAULT'] = 'ieee'"
+        elif "gpt_oss" in model_types_all:
+            os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
+            if not load_in_4bit:
+                # Only upcast MoE biases for MXFP4, not BnB
+                # Set norms to float32 since anyways they get upcasted to float32
+                os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
+                    "all;None;None;"\
+                    "x = 'gate_up_proj_bias'\n"\
+                    "if hasattr(module, x): "\
+                    "setattr(module, x, torch.nn.Parameter(getattr(module, x).to(torch.float32)) if isinstance(getattr(module, x), torch.nn.Parameter) else getattr(module, x).to(torch.float32))\n"\
+                    ""\
+                    "x = 'down_proj_bias'\n"\
+                    "if hasattr(module, x): "\
+                    "setattr(module, x, torch.nn.Parameter(getattr(module, x).to(torch.float32)) if isinstance(getattr(module, x), torch.nn.Parameter) else getattr(module, x).to(torch.float32))\n"\
+                    ""\
+                    ";"
+            else:
+                # Set down projection compute dtype to be float32 for float16 machines
+                # Set norms to float32 since anyways they get upcasted to float32
+                os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
+                    "torch.float16;torch.bfloat16;torch.float16;"\
+                    "if ('down_projs' in name) and hasattr(module, 'weight') and "\
+                    "torch.amax(dequantize_module_weight(module)) >= 0:"\
+                    "module._pre_set_compute_dtype = torch.float32\n"\
+                    ""\
+                    "if ('mlp.router' in name) and hasattr(module, 'weight'):"\
+                    "module._pre_set_compute_dtype = torch.float32\n"\
+                    ";"
+            # Set norms to float32 since anyways they get upcasted to float32
+            os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"
+        else:
+            for check_model_name in DISABLE_COMPILE_MODEL_NAMES:
+                if check_model_name in lowered_model_name:
+                    os.environ["UNSLOTH_COMPILE_DISABLE"] = "partial"
+                    os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
+                    if transformers_version < Version("4.50.0.dev0"):
+                        raise RuntimeError(f"Unsloth: {check_model_name} only works on transformers >= 4.50.0." + NIGHTLY)
+                    break
+        pass
+
+        if auto_model is not None:
+            # All other models need to disable static cache
+            os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
+        pass
 
         # New transformers need to check manually.
         if SUPPORTS_LLAMA32:
@@ -669,24 +851,15 @@ class FastModel(FastBaseModel):
                 both_exist = exist_adapter_config and exist_config
             else:
                 files = HfFileSystem(token = token).glob(f"{model_name}/*.json")
-                files = (os.path.split(x)[-1] for x in files)
+                files = list(os.path.split(x)[-1] for x in files)
                 if sum(x == "adapter_config.json" or x == "config.json" for x in files) >= 2:
                     both_exist = True
                 pass
             pass
         pass
 
-        # Error out if both LoRA and normal model config exists.
-        if both_exist:
-            raise RuntimeError(
-                "Unsloth: Your repo has a LoRA adapter and a base model.\n"\
-                "You have 2 files `config.json` and `adapter_config.json`.\n"\
-                "We must only allow one config file.\n"\
-                "Please separate the LoRA and base models to 2 repos."
-            )
-
-        elif not is_model and not is_peft:
-            error = autoconfig_error or peft_error
+        if not is_model and not is_peft:
+            error = autoconfig_error if autoconfig_error is not None else peft_error
             # Old transformers version
             if "rope_scaling" in error.lower() and not SUPPORTS_LLAMA31:
                 raise ImportError(
@@ -694,7 +867,7 @@ class FastModel(FastBaseModel):
                     f"This includes Llama 3.1. The minimum required version is 4.43.2\n"\
                     f'Try `pip install --upgrade "transformers>=4.43.2"`\n'\
                     f"to obtain the latest transformers build, then restart this session."\
-                ) 
+                )
             # Create a combined error message showing both failures
             combined_error = (
                 "Unsloth: Failed to load model. Both AutoConfig and PeftConfig loading failed.\n\n"
@@ -710,7 +883,17 @@ class FastModel(FastBaseModel):
             model_name = peft_config.base_model_name_or_path
             if not use_exact_model_name:
                 model_name = get_model_name(model_name, load_in_4bit)
-            
+            # Check if pre-quantized models are allowed
+            # For eg AMD GPUs need blocksize = 128, but our pre-quants are blocksize = 64
+            if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(("-unsloth-bnb-4bit", "-bnb-4bit")):
+                model_name = model_name.lower().removesuffix("-unsloth-bnb-4bit")
+                model_name = model_name.lower().removesuffix("-bnb-4bit")
+            # Change -BF16 to all False for 4bit, 8bit etc
+            if model_name.lower().endswith("-bf16"):
+                load_in_4bit = False
+                load_in_8bit = False
+                load_in_16bit = True
+
             model_config = AutoConfig.from_pretrained(
                 model_name,
                 token = token,
@@ -726,15 +909,7 @@ class FastModel(FastBaseModel):
         else:
             redirector = contextlib.redirect_stdout(open(os.devnull, "w"))
 
-        # Get model types like Gemma3 etc
-        model_types = get_transformers_model_type(
-            model_name        = model_name,
-            token             = token,
-            revision          = revision,
-            trust_remote_code = trust_remote_code,
-        )
         model_types = ["siglip"] + model_types
-
         # Set forced float32 env flag
         os.environ["UNSLOTH_FORCE_FLOAT32"] = "0"
         do_forced_float32 = False
@@ -742,8 +917,9 @@ class FastModel(FastBaseModel):
             if model_type_arch != "siglip": break
         global FORCE_FLOAT32
         for disable_name in FORCE_FLOAT32:
-            if (disable_name.lower() == model_type_arch.lower() or \
-                disable_name.lower() in model_name.lower()) and \
+            # add comma to model_types_all matching in case of exact match for end
+            if (disable_name.lower() == model_type_arch.lower().replace("-", "").replace("_", "") or \
+                disable_name.lower() in model_types_all) and \
                 ((dtype == torch.float16) or not SUPPORTS_BFLOAT16):
                 os.environ["UNSLOTH_FORCE_FLOAT32"] = "1"
                 dtype = torch.bfloat16 # Change to bfloat16 loading
@@ -752,7 +928,6 @@ class FastModel(FastBaseModel):
         # Patch gradient checkpointing
         if use_gradient_checkpointing == "unsloth":
             patch_unsloth_smart_gradient_checkpointing(dtype = dtype)
-
         with redirector:
             patch_loss_functions(torch_compile = False)
             model_types, supports_sdpa = unsloth_compile_transformers(
@@ -788,9 +963,10 @@ class FastModel(FastBaseModel):
                 unsloth_force_compile   = unsloth_force_compile,
             )
         pass
-        # Fix SDPA
-        if "gemma-3n" in lowered_model_name:
-            supports_sdpa = False
+        # Fix SDPA issues
+        for model_type in DISABLE_SDPA_MODEL_NAMES:
+            if model_type in model_types_all:
+                supports_sdpa = False
         pass
 
         # Check if this is local model since the tokenizer gets overwritten
@@ -800,11 +976,13 @@ class FastModel(FastBaseModel):
 
             tokenizer_name = old_model_name
         else:
-            tokenizer_name = None
+            tokenizer_name = kwargs.pop("tokenizer_name", None)
         pass
 
         # Check if VLM
-        is_vlm = any(x.endswith("ForConditionalGeneration") for x in model_config.architectures)
+        architectures = getattr(model_config, "architectures", None)
+        if architectures is None: architectures = []
+        is_vlm = any(x.endswith("ForConditionalGeneration") for x in architectures)
         is_vlm = is_vlm or hasattr(model_config, "vision_config")
         if auto_model is None:
             auto_model = AutoModelForVision2Seq if is_vlm else AutoModelForCausalLM
@@ -815,6 +993,7 @@ class FastModel(FastBaseModel):
             dtype             = _get_dtype(dtype),
             load_in_4bit      = load_in_4bit,
             load_in_8bit      = load_in_8bit,
+            load_in_16bit     = load_in_16bit,
             full_finetuning   = full_finetuning,
             token             = token,
             device_map        = device_map,
@@ -826,7 +1005,18 @@ class FastModel(FastBaseModel):
             use_gradient_checkpointing = use_gradient_checkpointing,
             supports_sdpa     = supports_sdpa,
             whisper_language  = whisper_language,
-            whisper_task      = whisper_task,            
+            whisper_task      = whisper_task,
+            auto_config       = model_config,
+            offload_embedding = offload_embedding,
+
+            # Pass vLLM/inference parameters
+            fast_inference         = fast_inference,
+            gpu_memory_utilization = gpu_memory_utilization,
+            float8_kv_cache        = float8_kv_cache,
+            random_state           = random_state,
+            max_lora_rank          = max_lora_rank,
+            disable_log_stats      = disable_log_stats,
+
             *args, **kwargs,
         )
 
@@ -844,10 +1034,11 @@ class FastModel(FastBaseModel):
 
         if load_in_4bit:
             # Fix up bitsandbytes config
+            compute_dtype = dtype_from_config(model.config)
             quantization_config = \
             {
-                # Sometimes torch_dtype is not a string!!
-                "bnb_4bit_compute_dtype"           : model.config.to_dict()["torch_dtype"],
+                # Sometimes compute_dtype is not a string!!
+                "bnb_4bit_compute_dtype"           : compute_dtype,
                 "bnb_4bit_quant_type"              : "nf4",
                 "bnb_4bit_use_double_quant"        : True,
                 "llm_int8_enable_fp32_cpu_offload" : False,
@@ -875,6 +1066,13 @@ class FastModel(FastBaseModel):
             # Patch it as well!
             model = FastBaseModel.post_patch_model(model, use_gradient_checkpointing, trust_remote_code  = trust_remote_code)
         pass
+
+        # Apply QAT if specified
+        if qat_scheme is not None:
+            print("Unsloth: Applying QAT to mitigate quantization degradation")
+            model = _prepare_model_for_qat(model, qat_scheme)
+        pass
+
         return model, tokenizer
     pass
 pass

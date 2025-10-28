@@ -114,7 +114,7 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/gemma-1.1-7b-it",
         "google/gemma-1.1-7b-it",
     ),
-    "unsloth/Starling-LM-7B-beta-bnb-4bit" : (
+    "unsloth/Starling-LM-7B-beta" : (
         "unsloth/Starling-LM-7B-beta",
         "Nexusflow/Starling-LM-7B-beta",
     ),
@@ -812,6 +812,11 @@ __INT_TO_FLOAT_MAPPER = \
         "microsoft/Phi-4-mini-reasoning",
         "unsloth/phi-4-mini-reasoning-bnb-4bit",
     ),
+    "unsloth/Phi-4-mini-instruct-unsloth-bnb-4bit" : (
+        "unsloth/Phi-4-mini-instruct",
+        "microsoft/Phi-4-mini-instruct",
+        "unsloth/Phi-4-mini-instruct-bnb-4bit",
+    ),
     "unsloth/orpheus-3b-0.1-pretrained-unsloth-bnb-4bit" : (
         "unsloth/orpheus-3b-0.1-pretrained",
         "canopylabs/orpheus-3b-0.1-pretrained",
@@ -940,6 +945,112 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/Qwen3-4B-Thinking-2507",
         "Qwen/Qwen3-4B-Thinking-2507",
         "unsloth/Qwen3-4B-Thinking-2507-bnb-4bit",
+    ),
+    "unsloth/gemma-3-270m-it-unsloth-bnb-4bit" : (
+        "unsloth/gemma-3-270m-it",
+        "google/gemma-3-270m-it",
+        "unsloth/gemma-3-270m-it-bnb-4bit",
+    ),
+    "unsloth/gemma-3-270m-unsloth-bnb-4bit" : (
+        "unsloth/gemma-3-270m",
+        "google/gemma-3-270m",
+        "unsloth/gemma-3-270m-bnb-4bit",
+    ),
+    "unsloth/Magistral-Small-2507-unsloth-bnb-4bit" : (
+        "unsloth/Magistral-Small-2507",
+        "mistralai/Magistral-Small-2507",
+        "unsloth/Magistral-Small-2507-bnb-4bit",
+    ),
+    "unsloth/Magistral-Small-2509-unsloth-bnb-4bit" : (
+        "unsloth/Magistral-Small-2509",
+        "mistralai/Magistral-Small-2509",
+        "unsloth/Magistral-Small-2509-bnb-4bit",
+    ),
+    "unsloth/Apertus-70B-Instruct-2509-unsloth-bnb-4bit" : (
+        "unsloth/Apertus-70B-Instruct-2509",
+        "swiss-ai/Apertus-70B-2509",
+        "unsloth/Apertus-70B-Instruct-2509-unsloth-bnb-4bit",
+    ),
+    "unsloth/Apertus-8B-Instruct-2509-unsloth-bnb-4bit" : (
+        "unsloth/Apertus-8B-Instruct-2509",
+        "swiss-ai/Apertus-8B-2509",
+        "unsloth/Apertus-8B-Instruct-2509-unsloth-bnb-4bit",
+    ),
+    "unsloth/granite-4.0-micro-unsloth-bnb-4bit" : (
+        "unsloth/granite-4.0-micro",
+        "ibm-granite/granite-4.0-micro",
+        "unsloth/granite-4.0-micro-bnb-4bit",
+    ),
+    "unsloth/granite-4.0-h-micro-unsloth-bnb-4bit" : (
+        "unsloth/granite-4.0-h-micro",
+        "ibm-granite/granite-4.0-h-micro",
+        "unsloth/granite-4.0-h-micro-bnb-4bit",
+    ),
+    "unsloth/granite-4.0-micro-base-unsloth-bnb-4bit" : (
+        "unsloth/granite-4.0-micro-base",
+        "ibm-granite/granite-4.0-micro-base",
+        "unsloth/granite-4.0-micro-base-bnb-4bit",
+    ),
+    "unsloth/granite-4.0-h-micro-base-unsloth-bnb-4bit" : (
+        "unsloth/granite-4.0-h-micro-base",
+        "ibm-granite/granite-4.0-h-micro-base",
+        "unsloth/granite-4.0-h-micro-base-bnb-4bit",
+    ),
+    "unsloth/granite-4.0-h-tiny" : (
+        "unsloth/granite-4.0-h-tiny",
+        "ibm-granite/granite-4.0-h-tiny",
+    ),
+    "unsloth/granite-4.0-h-small" : (
+        "unsloth/granite-4.0-h-small",
+        "ibm-granite/granite-4.0-h-small",
+    ),
+    "unsloth/granite-4.0-h-tiny-base" : (
+        "unsloth/granite-4.0-h-tiny-base",
+        "ibm-granite/granite-4.0-h-tiny-base",
+    ),
+    "unsloth/granite-4.0-h-small-base" : (
+        "unsloth/granite-4.0-h-small-base",
+        "ibm-granite/granite-4.0-h-small-base",
+    ),
+    "unsloth/Qwen3-VL-4B-Thinking-unsloth-bnb-4bit" : (
+        "unsloth/Qwen3-VL-4B-Thinking",
+        "Qwen/Qwen3-VL-4B-Thinking",
+        "unsloth/Qwen3-VL-4B-Thinking-bnb-4bit",
+    ),
+    "unsloth/Qwen3-VL-8B-Thinking-unsloth-bnb-4bit" : (
+        "unsloth/Qwen3-VL-8B-Thinking",
+        "Qwen/Qwen3-VL-8B-Thinking",
+        "unsloth/Qwen3-VL-8B-Thinking-bnb-4bit",
+    ),
+    "unsloth/Qwen3-VL-4B-Instruct-unsloth-bnb-4bit" : (
+        "unsloth/Qwen3-VL-4B-Instruct",
+        "Qwen/Qwen3-VL-4B-Instruct",
+        "unsloth/Qwen3-VL-4B-Instruct-bnb-4bit",
+    ),
+    "unsloth/Qwen3-VL-8B-Instruct-unsloth-bnb-4bit" : (
+        "unsloth/Qwen3-VL-8B-Instruct",
+        "Qwen/Qwen3-VL-8B-Instruct",
+        "unsloth/Qwen3-VL-8B-Instruct-bnb-4bit",
+    ),
+    "unsloth/Qwen3-VL-2B-Thinking-unsloth-bnb-4bit" : (
+        "unsloth/Qwen3-VL-2B-Thinking",
+        "Qwen/Qwen3-VL-2B-Thinking",
+        "unsloth/Qwen3-VL-2B-Thinking-bnb-4bit",
+    ),
+    "unsloth/Qwen3-VL-2B-Thinking-unsloth-bnb-4bit" : (
+        "unsloth/Qwen3-VL-2B-Thinking",
+        "Qwen/Qwen3-VL-2B-Thinking",
+        "unsloth/Qwen3-VL-2B-Thinking-bnb-4bit",
+    ),
+    "unsloth/Qwen3-VL-32B-Instruct-unsloth-bnb-4bit" : (
+        "unsloth/Qwen3-VL-32B-Instruct",
+        "Qwen/Qwen3-VL-32B-Instruct",
+        "unsloth/Qwen3-VL-32B-Instruct-bnb-4bit",
+    ),
+    "unsloth/Qwen3-VL-32B-Instruct-unsloth-bnb-4bit" : (
+        "unsloth/Qwen3-VL-32B-Instruct",
+        "Qwen/Qwen3-VL-32B-Instruct",
+        "unsloth/Qwen3-VL-32B-Instruct-bnb-4bit",
     ),
 }
 
