@@ -89,8 +89,10 @@ try:
         #         except:
         #             raise ImportError("Unsloth: Please update unsloth_zoo via `pip install --upgrade --no-cache-dir --no-deps unsloth_zoo`")
     import unsloth_zoo
-except:
-    raise ImportError("Unsloth: Please install unsloth_zoo via `pip install unsloth_zoo`")
+except NotImplementedError as e:
+    raise NotImplementedError(str(e))
+except Exception as e:
+    raise ImportError(f"Unsloth: Please install unsloth_zoo via `pip install unsloth_zoo` Also error = {str(e)}")
 pass
 
 from unsloth_zoo.device_type import (

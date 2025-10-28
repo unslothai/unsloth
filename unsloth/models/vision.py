@@ -538,7 +538,14 @@ class FastBaseModel:
             if hasattr(auto_config, "quantization_config"):
                 from transformers.quantizers.auto import AUTO_QUANTIZATION_CONFIG_MAPPING
                 quantization_config = auto_config.quantization_config
-                quantizer = AUTO_QUANTIZATION_CONFIG_MAPPING[quantization_config["quant_method"]]
+                quant_method = quantization_config["quant_method"]
+                # Sometimes bitsandbytes_4bit + bitsandbytes_8bit is provided
+                if quant_method == "bitsandbytes" and "bitsandbytes" not in AUTO_QUANTIZATION_CONFIG_MAPPING:
+                    if "bitsandbytes_4bit" not in AUTO_QUANTIZATION_CONFIG_MAPPING:
+                        raise KeyError("Unsloth: AUTO_QUANTIZATION_CONFIG_MAPPING does not have `bitsandbytes_4bit`")
+                    quantizer = AUTO_QUANTIZATION_CONFIG_MAPPING["bitsandbytes_4bit"]
+                else:
+                    quantizer = AUTO_QUANTIZATION_CONFIG_MAPPING[quant_method]
                 quantizer_kwargs = {}
                 # We cannot dequantize since gpt-oss-20b MXFP4 will now be gpt-oss-20b-BF16
                 if load_in_16bit and "dequantize" in inspect.signature(quantizer).parameters:
