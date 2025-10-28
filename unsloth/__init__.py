@@ -75,7 +75,7 @@ from importlib.metadata import version as importlib_version
 # Check for unsloth_zoo
 try:
     unsloth_zoo_version = importlib_version("unsloth_zoo")
-    if Version(unsloth_zoo_version) < Version("2025.10.4"):
+    if Version(unsloth_zoo_version) < Version("2025.10.12"):
         print(
             "Unsloth: Please update Unsloth and Unsloth-Zoo to the latest version!\n"\
             "Do this via `pip install --upgrade --force-reinstall --no-cache-dir --no-deps unsloth unsloth_zoo`"
@@ -89,8 +89,10 @@ try:
         #         except:
         #             raise ImportError("Unsloth: Please update unsloth_zoo via `pip install --upgrade --no-cache-dir --no-deps unsloth_zoo`")
     import unsloth_zoo
-except:
-    raise ImportError("Unsloth: Please install unsloth_zoo via `pip install unsloth_zoo`")
+except NotImplementedError as e:
+    raise NotImplementedError(str(e))
+except Exception as e:
+    raise ImportError(f"Unsloth: Please install unsloth_zoo via `pip install unsloth_zoo` Also error = {str(e)}")
 pass
 
 from unsloth_zoo.device_type import (
