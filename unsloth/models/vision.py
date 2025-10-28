@@ -374,21 +374,24 @@ class FastBaseModel:
 
         if DEVICE_TYPE == "cuda":
             gpu_stats = torch.cuda.get_device_properties(0)
+            gpu_stats_name = gpu_stats.name + ". " if gpu_stats.name != "" else "NVIDIA GPU Device. "
             gpu_version = torch.version.cuda
             gpu_stats_snippet = f"CUDA: {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit: {gpu_version}."
             try:    vllm_version = f" vLLM: {importlib_version('vllm')}."
             except: vllm_version = ""
         elif DEVICE_TYPE == "hip":
             gpu_stats = torch.cuda.get_device_properties(0)
+            gpu_stats_name = gpu_stats.name + ". " if gpu_stats.name != "" else "AMD GPU Device. "
             gpu_version = torch.version.hip
             gpu_stats_snippet = f"ROCm Toolkit: {gpu_version}."
             try:    vllm_version = f" vLLM: {importlib_version('vllm')}."
             except: vllm_version = ""
         elif DEVICE_TYPE == "xpu":
             gpu_stats = torch.xpu.get_device_properties(0)
+            gpu_stats_name = gpu_stats.name + ". " if gpu_stats.name != "" else "Intel XPU Device. "
             gpu_version = torch.version.xpu
             gpu_stats_snippet = f"Intel Toolkit: {gpu_version}."
-            # TODO: After adding vLLM support for XPU, changed this
+            # [TODO] After adding vLLM support for XPU, change this
             vllm_version = ""
         else:
             raise ValueError(f"Unsloth: Unsupported device type: {DEVICE_TYPE}")
@@ -397,7 +400,7 @@ class FastBaseModel:
 
         statistics = \
         f"==((====))==  Unsloth {__version__}: Fast {model_type_arch.title()} patching. Transformers: {transformers_version}.{vllm_version}\n"\
-        f"   {chr(92)}{chr(92)}   /|    {gpu_stats.name}. Num GPUs = {DEVICE_COUNT}. Max memory: {max_memory} GB. Platform: {platform_system}.\n"\
+        f"   {chr(92)}{chr(92)}   /|    {gpu_stats_name}Num GPUs = {DEVICE_COUNT}. Max memory: {max_memory} GB. Platform: {platform_system}.\n"\
         f"O^O/ {chr(92)}_/ {chr(92)}    Torch: {torch.__version__}. {gpu_stats_snippet} Triton: {triton_version}\n"\
         f"{chr(92)}        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. FA [Xformers = {xformers_version}. FA2 = {HAS_FLASH_ATTENTION}]\n"\
         f' "-____-"     Free license: http://github.com/unslothai/unsloth'
@@ -535,7 +538,14 @@ class FastBaseModel:
             if hasattr(auto_config, "quantization_config"):
                 from transformers.quantizers.auto import AUTO_QUANTIZATION_CONFIG_MAPPING
                 quantization_config = auto_config.quantization_config
-                quantizer = AUTO_QUANTIZATION_CONFIG_MAPPING[quantization_config["quant_method"]]
+                quant_method = quantization_config["quant_method"]
+                # Sometimes bitsandbytes_4bit + bitsandbytes_8bit is provided
+                if quant_method == "bitsandbytes" and "bitsandbytes" not in AUTO_QUANTIZATION_CONFIG_MAPPING:
+                    if "bitsandbytes_4bit" not in AUTO_QUANTIZATION_CONFIG_MAPPING:
+                        raise KeyError("Unsloth: AUTO_QUANTIZATION_CONFIG_MAPPING does not have `bitsandbytes_4bit`")
+                    quantizer = AUTO_QUANTIZATION_CONFIG_MAPPING["bitsandbytes_4bit"]
+                else:
+                    quantizer = AUTO_QUANTIZATION_CONFIG_MAPPING[quant_method]
                 quantizer_kwargs = {}
                 # We cannot dequantize since gpt-oss-20b MXFP4 will now be gpt-oss-20b-BF16
                 if load_in_16bit and "dequantize" in inspect.signature(quantizer).parameters:

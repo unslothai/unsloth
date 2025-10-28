@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.10.9"
+__version__ = "2025.10.11"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -73,6 +73,7 @@ __all__ = [
     "patch_peft_fast_inference",
     "error_out_no_vllm",
     "dequantize_module_weight",
+    "patch_hf_quantizer",
 ]
 
 import torch
@@ -553,8 +554,7 @@ pass
 
 # =============================================
 # Get Flash Attention v2 if Ampere (RTX 30xx, A100)
-if DEVICE_TYPE in ("cuda", "hip"):
-    import bitsandbytes as bnb
+import bitsandbytes as bnb
 
 from transformers import AutoTokenizer
 from transformers.utils.import_utils import _is_package_available
@@ -1015,7 +1015,8 @@ def get_statistics(local_files_only = False):
     pass
     _get_statistics(None)
     _get_statistics("repeat", force_download = False)
-    vram = torch.cuda.get_device_properties(0).total_memory / 1024 / 1024 / 1024
+    total_memory = torch.xpu.get_device_properties(0).total_memory if DEVICE_TYPE == "xpu" else torch.cuda.get_device_properties(0).total_memory
+    vram = total_memory / 1024 / 1024 / 1024
     if   vram <= 8 : vram = 8
     elif vram <= 16: vram = 16
     elif vram <= 20: vram = 20
@@ -1814,3 +1815,24 @@ def _prepare_model_for_qat(model: torch.nn.Module, qat_scheme: Union[str, TorchA
     quantize_(model, QATConfig(base_config, step = "prepare"), filter_fn = filter_fn)
     return model
 pass
+
+def patch_hf_quantizer():
+    # To tell hf trainer that the quantized model is trainable
+    def make_trainable(self):
+        return True
+    try:
+        from transformers.quantizers.quantizer_finegrained_fp8 import FineGrainedFP8HfQuantizer
+        FineGrainedFP8HfQuantizer.is_trainable = property(make_trainable)
+        FineGrainedFP8HfQuantizer.is_qat_trainable = property(make_trainable)
+    except Exception as e:
+        logger.warning(f"Failed to patch FineGrainedFP8HfQuantizer. Error {e}")
+
+    try:
+        from transformers.quantizers.quantizer_fbgemm_fp8 import FbgemmFp8HfQuantizer
+        FbgemmFp8HfQuantizer.is_trainable = property(make_trainable)
+        FbgemmFp8HfQuantizer.is_qat_trainable = property(make_trainable)
+    except Exception as e:
+        logger.warning(f"Failed to patch FbgemmFp8HfQuantizer. Error {e}")
+pass
+
+patch_hf_quantizer()

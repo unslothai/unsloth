@@ -298,12 +298,9 @@ def MistralForCausalLM_fast_forward(
     else:
         RETURN_LOGITS = os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1"
         # < 1024 Normal Unsloth uses less VRAM!
-        if DEVICE_TYPE == "hip":
-            # [TODO] AMD GPUs fail on chunked_cross_entropy loss!
-            # RuntimeError: Triton Error [HIP]:  Code: 1, Messsage: invalid argument
+        if bsz * q_len <= 1024 and not RETURN_LOGITS:
+            # Use unsloth_fused_ce_loss which actually calculates the best chunk size to reduce VRAM usage
             RETURN_LOGITS = False
-        elif bsz*q_len <= 1024:
-            RETURN_LOGITS = True
 
         if not RETURN_LOGITS and labels is not None:
             n_items = kwargs.get("num_items_in_batch", None) or kwargs.get("n_items", None)
