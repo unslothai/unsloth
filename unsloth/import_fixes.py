@@ -147,11 +147,11 @@ def patch_ipykernel_hf_xet():
     if (
         Version(importlib_version("hf_xet")) == Version("1.1.10")
     ) and (
-        Version(importlib_version("ipykernel")) > Version("6.30.1")
+        Version(importlib_version("ipykernel")) == Version("7.0.0")
     ):
         print(
-            "#### Unsloth: `hf_xet==1.1.10` and `ipykernel>6.30.1` breaks progress bars. Disabling for now in XET.\n"\
-            "#### Unsloth: To re-enable progress bars, please downgrade to `ipykernel==6.30.1` or wait for a fix to\n"\
+            "#### Unsloth: `hf_xet==1.1.10` and `ipykernel==7.0.0` breaks progress bars. Disabling for now in XET.\n"\
+            "#### Unsloth: To re-enable progress bars, please upgrade to `ipykernel>7.0.0` or wait for a fix to\n"\
             "https://github.com/huggingface/xet-core/issues/526"
         )
         from huggingface_hub.utils import disable_progress_bars
@@ -164,6 +164,6 @@ def patch_trackio():
     # See https://github.com/unslothai/notebooks/pull/110
     os.environ["TRACKIO_LOGO_LIGHT_URL"] = "https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20logo%20black%20text.png"
     os.environ["TRACKIO_LOGO_DARK_URL"] = "https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20logo%20white%20text.png"
-    os.environ["TRACKIO_PLOT_ORDER"] = "train/loss"
+    os.environ["TRACKIO_PLOT_ORDER"] = "train/reward"
     pass
 pass
