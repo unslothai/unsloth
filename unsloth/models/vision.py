@@ -640,13 +640,13 @@ class FastBaseModel:
             _, quant_state_dict = get_vllm_state_dict(
                 llm,
                 config = model_config,
-                is_vision_model = True,
+                is_vision_model = is_vlm,
             )
             model = convert_vllm_to_huggingface(
                 quant_state_dict,
                 model_config,
                 dtype, bnb_config,
-                is_vision_model = True,
+                is_vision_model = is_vlm,
             )
             model.vllm_engine = llm
             model.fast_generate = model.vllm_engine.generate
