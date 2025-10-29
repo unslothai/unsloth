@@ -13,7 +13,7 @@ from pathlib import Path
 
 def enforce_spacing(text: str) -> tuple[str, bool]:
     """Return updated text with keyword '=' padded by spaces, plus change flag."""
-    lines = text.splitlines(keepends = True)
+    lines = text.splitlines(keepends=True)
     if not lines:
         return text, False
 
@@ -68,23 +68,28 @@ def process_file(path: Path) -> bool:
             original = handle.read()
             encoding = handle.encoding
     except (OSError, SyntaxError) as exc:  # SyntaxError from tokenize on invalid python
-        print(f"Failed to read {path}: {exc}", file = sys.stderr)
+        print(f"Failed to read {path}: {exc}", file=sys.stderr)
         return False
 
     updated, changed = enforce_spacing(original)
     if changed:
-        path.write_text(updated, encoding = encoding)
+        path.write_text(updated, encoding=encoding)
     return changed
 
 
 def main(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(description = __doc__)
-    parser.add_argument("files", nargs = "+", help = "Python files to fix")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("files", nargs="+", help="Python files to fix")
     args = parser.parse_args(argv)
 
     touched: list[Path] = []
+    self_path = Path(__file__).resolve()
+
     for entry in args.files:
         path = Path(entry)
+        # Skip modifying this script to avoid self-edit loops.
+        if path.resolve() == self_path:
+            continue
         if not path.exists() or path.is_dir():
             continue
         if process_file(path):
