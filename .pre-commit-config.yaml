@@ -1,0 +1,17 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.0
+    hooks:
+      - id: ruff
+        args:
+          - --fix
+          - --exit-non-zero-on-fix
+  - repo: local
+    hooks:
+      - id: ruff-format-with-kwargs
+        name: Ruff format with kwarg spacing
+        entry: scripts/run_ruff_format.py
+        language: python
+        types: [python]
+        additional_dependencies:
+          - ruff==0.6.9
