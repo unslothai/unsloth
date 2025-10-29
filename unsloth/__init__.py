@@ -41,7 +41,6 @@ if already_imported:
         f"Please restructure your imports with 'import unsloth' at the top of your file.",
         stacklevel = 2,
     )
-pass
 
 # Unsloth currently does not work on multi GPU setups - sadly we are a 2 brother team so
 # enabling it will require much more work, so we have to prioritize. Please understand!
@@ -68,7 +67,6 @@ except ModuleNotFoundError:
     )
 except Exception as exception:
     raise exception
-pass
 
 import importlib.util
 from pathlib import Path
@@ -97,7 +95,6 @@ except Exception as e:
     raise ImportError(
         f"Unsloth: Please install unsloth_zoo via `pip install unsloth_zoo` Also error = {str(e)}"
     )
-pass
 
 from unsloth_zoo.device_type import (
     is_hip,
@@ -147,14 +144,12 @@ if DEVICE_TYPE == "cuda":
             return SUPPORTS_BFLOAT16
 
         torch.cuda.is_bf16_supported = is_bf16_supported
-    pass
 elif DEVICE_TYPE == "hip":
     SUPPORTS_BFLOAT16 = torch.cuda.is_bf16_supported()
 elif DEVICE_TYPE == "xpu":
     # torch.xpu.is_bf16_supported() does not have including_emulation
     # set SUPPORTS_BFLOAT16 as torch.xpu.is_bf16_supported()
     SUPPORTS_BFLOAT16 = torch.xpu.is_bf16_supported()
-pass
 
 # For Gradio HF Spaces?
 # if "SPACE_AUTHOR_NAME" not in os.environ and "SPACE_REPO_NAME" not in os.environ:
@@ -206,7 +201,6 @@ if DEVICE_TYPE == "cuda":
                 )[::-1][0]
                 latest_cuda = possible_cudas[latest_cuda]
                 os.system(f"ldconfig /usr/local/{latest_cuda}")
-        pass
 
         importlib.reload(bnb)
         importlib.reload(triton)
@@ -230,7 +224,6 @@ if DEVICE_TYPE == "cuda":
                 "Also try `sudo ldconfig /usr/local/cuda-xx.x` - find the latest cuda version.\n"
                 "Unsloth will still run for now, but maybe it might crash - let's hope it works!"
             )
-    pass
 elif DEVICE_TYPE == "hip":
     # NO-OP for rocm device
     pass
@@ -238,7 +231,6 @@ elif DEVICE_TYPE == "xpu":
     import bitsandbytes as bnb
 
     # TODO: check triton for intel installed properly.
-    pass
 
 from .models import *
 from .models import __version__

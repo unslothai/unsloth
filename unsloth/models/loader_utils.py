@@ -75,12 +75,8 @@ def __get_model_name(
         #     f"We shall load `{new_model_name}` for 4x faster loading."
         # )
         return new_model_name
-    pass
 
     return None
-
-
-pass
 
 
 def _get_new_mapper():
@@ -105,10 +101,6 @@ def _get_new_mapper():
         )
     except:
         return {}, {}, {}
-    pass
-
-
-pass
 
 
 def get_model_name(model_name, load_in_4bit = True):
@@ -151,9 +143,4 @@ def get_model_name(model_name, load_in_4bit = True):
                 'pip install --upgrade --no-cache-dir "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"\n'
                 'pip install --upgrade --no-cache-dir "git+https://github.com/unslothai/unsloth-zoo.git"\n'
             )
-        pass
-    pass
     return new_model_name if new_model_name is not None else model_name
-
-
-pass

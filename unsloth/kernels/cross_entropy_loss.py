@@ -104,7 +104,6 @@ def _cross_entropy_forward(
     tl.store(loss_ptr, loss)
 
 
-pass
 _cross_entropy_forward = triton.jit(_cross_entropy_forward)
 _cross_entropy_forward = triton.heuristics(
     {
@@ -192,11 +191,9 @@ def _chunked_cross_entropy_forward(
         else:
             loss = 0.0
         tl.store(loss_ptr, loss)
-    pass
     tl.store(logsumexp_ptr, logsumexp)
 
 
-pass
 _chunked_cross_entropy_forward = triton.jit(_chunked_cross_entropy_forward)
 _chunked_cross_entropy_forward = triton.heuristics(
     {
@@ -255,7 +252,6 @@ def _cross_entropy_backward(
     if DO_LOGIT_SCALING:
         # d/dx [s * x] = s
         x = x * LOGIT_SCALE
-    pass
 
     # Do logit softcapping for Gemma 2: t * tanh(1/t * x)
     partial = x
@@ -263,7 +259,6 @@ def _cross_entropy_backward(
         # d/dx [t * tanh(1/t * x)] = 1 - tanh^2(1/t * x)
         partial = triton_tanh(x / SOFTCAP)
         x = SOFTCAP * partial
-    pass
 
     logsumexp = tl.load(logsumexp_ptr + row_idx)
     y = tl.exp(x - logsumexp)
@@ -276,18 +271,15 @@ def _cross_entropy_backward(
     if DO_LOGIT_SCALING:
         # d/dx [s * x] = s
         y = y * LOGIT_SCALE
-    pass
 
     if DO_SOFTCAPPING:
         # d/dx [t * tanh(1/t * x)] = 1 - tanh^2(1/t * x)
         y = y * (1.0 - partial * partial)
-    pass
 
     # If y == 0: dC/dx = 0 ==> we already masked it to be = 0, so dloss = 0.
     tl.store(logits_ptr + col_offsets, dloss * y, mask = mask)
 
 
-pass
 _cross_entropy_backward = triton.jit(_cross_entropy_backward)
 _cross_entropy_backward = triton.heuristics(
     {
@@ -378,7 +370,6 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
             logsumexp = torch.logsumexp(logsumexp, dim = 1)  # Row sum
             losses += logsumexp
             losses.masked_fill_(labels == -100, 0)  # Don't forget to mask padding out!
-        pass
 
         ctx.save_for_backward(logits, logsumexp, labels)
         ctx.DO_SOFTCAPPING = DO_SOFTCAPPING
@@ -386,8 +377,6 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
         ctx.DO_LOGIT_SCALING = DO_LOGIT_SCALING
         ctx.logit_scaling = logit_scaling
         return losses
-
-    pass
 
     @staticmethod
     def backward(ctx, dlosses):
@@ -430,11 +419,6 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
             None,
         )
 
-    pass
-
-
-pass
-
 
 def fast_cross_entropy_loss(
     logits,
@@ -464,17 +448,12 @@ def fast_cross_entropy_loss(
     return loss.sum() / n_items
 
 
-pass
 if (Version(torch.__version__) < Version("2.4.0")) and not hasattr(
     fast_cross_entropy_loss, "__wrapped__"
 ):
     fast_cross_entropy_loss = torch._disable_dynamo(fast_cross_entropy_loss)
-pass
 
 
 # Patch CE Losses in transformers
 def patch_loss_functions(torch_compile = True):
     _patch_loss_functions(fast_cross_entropy_loss, torch_compile = torch_compile)
-
-
-pass

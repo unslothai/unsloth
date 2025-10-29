@@ -21,8 +21,6 @@ def safe_remove_directory(path):
         return False
 
 
-pass
-
 # This tokenizer will be used by the mapping function
 tokenizer = None
 

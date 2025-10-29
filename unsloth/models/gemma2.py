@@ -43,8 +43,6 @@ except:
             f'Try `pip install --upgrade "transformers>=4.42.3"`\n'
             f"to obtain the latest transformers build, then restart this session."
         )
-    pass
-pass
 
 from transformers.modeling_attn_mask_utils import (
     _prepare_4d_causal_attention_mask_for_sdpa,
@@ -59,7 +57,6 @@ try:
 except:
     Gemma2SdpaAttention = Gemma2Attention
     Gemma2FlashAttention2 = Gemma2Attention
-pass
 
 if HAS_FLASH_ATTENTION_SOFTCAPPING:
     from flash_attn import flash_attn_func
@@ -88,7 +85,6 @@ def Gemma2Attention_fast_forward(
         del self.temp_KV
         del self.RH_Q
         del self.attention
-    pass
 
     bsz, q_len, _ = hidden_states.size()
 
@@ -115,12 +111,10 @@ def Gemma2Attention_fast_forward(
     else:
         cos, sin = self.rotary_emb.get_cached(kv_seq_len, device_index)
         Q, K = inplace_rope_embedding(Q, K, cos, sin, position_ids)
-    pass
 
     if past_key_value is not None:
         K = torch.cat([past_key_value[0], K], dim = 2)
         V = torch.cat([past_key_value[1], V], dim = 2)
-    pass
     past_key_value = (K, V) if use_cache else None
 
     # Only enable if the attention_mask is True
@@ -131,14 +125,12 @@ def Gemma2Attention_fast_forward(
             sw = getattr(self.config, "sliding_window", None)
             sw = kv_seq_len if (sw is None or sw == "null") else sw
             window = (-1, -1) if (kv_seq_len <= sw) else (sw, sw)
-        pass
 
         # FA uses 1 / sqrt for softmax_scale!
         if not hasattr(self, "_flash_attention_softmax_scale"):
             self._flash_attention_softmax_scale = 1.0 / (
                 self.config.query_pre_attn_scalar**0.5
             )
-        pass
 
         Q = Q.transpose(1, 2)
         K = K.transpose(1, 2)
@@ -160,12 +152,8 @@ def Gemma2Attention_fast_forward(
             else slow_attention_softcapping
         )
         A = fx(Q, K, V, causal_mask, self, bsz, kv_seq_len)
-    pass
     A = self.apply_o(self, A)
     return A, None, past_key_value
-
-
-pass
 
 
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L590
@@ -250,7 +238,6 @@ def Gemma2DecoderLayer_fast_forward(
             self.post_feedforward_layernorm, hidden_states, gemma = True
         )
         hidden_states = residual + hidden_states
-    pass
 
     outputs = (hidden_states,)
     if output_attentions:
@@ -258,9 +245,6 @@ def Gemma2DecoderLayer_fast_forward(
     if use_cache:
         outputs += (present_key_value,)
     return outputs
-
-
-pass
 
 
 from math import sqrt as math_sqrt
@@ -346,7 +330,6 @@ def Gemma2Attention_fast_forward_inference(
         self.attention.resize_(
             (bsz, n_heads, 1, self.attention.shape[-1] + KV_CACHE_INCREMENT)
         )
-    pass
 
     Qn = fast_linear_forward(self.q_proj, Xn, out = self.temp_QA[0])
     Kn = fast_linear_forward(self.k_proj, Xn, out = self.temp_KV[0])
@@ -395,7 +378,6 @@ def Gemma2Attention_fast_forward_inference(
         Vnn = Vn[:, :, slicing_tokens:, :]  # .contiguous()
     else:
         Knn, Vnn = Kn, Vn
-    pass
 
     # Grouped query attention
     _, _, cached_len, _ = Knn.shape
@@ -408,7 +390,6 @@ def Gemma2Attention_fast_forward_inference(
         )
         Knn = Knn.reshape(bsz, n_heads, cached_len, head_dim)
         Vnn = Vnn.reshape(bsz, n_heads, cached_len, head_dim)
-    pass
     # else:
     #     Knn, Vnn = Knn, Vnn
     # pass
@@ -435,9 +416,6 @@ def Gemma2Attention_fast_forward_inference(
     A = A.reshape(bsz, 1, attention_size)
     A = fast_linear_forward(self.o_proj, A, out = self.temp_O)
     return A, (Kn, Vn)
-
-
-pass
 
 
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L825
@@ -486,11 +464,9 @@ def Gemma2Model_fast_forward_inference(
                 hidden_states,
                 seq_len,
             )
-        pass
     else:
         SWA = attention_mask
         GA = attention_mask
-    pass
     next_decoder_cache = []
     for idx, decoder_layer in enumerate(self.model.layers):
         # For pipeline parallelism, we need to move all tensors to the same device
@@ -537,7 +513,6 @@ def Gemma2Model_fast_forward_inference(
         hidden_states += residual
 
         next_decoder_cache.append(present_key_value)
-    pass
     hidden_states = fast_rms_layernorm_inference_gemma(
         self.model.norm, hidden_states, out_weights[device_index]
     )
@@ -548,9 +523,6 @@ def Gemma2Model_fast_forward_inference(
         hidden_states = [],
         attentions = [],
     )
-
-
-pass
 
 
 class FastGemma2Model(FastLlamaModel):
@@ -565,7 +537,6 @@ class FastGemma2Model(FastLlamaModel):
         if init_name is not None:
             exec(function, globals())
             Gemma2Attention.__init__ = eval(init_name)
-        pass
         Gemma2Attention.forward = Gemma2Attention_fast_forward
         Gemma2SdpaAttention.forward = Gemma2Attention_fast_forward
         Gemma2FlashAttention2.forward = Gemma2Attention_fast_forward
@@ -589,8 +560,6 @@ class FastGemma2Model(FastLlamaModel):
         )
         return
 
-    pass
-
     @staticmethod
     def post_patch(model, tokenizer):
         # Gemma does not downcast RoPE
@@ -610,7 +579,6 @@ class FastGemma2Model(FastLlamaModel):
                 param.requires_grad_(True)
             else:
                 param.requires_grad_(False)
-        pass
 
         # Patch RMS Layernorm
         for name, module in model.named_modules():
@@ -624,7 +592,6 @@ class FastGemma2Model(FastLlamaModel):
                     module.variance_epsilon = (
                         module.eps
                     )  # Gemma doesn't use variance_epsilon
-        pass
 
         # Clear deleted GPU items
         import gc
@@ -633,8 +600,3 @@ class FastGemma2Model(FastLlamaModel):
             gc.collect()
             torch.cuda.empty_cache()
         return model, tokenizer
-
-    pass
-
-
-pass

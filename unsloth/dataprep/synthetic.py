@@ -249,7 +249,6 @@ class SyntheticDataKit:
                     "--" + flag,
                     which,
                 ]
-        pass
         logger.info(subprocess_commands)
         vllm_process = subprocess.Popen(
             subprocess_commands,
@@ -291,7 +290,6 @@ class SyntheticDataKit:
             return
         else:
             print("vLLM Server Ready Detected")
-        pass
 
         trial = 0
         while not self.check_vllm_status():
@@ -304,8 +302,6 @@ class SyntheticDataKit:
             trial += 1
             time.sleep(1)
         return
-
-    pass
 
     @staticmethod
     def from_pretrained(
@@ -327,8 +323,6 @@ class SyntheticDataKit:
             **kwargs,
         )
 
-    pass
-
     @staticmethod
     def check_vllm_status():
         try:
@@ -337,9 +331,6 @@ class SyntheticDataKit:
                 return True
         except requests.exceptions.ConnectionError:
             return False
-        pass
-
-    pass
 
     def cleanup(self):
         if not hasattr(self, "vllm_process"):
@@ -374,8 +365,6 @@ class SyntheticDataKit:
 
         # Delete vLLM module as well
         delete_vllm(llm = None)
-
-    pass
 
     def __enter__(self):
         return self
@@ -429,10 +418,7 @@ class SyntheticDataKit:
             all_filenames.append(new_filename)
             with open(new_filename, "w", encoding = "utf-8") as f:
                 f.write(chunked_text)
-        pass
         return all_filenames
-
-    pass
 
     def prepare_qa_generation(
         self,
@@ -454,7 +440,6 @@ class SyntheticDataKit:
         locations = locations.split(",")
         for path in locations:
             os.makedirs(os.path.join(output_folder, path), exist_ok = True)
-        pass
 
         self.max_generation_tokens = max_generation_tokens
 
@@ -478,8 +463,3 @@ class SyntheticDataKit:
             f.write(config)
 
         self.overlap = overlap
-
-    pass
-
-
-pass

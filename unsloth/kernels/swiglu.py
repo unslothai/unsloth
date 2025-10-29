@@ -43,9 +43,6 @@ def _fg_kernel(
     tl.store(h + offsets, h_row, mask = mask)
 
 
-pass
-
-
 def swiglu_fg_kernel(e, g):
     batch, seq_len, hd = e.shape
     n_elements = e.numel()
@@ -60,9 +57,6 @@ def swiglu_fg_kernel(e, g):
             BLOCK_SIZE = 1024,
         )
     return h
-
-
-pass
 
 
 @triton.jit
@@ -112,9 +106,6 @@ def _DWf_DW_dfg_kernel(
     tl.store(g + offsets, de_row, mask = mask)  # de
 
 
-pass
-
-
 def swiglu_DWf_DW_dfg_kernel(DW, e, g):
     batch_seq_len, hd = e.shape
     n_elements = e.numel()
@@ -128,6 +119,3 @@ def swiglu_DWf_DW_dfg_kernel(DW, e, g):
             BLOCK_SIZE = 1024,
         )
     return DW, e, g
-
-
-pass

@@ -62,9 +62,6 @@ def layernorm_forward(
     tl.store(Y + col_offsets, output, mask = mask)
 
 
-pass
-
-
 @triton.jit
 def layernorm_backward(
     dY,
@@ -109,9 +106,6 @@ def layernorm_backward(
     tl.store(dY + col_offsets, dX_row, mask = mask)
 
 
-pass
-
-
 class Fast_Layernorm(torch.autograd.Function):
     @staticmethod
     def forward(ctx, X, W, b, eps):
@@ -146,8 +140,6 @@ class Fast_Layernorm(torch.autograd.Function):
         ctx.save_for_backward(X, W, b, r, mu)
         return Y.view(*shape)
 
-    pass
-
     @staticmethod
     def backward(ctx, dY):
         shape = dY.shape
@@ -174,11 +166,6 @@ class Fast_Layernorm(torch.autograd.Function):
         dX = dY.view(*shape)
         return dX, None, None, None, None
 
-    pass
-
-
-pass
-
 
 def fast_layernorm(layernorm, X):
     assert layernorm.elementwise_affine is True
@@ -191,9 +178,6 @@ def fast_layernorm(layernorm, X):
     )
     out = Fast_Layernorm.apply(X, W, bias, eps)
     return out
-
-
-pass
 
 
 def test_layernorm(
@@ -225,9 +209,6 @@ def test_layernorm(
     assert torch.dist(correct_grad, XX.grad).item() <= 0.1
 
 
-pass
-
-
 def testing_suite_layernorm():
     for dim in [512, 1024, 2048]:
         for dtype in [torch.float16, torch.bfloat16]:
@@ -242,11 +223,3 @@ def testing_suite_layernorm():
                             random_state = random_state,
                             seqlen = seqlen,
                         )
-                    pass
-                pass
-            pass
-        pass
-    pass
-
-
-pass

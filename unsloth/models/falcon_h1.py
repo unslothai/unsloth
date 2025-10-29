@@ -44,7 +44,6 @@ except:
             f'Try `pip install --upgrade "transformers>=4.53.0"`\n'
             f"to obtain the latest transformers build, then restart this session."
         )
-    pass
 from transformers.modeling_attn_mask_utils import (
     _prepare_4d_causal_attention_mask_for_sdpa,
 )
@@ -64,7 +63,6 @@ except ModuleNotFoundError:
     raise ImportError(
         "Unsloth: Could not import FalconH1Attention from transformers.models.falcon_h1.modeling_falcon_h1."
     )
-pass
 
 
 def FalconH1Attention_fast_forward(
@@ -90,7 +88,6 @@ def FalconH1Attention_fast_forward(
         del self.temp_KV
         del self.RH_Q
         del self.attention
-    pass
 
     bsz, q_len, _ = hidden_states.size()
 
@@ -137,7 +134,6 @@ def FalconH1Attention_fast_forward(
     if past_key_value is not None:
         K = torch.cat([past_key_value[0], K], dim = 2)
         V = torch.cat([past_key_value[1], V], dim = 2)
-    pass
     past_key_value = (K, V) if use_cache else None
 
     # Attention module
@@ -160,7 +156,6 @@ def FalconH1Attention_fast_forward(
         else:
             # Xformers does support the forward pass though
             Q = Q.view(bsz, q_len, n_kv_heads, n_groups, head_dim)
-        pass
 
         A = xformers_attention(Q, K, V, attn_bias = causal_mask)
         A = A.view(bsz, q_len, n_heads, head_dim)
@@ -190,15 +185,12 @@ def FalconH1Attention_fast_forward(
         )
         # Go back to (batch_size, seq_len, n_heads, head_dim)
         A = A.transpose(1, 2).contiguous()
-    pass
 
     attn_output = A.reshape(bsz, q_len, n_heads * head_dim)
     attn_output = self.apply_o(self, attn_output)
     attn_weights = None
     return attn_output, attn_weights, past_key_value
 
-
-pass
 
 torch_matmul = torch.matmul
 
@@ -281,7 +273,6 @@ def FalconH1Attention_fast_forward_inference(
             self.temp_O = torch.empty((1, bsz, hidden_size), dtype = dtype, device = device)
         else:
             self.temp_O = self.temp_QA[1][:, :, :hidden_size]
-        pass
 
         self.attention = torch.empty(
             (bsz, n_heads, 1, KV_CACHE_INCREMENT + seq_len), dtype = dtype, device = device
@@ -303,7 +294,6 @@ def FalconH1Attention_fast_forward_inference(
         self.attention.resize_(
             (bsz, n_heads, 1, self.attention.shape[-1] + KV_CACHE_INCREMENT)
         )
-    pass
 
     Qn = fast_linear_forward(self.q_proj, Xn, out = self.temp_QA[0])
     Kn = fast_linear_forward(self.k_proj, Xn, out = self.temp_KV[0])
@@ -364,7 +354,6 @@ def FalconH1Attention_fast_forward_inference(
         Vnn = Vn[:, :, slicing_tokens:, :]  # .contiguous()
     else:
         Knn, Vnn = Kn, Vn
-    pass
 
     # Grouped query attention
     _, _, cached_len, _ = Knn.shape
@@ -377,7 +366,6 @@ def FalconH1Attention_fast_forward_inference(
         )
         Knn = Knn.reshape(bsz, n_heads, cached_len, head_dim)
         Vnn = Vnn.reshape(bsz, n_heads, cached_len, head_dim)
-    pass
     # else:
     #     Knn, Vnn = Knn, Vnn
     # pass
@@ -403,14 +391,10 @@ def FalconH1Attention_fast_forward_inference(
             A = scaled_dot_product_attention(
                 Qn, Knn, Vnn, attn_mask = attention_mask, is_causal = False
             )
-    pass
     A = A.transpose(1, 2)
     A = A.reshape(bsz, 1, attention_size)
     A = fast_linear_forward(self.o_proj, A, out = self.temp_O)
     return A, (Kn, Vn)
-
-
-pass
 
 
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/falcon_h1/modeling_falcon_h1.py
@@ -515,7 +499,6 @@ def FalconH1DecoderLayer_fast_forward(
         hidden_states = fast_rms_layernorm(self.pre_ff_layernorm, hidden_states)
         hidden_states = self.feed_forward(hidden_states)
         hidden_states = residual + hidden_states
-    pass
 
     outputs = (hidden_states,)
     if output_attentions:
@@ -523,9 +506,6 @@ def FalconH1DecoderLayer_fast_forward(
     if use_cache:
         outputs += (present_key_value,)
     return outputs
-
-
-pass
 
 
 def _FalconH1_fast_forward_inference(
@@ -573,7 +553,6 @@ def _FalconH1_fast_forward_inference(
             )
         else:
             attention_mask = None
-        pass
 
         next_decoder_cache = []
 
@@ -629,7 +608,6 @@ def _FalconH1_fast_forward_inference(
             X += residual
 
             next_decoder_cache.append(present_key_value)
-        pass
         X = fast_rms_layernorm_inference(
             self.model.final_layernorm,
             X,
@@ -645,7 +623,6 @@ def _FalconH1_fast_forward_inference(
             attentions = [],
         )
 
-    pass
     return FalconH1Model_fast_forward_inference_custom
 
 
@@ -681,7 +658,6 @@ def _fast_prepare_inputs_for_generation(
             input_ids.shape[1] != cache_position.shape[0]
         ):  # Default case (the "else", a no op, is Exception 2)
             input_ids = input_ids[:, cache_position]
-    pass
     # TODO: Wire up Cache to work for inference.
     # else:
     #     past_key_values = FalconHybridMambaAttentionDynamicCache(
@@ -721,17 +697,10 @@ def _fast_prepare_inputs_for_generation(
     return model_inputs
 
 
-pass
-
-
 def fix_prepare_inputs_for_generation(module):
     # Fix prepare_inputs_for_generation
     if hasattr(module, "prepare_inputs_for_generation"):
         module.prepare_inputs_for_generation = _fast_prepare_inputs_for_generation
-    pass
-
-
-pass
 
 
 class FastFalconH1Model(FastLlamaModel):
@@ -746,7 +715,6 @@ class FastFalconH1Model(FastLlamaModel):
         if init_name is not None:
             exec(function, globals())
             FalconH1Attention.__init__ = eval(init_name)
-        pass
         FalconH1Attention.forward = FalconH1Attention_fast_forward
         FalconH1DecoderLayer.forward = FalconH1DecoderLayer_fast_forward
         FalconH1Model.forward = LlamaModel_fast_forward
@@ -767,8 +735,6 @@ class FastFalconH1Model(FastLlamaModel):
             LlamaRotaryEmbedding
         )
         return
-
-    pass
 
     @staticmethod
     def from_pretrained(  # TODO: Change after release
@@ -799,8 +765,3 @@ class FastFalconH1Model(FastLlamaModel):
             trust_remote_code = trust_remote_code,
             **kwargs,
         )
-
-    pass
-
-
-pass

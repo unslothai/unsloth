@@ -37,7 +37,6 @@ try:
 except:
     MistralSdpaAttention = MistralAttention
     MistralFlashAttention2 = MistralAttention
-pass
 from unsloth_zoo.utils import Version, _get_dtype
 
 
@@ -64,7 +63,6 @@ def MistralAttention_fast_forward(
         del self.temp_KV
         del self.RH_Q
         del self.attention
-    pass
 
     bsz, q_len, _ = hidden_states.size()
 
@@ -91,12 +89,10 @@ def MistralAttention_fast_forward(
         Q, K = fast_rope_embedding(Q, K, cos, sin)
     else:
         Q, K = inplace_rope_embedding(Q, K, cos, sin, position_ids)
-    pass
 
     if past_key_value is not None:
         K = torch.cat([past_key_value[0], K], dim = 2)
         V = torch.cat([past_key_value[1], V], dim = 2)
-    pass
     past_key_value = (K, V) if use_cache else None
 
     # Attention module
@@ -123,7 +119,6 @@ def MistralAttention_fast_forward(
                 Q = Q.view(1, Q_M, n_heads, head_dim)
                 K = K.view(1, K_M, n_heads, head_dim)
                 V = V.view(1, V_M, n_heads, head_dim)
-            pass
         else:
             # Xformers does support the forward pass though
             Q = Q.view(bsz, q_len, n_kv_heads, n_groups, head_dim)
@@ -132,8 +127,6 @@ def MistralAttention_fast_forward(
                 Q = Q.view(1, Q_M, n_kv_heads, n_groups, head_dim)
                 K = K.view(1, K_M, n_kv_heads, n_groups, head_dim)
                 V = V.view(1, V_M, n_kv_heads, n_groups, head_dim)
-            pass
-        pass
 
         A = xformers_attention(Q, K, V, attn_bias = causal_mask)
         A = A.view(bsz, q_len, n_heads, head_dim)
@@ -164,15 +157,11 @@ def MistralAttention_fast_forward(
         )
         # Go back to (batch_size, seq_len, n_heads, head_dim)
         A = A.transpose(1, 2).contiguous()
-    pass
 
     attn_output = A.reshape(bsz, q_len, n_heads * head_dim)
     attn_output = self.apply_o(self, attn_output)
     attn_weights = None
     return attn_output, attn_weights, past_key_value
-
-
-pass
 
 
 def MistralForCausalLM_fast_forward(
@@ -295,7 +284,6 @@ def MistralForCausalLM_fast_forward(
             output_hidden_states = output_hidden_states,
             return_dict = return_dict,
         )
-    pass
 
     hidden_states = outputs[0]
 
@@ -320,7 +308,6 @@ def MistralForCausalLM_fast_forward(
             hidden_states = outputs.hidden_states,
             attentions = outputs.attentions,
         )
-    pass
 
     if bsz == 1 and q_len == 1:
         logits = torch.mv(lm_head, hidden_states.ravel().to(lm_head.dtype))
@@ -374,9 +361,7 @@ def MistralForCausalLM_fast_forward(
                 attentions = outputs.attentions,
             )
             return output
-        pass
         logits = self.lm_head(hidden_states.to(lm_head.dtype))
-    pass
     logits = logits.to(_get_dtype(dtype_from_config(self.config)))
 
     loss = None
@@ -396,7 +381,6 @@ def MistralForCausalLM_fast_forward(
             n_items = kwargs.get("num_items_in_batch", None)
             or kwargs.get("n_items", None),
         )
-    pass
 
     if not return_dict:
         output = (logits,) + outputs[1:]
@@ -409,9 +393,6 @@ def MistralForCausalLM_fast_forward(
         hidden_states = outputs.hidden_states,
         attentions = outputs.attentions,
     )
-
-
-pass
 
 
 # Transformers had to update for Mistral Nemo 12b since Attention is (5120, 4096) now.
@@ -431,9 +412,6 @@ def patch_mistral_nemo_attention(function):
     return function
 
 
-pass
-
-
 class FastMistralModel(FastLlamaModel):
     @staticmethod
     def pre_patch():
@@ -449,7 +427,6 @@ class FastMistralModel(FastLlamaModel):
             # if True:#init_name is not None:
             exec(function, globals())
             MistralAttention.__init__ = eval(init_name)
-        pass
         MistralAttention.forward = MistralAttention_fast_forward
         MistralSdpaAttention.forward = MistralAttention_fast_forward
         MistralFlashAttention2.forward = MistralAttention_fast_forward
@@ -470,8 +447,6 @@ class FastMistralModel(FastLlamaModel):
             LlamaRotaryEmbedding
         )
         return
-
-    pass
 
     @staticmethod
     def from_pretrained(
@@ -502,8 +477,3 @@ class FastMistralModel(FastLlamaModel):
             trust_remote_code = trust_remote_code,
             **kwargs,
         )
-
-    pass
-
-
-pass

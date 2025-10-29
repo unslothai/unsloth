@@ -86,9 +86,6 @@ def find_lora_base_model(model_to_inspect):
     return current
 
 
-pass
-
-
 config_model = find_lora_base_model(model) if isinstance(model, PeftModel) else model
 
 assert (

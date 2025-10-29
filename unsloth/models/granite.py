@@ -43,8 +43,6 @@ except:
             f'Try `pip install --upgrade "transformers>=4.42.3"`\n'
             f"to obtain the latest transformers build, then restart this session."
         )
-    pass
-pass
 
 from transformers.modeling_attn_mask_utils import (
     _prepare_4d_causal_attention_mask_for_sdpa,
@@ -59,7 +57,6 @@ try:
 except:
     GraniteSdpaAttention = GraniteAttention
     GraniteFlashAttention2 = GraniteAttention
-pass
 
 
 def GraniteAttention_fast_forward(
@@ -85,7 +82,6 @@ def GraniteAttention_fast_forward(
         del self.temp_KV
         del self.RH_Q
         del self.attention
-    pass
 
     bsz, q_len, _ = hidden_states.size()
 
@@ -115,7 +111,6 @@ def GraniteAttention_fast_forward(
     if past_key_value is not None:
         K = torch.cat([past_key_value[0], K], dim = 2)
         V = torch.cat([past_key_value[1], V], dim = 2)
-    pass
     past_key_value = (K, V) if use_cache else None
 
     # Attention module
@@ -138,7 +133,6 @@ def GraniteAttention_fast_forward(
         else:
             # Xformers does support the forward pass though
             Q = Q.view(bsz, q_len, n_kv_heads, n_groups, head_dim)
-        pass
 
         A = xformers_attention(
             Q, K, V, attn_bias = causal_mask, scale = self.scaling, p = dropout_p
@@ -183,15 +177,11 @@ def GraniteAttention_fast_forward(
         )
         # Go back to (batch_size, seq_len, n_heads, head_dim)
         A = A.transpose(1, 2).contiguous()
-    pass
 
     attn_output = A.reshape(bsz, q_len, n_heads * head_dim)
     attn_output = self.apply_o(self, attn_output)
     attn_weights = None
     return attn_output, attn_weights, past_key_value
-
-
-pass
 
 
 def GraniteDecoderLayer_fast_forward(
@@ -263,7 +253,6 @@ def GraniteDecoderLayer_fast_forward(
         hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states)
         hidden_states = self.mlp(hidden_states)
         hidden_states = torch.add(residual, hidden_states, alpha = residual_multiplier)
-    pass
 
     outputs = (hidden_states,)
     if output_attentions:
@@ -271,9 +260,6 @@ def GraniteDecoderLayer_fast_forward(
     if use_cache:
         outputs += (present_key_value,)
     return outputs
-
-
-pass
 
 
 from math import sqrt as math_sqrt
@@ -356,7 +342,6 @@ def GraniteAttention_fast_forward_inference(
         self.attention.resize_(
             (bsz, n_heads, 1, self.attention.shape[-1] + KV_CACHE_INCREMENT)
         )
-    pass
 
     Qn = fast_linear_forward(self.q_proj, Xn, out = self.temp_QA[0])
     Kn = fast_linear_forward(self.k_proj, Xn, out = self.temp_KV[0])
@@ -406,7 +391,6 @@ def GraniteAttention_fast_forward_inference(
         )
         Kn = Kn.reshape(bsz, n_heads, cached_len, head_dim)
         Vn = Vn.reshape(bsz, n_heads, cached_len, head_dim)
-    pass
     # else:
     #     Kn, Vn = Kn, Vn
     # pass
@@ -425,9 +409,6 @@ def GraniteAttention_fast_forward_inference(
     A = A.reshape(bsz, 1, attention_size)
     A = fast_linear_forward(self.o_proj, A, out = self.temp_O)
     return A, (Kn, Vn)
-
-
-pass
 
 
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L825
@@ -460,7 +441,6 @@ def GraniteModel_fast_forward_inference(
         )
     else:
         attention_mask = None
-    pass
 
     position_embeddings = self.model.rotary_emb.get_cached(
         self.max_seq_length, hidden_states.device.index
@@ -497,7 +477,6 @@ def GraniteModel_fast_forward_inference(
         hidden_states = torch.add(residual, hidden_states, alpha = residual_multiplier)
 
         next_decoder_cache.append(present_key_value)
-    pass
     hidden_states = fast_rms_layernorm_inference(self.model.norm, hidden_states)
 
     return BaseModelOutputWithPast(
@@ -506,9 +485,6 @@ def GraniteModel_fast_forward_inference(
         hidden_states = [],
         attentions = [],
     )
-
-
-pass
 
 
 class GraniteRotaryEmbedding(LlamaRotaryEmbedding):
@@ -542,7 +518,6 @@ class FastGraniteModel(FastLlamaModel):
         if init_name is not None:
             exec(function, globals())
             GraniteAttention.__init__ = eval(init_name)
-        pass
         GraniteAttention.forward = GraniteAttention_fast_forward
         GraniteSdpaAttention.forward = GraniteAttention_fast_forward
         GraniteFlashAttention2.forward = GraniteAttention_fast_forward
@@ -562,8 +537,6 @@ class FastGraniteModel(FastLlamaModel):
         )
 
         return
-
-    pass
 
     @staticmethod
     def post_patch(model, tokenizer):
@@ -593,7 +566,6 @@ class FastGraniteModel(FastLlamaModel):
             lm_head.in_features = lm_head.weight.shape[1]
             lm_head.out_features = lm_head.weight.shape[0]
             model.lm_head = lm_head
-        pass
 
         # Also patch all dtypes - BnB seems to not allocate the correct type?
         # BnB default dtype seems to be float16!
@@ -612,8 +584,6 @@ class FastGraniteModel(FastLlamaModel):
                 else:
                     # https://github.com/TimDettmers/bitsandbytes/pull/763/files
                     quant_state.dtype = correct_dtype
-                pass
-            pass
             # Downcast RoPE embedding to correct data type
             if name.endswith("rotary_emb") or hasattr(module, "cos_cached"):
                 if hasattr(module, "cos_cached") and (
@@ -627,9 +597,6 @@ class FastGraniteModel(FastLlamaModel):
                 ):
                     module.short_cos_cached = module.short_cos_cached.to(correct_dtype)
                     module.short_sin_cached = module.short_sin_cached.to(correct_dtype)
-                pass
-            pass
-        pass
 
         # Clear deleted GPU items
         import gc
@@ -638,8 +605,3 @@ class FastGraniteModel(FastLlamaModel):
             gc.collect()
             torch.cuda.empty_cache()
         return model, tokenizer
-
-    pass
-
-
-pass

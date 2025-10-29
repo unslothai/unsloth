@@ -33,7 +33,6 @@ try:
 except:
     Qwen2SdpaAttention = Qwen2Attention
     Qwen2FlashAttention2 = Qwen2Attention
-pass
 
 
 class FastQwen2Model(FastLlamaModel):
@@ -48,7 +47,6 @@ class FastQwen2Model(FastLlamaModel):
         if init_name is not None:
             exec(function, globals())
             Qwen2Attention.__init__ = eval(init_name)
-        pass
         Qwen2Attention.forward = LlamaAttention_fast_forward
         Qwen2SdpaAttention.forward = LlamaAttention_fast_forward
         Qwen2FlashAttention2.forward = LlamaAttention_fast_forward
@@ -71,8 +69,6 @@ class FastQwen2Model(FastLlamaModel):
             LlamaRotaryEmbedding
         )
         return
-
-    pass
 
     @staticmethod
     def from_pretrained(
@@ -103,8 +99,3 @@ class FastQwen2Model(FastLlamaModel):
             trust_remote_code = trust_remote_code,
             **kwargs,
         )
-
-    pass
-
-
-pass

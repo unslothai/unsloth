@@ -42,8 +42,6 @@ except:
     except:
         # For older versions of huggingface_hub
         from huggingface_hub.utils._token import get_token
-    pass
-pass
 from huggingface_hub import HfFileSystem
 import importlib.util
 from ..device_type import (
@@ -76,10 +74,8 @@ if SUPPORTS_GEMMA:
     from .gemma import FastGemmaModel
 if SUPPORTS_GEMMA2:
     from .gemma2 import FastGemma2Model
-pass
 if SUPPORTS_FALCON_H1:
     from .falcon_h1 import FastFalconH1Model
-pass
 import torch
 from ._utils import (
     patch_compiling_bitsandbytes,
@@ -187,7 +183,6 @@ class FastLanguageModel(FastLlamaModel):
                 *args,
                 **kwargs,
             )
-        pass
 
         if token is None:
             token = get_token()
@@ -206,8 +201,6 @@ class FastLanguageModel(FastLlamaModel):
                     "Unsloth: Please install vLLM before enabling `fast_inference`!\n"
                     "You can do this in a terminal via `pip install vllm`"
                 )
-            pass
-        pass
         # Check if 4bit is allowed specifically for AMD
         if not ALLOW_BITSANDBYTES and not use_exact_model_name:
             if load_in_4bit or load_in_8bit or model_name.lower().endswith("-bnb-4bit"):
@@ -236,7 +229,6 @@ class FastLanguageModel(FastLlamaModel):
             from modelscope import snapshot_download
 
             model_name = snapshot_download(model_name)
-        pass
 
         # First check if it's a normal model via AutoConfig
         from huggingface_hub.utils import (
@@ -284,7 +276,6 @@ class FastLanguageModel(FastLlamaModel):
                     f"Please update transformers via `pip install --upgrade transformers` and try again."
                 )
             is_peft = False
-        pass
 
         # Old transformers versions check
         both_exist = (is_model and is_peft) and not SUPPORTS_LLAMA32
@@ -324,9 +315,6 @@ class FastLanguageModel(FastLlamaModel):
                     >= 2
                 ):
                     both_exist = True
-                pass
-            pass
-        pass
 
         if not is_model and not is_peft:
             error = autoconfig_error if autoconfig_error is not None else peft_error
@@ -345,7 +333,6 @@ class FastLanguageModel(FastLlamaModel):
                 f"PeftConfig error: {peft_error}\n\n"
             )
             raise RuntimeError(combined_error)
-        pass
 
         # Get base model for PEFT:
         if is_peft:
@@ -371,7 +358,6 @@ class FastLanguageModel(FastLlamaModel):
                 token = token,
                 trust_remote_code = trust_remote_code,
             )
-        pass
 
         if not was_disabled:
             enable_progress_bars()
@@ -384,7 +370,6 @@ class FastLanguageModel(FastLlamaModel):
                 scaling_type = (
                     scaling_type1 if scaling_type1 is not None else scaling_type2
                 )
-            pass
 
             if scaling_type == "llama3" and not SUPPORTS_LLAMA31:
                 raise ImportError(
@@ -490,7 +475,6 @@ class FastLanguageModel(FastLlamaModel):
                 *args,
                 **kwargs,
             )
-        pass
 
         if use_gradient_checkpointing == "unsloth":
             patch_unsloth_smart_gradient_checkpointing(dtype = dtype)
@@ -504,7 +488,6 @@ class FastLanguageModel(FastLlamaModel):
             tokenizer_name = old_model_name
         else:
             tokenizer_name = kwargs.pop("tokenizer_name", None)
-        pass
 
         if fast_inference:
             fast_inference, model_name = fast_inference_setup(model_name, model_config)
@@ -534,7 +517,6 @@ class FastLanguageModel(FastLlamaModel):
 
         if resize_model_vocab is not None:
             model.resize_token_embeddings(resize_model_vocab)
-        pass
 
         # In case the model supports tagging, add the unsloth tag.
         if hasattr(model, "add_model_tags"):
@@ -543,14 +525,12 @@ class FastLanguageModel(FastLlamaModel):
                     "unsloth",
                 ]
             )
-        pass
         if hasattr(tokenizer, "add_model_tags"):
             tokenizer.add_model_tags(
                 [
                     "unsloth",
                 ]
             )
-        pass
 
         if load_in_4bit:
             # Fix up bitsandbytes config
@@ -569,7 +549,6 @@ class FastLanguageModel(FastLlamaModel):
                 "quant_method": "bitsandbytes",
             }
             model.config.update({"quantization_config": quantization_config})
-        pass
 
         if is_peft:
             # From https://github.com/huggingface/peft/issues/184
@@ -584,13 +563,7 @@ class FastLanguageModel(FastLlamaModel):
             )
             # Patch it as well!
             model = dispatch_model.patch_peft_model(model, use_gradient_checkpointing)
-        pass
         return model, tokenizer
-
-    pass
-
-
-pass
 
 
 from ..kernels import (
@@ -608,7 +581,6 @@ try:
     AutoModelForVision2Seq = AutoModelForImageTextToText
 except:
     from transformers import AutoModelForVision2Seq
-pass
 
 
 class FastModel(FastBaseModel):
@@ -682,7 +654,6 @@ class FastModel(FastBaseModel):
             load_in_4bit = False
             load_in_8bit = False
             load_in_16bit = False
-        pass
 
         if int(load_in_4bit) + int(load_in_8bit) + int(load_in_16bit) >= 2:
             raise RuntimeError(
@@ -691,7 +662,6 @@ class FastModel(FastBaseModel):
                 "If you want 8bit finetuning, set both `load_in_4bit = False` and `load_in_8bit = True`\n"
                 "If you want 16bit LoRA finetuning, set `load_in_16bit = True`"
             )
-        pass
 
         if qat_scheme is not None and not full_finetuning:
             raise ValueError(
@@ -728,7 +698,6 @@ class FastModel(FastBaseModel):
             from modelscope import snapshot_download
 
             model_name = snapshot_download(model_name)
-        pass
 
         # First check if it's a normal model via AutoConfig
         from huggingface_hub.utils import (
@@ -776,7 +745,6 @@ class FastModel(FastBaseModel):
                     f"Please update transformers via `pip install --upgrade transformers` and try again."
                 )
             is_peft = False
-        pass
         # Old transformers versions check
         both_exist = (is_model and is_peft) and not SUPPORTS_LLAMA32
         # Error out if both LoRA and normal model config exists.
@@ -923,12 +891,10 @@ class FastModel(FastBaseModel):
                             + NIGHTLY
                         )
                     break
-        pass
 
         if auto_model is not None:
             # All other models need to disable static cache
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
-        pass
 
         # New transformers need to check manually.
         if SUPPORTS_LLAMA32:
@@ -947,9 +913,6 @@ class FastModel(FastBaseModel):
                     >= 2
                 ):
                     both_exist = True
-                pass
-            pass
-        pass
 
         if not is_model and not is_peft:
             error = autoconfig_error if autoconfig_error is not None else peft_error
@@ -968,7 +931,6 @@ class FastModel(FastBaseModel):
                 f"PeftConfig error: {peft_error}\n\n"
             )
             raise RuntimeError(combined_error)
-        pass
 
         # Get base model for PEFT:
         if is_peft:
@@ -994,7 +956,6 @@ class FastModel(FastBaseModel):
                 token = token,
                 trust_remote_code = trust_remote_code,
             )
-        pass
 
         if not was_disabled:
             enable_progress_bars()
@@ -1023,7 +984,6 @@ class FastModel(FastBaseModel):
                 os.environ["UNSLOTH_FORCE_FLOAT32"] = "1"
                 dtype = torch.bfloat16  # Change to bfloat16 loading
                 break
-        pass
         # Patch gradient checkpointing
         if use_gradient_checkpointing == "unsloth":
             patch_unsloth_smart_gradient_checkpointing(dtype = dtype)
@@ -1061,12 +1021,10 @@ class FastModel(FastBaseModel):
                 trust_remote_code = trust_remote_code,
                 unsloth_force_compile = unsloth_force_compile,
             )
-        pass
         # Fix SDPA issues
         for model_type in DISABLE_SDPA_MODEL_NAMES:
             if model_type in model_types_all:
                 supports_sdpa = False
-        pass
 
         # Check if this is local model since the tokenizer gets overwritten
         if (
@@ -1077,7 +1035,6 @@ class FastModel(FastBaseModel):
             tokenizer_name = old_model_name
         else:
             tokenizer_name = kwargs.pop("tokenizer_name", None)
-        pass
 
         # Check if VLM
         architectures = getattr(model_config, "architectures", None)
@@ -1122,7 +1079,6 @@ class FastModel(FastBaseModel):
 
         if resize_model_vocab is not None:
             model.resize_token_embeddings(resize_model_vocab)
-        pass
 
         # In case the model supports tagging, add the unsloth tag.
         if hasattr(model, "add_model_tags"):
@@ -1131,14 +1087,12 @@ class FastModel(FastBaseModel):
                     "unsloth",
                 ]
             )
-        pass
         if hasattr(tokenizer, "add_model_tags"):
             tokenizer.add_model_tags(
                 [
                     "unsloth",
                 ]
             )
-        pass
 
         if load_in_4bit:
             # Fix up bitsandbytes config
@@ -1157,7 +1111,6 @@ class FastModel(FastBaseModel):
                 "quant_method": "bitsandbytes",
             }
             model.config.update({"quantization_config": quantization_config})
-        pass
 
         if is_peft:
             # From https://github.com/huggingface/peft/issues/184
@@ -1174,20 +1127,13 @@ class FastModel(FastBaseModel):
             model = FastBaseModel.post_patch_model(
                 model, use_gradient_checkpointing, trust_remote_code = trust_remote_code
             )
-        pass
 
         # Apply QAT if specified
         if qat_scheme is not None:
             print("Unsloth: Applying QAT to mitigate quantization degradation")
             model = _prepare_model_for_qat(model, qat_scheme)
-        pass
 
         return model, tokenizer
-
-    pass
-
-
-pass
 
 
 class FastVisionModel(FastModel):

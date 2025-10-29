@@ -35,7 +35,6 @@ SYSTEM """You are a helpful assistant to the user"""
 '''
 
 OLLAMA_TEMPLATES["unsloth"] = unsloth_ollama
-pass
 
 # =========================================== Zephyr
 
@@ -54,7 +53,6 @@ PARAMETER min_p 0.1
 '''
 
 OLLAMA_TEMPLATES["zephyr"] = zephyr_ollama
-pass
 
 # =========================================== ChatML
 chatml_ollama = '''
@@ -73,7 +71,6 @@ PARAMETER min_p 0.1
 '''
 
 OLLAMA_TEMPLATES["chatml"] = chatml_ollama
-pass
 
 # =========================================== Mistral-1
 # Ollama from https://www.ollama.com/library/mistral
@@ -441,7 +438,6 @@ OLLAMA_TEMPLATES["devstral"] = devstral_ollama
 OLLAMA_TEMPLATES["magistral"] = magistral_ollama
 OLLAMA_TEMPLATES["codestral"] = codestral_ollama
 
-pass
 
 # =========================================== Llama-2
 # Ollama from https://www.ollama.com/library/llama3
@@ -456,7 +452,6 @@ PARAMETER min_p 0.1
 '''
 
 OLLAMA_TEMPLATES["llama"] = llama_ollama
-pass
 
 # ===========================================  Vicuna
 # Ollama from https://www.ollama.com/library/vicuna
@@ -469,7 +464,6 @@ PARAMETER min_p 0.1
 '''
 
 OLLAMA_TEMPLATES["vicuna"] = vicuna_ollama
-pass
 
 # =========================================== Vicuna Old
 vicuna_old_ollama = '''
@@ -486,7 +480,6 @@ SYSTEM """A chat between a curious human and an artificial intelligence assistan
 
 OLLAMA_TEMPLATES["vicuna_old"] = vicuna_old_ollama
 OLLAMA_TEMPLATES["vicuna old"] = OLLAMA_TEMPLATES["vicuna_old"]
-pass
 
 # =========================================== Alpaca multi turn
 alpaca_ollama = '''
@@ -507,7 +500,6 @@ SYSTEM """Below are some instructions that describe some tasks. Write responses 
 '''
 
 OLLAMA_TEMPLATES["alpaca"] = alpaca_ollama
-pass
 
 # =========================================== Gemma
 # Ollama from https://www.ollama.com/library/gemma
@@ -527,7 +519,6 @@ PARAMETER min_p 0.1
 '''
 
 OLLAMA_TEMPLATES["gemma"] = gemma_ollama
-pass
 
 # =========================================== Gemma with ChatML instead
 gemma_chatml_ollama = '''
@@ -548,7 +539,6 @@ PARAMETER min_p 0.1
 '''
 
 OLLAMA_TEMPLATES["gemma_chatml"] = gemma_chatml_ollama
-pass
 
 # =========================================== Gemma 2
 # Same as Gemma 1, but with sliding window attention!
@@ -559,7 +549,6 @@ OLLAMA_TEMPLATES["gemma2"] = gemma2_ollama
 # =========================================== Gemma 2 with ChatML instead
 gemma2_chatml_ollama = gemma_chatml_ollama + "PARAMETER num_ctx 4096\n"
 OLLAMA_TEMPLATES["gemma2_chatml"] = gemma2_chatml_ollama
-pass
 
 # =========================================== Llama-3
 # Ollama from https://www.ollama.com/library/llama3
@@ -582,7 +571,6 @@ PARAMETER min_p 0.1
 
 OLLAMA_TEMPLATES["llama-3"] = llama3_ollama
 OLLAMA_TEMPLATES["llama3"] = llama3_ollama
-pass
 
 
 # =========================================== Phi-3
@@ -606,7 +594,6 @@ PARAMETER min_p 0.1
 OLLAMA_TEMPLATES["phi-3"] = phi3_ollama
 OLLAMA_TEMPLATES["phi-35"] = OLLAMA_TEMPLATES["phi-3"]
 OLLAMA_TEMPLATES["phi-3.5"] = OLLAMA_TEMPLATES["phi-3"]
-pass
 
 # =========================================== Llama-3.1
 """
@@ -806,7 +793,6 @@ OLLAMA_TEMPLATES["llama-32-vision"] = llama_32_vision_ollama
 
 for version in ("llama-3.2", "llama-3.3", "llama-32", "llama-33"):
     OLLAMA_TEMPLATES[version] = OLLAMA_TEMPLATES["llama-3.1"]
-pass
 
 # =========================================== tinyllama
 # tinyllama-chat https://ollama.com/library/tinyllama:latest/blobs/af0ddbdaaa26
@@ -826,7 +812,6 @@ SYSTEM """You are a helpful AI assistant."""
 
 OLLAMA_TEMPLATES["tinyllama"] = tinyllama_ollama
 
-pass
 
 # =========================================== Qwen 2/2.5
 # Qwen2 https://ollama.com/library/qwen2:latest/blobs/77c91b422cc9
@@ -993,7 +978,6 @@ OLLAMA_TEMPLATES["qwen-25-coder"] = qwen_25_coder_ollama
 OLLAMA_TEMPLATES["qwen-25-vl"] = qwen_25_vl_ollama
 OLLAMA_TEMPLATES["openthinker"] = openthinker_ollama
 OLLAMA_TEMPLATES["qwen-2"] = qwen25_ollama
-pass
 
 # =========================================== Phi-4
 _phi4_ollama_template = (
@@ -1070,7 +1054,6 @@ OLLAMA_TEMPLATES["phi-4"] = phi_4_ollama
 OLLAMA_TEMPLATES["phi-4-reasoning"] = phi_4_reasoning_ollama
 OLLAMA_TEMPLATES["phi-4-mini"] = phi_4_mini_ollama
 OLLAMA_TEMPLATES["phi-4-mini-reasoning"] = phi_4_mini_reasoning_ollama
-pass
 
 
 # =========================================== Gemma-3
@@ -1126,7 +1109,6 @@ OLLAMA_TEMPLATES["gemma-3"] = gemma3_ollama
 OLLAMA_TEMPLATES["gemma3"] = gemma3_ollama
 OLLAMA_TEMPLATES["gemma3-270m"] = gemma3_270m_ollama
 
-pass
 
 # =========================================== Qwen-3
 # Ollama template for Qwen-3 (see https://ollama.com/library/qwen3/blobs/eb4402837c78)
@@ -1195,7 +1177,6 @@ qwen3_template_eos_token = "<|im_end|>"
 OLLAMA_TEMPLATES["qwen-3"] = qwen3_ollama
 OLLAMA_TEMPLATES["qwen3"] = qwen3_ollama
 
-pass
 
 # =========================================== Gemma-3n
 # Ollama from https://ollama.com/library/gemma3n/blobs/e0a42594d802
@@ -1216,7 +1197,6 @@ TEMPLATE """{{- range $i, $_ := .Messages }}
 
 OLLAMA_TEMPLATES["gemma-3n"] = gemma3n_ollama
 OLLAMA_TEMPLATES["gemma3n"] = gemma3n_ollama
-pass
 
 # =========================================== GPT-OSS
 
@@ -1404,7 +1384,6 @@ PARAMETER top_p 1.0
 OLLAMA_TEMPLATES["gpt-oss"] = gptoss_ollama
 OLLAMA_TEMPLATES["gptoss"] = gptoss_ollama
 
-pass
 
 # =========================================== Qwen3
 
@@ -1468,8 +1447,6 @@ For each function call, return a json object with function name and arguments wi
 OLLAMA_TEMPLATES["qwen3-instruct"] = qwen3_ollama
 OLLAMA_TEMPLATES["qwen3-thinking"] = qwen3_ollama
 
-pass
-
 
 # =========================================== Starling-LM
 
@@ -1490,7 +1467,6 @@ PARAMETER min_p 0.1
 
 OLLAMA_TEMPLATES["starling"] = starling_ollama
 
-pass
 
 # =========================================== Yi-chat
 
@@ -1728,8 +1704,6 @@ SYSTEM """A chat between a curious user and an artificial intelligence assistant
 
 OLLAMA_TEMPLATES["granite-32"] = granite_32_ollama
 OLLAMA_TEMPLATES["granite-32-vision"] = granite_32_vision_ollama
-
-pass
 
 
 OLLAMA_TEMPLATE_TO_MODEL_MAPPER = {
@@ -2211,11 +2185,8 @@ MODEL_TO_OLLAMA_TEMPLATE_MAPPER = {}
 for key, values in OLLAMA_TEMPLATE_TO_MODEL_MAPPER.items():
     for value in values:
         MODEL_TO_OLLAMA_TEMPLATE_MAPPER[value] = key
-    pass
 
     # Get lowercased
     lowered_key = key.lower()
     for value in values:
         MODEL_TO_OLLAMA_TEMPLATE_MAPPER[value.lower()] = lowered_key
-    pass
-pass

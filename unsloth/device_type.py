@@ -33,9 +33,6 @@ def is_hip():
     return bool(getattr(getattr(torch, "version", None), "hip", None))
 
 
-pass
-
-
 @functools.cache
 def get_device_type():
     if hasattr(torch, "cuda") and torch.cuda.is_available():
@@ -62,7 +59,6 @@ def get_device_type():
     )
 
 
-pass
 DEVICE_TYPE: str = get_device_type()
 # HIP fails for autocast and other torch functions. Use CUDA instead
 DEVICE_TYPE_TORCH = DEVICE_TYPE
@@ -79,8 +75,6 @@ def get_device_count():
     else:
         return 1
 
-
-pass
 
 DEVICE_COUNT: int = get_device_count()
 
@@ -102,4 +96,3 @@ if DEVICE_TYPE == "hip":
         ALLOW_BITSANDBYTES = Version(bitsandbytes.__version__) > Version("0.48.2.dev0")
     except:
         pass
-pass

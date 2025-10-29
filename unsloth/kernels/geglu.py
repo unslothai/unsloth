@@ -47,9 +47,6 @@ def _exact_forward_kernel(
     tl.store(h + offsets, h_row, mask = mask)
 
 
-pass
-
-
 def geglu_exact_forward_kernel(gate, up):
     batch, seq_len, hd = gate.shape
     n_elements = gate.numel()
@@ -65,9 +62,6 @@ def geglu_exact_forward_kernel(gate, up):
             BLOCK_SIZE = 1024,
         )
     return out
-
-
-pass
 
 
 @triton.jit
@@ -122,9 +116,6 @@ def _exact_backward_kernel(
     tl.store(g + offsets, de_row, mask = mask)  # de
 
 
-pass
-
-
 def geglu_exact_backward_kernel(DW, e, g):
     batch_seq_len, hd = e.shape
     n_elements = e.numel()
@@ -138,9 +129,6 @@ def geglu_exact_backward_kernel(DW, e, g):
             BLOCK_SIZE = 1024,
         )
     return DW, e, g
-
-
-pass
 
 
 @triton.jit
@@ -173,9 +161,6 @@ def _approx_forward_kernel(
     tl.store(h + offsets, h_row, mask = mask)
 
 
-pass
-
-
 def geglu_approx_forward_kernel(gate, up):
     batch, seq_len, hd = gate.shape
     n_elements = gate.numel()
@@ -191,9 +176,6 @@ def geglu_approx_forward_kernel(gate, up):
             BLOCK_SIZE = 1024,
         )
     return out
-
-
-pass
 
 
 @triton.jit
@@ -255,9 +237,6 @@ def _approx_backward_kernel(
     tl.store(g + offsets, de_row, mask = mask)  # de
 
 
-pass
-
-
 def geglu_approx_backward_kernel(DW, e, g):
     batch_seq_len, hd = e.shape
     n_elements = e.numel()
@@ -271,6 +250,3 @@ def geglu_approx_backward_kernel(DW, e, g):
             BLOCK_SIZE = 1024,
         )
     return DW, e, g
-
-
-pass

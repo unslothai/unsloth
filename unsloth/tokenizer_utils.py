@@ -76,7 +76,6 @@ def try_fix_tokenizer(tokenizer, prepend = True):
         converted_tokenizer = tokenizer._tokenizer
     else:
         converted_tokenizer = convert_slow_tokenizer(tokenizer)
-    pass
 
     tokenizer_string = converted_tokenizer.to_str()
 
@@ -84,7 +83,6 @@ def try_fix_tokenizer(tokenizer, prepend = True):
     prepend_text = '{"type":"Prepend","prepend":"▁"},'
     if not prepend and prepend_text in tokenizer_string:
         tokenizer_string = tokenizer_string.replace(prepend_text, "", 1)
-    pass
 
     dir_names = dir(tokenizer)
     # Get eos_token, bos_token etc
@@ -114,14 +112,9 @@ def try_fix_tokenizer(tokenizer, prepend = True):
             bad_text = f'"{bad_token}":{token_id},'
             good_text = f'"{token}":{token_id},'
             tokenizer_string = tokenizer_string.replace(bad_text, good_text, 1)
-        pass
-    pass
 
     fixed_tokenizer = converted_tokenizer.from_str(tokenizer_string)
     return fixed_tokenizer
-
-
-pass
 
 
 def get_sorted_dict(dictionary):
@@ -133,9 +126,6 @@ def get_sorted_dict(dictionary):
         value = inverted_dictionary[key]
         sorted_dictionary[value] = key
     return sorted_dictionary
-
-
-pass
 
 
 def convert_to_fast_tokenizer(
@@ -158,7 +148,6 @@ def convert_to_fast_tokenizer(
             FastTokenizer = PreTrainedTokenizerFast
     except:
         FastTokenizer = PreTrainedTokenizerFast
-    pass
 
     # Get all arguments (bos_token, etc)
     docs = FastTokenizer.__doc__
@@ -200,14 +189,11 @@ def convert_to_fast_tokenizer(
         if not assert_same_tokenization(slow_tokenizer, fast_tokenizer):
             # Failure :(
             return slow_tokenizer
-        pass
-    pass
 
     # Also tokenizer.model is missing!
     name = slow_tokenizer.name_or_path.replace("/", "_")
     if not os.path.exists(temporary_location):
         os.makedirs(temporary_location)
-    pass
     new_location = f"{temporary_location}/{name}"
     slow_tokenizer.save_pretrained(new_location)
     fast_tokenizer.save_pretrained(new_location)
@@ -217,9 +203,6 @@ def convert_to_fast_tokenizer(
     if assert_same_tokenization(slow_tokenizer, fast_tokenizer):
         return fast_tokenizer
     return slow_tokenizer
-
-
-pass
 
 
 # Check Mistral chat template without BOS / EOS
@@ -245,7 +228,6 @@ mistral_template = (
     "{% endif %}"
     "{% endfor %}"
 )
-pass
 
 # Check Llama chat template without BOS / EOS
 llama_template = (
@@ -270,7 +252,6 @@ llama_template = (
     "{% endif %}"
     "{% endfor %}"
 )
-pass
 
 
 def assert_same_tokenization(slow_tokenizer, fast_tokenizer):
@@ -360,10 +341,6 @@ def assert_same_tokenization(slow_tokenizer, fast_tokenizer):
             return check_chat_template
         else:
             return False
-    pass
-
-
-pass
 
 
 def fix_sentencepiece_tokenizer(
@@ -392,16 +369,13 @@ def fix_sentencepiece_tokenizer(
         except:
             # This will only work for older SentencePiece versions <= 3.20.3
             from transformers.utils import sentencepiece_model_pb2
-    pass
 
     if not os.path.exists(temporary_location):
         os.makedirs(temporary_location)
-    pass
 
     # Check if tokenizer.model exists
     if not os.path.isfile(f"{temporary_location}/tokenizer.model"):
         return new_tokenizer
-    pass
 
     # First save the old tokenizer
     old_tokenizer.save_pretrained(temporary_location)
@@ -424,7 +398,6 @@ def fix_sentencepiece_tokenizer(
                 f"Skip mapping {old_token} to {new_token} since {new_token} is already in the tokenizer!"
             )
             continue
-        pass
         ids = ids[0]
         # [TODO] Hack for Starling - try except
         try:
@@ -433,12 +406,10 @@ def fix_sentencepiece_tokenizer(
             continue
         assert tokenizer_piece.piece == old_token
         tokenizer_piece.piece = new_token
-    pass
 
     # And now write it
     with open(f"{temporary_location}/tokenizer.model", "wb") as file:
         file.write(tokenizer_file.SerializeToString())
-    pass
 
     # And load it!
     from transformers import AutoTokenizer
@@ -449,9 +420,6 @@ def fix_sentencepiece_tokenizer(
         pad_token = new_tokenizer.pad_token,
     )
     return tokenizer
-
-
-pass
 
 
 def fix_sentencepiece_gguf(saved_location):
@@ -473,8 +441,6 @@ def fix_sentencepiece_gguf(saved_location):
         UNUSED = 5
         BYTE = 6
 
-    pass
-
     # Load tokenizer.model
     tokenizer_file = sentencepiece_model_pb2.ModelProto()
     if not os.path.isfile(f"{saved_location}/tokenizer.model"):
@@ -489,7 +455,6 @@ def fix_sentencepiece_gguf(saved_location):
         return
     with open(f"{saved_location}/added_tokens.json", "r", encoding = "utf-8") as file:
         added_tokens_json = json.load(file)
-    pass
     if len(added_tokens_json) == 0:
         return
 
@@ -517,21 +482,16 @@ def fix_sentencepiece_gguf(saved_location):
         new_token.piece = added_token.encode("utf-8")
         new_token.score = -1000.0
         new_token.type = SentencePieceTokenTypes.USER_DEFINED
-    pass
 
     tokenizer_file.pieces.extend(new_tokens)
 
     with open(f"{saved_location}/tokenizer.model", "wb") as file:
         file.write(tokenizer_file.SerializeToString())
-    pass
 
     # Add padding tokens
     # actual_vocab_size = model.config.vocab_size
     # padding = actual_vocab_size - len(tokenizer_file.pieces)
     return
-
-
-pass
 
 
 def _load_correct_tokenizer(
@@ -551,7 +511,6 @@ def _load_correct_tokenizer(
         cache_dir = os.path.join(KAGGLE_TMP, cache_dir)
     else:
         cache_dir = None
-    pass
 
     # Try loading the slow tokenizer. If it fails, then try Fast only
     # Mainly to solve Deepseek models with no tokenizer.model file
@@ -575,7 +534,6 @@ def _load_correct_tokenizer(
         #     f"Unsloth: {tokenizer_name} has no tokenizer.model file.\n"\
         #     "Just informing you about this - this is not a critical error."
         # )
-    pass
     # Unsure why this occurs!
     if type(slow_tokenizer) is bool:
         slow_tokenizer = None
@@ -615,13 +573,8 @@ def _load_correct_tokenizer(
                 f"Unsloth: Will load {tokenizer_name} as a legacy tokenizer."
             )
             return convert_to_fast_tokenizer(slow_tokenizer)
-        pass
     else:
         return fast_tokenizer
-    pass
-
-
-pass
 
 
 def load_correct_tokenizer(
@@ -666,14 +619,9 @@ def load_correct_tokenizer(
             raise RuntimeError(
                 "Unsloth: Fixing chat template failed - please file a report immediately!"
             )
-        pass
-    pass
 
     tokenizer.chat_template = chat_template
     return tokenizer
-
-
-pass
 
 
 def _find_end_position(template, endfor, endif):
@@ -685,10 +633,6 @@ def _find_end_position(template, endfor, endif):
         return endfor
     else:
         return endif
-    pass
-
-
-pass
 
 
 def _fix_chat_template(chat_template):
@@ -721,11 +665,7 @@ def _fix_chat_template(chat_template):
         )
 
         chat_template = chat_template[: where + len(chosen_end)] + after_endfor
-    pass
     return chat_template
-
-
-pass
 
 
 def fix_chat_template(tokenizer):
@@ -755,8 +695,6 @@ def fix_chat_template(tokenizer):
             is_sharegpt = True
         except:
             is_sharegpt = None
-        pass
-    pass
 
     # Not ShareGPT or HF style - just return
     if is_sharegpt is None:
@@ -798,19 +736,13 @@ def fix_chat_template(tokenizer):
                     f"This is not a bug, but please notify the maintainers of `{tokenizer.name_or_path}` - thanks!"
                 )
                 chat_template = new_chat_template
-            pass
         else:
             raise RuntimeError(
                 f"Unsloth: The tokenizer `{tokenizer.name_or_path}`\n"
                 "has a {% if add_generation_prompt %} for generation purposes, but wasn't provided correctly.\n"
                 "Please file a bug report immediately - thanks!"
             )
-        pass
-    pass
     return chat_template
-
-
-pass
 
 
 def check_tokenizer(
@@ -831,7 +763,6 @@ def check_tokenizer(
     # We ignore some of them!
     if tokenizer.__repr__().split("(", 1)[0] in IGNORED_TOKENIZER_CHECKING:
         return tokenizer
-    pass
 
     max_embedding_size = model.model.embed_tokens.weight.shape[0]
     added_tokens_fast = tokenizer.added_tokens_decoder
@@ -884,16 +815,12 @@ def check_tokenizer(
                             if check_token == token:
                                 try_removal.append(token)
                                 try_mapper.append(name_token)
-                            pass
-                        pass
-                    pass
 
                     # Recheck!
                     can_be_removed = len(try_removal) == len(bad_tokens)
                     if can_be_removed:
                         remove_generic = True
                     can_be_removed1 = bad_tokens
-                pass
 
                 if can_be_removed:
                     # Yes it can be fixed!
@@ -906,8 +833,6 @@ def check_tokenizer(
                             # Remove sep token for example
                             setattr(tokenizer, try_mapper[j], None)
                             setattr(tokenizer, try_mapper[j] + "_id", None)
-                        pass
-                    pass
                     # Confirm 1 more time!
                     if max(tokenizer.added_tokens_decoder.keys()) < max_embedding_size:
                         logger.warning_once(
@@ -916,8 +841,6 @@ def check_tokenizer(
                             "We removed these bad tokens. If you think this is incorrect, fix your tokenizer first."
                         )
                         return convert_to_fast_tokenizer(tokenizer)
-                    pass
-                pass
 
                 # :( Failure
                 raise RuntimeError(
@@ -925,13 +848,11 @@ def check_tokenizer(
                     f"Tokens {bad_tokens} with ids {bad_indices} exceeds the max vocab size of {max_embedding_size}.\n"
                     f"Fix your tokenizer since it'll perform out of bounds memory accesses."
                 )
-            pass
 
             if IS_COLAB_ENVIRONMENT or IS_KAGGLE_ENVIRONMENT:
                 cache_dir = "huggingface_tokenizers_cache"
             else:
                 cache_dir = None
-            pass
 
             # Sometimes slow tokenizer does not work like Deepseek
             try:
@@ -966,13 +887,7 @@ def check_tokenizer(
                     "Please file an issue on the model owner's repo about this issue."
                 )
                 return tokenizer
-            pass
-        pass
-    pass
     return convert_to_fast_tokenizer(tokenizer)
-
-
-pass
 
 
 import inspect
@@ -1013,9 +928,6 @@ except:
             mag_norm = module.neftune_noise_alpha / torch.sqrt(dims)
             output = output + torch.zeros_like(output).uniform_(-mag_norm, mag_norm)
         return output
-
-    pass
-pass
 
 
 def patch_sft_trainer_tokenizer():
@@ -1087,7 +999,6 @@ def patch_sft_trainer_tokenizer():
             function = function.replace(replacer, replacer + check_text)
         else:
             function = function.replace(replacer, check_text + replacer)
-        pass
 
         x = [x for x in all_imports if x in function]
         exec(f"from trl.trainer.sft_trainer import ({','.join(x)})", locals())
@@ -1096,7 +1007,6 @@ def patch_sft_trainer_tokenizer():
             f"trl.trainer.sft_trainer.SFTTrainer.{function_name} = {function_name}",
             globals(),
         )
-    pass
 
     # Patch train with fix_untrained_tokens
     for path_to_trainer in (
@@ -1187,10 +1097,7 @@ def patch_sft_trainer_tokenizer():
             f"trl.trainer.{path_to_trainer}.{function_name} = {function_name}",
             globals(),
         )
-    pass
 
-
-pass
 
 # Finally patch TRL tokenizer things -> moved to RL
 # patch_sft_trainer_tokenizer()

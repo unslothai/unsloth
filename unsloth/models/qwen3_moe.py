@@ -92,9 +92,6 @@ def Qwen3MoeSparseMoeBlock_fast_forward(self, X, temp_gate = None, temp_up = Non
     return final_X, router_logits
 
 
-pass
-
-
 def Qwen3MoeDecoderLayer_fast_forward(
     self,
     hidden_states: torch.Tensor,
@@ -163,7 +160,6 @@ def Qwen3MoeDecoderLayer_fast_forward(
         hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states)
         hidden_states, router_logits = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
-    pass
 
     outputs = (hidden_states,)
     if output_attentions:
@@ -187,7 +183,6 @@ class FastQwen3MoeModel(FastQwen3Model):
         if init_name is not None:
             exec(function, globals())
             Qwen3MoeAttention.__init__ = eval(init_name)
-        pass
         Qwen3MoeAttention.forward = Qwen3Attention_fast_forward
         # Qwen3SdpaAttention   .forward = Qwen3Attention_fast_forward
         # Qwen3FlashAttention2 .forward = Qwen3Attention_fast_forward
@@ -214,8 +209,6 @@ class FastQwen3MoeModel(FastQwen3Model):
             LlamaRotaryEmbedding
         )
         return
-
-    pass
 
     @staticmethod
     def from_pretrained(  # TODO: Change after release
@@ -246,8 +239,3 @@ class FastQwen3MoeModel(FastQwen3Model):
             trust_remote_code = trust_remote_code,
             **kwargs,
         )
-
-    pass
-
-
-pass

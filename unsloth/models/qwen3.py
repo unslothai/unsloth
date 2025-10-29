@@ -40,7 +40,6 @@ except:
             f'Try `pip install --upgrade "transformers>=4.50.3"`\n'
             f"to obtain the latest transformers build, then restart this session."
         )
-    pass
 from transformers.modeling_attn_mask_utils import (
     _prepare_4d_causal_attention_mask_for_sdpa,
 )
@@ -54,7 +53,6 @@ try:
 except:
     Qwen3SdpaAttention = Qwen3Attention
     Qwen3FlashAttention2 = Qwen3Attention
-pass
 
 
 def Qwen3Attention_fast_forward(
@@ -80,7 +78,6 @@ def Qwen3Attention_fast_forward(
         del self.temp_KV
         del self.RH_Q
         del self.attention
-    pass
 
     bsz, q_len, _ = hidden_states.size()
 
@@ -131,7 +128,6 @@ def Qwen3Attention_fast_forward(
     if past_key_value is not None:
         K = torch.cat([past_key_value[0], K], dim = 2)
         V = torch.cat([past_key_value[1], V], dim = 2)
-    pass
     past_key_value = (K, V) if use_cache else None
 
     # Attention module
@@ -158,7 +154,6 @@ def Qwen3Attention_fast_forward(
                 Q = Q.view(1, Q_M, n_heads, head_dim)
                 K = K.view(1, K_M, n_heads, head_dim)
                 V = V.view(1, V_M, n_heads, head_dim)
-            pass
         else:
             # Xformers does support the forward pass though
             Q = Q.view(bsz, q_len, n_kv_heads, n_groups, head_dim)
@@ -167,8 +162,6 @@ def Qwen3Attention_fast_forward(
                 Q = Q.view(1, Q_M, n_kv_heads, n_groups, head_dim)
                 K = K.view(1, K_M, n_kv_heads, n_groups, head_dim)
                 V = V.view(1, V_M, n_kv_heads, n_groups, head_dim)
-            pass
-        pass
 
         A = xformers_attention(Q, K, V, attn_bias = causal_mask)
         A = A.view(bsz, q_len, n_heads, head_dim)
@@ -206,15 +199,12 @@ def Qwen3Attention_fast_forward(
         )
         # Go back to (batch_size, seq_len, n_heads, head_dim)
         A = A.transpose(1, 2).contiguous()
-    pass
 
     attn_output = A.reshape(bsz, q_len, n_heads * head_dim)
     attn_output = self.apply_o(self, attn_output)
     attn_weights = None
     return attn_output, attn_weights, past_key_value
 
-
-pass
 
 torch_matmul = torch.matmul
 
@@ -297,7 +287,6 @@ def Qwen3Attention_fast_forward_inference(
             self.temp_O = torch.empty((1, bsz, hidden_size), dtype = dtype, device = device)
         else:
             self.temp_O = self.temp_QA[1][:, :, :hidden_size]
-        pass
 
         self.attention = torch.empty(
             (bsz, n_heads, 1, KV_CACHE_INCREMENT + seq_len), dtype = dtype, device = device
@@ -319,7 +308,6 @@ def Qwen3Attention_fast_forward_inference(
         self.attention.resize_(
             (bsz, n_heads, 1, self.attention.shape[-1] + KV_CACHE_INCREMENT)
         )
-    pass
 
     Qn = fast_linear_forward(self.q_proj, Xn, out = self.temp_QA[0])
     Kn = fast_linear_forward(self.k_proj, Xn, out = self.temp_KV[0])
@@ -382,7 +370,6 @@ def Qwen3Attention_fast_forward_inference(
         Vnn = Vn[:, :, slicing_tokens:, :]  # .contiguous()
     else:
         Knn, Vnn = Kn, Vn
-    pass
 
     # when qlen==vlen and attn_mask is None, we should use causal attention
     Q_len = Qn.shape[-2]
@@ -403,7 +390,6 @@ def Qwen3Attention_fast_forward_inference(
         )
         Knn = Knn.reshape(bsz, n_heads, cached_len, head_dim)
         Vnn = Vnn.reshape(bsz, n_heads, cached_len, head_dim)
-    pass
     # else:
     #     Knn, Vnn = Knn, Vnn
     # pass
@@ -434,14 +420,10 @@ def Qwen3Attention_fast_forward_inference(
             A = scaled_dot_product_attention(
                 Qn, Knn, Vnn, attn_mask = attention_mask, is_causal = is_causal
             )
-    pass
     A = A.transpose(1, 2)
     A = A.reshape(bsz, 1, attention_size)
     A = fast_linear_forward(self.o_proj, A, out = self.temp_O)
     return A, (Kn, Vn)
-
-
-pass
 
 
 class FastQwen3Model(FastLlamaModel):
@@ -456,7 +438,6 @@ class FastQwen3Model(FastLlamaModel):
         if init_name is not None:
             exec(function, globals())
             Qwen3Attention.__init__ = eval(init_name)
-        pass
         Qwen3Attention.forward = Qwen3Attention_fast_forward
         Qwen3SdpaAttention.forward = Qwen3Attention_fast_forward
         Qwen3FlashAttention2.forward = Qwen3Attention_fast_forward
@@ -479,8 +460,6 @@ class FastQwen3Model(FastLlamaModel):
             LlamaRotaryEmbedding
         )
         return
-
-    pass
 
     @staticmethod
     def from_pretrained(  # TODO: Change after release
@@ -511,8 +490,3 @@ class FastQwen3Model(FastLlamaModel):
             trust_remote_code = trust_remote_code,
             **kwargs,
         )
-
-    pass
-
-
-pass

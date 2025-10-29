@@ -56,9 +56,6 @@ def vLLMSamplingParams(**kwargs):
     return sampling_params
 
 
-pass
-
-
 def PatchRL(FastLanguageModel):
     from trl.models.utils import unwrap_model_for_generation
     from contextlib import contextmanager
@@ -79,7 +76,6 @@ def PatchRL(FastLanguageModel):
                     return out.clone()
                 return out
 
-            pass
             unwrapped_model.generate = generate_with_clone
 
             try:
@@ -88,10 +84,6 @@ def PatchRL(FastLanguageModel):
                 # Restore generate and return
                 unwrapped_model.generate = original_generate
                 FastLanguageModel.for_training(model)
-            pass
-        pass
-
-    pass
 
     from transformers import Trainer
     from transformers.trainer_pt_utils import nested_detach
@@ -215,10 +207,6 @@ def PatchRL(FastLanguageModel):
             except:
                 continue
     exec(f"Trainer.prediction_step=unsloth_prediction_step")
-    pass
-
-
-pass
 
 
 selective_log_softmax = RL_REPLACEMENTS["selective_log_softmax"]
@@ -410,7 +398,6 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             else:
                 continue
             call_args.append(f"{k} = {k}")
-        pass
         arguments = f"\n{' ' * 8}" + f",\n{' ' * 8}".join(arguments)
         call_args = f"\n{' ' * 12}" + f",\n{' ' * 12}".join(call_args)
         processed.append(
@@ -419,7 +406,6 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
                 call_args,
             )
         )
-    pass
 
     # Process RLTrainer first
     arguments, call_args = processed[0]
@@ -432,7 +418,6 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             "processing_class = processing_class",
             "processing_class = tokenizer if tokenizer is not None else processing_class",
         )
-    pass
 
     # Edit bf16, fp16 by checking model's dtype/torch_dtype directly
     extra_args = ""
@@ -468,7 +453,6 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         )
         "elif mixed_precision_dtype == 'bfloat16':\n    # Both False since bfloat16 full finetuning doesn't do any autocasting.\n    args.fp16 = False\n    args.bf16 = False\n    os.environ['ACCELERATE_MIXED_PRECISION'] = 'no'\n"
         extra_args += mixed_precision
-    pass
 
     # Check if per_device_eval_batch_size (default 8) bigger than bsz
     # Also use FP16 / BF16 evaluation
@@ -482,7 +466,6 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
                 "    if getattr(args, 'eval_steps', None) is None: args.eval_steps = 0.1\n"
             )
             extra_args += check_eval_dataset
-        pass
 
         # Check if gradient accumulation bug fix is applied
         check_ga = (
@@ -517,7 +500,6 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             "    args.fp16_full_eval = args.fp16\n"
         )
         extra_args += eval_changes
-    pass
 
     # Force logits to be produced if preprocess_logits_for_metrics or compute_metrics is used
     if "model" in call_args:
@@ -529,7 +511,6 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             "    os.environ['UNSLOTH_RETURN_LOGITS'] = '1'\n"
         )
         extra_args += logits_check
-    pass
 
     # Check max_seq_length
     if "model" in call_args:
@@ -571,7 +552,6 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
                 "            args.max_length = 1024\n"
             )
             extra_args += max_length_check
-    pass
 
     # Enable for training and move padding side of tokenizer to right
     if "model" in call_args:
@@ -585,7 +565,6 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             "processing_class.tokenizer.padding_side = 'right'\n"
         )
         extra_args += training_check
-    pass
 
     # Check data collator if it's correct!
     if "data_collator" in call_args and "train_dataset" in call_args:
@@ -630,7 +609,6 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             "            )\n"
         )
         extra_args += pad_check
-    pass
 
     # Check NEFTune
     if "model" in call_args:
@@ -643,7 +621,6 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             "pass\n"
         )
         RLTrainer_post += neftune_check
-    pass
 
     # Add accelerator scaler to model
     if "model" in call_args:
@@ -658,7 +635,6 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             "pass\n"
         )
         RLTrainer_post += accelerator_check
-    pass
 
     # Add enabling and disabling training modes
     if "model" in call_args:
@@ -668,7 +644,6 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             "pass\n"
         )
         RLTrainer_post += training_check
-    pass
 
     # Edit optional metrics
     other_metrics_processor = ""
@@ -678,7 +653,6 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             other_metrics_processor += process_extra_arg(
                 old_RLTrainer_source, old_RLConfig_source
             )
-    pass
 
     # Add statistics as well!
     extra_args += (
@@ -693,7 +667,6 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         process_extra_args = RL_EXTRA_ARGS[trainer_file]
         for process_extra_arg in process_extra_args:
             extra_args += process_extra_arg(call_args, extra_args)
-    pass
 
     # Create RLTrainer args
     extra_args = extra_args.split("\n")
@@ -746,7 +719,6 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         y = f"'{v}'" if type(v) is str else f"{v}"
         y = f"{k} = {y},\n"
         arguments = re.sub(x, y, arguments)
-    pass
 
     # Fix GRPO beta default as 0.001 TRL used to be 0.04, now 0.00!
     # https://github.com/huggingface/trl/pull/3516
@@ -765,8 +737,6 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             y = f"'{v}'" if type(v) is str else f"{v}"
             y = f"{k} = {y},\n"
             arguments = re.sub(x, y, arguments)
-        pass
-    pass
 
     # Warn on too large or too small learning rate
     if "learning_rate" in call_args:
@@ -777,7 +747,6 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             "Consider decreasing it to 1e-1, otherwise gradient updates will explode!')\n"
         )
         extra_args += learning_rate_check
-    pass
 
     # Check if max_seq_length is NOT defined (max_length is now default)
     if "max_seq_length" not in call_args and "max_length" in call_args:
@@ -791,7 +760,6 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         max_seq_length_pre = ""
         max_seq_length_call = ""
         max_seq_length_post = ""
-    pass
 
     # Add output_dir saving
     if "output_dir" in call_args:
@@ -802,7 +770,6 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             "    save_strategy = 'no'\n"
         )
         extra_args += saving_check
-    pass
 
     # Edit dataset_num_proc
     if "dataset_num_proc" in call_args:
@@ -812,7 +779,6 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             "    dataset_num_proc = min(max(cpu_count()+4, 2), 64)\n"
         )
         extra_args += num_proc_check
-    pass
 
     # Add padding if flex attention is added
     if "pad_to_multiple_of" in call_args:
@@ -825,7 +791,6 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             "\n"
         )
         extra_args += pad_to_multiple_of
-    pass
 
     # Check for loss_type = dr_grpo and scale_rewards for GRPO
     if "loss_type" in call_args and "scale_rewards" in call_args:
@@ -855,7 +820,6 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             "\n"
         )
         extra_args += check_dr_grpo
-    pass
 
     # Check GRPO num_generations mismatch
     if "per_device_train_batch_size" in call_args and "num_generations" in call_args:
@@ -867,7 +831,6 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             "\n"
         )
         extra_args += check_num_generations
-    pass
 
     # Check temperature must not be <= 0. Also stop if >= 10
     if "temperature" in call_args:
@@ -879,14 +842,12 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             "\n"
         )
         extra_args += check_temperature
-    pass
 
     # Edit config with anything extra
     if trainer_file in RL_CONFIG_CHANGES:
         process_extra_args = RL_CONFIG_CHANGES[trainer_file]
         for process_extra_arg in process_extra_args:
             extra_args += process_extra_arg(old_RLTrainer_source, old_RLConfig_source)
-    pass
 
     # Edit report_to and default it to nothing if max_steps is like 60
 
@@ -918,12 +879,10 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         RL_pre = "\n".join(RL_PRE_ITEMS[trainer_file])
     else:
         RL_pre = ""
-    pass
 
     # Check if SamplingParams is in there
     if "SamplingParams" in old_RLTrainer_source:
         RL_pre = RL_pre + "\n" + inspect.getsource(vLLMSamplingParams)
-    pass
 
     # Selective log softmax and other functions
     selective_log_softmax_code = inspect.getsource(selective_log_softmax)
@@ -978,7 +937,6 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     # Remove multiple doc strings
     if __RLConfig_doc__ != "" and RLTrainer_source.count(__RLTrainer_doc__) == 2:
         RLTrainer_source = RLTrainer_source.replace(__RLTrainer_doc__, "", 1)
-    pass
 
     # Remove multiple newlines
     RLTrainer_source = re.sub(r"[\n]{3,}", "\n", RLTrainer_source)
@@ -1027,9 +985,6 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     )
 
 
-pass
-
-
 def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, imports):
     init = inspect.getsource(RLTrainer.__init__)
     old_init = init
@@ -1043,7 +998,6 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
             bracketed_comment,
             bracketed_comment.replace("(", "[").replace(")", "]"),
         )
-    pass
 
     # Remove peft_config
     init = init.replace("elif peft_config is None:", "elif False:")
@@ -1088,8 +1042,6 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                 vllm_setter += " " * 12 + "args.vllm_mode='colocate'\n"
 
             init = init.replace(replacer, replacer + vllm_setter)
-        pass
-    pass
 
     # breakpoint()
 
@@ -1161,7 +1113,6 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                     f"\n{' ' * 8}if {args}.use_vllm:\n{sampling_params}"
                     f"\n{' ' * 8}else:\n"
                 )
-        pass
 
         if trl_version >= Version("0.18.0"):
             # Replace LLM init with already existing vLLM engine for colocate mode
@@ -1175,7 +1126,6 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
             )
 
         init = init.replace(vllm_part, new_vllm_part)
-    pass
 
     # Search for vLLM calling in all child functions
     functions = dir(RLTrainer)
@@ -1203,7 +1153,6 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
         # Check for function
         for edit_function in edit_functions:
             source = edit_function(function, source)
-        pass
 
         """
         import torch
@@ -1267,7 +1216,6 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
             original_source,
             source,
         )
-    pass
 
     # Import all functions
     imports = list(set(imports))
@@ -1276,15 +1224,11 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
     for function in changed:
         old, new = changed[function]
         RLTrainer_source = RLTrainer_source.replace(old, new)
-    pass
 
     RLTrainer_source = RLTrainer_source.replace(
         f"class {RLTrainer_name}", f"class _Unsloth{RLTrainer_name}", 1
     )
     return RLTrainer_source
-
-
-pass
 
 
 def patch_trl_rl_trainers():
@@ -1298,15 +1242,9 @@ def patch_trl_rl_trainers():
     return
 
 
-pass
-
-
 def PatchFastRL(algorithm = None, FastLanguageModel = None):
     if FastLanguageModel is not None:
         PatchRL(FastLanguageModel)
     patch_trl_rl_trainers()
     if type(algorithm) is str and algorithm.islower():
         PatchRLStatistics(algorithm)
-
-
-pass

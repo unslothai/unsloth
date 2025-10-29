@@ -26,7 +26,6 @@ try:
     AutoModelForVision2Seq = AutoModelForImageTextToText
 except:
     from transformers import AutoModelForVision2Seq
-pass
 from ..kernels import (
     post_patch_loss_function,
 )
@@ -73,7 +72,6 @@ try:
 except:
     # Old HF Hub versions <= 0.0.25
     from huggingface_hub.utils._token import get_token
-pass
 from ..device_type import (
     is_hip,
     get_device_type,
@@ -131,7 +129,6 @@ try:
     torch_compiler_set_stance = torch.compiler.set_stance
 except:
     torch_compiler_set_stance = None
-pass
 
 
 def unsloth_base_fast_generate(
@@ -156,7 +153,6 @@ def unsloth_base_fast_generate(
         if type(kwargs["key"]) is not torch.Tensor:
             raise TypeError("Unsloth: You need to pass in input_ids to .generate!")
         input_ids = kwargs[key]
-    pass
     assert type(input_ids) is torch.Tensor
     bsz = input_ids.shape[0]
 
@@ -195,11 +191,8 @@ def unsloth_base_fast_generate(
                     NUM_LOGITS_TO_KEEP[arch] = "logits_to_keep"
                     break
             m = m.model
-        pass
         if arch not in NUM_LOGITS_TO_KEEP:
             NUM_LOGITS_TO_KEEP[arch] = None
-        pass
-    pass
     key = NUM_LOGITS_TO_KEEP[arch]
     if key is not None and key not in kwargs:
         kwargs[key] = 1
@@ -274,7 +267,6 @@ def unsloth_base_fast_generate(
         kwargs["cache_implementation"] = cache_implementation
         if cache_implementation is not None:
             kwargs["compile_config"] = _compile_config
-    pass
 
     # Delete cached Flex Attention masks to reset inference
     for name, module in self.named_modules():
@@ -289,7 +281,6 @@ def unsloth_base_fast_generate(
                 del module._cache
             except:
                 pass
-    pass
 
     # DO INFERENCE
     with torch.inference_mode(), autocaster:
@@ -308,13 +299,9 @@ def unsloth_base_fast_generate(
                 del module._cache
             except:
                 pass
-    pass
 
     # FastBaseModel.for_training(self)
     return output
-
-
-pass
 
 
 class FastBaseModel:
@@ -353,7 +340,6 @@ class FastBaseModel:
             raise RuntimeError(
                 "Unsloth: UNSLOTH_VLLM_STANDBY is True, but UNSLOTH_VLLM_STANDBY is not set to 1!"
             )
-        pass
 
         if model_types is None:
             raise RuntimeError(
@@ -394,7 +380,6 @@ class FastBaseModel:
                 "Unsloth: WARNING `trust_remote_code` is True.\n"
                 "Are you certain you want to do remote code execution?"
             )
-        pass
         if token is None:
             token = get_token()
         SUPPORTS_BFLOAT16 = is_bfloat16_supported()
@@ -458,7 +443,6 @@ class FastBaseModel:
             print(
                 "Unsloth: Fast downloading is enabled - ignore downloading bars which are red colored!"
             )
-        pass
         if old_hf_transfer != "0":
             os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 
@@ -475,7 +459,6 @@ class FastBaseModel:
                 "Device does not support bfloat16. Will change to float16."
             )
             dtype = torch.float16
-        pass
         assert dtype in (torch.float16, torch.bfloat16, torch.float32)
 
         bnb_compute_dtype = dtype
@@ -486,7 +469,6 @@ class FastBaseModel:
             )
             bnb_compute_dtype = torch.float16
             do_forced_float32 = True
-        pass
 
         # Check for custom data-types
         custom_datatype = None
@@ -519,7 +501,6 @@ class FastBaseModel:
             else:
                 custom_datatype = None
                 correct_dtype = None
-        pass
 
         # Stop SDPA for some archs like Pixtral / Mistral3
         if not ("attn_implementation" in kwargs):
@@ -530,7 +511,6 @@ class FastBaseModel:
                     f"Unsloth: {model_type_arch.title()} does not support SDPA - switching to fast eager."
                 )
             del kwargs["attn_implementation"]
-        pass
 
         bnb_config = None
         if full_finetuning and (load_in_4bit or load_in_8bit):
@@ -540,7 +520,6 @@ class FastBaseModel:
             load_in_4bit = False
             load_in_8bit = False
             load_in_16bit = False
-        pass
 
         if int(load_in_4bit) + int(load_in_8bit) + int(load_in_16bit) >= 2:
             raise RuntimeError(
@@ -565,7 +544,6 @@ class FastBaseModel:
             print(
                 "Unsloth: QLoRA and full finetuning all not selected. Switching to 16bit LoRA."
             )
-        pass
 
         if full_finetuning:
             os.environ["UNSLOTH_ENABLE_FULL_FINETUNING"] = "1"
@@ -579,7 +557,6 @@ class FastBaseModel:
                 )
         else:
             os.environ["UNSLOTH_ENABLE_FULL_FINETUNING"] = "0"
-        pass
 
         # Fix AttributeError: 'BitsAndBytesConfig' object has no attribute 'get_loading_attributes'
         if bnb_config is not None and not hasattr(bnb_config, "get_loading_attributes"):
@@ -632,8 +609,6 @@ class FastBaseModel:
                     quantization_config, **quantizer_kwargs
                 )
                 kwargs["quantization_config"] = quantization_config
-            pass
-        pass
 
         # Check if using forced float32 - we load it in bfloat16, then cast to float16!
         torch_dtype = dtype
@@ -715,7 +690,6 @@ class FastBaseModel:
             for allowed_arg in allowed_args:
                 if allowed_arg not in load_vllm_kwargs and allowed_arg in kwargs:
                     load_vllm_kwargs[allowed_arg] = kwargs[allowed_arg]
-            pass
 
             # Load vLLM first
             llm = load_vllm(**load_vllm_kwargs)
@@ -738,7 +712,6 @@ class FastBaseModel:
             model.fast_generate_batches = functools.partial(
                 generate_batches, model.vllm_engine
             )
-        pass
 
         raise_handler.remove()
 
@@ -754,15 +727,11 @@ class FastBaseModel:
                     or "layer_norm" in name
                 ) and hasattr(module, "weight"):
                     module._pre_set_compute_dtype = torch.float32
-        pass
         # Edit data-types
         if custom_datatype is not None:
             with torch.no_grad():
                 for jj, (name, module) in enumerate(model.named_modules()):
                     exec(custom_datatype)
-                pass
-            pass
-        pass
         # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
@@ -770,7 +739,6 @@ class FastBaseModel:
                 torch.cuda.empty_cache()
             elif DEVICE_TYPE == "xpu":
                 torch.xpu.empty_cache()
-        pass
 
         # Counteract saved tokenizers
         tokenizer_name = model_name if tokenizer_name is None else tokenizer_name
@@ -811,7 +779,6 @@ class FastBaseModel:
             if hasattr(__tokenizer, "pad_token"):
                 tokenizer.pad_token = __tokenizer.pad_token
                 tokenizer.pad_token_id = __tokenizer.pad_token_id
-        pass
         # Fix other stuff like BnB compute data types
         model, tokenizer = patch_model_and_tokenizer(
             model,
@@ -827,7 +794,6 @@ class FastBaseModel:
         # Log Unsloth version for future fastpaths for inference
         if hasattr(model, "config"):
             model.config.update({"unsloth_version": __version__})
-        pass
         patch_saving_functions(model, vision = True)
         if tokenizer is None:
             del model
@@ -852,7 +818,6 @@ class FastBaseModel:
             # Also set is_loaded_in_8bit to disable incorrect DDP
             m.is_loaded_in_8bit = True if not full_finetuning else False
             m = m.model
-        pass
         m.max_seq_length = max_seq_length
         # Save to modules as well
         for module in model.modules():
@@ -869,7 +834,6 @@ class FastBaseModel:
                 model._old_generate = model.generate
                 unsloth_base_fast_generate.__doc__ = model._old_generate.__doc__
                 model.generate = types.MethodType(unsloth_base_fast_generate, model)
-        pass
         model._unsloth_trust_remote_code = trust_remote_code
         # Post patches
         model = FastBaseModel.post_patch_model(
@@ -886,10 +850,7 @@ class FastBaseModel:
                 torch.cuda.empty_cache()
             elif DEVICE_TYPE == "xpu":
                 torch.xpu.empty_cache()
-        pass
         return model, tokenizer
-
-    pass
 
     @staticmethod
     def get_peft_model(
@@ -922,7 +883,6 @@ class FastBaseModel:
                 "Unsloth: Full finetuning is enabled, so .get_peft_model has no effect"
             )
             return model
-        pass
         transformers_set_seed(random_state)
 
         if type(r) is not int:
@@ -940,7 +900,6 @@ class FastBaseModel:
             finetune_language_layers = True
             finetune_attention_modules = True
             finetune_mlp_modules = True
-        pass
         if target_modules is None or target_modules == "all-linear":
             target_modules = get_peft_regex(
                 model,
@@ -955,7 +914,6 @@ class FastBaseModel:
                 tuple,
                 str,
             )
-        pass
 
         if hasattr(model, "vllm_engine"):
             if (
@@ -992,7 +950,6 @@ class FastBaseModel:
                 torch.cuda.empty_cache()
             elif DEVICE_TYPE == "xpu":
                 torch.xpu.empty_cache()
-        pass
         max_seq_length = model.max_seq_length
         # If we pass loftq_config = None we will get an error
         loftq_config = validate_loftq_config(
@@ -1018,7 +975,6 @@ class FastBaseModel:
         if qat_scheme is not None:
             print("Unsloth: Applying QAT to mitigate quantization degradation")
             model = _prepare_model_for_qat(model, qat_scheme)
-        pass
         # Fix LoraConfig.auto_mapping is None
         fix_lora_auto_mapping(model)
         # Enable gradients on modules which are trainable
@@ -1040,7 +996,6 @@ class FastBaseModel:
                 torch.cuda.empty_cache()
             elif DEVICE_TYPE == "xpu":
                 torch.xpu.empty_cache()
-        pass
         patch_saving_functions(model, vision = True)
         patch_peft_fast_inference(model)
 
@@ -1053,8 +1008,6 @@ class FastBaseModel:
             m.for_inference = functools.partial(FastBaseModel.for_inference, m)
             m = m.model
         return model
-
-    pass
 
     @staticmethod
     def post_patch_model(
@@ -1093,7 +1046,6 @@ class FastBaseModel:
             and trust_remote_code == False
         ):
             raise RuntimeError("Unsloth: Unsuccessfully patched inner_training_loop")
-        pass
         patch_saving_functions(model, vision = True)
 
         # Patch tokenizer to pad to the left
@@ -1102,15 +1054,12 @@ class FastBaseModel:
             if hasattr(m, "_saved_temp_tokenizer"):
                 if hasattr(m._saved_temp_tokenizer, "tokenizer"):
                     m._saved_temp_tokenizer.tokenizer.padding_side = "left"
-            pass
             # Also set is_loaded_in_8bit to disable incorrect DDP
             m.is_loaded_in_8bit = True if not full_finetuning else False
             m = m.model
-        pass
         if hasattr(m, "_saved_temp_tokenizer"):
             if hasattr(m._saved_temp_tokenizer, "tokenizer"):
                 m._saved_temp_tokenizer.tokenizer.padding_side = "left"
-        pass
         # Also set is_loaded_in_8bit to disable incorrect DDP
         m.is_loaded_in_8bit = True if not full_finetuning else False
 
@@ -1121,7 +1070,6 @@ class FastBaseModel:
                 torch.cuda.empty_cache()
             elif DEVICE_TYPE == "xpu":
                 torch.xpu.empty_cache()
-        pass
         # Add for_inference and for_training
         model.for_training = functools.partial(FastBaseModel.for_training, model)
         model.for_inference = functools.partial(FastBaseModel.for_inference, model)
@@ -1151,8 +1099,6 @@ class FastBaseModel:
                                 module.weight[module.padding_idx] = 0
         return model
 
-    pass
-
     @staticmethod
     def for_inference(model):
         if not hasattr(model, "parameters"):
@@ -1171,7 +1117,6 @@ class FastBaseModel:
             # Set a flag for generation!
             m._flag_for_generation = True
 
-        pass
         m = model
         while hasattr(m, "model"):
             _for_inference(m)
@@ -1183,19 +1128,16 @@ class FastBaseModel:
         for module in model.modules():
             if hasattr(module, "gradient_checkpointing"):
                 module.gradient_checkpointing = False
-        pass
 
         # Also disable training for embeddings for NEFTune
         if hasattr(model, "get_input_embeddings"):
             embeddings = model.get_input_embeddings()
             if hasattr(embeddings, "training"):
                 embeddings.training = False
-        pass
         if hasattr(model, "get_output_embeddings"):
             embeddings = model.get_output_embeddings()
             if hasattr(embeddings, "training"):
                 embeddings.training = False
-        pass
         # Must disable returning hidden states in the case for GRPO
         os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
         # Must enable returning logits
@@ -1204,8 +1146,6 @@ class FastBaseModel:
         if torch_compiler_set_stance is not None:
             torch_compiler_set_stance(stance = "default", skip_guard_eval_unsafe = False)
         return model
-
-    pass
 
     @staticmethod
     def for_training(model, use_gradient_checkpointing = True):
@@ -1218,7 +1158,6 @@ class FastBaseModel:
         for param in model.parameters():
             if hasattr(param, "_fast_lora"):
                 del param._fast_lora
-        pass
 
         def _for_training(m):
             if hasattr(m, "gradient_checkpointing"):
@@ -1236,7 +1175,6 @@ class FastBaseModel:
                 except:
                     pass
 
-        pass
         m = model
         while hasattr(m, "model"):
             _for_training(m)
@@ -1248,27 +1186,19 @@ class FastBaseModel:
         for module in model.modules():
             if hasattr(module, "gradient_checkpointing"):
                 module.gradient_checkpointing = True
-        pass
 
         # Also re-enable training for embeddings for NEFTune
         if hasattr(model, "get_input_embeddings"):
             embeddings = model.get_input_embeddings()
             if hasattr(embeddings, "training"):
                 embeddings.training = True
-        pass
         if hasattr(model, "get_output_embeddings"):
             embeddings = model.get_output_embeddings()
             if hasattr(embeddings, "training"):
                 embeddings.training = True
-        pass
         # Can re-enable not returning logits
         os.environ["UNSLOTH_RETURN_LOGITS"] = "0"
         # Turn off skip guards and set stance to default
         if torch_compiler_set_stance is not None:
             torch_compiler_set_stance(stance = "default", skip_guard_eval_unsafe = False)
         return model
-
-    pass
-
-
-pass

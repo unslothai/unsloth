@@ -38,7 +38,6 @@ try:
     HAS_FLEX_ATTENTION = False
 except:
     HAS_FLEX_ATTENTION = False
-pass
 
 
 if not HAS_FLEX_ATTENTION:
@@ -75,8 +74,6 @@ if not HAS_FLEX_ATTENTION:
         A = A.reshape(bsz, q_len, n_heads * head_dim)
         return A
 
-    pass
-
     create_flex_attention_causal_mask = None
     create_flex_attention_sliding_window_mask = None
 else:
@@ -91,12 +88,8 @@ else:
 
         return tanh_softcap
 
-    pass
-
     def causal_masker(b, h, q_idx, kv_idx):
         return q_idx >= kv_idx
-
-    pass
 
     @functools.lru_cache
     def sliding_window_masker(size = 4096):
@@ -106,8 +99,6 @@ else:
             return causal_mask & window_mask
 
         return sliding_window
-
-    pass
 
     @functools.lru_cache
     def create_block_mask(mask, n = 128):
@@ -121,13 +112,9 @@ else:
             _compile = True,
         )
 
-    pass
-
     def create_flex_attention_causal_mask(max_seq_length = 8192):
         causal_mask = create_block_mask(causal_masker, max_seq_length)
         return causal_mask
-
-    pass
 
     def create_flex_attention_sliding_window_mask(
         max_seq_length = 8192, sliding_window = 4096
@@ -135,8 +122,6 @@ else:
         sliding_masker = sliding_window_masker(sliding_window)
         causal_mask = create_block_mask(sliding_masker, max_seq_length)
         return causal_mask
-
-    pass
 
     @functools.lru_cache
     def flex_attention(s, t):
@@ -149,8 +134,6 @@ else:
             enable_gqa = True,
         )
 
-    pass
-
     def slow_attention_softcapping(Q, K, V, causal_mask, self, bsz, q_len):
         n_heads = self.config.num_attention_heads
         head_dim = self.head_dim
@@ -161,9 +144,6 @@ else:
         A = A.transpose(1, 2).contiguous()
         A = A.reshape(bsz, q_len, n_heads * head_dim)
         return A
-
-    pass
-pass
 
 
 torch_matmul = torch.matmul
@@ -205,6 +185,3 @@ def slow_inference_attention_softcapping(Q, K, V, causal_mask, self, bsz, q_len)
     A = A.transpose(1, 2).contiguous()
     A = A.reshape(bsz, q_len, n_heads * head_dim)
     return A
-
-
-pass

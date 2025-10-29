@@ -74,9 +74,6 @@ def weight_dequant_kernel(x_ptr, s_ptr, y_ptr, M, N, BLOCK_SIZE: tl.constexpr):
     tl.store(y_ptr + offs, y, mask = mask)
 
 
-pass
-
-
 def weight_dequant_block(
     x: torch.Tensor, s: torch.Tensor, block_size: int = 128, dtype = torch.bfloat16
 ) -> torch.Tensor:
@@ -93,9 +90,6 @@ def weight_dequant_block(
     )
     weight_dequant_kernel[grid](x, s, y, M, N, BLOCK_SIZE = block_size)
     return y
-
-
-pass
 
 
 def weight_dequant(x: torch.Tensor, s: torch.Tensor, dtype = torch.bfloat16):
@@ -115,9 +109,6 @@ def weight_dequant(x: torch.Tensor, s: torch.Tensor, dtype = torch.bfloat16):
         return weight_dequant_block(x, s, dtype = dtype)
 
 
-pass
-
-
 # Copied from https://huggingface.co/deepseek-ai/DeepSeek-V3/blob/main/inference/kernel.py
 @triton.jit
 def act_quant_kernel(x_ptr, y_ptr, s_ptr, BLOCK_SIZE: tl.constexpr):
@@ -135,9 +126,6 @@ def act_quant_kernel(x_ptr, y_ptr, s_ptr, BLOCK_SIZE: tl.constexpr):
     tl.store(s_ptr + pid, s)
 
 
-pass
-
-
 def act_quant(
     x: torch.Tensor, block_size: int = 128
 ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -152,9 +140,6 @@ def act_quant(
 
     act_quant_kernel[grid](x, y, s, BLOCK_SIZE = block_size)
     return y, s
-
-
-pass
 
 
 # Adapted from https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/layers/quantization/fp8_kernel.py
@@ -243,9 +228,6 @@ def _w8a8_block_fp8_matmul(
     tl.store(c_ptrs, c, mask = c_mask)
 
 
-pass
-
-
 def w8a8_block_fp8_matmul_triton(
     A: torch.Tensor,
     B: torch.Tensor,
@@ -327,9 +309,6 @@ def w8a8_block_fp8_matmul_triton(
     return C
 
 
-pass
-
-
 def torchao_block_matmul(
     act_q: torch.Tensor,
     weight_q: torch.Tensor,
@@ -347,8 +326,6 @@ def torchao_block_matmul(
     )
     return out.to(output_dtype)
 
-
-pass
 
 # This torchao FP8 matmul seems to be ~3x faster than the w8a8_block_fp8_matmul_triton. Though this is 15-30% slower than fbgemm implementation.
 # But this gives very comparable results when it comes to training loss, so we prefer using it when available.

@@ -33,9 +33,6 @@ class HideLoggingMessage(logging.Filter):
         return not (self.text in x.getMessage())
 
 
-pass
-
-
 # Fix up AttributeError: 'MessageFactory' object has no attribute 'GetPrototype'
 # MUST do this at the start primarily due to tensorflow causing issues
 def fix_message_factory_issue():
@@ -81,12 +78,8 @@ def fix_message_factory_issue():
             google.protobuf.message_factory.MessageFactory.GetPrototype = GetPrototype
             if UNSLOTH_ENABLE_LOGGING:
                 print("Unsloth: Patching protobuf.MessageFactory.GetPrototype")
-        pass
     except:
         pass
-
-
-pass
 
 
 # Fix Xformers performance issues since 0.0.25
@@ -118,9 +111,6 @@ def fix_xformers_performance_issue():
         except Exception as e:
             if UNSLOTH_ENABLE_LOGGING:
                 print(f"Unsloth: Failed patching Xformers with error = {str(e)}")
-
-
-pass
 
 
 # ValueError: 'aimv2' is already used by a Transformers config, pick another name.
@@ -164,9 +154,6 @@ def fix_vllm_aimv2_issue():
                 print(f"Unsloth: Failed patching vLLM with error = {str(e)}")
 
 
-pass
-
-
 def ignore_logger_messages():
     # Ignore Environment variable `HF_TOKEN` is set
     try:
@@ -176,9 +163,6 @@ def ignore_logger_messages():
         del huggingface_hub_logger
     except:
         pass
-
-
-pass
 
 
 def patch_ipykernel_hf_xet():
@@ -203,10 +187,6 @@ def patch_ipykernel_hf_xet():
         from huggingface_hub.utils import disable_progress_bars
 
         disable_progress_bars()
-    pass
-
-
-pass
 
 
 def patch_trackio():
@@ -219,7 +199,3 @@ def patch_trackio():
         "https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20logo%20white%20text.png"
     )
     os.environ["TRACKIO_PLOT_ORDER"] = "train/reward"
-    pass
-
-
-pass

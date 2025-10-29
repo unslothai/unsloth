@@ -111,8 +111,6 @@ class LoRA_MLP(torch.autograd.Function):
         ctx.inplace = inplace
         return i
 
-    pass
-
     @staticmethod
     @torch_amp_custom_bwd
     def backward(ctx, dY: torch.Tensor):
@@ -230,11 +228,6 @@ class LoRA_MLP(torch.autograd.Function):
             None,
         )  # _backward and _forward and inplace
 
-    pass
-
-
-pass
-
 
 from .swiglu import swiglu_fg_kernel, swiglu_DWf_DW_dfg_kernel
 
@@ -266,9 +259,6 @@ def apply_lora_mlp_swiglu(self, X, inplace = True):
         inplace,
     )
     return out
-
-
-pass
 
 
 from .geglu import geglu_exact_forward_kernel, geglu_exact_backward_kernel
@@ -303,9 +293,6 @@ def apply_lora_mlp_geglu_exact(self, X, inplace = True):
     return out
 
 
-pass
-
-
 from .geglu import geglu_approx_forward_kernel, geglu_approx_backward_kernel
 
 
@@ -335,9 +322,6 @@ def apply_lora_mlp_geglu_approx(self, X):
         geglu_approx_backward_kernel,
     )
     return out
-
-
-pass
 
 
 class LoRA_QKV(torch.autograd.Function):
@@ -421,8 +405,6 @@ class LoRA_QKV(torch.autograd.Function):
         )
         ctx.inplace = inplace
         return Q, K, V
-
-    pass
 
     @staticmethod
     @torch_amp_custom_bwd
@@ -536,11 +518,6 @@ class LoRA_QKV(torch.autograd.Function):
             None,
         )
 
-    pass
-
-
-pass
-
 
 def apply_lora_qkv(self, X, inplace = True):
     X = _maybe_fake_quantize_activations(X, self.q_proj)
@@ -567,9 +544,6 @@ def apply_lora_qkv(self, X, inplace = True):
         inplace,
     )
     return Q, K, V
-
-
-pass
 
 
 class LoRA_W(torch.autograd.Function):
@@ -613,8 +587,6 @@ class LoRA_W(torch.autograd.Function):
         ctx.save_for_backward(A, B, X)
         return XW
 
-    pass
-
     @staticmethod
     @torch_amp_custom_bwd
     def backward(ctx, dY: torch.Tensor):
@@ -652,20 +624,12 @@ class LoRA_W(torch.autograd.Function):
         # W, W_quant, A, B, S
         return dX.view(batch, seq_len, hd), None, None, d_A.t(), d_B.t(), None
 
-    pass
-
-
-pass
-
 
 def apply_lora_o(self, X):
     X = _maybe_fake_quantize_activations(X, self.o_proj)
     OW, OW_quant, OA, OB, OS = get_lora_parameters(self.o_proj)
     O = LoRA_W.apply(X, OW, OW_quant, OA, OB, OS)
     return O
-
-
-pass
 
 
 IDENTITY_DROPOUT = torch.nn.Identity
@@ -706,8 +670,6 @@ def fast_lora_forward(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
                 scaling = self.scaling[active_adapter]
                 W = self.base_layer.weight
                 return LoRA_W.apply(x, W, QUANT_STATE(W), lora_A, lora_B, scaling)
-            pass
-        pass
 
         result = self.base_layer(x, *args, **kwargs)
         # As per Tim Dettmers, for 4bit, we need to defensively clone here.
@@ -751,6 +713,3 @@ def fast_lora_forward(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
                 result = result.to(expected_dtype)
 
     return result
-
-
-pass

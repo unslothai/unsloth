@@ -20,8 +20,6 @@ def safe_remove_directory(path):
         return False
 
 
-pass
-
 print("🔥 Loading the 16-bit merged model from disk...")
 merged_model, merged_tokenizer = FastLanguageModel.from_pretrained(
     model_name = "./gpt-oss-finetuned-merged",

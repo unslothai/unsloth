@@ -54,8 +54,6 @@ except:
     except:
         # For older versions of huggingface_hub
         from huggingface_hub.utils._token import get_token
-    pass
-pass
 from pathlib import Path
 from peft import PeftModelForCausalLM, PeftModel
 
@@ -135,10 +133,6 @@ ALLOWED_QUANTS = {
 def print_quantization_methods():
     for key, value in ALLOWED_QUANTS.items():
         print(f'"{key}"  ==> {value}')
-    pass
-
-
-pass
 
 
 def check_if_sentencepiece_model(
@@ -154,17 +148,12 @@ def check_if_sentencepiece_model(
     if not os.path.exists(file_location):
         created_folder = True
         os.makedirs(file_location)
-    pass
     temp_tokenizer.save_pretrained(file_location)
     if os.path.isfile(f"{file_location}/tokenizer.model"):
         sentencepiece_model = True
-    pass
     if created_folder:
         shutil.rmtree(file_location, ignore_errors = True)
     return sentencepiece_model
-
-
-pass
 
 
 def _free_cached_model(model):
@@ -187,11 +176,6 @@ def _free_cached_model(model):
             )
 
             delete_strategy.execute()
-        pass
-    pass
-
-
-pass
 
 
 def _merge_lora(layer, name):
@@ -220,14 +204,10 @@ def _merge_lora(layer, name):
                 raise ValueError(
                     f"Unsloth: Merge failed.\n{name} has some elements = infinity."
                 )
-        pass
         W = W.t().to(dtype)
     else:
         W = layer.weight
     return W, bias
-
-
-pass
 
 
 def fast_save_pickle(shard, name):
@@ -241,9 +221,6 @@ def fast_save_pickle(shard, name):
         # pickle_protocol = pickle.HIGHEST_PROTOCOL,
     )
     return
-
-
-pass
 
 
 @torch.inference_mode
@@ -286,7 +263,6 @@ def unsloth_save_model(
         commit_description = "Upload model trained with Unsloth 2x faster"
     elif "Unsloth 2x faster" not in commit_description:
         commit_description += " (Trained with Unsloth 2x faster)"
-    pass
 
     if save_method == "merged_4bit":
         raise RuntimeError(
@@ -297,7 +273,6 @@ def unsloth_save_model(
         )
     elif save_method == "merged_4bit_forced":
         save_method = "merged_4bit"
-    pass
 
     save_pretrained_settings = dict(locals())
     for deletion in (
@@ -308,7 +283,6 @@ def unsloth_save_model(
         "maximum_memory_usage",
     ):
         del save_pretrained_settings[deletion]
-    pass
 
     # First check for a token!
     if push_to_hub:
@@ -321,8 +295,6 @@ def unsloth_save_model(
                 "Unsloth: Please supply a token!\n"
                 "Go to https://huggingface.co/settings/tokens"
             )
-        pass
-    pass
 
     assert maximum_memory_usage > 0 and maximum_memory_usage <= 0.95
 
@@ -330,7 +302,6 @@ def unsloth_save_model(
     for _ in range(3):
         torch.cuda.empty_cache()
         gc.collect()
-    pass
 
     save_method = save_method.lower().replace(" ", "_")
     if (
@@ -344,7 +315,6 @@ def unsloth_save_model(
             '"merged_16bit" ==> This merges LoRA weights and saves to float16. Needed for llama.cpp / GGUF.\n'
             '"merged_4bit"  ==> This merges LoRA weights and saves to 4bit. Useful for DPO / inference.'
         )
-    pass
 
     if save_method == "merged_4bit":
         print("Unsloth: Merging 4bit and LoRA weights to 4bit...")
@@ -353,9 +323,7 @@ def unsloth_save_model(
         # Counteract no LoRA adapters!
         if hasattr(model, "merge_and_unload"):
             model = model.merge_and_unload()
-        pass
         print("Done.")
-    pass
 
     if tags is not None:
         assert isinstance(tags, (list, tuple))
@@ -366,7 +334,6 @@ def unsloth_save_model(
         tags = [
             "unsloth",
         ]
-    pass
     save_pretrained_settings["tags"] = tags
 
     if ((save_method == "lora") or (save_method == "merged_4bit")) and push_to_hub:
@@ -375,13 +342,11 @@ def unsloth_save_model(
                 "Unsloth: Pushing to HF requires a token. Pass `token = 'hf_....'`\n"
                 "Go to https://huggingface.co/settings/tokens."
             )
-        pass
 
         if save_method == "lora":
             print("Unsloth: Saving LoRA adapters. Please wait...")
         elif save_method == "merged_4bit":
             print("Unsloth: Saving 4bit Bitsandbytes model. Please wait...")
-        pass
 
         # Update model tag
         _ = upload_to_huggingface(
@@ -429,15 +394,12 @@ def unsloth_save_model(
 
             # Revert back padding side
             tokenizer.padding_side = old_padding_side
-        pass
 
         if hasattr(model, "config"):
             print(
                 f"Saved {save_method} model to https://huggingface.co/" + save_directory
             )
-        pass
         return save_directory, None
-    pass
 
     # Tokenizer has different saving arguments
     tokenizer_save_settings = {
@@ -456,7 +418,6 @@ def unsloth_save_model(
         internal_model = model.model
     else:
         internal_model = model
-    pass
 
     # Cannot be converted properly!
     if (
@@ -488,7 +449,6 @@ def unsloth_save_model(
         )
         for deletion in what_to_delete:
             del save_pretrained_settings[deletion]
-        pass
         if hasattr(model, "add_model_tags"):
             model.add_model_tags(
                 [
@@ -508,7 +468,6 @@ def unsloth_save_model(
                 old_username = None,
                 private = private,
             )
-        pass
 
         if tokenizer is not None:
             print("Unsloth: Saving tokenizer...", end = "")
@@ -533,7 +492,6 @@ def unsloth_save_model(
         # [TODO] Is this correct?
         if save_method == "lora":
             save_pretrained_settings["selected_adapters"] = None
-        pass
 
         model.save_pretrained(**save_pretrained_settings)
 
@@ -542,11 +500,9 @@ def unsloth_save_model(
                 "Saved to https://huggingface.co/"
                 + save_pretrained_settings["save_directory"]
             )
-        pass
 
         print(" Done.")
         return save_directory, None
-    pass
 
     # If push_to_hub, we must remove the .../ part of a repo
     username = None
@@ -572,7 +528,6 @@ def unsloth_save_model(
         save_pretrained_settings["save_directory"] = new_save_directory
         tokenizer_save_settings["save_directory"] = new_save_directory
         save_directory = new_save_directory
-    pass
 
     print("Unsloth: Merging 4bit and LoRA weights to 16bit...")
 
@@ -592,7 +547,6 @@ def unsloth_save_model(
             sharded_ram_usage = int(mb_found.group(1)) * 1024 * 1024
     elif type(max_shard_size) is int:
         sharded_ram_usage = sharded_ram_usage
-    pass
 
     # Switch to our fast saving modules if it's a slow PC!
     n_cpus = psutil.cpu_count(logical = False)
@@ -615,14 +569,12 @@ def unsloth_save_model(
         save_function = fast_save_pickle
         save_pretrained_settings["safe_serialization"] = safe_serialization
         save_pretrained_settings["save_function"] = save_function
-    pass
 
     # Only safe_serialization uses more RAM
     if safe_serialization:
         max_ram -= sharded_ram_usage
     else:
         max_ram -= sharded_ram_usage * 0.25  # Uses much less
-    pass
 
     max_ram = int(max(0, max_ram) * maximum_memory_usage)
     print(
@@ -638,7 +590,6 @@ def unsloth_save_model(
     # Max directory for disk saving
     if not os.path.exists(temporary_location):
         os.makedirs(temporary_location)
-    pass
 
     # Check if Kaggle or Colab, since only 20GB of Disk space allowed.
     if IS_KAGGLE_ENVIRONMENT or IS_COLAB_ENVIRONMENT:
@@ -648,7 +599,6 @@ def unsloth_save_model(
             "model which will save 4-16GB of disk space, allowing you to save on Kaggle/Colab."
         )
         _free_cached_model(internal_model)
-    pass
 
     # HF also uses a OrderedDict
     from collections import OrderedDict
@@ -661,7 +611,6 @@ def unsloth_save_model(
             torch_dtype = torch.float16
         elif torch_dtype == "bfloat16":
             torch_dtype = torch.bfloat16
-    pass
 
     # Check modules to save float32 dtype
     state_dict["model.embed_tokens.weight"] = (
@@ -685,7 +634,6 @@ def unsloth_save_model(
             # Bias term
             if bias is not None:
                 state_dict[f"model.layers.{j}.{item}.bias"] = bias
-            pass
 
             if (torch.cuda.memory_allocated() + W.nbytes) < max_vram:
                 # Save to GPU memory
@@ -710,7 +658,6 @@ def unsloth_save_model(
                 state_dict[name] = torch.load(
                     filename, map_location = "cpu", mmap = True, weights_only = False
                 )
-        pass
         for item in LLAMA_LAYERNORMS:
             try:
                 # Skip for Gemma 2
@@ -719,8 +666,6 @@ def unsloth_save_model(
                 )
             except:
                 continue
-        pass
-    pass
 
     state_dict["model.norm.weight"] = internal_model.model.norm.weight.data
     # Check for modules_to_save float32 dtype
@@ -733,7 +678,6 @@ def unsloth_save_model(
         state_dict["lm_head.weight"] = internal_model.lm_head.weight.data.to(
             torch_dtype
         )
-    pass
 
     # All tensors MUST be type torch.Tensor and not torch.nn.parameter.Parameter
     for key, value in state_dict.items():
@@ -741,8 +685,6 @@ def unsloth_save_model(
             state_dict[key] = value = value.data
         if type(value) is not torch.Tensor:
             logger.warning_once(f"Unsloth: {key} is not a Tensor but a {type(value)}.")
-        pass
-    pass
 
     # Edit save_pretrained_settings
     # [TODO] _create_repo has errors due to **kwargs getting accepted
@@ -769,7 +711,6 @@ def unsloth_save_model(
     )
     for deletion in what_to_delete:
         del save_pretrained_settings[deletion]
-    pass
     if hasattr(model, "add_model_tags"):
         model.add_model_tags(
             [
@@ -789,7 +730,6 @@ def unsloth_save_model(
             old_username = username,
             private = private,
         )
-    pass
 
     # First check if we're pushing to an organization!
     save_directory = save_pretrained_settings["save_directory"]
@@ -805,7 +745,6 @@ def unsloth_save_model(
             actual_username = whoami(token = token)["name"]
         else:
             actual_username = username
-    pass
 
     # Check if pushing to an organization
     if save_pretrained_settings["push_to_hub"] and (username != actual_username):
@@ -813,7 +752,6 @@ def unsloth_save_model(
         # We upload everything at the end!
         tokenizer_save_settings["push_to_hub"] = False
         tokenizer_save_settings["save_directory"] = new_save_directory
-    pass
 
     # Save tokenizer
     if tokenizer is not None:
@@ -831,7 +769,6 @@ def unsloth_save_model(
         print(" Done.")
     else:
         print()
-    pass
 
     # Since merged, edit quantization_config
     old_config = model.config
@@ -875,7 +812,6 @@ def unsloth_save_model(
         )
     else:
         internal_model.save_pretrained(**save_pretrained_settings)
-    pass
 
     # Revert config back
     original_model = model
@@ -889,7 +825,6 @@ def unsloth_save_model(
         print(
             f"Saved merged model to https://huggingface.co/{username}/{save_directory.lstrip('/').split('/')[-1]}"
         )
-    pass
 
     save_pretrained_settings["state_dict"] = None
 
@@ -898,8 +833,6 @@ def unsloth_save_model(
         if j % 10 == 0:
             torch.cuda.empty_cache()
             gc.collect()
-        pass
-    pass
     state_dict = None
     del state_dict
     torch.cuda.empty_cache()
@@ -916,9 +849,6 @@ def unsloth_save_model(
     return save_directory, username
 
 
-pass
-
-
 def install_llama_cpp_clone_non_blocking():
     full_command = [
         "git",
@@ -930,9 +860,6 @@ def install_llama_cpp_clone_non_blocking():
         full_command, stdout = subprocess.DEVNULL, stderr = subprocess.STDOUT
     )
     return run_installer
-
-
-pass
 
 
 def install_llama_cpp_make_non_blocking():
@@ -957,7 +884,6 @@ def install_llama_cpp_make_non_blocking():
             raise RuntimeError(
                 f"*** Unsloth: Failed compiling llama.cpp using os.system(...) with error {check}. Please report this ASAP!"
             )
-        pass
         # f"cmake --build llama.cpp/build --config Release -j{psutil.cpu_count()*2} --clean-first --target {' '.join(LLAMA_CPP_TARGETS)}",
         full_command = [
             "cmake",
@@ -970,7 +896,6 @@ def install_llama_cpp_make_non_blocking():
             "--target",
         ] + LLAMA_CPP_TARGETS
         IS_CMAKE = True
-    pass
     # https://github.com/ggerganov/llama.cpp/issues/7062
     # Weirdly GPU conversion for GGUF breaks??
     # run_installer = subprocess.Popen(full_command, env = env, stdout = subprocess.DEVNULL, stderr = subprocess.STDOUT)
@@ -980,18 +905,12 @@ def install_llama_cpp_make_non_blocking():
     return run_installer, IS_CMAKE
 
 
-pass
-
-
 def install_python_non_blocking(packages = []):
     full_command = ["pip", "install"] + packages
     run_installer = subprocess.Popen(
         full_command, stdout = subprocess.DEVNULL, stderr = subprocess.STDOUT
     )
     return run_installer
-
-
-pass
 
 
 def try_execute(commands, force_complete = False):
@@ -1020,15 +939,9 @@ def try_execute(commands, force_complete = False):
                         f"*** Unsloth: Failed compiling llama.cpp with {line}. Please report this ASAP!"
                     )
                 print(line, flush = True, end = "")
-            pass
             if force_complete and sp.returncode is not None and sp.returncode != 0:
                 raise subprocess.CalledProcessError(sp.returncode, sp.args)
-        pass
-    pass
     return None
-
-
-pass
 
 
 def install_llama_cpp_old(version = -10):
@@ -1062,7 +975,6 @@ def install_llama_cpp_old(version = -10):
         import shutil
 
         shutil.rmtree("llama.cpp", ignore_errors = True)
-    pass
 
     # Clone a specific commit
     # Also don't use the GPU!
@@ -1086,7 +998,6 @@ def install_llama_cpp_old(version = -10):
             "rm -rf llama.cpp/build",
         ]
         try_execute(commands)
-    pass
 
     # Check if successful
     if not (
@@ -1102,10 +1013,6 @@ def install_llama_cpp_old(version = -10):
             "We've also double checked the building directory under 'llama.cpp/build/bin/'.\n"
             "But we expect this file to exist! Check if the file exists under llama.cpp and investigate the building process of llama.cpp (make/cmake)!"
         )
-    pass
-
-
-pass
 
 
 def install_llama_cpp_blocking(use_cuda = False):
@@ -1137,10 +1044,6 @@ def install_llama_cpp_blocking(use_cuda = False):
             "rm -rf llama.cpp/build",
         ]
         try_execute(commands)
-    pass
-
-
-pass
 
 
 def get_executable(executables):
@@ -1153,12 +1056,7 @@ def get_executable(executables):
             # Check if the executable exists and is executable
             if os.path.exists(path) and os.access(path, os.X_OK):
                 return path
-        pass
-    pass
     return None
-
-
-pass
 
 
 def save_to_gguf(
@@ -1199,7 +1097,6 @@ def save_to_gguf(
         raise TypeError(
             "Unsloth: quantization_method can only be a string or a list of strings"
         )
-    pass
 
     # Check if bfloat16 is supported
     if model_dtype == "bf16" and not torch.cuda.is_bf16_supported():
@@ -1208,12 +1105,10 @@ def save_to_gguf(
             "We shall switch instead to f16."
         )
         model_dtype = "f16"
-    pass
 
     # Check first_conversion as well
     if first_conversion is None:
         first_conversion = model_dtype
-    pass
 
     # Check I quants
     for quant_method in quantization_method:
@@ -1221,7 +1116,6 @@ def save_to_gguf(
             raise RuntimeError(
                 "Unsloth: Currently iq2 type quantizations aren't supported yet - sorry!"
             )
-    pass
 
     # Map quant methods
     new_quantization_methods = []
@@ -1241,10 +1135,8 @@ def save_to_gguf(
             for key, value in ALLOWED_QUANTS.items():
                 error += f"[{key}] => {value}\n"
             raise RuntimeError(error)
-        pass
 
         new_quantization_methods.append(quant_method)
-    pass
     quantization_method = new_quantization_methods
 
     # Determine optimal first_conversion
@@ -1413,10 +1305,6 @@ def save_to_gguf(
                             "Once that's done, redo the quantization.\n"
                             "Error: {e}"
                         )
-                    pass
-                pass
-            pass
-        pass
         print("Unsloth: Model files cleanup...")
         if quants_created:
             all_saved_locations.remove(base_gguf)
@@ -1426,7 +1314,6 @@ def save_to_gguf(
             all_saved_locations.reverse()
     else:
         print("Unsloth: GPT-OSS model - skipping additional quantizations")
-    pass
 
     if is_gpt_oss:
         want_full_precision = True
@@ -1437,9 +1324,6 @@ def save_to_gguf(
     print(f"Generated files: {all_saved_locations}")
 
     return all_saved_locations, want_full_precision, is_vlm
-
-
-pass
 
 
 def unsloth_save_pretrained_merged(
@@ -1474,7 +1358,6 @@ def unsloth_save_pretrained_merged(
             "Unsloth: You're not saving a tokenizer as well?\n"
             "You can do it separately via `tokenizer.save_pretrained(...)`"
         )
-    pass
 
     arguments = dict(locals())
     arguments["model"] = self
@@ -1482,9 +1365,6 @@ def unsloth_save_pretrained_merged(
     unsloth_save_model(**arguments)
     for _ in range(3):
         gc.collect()
-
-
-pass
 
 
 def unsloth_push_to_hub_merged(
@@ -1519,7 +1399,6 @@ def unsloth_push_to_hub_merged(
             "Unsloth: You're not saving a tokenizer as well?\n"
             "You can do it separately via `tokenizer.push_to_hub(...)`"
         )
-    pass
 
     arguments = dict(locals())
     arguments["model"] = self
@@ -1530,9 +1409,6 @@ def unsloth_push_to_hub_merged(
     unsloth_save_model(**arguments)
     for _ in range(3):
         gc.collect()
-
-
-pass
 
 
 MODEL_CARD = """---
@@ -1570,7 +1446,6 @@ def _determine_username(save_directory, old_username, token):
             username = whoami(token = token)["name"]
             if type(old_username) is str and username != old_username:
                 username = old_username
-            pass
             save_directory = f"{username}/{save_directory}"
         except:
             raise RuntimeError(
@@ -1578,11 +1453,7 @@ def _determine_username(save_directory, old_username, token):
             )
     else:
         username = save_directory.split("/")[0]
-    pass
     return save_directory, username
-
-
-pass
 
 
 def create_huggingface_repo(
@@ -1593,7 +1464,6 @@ def create_huggingface_repo(
 ):
     if token is None:
         token = get_token()
-    pass
     save_directory, username = _determine_username(save_directory, "", token)
 
     from huggingface_hub import create_repo
@@ -1623,9 +1493,6 @@ def create_huggingface_repo(
         pass
     hf_api = HfApi(token = token)
     return save_directory, hf_api
-
-
-pass
 
 
 def upload_to_huggingface(
@@ -1675,7 +1542,6 @@ def upload_to_huggingface(
             uploaded_location = file_location[file_location.rfind("/") + 1 :]
         else:
             uploaded_location = file_location
-        pass
 
         # find ftevent file from tensorboard and upload it
         import glob
@@ -1694,8 +1560,6 @@ def upload_to_huggingface(
                     repo_type = "model",
                     commit_message = "(Trained with Unsloth)",
                 )
-            pass
-        pass
 
         hf_api.upload_file(
             path_or_fileobj = file_location,
@@ -1711,7 +1575,6 @@ def upload_to_huggingface(
 
             with open("_temporary_unsloth_config.json", "w", encoding = "utf-8") as file:
                 json.dump({"model_type": model.config.model_type}, file, indent = 4)
-            pass
             hf_api.upload_file(
                 path_or_fileobj = "_temporary_unsloth_config.json",
                 path_in_repo = "config.json",
@@ -1720,12 +1583,7 @@ def upload_to_huggingface(
                 commit_message = "(Trained with Unsloth)",
             )
             os.remove("_temporary_unsloth_config.json")
-        pass
-    pass
     return username
-
-
-pass
 
 
 def fix_tokenizer_bos_token(tokenizer):
@@ -1758,12 +1616,7 @@ def fix_tokenizer_bos_token(tokenizer):
 
             tokenizer.chat_template = new_chat_template
 
-        pass
-    pass
     return fix_bos_token, chat_template
-
-
-pass
 
 
 def create_ollama_modelfile(tokenizer, base_model_name, model_location):
@@ -1816,14 +1669,10 @@ def create_ollama_modelfile(tokenizer, base_model_name, model_location):
         modelfile = modelfile.format(
             __FILE_LOCATION__ = model_location,
         )
-    pass
 
     modelfile = modelfile.replace("⚫@✅#🦥", "{").replace("⚡@🦥#⛵", "}").rstrip()
 
     return modelfile
-
-
-pass
 
 
 def create_ollama_model(username: str, model_name: str, tag: str, modelfile_path: str):
@@ -1868,9 +1717,6 @@ def create_ollama_model(username: str, model_name: str, tag: str, modelfile_path
         print("\nMODEL CREATED SUCCESSFULLY")
 
 
-pass
-
-
 def push_to_ollama_hub(username: str, model_name: str, tag: str):
     try:
         init_check = subprocess.run(
@@ -1907,9 +1753,6 @@ def push_to_ollama_hub(username: str, model_name: str, tag: str):
         print("\nMODEL PUBLISHED SUCCESSFULLY")
 
 
-pass
-
-
 def push_to_ollama(tokenizer, gguf_location, username: str, model_name: str, tag: str):
     model_file = create_ollama_modelfile(
         tokenizer = tokenizer, gguf_location = gguf_location
@@ -1929,9 +1772,6 @@ def push_to_ollama(tokenizer, gguf_location, username: str, model_name: str, tag
     push_to_ollama_hub(username = username, model_name = model_name, tag = tag)
 
     print("Successfully pushed to ollama")
-
-
-pass
 
 
 def unsloth_save_pretrained_gguf(
@@ -2066,7 +1906,6 @@ def unsloth_save_pretrained_gguf(
     # Use old chat template if the bos is removed
     if fix_bos_token:
         tokenizer.chat_template = old_chat_template
-    pass
 
     # Step 6: Clean up memory
     for _ in range(3):
@@ -2113,7 +1952,6 @@ def unsloth_save_pretrained_gguf(
             raise TypeError(
                 "Unsloth: quantization_method can only be a string or a list of strings"
             )
-        pass
         for i, quant_method in enumerate(quantization_method):
             quant_method = quant_method.lower()
             if quant_method == "not_quantized":
@@ -2125,8 +1963,6 @@ def unsloth_save_pretrained_gguf(
             elif quant_method is None:
                 quant_method = "q8_0"
             quantization_methods.append(quant_method.lower())
-        pass
-    pass
 
     try:
         all_file_locations, want_full_precision, is_vlm_update = save_to_gguf(
@@ -2179,7 +2015,6 @@ def unsloth_save_pretrained_gguf(
             "Unsloth: ##### The current model auto adds a BOS token.\n"
             "Unsloth: ##### We removed it in GGUF's chat template for you."
         )
-    pass
 
     if is_vlm_update:
         print("\n")
@@ -2212,9 +2047,6 @@ def unsloth_save_pretrained_gguf(
         "is_vlm": is_vlm_update,
         "fix_bos_token": fix_bos_token,
     }
-
-
-pass
 
 
 def unsloth_push_to_hub_gguf(
@@ -2313,7 +2145,6 @@ def unsloth_push_to_hub_gguf(
             except:
                 pass
         raise RuntimeError(f"Failed to convert model to GGUF: {e}")
-    pass
 
     # Step 3: Upload to HuggingFace Hub
     print("Unsloth: Uploading GGUF to Huggingface Hub...")
@@ -2367,7 +2198,6 @@ def unsloth_push_to_hub_gguf(
                 create_pr = create_pr,
                 revision = revision,
             )
-        pass
 
         # Upload config.json if exists
         config_path = os.path.join(actual_save_directory, "config.json")
@@ -2501,9 +2331,6 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
                 pass
 
     return full_repo_id
-
-
-pass
 
 
 # Corrected function to save LoRA to a custom directory
@@ -2672,9 +2499,6 @@ def unsloth_convert_lora_to_ggml_and_save_locally(
     )
 
 
-pass
-
-
 from .models.loader_utils import get_model_name
 from unsloth_zoo.saving_utils import (
     merge_and_overwrite_lora,
@@ -2703,7 +2527,6 @@ def save_to_gguf_generic(
 
     if not os.path.exists(os.path.join("llama.cpp", "unsloth_convert_hf_to_gguf.py")):
         install_llama_cpp(just_clone_repo = True)
-    pass
 
     # Use old style quantization_method
     new_quantization_methods = []
@@ -2721,7 +2544,6 @@ def save_to_gguf_generic(
             raise TypeError(
                 "Unsloth: quantization_method can only be a string or a list of strings"
             )
-        pass
         for i, quant_method in enumerate(quantization_method):
             quant_method = quant_method.lower()
             if quant_method == "not_quantized":
@@ -2733,7 +2555,6 @@ def save_to_gguf_generic(
             elif quant_method is None:
                 quant_method = "q8_0"
             new_quantization_methods.append(quant_method.lower())
-        pass
     else:
         new_quantization_methods.append(quantization_type.lower())
     # Check if wrong method
@@ -2743,8 +2564,6 @@ def save_to_gguf_generic(
             for key, value in ALLOWED_QUANTS.items():
                 error += f"[{key}] => {value}\n"
             raise RuntimeError(error)
-        pass
-    pass
 
     # Go through all types and save individually - somewhat inefficient
     # since we save F16 / BF16 multiple times
@@ -2773,12 +2592,7 @@ def save_to_gguf_generic(
                 repo_type = "model",
                 allow_patterns = ["*.gguf"],
             )
-        pass
-    pass
     return metadata
-
-
-pass
 
 
 @torch.inference_mode
@@ -2837,9 +2651,6 @@ def unsloth_generic_save(
     return
 
 
-pass
-
-
 def unsloth_generic_save_pretrained_merged(
     self,
     save_directory: Union[str, os.PathLike],
@@ -2872,7 +2683,6 @@ def unsloth_generic_save_pretrained_merged(
             "Unsloth: You're not saving a tokenizer as well?\n"
             "You can do it separately via `tokenizer.save_pretrained(...)`"
         )
-    pass
 
     arguments = dict(locals())
     arguments["model"] = self
@@ -2880,9 +2690,6 @@ def unsloth_generic_save_pretrained_merged(
     unsloth_generic_save(**arguments)
     for _ in range(3):
         gc.collect()
-
-
-pass
 
 
 def unsloth_generic_push_to_hub_merged(
@@ -2917,7 +2724,6 @@ def unsloth_generic_push_to_hub_merged(
             "Unsloth: You're not saving a tokenizer as well?\n"
             "You can do it separately via `tokenizer.push_to_hub(...)`"
         )
-    pass
 
     arguments = dict(locals())
     arguments["model"] = self
@@ -2928,9 +2734,6 @@ def unsloth_generic_push_to_hub_merged(
     unsloth_generic_save(**arguments)
     for _ in range(3):
         gc.collect()
-
-
-pass
 
 
 def unsloth_save_pretrained_torchao(
@@ -3011,21 +2814,14 @@ def unsloth_save_pretrained_torchao(
             torchao_save_directory, safe_serialization = safe_serialization
         )
         tokenizer.save_pretrained(torchao_save_directory)
-    pass
     for _ in range(3):
         gc.collect()
-
-
-pass
 
 
 def not_implemented_save(*args, **kwargs):
     raise NotImplementedError(
         "Unsloth: Sorry GGUF is currently not supported for vision models!"
     )
-
-
-pass
 
 
 def patch_saving_functions(model, vision = False):
@@ -3038,7 +2834,6 @@ def patch_saving_functions(model, vision = False):
         original_push_to_hub = model.original_push_to_hub
     else:
         original_push_to_hub = model.push_to_hub
-    pass
 
     signature = str(inspect.signature(original_push_to_hub)).replace("NoneType", "None")
     signature = signature[1:]
@@ -3114,14 +2909,11 @@ def patch_saving_functions(model, vision = False):
                         "unsloth",
                     ]
                 )
-            pass
-        pass
 
         if hasattr(original_model, "model"):
             original_model = original_model.model
         else:
             break
-    pass
 
     # Add saving methods to top level model
     if not vision:
@@ -3146,7 +2938,6 @@ def patch_saving_functions(model, vision = False):
             model.save_pretrained_ggml = types.MethodType(
                 unsloth_convert_lora_to_ggml_and_save_locally, model
             )
-        pass
     else:
         # Vision only 1 option
         model.push_to_hub_merged = types.MethodType(
@@ -3162,8 +2953,4 @@ def patch_saving_functions(model, vision = False):
         model.save_pretrained_torchao = types.MethodType(
             unsloth_save_pretrained_torchao, model
         )
-    pass
     return model
-
-
-pass

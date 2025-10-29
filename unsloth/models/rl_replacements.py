@@ -66,7 +66,6 @@ def sft_trainer_fix_untrained_tokens(call_args, extra_args):
     return ""
 
 
-pass
 RL_EXTRA_ARGS["sft_trainer"].append(sft_trainer_fix_untrained_tokens)
 
 
@@ -87,7 +86,6 @@ def dpo_trainer_fix_columns(call_args, extra_args):
     return ""
 
 
-pass
 RL_EXTRA_ARGS["dpo_trainer"].append(dpo_trainer_fix_columns)
 
 
@@ -117,8 +115,6 @@ def sft_trainer_prepare_dataset(function_name, function):
                 "def sft_prepare_dataset", "def _prepare_dataset"
             )
             return function
-        pass
-    pass
 
     check_text = (
         "if 'skip_prepare_dataset' in locals() and skip_prepare_dataset:\n"
@@ -155,7 +151,6 @@ def sft_trainer_prepare_dataset(function_name, function):
     if len(replacer) != 0:
         replacer = replacer[0]
         function = function.replace(replacer, replacer + check_text)
-    pass
 
     # Return tokenizer's original state
     return_state = (
@@ -169,7 +164,6 @@ def sft_trainer_prepare_dataset(function_name, function):
     return function
 
 
-pass
 RL_FUNCTIONS["sft_trainer"].append(sft_trainer_prepare_dataset)
 
 
@@ -190,13 +184,10 @@ def sft_trainer_compute_loss(function_name, function):
         )
         return outputs
 
-    pass
-
     function = inspect.getsource(compute_loss)
     return function
 
 
-pass
 RL_FUNCTIONS["sft_trainer"].append(sft_trainer_compute_loss)
 
 
@@ -221,7 +212,6 @@ def grpo_trainer__prepare_inputs(function_name, function):
     return function
 
 
-pass
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__prepare_inputs)
 
 
@@ -373,7 +363,6 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
     return function
 
 
-pass
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__generate_and_score_completions)
 
 
@@ -426,7 +415,6 @@ def grpo_trainer_fix_maybe_apply_chat_template(function_name, function):
     return function
 
 
-pass
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer_fix_maybe_apply_chat_template)
 
 
@@ -442,7 +430,6 @@ def grpo_trainer__move_model_to_vllm(function_name, function):
     return function
 
 
-pass
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__move_model_to_vllm)
 
 
@@ -492,15 +479,11 @@ def grpo_trainer__get_per_token_logps(function_name, function):
             #     breakpoint()  # Breakpoint triggered here
             #     print("Found high values!")
             # return  logps #  compute logprobs for the input tokens
-        pass
-
-    pass
 
     function = inspect.getsource(_get_per_token_logps)
     return function
 
 
-pass
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__get_per_token_logps)
 
 
@@ -602,15 +585,11 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             #     breakpoint()  # Breakpoint triggered here
             #     print("Found high values!")
             # return  logps #  compute logprobs for the input tokens
-        pass
-
-    pass
 
     function = inspect.getsource(_get_per_token_logps_and_entropies)
     return function
 
 
-pass
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__get_per_token_logps_and_entropies)
 
 grpo_compute_loss = RL_REPLACEMENTS["grpo_compute_loss"]
@@ -806,8 +785,6 @@ def grpo_trainer_compute_loss(function_name, function):
                     logit_scale_divide = logit_scale_divide,
                     attention_mask = attention_mask,
                 )
-            pass
-        pass
 
         if "train" in self._metrics:
             mode = "eval" if self.control.should_evaluate else "train"
@@ -862,13 +839,10 @@ def grpo_trainer_compute_loss(function_name, function):
 
         return loss
 
-    pass
-
     function = inspect.getsource(compute_loss)
     return function
 
 
-pass
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer_compute_loss)
 
 
@@ -890,7 +864,6 @@ def grpo_trainer_fix_batch_size(RLTrainer_source, RLConfig_source):
     return check_batch_size
 
 
-pass
 RL_CONFIG_CHANGES["grpo_trainer"].append(grpo_trainer_fix_batch_size)
 
 
@@ -906,7 +879,6 @@ def grpo_trainer_metrics(RLTrainer_source, RLConfig_source):
         use_normal = "rewards/{reward_func_name}" in RLTrainer_source
     else:
         use_normal = False
-    pass
 
     log_metrics = (
         "if not isinstance(reward_funcs, list): _reward_funcs = [reward_funcs]\n"
@@ -925,5 +897,4 @@ def grpo_trainer_metrics(RLTrainer_source, RLConfig_source):
     return log_metrics
 
 
-pass
 RL_METRICS_CHANGES["grpo_trainer"].append(grpo_trainer_metrics)

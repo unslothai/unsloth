@@ -48,7 +48,6 @@ if Version(torch.__version__) < Version("2.4.0"):
 else:
     torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "cuda")
     torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "cuda")
-pass
 
 if DEVICE_TYPE == "xpu":
     torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "xpu")
@@ -75,9 +74,6 @@ else:
     @triton.jit
     def triton_cast(x, dtype):
         return x.to(dtype)
-
-    pass
-pass
 
 
 @functools.lru_cache(1)
@@ -111,8 +107,6 @@ def calculate_settings(
     return BLOCK_SIZE, num_warps
 
 
-pass
-
 HAS_CUDA_STREAM = False
 import bitsandbytes as bnb
 
@@ -135,8 +129,6 @@ else:
         return nullcontext()
 
 
-pass
-
 # INTEL GPU Specific Logic
 if DEVICE_TYPE == "xpu":
     _gpu_getCurrentRawStream = torch._C._xpu_getCurrentRawStream
@@ -149,9 +141,6 @@ c_void_p = ctypes.c_void_p
 
 def _get_tensor_stream(tensor: torch_Tensor) -> c_void_p:
     return c_void_p(_gpu_getCurrentRawStream(tensor.device.index))
-
-
-pass
 
 
 # Get array of CUDA streams and other buffers
@@ -190,7 +179,6 @@ else:
         CUDA_STREAMS[k] = v
     CUDA_STREAMS = tuple(CUDA_STREAMS)
     del _CUDA_STREAMS
-pass
 
 # Bitsandbytes operations
 ctypes_c_int = ctypes.c_int
@@ -259,7 +247,6 @@ def get_lora_parameters(proj):
     # if not hasattr(proj, "disable_adapters") or proj.disable_adapters or proj.merged:
     if getattr(proj, "disable_adapters", True) or proj.merged:
         return W, W_quant, None, None, None
-    pass
 
     adapter = getattr(proj, "active_adapters", None)
     if adapter is None:
@@ -289,9 +276,6 @@ def get_lora_parameters(proj):
     )
 
 
-pass
-
-
 def get_lora_parameters_bias(proj):
     # For DPO or disabled adapters
     base_layer = getattr(
@@ -309,7 +293,6 @@ def get_lora_parameters_bias(proj):
     # if not hasattr(proj, "disable_adapters") or proj.disable_adapters or proj.merged:
     if getattr(proj, "disable_adapters", True) or proj.merged:
         return W, W_quant, None, None, None, base_layer.bias
-    pass
 
     if getattr(base_layer, "quant_method", None) == "fp8":
         # we need to somehow store and pass this information :)
@@ -331,9 +314,6 @@ def get_lora_parameters_bias(proj):
     )
 
 
-pass
-
-
 def _maybe_fake_quantize_activations(
     X: torch.Tensor, proj: torch.nn.Module
 ) -> torch.Tensor:
@@ -347,9 +327,6 @@ def _maybe_fake_quantize_activations(
     if activation_fake_quantizer is not None:
         X = activation_fake_quantizer(X)
     return X
-
-
-pass
 
 
 # INTEL GPU Specific Logic
@@ -379,7 +356,6 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
             absmax, shape, dtype, blocksize, compressed_stats, _, _ = quant_state
             offset, state2 = compressed_stats
             absmax2, code2, blocksize2, _, _, _, _ = state2
-        pass
         global XPU_STREAMS
         device = W.device
         device_index = device.index
@@ -426,7 +402,6 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
                 device = device,
                 requires_grad = False,
             )
-        pass
 
         # NF4 dequantization of statistics
         ptr_out_absmax = get_ptr(out_absmax)
@@ -457,12 +432,10 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
                 ctypes_c_int(out.numel()),
                 XPU_STREAM,
             )
-        pass
         # Careful returning transposed data
         is_transposed = True if W.shape[0] == 1 else False
         return out.t() if is_transposed else out
 
-    pass
 # NVIDIA GPU Default Logic
 elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
 
@@ -489,7 +462,6 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
             absmax, shape, dtype, blocksize, compressed_stats, _, _ = quant_state
             offset, state2 = compressed_stats
             absmax2, code2, blocksize2, _, _, _, _ = state2
-        pass
         global CUDA_STREAMS
         device = W.device
         device_index = device.index
@@ -537,7 +509,6 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
                 device = device,
                 requires_grad = False,
             )
-        pass
 
         # NF4 dequantization of statistics
         ptr_out_absmax = get_ptr(out_absmax)
@@ -568,12 +539,10 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
                 ctypes_c_int(out.numel()),
                 CUDA_STREAM,
             )
-        pass
         # Careful returning transposed data
         is_transposed = True if W.shape[0] == 1 else False
         return out.t() if is_transposed else out
 
-    pass
 else:
 
     @torch.inference_mode
@@ -599,7 +568,6 @@ else:
             absmax, shape, dtype, blocksize, compressed_stats, _, _ = quant_state
             offset, state2 = compressed_stats
             absmax2, code2, blocksize2, _, _, _, _ = state2
-        pass
 
         n_elements_absmax = absmax.numel()
         device = W.device
@@ -644,9 +612,6 @@ else:
         is_transposed = True if W.shape[0] == 1 else False
         return out.t() if is_transposed else out
 
-    pass
-pass
-
 
 # INTEL GPU Specific Logic
 if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
@@ -677,7 +642,6 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
             )
             offset, state2 = compressed_stats
             absmax2, code2, blocksize2, _, _, _, _ = state2
-        pass
         global XPU_STREAMS
         device = W.device
         device_index = device.index
@@ -753,11 +717,9 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
                 blocksize,
                 XPU_STREAM,
             )
-        pass
 
         return out
 
-    pass
 elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
 
     def fast_gemv(X, W, quant_state, out = None):
@@ -786,7 +748,6 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
             )
             offset, state2 = compressed_stats
             absmax2, code2, blocksize2, _, _, _, _ = state2
-        pass
         global CUDA_STREAMS
         device = W.device
         device_index = device.index
@@ -858,11 +819,9 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
                 blocksize,
                 CUDA_STREAM,
             )
-        pass
 
         return out
 
-    pass
 else:
 
     def fast_gemv(X, W, quant_state, out = None):
@@ -891,7 +850,6 @@ else:
             )
             offset, state2 = compressed_stats
             absmax2, code2, blocksize2, _, _, _, _ = state2
-        pass
         # assert(dtype == X.dtype)
         bout = shape[0]
         device = W.device
@@ -959,9 +917,6 @@ else:
 
         return out
 
-    pass
-pass
-
 
 def fast_linear_forward(proj, X, temp_lora = None, out = None):
     W, W_quant, lora_A, lora_B, lora_S, bias = get_lora_parameters_bias(proj)
@@ -978,7 +933,6 @@ def fast_linear_forward(proj, X, temp_lora = None, out = None):
     else:
         W = fast_dequantize(W.t(), W_quant, use_global_buffer = True)
         out = torch_matmul(X, W, out = out)
-    pass
 
     # Add in LoRA weights
     if lora_A is not None:
@@ -988,7 +942,6 @@ def fast_linear_forward(proj, X, temp_lora = None, out = None):
         if not hasattr(lora_A, "_fast_lora"):
             lora_A._fast_lora = lora_A.to(dtype)
             lora_B._fast_lora = lora_B.to(dtype)
-        pass
 
         if bsz == 1:
             out = out.view(out_dim)
@@ -1000,17 +953,12 @@ def fast_linear_forward(proj, X, temp_lora = None, out = None):
                 X.view(bsz, in_dim), lora_A._fast_lora.t(), out = temp_lora
             )
             out.addmm_(temp_lora, lora_B._fast_lora.t(), alpha = lora_S)
-        pass
         out = out.view(bsz, 1, out_dim)
-    pass
 
     if bias is not None:
         out += bias
 
     return out
-
-
-pass
 
 
 def matmul_lora(X, W, W_quant, A, B, s, out = None):
@@ -1022,7 +970,6 @@ def matmul_lora(X, W, W_quant, A, B, s, out = None):
         reshape = True
     else:
         reshape = False
-    pass
 
     if W.dtype == torch.float8_e4m3fn:
         out = fp8_linear(X, W, W_quant)
@@ -1038,9 +985,5 @@ def matmul_lora(X, W, W_quant, A, B, s, out = None):
         XA = torch_matmul(X, A.to(dtype))
         out.addmm_(XA, B.to(dtype), alpha = s)
         # out += (X @ A.to(dtype)) @ (s * B.to(dtype))
-    pass
 
     return out.view(batch, seq_len, -1) if reshape else out
-
-
-pass

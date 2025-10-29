@@ -46,7 +46,6 @@ if Version(transformers_version) > Version("4.45.2"):
     def unsloth_train(trainer, *args, **kwargs):
         return trainer.train(*args, **kwargs)
 
-    pass
 else:
 
     def unsloth_train(trainer, *args, **kwargs):
@@ -63,23 +62,17 @@ else:
         )
         return _unsloth_train(trainer)
 
-    pass
-pass
 
 try:
     from trl import SFTConfig as TrainingArguments
 except:
     from transformers import TrainingArguments
-pass
 
 
 class UnslothTrainingArguments(TrainingArguments):
     def __init__(self, embedding_learning_rate: float = None, *args, **kwargs):
         embedding_learning_rate = embedding_learning_rate
         super().__init__(*args, **kwargs)
-
-
-pass
 
 
 def _create_unsloth_optimizer(
@@ -108,8 +101,6 @@ def _create_unsloth_optimizer(
             param_groups["embeddings"][name] = param
         else:
             param_groups["non_embeddings"][name] = param
-        pass
-    pass
 
     optimizer_grouped_parameters = [
         {
@@ -125,9 +116,6 @@ def _create_unsloth_optimizer(
     ]
     optimizer = optimizer_cls(optimizer_grouped_parameters, **optimizer_kwargs)
     return optimizer
-
-
-pass
 
 
 class UnslothTrainer(SFTTrainer):
@@ -146,13 +134,7 @@ class UnslothTrainer(SFTTrainer):
                 optimizer_kwargs,
                 embedding_learning_rate,
             )
-        pass
         return self.optimizer
-
-    pass
-
-
-pass
 
 
 # From `trl>=0.13.0`, they changed how to pass several params to the trainer
@@ -167,7 +149,6 @@ def _backwards_compatible_trainer(trainer_class, config_class):
 
         if "processing_class" in trainer_params and "tokenizer" in kwargs:
             kwargs["processing_class"] = kwargs.pop("tokenizer")
-        pass
 
         if ("args" in kwargs) and (Version(trl.__version__) >= Version("0.13.0.dev0")):
             training_args = kwargs.pop("args", None)
@@ -208,8 +189,6 @@ def _backwards_compatible_trainer(trainer_class, config_class):
                     additional_config_kwargs[key] = value
                 else:
                     additional_config_kwargs[key] = value
-                pass
-            pass
 
             # Update config_dict with additional kwargs
             config_dict.update(additional_config_kwargs)
@@ -227,14 +206,9 @@ def _backwards_compatible_trainer(trainer_class, config_class):
             # Reconstruct kwargs for Trainer
             kwargs = trainer_kwargs
             kwargs["args"] = config
-        pass
         original_init(self, *args, **kwargs)
 
-    pass
     return new_init
-
-
-pass
 
 
 def _patch_trl_trainer():
@@ -262,9 +236,5 @@ def _patch_trl_trainer():
             )
         except:
             continue
-    pass
 
     trl.__UNSLOTH_BACKWARDS_COMPATIBLE__ = True
-
-
-pass

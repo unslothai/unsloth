@@ -189,8 +189,6 @@ def find_lora_base_model(model_to_inspect):
     return current
 
 
-pass
-
 base = find_lora_base_model(model)
 
 print((base.__class__.__name__))

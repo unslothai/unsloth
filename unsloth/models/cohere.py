@@ -38,8 +38,6 @@ except:
             f'Try `pip install --upgrade "transformers>=4.42.3"`\n'
             f"to obtain the latest transformers build, then restart this session."
         )
-    pass
-pass
 
 from transformers.modeling_attn_mask_utils import (
     _prepare_4d_causal_attention_mask_for_sdpa,
@@ -54,7 +52,6 @@ try:
 except:
     CohereSdpaAttention = CohereAttention
     CohereFlashAttention2 = CohereAttention
-pass
 
 
 def fast_layernorm_inference(self, X, out_weight = None):
@@ -66,9 +63,6 @@ def fast_layernorm_inference(self, X, out_weight = None):
     out_weight[:] = self.weight
     XX *= out_weight
     return XX.to(X.dtype)
-
-
-pass
 
 
 # QK norm in Cohere
@@ -97,7 +91,6 @@ def CohereAttention_fast_forward(
         del self.attention
         del self.q_norm_out_weight
         del self.k_norm_out_weight
-    pass
 
     bsz, q_len, _ = hidden_states.size()
 
@@ -114,7 +107,6 @@ def CohereAttention_fast_forward(
     if self.use_qk_norm:
         Q = fast_layernorm_compiled(self.q_norm, Q)
         K = fast_layernorm_compiled(self.k_norm, K)
-    pass
 
     kv_seq_len = K.shape[-2]
     if past_key_value is not None:
@@ -126,12 +118,10 @@ def CohereAttention_fast_forward(
     else:
         cos, sin = cos[position_ids], sin[position_ids]
         Q, K = inplace_rope_embedding(Q, K, cos, sin, position_ids)
-    pass
 
     if past_key_value is not None:
         K = torch.cat([past_key_value[0], K], dim = 2)
         V = torch.cat([past_key_value[1], V], dim = 2)
-    pass
     past_key_value = (K, V) if use_cache else None
 
     # Attention module
@@ -153,7 +143,6 @@ def CohereAttention_fast_forward(
                 V = V.reshape(bsz, kv_seq_len, n_heads, head_dim)
             else:
                 Q = Q.view(bsz, q_len, n_kv_heads, n_groups, head_dim)
-        pass
         A = xformers_attention(Q, K, V, attn_bias = causal_mask)
         A = A.view(bsz, q_len, n_heads, head_dim)
 
@@ -173,7 +162,6 @@ def CohereAttention_fast_forward(
             )
             K = K.reshape(bsz, n_heads, kv_seq_len, head_dim)
             V = V.reshape(bsz, n_heads, kv_seq_len, head_dim)
-        pass
         # Must be contiguous or else results are False!
         # https://github.com/pytorch/pytorch/issues/112577
         Q, K, V = Q.contiguous(), K.contiguous(), V.contiguous()
@@ -184,14 +172,10 @@ def CohereAttention_fast_forward(
         )
         # Go back to (batch_size, seq_len, n_heads, head_dim)
         A = A.transpose(1, 2).contiguous()
-    pass
     attn_output = A.reshape(bsz, q_len, n_heads * head_dim)
     attn_output = self.apply_o(self, attn_output)
     attn_weights = None
     return attn_output, attn_weights, past_key_value
-
-
-pass
 
 
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L590
@@ -254,7 +238,6 @@ def CohereDecoderLayer_fast_forward(
         # Fully Connected
         hidden_states_mlp = self.mlp(hidden_states)
         hidden_states = residual + hidden_states_attention + hidden_states_mlp
-    pass
 
     outputs = (hidden_states,)
     if output_attentions:
@@ -262,9 +245,6 @@ def CohereDecoderLayer_fast_forward(
     if use_cache:
         outputs += (present_key_value,)
     return outputs
-
-
-pass
 
 
 from math import sqrt as math_sqrt
@@ -327,7 +307,6 @@ def CohereAttention_fast_forward_inference(
             )
         else:
             self.temp_O = self.temp_QA[1][:, :, :hidden_size]
-        pass
 
         self.attention = torch.empty(
             (bsz, n_heads, 1, KV_CACHE_INCREMENT + seq_len),
@@ -347,7 +326,6 @@ def CohereAttention_fast_forward_inference(
         else:
             self.q_norm_out_weight = None
             self.k_norm_out_weight = None
-        pass
     elif kv_seq_len >= self.paged_attention.shape[0]:
         self.paged_attention.resize_(
             (
@@ -363,7 +341,6 @@ def CohereAttention_fast_forward_inference(
         self.attention.resize_(
             (bsz, n_heads, 1, self.attention.shape[-1] + KV_CACHE_INCREMENT)
         )
-    pass
 
     Qn = fast_linear_forward(self.q_proj, Xn, out = self.temp_QA[0])
     Kn = fast_linear_forward(self.k_proj, Xn, out = self.temp_KV[0])
@@ -374,7 +351,6 @@ def CohereAttention_fast_forward_inference(
     if self.use_qk_norm:
         Q = fast_layernorm_inference(self.q_norm, Q, self.q_norm_out_weight)
         K = fast_layernorm_inference(self.k_norm, K, self.k_norm_out_weight)
-    pass
 
     # cos, sin = self.rotary_emb(Vn, seq_len = kv_seq_len)
     # Qn, Kn = inplace_rope_embedding(Qn, Kn, cos, sin, position_ids)
@@ -416,7 +392,6 @@ def CohereAttention_fast_forward_inference(
         Vnn = Vn[:, :, slicing_tokens:, :]  # .contiguous()
     else:
         Knn, Vnn = Kn, Vn
-    pass
 
     # Grouped query attention
     _, _, cached_len, _ = Knn.shape
@@ -429,7 +404,6 @@ def CohereAttention_fast_forward_inference(
         )
         Knn = Knn.reshape(bsz, n_heads, cached_len, head_dim)
         Vnn = Vnn.reshape(bsz, n_heads, cached_len, head_dim)
-    pass
     # else:
     #     Knn, Vnn = Knn, Vnn
     # pass
@@ -450,14 +424,10 @@ def CohereAttention_fast_forward_inference(
         A = scaled_dot_product_attention(
             Qn, Knn, Vnn, attn_mask = attention_mask, is_causal = False
         )
-    pass
     A = A.transpose(1, 2)
     A = A.reshape(bsz, 1, attention_size)
     A = fast_linear_forward(self.o_proj, A, out = self.temp_O)
     return A, (Kn, Vn)
-
-
-pass
 
 
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L825
@@ -492,7 +462,6 @@ def CohereModel_fast_forward_inference(
         )
     else:
         attention_mask = None
-    pass
 
     next_decoder_cache = []
     for idx, decoder_layer in enumerate(self.model.layers):
@@ -521,7 +490,6 @@ def CohereModel_fast_forward_inference(
         hidden_states = residual
 
         next_decoder_cache.append(present_key_value)
-    pass
     hidden_states = fast_layernorm_inference(
         self.model.norm, hidden_states, out_weights[device_index]
     )
@@ -532,9 +500,6 @@ def CohereModel_fast_forward_inference(
         hidden_states = [],
         attentions = [],
     )
-
-
-pass
 
 
 class FastCohereModel(FastLlamaModel):
@@ -549,7 +514,6 @@ class FastCohereModel(FastLlamaModel):
         if init_name is not None:
             exec(function, globals())
             CohereAttention.__init__ = eval(init_name)
-        pass
         CohereAttention.forward = CohereAttention_fast_forward
         CohereSdpaAttention.forward = CohereAttention_fast_forward
         CohereFlashAttention2.forward = CohereAttention_fast_forward
@@ -567,8 +531,3 @@ class FastCohereModel(FastLlamaModel):
             LlamaRotaryEmbedding
         )
         return
-
-    pass
-
-
-pass

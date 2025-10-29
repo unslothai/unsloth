@@ -57,9 +57,6 @@ def _rms_layernorm_forward(
     tl.store(Y + col_offsets, output, mask = mask)
 
 
-pass
-
-
 def _rms_layernorm_backward(
     dY,
     dY_row_stride: tl.constexpr,
@@ -113,7 +110,6 @@ def _rms_layernorm_backward(
     tl.store(dX + col_offsets, output, mask = mask)
 
 
-pass
 _rms_layernorm_backward = triton.jit(_rms_layernorm_backward)
 _rms_layernorm_backward = triton.heuristics(
     {
@@ -159,9 +155,6 @@ def _gemma_rms_layernorm_forward(
     tl.store(Y + col_offsets, output, mask = mask)
 
 
-pass
-
-
 class Fast_RMS_Layernorm(torch.autograd.Function):
     @staticmethod
     def forward(ctx, X: torch.Tensor, W: torch.Tensor, eps: float, gemma: bool = False):
@@ -202,8 +195,6 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         ctx.save_for_backward(X, W, r)
         return Y.view(*shape)
 
-    pass
-
     @staticmethod
     def backward(ctx, dY: torch.Tensor):
         shape = dY.shape
@@ -238,11 +229,6 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         dX = dX.view(*shape)
         return dX, None, None, None
 
-    pass
-
-
-pass
-
 
 # [TODO] Unsure why RMS Layernorm is not torch.compiling properly
 @torch.compiler.disable
@@ -257,9 +243,6 @@ def fast_rms_layernorm(layernorm, X: torch.Tensor, gemma: bool = False):
     return out
 
 
-pass
-
-
 from transformers.models.llama.modeling_llama import LlamaRMSNorm
 
 
@@ -267,10 +250,6 @@ class Unsloth_LlamaRMSNorm(LlamaRMSNorm):
     def forward(self, X):
         return fast_rms_layernorm(self, X, gemma = False)
 
-    pass
-
-
-pass
 
 try:
     from transformers.models.mllama.modeling_mllama import MllamaTextRMSNorm
@@ -279,12 +258,9 @@ try:
         def forward(self, X):
             return fast_rms_layernorm(self, X, gemma = False)
 
-        pass
 
-    pass
 except:
     pass
-pass
 
 
 def patch_rms_layernorm():
@@ -302,9 +278,6 @@ def patch_rms_layernorm():
     return
 
 
-pass
-
-
 def unpatch_rms_layernorm():
     import transformers.models.llama.modeling_llama
 
@@ -316,9 +289,6 @@ def unpatch_rms_layernorm():
     except:
         pass
     return
-
-
-pass
 
 
 def test_rms_layernorm(
@@ -349,9 +319,6 @@ def test_rms_layernorm(
     assert torch.amax(correct_grad - XX.grad).item() <= 0.05
 
 
-pass
-
-
 def testing_suite_layernorm():
     for dim in [512, 1024, 2048]:
         for dtype in [torch.float16, torch.bfloat16]:
@@ -366,11 +333,3 @@ def testing_suite_layernorm():
                             random_state = random_state,
                             seqlen = seqlen,
                         )
-                    pass
-                pass
-            pass
-        pass
-    pass
-
-
-pass

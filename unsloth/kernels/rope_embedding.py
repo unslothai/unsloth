@@ -65,7 +65,6 @@ def _rope_embedding(
     if BACKWARD_PASS:
         # See our blog post for more info.
         sin1 = -sin1
-    pass
 
     # [TODO] Autotune ROPE_GROUP_SIZE to be 1, 2, 4, 8
     head_start = group_head_position * ROPE_GROUP_SIZE
@@ -84,10 +83,8 @@ def _rope_embedding(
 
         tl.store(Q + offs_q1, Q1 * cos1 - Q2 * sin1, mask = mask)
         tl.store(Q + offs_q2, Q2 * cos1 + Q1 * sin1, mask = mask)
-    pass
 
 
-pass
 _rope_embedding = triton.jit(_rope_embedding)
 _rope_embedding = triton.heuristics(
     {
@@ -148,8 +145,6 @@ class Fast_RoPE_Embedding(torch.autograd.Function):
         ctx.sin = sin
         return Q.view(batch, seq_len, n_heads, head_dim)
 
-    pass
-
     @staticmethod
     def backward(ctx, dY):
         batch: int
@@ -193,11 +188,6 @@ class Fast_RoPE_Embedding(torch.autograd.Function):
             None,
         )
 
-    pass
-
-
-pass
-
 
 # [TODO] Unsure why RoPE Embedding is not torch.compiling properly
 @torch.compiler.disable
@@ -207,9 +197,6 @@ def fast_rope_embedding(Q, K, cos, sin):
     # synchronize before cat to avoid race condition
     torch_device_stream(Q.device).synchronize()
     return Q, K
-
-
-pass
 
 
 class Slow_RoPE_Embedding(torch.autograd.Function):
@@ -232,8 +219,6 @@ class Slow_RoPE_Embedding(torch.autograd.Function):
         ctx.save_for_backward(cos, sin)
         return Q
 
-    pass
-
     @staticmethod
     def backward(ctx, dY):
         cos, sin = ctx.saved_tensors
@@ -246,17 +231,9 @@ class Slow_RoPE_Embedding(torch.autograd.Function):
         # dY += RH_dY
         return dY, None, None, None
 
-    pass
-
-
-pass
-
 
 def inplace_rope_embedding(Q, K, cos, sin, position_ids):
     Q = Slow_RoPE_Embedding.apply(Q, cos, sin, position_ids)
     K = Slow_RoPE_Embedding.apply(K, cos, sin, position_ids)
     torch_device_stream(Q.device).synchronize()
     return Q, K
-
-
-pass

@@ -495,8 +495,6 @@ def training_run(result_queue):
             "text": texts,
         }
 
-    pass
-
     limo_train = limo_train.map(
         formatting_prompts_func,
         batched = True,

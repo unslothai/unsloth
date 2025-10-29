@@ -181,8 +181,6 @@ class HideLoggingMessage(logging.Filter):
         return not (self.text in x.getMessage())
 
 
-pass
-
 # Stop vLLM messages
 if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") != "1":
     try:
@@ -246,7 +244,6 @@ if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") != "1":
         del vllm_attention_utils_fa_utils_logger
     except:
         pass
-pass
 
 # The speedups for torchdynamo mostly come with GPU Ampere or higher and which is not detected here.
 from transformers.training_args import logger as transformers_training_args_logger
@@ -436,9 +433,6 @@ class _RaiseUninitialized(logging.Handler):
             )
 
 
-pass
-
-
 class RaiseUninitialized:
     def __init__(self):
         self.error_handler = _RaiseUninitialized()
@@ -447,8 +441,6 @@ class RaiseUninitialized:
     def remove(self):
         transformers_logger.removeHandler(self.error_handler)
 
-
-pass
 
 # Patch get_model_param_count to record correct 4bit / 8bit
 from transformers.trainer_pt_utils import is_deepspeed_zero3_enabled
@@ -465,9 +457,6 @@ def extract_quant_model_param_count(model):
         else:
             count += p.numel()
     return count
-
-
-pass
 
 
 def get_model_param_count(model, trainable_only = False):
@@ -497,7 +486,6 @@ def get_model_param_count(model, trainable_only = False):
     return s
 
 
-pass
 import transformers.trainer_pt_utils
 
 transformers.trainer_pt_utils.get_model_param_count = get_model_param_count
@@ -527,11 +515,8 @@ def patch_mistral_nemo_config(config):
 
         add_head_dim = "self.sliding_window = sliding_window\n        self.head_dim = head_dim or hidden_size // num_attention_heads\n"
         config = config.replace("self.sliding_window = sliding_window", add_head_dim)
-    pass
     return config
 
-
-pass
 
 try:
     # Some Config files use layer_type_validation
@@ -585,12 +570,10 @@ for model_name in model_architectures:
     if model_name == "mistral":
         if Version(transformers_version) <= Version("4.42.4"):
             config = patch_mistral_nemo_config(config)
-    pass
 
     exec(config, globals())
     exec(f"import {config_filepath}", globals())
     exec(f"{config_filepath}.{config_filename} = {config_filename}", globals())
-pass
 # =============================================
 
 # =============================================
@@ -603,7 +586,6 @@ if DEVICE_TYPE in ("cuda", "hip"):
     else:
         torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "cuda")
         torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "cuda")
-    pass
 elif DEVICE_TYPE == "xpu":
     if Version(torch_version) < Version("2.6.0"):
         raise RuntimeError("torch.xpu currently only supports torch.version >= 2.6.0")
@@ -649,8 +631,6 @@ if is_openai_available():
             return False
 
         transformers.utils.is_openai_available = _is_openai_available
-    pass
-pass
 
 # =============================================
 # Get Flash Attention v2 if Ampere (RTX 30xx, A100)
@@ -714,13 +694,11 @@ if DEVICE_TYPE == "cuda":
                 )
 
                 HAS_FLASH_ATTENTION = False
-            pass
         else:
             HAS_FLASH_ATTENTION = False
     else:
         # Tri Dao's benchmark shows xformers is faster for now.
         HAS_FLASH_ATTENTION = False
-    pass
 elif DEVICE_TYPE == "hip":
     SUPPORTS_BFLOAT16 = True
     if _is_package_available("flash_attn"):
@@ -802,7 +780,6 @@ try:
             f"Otherwise in local machines, your xformers version of {xformers_version} is too new.\n"
             'Please downgrade xformers via `pip install --force-reinstall "xformers<=0.0.27"'
         )
-    pass
 
     if Version(torch_version) < Version("2.2.0") and Version(
         xformers_version
@@ -825,7 +802,6 @@ try:
             f"Unsloth: You have torch = {torch_version} but xformers = {xformers_version}.\n"
             f"Please install xformers <= 0.0.27 for torch = {torch_version}."
         )
-    pass
 
     from xformers._cpp_lib import _register_extensions
 
@@ -839,7 +815,6 @@ try:
             "python -m xformers.info\n\n"
             "Longer error message:\n" + str(error)
         )
-    pass
     import xformers.ops.fmha as xformers
 
     xformers_attention = xformers.memory_efficient_attention
@@ -855,7 +830,6 @@ except Exception as e:
     xformers = None
     xformers_attention = None
     xformers_version = None
-pass
 
 # Check TRL version
 from trl import __version__ as trl_version
@@ -874,7 +848,6 @@ if False:  # Version(trl_version) >= Version("0.9.0"):
         f"Otherwise in local machines, your TRL version of {trl_version} is too new.\n"
         "Please downgrade TRL via `pip install --force-reinstall trl"
     )
-pass
 
 # =============================================
 # Fix new Xformers versions TypeError: Multiple dispatch failed for 'torch._ops.aten.to.dtype_layout'
@@ -913,8 +886,6 @@ if hasattr(transformers.generation.configuration_utils, "ALL_CACHE_IMPLEMENTATIO
             transformers.generation.configuration_utils.ALL_CACHE_IMPLEMENTATIONS.append(
                 "dynamic"
             )
-    pass
-pass
 # =============================================
 
 # =============================================
@@ -976,8 +947,6 @@ def torch_compile_kwargs(*args, **kwargs):
     }
 
 
-pass
-
 accelerate.utils.dataclasses.TorchDynamoPlugin.to_kwargs = torch_compile_kwargs
 accelerate.utils.TorchDynamoPlugin.to_kwargs = torch_compile_kwargs
 accelerate.accelerator.TorchDynamoPlugin.to_kwargs = torch_compile_kwargs
@@ -1012,14 +981,11 @@ def patch_regional_compilation():
             ]
         return old_module_list(*args, **kwargs)
 
-    pass
     UnslothModuleList.__doc__ = old_module_list.__doc__
 
     torch.nn.ModuleList = UnslothModuleList
     return
 
-
-pass
 
 # =============================================
 
@@ -1040,8 +1006,6 @@ def prepare_model_for_kbit_training(
         float32_mixed_precision = True,
     )
 
-
-pass
 
 # =============================================
 # Weirdly LoraLayer.update_layer downcasts PEFT layers to float16??
@@ -1078,8 +1042,6 @@ if Version(peft_version) < Version("0.12.0"):
             "Unsloth unsuccessfully patched LoraLayer.update_layer. Please file a bug report.\n"
             "Luckily, your training run will still work in the meantime!"
         )
-    pass
-pass
 
 # =============================================
 import importlib
@@ -1091,8 +1053,6 @@ if USE_MODELSCOPE:
         raise ImportError(
             f"You are using the modelscope hub, please install modelscope by `pip install modelscope -U`"
         )
-    pass
-pass
 
 import socket
 
@@ -1108,8 +1068,6 @@ def has_internet(host = "8.8.8.8", port = 53, timeout = 3):
     except socket.error as ex:
         return False
 
-
-pass
 
 import psutil
 
@@ -1167,12 +1125,10 @@ def _get_statistics(statistics = None, force_download = True):
                         return "gcp"
             return "other"
 
-        pass
         try:
             statistics = try_vllm_check()
         except:
             statistics = "other"
-    pass
     if statistics is not None:
         import tempfile
         from huggingface_hub import snapshot_download
@@ -1204,11 +1160,6 @@ def _get_statistics(statistics = None, force_download = True):
                     "model = FastLanguageModel.from_pretrained('unsloth/gpt-oss-20b')\n"
                     "```"
                 )
-        pass
-    pass
-
-
-pass
 
 
 def get_statistics(local_files_only = False):
@@ -1233,7 +1184,6 @@ def get_statistics(local_files_only = False):
     if not are_progress_bars_disabled():
         disable_progress_bars()
         disabled = True
-    pass
     _get_statistics(None)
     _get_statistics("repeat", force_download = False)
     total_memory = (
@@ -1262,9 +1212,6 @@ def get_statistics(local_files_only = False):
     _get_statistics(f"{DEVICE_COUNT if DEVICE_COUNT <= 8 else 9}")
     if disabled:
         enable_progress_bars()
-
-
-pass
 
 
 # =============================================
@@ -1304,7 +1251,6 @@ if DEVICE_COUNT == 1:
     accelerate.accelerator.Accelerator.distributed_type = (
         lambda *args, **kwargs: DistributedType.NO
     )
-pass
 
 
 # to move multiple tensors to the same device
@@ -1328,7 +1274,6 @@ def move_to_device(target_device, *tensors):
         pass
     else:
         raise ValueError(f"Invalid target device: {target_device}")
-    pass
     moved_tensors = []
     for tensor in tensors:
         if tensor.device != target_device:
@@ -1355,7 +1300,6 @@ def offload_to_disk(
     file_location = os.path.join(temporary_location, model.config._name_or_path)
     if not os.path.exists(file_location):
         os.makedirs(file_location)
-    pass
 
     filename = os.path.join(file_location, f"{name}.pt")
     W = W.weight if hasattr(W, "weight") else W
@@ -1373,9 +1317,6 @@ def offload_to_disk(
     return offloaded_W
 
 
-pass
-
-
 def offload_input_embeddings(
     model, temporary_location: str = "_unsloth_temporary_saved_buffers"
 ):
@@ -1386,9 +1327,6 @@ def offload_input_embeddings(
     new_input_embeddings._offloaded_file_location = offloaded_W._offloaded_file_location
     model.set_input_embeddings(new_input_embeddings)
     return
-
-
-pass
 
 
 def offload_output_embeddings(
@@ -1411,22 +1349,13 @@ def offload_output_embeddings(
     return
 
 
-pass
-
-
 # Fixes a weird Torch 2.3 bug which says T4s have bfloat16
 def is_bfloat16_supported():
     return SUPPORTS_BFLOAT16
 
 
-pass
-
-
 def is_vLLM_available():
     return _is_package_available("vllm")
-
-
-pass
 
 
 # Patches models to add RoPE Scaling
@@ -1500,9 +1429,6 @@ def patch_linear_scaling(
     function = function.replace(rotary_emb, fix_rope_function, 1)
     function = exec_code + "\n\n" + function
     return init_name, function
-
-
-pass
 
 
 # Patches for Llama-3 LlamaExtendedRotaryEmbedding
@@ -1606,23 +1532,16 @@ def patch_llama_rope_scaling(
     return init_name, function
 
 
-pass
-
-
 def create_boolean_mask(n = 4096, sliding_window = 2048):
     # Creates a boolean mask for attention
     mask = torch.ones(n, n, dtype = torch.bool)
     if sliding_window == 0:
         return torch.triu(mask, diagonal = 1, out = mask)
-    pass
     torch.triu(mask, diagonal = 0, out = mask)
     torch.triu(mask.T, diagonal = -sliding_window, out = mask.T)
     mask = mask.T
     torch.logical_not(mask, out = mask)
     return mask
-
-
-pass
 
 
 def test_mask_creation():
@@ -1647,7 +1566,6 @@ def test_mask_creation():
             correct_mask = correct_mask == correct_mask.min()
             our_mask = create_boolean_mask(n = n, sliding_window = s)
             assert torch.all(correct_mask == our_mask)
-        pass
         correct_mask = (
             AttentionMaskConverter(
                 is_causal = True,
@@ -1665,10 +1583,6 @@ def test_mask_creation():
         correct_mask = correct_mask == correct_mask.min()
         our_mask = create_boolean_mask(n = n, sliding_window = 0)
         assert torch.all(correct_mask == our_mask)
-    pass
-
-
-pass
 
 
 def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
@@ -1681,8 +1595,6 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
             kwargs.pop("num_items_in_batch")
         elif "num_items_in_batch" not in inputs:
             inputs["num_items_in_batch"] = num_items_in_batch
-        pass
-    pass
 
     # Get gradient accumulation steps if possible
     if (
@@ -1701,12 +1613,8 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
             "Using gradient accumulation will be very slightly less accurate.\n"
             "Read more on gradient accumulation issues here: https://unsloth.ai/blog/gradient"
         )
-    pass
     outputs = self._old_compute_loss(model, inputs, *args, **kwargs)
     return outputs
-
-
-pass
 
 
 def patch_gradient_accumulation_fix(Trainer):
@@ -1728,7 +1636,6 @@ def patch_gradient_accumulation_fix(Trainer):
         else:
             if Trainer.get_batch_samples.__name__ != "_unsloth_get_batch_samples":
                 Trainer.get_batch_samples = _unsloth_get_batch_samples
-            pass
 
             # Also fix passing in num_items_in_batch
             if not hasattr(Trainer, "_old_compute_loss"):
@@ -1747,7 +1654,6 @@ def patch_gradient_accumulation_fix(Trainer):
                     for item in items_in_trainer:
                         if item in function:
                             good_items.append(item)
-                    pass
                     exec(
                         "from transformers.trainer import ("
                         + ", ".join(x for x in good_items)
@@ -1763,11 +1669,8 @@ def patch_gradient_accumulation_fix(Trainer):
                     )
                     exec(function, globals())
                     Trainer.compute_loss = compute_loss
-                pass
                 Trainer._old_compute_loss = Trainer.compute_loss
                 Trainer.compute_loss = _unsloth_pre_compute_loss
-            pass
-        pass
     else:
         logger.warning_once(
             "Unsloth: We fixed a gradient accumulation bug, "
@@ -1775,7 +1678,6 @@ def patch_gradient_accumulation_fix(Trainer):
             "Please update transformers, TRL and unsloth via:\n"
             "`pip install --upgrade --no-cache-dir --no-deps unsloth transformers git+https://github.com/huggingface/trl.git`"
         )
-    pass
 
     # Also fix up loss scaling ie negate loss *= self.args.gradient_accumulation_steps
     if Trainer.training_step.__name__ == "_unsloth_training_step":
@@ -1796,7 +1698,6 @@ def patch_gradient_accumulation_fix(Trainer):
     for item in items_in_trainer:
         if item in function:
             good_items.append(item)
-    pass
     exec(
         "from transformers.trainer import (" + ", ".join(x for x in good_items) + ")",
         globals(),
@@ -1835,9 +1736,6 @@ def patch_gradient_accumulation_fix(Trainer):
     Trainer.training_step = _unsloth_training_step
 
 
-pass
-
-
 def patch_tokenizer(model, tokenizer):
     model, tokenizer = _patch_tokenizer(model, tokenizer)
     if model is not None:
@@ -1845,16 +1743,10 @@ def patch_tokenizer(model, tokenizer):
     return model, tokenizer
 
 
-pass
-
-
 def patch_fast_lora():
     import peft.tuners.lora.bnb
 
     peft.tuners.lora.bnb.Linear4bit.forward = fast_lora_forward
-
-
-pass
 
 
 def unsloth_compile_transformers(
@@ -1899,7 +1791,6 @@ def unsloth_compile_transformers(
             "For now your models will not get optimized, but will still work for now!"
         )
         return
-    pass
     if trust_remote_code and unsloth_force_compile == False:
         print(
             "Unsloth: We can't trace models if `trust_remote_code = True`, "
@@ -1940,14 +1831,11 @@ def unsloth_compile_transformers(
             return_logits = return_logits,
             supports_sdpa = supports_sdpa,
         )
-    pass
     # Redo patches which override compiler
     for temporary_patch in TEMPORARY_PATCHES:
         temporary_patch()
     return model_types, supports_sdpa[0]
 
-
-pass
 
 # We need an empty logits flag to warn people logits will not be returned anymore unless asked ie
 # os.environ['UNSLOTH_RETURN_LOGITS'] = '1'
@@ -1986,7 +1874,6 @@ class EmptyLogits:
         return LOGITS_ERROR_STRING
 
 
-pass
 EMPTY_LOGITS = EmptyLogits()
 functions = dir(torch.Tensor)
 for j, function in enumerate(functions):
@@ -1998,7 +1885,6 @@ for j, function in enumerate(functions):
             exec(f"EMPTY_LOGITS.{function} = raise_{j}", globals(), locals())
         except:
             continue
-pass
 
 
 def validate_loftq_config(loftq_config, lora_dropout, bias, init_lora_weights, model):
@@ -2015,14 +1901,12 @@ def validate_loftq_config(loftq_config, lora_dropout, bias, init_lora_weights, m
             f"Unsloth: Dropout = 0 is supported for fast patching. You are using dropout = {lora_dropout}.\n"
             f"Unsloth will patch all other layers, except LoRA matrices, causing a performance hit."
         )
-    pass
 
     if bias != "none":
         logger.warning_once(
             f"Unsloth: bias = `none` is supported for fast patching. You are using bias = {bias}.\n"
             f"Unsloth will patch all other layers, except LoRA matrices, causing a performance hit."
         )
-    pass
 
     if not (
         type(init_lora_weights) is bool
@@ -2032,7 +1916,6 @@ def validate_loftq_config(loftq_config, lora_dropout, bias, init_lora_weights, m
         raise ValueError(
             'Unsloth: `init_lora_weights` must be either [True, False, "gaussian", "loftq"].'
         )
-    pass
 
     if init_lora_weights == "loftq":
         if not SUPPORTS_LOFTQ:
@@ -2043,7 +1926,6 @@ def validate_loftq_config(loftq_config, lora_dropout, bias, init_lora_weights, m
                 "Please install PEFT 0.7.2 or higher.\n"
                 "You can also install from source: `pip install git+https://github.com/huggingface/peft.git"
             )
-        pass
 
         if loftq_config == {}:
             from peft import LoftQConfig
@@ -2053,15 +1935,12 @@ def validate_loftq_config(loftq_config, lora_dropout, bias, init_lora_weights, m
                 "We shall use `loftq_config = LoftQConfig(loftq_bits = 4, loftq_iter = 1)`."
             )
             loftq_config = LoftQConfig(loftq_bits = 4, loftq_iter = 1)
-        pass
 
         if hasattr(model.config, "quantization_config"):
             raise ValueError(
                 "Unsloth: You are using `loftq` init, yet `load_in_4bit = True` was set.\n"
                 "Reload your model without any quantization by setting `load_in_4bit = False`."
             )
-        pass
-    pass
 
     return loftq_config
 
@@ -2073,7 +1952,6 @@ def fast_inference_setup(model_name, model_config):
             "Unsloth: vLLM is not installed! Will use Unsloth inference!"
         )
         fast_inference = False
-    pass
     from unsloth_zoo.vllm_utils import (
         patch_vllm,
         vllm_dynamic_quant_supported,
@@ -2088,8 +1966,6 @@ def fast_inference_setup(model_name, model_config):
                 f"we do not yet support fast inference for {model_name}"
             )
             model_name = model_name[: -len("unsloth-bnb-4bit")] + "bnb-4bit"
-        pass
-    pass
     return fast_inference, model_name
 
 
@@ -2105,7 +1981,6 @@ def patch_peft_fast_inference(model):
 
         model.save_lora = functools.partial(save_lora, model)
         model.load_lora = functools.partial(load_lora, model)
-    pass
 
 
 def error_out_no_vllm(*args, **kwargs):
@@ -2122,11 +1997,9 @@ try:
     except:
         print("Unsloth: TorchAO changed `torchao.quantization.Int4WeightOnlyConfig`")
         Int4WeightOnlyConfig = None
-    pass
 except:
     AOBaseConfig = None
     Int4WeightOnlyConfig = None
-    pass
 
 
 @dataclass
@@ -2144,9 +2017,6 @@ class TorchAOConfig:
                 lambda m, _: isinstance(m, torch.nn.Linear)
                 and m.in_features >= self.group_size
             )
-
-
-pass
 
 
 def _prepare_model_for_qat(
@@ -2207,7 +2077,6 @@ def _prepare_model_for_qat(
             )
         else:
             raise ValueError(f"Unexpected QAT scheme {qat_scheme}")
-        pass
         # Save TorchAO schemes
         torchao_config = TorchAOConfig(
             qat_scheme = qat_scheme,
@@ -2233,9 +2102,6 @@ def _prepare_model_for_qat(
     return model
 
 
-pass
-
-
 def patch_hf_quantizer():
     # To tell hf trainer that the quantized model is trainable
     def make_trainable(self):
@@ -2259,7 +2125,5 @@ def patch_hf_quantizer():
     except Exception as e:
         logger.warning(f"Failed to patch FbgemmFp8HfQuantizer. Error {e}")
 
-
-pass
 
 patch_hf_quantizer()
