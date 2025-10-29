@@ -144,18 +144,30 @@ def patch_ipykernel_hf_xet():
     if importlib.util.find_spec("hf_xet") is None: return
     if importlib.util.find_spec("ipykernel") is None: return
     if importlib.util.find_spec("huggingface_hub") is None: return
+
+    ipykernel_version = Version(importlib_version("ipykernel"))
     if (
         Version(importlib_version("hf_xet")) == Version("1.1.10")
     ) and (
-        Version(importlib_version("ipykernel")) == Version("7.0.0")
+        (ipykernel_version == Version("7.0.0")) or \
+        (ipykernel_version == Version("7.0.1")) or \ # 7.0.1 seems to also break with LookupError: <ContextVar name='shell_parent' at 0x7a9775143ec0>
+        (ipykernel_version >= Version("7.0.2"))
     ):
         print(
-            "#### Unsloth: `hf_xet==1.1.10` and `ipykernel==7.0.0` breaks progress bars. Disabling for now in XET.\n"\
-            "#### Unsloth: To re-enable progress bars, please upgrade to `ipykernel>7.0.0` or wait for a fix to\n"\
+            "#### Unsloth: `hf_xet==1.1.10` and `ipykernel>=7.0.0` breaks progress bars. Using ASCII progress bars.\n"\
+            "#### Unsloth: To re-enable progress bars, please downgrade to `ipykernel<7.0.0` or wait for a fix to\n"\
             "https://github.com/huggingface/xet-core/issues/526"
         )
-        from huggingface_hub.utils import disable_progress_bars
-        disable_progress_bars()
+        # from huggingface_hub.utils import disable_progress_bars
+        # disable_progress_bars()
+
+        # Force text bars for anyone doing `from tqdm.auto/notebook import tqdm`
+        from tqdm import std as _tstd
+        import tqdm.auto as _tauto, tqdm.notebook as _tnb
+        _tauto.tqdm   = _tstd.tqdm
+        _tauto.trange = _tstd.trange
+        _tnb.tqdm     = _tstd.tqdm
+        _tnb.trange   = _tstd.trange
     pass
 pass
 
