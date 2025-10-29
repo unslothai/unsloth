@@ -7,3 +7,10 @@ repos:
           - --fix
           - --exit-non-zero-on-fix
       - id: ruff-format
+  - repo: local
+    hooks:
+      - id: enforce-kwargs-spacing
+        name: Enforce spaces around keyword equals
+        entry: scripts/enforce_kwargs_spacing.py
+        language: system
+        types: [python]
