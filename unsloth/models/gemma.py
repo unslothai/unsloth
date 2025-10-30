@@ -16,6 +16,11 @@ from .llama import *
 from ._utils import __version__
 from unsloth_zoo.utils import _get_dtype
 from unsloth_zoo.hf_utils import dtype_from_config
+from ..utils.packing import (
+    build_sdpa_packed_attention_mask,
+    build_xformers_block_causal_mask,
+    get_packed_info_from_kwargs,
+)
 import math
 
 try:
@@ -75,6 +80,8 @@ def fast_geglu_inference(self, X):
     return down
 
 
+
+
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L590
 def GemmaDecoderLayer_fast_forward(
     self,
@@ -110,6 +117,7 @@ def GemmaDecoderLayer_fast_forward(
             output_attentions = output_attentions,
             use_cache = use_cache,
             padding_mask = padding_mask,
+            **kwargs,
         )
         hidden_states += residual
 
@@ -134,6 +142,7 @@ def GemmaDecoderLayer_fast_forward(
             output_attentions = output_attentions,
             use_cache = use_cache,
             padding_mask = padding_mask,
+            **kwargs,
         )
         hidden_states = residual + hidden_states
 
@@ -151,6 +160,8 @@ def GemmaDecoderLayer_fast_forward(
     if use_cache:
         outputs += (present_key_value,)
     return outputs
+
+
 
 
 from math import sqrt as math_sqrt
@@ -235,6 +246,8 @@ def GemmaModel_fast_forward_inference(
     )
 
 
+
+
 # Follows line by line https://github.com/google-deepmind/gemma/blob/main/gemma/positional_embeddings.py#L45
 # Formulates cos and sin differently from Llama!
 class GemmaFixedRotaryEmbedding(torch.nn.Module):
@@ -287,6 +300,7 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
             1, device = torch.cuda.current_device(), dtype = torch.get_default_dtype()
         )
 
+
     def _set_cos_sin_cache(self, seq_len, device, dtype):
         # Note: on the original Llama codebase, these tensors are created on the target device (and not on CPU) and
         # in FP32. They are applied (multiplied) in FP32 as well.
@@ -311,6 +325,7 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
         self.multi_gpu_sin_cached[device.index] = sin
         return cos, sin
 
+
     def forward(self, x, position_ids = None, seq_len = None):
         # x: [bs, num_attention_heads, seq_len, head_size]
         if seq_len is not None and seq_len > self.current_rope_size:
@@ -323,12 +338,14 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
             self.multi_gpu_sin_cached[device_index][:seq_len],
         )
 
+
     def get_cached(self, seq_len = None, device_index = None):
         if device_index is None:
             device_index = torch.cuda.current_device()
         return self.multi_gpu_cos_cached[device_index], self.multi_gpu_sin_cached[
             device_index
         ]
+
 
     def extend_rope_embedding(self, x, seq_len):
         if seq_len <= self.current_rope_size:
@@ -339,6 +356,9 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
             self._set_cos_sin_cache(
                 self.current_rope_size, device = torch.device(device), dtype = x.dtype
             )
+
+
+
 
 
 class GemmaFixedLinearScalingRotaryEmbedding(GemmaFixedRotaryEmbedding):
@@ -365,6 +385,7 @@ class GemmaFixedLinearScalingRotaryEmbedding(GemmaFixedRotaryEmbedding):
             config = config,
         )
 
+
     def _set_cos_sin_cache(self, seq_len, device, dtype):
         # Note: on the original Llama codebase, these tensors are created on the target device (and not on CPU) and
         # in FP32. They are applied (multiplied) in FP32 as well.
@@ -389,6 +410,9 @@ class GemmaFixedLinearScalingRotaryEmbedding(GemmaFixedRotaryEmbedding):
         self.multi_gpu_cos_cached[device.index] = cos
         self.multi_gpu_sin_cached[device.index] = sin
         return cos, sin
+
+
+
 
 
 class FastGemmaModel(FastLlamaModel):
@@ -425,6 +449,7 @@ class FastGemmaModel(FastLlamaModel):
             GemmaFixedRotaryEmbedding
         )
         return
+
 
     @staticmethod
     def post_patch(model, tokenizer):
@@ -466,3 +491,6 @@ class FastGemmaModel(FastLlamaModel):
             gc.collect()
             torch.cuda.empty_cache()
         return model, tokenizer
+
+
+
