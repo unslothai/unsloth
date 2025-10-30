@@ -218,7 +218,7 @@ def unsloth_base_fast_generate(
         dtype = torch.float16
     else:
         autocaster = torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = dtype)
-
+    print(dtype, autocaster)
     # Prepare LoRA
     # state_dict = convert_lora_modules(self, dtype = dtype)
 
