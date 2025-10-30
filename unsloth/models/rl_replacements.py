@@ -218,15 +218,10 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         if not has_images:
             # Left pad prompt before calculation old and ref hidden states
             prompt_completion_ids = left_pack_padding(prompt_completion_ids, self.processing_class.pad_token_id)
+        self.model.for_training()"""
 
-        fast_language_model_types =  ["llama",  "mistral", "gemma2", "qwen2" , "qwen3", "qwen3_moe"] 
-        
-        from unsloth import FastVisionModel, FastLanguageModel, FastModel
-        if prompt_inputs.get("pixel_values") is None and self.model.config.model_type not in fast_language_model_types:
-            self.model = FastModel.for_training(self.model)
-        else:
-            self.model = FastVisionModel.for_training(self.model)"""
-
+    if "has_images" not in function:
+        raise NotImplementedError("Unsloth: For now we support `trl<=0.23.1`. Please downgrade!")
     function = function.replace(line_to_replace, replacement_lines)
 
     pattern_to_find = re.compile(
