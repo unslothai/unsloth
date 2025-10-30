@@ -17,6 +17,11 @@ import os
 from ._utils import __version__
 from unsloth_zoo.utils import Version, _get_dtype
 from unsloth_zoo.hf_utils import dtype_from_config
+from ..utils.packing import (
+    build_sdpa_packed_attention_mask,
+    build_xformers_block_causal_mask,
+    get_packed_info_from_kwargs,
+)
 from .llama import (
     LlamaRotaryEmbedding,
     LlamaLinearScalingRotaryEmbedding,
@@ -98,13 +103,10 @@ def FalconH1Attention_fast_forward(
     assert n_kv_heads * n_groups == n_heads
 
     Q, K, V = self.apply_qkv(self, hidden_states)
-    Q = Q.view(
-        bsz, q_len, n_heads, head_dim
-    )  # .transpose(1, 2) # we will transpose after normalisation
-    K = K.view(
-        bsz, q_len, n_kv_heads, head_dim
-    )  # .transpose(1, 2) # we will transpose after normalisation
+    Q = Q.view(bsz, q_len, n_heads, head_dim)
+    K = K.view(bsz, q_len, n_kv_heads, head_dim)
     V = V.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
+    seq_info = get_packed_info_from_kwargs(kwargs, bsz * q_len, hidden_states.device)
 
     # Falcon H1 multiplies key states by a multiplier
     K = K * self.config.key_multiplier
@@ -116,20 +118,19 @@ def FalconH1Attention_fast_forward(
     if past_key_value is not None:
         kv_seq_len += past_key_value[0].shape[-2]
 
-    if position_embeddings and kv_seq_len <= position_embeddings[0].shape[0]:
+    # Extend RoPE dynamically to fit in VRAM
+    if position_embeddings  and kv_seq_len <= position_embeddings[0].shape[0]:
         cos, sin = position_embeddings
     else:
-        # Extend RoPE dynamically to fit in VRA
         rotary_emb = self.rotary_emb
         rotary_emb.extend_rope_embedding(V, seq_len = kv_seq_len)
-        device_index = Q.device.index
+        cos, sin = rotary_emb.get_cached(kv_seq_len, Q.device.index)
 
-        if position_ids is None:
-            # Useful for LongRoPE
-            cos, sin = rotary_emb.get_cached(kv_seq_len, device_index)
-        else:
-            cos, sin = rotary_emb.get_cached(kv_seq_len, device_index)
-    Q, K = fast_rope_embedding(Q, K, cos, sin)
+    rope_position_ids = (
+        position_ids if position_ids is not None else kwargs.get("position_ids")
+    )
+    # Useful for LongRoPE
+    Q, K = fast_rope_embedding(Q, K, cos, sin, rope_position_ids)
 
     if past_key_value is not None:
         K = torch.cat([past_key_value[0], K], dim = 2)
@@ -137,7 +138,45 @@ def FalconH1Attention_fast_forward(
     past_key_value = (K, V) if use_cache else None
 
     # Attention module
-    if not HAS_FLASH_ATTENTION and attention_mask is None:
+    if HAS_FLASH_ATTENTION and attention_mask is None:
+        Q_t = Q.transpose(1, 2)
+        K_t = K.transpose(1, 2)
+        V_t = V.transpose(1, 2)
+        sw = kv_seq_len
+        window = (-1, -1) if (kv_seq_len <= sw) else (sw, sw)
+        if (
+            seq_info is not None
+            and flash_attn_varlen_func is not None
+            and past_key_value is None
+            and window == (-1, -1)
+        ):
+            Q_f = Q_t.reshape(bsz * q_len, n_heads, head_dim)
+            K_f = K_t.reshape(bsz * q_len, n_kv_heads, head_dim)
+            V_f = V_t.reshape(bsz * q_len, n_kv_heads, head_dim)
+            _, cu_seqlens, max_seqlen = seq_info
+            A = flash_attn_varlen_func(
+                Q_f,
+                K_f,
+                V_f,
+                cu_seqlens,
+                cu_seqlens,
+                max_seqlen,
+                max_seqlen,
+                dropout_p = 0.0,
+                softmax_scale = None,
+                causal = True,
+            )
+        else:
+            A = flash_attn_func(
+                Q_t,
+                K_t,
+                V_t,
+                causal = True,
+                window_size = window,
+            )
+        A = A.reshape(bsz, q_len, n_heads * head_dim)
+
+    elif HAS_XFORMERS and attention_mask is None:
         # Xformers memory efficient attention
         Q = Q.transpose(1, 2)
         K = K.transpose(1, 2)
@@ -156,17 +195,13 @@ def FalconH1Attention_fast_forward(
         else:
             # Xformers does support the forward pass though
             Q = Q.view(bsz, q_len, n_kv_heads, n_groups, head_dim)
+        pass
+
+        if seq_info is not None and causal_mask is None:
+            causal_mask = build_xformers_block_causal_mask(seq_info)
 
         A = xformers_attention(Q, K, V, attn_bias = causal_mask)
         A = A.view(bsz, q_len, n_heads, head_dim)
-
-    elif HAS_FLASH_ATTENTION and attention_mask is None:
-        Q = Q.transpose(1, 2)
-        K = K.transpose(1, 2)
-        V = V.transpose(1, 2)
-        sw = kv_seq_len
-        window = (-1, -1) if (kv_seq_len <= sw) else (sw, sw)
-        A = flash_attn_func(Q, K, V, causal = True, window_size = window)
     else:
         # Grouped query attention
         # if n_groups != 1:
@@ -180,8 +215,17 @@ def FalconH1Attention_fast_forward(
         Q, K, V = Q.contiguous(), K.contiguous(), V.contiguous()
         # Needs (batch_size, n_heads, seq_len, head_dim)
         # is_casual and attention_mask must not be both set!
+        is_causal = False
+        if seq_info is not None and attention_mask is None:
+            attention_mask = build_sdpa_packed_attention_mask(
+                seq_info, dtype = Q.dtype, device = Q.device
+            )
         A = scaled_dot_product_attention(
-            Q, K, V, attn_mask = attention_mask, is_causal = False
+            Q,
+            K,
+            V,
+            attn_mask = attention_mask,
+            is_causal = is_causal,
         )
         # Go back to (batch_size, seq_len, n_heads, head_dim)
         A = A.transpose(1, 2).contiguous()
@@ -190,6 +234,7 @@ def FalconH1Attention_fast_forward(
     attn_output = self.apply_o(self, attn_output)
     attn_weights = None
     return attn_output, attn_weights, past_key_value
+
 
 
 torch_matmul = torch.matmul
@@ -397,6 +442,8 @@ def FalconH1Attention_fast_forward_inference(
     return A, (Kn, Vn)
 
 
+
+
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/falcon_h1/modeling_falcon_h1.py
 def FalconH1DecoderLayer_fast_forward(
     self,
@@ -442,6 +489,7 @@ def FalconH1DecoderLayer_fast_forward(
             use_cache = use_cache,
             padding_mask = padding_mask,
             position_embeddings = position_embeddings,
+            **kwargs,
         )
         attention_hidden_states = attention_hidden_states * self.attn_out_multiplier
 
@@ -486,6 +534,7 @@ def FalconH1DecoderLayer_fast_forward(
             use_cache = use_cache,
             padding_mask = padding_mask,
             position_embeddings = position_embeddings,
+            **kwargs,
         )
         attention_hidden_states = attention_hidden_states * self.attn_out_multiplier
 
@@ -506,6 +555,8 @@ def FalconH1DecoderLayer_fast_forward(
     if use_cache:
         outputs += (present_key_value,)
     return outputs
+
+
 
 
 def _FalconH1_fast_forward_inference(
@@ -697,10 +748,14 @@ def _fast_prepare_inputs_for_generation(
     return model_inputs
 
 
+
+
 def fix_prepare_inputs_for_generation(module):
     # Fix prepare_inputs_for_generation
     if hasattr(module, "prepare_inputs_for_generation"):
         module.prepare_inputs_for_generation = _fast_prepare_inputs_for_generation
+
+
 
 
 class FastFalconH1Model(FastLlamaModel):
@@ -736,6 +791,7 @@ class FastFalconH1Model(FastLlamaModel):
         )
         return
 
+
     @staticmethod
     def from_pretrained(  # TODO: Change after release
         model_name = "Qwen/FalconH1-7B",
@@ -765,3 +821,6 @@ class FastFalconH1Model(FastLlamaModel):
             trust_remote_code = trust_remote_code,
             **kwargs,
         )
+
+
+

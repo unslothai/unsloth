@@ -16,6 +16,11 @@ from .llama import *
 import os
 from ._utils import __version__
 from unsloth_zoo.utils import Version, _get_dtype
+from ..utils.packing import (
+    build_sdpa_packed_attention_mask,
+    build_xformers_block_causal_mask,
+    get_packed_info_from_kwargs,
+)
 from .llama import (
     LlamaRotaryEmbedding,
     LlamaLinearScalingRotaryEmbedding,
@@ -95,6 +100,7 @@ def Qwen3Attention_fast_forward(
         bsz, q_len, n_kv_heads, head_dim
     )  # .transpose(1, 2) # we will transpose after normalisation
     V = V.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
+    seq_info = get_packed_info_from_kwargs(kwargs, bsz * q_len, hidden_states.device)
 
     # Qwen3 has QKNorm. This seems to be the only difference from Qwen2.
     # Note that using fast_layernorm_compiled causes issues as the dimensions don't match up.
@@ -110,20 +116,19 @@ def Qwen3Attention_fast_forward(
     if past_key_value is not None:
         kv_seq_len += past_key_value[0].shape[-2]
 
-    if position_embeddings and kv_seq_len <= position_embeddings[0].shape[0]:
+    # Extend RoPE dynamically to fit in VRAM
+    if position_embeddings  and kv_seq_len <= position_embeddings[0].shape[0]:
         cos, sin = position_embeddings
     else:
-        # Extend RoPE dynamically to fit in VRA
         rotary_emb = self.rotary_emb
         rotary_emb.extend_rope_embedding(V, seq_len = kv_seq_len)
-        device_index = Q.device.index
+        cos, sin = rotary_emb.get_cached(kv_seq_len, Q.device.index)
 
-        if position_ids is None:
-            # Useful for LongRoPE
-            cos, sin = rotary_emb.get_cached(kv_seq_len, device_index)
-        else:
-            cos, sin = rotary_emb.get_cached(kv_seq_len, device_index)
-    Q, K = fast_rope_embedding(Q, K, cos, sin)
+    rope_position_ids = (
+        position_ids if position_ids is not None else kwargs.get("position_ids")
+    )
+    # Useful for LongRoPE
+    Q, K = fast_rope_embedding(Q, K, cos, sin, rope_position_ids)
 
     if past_key_value is not None:
         K = torch.cat([past_key_value[0], K], dim = 2)
@@ -131,8 +136,45 @@ def Qwen3Attention_fast_forward(
     past_key_value = (K, V) if use_cache else None
 
     # Attention module
-    if not HAS_FLASH_ATTENTION and HAS_XFORMERS and attention_mask is None:
-        # Xformers memory efficient attention
+    if HAS_FLASH_ATTENTION and attention_mask is None:
+        Q_t = Q.transpose(1, 2)
+        K_t = K.transpose(1, 2)
+        V_t = V.transpose(1, 2)
+        sw = kv_seq_len
+        window = (-1, -1) if (kv_seq_len <= sw) else (sw, sw)
+        if (
+            seq_info is not None
+            and flash_attn_varlen_func is not None
+            and past_key_value is None
+            and window == (-1, -1)
+        ):
+            Q_f = Q_t.reshape(bsz * q_len, n_heads, head_dim)
+            K_f = K_t.reshape(bsz * q_len, n_kv_heads, head_dim)
+            V_f = V_t.reshape(bsz * q_len, n_kv_heads, head_dim)
+            _, cu_seqlens, max_seqlen = seq_info
+            A = flash_attn_varlen_func(
+                Q_f,
+                K_f,
+                V_f,
+                cu_seqlens,
+                cu_seqlens,
+                max_seqlen,
+                max_seqlen,
+                dropout_p = 0.0,
+                softmax_scale = None,
+                causal = True,
+            )
+        else:
+            A = flash_attn_func(
+                Q_t,
+                K_t,
+                V_t,
+                causal = True,
+                window_size = window,
+            )
+        A = A.reshape(bsz, q_len, n_heads * head_dim)
+
+    elif HAS_XFORMERS and attention_mask is None:
         Q = Q.transpose(1, 2)
         K = K.transpose(1, 2)
         V = V.transpose(1, 2)
@@ -141,7 +183,6 @@ def Qwen3Attention_fast_forward(
 
         has_swa = isinstance(causal_mask, xformers.attn_bias.BlockDiagonalCausalMask)
 
-        # Group query attention
         K = K.view(bsz, kv_seq_len, n_kv_heads, 1, head_dim)
         V = V.view(bsz, kv_seq_len, n_kv_heads, 1, head_dim)
         K = K.expand(bsz, kv_seq_len, n_kv_heads, n_groups, head_dim)
@@ -149,38 +190,28 @@ def Qwen3Attention_fast_forward(
         if hidden_states.requires_grad:
             K = K.reshape(bsz, kv_seq_len, n_heads, head_dim)
             V = V.reshape(bsz, kv_seq_len, n_heads, head_dim)
-
             if has_swa:
                 Q = Q.view(1, Q_M, n_heads, head_dim)
                 K = K.view(1, K_M, n_heads, head_dim)
                 V = V.view(1, V_M, n_heads, head_dim)
         else:
-            # Xformers does support the forward pass though
             Q = Q.view(bsz, q_len, n_kv_heads, n_groups, head_dim)
-
             if has_swa:
                 Q = Q.view(1, Q_M, n_kv_heads, n_groups, head_dim)
                 K = K.view(1, K_M, n_kv_heads, n_groups, head_dim)
                 V = V.view(1, V_M, n_kv_heads, n_groups, head_dim)
 
+        if seq_info is not None and not has_swa:
+            causal_mask = build_xformers_block_causal_mask(seq_info)
+
         A = xformers_attention(Q, K, V, attn_bias = causal_mask)
         A = A.view(bsz, q_len, n_heads, head_dim)
 
-    elif HAS_FLASH_ATTENTION and attention_mask is None:
-        Q = Q.transpose(1, 2)
-        K = K.transpose(1, 2)
-        V = V.transpose(1, 2)
-        sw = kv_seq_len
-        window = (-1, -1) if (kv_seq_len <= sw) else (sw, sw)
-        A = flash_attn_func(Q, K, V, causal = True, window_size = window)
     else:
-        # Grouped query attention
-        # if n_groups != 1:
         K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
         V = V[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
         K = K.reshape(bsz, n_heads, kv_seq_len, head_dim)
         V = V.reshape(bsz, n_heads, kv_seq_len, head_dim)
-        # pass
         # Must be contiguous or else results are False!
         # https://github.com/pytorch/pytorch/issues/112577
         Q, K, V = Q.contiguous(), K.contiguous(), V.contiguous()
@@ -189,13 +220,22 @@ def Qwen3Attention_fast_forward(
         # when qlen==vlen and attn_mask is None, we should use causal attention
         Q_len = Q.shape[-2]
         K_len = K.shape[-2]
-        if attention_mask is None and Q_len == K_len:
-            is_causal = True
-        else:
+        if seq_info is not None and attention_mask is None:
+            attention_mask = build_sdpa_packed_attention_mask(
+                seq_info, dtype = Q.dtype, device = Q.device
+            )
             is_causal = False
+        else:
+            is_causal = attention_mask is None and Q_len == K_len
 
+        # Needs (batch_size, n_heads, seq_len, head_dim)
+        # is_casual and attention_mask must not be both set!
         A = scaled_dot_product_attention(
-            Q, K, V, attn_mask = attention_mask, is_causal = is_causal
+            Q,
+            K,
+            V,
+            attn_mask = attention_mask,
+            is_causal = is_causal,
         )
         # Go back to (batch_size, seq_len, n_heads, head_dim)
         A = A.transpose(1, 2).contiguous()
@@ -204,6 +244,7 @@ def Qwen3Attention_fast_forward(
     attn_output = self.apply_o(self, attn_output)
     attn_weights = None
     return attn_output, attn_weights, past_key_value
+
 
 
 torch_matmul = torch.matmul
@@ -426,6 +467,8 @@ def Qwen3Attention_fast_forward_inference(
     return A, (Kn, Vn)
 
 
+
+
 class FastQwen3Model(FastLlamaModel):
     @staticmethod
     def pre_patch():
@@ -461,6 +504,7 @@ class FastQwen3Model(FastLlamaModel):
         )
         return
 
+
     @staticmethod
     def from_pretrained(  # TODO: Change after release
         model_name = "Qwen/Qwen3-7B",
@@ -490,3 +534,6 @@ class FastQwen3Model(FastLlamaModel):
             trust_remote_code = trust_remote_code,
             **kwargs,
         )
+
+
+
