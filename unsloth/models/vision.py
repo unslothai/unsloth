@@ -156,6 +156,9 @@ def unsloth_base_fast_generate(
 
     FastBaseModel.for_inference(self)
     dtype = _get_dtype(dtype_from_config(self.config))
+    # Handle float32 cases
+    if os.environ.get("UNSLOTH_BFLOAT16_MIXED_PRECISION", "0") == "1":
+        dtype = torch.bfloat16
 
     # Check if VLM
     is_vlm = any(
@@ -516,6 +519,7 @@ class FastBaseModel:
                         f"Unsloth: Using bfloat16 full finetuning which cuts memory usage by 50%.\n"
                         f"To enable float32 training, use `float32_mixed_precision = True` during FastLanguageModel.from_pretrained"
                     )
+                    os.environ["UNSLOTH_BFLOAT16_MIXED_PRECISION"] = "1"
             else:
                 print("Unsloth: Float16 full finetuning uses more memory since we upcast weights to float32.")
         else:
