@@ -157,16 +157,8 @@ def patch_ipykernel_hf_xet():
             "#### Unsloth: To re-enable progress bars, please upgrade to `ipykernel>=7.1.0` or wait for a fix to\n"\
             "https://github.com/huggingface/xet-core/issues/526"
         )
-        # from huggingface_hub.utils import disable_progress_bars
-        # disable_progress_bars()
-
-        # Force text bars for anyone doing `from tqdm.auto/notebook import tqdm`
-        from tqdm import std as _tstd
-        import tqdm.auto as _tauto, tqdm.notebook as _tnb
-        _tauto.tqdm   = _tstd.tqdm
-        _tauto.trange = _tstd.trange
-        _tnb.tqdm     = _tstd.tqdm
-        _tnb.trange   = _tstd.trange
+        from huggingface_hub.utils import disable_progress_bars
+        disable_progress_bars()
 pass
 
 def patch_trackio():
