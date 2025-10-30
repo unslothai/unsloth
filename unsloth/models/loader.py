@@ -133,6 +133,7 @@ class FastLanguageModel(FastLlamaModel):
         revision                   = None,
         use_exact_model_name       = False,
         offload_embedding          = False,
+        float32_mixed_precision    = None, # Forces float32 mixed precision
 
         fast_inference             = False, # uses vLLM
         gpu_memory_utilization     = 0.5,
@@ -172,7 +173,7 @@ class FastLanguageModel(FastLlamaModel):
                 fullgraph                  = True, # No graph breaks
                 use_exact_model_name       = use_exact_model_name,
                 offload_embedding          = offload_embedding,
-
+                float32_mixed_precision    = float32_mixed_precision,
                 # Pass vLLM/inference parameters
                 fast_inference             = fast_inference,
                 gpu_memory_utilization     = gpu_memory_utilization,
@@ -449,7 +450,7 @@ class FastLanguageModel(FastLlamaModel):
                 fullgraph                  = True, # No graph breaks
                 use_exact_model_name       = use_exact_model_name,
                 offload_embedding          = offload_embedding,
-
+                float32_mixed_precision    = float32_mixed_precision,
                 # Pass vLLM/inference parameters
                 fast_inference             = fast_inference,
                 gpu_memory_utilization     = gpu_memory_utilization,
@@ -594,7 +595,7 @@ class FastModel(FastBaseModel):
         whisper_task               = None,
         unsloth_force_compile      = False,
         offload_embedding          = False,
-
+        float32_mixed_precision    = None, # Forces float32 mixed precision
         # Add the missing vLLM/inference parameters
         fast_inference             = False, # uses vLLM
         gpu_memory_utilization     = 0.5,
@@ -1008,7 +1009,7 @@ class FastModel(FastBaseModel):
             whisper_task      = whisper_task,
             auto_config       = model_config,
             offload_embedding = offload_embedding,
-
+            float32_mixed_precision = float32_mixed_precision,
             # Pass vLLM/inference parameters
             fast_inference         = fast_inference,
             gpu_memory_utilization = gpu_memory_utilization,
