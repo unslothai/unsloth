@@ -17,6 +17,11 @@ import os
 from ._utils import __version__
 from unsloth_zoo.utils import _get_dtype
 from unsloth_zoo.hf_utils import dtype_from_config
+from ..utils.packing import (
+    build_sdpa_packed_attention_mask,
+    build_xformers_block_causal_mask,
+    get_packed_info_from_kwargs,
+)
 from .llama import (
     LlamaRotaryEmbedding,
     LlamaLinearScalingRotaryEmbedding,
@@ -76,6 +81,7 @@ def MistralAttention_fast_forward(
     Q = Q.view(bsz, q_len, n_heads, head_dim).transpose(1, 2)
     K = K.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
     V = V.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
+    seq_info = get_packed_info_from_kwargs(kwargs, bsz * q_len, Q.device)
 
     kv_seq_len = K.shape[-2]
     if past_key_value is not None:
@@ -83,12 +89,13 @@ def MistralAttention_fast_forward(
 
     # Extend RoPE dynamically to fit in VRAM
     self.rotary_emb.extend_rope_embedding(V, seq_len = kv_seq_len)
-
     cos, sin = self.rotary_emb.get_cached(kv_seq_len, Q.device.index)
-    if position_ids is None:
-        Q, K = fast_rope_embedding(Q, K, cos, sin)
-    else:
-        Q, K = inplace_rope_embedding(Q, K, cos, sin, position_ids)
+
+    rope_position_ids = (
+        position_ids if position_ids is not None else kwargs.get("position_ids")
+    )
+    # Useful for LongRoPE
+    Q, K = fast_rope_embedding(Q, K, cos, sin, rope_position_ids)
 
     if past_key_value is not None:
         K = torch.cat([past_key_value[0], K], dim = 2)
@@ -96,7 +103,46 @@ def MistralAttention_fast_forward(
     past_key_value = (K, V) if use_cache else None
 
     # Attention module
-    if not HAS_FLASH_ATTENTION and HAS_XFORMERS and attention_mask is None:
+    if HAS_FLASH_ATTENTION and attention_mask is None:
+        Q_t = Q.transpose(1, 2)
+        K_t = K.transpose(1, 2)
+        V_t = V.transpose(1, 2)
+        sw = getattr(self.config, "sliding_window", None)
+        sw = kv_seq_len if (sw is None or sw == "null") else sw
+        window = (-1, -1) if (kv_seq_len <= sw) else (sw, sw)
+        if (
+            seq_info is not None
+            and flash_attn_varlen_func is not None
+            and past_key_value is None
+            and window == (-1, -1)
+        ):
+            Q_f = Q_t.reshape(bsz * q_len, n_heads, head_dim)
+            K_f = K_t.reshape(bsz * q_len, n_kv_heads, head_dim)
+            V_f = V_t.reshape(bsz * q_len, n_kv_heads, head_dim)
+            _, cu_seqlens, max_seqlen = seq_info
+            A = flash_attn_varlen_func(
+                Q_f,
+                K_f,
+                V_f,
+                cu_seqlens,
+                cu_seqlens,
+                max_seqlen,
+                max_seqlen,
+                dropout_p = 0.0,
+                softmax_scale = None,
+                causal = True,
+            )
+        else:
+            A = flash_attn_func(
+                Q_t,
+                K_t,
+                V_t,
+                causal = True,
+                window_size = window,
+            )
+        A = A.reshape(bsz, q_len, n_heads * head_dim)
+
+    elif HAS_XFORMERS and attention_mask is None:
         # Xformers memory efficient attention
         Q = Q.transpose(1, 2)
         K = K.transpose(1, 2)
@@ -105,6 +151,8 @@ def MistralAttention_fast_forward(
         Q_M = bsz * q_len
 
         has_swa = isinstance(causal_mask, xformers.attn_bias.BlockDiagonalCausalMask)
+        if seq_info is not None and not has_swa:
+            causal_mask = build_xformers_block_causal_mask(seq_info)
 
         # Group query attention
         K = K.view(bsz, kv_seq_len, n_kv_heads, 1, head_dim)
@@ -119,6 +167,7 @@ def MistralAttention_fast_forward(
                 Q = Q.view(1, Q_M, n_heads, head_dim)
                 K = K.view(1, K_M, n_heads, head_dim)
                 V = V.view(1, V_M, n_heads, head_dim)
+            pass
         else:
             # Xformers does support the forward pass though
             Q = Q.view(bsz, q_len, n_kv_heads, n_groups, head_dim)
@@ -127,18 +176,12 @@ def MistralAttention_fast_forward(
                 Q = Q.view(1, Q_M, n_kv_heads, n_groups, head_dim)
                 K = K.view(1, K_M, n_kv_heads, n_groups, head_dim)
                 V = V.view(1, V_M, n_kv_heads, n_groups, head_dim)
+            pass
+        pass
 
         A = xformers_attention(Q, K, V, attn_bias = causal_mask)
         A = A.view(bsz, q_len, n_heads, head_dim)
 
-    elif HAS_FLASH_ATTENTION and attention_mask is None:
-        Q = Q.transpose(1, 2)
-        K = K.transpose(1, 2)
-        V = V.transpose(1, 2)
-        sw = getattr(self.config, "sliding_window", None)
-        sw = kv_seq_len if (sw is None or sw == "null") else sw
-        window = (-1, -1) if (kv_seq_len <= sw) else (sw, sw)
-        A = flash_attn_func(Q, K, V, causal = True, window_size = window)
     else:
         # Grouped query attention
         # if n_groups != 1:
@@ -150,10 +193,19 @@ def MistralAttention_fast_forward(
         # Must be contiguous or else results are False!
         # https://github.com/pytorch/pytorch/issues/112577
         Q, K, V = Q.contiguous(), K.contiguous(), V.contiguous()
+        is_causal = False
+        if seq_info is not None and attention_mask is None:
+            attention_mask = build_sdpa_packed_attention_mask(
+                seq_info, dtype = Q.dtype, device = Q.device
+            )
         # Needs (batch_size, n_heads, seq_len, head_dim)
         # is_casual and attention_mask must not be both set!
         A = scaled_dot_product_attention(
-            Q, K, V, attn_mask = attention_mask, is_causal = False
+            Q,
+            K,
+            V,
+            attn_mask = attention_mask,
+            is_causal = is_causal,
         )
         # Go back to (batch_size, seq_len, n_heads, head_dim)
         A = A.transpose(1, 2).contiguous()
@@ -162,6 +214,8 @@ def MistralAttention_fast_forward(
     attn_output = self.apply_o(self, attn_output)
     attn_weights = None
     return attn_output, attn_weights, past_key_value
+
+
 
 
 def MistralForCausalLM_fast_forward(
@@ -396,6 +450,8 @@ def MistralForCausalLM_fast_forward(
     )
 
 
+
+
 # Transformers had to update for Mistral Nemo 12b since Attention is (5120, 4096) now.
 def patch_mistral_nemo_attention(function):
     function = function.replace(
@@ -411,6 +467,8 @@ def patch_mistral_nemo_attention(function):
         "self.o_proj = nn.Linear(self.config.num_attention_heads * self.head_dim, self.config.hidden_size, bias=False)",
     )
     return function
+
+
 
 
 class FastMistralModel(FastLlamaModel):
@@ -449,6 +507,7 @@ class FastMistralModel(FastLlamaModel):
         )
         return
 
+
     @staticmethod
     def from_pretrained(
         model_name = "unsloth/mistral-7b-bnb-4bit",
@@ -478,3 +537,6 @@ class FastMistralModel(FastLlamaModel):
             trust_remote_code = trust_remote_code,
             **kwargs,
         )
+
+
+

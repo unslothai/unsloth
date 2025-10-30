@@ -58,9 +58,14 @@ from transformers.modeling_attn_mask_utils import (
 )
 from ..kernels import *
 from ..tokenizer_utils import *
+from ..utils.packing import (
+    build_sdpa_packed_attention_mask,
+    build_xformers_block_causal_mask,
+    get_packed_info_from_kwargs,
+)
 
 if HAS_FLASH_ATTENTION:
-    from flash_attn import flash_attn_func
+    from flash_attn import flash_attn_func, flash_attn_varlen_func
 from .vision import FastBaseModel
 
 # Final patching code
@@ -123,9 +128,12 @@ def original_apply_qkv(self, X):
     return Q, K, V
 
 
+
+
 def original_apply_o(self, X):
     O = self.o_proj(X)
     return O
+
 
 
 from math import sqrt as math_sqrt
@@ -223,10 +231,13 @@ def _fast_prepare_inputs_for_generation(
     }
 
 
+
+
 def fix_prepare_inputs_for_generation(module):
     # Fix prepare_inputs_for_generation
     if hasattr(module, "prepare_inputs_for_generation"):
         module.prepare_inputs_for_generation = _fast_prepare_inputs_for_generation
+
 
 
 torch_matmul = torch.matmul
@@ -438,6 +449,8 @@ def LlamaAttention_fast_forward_inference(
     return A, (Kn, Vn)
 
 
+
+
 torch_nn_functional_silu = torch.nn.functional.silu
 
 
@@ -469,6 +482,7 @@ def fast_swiglu_inference(
     return down
 
 
+
 torch_square = torch.square
 torch_mean = torch.mean
 
@@ -493,6 +507,8 @@ def fast_rms_layernorm_inference(self, X, XX = None, XX2 = None, variance = None
     return X
 
 
+
+
 def fast_rms_layernorm_inference_gemma(self, X, out_weight = None):
     XX = X.to(torch.float32)
     variance = XX.square().mean(-1, keepdim = True)
@@ -509,6 +525,8 @@ def fast_rms_layernorm_inference_gemma(self, X, out_weight = None):
     return XX.to(X.dtype)
 
 
+
+
 # Normal layernorm with mean removal
 @torch.compile(fullgraph = False, dynamic = True, options = torch_compile_options)
 def fast_layernorm_compiled(layernorm, X):
@@ -522,6 +540,8 @@ def fast_layernorm_compiled(layernorm, X):
         * layernorm.weight.float()
     )
     return X.to(old_dtype)
+
+
 
 
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L320
@@ -562,6 +582,8 @@ def LlamaAttention_fast_forward(
     K = K.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
     V = V.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
 
+    seq_info = get_packed_info_from_kwargs(kwargs, bsz * q_len, Q.device)
+
     kv_seq_len = K.shape[-2]
     if past_key_value is not None:
         kv_seq_len += past_key_value[0].shape[-2]
@@ -569,23 +591,20 @@ def LlamaAttention_fast_forward(
     if position_embeddings and kv_seq_len <= position_embeddings[0].shape[0]:
         cos, sin = position_embeddings
     else:
-        # Extend RoPE dynamically to fit in VRA
         rotary_emb = self.rotary_emb
         rotary_emb.extend_rope_embedding(V, seq_len = kv_seq_len)
-
-        # if position_ids is None:
-        #     # Useful for LongRoPE
-        #     cos, sin = rotary_emb.get_cached(kv_seq_len, device = Q.device)
-        # else:
-        #     cos, sin = rotary_emb.get_cached(seq_len = kv_seq_len, device = Q.device)
         cos, sin = rotary_emb.get_cached(kv_seq_len, Q.device.index)
+
+    rope_position_ids = position_ids
+    if rope_position_ids is None and seq_info is not None:
+        rope_position_ids = kwargs.get("position_ids")
 
     # Q, K = (
     #     fast_rope_embedding(Q, K, cos, sin)
-    #     if position_ids is None
-    #     else inplace_rope_embedding(Q, K, cos, sin, position_ids)
+    #     if rope_position_ids is None
+    #     else inplace_rope_embedding(Q, K, cos, sin, rope_position_ids)
     # )
-    Q, K = fast_rope_embedding(Q, K, cos, sin)
+    Q, K = fast_rope_embedding(Q, K, cos, sin, rope_position_ids)
 
     if past_key_value is not None:
         K = torch.cat([past_key_value[0], K], dim = 2)
@@ -593,9 +612,38 @@ def LlamaAttention_fast_forward(
     past_key_value = (K, V) if use_cache else None
 
     # Attention module
-    if not HAS_FLASH_ATTENTION and HAS_XFORMERS and attention_mask is None:
+    if HAS_FLASH_ATTENTION and attention_mask is None:
+        if (
+            seq_info is not None
+            and flash_attn_varlen_func is not None
+            and past_key_value is None
+        ):
+            Q = Q.transpose(1, 2).reshape(bsz * q_len, n_heads, head_dim)
+            K = K.transpose(1, 2).reshape(bsz * q_len, n_kv_heads, head_dim)
+            V = V.transpose(1, 2).reshape(bsz * q_len, n_kv_heads, head_dim)
+            _, cu_seqlens, max_seqlen = seq_info
+            A = flash_attn_varlen_func(
+                Q,
+                K,
+                V,
+                cu_seqlens,
+                cu_seqlens,
+                max_seqlen,
+                max_seqlen,
+                dropout_p = 0.0,
+                causal = True,
+            ).view(bsz, q_len, n_heads, head_dim)
+        else:
+            Q = Q.transpose(1, 2)
+            K = K.transpose(1, 2)
+            V = V.transpose(1, 2)
+            A = flash_attn_func(Q, K, V, causal = True)
+
+    elif HAS_XFORMERS and attention_mask is None:
         # Xformers memory efficient attention
         # Also has Flash Attention v2 dispatching
+        if seq_info is not None:
+            causal_mask = build_xformers_block_causal_mask(seq_info)
         Q = Q.transpose(1, 2)
         K = K.transpose(1, 2)
         V = V.transpose(1, 2)
@@ -611,22 +659,21 @@ def LlamaAttention_fast_forward(
                 V = V.reshape(bsz, kv_seq_len, n_heads, head_dim)
             else:
                 Q = Q.view(bsz, q_len, n_kv_heads, n_groups, head_dim)
+        pass
         A = xformers_attention(Q, K, V, attn_bias = causal_mask)
         A = A.view(bsz, q_len, n_heads, head_dim)
 
-    elif HAS_FLASH_ATTENTION and attention_mask is None:
-        Q = Q.transpose(1, 2)
-        K = K.transpose(1, 2)
-        V = V.transpose(1, 2)
-        A = flash_attn_func(Q, K, V, causal = True)
     else:
         # when qlen==vlen and attn_mask is None, we should use causal attention
-        Q_len = Q.shape[-2]
-        K_len = K.shape[-2]
-        if attention_mask is None and Q_len == K_len:
-            is_causal = True
-        else:
+        if attention_mask is None and seq_info is not None:
+            attention_mask = build_sdpa_packed_attention_mask(
+                seq_info, dtype = Q.dtype, device = Q.device
+            )
             is_causal = False
+        else:
+            Q_len = Q.shape[-2]
+            K_len = K.shape[-2]
+            is_causal = attention_mask is None and Q_len == K_len
         # Grouped query attention
         if SDPA_HAS_GQA:
             # Needs (batch_size, n_heads, seq_len, head_dim)
@@ -658,7 +705,11 @@ def LlamaAttention_fast_forward(
             # Needs (batch_size, n_heads, seq_len, head_dim)
             # is_casual and attention_mask must not be both set!
             A = scaled_dot_product_attention(
-                Q, K, V, attn_mask = attention_mask, is_causal = is_causal
+                Q,
+                K,
+                V,
+                attn_mask = attention_mask,
+                is_causal = is_causal,
             )
             # Go back to (batch_size, seq_len, n_heads, head_dim)
             A = A.transpose(1, 2).contiguous()
@@ -667,6 +718,8 @@ def LlamaAttention_fast_forward(
     attn_output = self.apply_o(self, attn_output)
     attn_weights = None
     return attn_output, attn_weights, past_key_value
+
+
 
 
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L590
@@ -712,6 +765,7 @@ def LlamaDecoderLayer_fast_forward(
             use_cache = use_cache,
             padding_mask = padding_mask,
             position_embeddings = position_embeddings,
+            **kwargs,
         )
         hidden_states += residual
 
@@ -735,6 +789,7 @@ def LlamaDecoderLayer_fast_forward(
             use_cache = use_cache,
             padding_mask = padding_mask,
             position_embeddings = position_embeddings,
+            **kwargs,
         )
         hidden_states = residual + hidden_states
 
@@ -750,6 +805,8 @@ def LlamaDecoderLayer_fast_forward(
     if use_cache:
         outputs += (present_key_value,)
     return outputs
+
+
 
 
 # https://github.com/unslothai/unsloth/issues/404#issuecomment-2323473452
@@ -812,8 +869,11 @@ def LlamaModel_fast_forward(
 
     seq_length_with_past = seq_length
 
-    # Fix out of bounds tokenization
-    if hasattr(self, "max_seq_length"):
+    # Fix out of bounds tokenization unless we were given packed metadata
+    allow_overlength = getattr(self, "_unsloth_allow_packed_overlength", False) or (
+        "packed_seq_lengths" in kwargs
+    )
+    if hasattr(self, "max_seq_length") and not allow_overlength:
         if seq_length > self.max_seq_length:
             shape = input_ids.shape if input_ids is not None else inputs_embeds.shape
             logger.warning_once(
@@ -1086,6 +1146,7 @@ def LlamaModel_fast_forward(
                         output_attentions,
                         padding_mask = padding_mask,
                         position_embeddings = position_embeddings,
+                        **kwargs,
                     )
 
                 return custom_forward
@@ -1112,6 +1173,7 @@ def LlamaModel_fast_forward(
                 use_cache = use_cache,
                 padding_mask = padding_mask,
                 position_embeddings = position_embeddings,
+                **kwargs,
             )
             hidden_states = layer_outputs[0]
 
@@ -1157,6 +1219,8 @@ def LlamaModel_fast_forward(
         hidden_states = all_hidden_states,
         attentions = all_self_attns,
     )
+
+
 
 
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L825
@@ -1303,6 +1367,7 @@ def CausalLM_fast_forward(fast_forward_inference):
                 past_key_values,
                 position_ids = position_ids,
                 attention_mask = attention_mask,
+                **kwargs,
             )
         else:
             causal_mask = (
@@ -1335,6 +1400,7 @@ def CausalLM_fast_forward(fast_forward_inference):
                 output_attentions = output_attentions,
                 output_hidden_states = output_hidden_states,
                 return_dict = return_dict,
+                **kwargs,
             )
         hidden_states = outputs[0]
 
@@ -1484,6 +1550,8 @@ def CausalLM_fast_forward(fast_forward_inference):
     return _CausalLM_fast_forward
 
 
+
+
 @torch._disable_dynamo
 def PeftModel_fast_forward(
     self,
@@ -1526,6 +1594,8 @@ def PeftModel_fast_forward(
             logits_to_keep = logits_to_keep,
             **kwargs,
         )
+
+
 
 
 # Solves https://github.com/unslothai/unsloth/issues/168
@@ -1584,6 +1654,7 @@ class LlamaRotaryEmbedding(torch.nn.Module):
             1, device = get_current_device(), dtype = torch.get_default_dtype()
         )
 
+
     def _set_cos_sin_cache(self, seq_len, device, dtype):
         # Note: on the original Llama codebase, these tensors are created on the target device (and not on CPU) and
         # in FP32. They are applied (multiplied) in FP32 as well.
@@ -1608,6 +1679,7 @@ class LlamaRotaryEmbedding(torch.nn.Module):
         self.multi_gpu_sin_cached[device.index] = sin
         return cos, sin
 
+
     def forward(self, x, position_ids = None, seq_len = None):
         # x: [bs, num_attention_heads, seq_len, head_size]
         if seq_len is not None and seq_len > self.current_rope_size:
@@ -1619,12 +1691,14 @@ class LlamaRotaryEmbedding(torch.nn.Module):
             self.multi_gpu_sin_cached[device_index][:seq_len],
         )
 
+
     def get_cached(self, seq_len = None, device_index = None):
         if device_index is None:
             device_index = get_current_device()
         return self.multi_gpu_cos_cached[device_index], self.multi_gpu_sin_cached[
             device_index
         ]
+
 
     def extend_rope_embedding(self, x, seq_len):
         if seq_len <= self.current_rope_size:
@@ -1635,6 +1709,9 @@ class LlamaRotaryEmbedding(torch.nn.Module):
             self._set_cos_sin_cache(
                 self.current_rope_size, device = torch.device(device_idx), dtype = x.dtype
             )
+
+
+
 
 
 class LlamaLinearScalingRotaryEmbedding(LlamaRotaryEmbedding):
@@ -1661,6 +1738,7 @@ class LlamaLinearScalingRotaryEmbedding(LlamaRotaryEmbedding):
             config = config,
         )
 
+
     def _set_cos_sin_cache(self, seq_len, device, dtype):
         self.current_rope_size = seq_len
         inv_freq = 1.0 / (
@@ -1683,6 +1761,9 @@ class LlamaLinearScalingRotaryEmbedding(LlamaRotaryEmbedding):
         self.multi_gpu_cos_cached[device.index] = cos
         self.multi_gpu_sin_cached[device.index] = sin
         return cos, sin
+
+
+
 
 
 # See https://github.com/vllm-project/vllm/blob/main/vllm/model_executor/layers/rotary_embedding.py#L736
@@ -1744,6 +1825,7 @@ class LlamaExtendedRotaryEmbedding(torch.nn.Module):
             1, device = get_current_device(), dtype = torch.get_default_dtype()
         )
 
+
     def _set_cos_sin_cache(self, seq_len, device, dtype):
         # Note: on the original Llama codebase, these tensors are created on the target device (and not on CPU) and
         # in FP32. They are applied (multiplied) in FP32 as well.
@@ -1762,6 +1844,7 @@ class LlamaExtendedRotaryEmbedding(torch.nn.Module):
         self.multi_gpu_sin_cached[device.index] = sin
         return cos, sin
 
+
     def forward(self, x, position_ids = None, seq_len = None):
         # x: [bs, num_attention_heads, seq_len, head_size]
         if seq_len is not None and seq_len > self.current_rope_size:
@@ -1772,12 +1855,14 @@ class LlamaExtendedRotaryEmbedding(torch.nn.Module):
             self.multi_gpu_sin_cached[device_index][:seq_len],
         )
 
+
     def get_cached(self, seq_len = None, device_index = None):
         if device_index is None:
             device_index = get_current_device()
         return self.multi_gpu_cos_cached[device_index], self.multi_gpu_sin_cached[
             device_index
         ]
+
 
     def extend_rope_embedding(self, x, seq_len):
         if seq_len <= self.current_rope_size:
@@ -1788,6 +1873,7 @@ class LlamaExtendedRotaryEmbedding(torch.nn.Module):
             self._set_cos_sin_cache(
                 self.current_rope_size, device = torch.device(device_idx), dtype = x.dtype
             )
+
 
     # From https://github.com/meta-llama/llama-models/blob/main/models/llama3_1/api/model.py#L41
     def apply_scaling(self, freqs: torch.Tensor):
@@ -1813,6 +1899,9 @@ class LlamaExtendedRotaryEmbedding(torch.nn.Module):
                 )
                 new_freqs.append((1 - smooth) * freq / scale_factor + smooth * freq)
         return torch.tensor(new_freqs, dtype = freqs.dtype, device = freqs.device)
+
+
+
 
 
 class LongRopeRotaryEmbedding(torch.nn.Module):
@@ -1919,6 +2008,7 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
             1, device = get_current_device(), dtype = torch.get_default_dtype()
         )
 
+
     def _set_cos_sin_cache(self, seq_len, device, dtype):
         # Note: on the original Llama codebase, these tensors are created on the target device (and not on CPU) and
         # in FP32. They are applied (multiplied) in FP32 as well.
@@ -1940,6 +2030,7 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
         self.multi_gpu_long_sin_cached[device.index] = sin_cached
         return cos_cached, sin_cached
 
+
     def forward(self, x, position_ids = None, seq_len = None):
         # x: [bs, num_attention_heads, seq_len, head_size]
         if seq_len is not None and seq_len > self.current_rope_size:
@@ -1958,6 +2049,7 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
                 self.multi_gpu_long_sin_cached[device_index][:seq_len],
             )
 
+
     def get_cached(self, seq_len = None, device_index = None):
         if device_index is None:
             device_index = get_current_device()
@@ -1969,6 +2061,7 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
             device_index
         ], self.multi_gpu_long_sin_cached[device_index]
 
+
     def extend_rope_embedding(self, x, seq_len):
         if seq_len <= self.current_rope_size:
             return
@@ -1978,6 +2071,9 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
             self._set_cos_sin_cache(
                 self.current_rope_size, device = torch.device(device_idx), dtype = x.dtype
             )
+
+
+
 
 
 def unsloth_fast_generate(
@@ -2000,8 +2096,8 @@ def unsloth_fast_generate(
                 > self.config.max_position_embeddings
             ):
                 raise ValueError(
-                    f'Unsloth: input length {kwargs["input_ids"].shape[-1]} + max_new_tokens {kwargs["max_new_tokens"]} exceeds the maximum sequence length of {self.config.max_position_embeddings}!\n'
-                    'You will need to do long context extension by increasing the `max_seq_length` in `FastLanguageModel.from_pretrained`.'
+                    f"Unsloth: input length {kwargs['input_ids'].shape[-1]} + max_new_tokens {kwargs['max_new_tokens']} exceeds the maximum sequence length of {self.config.max_position_embeddings}!\n"
+                    "You will need to do long context extension by increasing the `max_seq_length` in `FastLanguageModel.from_pretrained`."
                 )
 
     # Must patch accelerate for Xformers
@@ -2043,6 +2139,8 @@ def unsloth_fast_generate(
     FastLlamaModel.for_training(self)
 
     return output
+
+
 
 
 class FastLlamaModel:
@@ -2089,6 +2187,7 @@ class FastLlamaModel:
             LlamaLinearScalingRotaryEmbedding
         )
         return
+
 
     @staticmethod
     def from_pretrained(
@@ -2243,8 +2342,6 @@ class FastLlamaModel:
         )
         model_config.model_name = model_name
         model_max_seq_length = model_config.max_position_embeddings
-
-        verify_fp8_support_if_applicable(model_config)
 
         # Check if RoPE Scaling is even allowed
         model_function = MODEL_FOR_CAUSAL_LM_MAPPING[model_config.__class__]
@@ -2583,12 +2680,14 @@ class FastLlamaModel:
                             module.weight[module.padding_idx] = 0
         return model, tokenizer
 
+
     @staticmethod
     def post_patch(model, tokenizer):
         model, tokenizer = patch_model_and_tokenizer(
             model, tokenizer, downcast_rope = True
         )
         return model, tokenizer
+
 
     @staticmethod
     def get_peft_model(
@@ -3082,6 +3181,7 @@ class FastLlamaModel:
             m = m.model
         return model
 
+
     @staticmethod
     def patch_peft_model(
         model,
@@ -3322,6 +3422,7 @@ class FastLlamaModel:
             m = m.model
         return model
 
+
     @staticmethod
     def for_inference(model):
         if not hasattr(model, "parameters"):
@@ -3362,6 +3463,7 @@ class FastLlamaModel:
             if hasattr(embeddings, "training"):
                 embeddings.training = False
         return model
+
 
     @staticmethod
     def for_training(model, use_gradient_checkpointing = True):
@@ -3409,6 +3511,8 @@ class FastLlamaModel:
             if hasattr(embeddings, "training"):
                 embeddings.training = True
         return model
+
+
 
 
 from .rl import PatchFastRL
