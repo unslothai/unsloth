@@ -948,6 +948,7 @@ class FastBaseModel:
 
         if type(float32_mixed_precision) is bool:
             # Respect whatever it was set before
+            pass
         else:
             float32_mixed_precision = True
             if _get_dtype(dtype_from_config(model.config)) == torch.bfloat16 and full_finetuning:
