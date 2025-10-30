@@ -511,7 +511,10 @@ class FastBaseModel:
         if full_finetuning:
             os.environ["UNSLOTH_ENABLE_FULL_FINETUNING"] = "1"
             if dtype == torch.bfloat16:
-                print("Unsloth: Using bfloat16 full finetuning which cuts memory usage by 50%.")
+                print(
+                    f"Unsloth: Using bfloat16 full finetuning which cuts memory usage by 50%.\n"
+                    f"To enable float32 training, use `float32_mixed_precision = True` during FastLanguageModel.from_pretrained"
+                )
             else:
                 print("Unsloth: Float16 full finetuning uses more memory since we upcast weights to float32.")
         else:
