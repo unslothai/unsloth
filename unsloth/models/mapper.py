@@ -1037,20 +1037,68 @@ __INT_TO_FLOAT_MAPPER = \
         "Qwen/Qwen3-VL-2B-Thinking",
         "unsloth/Qwen3-VL-2B-Thinking-bnb-4bit",
     ),
-    "unsloth/Qwen3-VL-2B-Thinking-unsloth-bnb-4bit" : (
-        "unsloth/Qwen3-VL-2B-Thinking",
-        "Qwen/Qwen3-VL-2B-Thinking",
-        "unsloth/Qwen3-VL-2B-Thinking-bnb-4bit",
+    "unsloth/Qwen3-VL-32B-Thinking-unsloth-bnb-4bit" : (
+        "unsloth/Qwen3-VL-32B-Thinking",
+        "Qwen/Qwen3-VL-32B-Thinking",
+        "unsloth/Qwen3-VL-32B-Thinking-bnb-4bit",
+    ),
+    "unsloth/Qwen3-VL-2B-Instruct-unsloth-bnb-4bit" : (
+        "unsloth/Qwen3-VL-2B-Instruct",
+        "Qwen/Qwen3-VL-2B-Instruct",
+        "unsloth/Qwen3-VL-2B-Instruct-bnb-4bit",
     ),
     "unsloth/Qwen3-VL-32B-Instruct-unsloth-bnb-4bit" : (
         "unsloth/Qwen3-VL-32B-Instruct",
         "Qwen/Qwen3-VL-32B-Instruct",
         "unsloth/Qwen3-VL-32B-Instruct-bnb-4bit",
     ),
-    "unsloth/Qwen3-VL-32B-Instruct-unsloth-bnb-4bit" : (
-        "unsloth/Qwen3-VL-32B-Instruct",
-        "Qwen/Qwen3-VL-32B-Instruct",
-        "unsloth/Qwen3-VL-32B-Instruct-bnb-4bit",
+    "unsloth/granite-4.0-350m-base-unsloth-bnb-4bit" : (
+        "unsloth/granite-4.0-350m-base-unsloth-bnb-4bit",
+        "ibm-granite/granite-4.0-350m-base",
+        "unsloth/granite-4.0-350m-base-bnb-4bit",
+    ),
+    "unsloth/granite-4.0-350m-unsloth-bnb-4bit" : (
+        "unsloth/granite-4.0-350m-unsloth-bnb-4bit",
+        "ibm-granite/granite-4.0-350m",
+        "unsloth/granite-4.0-350m-bnb-4bit",
+    ),
+    "unsloth/granite-4.0-h-350m-base-unsloth-bnb-4bit" : (
+        "unsloth/granite-4.0-h-350m-base-unsloth-bnb-4bit",
+        "ibm-granite/granite-4.0-h-350m-base",
+        "unsloth/granite-4.0-h-350m-base-bnb-4bit",
+    ),
+    "unsloth/granite-4.0-h-350m-unsloth-bnb-4bit" : (
+        "unsloth/granite-4.0-h-350m-unsloth-bnb-4bit",
+        "ibm-granite/granite-4.0-h-350m",
+        "unsloth/granite-4.0-h-350m-bnb-4bit",
+    ),
+    "unsloth/granite-4.0-1b-base-unsloth-bnb-4bit" : (
+        "unsloth/granite-4.0-1b-base-unsloth-bnb-4bit",
+        "ibm-granite/granite-4.0-1b-base",
+        "unsloth/granite-4.0-1b-base-bnb-4bit",
+    ),
+    "unsloth/granite-4.0-1b-unsloth-bnb-4bit" : (
+        "unsloth/granite-4.0-1b-unsloth-bnb-4bit",
+        "ibm-granite/granite-4.0-1b",
+        "unsloth/granite-4.0-1b-bnb-4bit",
+    ),
+    "unsloth/granite-4.0-h-1b-base-unsloth-bnb-4bit" : (
+        "unsloth/granite-4.0-h-1b-base-unsloth-bnb-4bit",
+        "ibm-granite/granite-4.0-h-1b-base",
+        "unsloth/granite-4.0-h-1b-base-bnb-4bit",
+    ),
+    "unsloth/granite-4.0-h-1b-unsloth-bnb-4bit" : (
+        "unsloth/granite-4.0-h-1b-unsloth-bnb-4bit",
+        "ibm-granite/granite-4.0-h-1b",
+        "unsloth/granite-4.0-h-1b-bnb-4bit",
+    ),
+    "unsloth/gpt-oss-safeguard-20b" : (
+        "unsloth/gpt-oss-safeguard-20b",
+        "openai/gpt-oss-safeguard-20b",
+    ),
+    "unsloth/gpt-oss-safeguard-120b" : (
+        "unsloth/gpt-oss-safeguard-120b",
+        "openai/gpt-oss-safeguard-120b",
     ),
 }
 
