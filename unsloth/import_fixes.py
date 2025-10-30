@@ -137,7 +137,7 @@ def ignore_logger_messages():
 pass
 
 def patch_ipykernel_hf_xet():
-    # HF-XET == 1.1.10 and ipykernel == 7.0.0 causes issues
+    # HF-XET == 1.1.10 and ipykernel == 7.0.0 / 7.0.1 causes issues
     # See https://github.com/huggingface/xet-core/issues/526
     # 2025-10-13T20:37:33.028737Z ERROR  Python exception updating progress:, error: PyErr { type: <class 'LookupError'>, value: LookupError(<ContextVar name='shell_parent' at 0x7535b4cebd80>), traceback: Some(<traceback object at 0x753408489f40>) }, caller: "src/progress_update.rs:313"
     # at /home/runner/work/xet-core/xet-core/error_printer/src/lib.rs:28
@@ -150,12 +150,11 @@ def patch_ipykernel_hf_xet():
         Version(importlib_version("hf_xet")) == Version("1.1.10")
     ) and (
         (ipykernel_version == Version("7.0.0")) or \
-        (ipykernel_version == Version("7.0.1")) or \ # 7.0.1 seems to also break with LookupError: <ContextVar name='shell_parent' at 0x7a9775143ec0>
-        (ipykernel_version >= Version("7.0.2"))
+        (ipykernel_version == Version("7.0.1")) # 7.0.1 seems to also break with LookupError: <ContextVar name='shell_parent' at 0x7a9775143ec0>
     ):
         print(
-            "#### Unsloth: `hf_xet==1.1.10` and `ipykernel>=7.0.0` breaks progress bars. Using ASCII progress bars.\n"\
-            "#### Unsloth: To re-enable progress bars, please downgrade to `ipykernel<7.0.0` or wait for a fix to\n"\
+            "#### Unsloth: `hf_xet==1.1.10` and `ipykernel==7.0.0` or `ipykernel==7.0.1` breaks progress bars. Using ASCII progress bars.\n"\
+            "#### Unsloth: To re-enable progress bars, please upgrade to `ipykernel>=7.1.0` or wait for a fix to\n"\
             "https://github.com/huggingface/xet-core/issues/526"
         )
         # from huggingface_hub.utils import disable_progress_bars
@@ -168,7 +167,6 @@ def patch_ipykernel_hf_xet():
         _tauto.trange = _tstd.trange
         _tnb.tqdm     = _tstd.tqdm
         _tnb.trange   = _tstd.trange
-    pass
 pass
 
 def patch_trackio():

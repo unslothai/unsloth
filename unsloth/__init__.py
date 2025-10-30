@@ -57,25 +57,14 @@ os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 # Log Unsloth is being used
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
-# Try importing PyTorch and check version
-try:
-    import torch
-except ModuleNotFoundError:
-    raise ImportError(
-        "Unsloth: Pytorch is not installed. Go to https://pytorch.org/.\n"\
-        "We have some installation instructions on our Github page."
-    )
-except Exception as exception:
-    raise exception
-pass
-
 import importlib.util
 from pathlib import Path
 from importlib.metadata import version as importlib_version
+from importlib.metadata import PackageNotFoundError
 # Check for unsloth_zoo
 try:
     unsloth_zoo_version = importlib_version("unsloth_zoo")
-    if Version(unsloth_zoo_version) < Version("2025.10.12"):
+    if Version(unsloth_zoo_version) < Version("2025.10.13"):
         print(
             "Unsloth: Please update Unsloth and Unsloth-Zoo to the latest version!\n"\
             "Do this via `pip install --upgrade --force-reinstall --no-cache-dir --no-deps unsloth unsloth_zoo`"
@@ -89,10 +78,22 @@ try:
         #         except:
         #             raise ImportError("Unsloth: Please update unsloth_zoo via `pip install --upgrade --no-cache-dir --no-deps unsloth_zoo`")
     import unsloth_zoo
-except NotImplementedError as e:
-    raise NotImplementedError(str(e))
-except Exception as e:
-    raise ImportError(f"Unsloth: Please install unsloth_zoo via `pip install unsloth_zoo` Also error = {str(e)}")
+except PackageNotFoundError:
+    raise ImportError(f"Unsloth: Please install unsloth_zoo via `pip install unsloth_zoo` then retry!")
+except:
+    raise
+pass
+
+# Try importing PyTorch and check version
+try:
+    import torch
+except ModuleNotFoundError:
+    raise ImportError(
+        "Unsloth: Pytorch is not installed. Go to https://pytorch.org/.\n"\
+        "We have some installation instructions on our Github page."
+    )
+except Exception as exception:
+    raise exception
 pass
 
 from unsloth_zoo.device_type import (

@@ -316,6 +316,7 @@ class FastBaseModel:
         whisper_task      = None,
         auto_config       = None,
         offload_embedding = False,
+        float32_mixed_precision = None, # Forces float32 mixed precision
         # vLLM parameters
         fast_inference    = False,
         gpu_memory_utilization = 0.5,
@@ -780,6 +781,7 @@ class FastBaseModel:
             trust_remote_code  = trust_remote_code,
             model_type = model_type_arch,
             tokenizer = tokenizer,
+            float32_mixed_precision = float32_mixed_precision,
         )
         # Clear deleted GPU items
         for _ in range(3):
@@ -940,13 +942,17 @@ class FastBaseModel:
         trust_remote_code = False,
         model_type = None,
         tokenizer = None,
+        float32_mixed_precision = None,
     ):
         full_finetuning = os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1"
 
-        float32_mixed_precision = True
-        if _get_dtype(dtype_from_config(model.config)) == torch.bfloat16 and full_finetuning:
-            # Use bfloat16 precision for full finetuning
-            float32_mixed_precision = False
+        if type(float32_mixed_precision) is bool:
+            # Respect whatever it was set before
+        else:
+            float32_mixed_precision = True
+            if _get_dtype(dtype_from_config(model.config)) == torch.bfloat16 and full_finetuning:
+                # Use bfloat16 precision for full finetuning
+                float32_mixed_precision = False
 
         model = prepare_model_for_training(
             model,
