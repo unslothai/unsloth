@@ -520,6 +520,12 @@ class FastBaseModel:
                         f"To enable float32 training, use `float32_mixed_precision = True` during FastLanguageModel.from_pretrained"
                     )
                     os.environ["UNSLOTH_BFLOAT16_MIXED_PRECISION"] = "1"
+                else:
+                    print(
+                        f"Unsloth: Using full float32 full finetuning.\n"
+                        f"To enable bfloat16 training to reduce VRAM usage by 50% albeit with a slightly higher loss, "\
+                        "use `float32_mixed_precision = False` during FastLanguageModel.from_pretrained"
+                    )
             else:
                 print("Unsloth: Float16 full finetuning uses more memory since we upcast weights to float32.")
         else:
