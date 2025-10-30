@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.10.11"
+__version__ = "2025.10.12"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -975,12 +975,12 @@ def _get_statistics(statistics = None, force_download = True):
         from huggingface_hub import snapshot_download
         from unsloth_zoo.rl_environments import execute_with_time_limit
         if has_internet():
-            @execute_with_time_limit(120)
             def stats_check():
                 with tempfile.TemporaryDirectory(ignore_cleanup_errors = True) as f:
                     snapshot_download(f"unslothai/{statistics}", force_download = True, cache_dir = f, local_dir = f)
+            time_limited_stats_check = execute_with_time_limit(120)(stats_check)
             try:
-                stats_check()
+                time_limited_stats_check()
             except TimeoutError:
                 raise TimeoutError(
                     "Unsloth: HuggingFace seems to be down after trying for 120 seconds :(\n"\
@@ -993,6 +993,9 @@ def _get_statistics(statistics = None, force_download = True):
                     "model = FastLanguageModel.from_pretrained('unsloth/gpt-oss-20b')\n"\
                     "```"
                 )
+            except:
+                # Try no time limit check
+                stats_check()
         pass
     pass
 pass
