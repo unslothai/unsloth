@@ -17,6 +17,11 @@ import os
 from ._utils import __version__
 from unsloth_zoo.utils import _get_dtype
 from unsloth_zoo.hf_utils import dtype_from_config
+from ..utils.packing import (
+    build_sdpa_packed_attention_mask,
+    build_xformers_block_causal_mask,
+    get_packed_info_from_kwargs,
+)
 from .llama import (
     LlamaRotaryEmbedding,
     LlamaLinearScalingRotaryEmbedding,
@@ -96,6 +101,7 @@ def GraniteAttention_fast_forward(
     Q = Q.view(bsz, q_len, n_heads, head_dim).transpose(1, 2)
     K = K.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
     V = V.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
+    seq_info = get_packed_info_from_kwargs(kwargs, bsz * q_len, Q.device)
 
     kv_seq_len = K.shape[-2]
     if past_key_value is not None:
@@ -103,10 +109,14 @@ def GraniteAttention_fast_forward(
 
     assert position_embeddings is not None
     cos, sin = position_embeddings
-    if position_ids is None:
-        Q, K = fast_rope_embedding(Q, K, cos, sin)
+    rope_position_ids = (
+        position_ids if position_ids is not None else kwargs.get("position_ids")
+    )
+    if rope_position_ids is not None:
+        # Useful for LongRoPE
+        Q, K = fast_rope_embedding(Q, K, cos, sin, rope_position_ids)
     else:
-        Q, K = inplace_rope_embedding(Q, K, cos, sin, position_ids)
+        Q, K = fast_rope_embedding(Q, K, cos, sin)
 
     if past_key_value is not None:
         K = torch.cat([past_key_value[0], K], dim = 2)
@@ -134,25 +144,51 @@ def GraniteAttention_fast_forward(
             # Xformers does support the forward pass though
             Q = Q.view(bsz, q_len, n_kv_heads, n_groups, head_dim)
 
+        if seq_info is not None and causal_mask is None:
+            causal_mask = build_xformers_block_causal_mask(seq_info)
+
         A = xformers_attention(
             Q, K, V, attn_bias = causal_mask, scale = self.scaling, p = dropout_p
         )
         A = A.view(bsz, q_len, n_heads, head_dim)
 
     elif HAS_FLASH_ATTENTION and attention_mask is None:
-        Q = Q.transpose(1, 2)
-        K = K.transpose(1, 2)
-        V = V.transpose(1, 2)
+        Q_t = Q.transpose(1, 2)
+        K_t = K.transpose(1, 2)
+        V_t = V.transpose(1, 2)
         window = (kv_seq_len, kv_seq_len)
-        A = flash_attn_func(
-            Q,
-            K,
-            V,
-            causal = True,
-            window_size = window,
-            softmax_scale = self.scaling,
-            dropout_p = dropout_p,
-        )
+        if (
+            seq_info is not None
+            and flash_attn_varlen_func is not None
+            and past_key_value is None
+        ):
+            Q_f = Q_t.reshape(bsz * q_len, n_heads, head_dim)
+            K_f = K_t.reshape(bsz * q_len, n_kv_heads, head_dim)
+            V_f = V_t.reshape(bsz * q_len, n_kv_heads, head_dim)
+            _, cu_seqlens, max_seqlen = seq_info
+            A = flash_attn_varlen_func(
+                Q_f,
+                K_f,
+                V_f,
+                cu_seqlens,
+                cu_seqlens,
+                max_seqlen,
+                max_seqlen,
+                dropout_p = 0.0,
+                softmax_scale = self.scaling,
+                causal = True,
+            ).view(bsz, q_len, n_heads, head_dim)
+        else:
+            A = flash_attn_func(
+                Q_t,
+                K_t,
+                V_t,
+                causal = True,
+                window_size = window,
+                softmax_scale = self.scaling,
+                dropout_p = dropout_p,
+            ).view(bsz, q_len, n_heads, head_dim)
+        A = A.reshape(bsz, q_len, n_heads * head_dim)
     else:
         # Grouped query attention
         # if n_groups != 1:
@@ -182,6 +218,8 @@ def GraniteAttention_fast_forward(
     attn_output = self.apply_o(self, attn_output)
     attn_weights = None
     return attn_output, attn_weights, past_key_value
+
+
 
 
 def GraniteDecoderLayer_fast_forward(
@@ -222,6 +260,7 @@ def GraniteDecoderLayer_fast_forward(
             padding_mask = padding_mask,
             position_embeddings = position_embeddings,
             _flag_for_generation = self._flag_for_generation,
+            **kwargs,
         )
         hidden_states = torch.add(residual, hidden_states, alpha = residual_multiplier)
 
@@ -245,6 +284,7 @@ def GraniteDecoderLayer_fast_forward(
             use_cache = use_cache,
             padding_mask = padding_mask,
             position_embeddings = position_embeddings,
+            **kwargs,
         )
         hidden_states = torch.add(residual, hidden_states, alpha = residual_multiplier)
 
@@ -260,6 +300,8 @@ def GraniteDecoderLayer_fast_forward(
     if use_cache:
         outputs += (present_key_value,)
     return outputs
+
+
 
 
 from math import sqrt as math_sqrt
@@ -280,9 +322,9 @@ def GraniteAttention_fast_forward_inference(
     use_sliding_window = False,
     position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
 ):
-    assert (
-        position_embeddings is not None
-    ), f"Granite model requires position embeddings to be specified"
+    assert position_embeddings is not None, (
+        f"Granite model requires position embeddings to be specified"
+    )
 
     Xn = hidden_states
     bsz, _, hd = hidden_states.size()
@@ -411,6 +453,8 @@ def GraniteAttention_fast_forward_inference(
     return A, (Kn, Vn)
 
 
+
+
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L825
 # @torch.inference_mode
 def GraniteModel_fast_forward_inference(
@@ -487,6 +531,8 @@ def GraniteModel_fast_forward_inference(
     )
 
 
+
+
 class GraniteRotaryEmbedding(LlamaRotaryEmbedding):
     def __init__(self, config):
         super().__init__(config = config)
@@ -537,6 +583,7 @@ class FastGraniteModel(FastLlamaModel):
         )
 
         return
+
 
     @staticmethod
     def post_patch(model, tokenizer):
@@ -605,3 +652,6 @@ class FastGraniteModel(FastLlamaModel):
             gc.collect()
             torch.cuda.empty_cache()
         return model, tokenizer
+
+
+

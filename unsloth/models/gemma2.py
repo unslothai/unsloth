@@ -16,6 +16,11 @@ from .llama import *
 from ._utils import __version__
 from unsloth_zoo.utils import _get_dtype
 from unsloth_zoo.hf_utils import dtype_from_config
+from ..utils.packing import (
+    build_sdpa_packed_attention_mask,
+    build_xformers_block_causal_mask,
+    get_packed_info_from_kwargs,
+)
 from .gemma import (
     GemmaFixedRotaryEmbedding,
     GemmaFixedLinearScalingRotaryEmbedding,
@@ -98,19 +103,25 @@ def Gemma2Attention_fast_forward(
     Q = Q.view(bsz, q_len, n_heads, head_dim).transpose(1, 2)
     K = K.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
     V = V.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
+    seq_info = get_packed_info_from_kwargs(kwargs, bsz * q_len, Q.device)
 
     kv_seq_len = K.shape[-2]
     if past_key_value is not None:
         kv_seq_len += past_key_value[0].shape[-2]
 
     device_index = Q.device.index
-    if position_ids is None:
-        cos = self.rotary_emb.multi_gpu_cos_cached[device_index]
-        sin = self.rotary_emb.multi_gpu_sin_cached[device_index]
-        Q, K = fast_rope_embedding(Q, K, cos, sin)
+    cos = self.rotary_emb.multi_gpu_cos_cached[device_index]
+    sin = self.rotary_emb.multi_gpu_sin_cached[device_index]
+
+    rope_position_ids = (
+        position_ids if position_ids is not None else kwargs.get("position_ids")
+    )
+    if rope_position_ids is not None:
+        # Useful for LongRoPE
+        cos_var, sin_var = self.rotary_emb.get_cached(kv_seq_len, device_index)
+        Q, K = fast_rope_embedding(Q, K, cos_var, sin_var, rope_position_ids)
     else:
-        cos, sin = self.rotary_emb.get_cached(kv_seq_len, device_index)
-        Q, K = inplace_rope_embedding(Q, K, cos, sin, position_ids)
+        Q, K = fast_rope_embedding(Q, K, cos, sin)
 
     if past_key_value is not None:
         K = torch.cat([past_key_value[0], K], dim = 2)
@@ -132,18 +143,40 @@ def Gemma2Attention_fast_forward(
                 self.config.query_pre_attn_scalar**0.5
             )
 
-        Q = Q.transpose(1, 2)
-        K = K.transpose(1, 2)
-        V = V.transpose(1, 2)
-        A = flash_attn_func(
-            Q,
-            K,
-            V,
-            causal = True,
-            softcap = self.config.attn_logit_softcapping,
-            softmax_scale = self._flash_attention_softmax_scale,
-            window_size = window,
-        )
+        Q_t = Q.transpose(1, 2)
+        K_t = K.transpose(1, 2)
+        V_t = V.transpose(1, 2)
+        if (
+            seq_info is not None
+            and flash_attn_varlen_func is not None
+            and past_key_value is None
+        ):
+            Q_f = Q_t.reshape(bsz * q_len, n_heads, head_dim)
+            K_f = K_t.reshape(bsz * q_len, n_kv_heads, head_dim)
+            V_f = V_t.reshape(bsz * q_len, n_kv_heads, head_dim)
+            _, cu_seqlens, max_seqlen = seq_info
+            A = flash_attn_varlen_func(
+                Q_f,
+                K_f,
+                V_f,
+                cu_seqlens,
+                cu_seqlens,
+                max_seqlen,
+                max_seqlen,
+                dropout_p = 0.0,
+                softmax_scale = self._flash_attention_softmax_scale,
+                causal = True,
+            )
+        else:
+            A = flash_attn_func(
+                Q_t,
+                K_t,
+                V_t,
+                causal = True,
+                softcap = self.config.attn_logit_softcapping,
+                softmax_scale = self._flash_attention_softmax_scale,
+                window_size = window,
+            )
         A = A.reshape(bsz, q_len, n_heads * head_dim)
     else:
         fx = (
@@ -154,6 +187,8 @@ def Gemma2Attention_fast_forward(
         A = fx(Q, K, V, causal_mask, self, bsz, kv_seq_len)
     A = self.apply_o(self, A)
     return A, None, past_key_value
+
+
 
 
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L590
@@ -192,6 +227,7 @@ def Gemma2DecoderLayer_fast_forward(
             use_cache = use_cache,
             padding_mask = padding_mask,
             _flag_for_generation = self._flag_for_generation,
+            **kwargs,
         )
         hidden_states = fast_rms_layernorm_inference_gemma(
             self.post_attention_layernorm, hidden_states, out_weight
@@ -222,6 +258,7 @@ def Gemma2DecoderLayer_fast_forward(
             output_attentions = output_attentions,
             use_cache = use_cache,
             padding_mask = padding_mask,
+            **kwargs,
         )
         hidden_states = fast_rms_layernorm(
             self.post_attention_layernorm, hidden_states, gemma = True
@@ -245,6 +282,8 @@ def Gemma2DecoderLayer_fast_forward(
     if use_cache:
         outputs += (present_key_value,)
     return outputs
+
+
 
 
 from math import sqrt as math_sqrt
@@ -418,6 +457,8 @@ def Gemma2Attention_fast_forward_inference(
     return A, (Kn, Vn)
 
 
+
+
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L825
 # @torch.inference_mode
 def Gemma2Model_fast_forward_inference(
@@ -525,6 +566,8 @@ def Gemma2Model_fast_forward_inference(
     )
 
 
+
+
 class FastGemma2Model(FastLlamaModel):
     @staticmethod
     def pre_patch():
@@ -559,6 +602,7 @@ class FastGemma2Model(FastLlamaModel):
             GemmaFixedRotaryEmbedding
         )
         return
+
 
     @staticmethod
     def post_patch(model, tokenizer):
@@ -600,3 +644,6 @@ class FastGemma2Model(FastLlamaModel):
             gc.collect()
             torch.cuda.empty_cache()
         return model, tokenizer
+
+
+
