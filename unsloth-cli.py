@@ -110,6 +110,7 @@ def run(args):
     # Configure training arguments
     training_args = SFTConfig(
         per_device_train_batch_size = args.per_device_train_batch_size,
+        per_device_eval_batch_size = args.per_device_eval_batch_size,
         gradient_accumulation_steps = args.gradient_accumulation_steps,
         warmup_steps = args.warmup_steps,
         max_steps = args.max_steps,
@@ -281,6 +282,12 @@ if __name__ == "__main__":
         type = int,
         default = 2,
         help = "Batch size per device during training, default is 2.",
+    )
+    training_group.add_argument(
+        "--per_device_eval_batch_size",
+        type = int,
+        default = 4,
+        help = "Batch size per device during evaluation, default is 4.",
     )
     training_group.add_argument(
         "--gradient_accumulation_steps",

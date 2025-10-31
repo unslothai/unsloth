@@ -1,4 +1,5 @@
 from unsloth import FastLanguageModel
+from unsloth.utils import attention_dispatch as attention_dispatch_utils
 from unsloth.utils.packing import configure_sample_packing, enable_sample_packing
 
 from contextlib import ExitStack
@@ -43,7 +44,8 @@ def _build_packed_training_setup(tmp_path, device):
     )
 
     training_args = SFTConfig(
-        per_device_train_batch_size=2,
+        per_device_train_batch_size=1,
+        per_device_eval_batch_size=1,
         gradient_accumulation_steps=1,
         dataset_text_field="text",
         max_length=64,
@@ -206,7 +208,7 @@ def test_packing_sdpa(tmp_path):
     )
     assert seq_info is not None
 
-    original_mask = llama_mod.build_sdpa_packed_attention_mask
+    original_mask = attention_dispatch_utils.build_sdpa_packed_attention_mask
     mask_calls = []
 
     def _capture_mask(seq_info, dtype, device):
@@ -214,11 +216,11 @@ def test_packing_sdpa(tmp_path):
         return original_mask(seq_info, dtype=dtype, device=device)
 
     with ExitStack() as stack:
-        stack.enter_context(patch.object(llama_mod, "HAS_FLASH_ATTENTION", False))
-        stack.enter_context(patch.object(llama_mod, "HAS_XFORMERS", False))
+        stack.enter_context(patch.object(attention_dispatch_utils, "HAS_FLASH_ATTENTION", False))
+        stack.enter_context(patch.object(attention_dispatch_utils, "HAS_XFORMERS", False))
         stack.enter_context(
             patch.object(
-                llama_mod,
+                attention_dispatch_utils,
                 "build_sdpa_packed_attention_mask",
                 side_effect=_capture_mask,
             )

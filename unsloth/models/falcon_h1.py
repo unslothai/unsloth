@@ -17,10 +17,13 @@ import os
 from ._utils import __version__
 from unsloth_zoo.utils import Version, _get_dtype
 from unsloth_zoo.hf_utils import dtype_from_config
-from ..utils.packing import (
-    build_sdpa_packed_attention_mask,
-    build_xformers_block_causal_mask,
-    get_packed_info_from_kwargs,
+from ..utils.packing import get_packed_info_from_kwargs
+from ..utils.attention_dispatch import (
+    AttentionConfig,
+    AttentionContext,
+    run_attention,
+    select_attention_backend,
+    SDPA,
 )
 from .llama import (
     LlamaRotaryEmbedding,
@@ -138,97 +141,45 @@ def FalconH1Attention_fast_forward(
     past_key_value = (K, V) if use_cache else None
 
     # Attention module
-    if HAS_FLASH_ATTENTION and attention_mask is None:
-        Q_t = Q.transpose(1, 2)
-        K_t = K.transpose(1, 2)
-        V_t = V.transpose(1, 2)
-        sw = kv_seq_len
-        window = (-1, -1) if (kv_seq_len <= sw) else (sw, sw)
-        if (
-            seq_info is not None
-            and flash_attn_varlen_func is not None
-            and past_key_value is None
-            and window == (-1, -1)
-        ):
-            Q_f = Q_t.reshape(bsz * q_len, n_heads, head_dim)
-            K_f = K_t.reshape(bsz * q_len, n_kv_heads, head_dim)
-            V_f = V_t.reshape(bsz * q_len, n_kv_heads, head_dim)
-            _, cu_seqlens, max_seqlen = seq_info
-            A = flash_attn_varlen_func(
-                Q_f,
-                K_f,
-                V_f,
-                cu_seqlens,
-                cu_seqlens,
-                max_seqlen,
-                max_seqlen,
-                dropout_p = 0.0,
-                softmax_scale = None,
-                causal = True,
-            )
-        else:
-            A = flash_attn_func(
-                Q_t,
-                K_t,
-                V_t,
-                causal = True,
-                window_size = window,
-            )
-        A = A.reshape(bsz, q_len, n_heads * head_dim)
+    window = (-1, -1)
+    use_varlen = (
+        attention_mask is None
+        and seq_info is not None
+        and past_key_value is None
+        and window == (-1, -1)
+    )
 
-    elif HAS_XFORMERS and attention_mask is None:
-        # Xformers memory efficient attention
-        Q = Q.transpose(1, 2)
-        K = K.transpose(1, 2)
-        V = V.transpose(1, 2)
-        K_M = V_M = bsz * kv_seq_len
-        Q_M = bsz * q_len
+    backend = (
+        SDPA if attention_mask is not None else select_attention_backend(use_varlen)
+    )
+    attention_config = AttentionConfig(
+        backend = backend,
+        n_kv_heads = n_kv_heads,
+        n_groups = n_groups,
+        flash_dense_kwargs = {
+            "causal": True,
+            "window_size": (kv_seq_len, kv_seq_len),
+        },
+        flash_varlen_kwargs = {
+            "dropout_p": 0.0,
+            "softmax_scale": None,
+            "causal": True,
+        },
+        sdpa_kwargs = {} if attention_mask is None else {"attn_mask": attention_mask},
+    )
+    context = AttentionContext(
+        bsz = bsz,
+        q_len = q_len,
+        kv_seq_len = kv_seq_len,
+        n_heads = n_heads,
+        head_dim = head_dim,
+        requires_grad = hidden_states.requires_grad,
+        seq_info = seq_info,
+        attention_mask = attention_mask,
+        causal_mask = causal_mask,
+    )
 
-        # Group query attention
-        K = K.view(bsz, kv_seq_len, n_kv_heads, 1, head_dim)
-        V = V.view(bsz, kv_seq_len, n_kv_heads, 1, head_dim)
-        K = K.expand(bsz, kv_seq_len, n_kv_heads, n_groups, head_dim)
-        V = V.expand(bsz, kv_seq_len, n_kv_heads, n_groups, head_dim)
-        if hidden_states.requires_grad:
-            K = K.reshape(bsz, kv_seq_len, n_heads, head_dim)
-            V = V.reshape(bsz, kv_seq_len, n_heads, head_dim)
-        else:
-            # Xformers does support the forward pass though
-            Q = Q.view(bsz, q_len, n_kv_heads, n_groups, head_dim)
-        pass
-
-        if seq_info is not None and causal_mask is None:
-            causal_mask = build_xformers_block_causal_mask(seq_info)
-
-        A = xformers_attention(Q, K, V, attn_bias = causal_mask)
-        A = A.view(bsz, q_len, n_heads, head_dim)
-    else:
-        # Grouped query attention
-        # if n_groups != 1:
-        K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
-        V = V[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
-        K = K.reshape(bsz, n_heads, kv_seq_len, head_dim)
-        V = V.reshape(bsz, n_heads, kv_seq_len, head_dim)
-        # pass
-        # Must be contiguous or else results are False!
-        # https://github.com/pytorch/pytorch/issues/112577
-        Q, K, V = Q.contiguous(), K.contiguous(), V.contiguous()
-        # Needs (batch_size, n_heads, seq_len, head_dim)
-        # is_casual and attention_mask must not be both set!
-        is_causal = False
-        if seq_info is not None and attention_mask is None:
-            attention_mask = build_sdpa_packed_attention_mask(
-                seq_info, dtype = Q.dtype, device = Q.device
-            )
-        A = scaled_dot_product_attention(
-            Q,
-            K,
-            V,
-            attn_mask = attention_mask,
-            is_causal = is_causal,
-        )
-        # Go back to (batch_size, seq_len, n_heads, head_dim)
-        A = A.transpose(1, 2).contiguous()
+    A = run_attention(config = attention_config, context = context, Q = Q, K = K, V = V)
 
     attn_output = A.reshape(bsz, q_len, n_heads * head_dim)
     attn_output = self.apply_o(self, attn_output)
