@@ -17,6 +17,7 @@ import triton
 import triton.language as tl
 from torch.nn import functional as F
 import math
+from packaging.version import Version
 from unsloth_zoo.log import logger
 from unsloth_zoo.temporary_patches.common import torch_compile
 torch_matmul = torch.matmul
@@ -354,7 +355,7 @@ class FP8BlockQuantLinear(torch.autograd.Function):
         return grad_X, None, None
 
 @torch_compile
-def fp8_block_quant_forward(X, weight, weight_scale):
+def fp8_torch_block_quant_forward(X, weight, weight_scale):
     return FP8BlockQuantLinear.apply(X, weight, weight_scale)
 
 
@@ -422,7 +423,7 @@ def fbgemm_fp8_linear(X, weight, weight_scale, bias=None):
     return FbgemmFp8Linear_matmul.apply(X, weight, weight_scale, bias)
 
 
-class FP8_torch_linear(torch.autograd.Function):
+class FP8_fbgemm_block_linear(torch.autograd.Function):
     @staticmethod
     def forward(ctx, X, weight, weight_scale, bias=None):
 
@@ -441,7 +442,7 @@ class FP8_torch_linear(torch.autograd.Function):
                 # We tranpose weight scale to counter that. Note that transposing weight would cause issues with matmul with input X
                 weight_scale = weight_scale.T
             else:
-                raise ValueError(f"Weight shape {weight.shape} and scales shape {weight_scale.shape} is not compatible with block size {block_size}")
+                raise ValueError(f"Weight shape {weight.shape} and scales shape {weight_scale.shape} is not compatible with block size {bs_n, bs_k}")
 
         xq, xs = triton_quantize_fp8_block(X, bs_m, bs_n, None)
         ## TODO: Investigate and resolve the high divergence of this output from baseline
@@ -469,19 +470,26 @@ class FP8_torch_linear(torch.autograd.Function):
         return grad_X, None, None, None, None
 
 @torch_compile
-def fp8_torch_linear(X, weight, weight_scale, bias=None):
-    return FP8_torch_linear.apply(X, weight, weight_scale, bias)
+def fp8_fbgemm_block_linear(X, weight, weight_scale, bias=None):
+    return FP8_fbgemm_block_linear.apply(X, weight, weight_scale, bias)
 
+fp8_block_quant_linear = fp8_torch_block_quant_forward
+try:
+    import fbgemm_gpu
+    # Older versions cause numerical imprecisions resulting in NaNs.
+    # This is both fast and accurate hence preferred.
+    # This makes it 15% faster than the torchao implementation.
+    if Version(fbgemm_gpu.__version__) >= Version("1.4.0"):
+        logger.info(f"Using fbgemm_gpu block quantized FP8 matmul")
+        fp8_block_quant_linear = fp8_fbgemm_block_linear
+except:
+    pass
 
 @torch_compile
 def fp8_linear(X, weight, weight_scale, bias=None):
     if weight_scale.ndim == 2 and weight_scale.shape[1] > 1:
         # This is block quantized FP8 matmul
-        out = fp8_block_quant_forward(X, weight, weight_scale)
-        # These operations fall apart when X have large values in it. So disabling for the timebeing?
-        # The above operation makes the training loop ~15-30% slower if torchao is available ~4x slower if not :(
-        # TODO: Fix the outlier handling in torch implementation and enable this
-        # out = fp8_torch_linear(X, weight, weight_scale, bias)
+        out = fp8_block_quant_linear(X, weight, weight_scale)
     else:
         # Row quantized FP8
         out = fbgemm_fp8_linear(X, weight, weight_scale, bias)
@@ -498,4 +506,4 @@ def module_forward_patch(forward_function, scale_attr='weight_scale'):
 if FbgemmFp8Linear is not None:
     FbgemmFp8Linear.forward = module_forward_patch(fbgemm_fp8_linear, 'weight_scale')
 if FP8Linear is not None:
-    FP8Linear.forward = module_forward_patch(fp8_block_quant_forward, 'weight_scale_inv')
+    FP8Linear.forward = module_forward_patch(fp8_block_quant_linear, 'weight_scale_inv')
