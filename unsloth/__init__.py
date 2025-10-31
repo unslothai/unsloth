@@ -29,24 +29,6 @@ already_imported = [mod for mod in critical_modules if mod in sys.modules]
 # their code at import time. If they're imported first, the original (slower,
 # more memory-intensive) implementations will be used instead of Unsloth's
 # optimized versions, potentially causing OOM errors or slower training.
-
-import logging
-# Ignore logging messages
-class HideLoggingMessage(logging.Filter):
-    __slots__ = "text",
-    def __init__(self, text): self.text = text
-    def filter(self, x): return not (self.text in x.getMessage())
-pass
-
-# Skipping import of cpp extensions due to incompatible torch version
-try:
-    from torchao import logger as torchao_logger
-    torchao_logger.addFilter(HideLoggingMessage("Skipping import"))
-    del torchao_logger
-except:
-    pass
-del HideLoggingMessage, logging
-
 if already_imported:
     # stacklevel=2 makes warning point to user's import line rather than this library code,
     # showing them exactly where to fix the import order in their script
@@ -74,8 +56,6 @@ os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 # Log Unsloth is being used
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
-import importlib.util
-from pathlib import Path
 from importlib.metadata import version as importlib_version
 from importlib.metadata import PackageNotFoundError
 # Check for unsloth_zoo
@@ -99,7 +79,7 @@ except PackageNotFoundError:
     raise ImportError(f"Unsloth: Please install unsloth_zoo via `pip install unsloth_zoo` then retry!")
 except:
     raise
-pass
+del PackageNotFoundError, importlib_version
 
 # Try importing PyTorch and check version
 try:
@@ -109,8 +89,8 @@ except ModuleNotFoundError:
         "Unsloth: Pytorch is not installed. Go to https://pytorch.org/.\n"\
         "We have some installation instructions on our Github page."
     )
-except Exception as exception:
-    raise exception
+except:
+    raise
 pass
 
 from unsloth_zoo.device_type import (
@@ -133,6 +113,8 @@ from .import_fixes import patch_ipykernel_hf_xet
 patch_ipykernel_hf_xet(); del patch_ipykernel_hf_xet;
 from .import_fixes import patch_trackio
 patch_trackio(); del patch_trackio;
+from .import_fixes import patch_torchao
+patch_torchao(); del patch_torchao;
 
 # Torch 2.4 has including_emulation
 if DEVICE_TYPE == "cuda":
@@ -147,7 +129,7 @@ if DEVICE_TYPE == "cuda":
     else:
         def is_bf16_supported(): return SUPPORTS_BFLOAT16
         torch.cuda.is_bf16_supported = is_bf16_supported
-    pass
+    del major_version, minor_version
 elif DEVICE_TYPE == "hip":
     SUPPORTS_BFLOAT16 = torch.cuda.is_bf16_supported()
 elif DEVICE_TYPE == "xpu":
@@ -196,6 +178,8 @@ if DEVICE_TYPE == "cuda":
                 latest_cuda = np.argsort([float(find_number.search(x).group(1)) for x in possible_cudas])[::-1][0]
                 latest_cuda = possible_cudas[latest_cuda]
                 os.system(f"ldconfig /usr/local/{latest_cuda}")
+                del find_number, latest_cuda
+            del possible_cudas, find_cuda
         pass
 
         importlib.reload(bnb)
@@ -217,7 +201,7 @@ if DEVICE_TYPE == "cuda":
                 "Also try `sudo ldconfig /usr/local/cuda-xx.x` - find the latest cuda version.\n"\
                 "Unsloth will still run for now, but maybe it might crash - let's hope it works!"
             )
-    pass
+    del libcuda_dirs
 elif DEVICE_TYPE == "hip":
     # NO-OP for rocm device
     pass
