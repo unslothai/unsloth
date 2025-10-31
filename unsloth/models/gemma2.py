@@ -16,10 +16,13 @@ from .llama import *
 from ._utils import __version__
 from unsloth_zoo.utils import _get_dtype
 from unsloth_zoo.hf_utils import dtype_from_config
-from ..utils.packing import (
-    build_sdpa_packed_attention_mask,
-    build_xformers_block_causal_mask,
-    get_packed_info_from_kwargs,
+from ..utils.packing import get_packed_info_from_kwargs
+from ..utils.attention_dispatch import (
+    AttentionConfig,
+    AttentionContext,
+    run_attention,
+    select_attention_backend,
+    SDPA,
 )
 from .gemma import (
     GemmaFixedRotaryEmbedding,
@@ -129,54 +132,55 @@ def Gemma2Attention_fast_forward(
     past_key_value = (K, V) if use_cache else None
 
     # Only enable if the attention_mask is True
-    has_sliding_window = type(causal_mask) is bool and causal_mask is True
-    if HAS_FLASH_ATTENTION_SOFTCAPPING and attention_mask is None:
+    has_sliding_window = isinstance(causal_mask, bool) and causal_mask is True
+    use_flash = HAS_FLASH_ATTENTION_SOFTCAPPING and attention_mask is None
+
+    if use_flash:
         window = (-1, -1)
         if has_sliding_window:
             sw = getattr(self.config, "sliding_window", None)
             sw = kv_seq_len if (sw is None or sw == "null") else sw
             window = (-1, -1) if (kv_seq_len <= sw) else (sw, sw)
 
-        # FA uses 1 / sqrt for softmax_scale!
         if not hasattr(self, "_flash_attention_softmax_scale"):
             self._flash_attention_softmax_scale = 1.0 / (
                 self.config.query_pre_attn_scalar**0.5
             )
 
-        Q_t = Q.transpose(1, 2)
-        K_t = K.transpose(1, 2)
-        V_t = V.transpose(1, 2)
-        if (
-            seq_info is not None
-            and flash_attn_varlen_func is not None
-            and past_key_value is None
-        ):
-            Q_f = Q_t.reshape(bsz * q_len, n_heads, head_dim)
-            K_f = K_t.reshape(bsz * q_len, n_kv_heads, head_dim)
-            V_f = V_t.reshape(bsz * q_len, n_kv_heads, head_dim)
-            _, cu_seqlens, max_seqlen = seq_info
-            A = flash_attn_varlen_func(
-                Q_f,
-                K_f,
-                V_f,
-                cu_seqlens,
-                cu_seqlens,
-                max_seqlen,
-                max_seqlen,
-                dropout_p = 0.0,
-                softmax_scale = self._flash_attention_softmax_scale,
-                causal = True,
-            )
-        else:
-            A = flash_attn_func(
-                Q_t,
-                K_t,
-                V_t,
-                causal = True,
-                softcap = self.config.attn_logit_softcapping,
-                softmax_scale = self._flash_attention_softmax_scale,
-                window_size = window,
-            )
+        use_varlen = (
+            seq_info is not None and past_key_value is None and window == (-1, -1)
+        )
+
+        attention_config = AttentionConfig(
+            backend = select_attention_backend(use_varlen),
+            n_kv_heads = n_kv_heads,
+            n_groups = n_groups,
+            flash_dense_kwargs = {
+                "causal": True,
+                "softcap": self.config.attn_logit_softcapping,
+                "softmax_scale": self._flash_attention_softmax_scale,
+                "window_size": window,
+            },
+            flash_varlen_kwargs = {
+                "dropout_p": 0.0,
+                "softmax_scale": self._flash_attention_softmax_scale,
+                "causal": True,
+            },
+        )
+
+        context = AttentionContext(
+            bsz = bsz,
+            q_len = q_len,
+            kv_seq_len = kv_seq_len,
+            n_heads = n_heads,
+            head_dim = head_dim,
+            requires_grad = hidden_states.requires_grad,
+            seq_info = seq_info,
+            attention_mask = attention_mask,
+            causal_mask = causal_mask,
+        )
+
+        A = run_attention(config = attention_config, context = context, Q = Q, K = K, V = V)
         A = A.reshape(bsz, q_len, n_heads * head_dim)
     else:
         fx = (
