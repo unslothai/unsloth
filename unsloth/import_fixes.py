@@ -169,10 +169,3 @@ def patch_trackio():
     os.environ["TRACKIO_PLOT_ORDER"] = "train/reward"
     pass
 pass
-
-def patch_torchao():
-    # Suppress WARNING:torchao:Skipping import of cpp extensions due to incompatible torch version 2.7.0+cu126 for torchao version 0.14.1
-    # Please see https://github.com/pytorch/ao/issues/2919 for more info
-    torchao_logger = logging.getLogger("torchao")
-    torchao_logger.addFilter(HideLoggingMessage("Skipping import"))
-pass

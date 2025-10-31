@@ -113,8 +113,6 @@ from .import_fixes import patch_ipykernel_hf_xet
 patch_ipykernel_hf_xet(); del patch_ipykernel_hf_xet;
 from .import_fixes import patch_trackio
 patch_trackio(); del patch_trackio;
-from .import_fixes import patch_torchao
-patch_torchao(); del patch_torchao;
 
 # Torch 2.4 has including_emulation
 if DEVICE_TYPE == "cuda":
