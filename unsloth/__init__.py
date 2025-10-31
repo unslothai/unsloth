@@ -30,6 +30,23 @@ already_imported = [mod for mod in critical_modules if mod in sys.modules]
 # more memory-intensive) implementations will be used instead of Unsloth's
 # optimized versions, potentially causing OOM errors or slower training.
 
+import logging
+# Ignore logging messages
+class HideLoggingMessage(logging.Filter):
+    __slots__ = "text",
+    def __init__(self, text): self.text = text
+    def filter(self, x): return not (self.text in x.getMessage())
+pass
+
+# Skipping import of cpp extensions due to incompatible torch version
+try:
+    from torchao import logger as torchao_logger
+    torchao_logger.addFilter(HideLoggingMessage("Skipping import"))
+    del torchao_logger
+except:
+    pass
+del HideLoggingMessage, logging
+
 if already_imported:
     # stacklevel=2 makes warning point to user's import line rather than this library code,
     # showing them exactly where to fix the import order in their script
@@ -40,7 +57,7 @@ if already_imported:
         f"Please restructure your imports with 'import unsloth' at the top of your file.",
         stacklevel = 2,
     )
-pass
+del already_imported, critical_modules
 
 # Unsloth currently does not work on multi GPU setups - sadly we are a 2 brother team so
 # enabling it will require much more work, so we have to prioritize. Please understand!
