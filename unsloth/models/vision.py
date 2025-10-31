@@ -561,6 +561,13 @@ class FastBaseModel:
 
         kwargs = add_dtype_kwargs(torch_dtype, kwargs)
 
+        model_config = AutoConfig.from_pretrained(
+            model_name,
+            token = token,
+            attn_implementation = "sdpa" if supports_sdpa else "eager",
+        )
+        verify_fp8_support_if_applicable(model_config)
+
         raise_handler = RaiseUninitialized()
         if not fast_inference:
             model = auto_model.from_pretrained(
@@ -602,11 +609,6 @@ class FastBaseModel:
                 get_vllm_state_dict,
                 convert_vllm_to_huggingface,
                 generate_batches,
-            )
-            model_config = AutoConfig.from_pretrained(
-                model_name,
-                token = token,
-                attn_implementation = "sdpa" if supports_sdpa else "eager",
             )
             model_config.model_name = model_name
 
