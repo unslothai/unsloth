@@ -8,14 +8,14 @@ from typing import Iterable, Optional, Sequence, Tuple
 import torch
 
 try:
-    from flash_attn.flash_attn_interface import flash_attn_varlen_func
-except Exception as exc:  # pragma: no cover
-    flash_attn_varlen_func = None
-
-try:
-    from xformers.attn_bias import BlockDiagonalCausalMask as _XFormersBlockMask
-except Exception:  # pragma: no cover
-    _XFormersBlockMask = None
+    from xformers.ops.fmha.attn_bias import (
+        BlockDiagonalCausalMask as _XFormersBlockMask,
+    )
+except Exception:
+    try:
+        from xformers.attn_bias import BlockDiagonalCausalMask as _XFormersBlockMask
+    except Exception:
+        _XFormersBlockMask = None
 
 
 class _TrlPackingWarningFilter(logging.Filter):
@@ -55,8 +55,14 @@ def enable_sample_packing(
     sequence_lengths_key: str = "seq_lengths",
 ) -> None:
     """Enable runtime support for packed batches on an existing trainer."""
-    if model is None or trainer is None:
-        raise ValueError("model and trainer must not be None")
+    train_bs = getattr(trainer.args, "per_device_train_batch_size", 1)
+    eval_bs = getattr(trainer.args, "per_device_eval_batch_size", 1)
+
+    if train_bs != 1 or eval_bs != 1:
+        raise ValueError(
+            "Sample packing requires per_device_train_batch_size=1 and "
+            f"per_device_eval_batch_size=1; received {train_bs}, {eval_bs}."
+        )
 
     def _mark_allow_overlength(module):
         if hasattr(module, "max_seq_length"):
@@ -66,7 +72,7 @@ def enable_sample_packing(
 
     _mark_allow_overlength(model)
 
-    if hasattr(trainer, "args") and hasattr(trainer.args, "remove_unused_columns"):
+    if hasattr(trainer.args, "remove_unused_columns"):
         trainer.args.remove_unused_columns = False
 
     collator = getattr(trainer, "data_collator", None)
