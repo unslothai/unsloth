@@ -16,6 +16,11 @@ from .llama import *
 from ._utils import __version__
 from unsloth_zoo.utils import _get_dtype
 from unsloth_zoo.hf_utils import dtype_from_config
+from ..utils.packing import (
+    build_sdpa_packed_attention_mask,
+    build_xformers_block_causal_mask,
+    get_packed_info_from_kwargs,
+)
 import math
 
 try:
@@ -103,6 +108,7 @@ def GemmaDecoderLayer_fast_forward(
             output_attentions=output_attentions,
             use_cache=use_cache,
             padding_mask=padding_mask,
+            **kwargs,
         )
         hidden_states += residual
 
@@ -123,6 +129,7 @@ def GemmaDecoderLayer_fast_forward(
             output_attentions=output_attentions,
             use_cache=use_cache,
             padding_mask=padding_mask,
+            **kwargs,
         )
         hidden_states = residual + hidden_states
 
