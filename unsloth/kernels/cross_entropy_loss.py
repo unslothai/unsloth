@@ -300,6 +300,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
         if n_chunks == 1:
             # For small vocabs <= 65336 like Llama, Mistral
             BLOCK_SIZE, num_warps = calculate_settings(vocab_size)
+            if is_cdna(): num_warps = num_warps // 2
             logsumexp = torch.empty(n_rows, dtype = torch.float32, device = device)
 
             with torch_gpu_device(device):

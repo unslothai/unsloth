@@ -156,6 +156,9 @@ def unsloth_base_fast_generate(
 
     FastBaseModel.for_inference(self)
     dtype = _get_dtype(dtype_from_config(self.config))
+    # Handle full float32 cases as config.dtype == torch.float32!
+    do_bfloat16_mixed_precision = os.environ.get("UNSLOTH_BFLOAT16_MIXED_PRECISION", "0") == "1"
+    if do_bfloat16_mixed_precision: dtype = torch.bfloat16
 
     # Check if VLM
     is_vlm = any(
@@ -215,7 +218,6 @@ def unsloth_base_fast_generate(
         dtype = torch.float16
     else:
         autocaster = torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = dtype)
-
     # Prepare LoRA
     # state_dict = convert_lora_modules(self, dtype = dtype)
 
@@ -252,6 +254,8 @@ def unsloth_base_fast_generate(
                 cache_implementation = "hybrid"
             else:
                 cache_implementation = "static"
+    # [TODO] Unsure why static fails
+    if do_bfloat16_mixed_precision: cache_implementation = None
 
     if "generation_config" in kwargs:
         kwargs["generation_config"].cache_implementation = cache_implementation
@@ -316,6 +320,7 @@ class FastBaseModel:
         whisper_task      = None,
         auto_config       = None,
         offload_embedding = False,
+        float32_mixed_precision = None, # Forces float32 mixed precision
         # vLLM parameters
         fast_inference    = False,
         gpu_memory_utilization = 0.5,
@@ -374,21 +379,24 @@ class FastBaseModel:
 
         if DEVICE_TYPE == "cuda":
             gpu_stats = torch.cuda.get_device_properties(0)
+            gpu_stats_name = gpu_stats.name + ". " if gpu_stats.name != "" else "NVIDIA GPU Device. "
             gpu_version = torch.version.cuda
             gpu_stats_snippet = f"CUDA: {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit: {gpu_version}."
             try:    vllm_version = f" vLLM: {importlib_version('vllm')}."
             except: vllm_version = ""
         elif DEVICE_TYPE == "hip":
             gpu_stats = torch.cuda.get_device_properties(0)
+            gpu_stats_name = gpu_stats.name + ". " if gpu_stats.name != "" else "AMD GPU Device. "
             gpu_version = torch.version.hip
             gpu_stats_snippet = f"ROCm Toolkit: {gpu_version}."
             try:    vllm_version = f" vLLM: {importlib_version('vllm')}."
             except: vllm_version = ""
         elif DEVICE_TYPE == "xpu":
             gpu_stats = torch.xpu.get_device_properties(0)
+            gpu_stats_name = gpu_stats.name + ". " if gpu_stats.name != "" else "Intel XPU Device. "
             gpu_version = torch.version.xpu
             gpu_stats_snippet = f"Intel Toolkit: {gpu_version}."
-            # TODO: After adding vLLM support for XPU, changed this
+            # [TODO] After adding vLLM support for XPU, change this
             vllm_version = ""
         else:
             raise ValueError(f"Unsloth: Unsupported device type: {DEVICE_TYPE}")
@@ -397,7 +405,7 @@ class FastBaseModel:
 
         statistics = \
         f"==((====))==  Unsloth {__version__}: Fast {model_type_arch.title()} patching. Transformers: {transformers_version}.{vllm_version}\n"\
-        f"   {chr(92)}{chr(92)}   /|    {gpu_stats.name}. Num GPUs = {DEVICE_COUNT}. Max memory: {max_memory} GB. Platform: {platform_system}.\n"\
+        f"   {chr(92)}{chr(92)}   /|    {gpu_stats_name}Num GPUs = {DEVICE_COUNT}. Max memory: {max_memory} GB. Platform: {platform_system}.\n"\
         f"O^O/ {chr(92)}_/ {chr(92)}    Torch: {torch.__version__}. {gpu_stats_snippet} Triton: {triton_version}\n"\
         f"{chr(92)}        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. FA [Xformers = {xformers_version}. FA2 = {HAS_FLASH_ATTENTION}]\n"\
         f' "-____-"     Free license: http://github.com/unslothai/unsloth'
@@ -507,7 +515,18 @@ class FastBaseModel:
         if full_finetuning:
             os.environ["UNSLOTH_ENABLE_FULL_FINETUNING"] = "1"
             if dtype == torch.bfloat16:
-                print("Unsloth: Using bfloat16 full finetuning which cuts memory usage by 50%.")
+                if float32_mixed_precision != True:
+                    print(
+                        f"Unsloth: Using bfloat16 full finetuning which cuts memory usage by 50%.\n"
+                        f"To enable float32 training, use `float32_mixed_precision = True` during FastLanguageModel.from_pretrained"
+                    )
+                else:
+                    print(
+                        f"Unsloth: Using full float32 full finetuning. "
+                        f"To enable bfloat16 training to reduce VRAM usage by 50% albeit with a slightly higher loss, do:\n"\
+                        "use `float32_mixed_precision = False` during FastLanguageModel.from_pretrained"
+                    )
+                    os.environ["UNSLOTH_BFLOAT16_MIXED_PRECISION"] = "1"
             else:
                 print("Unsloth: Float16 full finetuning uses more memory since we upcast weights to float32.")
         else:
@@ -535,7 +554,14 @@ class FastBaseModel:
             if hasattr(auto_config, "quantization_config"):
                 from transformers.quantizers.auto import AUTO_QUANTIZATION_CONFIG_MAPPING
                 quantization_config = auto_config.quantization_config
-                quantizer = AUTO_QUANTIZATION_CONFIG_MAPPING[quantization_config["quant_method"]]
+                quant_method = quantization_config["quant_method"]
+                # Sometimes bitsandbytes_4bit + bitsandbytes_8bit is provided
+                if quant_method == "bitsandbytes" and "bitsandbytes" not in AUTO_QUANTIZATION_CONFIG_MAPPING:
+                    if "bitsandbytes_4bit" not in AUTO_QUANTIZATION_CONFIG_MAPPING:
+                        raise KeyError("Unsloth: AUTO_QUANTIZATION_CONFIG_MAPPING does not have `bitsandbytes_4bit`")
+                    quantizer = AUTO_QUANTIZATION_CONFIG_MAPPING["bitsandbytes_4bit"]
+                else:
+                    quantizer = AUTO_QUANTIZATION_CONFIG_MAPPING[quant_method]
                 quantizer_kwargs = {}
                 # We cannot dequantize since gpt-oss-20b MXFP4 will now be gpt-oss-20b-BF16
                 if load_in_16bit and "dequantize" in inspect.signature(quantizer).parameters:
@@ -630,13 +656,13 @@ class FastBaseModel:
             _, quant_state_dict = get_vllm_state_dict(
                 llm,
                 config = model_config,
-                is_vision_model = True,
+                is_vision_model = is_vlm,
             )
             model = convert_vllm_to_huggingface(
                 quant_state_dict,
                 model_config,
                 dtype, bnb_config,
-                is_vision_model = True,
+                is_vision_model = is_vlm,
             )
             model.vllm_engine = llm
             model.fast_generate = model.vllm_engine.generate
@@ -770,6 +796,7 @@ class FastBaseModel:
             trust_remote_code  = trust_remote_code,
             model_type = model_type_arch,
             tokenizer = tokenizer,
+            float32_mixed_precision = float32_mixed_precision,
         )
         # Clear deleted GPU items
         for _ in range(3):
@@ -930,13 +957,18 @@ class FastBaseModel:
         trust_remote_code = False,
         model_type = None,
         tokenizer = None,
+        float32_mixed_precision = None,
     ):
         full_finetuning = os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1"
 
-        float32_mixed_precision = True
-        if _get_dtype(dtype_from_config(model.config)) == torch.bfloat16 and full_finetuning:
-            # Use bfloat16 precision for full finetuning
-            float32_mixed_precision = False
+        if type(float32_mixed_precision) is bool:
+            # Respect whatever it was set before
+            pass
+        else:
+            float32_mixed_precision = True
+            if _get_dtype(dtype_from_config(model.config)) == torch.bfloat16 and full_finetuning:
+                # Use bfloat16 precision for full finetuning
+                float32_mixed_precision = False
 
         model = prepare_model_for_training(
             model,
