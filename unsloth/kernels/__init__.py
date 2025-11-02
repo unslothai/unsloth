@@ -51,8 +51,8 @@ from .flex_attention import (
     HAS_FLEX_ATTENTION,
     slow_attention_softcapping,
     slow_inference_attention_softcapping,
-    create_flex_attention_causal_mask,
-    create_flex_attention_sliding_window_mask,
+    create_cached_sliding_window_block_mask,
+    create_cached_causal_block_mask,
 )
 
 import os
