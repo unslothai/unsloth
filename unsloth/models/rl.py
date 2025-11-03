@@ -1085,7 +1085,10 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
         )
 
         # Replace self.llm.generate and self.llm.chat
-        lora_name = trainer_file + "_lora_model"
+        if "CUDA_VISIBLE_DEVICES" in os.environ:
+            lora_name = trainer_file + "_lora_model_" + "os.environ.get('CUDA_VISIBLE_DEVICES', '0').replace(',','')"
+        else:
+            lora_name = trainer_file + "_lora_model"
         source = re.sub(
             r"(self\.llm\.(?:generate|chat)\([^\)]{1,})\)",
             r"\1, lora_request = self.model.load_lora('" + lora_name + r"', load_tensors = True))",
