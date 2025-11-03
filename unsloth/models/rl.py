@@ -752,11 +752,11 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "        scale_rewards = False\n"\
         "elif loss_type.lower() == 'dapo':\n"\
         "    if mask_truncated_completions != True:\n"\
-        "        print('Unsloth: The DAPO paper recommends `mask_truncated_completions = True`')\n"\
+        "        print('Unsloth: The DAPO paper recommends `mask_truncated_completions = True` - we will set it.')\n"\
         "    if epsilon_high != 0.28:\n"\
-        "        print('Unsloth: The DAPO paper recommends `epsilon_high = 0.28`')\n"\
+        "        print('Unsloth: The DAPO paper recommends `epsilon_high = 0.28` - we will set it.')\n"\
         "    if beta != 0.0:\n"\
-        "        print('Unsloth: The DAPO paper recommends setting `beta = 0.0` to remove the KL term')\n"\
+        "        print('Unsloth: The DAPO paper recommends setting `beta = 0.0` to remove the KL term - we will set it.')\n"\
         "    mask_truncated_completions = True\n"\
         "    epsilon_high = 0.28\n"\
         "    beta = 0.0\n"\
@@ -1085,10 +1085,13 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
         )
 
         # Replace self.llm.generate and self.llm.chat
-        lora_name = trainer_file + "_lora_model"
+        if "CUDA_VISIBLE_DEVICES" in os.environ:
+            lora_name = trainer_file + "_lora_model_' + " + "(os.environ.get('CUDA_VISIBLE_DEVICES', '0').replace(',',''))"
+        else:
+            lora_name = trainer_file + "_lora_model'"
         source = re.sub(
             r"(self\.llm\.(?:generate|chat)\([^\)]{1,})\)",
-            r"\1, lora_request = self.model.load_lora('" + lora_name + r"', load_tensors = True))",
+            r"\1, lora_request = self.model.load_lora('" + lora_name + r", load_tensors = True))",
             source
         )
         # Prefer using unsloth's sampling params and fallback to trl's if not found
