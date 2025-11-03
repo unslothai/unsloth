@@ -215,17 +215,18 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
     # The new multi-line string that will replace the line above
     replacement_lines = """
         batch_size = self.args.per_device_train_batch_size if mode == "train" else self.args.per_device_eval_batch_size
-        if not has_images:
-            # Left pad prompt before calculation old and ref hidden states
-            prompt_completion_ids = left_pack_padding(prompt_completion_ids, self.processing_class.pad_token_id)
-
-        fast_language_model_types =  ["llama",  "mistral", "gemma2", "qwen2" , "qwen3", "qwen3_moe"] 
-        
-        from unsloth import FastVisionModel, FastLanguageModel, FastModel
-        if prompt_inputs.get("pixel_values") is None and self.model.config.model_type not in fast_language_model_types:
-            self.model = FastModel.for_training(self.model)
-        else:
-            self.model = FastVisionModel.for_training(self.model)"""
+        try:
+            # TRL 0.23.1 and below path
+            if not has_images:
+                # Left pad prompt before calculation old and ref hidden states
+                prompt_completion_ids = left_pack_padding(prompt_completion_ids, self.processing_class.pad_token_id)
+            self.model.for_training()
+        except:
+            # TRL 0.24.0 and below path
+            if images is None:
+                # Left pad prompt before calculation old and ref hidden states
+                prompt_completion_ids = left_pack_padding(prompt_completion_ids, self.processing_class.pad_token_id)
+        self.model.for_training()"""
 
     function = function.replace(line_to_replace, replacement_lines)
 

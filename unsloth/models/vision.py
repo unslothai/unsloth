@@ -91,6 +91,7 @@ VLLM_SUPPORTED_VLM = [
     "qwen2_5_vl",
     "gemma3",
     "mistral3",
+    "qwen3_vl",
 ]
 VLLM_NON_LORA_VLM = [
     "mllama",
@@ -156,6 +157,9 @@ def unsloth_base_fast_generate(
 
     FastBaseModel.for_inference(self)
     dtype = _get_dtype(dtype_from_config(self.config))
+    # Handle full float32 cases as config.dtype == torch.float32!
+    do_bfloat16_mixed_precision = os.environ.get("UNSLOTH_BFLOAT16_MIXED_PRECISION", "0") == "1"
+    if do_bfloat16_mixed_precision: dtype = torch.bfloat16
 
     # Check if VLM
     is_vlm = any(
@@ -215,7 +219,6 @@ def unsloth_base_fast_generate(
         dtype = torch.float16
     else:
         autocaster = torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = dtype)
-
     # Prepare LoRA
     # state_dict = convert_lora_modules(self, dtype = dtype)
 
@@ -252,6 +255,8 @@ def unsloth_base_fast_generate(
                 cache_implementation = "hybrid"
             else:
                 cache_implementation = "static"
+    # [TODO] Unsure why static fails
+    if do_bfloat16_mixed_precision: cache_implementation = None
 
     if "generation_config" in kwargs:
         kwargs["generation_config"].cache_implementation = cache_implementation
@@ -316,6 +321,7 @@ class FastBaseModel:
         whisper_task      = None,
         auto_config       = None,
         offload_embedding = False,
+        float32_mixed_precision = None, # Forces float32 mixed precision
         # vLLM parameters
         fast_inference    = False,
         gpu_memory_utilization = 0.5,
@@ -510,7 +516,18 @@ class FastBaseModel:
         if full_finetuning:
             os.environ["UNSLOTH_ENABLE_FULL_FINETUNING"] = "1"
             if dtype == torch.bfloat16:
-                print("Unsloth: Using bfloat16 full finetuning which cuts memory usage by 50%.")
+                if float32_mixed_precision != True:
+                    print(
+                        f"Unsloth: Using bfloat16 full finetuning which cuts memory usage by 50%.\n"
+                        f"To enable float32 training, use `float32_mixed_precision = True` during FastLanguageModel.from_pretrained"
+                    )
+                else:
+                    print(
+                        f"Unsloth: Using full float32 full finetuning. "
+                        f"To enable bfloat16 training to reduce VRAM usage by 50% albeit with a slightly higher loss, do:\n"\
+                        "use `float32_mixed_precision = False` during FastLanguageModel.from_pretrained"
+                    )
+                    os.environ["UNSLOTH_BFLOAT16_MIXED_PRECISION"] = "1"
             else:
                 print("Unsloth: Float16 full finetuning uses more memory since we upcast weights to float32.")
         else:
@@ -782,6 +799,7 @@ class FastBaseModel:
             trust_remote_code  = trust_remote_code,
             model_type = model_type_arch,
             tokenizer = tokenizer,
+            float32_mixed_precision = float32_mixed_precision,
         )
         # Clear deleted GPU items
         for _ in range(3):
@@ -942,13 +960,18 @@ class FastBaseModel:
         trust_remote_code = False,
         model_type = None,
         tokenizer = None,
+        float32_mixed_precision = None,
     ):
         full_finetuning = os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1"
 
-        float32_mixed_precision = True
-        if _get_dtype(dtype_from_config(model.config)) == torch.bfloat16 and full_finetuning:
-            # Use bfloat16 precision for full finetuning
-            float32_mixed_precision = False
+        if type(float32_mixed_precision) is bool:
+            # Respect whatever it was set before
+            pass
+        else:
+            float32_mixed_precision = True
+            if _get_dtype(dtype_from_config(model.config)) == torch.bfloat16 and full_finetuning:
+                # Use bfloat16 precision for full finetuning
+                float32_mixed_precision = False
 
         model = prepare_model_for_training(
             model,
