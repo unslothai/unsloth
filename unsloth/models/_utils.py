@@ -235,6 +235,9 @@ del transformers_training_args_logger
 # No label_names provided for model class
 from transformers.trainer import logger as transformers_trainer_logger
 transformers_trainer_logger.addFilter(HideLoggingMessage("No label_names"))
+
+# The tokenizer has new PAD/BOS/EOS tokens that differ from the model config and generation config.
+transformers_trainer_logger.addFilter(HideLoggingMessage("The tokenizer has new"))
 del transformers_trainer_logger
 
 # Using the default loss: `ForCausalLMLoss`.
