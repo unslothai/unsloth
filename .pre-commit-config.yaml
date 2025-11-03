@@ -6,4 +6,12 @@ repos:
         args:
           - --fix
           - --exit-non-zero-on-fix
-      - id: ruff-format
+  - repo: local
+    hooks:
+      - id: ruff-format-with-kwargs
+        name: Ruff format with kwarg spacing
+        entry: scripts/run_ruff_format.py
+        language: python
+        types: [python]
+        additional_dependencies:
+          - ruff==0.6.9
