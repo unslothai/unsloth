@@ -752,11 +752,11 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "        scale_rewards = False\n"\
         "elif loss_type.lower() == 'dapo':\n"\
         "    if mask_truncated_completions != True:\n"\
-        "        print('Unsloth: The DAPO paper recommends `mask_truncated_completions = True`')\n"\
+        "        print('Unsloth: The DAPO paper recommends `mask_truncated_completions = True` - we will set it.')\n"\
         "    if epsilon_high != 0.28:\n"\
-        "        print('Unsloth: The DAPO paper recommends `epsilon_high = 0.28`')\n"\
+        "        print('Unsloth: The DAPO paper recommends `epsilon_high = 0.28` - we will set it.')\n"\
         "    if beta != 0.0:\n"\
-        "        print('Unsloth: The DAPO paper recommends setting `beta = 0.0` to remove the KL term')\n"\
+        "        print('Unsloth: The DAPO paper recommends setting `beta = 0.0` to remove the KL term - we will set it.')\n"\
         "    mask_truncated_completions = True\n"\
         "    epsilon_high = 0.28\n"\
         "    beta = 0.0\n"\
