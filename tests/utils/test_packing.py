@@ -211,9 +211,14 @@ def test_packing_sdpa(tmp_path):
     original_mask = attention_dispatch_utils.build_sdpa_packed_attention_mask
     mask_calls = []
 
-    def _capture_mask(seq_info, dtype, device):
+    def _capture_mask(seq_info, dtype, device, *, sliding_window=None):
         mask_calls.append(tuple(seq_info[0].tolist()))
-        return original_mask(seq_info, dtype=dtype, device=device)
+        return original_mask(
+            seq_info,
+            dtype=dtype,
+            device=device,
+            sliding_window=sliding_window,
+        )
 
     with ExitStack() as stack:
         stack.enter_context(patch.object(attention_dispatch_utils, "HAS_FLASH_ATTENTION", False))
