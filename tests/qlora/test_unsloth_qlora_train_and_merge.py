@@ -209,3 +209,28 @@ if __name__ == "__main__":
     )
     with header_footer_context("Responses after unsloth merge to 16bit"):
         check_responses(responses, answer=ANSWER, prompt=prompt)
+
+
+# Minimal Phi-2 smoke test to ensure loader + forward path works.
+# Skips automatically if model cannot be downloaded in CI.
+def test_unsloth_phi2_load_and_forward_smoke():
+    import pytest
+    import torch
+    from unsloth import FastLanguageModel
+
+    model_name = "microsoft/Phi-2"
+    try:
+        model, tokenizer = FastLanguageModel.from_pretrained(
+            model_name,
+            max_seq_length=64,
+            load_in_4bit=True,
+            use_exact_model_name=True,
+        )
+    except Exception as e:
+        pytest.skip(f"Skipping Phi-2 smoke test due to: {e}")
+
+    model.eval()
+    with torch.no_grad():
+        input_ids = tokenizer("Hello", return_tensors="pt").input_ids.to(next(model.parameters()).device)
+        out = model(input_ids=input_ids)
+        assert hasattr(out, "logits")

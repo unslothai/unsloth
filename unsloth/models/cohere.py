@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from .llama import *
+from ..kernels import fast_layernorm_inference
 from ._utils import __version__
 from unsloth_zoo.hf_utils import dtype_from_config
 from unsloth_zoo.utils import _get_dtype

@@ -25,8 +25,11 @@ from .rms_layernorm import (
 from .layernorm import (
     fast_layernorm,
     patch_layernorm,
+    fast_layernorm_inference,
 )
 from .rope_embedding import fast_rope_embedding, inplace_rope_embedding
+from .dropout import DeterministicDropout, seeded_dropout
+# GeLU acceleration reserved; currently unused
 from .swiglu import swiglu_fg_kernel, swiglu_DWf_DW_dfg_kernel
 from .geglu import (
     geglu_exact_forward_kernel,
