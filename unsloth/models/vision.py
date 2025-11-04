@@ -626,7 +626,14 @@ class FastBaseModel:
                 get_vllm_state_dict,
                 convert_vllm_to_huggingface,
                 generate_batches,
+                get_lora_supported_ranks,
             )
+            if full_finetuning:
+                max_lora_rank = max(get_lora_supported_ranks())
+                raise NotImplementedError(
+                    f"Unsloth: `fast_inference = True` does yet support `full_finetuning = True`.\n"
+                    f"Use `lora_rank = {max_lora_rank}` as the closest replacement for full finetuning with Unsloth"
+                )
             model_config.model_name = model_name
 
             if fast_inference:
