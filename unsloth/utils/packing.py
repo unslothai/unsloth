@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Iterable, Optional, Sequence, Tuple
+from typing import Any, Iterable, Optional, Sequence, Tuple
 
 import torch
 
@@ -169,15 +169,30 @@ def get_packed_info_from_kwargs(
 
 
 def build_xformers_block_causal_mask(
-    seq_info: Tuple[torch.Tensor, torch.Tensor, int]
+    seq_info: Optional[Tuple[torch.Tensor, torch.Tensor, int]],
+    *,
+    sliding_window: Optional[int] = None,
+    base_mask: Optional[Any] = None,
 ):
     if _XFormersBlockMask is None:
         return None
-    seq_lengths, _, _ = seq_info
-    lengths = seq_lengths.to("cpu", torch.int32).tolist()
-    if not lengths:
-        return None
-    return _XFormersBlockMask.from_seqlens(lengths)
+    if seq_info is not None:
+        seq_lengths, _, _ = seq_info
+        lengths = seq_lengths.to("cpu", torch.int32).tolist()
+        if not lengths:
+            return None
+        mask = _XFormersBlockMask.from_seqlens(lengths)
+    else:
+        mask = base_mask
+
+    if (
+        sliding_window is not None
+        and sliding_window > 0
+        and mask is not None
+        and hasattr(mask, "make_local_attention")
+    ):
+        mask = mask.make_local_attention(window_size=sliding_window)
+    return mask
 
 
 def build_sdpa_packed_attention_mask(
@@ -185,6 +200,7 @@ def build_sdpa_packed_attention_mask(
     *,
     dtype: torch.dtype,
     device: torch.device,
+    sliding_window: Optional[int] = None,
 ) -> torch.Tensor:
     seq_lengths, _, _ = seq_info
     total_tokens = int(seq_lengths.sum().item())
@@ -202,6 +218,11 @@ def build_sdpa_packed_attention_mask(
         block = torch.zeros((length, length), dtype=dtype, device=device)
         upper = torch.triu(torch.ones((length, length), device=device), diagonal=1).bool()
         block = block.masked_fill(upper, float("-inf"))
+        if sliding_window is not None and sliding_window > 0 and length > sliding_window:
+            idx = torch.arange(length, device=device)
+            dist = idx.unsqueeze(1) - idx.unsqueeze(0)
+            window_mask = dist >= sliding_window
+            block = block.masked_fill(window_mask, float("-inf"))
         mask[offset : offset + length, offset : offset + length] = block
         offset += length
     return mask.unsqueeze(0).unsqueeze(0)

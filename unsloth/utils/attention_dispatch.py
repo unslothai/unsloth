@@ -28,9 +28,6 @@ XFORMERS = "xformers"
 SDPA = "sdpa"
 
 
-XFORMERS_BIAS_BUILDER = (
-    lambda bias, seq: build_xformers_block_causal_mask(seq) if seq is not None else bias
-)
 XFORMERS_BLOCK_DIAG_CLS = (
     xformers.attn_bias.BlockDiagonalCausalMask if HAS_XFORMERS else None
 )
@@ -70,6 +67,7 @@ class AttentionContext:
     seq_info: Optional[Tuple[Tensor, Tensor, int]]
     attention_mask: Optional[Tensor]
     causal_mask: Optional[Any]
+    sliding_window: Optional[int] = None
 
 
 def select_attention_backend(use_varlen: bool = False) -> str:
@@ -109,7 +107,8 @@ def run_attention(
     head_dim = context.head_dim
     kv_seq_len = context.kv_seq_len
     requires_grad = context.requires_grad
-    
+    sliding_window = context.sliding_window
+
     if backend == FLASH_VARLEN:
         Q_f = Q.transpose(1, 2).reshape(bsz * q_len, n_heads, head_dim)
         K_f = K.transpose(1, 2).reshape(bsz * q_len, config.n_kv_heads, head_dim)
@@ -133,7 +132,11 @@ def run_attention(
             bsz, q_len, n_heads, head_dim
         )
     elif backend == XFORMERS:
-        attn_bias = XFORMERS_BIAS_BUILDER(context.causal_mask, context.seq_info)
+        attn_bias = build_xformers_block_causal_mask(
+            context.seq_info,
+            sliding_window=sliding_window,
+            base_mask=context.causal_mask,
+        )
 
         Q_t = Q.transpose(1, 2)
         K_t = K.transpose(1, 2)
@@ -204,7 +207,10 @@ def run_attention(
         is_causal_local = False
         if context.seq_info is not None and local_mask is None:
             local_mask = build_sdpa_packed_attention_mask(
-                context.seq_info, dtype=Q.dtype, device=Q.device
+                context.seq_info,
+                dtype=Q.dtype,
+                device=Q.device,
+                sliding_window=sliding_window,
             )
         else:
             q_len_local = Q.shape[-2]
@@ -239,6 +245,7 @@ def run_attention(
             **kwargs,
         )
         return out.transpose(1, 2).contiguous()
+
 
 __all__ = [
     "AttentionConfig",
