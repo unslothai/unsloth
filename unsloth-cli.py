@@ -40,16 +40,19 @@ def run(args):
     from trl import SFTTrainer, SFTConfig
     from unsloth import is_bfloat16_supported
     from unsloth.utils import configure_sample_packing, enable_sample_packing
+    from unsloth.models.loader_utils import prepare_device_map
     import logging
 
     logging.getLogger("hf-to-gguf").setLevel(logging.WARNING)
 
     # Load model and tokenizer
+    device_map, distributed = prepare_device_map()
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name = args.model_name,
         max_seq_length = args.max_seq_length,
         dtype = args.dtype,
         load_in_4bit = args.load_in_4bit,
+        device_map = device_map,
     )
 
     # Configure PEFT model
@@ -126,6 +129,7 @@ def run(args):
         report_to = args.report_to,
         max_length = args.max_seq_length,
         dataset_num_proc = 2,
+        ddp_find_unused_parameters = False if distributed else None,
     )
 
     if args.sample_packing:

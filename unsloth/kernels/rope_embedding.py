@@ -15,6 +15,7 @@
 import triton
 import triton.language as tl
 import torch
+from ..device_type import DEVICE_COUNT
 from .utils import calculate_settings, torch_gpu_device, torch_device_stream
 
 
@@ -293,7 +294,8 @@ def fast_rope_embedding(Q, K, cos, sin, rope_embedding_indices = None):
         K_out = Fast_RoPE_Embedding.apply(
             K.transpose(1, 2).contiguous(), cos, sin
         ).transpose(1, 2)
-    torch_device_stream(Q.device).synchronize()
+    if DEVICE_COUNT > 1:
+        torch_device_stream(Q.device).synchronize()
     return Q_out, K_out
 
 
