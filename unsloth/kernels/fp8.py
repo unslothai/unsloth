@@ -17,7 +17,7 @@ import triton
 import triton.language as tl
 from torch.nn import functional as F
 import math
-from packaging.version import Version
+from unsloth_zoo.utils import Version
 from unsloth_zoo.log import logger
 from unsloth_zoo.temporary_patches.common import torch_compile
 torch_matmul = torch.matmul
@@ -309,8 +309,9 @@ def torchao_block_matmul(
     return out.to(output_dtype)
 pass
 
-# This torchao FP8 matmul seems to be ~3x faster than the w8a8_block_fp8_matmul_triton. Though this is 15-30% slower than fbgemm implementation.
-# But this gives very comparable results when it comes to training loss, so we prefer using it when available.
+# Note that older versions of fbgemm (<=1.3.0) cause numerical imprecisions resulting in NaNs especially when X has high values in it.
+# So our preference order is fbgemm (>=1.4.0) > torchao > triton. All of these have similar outputs/losses. Never use fbgemm (<=1.3.0) for block quantized FP8 matmul.
+# This torchao FP8 matmul seems to be ~3x faster than the w8a8_block_fp8_matmul_triton. Though torchao is 15-30% slower than fbgemm implementation (on H100 GPUs).
 fp8_block_matmul = torchao_block_matmul if torchao_blockwise_gemm is not None else w8a8_block_fp8_matmul_triton
 
 class FP8BlockQuantLinear(torch.autograd.Function):
@@ -476,7 +477,7 @@ def fp8_fbgemm_block_linear(X, weight, weight_scale, bias=None):
 fp8_block_quant_linear = fp8_torch_block_quant_forward
 try:
     import fbgemm_gpu
-    # Older versions cause numerical imprecisions resulting in NaNs.
+    # Older versions cause numerical imprecisions resulting in NaNs especially when X has high values in it.
     # This is both fast and accurate hence preferred.
     # This makes it 15% faster than the torchao implementation.
     if Version(fbgemm_gpu.__version__) >= Version("1.4.0"):
