@@ -194,6 +194,7 @@ import torch
 import numpy as np
 from contextlib import nullcontext
 from torch.nn import functional as F
+import inspect
 from transformers import DataCollatorForSeq2Seq, DataCollatorForLanguageModeling as TransformersDataCollatorForLanguageModeling
 from transformers.training_args import ParallelMode
 
@@ -971,6 +972,8 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
         init,
         flags = re.MULTILINE | re.DOTALL,
     )
+    print("$$$$$$$$")
+    print(vllm_part)
     
     if len(vllm_part) == 1:
         vllm_part, args = vllm_part[0][0], vllm_part[0][1]
