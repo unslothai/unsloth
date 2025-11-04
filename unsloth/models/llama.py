@@ -1048,10 +1048,12 @@ def LlamaModel_fast_forward(
 
         mask = causal_mask
         if IS_GEMMA2:
-            if idx % 2 == 0:
+            use_sliding_window = idx % 2 == 0
+            if use_sliding_window:
                 mask = self.SWA_mask if use_static_mask else dynamic_SWA_mask
             else:
                 mask = self.GA_mask if use_static_mask else dynamic_GA_mask
+            kwargs["use_sliding_window"] = use_sliding_window
 
         if gradient_checkpointing and not isinstance(
             decoder_layer, GradientCheckpointingLayer
