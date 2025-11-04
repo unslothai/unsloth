@@ -950,8 +950,13 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
             if "grpo" in trainer_file and trl_version >= Version("0.18.0"):
                 # If model has vllm_engine, then use vllm in colocate mode. Donot wait for server
                 vllm_setter += \
-                " " * 12 + "args.vllm_mode='colocate'\n"               
-    
+                " " * 12 + "args.vllm_mode='colocate'\n"
+                if trl_version >= Version("0.23.0"):
+                    # We need to set this flag for sleep mode auto working with trl update
+                    vllm_setter += \
+                    " " * 12 + "if os.environ.get('UNSLOTH_VLLM_STANDBY', '0') == '1':\n" + \
+                    " " * 16 + "args.vllm_enable_sleep_mode=True\n"
+
             init = init.replace(replacer, replacer + vllm_setter)
         pass
     pass
