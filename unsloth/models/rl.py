@@ -1114,6 +1114,7 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                 "**grpo_update_SamplingParams("\
                 "SamplingParams, generation_kwargs, "\
                 "getattr(self.args, 'vllm_sampling_params', None)"
+                ")"\
             ")",
         )
 
