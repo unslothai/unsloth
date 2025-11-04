@@ -132,24 +132,34 @@ def Gemma2Attention_fast_forward(
     past_key_value = (K, V) if use_cache else None
 
     # Only enable if the attention_mask is True
-    has_sliding_window = isinstance(causal_mask, bool) and causal_mask is True
+    use_sliding_window = kwargs.get("use_sliding_window")
+    has_sliding_window = (
+        use_sliding_window
+        if use_sliding_window is not None
+        else isinstance(causal_mask, bool) and causal_mask is True
+    )
+
     use_flash = HAS_FLASH_ATTENTION_SOFTCAPPING and attention_mask is None
 
     if use_flash:
         window = (-1, -1)
+        sliding_window = getattr(self.config, "sliding_window", None)
         if has_sliding_window:
-            sw = getattr(self.config, "sliding_window", None)
-            sw = kv_seq_len if (sw is None or sw == "null") else sw
-            window = (-1, -1) if (kv_seq_len <= sw) else (sw, sw)
+            sliding_window = (
+                sliding_window if sliding_window is not None else kv_seq_len
+            )
+            window = (
+                (-1, -1)
+                if kv_seq_len <= sliding_window
+                else (sliding_window, sliding_window)
+            )
 
         if not hasattr(self, "_flash_attention_softmax_scale"):
             self._flash_attention_softmax_scale = 1.0 / (
                 self.config.query_pre_attn_scalar**0.5
             )
 
-        use_varlen = (
-            seq_info is not None and past_key_value is None and window == (-1, -1)
-        )
+        use_varlen = seq_info is not None and past_key_value is None
 
         attention_config = AttentionConfig(
             backend = select_attention_backend(use_varlen),
@@ -165,6 +175,8 @@ def Gemma2Attention_fast_forward(
                 "dropout_p": 0.0,
                 "softmax_scale": self._flash_attention_softmax_scale,
                 "causal": True,
+                "softcap": self.config.attn_logit_softcapping,
+                "window_size": window,
             },
         )
 
@@ -178,6 +190,7 @@ def Gemma2Attention_fast_forward(
             seq_info = seq_info,
             attention_mask = attention_mask,
             causal_mask = causal_mask,
+            sliding_window = sliding_window,
         )
 
         A = run_attention(config = attention_config, context = context, Q = Q, K = K, V = V)
