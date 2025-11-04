@@ -535,14 +535,16 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
 pass
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__get_per_token_logps_and_entropies)
 
-grpo_compute_loss      = RL_REPLACEMENTS["grpo_compute_loss"]
-grpo_compute_loss_slow = RL_REPLACEMENTS["grpo_compute_loss_slow"]
-UnslothEfficientGRPO   = RL_REPLACEMENTS["UnslothEfficientGRPO"]
-grpo_accumulated_loss  = RL_REPLACEMENTS["grpo_accumulated_loss"]
+grpo_compute_loss          = RL_REPLACEMENTS["grpo_compute_loss"]
+grpo_compute_loss_slow     = RL_REPLACEMENTS["grpo_compute_loss_slow"]
+UnslothEfficientGRPO       = RL_REPLACEMENTS["UnslothEfficientGRPO"]
+grpo_accumulated_loss      = RL_REPLACEMENTS["grpo_accumulated_loss"]
+grpo_update_SamplingParams = RL_REPLACEMENTS["grpo_update_SamplingParams"]
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_compute_loss))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(UnslothEfficientGRPO))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_accumulated_loss))
 RL_PRE_ITEMS["grpo_trainer"].append(grpo_compute_loss_slow)
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_update_SamplingParams))
 
 # Edit _get_per_token_logps to handle mixed precision
 def grpo_trainer_compute_loss(function_name, function):

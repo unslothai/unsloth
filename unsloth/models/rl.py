@@ -972,8 +972,6 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
         init,
         flags = re.MULTILINE | re.DOTALL,
     )
-    print("$$$$$$$$")
-    print(vllm_part)
     
     if len(vllm_part) == 1:
         vllm_part, args = vllm_part[0][0], vllm_part[0][1]
@@ -991,6 +989,15 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
 
         if len(sampling_params) == 1:
             sampling_params = sampling_params[0]
+            # Fix later versions of SamplingParams via grpo_update_SamplingParams
+            sampling_params = sampling_params.replace(
+                "sampling_params = SamplingParams(**generation_kwargs)",
+                "sampling_params = SamplingParams("\
+                    "**grpo_update_SamplingParams("\
+                    "SamplingParams, generation_kwargs, "\
+                    "getattr(self.args, 'vllm_sampling_params', None)"
+                ")",
+            )
             # Fix guided_decoding
             sampling_params = sampling_params.replace(
                 "guided_decoding=guided_decoding,",
