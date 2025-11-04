@@ -989,15 +989,6 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
 
         if len(sampling_params) == 1:
             sampling_params = sampling_params[0]
-            # Fix later versions of SamplingParams via grpo_update_SamplingParams
-            sampling_params = sampling_params.replace(
-                "sampling_params = SamplingParams(**generation_kwargs)",
-                "sampling_params = SamplingParams("\
-                    "**grpo_update_SamplingParams("\
-                    "SamplingParams, generation_kwargs, "\
-                    "getattr(self.args, 'vllm_sampling_params', None)"
-                ")",
-            )
             # Fix guided_decoding
             sampling_params = sampling_params.replace(
                 "guided_decoding=guided_decoding,",
@@ -1041,6 +1032,16 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                 new_vllm_part,
                 flags=re.DOTALL  # Ensure . matches newlines [[5]]
             )
+
+        # Fix later versions of SamplingParams via grpo_update_SamplingParams
+        new_vllm_part = new_vllm_part.replace(
+            "sampling_params = SamplingParams(**generation_kwargs)",
+            "sampling_params = SamplingParams("\
+                "**grpo_update_SamplingParams("\
+                "SamplingParams, generation_kwargs, "\
+                "getattr(self.args, 'vllm_sampling_params', None)"
+            ")",
+        )
 
         init = init.replace(vllm_part, new_vllm_part)
     pass
