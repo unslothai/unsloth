@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+<<<<<<< HEAD
 import importlib
 import os
 import re
@@ -24,6 +25,12 @@ from .mapper import (
     FLOAT_TO_FP8_BLOCK_MAPPER,
     FLOAT_TO_FP8_ROW_MAPPER,
 )
+=======
+from .mapper import INT_TO_FLOAT_MAPPER, FLOAT_TO_INT_MAPPER, MAP_TO_UNSLOTH_16bit
+from ..device_type import DEVICE_TYPE_TORCH
+import os
+import torch
+>>>>>>> 96b06fb (ddp working OOTB with CLI)
 
 # https://github.com/huggingface/transformers/pull/26037 allows 4 bit loading!
 from packaging.version import Version
@@ -36,6 +43,9 @@ import gc
 transformers_version = Version(transformers_version)
 SUPPORTS_FOURBIT = transformers_version >= Version("4.37")
 
+LOCAL_RANK_KEYS = ("LOCAL_RANK", "RANK")
+WORLD_SIZE_KEYS = ("WORLD_SIZE",)
+
 BAD_MAPPINGS = {
     "unsloth/Qwen3-32B-unsloth-bnb-4bit".lower(): "unsloth/Qwen3-32B-bnb-4bit".lower(),  # 32B dynamic quant is way too big
     "unsloth/Qwen3-30B-A3B-unsloth-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B".lower(),  # HF loads MoEs too slowly
@@ -43,6 +53,50 @@ BAD_MAPPINGS = {
     "unsloth/Qwen3-30B-A3B-Base-unsloth-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B-Base".lower(),  # HF loads MoEs too slowly
     "unsloth/Qwen3-30B-A3B-Base-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B-Base".lower(),  # We rather do it on the fly
 }
+
+
+def _get_env_int(keys):
+    for key in keys:
+        value = os.environ.get(key)
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except ValueError:
+            continue
+    return None
+
+
+def _infer_distributed_ranks():
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        try:
+            return torch.distributed.get_rank(), torch.distributed.get_world_size()
+        except Exception:
+            pass
+    return _get_env_int(LOCAL_RANK_KEYS), _get_env_int(WORLD_SIZE_KEYS)
+
+
+def is_distributed():
+    rank, world_size = _infer_distributed_ranks()
+    return (world_size or 1) > 1 or (rank is not None and rank > 0)
+
+
+def prepare_device_map():
+    rank, world_size = _infer_distributed_ranks()
+    distributed = (world_size or 1) > 1 or (rank is not None and rank > 0)
+    if not distributed:
+        return None, False
+
+    local_rank = 0 if rank is None else rank
+    device_map = {"": f"{DEVICE_TYPE_TORCH}:{local_rank}"}
+    try:
+        if DEVICE_TYPE_TORCH == "cuda":
+            torch.cuda.set_device(local_rank)
+        elif DEVICE_TYPE_TORCH == "xpu" and hasattr(torch, "xpu"):
+            torch.xpu.set_device(local_rank)
+    except Exception:
+        pass
+    return device_map, True
 
 
 def __get_model_name(
@@ -109,6 +163,8 @@ def __get_model_name(
         return new_model_name
 
     return None
+
+
 
 
 def _get_new_mapper():
@@ -188,6 +244,7 @@ def get_model_name(model_name, load_in_4bit = True, load_in_fp8 = False):
     return new_model_name if new_model_name is not None else model_name
 
 
+<<<<<<< HEAD
 def _get_torchao_fp8_config(fp8_mode: str):
     """
     Return a `torchao.quantization.Float8DynamicActivationFloat8WeightConfig`
@@ -373,3 +430,5 @@ def _get_fp8_mode_and_check_settings(
                 "Unsloth: On the fly `load_in_fp8` is only compatible with fbgemm_gpu_genai 1.4.1+. Try `unsloth/Qwen3-8B` instead."
             )
     return fp8_mode
+=======
+>>>>>>> 96b06fb (ddp working OOTB with CLI)
