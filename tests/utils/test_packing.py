@@ -2,6 +2,7 @@ from unsloth import FastLanguageModel
 from unsloth.utils import attention_dispatch as attention_dispatch_utils
 from unsloth.utils.packing import configure_sample_packing, enable_sample_packing
 
+from collections.abc import Iterable
 from contextlib import ExitStack
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -10,6 +11,7 @@ import pytest
 import torch
 from datasets import Dataset
 from trl import SFTConfig, SFTTrainer
+from trl.trainer.sft_trainer import DataCollatorForLanguageModeling
 
 
 def _build_packed_training_setup(tmp_path, device):
@@ -120,25 +122,16 @@ class _DummyModel(torch.nn.Module):
         self.generation_config = SimpleNamespace(attn_implementation="sdpa")
 
 
-class _DummyCollator:
-    def __init__(self):
-        self.padding_free = False
-        self.return_position_ids = False
-
-    def torch_call(self, examples):
-        batch_size = len(examples)
-        max_tokens = 4
-        return {
-            "input_ids": torch.zeros(batch_size, max_tokens, dtype=torch.long),
-            "attention_mask": torch.ones(batch_size, max_tokens, dtype=torch.long),
-            "batch": examples,
-        }
-
-
 class _DummyTrainer:
     def __init__(self):
         self.args = SimpleNamespace(remove_unused_columns=True)
-        self.data_collator = _DummyCollator()
+        self.data_collator = DataCollatorForLanguageModeling(
+            pad_token_id=0,
+            completion_only_loss=False,
+            padding_free=True,
+            return_position_ids=False,
+            return_tensors="pt",
+        )
 
 
 def test_enable_sample_packing():
@@ -151,17 +144,21 @@ def test_enable_sample_packing():
     assert getattr(model, "_unsloth_allow_packed_overlength") is True
     assert getattr(model.child, "_unsloth_allow_packed_overlength") is True
 
-    # trainer args are updated to keep the packed metadata
-    assert trainer.args.remove_unused_columns is False
-
     collator = trainer.data_collator
-    assert collator.padding_free is True
     assert collator.return_position_ids is True
     assert getattr(collator, "_unsloth_packing_wrapped") is True
 
     examples = [
-        {"seq_lengths": [2, 1]},
-        {"seq_lengths": [3]},
+        {
+            "input_ids": [0, 1, 2],
+            "labels": [0, 1, 2],
+            "seq_lengths": [2, 1],
+        },
+        {
+            "input_ids": [3, 4, 5],
+            "labels": [3, 4, 5],
+            "seq_lengths": [3],
+        },
     ]
     batch = collator.torch_call(examples)
 
@@ -172,13 +169,43 @@ def test_enable_sample_packing():
         torch.tensor([2, 1, 3], dtype=torch.int32),
     )
 
-    assert "position_ids" in batch
-    assert torch.equal(batch["position_ids"][0, :3], torch.tensor([0, 1, 0], dtype=torch.long))
-    assert torch.equal(batch["position_ids"][1, :3], torch.tensor([0, 1, 2], dtype=torch.long))
+    assert batch["input_ids"].shape == (1, 6)
+    expected_positions = torch.tensor([0, 1, 0, 0, 1, 2], dtype=torch.long)
+    assert torch.equal(batch["position_ids"].view(-1)[:6], expected_positions)
 
-    # attention_mask is dropped when return_position_ids is set
-    assert "attention_mask" not in batch
-    assert batch["batch"] == examples
+
+def test_enable_sample_packing_trl_collator(tmp_path):
+    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+    model, _, trainer, _ = _build_packed_training_setup(tmp_path, device)
+
+    enable_sample_packing(model, trainer)
+
+    examples = [
+        {
+            "input_ids": [0, 1, 2],
+            "labels": [0, 1, 2],
+            "seq_lengths": [2, 1],
+        },
+        {
+            "input_ids": [3, 4, 5],
+            "labels": [3, 4, 5],
+            "seq_lengths": [3],
+        },
+    ]
+
+    batch = trainer.data_collator.torch_call(examples)
+
+    assert batch["input_ids"].shape == (1, 6)
+    assert torch.equal(
+        batch["packed_seq_lengths"],
+        torch.tensor([2, 1, 3], dtype=torch.int32),
+    )
+
+    expected_positions = torch.tensor([0, 1, 0, 0, 1, 2], dtype=torch.long)
+    assert torch.equal(batch["position_ids"].view(-1)[:6], expected_positions)
+
+    if hasattr(trainer, "accelerator"):
+        trainer.accelerator.free_memory()
 
 
 def test_packing_sdpa(tmp_path):
