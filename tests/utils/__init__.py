@@ -25,7 +25,7 @@ def timer(name):
 
 
 @contextmanager
-def header_footer_context(title: str, char="-"):
+def header_footer_context(title: str, char = "-"):
     print()
     print(f"{char}" * 50 + f" {title} " + f"{char}" * 50)
     yield

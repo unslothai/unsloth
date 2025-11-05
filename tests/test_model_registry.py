@@ -64,16 +64,16 @@ TestParams = [
 
 
 # Test that model registration methods register respective models
-@pytest.mark.parametrize("model_test_param", TestParams, ids=lambda param: param.name)
+@pytest.mark.parametrize("model_test_param", TestParams, ids = lambda param: param.name)
 def test_model_registration(model_test_param: ModelTestParam):
     MODEL_REGISTRY.clear()
     registration_method = model_test_param.register_models
     registration_method()
     registered_models = MODEL_REGISTRY.keys()
     missing_models = _test_model_uploaded(registered_models)
-    assert not missing_models, (
-        f"{model_test_param.name} missing following models: {missing_models}"
-    )
+    assert (
+        not missing_models
+    ), f"{model_test_param.name} missing following models: {missing_models}"
 
 
 def test_all_model_registration():
@@ -82,10 +82,11 @@ def test_all_model_registration():
     missing_models = _test_model_uploaded(registered_models)
     assert not missing_models, f"Missing following models: {missing_models}"
 
+
 def test_quant_type():
     # Test that the quant_type is correctly set for model paths
     # NOTE: for models registered under org="unsloth" with QuantType.NONE aliases QuantType.UNSLOTH
-    dynamic_quant_models = search_models(quant_types=[QuantType.UNSLOTH])
+    dynamic_quant_models = search_models(quant_types = [QuantType.UNSLOTH])
     assert all(m.quant_type == QuantType.UNSLOTH for m in dynamic_quant_models)
     quant_tag = QUANT_TAG_MAP[QuantType.UNSLOTH]
     assert all(quant_tag in m.model_path for m in dynamic_quant_models)
