@@ -32,7 +32,7 @@ class _TrlPackingWarningFilter(logging.Filter):
 _TRL_FILTER_INSTALLED = False
 
 
-def _ensure_trl_warning_filter() -> None:
+def _ensure_trl_warning_filter():
     global _TRL_FILTER_INSTALLED
     if _TRL_FILTER_INSTALLED:
         return
@@ -40,7 +40,7 @@ def _ensure_trl_warning_filter() -> None:
     _TRL_FILTER_INSTALLED = True
 
 
-def configure_sample_packing(config) -> None:
+def configure_sample_packing(config):
     """Mutate an ``SFTConfig`` so TRL prepares packed batches."""
     _ensure_trl_warning_filter()
     setattr(config, "packing", True)
@@ -48,22 +48,8 @@ def configure_sample_packing(config) -> None:
     setattr(config, "remove_unused_columns", False)
 
 
-def enable_sample_packing(
-    model,
-    trainer,
-    *,
-    sequence_lengths_key: str = "seq_lengths",
-) -> None:
+def enable_sample_packing(model, trainer):
     """Enable runtime support for packed batches on an existing trainer."""
-    train_bs = getattr(trainer.args, "per_device_train_batch_size", 1)
-    eval_bs = getattr(trainer.args, "per_device_eval_batch_size", 1)
-
-    if train_bs != 1 or eval_bs != 1:
-        raise ValueError(
-            "Sample packing requires per_device_train_batch_size=1 and "
-            f"per_device_eval_batch_size=1; received {train_bs}, {eval_bs}."
-        )
-
     def _mark_allow_overlength(module):
         if hasattr(module, "max_seq_length"):
             setattr(module, "_unsloth_allow_packed_overlength", True)
@@ -72,17 +58,14 @@ def enable_sample_packing(
 
     _mark_allow_overlength(model)
 
-    if hasattr(trainer.args, "remove_unused_columns"):
-        trainer.args.remove_unused_columns = False
-
     collator = getattr(trainer, "data_collator", None)
-    if collator is None or not hasattr(collator, "torch_call"):
-        return
-    if getattr(collator, "_unsloth_packing_wrapped", False):
+    if (
+        collator is None
+        or not hasattr(collator, "torch_call")
+        or getattr(collator, "_unsloth_packing_wrapped", False)
+    ):
         return
 
-    if hasattr(collator, "padding_free"):
-        collator.padding_free = True
     if hasattr(collator, "return_position_ids"):
         collator.return_position_ids = True
 
@@ -92,41 +75,12 @@ def enable_sample_packing(
         batch = original_torch_call(examples)
         if examples and isinstance(examples[0], dict):
             seq_lengths: list[int] = []
-            per_example_counts: list[int] = []
             for example in examples:
-                lengths = example.get(sequence_lengths_key)
-                if isinstance(lengths, Iterable):
-                    numeric_lengths = [int(length) for length in lengths]
-                    seq_lengths.extend(numeric_lengths)
-                    per_example_counts.append(len(numeric_lengths))
-                else:
-                    per_example_counts.append(0)
+                seq_lengths.extend(example["seq_lengths"])
             if seq_lengths:
-                batch["packed_seq_lengths"] = torch.tensor(seq_lengths, dtype=torch.int32)
-
-                position_ids = batch.get("position_ids")
-                input_ids = batch.get("input_ids")
-                if position_ids is None and input_ids is not None:
-                    position_ids = torch.zeros_like(
-                        input_ids, dtype=torch.long, device=input_ids.device
-                    )
-
-                if position_ids is not None and input_ids is not None:
-                    seq_index = 0
-                    for row_idx, count in enumerate(per_example_counts):
-                        cursor = 0
-                        for _ in range(count):
-                            length = seq_lengths[seq_index]
-                            if length > 0:
-                                position_ids[row_idx, cursor : cursor + length] = torch.arange(
-                                    length, dtype=torch.long, device=position_ids.device
-                                )
-                                cursor += length
-                            seq_index += 1
-                    batch["position_ids"] = position_ids
-
-                if "attention_mask" in batch and getattr(collator, "return_position_ids", False):
-                    batch.pop("attention_mask")
+                batch["packed_seq_lengths"] = torch.tensor(
+                    seq_lengths, dtype=torch.int32
+                )
         return batch
 
     collator.torch_call = torch_call_with_lengths
