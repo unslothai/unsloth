@@ -323,8 +323,8 @@ class FP8BlockQuantLinear(torch.autograd.Function):
         assert block_size is not None, "block_size is not set"
         if triton.cdiv(m, block_size[0]) != p or triton.cdiv(n, block_size[1]) != q:
             if triton.cdiv(m, block_size[0]) == q and triton.cdiv(n, block_size[1]) == p:
-                # weights are tranposed during backward pass for training :)
-                # We tranpose weight scale to counter that. Note that transposing weight would cause issues with matmul with input X
+                # weights are transposed during backward pass for training :)
+                # We transpose weight scale to counter that. Note that transposing weight would cause issues with matmul with input X
                 weight_scale = weight_scale.T
             else:
                 raise ValueError(f"Weight shape {weight.shape} and scales shape {weight_scale.shape} is not compatible with block size {block_size}")
@@ -437,8 +437,8 @@ class FP8_torch_linear(torch.autograd.Function):
 
         if triton.cdiv(m, bs_n) != p or triton.cdiv(n, bs_k) != q:
             if triton.cdiv(m, bs_n) == q and triton.cdiv(n, bs_k) == p:
-                # weights are tranposed during backward pass for training :)
-                # We tranpose weight scale to counter that. Note that transposing weight would cause issues with matmul with input X
+                # weights are transposed during backward pass for training :)
+                # We transpose weight scale to counter that. Note that transposing weight would cause issues with matmul with input X
                 weight_scale = weight_scale.T
             else:
                 raise ValueError(f"Weight shape {weight.shape} and scales shape {weight_scale.shape} is not compatible with block size {block_size}")
