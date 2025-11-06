@@ -19,9 +19,9 @@ import numpy as np
 
 # Fix some issues before importing other packages
 from .import_fixes import fix_message_factory_issue
-
 fix_message_factory_issue()
 del fix_message_factory_issue
+
 # Check if modules that need patching are already imported
 critical_modules = ["trl", "transformers", "peft"]
 already_imported = [mod for mod in critical_modules if mod in sys.modules]
@@ -63,7 +63,7 @@ from importlib.metadata import PackageNotFoundError
 # Check for unsloth_zoo
 try:
     unsloth_zoo_version = importlib_version("unsloth_zoo")
-    if Version(unsloth_zoo_version) < Version("2025.11.1"):
+    if Version(unsloth_zoo_version) < Version("2025.11.2"):
         print(
             "Unsloth: Please update Unsloth and Unsloth-Zoo to the latest version!\n"
             "Do this via `pip install --upgrade --force-reinstall --no-cache-dir --no-deps unsloth unsloth_zoo`"
@@ -107,25 +107,25 @@ from unsloth_zoo.device_type import (
 
 # Fix other issues
 from .import_fixes import fix_xformers_performance_issue
-
 fix_xformers_performance_issue()
 del fix_xformers_performance_issue
-from .import_fixes import fix_vllm_aimv2_issue
 
+from .import_fixes import fix_vllm_aimv2_issue
 fix_vllm_aimv2_issue()
 del fix_vllm_aimv2_issue
-from .import_fixes import ignore_logger_messages
 
+from .import_fixes import ignore_logger_messages
 ignore_logger_messages()
 del ignore_logger_messages
-from .import_fixes import patch_ipykernel_hf_xet
 
+from .import_fixes import patch_ipykernel_hf_xet
 patch_ipykernel_hf_xet()
 del patch_ipykernel_hf_xet
-from .import_fixes import patch_trackio
 
+from .import_fixes import patch_trackio
 patch_trackio()
 del patch_trackio
+
 # Torch 2.4 has including_emulation
 if DEVICE_TYPE == "cuda":
     major_version, minor_version = torch.cuda.get_device_capability()
