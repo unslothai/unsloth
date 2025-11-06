@@ -133,6 +133,7 @@ class FastLanguageModel(FastLlamaModel):
         revision                   = None,
         use_exact_model_name       = False,
         offload_embedding          = False,
+        float32_mixed_precision    = None, # Forces float32 mixed precision
 
         fast_inference             = False, # uses vLLM
         gpu_memory_utilization     = 0.5,
@@ -172,7 +173,7 @@ class FastLanguageModel(FastLlamaModel):
                 fullgraph                  = True, # No graph breaks
                 use_exact_model_name       = use_exact_model_name,
                 offload_embedding          = offload_embedding,
-
+                float32_mixed_precision    = float32_mixed_precision,
                 # Pass vLLM/inference parameters
                 fast_inference             = fast_inference,
                 gpu_memory_utilization     = gpu_memory_utilization,
@@ -202,7 +203,8 @@ class FastLanguageModel(FastLlamaModel):
         pass
         # Check if 4bit is allowed specifically for AMD
         if not ALLOW_BITSANDBYTES and not use_exact_model_name:
-            print("Unsloth: AMD currently is not stable with 4bit bitsandbytes. Disabling for now.")
+            if load_in_4bit or load_in_8bit or model_name.lower().endswith("-bnb-4bit"):
+                print("Unsloth: AMD currently is not stable with 4bit bitsandbytes. Disabling for now.")
             load_in_4bit = False
 
         old_model_name = model_name
@@ -448,7 +450,7 @@ class FastLanguageModel(FastLlamaModel):
                 fullgraph                  = True, # No graph breaks
                 use_exact_model_name       = use_exact_model_name,
                 offload_embedding          = offload_embedding,
-
+                float32_mixed_precision    = float32_mixed_precision,
                 # Pass vLLM/inference parameters
                 fast_inference             = fast_inference,
                 gpu_memory_utilization     = gpu_memory_utilization,
@@ -593,7 +595,7 @@ class FastModel(FastBaseModel):
         whisper_task               = None,
         unsloth_force_compile      = False,
         offload_embedding          = False,
-
+        float32_mixed_precision    = None, # Forces float32 mixed precision
         # Add the missing vLLM/inference parameters
         fast_inference             = False, # uses vLLM
         gpu_memory_utilization     = 0.5,
@@ -650,7 +652,8 @@ class FastModel(FastBaseModel):
             )
         # Check if 4bit is allowed specifically for AMD
         if not ALLOW_BITSANDBYTES and not use_exact_model_name:
-            print("Unsloth: AMD currently is not stable with 4bit bitsandbytes. Disabling for now.")
+            if load_in_4bit or load_in_8bit or model_name.lower().endswith("-bnb-4bit"):
+                print("Unsloth: AMD currently is not stable with 4bit bitsandbytes. Disabling for now.")
             load_in_4bit = False
 
         old_model_name = model_name
@@ -1006,7 +1009,7 @@ class FastModel(FastBaseModel):
             whisper_task      = whisper_task,
             auto_config       = model_config,
             offload_embedding = offload_embedding,
-
+            float32_mixed_precision = float32_mixed_precision,
             # Pass vLLM/inference parameters
             fast_inference         = fast_inference,
             gpu_memory_utilization = gpu_memory_utilization,

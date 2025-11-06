@@ -29,7 +29,6 @@ already_imported = [mod for mod in critical_modules if mod in sys.modules]
 # their code at import time. If they're imported first, the original (slower,
 # more memory-intensive) implementations will be used instead of Unsloth's
 # optimized versions, potentially causing OOM errors or slower training.
-
 if already_imported:
     # stacklevel=2 makes warning point to user's import line rather than this library code,
     # showing them exactly where to fix the import order in their script
@@ -40,7 +39,7 @@ if already_imported:
         f"Please restructure your imports with 'import unsloth' at the top of your file.",
         stacklevel = 2,
     )
-pass
+del already_imported, critical_modules
 
 # Unsloth currently does not work on multi GPU setups - sadly we are a 2 brother team so
 # enabling it will require much more work, so we have to prioritize. Please understand!
@@ -57,25 +56,12 @@ os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 # Log Unsloth is being used
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
-# Try importing PyTorch and check version
-try:
-    import torch
-except ModuleNotFoundError:
-    raise ImportError(
-        "Unsloth: Pytorch is not installed. Go to https://pytorch.org/.\n"\
-        "We have some installation instructions on our Github page."
-    )
-except Exception as exception:
-    raise exception
-pass
-
-import importlib.util
-from pathlib import Path
 from importlib.metadata import version as importlib_version
+from importlib.metadata import PackageNotFoundError
 # Check for unsloth_zoo
 try:
     unsloth_zoo_version = importlib_version("unsloth_zoo")
-    if Version(unsloth_zoo_version) < Version("2025.10.4"):
+    if Version(unsloth_zoo_version) < Version("2025.11.1"):
         print(
             "Unsloth: Please update Unsloth and Unsloth-Zoo to the latest version!\n"\
             "Do this via `pip install --upgrade --force-reinstall --no-cache-dir --no-deps unsloth unsloth_zoo`"
@@ -89,8 +75,22 @@ try:
         #         except:
         #             raise ImportError("Unsloth: Please update unsloth_zoo via `pip install --upgrade --no-cache-dir --no-deps unsloth_zoo`")
     import unsloth_zoo
+except PackageNotFoundError:
+    raise ImportError(f"Unsloth: Please install unsloth_zoo via `pip install unsloth_zoo` then retry!")
 except:
-    raise ImportError("Unsloth: Please install unsloth_zoo via `pip install unsloth_zoo`")
+    raise
+del PackageNotFoundError, importlib_version
+
+# Try importing PyTorch and check version
+try:
+    import torch
+except ModuleNotFoundError:
+    raise ImportError(
+        "Unsloth: Pytorch is not installed. Go to https://pytorch.org/.\n"\
+        "We have some installation instructions on our Github page."
+    )
+except:
+    raise
 pass
 
 from unsloth_zoo.device_type import (
@@ -101,53 +101,6 @@ from unsloth_zoo.device_type import (
     DEVICE_COUNT,
     ALLOW_PREQUANTIZED_MODELS,
 )
-# Reduce VRAM usage by reducing fragmentation
-# And optimize pinning of memory
-# TODO(billishyahao): need to add hip related optimization...
-if (DEVICE_TYPE in ("cuda", "hip")) and (os.environ.get("UNSLOTH_VLLM_STANDBY", "0")=="0"):
-    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = \
-        "expandable_segments:True,"\
-        "roundup_power2_divisions:[32:256,64:128,256:64,>:32]"
-    os.environ["PYTORCH_HIP_ALLOC_CONF"] = "expandable_segments:True"
-elif (DEVICE_TYPE in ("cuda", "hip")) and (os.environ.get("UNSLOTH_VLLM_STANDBY", "0")=="1") and \
-    ("expandable_segments:True" in os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "")):
-    warnings.warn(
-        "Unsloth: `UNSLOTH_VLLM_STANDBY` is on, but requires `expandable_segments` to be off.\n"\
-        "We will remove `expandable_segments`.",
-        stacklevel = 2,
-    )
-    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = re.sub(
-        r"expandable\_segments\:True\,?",
-        "",
-        os.environ["PYTORCH_CUDA_ALLOC_CONF"],
-    )
-    os.environ["PYTORCH_HIP_ALLOC_CONF"] = re.sub(
-        r"expandable\_segments\:True\,?",
-        "",
-        os.environ["PYTORCH_HIP_ALLOC_CONF"],
-    )
-pass
-# We support Pytorch 2
-# Fixes https://github.com/unslothai/unsloth/issues/38
-torch_version = str(re.match(r"[0-9\.]{3,}", str(torch.__version__)).group(0)).split(".")
-major_torch, minor_torch = torch_version[0], torch_version[1]
-major_torch, minor_torch = int(major_torch), int(minor_torch)
-if (major_torch < 2):
-    raise ImportError("Unsloth only supports Pytorch 2 for now. Please update your Pytorch to 2.1.\n"\
-                      "We have some installation instructions on our Github page.")
-elif (major_torch == 2) and (minor_torch < 2):
-    # Disable expandable_segments
-    del os.environ["PYTORCH_CUDA_ALLOC_CONF"]
-    del os.environ["PYTORCH_HIP_ALLOC_CONF"]
-pass
-
-# CCE fails on Torch 2.8 and above
-# OutOfResources: out of resource: shared memory, Required: 98304, Hardware limit: 65536. Reducing block sizes or `num_stages`
-if (major_torch >= 2 and minor_torch >= 8) or (major_torch > 2):
-    os.environ["UNSLOTH_ENABLE_CCE"] = "0"
-elif DEVICE_TYPE == "hip":
-    # CCE also fails in HIP / AMD
-    os.environ["UNSLOTH_ENABLE_CCE"] = "0"
 
 # Fix other issues
 from .import_fixes import fix_xformers_performance_issue
@@ -174,7 +127,7 @@ if DEVICE_TYPE == "cuda":
     else:
         def is_bf16_supported(): return SUPPORTS_BFLOAT16
         torch.cuda.is_bf16_supported = is_bf16_supported
-    pass
+    del major_version, minor_version
 elif DEVICE_TYPE == "hip":
     SUPPORTS_BFLOAT16 = torch.cuda.is_bf16_supported()
 elif DEVICE_TYPE == "xpu":
@@ -223,6 +176,8 @@ if DEVICE_TYPE == "cuda":
                 latest_cuda = np.argsort([float(find_number.search(x).group(1)) for x in possible_cudas])[::-1][0]
                 latest_cuda = possible_cudas[latest_cuda]
                 os.system(f"ldconfig /usr/local/{latest_cuda}")
+                del find_number, latest_cuda
+            del possible_cudas, find_cuda
         pass
 
         importlib.reload(bnb)
@@ -244,12 +199,12 @@ if DEVICE_TYPE == "cuda":
                 "Also try `sudo ldconfig /usr/local/cuda-xx.x` - find the latest cuda version.\n"\
                 "Unsloth will still run for now, but maybe it might crash - let's hope it works!"
             )
-    pass
+    del libcuda_dirs
 elif DEVICE_TYPE == "hip":
     # NO-OP for rocm device
     pass
 elif DEVICE_TYPE == "xpu":
-    # currently intel xpu will not support bnb, will add support in the future
+    import bitsandbytes as bnb
     # TODO: check triton for intel installed properly.
     pass
 
@@ -264,6 +219,8 @@ from unsloth_zoo.rl_environments import (
     create_locked_down_function,
     execute_with_time_limit,
     Benchmarker,
+    is_port_open,
+    launch_openenv,
 )
 
 # Patch TRL trainers for backwards compatibility

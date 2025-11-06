@@ -1,12 +1,12 @@
 <div align="center">
 
-  <a href="https://unsloth.ai"><picture>
+  <a href="https://docs.unsloth.ai"><picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20logo%20white%20text.png">
     <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20logo%20black%20text.png">
     <img alt="unsloth logo" src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20logo%20black%20text.png" height="110" style="max-width: 100%;">
   </picture></a>
   
-<a href="https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Llama3.1_(8B)-Alpaca.ipynb"><img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/start free finetune button.png" width="154"></a>
+<a href="https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/gpt-oss-(20B)-Fine-tuning.ipynb"><img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/start free finetune button.png" width="154"></a>
 <a href="https://discord.com/invite/unsloth"><img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/Discord button.png" width="165"></a>
 <a href="https://docs.unsloth.ai"><img src="https://raw.githubusercontent.com/unslothai/unsloth/refs/heads/main/images/Documentation%20Button.png" width="137"></a>
 
@@ -18,19 +18,19 @@
 
 ## ✨ Train for Free
 
-Notebooks are beginner friendly. Read our [guide](https://docs.unsloth.ai/get-started/fine-tuning-guide). Add dataset, click "Run All", and export your trained model to GGUF, Ollama, vLLM or Hugging Face.
+Notebooks are beginner friendly. Read our [guide](https://docs.unsloth.ai/get-started/fine-tuning-guide). Add dataset, run, then export your trained model to GGUF, Ollama, vLLM or Hugging Face.
 
 | Model | Free Notebooks | Performance | Memory use |
 |-----------|---------|--------|----------|
 | **gpt-oss (20B)**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/gpt-oss-(20B)-Fine-tuning.ipynb)               | 1.5x faster | 70% less |
 | **Qwen3 (14B)**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Qwen3_(14B)-Reasoning-Conversational.ipynb)               | 2x faster | 70% less |
-| **Gemma 3n (4B)**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Gemma3N_(4B)-Conversational.ipynb)               | 1.5x faster | 50% less |
+| **DeepSeek-OCR (3B)**    | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Deepseek_OCR_(3B).ipynb)               | 1.5x faster | 30% less |
 | **gpt-oss (20B): GRPO**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/gpt-oss-(20B)-GRPO.ipynb)               | 2x faster | 80% less |
 | **Qwen3-VL (8B): GSPO**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Qwen3_VL_(8B)-Vision-GRPO.ipynb)               | 1.5x faster | 80% less |
 | **Qwen3-VL (8B)**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Qwen3_VL_(8B)-Vision.ipynb)               | 2x faster | 50% less |
 | **Gemma 3 (270M)** | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Gemma3_(270M).ipynb)               | 1.7x faster | 60% less |
+| **Gemma 3n (4B)**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Gemma3N_(4B)-Conversational.ipynb)               | 1.5x faster | 50% less |
 | **Llama 3.1 (8B)**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Llama3.1_(8B)-Alpaca.ipynb)               | 2x faster | 70% less |
-| **Mistral v0.3 (7B)**    | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Mistral_v0.3_(7B)-Conversational.ipynb)               | 2.2x faster | 75% less |
 | **Orpheus-TTS (3B)**     | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Orpheus_(3B)-TTS.ipynb)               | 1.5x faster | 50% less |
 
 - See all our notebooks for: [Kaggle](https://github.com/unslothai/notebooks?tab=readme-ov-file#-kaggle-notebooks), [GRPO](https://docs.unsloth.ai/get-started/unsloth-notebooks#grpo-reasoning-rl-notebooks), **[TTS](https://docs.unsloth.ai/get-started/unsloth-notebooks#text-to-speech-tts-notebooks)** & [Vision](https://docs.unsloth.ai/get-started/unsloth-notebooks#vision-multimodal-notebooks)
@@ -47,12 +47,14 @@ For Windows, `pip install unsloth` works only if you have Pytorch installed. Rea
 ### Docker
 Use our official [Unsloth Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsloth``` container. Read our [Docker Guide](https://docs.unsloth.ai/get-started/install-and-update/docker).
 ### Blackwell & DGX Spark
-For RTX 50x, B200, 6000 GPUs, simply do `pip install unsloth`. Read our [Blackwell Guide](https://docs.unsloth.ai/basics/training-llms-with-blackwell-rtx-50-series-and-unsloth) and [DGX Spark Guide](https://docs.unsloth.ai/new/fine-tuning-llms-with-nvidia-dgx-spark-and-unsloth) for more details.
+For RTX 50x, B200, 6000 GPUs: `pip install unsloth`. Read our [Blackwell Guide](https://docs.unsloth.ai/basics/training-llms-with-blackwell-rtx-50-series-and-unsloth) and [DGX Spark Guide](https://docs.unsloth.ai/new/fine-tuning-llms-with-nvidia-dgx-spark-and-unsloth) for more details.
 
-## 🦥 Unsloth.ai News
+## 🦥 Unsloth News
+- **DeepSeek-OCR**: Fine-tune to improve DeepSeek-OCR's language understanding by 89%. [Guide](https://docs.unsloth.ai/new/deepseek-ocr-run-and-fine-tune) • [Notebook](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Deepseek_OCR_(3B).ipynb)
 - **Docker**: Use Unsloth with no setup & environment issues with our new image. [Guide](https://docs.unsloth.ai/new/how-to-train-llms-with-unsloth-and-docker) • [Docker image](https://hub.docker.com/r/unsloth/unsloth)
 - **gpt-oss RL**: Introducing the fastest possible inference for gpt-oss RL! [Read blog](https://docs.unsloth.ai/new/gpt-oss-reinforcement-learning)
 - **Vision RL**: You can now train VLMs with GRPO or GSPO in Unsloth! [Read guide](https://docs.unsloth.ai/new/vision-reinforcement-learning-vlm-rl)
+- **Quantization-Aware Training**: We collabed with Pytorch for QAT, recovering as much 70% accuracy. [Read blog](https://docs.unsloth.ai/new/quantization-aware-training-qat)
 - **Memory-efficient RL**: We're introducing even better RL. Our new kernels & algos allows faster RL with 50% less VRAM & 10× more context. [Read blog](https://docs.unsloth.ai/new/memory-efficient-rl)
 - **gpt-oss** by OpenAI: For details on [Unsloth Flex Attention](https://docs.unsloth.ai/new/long-context-gpt-oss-training), long-context training, bug fixes, [Read our Guide](https://docs.unsloth.ai/basics/gpt-oss). 20B works on a 14GB GPU and 120B on 65GB VRAM. [gpt-oss uploads](https://huggingface.co/collections/unsloth/gpt-oss-6892433695ce0dee42f31681).
 - **Gemma 3n** by Google: [Read Blog](https://docs.unsloth.ai/basics/gemma-3n-how-to-run-and-fine-tune). We [uploaded GGUFs, 4-bit models](https://huggingface.co/collections/unsloth/gemma-3n-685d3874830e49e1c93f9339).
@@ -92,15 +94,15 @@ For RTX 50x, B200, 6000 GPUs, simply do `pip install unsloth`. Read our [Blackwe
 - Supports **all models** including [TTS](https://docs.unsloth.ai/basics/text-to-speech-tts-fine-tuning), multimodal, [BERT](https://docs.unsloth.ai/get-started/unsloth-notebooks#other-important-notebooks) and more! Any model that works in transformers, works in Unsloth.
 - The most efficient library for [Reinforcement Learning (RL)](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide), using 80% less VRAM. Supports GRPO, GSPO, DrGRPO, DAPO etc.
 - **0% loss in accuracy** - no approximation methods - all exact.
-- Supports NVIDIA (since 2018), AMD and Intel GPUs and DGX Spark. Minimum CUDA Capability 7.0 (V100, T4, Titan V, RTX 20, 30, 40x, A100, H100, L40 etc)
+- Supports NVIDIA (since 2018), [AMD](https://docs.unsloth.ai/get-started/install-and-update/amd) and Intel GPUs. Minimum CUDA Capability 7.0 (V100, T4, Titan V, RTX 20, 30, 40x, A100, H100, L40 etc)
 - Works on **Linux**, WSL and **Windows**
 - All kernels written in [OpenAI's Triton](https://openai.com/index/triton/) language. Manual backprop engine.
 - If you trained a model with 🦥Unsloth, you can use this cool sticker! &nbsp; <img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/made with unsloth.png" width="200" align="center" />
 
 ## 💾 Install Unsloth
-You can also see our documentation for more detailed installation and updating instructions [here](https://docs.unsloth.ai/get-started/installing-+-updating).
+You can also see our docs for more detailed installation and updating instructions [here](https://docs.unsloth.ai/get-started/installing-+-updating).
 
-Unsloth does not support Python 3.14. Use 3.13 or lower.
+Unsloth supports Python 3.13 or lower.
 
 ### Pip Installation
 **Install with pip (recommended) for Linux devices:**

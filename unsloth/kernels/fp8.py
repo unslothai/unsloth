@@ -17,21 +17,36 @@ import triton
 import triton.language as tl
 from torch.nn import functional as F
 import math
+from unsloth_zoo.log import logger
+from unsloth_zoo.temporary_patches.common import torch_compile
+torch_matmul = torch.matmul
+
+try:
+    from transformers.integrations.finegrained_fp8 import FP8Linear
+except:
+    FP8Linear = None
+    logger.info("Unsloth: FP8 models need importing FP8Linear from `transformers.integrations.finegrained_fp8` but we don't see it.")
+
+try:
+    from transformers.integrations.fbgemm_fp8 import FbgemmFp8Linear
+except:
+    FbgemmFp8Linear = None
+    logger.info("Unsloth: FP8 models need importing FbgemmFP8Linear from `transformers.integrations.fbgemm_fp8` but we don't see it.")
+
 try:
     from fbgemm_gpu.experimental.gemm.triton_gemm.fp8_gemm import triton_quantize_fp8_block
-except ImportError:
+except:
     triton_quantize_fp8_block = None
+    logger.info("Unsloth: Could not find fbgemm_gpu.experimental.gemm.triton_gemm.fp8_gemm.triton_quantize_fp8_block")
 
 try:
     from torchao.prototype.blockwise_fp8_inference.blockwise_quantization import (
         blockwise_fp8_gemm as torchao_blockwise_gemm,
     )
-except ImportError:
+except:
     torchao_blockwise_gemm = None
+    logger.info("Unsloth: Could not find torchao.prototype.blockwise_fp8_inference.blockwise_quantization.blockwise_fp8_gemm")
 
-from unsloth_zoo.temporary_patches.common import torch_compile
-
-torch_matmul = torch.matmul
 
 @triton.jit
 def weight_dequant_kernel(x_ptr, s_ptr, y_ptr, M, N, BLOCK_SIZE: tl.constexpr):
@@ -46,6 +61,7 @@ def weight_dequant_kernel(x_ptr, s_ptr, y_ptr, M, N, BLOCK_SIZE: tl.constexpr):
     s = tl.load(s_ptr + pid_m * n + pid_n)
     y = x * s
     tl.store(y_ptr + offs, y, mask=mask)
+pass
 
 
 def weight_dequant_block(x: torch.Tensor, s: torch.Tensor, block_size: int = 128, dtype=torch.bfloat16) -> torch.Tensor:
@@ -59,6 +75,7 @@ def weight_dequant_block(x: torch.Tensor, s: torch.Tensor, block_size: int = 128
     grid = lambda meta: (triton.cdiv(M, meta['BLOCK_SIZE']), triton.cdiv(N, meta['BLOCK_SIZE']))
     weight_dequant_kernel[grid](x, s, y, M, N, BLOCK_SIZE=block_size)
     return y
+pass
 
 def weight_dequant(x: torch.Tensor, s: torch.Tensor, dtype=torch.bfloat16):
     if s.shape[1] == 1:
@@ -75,7 +92,7 @@ def weight_dequant(x: torch.Tensor, s: torch.Tensor, dtype=torch.bfloat16):
     else:
         # this is block quantized weight
         return weight_dequant_block(x, s, dtype=dtype)
-
+pass
 
 # Copied from https://huggingface.co/deepseek-ai/DeepSeek-V3/blob/main/inference/kernel.py
 @triton.jit
@@ -92,6 +109,7 @@ def act_quant_kernel(x_ptr, y_ptr, s_ptr, BLOCK_SIZE: tl.constexpr):
     y = y.to(y_ptr.dtype.element_ty)
     tl.store(y_ptr + offs, y)
     tl.store(s_ptr + pid, s)
+pass
 
 def act_quant(x: torch.Tensor, block_size: int = 128) -> tuple[torch.Tensor, torch.Tensor]:
     if not x.is_contiguous():
@@ -105,7 +123,7 @@ def act_quant(x: torch.Tensor, block_size: int = 128) -> tuple[torch.Tensor, tor
 
     act_quant_kernel[grid](x, y, s, BLOCK_SIZE = block_size)
     return y, s
-
+pass
 
 # Adapted from https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/layers/quantization/fp8_kernel.py
 @triton.jit
@@ -191,7 +209,7 @@ def _w8a8_block_fp8_matmul(
     c_ptrs = C + stride_cm * offs_cm[:, None] + stride_cn * offs_cn[None, :]
     c_mask = (offs_cm[:, None] < M) & (offs_cn[None, :] < N)
     tl.store(c_ptrs, c, mask = c_mask)
-
+pass
 
 def w8a8_block_fp8_matmul_triton(
     A: torch.Tensor,
@@ -270,6 +288,7 @@ def w8a8_block_fp8_matmul_triton(
         GROUP_SIZE_M = 8,
     )
     return C
+pass
 
 def torchao_block_matmul(
     act_q: torch.Tensor,
@@ -287,6 +306,7 @@ def torchao_block_matmul(
         block_size=block_size[1],
     )
     return out.to(output_dtype)
+pass
 
 # This torchao FP8 matmul seems to be ~3x faster than the w8a8_block_fp8_matmul_triton. Though this is 15-30% slower than fbgemm implementation.
 # But this gives very comparable results when it comes to training loss, so we prefer using it when available.
@@ -303,8 +323,8 @@ class FP8BlockQuantLinear(torch.autograd.Function):
         assert block_size is not None, "block_size is not set"
         if triton.cdiv(m, block_size[0]) != p or triton.cdiv(n, block_size[1]) != q:
             if triton.cdiv(m, block_size[0]) == q and triton.cdiv(n, block_size[1]) == p:
-                # weights are tranposed during backward pass for training :)
-                # We tranpose weight scale to counter that. Note that transposing weight would cause issues with matmul with input X
+                # weights are transposed during backward pass for training :)
+                # We transpose weight scale to counter that. Note that transposing weight would cause issues with matmul with input X
                 weight_scale = weight_scale.T
             else:
                 raise ValueError(f"Weight shape {weight.shape} and scales shape {weight_scale.shape} is not compatible with block size {block_size}")
@@ -329,7 +349,7 @@ class FP8BlockQuantLinear(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         W_deq = weight_dequant(ctx.weight, ctx.weight_scale)
-        grad_X = torch_matmul(grad_output, W_deq.t())
+        grad_X = torch_matmul(grad_output, W_deq)
         del W_deq
         return grad_X, None, None
 
@@ -338,20 +358,17 @@ def fp8_block_quant_forward(X, weight, weight_scale):
     return FP8BlockQuantLinear.apply(X, weight, weight_scale)
 
 
-class FbgemmFp8Linear(torch.autograd.Function):
+class FbgemmFp8Linear_matmul(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, x, weight, weight_scale, bias=None):
-        if weight.shape[0] != weight_scale.shape[0]:
-            if weight.shape[1] == weight_scale.shape[0]:
-                # This is generally the case when we do backward pass. The only way is to dequantize as there is no column wise fp8 matmul
-                W_deq = weight_dequant(weight, weight_scale).T
-                x = torch_matmul(x, W_deq)
-                del W_deq
-                return x
-            else:
-                raise ValueError(f"Shapes are incompatible {weight.shape=}, {weight_scale.shape=}, {x.shape=}")
-        else:
+
+        if weight.shape[0] == weight_scale.shape[0] and (weight.shape[0] % 8 == 0 and weight.shape[1] % 8 == 0):
+            # Edit: The kernel seems to expect that the weight has dimensions divisible by 8. Otherwise it throws `RuntimeError: cutlass cannot implement`
+            # One thing we can do is to pad the weight and weight scale to multiple of 8 and perform a F8F8BF16 operation.
+            # I tried benchmarking that for speed but observed that dequantize+bf16 matmul is significantly faster than padding+f8f8bf16 matmul. So we'll go that route.
+            # So essentially, f8f8bf16_rowise only happens when shapes are proper (no transposes) and divisible by 8.
+
             # quantize_fp8_per_row will squash the leading dimensions, so save the desired shape here
             output_shape = (*x.shape[:-1], -1)
             # x_quantized and x_scale are not necessarily on the same device as x, this is an issue.
@@ -378,6 +395,16 @@ class FbgemmFp8Linear(torch.autograd.Function):
             output = output.to(x.device, x.dtype)
             output = output.reshape(output_shape)
             del x_quantized, x_scale
+        elif (weight.shape[0] != weight_scale.shape[0] and weight.shape[1] == weight_scale.shape[0]) or (weight.shape[0] // 8 != 0 or weight.shape[1] // 8 != 0):
+            # Either the weight/scale is transposed or its shape is not divisible by 8. Both cases, dequantizing is the preferred way.
+            # The transpose case is generally noticed in backward pass when we do dY@W instead of @W.T as we do for forward.
+            # The shape case, I noticed to happen in MLP of Qwen 2.5 VL 7B where the gate proj is of shape (3420, 1280) and 3420/8=427.5
+
+            W_deq = weight_dequant(weight, weight_scale).T
+            output = torch_matmul(x, W_deq)
+            del W_deq
+        else:
+            raise ValueError(f"Shapes are incompatible {weight.shape=}, {weight_scale.shape=}, {x.shape=}")
 
         ctx.weight = weight
         ctx.weight_scale = weight_scale
@@ -386,13 +413,13 @@ class FbgemmFp8Linear(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         W_deq = weight_dequant(ctx.weight, ctx.weight_scale)
-        grad_X = torch_matmul(grad_output, W_deq.t())
+        grad_X = torch_matmul(grad_output, W_deq)
         del W_deq
         return grad_X, None, None, None, None
 
 @torch_compile
-def fbgemm_fp8_linear(X, weight, weight_scale, bias=None, ):
-    return FbgemmFp8Linear.apply(X, weight, weight_scale, bias)
+def fbgemm_fp8_linear(X, weight, weight_scale, bias=None):
+    return FbgemmFp8Linear_matmul.apply(X, weight, weight_scale, bias)
 
 
 class FP8_torch_linear(torch.autograd.Function):
@@ -410,8 +437,8 @@ class FP8_torch_linear(torch.autograd.Function):
 
         if triton.cdiv(m, bs_n) != p or triton.cdiv(n, bs_k) != q:
             if triton.cdiv(m, bs_n) == q and triton.cdiv(n, bs_k) == p:
-                # weights are tranposed during backward pass for training :)
-                # We tranpose weight scale to counter that. Note that transposing weight would cause issues with matmul with input X
+                # weights are transposed during backward pass for training :)
+                # We transpose weight scale to counter that. Note that transposing weight would cause issues with matmul with input X
                 weight_scale = weight_scale.T
             else:
                 raise ValueError(f"Weight shape {weight.shape} and scales shape {weight_scale.shape} is not compatible with block size {block_size}")
@@ -437,7 +464,7 @@ class FP8_torch_linear(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         W_deq = weight_dequant(ctx.weight, ctx.weight_scale)
-        grad_X = torch_matmul(grad_output, W_deq.t())
+        grad_X = torch_matmul(grad_output, W_deq)
         del W_deq
         return grad_X, None, None, None, None
 
@@ -459,3 +486,16 @@ def fp8_linear(X, weight, weight_scale, bias=None):
         # Row quantized FP8
         out = fbgemm_fp8_linear(X, weight, weight_scale, bias)
     return out
+
+
+def module_forward_patch(forward_function, scale_attr='weight_scale'):
+    def patched_forward(self, X):
+        return forward_function(X, self.weight, getattr(self, scale_attr))
+    return patched_forward
+
+
+# Patch the forward functions of the layers (for compiled models)
+if FbgemmFp8Linear is not None:
+    FbgemmFp8Linear.forward = module_forward_patch(fbgemm_fp8_linear, 'weight_scale')
+if FP8Linear is not None:
+    FP8Linear.forward = module_forward_patch(fp8_block_quant_forward, 'weight_scale_inv')
