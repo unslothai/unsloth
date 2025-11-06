@@ -19,6 +19,7 @@ import numpy as np
 
 # Fix some issues before importing other packages
 from .import_fixes import fix_message_factory_issue
+
 fix_message_factory_issue()
 del fix_message_factory_issue
 
@@ -107,22 +108,27 @@ from unsloth_zoo.device_type import (
 
 # Fix other issues
 from .import_fixes import fix_xformers_performance_issue
+
 fix_xformers_performance_issue()
 del fix_xformers_performance_issue
 
 from .import_fixes import fix_vllm_aimv2_issue
+
 fix_vllm_aimv2_issue()
 del fix_vllm_aimv2_issue
 
 from .import_fixes import ignore_logger_messages
+
 ignore_logger_messages()
 del ignore_logger_messages
 
 from .import_fixes import patch_ipykernel_hf_xet
+
 patch_ipykernel_hf_xet()
 del patch_ipykernel_hf_xet
 
 from .import_fixes import patch_trackio
+
 patch_trackio()
 del patch_trackio
 

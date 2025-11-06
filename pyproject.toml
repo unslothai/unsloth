@@ -868,6 +868,7 @@ repository = "https://github.com/unslothai/unsloth"
 
 [tool.ruff]
 target-version = "py311"
+force-exclude = true
 extend-exclude = [
     "*chat_templates.py",
     "*ollama_template_mappers.py",
