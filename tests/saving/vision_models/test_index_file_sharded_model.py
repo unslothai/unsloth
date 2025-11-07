@@ -21,7 +21,7 @@ from tests.utils.cleanup_utils import safe_remove_directory
 ## Dataset Preparation"""
 
 print("\n📊 Loading and preparing dataset...")
-dataset = load_dataset("lbourdois/OCR-liboaccn-OPUS-MIT-5M-clean", "en", split="train")
+dataset = load_dataset("lbourdois/OCR-liboaccn-OPUS-MIT-5M-clean", "en", split = "train")
 # To select the first 2000 examples
 train_dataset = dataset.select(range(2000))
 
@@ -31,6 +31,8 @@ eval_dataset = dataset.select(range(2000, 2200))
 print(f"✅ Dataset loaded successfully!")
 print(f"   📈 Training samples: {len(train_dataset)}")
 print(f"   📊 Evaluation samples: {len(eval_dataset)}")
+
+
 # Convert dataset to OAI messages
 def format_data(sample):
     return {
@@ -59,6 +61,7 @@ def format_data(sample):
         ],
     }
 
+
 print("\n🔄 Formatting dataset for vision training...")
 system_message = "You are an expert french ocr system."
 # Convert dataset to OAI messages
@@ -78,11 +81,11 @@ print("🤖 Loading base vision model...")
 try:
     model, tokenizer = FastVisionModel.from_pretrained(
         # model_name = "unsloth/Qwen2-VL-7B-Instruct",
-        model_name="unsloth/Qwen2-VL-7B-Instruct",
-        max_seq_length=2048,  # Choose any for long context!
-        load_in_4bit=True,  # 4 bit quantization to reduce memory
-        load_in_8bit=False,  # [NEW!] A bit more accurate, uses 2x memory
-        full_finetuning=False,  # [NEW!] We have full finetuning now!
+        model_name = "unsloth/Qwen2-VL-7B-Instruct",
+        max_seq_length = 2048,  # Choose any for long context!
+        load_in_4bit = True,  # 4 bit quantization to reduce memory
+        load_in_8bit = False,  # [NEW!] A bit more accurate, uses 2x memory
+        full_finetuning = False,  # [NEW!] We have full finetuning now!
     )
 except Exception as e:
     print(f"❌ Failed to load base model: {e}")
@@ -93,18 +96,18 @@ print("\n🔧 Setting up LoRA configuration...")
 try:
     model = FastVisionModel.get_peft_model(
         model,
-        finetune_vision_layers=True,  # Turn off for just text!
-        finetune_language_layers=True,  # Should leave on!
-        finetune_attention_modules=True,  # Attention good for GRPO
-        finetune_mlp_modules=True,  # SHould leave on always!
-        r=16,  # Choose any number > 0 ! Suggested 8, 16, 32, 64, 128
-        lora_alpha=32,
-        lora_dropout=0,  # Supports any, but = 0 is optimized
-        bias="none",  # Supports any, but = "none" is optimized
-        use_gradient_checkpointing="unsloth",  # True or "unsloth" for very long context
-        random_state=3407,
-        use_rslora=False,  # We support rank stabilized LoRA
-        loftq_config=None,  # And LoftQ
+        finetune_vision_layers = True,  # Turn off for just text!
+        finetune_language_layers = True,  # Should leave on!
+        finetune_attention_modules = True,  # Attention good for GRPO
+        finetune_mlp_modules = True,  # SHould leave on always!
+        r = 16,  # Choose any number > 0 ! Suggested 8, 16, 32, 64, 128
+        lora_alpha = 32,
+        lora_dropout = 0,  # Supports any, but = 0 is optimized
+        bias = "none",  # Supports any, but = "none" is optimized
+        use_gradient_checkpointing = "unsloth",  # True or "unsloth" for very long context
+        random_state = 3407,
+        use_rslora = False,  # We support rank stabilized LoRA
+        loftq_config = None,  # And LoftQ
     )
     print("✅ LoRA configuration applied successfully!")
     print(f"   🎯 LoRA rank (r): 16")
@@ -125,40 +128,40 @@ FastVisionModel.for_training(model)  # Enable for training!
 
 try:
     trainer = SFTTrainer(
-        model=model,
-        tokenizer=tokenizer,
-        data_collator=UnslothVisionDataCollator(model, tokenizer),
-        train_dataset=train_dataset,
-        args=SFTConfig(
+        model = model,
+        tokenizer = tokenizer,
+        data_collator = UnslothVisionDataCollator(model, tokenizer),
+        train_dataset = train_dataset,
+        args = SFTConfig(
             # per_device_train_batch_size = 4,
             # gradient_accumulation_steps = 8,
-            per_device_train_batch_size=2,
-            gradient_accumulation_steps=4,
-            gradient_checkpointing=True,
-            gradient_checkpointing_kwargs={
+            per_device_train_batch_size = 2,
+            gradient_accumulation_steps = 4,
+            gradient_checkpointing = True,
+            gradient_checkpointing_kwargs = {
                 "use_reentrant": False
             },  # use reentrant checkpointing
-            max_grad_norm=0.3,  # max gradient norm based on QLoRA paper
-            warmup_ratio=0.03,
+            max_grad_norm = 0.3,  # max gradient norm based on QLoRA paper
+            warmup_ratio = 0.03,
             # num_train_epochs = 2, # Set this instead of max_steps for full training runs
-            max_steps=10,
-            learning_rate=2e-4,
-            fp16=not is_bf16_supported(),
-            bf16=is_bf16_supported(),
-            logging_steps=5,
-            save_strategy="epoch",
-            optim="adamw_torch_fused",
-            weight_decay=0.01,
-            lr_scheduler_type="linear",
-            seed=3407,
-            output_dir="checkpoints",
-            report_to="none",  # For Weights and Biases
+            max_steps = 10,
+            learning_rate = 2e-4,
+            fp16 = not is_bf16_supported(),
+            bf16 = is_bf16_supported(),
+            logging_steps = 5,
+            save_strategy = "epoch",
+            optim = "adamw_torch_fused",
+            weight_decay = 0.01,
+            lr_scheduler_type = "linear",
+            seed = 3407,
+            output_dir = "checkpoints",
+            report_to = "none",  # For Weights and Biases
             # You MUST put the below items for vision finetuning:
-            remove_unused_columns=False,
-            dataset_text_field="",
-            dataset_kwargs={"skip_prepare_dataset": True},
-            dataset_num_proc=4,
-            max_seq_length=2048,
+            remove_unused_columns = False,
+            dataset_text_field = "",
+            dataset_kwargs = {"skip_prepare_dataset": True},
+            dataset_num_proc = 4,
+            max_seq_length = 2048,
         ),
     )
     print("✅ Trainer setup completed!")
@@ -218,7 +221,7 @@ try:
     print("=== UPLOADING MODEL TO HUB ===".center(80))
     print("=" * 80 + "\n")
     print(f"🚀 Uploading to repository: {repo_name}")
-    model.push_to_hub_merged(repo_name, tokenizer=tokenizer, token=hf_token)
+    model.push_to_hub_merged(repo_name, tokenizer = tokenizer, token = hf_token)
     success["upload"] = True
     print("✅ Model uploaded successfully!")
 except Exception as e:
@@ -230,8 +233,8 @@ try:
     print("\n" + "=" * 80)
     print("=== VERIFYING REPO CONTENTS ===".center(80))
     print("=" * 80 + "\n")
-    fs = HfFileSystem(token=hf_token)
-    file_list = fs.ls(repo_name, detail=True)
+    fs = HfFileSystem(token = hf_token)
+    file_list = fs.ls(repo_name, detail = True)
     safetensors_found = any(
         file["name"].endswith("model.safetensors.index.json") for file in file_list
     )

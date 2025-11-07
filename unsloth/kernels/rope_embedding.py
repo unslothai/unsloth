@@ -16,39 +16,55 @@ import triton
 import triton.language as tl
 import torch
 from .utils import calculate_settings, torch_gpu_device, torch_device_stream
-ROPE_GROUP_SIZE : int = 4
+
+ROPE_GROUP_SIZE: int = 4
+
 
 def _rope_embedding(
-    Q,     Q_row_stride: tl.constexpr,
-    cos, cos_row_stride: tl.constexpr,
-    sin, sin_row_stride: tl.constexpr,
+    Q,
+    Q_row_stride: tl.constexpr,
+    cos,
+    cos_row_stride: tl.constexpr,
+    sin,
+    sin_row_stride: tl.constexpr,
     seqlen,
-    head_dim      : tl.constexpr,
-    n_heads       : tl.constexpr,
-    BACKWARD_PASS : tl.constexpr,
-    BLOCK_SIZE    : tl.constexpr,
+    head_dim: tl.constexpr,
+    n_heads: tl.constexpr,
+    BACKWARD_PASS: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
 ):
     """
-        Calculates the RoPE Embedding quickly
-        RoPE is Q * cos + rotate_half(Q) * sin
-        See our blog post for more info
+    Calculates the RoPE Embedding quickly
+    RoPE is Q * cos + rotate_half(Q) * sin
+    See our blog post for more info
     """
     ROPE_GROUP_SIZE = 4
-    row_position  = tl.program_id(0)
+    row_position = tl.program_id(0)
     group_head_position = tl.program_id(1)
-    col_offsets  = tl.arange(0, BLOCK_SIZE)
+    col_offsets = tl.arange(0, BLOCK_SIZE)
     half_head_dim = head_dim // 2
     mask = col_offsets < half_head_dim
 
-    sin1 = tl.load(sin + (row_position % seqlen)*sin_row_stride + \
-                   half_head_dim*0 + col_offsets, mask = mask, other = 0)
-    cos1 = tl.load(cos + (row_position % seqlen)*cos_row_stride + \
-                   half_head_dim*0 + col_offsets, mask = mask, other = 0)
+    sin1 = tl.load(
+        sin
+        + (row_position % seqlen) * sin_row_stride
+        + half_head_dim * 0
+        + col_offsets,
+        mask = mask,
+        other = 0,
+    )
+    cos1 = tl.load(
+        cos
+        + (row_position % seqlen) * cos_row_stride
+        + half_head_dim * 0
+        + col_offsets,
+        mask = mask,
+        other = 0,
+    )
 
     if BACKWARD_PASS:
         # See our blog post for more info.
         sin1 = -sin1
-    pass
 
     # [TODO] Autotune ROPE_GROUP_SIZE to be 1, 2, 4, 8
     head_start = group_head_position * ROPE_GROUP_SIZE
@@ -57,16 +73,18 @@ def _rope_embedding(
     # 10% Faster kernel from [HuyNguyen-hust](https://github.com/unslothai/unsloth/pull/238)
     for k in range(head_start, head_end):
         offs_q1 = row_position * Q_row_stride + k * head_dim + col_offsets
-        offs_q2 = row_position * Q_row_stride + k * head_dim + col_offsets + half_head_dim
+        offs_q2 = (
+            row_position * Q_row_stride + k * head_dim + col_offsets + half_head_dim
+        )
 
         # For Gemma - sometimes RoPE must be done in float32 and not bfloat16
         Q1 = tl.load(Q + offs_q1, mask = mask, other = 0).to(sin1.dtype)
         Q2 = tl.load(Q + offs_q2, mask = mask, other = 0).to(sin1.dtype)
 
-        tl.store(Q + offs_q1, Q1*cos1 - Q2*sin1, mask = mask)
-        tl.store(Q + offs_q2, Q2*cos1 + Q1*sin1, mask = mask)
-    pass
-pass
+        tl.store(Q + offs_q1, Q1 * cos1 - Q2 * sin1, mask = mask)
+        tl.store(Q + offs_q2, Q2 * cos1 + Q1 * sin1, mask = mask)
+
+
 _rope_embedding = triton.jit(_rope_embedding)
 _rope_embedding = triton.heuristics(
     {
@@ -79,76 +97,97 @@ class Fast_RoPE_Embedding(torch.autograd.Function):
     @staticmethod
     def forward(ctx, Q, cos, sin):
         cos, sin = cos.squeeze(), sin.squeeze()
-        batch    : int
-        seq_len  : int
-        n_heads  : int
-        head_dim : int
+        batch: int
+        seq_len: int
+        n_heads: int
+        head_dim: int
         batch, seq_len, n_heads, head_dim = Q.shape
-        Q = Q.view(batch*seq_len, n_heads*head_dim)
-        n_rows : int
-        n_cols : int
+        Q = Q.view(batch * seq_len, n_heads * head_dim)
+        n_rows: int
+        n_cols: int
         n_rows, n_cols = Q.shape
-        assert(seq_len <= cos.shape[0])
+        assert seq_len <= cos.shape[0]
 
         # [TODO] Changing blocksize to head_dim//2 seems to have
         # some concurrency / un-deterministic issues.
-        BLOCK_SIZE, num_warps = calculate_settings(head_dim//2) # (head_dim//2)
+        BLOCK_SIZE, num_warps = calculate_settings(head_dim // 2)  # (head_dim//2)
 
         # group_size = 4 # 4 or 8, too large group_size can hurt performance.
-        div : int
-        mod : int
+        div: int
+        mod: int
         div, mod = divmod(n_heads, ROPE_GROUP_SIZE)
-        n_groups : int = div + (mod != 0)
+        n_groups: int = div + (mod != 0)
 
         with torch_gpu_device(Q.device):
-            _rope_embedding[(n_rows, n_groups, )](
-                  Q,   Q.stride(0),
-                cos, cos.stride(0),
-                sin, sin.stride(0),
+            _rope_embedding[
+                (
+                    n_rows,
+                    n_groups,
+                )
+            ](
+                Q,
+                Q.stride(0),
+                cos,
+                cos.stride(0),
+                sin,
+                sin.stride(0),
                 seq_len,
-                head_dim, n_heads,
+                head_dim,
+                n_heads,
                 BACKWARD_PASS = False,
                 BLOCK_SIZE = BLOCK_SIZE,
-                num_warps  = num_warps,
+                num_warps = num_warps,
             )
         ctx.BLOCK_SIZE = BLOCK_SIZE
-        ctx.num_warps  = num_warps
+        ctx.num_warps = num_warps
         ctx.n_groups = n_groups
         ctx.cos = cos
         ctx.sin = sin
         return Q.view(batch, seq_len, n_heads, head_dim)
-    pass
 
     @staticmethod
     def backward(ctx, dY):
-        batch    : int
-        seq_len  : int
-        n_heads  : int
-        head_dim : int
+        batch: int
+        seq_len: int
+        n_heads: int
+        head_dim: int
         batch, seq_len, n_heads, head_dim = dY.shape
-        dY = dY.reshape(batch*seq_len, n_heads*head_dim)
+        dY = dY.reshape(batch * seq_len, n_heads * head_dim)
         # Must be reshape not view
-        n_rows : int
-        n_cols : int
+        n_rows: int
+        n_cols: int
         n_rows, n_cols = dY.shape
 
         cos = ctx.cos
         sin = ctx.sin
 
         with torch_gpu_device(dY.device):
-            _rope_embedding[(n_rows, ctx.n_groups, )](
-                dY,  dY .stride(0),
-                cos, cos.stride(0),
-                sin, sin.stride(0),
-                seq_len, head_dim, n_heads,
+            _rope_embedding[
+                (
+                    n_rows,
+                    ctx.n_groups,
+                )
+            ](
+                dY,
+                dY.stride(0),
+                cos,
+                cos.stride(0),
+                sin,
+                sin.stride(0),
+                seq_len,
+                head_dim,
+                n_heads,
                 BACKWARD_PASS = True,
                 BLOCK_SIZE = ctx.BLOCK_SIZE,
-                num_warps  = ctx.num_warps,
+                num_warps = ctx.num_warps,
             )
         dY = dY.view(batch, seq_len, n_heads, head_dim)
-        return dY, None, None,
-    pass
-pass
+        return (
+            dY,
+            None,
+            None,
+        )
+
 
 # [TODO] Unsure why RoPE Embedding is not torch.compiling properly
 @torch.compiler.disable
@@ -158,7 +197,6 @@ def fast_rope_embedding(Q, K, cos, sin):
     # synchronize before cat to avoid race condition
     torch_device_stream(Q.device).synchronize()
     return Q, K
-pass
 
 
 class Slow_RoPE_Embedding(torch.autograd.Function):
@@ -172,7 +210,7 @@ class Slow_RoPE_Embedding(torch.autograd.Function):
             sin = sin[position_ids].unsqueeze(1)  # [bs, 1, seq_len, dim]
 
         # Q * cos + rotate_half(Q) * sin
-        half = Q.shape[-1]//2
+        half = Q.shape[-1] // 2
         RH_Q = torch.cat((-Q[..., half:], Q[..., :half]), dim = -1)
         Q *= cos
         Q.addcmul_(RH_Q, sin)
@@ -180,21 +218,18 @@ class Slow_RoPE_Embedding(torch.autograd.Function):
         # Q += RH_Q
         ctx.save_for_backward(cos, sin)
         return Q
-    pass
 
     @staticmethod
     def backward(ctx, dY):
         cos, sin = ctx.saved_tensors
         # Q * cos + rotate_half.T(Q) * sin
-        half = dY.shape[-1]//2
+        half = dY.shape[-1] // 2
         RH_dY = torch.cat((dY[..., half:], -dY[..., :half]), dim = -1)
         dY *= cos
         dY.addcmul_(RH_dY, sin)
         # RH_dY *= sin
         # dY += RH_dY
         return dY, None, None, None
-    pass
-pass
 
 
 def inplace_rope_embedding(Q, K, cos, sin, position_ids):
@@ -202,4 +237,3 @@ def inplace_rope_embedding(Q, K, cos, sin, position_ids):
     K = Slow_RoPE_Embedding.apply(K, cos, sin, position_ids)
     torch_device_stream(Q.device).synchronize()
     return Q, K
-pass

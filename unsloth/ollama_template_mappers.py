@@ -22,8 +22,7 @@ OLLAMA_TEMPLATES = {}
 
 # =========================================== Unsloth
 
-unsloth_ollama = \
-'''
+unsloth_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{ if .System }}{{ .System }}
 {{ end }}{{ if .Prompt }}>>> User: {{ .Prompt }}
@@ -36,12 +35,10 @@ SYSTEM """You are a helpful assistant to the user"""
 '''
 
 OLLAMA_TEMPLATES["unsloth"] = unsloth_ollama
-pass
 
 # =========================================== Zephyr
 
-zephyr_ollama = \
-'''
+zephyr_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{ if .System }}<|system|>
 {{ .System }}{__EOS_TOKEN__}
@@ -56,11 +53,9 @@ PARAMETER min_p 0.1
 '''
 
 OLLAMA_TEMPLATES["zephyr"] = zephyr_ollama
-pass
 
 # =========================================== ChatML
-chatml_ollama = \
-'''
+chatml_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{ if .System }}<|im_start|>system
 {{ .System }}<|im_end|>
@@ -76,14 +71,12 @@ PARAMETER min_p 0.1
 '''
 
 OLLAMA_TEMPLATES["chatml"] = chatml_ollama
-pass
 
 # =========================================== Mistral-1
 # Ollama from https://www.ollama.com/library/mistral
 # Mistral v0.1 https://ollama.com/library/mistral:v0.1/blobs/22e1b2e8dc2f
 # Mistral v0.2 https://ollama.com/library/mistral:v0.2/blobs/e6836092461f
-mistral_ollama = \
-'''
+mistral_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """[INST] {{ if .System }}{{ .System }} {{ end }}{{ .Prompt }} [/INST]"""
 PARAMETER stop "[INST]"
@@ -92,8 +85,7 @@ PARAMETER stop "[/INST]"
 
 # mistral:v0.3 https://ollama.com/library/mistral:v0.3/blobs/1ff5b64b61b9
 # mistral-large https://ollama.com/library/mistral-large:latest/blobs/96adabcf2c08
-mistral_v03_ollama = \
-'''
+mistral_v03_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{- if .Messages }}
 {{- range $index, $_ := .Messages }}
@@ -123,8 +115,7 @@ PARAMETER stop "</s>"
 '''
 
 # Mistral-small https://ollama.com/library/mistral-small:latest/blobs/6db27cd4e277
-mistral_small_ollama = \
-'''
+mistral_small_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{- range $index, $_ := .Messages }}
 {{- if eq .Role "system" }}[SYSTEM_PROMPT]{{ .Content }}[/SYSTEM_PROMPT]
@@ -147,8 +138,7 @@ SYSTEM """You are Mistral Small 3, a Large Language Model (LLM) created by Mistr
 '''
 
 # mistral-small-3.1 https://ollama.com/library/mistral-small3.1:latest/blobs/6db27cd4e277
-mistral_small_31_ollama = \
-'''
+mistral_small_31_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{- range $index, $_ := .Messages }}
 {{- if eq .Role "system" }}[SYSTEM_PROMPT]{{ .Content }}[/SYSTEM_PROMPT]
@@ -188,8 +178,7 @@ You cannot read nor transcribe audio files or videos."""
 '''
 
 # mistral-small-3.2 https://ollama.com/library/mistral-small3.2:latest/blobs/706c4d1164f7
-mistral_small_32_ollama = \
-'''
+mistral_small_32_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{- range $index, $_ := .Messages }}
 {{- if eq .Role "system" }}[SYSTEM_PROMPT]{{ .Content }}[/SYSTEM_PROMPT]
@@ -240,8 +229,7 @@ Always prioritize using tools to provide the most accurate and helpful response.
 
 
 # https://ollama.com/library/mixtral:latest/blobs/53d74de0d84c
-mixtral_ollama = \
-'''
+mixtral_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """[INST] {{ if .System }}{{ .System }} {{ end }}{{ .Prompt }} [/INST] {{ .Response }}"""
 PARAMETER stop "[INST]"
@@ -249,8 +237,7 @@ PARAMETER stop "[/INST]"
 '''
 
 # https://registry.ollama.ai/library/mistral-nemo:latest/blobs/438402ddac75
-mistral_nemo_ollama = \
-'''
+mistral_nemo_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """
 {{- range $i, $_ := .Messages }}
@@ -273,8 +260,7 @@ PARAMETER stop "[/INST]"
 '''
 
 # https://ollama.com/library/codestral:latest/blobs/51707752a87c
-codestral_ollama = \
-'''
+codestral_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """
 {{- if .Suffix }}[SUFFIX]{{ .Suffix }}[PREFIX] {{ .Prompt }}
@@ -301,8 +287,7 @@ PARAMETER stop "[SUFFIX]"
 '''
 
 # https://ollama.com/library/devstral:latest/blobs/ea9ec42474e0
-devstral_ollama = \
-'''
+devstral_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{- $lastUserIndex := -1 }}
 {{- range $index, $_ := .Messages }}
@@ -400,8 +385,7 @@ Your primary role is to assist users by executing commands, modifying code, and 
 '''
 
 # https://ollama.com/library/magistral:latest/blobs/35f7a1efc383
-magistral_ollama = \
-'''
+magistral_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """
 {{- range $i, $_ := .Messages }}
@@ -443,23 +427,21 @@ Here, provide a concise summary that reflects your reasoning and presents a clea
 Problem:"""
 '''
 
-OLLAMA_TEMPLATES["mistral"]          = mistral_ollama
-OLLAMA_TEMPLATES["mistral-v03"]      = mistral_v03_ollama
-OLLAMA_TEMPLATES["mistral-small"]    = mistral_small_ollama
+OLLAMA_TEMPLATES["mistral"] = mistral_ollama
+OLLAMA_TEMPLATES["mistral-v03"] = mistral_v03_ollama
+OLLAMA_TEMPLATES["mistral-small"] = mistral_small_ollama
 OLLAMA_TEMPLATES["mistral-small-31"] = mistral_small_31_ollama
 OLLAMA_TEMPLATES["mistral-small-32"] = mistral_small_32_ollama
-OLLAMA_TEMPLATES["mixtral"]          = mixtral_ollama
-OLLAMA_TEMPLATES["mistral-nemo"]     = mistral_nemo_ollama
-OLLAMA_TEMPLATES["devstral"]         = devstral_ollama
-OLLAMA_TEMPLATES["magistral"]        = magistral_ollama
-OLLAMA_TEMPLATES["codestral"]        = codestral_ollama
+OLLAMA_TEMPLATES["mixtral"] = mixtral_ollama
+OLLAMA_TEMPLATES["mistral-nemo"] = mistral_nemo_ollama
+OLLAMA_TEMPLATES["devstral"] = devstral_ollama
+OLLAMA_TEMPLATES["magistral"] = magistral_ollama
+OLLAMA_TEMPLATES["codestral"] = codestral_ollama
 
-pass
 
 # =========================================== Llama-2
 # Ollama from https://www.ollama.com/library/llama3
-llama_ollama = \
-'''
+llama_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """[INST] <<SYS>>{{ .System }}<</SYS>>
 
@@ -469,13 +451,11 @@ PARAMETER temperature 1.5
 PARAMETER min_p 0.1
 '''
 
-OLLAMA_TEMPLATES["llama"] =llama_ollama
-pass
+OLLAMA_TEMPLATES["llama"] = llama_ollama
 
 # ===========================================  Vicuna
 # Ollama from https://www.ollama.com/library/vicuna
-vicuna_ollama = \
-'''
+vicuna_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{ if .System }}{{ .System }} {{ end }}{{ if .Prompt }}USER: {{ .Prompt }} {{ end }}ASSISTANT: {{ .Response }} {__EOS_TOKEN__}"""
 PARAMETER stop "{__EOS_TOKEN__}"
@@ -484,11 +464,9 @@ PARAMETER min_p 0.1
 '''
 
 OLLAMA_TEMPLATES["vicuna"] = vicuna_ollama
-pass
 
 # =========================================== Vicuna Old
-vicuna_old_ollama = \
-'''
+vicuna_old_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{ if .System }}{{ .System }}
 {{ end }}{{ if .Prompt }}### Human: {{ .Prompt }}
@@ -502,11 +480,9 @@ SYSTEM """A chat between a curious human and an artificial intelligence assistan
 
 OLLAMA_TEMPLATES["vicuna_old"] = vicuna_old_ollama
 OLLAMA_TEMPLATES["vicuna old"] = OLLAMA_TEMPLATES["vicuna_old"]
-pass
 
 # =========================================== Alpaca multi turn
-alpaca_ollama = \
-'''
+alpaca_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{ if .System }}{{ .System }}
 
@@ -524,12 +500,10 @@ SYSTEM """Below are some instructions that describe some tasks. Write responses 
 '''
 
 OLLAMA_TEMPLATES["alpaca"] = alpaca_ollama
-pass
 
 # =========================================== Gemma
 # Ollama from https://www.ollama.com/library/gemma
-gemma_ollama = \
-'''
+gemma_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """<start_of_turn>user
 {{ if .System }}{{ .System }} {{ end }}{{ .Prompt }}<end_of_turn>
@@ -545,11 +519,9 @@ PARAMETER min_p 0.1
 '''
 
 OLLAMA_TEMPLATES["gemma"] = gemma_ollama
-pass
 
 # =========================================== Gemma with ChatML instead
-gemma_chatml_ollama = \
-'''
+gemma_chatml_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{ if .System }}<|im_start|>system
 {{ .System }}<|im_end|>
@@ -567,7 +539,6 @@ PARAMETER min_p 0.1
 '''
 
 OLLAMA_TEMPLATES["gemma_chatml"] = gemma_chatml_ollama
-pass
 
 # =========================================== Gemma 2
 # Same as Gemma 1, but with sliding window attention!
@@ -578,12 +549,10 @@ OLLAMA_TEMPLATES["gemma2"] = gemma2_ollama
 # =========================================== Gemma 2 with ChatML instead
 gemma2_chatml_ollama = gemma_chatml_ollama + "PARAMETER num_ctx 4096\n"
 OLLAMA_TEMPLATES["gemma2_chatml"] = gemma2_chatml_ollama
-pass
 
 # =========================================== Llama-3
 # Ollama from https://www.ollama.com/library/llama3
-llama3_ollama = \
-'''
+llama3_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{ if .System }}<|start_header_id|>system<|end_header_id|>
 
@@ -602,13 +571,11 @@ PARAMETER min_p 0.1
 
 OLLAMA_TEMPLATES["llama-3"] = llama3_ollama
 OLLAMA_TEMPLATES["llama3"] = llama3_ollama
-pass
 
 
 # =========================================== Phi-3
 # Ollama from https://www.ollama.com/library/phi3
-phi3_ollama = \
-'''
+phi3_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{ if .System }}<|system|>
 {{ .System }}<|end|>
@@ -624,10 +591,9 @@ PARAMETER temperature 1.5
 PARAMETER min_p 0.1
 '''
 
-OLLAMA_TEMPLATES["phi-3"]   = phi3_ollama
-OLLAMA_TEMPLATES["phi-35"]  = OLLAMA_TEMPLATES["phi-3"]
+OLLAMA_TEMPLATES["phi-3"] = phi3_ollama
+OLLAMA_TEMPLATES["phi-35"] = OLLAMA_TEMPLATES["phi-3"]
 OLLAMA_TEMPLATES["phi-3.5"] = OLLAMA_TEMPLATES["phi-3"]
-pass
 
 # =========================================== Llama-3.1
 """
@@ -647,8 +613,7 @@ tokenizer.apply_chat_template(
 """
 
 # Ollama from https://ollama.com/library/llama3.1 (needs updating!)
-llama31_ollama = \
-'''
+llama31_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{ if .Messages }}
 {{- if or .System .Tools }}<|start_header_id|>system<|end_header_id|>
@@ -708,8 +673,7 @@ PARAMETER min_p 0.1
 '''
 
 # https://ollama.com/ajindal/llama3.1-storm:8b/blobs/1970553b62f4
-llama_31_storm_ollama = \
-'''
+llama_31_storm_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """
 {{ if .Messages }}
@@ -764,8 +728,7 @@ PARAMETER stop "<|eot_id|>"
 '''
 
 # https://ollama.com/library/nemotron:latest/blobs/4863fe3335f3
-llama_31_nemotron_ollama = \
-'''
+llama_31_nemotron_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """<|start_header_id|>system<|end_header_id|>
 
@@ -808,8 +771,7 @@ PARAMETER stop "<|eot_id|>"
 '''
 
 # https://ollama.com/library/llama3.2-vision:latest/blobs/715415638c895a1f8e8c6
-llama_32_vision_ollama = \
-'''
+llama_32_vision_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{- range $index, $_ := .Messages }}<|start_header_id|>{{ .Role }}<|end_header_id|>
 
@@ -823,20 +785,18 @@ PARAMETER temperature 0.6
 PARAMETER top_p 0.9
 '''
 
-OLLAMA_TEMPLATES["llama-3.1"]         = llama31_ollama
-OLLAMA_TEMPLATES["llama-31"]          = llama31_ollama
+OLLAMA_TEMPLATES["llama-3.1"] = llama31_ollama
+OLLAMA_TEMPLATES["llama-31"] = llama31_ollama
 OLLAMA_TEMPLATES["llama-31-nemotron"] = llama_31_nemotron_ollama
-OLLAMA_TEMPLATES["llama-31-storm"]    = llama_31_storm_ollama
-OLLAMA_TEMPLATES["llama-32-vision"]   = llama_32_vision_ollama
+OLLAMA_TEMPLATES["llama-31-storm"] = llama_31_storm_ollama
+OLLAMA_TEMPLATES["llama-32-vision"] = llama_32_vision_ollama
 
 for version in ("llama-3.2", "llama-3.3", "llama-32", "llama-33"):
     OLLAMA_TEMPLATES[version] = OLLAMA_TEMPLATES["llama-3.1"]
-pass
 
 # =========================================== tinyllama
 # tinyllama-chat https://ollama.com/library/tinyllama:latest/blobs/af0ddbdaaa26
-tinyllama_ollama = \
-'''
+tinyllama_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """<|system|>
 {{ .System }}</s>
@@ -852,13 +812,11 @@ SYSTEM """You are a helpful AI assistant."""
 
 OLLAMA_TEMPLATES["tinyllama"] = tinyllama_ollama
 
-pass
 
 # =========================================== Qwen 2/2.5
 # Qwen2 https://ollama.com/library/qwen2:latest/blobs/77c91b422cc9
 # Qwen2.5 from https://ollama.com/library/qwen2.5/blobs/eb4402837c78
-qwen25_ollama = \
-'''
+qwen25_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{- if .Messages }}
 {{- if or .System .Tools }}<|im_start|>system
@@ -918,8 +876,7 @@ SYSTEM """You are Qwen, created by Alibaba Cloud. You are a helpful assistant.""
 '''
 
 # https://ollama.com/library/qwen2.5-coder:latest/blobs/1e65450c3067
-qwen_25_coder_ollama = \
-'''
+qwen_25_coder_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{- if .Suffix }}<|fim_prefix|>{{ .Prompt }}<|fim_suffix|>{{ .Suffix }}<|fim_middle|>
 {{- else if .Messages }}
@@ -976,8 +933,7 @@ SYSTEM """You are Qwen, created by Alibaba Cloud. You are a helpful assistant.""
 '''
 
 # https://ollama.com/library/qwen2.5vl:latest/blobs/a242d8dfdc8f
-qwen_25_vl_ollama = \
-'''
+qwen_25_vl_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{- if .System -}}
 <|im_start|>system
@@ -1003,8 +959,7 @@ SYSTEM """You are a helpful assistant."""
 '''
 
 # https://ollama.com/library/openthinker:latest/blobs/32695b892af8
-openthinker_ollama = \
-'''
+openthinker_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{- range $i, $_ := .Messages }}
 {{- $last := eq (len (slice $.Messages $i)) 1 -}}
@@ -1018,22 +973,21 @@ TEMPLATE """{{- range $i, $_ := .Messages }}
 '''
 
 
-OLLAMA_TEMPLATES["qwen-25"]       = qwen25_ollama
+OLLAMA_TEMPLATES["qwen-25"] = qwen25_ollama
 OLLAMA_TEMPLATES["qwen-25-coder"] = qwen_25_coder_ollama
-OLLAMA_TEMPLATES["qwen-25-vl"]    = qwen_25_vl_ollama
-OLLAMA_TEMPLATES["openthinker"]   = openthinker_ollama
-OLLAMA_TEMPLATES["qwen-2"]        = qwen25_ollama
-pass
+OLLAMA_TEMPLATES["qwen-25-vl"] = qwen_25_vl_ollama
+OLLAMA_TEMPLATES["openthinker"] = openthinker_ollama
+OLLAMA_TEMPLATES["qwen-2"] = qwen25_ollama
 
 # =========================================== Phi-4
-_phi4_ollama_template = \
-    "{{ if .System }}<|im_start|><|system|><|im_sep|>{{ .System }}<|im_end|>{{ end }}"\
-    "{{ if .Prompt }}<|im_start|><|user|><|im_sep|>{{ .Prompt }}<|im_end|>{{ end }}"\
+_phi4_ollama_template = (
+    "{{ if .System }}<|im_start|><|system|><|im_sep|>{{ .System }}<|im_end|>{{ end }}"
+    "{{ if .Prompt }}<|im_start|><|user|><|im_sep|>{{ .Prompt }}<|im_end|>{{ end }}"
     "<|im_start|><|assistant|><|im_sep|>{{ .Response }}<|im_end|>"
+)
 
 # Ollama from https://www.ollama.com/library/phi4 is different
-phi_4_ollama = \
-f'''
+phi_4_ollama = f'''
 FROM {{__FILE_LOCATION__}}
 TEMPLATE """{_phi4_ollama_template}"""
 PARAMETER stop "<|im_end|>"
@@ -1044,8 +998,7 @@ PARAMETER min_p 0.1
 '''
 
 # https://ollama.com/library/phi4-reasoning:latest/blobs/32695b892af8
-phi_4_reasoning_ollama = \
-'''
+phi_4_reasoning_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """
 {{- range $i, $_ := .Messages }}
@@ -1063,8 +1016,7 @@ PARAMETER stop "<|im_sep|>"
 '''
 
 # https://ollama.com/library/phi4-mini:latest/blobs/813f53fdc6e5
-phi_4_mini_ollama = \
-'''
+phi_4_mini_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{- if or .System .Tools }}<|system|>{{ if .System }}{{ .System }}{{ end }}
 {{- if .Tools }}{{ if not .System }}You are a helpful assistant with some tools.{{ end }}<|tool|>{{ .Tools }}<|/tool|><|end|>
@@ -1083,8 +1035,7 @@ TEMPLATE """{{- if or .System .Tools }}<|system|>{{ if .System }}{{ .System }}{{
 '''
 
 # https://ollama.com/library/phi4-mini-reasoning:latest/blobs/c895a1f8e8c6
-phi_4_mini_reasoning_ollama = \
-'''
+phi_4_mini_reasoning_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """
 {{- if .System }}<|system|>{{ .System }}
@@ -1099,17 +1050,15 @@ TEMPLATE """
 {{- end }}"""
 SYSTEM """Your name is Phi, an AI math expert developed by Microsoft."""
 '''
-OLLAMA_TEMPLATES["phi-4"]                = phi_4_ollama
-OLLAMA_TEMPLATES["phi-4-reasoning"]      = phi_4_reasoning_ollama
-OLLAMA_TEMPLATES["phi-4-mini"]           = phi_4_mini_ollama
+OLLAMA_TEMPLATES["phi-4"] = phi_4_ollama
+OLLAMA_TEMPLATES["phi-4-reasoning"] = phi_4_reasoning_ollama
+OLLAMA_TEMPLATES["phi-4-mini"] = phi_4_mini_ollama
 OLLAMA_TEMPLATES["phi-4-mini-reasoning"] = phi_4_mini_reasoning_ollama
-pass
 
 
 # =========================================== Gemma-3
 # Ollama from https://ollama.com/library/gemma3/blobs/e0a42594d802
-gemma3_ollama = \
-'''
+gemma3_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{- range $i, $_ := .Messages }}
 {{- $last := eq (len (slice $.Messages $i)) 1 }}
@@ -1132,8 +1081,7 @@ PARAMETER num_predict 32768
 '''
 
 # https://ollama.com/library/gemma3:270m/blobs/4b19ac7dd2fb
-gemma3_270m_ollama = \
-'''
+gemma3_270m_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{- $systemPromptAdded := false }}
 {{- range $i, $_ := .Messages }}
@@ -1157,16 +1105,14 @@ PARAMETER top_k 64
 PARAMETER top_p 0.95
 '''
 
-OLLAMA_TEMPLATES["gemma-3"]     = gemma3_ollama
-OLLAMA_TEMPLATES["gemma3"]      = gemma3_ollama
+OLLAMA_TEMPLATES["gemma-3"] = gemma3_ollama
+OLLAMA_TEMPLATES["gemma3"] = gemma3_ollama
 OLLAMA_TEMPLATES["gemma3-270m"] = gemma3_270m_ollama
 
-pass
 
 # =========================================== Qwen-3
 # Ollama template for Qwen-3 (see https://ollama.com/library/qwen3/blobs/eb4402837c78)
-qwen3_ollama = \
-'''
+qwen3_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{- if .Messages }}
 {{- if or .System .Tools }}<|im_start|>system
@@ -1231,12 +1177,10 @@ qwen3_template_eos_token = "<|im_end|>"
 OLLAMA_TEMPLATES["qwen-3"] = qwen3_ollama
 OLLAMA_TEMPLATES["qwen3"] = qwen3_ollama
 
-pass
 
 # =========================================== Gemma-3n
 # Ollama from https://ollama.com/library/gemma3n/blobs/e0a42594d802
-gemma3n_ollama = \
-'''
+gemma3n_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{- range $i, $_ := .Messages }}
 {{- $last := eq (len (slice $.Messages $i)) 1 }}
@@ -1253,13 +1197,11 @@ TEMPLATE """{{- range $i, $_ := .Messages }}
 
 OLLAMA_TEMPLATES["gemma-3n"] = gemma3n_ollama
 OLLAMA_TEMPLATES["gemma3n"] = gemma3n_ollama
-pass
 
 # =========================================== GPT-OSS
 
 # Ollama from https://ollama.com/library/gpt-oss:latest/blobs/fa6710a93d78
-gptoss_ollama = \
-'''
+gptoss_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """<|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
 Knowledge cutoff: 2024-06
@@ -1440,15 +1382,13 @@ PARAMETER top_p 1.0
 '''
 
 OLLAMA_TEMPLATES["gpt-oss"] = gptoss_ollama
-OLLAMA_TEMPLATES["gptoss"]  = gptoss_ollama
+OLLAMA_TEMPLATES["gptoss"] = gptoss_ollama
 
-pass
 
 # =========================================== Qwen3
 
 # Ollama from https://ollama.com/library/qwen3/blobs/53e4ea15e8f5
-qwen3_ollama = \
-'''
+qwen3_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """
 {{- $lastUserIdx := -1 -}}
@@ -1507,15 +1447,12 @@ For each function call, return a json object with function name and arguments wi
 OLLAMA_TEMPLATES["qwen3-instruct"] = qwen3_ollama
 OLLAMA_TEMPLATES["qwen3-thinking"] = qwen3_ollama
 
-pass
-
 
 # =========================================== Starling-LM
 
 
 # Ollama from https://ollama.com/library/starling-lm:7b/blobs/4b21bfc435b4
-starling_ollama = \
-'''
+starling_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{ if .System }}GPT4 Correct System: {{ .System }}<|end_of_turn|>
 {{ end }}{{ if .Prompt }}GPT4 Correct User: {{ .Prompt }}<|end_of_turn|>
@@ -1528,16 +1465,14 @@ PARAMETER temperature 1.5
 PARAMETER min_p 0.1
 '''
 
-OLLAMA_TEMPLATES["starling"] =  starling_ollama
+OLLAMA_TEMPLATES["starling"] = starling_ollama
 
-pass
 
 # =========================================== Yi-chat
 
 
 # Ollama from https://ollama.com/library/yi:34b-chat/blobs/62fbfd9ed093
-yi_chat_ollama = \
-'''
+yi_chat_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{ if .System }}<|im_start|>system
 {{ .System }}<|im_end|>
@@ -1552,8 +1487,7 @@ OLLAMA_TEMPLATES["yi-chat"] = yi_chat_ollama
 # =========================================== Granite
 
 # Ollama from https://ollama.com/library/granite3.2:latest/blobs/3e7ca51acd6e
-granite_32_ollama = \
-'''
+granite_32_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{- /*
 
@@ -1709,8 +1643,7 @@ If no user message provided, build the default system message
 '''
 
 # granite-3.2-vision https://ollama.com/library/granite3.2-vision:latest/blobs/579046ba1157
-granite_32_vision_ollama = \
-'''
+granite_32_vision_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{- /* Tools */ -}}
 {{- if .Tools -}}
@@ -1769,10 +1702,8 @@ PARAMETER temperature 0
 SYSTEM """A chat between a curious user and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the user's questions."""
 '''
 
-OLLAMA_TEMPLATES["granite-32"]        = granite_32_ollama
+OLLAMA_TEMPLATES["granite-32"] = granite_32_ollama
 OLLAMA_TEMPLATES["granite-32-vision"] = granite_32_vision_ollama
-
-pass
 
 
 OLLAMA_TEMPLATE_TO_MODEL_MAPPER = {
@@ -1827,7 +1758,7 @@ OLLAMA_TEMPLATE_TO_MODEL_MAPPER = {
         "unsloth/mistral-7b-instruct-v0.2",
         "mistralai/Mistral-7B-Instruct-v0.2",
     ),
-    "mistral-v03":(
+    "mistral-v03": (
         "unsloth/mistral-7b-instruct-v0.3-bnb-4bit",
         "unsloth/mistral-7b-instruct-v0.3",
         "mistralai/Mistral-7B-Instruct-v0.3",
@@ -1855,7 +1786,7 @@ OLLAMA_TEMPLATE_TO_MODEL_MAPPER = {
         "mistralai/Mistral-Small-3.2-24B-Instruct-2506",
         "unsloth/Mistral-Small-3.2-24B-Instruct-2506-bnb-4bit",
     ),
-    "mixtral":(
+    "mixtral": (
         "unsloth/Mixtral-8x7B-Instruct-v0.1-unsloth-bnb-4bit",
         "unsloth/Mixtral-8x7B-Instruct-v0.1",
         "mistralai/Mixtral-8x7B-Instruct-v0.1",
@@ -1951,7 +1882,7 @@ OLLAMA_TEMPLATE_TO_MODEL_MAPPER = {
         "unsloth/Llama-3.1-Storm-8B",
         "akjindal53244/Llama-3.1-Storm-8B",
     ),
-    "llama-31-nemotron":(
+    "llama-31-nemotron": (
         "unsloth/Llama-3.1-Nemotron-70B-Instruct-bnb-4bit",
         "unsloth/Llama-3.1-Nemotron-70B-Instruct",
         "nvidia/Llama-3.1-Nemotron-70B-Instruct-HF",
@@ -1965,9 +1896,8 @@ OLLAMA_TEMPLATE_TO_MODEL_MAPPER = {
         "unsloth/Llama-3.2-3B-Instruct",
         "meta-llama/Llama-3.2-3B-Instruct",
         "unsloth/Llama-3.2-3B-Instruct-bnb-4bit",
-
     ),
-    "llama-32-vision":(
+    "llama-32-vision": (
         "unsloth/Llama-3.2-11B-Vision-Instruct-unsloth-bnb-4bit",
         "unsloth/Llama-3.2-11B-Vision-Instruct",
         "meta-llama/Llama-3.2-11B-Vision-Instruct",
@@ -2040,7 +1970,7 @@ OLLAMA_TEMPLATE_TO_MODEL_MAPPER = {
         "google/gemma-3n-E2B-it",
         "unsloth/gemma-3n-E2B-it-unsloth-bnb-4bit",
     ),
-    "gemma3-270m":(
+    "gemma3-270m": (
         "unsloth/gemma-3-270m-it-unsloth-bnb-4bit",
         "unsloth/gemma-3-270m-it",
         "google/gemma-3-270m-it",
@@ -2082,9 +2012,8 @@ OLLAMA_TEMPLATE_TO_MODEL_MAPPER = {
         "unsloth/Qwen2.5-Math-72B-Instruct-bnb-4bit",
         "unsloth/Qwen2.5-Math-72B-Instruct",
         "Qwen/Qwen2.5-Math-72B-Instruct",
-
     ),
-    "qwen-25-coder":(
+    "qwen-25-coder": (
         "unsloth/Qwen2.5-Coder-0.5B-Instruct-bnb-4bit",
         "unsloth/Qwen2.5-Coder-0.5B-Instruct",
         "Qwen/Qwen2.5-Coder-0.5B-Instruct",
@@ -2104,7 +2033,7 @@ OLLAMA_TEMPLATE_TO_MODEL_MAPPER = {
         "unsloth/Qwen2.5-Coder-32B-Instruct",
         "Qwen/Qwen2.5-Coder-32B-Instruct",
     ),
-    "qwen-25-vl":(
+    "qwen-25-vl": (
         "unsloth/Qwen2.5-VL-3B-Instruct-unsloth-bnb-4bit",
         "unsloth/Qwen2.5-VL-3B-Instruct",
         "Qwen/Qwen2.5-VL-3B-Instruct",
@@ -2256,11 +2185,8 @@ MODEL_TO_OLLAMA_TEMPLATE_MAPPER = {}
 for key, values in OLLAMA_TEMPLATE_TO_MODEL_MAPPER.items():
     for value in values:
         MODEL_TO_OLLAMA_TEMPLATE_MAPPER[value] = key
-    pass
 
     # Get lowercased
     lowered_key = key.lower()
     for value in values:
         MODEL_TO_OLLAMA_TEMPLATE_MAPPER[value.lower()] = lowered_key
-    pass
-pass
