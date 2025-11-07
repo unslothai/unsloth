@@ -873,6 +873,7 @@ extend-exclude = [
     "*chat_templates.py",
     "*ollama_template_mappers.py",
     "*_auto_install.py",
+    "*mapper.py",
 ]
 
 [tool.ruff.lint]
