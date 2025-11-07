@@ -208,3 +208,20 @@ def patch_trackio():
         "https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20logo%20white%20text.png"
     )
     os.environ["TRACKIO_PLOT_ORDER"] = "train/reward"
+
+
+def patch_datasets():
+    # Datasets 4.4.0 and 4.4.1 weirdly have some weird `_thread.RLock_recursion_count` issues
+    if importlib.util.find_spec("datasets") is None:
+        return
+
+    datasets_version = Version(importlib_version("datasets"))
+    if (
+        (datasets_version <= Version("4.5.0"))
+        and (datasets_version >= Version("4.4.0"))
+    ):
+        raise NotImplementedError(
+            f"#### Unsloth: Using `datasets = {str(datasets_version)}` will cause recursion errors.\n"
+            "Please downgrade datasets to `datasets==4.3.0"
+        )
+
