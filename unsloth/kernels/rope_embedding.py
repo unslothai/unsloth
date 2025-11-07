@@ -233,7 +233,6 @@ class Fast_RoPE_Embedding(torch.autograd.Function):
         ctx.sin = sin
         return Q.reshape(batch, seq_len, n_heads, head_dim)
 
-
     @staticmethod
     def backward(ctx, dY):
         batch: int
@@ -275,9 +274,6 @@ class Fast_RoPE_Embedding(torch.autograd.Function):
             None,
             None,
         )
-
-
-
 
 
 # [TODO] Unsure why RoPE Embedding is not torch.compiling properly
@@ -440,7 +436,6 @@ class Slow_RoPE_Embedding(torch.autograd.Function):
         ctx.save_for_backward(cos, sin)
         return Q
 
-
     @staticmethod
     def backward(ctx, dY):
         cos, sin = ctx.saved_tensors
@@ -454,13 +449,8 @@ class Slow_RoPE_Embedding(torch.autograd.Function):
         return dY, None, None, None
 
 
-
-
-
 def inplace_rope_embedding(Q, K, cos, sin, position_ids):
     Q = Slow_RoPE_Embedding.apply(Q, cos, sin, position_ids)
     K = Slow_RoPE_Embedding.apply(K, cos, sin, position_ids)
     torch_device_stream(Q.device).synchronize()
     return Q, K
-
-

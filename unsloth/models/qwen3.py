@@ -171,7 +171,6 @@ def Qwen3Attention_fast_forward(
     return attn_output, attn_weights, past_key_value
 
 
-
 torch_matmul = torch.matmul
 
 
@@ -392,8 +391,6 @@ def Qwen3Attention_fast_forward_inference(
     return A, (Kn, Vn)
 
 
-
-
 class FastQwen3Model(FastLlamaModel):
     @staticmethod
     def pre_patch():
@@ -429,7 +426,6 @@ class FastQwen3Model(FastLlamaModel):
         )
         return
 
-
     @staticmethod
     def from_pretrained(  # TODO: Change after release
         model_name = "Qwen/Qwen3-7B",
@@ -459,6 +455,3 @@ class FastQwen3Model(FastLlamaModel):
             trust_remote_code = trust_remote_code,
             **kwargs,
         )
-
-
-

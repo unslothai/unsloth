@@ -187,8 +187,6 @@ def GraniteAttention_fast_forward(
     return attn_output, attn_weights, past_key_value
 
 
-
-
 def GraniteDecoderLayer_fast_forward(
     self,
     hidden_states: torch.Tensor,
@@ -269,8 +267,6 @@ def GraniteDecoderLayer_fast_forward(
     return outputs
 
 
-
-
 from math import sqrt as math_sqrt
 
 KV_CACHE_INCREMENT = 256  # KV Cache update size
@@ -289,9 +285,9 @@ def GraniteAttention_fast_forward_inference(
     use_sliding_window = False,
     position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
 ):
-    assert position_embeddings is not None, (
-        f"Granite model requires position embeddings to be specified"
-    )
+    assert (
+        position_embeddings is not None
+    ), f"Granite model requires position embeddings to be specified"
 
     Xn = hidden_states
     bsz, _, hd = hidden_states.size()
@@ -420,8 +416,6 @@ def GraniteAttention_fast_forward_inference(
     return A, (Kn, Vn)
 
 
-
-
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L825
 # @torch.inference_mode
 def GraniteModel_fast_forward_inference(
@@ -498,8 +492,6 @@ def GraniteModel_fast_forward_inference(
     )
 
 
-
-
 class GraniteRotaryEmbedding(LlamaRotaryEmbedding):
     def __init__(self, config):
         super().__init__(config = config)
@@ -550,7 +542,6 @@ class FastGraniteModel(FastLlamaModel):
         )
 
         return
-
 
     @staticmethod
     def post_patch(model, tokenizer):
@@ -619,6 +610,3 @@ class FastGraniteModel(FastLlamaModel):
             gc.collect()
             torch.cuda.empty_cache()
         return model, tokenizer
-
-
-
