@@ -25,7 +25,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "unsloth_zoo>=2025.11.1",
+    "unsloth_zoo>=2025.11.3",
     "wheel>=0.42.0",
     "packaging",
     "torch>=2.4.0",
@@ -40,7 +40,7 @@ dependencies = [
     "triton>=3.0.0 ; ('linux' in sys_platform)",
     "triton-windows ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
     "sentencepiece>=0.2.0",
-    "datasets>=3.4.1,!=4.0.*,!=4.1.0",
+    "datasets>=3.4.1,!=4.0.*,!=4.1.0,<4.4.0",
     "accelerate>=0.34.1",
     "peft>=0.7.1,!=0.11.0",
     "huggingface_hub>=0.34.0",
@@ -61,7 +61,7 @@ exclude = ["images*", "tests*", "kernels/moe*"]
 
 [project.optional-dependencies]
 huggingface = [
-    "unsloth_zoo>=2025.11.1",
+    "unsloth_zoo>=2025.11.3",
     "wheel>=0.42.0",
     "packaging",
     "torchvision",
@@ -71,7 +71,7 @@ huggingface = [
     "tyro",
     "protobuf",
     "sentencepiece>=0.2.0",
-    "datasets>=3.4.1,!=4.0.*,!=4.1.0",
+    "datasets>=3.4.1,!=4.0.*,!=4.1.0,<4.4.0",
     "accelerate>=0.34.1",
     "peft>=0.7.1,!=0.11.0",
     "huggingface_hub>=0.34.0",
@@ -394,11 +394,11 @@ colab-ampere-torch220 = [
     "unsloth[flashattention]",
 ]
 colab-new = [
-    "unsloth_zoo>=2025.11.1",
+    "unsloth_zoo>=2025.11.3",
     "packaging",
     "tyro",
     "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,<=4.57.2",
-    "datasets>=3.4.1,!=4.0.*,!=4.1.0",
+    "datasets>=3.4.1,!=4.0.*,!=4.1.0,<4.4.0",
     "sentencepiece>=0.2.0",
     "tqdm",
     "psutil",
