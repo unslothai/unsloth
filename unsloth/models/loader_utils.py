@@ -129,8 +129,6 @@ def __get_model_name(
     return None
 
 
-
-
 def _get_new_mapper():
     try:
         import requests
@@ -153,8 +151,6 @@ def _get_new_mapper():
         )
     except:
         return {}, {}, {}
-
-
 
 
 def get_model_name(model_name, load_in_4bit = True):
@@ -198,5 +194,3 @@ def get_model_name(model_name, load_in_4bit = True):
                 'pip install --upgrade --no-cache-dir "git+https://github.com/unslothai/unsloth-zoo.git"\n'
             )
     return new_model_name if new_model_name is not None else model_name
-
-

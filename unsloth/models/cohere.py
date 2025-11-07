@@ -72,8 +72,6 @@ def fast_layernorm_inference(self, X, out_weight = None):
     return XX.to(X.dtype)
 
 
-
-
 # QK norm in Cohere
 def CohereAttention_fast_forward(
     self,
@@ -173,8 +171,6 @@ def CohereAttention_fast_forward(
     return attn_output, attn_weights, past_key_value
 
 
-
-
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L590
 def CohereDecoderLayer_fast_forward(
     self,
@@ -244,8 +240,6 @@ def CohereDecoderLayer_fast_forward(
     if use_cache:
         outputs += (present_key_value,)
     return outputs
-
-
 
 
 from math import sqrt as math_sqrt
@@ -431,8 +425,6 @@ def CohereAttention_fast_forward_inference(
     return A, (Kn, Vn)
 
 
-
-
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L825
 # @torch.inference_mode
 def CohereModel_fast_forward_inference(
@@ -505,8 +497,6 @@ def CohereModel_fast_forward_inference(
     )
 
 
-
-
 class FastCohereModel(FastLlamaModel):
     @staticmethod
     def pre_patch():
@@ -536,6 +526,3 @@ class FastCohereModel(FastLlamaModel):
             LlamaRotaryEmbedding
         )
         return
-
-
-

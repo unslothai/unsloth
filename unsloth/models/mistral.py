@@ -143,8 +143,6 @@ def MistralAttention_fast_forward(
     return attn_output, attn_weights, past_key_value
 
 
-
-
 def MistralForCausalLM_fast_forward(
     self,
     input_ids: torch.LongTensor = None,
@@ -377,8 +375,6 @@ def MistralForCausalLM_fast_forward(
     )
 
 
-
-
 # Transformers had to update for Mistral Nemo 12b since Attention is (5120, 4096) now.
 def patch_mistral_nemo_attention(function):
     function = function.replace(
@@ -394,8 +390,6 @@ def patch_mistral_nemo_attention(function):
         "self.o_proj = nn.Linear(self.config.num_attention_heads * self.head_dim, self.config.hidden_size, bias=False)",
     )
     return function
-
-
 
 
 class FastMistralModel(FastLlamaModel):
@@ -434,7 +428,6 @@ class FastMistralModel(FastLlamaModel):
         )
         return
 
-
     @staticmethod
     def from_pretrained(
         model_name = "unsloth/mistral-7b-bnb-4bit",
@@ -464,6 +457,3 @@ class FastMistralModel(FastLlamaModel):
             trust_remote_code = trust_remote_code,
             **kwargs,
         )
-
-
-
