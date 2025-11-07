@@ -105,35 +105,19 @@ def enable_sample_packing(model, trainer):
 
 def get_packed_info_from_kwargs(
     kwargs: dict,
-    total_tokens: int,
     device: torch.device,
 ) -> Optional[Tuple[torch.Tensor, torch.Tensor, int]]:
-    """Extract packed sequence information from attention kwargs."""
+    """Return packed sequence metadata expected by the attention kernels."""
 
     seq_lengths = kwargs.get("packed_seq_lengths")
     if seq_lengths is None:
         return None
 
-    if isinstance(seq_lengths, torch.Tensor):
-        lengths = seq_lengths.to(device = device, dtype = torch.int32)
-    else:
-        lengths = torch.tensor(seq_lengths, device = device, dtype = torch.int32)
+    lengths = seq_lengths.to(device = device, dtype = torch.int32, non_blocking = True)
+    cu_seqlens = torch.empty(lengths.numel() + 1, dtype = torch.int32, device = device)
+    cu_seqlens[0] = 0
+    torch.cumsum(lengths, dim = 0, dtype = torch.int32, out = cu_seqlens[1:])
 
-    if lengths.ndim > 1:
-        lengths = lengths.reshape(-1)
-
-    if lengths.numel() == 0:
-        return None
-
-    if int(lengths.sum().item()) != total_tokens:
-        return None
-
-    cu_seqlens = torch.cat(
-        [
-            torch.zeros(1, dtype = torch.int32, device = device),
-            torch.cumsum(lengths, dim = 0, dtype = torch.int32),
-        ]
-    )
     max_seqlen = int(lengths.max().item())
     return lengths, cu_seqlens, max_seqlen
 
@@ -229,7 +213,6 @@ def mask_packed_sequence_boundaries(
     ignore_index: int = -100,
 ) -> bool:
     """Mark final token of every packed sample so CE ignores boundary predictions."""
-
     lengths = _normalize_packed_lengths(seq_lengths, device = shift_labels.device)
     if lengths is None:
         return False

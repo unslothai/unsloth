@@ -277,7 +277,6 @@ def test_packing_sdpa(tmp_path):
 
     seq_info = llama_mod.get_packed_info_from_kwargs(
         {"packed_seq_lengths": batch["packed_seq_lengths"]},
-        inputs["input_ids"].shape[0] * inputs["input_ids"].shape[1],
         inputs["input_ids"].device,
     )
     assert seq_info is not None

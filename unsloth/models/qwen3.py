@@ -102,7 +102,7 @@ def Qwen3Attention_fast_forward(
         bsz, q_len, n_kv_heads, head_dim
     )  # .transpose(1, 2) # we will transpose after normalisation
     V = V.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
-    seq_info = get_packed_info_from_kwargs(kwargs, bsz * q_len, hidden_states.device)
+    seq_info = get_packed_info_from_kwargs(kwargs, hidden_states.device)
 
     # Qwen3 has QKNorm. This seems to be the only difference from Qwen2.
     # Note that using fast_layernorm_compiled causes issues as the dimensions don't match up.
