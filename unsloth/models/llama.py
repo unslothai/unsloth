@@ -26,7 +26,10 @@ from ._utils import (
     _get_inference_mode_context_manager,
     _prepare_model_for_qat,
 )
-from ..utils.packing import get_packed_info_from_kwargs
+from ..utils.packing import (
+    get_packed_info_from_kwargs,
+    mask_packed_sequence_boundaries,
+)
 from ..utils.attention_dispatch import (
     AttentionConfig,
     AttentionContext,
@@ -1412,6 +1415,10 @@ def CausalLM_fast_forward(fast_forward_inference):
             shift_labels = torch.empty_like(labels)
             shift_labels[..., :-1] = labels[..., 1:]
             shift_labels[..., -1] = -100
+            mask_packed_sequence_boundaries(
+                shift_labels,
+                kwargs.get("packed_seq_lengths"),
+            )
             # shift_labels = torch.hstack((labels[..., 1:], self.extra_ignored_labels[:labels.shape[0]]))
             n_items = kwargs.get("num_items_in_batch", None)
             if n_items is None:
