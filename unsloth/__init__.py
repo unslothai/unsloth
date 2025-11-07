@@ -19,14 +19,13 @@ import numpy as np
 
 # Fix some issues before importing other packages
 from .import_fixes import fix_message_factory_issue
+
 fix_message_factory_issue()
 del fix_message_factory_issue
 
 # Check if modules that need patching are already imported
 critical_modules = ["trl", "transformers", "peft"]
-already_imported = [
-mod for mod in critical_modules if mod in sys.modules
-]
+already_imported = [mod for mod in critical_modules if mod in sys.modules]
 
 # This check is critical because Unsloth optimizes these libraries by modifying
 # their code at import time. If they're imported first, the original (slower,
@@ -97,7 +96,6 @@ except ModuleNotFoundError:
     )
 except:
     raise
-pass
 
 from unsloth_zoo.device_type import (
     is_hip,
