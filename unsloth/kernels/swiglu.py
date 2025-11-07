@@ -19,38 +19,54 @@ from .utils import calculate_settings, torch_gpu_device
 
 
 @triton.jit
-def _fg_kernel(e, g, h, n_elements, BLOCK_SIZE : tl.constexpr,):
+def _fg_kernel(
+    e,
+    g,
+    h,
+    n_elements,
+    BLOCK_SIZE: tl.constexpr,
+):
     block_idx = tl.program_id(0)
-    offsets = block_idx*BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    offsets = block_idx * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = offsets < n_elements
 
     e_row = tl.load(e + offsets, mask = mask, other = 0).to(tl.float32)
-    g_row = tl.load(g + offsets, mask = mask, other = 0)#.to(tl.float32)
+    g_row = tl.load(g + offsets, mask = mask, other = 0)  # .to(tl.float32)
 
     # f = e * sigmoid(e)
-    f_row = e_row * tl.sigmoid(e_row) # e_row / (1 + tl.exp(-e_row))
-    f_row = f_row.to(g_row.dtype) # Exact copy from HF
+    f_row = e_row * tl.sigmoid(e_row)  # e_row / (1 + tl.exp(-e_row))
+    f_row = f_row.to(g_row.dtype)  # Exact copy from HF
     # h = f * g
     h_row = f_row * g_row
 
     # Store h
     tl.store(h + offsets, h_row, mask = mask)
-pass
 
 
 def swiglu_fg_kernel(e, g):
     batch, seq_len, hd = e.shape
     n_elements = e.numel()
     h = torch.empty((batch, seq_len, hd), dtype = e.dtype, device = e.device)
-    grid = lambda meta: (triton.cdiv(n_elements, meta['BLOCK_SIZE']),)
+    grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
     with torch_gpu_device(e.device):
-        _fg_kernel[grid](e, g, h, n_elements, BLOCK_SIZE = 1024,)
+        _fg_kernel[grid](
+            e,
+            g,
+            h,
+            n_elements,
+            BLOCK_SIZE = 1024,
+        )
     return h
-pass
 
 
 @triton.jit
-def _DWf_DW_dfg_kernel(DW, e, g, n_elements, BLOCK_SIZE : tl.constexpr,):
+def _DWf_DW_dfg_kernel(
+    DW,
+    e,
+    g,
+    n_elements,
+    BLOCK_SIZE: tl.constexpr,
+):
     """
     e = e.float()
     se = 1.0 / (1.0 + torch.exp(-e))
@@ -61,21 +77,21 @@ def _DWf_DW_dfg_kernel(DW, e, g, n_elements, BLOCK_SIZE : tl.constexpr,):
     de = (dg.float() * se * (1.0 + e * (1.0 - se))).to(dtype)
     """
     block_idx = tl.program_id(0)
-    offsets = block_idx*BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    offsets = block_idx * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = offsets < n_elements
 
-    DW_row = tl.load(DW + offsets, mask = mask, other = 0)#.to(tl.float32)
-    e_row  = tl.load(e  + offsets, mask = mask, other = 0).to(tl.float32)
-    g_row  = tl.load(g  + offsets, mask = mask, other = 0)#.to(tl.float32)
+    DW_row = tl.load(DW + offsets, mask = mask, other = 0)  # .to(tl.float32)
+    e_row = tl.load(e + offsets, mask = mask, other = 0).to(tl.float32)
+    g_row = tl.load(g + offsets, mask = mask, other = 0)  # .to(tl.float32)
 
     # e = e.float()
     # se = 1.0 / (1.0 + torch.exp(-e))
-    se_row = tl.sigmoid(e_row) # 1.0 / (1.0 + tl.exp(-e_row))
+    se_row = tl.sigmoid(e_row)  # 1.0 / (1.0 + tl.exp(-e_row))
     # f = (se * e).to(dtype)
     f_row = se_row * e_row
     f_row = f_row.to(DW_row.dtype)
     # h = f * g
-    h_row  =  f_row * g_row
+    h_row = f_row * g_row
     # df = DW * f
     df_row = DW_row * f_row
     # dg = DW * g
@@ -85,17 +101,21 @@ def _DWf_DW_dfg_kernel(DW, e, g, n_elements, BLOCK_SIZE : tl.constexpr,):
     de_row = de_row.to(DW_row.dtype)
 
     # Store derivatives in buffers
-    tl.store(DW + offsets, h_row,  mask = mask) # h  = f * g
-    tl.store(e  + offsets, df_row, mask = mask) # df = DW * f
-    tl.store(g  + offsets, de_row, mask = mask) # de
-pass
+    tl.store(DW + offsets, h_row, mask = mask)  # h  = f * g
+    tl.store(e + offsets, df_row, mask = mask)  # df = DW * f
+    tl.store(g + offsets, de_row, mask = mask)  # de
 
 
 def swiglu_DWf_DW_dfg_kernel(DW, e, g):
     batch_seq_len, hd = e.shape
     n_elements = e.numel()
-    grid = lambda meta: (triton.cdiv(n_elements, meta['BLOCK_SIZE']),)
+    grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
     with torch_gpu_device(e.device):
-        _DWf_DW_dfg_kernel[grid](DW, e, g, n_elements, BLOCK_SIZE = 1024,)
+        _DWf_DW_dfg_kernel[grid](
+            DW,
+            e,
+            g,
+            n_elements,
+            BLOCK_SIZE = 1024,
+        )
     return DW, e, g
-pass

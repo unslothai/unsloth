@@ -51,9 +51,9 @@ class Llama4GroupedGemmTextMoe(Llama4TextMoe):
     def __init__(
         self,
         config: Llama4TextConfig,
-        overlap_router_shared=False,
-        verbose=False,
-        debug=False,
+        overlap_router_shared = False,
+        verbose = False,
+        debug = False,
     ):
         super().__init__(config)
         self.overlap_router_shared = overlap_router_shared
@@ -62,9 +62,9 @@ class Llama4GroupedGemmTextMoe(Llama4TextMoe):
 
         # Permute in-place expert weights
         E, K, N = self.num_experts, self.hidden_dim, self.experts.expert_dim
-        assert self.experts.gate_up_proj.shape == torch.Size([E, K, 2 * N]), (
-            f"{self.experts.gate_up_proj.shape} != {[E, K, 2 * N]}"
-        )
+        assert self.experts.gate_up_proj.shape == torch.Size(
+            [E, K, 2 * N]
+        ), f"{self.experts.gate_up_proj.shape} != {[E, K, 2 * N]}"
         permuted_shape = [E, 2 * N, K]
         permuted_stride = [2 * N * K, K, 1]
         if verbose:
@@ -79,9 +79,9 @@ class Llama4GroupedGemmTextMoe(Llama4TextMoe):
                 f"{self.experts.gate_up_proj.shape}:{self.experts.gate_up_proj.stride()}"
             )
 
-        assert self.experts.down_proj.shape == torch.Size([E, N, K]), (
-            f"{self.experts.down_proj.shape} != {[E, N, K]}"
-        )
+        assert self.experts.down_proj.shape == torch.Size(
+            [E, N, K]
+        ), f"{self.experts.down_proj.shape} != {[E, N, K]}"
         permuted_shape = [E, K, N]
         permuted_stride = [K * N, N, 1]
         if verbose:
@@ -110,9 +110,9 @@ class Llama4GroupedGemmTextMoe(Llama4TextMoe):
             if any(n in name for n in self.EXPERT_WEIGHT_NAMES):
                 param_to_copy = param_to_copy.permute(0, 2, 1)
 
-            assert param.shape == param_to_copy.shape, (
-                f"{param.shape} != {param_to_copy.shape}"
-            )
+            assert (
+                param.shape == param_to_copy.shape
+            ), f"{param.shape} != {param_to_copy.shape}"
             param.copy_(param_to_copy)
 
         return self
@@ -136,7 +136,7 @@ class Llama4GroupedGemmTextMoe(Llama4TextMoe):
         hidden_states = hidden_states.view(-1, self.hidden_dim)
         router_logits = self.router(hidden_states)
         routing_weights, selected_experts = torch.topk(
-            router_logits, self.top_k, dim=-1
+            router_logits, self.top_k, dim = -1
         )
 
         routing_weights = F.sigmoid(routing_weights.float()).to(hidden_states.dtype)
@@ -167,9 +167,10 @@ class Llama4GroupedGemmTextMoe(Llama4TextMoe):
         router_logits, routing_weights, selected_experts = self.run_router(
             hidden_states
         )
-        assert routing_weights.shape == (num_tokens, self.top_k), (
-            f"{routing_weights.shape} != {(num_tokens, self.top_k)}"
-        )
+        assert routing_weights.shape == (
+            num_tokens,
+            self.top_k,
+        ), f"{routing_weights.shape} != {(num_tokens, self.top_k)}"
 
         if self.overlap_router_shared:
             with torch.cuda.stream(self.shared_expert_stream):
@@ -194,7 +195,7 @@ class Llama4GroupedGemmTextMoe(Llama4TextMoe):
         )
 
         if self.top_k > 1:
-            hidden_states = hidden_states.sum(dim=1)
+            hidden_states = hidden_states.sum(dim = 1)
         hidden_states_after_weight_merge = hidden_states.view(-1, hidden_dim)
 
         # 1. Compute tokens per expert and indices for gathering tokes from token order to expert order
@@ -211,7 +212,7 @@ class Llama4GroupedGemmTextMoe(Llama4TextMoe):
 
         # Start expert computation
         first_gemm = torch_grouped_gemm(
-            X=hidden_states, W=self.experts.gate_up_proj, m_sizes=token_counts_by_expert
+            X = hidden_states, W = self.experts.gate_up_proj, m_sizes = token_counts_by_expert
         )
         assert first_gemm.shape == (total_tokens, 2 * self.experts.expert_dim)
 
@@ -220,7 +221,7 @@ class Llama4GroupedGemmTextMoe(Llama4TextMoe):
 
         # See comment above
         second_gemm = torch_grouped_gemm(
-            X=intermediate, W=self.experts.down_proj, m_sizes=token_counts_by_expert
+            X = intermediate, W = self.experts.down_proj, m_sizes = token_counts_by_expert
         )
         assert second_gemm.shape == (total_tokens, hidden_dim)
 
@@ -233,17 +234,17 @@ class Llama4GroupedGemmTextMoe(Llama4TextMoe):
 
         result = (
             Llama4MoeResult(
-                token_counts_by_expert=token_counts_by_expert,
-                gather_indices=gather_indices,
-                topk_weights=routing_weights,
-                hidden_states_after_weight_merge=hidden_states_after_weight_merge,
-                first_gemm=first_gemm,
-                intermediate=intermediate,
-                second_gemm=second_gemm,
-                hidden_states_unpermute=hidden_states_unpermute,
-                shared_expert_out=shared_expert_out,
-                final_out=final_out,
-                router_logits=router_logits,
+                token_counts_by_expert = token_counts_by_expert,
+                gather_indices = gather_indices,
+                topk_weights = routing_weights,
+                hidden_states_after_weight_merge = hidden_states_after_weight_merge,
+                first_gemm = first_gemm,
+                intermediate = intermediate,
+                second_gemm = second_gemm,
+                hidden_states_unpermute = hidden_states_unpermute,
+                shared_expert_out = shared_expert_out,
+                final_out = final_out,
+                router_logits = router_logits,
             )
             if self.debug
             else (final_out, routing_weights)
@@ -256,7 +257,7 @@ class Llama4TritonTextMoe(Llama4GroupedGemmTextMoe):
     def __init__(
         self,
         config: Llama4TextConfig,
-        overlap_router_shared=False,
+        overlap_router_shared = False,
         permute_x: bool = False,
         permute_y: bool = True,
         autotune: bool = True,
@@ -265,12 +266,10 @@ class Llama4TritonTextMoe(Llama4GroupedGemmTextMoe):
         kernel_config_bwd_dX: KernelConfigBackward_dX = None,
         dW_only: bool = False,
         dX_only: bool = False,
-        verbose=False,
+        verbose = False,
     ):
-        super().__init__(config, overlap_router_shared=overlap_router_shared)
-        assert not permute_x, (
-            "Llama4 triton grouped gemm does not support permute x due to pre-multiplication of router weights"
-        )
+        super().__init__(config, overlap_router_shared = overlap_router_shared)
+        assert not permute_x, "Llama4 triton grouped gemm does not support permute x due to pre-multiplication of router weights"
         self.permute_x = permute_x
         self.permute_y = permute_y
         self.autotune = autotune
@@ -296,9 +295,9 @@ class Llama4TritonTextMoe(Llama4GroupedGemmTextMoe):
             if any(n in name for n in self.EXPERT_WEIGHT_NAMES):
                 param_to_copy = param_to_copy.permute(0, 2, 1)
 
-            assert param.shape == param_to_copy.shape, (
-                f"{param.shape} != {param_to_copy.shape}"
-            )
+            assert (
+                param.shape == param_to_copy.shape
+            ), f"{param.shape} != {param_to_copy.shape}"
             param.copy_(param_to_copy)
 
         return self
@@ -322,7 +321,7 @@ class Llama4TritonTextMoe(Llama4GroupedGemmTextMoe):
         hidden_states = hidden_states.view(-1, self.hidden_dim)
         router_logits = self.router(hidden_states)
         routing_weights, selected_experts = torch.topk(
-            router_logits, self.top_k, dim=-1
+            router_logits, self.top_k, dim = -1
         )
 
         routing_weights = F.sigmoid(routing_weights.float()).to(hidden_states.dtype)
@@ -353,9 +352,10 @@ class Llama4TritonTextMoe(Llama4GroupedGemmTextMoe):
         router_logits, routing_weights, selected_experts = self.run_router(
             hidden_states
         )
-        assert routing_weights.shape == (num_tokens, self.top_k), (
-            f"{routing_weights.shape} != {(num_tokens, self.top_k)}"
-        )
+        assert routing_weights.shape == (
+            num_tokens,
+            self.top_k,
+        ), f"{routing_weights.shape} != {(num_tokens, self.top_k)}"
 
         if self.overlap_router_shared:
             with torch.cuda.stream(self.shared_expert_stream):
@@ -380,7 +380,7 @@ class Llama4TritonTextMoe(Llama4GroupedGemmTextMoe):
         )
 
         if self.top_k > 1:
-            hidden_states = hidden_states.sum(dim=1)
+            hidden_states = hidden_states.sum(dim = 1)
         hidden_states = hidden_states.view(-1, hidden_dim)
 
         # 1. Compute tokens per expert and indices for gathering tokes from token order to expert order
@@ -395,37 +395,37 @@ class Llama4TritonTextMoe(Llama4GroupedGemmTextMoe):
 
         # Start expert computation
         hidden_states = grouped_gemm(
-            X=hidden_states,
-            W=self.experts.gate_up_proj,
-            m_sizes=token_counts_by_expert,
-            gather_indices=gather_indices,
-            topk=self.top_k,
-            permute_x=self.permute_x,
-            permute_y=False,  # output of first grouped gemm should never be permuted
-            autotune=self.autotune,
-            kernel_config_fwd=self.kernel_config_fwd,
-            kernel_config_bwd_dW=self.kernel_config_bwd_dW,
-            kernel_config_bwd_dX=self.kernel_config_bwd_dX,
-            is_first_gemm=True,
-            dW_only=self.dW_only,
-            dX_only=self.dX_only,
+            X = hidden_states,
+            W = self.experts.gate_up_proj,
+            m_sizes = token_counts_by_expert,
+            gather_indices = gather_indices,
+            topk = self.top_k,
+            permute_x = self.permute_x,
+            permute_y = False,  # output of first grouped gemm should never be permuted
+            autotune = self.autotune,
+            kernel_config_fwd = self.kernel_config_fwd,
+            kernel_config_bwd_dW = self.kernel_config_bwd_dW,
+            kernel_config_bwd_dX = self.kernel_config_bwd_dX,
+            is_first_gemm = True,
+            dW_only = self.dW_only,
+            dX_only = self.dX_only,
         )
         hidden_states = self.act_and_mul(hidden_states)
         hidden_states = grouped_gemm(
-            X=hidden_states,
-            W=self.experts.down_proj,
-            m_sizes=token_counts_by_expert,
-            gather_indices=gather_indices,
-            topk=self.top_k,
-            permute_x=False,
-            permute_y=self.permute_y,
-            autotune=self.autotune,
-            kernel_config_fwd=self.kernel_config_fwd,
-            kernel_config_bwd_dW=self.kernel_config_bwd_dW,
-            kernel_config_bwd_dX=self.kernel_config_bwd_dX,
-            is_first_gemm=False,
-            dW_only=self.dW_only,
-            dX_only=self.dX_only,
+            X = hidden_states,
+            W = self.experts.down_proj,
+            m_sizes = token_counts_by_expert,
+            gather_indices = gather_indices,
+            topk = self.top_k,
+            permute_x = False,
+            permute_y = self.permute_y,
+            autotune = self.autotune,
+            kernel_config_fwd = self.kernel_config_fwd,
+            kernel_config_bwd_dW = self.kernel_config_bwd_dW,
+            kernel_config_bwd_dX = self.kernel_config_bwd_dX,
+            is_first_gemm = False,
+            dW_only = self.dW_only,
+            dX_only = self.dX_only,
         )
 
         # Post-processing
