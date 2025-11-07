@@ -1,3 +1,18 @@
+# Copyright 2023-present Daniel Han-Chen, Michael Han-Chen & the Unsloth team. All rights reserved.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Lesser General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU Lesser General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 """Utilities for enabling packed (padding-free) batches across Unsloth."""
 
 from __future__ import annotations
@@ -50,6 +65,7 @@ def configure_sample_packing(config):
 
 def enable_sample_packing(model, trainer):
     """Enable runtime support for packed batches on an existing trainer."""
+
     def _mark_allow_overlength(module):
         if hasattr(module, "max_seq_length"):
             setattr(module, "_unsloth_allow_packed_overlength", True)
@@ -79,7 +95,7 @@ def enable_sample_packing(model, trainer):
                 seq_lengths.extend(example["seq_lengths"])
             if seq_lengths:
                 batch["packed_seq_lengths"] = torch.tensor(
-                    seq_lengths, dtype=torch.int32
+                    seq_lengths, dtype = torch.int32
                 )
         return batch
 
@@ -99,9 +115,9 @@ def get_packed_info_from_kwargs(
         return None
 
     if isinstance(seq_lengths, torch.Tensor):
-        lengths = seq_lengths.to(device=device, dtype=torch.int32)
+        lengths = seq_lengths.to(device = device, dtype = torch.int32)
     else:
-        lengths = torch.tensor(seq_lengths, device=device, dtype=torch.int32)
+        lengths = torch.tensor(seq_lengths, device = device, dtype = torch.int32)
 
     if lengths.ndim > 1:
         lengths = lengths.reshape(-1)
@@ -114,8 +130,8 @@ def get_packed_info_from_kwargs(
 
     cu_seqlens = torch.cat(
         [
-            torch.zeros(1, dtype=torch.int32, device=device),
-            torch.cumsum(lengths, dim=0, dtype=torch.int32),
+            torch.zeros(1, dtype = torch.int32, device = device),
+            torch.cumsum(lengths, dim = 0, dtype = torch.int32),
         ]
     )
     max_seqlen = int(lengths.max().item())
@@ -145,7 +161,7 @@ def build_xformers_block_causal_mask(
         and mask is not None
         and hasattr(mask, "make_local_attention")
     ):
-        mask = mask.make_local_attention(window_size=sliding_window)
+        mask = mask.make_local_attention(window_size = sliding_window)
     return mask
 
 
@@ -161,25 +177,32 @@ def build_sdpa_packed_attention_mask(
     mask = torch.full(
         (total_tokens, total_tokens),
         float("-inf"),
-        dtype=dtype,
-        device=device,
+        dtype = dtype,
+        device = device,
     )
     offset = 0
     for length in seq_lengths.tolist():
         length = int(length)
         if length <= 0:
             continue
-        block = torch.zeros((length, length), dtype=dtype, device=device)
-        upper = torch.triu(torch.ones((length, length), device=device), diagonal=1).bool()
+        block = torch.zeros((length, length), dtype = dtype, device = device)
+        upper = torch.triu(
+            torch.ones((length, length), device = device), diagonal = 1
+        ).bool()
         block = block.masked_fill(upper, float("-inf"))
-        if sliding_window is not None and sliding_window > 0 and length > sliding_window:
-            idx = torch.arange(length, device=device)
+        if (
+            sliding_window is not None
+            and sliding_window > 0
+            and length > sliding_window
+        ):
+            idx = torch.arange(length, device = device)
             dist = idx.unsqueeze(1) - idx.unsqueeze(0)
             window_mask = dist >= sliding_window
             block = block.masked_fill(window_mask, float("-inf"))
         mask[offset : offset + length, offset : offset + length] = block
         offset += length
     return mask.unsqueeze(0).unsqueeze(0)
+
 
 __all__ = [
     "configure_sample_packing",
