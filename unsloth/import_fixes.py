@@ -216,12 +216,10 @@ def patch_datasets():
         return
 
     datasets_version = Version(importlib_version("datasets"))
-    if (
-        (datasets_version <= Version("4.5.0"))
-        and (datasets_version >= Version("4.4.0"))
+    if (datasets_version <= Version("4.5.0")) and (
+        datasets_version >= Version("4.4.0")
     ):
         raise NotImplementedError(
             f"#### Unsloth: Using `datasets = {str(datasets_version)}` will cause recursion errors.\n"
             "Please downgrade datasets to `datasets==4.3.0"
         )
-
