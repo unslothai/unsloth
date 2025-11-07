@@ -6,7 +6,8 @@ import torch
 import sys
 import warnings
 
-def clear_memory(variables_to_clear=None, verbose=False, clear_all_caches=True):
+
+def clear_memory(variables_to_clear = None, verbose = False, clear_all_caches = True):
     """
     Comprehensive memory clearing for persistent memory leaks.
 
@@ -24,9 +25,18 @@ def clear_memory(variables_to_clear=None, verbose=False, clear_all_caches=True):
     root_level = logging.getLogger().level
 
     if variables_to_clear is None:
-        variables_to_clear = ["inputs", "model", "base_model", "processor", "tokenizer",
-                             "base_processor", "base_tokenizer", "trainer",
-                             "peft_model", "bnb_config"]
+        variables_to_clear = [
+            "inputs",
+            "model",
+            "base_model",
+            "processor",
+            "tokenizer",
+            "base_processor",
+            "base_tokenizer",
+            "trainer",
+            "peft_model",
+            "bnb_config",
+        ]
 
     # 1. Clear LRU caches FIRST (very important for memory leaks)
     if clear_all_caches:
@@ -65,7 +75,9 @@ def clear_memory(variables_to_clear=None, verbose=False, clear_all_caches=True):
             torch.cuda.reset_accumulated_memory_stats()
 
             # Clear JIT cache
-            if hasattr(torch.jit, '_state') and hasattr(torch.jit._state, '_clear_class_state'):
+            if hasattr(torch.jit, "_state") and hasattr(
+                torch.jit._state, "_clear_class_state"
+            ):
                 torch.jit._state._clear_class_state()
 
             # Force another CUDA cache clear
@@ -77,7 +89,9 @@ def clear_memory(variables_to_clear=None, verbose=False, clear_all_caches=True):
         if verbose:
             mem_after = torch.cuda.memory_allocated() / 1024**3
             mem_reserved = torch.cuda.memory_reserved() / 1024**3
-            print(f"GPU memory - Before: {mem_before:.2f} GB, After: {mem_after:.2f} GB")
+            print(
+                f"GPU memory - Before: {mem_before:.2f} GB, After: {mem_after:.2f} GB"
+            )
             print(f"GPU reserved memory: {mem_reserved:.2f} GB")
             if mem_before > 0:
                 print(f"Memory freed: {mem_before - mem_after:.2f} GB")
@@ -89,17 +103,18 @@ def clear_memory(variables_to_clear=None, verbose=False, clear_all_caches=True):
             logger = logging.getLogger(name)
             logger.setLevel(level)
 
-def clear_all_lru_caches(verbose=True):
+
+def clear_all_lru_caches(verbose = True):
     """Clear all LRU caches in loaded modules."""
     cleared_caches = []
 
     # Modules to skip to avoid warnings
     skip_modules = {
-        'torch.distributed',
-        'torchaudio',
-        'torch._C',
-        'torch.distributed.reduce_op',
-        'torchaudio.backend',
+        "torch.distributed",
+        "torchaudio",
+        "torch._C",
+        "torch.distributed.reduce_op",
+        "torchaudio.backend",
     }
 
     # Create a static list of modules to avoid RuntimeError
@@ -125,7 +140,7 @@ def clear_all_lru_caches(verbose=True):
                         warnings.simplefilter("ignore", DeprecationWarning)
 
                     attr = getattr(module, attr_name)
-                    if hasattr(attr, 'cache_clear'):
+                    if hasattr(attr, "cache_clear"):
                         attr.cache_clear()
                         cleared_caches.append(f"{module_name}.{attr_name}")
                 except Exception:
@@ -135,14 +150,14 @@ def clear_all_lru_caches(verbose=True):
 
     # Method 2: Clear specific known caches
     known_caches = [
-        'transformers.utils.hub.cached_file',
-        'transformers.tokenization_utils_base.get_tokenizer',
-        'torch._dynamo.utils.counters',
+        "transformers.utils.hub.cached_file",
+        "transformers.tokenization_utils_base.get_tokenizer",
+        "torch._dynamo.utils.counters",
     ]
 
     for cache_path in known_caches:
         try:
-            parts = cache_path.split('.')
+            parts = cache_path.split(".")
             module = sys.modules.get(parts[0])
             if module:
                 obj = module
@@ -150,7 +165,7 @@ def clear_all_lru_caches(verbose=True):
                     obj = getattr(obj, part, None)
                     if obj is None:
                         break
-                if obj and hasattr(obj, 'cache_clear'):
+                if obj and hasattr(obj, "cache_clear"):
                     obj.cache_clear()
                     cleared_caches.append(cache_path)
         except Exception:
@@ -162,7 +177,7 @@ def clear_all_lru_caches(verbose=True):
 
 def clear_specific_lru_cache(func):
     """Clear cache for a specific function."""
-    if hasattr(func, 'cache_clear'):
+    if hasattr(func, "cache_clear"):
         func.cache_clear()
         return True
     return False
@@ -180,20 +195,22 @@ def monitor_cache_sizes():
             for attr_name in dir(module):
                 try:
                     attr = getattr(module, attr_name)
-                    if hasattr(attr, 'cache_info'):
+                    if hasattr(attr, "cache_info"):
                         info = attr.cache_info()
-                        cache_info.append({
-                            'function': f"{module_name}.{attr_name}",
-                            'size': info.currsize,
-                            'hits': info.hits,
-                            'misses': info.misses
-                        })
+                        cache_info.append(
+                            {
+                                "function": f"{module_name}.{attr_name}",
+                                "size": info.currsize,
+                                "hits": info.hits,
+                                "misses": info.misses,
+                            }
+                        )
                 except:
                     pass
         except:
             pass
 
-    return sorted(cache_info, key=lambda x: x['size'], reverse=True)
+    return sorted(cache_info, key = lambda x: x["size"], reverse = True)
 
 
 def safe_remove_directory(path):
