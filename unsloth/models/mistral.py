@@ -17,7 +17,10 @@ import os
 from ._utils import __version__
 from unsloth_zoo.utils import _get_dtype
 from unsloth_zoo.hf_utils import dtype_from_config
-from ..utils.packing import get_packed_info_from_kwargs
+from ..utils.packing import (
+    get_packed_info_from_kwargs,
+    mask_packed_sequence_boundaries,
+)
 from ..utils.attention_dispatch import (
     AttentionConfig,
     AttentionContext,
@@ -355,6 +358,10 @@ def MistralForCausalLM_fast_forward(
         shift_labels = torch.empty_like(labels)
         shift_labels[..., :-1] = labels[..., 1:]
         shift_labels[..., -1] = -100
+        mask_packed_sequence_boundaries(
+            shift_labels,
+            kwargs.get("packed_seq_lengths"),
+        )
         loss = fast_cross_entropy_loss(
             logits = shift_logits,
             labels = shift_labels,

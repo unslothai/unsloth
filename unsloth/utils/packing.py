@@ -204,7 +204,50 @@ def build_sdpa_packed_attention_mask(
     return mask.unsqueeze(0).unsqueeze(0)
 
 
+def _normalize_packed_lengths(
+    seq_lengths: Any,
+    *,
+    device: torch.device,
+) -> Optional[torch.Tensor]:
+    if seq_lengths is None:
+        return None
+    if isinstance(seq_lengths, torch.Tensor):
+        lengths = seq_lengths.to(device = device, dtype = torch.int64)
+    else:
+        lengths = torch.tensor(seq_lengths, device = device, dtype = torch.int64)
+    if lengths.ndim != 1:
+        lengths = lengths.reshape(-1)
+    if lengths.numel() == 0:
+        return None
+    return lengths
+
+
+def mask_packed_sequence_boundaries(
+    shift_labels: torch.Tensor,
+    seq_lengths: Any,
+    *,
+    ignore_index: int = -100,
+) -> bool:
+    """Mark final token of every packed sample so CE ignores boundary predictions."""
+
+    lengths = _normalize_packed_lengths(seq_lengths, device = shift_labels.device)
+    if lengths is None:
+        return False
+
+    flat = shift_labels.reshape(-1)
+    total_tokens = flat.shape[0]
+    boundary_positions = torch.cumsum(lengths, dim = 0) - 1
+    valid = boundary_positions < total_tokens
+    if not torch.all(valid):
+        boundary_positions = boundary_positions[valid]
+    if boundary_positions.numel() == 0:
+        return False
+    flat[boundary_positions] = ignore_index
+    return True
+
+
 __all__ = [
     "configure_sample_packing",
     "enable_sample_packing",
+    "mask_packed_sequence_boundaries",
 ]
