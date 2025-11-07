@@ -128,12 +128,9 @@ def original_apply_qkv(self, X):
     return Q, K, V
 
 
-
-
 def original_apply_o(self, X):
     O = self.o_proj(X)
     return O
-
 
 
 from math import sqrt as math_sqrt
@@ -231,13 +228,10 @@ def _fast_prepare_inputs_for_generation(
     }
 
 
-
-
 def fix_prepare_inputs_for_generation(module):
     # Fix prepare_inputs_for_generation
     if hasattr(module, "prepare_inputs_for_generation"):
         module.prepare_inputs_for_generation = _fast_prepare_inputs_for_generation
-
 
 
 torch_matmul = torch.matmul
@@ -449,8 +443,6 @@ def LlamaAttention_fast_forward_inference(
     return A, (Kn, Vn)
 
 
-
-
 torch_nn_functional_silu = torch.nn.functional.silu
 
 
@@ -482,7 +474,6 @@ def fast_swiglu_inference(
     return down
 
 
-
 torch_square = torch.square
 torch_mean = torch.mean
 
@@ -507,8 +498,6 @@ def fast_rms_layernorm_inference(self, X, XX = None, XX2 = None, variance = None
     return X
 
 
-
-
 def fast_rms_layernorm_inference_gemma(self, X, out_weight = None):
     XX = X.to(torch.float32)
     variance = XX.square().mean(-1, keepdim = True)
@@ -525,8 +514,6 @@ def fast_rms_layernorm_inference_gemma(self, X, out_weight = None):
     return XX.to(X.dtype)
 
 
-
-
 # Normal layernorm with mean removal
 @torch.compile(fullgraph = False, dynamic = True, options = torch_compile_options)
 def fast_layernorm_compiled(layernorm, X):
@@ -540,8 +527,6 @@ def fast_layernorm_compiled(layernorm, X):
         * layernorm.weight.float()
     )
     return X.to(old_dtype)
-
-
 
 
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L320
@@ -639,8 +624,6 @@ def LlamaAttention_fast_forward(
     return attn_output, attn_weights, past_key_value
 
 
-
-
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L590
 def LlamaDecoderLayer_fast_forward(
     self,
@@ -724,8 +707,6 @@ def LlamaDecoderLayer_fast_forward(
     if use_cache:
         outputs += (present_key_value,)
     return outputs
-
-
 
 
 # https://github.com/unslothai/unsloth/issues/404#issuecomment-2323473452
@@ -1142,8 +1123,6 @@ def LlamaModel_fast_forward(
     )
 
 
-
-
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L825
 def _LlamaModel_fast_forward_inference(
     attention_fast_forward_inference = LlamaAttention_fast_forward_inference,
@@ -1471,8 +1450,6 @@ def CausalLM_fast_forward(fast_forward_inference):
     return _CausalLM_fast_forward
 
 
-
-
 @torch._disable_dynamo
 def PeftModel_fast_forward(
     self,
@@ -1515,8 +1492,6 @@ def PeftModel_fast_forward(
             logits_to_keep = logits_to_keep,
             **kwargs,
         )
-
-
 
 
 # Solves https://github.com/unslothai/unsloth/issues/168
@@ -1575,7 +1550,6 @@ class LlamaRotaryEmbedding(torch.nn.Module):
             1, device = get_current_device(), dtype = torch.get_default_dtype()
         )
 
-
     def _set_cos_sin_cache(self, seq_len, device, dtype):
         # Note: on the original Llama codebase, these tensors are created on the target device (and not on CPU) and
         # in FP32. They are applied (multiplied) in FP32 as well.
@@ -1600,7 +1574,6 @@ class LlamaRotaryEmbedding(torch.nn.Module):
         self.multi_gpu_sin_cached[device.index] = sin
         return cos, sin
 
-
     def forward(self, x, position_ids = None, seq_len = None):
         # x: [bs, num_attention_heads, seq_len, head_size]
         if seq_len is not None and seq_len > self.current_rope_size:
@@ -1612,14 +1585,12 @@ class LlamaRotaryEmbedding(torch.nn.Module):
             self.multi_gpu_sin_cached[device_index][:seq_len],
         )
 
-
     def get_cached(self, seq_len = None, device_index = None):
         if device_index is None:
             device_index = get_current_device()
         return self.multi_gpu_cos_cached[device_index], self.multi_gpu_sin_cached[
             device_index
         ]
-
 
     def extend_rope_embedding(self, x, seq_len):
         if seq_len <= self.current_rope_size:
@@ -1630,9 +1601,6 @@ class LlamaRotaryEmbedding(torch.nn.Module):
             self._set_cos_sin_cache(
                 self.current_rope_size, device = torch.device(device_idx), dtype = x.dtype
             )
-
-
-
 
 
 class LlamaLinearScalingRotaryEmbedding(LlamaRotaryEmbedding):
@@ -1659,7 +1627,6 @@ class LlamaLinearScalingRotaryEmbedding(LlamaRotaryEmbedding):
             config = config,
         )
 
-
     def _set_cos_sin_cache(self, seq_len, device, dtype):
         self.current_rope_size = seq_len
         inv_freq = 1.0 / (
@@ -1682,9 +1649,6 @@ class LlamaLinearScalingRotaryEmbedding(LlamaRotaryEmbedding):
         self.multi_gpu_cos_cached[device.index] = cos
         self.multi_gpu_sin_cached[device.index] = sin
         return cos, sin
-
-
-
 
 
 # See https://github.com/vllm-project/vllm/blob/main/vllm/model_executor/layers/rotary_embedding.py#L736
@@ -1746,7 +1710,6 @@ class LlamaExtendedRotaryEmbedding(torch.nn.Module):
             1, device = get_current_device(), dtype = torch.get_default_dtype()
         )
 
-
     def _set_cos_sin_cache(self, seq_len, device, dtype):
         # Note: on the original Llama codebase, these tensors are created on the target device (and not on CPU) and
         # in FP32. They are applied (multiplied) in FP32 as well.
@@ -1765,7 +1728,6 @@ class LlamaExtendedRotaryEmbedding(torch.nn.Module):
         self.multi_gpu_sin_cached[device.index] = sin
         return cos, sin
 
-
     def forward(self, x, position_ids = None, seq_len = None):
         # x: [bs, num_attention_heads, seq_len, head_size]
         if seq_len is not None and seq_len > self.current_rope_size:
@@ -1776,14 +1738,12 @@ class LlamaExtendedRotaryEmbedding(torch.nn.Module):
             self.multi_gpu_sin_cached[device_index][:seq_len],
         )
 
-
     def get_cached(self, seq_len = None, device_index = None):
         if device_index is None:
             device_index = get_current_device()
         return self.multi_gpu_cos_cached[device_index], self.multi_gpu_sin_cached[
             device_index
         ]
-
 
     def extend_rope_embedding(self, x, seq_len):
         if seq_len <= self.current_rope_size:
@@ -1794,7 +1754,6 @@ class LlamaExtendedRotaryEmbedding(torch.nn.Module):
             self._set_cos_sin_cache(
                 self.current_rope_size, device = torch.device(device_idx), dtype = x.dtype
             )
-
 
     # From https://github.com/meta-llama/llama-models/blob/main/models/llama3_1/api/model.py#L41
     def apply_scaling(self, freqs: torch.Tensor):
@@ -1820,9 +1779,6 @@ class LlamaExtendedRotaryEmbedding(torch.nn.Module):
                 )
                 new_freqs.append((1 - smooth) * freq / scale_factor + smooth * freq)
         return torch.tensor(new_freqs, dtype = freqs.dtype, device = freqs.device)
-
-
-
 
 
 class LongRopeRotaryEmbedding(torch.nn.Module):
@@ -1929,7 +1885,6 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
             1, device = get_current_device(), dtype = torch.get_default_dtype()
         )
 
-
     def _set_cos_sin_cache(self, seq_len, device, dtype):
         # Note: on the original Llama codebase, these tensors are created on the target device (and not on CPU) and
         # in FP32. They are applied (multiplied) in FP32 as well.
@@ -1951,7 +1906,6 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
         self.multi_gpu_long_sin_cached[device.index] = sin_cached
         return cos_cached, sin_cached
 
-
     def forward(self, x, position_ids = None, seq_len = None):
         # x: [bs, num_attention_heads, seq_len, head_size]
         if seq_len is not None and seq_len > self.current_rope_size:
@@ -1970,7 +1924,6 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
                 self.multi_gpu_long_sin_cached[device_index][:seq_len],
             )
 
-
     def get_cached(self, seq_len = None, device_index = None):
         if device_index is None:
             device_index = get_current_device()
@@ -1982,7 +1935,6 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
             device_index
         ], self.multi_gpu_long_sin_cached[device_index]
 
-
     def extend_rope_embedding(self, x, seq_len):
         if seq_len <= self.current_rope_size:
             return
@@ -1992,9 +1944,6 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
             self._set_cos_sin_cache(
                 self.current_rope_size, device = torch.device(device_idx), dtype = x.dtype
             )
-
-
-
 
 
 def unsloth_fast_generate(
@@ -2062,8 +2011,6 @@ def unsloth_fast_generate(
     return output
 
 
-
-
 class FastLlamaModel:
     @staticmethod
     def _prepare_for_qat(model, qat_scheme):
@@ -2108,7 +2055,6 @@ class FastLlamaModel:
             LlamaLinearScalingRotaryEmbedding
         )
         return
-
 
     @staticmethod
     def from_pretrained(
@@ -2601,14 +2547,12 @@ class FastLlamaModel:
                             module.weight[module.padding_idx] = 0
         return model, tokenizer
 
-
     @staticmethod
     def post_patch(model, tokenizer):
         model, tokenizer = patch_model_and_tokenizer(
             model, tokenizer, downcast_rope = True
         )
         return model, tokenizer
-
 
     @staticmethod
     def get_peft_model(
@@ -3102,7 +3046,6 @@ class FastLlamaModel:
             m = m.model
         return model
 
-
     @staticmethod
     def patch_peft_model(
         model,
@@ -3343,7 +3286,6 @@ class FastLlamaModel:
             m = m.model
         return model
 
-
     @staticmethod
     def for_inference(model):
         if not hasattr(model, "parameters"):
@@ -3384,7 +3326,6 @@ class FastLlamaModel:
             if hasattr(embeddings, "training"):
                 embeddings.training = False
         return model
-
 
     @staticmethod
     def for_training(model, use_gradient_checkpointing = True):
@@ -3432,8 +3373,6 @@ class FastLlamaModel:
             if hasattr(embeddings, "training"):
                 embeddings.training = True
         return model
-
-
 
 
 from .rl import PatchFastRL
