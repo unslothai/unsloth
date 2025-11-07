@@ -206,8 +206,6 @@ def Gemma2Attention_fast_forward(
     return A, None, past_key_value
 
 
-
-
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L590
 def Gemma2DecoderLayer_fast_forward(
     self,
@@ -299,8 +297,6 @@ def Gemma2DecoderLayer_fast_forward(
     if use_cache:
         outputs += (present_key_value,)
     return outputs
-
-
 
 
 from math import sqrt as math_sqrt
@@ -474,8 +470,6 @@ def Gemma2Attention_fast_forward_inference(
     return A, (Kn, Vn)
 
 
-
-
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L825
 # @torch.inference_mode
 def Gemma2Model_fast_forward_inference(
@@ -583,8 +577,6 @@ def Gemma2Model_fast_forward_inference(
     )
 
 
-
-
 class FastGemma2Model(FastLlamaModel):
     @staticmethod
     def pre_patch():
@@ -619,7 +611,6 @@ class FastGemma2Model(FastLlamaModel):
             GemmaFixedRotaryEmbedding
         )
         return
-
 
     @staticmethod
     def post_patch(model, tokenizer):
@@ -661,6 +652,3 @@ class FastGemma2Model(FastLlamaModel):
             gc.collect()
             torch.cuda.empty_cache()
         return model, tokenizer
-
-
-

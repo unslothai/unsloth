@@ -1,3 +1,18 @@
+# Copyright 2023-present Daniel Han-Chen, Michael Han-Chen & the Unsloth team. All rights reserved.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Lesser General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU Lesser General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 from unsloth import FastLanguageModel
 from unsloth.utils import attention_dispatch as attention_dispatch_utils
 from unsloth.utils.packing import configure_sample_packing, enable_sample_packing
@@ -24,10 +39,10 @@ def _build_packed_training_setup(tmp_path, device):
 
     try:
         model, tokenizer = FastLanguageModel.from_pretrained(
-            model_name="hf-internal-testing/tiny-random-LlamaForCausalLM",
-            max_seq_length=64,
-            load_in_4bit=False,
-            dtype=dtype,
+            model_name = "hf-internal-testing/tiny-random-LlamaForCausalLM",
+            max_seq_length = 64,
+            load_in_4bit = False,
+            dtype = dtype,
         )
     except OSError as exc:  # pragma: no cover - offline CI
         pytest.skip(f"Requires access to tiny llama checkpoint: {exc}")
@@ -46,25 +61,25 @@ def _build_packed_training_setup(tmp_path, device):
     )
 
     training_args = SFTConfig(
-        per_device_train_batch_size=1,
-        per_device_eval_batch_size=1,
-        gradient_accumulation_steps=1,
-        dataset_text_field="text",
-        max_length=64,
-        logging_steps=1,
-        max_steps=1,
-        fp16=device.type == "cuda" and not torch.cuda.is_bf16_supported(),
-        bf16=device.type == "cuda" and torch.cuda.is_bf16_supported(),
-        dataset_num_proc=1,
-        output_dir=str(tmp_path),
+        per_device_train_batch_size = 1,
+        per_device_eval_batch_size = 1,
+        gradient_accumulation_steps = 1,
+        dataset_text_field = "text",
+        max_length = 64,
+        logging_steps = 1,
+        max_steps = 1,
+        fp16 = device.type == "cuda" and not torch.cuda.is_bf16_supported(),
+        bf16 = device.type == "cuda" and torch.cuda.is_bf16_supported(),
+        dataset_num_proc = 1,
+        output_dir = str(tmp_path),
     )
     configure_sample_packing(training_args)
 
     trainer = SFTTrainer(
-        model=model,
-        processing_class=tokenizer,
-        train_dataset=dataset,
-        args=training_args,
+        model = model,
+        processing_class = tokenizer,
+        train_dataset = dataset,
+        args = training_args,
     )
 
     enable_sample_packing(model, trainer)
@@ -118,19 +133,19 @@ class _DummyModel(torch.nn.Module):
         super().__init__()
         self.max_seq_length = 16
         self.child = _DummyChild()
-        self.config = SimpleNamespace(_attn_implementation="sdpa")
-        self.generation_config = SimpleNamespace(attn_implementation="sdpa")
+        self.config = SimpleNamespace(_attn_implementation = "sdpa")
+        self.generation_config = SimpleNamespace(attn_implementation = "sdpa")
 
 
 class _DummyTrainer:
     def __init__(self):
-        self.args = SimpleNamespace(remove_unused_columns=True)
+        self.args = SimpleNamespace(remove_unused_columns = True)
         self.data_collator = DataCollatorForLanguageModeling(
-            pad_token_id=0,
-            completion_only_loss=False,
-            padding_free=True,
-            return_position_ids=False,
-            return_tensors="pt",
+            pad_token_id = 0,
+            completion_only_loss = False,
+            padding_free = True,
+            return_position_ids = False,
+            return_tensors = "pt",
         )
 
 
@@ -166,11 +181,11 @@ def test_enable_sample_packing():
     assert "packed_seq_lengths" in batch
     assert torch.equal(
         batch["packed_seq_lengths"],
-        torch.tensor([2, 1, 3], dtype=torch.int32),
+        torch.tensor([2, 1, 3], dtype = torch.int32),
     )
 
     assert batch["input_ids"].shape == (1, 6)
-    expected_positions = torch.tensor([0, 1, 0, 0, 1, 2], dtype=torch.long)
+    expected_positions = torch.tensor([0, 1, 0, 0, 1, 2], dtype = torch.long)
     assert torch.equal(batch["position_ids"].view(-1)[:6], expected_positions)
 
 
@@ -198,10 +213,10 @@ def test_enable_sample_packing_trl_collator(tmp_path):
     assert batch["input_ids"].shape == (1, 6)
     assert torch.equal(
         batch["packed_seq_lengths"],
-        torch.tensor([2, 1, 3], dtype=torch.int32),
+        torch.tensor([2, 1, 3], dtype = torch.int32),
     )
 
-    expected_positions = torch.tensor([0, 1, 0, 0, 1, 2], dtype=torch.long)
+    expected_positions = torch.tensor([0, 1, 0, 0, 1, 2], dtype = torch.long)
     assert torch.equal(batch["position_ids"].view(-1)[:6], expected_positions)
 
     if hasattr(trainer, "accelerator"):
@@ -223,7 +238,10 @@ def test_packing_sdpa(tmp_path):
     assert "position_ids" in batch
     flat_positions = batch["position_ids"].reshape(-1)[:packed_tokens]
     expected_positions = torch.cat(
-        [torch.arange(length, dtype=torch.long) for length in batch["packed_seq_lengths"].tolist()]
+        [
+            torch.arange(length, dtype = torch.long)
+            for length in batch["packed_seq_lengths"].tolist()
+        ]
     )
     assert torch.equal(flat_positions.cpu(), expected_positions)
     inputs = _trim_batch_to_total_tokens(batch, packed_tokens)
@@ -238,23 +256,27 @@ def test_packing_sdpa(tmp_path):
     original_mask = attention_dispatch_utils.build_sdpa_packed_attention_mask
     mask_calls = []
 
-    def _capture_mask(seq_info, dtype, device, *, sliding_window=None):
+    def _capture_mask(seq_info, dtype, device, *, sliding_window = None):
         mask_calls.append(tuple(seq_info[0].tolist()))
         return original_mask(
             seq_info,
-            dtype=dtype,
-            device=device,
-            sliding_window=sliding_window,
+            dtype = dtype,
+            device = device,
+            sliding_window = sliding_window,
         )
 
     with ExitStack() as stack:
-        stack.enter_context(patch.object(attention_dispatch_utils, "HAS_FLASH_ATTENTION", False))
-        stack.enter_context(patch.object(attention_dispatch_utils, "HAS_XFORMERS", False))
+        stack.enter_context(
+            patch.object(attention_dispatch_utils, "HAS_FLASH_ATTENTION", False)
+        )
+        stack.enter_context(
+            patch.object(attention_dispatch_utils, "HAS_XFORMERS", False)
+        )
         stack.enter_context(
             patch.object(
                 attention_dispatch_utils,
                 "build_sdpa_packed_attention_mask",
-                side_effect=_capture_mask,
+                side_effect = _capture_mask,
             )
         )
         with torch.no_grad():

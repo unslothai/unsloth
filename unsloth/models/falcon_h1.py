@@ -187,7 +187,6 @@ def FalconH1Attention_fast_forward(
     return attn_output, attn_weights, past_key_value
 
 
-
 torch_matmul = torch.matmul
 
 
@@ -393,8 +392,6 @@ def FalconH1Attention_fast_forward_inference(
     return A, (Kn, Vn)
 
 
-
-
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/falcon_h1/modeling_falcon_h1.py
 def FalconH1DecoderLayer_fast_forward(
     self,
@@ -506,8 +503,6 @@ def FalconH1DecoderLayer_fast_forward(
     if use_cache:
         outputs += (present_key_value,)
     return outputs
-
-
 
 
 def _FalconH1_fast_forward_inference(
@@ -699,14 +694,10 @@ def _fast_prepare_inputs_for_generation(
     return model_inputs
 
 
-
-
 def fix_prepare_inputs_for_generation(module):
     # Fix prepare_inputs_for_generation
     if hasattr(module, "prepare_inputs_for_generation"):
         module.prepare_inputs_for_generation = _fast_prepare_inputs_for_generation
-
-
 
 
 class FastFalconH1Model(FastLlamaModel):
@@ -742,7 +733,6 @@ class FastFalconH1Model(FastLlamaModel):
         )
         return
 
-
     @staticmethod
     def from_pretrained(  # TODO: Change after release
         model_name = "Qwen/FalconH1-7B",
@@ -772,6 +762,3 @@ class FastFalconH1Model(FastLlamaModel):
             trust_remote_code = trust_remote_code,
             **kwargs,
         )
-
-
-

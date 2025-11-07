@@ -165,8 +165,6 @@ def __get_model_name(
     return None
 
 
-
-
 def _get_new_mapper():
     try:
         import requests
@@ -242,6 +240,7 @@ def get_model_name(model_name, load_in_4bit = True, load_in_fp8 = False):
         # Handle on the fly TorchAO FP8 quantization
         return new_model_name
     return new_model_name if new_model_name is not None else model_name
+<<<<<<< HEAD
 
 
 <<<<<<< HEAD
@@ -432,3 +431,5 @@ def _get_fp8_mode_and_check_settings(
     return fp8_mode
 =======
 >>>>>>> 96b06fb (ddp working OOTB with CLI)
+=======
+>>>>>>> 7986a09 (LGPL license headers)

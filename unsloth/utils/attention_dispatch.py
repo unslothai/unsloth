@@ -1,3 +1,18 @@
+# Copyright 2023-present Daniel Han-Chen, Michael Han-Chen & the Unsloth team. All rights reserved.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Lesser General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU Lesser General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 """Shared helpers for attention backend selection and execution."""
 
 from __future__ import annotations
@@ -37,7 +52,7 @@ XFORMERS_BLOCK_DIAG_CLS = (
 class AttentionConfig:
     """
     Per-layer attention metadata.
-    
+
     NOTE(djsaunde): I had originally intended this to be populated once per layer, but
         we're currently constructing it on every forward pass since it can possibly be
         invalid from one forward pass to the next (e.g., switching from training to
@@ -134,8 +149,8 @@ def run_attention(
     elif backend == XFORMERS:
         attn_bias = build_xformers_block_causal_mask(
             context.seq_info,
-            sliding_window=sliding_window,
-            base_mask=context.causal_mask,
+            sliding_window = sliding_window,
+            base_mask = context.causal_mask,
         )
 
         Q_t = Q.transpose(1, 2)
@@ -160,11 +175,12 @@ def run_attention(
                 K_mod = K_mod.reshape(bsz, kv_seq_len, n_heads, head_dim)
                 V_mod = V_mod.reshape(bsz, kv_seq_len, n_heads, head_dim)
             else:
-                Q_mod = Q_t.view(bsz, q_len, config.n_kv_heads, config.n_groups, head_dim)
+                Q_mod = Q_t.view(
+                    bsz, q_len, config.n_kv_heads, config.n_groups, head_dim
+                )
 
-        has_block = (
-            XFORMERS_BLOCK_DIAG_CLS is not None
-            and isinstance(attn_bias, XFORMERS_BLOCK_DIAG_CLS)
+        has_block = XFORMERS_BLOCK_DIAG_CLS is not None and isinstance(
+            attn_bias, XFORMERS_BLOCK_DIAG_CLS
         )
 
         if config.n_groups != 1 and not requires_grad and has_block:
@@ -186,7 +202,7 @@ def run_attention(
             Q_mod,
             K_mod,
             V_mod,
-            attn_bias=attn_bias,
+            attn_bias = attn_bias,
             **xformers_kwargs,
         )
 
@@ -208,9 +224,9 @@ def run_attention(
         if context.seq_info is not None and local_mask is None:
             local_mask = build_sdpa_packed_attention_mask(
                 context.seq_info,
-                dtype=Q.dtype,
-                device=Q.device,
-                sliding_window=sliding_window,
+                dtype = Q.dtype,
+                device = Q.device,
+                sliding_window = sliding_window,
             )
         else:
             q_len_local = Q.shape[-2]
@@ -251,5 +267,5 @@ __all__ = [
     "AttentionConfig",
     "AttentionContext",
     "select_attention_backend",
-    "run_attention"
+    "run_attention",
 ]
