@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
+import os
 import warnings
 from dataclasses import dataclass, field
 from typing import Optional
@@ -21,6 +23,7 @@ import trl
 import inspect
 from trl import SFTTrainer
 from . import is_bfloat16_supported
+from unsloth.utils import configure_sample_packing, enable_sample_packing
 from unsloth_zoo.training_utils import (
     unsloth_train as _unsloth_train,
 )
@@ -38,8 +41,44 @@ __all__ = [
     "UnslothVisionDataCollator",
 ]
 
+logger = logging.getLogger(__name__)
+
+_AUTO_PACKING_ENV_DISABLED = os.environ.get(
+    "UNSLOTH_DISABLE_AUTO_PACKING", ""
+).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _should_auto_pack(config) -> bool:
+    if config is None or _AUTO_PACKING_ENV_DISABLED:
+        return False
+    return not getattr(config, "_unsloth_disable_auto_packing", False)
+
+
+def _disable_sample_packing(config):
+    if config is None:
+        return
+    for attr, value in (("packing", False), ("padding_free", False)):
+        if hasattr(config, attr):
+            setattr(config, attr, value)
+    if hasattr(config, "remove_unused_columns"):
+        setattr(config, "remove_unused_columns", True)
+    setattr(config, "_unsloth_disable_auto_packing", True)
+
+
+_AUTO_PACK_SKIP_MESSAGES = (
+    "Packing is not supported for vision-language models.",
+    "Padding-free training is yet not supported for vision-language models.",
+    "Passing a custom data collator is not supported when using padding-free.",
+)
+
+
+def _should_skip_auto_packing_error(exc: Exception) -> bool:
+    message = str(exc)
+    return any(msg in message for msg in _AUTO_PACK_SKIP_MESSAGES)
+
+
 # Unsloth gradient accumulation fix:
-from transformers import __version__ as transformers_version
+from transformers import __version__ as transformers_version, ProcessorMixin
 
 if Version(transformers_version) > Version("4.45.2"):
 
@@ -211,6 +250,69 @@ def _backwards_compatible_trainer(trainer_class, config_class):
     return new_init
 
 
+def _patch_sft_trainer_auto_packing(trl_module):
+    sft_trainer = getattr(trl_module, "SFTTrainer", None)
+    if sft_trainer is None:
+        return
+    if getattr(sft_trainer, "_unsloth_auto_packing_wrapped", False):
+        return
+
+    original_init = sft_trainer.__init__
+
+    @wraps(original_init)
+    def new_init(self, *args, **kwargs):
+        config_arg = None
+        if len(args) >= 2:
+            config_arg = args[1]
+        else:
+            config_arg = kwargs.get("args")
+
+        processing_class = kwargs.get("processing_class") or kwargs.get("tokenizer")
+        data_collator = kwargs.get("data_collator")
+
+        blocked = data_collator is not None or isinstance(
+            processing_class, ProcessorMixin
+        )
+        if blocked and _should_auto_pack(config_arg):
+            reason = (
+                "custom data collator"
+                if data_collator is not None
+                else "processor-based model"
+            )
+            logger.info(
+                "Unsloth: Auto sample packing skipped (%s detected). Use UNSLOTH_DISABLE_AUTO_PACKING=1 to silence.",
+                reason,
+            )
+
+        auto_pack_active = False
+        if _should_auto_pack(config_arg) and not blocked:
+            configure_sample_packing(config_arg)
+            auto_pack_active = True
+            logger.info("Unsloth: Sample packing auto-enabled for SFTTrainer instance.")
+
+        try:
+            original_init(self, *args, **kwargs)
+        except ValueError as exc:
+            if auto_pack_active and _should_skip_auto_packing_error(exc):
+                logger.info(
+                    "Unsloth: Auto sample packing failed because trainer reported an incompatible setup (%s).",
+                    exc,
+                )
+                _disable_sample_packing(config_arg)
+                auto_pack_active = False
+                original_init(self, *args, **kwargs)
+            else:
+                raise
+
+        trainer_args = getattr(self, "args", None)
+        if auto_pack_active and _should_auto_pack(trainer_args):
+            enable_sample_packing(self.model, self)
+            print("Unsloth: Sample packing enabled.")
+
+    sft_trainer.__init__ = new_init
+    sft_trainer._unsloth_auto_packing_wrapped = True
+
+
 def _patch_trl_trainer():
     import trl
 
@@ -236,5 +338,8 @@ def _patch_trl_trainer():
             )
         except:
             continue
+
+    if not _AUTO_PACKING_ENV_DISABLED:
+        _patch_sft_trainer_auto_packing(trl)
 
     trl.__UNSLOTH_BACKWARDS_COMPATIBLE__ = True
