@@ -15,7 +15,11 @@
 
 from unsloth import FastLanguageModel
 from unsloth.utils import attention_dispatch as attention_dispatch_utils
-from unsloth.utils.packing import configure_sample_packing, enable_sample_packing
+from unsloth.utils.packing import (
+    configure_sample_packing,
+    enable_sample_packing,
+    mask_packed_sequence_boundaries,
+)
 
 from collections.abc import Iterable
 from contextlib import ExitStack
@@ -111,6 +115,31 @@ def _trim_batch_to_total_tokens(data, total_tokens):
         else:
             trimmed[key] = value
     return trimmed
+
+
+def test_mask_packed_sequence_boundaries_marks_single_row():
+    shift_labels = torch.arange(6, dtype = torch.long).view(1, 6)
+    changed = mask_packed_sequence_boundaries(
+        shift_labels,
+        torch.tensor([2, 1, 3], dtype = torch.int32),
+    )
+    assert changed is True
+    flat = shift_labels.view(-1)
+    assert flat[1].item() == -100
+    assert flat[2].item() == -100
+    assert flat[5].item() == -100
+    assert flat[0].item() != -100
+
+
+def test_mask_packed_sequence_boundaries_across_multiple_rows():
+    shift_labels = torch.arange(10, dtype = torch.long).view(2, 5)
+    lengths = torch.tensor([3, 2, 4, 1], dtype = torch.int32)
+    changed = mask_packed_sequence_boundaries(shift_labels, lengths)
+    assert changed is True
+    flat = shift_labels.view(-1)
+    for idx in (2, 4, 8, 9):
+        assert flat[idx].item() == -100
+    assert torch.any(flat != -100)
 
 
 def test_configure_sample_packing():
@@ -255,6 +284,7 @@ def test_packing_sdpa(tmp_path):
 
     original_mask = attention_dispatch_utils.build_sdpa_packed_attention_mask
     mask_calls = []
+    captured_loss_labels = {}
 
     def _capture_mask(seq_info, dtype, device, *, sliding_window = None):
         mask_calls.append(tuple(seq_info[0].tolist()))
@@ -264,6 +294,10 @@ def test_packing_sdpa(tmp_path):
             device = device,
             sliding_window = sliding_window,
         )
+
+    def _capture_loss(*, logits, labels, **loss_kwargs):
+        captured_loss_labels["labels"] = labels.detach().to("cpu")
+        return torch.zeros((), device = logits.device, dtype = logits.dtype)
 
     with ExitStack() as stack:
         stack.enter_context(
@@ -279,11 +313,29 @@ def test_packing_sdpa(tmp_path):
                 side_effect = _capture_mask,
             )
         )
+        stack.enter_context(
+            patch.object(
+                llama_mod,
+                "fast_cross_entropy_loss",
+                side_effect = _capture_loss,
+            )
+        )
         with torch.no_grad():
             outputs = model(**inputs)
 
     assert mask_calls, "SDPA packed mask was not constructed"
     assert outputs.loss is not None
+    assert "labels" in captured_loss_labels
+    flat_loss_labels = captured_loss_labels["labels"].reshape(-1)
+    boundaries = (
+        torch.cumsum(
+            batch["packed_seq_lengths"].to(device = "cpu", dtype = torch.long), dim = 0
+        )
+        - 1
+    )
+    for idx in boundaries.tolist():
+        assert flat_loss_labels[idx].item() == -100
+    assert torch.any(flat_loss_labels != -100)
 
     if hasattr(trainer, "accelerator"):
         trainer.accelerator.free_memory()
