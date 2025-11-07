@@ -556,7 +556,6 @@ def LlamaAttention_fast_forward(
         del self.temp_KV
         del self.RH_Q
         del self.attention
-
     bsz, q_len, _ = hidden_states.size()
 
     n_heads = self.config.num_attention_heads
@@ -569,7 +568,7 @@ def LlamaAttention_fast_forward(
     Q = Q.view(bsz, q_len, n_heads, head_dim).transpose(1, 2)
     K = K.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
     V = V.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
-    seq_info = get_packed_info_from_kwargs(kwargs, bsz * q_len, Q.device)
+    seq_info = get_packed_info_from_kwargs(kwargs, Q.device)
 
     kv_seq_len = K.shape[-2]
     if past_key_value is not None:
@@ -1139,6 +1138,7 @@ def _LlamaModel_fast_forward_inference(
         past_key_values,
         position_ids,
         attention_mask = None,
+        **kwargs,
     ):
         input_ids = input_ids[:, : self.max_seq_length]
         bsz, q_len = input_ids.shape

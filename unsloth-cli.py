@@ -39,7 +39,6 @@ def run(args):
     from transformers.utils import strtobool
     from trl import SFTTrainer, SFTConfig
     from unsloth import is_bfloat16_supported
-    from unsloth.utils import configure_sample_packing, enable_sample_packing
     from unsloth.models.loader_utils import prepare_device_map
     import logging
 
@@ -132,12 +131,6 @@ def run(args):
         ddp_find_unused_parameters = False if distributed else None,
     )
 
-    if args.sample_packing:
-        print(
-            f"Unsloth Packing: Sample packing enabled (max_length={args.max_seq_length})."
-        )
-        configure_sample_packing(training_args)
-
     # Initialize trainer
     trainer = SFTTrainer(
         model = model,
@@ -145,9 +138,6 @@ def run(args):
         train_dataset = dataset,
         args = training_args,
     )
-
-    if args.sample_packing:
-        enable_sample_packing(model, trainer)
 
     trainer.train()
 
@@ -340,11 +330,6 @@ if __name__ == "__main__":
         type = int,
         default = 3407,
         help = "Seed for reproducibility, default is 3407.",
-    )
-    training_group.add_argument(
-        "--sample_packing",
-        action = "store_true",
-        help = "Enable cross-example packing using TRL's dataset bin packing.",
     )
 
     report_group = parser.add_argument_group("📊 Report Options")
