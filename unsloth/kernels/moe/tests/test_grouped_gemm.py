@@ -50,29 +50,29 @@ SEED = 0
 # permute_y => permute the output of the grouped GEMM, only done for the second grouped GEMM
 # fuse_mul_post => fuse the multiplication of topk weights in the epilogue of the second grouped GEMM; only used for inference, not currently tested
 def check_valid_config(
-    permute_x, permute_y, use_W1, fuse_mul_post=False, is_backward=False, verbose=False
+    permute_x, permute_y, use_W1, fuse_mul_post = False, is_backward = False, verbose = False
 ):
     use_W2 = not use_W1
 
     if permute_x and permute_y:
         if verbose:
-            print(f"Skipping test: {permute_x=} {permute_y=}")
+            print(f"Skipping test: {permute_x = } {permute_y = }")
         return False
     if use_W2 and permute_x:
         if verbose:
-            print(f"Skipping test: {permute_x=} {use_W2=}")
+            print(f"Skipping test: {permute_x = } {use_W2 = }")
         return False
     if use_W1 and permute_y:
         if verbose:
-            print(f"Skipping test: {permute_y=} {use_W1=}")
+            print(f"Skipping test: {permute_y = } {use_W1 = }")
         return False
     if fuse_mul_post and use_W1:
         if verbose:
-            print(f"Skipping test: {fuse_mul_post=} {use_W1=}")
+            print(f"Skipping test: {fuse_mul_post = } {use_W1 = }")
         return False
     if is_backward and fuse_mul_post:
         if verbose:
-            print(f"Skipping test: {fuse_mul_post=} {is_backward=}")
+            print(f"Skipping test: {fuse_mul_post = } {is_backward = }")
         return False
 
     return True
@@ -122,22 +122,22 @@ def _test_grouped_gemm_forward(
     use_autograd: bool = False,
 ):
     if not check_valid_config(
-        permute_x, permute_y, use_W1=use_W1, fuse_mul_post=fuse_mul_post
+        permute_x, permute_y, use_W1 = use_W1, fuse_mul_post = fuse_mul_post
     ):
         pytest.skip(
-            f"Skipping test due to invalid config: {permute_x=} {permute_y=} {use_W1=} {fuse_mul_post=}"
+            f"Skipping test due to invalid config: {permute_x = } {permute_y = } {use_W1 = } {fuse_mul_post = }"
         )
 
     if use_tma_store and not allow_tma_store:
         pytest.skip("TMA store needs to be debugged due to non-deterministic behavior")
 
     X1, X2, W1, W2, gating_output = make_inputs(
-        M=data_config.bs * data_config.seq_len,
-        N=model_config.intermediate_size,
-        K=model_config.hidden_size,
-        E=model_config.num_experts,
-        topk=model_config.topk,
-        dtype=data_config.dtype,
+        M = data_config.bs * data_config.seq_len,
+        N = model_config.intermediate_size,
+        K = model_config.hidden_size,
+        E = model_config.num_experts,
+        topk = model_config.topk,
+        dtype = data_config.dtype,
     )
     topk = model_config.topk
     use_sigmoid = model_config.use_sigmoid
@@ -150,24 +150,26 @@ def _test_grouped_gemm_forward(
     W = W1 if use_W1 else W2
 
     if use_W1:
-        assert X.shape == (num_tokens, K), (
-            f"X.shape: {X.shape}, num_tokens: {num_tokens}, K: {K}"
-        )
+        assert X.shape == (
+            num_tokens,
+            K,
+        ), f"X.shape: {X.shape}, num_tokens: {num_tokens}, K: {K}"
     else:
-        assert X.shape == (num_tokens * topk, N), (
-            f"X.shape: {X.shape}, num_tokens: {num_tokens}, topk: {topk}, N: {N}"
-        )
+        assert X.shape == (
+            num_tokens * topk,
+            N,
+        ), f"X.shape: {X.shape}, num_tokens: {num_tokens}, topk: {topk}, N: {N}"
 
     total_tokens = num_tokens * topk
     output_shape = (total_tokens, 2 * N) if use_W1 else (total_tokens, K)
 
     topk_weights, topk_ids = calculate_topk(
-        gating_output, topk, use_sigmoid=use_sigmoid, renormalize=renormalize
+        gating_output, topk, use_sigmoid = use_sigmoid, renormalize = renormalize
     )
     topk_weights = topk_weights.view(-1)  # num_tokens * topk
     topk_ids = topk_ids.view(-1)  # num_tokens * topk
 
-    expert_token_counts, gather_indices = get_routing_indices(topk_ids, num_experts=E)
+    expert_token_counts, gather_indices = get_routing_indices(topk_ids, num_experts = E)
     assert len(gather_indices) == total_tokens
     assert len(expert_token_counts) == E
 
@@ -177,11 +179,11 @@ def _test_grouped_gemm_forward(
 
     Xref = Xperm
 
-    assert Xperm.shape == (total_tokens, K) if use_W1 else (total_tokens, N), (
-        f"Xperm.shape: {Xperm.shape}, total_tokens: {total_tokens}, K: {K}"
-    )
+    assert (
+        Xperm.shape == (total_tokens, K) if use_W1 else (total_tokens, N)
+    ), f"Xperm.shape: {Xperm.shape}, total_tokens: {total_tokens}, K: {K}"
 
-    ref_output = torch_grouped_gemm(X=Xref, W=W, m_sizes=expert_token_counts)
+    ref_output = torch_grouped_gemm(X = Xref, W = W, m_sizes = expert_token_counts)
 
     if permute_x:
         X_test = X
@@ -202,55 +204,55 @@ def _test_grouped_gemm_forward(
         from grouped_gemm.interface import grouped_gemm
 
         kernel_config_fwd = KernelConfigForward(
-            BLOCK_SIZE_M=BLOCK_SIZE_M,
-            BLOCK_SIZE_N=BLOCK_SIZE_N,
-            BLOCK_SIZE_K=BLOCK_SIZE_K,
-            num_warps=num_warps,
-            num_stages=num_stages,
-            permute_x=permute_x,
-            permute_y=permute_y,
-            fuse_mul_post=fuse_mul_post,
-            use_tma_load_w=use_tma_load_w,
-            use_tma_load_x=use_tma_load_x,
-            use_tma_store=use_tma_store,
+            BLOCK_SIZE_M = BLOCK_SIZE_M,
+            BLOCK_SIZE_N = BLOCK_SIZE_N,
+            BLOCK_SIZE_K = BLOCK_SIZE_K,
+            num_warps = num_warps,
+            num_stages = num_stages,
+            permute_x = permute_x,
+            permute_y = permute_y,
+            fuse_mul_post = fuse_mul_post,
+            use_tma_load_w = use_tma_load_w,
+            use_tma_load_x = use_tma_load_x,
+            use_tma_store = use_tma_store,
         )
 
         test_output = grouped_gemm(
-            X=X_test,
-            W=W,
-            topk=topk,
-            m_sizes=expert_token_counts,
-            gather_indices=gather_indices,
-            topk_weights=topk_weights if fuse_mul_post else None,
-            permute_x=permute_x,
-            permute_y=permute_y,
-            fuse_mul_post=fuse_mul_post,
-            kernel_config_fwd=kernel_config_fwd,
-            autotune=autotune,
-            is_first_gemm=use_W1,
+            X = X_test,
+            W = W,
+            topk = topk,
+            m_sizes = expert_token_counts,
+            gather_indices = gather_indices,
+            topk_weights = topk_weights if fuse_mul_post else None,
+            permute_x = permute_x,
+            permute_y = permute_y,
+            fuse_mul_post = fuse_mul_post,
+            kernel_config_fwd = kernel_config_fwd,
+            autotune = autotune,
+            is_first_gemm = use_W1,
         )
     # Use manual interface
     else:
         test_output = grouped_gemm_forward(
-            X=X_test,
-            W=W,
-            topk=topk,
-            m_sizes=expert_token_counts,
-            gather_indices=gather_indices,
-            topk_weights=topk_weights if fuse_mul_post else None,
-            permute_x=permute_x,
-            permute_y=permute_y,
-            fuse_mul_post=fuse_mul_post,
-            use_tma_load_w=use_tma_load_w,
-            use_tma_load_x=use_tma_load_x,
-            use_tma_store=use_tma_store,
-            autotune=autotune,
-            BLOCK_SIZE_M=BLOCK_SIZE_M,
-            BLOCK_SIZE_N=BLOCK_SIZE_N,
-            BLOCK_SIZE_K=BLOCK_SIZE_K,
-            num_warps=num_warps,
-            num_stages=num_stages,
-            flatten=flatten,
+            X = X_test,
+            W = W,
+            topk = topk,
+            m_sizes = expert_token_counts,
+            gather_indices = gather_indices,
+            topk_weights = topk_weights if fuse_mul_post else None,
+            permute_x = permute_x,
+            permute_y = permute_y,
+            fuse_mul_post = fuse_mul_post,
+            use_tma_load_w = use_tma_load_w,
+            use_tma_load_x = use_tma_load_x,
+            use_tma_store = use_tma_store,
+            autotune = autotune,
+            BLOCK_SIZE_M = BLOCK_SIZE_M,
+            BLOCK_SIZE_N = BLOCK_SIZE_N,
+            BLOCK_SIZE_K = BLOCK_SIZE_K,
+            num_warps = num_warps,
+            num_stages = num_stages,
+            flatten = flatten,
         )
     assert ref_output.shape == output_shape
     assert test_output.shape == output_shape
@@ -265,26 +267,26 @@ def _test_grouped_gemm_forward(
             test_output = unpermute(test_output, gather_indices)
         ref_output = ref_output * topk_weights[:, None]
 
-    assert torch.allclose(ref_output, test_output, atol=atol, rtol=rtol), (
-        f"Grouped gemm forward failed: {(ref_output - test_output).abs().max().item():.6f}"
-    )
+    assert torch.allclose(
+        ref_output, test_output, atol = atol, rtol = rtol
+    ), f"Grouped gemm forward failed: {(ref_output - test_output).abs().max().item():.6f}"
 
 
 # NOTE: Fuse multiplication of topk weights is only supported for inference and not training, although this may change in the future; not currently tested.
 @pytest.mark.parametrize(
     "kernel_config",
     KERNEL_CONFIGS_FWD,
-    ids=lambda x: x.to_string(include_tuning_params=True, include_tma=True),
+    ids = lambda x: x.to_string(include_tuning_params = True, include_tma = True),
 )
 @pytest.mark.parametrize(
     "model_config",
     SMALL_MODEL_CONFIGS + [QWEN_MODEL_CONFIG, LLAMA_MODEL_CONFIG],
-    ids=lambda x: f"topk={x.topk} num_experts={x.num_experts} hidden_size={x.hidden_size} intermediate_size={x.intermediate_size}",
+    ids = lambda x: f"topk={x.topk} num_experts={x.num_experts} hidden_size={x.hidden_size} intermediate_size={x.intermediate_size}",
 )
 @pytest.mark.parametrize(
-    "data_config", DATA_CONFIGS, ids=lambda x: f"seq_len={x.seq_len} dtype={x.dtype}"
+    "data_config", DATA_CONFIGS, ids = lambda x: f"seq_len={x.seq_len} dtype={x.dtype}"
 )
-@pytest.mark.parametrize("use_W1", [True, False], ids=lambda x: f"use_W1={x}")
+@pytest.mark.parametrize("use_W1", [True, False], ids = lambda x: f"use_W1={x}")
 def test_grouped_gemm_forward_manual(
     data_config: DataConfig,
     model_config: ModelConfig,
@@ -292,9 +294,9 @@ def test_grouped_gemm_forward_manual(
     use_W1: bool,
 ):
     _test_grouped_gemm_forward(
-        data_config=data_config,
-        model_config=model_config,
-        use_W1=use_W1,
+        data_config = data_config,
+        model_config = model_config,
+        use_W1 = use_W1,
         **asdict(kernel_config),
     )
 
@@ -302,17 +304,17 @@ def test_grouped_gemm_forward_manual(
 @pytest.mark.parametrize(
     "kernel_config",
     KERNEL_CONFIGS_FWD,
-    ids=lambda x: x.to_string(include_tuning_params=True, include_tma=True),
+    ids = lambda x: x.to_string(include_tuning_params = True, include_tma = True),
 )
 @pytest.mark.parametrize(
     "model_config",
     SMALL_MODEL_CONFIGS + [QWEN_MODEL_CONFIG, LLAMA_MODEL_CONFIG],
-    ids=lambda x: f"topk={x.topk} num_experts={x.num_experts} hidden_size={x.hidden_size} intermediate_size={x.intermediate_size}",
+    ids = lambda x: f"topk={x.topk} num_experts={x.num_experts} hidden_size={x.hidden_size} intermediate_size={x.intermediate_size}",
 )
 @pytest.mark.parametrize(
-    "data_config", DATA_CONFIGS, ids=lambda x: f"seq_len={x.seq_len} dtype={x.dtype}"
+    "data_config", DATA_CONFIGS, ids = lambda x: f"seq_len={x.seq_len} dtype={x.dtype}"
 )
-@pytest.mark.parametrize("use_W1", [True, False], ids=lambda x: f"use_W1={x}")
+@pytest.mark.parametrize("use_W1", [True, False], ids = lambda x: f"use_W1={x}")
 def test_grouped_gemm_forward_manual_autograd(
     data_config: DataConfig,
     model_config: ModelConfig,
@@ -320,32 +322,32 @@ def test_grouped_gemm_forward_manual_autograd(
     use_W1: bool,
 ):
     _test_grouped_gemm_forward(
-        data_config=data_config,
-        model_config=model_config,
-        use_W1=use_W1,
-        use_autograd=True,
+        data_config = data_config,
+        model_config = model_config,
+        use_W1 = use_W1,
+        use_autograd = True,
         **asdict(kernel_config),
     )
 
 
 @pytest.mark.parametrize(
-    "num_autotune_configs", [10], ids=lambda x: f"num_autotune_configs={x}"
+    "num_autotune_configs", [10], ids = lambda x: f"num_autotune_configs={x}"
 )
 @pytest.mark.parametrize(
-    "permute_x", [True, False], ids=lambda x: "permute_x" if x else ""
+    "permute_x", [True, False], ids = lambda x: "permute_x" if x else ""
 )
 @pytest.mark.parametrize(
-    "permute_y", [True, False], ids=lambda x: "permute_y" if x else ""
+    "permute_y", [True, False], ids = lambda x: "permute_y" if x else ""
 )
 @pytest.mark.parametrize(
     "model_config",
     [LLAMA_MODEL_CONFIG, QWEN_MODEL_CONFIG],
-    ids=lambda x: f"topk={x.topk} num_experts={x.num_experts} hidden_size={x.hidden_size} intermediate_size={x.intermediate_size}",
+    ids = lambda x: f"topk={x.topk} num_experts={x.num_experts} hidden_size={x.hidden_size} intermediate_size={x.intermediate_size}",
 )
 @pytest.mark.parametrize(
-    "data_config", DATA_CONFIGS, ids=lambda x: f"seq_len={x.seq_len} dtype={x.dtype}"
+    "data_config", DATA_CONFIGS, ids = lambda x: f"seq_len={x.seq_len} dtype={x.dtype}"
 )
-@pytest.mark.parametrize("use_W1", [True, False], ids=lambda x: f"use_W1={x}")
+@pytest.mark.parametrize("use_W1", [True, False], ids = lambda x: f"use_W1={x}")
 def test_grouped_gemm_forward_autotune(
     data_config: DataConfig,
     model_config: ModelConfig,
@@ -355,35 +357,35 @@ def test_grouped_gemm_forward_autotune(
     num_autotune_configs: int,
 ):
     _test_grouped_gemm_forward(
-        data_config=data_config,
-        model_config=model_config,
-        permute_x=permute_x,
-        permute_y=permute_y,
-        use_W1=use_W1,
-        num_autotune_configs=num_autotune_configs,
-        autotune=True,
-        use_autograd=False,
+        data_config = data_config,
+        model_config = model_config,
+        permute_x = permute_x,
+        permute_y = permute_y,
+        use_W1 = use_W1,
+        num_autotune_configs = num_autotune_configs,
+        autotune = True,
+        use_autograd = False,
     )
 
 
 @pytest.mark.parametrize(
-    "num_autotune_configs", [10], ids=lambda x: f"num_autotune_configs={x}"
+    "num_autotune_configs", [10], ids = lambda x: f"num_autotune_configs={x}"
 )
 @pytest.mark.parametrize(
-    "permute_x", [True, False], ids=lambda x: "permute_x" if x else ""
+    "permute_x", [True, False], ids = lambda x: "permute_x" if x else ""
 )
 @pytest.mark.parametrize(
-    "permute_y", [True, False], ids=lambda x: "permute_y" if x else ""
+    "permute_y", [True, False], ids = lambda x: "permute_y" if x else ""
 )
 @pytest.mark.parametrize(
     "model_config",
     [LLAMA_MODEL_CONFIG, QWEN_MODEL_CONFIG],
-    ids=lambda x: f"topk={x.topk} num_experts={x.num_experts} hidden_size={x.hidden_size} intermediate_size={x.intermediate_size}",
+    ids = lambda x: f"topk={x.topk} num_experts={x.num_experts} hidden_size={x.hidden_size} intermediate_size={x.intermediate_size}",
 )
 @pytest.mark.parametrize(
-    "data_config", DATA_CONFIGS, ids=lambda x: f"seq_len={x.seq_len} dtype={x.dtype}"
+    "data_config", DATA_CONFIGS, ids = lambda x: f"seq_len={x.seq_len} dtype={x.dtype}"
 )
-@pytest.mark.parametrize("use_W1", [True, False], ids=lambda x: f"use_W1={x}")
+@pytest.mark.parametrize("use_W1", [True, False], ids = lambda x: f"use_W1={x}")
 def test_grouped_gemm_forward_autotune_autograd(
     data_config: DataConfig,
     model_config: ModelConfig,
@@ -393,14 +395,14 @@ def test_grouped_gemm_forward_autotune_autograd(
     num_autotune_configs: int,
 ):
     _test_grouped_gemm_forward(
-        data_config=data_config,
-        model_config=model_config,
-        permute_x=permute_x,
-        permute_y=permute_y,
-        use_W1=use_W1,
-        num_autotune_configs=num_autotune_configs,
-        autotune=True,
-        use_autograd=True,
+        data_config = data_config,
+        model_config = model_config,
+        permute_x = permute_x,
+        permute_y = permute_y,
+        use_W1 = use_W1,
+        num_autotune_configs = num_autotune_configs,
+        autotune = True,
+        use_autograd = True,
     )
 
 
@@ -459,9 +461,9 @@ def _test_grouped_gemm_backward_dX(
     use_autograd: bool = False,
     fuse_mul_post: bool = False,
 ):
-    if not check_valid_config(permute_x, permute_y, use_W1=use_W1, is_backward=True):
+    if not check_valid_config(permute_x, permute_y, use_W1 = use_W1, is_backward = True):
         pytest.skip(
-            f"Skipping test due to invalid config: {permute_x=} {permute_y=} {use_W1=}"
+            f"Skipping test due to invalid config: {permute_x = } {permute_y = } {use_W1 = }"
         )
 
     if use_tma_store and not allow_tma_store:
@@ -482,13 +484,13 @@ def _test_grouped_gemm_backward_dX(
 
     use_W2 = not use_W1
     X1, X2, W1, W2, gating_output = make_inputs(
-        M=data_config.bs * data_config.seq_len,
-        N=model_config.intermediate_size,
-        K=model_config.hidden_size,
-        E=model_config.num_experts,
-        topk=model_config.topk,
-        dtype=data_config.dtype,
-        requires_grad=True,
+        M = data_config.bs * data_config.seq_len,
+        N = model_config.intermediate_size,
+        K = model_config.hidden_size,
+        E = model_config.num_experts,
+        topk = model_config.topk,
+        dtype = data_config.dtype,
+        requires_grad = True,
     )
     topk = model_config.topk
     num_experts = model_config.num_experts
@@ -504,23 +506,25 @@ def _test_grouped_gemm_backward_dX(
     W = W1 if use_W1 else W2
 
     if use_W1:
-        assert X.shape == (num_tokens, K), (
-            f"X.shape: {X.shape}, num_tokens: {num_tokens}, K: {K}"
-        )
+        assert X.shape == (
+            num_tokens,
+            K,
+        ), f"X.shape: {X.shape}, num_tokens: {num_tokens}, K: {K}"
     else:
-        assert X.shape == (total_tokens, N), (
-            f"X.shape: {X.shape}, total_tokens: {total_tokens}, N: {N}"
-        )
+        assert X.shape == (
+            total_tokens,
+            N,
+        ), f"X.shape: {X.shape}, total_tokens: {total_tokens}, N: {N}"
 
     W_test = W.detach().clone().requires_grad_(True)
 
     topk_weights, topk_ids = calculate_topk(
-        gating_output, topk, use_sigmoid=use_sigmoid, renormalize=renormalize
+        gating_output, topk, use_sigmoid = use_sigmoid, renormalize = renormalize
     )
     topk_weights = topk_weights.view(-1)  # num_tokens * topk
     topk_ids = topk_ids.view(-1)  # num_tokens * topk
 
-    expert_token_counts, gather_indices = get_routing_indices(topk_ids, num_experts=E)
+    expert_token_counts, gather_indices = get_routing_indices(topk_ids, num_experts = E)
     assert len(gather_indices) == total_tokens
     assert len(expert_token_counts) == num_experts
 
@@ -535,10 +539,10 @@ def _test_grouped_gemm_backward_dX(
     assert Xperm.shape == (total_tokens, K) if use_W1 else (total_tokens, N)
 
     output_shape = (total_tokens, 2 * N) if use_W1 else (total_tokens, K)
-    ref_output = torch_grouped_gemm(X=Xperm, W=W, m_sizes=expert_token_counts)
-    assert ref_output.shape == output_shape, (
-        f"ref_output.shape: {ref_output.shape}, output_shape: {output_shape}"
-    )
+    ref_output = torch_grouped_gemm(X = Xperm, W = W, m_sizes = expert_token_counts)
+    assert (
+        ref_output.shape == output_shape
+    ), f"ref_output.shape: {ref_output.shape}, output_shape: {output_shape}"
 
     if permute_y:
         ref_output = unpermute(ref_output, gather_indices)
@@ -566,14 +570,14 @@ def _test_grouped_gemm_backward_dX(
         if not autotune:
             kernel_config_fwd = KernelConfigForward()
             kernel_config_bwd_dX = KernelConfigBackward_dX(
-                use_tma_load_dy=use_tma_load_dy,
-                use_tma_load_w=use_tma_load_w,
-                use_tma_store=use_tma_store,
-                BLOCK_SIZE_M=BLOCK_SIZE_M,
-                BLOCK_SIZE_N=BLOCK_SIZE_N,
-                BLOCK_SIZE_K=BLOCK_SIZE_K,
-                num_warps=num_warps,
-                num_stages=num_stages,
+                use_tma_load_dy = use_tma_load_dy,
+                use_tma_load_w = use_tma_load_w,
+                use_tma_store = use_tma_store,
+                BLOCK_SIZE_M = BLOCK_SIZE_M,
+                BLOCK_SIZE_N = BLOCK_SIZE_N,
+                BLOCK_SIZE_K = BLOCK_SIZE_K,
+                num_warps = num_warps,
+                num_stages = num_stages,
             )
             kernel_config_bwd_dW = KernelConfigBackward_dW()
         else:
@@ -603,25 +607,25 @@ def _test_grouped_gemm_backward_dX(
             else Xperm.detach().clone().requires_grad_(True)
         )
         test_output = grouped_gemm(
-            X=X_,
-            W=W_test,
-            m_sizes=expert_token_counts,
-            gather_indices=gather_indices,
-            topk=topk,
-            permute_x=permute_x,
-            permute_y=permute_y,
-            autotune=autotune,
-            kernel_config_fwd=kernel_config_fwd,
-            kernel_config_bwd_dX=kernel_config_bwd_dX,
-            is_first_gemm=use_W1,
-            dX_only=True,
+            X = X_,
+            W = W_test,
+            m_sizes = expert_token_counts,
+            gather_indices = gather_indices,
+            topk = topk,
+            permute_x = permute_x,
+            permute_y = permute_y,
+            autotune = autotune,
+            kernel_config_fwd = kernel_config_fwd,
+            kernel_config_bwd_dX = kernel_config_bwd_dX,
+            is_first_gemm = use_W1,
+            dX_only = True,
         )
-        assert test_output.shape == ref_output.shape, (
-            f"test_output.shape: {test_output.shape}, ref_output.shape: {ref_output.shape}"
-        )
-        assert torch.allclose(test_output, ref_output, atol=atol, rtol=rtol), (
-            f"Grouped gemm backward_dX forward outputs mismatch: {(test_output - ref_output).abs().max().item():.6f}"
-        )
+        assert (
+            test_output.shape == ref_output.shape
+        ), f"test_output.shape: {test_output.shape}, ref_output.shape: {ref_output.shape}"
+        assert torch.allclose(
+            test_output, ref_output, atol = atol, rtol = rtol
+        ), f"Grouped gemm backward_dX forward outputs mismatch: {(test_output - ref_output).abs().max().item():.6f}"
         test_output.backward(grad_output)
         assert X_.grad is not None
 
@@ -631,40 +635,40 @@ def _test_grouped_gemm_backward_dX(
         # This is due to the fact that torch autograd handles unpermute and sum reduction differently see: https://discuss.pytorch.org/t/permute-unpermute-gradient/219557    else:
         if permute_x and use_W1:
             X_grad_unperm = unpermute(Xperm.grad, gather_indices)
-            manual_grad_check = X_grad_unperm.view(num_tokens, topk, K).sum(dim=1)
-            assert manual_grad_check.shape == X_.grad.shape, (
-                f"manual_grad_check.shape: {manual_grad_check.shape}, X_.grad.shape: {X_.grad.shape}"
-            )
-            assert torch.allclose(manual_grad_check, X_.grad, atol=atol, rtol=rtol), (
-                f"Grouped gemm backward_dX forward outputs mismatch: {(manual_grad_check - X_.grad).abs().max().item():.6f}"
-            )
+            manual_grad_check = X_grad_unperm.view(num_tokens, topk, K).sum(dim = 1)
+            assert (
+                manual_grad_check.shape == X_.grad.shape
+            ), f"manual_grad_check.shape: {manual_grad_check.shape}, X_.grad.shape: {X_.grad.shape}"
+            assert torch.allclose(
+                manual_grad_check, X_.grad, atol = atol, rtol = rtol
+            ), f"Grouped gemm backward_dX forward outputs mismatch: {(manual_grad_check - X_.grad).abs().max().item():.6f}"
             manual_diff = (X_.grad - manual_grad_check).abs().max().item()
             autograd_diff = (X_.grad - X.grad).abs().max().item()
             print(f"manual_diff: {manual_diff:.6f}, autograd_diff: {autograd_diff:.6f}")
         else:
-            assert torch.allclose(X_.grad, ref_grad, atol=atol, rtol=rtol), (
-                f"Grouped gemm backward_dX forward outputs mismatch: {(X_.grad - ref_grad).abs().max().item():.6f}"
-            )
+            assert torch.allclose(
+                X_.grad, ref_grad, atol = atol, rtol = rtol
+            ), f"Grouped gemm backward_dX forward outputs mismatch: {(X_.grad - ref_grad).abs().max().item():.6f}"
         return
     else:
         dX_test = grouped_gemm_dX(
-            dY=grad_output,
-            W=W_test,
-            gather_indices=gather_indices,
-            m_sizes=expert_token_counts,
-            topk=topk,
-            permute_x=permute_x,
-            permute_y=permute_y,
-            use_tma_load_w=use_tma_load_w,
-            use_tma_load_dy=use_tma_load_dy,
-            use_tma_store=use_tma_store,
-            autotune=autotune,
-            BLOCK_SIZE_M=BLOCK_SIZE_M,
-            BLOCK_SIZE_N=BLOCK_SIZE_N,
-            BLOCK_SIZE_K=BLOCK_SIZE_K,
-            num_warps=num_warps,
-            num_stages=num_stages,
-            flatten=flatten,
+            dY = grad_output,
+            W = W_test,
+            gather_indices = gather_indices,
+            m_sizes = expert_token_counts,
+            topk = topk,
+            permute_x = permute_x,
+            permute_y = permute_y,
+            use_tma_load_w = use_tma_load_w,
+            use_tma_load_dy = use_tma_load_dy,
+            use_tma_store = use_tma_store,
+            autotune = autotune,
+            BLOCK_SIZE_M = BLOCK_SIZE_M,
+            BLOCK_SIZE_N = BLOCK_SIZE_N,
+            BLOCK_SIZE_K = BLOCK_SIZE_K,
+            num_warps = num_warps,
+            num_stages = num_stages,
+            flatten = flatten,
             # debug=True,
         )
 
@@ -673,21 +677,21 @@ def _test_grouped_gemm_backward_dX(
     if permute_x and use_W1:
         ref_grad = unpermute(ref_grad, gather_indices)
 
-    assert ref_grad.shape == dX_test.shape, (
-        f"Grouped gemm manual backward_dX outputs mismatch: ref_grad: {ref_grad.shape}, dX_test: {dX_test.shape}"
-    )
+    assert (
+        ref_grad.shape == dX_test.shape
+    ), f"Grouped gemm manual backward_dX outputs mismatch: ref_grad: {ref_grad.shape}, dX_test: {dX_test.shape}"
     diff = (ref_grad - dX_test).abs().max().item()
 
-    assert torch.allclose(ref_grad, dX_test, atol=atol, rtol=rtol), (
-        f"Grouped gemm manual backward_dX outputs mismatch: {diff:.6f}"
-    )
+    assert torch.allclose(
+        ref_grad, dX_test, atol = atol, rtol = rtol
+    ), f"Grouped gemm manual backward_dX outputs mismatch: {diff:.6f}"
 
     if permute_x and use_W1:
         # Show that reduction results in diffs
         # First calculate X.grad manually by backpropping through unpermuted ref_grad
-        dX_ref_check = ref_grad.view(num_tokens, topk, K).sum(dim=1)
+        dX_ref_check = ref_grad.view(num_tokens, topk, K).sum(dim = 1)
         # Do the same for the actual output of the kernel
-        dX_test_check = dX_test.view(num_tokens, topk, K).sum(dim=1)
+        dX_test_check = dX_test.view(num_tokens, topk, K).sum(dim = 1)
         # Show diffs for each combination
         diff_ref_check = (X.grad - dX_ref_check).abs().max().item()
         diff_test_check = (X.grad - dX_test_check).abs().max().item()
@@ -702,17 +706,17 @@ def _test_grouped_gemm_backward_dX(
 @pytest.mark.parametrize(
     "kernel_config",
     KERNEL_CONFIGS_BWD_dX,
-    ids=lambda x: x.to_string(include_tuning_params=True, include_tma=True),
+    ids = lambda x: x.to_string(include_tuning_params = True, include_tma = True),
 )
 @pytest.mark.parametrize(
     "model_config",
     SMALL_MODEL_CONFIGS[:1] + [LLAMA_MODEL_CONFIG, QWEN_MODEL_CONFIG],
-    ids=lambda x: f"topk={x.topk} num_experts={x.num_experts} hidden_size={x.hidden_size} intermediate_size={x.intermediate_size}",
+    ids = lambda x: f"topk={x.topk} num_experts={x.num_experts} hidden_size={x.hidden_size} intermediate_size={x.intermediate_size}",
 )
 @pytest.mark.parametrize(
-    "data_config", DATA_CONFIGS, ids=lambda x: f"seq_len={x.seq_len} dtype={x.dtype}"
+    "data_config", DATA_CONFIGS, ids = lambda x: f"seq_len={x.seq_len} dtype={x.dtype}"
 )
-@pytest.mark.parametrize("use_W1", [True, False], ids=lambda x: f"use_W1={x}")
+@pytest.mark.parametrize("use_W1", [True, False], ids = lambda x: f"use_W1={x}")
 def test_grouped_gemm_backward_dX_manual(
     data_config: DataConfig,
     model_config: ModelConfig,
@@ -720,10 +724,10 @@ def test_grouped_gemm_backward_dX_manual(
     use_W1: bool,
 ):
     _test_grouped_gemm_backward_dX(
-        data_config=data_config,
-        model_config=model_config,
-        use_W1=use_W1,
-        use_autograd=False,
+        data_config = data_config,
+        model_config = model_config,
+        use_W1 = use_W1,
+        use_autograd = False,
         **asdict(kernel_config),
     )
 
@@ -731,17 +735,17 @@ def test_grouped_gemm_backward_dX_manual(
 @pytest.mark.parametrize(
     "kernel_config",
     KERNEL_CONFIGS_BWD_dX,
-    ids=lambda x: x.to_string(include_tuning_params=True, include_tma=True),
+    ids = lambda x: x.to_string(include_tuning_params = True, include_tma = True),
 )
 @pytest.mark.parametrize(
     "model_config",
     SMALL_MODEL_CONFIGS[:1] + [LLAMA_MODEL_CONFIG, QWEN_MODEL_CONFIG],
-    ids=lambda x: f"topk={x.topk} num_experts={x.num_experts} hidden_size={x.hidden_size} intermediate_size={x.intermediate_size}",
+    ids = lambda x: f"topk={x.topk} num_experts={x.num_experts} hidden_size={x.hidden_size} intermediate_size={x.intermediate_size}",
 )
 @pytest.mark.parametrize(
-    "data_config", DATA_CONFIGS, ids=lambda x: f"seq_len={x.seq_len} dtype={x.dtype}"
+    "data_config", DATA_CONFIGS, ids = lambda x: f"seq_len={x.seq_len} dtype={x.dtype}"
 )
-@pytest.mark.parametrize("use_W1", [True, False], ids=lambda x: f"use_W1={x}")
+@pytest.mark.parametrize("use_W1", [True, False], ids = lambda x: f"use_W1={x}")
 def test_grouped_gemm_backward_dX_manual_autograd(
     data_config: DataConfig,
     model_config: ModelConfig,
@@ -749,32 +753,32 @@ def test_grouped_gemm_backward_dX_manual_autograd(
     use_W1: bool,
 ):
     _test_grouped_gemm_backward_dX(
-        data_config=data_config,
-        model_config=model_config,
-        use_W1=use_W1,
-        use_autograd=True,
+        data_config = data_config,
+        model_config = model_config,
+        use_W1 = use_W1,
+        use_autograd = True,
         **asdict(kernel_config),
     )
 
 
 @pytest.mark.parametrize(
-    "num_autotune_configs", [20], ids=lambda x: f"num_autotune_configs={x}"
+    "num_autotune_configs", [20], ids = lambda x: f"num_autotune_configs={x}"
 )
 @pytest.mark.parametrize(
-    "permute_x", [True, False], ids=lambda x: "permute_x" if x else ""
+    "permute_x", [True, False], ids = lambda x: "permute_x" if x else ""
 )
 @pytest.mark.parametrize(
-    "permute_y", [True, False], ids=lambda x: "permute_y" if x else ""
+    "permute_y", [True, False], ids = lambda x: "permute_y" if x else ""
 )
 @pytest.mark.parametrize(
     "model_config",
     [LLAMA_MODEL_CONFIG, QWEN_MODEL_CONFIG],
-    ids=lambda x: f"topk={x.topk} num_experts={x.num_experts} hidden_size={x.hidden_size} intermediate_size={x.intermediate_size}",
+    ids = lambda x: f"topk={x.topk} num_experts={x.num_experts} hidden_size={x.hidden_size} intermediate_size={x.intermediate_size}",
 )
 @pytest.mark.parametrize(
-    "data_config", DATA_CONFIGS, ids=lambda x: f"seq_len={x.seq_len} dtype={x.dtype}"
+    "data_config", DATA_CONFIGS, ids = lambda x: f"seq_len={x.seq_len} dtype={x.dtype}"
 )
-@pytest.mark.parametrize("use_W1", [True, False], ids=lambda x: f"use_W1={x}")
+@pytest.mark.parametrize("use_W1", [True, False], ids = lambda x: f"use_W1={x}")
 def test_grouped_gemm_backward_dX_autotune(
     data_config: DataConfig,
     model_config: ModelConfig,
@@ -785,35 +789,35 @@ def test_grouped_gemm_backward_dX_autotune(
 ):
     # TMA loads / stores will be autotuned
     _test_grouped_gemm_backward_dX(
-        data_config=data_config,
-        model_config=model_config,
-        permute_x=permute_x,
-        permute_y=permute_y,
-        use_W1=use_W1,
-        autotune=True,
-        use_autograd=False,
-        num_autotune_configs=num_autotune_configs,
+        data_config = data_config,
+        model_config = model_config,
+        permute_x = permute_x,
+        permute_y = permute_y,
+        use_W1 = use_W1,
+        autotune = True,
+        use_autograd = False,
+        num_autotune_configs = num_autotune_configs,
     )
 
 
 @pytest.mark.parametrize(
-    "num_autotune_configs", [20], ids=lambda x: f"num_autotune_configs={x}"
+    "num_autotune_configs", [20], ids = lambda x: f"num_autotune_configs={x}"
 )
 @pytest.mark.parametrize(
-    "permute_x", [True, False], ids=lambda x: "permute_x" if x else ""
+    "permute_x", [True, False], ids = lambda x: "permute_x" if x else ""
 )
 @pytest.mark.parametrize(
-    "permute_y", [True, False], ids=lambda x: "permute_y" if x else ""
+    "permute_y", [True, False], ids = lambda x: "permute_y" if x else ""
 )
 @pytest.mark.parametrize(
     "model_config",
     [LLAMA_MODEL_CONFIG, QWEN_MODEL_CONFIG],
-    ids=lambda x: f"topk={x.topk} num_experts={x.num_experts} hidden_size={x.hidden_size} intermediate_size={x.intermediate_size}",
+    ids = lambda x: f"topk={x.topk} num_experts={x.num_experts} hidden_size={x.hidden_size} intermediate_size={x.intermediate_size}",
 )
 @pytest.mark.parametrize(
-    "data_config", DATA_CONFIGS, ids=lambda x: f"seq_len={x.seq_len} dtype={x.dtype}"
+    "data_config", DATA_CONFIGS, ids = lambda x: f"seq_len={x.seq_len} dtype={x.dtype}"
 )
-@pytest.mark.parametrize("use_W1", [True, False], ids=lambda x: f"use_W1={x}")
+@pytest.mark.parametrize("use_W1", [True, False], ids = lambda x: f"use_W1={x}")
 def test_grouped_gemm_backward_dX_autotune_autograd(
     data_config: DataConfig,
     model_config: ModelConfig,
@@ -824,14 +828,14 @@ def test_grouped_gemm_backward_dX_autotune_autograd(
 ):
     # TMA loads / stores will be autotuned
     _test_grouped_gemm_backward_dX(
-        data_config=data_config,
-        model_config=model_config,
-        permute_x=permute_x,
-        permute_y=permute_y,
-        use_W1=use_W1,
-        autotune=True,
-        use_autograd=True,
-        num_autotune_configs=num_autotune_configs,
+        data_config = data_config,
+        model_config = model_config,
+        permute_x = permute_x,
+        permute_y = permute_y,
+        use_W1 = use_W1,
+        autotune = True,
+        use_autograd = True,
+        num_autotune_configs = num_autotune_configs,
     )
 
 
@@ -860,25 +864,25 @@ def _test_grouped_gemm_backward_dW(
     if not check_valid_config(
         permute_x,
         permute_y,
-        fuse_mul_post=fuse_mul_post,
-        use_W1=use_W1,
-        is_backward=True,
+        fuse_mul_post = fuse_mul_post,
+        use_W1 = use_W1,
+        is_backward = True,
     ):
         pytest.skip(
-            f"Skipping test due to invalid config: {permute_x=} {permute_y=} {use_W1=}"
+            f"Skipping test due to invalid config: {permute_x = } {permute_y = } {use_W1 = }"
         )
 
     if use_tma_store and not allow_tma_store:
         pytest.skip("TMA store needs to be debugged due to non-deterministic behavior")
 
     X1, X2, W1, W2, gating_output = make_inputs(
-        M=data_config.bs * data_config.seq_len,
-        N=model_config.intermediate_size,
-        K=model_config.hidden_size,
-        E=model_config.num_experts,
-        topk=model_config.topk,
-        dtype=data_config.dtype,
-        requires_grad=True,
+        M = data_config.bs * data_config.seq_len,
+        N = model_config.intermediate_size,
+        K = model_config.hidden_size,
+        E = model_config.num_experts,
+        topk = model_config.topk,
+        dtype = data_config.dtype,
+        requires_grad = True,
     )
     topk = model_config.topk
     num_experts = model_config.num_experts
@@ -892,13 +896,15 @@ def _test_grouped_gemm_backward_dW(
     W = W1 if use_W1 else W2
 
     if use_W1:
-        assert X.shape == (num_tokens, K), (
-            f"X.shape: {X.shape}, num_tokens: {num_tokens}, K: {K}"
-        )
+        assert X.shape == (
+            num_tokens,
+            K,
+        ), f"X.shape: {X.shape}, num_tokens: {num_tokens}, K: {K}"
     else:
-        assert X.shape == (num_tokens * topk, N), (
-            f"X.shape: {X.shape}, num_tokens: {num_tokens}, topk: {topk}, N: {N}"
-        )
+        assert X.shape == (
+            num_tokens * topk,
+            N,
+        ), f"X.shape: {X.shape}, num_tokens: {num_tokens}, topk: {topk}, N: {N}"
 
     total_tokens = num_tokens * topk
     output_shape = (total_tokens, 2 * N) if use_W1 else (total_tokens, K)
@@ -907,12 +913,12 @@ def _test_grouped_gemm_backward_dW(
     W_test = W.detach().clone().requires_grad_(True)
 
     topk_weights, topk_ids = calculate_topk(
-        gating_output, topk, use_sigmoid=use_sigmoid, renormalize=renormalize
+        gating_output, topk, use_sigmoid = use_sigmoid, renormalize = renormalize
     )
     topk_weights = topk_weights.view(-1)  # num_tokens * topk
     topk_ids = topk_ids.view(-1)  # num_tokens * topk
 
-    expert_token_counts, gather_indices = get_routing_indices(topk_ids, num_experts=E)
+    expert_token_counts, gather_indices = get_routing_indices(topk_ids, num_experts = E)
     assert len(gather_indices) == total_tokens
     assert len(expert_token_counts) == num_experts
 
@@ -928,7 +934,7 @@ def _test_grouped_gemm_backward_dW(
 
     output_shape = (total_tokens, 2 * N) if use_W1 else (total_tokens, K)
 
-    ref_output = torch_grouped_gemm(X=Xperm, W=W, m_sizes=expert_token_counts)
+    ref_output = torch_grouped_gemm(X = Xperm, W = W, m_sizes = expert_token_counts)
     assert ref_output.shape == output_shape
 
     # if permute_y then the assumption is that the output of grouped_gemm was unpermuted on store
@@ -945,7 +951,7 @@ def _test_grouped_gemm_backward_dW(
     X_ = X_test if permute_x else Xperm_test
 
     if debug:
-        torch.set_printoptions(precision=4)
+        torch.set_printoptions(precision = 4)
         for i in range(num_experts):
             print(f"Expert {i} weight grad:\n{W.grad[i, :5, :5]}")
 
@@ -963,24 +969,24 @@ def _test_grouped_gemm_backward_dW(
         if not autotune:
             kernel_config_fwd = KernelConfigForward(
                 # Only care about backward_dW config
-                use_tma_load_w=False,
-                use_tma_load_x=False,
-                use_tma_store=False,
-                BLOCK_SIZE_M=BLOCK_SIZE_M,
-                BLOCK_SIZE_N=BLOCK_SIZE_N,
-                BLOCK_SIZE_K=BLOCK_SIZE_K,
-                num_warps=num_warps,
-                num_stages=num_stages,
+                use_tma_load_w = False,
+                use_tma_load_x = False,
+                use_tma_store = False,
+                BLOCK_SIZE_M = BLOCK_SIZE_M,
+                BLOCK_SIZE_N = BLOCK_SIZE_N,
+                BLOCK_SIZE_K = BLOCK_SIZE_K,
+                num_warps = num_warps,
+                num_stages = num_stages,
             )
             kernel_config_bwd_dW = KernelConfigBackward_dW(
-                use_tma_load_dy=use_tma_load_dy,
-                use_tma_load_x=use_tma_load_x,
-                use_tma_store=use_tma_store,
-                BLOCK_SIZE_M=BLOCK_SIZE_M,
-                BLOCK_SIZE_N=BLOCK_SIZE_N,
-                BLOCK_SIZE_K=BLOCK_SIZE_K,
-                num_warps=num_warps,
-                num_stages=num_stages,
+                use_tma_load_dy = use_tma_load_dy,
+                use_tma_load_x = use_tma_load_x,
+                use_tma_store = use_tma_store,
+                BLOCK_SIZE_M = BLOCK_SIZE_M,
+                BLOCK_SIZE_N = BLOCK_SIZE_N,
+                BLOCK_SIZE_K = BLOCK_SIZE_K,
+                num_warps = num_warps,
+                num_stages = num_stages,
             )
         else:
             from grouped_gemm.kernels.backward import _autotuned_grouped_gemm_dW_kernel
@@ -1001,56 +1007,56 @@ def _test_grouped_gemm_backward_dW(
             kernel_config_bwd_dW = None
 
         test_output = grouped_gemm(
-            X=X_,
-            W=W_test,
-            m_sizes=expert_token_counts,
-            gather_indices=gather_indices,
-            topk=topk,
-            permute_x=permute_x,
-            permute_y=permute_y,
-            kernel_config_fwd=kernel_config_fwd,
-            kernel_config_bwd_dW=kernel_config_bwd_dW,
-            autotune=autotune,
-            is_first_gemm=use_W1,
-            dW_only=True,
+            X = X_,
+            W = W_test,
+            m_sizes = expert_token_counts,
+            gather_indices = gather_indices,
+            topk = topk,
+            permute_x = permute_x,
+            permute_y = permute_y,
+            kernel_config_fwd = kernel_config_fwd,
+            kernel_config_bwd_dW = kernel_config_bwd_dW,
+            autotune = autotune,
+            is_first_gemm = use_W1,
+            dW_only = True,
         )
-        assert test_output.shape == ref_output.shape, (
-            f"Grouped gemm autograd backward_dW outputs mismatch: {test_output.shape} != {ref_output.shape}"
-        )
-        assert torch.allclose(test_output, ref_output, atol=atol, rtol=rtol), (
-            f"Grouped gemm autograd backward_dW forward outputs mismatch: {test_output.shape} != {ref_output.shape}"
-        )
+        assert (
+            test_output.shape == ref_output.shape
+        ), f"Grouped gemm autograd backward_dW outputs mismatch: {test_output.shape} != {ref_output.shape}"
+        assert torch.allclose(
+            test_output, ref_output, atol = atol, rtol = rtol
+        ), f"Grouped gemm autograd backward_dW forward outputs mismatch: {test_output.shape} != {ref_output.shape}"
         test_output.backward(grad_output)
         assert W_test.grad is not None
         dW_test = W_test.grad
     else:
         dW_test = grouped_gemm_dW(
-            dY=grad_output,
-            X=X_,
-            m_sizes=expert_token_counts,
-            gather_indices=gather_indices,
-            topk=topk,
-            permute_x=permute_x,
-            permute_y=permute_y,
-            use_tma_load_dy=use_tma_load_dy,
-            use_tma_load_x=use_tma_load_x,
-            use_tma_store=use_tma_store,
-            BLOCK_SIZE_M=BLOCK_SIZE_M,
-            BLOCK_SIZE_N=BLOCK_SIZE_N,
-            BLOCK_SIZE_K=BLOCK_SIZE_K,
-            num_warps=num_warps,
-            num_stages=num_stages,
-            flatten=flatten,
-            autotune=autotune,
-            debug=debug,
+            dY = grad_output,
+            X = X_,
+            m_sizes = expert_token_counts,
+            gather_indices = gather_indices,
+            topk = topk,
+            permute_x = permute_x,
+            permute_y = permute_y,
+            use_tma_load_dy = use_tma_load_dy,
+            use_tma_load_x = use_tma_load_x,
+            use_tma_store = use_tma_store,
+            BLOCK_SIZE_M = BLOCK_SIZE_M,
+            BLOCK_SIZE_N = BLOCK_SIZE_N,
+            BLOCK_SIZE_K = BLOCK_SIZE_K,
+            num_warps = num_warps,
+            num_stages = num_stages,
+            flatten = flatten,
+            autotune = autotune,
+            debug = debug,
         )
-    assert W.grad.shape == dW_test.shape, (
-        f"Grouped gemm manual backward_dW outputs mismatch: W.grad: {W.grad.shape}, dW_test: {dW_test.shape}"
-    )
+    assert (
+        W.grad.shape == dW_test.shape
+    ), f"Grouped gemm manual backward_dW outputs mismatch: W.grad: {W.grad.shape}, dW_test: {dW_test.shape}"
 
     if debug:
         with torch.no_grad():
-            if not torch.allclose(W.grad, dW_test, atol=atol, rtol=rtol):
+            if not torch.allclose(W.grad, dW_test, atol = atol, rtol = rtol):
                 print(f"Ref Wgrad sum: {W.grad.sum().item():.4f}")
             print(f"Test Wgrad sum: {dW_test.sum().item():.4f}")
 
@@ -1061,30 +1067,30 @@ def _test_grouped_gemm_backward_dW(
                 print(f"Expert {i} diff: {expert_diff:.6f}")
 
             diff = (W.grad - dW_test).abs().max().item()
-            assert False, (
-                f"Grouped gemm manual backward_dW outputs mismatch: {diff:.6f}"
-            )
+            assert (
+                False
+            ), f"Grouped gemm manual backward_dW outputs mismatch: {diff:.6f}"
     else:
         diff = (W.grad - dW_test).abs().max().item()
-        assert torch.allclose(W.grad, dW_test, atol=atol, rtol=rtol), (
-            f"Grouped gemm manual backward_dW outputs mismatch: {diff:.6f}"
-        )
+        assert torch.allclose(
+            W.grad, dW_test, atol = atol, rtol = rtol
+        ), f"Grouped gemm manual backward_dW outputs mismatch: {diff:.6f}"
 
 
 @pytest.mark.parametrize(
     "kernel_config",
     KERNEL_CONFIGS_BWD_dW,
-    ids=lambda x: x.to_string(include_tuning_params=False, include_tma=True),
+    ids = lambda x: x.to_string(include_tuning_params = False, include_tma = True),
 )
 @pytest.mark.parametrize(
     "model_config",
     SMALL_MODEL_CONFIGS + [LLAMA_MODEL_CONFIG, QWEN_MODEL_CONFIG],
-    ids=lambda x: f"topk={x.topk} num_experts={x.num_experts} hidden_size={x.hidden_size} intermediate_size={x.intermediate_size}",
+    ids = lambda x: f"topk={x.topk} num_experts={x.num_experts} hidden_size={x.hidden_size} intermediate_size={x.intermediate_size}",
 )
 @pytest.mark.parametrize(
-    "data_config", DATA_CONFIGS, ids=lambda x: f"seq_len={x.seq_len} dtype={x.dtype}"
+    "data_config", DATA_CONFIGS, ids = lambda x: f"seq_len={x.seq_len} dtype={x.dtype}"
 )
-@pytest.mark.parametrize("use_W1", [True, False], ids=lambda x: f"use_W1={x}")
+@pytest.mark.parametrize("use_W1", [True, False], ids = lambda x: f"use_W1={x}")
 def test_grouped_gemm_backward_dW_manual(
     data_config: DataConfig,
     model_config: ModelConfig,
@@ -1093,10 +1099,10 @@ def test_grouped_gemm_backward_dW_manual(
     debug: bool = False,
 ):
     _test_grouped_gemm_backward_dW(
-        data_config=data_config,
-        model_config=model_config,
-        use_W1=use_W1,
-        use_autograd=False,
+        data_config = data_config,
+        model_config = model_config,
+        use_W1 = use_W1,
+        use_autograd = False,
         **asdict(kernel_config),
     )
 
@@ -1104,17 +1110,17 @@ def test_grouped_gemm_backward_dW_manual(
 @pytest.mark.parametrize(
     "kernel_config",
     KERNEL_CONFIGS_BWD_dW,
-    ids=lambda x: x.to_string(include_tuning_params=False, include_tma=True),
+    ids = lambda x: x.to_string(include_tuning_params = False, include_tma = True),
 )
 @pytest.mark.parametrize(
     "model_config",
     SMALL_MODEL_CONFIGS + [LLAMA_MODEL_CONFIG, QWEN_MODEL_CONFIG],
-    ids=lambda x: f"topk={x.topk} num_experts={x.num_experts} hidden_size={x.hidden_size} intermediate_size={x.intermediate_size}",
+    ids = lambda x: f"topk={x.topk} num_experts={x.num_experts} hidden_size={x.hidden_size} intermediate_size={x.intermediate_size}",
 )
 @pytest.mark.parametrize(
-    "data_config", DATA_CONFIGS, ids=lambda x: f"seq_len={x.seq_len} dtype={x.dtype}"
+    "data_config", DATA_CONFIGS, ids = lambda x: f"seq_len={x.seq_len} dtype={x.dtype}"
 )
-@pytest.mark.parametrize("use_W1", [True, False], ids=lambda x: f"use_W1={x}")
+@pytest.mark.parametrize("use_W1", [True, False], ids = lambda x: f"use_W1={x}")
 def test_grouped_gemm_backward_dW_manual_autograd(
     data_config: DataConfig,
     model_config: ModelConfig,
@@ -1123,32 +1129,32 @@ def test_grouped_gemm_backward_dW_manual_autograd(
     debug: bool = False,
 ):
     _test_grouped_gemm_backward_dW(
-        data_config=data_config,
-        model_config=model_config,
-        use_W1=use_W1,
-        use_autograd=True,
+        data_config = data_config,
+        model_config = model_config,
+        use_W1 = use_W1,
+        use_autograd = True,
         **asdict(kernel_config),
     )
 
 
 @pytest.mark.parametrize(
-    "num_autotune_configs", [20], ids=lambda x: f"num_autotune_configs={x}"
+    "num_autotune_configs", [20], ids = lambda x: f"num_autotune_configs={x}"
 )
 @pytest.mark.parametrize(
-    "permute_x", [True, False], ids=lambda x: "permute_x" if x else ""
+    "permute_x", [True, False], ids = lambda x: "permute_x" if x else ""
 )
 @pytest.mark.parametrize(
-    "permute_y", [True, False], ids=lambda x: "permute_y" if x else ""
+    "permute_y", [True, False], ids = lambda x: "permute_y" if x else ""
 )
 @pytest.mark.parametrize(
     "model_config",
     [LLAMA_MODEL_CONFIG, QWEN_MODEL_CONFIG],
-    ids=lambda x: f"topk={x.topk} num_experts={x.num_experts} hidden_size={x.hidden_size} intermediate_size={x.intermediate_size}",
+    ids = lambda x: f"topk={x.topk} num_experts={x.num_experts} hidden_size={x.hidden_size} intermediate_size={x.intermediate_size}",
 )
 @pytest.mark.parametrize(
-    "data_config", DATA_CONFIGS, ids=lambda x: f"seq_len={x.seq_len} dtype={x.dtype}"
+    "data_config", DATA_CONFIGS, ids = lambda x: f"seq_len={x.seq_len} dtype={x.dtype}"
 )
-@pytest.mark.parametrize("use_W1", [True, False], ids=lambda x: f"use_W1={x}")
+@pytest.mark.parametrize("use_W1", [True, False], ids = lambda x: f"use_W1={x}")
 def test_grouped_gemm_backward_dW_autotune(
     data_config: DataConfig,
     model_config: ModelConfig,
@@ -1158,35 +1164,35 @@ def test_grouped_gemm_backward_dW_autotune(
     num_autotune_configs: int,
 ):
     _test_grouped_gemm_backward_dW(
-        data_config=data_config,
-        model_config=model_config,
-        use_W1=use_W1,
-        permute_x=permute_x,
-        permute_y=permute_y,
-        autotune=True,
-        use_autograd=False,
-        num_autotune_configs=num_autotune_configs,
+        data_config = data_config,
+        model_config = model_config,
+        use_W1 = use_W1,
+        permute_x = permute_x,
+        permute_y = permute_y,
+        autotune = True,
+        use_autograd = False,
+        num_autotune_configs = num_autotune_configs,
     )
 
 
 @pytest.mark.parametrize(
-    "num_autotune_configs", [20], ids=lambda x: f"num_autotune_configs={x}"
+    "num_autotune_configs", [20], ids = lambda x: f"num_autotune_configs={x}"
 )
 @pytest.mark.parametrize(
-    "permute_x", [True, False], ids=lambda x: "permute_x" if x else ""
+    "permute_x", [True, False], ids = lambda x: "permute_x" if x else ""
 )
 @pytest.mark.parametrize(
-    "permute_y", [True, False], ids=lambda x: "permute_y" if x else ""
+    "permute_y", [True, False], ids = lambda x: "permute_y" if x else ""
 )
 @pytest.mark.parametrize(
     "model_config",
     [LLAMA_MODEL_CONFIG, QWEN_MODEL_CONFIG],
-    ids=lambda x: f"topk={x.topk} num_experts={x.num_experts} hidden_size={x.hidden_size} intermediate_size={x.intermediate_size}",
+    ids = lambda x: f"topk={x.topk} num_experts={x.num_experts} hidden_size={x.hidden_size} intermediate_size={x.intermediate_size}",
 )
 @pytest.mark.parametrize(
-    "data_config", DATA_CONFIGS, ids=lambda x: f"seq_len={x.seq_len} dtype={x.dtype}"
+    "data_config", DATA_CONFIGS, ids = lambda x: f"seq_len={x.seq_len} dtype={x.dtype}"
 )
-@pytest.mark.parametrize("use_W1", [True, False], ids=lambda x: f"use_W1={x}")
+@pytest.mark.parametrize("use_W1", [True, False], ids = lambda x: f"use_W1={x}")
 def test_grouped_gemm_backward_dW_autotune_autograd(
     data_config: DataConfig,
     model_config: ModelConfig,
@@ -1196,12 +1202,12 @@ def test_grouped_gemm_backward_dW_autotune_autograd(
     num_autotune_configs: int,
 ):
     _test_grouped_gemm_backward_dW(
-        data_config=data_config,
-        model_config=model_config,
-        use_W1=use_W1,
-        permute_x=permute_x,
-        permute_y=permute_y,
-        autotune=True,
-        use_autograd=True,
-        num_autotune_configs=num_autotune_configs,
+        data_config = data_config,
+        model_config = model_config,
+        use_W1 = use_W1,
+        permute_x = permute_x,
+        permute_y = permute_y,
+        autotune = True,
+        use_autograd = True,
+        num_autotune_configs = num_autotune_configs,
     )

@@ -4,14 +4,15 @@ import os
 import shutil
 import importlib
 
+
 def detect_package_manager():
     """Detect the available package manager"""
     package_managers = {
-        'apt': '/usr/bin/apt',
-        'yum': '/usr/bin/yum',
-        'dnf': '/usr/bin/dnf',
-        'pacman': '/usr/bin/pacman',
-        'zypper': '/usr/bin/zypper'
+        "apt": "/usr/bin/apt",
+        "yum": "/usr/bin/yum",
+        "dnf": "/usr/bin/dnf",
+        "pacman": "/usr/bin/pacman",
+        "zypper": "/usr/bin/zypper",
     }
 
     for pm, path in package_managers.items():
@@ -19,7 +20,8 @@ def detect_package_manager():
             return pm
     return None
 
-def check_package_installed(package_name, package_manager=None):
+
+def check_package_installed(package_name, package_manager = None):
     """Check if a package is installed using the system package manager"""
 
     if package_manager is None:
@@ -30,33 +32,38 @@ def check_package_installed(package_name, package_manager=None):
         return None
 
     try:
-        if package_manager == 'apt':
+        if package_manager == "apt":
             # Check with dpkg
-            result = subprocess.run(['dpkg', '-l', package_name],
-                                  capture_output=True, text=True)
+            result = subprocess.run(
+                ["dpkg", "-l", package_name], capture_output = True, text = True
+            )
             return result.returncode == 0
 
-        elif package_manager in ['yum', 'dnf']:
+        elif package_manager in ["yum", "dnf"]:
             # Check with rpm
-            result = subprocess.run(['rpm', '-q', package_name],
-                                  capture_output=True, text=True)
+            result = subprocess.run(
+                ["rpm", "-q", package_name], capture_output = True, text = True
+            )
             return result.returncode == 0
 
-        elif package_manager == 'pacman':
-            result = subprocess.run(['pacman', '-Q', package_name],
-                                  capture_output=True, text=True)
+        elif package_manager == "pacman":
+            result = subprocess.run(
+                ["pacman", "-Q", package_name], capture_output = True, text = True
+            )
             return result.returncode == 0
 
-        elif package_manager == 'zypper':
-            result = subprocess.run(['zypper', 'se', '-i', package_name],
-                                  capture_output=True, text=True)
+        elif package_manager == "zypper":
+            result = subprocess.run(
+                ["zypper", "se", "-i", package_name], capture_output = True, text = True
+            )
             return package_name in result.stdout
 
     except Exception as e:
         print(f"Error checking package: {e}")
         return None
 
-def require_package(package_name, executable_name=None):
+
+def require_package(package_name, executable_name = None):
     """Require a package to be installed, exit if not found"""
 
     # First check if executable is in PATH (most reliable)
@@ -78,11 +85,11 @@ def require_package(package_name, executable_name=None):
     print(f"\nPlease install {package_name} using your system package manager:")
 
     install_commands = {
-        'apt': f"sudo apt update && sudo apt install {package_name}",
-        'yum': f"sudo yum install {package_name}",
-        'dnf': f"sudo dnf install {package_name}",
-        'pacman': f"sudo pacman -S {package_name}",
-        'zypper': f"sudo zypper install {package_name}"
+        "apt": f"sudo apt update && sudo apt install {package_name}",
+        "yum": f"sudo yum install {package_name}",
+        "dnf": f"sudo dnf install {package_name}",
+        "pacman": f"sudo pacman -S {package_name}",
+        "zypper": f"sudo zypper install {package_name}",
     }
 
     if pm and pm in install_commands:
@@ -97,10 +104,12 @@ def require_package(package_name, executable_name=None):
     print(f"\nPlease install the required package and run the script again.")
     sys.exit(1)
 
-# Usage
-#require_package("ffmpeg", "ffmpeg")
 
-def require_python_package(package_name, import_name=None, pip_name=None):
+# Usage
+# require_package("ffmpeg", "ffmpeg")
+
+
+def require_python_package(package_name, import_name = None, pip_name = None):
     """Require a Python package to be installed, exit if not found"""
     if import_name is None:
         import_name = package_name
