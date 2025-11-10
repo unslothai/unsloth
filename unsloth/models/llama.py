@@ -2047,7 +2047,7 @@ def unsloth_fast_generate(
 
 class FastLlamaModel:
     @staticmethod
-    def _prepare_for_qat(cls, model, qat_scheme):
+    def _prepare_for_qat(model, qat_scheme):
         model = _prepare_model_for_qat(model, qat_scheme)
         return model
 

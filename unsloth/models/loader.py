@@ -588,7 +588,7 @@ except:
 
 class FastModel(FastBaseModel):
 
-    @classmethod
+    @staticmethod
     def _prepare_for_qat(model, qat_scheme):
         model = _prepare_model_for_qat(model, qat_scheme)
         return model
