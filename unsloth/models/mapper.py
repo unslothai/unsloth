@@ -1112,14 +1112,12 @@ for key, values in __INT_TO_FLOAT_MAPPER.items():
 
     for value in values:
         FLOAT_TO_INT_MAPPER[value] = key
-    pass
 
     # Map to Unsloth version for 16bit versions
     if len(values) == 2:
         if values[0].startswith("unsloth"):
             MAP_TO_UNSLOTH_16bit[values[1]] = values[0]
             MAP_TO_UNSLOTH_16bit[values[1].lower()] = values[0]
-        pass
     elif len(values) == 3:
         # Dynamic Unsloth quantization
         if values[0].startswith("unsloth"):
@@ -1128,7 +1126,6 @@ for key, values in __INT_TO_FLOAT_MAPPER.items():
             MAP_TO_UNSLOTH_16bit[values[2]] = values[0]
             MAP_TO_UNSLOTH_16bit[values[2].lower()] = values[0]
         pass
-    pass
 
     # Get lowercased
     lowered_key = key.lower()
@@ -1136,5 +1133,3 @@ for key, values in __INT_TO_FLOAT_MAPPER.items():
 
     for value in values:
         FLOAT_TO_INT_MAPPER[value.lower()] = lowered_key
-    pass
-pass
