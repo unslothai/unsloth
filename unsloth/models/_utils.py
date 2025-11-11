@@ -2009,19 +2009,6 @@ except:
     AOBaseConfig = None
     Int4WeightOnlyConfig = None
 
-
-
-@dataclass
-class TorchAOConfig:
-    qat_scheme: str = "int4"
-    base_config_and_filter_fns: List[
-        Tuple["AOBaseConfig", Optional[Callable]]
-    ] = field(
-        default_factory=lambda: [
-            (Int4WeightOnlyConfig(group_size=128), None)
-        ]
-    )
-
 @dataclass
 class TorchAOConfig:
     qat_scheme: str = "int4"
@@ -2070,7 +2057,7 @@ def _untie_input_output_embeddings(model: torch.nn.Module) -> None:
     if out_proj.weight.data_ptr() == in_emb.weight.data_ptr():
         with torch.no_grad():
             W = in_emb.weight.detach().clone()
-        out_proj.weight = nn.Parameter(W)  # new storage, keeps dtype/device
+        out_proj.weight = torch.nn.Parameter(W)  # new storage, keeps dtype/device
 
     # 4) Prevent future automatic re-tying
     def _no_tie(self):
