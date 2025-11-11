@@ -2009,6 +2009,7 @@ except:
     AOBaseConfig = None
     Int4WeightOnlyConfig = None
 
+
 @dataclass
 class TorchAOConfig:
     qat_scheme: str = "int4"
@@ -2017,9 +2018,9 @@ class TorchAOConfig:
     base_config_and_filter_fns: List[
         Tuple["AOBaseConfig", Optional[Callable[[torch.nn.Module, str], bool]]]
     ] = field(
-        default_factory=lambda: [
+        default_factory = lambda: [
             (
-                Int4WeightOnlyConfig(group_size=128),
+                Int4WeightOnlyConfig(group_size = 128),
                 lambda m, _: isinstance(m, torch.nn.Linear)
                 and getattr(m, "in_features", 0) >= 128,
             ),
@@ -2027,9 +2028,8 @@ class TorchAOConfig:
     )
 
     # Optional transformation to apply before quantization setup
-    prequantization_transform: Optional[
-        Callable[[torch.nn.Module], None]
-    ] = None
+    prequantization_transform: Optional[Callable[[torch.nn.Module], None]] = None
+
 
 def _untie_input_output_embeddings(model: torch.nn.Module) -> None:
     """
@@ -2049,9 +2049,9 @@ def _untie_input_output_embeddings(model: torch.nn.Module) -> None:
         raise AttributeError("Couldn't locate output projection (lm_head).")
 
     # (Optional) sanity: shapes should match [vocab, hidden]
-    assert out_proj.weight.shape == in_emb.weight.shape, (
-        f"Shape mismatch: out_proj {out_proj.weight.shape} vs in_emb {in_emb.weight.shape}"
-    )
+    assert (
+        out_proj.weight.shape == in_emb.weight.shape
+    ), f"Shape mismatch: out_proj {out_proj.weight.shape} vs in_emb {in_emb.weight.shape}"
 
     # 3) Only clone if they are actually tied (shared storage)
     if out_proj.weight.data_ptr() == in_emb.weight.data_ptr():
@@ -2062,10 +2062,14 @@ def _untie_input_output_embeddings(model: torch.nn.Module) -> None:
     # 4) Prevent future automatic re-tying
     def _no_tie(self):
         return
+
     model.tie_weights = _no_tie.__get__(model, model.__class__)
 
     # 5) Verify no shared storage
-    assert out_proj.weight.data_ptr() != in_emb.weight.data_ptr(), "Embeddings still tied!"
+    assert (
+        out_proj.weight.data_ptr() != in_emb.weight.data_ptr()
+    ), "Embeddings still tied!"
+
 
 def _filter_fn_to_fqns(
     model: torch.nn.Module,
@@ -2078,7 +2082,8 @@ def _filter_fn_to_fqns(
     for fqn, module in model.named_modules():
         if filter_fn(module, fqn):
             yield fqn
-            
+
+
 def _convert_torchao_model(model):
     from transformers import TorchAoConfig
     from torchao.quantization import quantize_, ModuleFqnToConfig
@@ -2087,7 +2092,7 @@ def _convert_torchao_model(model):
 
     module_to_fqn_dict = {}
     for base_config, filter_fn in model._torchao_config.base_config_and_filter_fns:
-        quantize_(model, QATConfig(base_config, step="convert"), filter_fn=filter_fn)
+        quantize_(model, QATConfig(base_config, step = "convert"), filter_fn = filter_fn)
 
         # Default filter function used for quantize_
         if filter_fn is None:
@@ -2103,13 +2108,16 @@ def _convert_torchao_model(model):
     in_emb = model.get_input_embeddings()
     out_proj = model.get_output_embeddings() or getattr(model, "lm_head", None)
     kwargs = {}
-    if isinstance(in_emb.weight, TorchAOBaseTensor) or (out_proj is not None and isinstance(out_proj.weight, TorchAOBaseTensor)):
+    if isinstance(in_emb.weight, TorchAOBaseTensor) or (
+        out_proj is not None and isinstance(out_proj.weight, TorchAOBaseTensor)
+    ):
         kwargs["include_input_output_embeddings"] = True
         kwargs["modules_to_not_convert"] = []
-    
+
     quant_config = ModuleFqnToConfig(module_to_fqn_dict)
-    quantization_config = TorchAoConfig(quant_type=quant_config, **kwargs)
+    quantization_config = TorchAoConfig(quant_type = quant_config, **kwargs)
     model.config.quantization_config = quantization_config
+
 
 def _prepare_model_for_qat(
     model: torch.nn.Module, qat_scheme: Union[str, TorchAOConfig]
@@ -2132,6 +2140,7 @@ def _prepare_model_for_qat(
         torchao_config: Optional[TorchAOConfig] = None
         if qat_scheme == "fp8-int4":
             from torchao.quantization import Float8DynamicActivationInt4WeightConfig
+
             group_size = 128
             base_config = Float8DynamicActivationInt4WeightConfig()
             filter_fn = (
@@ -2140,29 +2149,44 @@ def _prepare_model_for_qat(
             )
             torchao_config = TorchAOConfig(
                 qat_scheme = qat_scheme,
-                base_config_and_filter_fns = [(base_config, filter_fn)]
+                base_config_and_filter_fns = [(base_config, filter_fn)],
             )
         elif qat_scheme == "fp8-fp8":
             from torchao.quantization import Float8DynamicActivationFloat8WeightConfig
+
             base_config = Float8DynamicActivationFloat8WeightConfig(
                 granularity = PerRow()
             )
             torchao_config = TorchAOConfig(
-                qat_scheme = qat_scheme,
-                base_config_and_filter_fns = [(base_config, None)]
+                qat_scheme = qat_scheme, base_config_and_filter_fns = [(base_config, None)]
             )
         elif qat_scheme == "int8-int4":
-            from torchao.quantization import Int8DynamicActivationIntxWeightConfig, IntxWeightOnlyConfig
+            from torchao.quantization import (
+                Int8DynamicActivationIntxWeightConfig,
+                IntxWeightOnlyConfig,
+            )
+
             torchao_config = TorchAOConfig(
                 qat_scheme = qat_scheme,
                 base_config_and_filter_fns = [
-                    (IntxWeightOnlyConfig(weight_dtype=torch.int8, granularity=PerAxis(0)), lambda m, fqn: isinstance(m, torch.nn.Embedding)),
-                    (Int8DynamicActivationIntxWeightConfig(weight_dtype=torch.int4, weight_granularity=PerGroup(32)), None)
+                    (
+                        IntxWeightOnlyConfig(
+                            weight_dtype = torch.int8, granularity = PerAxis(0)
+                        ),
+                        lambda m, fqn: isinstance(m, torch.nn.Embedding),
+                    ),
+                    (
+                        Int8DynamicActivationIntxWeightConfig(
+                            weight_dtype = torch.int4, weight_granularity = PerGroup(32)
+                        ),
+                        None,
+                    ),
                 ],
-                prequantization_transform=_untie_input_output_embeddings,
+                prequantization_transform = _untie_input_output_embeddings,
             )
         elif qat_scheme == "int4":
             from torchao.quantization import Int4WeightOnlyConfig
+
             group_size = 128
             base_config = Int4WeightOnlyConfig(group_size = group_size)
             filter_fn = (
@@ -2171,7 +2195,7 @@ def _prepare_model_for_qat(
             )
             torchao_config = TorchAOConfig(
                 qat_scheme = qat_scheme,
-                base_config_and_filter_fns = [(base_config, filter_fn)]
+                base_config_and_filter_fns = [(base_config, filter_fn)],
             )
         else:
             raise ValueError(f"Unexpected QAT scheme {qat_scheme}")
@@ -2189,7 +2213,7 @@ def _prepare_model_for_qat(
     if torchao_config.prequantization_transform is not None:
         torchao_config.prequantization_transform(model)
     for base_config, filter_fn in torchao_config.base_config_and_filter_fns:
-        quantize_(model, QATConfig(base_config, step = "prepare"), filter_fn=filter_fn)
+        quantize_(model, QATConfig(base_config, step = "prepare"), filter_fn = filter_fn)
 
     return model
 
