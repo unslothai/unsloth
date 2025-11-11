@@ -48,7 +48,7 @@ huggingfacenotorch = [
     "tyro",
     "protobuf",
     "sentencepiece>=0.2.0",
-    "datasets>=3.4.1,!=4.0.*,!=4.1.0",
+    "datasets>=3.4.1,!=4.0.*,!=4.1.0,<4.4.0",
     "accelerate>=0.34.1",
     "peft>=0.7.1,!=0.11.0",
     "huggingface_hub>=0.34.0",
@@ -59,7 +59,7 @@ huggingfacenotorch = [
 ]
 huggingface = [
     "unsloth[huggingfacenotorch]",
-    "unsloth_zoo>=2025.11.1",
+    "unsloth_zoo>=2025.11.3",
     "torchvision",
     "unsloth[triton]",
 ]
@@ -489,11 +489,11 @@ colab-ampere-torch220 = [
     "flash-attn>=2.6.3 ; ('linux' in sys_platform)",
 ]
 colab-new = [
-    "unsloth_zoo>=2025.11.1",
+    "unsloth_zoo>=2025.11.3",
     "packaging",
     "tyro",
     "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,<=4.57.2",
-    "datasets>=3.4.1,!=4.0.*,!=4.1.0",
+    "datasets>=3.4.1,!=4.0.*,!=4.1.0,<4.4.0",
     "sentencepiece>=0.2.0",
     "tqdm",
     "psutil",
@@ -865,3 +865,32 @@ amd = [
 homepage = "http://www.unsloth.ai"
 documentation = "https://github.com/unslothai/unsloth"
 repository = "https://github.com/unslothai/unsloth"
+
+[tool.ruff]
+target-version = "py311"
+force-exclude = true
+extend-exclude = [
+    "*chat_templates.py",
+    "*ollama_template_mappers.py",
+    "*_auto_install.py",
+    "*mapper.py",
+]
+
+[tool.ruff.lint]
+select = ["E9", "F63", "F7", "F82"]
+ignore = [
+    "E402",
+    "E722",
+    "F403",
+    "F405",
+    "F811",
+    "F821",
+    "F841",
+    "F401",
+    "E731",
+    "E741",
+    "F601",
+    "E712",
+]
+
+[tool.ruff.format]
