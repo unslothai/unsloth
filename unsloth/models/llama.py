@@ -3212,7 +3212,7 @@ class FastLlamaModel:
                         # https://stackoverflow.com/questions/50599045/python-replacing-a-function-within-a-class-of-a-module
                         if hasattr(mlp_module, "_unsloth_forward"):
                             # then we've patched the mlp to use TiledMLP
-                            mlp_module._unsloth_forward = _apply_lora_mlp
+                            mlp_module._unsloth_forward = types.MethodType(_apply_lora_mlp, mlp_module)
                         else:
                             mlp_module.forward = types.MethodType(
                                 _apply_lora_mlp, mlp_module
