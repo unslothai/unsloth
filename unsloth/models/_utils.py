@@ -751,6 +751,9 @@ elif DEVICE_TYPE == "hip":
 elif DEVICE_TYPE == "xpu":
     SUPPORTS_BFLOAT16 = True
 
+if os.getenv("UNSLOTH_DISABLE_FLASH_ATTENTION", "0") == "1":
+    HAS_FLASH_ATTENTION = False
+
 # =============================================
 # Get Xformers
 try:

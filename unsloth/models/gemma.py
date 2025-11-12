@@ -17,6 +17,7 @@ from ._utils import __version__
 from unsloth_zoo.utils import _get_dtype
 from unsloth_zoo.hf_utils import dtype_from_config
 import math
+import os
 
 try:
     from transformers.models.gemma.modeling_gemma import (
@@ -122,9 +123,14 @@ def GemmaDecoderLayer_fast_forward(
         hidden_states += residual
     else:
         residual = hidden_states
-        hidden_states = fast_rms_layernorm(
-            self.input_layernorm, hidden_states, gemma = True
-        )
+        _disable_triton_rms = os.getenv("UNSLOTH_DISABLE_TRITON_RMSNORM", "0") == "1"
+        _ln_impl = os.getenv("UNSLOTH_LAYERNORM_IMPL", "").lower()
+        if _disable_triton_rms or _ln_impl == "python":
+            hidden_states = self.input_layernorm(hidden_states)
+        else:
+            hidden_states = fast_rms_layernorm(
+                self.input_layernorm, hidden_states, gemma = True
+            )
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states = hidden_states,
             causal_mask = causal_mask,
@@ -139,9 +145,12 @@ def GemmaDecoderLayer_fast_forward(
 
         # Fully Connected
         residual = hidden_states
-        hidden_states = fast_rms_layernorm(
-            self.post_attention_layernorm, hidden_states, gemma = True
-        )
+        if _disable_triton_rms or _ln_impl == "python":
+            hidden_states = self.post_attention_layernorm(hidden_states)
+        else:
+            hidden_states = fast_rms_layernorm(
+                self.post_attention_layernorm, hidden_states, gemma = True
+            )
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
 
@@ -175,7 +184,8 @@ def GemmaModel_fast_forward_inference(
     )
     input_ids = input_ids[:, : self.max_seq_length]
     hidden_states = self.model.embed_tokens(input_ids)
-    hidden_states = hidden_states.to(_get_dtype(dtype_from_config(self.config)))
+    if os.environ.get("UNSLOTH_DISABLE_AUTODTYPE_CAST", "0") != "1":
+        hidden_states = hidden_states.to(_get_dtype(dtype_from_config(self.config)))
     # 3072**0.5 = 55.5000 in bfloat16, whilst 55.4256 in float32
     # 2048**0.5 = 45.2500 in bfloat16, whilst 45.2548 in float32
     hidden_states *= torch.tensor(
