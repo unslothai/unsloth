@@ -101,6 +101,14 @@ _LOGGED_ATTENTION_FA2 = False
 _LOGGED_RMSNORM = False
 import types
 
+_FA2_COMPUTE_DTYPE_MAP = {
+    "bf16": torch.bfloat16,
+    "bfloat16": torch.bfloat16,
+    "f16": torch.float16,
+    "float16": torch.float16,
+    "fp16": torch.float16,
+}
+
 try:
     from huggingface_hub.utils import get_token
 except:
@@ -595,26 +603,21 @@ def LlamaAttention_fast_forward(
     _disable_triton_rope = os.environ.get("UNSLOTH_DISABLE_TRITON_ROPE", "0") == "1"
     if _rope_impl == "slow" or _disable_triton_rope:
         Q, K = inplace_rope_embedding(Q, K, cos, sin, position_ids)
-        if not _LOGGED_ROPE:
-            logger.debug(
-                "Unsloth: RoPE=slow (torch). device=%s cos_dtype=%s env(UNSLOTH_ROPE_IMPL=%s, UNSLOTH_DISABLE_TRITON_ROPE=%s)",
-                DEVICE_TYPE_TORCH,
-                str(cos.dtype),
-                os.environ.get("UNSLOTH_ROPE_IMPL"),
-                os.environ.get("UNSLOTH_DISABLE_TRITON_ROPE"),
-            )
-            _LOGGED_ROPE = True
+        _rope_impl_name = "slow (torch)"
     else:
         Q, K = fast_rope_embedding(Q, K, cos, sin)
-        if not _LOGGED_ROPE:
-            logger.debug(
-                "Unsloth: RoPE=triton (fast). device=%s cos_dtype=%s env(UNSLOTH_ROPE_IMPL=%s, UNSLOTH_DISABLE_TRITON_ROPE=%s)",
-                DEVICE_TYPE_TORCH,
-                str(cos.dtype),
-                os.environ.get("UNSLOTH_ROPE_IMPL"),
-                os.environ.get("UNSLOTH_DISABLE_TRITON_ROPE"),
-            )
-            _LOGGED_ROPE = True
+        _rope_impl_name = "triton (fast)"
+
+    if not _LOGGED_ROPE:
+        logger.debug(
+            "Unsloth: RoPE=%s. device=%s cos_dtype=%s env(UNSLOTH_ROPE_IMPL=%s, UNSLOTH_DISABLE_TRITON_ROPE=%s)",
+            _rope_impl_name,
+            DEVICE_TYPE_TORCH,
+            str(cos.dtype),
+            os.environ.get("UNSLOTH_ROPE_IMPL"),
+            os.environ.get("UNSLOTH_DISABLE_TRITON_ROPE"),
+        )
+        _LOGGED_ROPE = True
 
     if past_key_value is not None:
         K = torch.cat([past_key_value[0], K], dim = 2)
@@ -651,15 +654,8 @@ def LlamaAttention_fast_forward(
         _fa2_in_dtype = Q.dtype
         if DEVICE_TYPE == "hip":
             target = os.environ.get("UNSLOTH_FA2_COMPUTE_DTYPE", "").lower()
-            _dtype_map = {
-                "bf16": torch.bfloat16,
-                "bfloat16": torch.bfloat16,
-                "f16": torch.float16,
-                "float16": torch.float16,
-                "fp16": torch.float16,
-            }
-            if target in _dtype_map:
-                target_dtype = _dtype_map[target]
+            if target in _FA2_COMPUTE_DTYPE_MAP:
+                target_dtype = _FA2_COMPUTE_DTYPE_MAP[target]
                 if Q.dtype != target_dtype:
                     Q = Q.to(target_dtype)
                     K = K.to(target_dtype)
