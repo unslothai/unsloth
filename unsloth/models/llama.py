@@ -1051,6 +1051,10 @@ def LlamaModel_fast_forward(
         # Also, transformers 4.45.0 supports granite but with the attention refactor (it always had the refactor)
         # unsloth's check for granite too has "version >= 4.45.0 (rightly so)".
         # so let granite always use the attention refactor implementation.
+
+        self.rotary_emb.extend_rope_embedding(
+            hidden_states, self.config.max_position_embeddings
+        )
         position_embeddings = self.rotary_emb.get_cached(
             self.config.max_position_embeddings, hidden_states.device.index
         )
