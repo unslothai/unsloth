@@ -789,15 +789,19 @@ def LlamaDecoderLayer_fast_forward(
         _ln_impl = os.environ.get("UNSLOTH_LAYERNORM_IMPL", "").lower()
         if _disable_triton_rms or _ln_impl == "python":
             hidden_states = self.input_layernorm(hidden_states)
-            if not _LOGGED_RMSNORM:
-                logger.debug(
-                    "Unsloth: RMSNorm=torch. env(UNSLOTH_DISABLE_TRITON_RMSNORM=%s, UNSLOTH_LAYERNORM_IMPL=%s)",
-                    os.environ.get("UNSLOTH_DISABLE_TRITON_RMSNORM"),
-                    os.environ.get("UNSLOTH_LAYERNORM_IMPL"),
-                )
-                _LOGGED_RMSNORM = True
+            _rms_impl_name = "torch"
         else:
             hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
+            _rms_impl_name = "triton"
+
+        if not _LOGGED_RMSNORM:
+            logger.debug(
+                "Unsloth: RMSNorm=%s. env(UNSLOTH_DISABLE_TRITON_RMSNORM=%s, UNSLOTH_LAYERNORM_IMPL=%s)",
+                _rms_impl_name,
+                os.environ.get("UNSLOTH_DISABLE_TRITON_RMSNORM"),
+                os.environ.get("UNSLOTH_LAYERNORM_IMPL"),
+            )
+            _LOGGED_RMSNORM = True
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states = hidden_states,
             causal_mask = causal_mask,
