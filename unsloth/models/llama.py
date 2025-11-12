@@ -565,7 +565,7 @@ def LlamaAttention_fast_forward(
     global _LOGGED_ROPE, _LOGGED_ATTENTION_FA2
 
     bsz, q_len, _ = hidden_states.size()
-    
+
     # Preserve original dtype for attention output
     _orig_out_dtype = hidden_states.dtype
 
@@ -785,7 +785,9 @@ def LlamaDecoderLayer_fast_forward(
         hidden_states += residual
     else:
         residual = hidden_states
-        _disable_triton_rms = os.environ.get("UNSLOTH_DISABLE_TRITON_RMSNORM", "0") == "1"
+        _disable_triton_rms = (
+            os.environ.get("UNSLOTH_DISABLE_TRITON_RMSNORM", "0") == "1"
+        )
         _ln_impl = os.environ.get("UNSLOTH_LAYERNORM_IMPL", "").lower()
         if _disable_triton_rms or _ln_impl == "python":
             hidden_states = self.input_layernorm(hidden_states)
@@ -820,7 +822,9 @@ def LlamaDecoderLayer_fast_forward(
         if _disable_triton_rms or _ln_impl == "python":
             hidden_states = self.post_attention_layernorm(hidden_states)
         else:
-            hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states)
+            hidden_states = fast_rms_layernorm(
+                self.post_attention_layernorm, hidden_states
+            )
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
 
