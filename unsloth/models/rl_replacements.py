@@ -406,28 +406,231 @@ pass
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__move_model_to_vllm)
 
 
-# Edit _get_per_token_logps to handle mixed precision
-def grpo_trainer__get_per_token_logps(function_name, function):
-    if function_name != "_get_per_token_logps": return function
+def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
+    if function_name != "_get_per_token_logps_and_entropies": return function
 
-    def _get_per_token_logps(self, model, input_ids, attention_mask, logits_to_keep, compute_efficient = False):
-        if True: # os.environ.get('UNSLOTH_USE_NEW_MODEL', '0') == '0':
-            return None # Unsloth efficient GRPO
-        # Otherwise, calculate normally:
-        if not hasattr(self, '_autocast_dtype'):
-            self._autocast_dtype = torch.float16 if os.environ.get('ACCELERATE_MIXED_PRECISION', 'fp16') == 'fp16' else torch.bfloat16
-            if os.environ.get('UNSLOTH_FORCE_FLOAT32', '0') == '1': self._autocast_dtype = torch.float16
+    # Just copy over from _get_per_token_logps replacement function above. For now this returns None anyway
+    def _get_per_token_logps_and_entropies(self, model, input_ids, attention_mask, logits_to_keep, batch_size = None,
+                                           compute_entropy = False, compute_efficient = False, *args, **kwargs):
+        # if True: # os.environ.get('UNSLOTH_USE_NEW_MODEL', '0') == '0':
+        #     return None, None  # logps, entropies Unsloth efficient GRPO
+        if compute_efficient:
+            return None, None
+        else:
+            # Otherwise, calculate normally:
+            if not hasattr(self, '_autocast_dtype'):
+                self._autocast_dtype = torch.float16 if os.environ.get('ACCELERATE_MIXED_PRECISION', 'fp16') == 'fp16' else torch.bfloat16
+                if os.environ.get('UNSLOTH_FORCE_FLOAT32', '0') == '1': self._autocast_dtype = torch.float16
 
-        os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
-        with torch.amp.autocast(device_type = DEVICE_TYPE, dtype = self._autocast_dtype):
-            # We add 1 to `logits_to_keep` because the last logits of the sequence is later excluded
-            logits = model(
-                input_ids = input_ids,
-                attention_mask = attention_mask,
-                logits_to_keep = logits_to_keep + 1,
-            ).logits
+            pixel_values, image_grid_thw = kwargs.get("pixel_values", None), kwargs.get("image_grid_thw", None)
+            pixel_attention_mask, image_sizes = kwargs.get('pixel_attention_mask',None), kwargs.get('image_sizes',None)
+
+            os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
+
+            unwrapped_model = self.accelerator.unwrap_model(model, keep_fp32_wrapper=False)
+
+            B = input_ids.shape[0]
+            all_logprobs_list = []
+
+            # 1. Pre-calculate batch-dependent padding (if needed)
+            # This logic MUST run on the full batch BEFORE looping
+            if pixel_values is None:
+                attention_mask = input_ids != self.processing_class.pad_token_id
+                attention_mask = attention_mask.to(attention_mask.dtype)
+                
+                left_pad_tokens_per_prompt = calculate_pad_tokens_in_prompt(input_ids, logits_to_keep, self.processing_class.pad_token_id)
+                max_left_pad = max(left_pad_tokens_per_prompt).item()
+                
+                input_ids = left_pack_padding(input_ids, self.processing_class.pad_token_id)
+            else:
+                # This branch is simpler and doesn't need pre-calculation
+                max_left_pad = 0 # Not used, but defined for clarity
+
+            # 2. Chunk all model inputs
+            input_ids_chunks = torch.chunk(input_ids, chunks=B, dim=0)
+            attention_mask_chunks = torch.chunk(attention_mask, chunks=B, dim=0)
+
+            def chunk_optional(tensor, chunks):
+                if tensor is None:
+                    return [None] * chunks
+                return torch.chunk(tensor, chunks=chunks, dim=0)
+
+            pixel_values_chunks = chunk_optional(pixel_values, B)
+            image_grid_thw_chunks = chunk_optional(image_grid_thw, B)
+            pixel_attention_mask_chunks = chunk_optional(pixel_attention_mask, B)
+
+            # Handle image_sizes, which might be a list
+            if image_sizes is not None and not isinstance(image_sizes, torch.Tensor):
+                image_sizes_chunks = [[size] for size in image_sizes] # Chunk a list
+            else:
+                image_sizes_chunks = chunk_optional(image_sizes, B) # Chunk a tensor or None
+
+            # 3. Get parameters for logprob calculation
+            lm_head = self.model.get_output_embeddings().weight
+            temperature = self.temperature
+            logit_softcapping = getattr(model.config, "final_logit_softcapping", 0)
+            if logit_softcapping is None: logit_softcapping = 0
+            logit_scale_multiply = getattr(model.config, "logit_scale", 0)
+            if logit_scale_multiply is None: logit_scale_multiply = 0
+            logit_scale_divide = getattr(model.config, "logits_scaling", 0)
+            if logit_scale_divide is None: logit_scale_divide = 0
+
+            # 4. Zip inputs and loop
+            zipped_inputs = zip(
+                input_ids_chunks,
+                attention_mask_chunks,
+                pixel_values_chunks,
+                image_grid_thw_chunks,
+                pixel_attention_mask_chunks,
+                image_sizes_chunks
+            )
+            os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
+
+            with torch.amp.autocast(device_type = 'cuda', dtype = self._autocast_dtype):
+                with torch.no_grad():
+                    for (
+                            input_ids_chunk,
+                            attention_mask_chunk,
+                            pixel_values_chunk,
+                            image_grid_thw_chunk,
+                            pixel_attention_mask_chunk,
+                            image_sizes_chunk
+                        ) in zipped_inputs:
+
+                            # --- 4a. Compute hidden states (model call) ---
+                            if pixel_values is None:
+                                logits_chunk = unwrapped_model(
+                                    input_ids = input_ids_chunk,
+                                    attention_mask = attention_mask_chunk,
+                                    pixel_values = pixel_values_chunk,
+                                    image_grid_thw = image_grid_thw_chunk,
+                                    pixel_attention_mask = pixel_attention_mask_chunk,
+                                    image_sizes = image_sizes_chunk,
+                                ).logits
+                                
+                                # --- 4b. Post-process hidden states ---
+                                completion_input_ids_chunk = input_ids_chunk[:, -(logits_to_keep + max_left_pad):]
+                                logits_chunk = logits_chunk[:, -(logits_to_keep + max_left_pad): , :]
+                                
+                            else:
+                                logits_chunk = unwrapped_model(
+                                    input_ids = input_ids_chunk,
+                                    attention_mask = attention_mask_chunk,
+                                    pixel_values = pixel_values_chunk,
+                                    image_grid_thw = image_grid_thw_chunk,
+                                    pixel_attention_mask = pixel_attention_mask_chunk,
+                                    image_sizes = image_sizes_chunk,
+                                    logits_to_keep = logits_to_keep + 1,
+                                ).logits
+                                
+                                # --- 4b. Post-process hidden states ---
+                                logits_chunk = logits_chunk[:, :-1, : ] 
+                                completion_input_ids_chunk = input_ids_chunk[:, -logits_to_keep:]
+                            
+                            # --- 4c. Compute logprobs ---
+                            logprobs_chunk = chunked_hidden_states_selective_log_softmax(
+                                logits_chunk,
+                                lm_head, 
+                                completion_input_ids_chunk, 
+                                chunks = 64, # Since this chunk's batch size is 1
+                                logit_scale_multiply = logit_scale_multiply, 
+                                logit_scale_divide = logit_scale_divide,
+                                logit_softcapping = logit_softcapping, 
+                                temperature = temperature
+                            )
+                            
+                            all_logprobs_list.append(logprobs_chunk)
+                    # 5. Concatenate final results
+                    logprobs = torch.cat(all_logprobs_list, dim=0)
+                    entropies = None
+            with torch.amp.autocast(device_type = 'cuda', dtype = self._autocast_dtype):
+                with torch.no_grad():
+                    if pixel_values is None:
+                        attention_mask =  input_ids != self.processing_class.pad_token_id
+                        attention_mask = attention_mask.to(attention_mask.dtype)
+                        # We add 1 to `logits_to_keep` because the last logits of the sequence is later excluded
+                        logits = unwrapped_model(
+                            input_ids = input_ids,
+                            attention_mask = attention_mask,
+                            pixel_values = pixel_values,
+                            image_grid_thw = image_grid_thw,
+                            pixel_attention_mask = pixel_attention_mask,
+                            image_sizes = image_sizes,
+                            #logits_to_keep = logits_to_keep + 1,
+                        ).logits
+                        left_pad_tokens_per_prompt = calculate_pad_tokens_in_prompt(input_ids, logits_to_keep, self.processing_class.pad_token_id)
+
+                        max_left_pad = max(left_pad_tokens_per_prompt).item()
+
+                        input_ids = left_pack_padding(input_ids, self.processing_class.pad_token_id)
+
+                        completion_input_ids = input_ids[:, -(logits_to_keep +max_left_pad):]
+
+                        logits = logits[:, -(logits_to_keep +max_left_pad): , :]
+
+                    else:
+                        logits = unwrapped_model(
+                            input_ids = input_ids,
+                            attention_mask = attention_mask,
+                            pixel_values = pixel_values,
+                            image_grid_thw = image_grid_thw,
+                            pixel_attention_mask = pixel_attention_mask,
+                            image_sizes = image_sizes,
+                            logits_to_keep = logits_to_keep+1, #+1 we caluclate logprobs and remove extra logit here
+                        ).logits
+                        logits = logits[:, :-1, : ] 
+                        completion_input_ids = input_ids[:, -logits_to_keep:]
+                    
+                    lm_head = self.model.get_output_embeddings().weight
+                    #logits in these cases are hidden states
+                    temperature = self.temperature
+                    logit_softcapping = getattr(model.config, "final_logit_softcapping", 0) # Gemma
+                    if logit_softcapping is None: logit_softcapping = 0
+                    logit_scale_multiply = getattr(model.config, "logit_scale", 0) # Cohere
+                    if logit_scale_multiply is None: logit_scale_multiply = 0
+                    logit_scale_divide = getattr(model.config, "logits_scaling", 0) # Granite
+                    if logit_scale_divide is None: logit_scale_divide = 0
+
+                    # logprobs = chunked_hidden_states_selective_log_softmax(logits,lm_head, completion_input_ids, chunks=input_ids.shape[0]*4, 
+                    #                                                        logit_scale_multiply=logit_scale_multiply, logit_scale_divide=logit_scale_divide,
+                    #                                                        logit_softcapping=logit_softcapping, temperature=temperature)
+                    # This is the most memory-efficient way to loop externally.
+                    B = logits.shape[0] 
+                    
+                    old_logprobs_list = []
+
+                    logits_chunks           = torch.chunk(logits,               chunks=B, dim=0)
+                    completion_ids_chunks = torch.chunk(completion_input_ids, chunks=B, dim=0)
+
+                    for logits_chunk, input_ids_chunk in zip(logits_chunks, completion_ids_chunks):
+                        
+
+                        logprobs_chunk = chunked_hidden_states_selective_log_softmax(
+                            logits_chunk,
+                            lm_head, 
+                            input_ids_chunk, 
+                            chunks = 64, # Because this chunk's batch size is 1
+                            logit_scale_multiply = logit_scale_multiply, 
+                            logit_scale_divide = logit_scale_divide,
+                            logit_softcapping = logit_softcapping, 
+                            temperature = temperature
+                        )
+                        
+                        old_logprobs_list.append(logprobs_chunk)
+
+                    old_logprobs = torch.cat(old_logprobs_list, dim=0)
+                    #if we use below features we will have to materialize all hidden states.
+                    
+                    breakpoint()
+                    torch.allclose(old_logprobs, logprobs, rtol=1e-5)
+                    # if compute_entropy:
+                    #     from trl.trainer.utils import entropy_from_logits
+                    #     entropies = entropy_from_logits(logits)
+            os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
+
+            
             # logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
-            return logits
+            return logprobs.detach(), entropies  # logps, entropies
             # input_ids = input_ids[:, -logits_to_keep:]
             # For transformers<=4.48, logits_to_keep argument isn't supported, so here we drop logits ourselves.
             # See https://github.com/huggingface/trl/issues/2770
@@ -446,10 +649,6 @@ def grpo_trainer__get_per_token_logps(function_name, function):
             # return  logps #  compute logprobs for the input tokens
         pass
     pass
-
-    function = inspect.getsource(_get_per_token_logps)
-    return function
-pass
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__get_per_token_logps)
 
 def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
