@@ -109,6 +109,14 @@ _FA2_COMPUTE_DTYPE_MAP = {
     "fp16": torch.float16,
 }
 
+_ROPE_IMPL = os.getenv("UNSLOTH_ROPE_IMPL", "").lower()
+_DISABLE_TRITON_ROPE = os.getenv("UNSLOTH_DISABLE_TRITON_ROPE", "0") == "1"
+
+_LAYERNORM_IMPL = os.getenv("UNSLOTH_LAYERNORM_IMPL", "").lower()
+_DISABLE_TRITON_RMSNORM = os.getenv("UNSLOTH_DISABLE_TRITON_RMSNORM", "0") == "1"
+
+_FA2_COMPUTE_DTYPE_TARGET = os.getenv("UNSLOTH_FA2_COMPUTE_DTYPE", "").lower()
+
 try:
     from huggingface_hub.utils import get_token
 except:
@@ -599,9 +607,7 @@ def LlamaAttention_fast_forward(
         cos, sin = rotary_emb.get_cached(kv_seq_len, Q.device.index)
 
     # Allow switching RoPE implementation to a non-Triton path on HIP if needed
-    _rope_impl = os.environ.get("UNSLOTH_ROPE_IMPL", "").lower()
-    _disable_triton_rope = os.environ.get("UNSLOTH_DISABLE_TRITON_ROPE", "0") == "1"
-    if _rope_impl == "slow" or _disable_triton_rope:
+    if _ROPE_IMPL == "slow" or _DISABLE_TRITON_ROPE:
         Q, K = inplace_rope_embedding(Q, K, cos, sin, position_ids)
         _rope_impl_name = "slow (torch)"
     else:
@@ -614,8 +620,8 @@ def LlamaAttention_fast_forward(
             _rope_impl_name,
             DEVICE_TYPE_TORCH,
             str(cos.dtype),
-            os.environ.get("UNSLOTH_ROPE_IMPL"),
-            os.environ.get("UNSLOTH_DISABLE_TRITON_ROPE"),
+            os.getenv("UNSLOTH_ROPE_IMPL"),
+            os.getenv("UNSLOTH_DISABLE_TRITON_ROPE"),
         )
         _LOGGED_ROPE = True
 
@@ -653,9 +659,8 @@ def LlamaAttention_fast_forward(
         # Allow selecting a compute dtype, defaulting to fp16 if inputs are bf16.
         _fa2_in_dtype = Q.dtype
         if DEVICE_TYPE == "hip":
-            target = os.environ.get("UNSLOTH_FA2_COMPUTE_DTYPE", "").lower()
-            if target in _FA2_COMPUTE_DTYPE_MAP:
-                target_dtype = _FA2_COMPUTE_DTYPE_MAP[target]
+            if _FA2_COMPUTE_DTYPE_TARGET in _FA2_COMPUTE_DTYPE_MAP:
+                target_dtype = _FA2_COMPUTE_DTYPE_MAP[_FA2_COMPUTE_DTYPE_TARGET]
                 if Q.dtype != target_dtype:
                     Q = Q.to(target_dtype)
                     K = K.to(target_dtype)
@@ -674,8 +679,8 @@ def LlamaAttention_fast_forward(
                 str(_fa2_in_dtype),
                 str(Q.dtype),
                 str(A.dtype),
-                os.environ.get("UNSLOTH_FA2_COMPUTE_DTYPE"),
-                os.environ.get("UNSLOTH_DISABLE_FLASH_ATTENTION"),
+                os.getenv("UNSLOTH_FA2_COMPUTE_DTYPE"),
+                os.getenv("UNSLOTH_DISABLE_FLASH_ATTENTION"),
             )
             _LOGGED_ATTENTION_FA2 = True
     else:
@@ -785,11 +790,7 @@ def LlamaDecoderLayer_fast_forward(
         hidden_states += residual
     else:
         residual = hidden_states
-        _disable_triton_rms = (
-            os.environ.get("UNSLOTH_DISABLE_TRITON_RMSNORM", "0") == "1"
-        )
-        _ln_impl = os.environ.get("UNSLOTH_LAYERNORM_IMPL", "").lower()
-        if _disable_triton_rms or _ln_impl == "python":
+        if _DISABLE_TRITON_RMSNORM or _LAYERNORM_IMPL == "python":
             hidden_states = self.input_layernorm(hidden_states)
             _rms_impl_name = "torch"
         else:
@@ -800,8 +801,8 @@ def LlamaDecoderLayer_fast_forward(
             logger.debug(
                 "Unsloth: RMSNorm=%s. env(UNSLOTH_DISABLE_TRITON_RMSNORM=%s, UNSLOTH_LAYERNORM_IMPL=%s)",
                 _rms_impl_name,
-                os.environ.get("UNSLOTH_DISABLE_TRITON_RMSNORM"),
-                os.environ.get("UNSLOTH_LAYERNORM_IMPL"),
+                os.getenv("UNSLOTH_DISABLE_TRITON_RMSNORM"),
+                os.getenv("UNSLOTH_LAYERNORM_IMPL"),
             )
             _LOGGED_RMSNORM = True
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
@@ -819,7 +820,7 @@ def LlamaDecoderLayer_fast_forward(
 
         # Fully Connected
         residual = hidden_states
-        if _disable_triton_rms or _ln_impl == "python":
+        if _DISABLE_TRITON_RMSNORM or _LAYERNORM_IMPL == "python":
             hidden_states = self.post_attention_layernorm(hidden_states)
         else:
             hidden_states = fast_rms_layernorm(
@@ -938,7 +939,7 @@ def LlamaModel_fast_forward(
         inputs_embeds = self.embed_tokens(input_ids)
 
     # Allow overriding the automatic dtype cast via env for diagnostics
-    if os.environ.get("UNSLOTH_DISABLE_AUTODTYPE_CAST", "0") != "1":
+    if os.getenv("UNSLOTH_DISABLE_AUTODTYPE_CAST", "0") != "1":
         inputs_embeds = inputs_embeds.to(_get_dtype(dtype_from_config(self.config)))
 
     # Normalized from Gemma
@@ -1435,7 +1436,7 @@ def CausalLM_fast_forward(fast_forward_inference):
             labels = labels.to(lm_head_device)
 
         # Output last hidden states without logits if asked
-        if os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") == "1":
+        if os.getenv("UNSLOTH_RETURN_HIDDEN_STATES", "0") == "1":
             if num_logits_to_keep != 0:
                 hidden_states = hidden_states[:, -num_logits_to_keep:, :]
             return CausalLMOutputWithPast(

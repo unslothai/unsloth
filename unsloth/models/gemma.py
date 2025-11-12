@@ -19,6 +19,10 @@ from unsloth_zoo.hf_utils import dtype_from_config
 import math
 import os
 
+_DISABLE_TRITON_RMSNORM = os.getenv("UNSLOTH_DISABLE_TRITON_RMSNORM", "0") == "1"
+_LAYERNORM_IMPL = os.getenv("UNSLOTH_LAYERNORM_IMPL", "").lower()
+_DISABLE_AUTODTYPE_CAST = os.getenv("UNSLOTH_DISABLE_AUTODTYPE_CAST", "0") == "1"
+
 try:
     from transformers.models.gemma.modeling_gemma import (
         GemmaAttention,
@@ -123,9 +127,7 @@ def GemmaDecoderLayer_fast_forward(
         hidden_states += residual
     else:
         residual = hidden_states
-        _disable_triton_rms = os.getenv("UNSLOTH_DISABLE_TRITON_RMSNORM", "0") == "1"
-        _ln_impl = os.getenv("UNSLOTH_LAYERNORM_IMPL", "").lower()
-        if _disable_triton_rms or _ln_impl == "python":
+        if _DISABLE_TRITON_RMSNORM or _LAYERNORM_IMPL == "python":
             hidden_states = self.input_layernorm(hidden_states)
         else:
             hidden_states = fast_rms_layernorm(
@@ -145,7 +147,7 @@ def GemmaDecoderLayer_fast_forward(
 
         # Fully Connected
         residual = hidden_states
-        if _disable_triton_rms or _ln_impl == "python":
+        if _DISABLE_TRITON_RMSNORM or _LAYERNORM_IMPL == "python":
             hidden_states = self.post_attention_layernorm(hidden_states)
         else:
             hidden_states = fast_rms_layernorm(
@@ -184,7 +186,7 @@ def GemmaModel_fast_forward_inference(
     )
     input_ids = input_ids[:, : self.max_seq_length]
     hidden_states = self.model.embed_tokens(input_ids)
-    if os.environ.get("UNSLOTH_DISABLE_AUTODTYPE_CAST", "0") != "1":
+    if not _DISABLE_AUTODTYPE_CAST:
         hidden_states = hidden_states.to(_get_dtype(dtype_from_config(self.config)))
     # 3072**0.5 = 55.5000 in bfloat16, whilst 55.4256 in float32
     # 2048**0.5 = 45.2500 in bfloat16, whilst 45.2548 in float32
