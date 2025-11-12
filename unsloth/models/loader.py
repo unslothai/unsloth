@@ -986,7 +986,7 @@ class FastModel(FastBaseModel):
                 or disable_name.lower() in model_types_all
             ) and ((dtype == torch.float16) or not SUPPORTS_BFLOAT16):
                 os.environ["UNSLOTH_FORCE_FLOAT32"] = "1"
-                dtype = torch.bfloat16  # Change to bfloat16 loading
+                dtype = torch.float32
                 break
         # Patch gradient checkpointing
         if use_gradient_checkpointing == "unsloth":
