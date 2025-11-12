@@ -587,7 +587,6 @@ except:
 
 
 class FastModel(FastBaseModel):
-
     @staticmethod
     def _prepare_for_qat(model, qat_scheme):
         model = _prepare_model_for_qat(model, qat_scheme)
@@ -1143,7 +1142,6 @@ class FastModel(FastBaseModel):
         if qat_scheme is not None:
             print("Unsloth: Applying QAT to mitigate quantization degradation")
             model = FastModel._prepare_for_qat(model, qat_scheme)
-        pass
 
         return model, tokenizer
 

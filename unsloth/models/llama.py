@@ -3013,8 +3013,7 @@ class FastLlamaModel:
         if qat_scheme is not None:
             print("Unsloth: Applying QAT to mitigate quantization degradation")
             model = FastLlamaModel._prepare_for_qat(model, qat_scheme)
-            
-        pass
+
 
         model._saved_temp_tokenizer = _saved_temp_tokenizer
 
