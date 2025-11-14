@@ -566,7 +566,7 @@ def LlamaAttention_fast_forward(
     if past_key_value is not None:
         kv_seq_len += past_key_value[0].shape[-2]
 
-    if position_embeddings:
+    if position_embeddings and kv_seq_len <= position_embeddings[0].shape[0]:
         cos, sin = position_embeddings
     else:
         # Extend RoPE dynamically to fit in VRA
@@ -1051,6 +1051,10 @@ def LlamaModel_fast_forward(
         # Also, transformers 4.45.0 supports granite but with the attention refactor (it always had the refactor)
         # unsloth's check for granite too has "version >= 4.45.0 (rightly so)".
         # so let granite always use the attention refactor implementation.
+
+        self.rotary_emb.extend_rope_embedding(
+            hidden_states, self.config.max_position_embeddings
+        )
         position_embeddings = self.rotary_emb.get_cached(
             self.config.max_position_embeddings, hidden_states.device.index
         )
@@ -2043,6 +2047,11 @@ def unsloth_fast_generate(
 
 class FastLlamaModel:
     @staticmethod
+    def _prepare_for_qat(model, qat_scheme):
+        model = _prepare_model_for_qat(model, qat_scheme)
+        return model
+
+    @staticmethod
     def pre_patch():
         init_name, function = patch_llama_rope_scaling(
             model_name = "llama",
@@ -3003,7 +3012,8 @@ class FastLlamaModel:
         # Apply QAT + LoRA if specified
         if qat_scheme is not None:
             print("Unsloth: Applying QAT to mitigate quantization degradation")
-            model = _prepare_model_for_qat(model, qat_scheme)
+            model = FastLlamaModel._prepare_for_qat(model, qat_scheme)
+
 
         model._saved_temp_tokenizer = _saved_temp_tokenizer
 
@@ -3210,9 +3220,15 @@ class FastLlamaModel:
                         )
                     ):
                         # https://stackoverflow.com/questions/50599045/python-replacing-a-function-within-a-class-of-a-module
-                        mlp_module.forward = types.MethodType(
-                            _apply_lora_mlp, mlp_module
-                        )
+                        if hasattr(mlp_module, "_unsloth_forward"):
+                            # then we've patched the mlp to use TiledMLP
+                            mlp_module._unsloth_forward = types.MethodType(
+                                _apply_lora_mlp, mlp_module
+                            )
+                        else:
+                            mlp_module.forward = types.MethodType(
+                                _apply_lora_mlp, mlp_module
+                            )
                         n_mlp += 1
                     else:
                         logger.warning_once(

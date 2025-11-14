@@ -57,6 +57,7 @@ from ..device_type import (
 # https://github.com/huggingface/transformers/pull/26037 allows 4 bit loading!
 from unsloth_zoo.utils import Version, _get_dtype
 from unsloth_zoo.hf_utils import dtype_from_config
+from unsloth_zoo.tiled_mlp import patch_tiled_mlp
 
 transformers_version = Version(transformers_version)
 SUPPORTS_FOURBIT = transformers_version >= Version("4.37")
@@ -566,6 +567,13 @@ class FastLanguageModel(FastLlamaModel):
             )
             # Patch it as well!
             model = dispatch_model.patch_peft_model(model, use_gradient_checkpointing)
+
+        # Patch Tiled MLP
+        # to turn on set UNSLOTH_TILED_MLP to "arctic", "target", or "target:{GB}""
+        patch_tiled_mlp_choice = os.environ.get("UNSLOTH_TILED_MLP", "0")
+        if patch_tiled_mlp_choice != "0":
+            patch_tiled_mlp(model, patch_options_str = patch_tiled_mlp_choice)
+
         return model, tokenizer
 
 
@@ -587,6 +595,11 @@ except:
 
 
 class FastModel(FastBaseModel):
+    @staticmethod
+    def _prepare_for_qat(model, qat_scheme):
+        model = _prepare_model_for_qat(model, qat_scheme)
+        return model
+
     @staticmethod
     def from_pretrained(
         model_name = "unsloth/Llama-3.2-11B-Vision-Instruct-bnb-4bit",
@@ -1136,7 +1149,13 @@ class FastModel(FastBaseModel):
         # Apply QAT if specified
         if qat_scheme is not None:
             print("Unsloth: Applying QAT to mitigate quantization degradation")
-            model = _prepare_model_for_qat(model, qat_scheme)
+            model = FastModel._prepare_for_qat(model, qat_scheme)
+
+        # Patch Tiled MLP
+        # to turn on set UNSLOTH_TILED_MLP to "arctic", "target", or "target:{GB}""
+        patch_tiled_mlp_choice = os.environ.get("UNSLOTH_TILED_MLP", "0")
+        if patch_tiled_mlp_choice != "0":
+            patch_tiled_mlp(model, patch_options_str = patch_tiled_mlp_choice)
 
         return model, tokenizer
 
