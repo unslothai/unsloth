@@ -343,6 +343,7 @@ def _maybe_dequantize_torchao_float8_tensor(w: torch.Tensor) -> torch.Tensor:
     if not _HAS_TORCHAO:
         return w
     from torchao.quantization import Float8Tensor
+
     if not isinstance(w, Float8Tensor):
         return w
     # In the backward pass, rowwise scaled becomes colwise scaled after we
