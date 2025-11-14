@@ -34,29 +34,29 @@ import os
 
 
 def run(args):
-    import torch
     from unsloth import FastLanguageModel
     from datasets import load_dataset
     from transformers.utils import strtobool
     from trl import SFTTrainer, SFTConfig
-    from transformers import TrainingArguments
     from unsloth import is_bfloat16_supported
+    from unsloth.models.loader_utils import prepare_device_map
     import logging
 
     logging.getLogger("hf-to-gguf").setLevel(logging.WARNING)
 
     # Load model and tokenizer
+    device_map, distributed = prepare_device_map()
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name = args.model_name,
         max_seq_length = args.max_seq_length,
         dtype = args.dtype,
         load_in_4bit = args.load_in_4bit,
+        device_map = device_map,
     )
 
     # Configure PEFT model
     model = FastLanguageModel.get_peft_model(
         model,
-        r = args.r,
         target_modules = [
             "q_proj",
             "k_proj",
@@ -112,6 +112,7 @@ def run(args):
     # Configure training arguments
     training_args = SFTConfig(
         per_device_train_batch_size = args.per_device_train_batch_size,
+        per_device_eval_batch_size = args.per_device_eval_batch_size,
         gradient_accumulation_steps = args.gradient_accumulation_steps,
         warmup_steps = args.warmup_steps,
         max_steps = args.max_steps,
@@ -127,7 +128,7 @@ def run(args):
         report_to = args.report_to,
         max_length = args.max_seq_length,
         dataset_num_proc = 2,
-        packing = False,
+        ddp_find_unused_parameters = False if distributed else None,
     )
 
     # Initialize trainer
@@ -138,8 +139,7 @@ def run(args):
         args = training_args,
     )
 
-    # Train model
-    trainer_stats = trainer.train()
+    trainer.train()
 
     # Save model
     if args.save_model:
@@ -164,13 +164,15 @@ def run(args):
             else:
                 print(f"Saving model with quantization method: {args.quantization}")
                 model.save_pretrained_gguf(
-                    args.save_path, tokenizer, quantization_method = args.quantization
+                    args.save_path,
+                    tokenizer,
+                    quantization_method = args.quantization,
                 )
                 if args.push_model:
                     model.push_to_hub_gguf(
                         hub_path = args.hub_path,
                         hub_token = args.hub_token,
-                        quantization_method = quantization_method,
+                        quantization_method = args.quantization,
                     )
         else:
             model.save_pretrained_merged(args.save_path, tokenizer, args.save_method)
@@ -181,7 +183,6 @@ def run(args):
 
 
 if __name__ == "__main__":
-    # Define argument parser
     parser = argparse.ArgumentParser(
         description = "🦥 Fine-tune your llm faster using unsloth!"
     )
@@ -218,7 +219,8 @@ if __name__ == "__main__":
     )
 
     lora_group = parser.add_argument_group(
-        "🧠 LoRA Options", "These options are used to configure the LoRA model."
+        "🧠 LoRA Options",
+        "These options are used to configure the LoRA model.",
     )
     lora_group.add_argument(
         "--r",
@@ -239,7 +241,10 @@ if __name__ == "__main__":
         help = "LoRA dropout rate, default is 0.0 which is optimized.",
     )
     lora_group.add_argument(
-        "--bias", type = str, default = "none", help = "Bias setting for LoRA"
+        "--bias",
+        type = str,
+        default = "none",
+        help = "Bias setting for LoRA",
     )
     lora_group.add_argument(
         "--use_gradient_checkpointing",
@@ -254,10 +259,15 @@ if __name__ == "__main__":
         help = "Random state for reproducibility, default is 3407.",
     )
     lora_group.add_argument(
-        "--use_rslora", action = "store_true", help = "Use rank stabilized LoRA"
+        "--use_rslora",
+        action = "store_true",
+        help = "Use rank stabilized LoRA",
     )
     lora_group.add_argument(
-        "--loftq_config", type = str, default = None, help = "Configuration for LoftQ"
+        "--loftq_config",
+        type = str,
+        default = None,
+        help = "Configuration for LoftQ",
     )
 
     training_group = parser.add_argument_group("🎓 Training Options")
@@ -266,6 +276,12 @@ if __name__ == "__main__":
         type = int,
         default = 2,
         help = "Batch size per device during training, default is 2.",
+    )
+    training_group.add_argument(
+        "--per_device_eval_batch_size",
+        type = int,
+        default = 4,
+        help = "Batch size per device during evaluation, default is 4.",
     )
     training_group.add_argument(
         "--gradient_accumulation_steps",
@@ -280,7 +296,10 @@ if __name__ == "__main__":
         help = "Number of warmup steps, default is 5.",
     )
     training_group.add_argument(
-        "--max_steps", type = int, default = 400, help = "Maximum number of training steps."
+        "--max_steps",
+        type = int,
+        default = 400,
+        help = "Maximum number of training steps.",
     )
     training_group.add_argument(
         "--learning_rate",
@@ -289,7 +308,10 @@ if __name__ == "__main__":
         help = "Learning rate, default is 2e-4.",
     )
     training_group.add_argument(
-        "--optim", type = str, default = "adamw_8bit", help = "Optimizer type."
+        "--optim",
+        type = str,
+        default = "adamw_8bit",
+        help = "Optimizer type.",
     )
     training_group.add_argument(
         "--weight_decay",
@@ -310,7 +332,6 @@ if __name__ == "__main__":
         help = "Seed for reproducibility, default is 3407.",
     )
 
-    # Report/Logging arguments
     report_group = parser.add_argument_group("📊 Report Options")
     report_group.add_argument(
         "--report_to",
@@ -331,19 +352,31 @@ if __name__ == "__main__":
             "all",
             "none",
         ],
-        help = "The list of integrations to report the results and logs to. Supported platforms are: \n\t\t 'azure_ml', 'clearml', 'codecarbon', 'comet_ml', 'dagshub', 'dvclive', 'flyte', 'mlflow', 'neptune', 'tensorboard', and 'wandb'. Use 'all' to report to all integrations installed, 'none' for no integrations.",
+        help = (
+            "The list of integrations to report the results and logs to. Supported platforms are:\n\t\t "
+            "'azure_ml', 'clearml', 'codecarbon', 'comet_ml', 'dagshub', 'dvclive', 'flyte', "
+            "'mlflow', 'neptune', 'tensorboard', and 'wandb'. Use 'all' to report to all integrations "
+            "installed, 'none' for no integrations."
+        ),
     )
     report_group.add_argument(
-        "--logging_steps", type = int, default = 1, help = "Logging steps, default is 1"
+        "--logging_steps",
+        type = int,
+        default = 1,
+        help = "Logging steps, default is 1",
     )
 
-    # Saving and pushing arguments
     save_group = parser.add_argument_group("💾 Save Model Options")
     save_group.add_argument(
-        "--output_dir", type = str, default = "outputs", help = "Output directory"
+        "--output_dir",
+        type = str,
+        default = "outputs",
+        help = "Output directory",
     )
     save_group.add_argument(
-        "--save_model", action = "store_true", help = "Save the model after training"
+        "--save_model",
+        action = "store_true",
+        help = "Save the model after training",
     )
     save_group.add_argument(
         "--save_method",
@@ -358,14 +391,20 @@ if __name__ == "__main__":
         help = "Convert the model to GGUF after training",
     )
     save_group.add_argument(
-        "--save_path", type = str, default = "model", help = "Path to save the model"
+        "--save_path",
+        type = str,
+        default = "model",
+        help = "Path to save the model",
     )
     save_group.add_argument(
         "--quantization",
         type = str,
         default = "q8_0",
         nargs = "+",
-        help = "Quantization method for saving the model. common values ('f16', 'q4_k_m', 'q8_0'), Check our wiki for all quantization methods https://github.com/unslothai/unsloth/wiki#saving-to-gguf ",
+        help = (
+            "Quantization method for saving the model. common values ('f16', 'q4_k_m', 'q8_0'), "
+            "Check our wiki for all quantization methods https://github.com/unslothai/unsloth/wiki#saving-to-gguf"
+        ),
     )
 
     push_group = parser.add_argument_group("🚀 Push Model Options")
@@ -386,7 +425,9 @@ if __name__ == "__main__":
         help = "Path on Hugging Face hub to push the model",
     )
     push_group.add_argument(
-        "--hub_token", type = str, help = "Token for pushing the model to Hugging Face hub"
+        "--hub_token",
+        type = str,
+        help = "Token for pushing the model to Hugging Face hub",
     )
 
     args = parser.parse_args()
