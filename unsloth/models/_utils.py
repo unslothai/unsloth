@@ -83,7 +83,8 @@ import contextlib
 import re
 from dataclasses import dataclass, field
 import functools
-import warnings, subprocess, re, inspect, psutil, os, math
+import textwrap
+import warnings, subprocess, inspect, psutil, os, math
 from unsloth_zoo.utils import Version, get_quant_type
 from importlib.metadata import version as importlib_version
 from ..device_type import (
@@ -1688,60 +1689,103 @@ def patch_gradient_accumulation_fix(Trainer):
         )
 
     # Also fix up loss scaling ie negate loss *= self.args.gradient_accumulation_steps
-    if Trainer.training_step.__name__ == "_unsloth_training_step":
-        return
-    if "num_items_in_batch" not in inspect.signature(Trainer.training_step).parameters:
-        return
+    if not (
+        Trainer.training_step.__name__ == "_unsloth_training_step"
+        or "num_items_in_batch"
+        not in inspect.signature(Trainer.training_step).parameters
+    ):
+        function = inspect.getsource(Trainer.training_step)
+        where = function.find("def")
+        function = function.split("\n")
+        function = "\n".join(x[where:] for x in function)
 
-    function = inspect.getsource(Trainer.training_step)
-    where = function.find("def")
-    function = function.split("\n")
-    function = "\n".join(x[where:] for x in function)
+        # Import all variables that need importing
+        import transformers.trainer
 
-    # Import all variables that need importing
-    import transformers.trainer
+        items_in_trainer = dir(transformers.trainer)
+        good_items = []
+        for item in items_in_trainer:
+            if item in function:
+                good_items.append(item)
+        exec(
+            "from transformers.trainer import ("
+            + ", ".join(x for x in good_items)
+            + ")",
+            globals(),
+        )
 
-    items_in_trainer = dir(transformers.trainer)
-    good_items = []
-    for item in items_in_trainer:
-        if item in function:
-            good_items.append(item)
-    exec(
-        "from transformers.trainer import (" + ", ".join(x for x in good_items) + ")",
-        globals(),
-    )
+        # Accelerate does / self.args.gradient_accumulation_steps internally, so if we already
+        # summed it up and did the division before hand, we have to negate it.
+        function = function.replace(
+            "loss *= self.args.gradient_accumulation_steps",
+            "if num_items_in_batch is not None: loss *= self.args.gradient_accumulation_steps",
+        )
+        function = function.replace(
+            "def training_step", "def _unsloth_training_step", 1
+        )
 
-    # Accelerate does / self.args.gradient_accumulation_steps internally, so if we already
-    # summed it up and did the division before hand, we have to negate it.
-    function = function.replace(
-        "loss *= self.args.gradient_accumulation_steps",
-        "if num_items_in_batch is not None: loss *= self.args.gradient_accumulation_steps",
-    )
-    function = function.replace("def training_step", "def _unsloth_training_step", 1)
+        # Fix 4.47.0 issue where num_items_in_batch was removed
+        # See https://github.com/huggingface/transformers/pull/35121
+        function = function.replace(
+            "if self.model_accepts_loss_kwargs:",
+            "if False:",
+        )
 
-    # Fix 4.47.0 issue where num_items_in_batch was removed
-    # See https://github.com/huggingface/transformers/pull/35121
-    function = function.replace(
-        "if self.model_accepts_loss_kwargs:",
-        "if False:",
-    )
+        # Fix when num_items_in_batch is nothing
+        # https://github.com/huggingface/transformers/pull/35207
+        function = re.sub(
+            r"else:\n"
+            r"([\s]{4,})self\.accelerator\.backward\(loss, \*\*kwargs\)\n"
+            r"(.+?)if num_items_in_batch is None\:\n"
+            r"(.+?)return loss\.detach\(\) \/ self\.args\.gradient_accumulation_steps",
+            "else:\n"
+            "\2if num_items_in_batch is None:\n"
+            "\3loss = loss / self.args.gradient_accumulation_steps\n"
+            "\1self.accelerator.backward(loss, **kwargs)",
+            function,
+        )
 
-    # Fix when num_items_in_batch is nothing
-    # https://github.com/huggingface/transformers/pull/35207
-    function = re.sub(
-        r"else:\n"
-        r"([\s]{4,})self\.accelerator\.backward\(loss, \*\*kwargs\)\n"
-        r"(.+?)if num_items_in_batch is None\:\n"
-        r"(.+?)return loss\.detach\(\) \/ self\.args\.gradient_accumulation_steps",
-        "else:\n"
-        "\2if num_items_in_batch is None:\n"
-        "\3loss = loss / self.args.gradient_accumulation_steps\n"
-        "\1self.accelerator.backward(loss, **kwargs)",
-        function,
-    )
+        exec(function, globals())
+        Trainer.training_step = _unsloth_training_step
 
-    exec(function, globals())
-    Trainer.training_step = _unsloth_training_step
+    # Prevent double scaling gradient accumulation
+    # https://github.com/huggingface/transformers/pull/37208
+    # Patch model_accepts_loss_kwargs detection in Trainer.__init__
+    if Trainer.__init__.__name__ != "_unsloth___init__":
+        try:
+            init_function = inspect.getsource(Trainer.__init__)
+        except Exception:
+            init_function = ""
+        if init_function is not None:
+            init_function = textwrap.dedent(init_function)
+
+            # Import all variables that need importing
+            import transformers.trainer
+
+            items_in_trainer = dir(transformers.trainer)
+            good_items = []
+            for item in items_in_trainer:
+                if item in init_function:
+                    good_items.append(item)
+            exec(
+                "from transformers.trainer import ("
+                + ", ".join(x for x in good_items)
+                + ")",
+                globals(),
+            )
+
+            init_function = init_function.replace(
+                "def __init__", "def _unsloth___init__", 1
+            )
+
+            # Force else branch
+            init_function = re.sub(
+                r'if[\s]+hasattr\(\s*unwrapped_model\s*,\s*"accepts_loss_kwargs"\s*\)\s*:',
+                'if hasattr(unwrapped_model, "accepts_loss_kwargs") and False:',
+                init_function,
+            )
+            exec(init_function, globals())
+            Trainer.__init__ = _unsloth___init__
 
 
 def patch_tokenizer(model, tokenizer):
