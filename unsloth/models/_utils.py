@@ -84,7 +84,7 @@ import re
 from dataclasses import dataclass, field
 import functools
 import textwrap
-import warnings, subprocess, re, inspect, psutil, os, math
+import warnings, subprocess, inspect, psutil, os, math
 from unsloth_zoo.utils import Version, get_quant_type
 from importlib.metadata import version as importlib_version
 from ..device_type import (
