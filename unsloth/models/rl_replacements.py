@@ -536,7 +536,20 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             )
 
             with torch.amp.autocast(device_type = "cuda", dtype = self._autocast_dtype):
-                with torch.inference_mode():
+                # If the state dict was quantized using torchao, we will run into
+                # the following error when calling ops like aten.t() in inference mode.
+                # This is a bug in PyTorch that affects all tensor subclasses.
+                #
+                #     Cannot set version_counter for inference tensor
+                #
+                # For now, we work around this issue by using torch.no_grad in this case.
+                # See https://github.com/pytorch/pytorch/issues/164872 for more details
+                torchao_config = getattr(model, "torchao_config", None)
+                if torchao_config is not None and torchao_config.qat_scheme is None:
+                    ctx_manager = torch.no_grad()
+                else:
+                    ctx_manager = torch.inference_mode()
+                with ctx_manager:
                     if pixel_values is None:
                         attention_mask = input_ids != self.processing_class.pad_token_id
                         attention_mask = attention_mask.to(attention_mask.dtype)
