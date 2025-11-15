@@ -98,7 +98,6 @@ import re, os, inspect, math, sys
 # One-time debug flags to avoid repeated logs in hot paths
 _LOGGED_ROPE = False
 _LOGGED_ATTENTION_FA2 = False
-_LOGGED_RMSNORM = False
 import types
 
 _FA2_COMPUTE_DTYPE_MAP = {
@@ -112,8 +111,7 @@ _FA2_COMPUTE_DTYPE_MAP = {
 _ROPE_IMPL = os.getenv("UNSLOTH_ROPE_IMPL", "").lower()
 _DISABLE_TRITON_ROPE = os.getenv("UNSLOTH_DISABLE_TRITON_ROPE", "0") == "1"
 
-_LAYERNORM_IMPL = os.getenv("UNSLOTH_LAYERNORM_IMPL", "").lower()
-_DISABLE_TRITON_RMSNORM = os.getenv("UNSLOTH_DISABLE_TRITON_RMSNORM", "0") == "1"
+ 
 
 _FA2_COMPUTE_DTYPE_TARGET = os.getenv("UNSLOTH_FA2_COMPUTE_DTYPE", "").lower()
 
@@ -761,8 +759,6 @@ def LlamaDecoderLayer_fast_forward(
             (see `past_key_values`).
         past_key_value (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
     """
-    global _LOGGED_RMSNORM
-
     if use_cache and hasattr(self, "_flag_for_generation"):
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(
@@ -790,21 +786,7 @@ def LlamaDecoderLayer_fast_forward(
         hidden_states += residual
     else:
         residual = hidden_states
-        if _DISABLE_TRITON_RMSNORM or _LAYERNORM_IMPL == "python":
-            hidden_states = self.input_layernorm(hidden_states)
-            _rms_impl_name = "torch"
-        else:
-            hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
-            _rms_impl_name = "triton"
-
-        if not _LOGGED_RMSNORM:
-            logger.debug(
-                "Unsloth: RMSNorm=%s. env(UNSLOTH_DISABLE_TRITON_RMSNORM=%s, UNSLOTH_LAYERNORM_IMPL=%s)",
-                _rms_impl_name,
-                os.getenv("UNSLOTH_DISABLE_TRITON_RMSNORM"),
-                os.getenv("UNSLOTH_LAYERNORM_IMPL"),
-            )
-            _LOGGED_RMSNORM = True
+        hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states = hidden_states,
             causal_mask = causal_mask,
@@ -820,12 +802,9 @@ def LlamaDecoderLayer_fast_forward(
 
         # Fully Connected
         residual = hidden_states
-        if _DISABLE_TRITON_RMSNORM or _LAYERNORM_IMPL == "python":
-            hidden_states = self.post_attention_layernorm(hidden_states)
-        else:
-            hidden_states = fast_rms_layernorm(
-                self.post_attention_layernorm, hidden_states
-            )
+        hidden_states = fast_rms_layernorm(
+            self.post_attention_layernorm, hidden_states
+        )
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
 

@@ -19,8 +19,6 @@ from unsloth_zoo.hf_utils import dtype_from_config
 import math
 import os
 
-_DISABLE_TRITON_RMSNORM = os.getenv("UNSLOTH_DISABLE_TRITON_RMSNORM", "0") == "1"
-_LAYERNORM_IMPL = os.getenv("UNSLOTH_LAYERNORM_IMPL", "").lower()
 _DISABLE_AUTODTYPE_CAST = os.getenv("UNSLOTH_DISABLE_AUTODTYPE_CAST", "0") == "1"
 
 try:
@@ -127,12 +125,9 @@ def GemmaDecoderLayer_fast_forward(
         hidden_states += residual
     else:
         residual = hidden_states
-        if _DISABLE_TRITON_RMSNORM or _LAYERNORM_IMPL == "python":
-            hidden_states = self.input_layernorm(hidden_states)
-        else:
-            hidden_states = fast_rms_layernorm(
-                self.input_layernorm, hidden_states, gemma = True
-            )
+        hidden_states = fast_rms_layernorm(
+            self.input_layernorm, hidden_states, gemma = True
+        )
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states = hidden_states,
             causal_mask = causal_mask,
@@ -147,12 +142,9 @@ def GemmaDecoderLayer_fast_forward(
 
         # Fully Connected
         residual = hidden_states
-        if _DISABLE_TRITON_RMSNORM or _LAYERNORM_IMPL == "python":
-            hidden_states = self.post_attention_layernorm(hidden_states)
-        else:
-            hidden_states = fast_rms_layernorm(
-                self.post_attention_layernorm, hidden_states, gemma = True
-            )
+        hidden_states = fast_rms_layernorm(
+            self.post_attention_layernorm, hidden_states, gemma = True
+        )
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
 
