@@ -640,6 +640,7 @@ class FastBaseModel:
             model_name,
             token = token,
             attn_implementation = "sdpa" if supports_sdpa else "eager",
+            trust_remote_code = trust_remote_code,
         )
         verify_fp8_support_if_applicable(model_config)
 

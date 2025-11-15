@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.11.2"
+__version__ = "2025.11.3"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -74,7 +74,7 @@ __all__ = [
 ]
 
 import torch
-from typing import Union, Optional, List, Any, Callable, Tuple
+from typing import Union, Optional, List, Any, Callable, Tuple, Iterator
 from platform import system as platform_system
 
 platform_system = platform_system()
@@ -83,7 +83,8 @@ import contextlib
 import re
 from dataclasses import dataclass, field
 import functools
-import warnings, subprocess, re, inspect, psutil, os, math
+import textwrap
+import warnings, subprocess, inspect, psutil, os, math
 from unsloth_zoo.utils import Version, get_quant_type
 from importlib.metadata import version as importlib_version
 from ..device_type import (
@@ -1688,60 +1689,103 @@ def patch_gradient_accumulation_fix(Trainer):
         )
 
     # Also fix up loss scaling ie negate loss *= self.args.gradient_accumulation_steps
-    if Trainer.training_step.__name__ == "_unsloth_training_step":
-        return
-    if "num_items_in_batch" not in inspect.signature(Trainer.training_step).parameters:
-        return
+    if not (
+        Trainer.training_step.__name__ == "_unsloth_training_step"
+        or "num_items_in_batch"
+        not in inspect.signature(Trainer.training_step).parameters
+    ):
+        function = inspect.getsource(Trainer.training_step)
+        where = function.find("def")
+        function = function.split("\n")
+        function = "\n".join(x[where:] for x in function)
 
-    function = inspect.getsource(Trainer.training_step)
-    where = function.find("def")
-    function = function.split("\n")
-    function = "\n".join(x[where:] for x in function)
+        # Import all variables that need importing
+        import transformers.trainer
 
-    # Import all variables that need importing
-    import transformers.trainer
+        items_in_trainer = dir(transformers.trainer)
+        good_items = []
+        for item in items_in_trainer:
+            if item in function:
+                good_items.append(item)
+        exec(
+            "from transformers.trainer import ("
+            + ", ".join(x for x in good_items)
+            + ")",
+            globals(),
+        )
 
-    items_in_trainer = dir(transformers.trainer)
-    good_items = []
-    for item in items_in_trainer:
-        if item in function:
-            good_items.append(item)
-    exec(
-        "from transformers.trainer import (" + ", ".join(x for x in good_items) + ")",
-        globals(),
-    )
+        # Accelerate does / self.args.gradient_accumulation_steps internally, so if we already
+        # summed it up and did the division before hand, we have to negate it.
+        function = function.replace(
+            "loss *= self.args.gradient_accumulation_steps",
+            "if num_items_in_batch is not None: loss *= self.args.gradient_accumulation_steps",
+        )
+        function = function.replace(
+            "def training_step", "def _unsloth_training_step", 1
+        )
 
-    # Accelerate does / self.args.gradient_accumulation_steps internally, so if we already
-    # summed it up and did the division before hand, we have to negate it.
-    function = function.replace(
-        "loss *= self.args.gradient_accumulation_steps",
-        "if num_items_in_batch is not None: loss *= self.args.gradient_accumulation_steps",
-    )
-    function = function.replace("def training_step", "def _unsloth_training_step", 1)
+        # Fix 4.47.0 issue where num_items_in_batch was removed
+        # See https://github.com/huggingface/transformers/pull/35121
+        function = function.replace(
+            "if self.model_accepts_loss_kwargs:",
+            "if False:",
+        )
 
-    # Fix 4.47.0 issue where num_items_in_batch was removed
-    # See https://github.com/huggingface/transformers/pull/35121
-    function = function.replace(
-        "if self.model_accepts_loss_kwargs:",
-        "if False:",
-    )
+        # Fix when num_items_in_batch is nothing
+        # https://github.com/huggingface/transformers/pull/35207
+        function = re.sub(
+            r"else:\n"
+            r"([\s]{4,})self\.accelerator\.backward\(loss, \*\*kwargs\)\n"
+            r"(.+?)if num_items_in_batch is None\:\n"
+            r"(.+?)return loss\.detach\(\) \/ self\.args\.gradient_accumulation_steps",
+            "else:\n"
+            "\2if num_items_in_batch is None:\n"
+            "\3loss = loss / self.args.gradient_accumulation_steps\n"
+            "\1self.accelerator.backward(loss, **kwargs)",
+            function,
+        )
 
-    # Fix when num_items_in_batch is nothing
-    # https://github.com/huggingface/transformers/pull/35207
-    function = re.sub(
-        r"else:\n"
-        r"([\s]{4,})self\.accelerator\.backward\(loss, \*\*kwargs\)\n"
-        r"(.+?)if num_items_in_batch is None\:\n"
-        r"(.+?)return loss\.detach\(\) \/ self\.args\.gradient_accumulation_steps",
-        "else:\n"
-        "\2if num_items_in_batch is None:\n"
-        "\3loss = loss / self.args.gradient_accumulation_steps\n"
-        "\1self.accelerator.backward(loss, **kwargs)",
-        function,
-    )
+        exec(function, globals())
+        Trainer.training_step = _unsloth_training_step
 
-    exec(function, globals())
-    Trainer.training_step = _unsloth_training_step
+    # Prevent double scaling gradient accumulation
+    # https://github.com/huggingface/transformers/pull/37208
+    # Patch model_accepts_loss_kwargs detection in Trainer.__init__
+    if Trainer.__init__.__name__ != "_unsloth___init__":
+        try:
+            init_function = inspect.getsource(Trainer.__init__)
+        except Exception:
+            init_function = ""
+        if init_function is not None:
+            init_function = textwrap.dedent(init_function)
+
+            # Import all variables that need importing
+            import transformers.trainer
+
+            items_in_trainer = dir(transformers.trainer)
+            good_items = []
+            for item in items_in_trainer:
+                if item in init_function:
+                    good_items.append(item)
+            exec(
+                "from transformers.trainer import ("
+                + ", ".join(x for x in good_items)
+                + ")",
+                globals(),
+            )
+
+            init_function = init_function.replace(
+                "def __init__", "def _unsloth___init__", 1
+            )
+
+            # Force else branch
+            init_function = re.sub(
+                r'if[\s]+hasattr\(\s*unwrapped_model\s*,\s*"accepts_loss_kwargs"\s*\)\s*:',
+                'if hasattr(unwrapped_model, "accepts_loss_kwargs") and False:',
+                init_function,
+            )
+            exec(init_function, globals())
+            Trainer.__init__ = _unsloth___init__
 
 
 def patch_tokenizer(model, tokenizer):
@@ -2013,18 +2057,110 @@ except:
 @dataclass
 class TorchAOConfig:
     qat_scheme: str = "int4"
-    base_config: AOBaseConfig = field(
-        default_factory = lambda: Int4WeightOnlyConfig(group_size = 128)
-    )
-    group_size: int = 128
-    filter_fn: Optional[Callable] = None
 
-    def __post_init__(self):
-        if self.filter_fn is None:
-            self.filter_fn = (
+    # Each (config, filter_fn) pair defines a quantization rule
+    base_config_and_filter_fns: List[
+        Tuple["AOBaseConfig", Optional[Callable[[torch.nn.Module, str], bool]]]
+    ] = field(
+        default_factory = lambda: [
+            (
+                Int4WeightOnlyConfig(group_size = 128),
                 lambda m, _: isinstance(m, torch.nn.Linear)
-                and m.in_features >= self.group_size
-            )
+                and getattr(m, "in_features", 0) >= 128,
+            ),
+        ]
+    )
+
+    # Optional transformation to apply before quantization setup
+    prequantization_transform: Optional[Callable[[torch.nn.Module], None]] = None
+
+
+def _untie_input_output_embeddings(model: torch.nn.Module) -> None:
+    """
+    Utility to untie input/output embeddings in a HuggingFace model.
+    This is useful if we want to quantize the input/ouput embeddings differently.
+    Model is modified in-place.
+    """
+
+    # 1) Persist setting in config
+    if hasattr(model.config, "tie_word_embeddings"):
+        model.config.tie_word_embeddings = False
+
+    # 2) Find input and output embeddings
+    in_emb = model.get_input_embeddings()
+    out_proj = model.get_output_embeddings() or getattr(model, "lm_head", None)
+    if out_proj is None:
+        raise AttributeError("Couldn't locate output projection (lm_head).")
+
+    # (Optional) sanity: shapes should match [vocab, hidden]
+    assert (
+        out_proj.weight.shape == in_emb.weight.shape
+    ), f"Shape mismatch: out_proj {out_proj.weight.shape} vs in_emb {in_emb.weight.shape}"
+
+    # 3) Only clone if they are actually tied (shared storage)
+    if out_proj.weight.data_ptr() == in_emb.weight.data_ptr():
+        with torch.no_grad():
+            W = in_emb.weight.detach().clone()
+        out_proj.weight = torch.nn.Parameter(W)  # new storage, keeps dtype/device
+
+    # 4) Prevent future automatic re-tying
+    def _no_tie(self):
+        return
+
+    model.tie_weights = _no_tie.__get__(model, model.__class__)
+
+    # 5) Verify no shared storage
+    assert (
+        out_proj.weight.data_ptr() != in_emb.weight.data_ptr()
+    ), "Embeddings still tied!"
+
+
+def _filter_fn_to_fqns(
+    model: torch.nn.Module,
+    filter_fn: Callable[[torch.nn.Module, str], bool],
+) -> Iterator[str]:
+    """
+    Given a model and a filter function (m, fqn) -> bool,
+    yield fully qualified names (FQNs) of modules that match.
+    """
+    for fqn, module in model.named_modules():
+        if filter_fn(module, fqn):
+            yield fqn
+
+
+def _convert_torchao_model(model):
+    from transformers import TorchAoConfig
+    from torchao.quantization import quantize_, ModuleFqnToConfig
+    from torchao.quantization.qat import QATConfig
+    from torchao.utils import TorchAOBaseTensor
+
+    module_to_fqn_dict = {}
+    for base_config, filter_fn in model._torchao_config.base_config_and_filter_fns:
+        quantize_(model, QATConfig(base_config, step = "convert"), filter_fn = filter_fn)
+
+        # Default filter function used for quantize_
+        if filter_fn is None:
+            if "_default" in module_to_fqn_dict:
+                raise ValueError("Cannot use multiple default quantization configs")
+            module_to_fqn_dict["_default"] = base_config
+        else:
+            for fqn in _filter_fn_to_fqns(model, filter_fn):
+                if fqn in module_to_fqn_dict:
+                    raise ValueError(f"Found multiple quantization configs for {fqn}")
+                module_to_fqn_dict[fqn] = base_config
+
+    in_emb = model.get_input_embeddings()
+    out_proj = model.get_output_embeddings() or getattr(model, "lm_head", None)
+    kwargs = {}
+    if isinstance(in_emb.weight, TorchAOBaseTensor) or (
+        out_proj is not None and isinstance(out_proj.weight, TorchAOBaseTensor)
+    ):
+        kwargs["include_input_output_embeddings"] = True
+        kwargs["modules_to_not_convert"] = []
+
+    quant_config = ModuleFqnToConfig(module_to_fqn_dict)
+    quantization_config = TorchAoConfig(quant_type = quant_config, **kwargs)
+    model.config.quantization_config = quantization_config
 
 
 def _prepare_model_for_qat(
@@ -2041,13 +2177,11 @@ def _prepare_model_for_qat(
     For more details: https://dev-discuss.pytorch.org/t/speeding-up-qat-by-1-89x-with-lora/2700
     """
     from torchao.quantization import PerRow, quantize_
-    from torchao.quantization.granularity import PerGroup
+    from torchao.quantization.granularity import PerGroup, PerAxis
     from torchao.quantization.qat import QATConfig
 
     if not isinstance(qat_scheme, TorchAOConfig):
-        filter_fn = None
-        group_size = None
-        base_config = None
+        torchao_config: Optional[TorchAOConfig] = None
         if qat_scheme == "fp8-int4":
             from torchao.quantization import Float8DynamicActivationInt4WeightConfig
 
@@ -2057,22 +2191,42 @@ def _prepare_model_for_qat(
                 lambda m, _: isinstance(m, torch.nn.Linear)
                 and m.in_features >= group_size
             )
+            torchao_config = TorchAOConfig(
+                qat_scheme = qat_scheme,
+                base_config_and_filter_fns = [(base_config, filter_fn)],
+            )
         elif qat_scheme == "fp8-fp8":
             from torchao.quantization import Float8DynamicActivationFloat8WeightConfig
 
             base_config = Float8DynamicActivationFloat8WeightConfig(
                 granularity = PerRow()
             )
-        elif qat_scheme == "int8-int4":
-            from torchao.quantization import Int8DynamicActivationIntxWeightConfig
-
-            group_size = 32
-            base_config = Int8DynamicActivationIntxWeightConfig(
-                weight_dtype = torch.int4, weight_granularity = PerGroup(group_size)
+            torchao_config = TorchAOConfig(
+                qat_scheme = qat_scheme, base_config_and_filter_fns = [(base_config, None)]
             )
-            filter_fn = (
-                lambda m, _: isinstance(m, torch.nn.Linear)
-                and m.in_features >= group_size
+        elif qat_scheme == "int8-int4":
+            from torchao.quantization import (
+                Int8DynamicActivationIntxWeightConfig,
+                IntxWeightOnlyConfig,
+            )
+
+            torchao_config = TorchAOConfig(
+                qat_scheme = qat_scheme,
+                base_config_and_filter_fns = [
+                    (
+                        IntxWeightOnlyConfig(
+                            weight_dtype = torch.int8, granularity = PerAxis(0)
+                        ),
+                        lambda m, fqn: isinstance(m, torch.nn.Embedding),
+                    ),
+                    (
+                        Int8DynamicActivationIntxWeightConfig(
+                            weight_dtype = torch.int4, weight_granularity = PerGroup(32)
+                        ),
+                        None,
+                    ),
+                ],
+                prequantization_transform = _untie_input_output_embeddings,
             )
         elif qat_scheme == "int4":
             from torchao.quantization import Int4WeightOnlyConfig
@@ -2083,21 +2237,15 @@ def _prepare_model_for_qat(
                 lambda m, _: isinstance(m, torch.nn.Linear)
                 and m.in_features >= group_size
             )
+            torchao_config = TorchAOConfig(
+                qat_scheme = qat_scheme,
+                base_config_and_filter_fns = [(base_config, filter_fn)],
+            )
         else:
             raise ValueError(f"Unexpected QAT scheme {qat_scheme}")
-        # Save TorchAO schemes
-        torchao_config = TorchAOConfig(
-            qat_scheme = qat_scheme,
-            base_config = base_config,
-            group_size = group_size,
-            filter_fn = filter_fn,
-        )
+        assert torchao_config is not None, f"TorchAOConfig was not set for {qat_scheme}"
     else:
         torchao_config = qat_scheme
-        qat_scheme = torchao_config.qat_scheme
-        base_config = torchao_config.base_config
-        group_size = torchao_config.group_size
-        filter_fn = torchao_config.filter_fn
 
     # Save Torchao metadata everywhere
     inner_model = model
@@ -2105,8 +2253,12 @@ def _prepare_model_for_qat(
         inner_model._torchao_config = torchao_config
         inner_model = inner_model.model
     inner_model._torchao_config = torchao_config
-    # Quantize with TorchAO
-    quantize_(model, QATConfig(base_config, step = "prepare"), filter_fn = filter_fn)
+
+    if torchao_config.prequantization_transform is not None:
+        torchao_config.prequantization_transform(model)
+    for base_config, filter_fn in torchao_config.base_config_and_filter_fns:
+        quantize_(model, QATConfig(base_config, step = "prepare"), filter_fn = filter_fn)
+
     return model
 
 
