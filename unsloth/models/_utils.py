@@ -1708,7 +1708,9 @@ def patch_gradient_accumulation_fix(Trainer):
             if item in function:
                 good_items.append(item)
         exec(
-            "from transformers.trainer import (" + ", ".join(x for x in good_items) + ")",
+            "from transformers.trainer import ("
+            + ", ".join(x for x in good_items)
+            + ")",
             globals(),
         )
 
@@ -1718,7 +1720,9 @@ def patch_gradient_accumulation_fix(Trainer):
             "loss *= self.args.gradient_accumulation_steps",
             "if num_items_in_batch is not None: loss *= self.args.gradient_accumulation_steps",
         )
-        function = function.replace("def training_step", "def _unsloth_training_step", 1)
+        function = function.replace(
+            "def training_step", "def _unsloth_training_step", 1
+        )
 
         # Fix 4.47.0 issue where num_items_in_batch was removed
         # See https://github.com/huggingface/transformers/pull/35121
@@ -1782,6 +1786,7 @@ def patch_gradient_accumulation_fix(Trainer):
             )
             exec(init_function, globals())
             Trainer.__init__ = _unsloth___init__
+
 
 def patch_tokenizer(model, tokenizer):
     model, tokenizer = _patch_tokenizer(model, tokenizer)
