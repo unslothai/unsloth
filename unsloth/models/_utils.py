@@ -1930,9 +1930,12 @@ def unsloth_compile_transformers(
                         -1,
                         self.hidden_size,
                     )
-                    next_states = next_states * routing_weights.transpose(
-                        0, 1
-                    ).view(num_experts, batch_size, -1)[..., None]
+                    next_states = (
+                        next_states
+                        * routing_weights.transpose(0, 1).view(
+                            num_experts, batch_size, -1
+                        )[..., None]
+                    )
                     next_states = next_states.sum(dim = 0)
                 return next_states
 

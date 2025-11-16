@@ -710,7 +710,9 @@ def LlamaDecoderLayer_fast_forward(
     # On Strix Halo (HIP), run the MLP in float32 for selected
     # model families (Qwen, Mistral, GPT-OSS) for improved stability.
     layer_config = getattr(self, "config", None)
-    layer_model_type = getattr(layer_config, "model_type", "") if layer_config is not None else ""
+    layer_model_type = (
+        getattr(layer_config, "model_type", "") if layer_config is not None else ""
+    )
     SAFE_MLP_MODEL_TYPES = ("qwen", "mistral", "gpt-oss", "gpt_oss")
     SAFE_STRIX_MLP = STRIX_HALO_SAFE and any(
         layer_model_type.startswith(x) for x in SAFE_MLP_MODEL_TYPES
@@ -763,9 +765,7 @@ def LlamaDecoderLayer_fast_forward(
 
         # Fully Connected
         residual = hidden_states
-        hidden_states = fast_rms_layernorm(
-            self.post_attention_layernorm, hidden_states
-        )
+        hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states)
         if SAFE_STRIX_MLP:
             mlp_in = hidden_states.to(torch.float32)
             mlp_out = self.mlp(mlp_in)
@@ -883,7 +883,6 @@ def LlamaModel_fast_forward(
     if inputs_embeds is None:
         inputs_embeds = self.embed_tokens(input_ids)
 
-    
     # Normalized from Gemma
     IS_GEMMA = self.config.model_type.startswith("gemma")
     IS_GEMMA2 = self.config.model_type.startswith("gemma2")

@@ -365,7 +365,6 @@ def MistralForCausalLM_fast_forward(
         logits = self.lm_head(hidden_states.to(lm_head.dtype))
     logits = logits.to(_get_dtype(dtype_from_config(self.config)))
 
-
     # PyTorch CE loss instead of fused kernels for some nans in unsloth_fused_ce_loss on StrixHalo
     if STRIX_HALO_SAFE:
         logits = logits.float()
