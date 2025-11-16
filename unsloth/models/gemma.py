@@ -19,9 +19,8 @@ from unsloth_zoo.hf_utils import dtype_from_config
 import math
 import os
 
-_DISABLE_TRITON_RMSNORM = os.getenv("UNSLOTH_DISABLE_TRITON_RMSNORM", "0") == "1"
-_LAYERNORM_IMPL = os.getenv("UNSLOTH_LAYERNORM_IMPL", "").lower()
-_DISABLE_AUTODTYPE_CAST = os.getenv("UNSLOTH_DISABLE_AUTODTYPE_CAST", "0") == "1"
+_STRIX_HALO_SAFE = os.getenv("UNSLOTH_STRIX_HALO_SAFE", "0") == "1"
+_GEMMA_STRIX_SAFE = ("hip" == DEVICE_TYPE) and _STRIX_HALO_SAFE
 
 try:
     from transformers.models.gemma.modeling_gemma import (
@@ -123,16 +122,18 @@ def GemmaDecoderLayer_fast_forward(
         hidden_states = fast_rms_layernorm_inference_gemma(
             self.post_attention_layernorm, hidden_states, out_weight
         )
-        hidden_states = fast_geglu_inference(self.mlp, hidden_states)
-        hidden_states += residual
+        if _GEMMA_STRIX_SAFE:
+            mlp_in = hidden_states.to(torch.float32)
+            mlp_out = self.mlp(mlp_in)
+            hidden_states = residual + mlp_out.to(hidden_states.dtype)
+        else:
+            hidden_states = fast_geglu_inference(self.mlp, hidden_states)
+            hidden_states += residual
     else:
         residual = hidden_states
-        if _DISABLE_TRITON_RMSNORM or _LAYERNORM_IMPL == "python":
-            hidden_states = self.input_layernorm(hidden_states)
-        else:
-            hidden_states = fast_rms_layernorm(
-                self.input_layernorm, hidden_states, gemma = True
-            )
+        hidden_states = fast_rms_layernorm(
+            self.input_layernorm, hidden_states, gemma = True
+        )
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states = hidden_states,
             causal_mask = causal_mask,
@@ -147,14 +148,19 @@ def GemmaDecoderLayer_fast_forward(
 
         # Fully Connected
         residual = hidden_states
-        if _DISABLE_TRITON_RMSNORM or _LAYERNORM_IMPL == "python":
-            hidden_states = self.post_attention_layernorm(hidden_states)
+        hidden_states = fast_rms_layernorm(
+            self.post_attention_layernorm, hidden_states, gemma = True
+        )
+
+        # On Strix Halo (HIP) in safe mode, run Gemma MLP in float32 for
+        # numerical stability, then cast back. Else use the default path.
+        if _GEMMA_STRIX_SAFE:
+            mlp_in = hidden_states.to(torch.float32)
+            mlp_out = self.mlp(mlp_in)
+            hidden_states = residual + mlp_out.to(hidden_states.dtype)
         else:
-            hidden_states = fast_rms_layernorm(
-                self.post_attention_layernorm, hidden_states, gemma = True
-            )
-        hidden_states = self.mlp(hidden_states)
-        hidden_states = residual + hidden_states
+            hidden_states = self.mlp(hidden_states)
+            hidden_states = residual + hidden_states
 
     outputs = (hidden_states,)
     if output_attentions:
@@ -186,8 +192,7 @@ def GemmaModel_fast_forward_inference(
     )
     input_ids = input_ids[:, : self.max_seq_length]
     hidden_states = self.model.embed_tokens(input_ids)
-    if not _DISABLE_AUTODTYPE_CAST:
-        hidden_states = hidden_states.to(_get_dtype(dtype_from_config(self.config)))
+    hidden_states = hidden_states.to(_get_dtype(dtype_from_config(self.config)))
     # 3072**0.5 = 55.5000 in bfloat16, whilst 55.4256 in float32
     # 2048**0.5 = 45.2500 in bfloat16, whilst 45.2548 in float32
     hidden_states *= torch.tensor(
