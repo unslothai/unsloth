@@ -814,10 +814,9 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             "    if epsilon_high != 0.28:\n"
             "        print('Unsloth: The DAPO paper recommends `epsilon_high = 0.28` - we will set it.')\n"
             "    if beta != 0.0:\n"
-            "        print('Unsloth: The DAPO paper recommends setting `beta = 0.0` to remove the KL term - we will set it.')\n"
+            "        print(f'[WARNING] Unsloth: The DAPO paper recommends setting `beta = 0.0` to remove the KL term - You have set it to {beta}.')\n"
             "    mask_truncated_completions = True\n"
             "    epsilon_high = 0.28\n"
-            "    beta = 0.0\n"
             "\n"
         )
         extra_args += check_dr_grpo
