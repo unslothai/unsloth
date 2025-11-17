@@ -535,11 +535,42 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     return [None] * chunks
                 return torch.chunk(tensor, chunks=chunks, dim=0)
 
-            pixel_values_chunks = chunk_optional(pixel_values, B)
-            image_grid_thw_chunks = chunk_optional(image_grid_thw, B)
-            pixel_attention_mask_chunks = chunk_optional(pixel_attention_mask, B)
+            pixel_values_chunks = [None] * B
+            image_grid_thw_chunks = [None] * B
+            pixel_attention_mask_chunks = [None] * B
 
-            # Handle image_sizes, which might be a list
+            # === THIS IS THE ADAPTED LOGIC YOU REQUESTED ===
+            if image_grid_thw is not None and pixel_values is not None:
+                # This logic assumes image_grid_thw.shape[0] == B
+                # (i.e., one image_grid_thw entry per sample)
+                if image_grid_thw.shape[0] != B:
+                    raise ValueError(
+                        f"This logic requires image_grid_thw.shape[0] ({image_grid_thw.shape[0]}) "
+                        f"to be equal to batch size B ({B})."
+                    )
+
+                # 1. Calculate the number of patches (rows) for each sample.
+                # This is the equivalent of your `prod(-1)` logic.
+                # `rows_per_sample` will be a 1D tensor of shape (B,), e.g., [50, 60, 50]
+                rows_per_sample = image_grid_thw.prod(dim=-1) 
+                rows_per_sample_list = rows_per_sample.cpu().tolist()
+
+                # 2. Split the flattened tensors using this list of sizes.
+                # This is the per-sample equivalent of your start/end_pixel_idx logic.
+                pixel_values_chunks = list(torch.split(pixel_values, rows_per_sample_list, dim=0))
+                if pixel_attention_mask is not None:
+                    # Assume pixel_attention_mask is also flattened
+                    pixel_attention_mask_chunks = list(torch.split(pixel_attention_mask, rows_per_sample_list, dim=0))
+
+                # 3. Chunk image_grid_thw normally (by B)
+                image_grid_thw_chunks = list(torch.chunk(image_grid_thw, chunks=B, dim=0))
+
+            elif pixel_values is not None:
+                # Simple case where pixel_values is (B, ...) and no grid is given
+                pixel_values_chunks = list(torch.chunk(pixel_values, chunks=B, dim=0))
+                if pixel_attention_mask is not None:
+                    pixel_attention_mask_chunks = list(torch.chunk(pixel_attention_mask, chunks=B, dim=0))
+            
             if image_sizes is not None and not isinstance(image_sizes, torch.Tensor):
                 image_sizes_chunks = [[size] for size in image_sizes] # Chunk a list
             else:
