@@ -117,7 +117,7 @@ See [here](https://github.com/unslothai/unsloth/edit/main/README.md#advanced-pip
 ### Windows Installation
 
 1. **Install NVIDIA Video Driver:**
-  You should install the latest version of your GPUs driver. Download drivers here: [NVIDIA GPU Driver](https://www.nvidia.com/Download/index.aspx).
+  You should install the latest driver for your GPU. Download drivers here: [NVIDIA GPU Driver](https://www.nvidia.com/Download/index.aspx).
 
 3. **Install Visual Studio C++:**
    You will need Visual Studio, with C++ installed. By default, C++ is not installed with [Visual Studio](https://visualstudio.microsoft.com/vs/community/), so make sure you select all of the C++ options. Also select options for Windows 10/11 SDK. For detailed instructions with options, see [here](https://docs.unsloth.ai/get-started/installing-+-updating).
