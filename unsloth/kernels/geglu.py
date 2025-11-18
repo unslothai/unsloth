@@ -21,6 +21,10 @@ from .utils import (
     torch_gpu_device,
 )
 
+# signed int32 max is 2**31-1 so num_elements cannot exceed 2**31
+NUM_INT32_ELEMENTS = 2**31
+SAFE_INT32_BUFFER_MULTIPLIER = 4
+
 
 @triton.jit
 def _exact_forward_kernel(
@@ -29,9 +33,16 @@ def _exact_forward_kernel(
     h,
     n_elements,
     BLOCK_SIZE: tl.constexpr,
+    LONG_INDEXING: tl.constexpr,
 ):
     block_idx = tl.program_id(0)
-    offsets = block_idx * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    if LONG_INDEXING:
+        offsets = block_idx.to(tl.int64) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE).to(
+            tl.int64
+        )
+        n_elements = tl.cast(n_elements, tl.int64)
+    else:
+        offsets = block_idx * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = offsets < n_elements
 
     # f = 1/2 * e * (1 + erf(1/sqrt(2) * e))
@@ -53,13 +64,18 @@ def geglu_exact_forward_kernel(gate, up):
     device = gate.device
     out = torch.empty((batch, seq_len, hd), dtype = gate.dtype, device = device)
     grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
+    BLOCK_SIZE = 1024
     with torch_gpu_device(device):
         _exact_forward_kernel[grid](
             gate,
             up,
             out,
             n_elements,
-            BLOCK_SIZE = 1024,
+            BLOCK_SIZE = BLOCK_SIZE,
+            LONG_INDEXING = 0
+            if n_elements
+            <= (NUM_INT32_ELEMENTS - BLOCK_SIZE * SAFE_INT32_BUFFER_MULTIPLIER)
+            else 1,
         )
     return out
 
@@ -71,6 +87,7 @@ def _exact_backward_kernel(
     g,
     n_elements,
     BLOCK_SIZE: tl.constexpr,
+    LONG_INDEXING: tl.constexpr,
 ):
     """
     f = 1/2 * e * (1 + erf(1/sqrt(2) * e))
@@ -83,7 +100,13 @@ def _exact_backward_kernel(
     f =        1/2 * (1 + erf(1/sqrt(2) * e)) * e
     """
     block_idx = tl.program_id(0)
-    offsets = block_idx * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    if LONG_INDEXING:
+        offsets = block_idx.to(tl.int64) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE).to(
+            tl.int64
+        )
+        n_elements = tl.cast(n_elements, tl.int64)
+    else:
+        offsets = block_idx * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = offsets < n_elements
 
     DW_row = tl.load(DW + offsets, mask = mask, other = 0)  # .to(tl.float32)
@@ -120,13 +143,18 @@ def geglu_exact_backward_kernel(DW, e, g):
     batch_seq_len, hd = e.shape
     n_elements = e.numel()
     grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
+    BLOCK_SIZE = 1024
     with torch_gpu_device(e.device):
         _exact_backward_kernel[grid](
             DW,
             e,
             g,
             n_elements,
-            BLOCK_SIZE = 1024,
+            BLOCK_SIZE = BLOCK_SIZE,
+            LONG_INDEXING = 0
+            if n_elements
+            <= (NUM_INT32_ELEMENTS - BLOCK_SIZE * SAFE_INT32_BUFFER_MULTIPLIER)
+            else 1,
         )
     return DW, e, g
 
@@ -138,9 +166,16 @@ def _approx_forward_kernel(
     h,
     n_elements,
     BLOCK_SIZE: tl.constexpr,
+    LONG_INDEXING: tl.constexpr,
 ):
     block_idx = tl.program_id(0)
-    offsets = block_idx * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    if LONG_INDEXING:
+        offsets = block_idx.to(tl.int64) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE).to(
+            tl.int64
+        )
+        n_elements = tl.cast(n_elements, tl.int64)
+    else:
+        offsets = block_idx * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = offsets < n_elements
 
     # f = 1/2 * e * (1 + tanh( sqrt(2/pi) * (x + 0.044715 * x^3 ) ))
@@ -167,13 +202,18 @@ def geglu_approx_forward_kernel(gate, up):
     device = gate.device
     out = torch.empty((batch, seq_len, hd), dtype = gate.dtype, device = device)
     grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
+    BLOCK_SIZE = 1024
     with torch_gpu_device(device):
         _approx_forward_kernel[grid](
             gate,
             up,
             out,
             n_elements,
-            BLOCK_SIZE = 1024,
+            BLOCK_SIZE = BLOCK_SIZE,
+            LONG_INDEXING = 0
+            if n_elements
+            <= (NUM_INT32_ELEMENTS - BLOCK_SIZE * SAFE_INT32_BUFFER_MULTIPLIER)
+            else 1,
         )
     return out
 
@@ -185,6 +225,7 @@ def _approx_backward_kernel(
     g,
     n_elements,
     BLOCK_SIZE: tl.constexpr,
+    LONG_INDEXING: tl.constexpr,
 ):
     """
     f = 1/2 * e * (1 + tanh( sqrt(2/pi) * x * (1 + 0.044715 * x^2 ) ))
@@ -201,7 +242,13 @@ def _approx_backward_kernel(
     See https://www.desmos.com/calculator/nqprfoni6x
     """
     block_idx = tl.program_id(0)
-    offsets = block_idx * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    if LONG_INDEXING:
+        offsets = block_idx.to(tl.int64) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE).to(
+            tl.int64
+        )
+        n_elements = tl.cast(n_elements, tl.int64)
+    else:
+        offsets = block_idx * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = offsets < n_elements
 
     DW_row = tl.load(DW + offsets, mask = mask, other = 0)  # .to(tl.float32)
@@ -241,12 +288,17 @@ def geglu_approx_backward_kernel(DW, e, g):
     batch_seq_len, hd = e.shape
     n_elements = e.numel()
     grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
+    BLOCK_SIZE = 1024
     with torch_gpu_device(e.device):
         _approx_backward_kernel[grid](
             DW,
             e,
             g,
             n_elements,
-            BLOCK_SIZE = 1024,
+            BLOCK_SIZE = BLOCK_SIZE,
+            LONG_INDEXING = 0
+            if n_elements
+            <= (NUM_INT32_ELEMENTS - BLOCK_SIZE * SAFE_INT32_BUFFER_MULTIPLIER)
+            else 1,
         )
     return DW, e, g
