@@ -236,14 +236,25 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             # TRL 0.23.1 and below path
             if not has_images:
                 # Left pad prompt before calculation old and ref hidden states
-                prompt_completion_ids = left_pack_padding(prompt_completion_ids, self.processing_class.pad_token_id)
-            self.model.for_training()
+                # if self.state.global_step==5:
+                #     breakpoint()
+                #breakpoint()
+                left_pad_tokens_per_prompt = calculate_pad_tokens_in_prompt(prompt_completion_ids, logits_to_keep, self.processing_class.pad_token_id)
+
+                max_left_pad = max(left_pad_tokens_per_prompt).item()
+                
+                #logits_to_keep  = logits_to_keep+max_left_pad
         except:
             # TRL 0.24.0 and below path
             if images is None:
                 # Left pad prompt before calculation old and ref hidden states
-                prompt_completion_ids = left_pack_padding(prompt_completion_ids, self.processing_class.pad_token_id)
+                left_pad_tokens_per_prompt = calculate_pad_tokens_in_prompt(prompt_completion_ids, logits_to_keep, self.processing_class.pad_token_id)
+                #breakpoint()
+                max_left_pad = max(left_pad_tokens_per_prompt).item()
+
+                #logits_to_keep  = logits_to_keep+max_left_pad
         self.model.for_training()"""
+
 
     function = function.replace(line_to_replace, replacement_lines)
 
@@ -324,7 +335,8 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
 
     replacement_string = """        if "image_sizes" in prompt_inputs:
             output["image_sizes"] = prompt_inputs["image_sizes"]
-        
+        if max_left_pad is not None:
+            output["max_left_pad"] = torch.tensor(sampling_per_token_logps.shape[0] * [max_left_pad]).unsqueeze(-1)
         if self.use_vllm:
             try:
                 output["sampling_per_token_logps"] = sampling_per_token_logps
@@ -515,13 +527,14 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             # 1. Pre-calculate batch-dependent padding (if needed)
             # This logic MUST run on the full batch BEFORE looping
             if pixel_values is None:
-                attention_mask = input_ids != self.processing_class.pad_token_id
-                attention_mask = attention_mask.to(attention_mask.dtype)
-                
+                # if self.state.global_step==5:
+                #     breakpoint()                
                 left_pad_tokens_per_prompt = calculate_pad_tokens_in_prompt(input_ids, logits_to_keep, self.processing_class.pad_token_id)
                 max_left_pad = max(left_pad_tokens_per_prompt).item()
-                
+                #breakpoint()
                 input_ids = left_pack_padding(input_ids, self.processing_class.pad_token_id)
+                attention_mask = input_ids != self.processing_class.pad_token_id
+                attention_mask = attention_mask.to(attention_mask.dtype)
             else:
                 # This branch is simpler and doesn't need pre-calculation
                 max_left_pad = 0 # Not used, but defined for clarity
@@ -596,7 +609,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 image_sizes_chunks
             )
             os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
-
+            #breakpoint()
             with torch.amp.autocast(device_type = 'cuda', dtype = self._autocast_dtype):
                 with torch.no_grad():
                     for (
@@ -620,9 +633,12 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 ).logits
                                 
                                 # --- 4b. Post-process hidden states ---
-                                completion_input_ids_chunk = input_ids_chunk[:, -(logits_to_keep + max_left_pad):]
-                                logits_chunk = logits_chunk[:, -(logits_to_keep + max_left_pad): , :]
-                                
+                                #accounts of padding already.
+                                completion_input_ids_chunk = input_ids_chunk[:, -(logits_to_keep+max_left_pad):]
+                                #breakpoint()
+                                logits_chunk = logits_chunk[:, -(logits_to_keep + max_left_pad+1): , :]
+                                logits_chunk = logits_chunk[:, :-1, : ] 
+                                #breakpoint()
                             else:
                                 logits_chunk = unwrapped_model(
                                     input_ids = input_ids_chunk,
@@ -639,6 +655,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 completion_input_ids_chunk = input_ids_chunk[:, -logits_to_keep:]
                             
                             # --- 4c. Compute logprobs ---
+                            #breakpoint()
                             logprobs_chunk = chunked_hidden_states_selective_log_softmax(
                                 logits_chunk,
                                 lm_head, 
@@ -649,17 +666,16 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 logit_softcapping = logit_softcapping, 
                                 temperature = temperature
                             )
+                            # if logprobs_chunk.shape[1]:
+                            #     breakpoint()
                             
                             all_logprobs_list.append(logprobs_chunk)
                     # 5. Concatenate final results
                     logprobs = torch.cat(all_logprobs_list, dim=0)
                     entropies = None
                     
-
-                    #breakpoint()
-
             os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
-
+            #breakpoint()
             
             # logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
             return logprobs.detach(), entropies  # logps, entropies
@@ -793,6 +809,7 @@ def grpo_trainer_compute_loss(function_name, function):
         if logit_scale_divide is None:
             logit_scale_divide = 0
 
+        max_left_pad =  inputs.get("max_left_pad", 0)
         if per_token_logps is not None:
             if ref_hidden_states is not None:
                 ref_hidden_states = ref_hidden_states[
@@ -824,6 +841,7 @@ def grpo_trainer_compute_loss(function_name, function):
                     max_completion_length = self.args.max_completion_length,
                     delta = self.args.delta,
                     temperature = self.args.temperature,
+                    max_left_pad = max_left_pad,
                     logit_softcapping = logit_softcapping,
                     logit_scale_multiply = logit_scale_multiply,
                     logit_scale_divide = logit_scale_divide,
@@ -854,6 +872,7 @@ def grpo_trainer_compute_loss(function_name, function):
                         max_completion_length = self.args.max_completion_length,
                         delta = self.args.delta,
                         temperature = self.args.temperature,
+                        max_left_pad = max_left_pad,
                         logit_softcapping = logit_softcapping,
                         logit_scale_multiply = logit_scale_multiply,
                         logit_scale_divide = logit_scale_divide,
