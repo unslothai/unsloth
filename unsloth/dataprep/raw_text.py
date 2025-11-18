@@ -20,12 +20,28 @@ from typing import List, Dict, Any, Union, Optional
 from datasets import Dataset
 from pathlib import Path
 
+__all__ = [
+    "RawTextDataLoader",
+    "TextPreprocessor",
+]
+
+SUPPORTED_FORMATS = {
+    '.txt': 'plain_text',
+    '.md': 'markdown', 
+    '.json': 'json_lines',
+    '.jsonl': 'json_lines',
+    '.csv': 'csv_text_column'
+}
+
 class RawTextDataLoader:
     def __init__(self, tokenizer, chunk_size=2048, stride=512):
         self.tokenizer = tokenizer
         self.chunk_size = chunk_size  
         self.stride = stride
     
+    def detect_format(self, file_path):
+        """Auto-detect file format and parse accordingly"""
+
     def load_from_file(self, file_path):
         """Load raw text and convert to dataset"""
         
@@ -64,6 +80,15 @@ class TextPreprocessor:
         
     def add_structure_tokens(self, text):
         """Add special tokens for structure (chapters, sections)"""
+    
+    def validate_dataset(self, dataset):
+        """
+        Check for:
+        - Minimum/maximum sequence lengths
+        - Character encoding issues
+        - Repeated content
+        - Empty chunks
+        """
 
 def validate_dataset(self, dataset):
     """
