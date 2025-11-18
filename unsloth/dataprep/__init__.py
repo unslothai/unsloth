@@ -13,3 +13,4 @@
 # limitations under the License.
 
 from .synthetic import *
+from raw_text import *
