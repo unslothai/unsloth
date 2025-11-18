@@ -64,9 +64,11 @@ class RawTextDataLoader:
         
     def chunk_text(self, text):
         """Split text into overlapping chunks"""
+        return self.smart_chunk_text(text, self.chunk_size, self.stride)
         
     def create_causal_dataset(self, chunks):
         """Create dataset for causal language modeling"""
+        return Dataset.from_dict({"text": chunks})
 
     def smart_chunk_text(self, text, chunk_size, stride):
         """
@@ -76,6 +78,51 @@ class RawTextDataLoader:
         3. Maintains context with stride overlap
         4. Adds proper EOS tokens
         """
+        # First pass: tokenize the entire text to get accurate token counts
+        tokenized = self.tokenizer(text, return_tensors="pt", add_special_tokens=False)
+        tokens = tokenized["input_ids"]
+        
+        # Handle different tokenizer return formats
+        if hasattr(tokens, '__len__') and len(tokens) > 0:
+            # If it's a nested structure, get the first element
+            if hasattr(tokens[0], '__len__'):
+                tokens = tokens[0]
+        elif isinstance(tokens, int):
+            # If tokenizer returns just a count, create a simple range
+            tokens = list(range(tokens))
+        
+        if len(tokens) <= chunk_size:
+            # Text is small enough to fit in one chunk
+            eos_token = self.tokenizer.eos_token if self.tokenizer.eos_token else ""
+            return [text + eos_token]
+        
+        chunks = []
+        start_idx = 0
+        
+        while start_idx < len(tokens):
+            # Calculate end index for this chunk
+            end_idx = min(start_idx + chunk_size, len(tokens))
+            
+            # Extract tokens for this chunk
+            chunk_tokens = tokens[start_idx:end_idx]
+            
+            # Decode back to text
+            chunk_text = self.tokenizer.decode(chunk_tokens, skip_special_tokens=True)
+            
+            # Add EOS token if it's the last chunk or chunk is complete
+            if end_idx == len(tokens) or len(chunk_tokens) == chunk_size:
+                eos_token = self.tokenizer.eos_token if self.tokenizer.eos_token else ""
+                chunk_text += eos_token
+            
+            chunks.append(chunk_text)
+            
+            # Move to next chunk with stride overlap
+            if end_idx == len(tokens):
+                break
+            start_idx += chunk_size - stride
+            
+        return chunks
+
     
     def tokenize_and_chunk(self, text):
         """
