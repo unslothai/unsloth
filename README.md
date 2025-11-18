@@ -117,7 +117,7 @@ See [here](https://github.com/unslothai/unsloth/edit/main/README.md#advanced-pip
 ### Windows Installation
 
 1. **Install NVIDIA Video Driver:**
-  You should install the latest version of your GPUs driver. Download drivers here: [NVIDIA GPU Drive](https://www.nvidia.com/Download/index.aspx).
+  You should install the latest version of your GPUs driver. Download drivers here: [NVIDIA GPU Driver](https://www.nvidia.com/Download/index.aspx).
 
 3. **Install Visual Studio C++:**
    You will need Visual Studio, with C++ installed. By default, C++ is not installed with [Visual Studio](https://visualstudio.microsoft.com/vs/community/), so make sure you select all of the C++ options. Also select options for Windows 10/11 SDK. For detailed instructions with options, see [here](https://docs.unsloth.ai/get-started/installing-+-updating).
@@ -278,7 +278,7 @@ Access Jupyter Lab at `http://localhost:8888` and start fine-tuning!
 
 ## 📜 Documentation
 - Go to our official [Documentation](https://docs.unsloth.ai) for [running models](https://docs.unsloth.ai/basics/running-and-saving-models), [saving to GGUF](https://docs.unsloth.ai/basics/running-and-saving-models/saving-to-gguf), [checkpointing](https://docs.unsloth.ai/basics/finetuning-from-last-checkpoint), [evaluation](https://docs.unsloth.ai/get-started/fine-tuning-llms-guide#evaluation) and more!
-- Read our Guides for: [Fine-tuning](https://docs.unsloth.ai/get-started/fine-tuning-llms-guide), [Reinforcement Learning](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide), [Text-to-Speech (TTS)](https://docs.unsloth.ai/basics/text-to-speech-tts-fine-tuning), [Vision](https://docs.unsloth.ai/basics/vision-fine-tuning) and [any model](docs.unsloth.ai/models/tutorials-how-to-fine-tune-and-run-llms).
+- Read our Guides for: [Fine-tuning](https://docs.unsloth.ai/get-started/fine-tuning-llms-guide), [Reinforcement Learning](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide), [Text-to-Speech (TTS)](https://docs.unsloth.ai/basics/text-to-speech-tts-fine-tuning), [Vision](https://docs.unsloth.ai/basics/vision-fine-tuning) and [any model](https://docs.unsloth.ai/models/tutorials-how-to-fine-tune-and-run-llms).
 - We support Huggingface's transformers, TRL, Trainer, Seq2SeqTrainer and Pytorch code.
 
 Unsloth example code to fine-tune gpt-oss-20b:
