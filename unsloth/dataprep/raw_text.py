@@ -177,12 +177,27 @@ class RawTextDataLoader:
 class TextPreprocessor:
     def clean_text(self, text):
         """Remove unwanted characters, normalize whitespace"""
+        text = re.sub(r'\s+', ' ', text)
+        text = re.sub(r'[^\x20-\x7E\n\t]', '', text)
+        text = text.replace('\r\n', '\n').replace('\r', '\n')
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        return text.strip()
         
     def extract_sections(self, text, patterns):
         """Extract specific sections (e.g., code blocks, quotes)"""
-        
+        sections = []
+        for pattern in patterns:
+            matches = re.findall(pattern, text, re.MULTILINE | re.DOTALL)
+            sections.extend(matches)
+        return sections
+
     def add_structure_tokens(self, text):
         """Add special tokens for structure (chapters, sections)"""
+        text = re.sub(r'^# (.+)$', r'<|chapter|>\1<|/chapter|>', text, flags=re.MULTILINE)
+        text = re.sub(r'^## (.+)$', r'<|section|>\1<|/section|>', text, flags=re.MULTILINE)
+        text = re.sub(r'^### (.+)$', r'<|subsection|>\1<|/subsection|>', text, flags=re.MULTILINE)
+        text = re.sub(r'```(\w*)\n(.*?)\n```', r'<|code|\1|>\2<|/code|>', text, flags=re.DOTALL)
+        return text
     
     def validate_dataset(self, dataset):
         """
