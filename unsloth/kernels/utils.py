@@ -36,7 +36,7 @@ import functools
 import torch
 
 torch_Tensor = torch.Tensor
-from packaging.version import Version
+from unsloth_zoo.utils import Version
 
 if DEVICE_TYPE == "xpu" and Version(torch.__version__) < Version("2.6.0"):
     raise RuntimeError(
@@ -56,7 +56,6 @@ if DEVICE_TYPE == "xpu":
 
 
 # tl.math.tanh now is libdevice.tanh
-from packaging.version import Version
 import triton
 import triton.language as tl
 
@@ -217,7 +216,9 @@ if importlib.util.find_spec("torchao") is not None:
     try:
         from torchao.quantization import Float8Tensor
     except:
-        print("Unsloth: `from torchao.quantization import Float8Tensor` failed.")
+        import torchao
+        if Version(torchao.__version__) >= Version("0.15.0"):
+            print(f"Unsloth: `from torchao.quantization import Float8Tensor` failed on version={torchao.__version__}")
         Float8Tensor = type(None)
 else:
     Float8Tensor = type(None)
