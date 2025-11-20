@@ -21,8 +21,8 @@ from .mapper import INT_TO_FLOAT_MAPPER, FLOAT_TO_INT_MAPPER, MAP_TO_UNSLOTH_16b
 # https://github.com/huggingface/transformers/pull/26037 allows 4 bit loading!
 from packaging.version import Version
 from transformers import (
-    AutoModelForCausalLM,
-    AutoTokenizer,
+    AutoModel,
+    AutoProcessor,
     TorchAoConfig,
     __version__ as transformers_version,
 )
@@ -194,13 +194,13 @@ def _offline_quantize_to_fp8(model_name: str) -> str:
     if not os.path.isdir(new_model_name):
         qconfig = _get_torchao_fp8_config()
         qconfig = TorchAoConfig(qconfig)
-        model = AutoModelForCausalLM.from_pretrained(
+        model = AutoModel.from_pretrained(
             model_name,
             torch_dtype = "auto",
             device_map = "auto",
             quantization_config = qconfig,
         )
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        tokenizer = AutoProcessor.from_pretrained(model_name)
         model.save_pretrained(new_model_name, safe_serialization = False)
         tokenizer.save_pretrained(new_model_name)
     return new_model_name
