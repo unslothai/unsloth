@@ -46,16 +46,18 @@ class RawTextDataLoader:
         extension = Path(file_path).suffix.lower()
         return SUPPORTED_FORMATS.get(extension, "plain_text")
 
-    def load_from_file(self, file_path, return_tokenized=None):
+    def load_from_file(self, file_path, return_tokenized = None):
         """Load raw text and convert to dataset"""
         if return_tokenized is None:
             return_tokenized = self.return_tokenized
         file_format = self.detect_format(file_path)
         text_content = self._read_file_by_format(file_path, file_format)
-        chunks = self.smart_chunk_text(text_content, self.chunk_size, self.stride, return_tokenized)
+        chunks = self.smart_chunk_text(
+            text_content, self.chunk_size, self.stride, return_tokenized
+        )
         return self.create_causal_dataset(chunks)
 
-    def load_from_files(self, file_paths, return_tokenized=None):
+    def load_from_files(self, file_paths, return_tokenized = None):
         """Load multiple text files"""
         if return_tokenized is None:
             return_tokenized = self.return_tokenized
@@ -63,15 +65,19 @@ class RawTextDataLoader:
         for file_path in file_paths:
             file_format = self.detect_format(file_path)
             text_content = self._read_file_by_format(file_path, file_format)
-            chunks = self.smart_chunk_text(text_content, self.chunk_size, self.stride, return_tokenized)
+            chunks = self.smart_chunk_text(
+                text_content, self.chunk_size, self.stride, return_tokenized
+            )
             all_chunks.extend(chunks)
         return self.create_causal_dataset(all_chunks)
 
-    def chunk_text(self, text, return_tokenized=None):
+    def chunk_text(self, text, return_tokenized = None):
         """Split text into overlapping chunks"""
         if return_tokenized is None:
             return_tokenized = self.return_tokenized
-        return self.smart_chunk_text(text, self.chunk_size, self.stride, return_tokenized)
+        return self.smart_chunk_text(
+            text, self.chunk_size, self.stride, return_tokenized
+        )
 
     def create_causal_dataset(self, chunks):
         """Create dataset for causal language modeling"""
@@ -80,15 +86,14 @@ class RawTextDataLoader:
             # Reorganize the data structure for Dataset.from_dict
             input_ids = [chunk["input_ids"] for chunk in chunks]
             attention_mask = [chunk["attention_mask"] for chunk in chunks]
-            return Dataset.from_dict({
-                "input_ids": input_ids,
-                "attention_mask": attention_mask
-            })
+            return Dataset.from_dict(
+                {"input_ids": input_ids, "attention_mask": attention_mask}
+            )
         else:
             # If chunks are text strings (backward compatibility)
             return Dataset.from_dict({"text": chunks})
 
-    def smart_chunk_text(self, text, chunk_size, stride, return_tokenized=True):
+    def smart_chunk_text(self, text, chunk_size, stride, return_tokenized = True):
         """
         Intelligent chunking that:
         1. Respects sentence/paragraph boundaries
@@ -113,11 +118,13 @@ class RawTextDataLoader:
             # Text is small enough to fit in one chunk
             if return_tokenized:
                 # Add EOS token to the tokens if available
-                eos_token_id = getattr(self.tokenizer, 'eos_token_id', None)
+                eos_token_id = getattr(self.tokenizer, "eos_token_id", None)
                 if eos_token_id is not None:
-                    tokens = tokens.tolist() if hasattr(tokens, 'tolist') else list(tokens)
+                    tokens = (
+                        tokens.tolist() if hasattr(tokens, "tolist") else list(tokens)
+                    )
                     tokens.append(eos_token_id)
-                
+
                 # Create attention mask
                 attention_mask = [1] * len(tokens)
                 return [{"input_ids": tokens, "attention_mask": attention_mask}]
@@ -137,28 +144,35 @@ class RawTextDataLoader:
 
             if return_tokenized:
                 # Convert to list if it's a tensor
-                chunk_tokens_list = chunk_tokens.tolist() if hasattr(chunk_tokens, 'tolist') else list(chunk_tokens)
-                
+                chunk_tokens_list = (
+                    chunk_tokens.tolist()
+                    if hasattr(chunk_tokens, "tolist")
+                    else list(chunk_tokens)
+                )
+
                 # Add EOS token if it's the last chunk or chunk is complete
                 if end_idx == len(tokens) or len(chunk_tokens_list) == chunk_size:
-                    eos_token_id = getattr(self.tokenizer, 'eos_token_id', None)
+                    eos_token_id = getattr(self.tokenizer, "eos_token_id", None)
                     if eos_token_id is not None:
                         chunk_tokens_list.append(eos_token_id)
 
                 # Create attention mask (all tokens are attended to)
                 attention_mask = [1] * len(chunk_tokens_list)
-                
-                chunks.append({
-                    "input_ids": chunk_tokens_list,
-                    "attention_mask": attention_mask
-                })
+
+                chunks.append(
+                    {"input_ids": chunk_tokens_list, "attention_mask": attention_mask}
+                )
             else:
                 # Decode back to text (backward compatibility)
-                chunk_text = self.tokenizer.decode(chunk_tokens, skip_special_tokens = True)
+                chunk_text = self.tokenizer.decode(
+                    chunk_tokens, skip_special_tokens = True
+                )
 
                 # Add EOS token if it's the last chunk or chunk is complete
                 if end_idx == len(tokens) or len(chunk_tokens) == chunk_size:
-                    eos_token = self.tokenizer.eos_token if self.tokenizer.eos_token else ""
+                    eos_token = (
+                        self.tokenizer.eos_token if self.tokenizer.eos_token else ""
+                    )
                     chunk_text += eos_token
 
                 chunks.append(chunk_text)

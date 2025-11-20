@@ -105,14 +105,14 @@ def run(args):
         if args.raw_text_file:
             # Use raw text loader - returns pre-tokenized data
             loader = RawTextDataLoader(tokenizer, args.chunk_size, args.stride)
-            dataset = loader.load_from_file(args.raw_text_file, return_tensors=True)
+            dataset = loader.load_from_file(args.raw_text_file, return_tensors = True)
             # Mark dataset as pre-tokenized to skip text formatting
             dataset._is_pretokenized = True
             return dataset
         elif args.dataset.endswith((".txt", ".md", ".json", ".jsonl")):
             # Auto-detect local raw text files - returns pre-tokenized data
             loader = RawTextDataLoader(tokenizer, args.chunk_size, args.stride)
-            dataset = loader.load_from_file(args.dataset, return_tensors=True)
+            dataset = loader.load_from_file(args.dataset, return_tensors = True)
             # Mark dataset as pre-tokenized to skip text formatting
             dataset._is_pretokenized = True
             return dataset
