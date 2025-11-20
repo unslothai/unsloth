@@ -218,9 +218,9 @@ if importlib.util.find_spec("torchao") is not None:
         from torchao.quantization import Float8Tensor
     except:
         print("Unsloth: `from torchao.quantization import Float8Tensor` failed.")
-        Float8Tensor = None
+        Float8Tensor = type(None)
 else:
-    Float8Tensor = None
+    Float8Tensor = type(None)
 
 
 def QUANT_STATE(W):
