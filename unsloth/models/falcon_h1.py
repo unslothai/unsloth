@@ -122,7 +122,7 @@ def FalconH1Attention_fast_forward(
         kv_seq_len += past_key_value[0].shape[-2]
 
     # Extend RoPE dynamically to fit in VRAM
-    if position_embeddings  and kv_seq_len <= position_embeddings[0].shape[0]:
+    if position_embeddings and kv_seq_len <= position_embeddings[0].shape[0]:
         cos, sin = position_embeddings
     else:
         rotary_emb = self.rotary_emb
