@@ -766,7 +766,7 @@ __DTYPE_MAP = {
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L825
 def LlamaModel_fast_forward(
     self,
-    input_ids: torch.LongTensor,
+    input_ids: Optional[torch.LongTensor] = None,
     causal_mask: Optional[BlockDiagonalCausalMask] = None,
     attention_mask: Optional[torch.Tensor] = None,
     position_ids: Optional[torch.LongTensor] = None,
