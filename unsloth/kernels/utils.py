@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import importlib
 import triton
 import ctypes
 
@@ -35,7 +36,7 @@ import functools
 import torch
 
 torch_Tensor = torch.Tensor
-from packaging.version import Version
+from unsloth_zoo.utils import Version
 
 if DEVICE_TYPE == "xpu" and Version(torch.__version__) < Version("2.6.0"):
     raise RuntimeError(
@@ -55,7 +56,6 @@ if DEVICE_TYPE == "xpu":
 
 
 # tl.math.tanh now is libdevice.tanh
-from packaging.version import Version
 import triton
 import triton.language as tl
 
@@ -211,6 +211,22 @@ torch_float16 = torch.float16
 torch_bfloat16 = torch.bfloat16
 
 
+# Check whether torchao can be imported to get Float8Tensor
+if importlib.util.find_spec("torchao") is not None:
+    try:
+        from torchao.quantization import Float8Tensor
+    except:
+        import torchao
+
+        if Version(torchao.__version__) >= Version("0.15.0"):
+            print(
+                f"Unsloth: `from torchao.quantization import Float8Tensor` failed on version={torchao.__version__}"
+            )
+        Float8Tensor = type(None)
+else:
+    Float8Tensor = type(None)
+
+
 def QUANT_STATE(W):
     return getattr(W, "quant_state", None)
 
@@ -335,6 +351,13 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
     @torch.inference_mode
     def fast_dequantize(W, quant_state = None, out = None, use_global_buffer = False):
         # TODO: After adding XPU BNB support, check this function
+        if isinstance(W, Float8Tensor):
+            # TorchAO Float8Tensor
+            # In the backward pass, rowwise scaled becomes colwise scaled after we
+            # transpose the weight tensor. Use this case to detect backward
+            assert W.ndim == 2
+            if W.block_size[0] == W.shape[0] and W.block_size[1] == 1:
+                return W.dequantize()
         if quant_state is None:
             return W
         if W.dtype == torch.float8_e4m3fn:
@@ -441,6 +464,13 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
 
     @torch.inference_mode
     def fast_dequantize(W, quant_state = None, out = None, use_global_buffer = False):
+        if isinstance(W, Float8Tensor):
+            # TorchAO Float8Tensor
+            # In the backward pass, rowwise scaled becomes colwise scaled after we
+            # transpose the weight tensor. Use this case to detect backward
+            assert W.ndim == 2
+            if W.block_size[0] == W.shape[0] and W.block_size[1] == 1:
+                return W.dequantize()
         if quant_state is None:
             return W
         if W.dtype == torch.float8_e4m3fn:
@@ -551,6 +581,13 @@ else:
 
     @torch.inference_mode
     def fast_dequantize(W, quant_state = None, out = None, use_global_buffer = False):
+        if isinstance(W, Float8Tensor):
+            # TorchAO Float8Tensor
+            # In the backward pass, rowwise scaled becomes colwise scaled after we
+            # transpose the weight tensor. Use this case to detect backward
+            assert W.ndim == 2
+            if W.block_size[0] == W.shape[0] and W.block_size[1] == 1:
+                return W.dequantize()
         if quant_state is None:
             return W
         if W.dtype == torch.float8_e4m3fn:
@@ -987,8 +1024,8 @@ def matmul_lora(X, W, W_quant, A, B, s, out = None):
     if W.dtype == torch.float8_e4m3fn:
         out = fp8_linear(X, W, W_quant)
     else:
-        W = fast_dequantize(W.t(), W_quant, use_global_buffer = True)
-        out = torch_matmul(X, W, out = out)
+        W = fast_dequantize(W, W_quant, use_global_buffer = True)
+        out = torch_matmul(X, W.t(), out = out)
     if W_quant is not None:
         del W
 
