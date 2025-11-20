@@ -217,8 +217,11 @@ if importlib.util.find_spec("torchao") is not None:
         from torchao.quantization import Float8Tensor
     except:
         import torchao
+
         if Version(torchao.__version__) >= Version("0.15.0"):
-            print(f"Unsloth: `from torchao.quantization import Float8Tensor` failed on version={torchao.__version__}")
+            print(
+                f"Unsloth: `from torchao.quantization import Float8Tensor` failed on version={torchao.__version__}"
+            )
         Float8Tensor = type(None)
 else:
     Float8Tensor = type(None)
