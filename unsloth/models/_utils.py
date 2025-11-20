@@ -71,6 +71,7 @@ __all__ = [
     "dequantize_module_weight",
     "patch_hf_quantizer",
     "verify_fp8_support_if_applicable",
+    "_get_inference_mode_context_manager",
 ]
 
 import torch
