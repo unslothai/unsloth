@@ -3017,7 +3017,6 @@ class FastLlamaModel:
             print("Unsloth: Applying QAT to mitigate quantization degradation")
             model = FastLlamaModel._prepare_for_qat(model, qat_scheme)
 
-
         model._saved_temp_tokenizer = _saved_temp_tokenizer
 
         model = FastLlamaModel.patch_peft_model(model, use_gradient_checkpointing)
