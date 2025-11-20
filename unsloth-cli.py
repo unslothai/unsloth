@@ -100,6 +100,8 @@ def run(args):
         return {"text": texts}
 
     def load_dataset_smart(args):
+        from transformers.utils import strtobool
+        
         if args.raw_text_file:
             # Use raw text loader
             loader = RawTextDataLoader(tokenizer, args.chunk_size, args.stride)
@@ -109,20 +111,21 @@ def run(args):
             loader = RawTextDataLoader(tokenizer)
             dataset = loader.load_from_file(args.dataset)
         else:
-            # Existing HuggingFace dataset logic
-            dataset = load_dataset(args.dataset, split="train")
+            # Check for modelscope usage
+            use_modelscope = strtobool(os.environ.get("UNSLOTH_USE_MODELSCOPE", "False"))
+            if use_modelscope:
+                from modelscope import MsDataset
+                dataset = MsDataset.load(args.dataset, split="train")
+            else:
+                # Existing HuggingFace dataset logic
+                dataset = load_dataset(args.dataset, split="train")
+            
+            # Apply formatting for structured datasets
             dataset = dataset.map(formatting_prompts_func, batched=True)
         return dataset
 
-    use_modelscope = strtobool(os.environ.get("UNSLOTH_USE_MODELSCOPE", "False"))
-    if use_modelscope:
-        from modelscope import MsDataset
-
-        dataset = MsDataset.load(args.dataset, split = "train")
-    else:
-        # Load and format dataset
-        dataset = load_dataset(args.dataset, split = "train")
-    dataset = dataset.map(formatting_prompts_func, batched = True)
+    # Load dataset using smart loader
+    dataset = load_dataset_smart(args)
     print("Data is formatted and ready!")
 
     # Configure training arguments
