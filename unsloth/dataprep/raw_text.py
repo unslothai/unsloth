@@ -184,14 +184,6 @@ class RawTextDataLoader:
 
         return chunks
 
-    def tokenize_and_chunk(self, text):
-        """
-        Tokenize first, then chunk by token count:
-        1. More precise length control
-        2. Avoids mid-token splits
-        3. Handles different languages better
-        """
-
     def _read_file_by_format(self, file_path, file_format):
         """Read file content based on detected format."""
         with open(file_path, "r", encoding = "utf-8") as f:
