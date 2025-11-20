@@ -104,14 +104,14 @@ def run(args):
             # Use raw text loader
             loader = RawTextDataLoader(tokenizer, args.chunk_size, args.stride)
             dataset = loader.load_from_file(args.raw_text_file)
-        elif args.dataset.endswith(('.txt', '.md', '.json', '.jsonl')):
+        elif args.dataset.endswith((".txt", ".md", ".json", ".jsonl")):
             # Auto-detect local raw text files
             loader = RawTextDataLoader(tokenizer)
             dataset = loader.load_from_file(args.dataset)
         else:
             # Existing HuggingFace dataset logic
-            dataset = load_dataset(args.dataset, split="train")
-            dataset = dataset.map(formatting_prompts_func, batched=True)
+            dataset = load_dataset(args.dataset, split = "train")
+            dataset = dataset.map(formatting_prompts_func, batched = True)
         return dataset
 
     use_modelscope = strtobool(os.environ.get("UNSLOTH_USE_MODELSCOPE", "False"))
@@ -406,35 +406,27 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "--raw_text_file", 
-        type=str, 
-        help="Path to raw text file for training"
+        "--raw_text_file", type = str, help = "Path to raw text file for training"
     )
     parser.add_argument(
-        "--chunk_size", 
-        type=int, 
-        default=2048, 
-        help="Size of text chunks for training"
+        "--chunk_size", type = int, default = 2048, help = "Size of text chunks for training"
     )
     parser.add_argument(
-        "--stride", 
-        type=int, 
-        default=512, 
-        help="Overlap between chunks"
+        "--stride", type = int, default = 512, help = "Overlap between chunks"
     )
 
     TRAINING_MODES = {
-        'instruction': 'Standard instruction-following',
-        'causal': 'Causal language modeling (raw text)',
-        'completion': 'Text completion tasks'
+        "instruction": "Standard instruction-following",
+        "causal": "Causal language modeling (raw text)",
+        "completion": "Text completion tasks",
     }
 
     parser.add_argument(
         "--training_mode",
-        type=str,
-        default="instruction", 
-        choices=list(TRAINING_MODES.keys()),
-        help="Training mode for the model"
+        type = str,
+        default = "instruction",
+        choices = list(TRAINING_MODES.keys()),
+        help = "Training mode for the model",
     )
 
     args = parser.parse_args()
