@@ -262,11 +262,14 @@ def _check_load_in_fp8_settings(
 
     # Check if torchao has this PR: https://github.com/pytorch/ao/pull/3158,
     # which will be released in 0.15.0.
-    error_message = "Unsloth: `load_in_fp8` requires torchao 0.15.0+ (or nightly)"
     if importlib.util.find_spec("torchao") is None:
-        raise ValueError(error_message)
+        raise ValueError("Unsloth: Please install torchao for on the fly float8 to work!")
     import torchao
 
+    error_message = \
+        "Unsloth: `load_in_fp8` requires torchao 0.15.0+ (or nightly).\n"\
+        f"You have torchao version={torchao.__version__}\n"\
+        "Use `pip install --upgrade --force-reinstall torchao`"
     if Version(torchao.__version__) < Version("0.15.0"):
         raise ValueError(error_message)
 
