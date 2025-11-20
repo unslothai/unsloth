@@ -24,6 +24,8 @@ from .utils import (
 # signed int32 max is 2**31-1 so num_elements cannot exceed 2**31
 NUM_INT32_ELEMENTS = 2**31
 SAFE_INT32_BUFFER_MULTIPLIER = 4
+BLOCK_SIZE = 1024
+INT32_SAFETY_BUFFER = NUM_INT32_ELEMENTS - BLOCK_SIZE * SAFE_INT32_BUFFER_MULTIPLIER
 
 
 @triton.jit
@@ -64,7 +66,6 @@ def geglu_exact_forward_kernel(gate, up):
     device = gate.device
     out = torch.empty((batch, seq_len, hd), dtype = gate.dtype, device = device)
     grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
-    BLOCK_SIZE = 1024
     with torch_gpu_device(device):
         _exact_forward_kernel[grid](
             gate,
@@ -72,10 +73,7 @@ def geglu_exact_forward_kernel(gate, up):
             out,
             n_elements,
             BLOCK_SIZE = BLOCK_SIZE,
-            LONG_INDEXING = 0
-            if n_elements
-            <= (NUM_INT32_ELEMENTS - BLOCK_SIZE * SAFE_INT32_BUFFER_MULTIPLIER)
-            else 1,
+            LONG_INDEXING = 0 if n_elements <= INT32_SAFETY_BUFFER else 1,
         )
     return out
 
@@ -143,7 +141,6 @@ def geglu_exact_backward_kernel(DW, e, g):
     batch_seq_len, hd = e.shape
     n_elements = e.numel()
     grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
-    BLOCK_SIZE = 1024
     with torch_gpu_device(e.device):
         _exact_backward_kernel[grid](
             DW,
@@ -151,10 +148,7 @@ def geglu_exact_backward_kernel(DW, e, g):
             g,
             n_elements,
             BLOCK_SIZE = BLOCK_SIZE,
-            LONG_INDEXING = 0
-            if n_elements
-            <= (NUM_INT32_ELEMENTS - BLOCK_SIZE * SAFE_INT32_BUFFER_MULTIPLIER)
-            else 1,
+            LONG_INDEXING = 0 if n_elements <= INT32_SAFETY_BUFFER else 1,
         )
     return DW, e, g
 
@@ -202,7 +196,6 @@ def geglu_approx_forward_kernel(gate, up):
     device = gate.device
     out = torch.empty((batch, seq_len, hd), dtype = gate.dtype, device = device)
     grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
-    BLOCK_SIZE = 1024
     with torch_gpu_device(device):
         _approx_forward_kernel[grid](
             gate,
@@ -210,10 +203,7 @@ def geglu_approx_forward_kernel(gate, up):
             out,
             n_elements,
             BLOCK_SIZE = BLOCK_SIZE,
-            LONG_INDEXING = 0
-            if n_elements
-            <= (NUM_INT32_ELEMENTS - BLOCK_SIZE * SAFE_INT32_BUFFER_MULTIPLIER)
-            else 1,
+            LONG_INDEXING = 0 if n_elements <= INT32_SAFETY_BUFFER else 1,
         )
     return out
 
@@ -288,7 +278,6 @@ def geglu_approx_backward_kernel(DW, e, g):
     batch_seq_len, hd = e.shape
     n_elements = e.numel()
     grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
-    BLOCK_SIZE = 1024
     with torch_gpu_device(e.device):
         _approx_backward_kernel[grid](
             DW,
@@ -296,9 +285,6 @@ def geglu_approx_backward_kernel(DW, e, g):
             g,
             n_elements,
             BLOCK_SIZE = BLOCK_SIZE,
-            LONG_INDEXING = 0
-            if n_elements
-            <= (NUM_INT32_ELEMENTS - BLOCK_SIZE * SAFE_INT32_BUFFER_MULTIPLIER)
-            else 1,
+            LONG_INDEXING = 0 if n_elements <= INT32_SAFETY_BUFFER else 1,
         )
     return DW, e, g
