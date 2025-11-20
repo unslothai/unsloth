@@ -61,6 +61,7 @@ def test_raw_text_loader():
     class MockTokenizer:
         def __init__(self):
             self.eos_token = "</s>"
+            self.eos_token_id = 2  # Mock EOS token ID
 
         def __call__(self, text, return_tensors = None, add_special_tokens = False):
             words = text.split()
@@ -77,6 +78,9 @@ def test_raw_text_loader():
 
                     def __len__(self):
                         return len(self.data)
+                    
+                    def tolist(self):
+                        return self.data
 
                 return {"input_ids": [MockTensor(token_ids)]}
             return {"input_ids": token_ids}
@@ -95,10 +99,22 @@ def test_raw_text_loader():
         tokenizer = MockTokenizer()
         loader = RawTextDataLoader(tokenizer, chunk_size = 5, stride = 2)
 
-        # Test loading
-        dataset = loader.load_from_file(test_file)
-        assert len(dataset) > 0, "Should create at least one chunk"
-        assert "text" in dataset.column_names, "Dataset should have 'text' column"
+        # Test loading with text output (legacy mode)
+        text_dataset = loader.load_from_file(test_file, return_tensors=False)
+        assert len(text_dataset) > 0, "Should create at least one chunk"
+        assert "text" in text_dataset.column_names, "Dataset should have 'text' column"
+
+        # Test loading with tokenized output (new efficient mode)
+        tokenized_dataset = loader.load_from_file(test_file, return_tensors=True)
+        assert len(tokenized_dataset) > 0, "Should create at least one tokenized chunk"
+        assert "input_ids" in tokenized_dataset.column_names, "Dataset should have 'input_ids' column"
+        assert "attention_mask" in tokenized_dataset.column_names, "Dataset should have 'attention_mask' column"
+        
+        # Verify tokenized data structure
+        first_sample = tokenized_dataset[0]
+        assert isinstance(first_sample["input_ids"], list), "input_ids should be a list"
+        assert isinstance(first_sample["attention_mask"], list), "attention_mask should be a list"
+        assert len(first_sample["input_ids"]) == len(first_sample["attention_mask"]), "input_ids and attention_mask should have same length"
 
         # Test preprocessor
         preprocessor = TextPreprocessor()
