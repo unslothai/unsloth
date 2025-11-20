@@ -840,10 +840,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             "\n"
         )
         extra_args += check_num_generations
-    elif (
-        "per_device_train_batch_size" in call_args
-        and "num_generations" in call_args
-    ):
+    elif "per_device_train_batch_size" in call_args and "num_generations" in call_args:
         if "steps_per_generation" not in call_args:
             print(f"Unsloth: Could not find `steps_per_generation` in {trainer_file}")
         if "generation_batch_size" not in call_args:
