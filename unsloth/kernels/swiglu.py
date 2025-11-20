@@ -56,7 +56,7 @@ def _fg_kernel(
     tl.store(h + offsets, h_row, mask = mask)
 
 
-def swig32lu_fg_kernel(e, g):
+def swiglu_fg_kernel(e, g):
     batch, seq_len, hd = e.shape
     n_elements = e.numel()
     h = torch.empty((batch, seq_len, hd), dtype = e.dtype, device = e.device)
