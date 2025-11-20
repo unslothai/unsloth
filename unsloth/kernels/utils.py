@@ -212,9 +212,15 @@ torch_float16 = torch.float16
 torch_bfloat16 = torch.bfloat16
 
 
-# Whether torchao can be imported
-_HAS_TORCHAO = importlib.util.find_spec("torchao") is not None
-
+# Check whether torchao can be imported to get Float8Tensor
+if importlib.util.find_spec("torchao") is not None:
+    try:
+        from torchao.quantization import Float8Tensor
+    except:
+        print("Unsloth: `from torchao.quantization import Float8Tensor` failed.")
+        Float8Tensor = None
+else:
+    Float8Tensor = None
 
 def QUANT_STATE(W):
     return getattr(W, "quant_state", None)
@@ -334,34 +340,19 @@ def _maybe_fake_quantize_activations(
     return X
 
 
-def _maybe_dequantize_torchao_float8_tensor(w: torch.Tensor) -> torch.Tensor:
-    """
-    Dequantize `w` if it is a `torchao.quantization.Float8Tensor` and only
-    during the backward pass, when the tensor is no longer rowwise scaled
-    because it's been transposed.
-    """
-    if not _HAS_TORCHAO:
-        return w
-    from torchao.quantization import Float8Tensor
-
-    if not isinstance(w, Float8Tensor):
-        return w
-    # In the backward pass, rowwise scaled becomes colwise scaled after we
-    # transpose the weight tensor. Use this case to detect backward
-    assert w.ndim == 2
-    if w.block_size[0] == w.shape[0] and w.block_size[1] == 1:
-        return w.dequantize()
-    else:
-        return w
-
-
 # INTEL GPU Specific Logic
 if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
 
     @torch.inference_mode
     def fast_dequantize(W, quant_state = None, out = None, use_global_buffer = False):
         # TODO: After adding XPU BNB support, check this function
-        W = _maybe_dequantize_torchao_float8_tensor(W)
+        if isinstance(W, Float8Tensor):
+            # TorchAO Float8Tensor
+            # In the backward pass, rowwise scaled becomes colwise scaled after we
+            # transpose the weight tensor. Use this case to detect backward
+            assert W.ndim == 2
+            if W.block_size[0] == W.shape[0] and W.block_size[1] == 1:
+                return W.dequantize()
         if quant_state is None:
             return W
         if W.dtype == torch.float8_e4m3fn:
@@ -468,7 +459,13 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
 
     @torch.inference_mode
     def fast_dequantize(W, quant_state = None, out = None, use_global_buffer = False):
-        W = _maybe_dequantize_torchao_float8_tensor(W)
+        if isinstance(W, Float8Tensor):
+            # TorchAO Float8Tensor
+            # In the backward pass, rowwise scaled becomes colwise scaled after we
+            # transpose the weight tensor. Use this case to detect backward
+            assert W.ndim == 2
+            if W.block_size[0] == W.shape[0] and W.block_size[1] == 1:
+                return W.dequantize()
         if quant_state is None:
             return W
         if W.dtype == torch.float8_e4m3fn:
@@ -579,7 +576,13 @@ else:
 
     @torch.inference_mode
     def fast_dequantize(W, quant_state = None, out = None, use_global_buffer = False):
-        W = _maybe_dequantize_torchao_float8_tensor(W)
+        if isinstance(W, Float8Tensor):
+            # TorchAO Float8Tensor
+            # In the backward pass, rowwise scaled becomes colwise scaled after we
+            # transpose the weight tensor. Use this case to detect backward
+            assert W.ndim == 2
+            if W.block_size[0] == W.shape[0] and W.block_size[1] == 1:
+                return W.dequantize()
         if quant_state is None:
             return W
         if W.dtype == torch.float8_e4m3fn:
