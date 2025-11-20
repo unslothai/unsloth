@@ -604,7 +604,10 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(UnslothEfficientGRPO))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_accumulated_loss))
 RL_PRE_ITEMS["grpo_trainer"].append(grpo_compute_loss_slow)
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_update_SamplingParams))
-RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_get_inference_mode_context_manager))
+RL_PRE_ITEMS["grpo_trainer"].append(
+    inspect.getsource(_get_inference_mode_context_manager)
+)
+
 
 # Edit _get_per_token_logps to handle mixed precision
 def grpo_trainer_compute_loss(function_name, function):
