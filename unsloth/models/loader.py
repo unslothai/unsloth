@@ -145,7 +145,7 @@ class FastLanguageModel(FastLlamaModel):
         max_lora_rank = 64,
         disable_log_stats = True,
         qat_scheme = None,
-        load_in_fp8 = False, # fp8 LoRA
+        load_in_fp8 = False,  # fp8 LoRA
         *args,
         **kwargs,
     ):
@@ -660,7 +660,7 @@ class FastModel(FastBaseModel):
         max_lora_rank = 64,
         disable_log_stats = True,
         qat_scheme = None,
-        load_in_fp8 = False, # fp8 LoRA
+        load_in_fp8 = False,  # fp8 LoRA
         *args,
         **kwargs,
     ):

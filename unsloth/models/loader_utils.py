@@ -166,8 +166,8 @@ def _get_torchao_fp8_config():
     from torchao.quantization import Float8DynamicActivationFloat8WeightConfig, PerRow
 
     return Float8DynamicActivationFloat8WeightConfig(
-        granularity=PerRow(),
-        activation_value_lb=1e-12,
+        granularity = PerRow(),
+        activation_value_lb = 1e-12,
     )
 
 
@@ -188,18 +188,20 @@ def _offline_quantize_to_fp8(model_name: str) -> str:
     temp_dir = tempfile.gettempdir()
     new_model_name = model_name.split("/")[-1] + "-fp8"
     new_model_name = os.path.join(temp_dir, new_model_name)
-    print(f"Quantizing '{model_name}' to fp8, using model_name='{new_model_name}' instead")
+    print(
+        f"Quantizing '{model_name}' to fp8, using model_name='{new_model_name}' instead"
+    )
     if not os.path.isdir(new_model_name):
         qconfig = _get_torchao_fp8_config()
         qconfig = TorchAoConfig(qconfig)
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            torch_dtype="auto",
-            device_map="auto",
-            quantization_config=qconfig,
+            torch_dtype = "auto",
+            device_map = "auto",
+            quantization_config = qconfig,
         )
         tokenizer = AutoTokenizer.from_pretrained(model_name)
-        model.save_pretrained(new_model_name, safe_serialization=False)
+        model.save_pretrained(new_model_name, safe_serialization = False)
         tokenizer.save_pretrained(new_model_name)
     return new_model_name
 
@@ -210,8 +212,8 @@ def _tag_model_with_fp8_torchao_config(model: torch.nn.Module):
     """
     base_config = _get_torchao_fp8_config()
     model.torchao_config = TorchAOConfig(
-        qat_scheme=None,
-        base_config_and_filter_fns=[(base_config, None)],
+        qat_scheme = None,
+        base_config_and_filter_fns = [(base_config, None)],
     )
 
 
@@ -232,9 +234,13 @@ def _check_load_in_fp8_settings(
     4. If fbgemm_gpu_genai is installed, require 1.4.1+
     """
     if not fast_inference:
-        raise ValueError("Unsloth: `load_in_fp8` is only supported for `fast_inference` for now")
+        raise ValueError(
+            "Unsloth: `load_in_fp8` is only supported for `fast_inference` for now"
+        )
     if full_finetuning:
-        raise ValueError("Unsloth: `load_in_fp8` is not compatible with full finetuning")
+        raise ValueError(
+            "Unsloth: `load_in_fp8` is not compatible with full finetuning"
+        )
     if load_in_4bit or load_in_8bit or load_in_16bit:
         raise ValueError(
             "Unsloth: `load_in_fp8` is not compatible with `load_in_4bit`, `load_in_8bit` or `load_in_16bit`",
@@ -243,7 +249,8 @@ def _check_load_in_fp8_settings(
         raise ValueError("Unsloth: `load_in_fp8` requires `use_exact_model_name=False`")
 
     # Check if this is Hopper or above
-    if not (torch.cuda.is_available()
+    if not (
+        torch.cuda.is_available()
         and torch.version.cuda
         and torch.cuda.get_device_capability() >= (9, 0)
     ):
@@ -265,10 +272,12 @@ def _check_load_in_fp8_settings(
 
     # If fbgemm_gpu_genai is installed, check if it's >= 1.4.1
     if (
-        importlib.util.find_spec("fbgemm_gpu") is not None and
-        importlib.util.find_spec("fbgemm_gpu.experimental") is not None
+        importlib.util.find_spec("fbgemm_gpu") is not None
+        and importlib.util.find_spec("fbgemm_gpu.experimental") is not None
     ):
         import fbgemm_gpu.experimental.gen_ai
 
         if Version(fbgemm_gpu.__version__) < Version("1.4.1"):
-            raise ValueError("Unsloth: `load_in_fp8` is only compatible with fbgemm_gpu_genai 1.4.1+")
+            raise ValueError(
+                "Unsloth: `load_in_fp8` is only compatible with fbgemm_gpu_genai 1.4.1+"
+            )
