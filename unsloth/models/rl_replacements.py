@@ -324,12 +324,13 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
 
     string_to_find = """        if "image_sizes" in prompt_inputs:
             output["image_sizes"] = prompt_inputs["image_sizes"]"""
+    #TODO: REMEMBER TO DISABLE TRLS VLLM IMPORTANCE SAMPLING LOGIC SINCE UNSLOTH USES CUSTOM ONE
 
     replacement_string = """        if "image_sizes" in prompt_inputs:
             output["image_sizes"] = prompt_inputs["image_sizes"]
         if max_left_pad is not None:
             output["max_left_pad"] = torch.tensor(sampling_per_token_logps.shape[0] * [max_left_pad]).unsqueeze(-1)
-        if self.use_vllm:
+        if self.use_vllm and self.vllm_importance_sampling_correction:
             try:
                 output["sampling_per_token_logps"] = sampling_per_token_logps
             except NameError:
@@ -868,7 +869,7 @@ def grpo_trainer_compute_loss(function_name, function):
             self._metrics["completion_length"].append(completion_length.item())
             self._metrics["kl"].append(mean_kl.item())
 
-        if self.use_vllm and delta is not None:
+        if self.use_vllm and delta is not None and self.vllm_importance_sampling_correction:
             mean_delta = (
                 torch.mean(delta)
                 if delta.numel() > 0
