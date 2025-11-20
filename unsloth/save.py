@@ -2778,7 +2778,7 @@ def unsloth_save_pretrained_torchao(
         print(
             "Unsloth: You did not specify a `torchao_config`, so defaulting to `Int8DynamicActivationInt8WeightConfig`"
         )
-        torchao_config = Int8DynamicActivationInt8WeightConfig(group_size=32)
+        torchao_config = Int8DynamicActivationInt8WeightConfig()
     quantization_config = TorchAoConfig(quant_type = torchao_config)
 
     is_vlm = False
