@@ -222,6 +222,7 @@ if importlib.util.find_spec("torchao") is not None:
 else:
     Float8Tensor = None
 
+
 def QUANT_STATE(W):
     return getattr(W, "quant_state", None)
 
