@@ -322,10 +322,16 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         if self.use_vllm:"""
             function = function.replace(replace_part, new_replacement)
 
+    #Important note: we disable TRL's importance sampling logic
+    string_to_find = "if self.use_vllm and self.vllm_importance_sampling_correction:"
+
+    replacement_string = "if False and self.use_vllm and self.vllm_importance_sampling_correction:"
+
+    function = function.replace(string_to_find, replacement_string)
+
     string_to_find = """        if "image_sizes" in prompt_inputs:
             output["image_sizes"] = prompt_inputs["image_sizes"]"""
-    #TODO: REMEMBER TO DISABLE TRLS VLLM IMPORTANCE SAMPLING LOGIC SINCE UNSLOTH USES CUSTOM ONE
-
+   
     replacement_string = """        if "image_sizes" in prompt_inputs:
             output["image_sizes"] = prompt_inputs["image_sizes"]
         if max_left_pad is not None:
@@ -335,7 +341,6 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
                 output["sampling_per_token_logps"] = sampling_per_token_logps
             except NameError:
                 output["sampling_per_token_logps"] = None"""
-
     function = function.replace(string_to_find, replacement_string)
 
     if "wake_up()" not in function:
