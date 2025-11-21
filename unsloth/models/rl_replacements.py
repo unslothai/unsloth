@@ -337,7 +337,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         if max_left_pad is not None:
             output["max_left_pad"] = torch.tensor(sampling_per_token_logps.shape[0] * [max_left_pad]).unsqueeze(-1)        
         try:
-            if self.use_vllm and self.vllm_importance_sampling_correction:
+            if self.use_vllm and getattr(self, "vllm_importance_sampling_correction", False):
                 output["sampling_per_token_logps"] = sampling_per_token_logps
         except NameError:
             output["sampling_per_token_logps"] = None"""
@@ -608,7 +608,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                     pixel_attention_mask = pixel_attention_mask_chunk,
                                     image_sizes = image_sizes_chunk,
                                 ).logits
-                                
+
                                 completion_input_ids_chunk = input_ids_chunk[:, -(logits_to_keep+max_left_pad):]
                                 logits_chunk = logits_chunk[:, -(logits_to_keep + max_left_pad+1): , :]
                                 logits_chunk = logits_chunk[:, :-1, : ] 
@@ -625,7 +625,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
 
                                 logits_chunk = logits_chunk[:, :-1, : ] 
                                 completion_input_ids_chunk = input_ids_chunk[:, -logits_to_keep:]
-                            
+                            #breakpoint()
                             logprobs_chunk = chunked_hidden_states_selective_log_softmax(
                                 logits_chunk,
                                 lm_head, 
@@ -874,7 +874,7 @@ def grpo_trainer_compute_loss(function_name, function):
             self._metrics["completion_length"].append(completion_length.item())
             self._metrics["kl"].append(mean_kl.item())
 
-        if self.use_vllm and delta is not None and self.vllm_importance_sampling_correction:
+        if self.use_vllm and delta is not None and getattr(self, "vllm_importance_sampling_correction", False):
             mean_delta = (
                 torch.mean(delta)
                 if delta.numel() > 0
