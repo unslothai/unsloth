@@ -247,6 +247,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
                 max_left_pad = max(left_pad_tokens_per_prompt).item()
         self.model.for_training()"""
 
+
     function = function.replace(line_to_replace, replacement_lines)
 
     pattern_to_find = re.compile(
@@ -321,18 +322,16 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         if self.use_vllm:"""
             function = function.replace(replace_part, new_replacement)
 
-    # Important note: we disable TRL's importance sampling logic
+    #Important note: we disable TRL's importance sampling logic
     string_to_find = "if self.use_vllm and self.vllm_importance_sampling_correction:"
 
-    replacement_string = (
-        "if False and self.use_vllm and self.vllm_importance_sampling_correction:"
-    )
+    replacement_string = "if False and self.use_vllm and self.vllm_importance_sampling_correction:"
 
     function = function.replace(string_to_find, replacement_string)
 
     string_to_find = """        if "image_sizes" in prompt_inputs:
             output["image_sizes"] = prompt_inputs["image_sizes"]"""
-
+   
     replacement_string = """        if "image_sizes" in prompt_inputs:
             output["image_sizes"] = prompt_inputs["image_sizes"]
         if max_left_pad is not None:
@@ -500,78 +499,50 @@ RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__get_per_token_logps)
 
 
 def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
-    if function_name != "_get_per_token_logps_and_entropies":
-        return function
+    if function_name != "_get_per_token_logps_and_entropies": return function
 
     # Just copy over from _get_per_token_logps replacement function above. For now this returns None anyway
-    def _get_per_token_logps_and_entropies(
-        self,
-        model,
-        input_ids,
-        attention_mask,
-        logits_to_keep,
-        batch_size = None,
-        compute_entropy = False,
-        compute_efficient = False,
-        *args,
-        **kwargs,
-    ):
+    def _get_per_token_logps_and_entropies(self, model, input_ids, attention_mask, logits_to_keep, batch_size = None,
+                                           compute_entropy = False, compute_efficient = False, *args, **kwargs):
         # if True: # os.environ.get('UNSLOTH_USE_NEW_MODEL', '0') == '0':
         #     return None, None  # logps, entropies Unsloth efficient GRPO
         if compute_efficient:
             return None, None
         else:
-            if not hasattr(self, "_autocast_dtype"):
-                self._autocast_dtype = (
-                    torch.float16
-                    if os.environ.get("ACCELERATE_MIXED_PRECISION", "fp16") == "fp16"
-                    else torch.bfloat16
-                )
-                if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
-                    self._autocast_dtype = torch.float16
+            if not hasattr(self, '_autocast_dtype'):
+                self._autocast_dtype = torch.float16 if os.environ.get('ACCELERATE_MIXED_PRECISION', 'fp16') == 'fp16' else torch.bfloat16
+                if os.environ.get('UNSLOTH_FORCE_FLOAT32', '0') == '1': self._autocast_dtype = torch.float16
 
-            pixel_values, image_grid_thw = (
-                kwargs.get("pixel_values", None),
-                kwargs.get("image_grid_thw", None),
-            )
-            pixel_attention_mask, image_sizes = (
-                kwargs.get("pixel_attention_mask", None),
-                kwargs.get("image_sizes", None),
-            )
+            pixel_values, image_grid_thw = kwargs.get("pixel_values", None), kwargs.get("image_grid_thw", None)
+            pixel_attention_mask, image_sizes = kwargs.get('pixel_attention_mask',None), kwargs.get('image_sizes',None)
 
-            unwrapped_model = self.accelerator.unwrap_model(
-                model, keep_fp32_wrapper = False
-            )
+            unwrapped_model = self.accelerator.unwrap_model(model, keep_fp32_wrapper=False)
 
             B = input_ids.shape[0]
             all_logprobs_list = []
 
-            if pixel_values is None:
-                left_pad_tokens_per_prompt = calculate_pad_tokens_in_prompt(
-                    input_ids, logits_to_keep, self.processing_class.pad_token_id
-                )
+            if pixel_values is None:          
+                left_pad_tokens_per_prompt = calculate_pad_tokens_in_prompt(input_ids, logits_to_keep, self.processing_class.pad_token_id)
                 max_left_pad = max(left_pad_tokens_per_prompt).item()
-                input_ids = left_pack_padding(
-                    input_ids, self.processing_class.pad_token_id
-                )
+                input_ids = left_pack_padding(input_ids, self.processing_class.pad_token_id)
                 attention_mask = input_ids != self.processing_class.pad_token_id
                 attention_mask = attention_mask.to(attention_mask.dtype)
             else:
                 max_left_pad = 0
 
-            input_ids_chunks = torch.chunk(input_ids, chunks = B, dim = 0)
-            attention_mask_chunks = torch.chunk(attention_mask, chunks = B, dim = 0)
+            input_ids_chunks = torch.chunk(input_ids, chunks=B, dim=0)
+            attention_mask_chunks = torch.chunk(attention_mask, chunks=B, dim=0)
 
             def chunk_optional(tensor, chunks):
                 if tensor is None:
                     return [None] * chunks
-                return torch.chunk(tensor, chunks = chunks, dim = 0)
+                return torch.chunk(tensor, chunks=chunks, dim=0)
 
             pixel_values_chunks = [None] * B
             image_grid_thw_chunks = [None] * B
             pixel_attention_mask_chunks = [None] * B
 
-            # This is the chunkng logit from trl 0.23.0
+            #This is the chunkng logit from trl 0.23.0
             if image_grid_thw is not None and pixel_values is not None:
                 if image_grid_thw.shape[0] != B:
                     raise ValueError(
@@ -579,44 +550,33 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         f"to be equal to batch size B ({B})."
                     )
 
-                rows_per_sample = image_grid_thw.prod(dim = -1)
+                rows_per_sample = image_grid_thw.prod(dim=-1) 
                 rows_per_sample_list = rows_per_sample.cpu().tolist()
 
-                pixel_values_chunks = list(
-                    torch.split(pixel_values, rows_per_sample_list, dim = 0)
-                )
+                pixel_values_chunks = list(torch.split(pixel_values, rows_per_sample_list, dim=0))
                 if pixel_attention_mask is not None:
-                    pixel_attention_mask_chunks = list(
-                        torch.split(pixel_attention_mask, rows_per_sample_list, dim = 0)
-                    )
+                    pixel_attention_mask_chunks = list(torch.split(pixel_attention_mask, rows_per_sample_list, dim=0))
 
-                image_grid_thw_chunks = list(
-                    torch.chunk(image_grid_thw, chunks = B, dim = 0)
-                )
+                image_grid_thw_chunks = list(torch.chunk(image_grid_thw, chunks=B, dim=0))
 
             elif pixel_values is not None:
-                pixel_values_chunks = list(torch.chunk(pixel_values, chunks = B, dim = 0))
+                pixel_values_chunks = list(torch.chunk(pixel_values, chunks=B, dim=0))
                 if pixel_attention_mask is not None:
-                    pixel_attention_mask_chunks = list(
-                        torch.chunk(pixel_attention_mask, chunks = B, dim = 0)
-                    )
-
+                    pixel_attention_mask_chunks = list(torch.chunk(pixel_attention_mask, chunks=B, dim=0))
+            
             if image_sizes is not None and not isinstance(image_sizes, torch.Tensor):
-                image_sizes_chunks = [[size] for size in image_sizes]
+                image_sizes_chunks = [[size] for size in image_sizes] 
             else:
-                image_sizes_chunks = chunk_optional(image_sizes, B)
+                image_sizes_chunks = chunk_optional(image_sizes, B) 
 
             lm_head = self.model.get_output_embeddings().weight
             temperature = self.temperature
             logit_softcapping = getattr(model.config, "final_logit_softcapping", 0)
-            if logit_softcapping is None:
-                logit_softcapping = 0
+            if logit_softcapping is None: logit_softcapping = 0
             logit_scale_multiply = getattr(model.config, "logit_scale", 0)
-            if logit_scale_multiply is None:
-                logit_scale_multiply = 0
+            if logit_scale_multiply is None: logit_scale_multiply = 0
             logit_scale_divide = getattr(model.config, "logits_scaling", 0)
-            if logit_scale_divide is None:
-                logit_scale_divide = 0
+            if logit_scale_divide is None: logit_scale_divide = 0
 
             zipped_inputs = zip(
                 input_ids_chunks,
@@ -624,70 +584,65 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 pixel_values_chunks,
                 image_grid_thw_chunks,
                 pixel_attention_mask_chunks,
-                image_sizes_chunks,
+                image_sizes_chunks
             )
             os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
 
-            with torch.amp.autocast(device_type = "cuda", dtype = self._autocast_dtype):
+            with torch.amp.autocast(device_type = 'cuda', dtype = self._autocast_dtype):
                 with torch.no_grad():
                     for (
-                        input_ids_chunk,
-                        attention_mask_chunk,
-                        pixel_values_chunk,
-                        image_grid_thw_chunk,
-                        pixel_attention_mask_chunk,
-                        image_sizes_chunk,
-                    ) in zipped_inputs:
-                        if pixel_values is None:
-                            logits_chunk = unwrapped_model(
-                                input_ids = input_ids_chunk,
-                                attention_mask = attention_mask_chunk,
-                                pixel_values = pixel_values_chunk,
-                                image_grid_thw = image_grid_thw_chunk,
-                                pixel_attention_mask = pixel_attention_mask_chunk,
-                                image_sizes = image_sizes_chunk,
-                            ).logits
+                            input_ids_chunk,
+                            attention_mask_chunk,
+                            pixel_values_chunk,
+                            image_grid_thw_chunk,
+                            pixel_attention_mask_chunk,
+                            image_sizes_chunk
+                        ) in zipped_inputs:
 
-                            completion_input_ids_chunk = input_ids_chunk[
-                                :, -(logits_to_keep + max_left_pad) :
-                            ]
-                            logits_chunk = logits_chunk[
-                                :, -(logits_to_keep + max_left_pad + 1) :, :
-                            ]
-                            logits_chunk = logits_chunk[:, :-1, :]
-                        else:
-                            logits_chunk = unwrapped_model(
-                                input_ids = input_ids_chunk,
-                                attention_mask = attention_mask_chunk,
-                                pixel_values = pixel_values_chunk,
-                                image_grid_thw = image_grid_thw_chunk,
-                                pixel_attention_mask = pixel_attention_mask_chunk,
-                                image_sizes = image_sizes_chunk,
-                                logits_to_keep = logits_to_keep + 1,
-                            ).logits
+                            if pixel_values is None:
+                                logits_chunk = unwrapped_model(
+                                    input_ids = input_ids_chunk,
+                                    attention_mask = attention_mask_chunk,
+                                    pixel_values = pixel_values_chunk,
+                                    image_grid_thw = image_grid_thw_chunk,
+                                    pixel_attention_mask = pixel_attention_mask_chunk,
+                                    image_sizes = image_sizes_chunk,
+                                ).logits
 
-                            logits_chunk = logits_chunk[:, :-1, :]
-                            completion_input_ids_chunk = input_ids_chunk[
-                                :, -logits_to_keep:
-                            ]
-                        # breakpoint()
-                        logprobs_chunk = chunked_hidden_states_selective_log_softmax(
-                            logits_chunk,
-                            lm_head,
-                            completion_input_ids_chunk,
-                            chunks = 8,
-                            logit_scale_multiply = logit_scale_multiply,
-                            logit_scale_divide = logit_scale_divide,
-                            logit_softcapping = logit_softcapping,
-                            temperature = temperature,
-                        )
+                                completion_input_ids_chunk = input_ids_chunk[:, -(logits_to_keep+max_left_pad):]
+                                logits_chunk = logits_chunk[:, -(logits_to_keep + max_left_pad+1): , :]
+                                logits_chunk = logits_chunk[:, :-1, : ] 
+                            else:
+                                logits_chunk = unwrapped_model(
+                                    input_ids = input_ids_chunk,
+                                    attention_mask = attention_mask_chunk,
+                                    pixel_values = pixel_values_chunk,
+                                    image_grid_thw = image_grid_thw_chunk,
+                                    pixel_attention_mask = pixel_attention_mask_chunk,
+                                    image_sizes = image_sizes_chunk,
+                                    logits_to_keep = logits_to_keep + 1,
+                                ).logits
 
-                        all_logprobs_list.append(logprobs_chunk)
-                    logprobs = torch.cat(all_logprobs_list, dim = 0)
+                                logits_chunk = logits_chunk[:, :-1, : ] 
+                                completion_input_ids_chunk = input_ids_chunk[:, -logits_to_keep:]
+                            #breakpoint()
+                            logprobs_chunk = chunked_hidden_states_selective_log_softmax(
+                                logits_chunk,
+                                lm_head, 
+                                completion_input_ids_chunk, 
+                                chunks = 8,
+                                logit_scale_multiply = logit_scale_multiply, 
+                                logit_scale_divide = logit_scale_divide,
+                                logit_softcapping = logit_softcapping, 
+                                temperature = temperature
+                            )
+                            
+                            all_logprobs_list.append(logprobs_chunk)
+                    logprobs = torch.cat(all_logprobs_list, dim=0)
                     entropies = None
-
+                    
             os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
-
+            
             return logprobs.detach(), entropies  # logps, entropies
             # input_ids = input_ids[:, -logits_to_keep:]
             # For transformers<=4.48, logits_to_keep argument isn't supported, so here we drop logits ourselves.
@@ -797,14 +752,14 @@ def grpo_trainer_compute_loss(function_name, function):
         #         ref_per_token_logps = per_token_logps = get_logps_func(model, input_ids, attention_mask, logits_to_keep)
         # else:
         #     ref_per_token_logps = None
-        ref_hidden_states = inputs.get("ref_per_token_logps", None)
+        ref_logps = inputs.get("ref_per_token_logps", None)
         # per_token_kl = torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1
         # x - x.detach() allows for preserving gradients from x
         advantages = inputs["advantages"]
         # per_token_loss = torch.exp(per_token_logps - per_token_logps.detach()) * advantages.unsqueeze(1)
         # per_token_loss = -(per_token_loss - self.beta * per_token_kl)
         # loss = ((per_token_loss * completion_mask).sum(dim=1) / completion_mask.sum(dim=1)).mean()
-        old_hidden_states = inputs.get("old_per_token_logps", None)
+        old_logps = inputs.get("old_per_token_logps", None)
 
         input_ids = input_ids[:, -logits_to_keep:]
 
@@ -819,7 +774,7 @@ def grpo_trainer_compute_loss(function_name, function):
         if logit_scale_divide is None:
             logit_scale_divide = 0
 
-        max_left_pad = inputs.get("max_left_pad", 0)
+        max_left_pad =  inputs.get("max_left_pad", 0)
         if per_token_logps is not None:
             if ref_hidden_states is not None:
                 ref_hidden_states = ref_hidden_states[
@@ -872,8 +827,8 @@ def grpo_trainer_compute_loss(function_name, function):
                         logits_to_keep = logits_to_keep,
                         completion_mask = completion_mask,
                         advantages = advantages,
-                        old_hidden_states = old_hidden_states,
-                        ref_hidden_states = ref_hidden_states,
+                        old_logps = old_logps,
+                        ref_logps = ref_logps,
                         n_chunks = self.args.unsloth_num_chunks,
                         loss_type = self.args.loss_type,
                         importance_sampling_level = self.importance_sampling_level,
@@ -919,11 +874,7 @@ def grpo_trainer_compute_loss(function_name, function):
             self._metrics["completion_length"].append(completion_length.item())
             self._metrics["kl"].append(mean_kl.item())
 
-        if (
-            self.use_vllm
-            and delta is not None
-            and getattr(self, "vllm_importance_sampling_correction", False)
-        ):
+        if self.use_vllm and delta is not None and getattr(self, "vllm_importance_sampling_correction", False):
             mean_delta = (
                 torch.mean(delta)
                 if delta.numel() > 0
