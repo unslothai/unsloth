@@ -164,7 +164,11 @@ def _get_torchao_fp8_config(fp8_mode: str):
     Return a `torchao.quantization.Float8DynamicActivationFloat8WeightConfig`
     to be used for `load_in_fp8=True`.
     """
-    from torchao.quantization import Float8DynamicActivationFloat8WeightConfig, PerBlock, PerRow
+    from torchao.quantization import (
+        Float8DynamicActivationFloat8WeightConfig,
+        PerBlock,
+        PerRow,
+    )
 
     if fp8_mode == "row":
         granularity = PerRow()
@@ -251,9 +255,9 @@ def _get_fp8_mode_and_check_settings(
     """
     assert load_in_fp8 is not False
     if load_in_fp8 is True:
-       fp8_mode = "row"  # default
+        fp8_mode = "row"  # default
     else:
-       fp8_mode = load_in_fp8
+        fp8_mode = load_in_fp8
 
     # Check user settings
     if fp8_mode not in ["row", "block"]:
@@ -290,13 +294,16 @@ def _get_fp8_mode_and_check_settings(
     # Check if torchao has this PR: https://github.com/pytorch/ao/pull/3158,
     # which will be released in 0.15.0.
     if importlib.util.find_spec("torchao") is None:
-        raise ValueError("Unsloth: Please install torchao for on the fly float8 to work!")
+        raise ValueError(
+            "Unsloth: Please install torchao for on the fly float8 to work!"
+        )
     import torchao
 
-    error_message = \
-        "Unsloth: `load_in_fp8` requires torchao 0.15.0+ (or nightly).\n"\
-        f"You have torchao version={torchao.__version__}\n"\
+    error_message = (
+        "Unsloth: `load_in_fp8` requires torchao 0.15.0+ (or nightly).\n"
+        f"You have torchao version={torchao.__version__}\n"
         "Use `pip install --upgrade --force-reinstall torchao`"
+    )
     if Version(torchao.__version__) < Version("0.15.0"):
         raise ValueError(error_message)
 
