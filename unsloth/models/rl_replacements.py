@@ -335,12 +335,12 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
     replacement_string = """        if "image_sizes" in prompt_inputs:
             output["image_sizes"] = prompt_inputs["image_sizes"]
         if max_left_pad is not None:
-            output["max_left_pad"] = torch.tensor(sampling_per_token_logps.shape[0] * [max_left_pad]).unsqueeze(-1)
-        if self.use_vllm and self.vllm_importance_sampling_correction:
-            try:
+            output["max_left_pad"] = torch.tensor(sampling_per_token_logps.shape[0] * [max_left_pad]).unsqueeze(-1)        
+        try:
+            if self.use_vllm and self.vllm_importance_sampling_correction:
                 output["sampling_per_token_logps"] = sampling_per_token_logps
-            except NameError:
-                output["sampling_per_token_logps"] = None"""
+        except NameError:
+            output["sampling_per_token_logps"] = None"""
     function = function.replace(string_to_find, replacement_string)
 
     if "wake_up()" not in function:
