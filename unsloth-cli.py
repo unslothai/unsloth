@@ -129,8 +129,8 @@ def run(args):
         max_length = args.max_seq_length,
         dataset_num_proc = 2,
         ddp_find_unused_parameters = False if distributed else None,
+        packing = args.packing,
     )
-    training_args.sample_packing = args.sample_packing
 
     # Initialize trainer
     trainer = SFTTrainer(
@@ -333,9 +333,9 @@ if __name__ == "__main__":
         help = "Seed for reproducibility, default is 3407.",
     )
     training_group.add_argument(
-        "--sample_packing",
+        "--packing",
         action = "store_true",
-        help = "Flag to enable padding-free sample packing via TRL's bin packer.",
+        help = "Enable padding-free sample packing via TRL's bin packer.",
     )
 
     report_group = parser.add_argument_group("📊 Report Options")

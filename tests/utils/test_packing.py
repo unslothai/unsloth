@@ -21,7 +21,6 @@ from unsloth.utils.packing import (
     mask_packed_sequence_boundaries,
 )
 
-from collections.abc import Iterable
 from contextlib import ExitStack
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -76,8 +75,8 @@ def _build_packed_training_setup(tmp_path, device):
         bf16 = device.type == "cuda" and torch.cuda.is_bf16_supported(),
         dataset_num_proc = 1,
         output_dir = str(tmp_path),
+        packing = True,
     )
-    configure_sample_packing(training_args)
 
     trainer = SFTTrainer(
         model = model,
