@@ -32,7 +32,7 @@ from transformers import AutoConfig
 from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
 from .loader_utils import (
-    _check_load_in_fp8_settings,
+    _get_fp8_mode_and_check_settings,
     _offline_quantize_to_fp8,
     _tag_model_with_fp8_torchao_config,
     get_model_name,
@@ -220,7 +220,8 @@ class FastLanguageModel(FastLlamaModel):
             load_in_4bit = False
 
         if load_in_fp8:
-            _check_load_in_fp8_settings(
+            fp8_mode = _get_fp8_mode_and_check_settings(
+                load_in_fp8,
                 fast_inference,
                 full_finetuning,
                 load_in_4bit,
@@ -228,11 +229,13 @@ class FastLanguageModel(FastLlamaModel):
                 load_in_16bit,
                 use_exact_model_name,
             )
+        else:
+            fp8_mode = None
 
         old_model_name = model_name
         if not use_exact_model_name:
             if load_in_fp8:
-                model_name = _offline_quantize_to_fp8(model_name)
+                model_name = _offline_quantize_to_fp8(model_name, fp8_mode)
             else:
                 model_name = get_model_name(model_name, load_in_4bit)
 
@@ -578,7 +581,7 @@ class FastLanguageModel(FastLlamaModel):
             model.config.update({"quantization_config": quantization_config})
 
         if load_in_fp8:
-            _tag_model_with_fp8_torchao_config(model)
+            _tag_model_with_fp8_torchao_config(model, fp8_mode)
 
         if is_peft:
             # From https://github.com/huggingface/peft/issues/184
@@ -722,7 +725,8 @@ class FastModel(FastBaseModel):
             load_in_4bit = False
 
         if load_in_fp8:
-            _check_load_in_fp8_settings(
+            fp8_mode = _get_fp8_mode_and_check_settings(
+                load_in_fp8,
                 fast_inference,
                 full_finetuning,
                 load_in_4bit,
@@ -730,11 +734,13 @@ class FastModel(FastBaseModel):
                 load_in_16bit,
                 use_exact_model_name,
             )
+        else:
+            fp8_mode = None
 
         old_model_name = model_name
         if not use_exact_model_name:
             if load_in_fp8:
-                model_name = _offline_quantize_to_fp8(model_name)
+                model_name = _offline_quantize_to_fp8(model_name, fp8_mode)
             else:
                 model_name = get_model_name(model_name, load_in_4bit)
 
@@ -1172,7 +1178,7 @@ class FastModel(FastBaseModel):
             model.config.update({"quantization_config": quantization_config})
 
         if load_in_fp8:
-            _tag_model_with_fp8_torchao_config(model)
+            _tag_model_with_fp8_torchao_config(model, fp8_mode)
 
         if is_peft:
             # From https://github.com/huggingface/peft/issues/184
