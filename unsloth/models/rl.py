@@ -208,7 +208,7 @@ def PatchRL(FastLanguageModel):
                 continue
     exec(f"Trainer.prediction_step=unsloth_prediction_step")
 
-
+grpo_selective_log_softmax = RL_REPLACEMENTS["grpo_selective_log_softmax"]
 selective_log_softmax = RL_REPLACEMENTS["selective_log_softmax"]
 calculate_pad_tokens_in_prompt = RL_REPLACEMENTS["calculate_pad_tokens_in_prompt"]
 create_completion_attention_mask = RL_REPLACEMENTS["create_completion_attention_mask"]
@@ -253,6 +253,7 @@ torch_compile_options = {{
     "triton.cudagraphs" : False,
 }}
 
+{grpo_selective_log_softmax_code}
 {selective_log_softmax_code}
 {calculate_pad_tokens_in_prompt_code}
 {create_completion_attention_mask_code}
@@ -909,6 +910,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
 
     # Selective log softmax and other functions
     selective_log_softmax_code = inspect.getsource(selective_log_softmax)
+    grpo_selective_log_softmax_code = inspect.getsource(grpo_selective_log_softmax)
     calculate_pad_tokens_in_prompt_code = inspect.getsource(
         calculate_pad_tokens_in_prompt
     )
@@ -938,6 +940,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         max_seq_length_call = max_seq_length_call,
         max_seq_length_post = max_seq_length_post,
         selective_log_softmax_code = selective_log_softmax_code,
+        grpo_selective_log_softmax_code = grpo_selective_log_softmax_code,
         calculate_pad_tokens_in_prompt_code = calculate_pad_tokens_in_prompt_code,
         create_completion_attention_mask_code = create_completion_attention_mask_code,
         left_pack_padding_code = left_pack_padding_code,
