@@ -51,7 +51,7 @@ _AUTO_PACKING_ENV_DISABLED = os.environ.get(
 def _should_auto_pack(config) -> bool:
     if config is None or _AUTO_PACKING_ENV_DISABLED:
         return False
-    if not getattr(config, "sample_packing", False):
+    if not getattr(config, "packing", False):
         return False
     return not getattr(config, "_unsloth_disable_auto_packing", False)
 
