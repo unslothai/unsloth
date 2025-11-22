@@ -352,12 +352,7 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
     def fast_dequantize(W, quant_state = None, out = None, use_global_buffer = False):
         # TODO: After adding XPU BNB support, check this function
         if isinstance(W, Float8Tensor):
-            # TorchAO Float8Tensor
-            # In the backward pass, rowwise scaled becomes colwise scaled after we
-            # transpose the weight tensor. Use this case to detect backward
-            assert W.ndim == 2
-            if W.block_size[0] == W.shape[0] and W.block_size[1] == 1:
-                return W.dequantize()
+            return W.dequantize()
         if quant_state is None:
             return W
         if W.dtype == torch.float8_e4m3fn:
@@ -465,12 +460,7 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
     @torch.inference_mode
     def fast_dequantize(W, quant_state = None, out = None, use_global_buffer = False):
         if isinstance(W, Float8Tensor):
-            # TorchAO Float8Tensor
-            # In the backward pass, rowwise scaled becomes colwise scaled after we
-            # transpose the weight tensor. Use this case to detect backward
-            assert W.ndim == 2
-            if W.block_size[0] == W.shape[0] and W.block_size[1] == 1:
-                return W.dequantize()
+            return W.dequantize()
         if quant_state is None:
             return W
         if W.dtype == torch.float8_e4m3fn:
@@ -582,12 +572,7 @@ else:
     @torch.inference_mode
     def fast_dequantize(W, quant_state = None, out = None, use_global_buffer = False):
         if isinstance(W, Float8Tensor):
-            # TorchAO Float8Tensor
-            # In the backward pass, rowwise scaled becomes colwise scaled after we
-            # transpose the weight tensor. Use this case to detect backward
-            assert W.ndim == 2
-            if W.block_size[0] == W.shape[0] and W.block_size[1] == 1:
-                return W.dequantize()
+            return W.dequantize()
         if quant_state is None:
             return W
         if W.dtype == torch.float8_e4m3fn:
@@ -1021,7 +1006,17 @@ def matmul_lora(X, W, W_quant, A, B, s, out = None):
     else:
         reshape = False
 
-    if W.dtype == torch.float8_e4m3fn:
+    if isinstance(W, Float8Tensor):
+        assert W.ndim == 2
+        if W.block_size[0] == W.shape[0] and W.block_size[1] == 1:
+            # In the backward pass, rowwise scaled becomes colwise scaled after we
+            # transpose the weight tensor. Use this case to detect backward.
+            # TODO: would be simpler if we simply don't call `matmul_lora` in backward
+            W = W.dequantize()
+        else:
+            W = W.contiguous()
+        out = torch_matmul(X, W.t(), out = out)
+    elif W.dtype == torch.float8_e4m3fn:
         out = fp8_linear(X, W, W_quant)
     else:
         W = fast_dequantize(W, W_quant, use_global_buffer = True)
