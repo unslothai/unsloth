@@ -780,6 +780,7 @@ class FastBaseModel:
                 token = token,
                 language = whisper_language,
                 task = whisper_task,
+                trust_remote_code = trust_remote_code,
             )
         else:
             try:
@@ -787,12 +788,14 @@ class FastBaseModel:
                     tokenizer_name,
                     padding_side = "left",
                     token = token,
+                    trust_remote_code = trust_remote_code,
                 )
             except:
                 tokenizer = get_auto_processor(
                     tokenizer_name,
                     padding_side = "left",
                     token = token,
+                    trust_remote_code = trust_remote_code,
                 )
         if hasattr(tokenizer, "tokenizer"):
             __tokenizer = tokenizer.tokenizer
