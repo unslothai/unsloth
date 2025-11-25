@@ -566,6 +566,7 @@ try:
             logger.info(f"Using fbgemm_gpu block quantized FP8 matmul")
             fp8_block_quant_linear = fp8_fbgemm_block_linear
         else:
+            os.environ["UNSLOTH_HAS_FBGEMM"] = "0"
 except:
     pass
 
