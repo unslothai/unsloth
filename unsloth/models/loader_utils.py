@@ -242,6 +242,7 @@ def _offline_quantize_to_fp8(model_name: str, fp8_mode: str) -> str:
             TorchAoConfig,
             AutoConfig,
         )
+
         qconfig = _get_torchao_fp8_config(fp8_mode)
         qconfig = TorchAoConfig(qconfig)
         config = AutoConfig.from_pretrained(model_name)
@@ -334,11 +335,15 @@ def _get_fp8_mode_and_check_settings(
         and torch.version.cuda
         and torch.cuda.get_device_capability() >= (9, 0)
     ):
-        raise ValueError("Unsloth: On the fly `load_in_fp8` requires H100 GPUs or after. Try `unsloth/Qwen3-8B` instead.")
+        raise ValueError(
+            "Unsloth: On the fly `load_in_fp8` requires H100 GPUs or after. Try `unsloth/Qwen3-8B` instead."
+        )
 
     # Check if torch >= 2.9.0
     if Version(torch.__version__) < Version("2.9.0"):
-        raise ValueError("Unsloth: On the fly `load_in_fp8` requires torch 2.9.0+. Try `unsloth/Qwen3-8B` instead.")
+        raise ValueError(
+            "Unsloth: On the fly `load_in_fp8` requires torch 2.9.0+. Try `unsloth/Qwen3-8B` instead."
+        )
 
     # Check if torchao has this PR: https://github.com/pytorch/ao/pull/3158,
     # which will be released in 0.15.0.
