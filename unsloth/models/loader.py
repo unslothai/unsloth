@@ -223,7 +223,9 @@ class FastLanguageModel(FastLlamaModel):
         old_model_name = model_name
         fp8_mode = None
         if not use_exact_model_name:
-            new_model_name = get_model_name(model_name, load_in_4bit = load_in_4bit, load_in_fp8 = load_in_fp8)
+            new_model_name = get_model_name(
+                model_name, load_in_4bit = load_in_4bit, load_in_fp8 = load_in_fp8
+            )
             if new_model_name is None and load_in_fp8 != False:
                 fp8_mode = _get_fp8_mode_and_check_settings(
                     load_in_fp8,
@@ -378,7 +380,7 @@ class FastLanguageModel(FastLlamaModel):
             if model_name.lower().endswith("-bf16"):
                 load_in_4bit = False
                 load_in_8bit = False
-                load_in_fp8  = False
+                load_in_fp8 = False
                 load_in_16bit = True
 
             model_config = AutoConfig.from_pretrained(
@@ -730,7 +732,9 @@ class FastModel(FastBaseModel):
         old_model_name = model_name
         fp8_mode = None
         if not use_exact_model_name:
-            new_model_name = get_model_name(model_name, load_in_4bit = load_in_4bit, load_in_fp8 = load_in_fp8)
+            new_model_name = get_model_name(
+                model_name, load_in_4bit = load_in_4bit, load_in_fp8 = load_in_fp8
+            )
             if new_model_name is None and load_in_fp8 != False:
                 fp8_mode = _get_fp8_mode_and_check_settings(
                     load_in_fp8,
@@ -757,7 +761,7 @@ class FastModel(FastBaseModel):
         if model_name.lower().endswith("-bf16"):
             load_in_4bit = False
             load_in_8bit = False
-            load_in_fp8  = False
+            load_in_fp8 = False
             load_in_16bit = True
 
         # Check modelscope
@@ -1018,7 +1022,7 @@ class FastModel(FastBaseModel):
             if model_name.lower().endswith("-bf16"):
                 load_in_4bit = False
                 load_in_8bit = False
-                load_in_fp8  = False
+                load_in_fp8 = False
                 load_in_16bit = True
 
             model_config = AutoConfig.from_pretrained(
