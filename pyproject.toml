@@ -60,7 +60,7 @@ huggingfacenotorch = [
 ]
 huggingface = [
     "unsloth[huggingfacenotorch]",
-    "unsloth_zoo>=2025.11.4",
+    "unsloth_zoo>=2025.11.5",
     "torchvision",
     "unsloth[triton]",
 ]
@@ -273,10 +273,22 @@ cu128onlytorch280 = [
 cu130onlytorch280 = [
 ]
 cu126onlytorch290 = [
+    "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.33.post1-cp39-abi3-manylinux_2_28_x86_64.whl ; ('linux' in sys_platform)",
+    "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.33.post1-cp39-abi3-win_amd64.whl ; (sys_platform == 'win32')",
 ]
 cu128onlytorch290 = [
+    "xformers @ https://download.pytorch.org/whl/cu128/xformers-0.0.33.post1-cp39-abi3-manylinux_2_28_x86_64.whl ; ('linux' in sys_platform)",
+    "xformers @ https://download.pytorch.org/whl/cu128/xformers-0.0.33.post1-cp39-abi3-win_amd64.whl ; (sys_platform == 'win32')",
 ]
 cu130onlytorch290 = [
+    "xformers @ https://download.pytorch.org/whl/cu130/xformers-0.0.33.post1-cp39-abi3-manylinux_2_28_x86_64.whl ; ('linux' in sys_platform)",
+    "xformers @ https://download.pytorch.org/whl/cu130/xformers-0.0.33.post1-cp39-abi3-win_amd64.whl ; (sys_platform == 'win32')",
+]
+cu126onlytorch291 = [
+]
+cu128onlytorch291 = [
+]
+cu130onlytorch291 = [
 ]
 cu118 = [
     "unsloth[huggingface]",
@@ -453,6 +465,21 @@ cu130-torch290 = [
     "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
     "unsloth[cu130onlytorch290]",
 ]
+cu126-torch291 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+    "unsloth[cu126onlytorch291]",
+]
+cu128-torch291 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+    "unsloth[cu128onlytorch291]",
+]
+cu130-torch291 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+    "unsloth[cu130onlytorch291]",
+]
 kaggle = [
     "unsloth[huggingface]",
 ]
@@ -490,7 +517,7 @@ colab-ampere-torch220 = [
     "flash-attn>=2.6.3 ; ('linux' in sys_platform)",
 ]
 colab-new = [
-    "unsloth_zoo>=2025.11.4",
+    "unsloth_zoo>=2025.11.5",
     "packaging",
     "tyro",
     "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,<=4.57.2",
@@ -720,6 +747,21 @@ cu130-ampere-torch290 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
     "unsloth[cu130onlytorch290]",
+]
+cu126-ampere-torch291 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+    "unsloth[cu126onlytorch291]",
+]
+cu128-ampere-torch291 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+    "unsloth[cu128onlytorch291]",
+]
+cu130-ampere-torch291 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+    "unsloth[cu130onlytorch291]",
 ]
 flashattentiontorch260abiFALSEcu12x = [
     "flash-attn @ https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.6cxx11abiFALSE-cp39-cp39-linux_x86_64.whl ; ('linux' in sys_platform) and python_version == '3.9'",

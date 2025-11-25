@@ -618,16 +618,24 @@ class FastBaseModel:
                 else:
                     quantizer = AUTO_QUANTIZATION_CONFIG_MAPPING[quant_method]
                 quantizer_kwargs = {}
-                # We cannot dequantize since gpt-oss-20b MXFP4 will now be gpt-oss-20b-BF16
-                if (
-                    load_in_16bit
-                    and "dequantize" in inspect.signature(quantizer).parameters
-                ):
-                    quantizer_kwargs["dequantize"] = True
-                quantization_config = quantizer.from_dict(
-                    quantization_config, **quantizer_kwargs
-                )
-                kwargs["quantization_config"] = quantization_config
+                if quant_method == "compressed-tensors":
+                    # Ignore these
+                    pass
+                else:
+                    # We cannot dequantize since gpt-oss-20b MXFP4 will now be gpt-oss-20b-BF16
+                    if (
+                        load_in_16bit
+                        and "dequantize" in inspect.signature(quantizer).parameters
+                    ):
+                        quantizer_kwargs["dequantize"] = True
+                    try:
+                        # Sometimes this fails so we wrap it in a try except
+                        quantization_config = quantizer.from_dict(
+                            quantization_config, **quantizer_kwargs
+                        )
+                    except:
+                        pass
+                    kwargs["quantization_config"] = quantization_config
 
         # Check if using forced float32 - we load it in bfloat16, then cast to float16!
         torch_dtype = dtype
