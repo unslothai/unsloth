@@ -177,6 +177,7 @@ if DEVICE_TYPE == "cuda":
         print(
             "Unsloth: `bitsandbytes` is not installed - 4bit QLoRA unallowed, but 16bit and full finetuning works!"
         )
+        bnb = None
     try:
         cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
         libcuda_dirs()
@@ -209,7 +210,8 @@ if DEVICE_TYPE == "cuda":
                 del find_number, latest_cuda
             del possible_cudas, find_cuda
 
-        importlib.reload(bnb)
+        if bnb is not None:
+            importlib.reload(bnb)
         importlib.reload(triton)
         try:
             libcuda_dirs = lambda: None
