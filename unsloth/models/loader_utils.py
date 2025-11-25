@@ -334,17 +334,17 @@ def _get_fp8_mode_and_check_settings(
         and torch.version.cuda
         and torch.cuda.get_device_capability() >= (9, 0)
     ):
-        raise ValueError("Unsloth: `load_in_fp8` requires H100 GPUs or after")
+        raise ValueError("Unsloth: On the fly `load_in_fp8` requires H100 GPUs or after. Try `unsloth/Qwen3-8B` instead.")
 
     # Check if torch >= 2.9.0
     if Version(torch.__version__) < Version("2.9.0"):
-        raise ValueError("Unsloth: `load_in_fp8` requires torch 2.9.0+")
+        raise ValueError("Unsloth: On the fly `load_in_fp8` requires torch 2.9.0+. Try `unsloth/Qwen3-8B` instead.")
 
     # Check if torchao has this PR: https://github.com/pytorch/ao/pull/3158,
     # which will be released in 0.15.0.
     if importlib.util.find_spec("torchao") is None:
         raise ValueError(
-            "Unsloth: Please install torchao for on the fly float8 to work!"
+            "Unsloth: Please install torchao for on the fly float8 to work! Try `unsloth/Qwen3-8B` instead."
         )
     import torchao
 
@@ -365,6 +365,6 @@ def _get_fp8_mode_and_check_settings(
 
         if Version(fbgemm_gpu.__version__) < Version("1.4.1"):
             raise ValueError(
-                "Unsloth: `load_in_fp8` is only compatible with fbgemm_gpu_genai 1.4.1+"
+                "Unsloth: On the fly `load_in_fp8` is only compatible with fbgemm_gpu_genai 1.4.1+. Try `unsloth/Qwen3-8B` instead."
             )
     return fp8_mode
