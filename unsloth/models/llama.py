@@ -1989,7 +1989,9 @@ def unsloth_fast_generate(
     **kwargs,
 ):
     # If the model starts out in training mode, restore training mode after generation
-    restore_training_mode = True if not hasattr(self, "training") and self.training else False
+    restore_training_mode = (
+        True if not hasattr(self, "training") and self.training else False
+    )
 
     FastLlamaModel.for_inference(self)
 
