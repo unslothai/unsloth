@@ -519,6 +519,35 @@ def fp8_fbgemm_block_linear(X, weight, weight_scale, bias = None):
     return FP8_fbgemm_block_linear.apply(X, weight, weight_scale, bias)
 
 
+def test_has_fbgemm():
+    # We must manually check if the faster FBGEMM works on the specific GPU
+    # For example RTX 5090 and RTX 4090 does not work
+    # [TODO] Investigate with TorchAO why FBGEMM fails on consumer GPUs
+    M, N, K = 128, 128, 128
+    xq = torch.ones(M, K, dtype = torch.float8_e4m3fn, device = "cuda")
+    wq = xq
+    M, K = xq.shape
+    N, _ = wq.shape
+    block_scale = torch.ones(M // 128, K // 128, dtype = torch.float32, device = "cuda")
+    has_fbgemm = False
+    try:
+        out = torch.ops.fbgemm.f8f8bf16_blockwise(
+            xq, wq, block_scale, block_scale
+        )
+        assert torch.unique(out).item() == 128
+        has_fbgemm = True
+        del out
+    except Exception as e:
+        e = str(e)
+        if "cutlass cannot initialize" in e.lower():
+            print(f"Unsloth: FBGEMM on the current GPU cannot load - will switch to slower Triton kernels")
+        else:
+            print(f"Unsloth: FBGEMM on the current GPU cannot load with error = {e} - will switch to slower Triton kernels")
+        has_fbgemm = False
+    del block_scale, xq
+    torch.cuda.empty_cache()
+    return has_fbgemm
+
 fp8_block_quant_linear = fp8_torch_block_quant_forward
 try:
     import fbgemm_gpu
@@ -527,8 +556,11 @@ try:
     # This is both fast and accurate hence preferred.
     # This makes it 15% faster than the torchao implementation.
     if Version(fbgemm_gpu.__version__) >= Version("1.4.0"):
-        logger.info(f"Using fbgemm_gpu block quantized FP8 matmul")
-        fp8_block_quant_linear = fp8_fbgemm_block_linear
+        # We must manually confirm if blockwise FBGEMM works!
+        # This check is a must for consumer grade GPUs which fail
+        if test_has_fbgemm():
+            logger.info(f"Using fbgemm_gpu block quantized FP8 matmul")
+            fp8_block_quant_linear = fp8_fbgemm_block_linear
 except:
     pass
 
