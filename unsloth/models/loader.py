@@ -221,6 +221,7 @@ class FastLanguageModel(FastLlamaModel):
 
         # Find FP8, BnB 4bit, other mapped names
         old_model_name = model_name
+        fp8_mode = None
         if not use_exact_model_name:
             new_model_name = get_model_name(model_name, load_in_4bit = load_in_4bit, load_in_fp8 = load_in_fp8)
             if new_model_name is None and load_in_fp8 != False:
@@ -727,6 +728,7 @@ class FastModel(FastBaseModel):
 
         # Find FP8, BnB 4bit, other mapped names
         old_model_name = model_name
+        fp8_mode = None
         if not use_exact_model_name:
             new_model_name = get_model_name(model_name, load_in_4bit = load_in_4bit, load_in_fp8 = load_in_fp8)
             if new_model_name is None and load_in_fp8 != False:
