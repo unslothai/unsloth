@@ -541,9 +541,9 @@ def test_has_fbgemm():
     except Exception as e:
         e = str(e)
         if "cutlass cannot initialize" in e.lower():
-            print(f"Unsloth: FBGEMM on the current GPU cannot load - will switch to slower Triton kernels")
+            print(f"Unsloth: FBGEMM on the current GPU cannot load - will switch to Triton kernels")
         else:
-            print(f"Unsloth: FBGEMM on the current GPU cannot load with error = {e} - will switch to slower Triton kernels")
+            print(f"Unsloth: FBGEMM on the current GPU cannot load with error = {e} - will switch to Triton kernels")
         has_fbgemm = False
     del block_scale, xq
     torch.cuda.empty_cache()
