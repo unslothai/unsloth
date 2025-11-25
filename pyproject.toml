@@ -176,10 +176,19 @@ cu128onlytorch280 = [
 cu130onlytorch280 = [
 ]
 cu126onlytorch290 = [
+    "xformers==0.0.33.post1 ; ('linux' in sys_platform or sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 ]
 cu128onlytorch290 = [
+    "xformers==0.0.33.post1 ; ('linux' in sys_platform or sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 ]
 cu130onlytorch290 = [
+    "xformers==0.0.33.post1 ; ('linux' in sys_platform or sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+]
+cu126onlytorch291 = [
+]
+cu128onlytorch291 = [
+]
+cu130onlytorch291 = [
 ]
 cu118 = [
     "unsloth[huggingface]",
@@ -355,6 +364,21 @@ cu130-torch290 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
     "unsloth[cu130onlytorch290]",
+]
+cu126-torch291 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+    "unsloth[cu126onlytorch291]",
+]
+cu128-torch291 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+    "unsloth[cu128onlytorch291]",
+]
+cu130-torch291 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+    "unsloth[cu130onlytorch291]",
 ]
 kaggle = [
     "unsloth[huggingface]",
@@ -618,6 +642,21 @@ cu130-ampere-torch290 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
     "unsloth[cu130onlytorch290]",
+]
+cu126-ampere-torch291 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+    "unsloth[cu126onlytorch291]",
+]
+cu128-ampere-torch291 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+    "unsloth[cu128onlytorch291]",
+]
+cu130-ampere-torch291 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+    "unsloth[cu130onlytorch291]",
 ]
 
 [project.urls]
