@@ -1204,42 +1204,42 @@ __INT_TO_FLOAT_MAPPER = \
         ),
     },
     "unsloth/granite-4.0-350m-base-unsloth-bnb-4bit" : (
-        "unsloth/granite-4.0-350m-base-unsloth-bnb-4bit",
+        "unsloth/granite-4.0-350m-base",
         "ibm-granite/granite-4.0-350m-base",
         "unsloth/granite-4.0-350m-base-bnb-4bit",
     ),
     "unsloth/granite-4.0-350m-unsloth-bnb-4bit" : (
-        "unsloth/granite-4.0-350m-unsloth-bnb-4bit",
+        "unsloth/granite-4.0-350m",
         "ibm-granite/granite-4.0-350m",
         "unsloth/granite-4.0-350m-bnb-4bit",
     ),
     "unsloth/granite-4.0-h-350m-base-unsloth-bnb-4bit" : (
-        "unsloth/granite-4.0-h-350m-base-unsloth-bnb-4bit",
+        "unsloth/granite-4.0-h-350m-base",
         "ibm-granite/granite-4.0-h-350m-base",
         "unsloth/granite-4.0-h-350m-base-bnb-4bit",
     ),
     "unsloth/granite-4.0-h-350m-unsloth-bnb-4bit" : (
-        "unsloth/granite-4.0-h-350m-unsloth-bnb-4bit",
+        "unsloth/granite-4.0-h-350m",
         "ibm-granite/granite-4.0-h-350m",
         "unsloth/granite-4.0-h-350m-bnb-4bit",
     ),
     "unsloth/granite-4.0-1b-base-unsloth-bnb-4bit" : (
-        "unsloth/granite-4.0-1b-base-unsloth-bnb-4bit",
+        "unsloth/granite-4.0-1b-base",
         "ibm-granite/granite-4.0-1b-base",
         "unsloth/granite-4.0-1b-base-bnb-4bit",
     ),
     "unsloth/granite-4.0-1b-unsloth-bnb-4bit" : (
-        "unsloth/granite-4.0-1b-unsloth-bnb-4bit",
+        "unsloth/granite-4.0-1b",
         "ibm-granite/granite-4.0-1b",
         "unsloth/granite-4.0-1b-bnb-4bit",
     ),
     "unsloth/granite-4.0-h-1b-base-unsloth-bnb-4bit" : (
-        "unsloth/granite-4.0-h-1b-base-unsloth-bnb-4bit",
+        "unsloth/granite-4.0-h-1b-base",
         "ibm-granite/granite-4.0-h-1b-base",
         "unsloth/granite-4.0-h-1b-base-bnb-4bit",
     ),
     "unsloth/granite-4.0-h-1b-unsloth-bnb-4bit" : (
-        "unsloth/granite-4.0-h-1b-unsloth-bnb-4bit",
+        "unsloth/granite-4.0-h-1b",
         "ibm-granite/granite-4.0-h-1b",
         "unsloth/granite-4.0-h-1b-bnb-4bit",
     ),
@@ -1263,6 +1263,7 @@ for key, values in __INT_TO_FLOAT_MAPPER.items():
     block, row = None, None
     if type(values) is dict:
         assert "16" in values
+        float16_values = values["16"]
         # Float8 and other quantized types
         if "8" in values:
             float8_values = values["8"]
@@ -1273,11 +1274,15 @@ for key, values in __INT_TO_FLOAT_MAPPER.items():
             FLOAT_TO_FP8_BLOCK_MAPPER[official.lower() + "-dynamic"] = block
             FLOAT_TO_FP8_ROW_MAPPER[official.lower()] = row
             FLOAT_TO_FP8_ROW_MAPPER[official.lower() + "-dynamic"] = row
+            FLOAT_TO_FP8_BLOCK_MAPPER[float16_values[0]] = block
+            FLOAT_TO_FP8_BLOCK_MAPPER[float16_values[0].lower()] = block
+            FLOAT_TO_FP8_ROW_MAPPER[float16_values[0]] = block
+            FLOAT_TO_FP8_ROW_MAPPER[float16_values[0].lower()] = block
             for k in float8_values:
                 FLOAT_TO_FP8_BLOCK_MAPPER[k.lower()] = block
                 FLOAT_TO_FP8_ROW_MAPPER[k.lower()] = row
         pass
-        values = values["16"]
+        values = float16_values
     INT_TO_FLOAT_MAPPER[key] = values[0]
 
     for value in values:
