@@ -1288,10 +1288,12 @@ for key, values in __INT_TO_FLOAT_MAPPER.items():
         if values[0].startswith("unsloth"):
             MAP_TO_UNSLOTH_16bit[values[1]] = values[0]
             MAP_TO_UNSLOTH_16bit[values[1].lower()] = values[0]
-            MAP_TO_UNSLOTH_16bit[block] = values[0]
-            MAP_TO_UNSLOTH_16bit[block.lower()] = values[0]
-            MAP_TO_UNSLOTH_16bit[row] = values[0]
-            MAP_TO_UNSLOTH_16bit[row.lower()] = values[0]
+            if block is not None:
+                MAP_TO_UNSLOTH_16bit[block] = values[0]
+                MAP_TO_UNSLOTH_16bit[block.lower()] = values[0]
+            if row is not None:
+                MAP_TO_UNSLOTH_16bit[row] = values[0]
+                MAP_TO_UNSLOTH_16bit[row.lower()] = values[0]
     elif len(values) == 3:
         # Dynamic Unsloth quantization
         if values[0].startswith("unsloth"):
@@ -1299,10 +1301,12 @@ for key, values in __INT_TO_FLOAT_MAPPER.items():
             MAP_TO_UNSLOTH_16bit[values[1].lower()] = values[0]
             MAP_TO_UNSLOTH_16bit[values[2]] = values[0]
             MAP_TO_UNSLOTH_16bit[values[2].lower()] = values[0]
-            MAP_TO_UNSLOTH_16bit[block] = values[0]
-            MAP_TO_UNSLOTH_16bit[block.lower()] = values[0]
-            MAP_TO_UNSLOTH_16bit[row] = values[0]
-            MAP_TO_UNSLOTH_16bit[row.lower()] = values[0]
+            if block is not None:
+                MAP_TO_UNSLOTH_16bit[block] = values[0]
+                MAP_TO_UNSLOTH_16bit[block.lower()] = values[0]
+            if row is not None:
+                MAP_TO_UNSLOTH_16bit[row] = values[0]
+                MAP_TO_UNSLOTH_16bit[row.lower()] = values[0]
         pass
 
     # Get lowercased
