@@ -258,6 +258,7 @@ class FastLanguageModel(FastLlamaModel):
         if model_name.lower().endswith("-bf16"):
             load_in_4bit = False
             load_in_8bit = False
+            load_in_fp8  = False
             load_in_16bit = True
 
         if USE_MODELSCOPE and not os.path.exists(model_name):
@@ -386,7 +387,7 @@ class FastLanguageModel(FastLlamaModel):
             if model_name.lower().endswith("-bf16"):
                 load_in_4bit = False
                 load_in_8bit = False
-                load_in_fp8 = False
+                load_in_fp8  = False
                 load_in_16bit = True
 
             model_config = AutoConfig.from_pretrained(
@@ -710,9 +711,10 @@ class FastModel(FastBaseModel):
             )
             load_in_4bit = False
             load_in_8bit = False
+            load_in_fp8  = False
             load_in_16bit = False
 
-        if int(load_in_4bit) + int(load_in_8bit) + int(load_in_16bit) >= 2:
+        if int(load_in_4bit) + int(load_in_8bit) + int(load_in_16bit) + int(load_in_fp8 != False) >= 2:
             raise RuntimeError(
                 "Unsloth: Can only load in 4bit or 8bit or 16bit, not a combination!\n"
                 "Also, we by default set `load_in_4bit = True`.\n"
