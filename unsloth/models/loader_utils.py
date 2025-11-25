@@ -17,7 +17,13 @@ import os
 import re
 import tempfile
 from typing import Union
-from .mapper import INT_TO_FLOAT_MAPPER, FLOAT_TO_INT_MAPPER, MAP_TO_UNSLOTH_16bit
+from .mapper import (
+    INT_TO_FLOAT_MAPPER,
+    FLOAT_TO_INT_MAPPER,
+    MAP_TO_UNSLOTH_16bit,
+    FLOAT_TO_FP8_BLOCK_MAPPER,
+    FLOAT_TO_FP8_ROW_MAPPER,
+)
 
 # https://github.com/huggingface/transformers/pull/26037 allows 4 bit loading!
 from packaging.version import Version
@@ -45,11 +51,28 @@ def __get_model_name(
     INT_TO_FLOAT_MAPPER = None,
     FLOAT_TO_INT_MAPPER = None,
     MAP_TO_UNSLOTH_16bit = None,
+    load_in_fp8 = False,
+    FLOAT_TO_FP8_BLOCK_MAPPER = None,
+    FLOAT_TO_FP8_ROW_MAPPER = None,
 ):
     model_name = str(model_name)
     lower_model_name = model_name.lower()
 
-    if not SUPPORTS_FOURBIT and lower_model_name in INT_TO_FLOAT_MAPPER:
+    assert load_in_fp8 in (True, False, "block")
+    if load_in_fp8 != False:
+        if load_in_fp8 == True and (os.environ.get("UNSLOTH_HAS_FBGEMM", "0") == "1"):
+            if lower_model_name in FLOAT_TO_FP8_ROW_MAPPER:
+                # Faster row scaling only works if FBGEMM works!
+                return FLOAT_TO_FP8_ROW_MAPPER[lower_model_name]
+            elif lower_model_name in FLOAT_TO_FP8_BLOCK_MAPPER:
+                # Otherwise we use the slower blockwise type
+                return FLOAT_TO_FP8_BLOCK_MAPPER[lower_model_name]
+        else:
+            if lower_model_name in FLOAT_TO_FP8_BLOCK_MAPPER:
+                return FLOAT_TO_FP8_BLOCK_MAPPER[lower_model_name]
+        return None
+
+    elif not SUPPORTS_FOURBIT and lower_model_name in INT_TO_FLOAT_MAPPER:
         model_name = INT_TO_FLOAT_MAPPER[lower_model_name]
         print(
             f"Unsloth: Your transformers version of {transformers_version} does not support native "
@@ -112,13 +135,17 @@ def _get_new_mapper():
         return {}, {}, {}
 
 
-def get_model_name(model_name, load_in_4bit = True):
+def get_model_name(model_name, load_in_4bit = True, load_in_fp8 = False):
+    assert load_in_fp8 in (True, False, "block")
     new_model_name = __get_model_name(
         model_name = model_name,
         load_in_4bit = load_in_4bit,
         INT_TO_FLOAT_MAPPER = INT_TO_FLOAT_MAPPER,
         FLOAT_TO_INT_MAPPER = FLOAT_TO_INT_MAPPER,
         MAP_TO_UNSLOTH_16bit = MAP_TO_UNSLOTH_16bit,
+        load_in_fp8 = load_in_fp8,
+        FLOAT_TO_FP8_BLOCK_MAPPER = FLOAT_TO_FP8_BLOCK_MAPPER,
+        FLOAT_TO_FP8_ROW_MAPPER = FLOAT_TO_FP8_ROW_MAPPER,
     )
     # In the rare case, we convert bad model names to other names
     # For eg too large dynamic quants or MoEs
@@ -144,6 +171,9 @@ def get_model_name(model_name, load_in_4bit = True):
             INT_TO_FLOAT_MAPPER = NEW_INT_TO_FLOAT_MAPPER,
             FLOAT_TO_INT_MAPPER = NEW_FLOAT_TO_INT_MAPPER,
             MAP_TO_UNSLOTH_16bit = NEW_MAP_TO_UNSLOTH_16bit,
+            load_in_fp8 = load_in_fp8,
+            FLOAT_TO_FP8_BLOCK_MAPPER = FLOAT_TO_FP8_BLOCK_MAPPER,
+            FLOAT_TO_FP8_ROW_MAPPER = FLOAT_TO_FP8_ROW_MAPPER,
         )
         if upgraded_model_name is not None:
             raise NotImplementedError(
@@ -152,6 +182,9 @@ def get_model_name(model_name, load_in_4bit = True):
                 'pip install --upgrade --no-cache-dir "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"\n'
                 'pip install --upgrade --no-cache-dir "git+https://github.com/unslothai/unsloth-zoo.git"\n'
             )
+    if load_in_fp8 != False:
+        # Handle on the fly TorchAO FP8 quantization
+        return new_model_name
     return new_model_name if new_model_name is not None else model_name
 
 
@@ -239,11 +272,14 @@ def _tag_model_with_fp8_torchao_config(model: torch.nn.Module, fp8_mode: str):
     """
     Tag a model with a `TorchAOConfig` so downstream callers will know what to do with it.
     """
-    base_config = _get_torchao_fp8_config(fp8_mode)
-    model.torchao_config = TorchAOConfig(
-        qat_scheme = None,
-        base_config_and_filter_fns = [(base_config, None)],
-    )
+    try:
+        base_config = _get_torchao_fp8_config(fp8_mode)
+        model.torchao_config = TorchAOConfig(
+            qat_scheme = None,
+            base_config_and_filter_fns = [(base_config, None)],
+        )
+    except:
+        pass
 
 
 def _get_fp8_mode_and_check_settings(
