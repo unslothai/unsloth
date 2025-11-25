@@ -229,6 +229,7 @@ from transformers import DataCollatorForSeq2Seq, DataCollatorForLanguageModeling
 from transformers.training_args import ParallelMode
 
 # Wrap trainer with padding to right and enable training mode
+# Also patches W&B since multiple runs must use wandb.finish()
 import functools
 from types import MethodType
 def prepare_for_training_mode(f):
@@ -241,6 +242,12 @@ def prepare_for_training_mode(f):
         # Return inference mode
         if hasattr(self, 'model') and hasattr(self.model, "for_inference"):
             self.model.for_inference()
+        # Patch W&B to enable logging on future runs, otherwise it'll overwrite the first run
+        try:
+            import wandb
+            wandb.finish()
+        except:
+            pass
         return output
     return wrapper
 pass

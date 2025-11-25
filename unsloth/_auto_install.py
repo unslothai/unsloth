@@ -34,7 +34,8 @@ elif v  < V('2.7.9'): x = 'cu{}{}-torch270'
 elif v  < V('2.8.0'): x = 'cu{}{}-torch271'
 elif v  < V('2.8.9'): x = 'cu{}{}-torch280'
 elif v  < V('2.9.1'): x = 'cu{}{}-torch290'
+elif v  < V('2.9.2'): x = 'cu{}{}-torch291'
 else: raise RuntimeError(f"Torch = {v} too new!")
 if v > V('2.6.9') and cuda not in ("11.8", "12.6", "12.8", "13.0"): raise RuntimeError(f"CUDA = {cuda} not supported!")
-x = x.format(cuda.replace(".", ""), "-ampere" if is_ampere else "")
-print(f'pip install --upgrade pip && pip install "unsloth[{x}] @ git+https://github.com/unslothai/unsloth.git"')
+x = x.format(cuda.replace(".", ""), "-ampere" if False else "") # is_ampere is broken due to flash-attn
+print(f'pip install --upgrade pip && pip install --no-deps git+https://github.com/unslothai/unsloth-zoo.git && pip install "unsloth[{x}] @ git+https://github.com/unslothai/unsloth.git" --no-build-isolation')

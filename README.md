@@ -197,9 +197,9 @@ pip install unsloth
 </details>
 
 ### Advanced Pip Installation
-`⚠️Do **NOT** use this if you have Conda.` Pip is a bit more complex since there are dependency issues. The pip command is different for `torch 2.2,2.3,2.4,2.5` and CUDA versions.
+`⚠️Do **NOT** use this if you have Conda.` Pip is a bit more complex since there are dependency issues. The pip command is different for `torch 2.2,2.3,2.4,2.5,2.6,2.7,2.8,2.9` and CUDA versions.
 
-For other torch versions, we support `torch211`, `torch212`, `torch220`, `torch230`, `torch240` and for CUDA versions, we support `cu118` and `cu121` and `cu124`. For Ampere devices (A100, H100, RTX3090) and above, use `cu118-ampere` or `cu121-ampere` or `cu124-ampere`.
+For other torch versions, we support `torch211`, `torch212`, `torch220`, `torch230`, `torch240`, `torch250`, `torch260`, `torch270`, `torch280`, `torch290` and for CUDA versions, we support `cu118` and `cu121` and `cu124`. For Ampere devices (A100, H100, RTX3090) and above, use `cu118-ampere` or `cu121-ampere` or `cu124-ampere`.
 
 For example, if you have `torch 2.4` and `CUDA 12.1`, use:
 ```bash
@@ -207,10 +207,10 @@ pip install --upgrade pip
 pip install "unsloth[cu121-torch240] @ git+https://github.com/unslothai/unsloth.git"
 ```
 
-Another example, if you have `torch 2.5` and `CUDA 12.4`, use:
+Another example, if you have `torch 2.9` and `CUDA 13.0`, use:
 ```bash
 pip install --upgrade pip
-pip install "unsloth[cu124-torch250] @ git+https://github.com/unslothai/unsloth.git"
+pip install "unsloth[cu130-torch290] @ git+https://github.com/unslothai/unsloth.git"
 ```
 
 And other examples:
@@ -242,7 +242,7 @@ v = V(re.match(r"[0-9\.]{3,}", torch.__version__).group(0))
 cuda = str(torch.version.cuda)
 is_ampere = torch.cuda.get_device_capability()[0] >= 8
 USE_ABI = torch._C._GLIBCXX_USE_CXX11_ABI
-if cuda not in ("11.8", "12.1", "12.4", "12.6", "12.8"): raise RuntimeError(f"CUDA = {cuda} not supported!")
+if cuda not in ("11.8", "12.1", "12.4", "12.6", "12.8", "13.0"): raise RuntimeError(f"CUDA = {cuda} not supported!")
 if   v <= V('2.1.0'): raise RuntimeError(f"Torch = {v} too old!")
 elif v <= V('2.1.1'): x = 'cu{}{}-torch211'
 elif v <= V('2.1.2'): x = 'cu{}{}-torch212'
@@ -255,10 +255,12 @@ elif v  < V('2.7.0'): x = 'cu{}{}-torch260'
 elif v  < V('2.7.9'): x = 'cu{}{}-torch270'
 elif v  < V('2.8.0'): x = 'cu{}{}-torch271'
 elif v  < V('2.8.9'): x = 'cu{}{}-torch280'
+elif v  < V('2.9.1'): x = 'cu{}{}-torch290'
+elif v  < V('2.9.2'): x = 'cu{}{}-torch291'
 else: raise RuntimeError(f"Torch = {v} too new!")
-if v > V('2.6.9') and cuda not in ("11.8", "12.6", "12.8"): raise RuntimeError(f"CUDA = {cuda} not supported!")
-x = x.format(cuda.replace(".", ""), "-ampere" if is_ampere else "")
-print(f'pip install --upgrade pip && pip install "unsloth[{x}] @ git+https://github.com/unslothai/unsloth.git"')
+if v > V('2.6.9') and cuda not in ("11.8", "12.6", "12.8", "13.0"): raise RuntimeError(f"CUDA = {cuda} not supported!")
+x = x.format(cuda.replace(".", ""), "-ampere" if False else "") # is_ampere is broken due to flash-attn
+print(f'pip install --upgrade pip && pip install --no-deps git+https://github.com/unslothai/unsloth-zoo.git && pip install "unsloth[{x}] @ git+https://github.com/unslothai/unsloth.git" --no-build-isolation')
 ```
 ### Docker Installation
 You can use our pre-built Docker container with all dependencies to use Unsloth instantly with no setup required.
