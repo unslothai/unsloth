@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import os
 import torch
 import torch.nn as nn
 import triton
@@ -549,6 +550,8 @@ def test_has_fbgemm():
     return has_fbgemm
 
 fp8_block_quant_linear = fp8_torch_block_quant_forward
+if "UNSLOTH_HAS_FBGEMM" not in os.environ:
+    os.environ["UNSLOTH_HAS_FBGEMM"] = "0"
 try:
     import fbgemm_gpu
 
@@ -559,8 +562,10 @@ try:
         # We must manually confirm if blockwise FBGEMM works!
         # This check is a must for consumer grade GPUs which fail
         if test_has_fbgemm():
+            os.environ["UNSLOTH_HAS_FBGEMM"] = "1"
             logger.info(f"Using fbgemm_gpu block quantized FP8 matmul")
             fp8_block_quant_linear = fp8_fbgemm_block_linear
+        else:
 except:
     pass
 
