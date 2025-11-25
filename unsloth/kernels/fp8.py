@@ -532,22 +532,25 @@ def test_has_fbgemm():
     block_scale = torch.ones(M // 128, K // 128, dtype = torch.float32, device = "cuda")
     has_fbgemm = False
     try:
-        out = torch.ops.fbgemm.f8f8bf16_blockwise(
-            xq, wq, block_scale, block_scale
-        )
+        out = torch.ops.fbgemm.f8f8bf16_blockwise(xq, wq, block_scale, block_scale)
         assert torch.unique(out).item() == 128
         has_fbgemm = True
         del out
     except Exception as e:
         e = str(e)
         if "cutlass cannot initialize" in e.lower():
-            print(f"Unsloth: FBGEMM on the current GPU cannot load - will switch to Triton kernels")
+            print(
+                f"Unsloth: FBGEMM on the current GPU cannot load - will switch to Triton kernels"
+            )
         else:
-            print(f"Unsloth: FBGEMM on the current GPU cannot load with error = {e} - will switch to Triton kernels")
+            print(
+                f"Unsloth: FBGEMM on the current GPU cannot load with error = {e} - will switch to Triton kernels"
+            )
         has_fbgemm = False
     del block_scale, xq
     torch.cuda.empty_cache()
     return has_fbgemm
+
 
 fp8_block_quant_linear = fp8_torch_block_quant_forward
 if "UNSLOTH_HAS_FBGEMM" not in os.environ:
