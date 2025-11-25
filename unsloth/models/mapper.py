@@ -1281,6 +1281,9 @@ for key, values in __INT_TO_FLOAT_MAPPER.items():
             for k in float8_values:
                 FLOAT_TO_FP8_BLOCK_MAPPER[k.lower()] = block
                 FLOAT_TO_FP8_ROW_MAPPER[k.lower()] = row
+            for k in float16_values:
+                FLOAT_TO_FP8_BLOCK_MAPPER[k.lower()] = block
+                FLOAT_TO_FP8_ROW_MAPPER[k.lower()] = row
         values = float16_values
     INT_TO_FLOAT_MAPPER[key] = values[0]
 
