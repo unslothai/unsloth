@@ -211,6 +211,12 @@ class FastLanguageModel(FastLlamaModel):
                     "Unsloth: Please install vLLM before enabling `fast_inference`!\n"
                     "You can do this in a terminal via `pip install vllm`"
                 )
+        # [TODO] For now fast_inference only works with fast_inference ie vLLM
+        if load_in_fp8 != False:
+            if not fast_inference:
+                raise NotImplementedError(
+                    "Unsloth: set `fast_inference = True` when doing `load_in_fp8`."
+                )
         # Check if 4bit is allowed specifically for AMD
         if not ALLOW_BITSANDBYTES and not use_exact_model_name:
             if load_in_4bit or load_in_8bit or model_name.lower().endswith("-bnb-4bit"):
@@ -727,6 +733,19 @@ class FastModel(FastBaseModel):
                     "Unsloth: AMD currently is not stable with 4bit bitsandbytes. Disabling for now."
                 )
             load_in_4bit = False
+
+        if fast_inference:
+            if importlib.util.find_spec("vllm") is None:
+                raise ImportError(
+                    "Unsloth: Please install vLLM before enabling `fast_inference`!\n"
+                    "You can do this in a terminal via `pip install vllm`"
+                )
+        # [TODO] For now fast_inference only works with fast_inference ie vLLM
+        if load_in_fp8 != False:
+            if not fast_inference:
+                raise NotImplementedError(
+                    "Unsloth: set `fast_inference = True` when doing `load_in_fp8`."
+                )
 
         # Find FP8, BnB 4bit, other mapped names
         old_model_name = model_name
