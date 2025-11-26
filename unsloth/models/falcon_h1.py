@@ -57,7 +57,7 @@ try:
         FalconH1Attention,
     )
 except ModuleNotFoundError:
-    # if we are on a old version of transformers technically it should fail in the try except above
+    # if we are on an old version of transformers technically it should fail in the try except above
     # but if somehow we make it here, we need to raise an error since FalconH1Attention is not available
     # or renamed
     raise ImportError(
