@@ -22,7 +22,10 @@ from ._utils import *
 from ._utils import patch_unsloth_smart_gradient_checkpointing
 from ._utils import __version__, importlib_version
 from ._utils import move_to_device
-from ._utils import _prepare_model_for_qat
+from ._utils import (
+    _get_inference_mode_context_manager,
+    _prepare_model_for_qat,
+)
 from ..utils.packing import (
     get_packed_info_from_kwargs,
     mask_packed_sequence_boundaries,
@@ -1958,6 +1961,9 @@ def unsloth_fast_generate(
     *args,
     **kwargs,
 ):
+    # If the model starts out in training mode, restore training mode after generation
+    restore_training_mode = self.training
+
     FastLlamaModel.for_inference(self)
 
     dtype = _get_dtype(dtype_from_config(self.config))
@@ -2003,7 +2009,7 @@ def unsloth_fast_generate(
 
     # Mixed precision autocast
     with (
-        torch.inference_mode(),
+        _get_inference_mode_context_manager(self),
         torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = dtype),
     ):
         output = self._old_generate(*args, **kwargs)
@@ -2013,7 +2019,8 @@ def unsloth_fast_generate(
     #     accelerate.utils.operations.send_to_device = accelerate_old_send_to_device
     # pass
 
-    FastLlamaModel.for_training(self)
+    if restore_training_mode:
+        FastLlamaModel.for_training(self)
 
     return output
 

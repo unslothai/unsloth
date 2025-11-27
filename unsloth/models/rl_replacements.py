@@ -35,6 +35,7 @@ from ..device_type import (
     ALLOW_PREQUANTIZED_MODELS,
 )
 import textwrap
+from ._utils import _get_inference_mode_context_manager
 
 RL_EXTRA_ARGS = defaultdict(list)
 RL_FUNCTIONS = defaultdict(list)
@@ -536,7 +537,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             )
 
             with torch.amp.autocast(device_type = "cuda", dtype = self._autocast_dtype):
-                with torch.inference_mode():
+                with _get_inference_mode_context_manager(model):
                     if pixel_values is None:
                         attention_mask = input_ids != self.processing_class.pad_token_id
                         attention_mask = attention_mask.to(attention_mask.dtype)
@@ -603,6 +604,9 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(UnslothEfficientGRPO))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_accumulated_loss))
 RL_PRE_ITEMS["grpo_trainer"].append(grpo_compute_loss_slow)
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_update_SamplingParams))
+RL_PRE_ITEMS["grpo_trainer"].append(
+    inspect.getsource(_get_inference_mode_context_manager)
+)
 
 
 # Edit _get_per_token_logps to handle mixed precision

@@ -31,7 +31,12 @@ from .cohere import FastCohereModel
 from transformers import AutoConfig
 from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
-from .loader_utils import get_model_name
+from .loader_utils import (
+    _get_fp8_mode_and_check_settings,
+    _offline_quantize_to_fp8,
+    _tag_model_with_fp8_torchao_config,
+    get_model_name,
+)
 import os, contextlib, sys
 
 try:
@@ -140,6 +145,7 @@ class FastLanguageModel(FastLlamaModel):
         max_lora_rank = 64,
         disable_log_stats = True,
         qat_scheme = None,
+        load_in_fp8 = False,  # fp8 LoRA (True, False, 'block')
         *args,
         **kwargs,
     ):
@@ -183,6 +189,7 @@ class FastLanguageModel(FastLlamaModel):
                 max_lora_rank = max_lora_rank,
                 disable_log_stats = disable_log_stats,
                 qat_scheme = qat_scheme,
+                load_in_fp8 = load_in_fp8,
                 *args,
                 **kwargs,
             )
@@ -204,6 +211,12 @@ class FastLanguageModel(FastLlamaModel):
                     "Unsloth: Please install vLLM before enabling `fast_inference`!\n"
                     "You can do this in a terminal via `pip install vllm`"
                 )
+        # [TODO] For now fast_inference only works with fast_inference ie vLLM
+        if load_in_fp8 != False:
+            if not fast_inference:
+                raise NotImplementedError(
+                    "Unsloth: set `fast_inference = True` when doing `load_in_fp8`."
+                )
         # Check if 4bit is allowed specifically for AMD
         if not ALLOW_BITSANDBYTES and not use_exact_model_name:
             if load_in_4bit or load_in_8bit or model_name.lower().endswith("-bnb-4bit"):
@@ -212,9 +225,28 @@ class FastLanguageModel(FastLlamaModel):
                 )
             load_in_4bit = False
 
+        # Find FP8, BnB 4bit, other mapped names
         old_model_name = model_name
+        fp8_mode = None
         if not use_exact_model_name:
-            model_name = get_model_name(model_name, load_in_4bit)
+            new_model_name = get_model_name(
+                model_name, load_in_4bit = load_in_4bit, load_in_fp8 = load_in_fp8
+            )
+            if new_model_name is None and load_in_fp8 != False:
+                fp8_mode = _get_fp8_mode_and_check_settings(
+                    load_in_fp8,
+                    fast_inference,
+                    full_finetuning,
+                    load_in_4bit,
+                    load_in_8bit,
+                    load_in_16bit,
+                    use_exact_model_name,
+                )
+                model_name = _offline_quantize_to_fp8(model_name, fp8_mode)
+            else:
+                assert new_model_name is not None
+                model_name = new_model_name
+
         # Check if pre-quantized models are allowed
         # For eg AMD GPUs need blocksize = 128, but our pre-quants are blocksize = 64
         if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
@@ -226,6 +258,7 @@ class FastLanguageModel(FastLlamaModel):
         if model_name.lower().endswith("-bf16"):
             load_in_4bit = False
             load_in_8bit = False
+            load_in_fp8 = False
             load_in_16bit = True
 
         if USE_MODELSCOPE and not os.path.exists(model_name):
@@ -354,6 +387,7 @@ class FastLanguageModel(FastLlamaModel):
             if model_name.lower().endswith("-bf16"):
                 load_in_4bit = False
                 load_in_8bit = False
+                load_in_fp8 = False
                 load_in_16bit = True
 
             model_config = AutoConfig.from_pretrained(
@@ -476,6 +510,8 @@ class FastLanguageModel(FastLlamaModel):
                 random_state = random_state,
                 max_lora_rank = max_lora_rank,
                 disable_log_stats = disable_log_stats,
+                qat_scheme = qat_scheme,
+                load_in_fp8 = load_in_fp8,
                 *args,
                 **kwargs,
             )
@@ -553,6 +589,9 @@ class FastLanguageModel(FastLlamaModel):
                 "quant_method": "bitsandbytes",
             }
             model.config.update({"quantization_config": quantization_config})
+
+        if load_in_fp8 != False:
+            _tag_model_with_fp8_torchao_config(model, fp8_mode)
 
         if is_peft:
             # From https://github.com/huggingface/peft/issues/184
@@ -634,6 +673,7 @@ class FastModel(FastBaseModel):
         max_lora_rank = 64,
         disable_log_stats = True,
         qat_scheme = None,
+        load_in_fp8 = False,  # fp8 LoRA (True, False, 'block')
         *args,
         **kwargs,
     ):
@@ -660,6 +700,7 @@ class FastModel(FastBaseModel):
             )
             dtype = torch.float16
         assert dtype in (torch.float16, torch.bfloat16, torch.float32)
+        assert load_in_fp8 in (True, False, "block")
 
         patch_compiled_autograd()
         patch_compiling_bitsandbytes()
@@ -670,9 +711,16 @@ class FastModel(FastBaseModel):
             )
             load_in_4bit = False
             load_in_8bit = False
+            load_in_fp8 = False
             load_in_16bit = False
 
-        if int(load_in_4bit) + int(load_in_8bit) + int(load_in_16bit) >= 2:
+        if (
+            int(load_in_4bit)
+            + int(load_in_8bit)
+            + int(load_in_16bit)
+            + int(load_in_fp8 != False)
+            >= 2
+        ):
             raise RuntimeError(
                 "Unsloth: Can only load in 4bit or 8bit or 16bit, not a combination!\n"
                 "Also, we by default set `load_in_4bit = True`.\n"
@@ -694,9 +742,41 @@ class FastModel(FastBaseModel):
                 )
             load_in_4bit = False
 
+        if fast_inference:
+            if importlib.util.find_spec("vllm") is None:
+                raise ImportError(
+                    "Unsloth: Please install vLLM before enabling `fast_inference`!\n"
+                    "You can do this in a terminal via `pip install vllm`"
+                )
+        # [TODO] For now fast_inference only works with fast_inference ie vLLM
+        if load_in_fp8 != False:
+            if not fast_inference:
+                raise NotImplementedError(
+                    "Unsloth: set `fast_inference = True` when doing `load_in_fp8`."
+                )
+
+        # Find FP8, BnB 4bit, other mapped names
         old_model_name = model_name
+        fp8_mode = None
         if not use_exact_model_name:
-            model_name = get_model_name(model_name, load_in_4bit)
+            new_model_name = get_model_name(
+                model_name, load_in_4bit = load_in_4bit, load_in_fp8 = load_in_fp8
+            )
+            if new_model_name is None and load_in_fp8 != False:
+                fp8_mode = _get_fp8_mode_and_check_settings(
+                    load_in_fp8,
+                    fast_inference,
+                    full_finetuning,
+                    load_in_4bit,
+                    load_in_8bit,
+                    load_in_16bit,
+                    use_exact_model_name,
+                )
+                model_name = _offline_quantize_to_fp8(model_name, fp8_mode)
+            else:
+                assert new_model_name is not None
+                model_name = new_model_name
+
         # Check if pre-quantized models are allowed
         # For eg AMD GPUs need blocksize = 128, but our pre-quants are blocksize = 64
         if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
@@ -708,6 +788,7 @@ class FastModel(FastBaseModel):
         if model_name.lower().endswith("-bf16"):
             load_in_4bit = False
             load_in_8bit = False
+            load_in_fp8 = False
             load_in_16bit = True
 
         # Check modelscope
@@ -786,6 +867,8 @@ class FastModel(FastBaseModel):
             string += "_load_in_8bit_"
         if load_in_16bit:
             string += "_load_in_16bit_"
+        if load_in_fp8:
+            string += "load_in_fp8"
         os.environ["UNSLOTH_MODEL_NAME"] = string
 
         # Check versions
@@ -966,6 +1049,7 @@ class FastModel(FastBaseModel):
             if model_name.lower().endswith("-bf16"):
                 load_in_4bit = False
                 load_in_8bit = False
+                load_in_fp8 = False
                 load_in_16bit = True
 
             model_config = AutoConfig.from_pretrained(
@@ -1129,6 +1213,9 @@ class FastModel(FastBaseModel):
                 "quant_method": "bitsandbytes",
             }
             model.config.update({"quantization_config": quantization_config})
+
+        if load_in_fp8 != False:
+            _tag_model_with_fp8_torchao_config(model, fp8_mode)
 
         if is_peft:
             # From https://github.com/huggingface/peft/issues/184
