@@ -1988,6 +1988,9 @@ def unsloth_fast_generate(
     *args,
     **kwargs,
 ):
+    # If the model starts out in training mode, restore training mode after generation
+    restore_training_mode = self.training
+
     FastLlamaModel.for_inference(self)
 
     dtype = _get_dtype(dtype_from_config(self.config))
@@ -2043,7 +2046,8 @@ def unsloth_fast_generate(
     #     accelerate.utils.operations.send_to_device = accelerate_old_send_to_device
     # pass
 
-    FastLlamaModel.for_training(self)
+    if restore_training_mode:
+        FastLlamaModel.for_training(self)
 
     return output
 
