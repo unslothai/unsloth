@@ -73,7 +73,6 @@ def _rope_embedding_QK(
         cos_ptr + col_offsets,
         mask = mask,
         other = 0,
-        eviction_policy = "evict_first",
     )
     if BACKWARD_PASS:
         sin1 = -sin1
