@@ -67,7 +67,6 @@ def _rope_embedding_QK(
         sin_ptr + col_offsets,
         mask = mask,
         other = 0,
-        eviction_policy = "evict_first",
     )
     cos1 = tl.load(
         cos_ptr + col_offsets,
