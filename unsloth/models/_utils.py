@@ -2296,7 +2296,7 @@ def verify_fp8_support_if_applicable(model_config):
             f"Unsloth: FP8 quantization is only supported on CUDA GPUs. You are using {DEVICE_TYPE}."
         )
     # todo: verify xpu fbgemm fp8 support status and change code here
-    if DEVICE_TYPE == "xpu":
+    if DEVICE_TYPE == "cuda":
         major_version, minor_version = torch.cuda.get_device_capability()
         if quant_method == "fbgemm_fp8" and major_version < 9:
             # While L4 does support FP8 as data type, it doesn't have fbgemm (package) support yet. So we restrict it.
