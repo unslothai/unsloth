@@ -2593,7 +2593,7 @@ default_system_message = \
 extra_eos_tokens = None,
 ):
     """
-    Creates a Ollama modelfile and a HF Jinja template from a custom
+    Creates an Ollama modelfile and a HF Jinja template from a custom
     template. You must provide 2x examples of an input & output.
     There is an optional system message as well.
 
@@ -2930,7 +2930,7 @@ extra_eos_tokens = None,
 
 ):
     """
-    Creates a Ollama modelfile and a HF Jinja template from a custom
+    Creates an Ollama modelfile and a HF Jinja template from a custom
     template. You must provide 2x examples of an input & output.
     There is an optional system message as well.
 
