@@ -55,8 +55,8 @@ For RTX 50x, B200, 6000 GPUs: `pip install unsloth`. Read our [Blackwell Guide](
 - **Docker**: Use Unsloth with no setup & environment issues with our new image. [Guide](https://docs.unsloth.ai/new/how-to-train-llms-with-unsloth-and-docker) • [Docker image](https://hub.docker.com/r/unsloth/unsloth)
 - **gpt-oss RL**: Introducing the fastest possible inference for gpt-oss RL! [Read blog](https://docs.unsloth.ai/new/gpt-oss-reinforcement-learning)
 - **Vision RL**: You can now train VLMs with GRPO or GSPO in Unsloth! [Read guide](https://docs.unsloth.ai/new/vision-reinforcement-learning-vlm-rl)
-- **Quantization-Aware Training**: We collabed with Pytorch for QAT, recovering as much 70% accuracy. [Read blog](https://docs.unsloth.ai/new/quantization-aware-training-qat)
-- **gpt-oss** by OpenAI: For details on [Unsloth Flex Attention](https://docs.unsloth.ai/new/long-context-gpt-oss-training), long-context training, bug fixes, [Read our Guide](https://docs.unsloth.ai/basics/gpt-oss). 20B works on a 14GB GPU and 120B on 65GB VRAM. [gpt-oss uploads](https://huggingface.co/collections/unsloth/gpt-oss-6892433695ce0dee42f31681).
+- **Quantization-Aware Training**: We collabed with Pytorch, recovering ~70% accuracy. [Read blog](https://docs.unsloth.ai/new/quantization-aware-training-qat)
+- **gpt-oss** by OpenAI: Read our [Unsloth Flex Attention](https://docs.unsloth.ai/new/long-context-gpt-oss-training) blog and [gpt-oss Guide](https://docs.unsloth.ai/basics/gpt-oss). 20B works on 14GB VRAM. 120B on 65GB.
 
 <details>
   <summary>Click for more news</summary>
