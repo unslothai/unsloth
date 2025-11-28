@@ -276,10 +276,22 @@ class Fast_RoPE_Embedding(torch.autograd.Function):
 
 # [TODO] Unsure why RoPE Embedding is not torch.compiling properly
 @torch.compiler.disable
-def fast_rope_embedding(Q, K, cos, sin, rope_embedding_indices = None):
+def fast_rope_embedding(
+    Q,
+    K,
+    cos,
+    sin,
+    rope_embedding_indices = None,
+    inplace = True,
+):
     if rope_embedding_indices is not None:
         Q_out, K_out = Fast_RoPE_Embedding_QK.apply(
-            Q, K, cos, sin, rope_embedding_indices
+            Q,
+            K,
+            cos,
+            sin,
+            rope_embedding_indices,
+            inplace,
         )
     else:
         Q_out = Fast_RoPE_Embedding.apply(
@@ -295,15 +307,21 @@ def fast_rope_embedding(Q, K, cos, sin, rope_embedding_indices = None):
 
 class Fast_RoPE_Embedding_QK(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, Q, K, cos, sin, rope_indices):
+    def forward(ctx, Q, K, cos, sin, rope_indices, inplace):
         has_indices = rope_indices is not None
         cos, sin = cos.squeeze(), sin.squeeze()
 
         batch, n_heads_Q, seq_len, head_dim = Q.shape
         _, n_heads_K, _, _ = K.shape
 
-        Q_out = Q.clone()
-        K_out = K.clone()
+        ctx.inplace = bool(inplace)
+        if ctx.inplace:
+            Q_out = Q
+            K_out = K
+            ctx.mark_dirty(Q, K)
+        else:
+            Q_out = Q.clone()
+            K_out = K.clone()
 
         if has_indices:
             rope_ptr = rope_indices.reshape(-1).to(dtype = torch.int32, device = Q.device)
@@ -407,7 +425,7 @@ class Fast_RoPE_Embedding_QK(torch.autograd.Function):
                 num_warps = ctx.num_warps,
             )
 
-        return (dQ, dK, None, None, None)
+        return (dQ, dK, None, None, None, None)
 
 
 class Slow_RoPE_Embedding(torch.autograd.Function):
