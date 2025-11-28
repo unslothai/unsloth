@@ -1551,7 +1551,11 @@ class LlamaRotaryEmbedding(torch.nn.Module):
         super().__init__()
         if config is not None:
             # [TODO] Hack to pass in config - need to remove later
-            base = config.rope_theta
+            try:
+                base = config.rope_theta
+            except:
+                base = getattr(config, "rope_parameters", {})
+                base = base["rope_theta"]
             partial_rotary_factor = (
                 config.partial_rotary_factor
                 if hasattr(config, "partial_rotary_factor")
