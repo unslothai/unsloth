@@ -364,11 +364,7 @@ class Fast_RoPE_Embedding_QK(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, dQ, dK):
-        batch, n_heads_Q, seq_len, head_dim = dQ.shape
-        _, n_heads_K, _, _ = dK.shape
-
-        dQ_out = dQ.clone()
-        dK_out = dK.clone()
+        batch, _, _, head_dim = dQ.shape
 
         rope_ptr = (
             ctx.rope_indices
@@ -377,23 +373,23 @@ class Fast_RoPE_Embedding_QK(torch.autograd.Function):
         )
 
         Q_batch_stride, Q_head_stride, Q_seq_stride = (
-            dQ_out.stride(0),
-            dQ_out.stride(1),
-            dQ_out.stride(2),
+            dQ.stride(0),
+            dQ.stride(1),
+            dQ.stride(2),
         )
         K_batch_stride, K_head_stride, K_seq_stride = (
-            dK_out.stride(0),
-            dK_out.stride(1),
-            dK_out.stride(2),
+            dK.stride(0),
+            dK.stride(1),
+            dK.stride(2),
         )
 
         with torch_gpu_device(dQ.device):
             _rope_embedding_QK[(batch * ctx.seq_len, ctx.n_heads_Q)](
-                dQ_out,
+                dQ,
                 Q_batch_stride,
                 Q_head_stride,
                 Q_seq_stride,
-                dK_out,
+                dK,
                 K_batch_stride,
                 K_head_stride,
                 K_seq_stride,
@@ -411,7 +407,7 @@ class Fast_RoPE_Embedding_QK(torch.autograd.Function):
                 num_warps = ctx.num_warps,
             )
 
-        return (dQ_out, dK_out, None, None, None)
+        return (dQ, dK, None, None, None)
 
 
 class Slow_RoPE_Embedding(torch.autograd.Function):
