@@ -282,16 +282,10 @@ def fast_rope_embedding(
     cos,
     sin,
     rope_embedding_indices = None,
-    inplace = True,
 ):
     if rope_embedding_indices is not None:
         Q_out, K_out = Fast_RoPE_Embedding_QK.apply(
-            Q,
-            K,
-            cos,
-            sin,
-            rope_embedding_indices,
-            inplace,
+            Q, K, cos, sin, rope_embedding_indices
         )
     else:
         Q_out = Fast_RoPE_Embedding.apply(
@@ -307,21 +301,15 @@ def fast_rope_embedding(
 
 class Fast_RoPE_Embedding_QK(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, Q, K, cos, sin, rope_indices, inplace):
+    def forward(ctx, Q, K, cos, sin, rope_indices):
         has_indices = rope_indices is not None
         cos, sin = cos.squeeze(), sin.squeeze()
 
         batch, n_heads_Q, seq_len, head_dim = Q.shape
         _, n_heads_K, _, _ = K.shape
 
-        ctx.inplace = bool(inplace)
-        if ctx.inplace:
-            Q_out = Q
-            K_out = K
-            ctx.mark_dirty(Q, K)
-        else:
-            Q_out = Q.clone()
-            K_out = K.clone()
+        Q_out = Q.clone()
+        K_out = K.clone()
 
         if has_indices:
             rope_ptr = rope_indices.reshape(-1).to(dtype = torch.int32, device = Q.device)
@@ -401,13 +389,16 @@ class Fast_RoPE_Embedding_QK(torch.autograd.Function):
             dK.stride(2),
         )
 
+        dQ_out = dQ.clone()
+        dK_out = dK.clone()
+
         with torch_gpu_device(dQ.device):
             _rope_embedding_QK[(batch * ctx.seq_len, ctx.n_heads_Q)](
-                dQ,
+                dQ_out,
                 Q_batch_stride,
                 Q_head_stride,
                 Q_seq_stride,
-                dK,
+                dK_out,
                 K_batch_stride,
                 K_head_stride,
                 K_seq_stride,
@@ -425,7 +416,7 @@ class Fast_RoPE_Embedding_QK(torch.autograd.Function):
                 num_warps = ctx.num_warps,
             )
 
-        return (dQ, dK, None, None, None, None)
+        return (dQ_out, dK_out, None, None, None)
 
 
 class Slow_RoPE_Embedding(torch.autograd.Function):
