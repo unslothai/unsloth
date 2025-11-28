@@ -57,6 +57,7 @@ def run(args):
     # Configure PEFT model
     model = FastLanguageModel.get_peft_model(
         model,
+        r = args.r,
         target_modules = [
             "q_proj",
             "k_proj",
