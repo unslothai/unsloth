@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import logging
+from collections import OrderedDict
 from typing import Any, Iterable, Optional, Sequence, Tuple
 
 import torch
@@ -31,6 +32,39 @@ except Exception:
         from xformers.attn_bias import BlockDiagonalCausalMask as _XFormersBlockMask
     except Exception:
         _XFormersBlockMask = None
+
+_XFORMERS_MASK_CACHE_MAXSIZE = 32
+_XFORMERS_MASK_CACHE: OrderedDict[Tuple[Tuple[int, ...], int], Any] = OrderedDict()
+
+
+def _window_cache_key(sliding_window: Optional[int]) -> int:
+    if sliding_window is None or sliding_window <= 0:
+        return 0
+    return int(sliding_window)
+
+
+def _get_cached_block_mask(
+    lengths: Tuple[int, ...],
+    sliding_window: Optional[int],
+):
+    if _XFormersBlockMask is None:
+        return None
+
+    window_key = _window_cache_key(sliding_window)
+    cache_key = (lengths, window_key)
+    cached = _XFORMERS_MASK_CACHE.get(cache_key)
+    if cached is not None:
+        _XFORMERS_MASK_CACHE.move_to_end(cache_key)
+        return cached
+
+    mask = _XFormersBlockMask.from_seqlens(list(lengths))
+    if window_key and mask is not None and hasattr(mask, "make_local_attention"):
+        mask = mask.make_local_attention(window_size = window_key)
+
+    _XFORMERS_MASK_CACHE[cache_key] = mask
+    if len(_XFORMERS_MASK_CACHE) > _XFORMERS_MASK_CACHE_MAXSIZE:
+        _XFORMERS_MASK_CACHE.popitem(last = False)
+    return mask
 
 
 class _TrlPackingWarningFilter(logging.Filter):
@@ -132,20 +166,21 @@ def build_xformers_block_causal_mask(
         return None
     if seq_info is not None:
         seq_lengths, _, _ = seq_info
-        lengths = seq_lengths.to("cpu", torch.int32).tolist()
-        if not lengths:
+        lengths_tensor = seq_lengths.to("cpu", torch.int32)
+        if lengths_tensor.numel() == 0:
             return None
-        mask = _XFormersBlockMask.from_seqlens(lengths)
+        lengths = tuple(int(x) for x in lengths_tensor.tolist())
+        mask = _get_cached_block_mask(lengths, sliding_window)
     else:
         mask = base_mask
 
-    if (
-        sliding_window is not None
-        and sliding_window > 0
-        and mask is not None
-        and hasattr(mask, "make_local_attention")
-    ):
-        mask = mask.make_local_attention(window_size = sliding_window)
+        if (
+            sliding_window is not None
+            and sliding_window > 0
+            and mask is not None
+            and hasattr(mask, "make_local_attention")
+        ):
+            mask = mask.make_local_attention(window_size = sliding_window)
     return mask
 
 
