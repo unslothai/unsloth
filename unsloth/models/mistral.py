@@ -272,21 +272,15 @@ def MistralForCausalLM_fast_forward(
             attention_mask = attention_mask,
         )
     else:
-        print(f"DEBUG_MISTRAL: input_ids.shape={input_ids.shape}")
         if position_ids is not None:
-            print(f"DEBUG_MISTRAL: position_ids.shape={position_ids.shape}")
             # Robust fix: Slice position_ids if it's longer than input_ids
             # Handle both 1D and 2D position_ids
             if position_ids.dim() == 2:
                 if position_ids.shape[1] > input_ids.shape[1]:
-                    print(f"DEBUG_MISTRAL: Slicing 2D position_ids from {position_ids.shape} to match input_ids {input_ids.shape}")
                     position_ids = position_ids[:, -input_ids.shape[1]:]
             elif position_ids.dim() == 1:
                 if position_ids.shape[0] > input_ids.shape[1]:
-                    print(f"DEBUG_MISTRAL: Slicing 1D position_ids from {position_ids.shape} to match input_ids {input_ids.shape}")
                     position_ids = position_ids[-input_ids.shape[1]:]
-        else:
-            print("DEBUG_MISTRAL: position_ids is None")
         
         outputs = self.model(
             input_ids = input_ids,
