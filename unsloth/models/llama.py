@@ -181,9 +181,16 @@ def _fast_prepare_inputs_for_generation(
             else:
                 # Create position_ids if not present
                 seq_len = input_ids.shape[1]
-                kwargs["position_ids"] = torch.arange(
-                    past_length, past_length + seq_len, dtype=torch.long, device=input_ids.device
-                ).unsqueeze(0).repeat(input_ids.shape[0], 1)
+                kwargs["position_ids"] = (
+                    torch.arange(
+                        past_length,
+                        past_length + seq_len,
+                        dtype = torch.long,
+                        device = input_ids.device,
+                    )
+                    .unsqueeze(0)
+                    .repeat(input_ids.shape[0], 1)
+                )
 
             # Get to the base model
             base_model = self
@@ -1543,16 +1550,16 @@ def PeftModel_fast_forward(
             # Handle both 1D and 2D position_ids
             if position_ids.dim() == 2:
                 if position_ids.shape[1] > input_ids.shape[1]:
-                    position_ids = position_ids[:, -input_ids.shape[1]:]
+                    position_ids = position_ids[:, -input_ids.shape[1] :]
             elif position_ids.dim() == 1:
                 if position_ids.shape[0] > input_ids.shape[1]:
-                    position_ids = position_ids[-input_ids.shape[1]:]
+                    position_ids = position_ids[-input_ids.shape[1] :]
 
         return self.base_model(
             input_ids = input_ids,
             causal_mask = causal_mask,
             attention_mask = attention_mask,
-            position_ids = position_ids, # Added position_ids
+            position_ids = position_ids,  # Added position_ids
             inputs_embeds = inputs_embeds,
             labels = labels,
             output_attentions = output_attentions,
