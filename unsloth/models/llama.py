@@ -212,15 +212,15 @@ def _fast_prepare_inputs_for_generation(
                 # Define bs and calculate correct sequence length
                 bs = input_ids.shape[0]
                 seq_len = input_ids.shape[1]
-                
+
                 # cache_position should start from past_length and cover the new tokens
                 cache_position = torch.arange(
                     past_length, past_length + seq_len, device = input_ids.device
                 )
-                
+
                 kwargs = {
-                    "sequence_length": seq_len, # Was 1, now seq_len
-                    "target_length": past_length + seq_len, # Was cache_length
+                    "sequence_length": seq_len,  # Was 1, now seq_len
+                    "target_length": past_length + seq_len,  # Was cache_length
                     "dtype": self.dtype,
                     "cache_position": cache_position,
                     "batch_size": bs,
@@ -1561,8 +1561,8 @@ def PeftModel_fast_forward(
                     position_ids = position_ids[:, -input_ids.shape[1] :]
             elif position_ids.dim() == 1:
                 if position_ids.shape[0] > input_ids.shape[1]:
-                    position_ids = position_ids[-input_ids.shape[1]:]
-            
+                    position_ids = position_ids[-input_ids.shape[1] :]
+
             # Update kwargs with sliced position_ids
             kwargs["position_ids"] = position_ids
 
