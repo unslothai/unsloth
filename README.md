@@ -113,7 +113,7 @@ pip install unsloth
 ```
 pip install --upgrade --force-reinstall --no-cache-dir unsloth unsloth_zoo
 ```
-See [here](https://github.com/unslothai/unsloth/edit/main/README.md#advanced-pip-installation) for advanced pip install instructions.
+See [here](#advanced-pip-installation) for advanced pip install instructions.
 ### Windows Installation
 
 1. **Install NVIDIA Video Driver:**
