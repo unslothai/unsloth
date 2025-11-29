@@ -160,8 +160,30 @@ def _fast_prepare_inputs_for_generation(
             past_key_values = None
             kwargs["past_key_values"] = None
         else:
-            bs, cache_length = input_ids.shape
-            input_ids = input_ids[:, [-1]]
+            if hasattr(past_key_values, "get_seq_length"):
+                past_length = past_key_values.get_seq_length()
+            else:
+                past_length = past_key_values[0][0].shape[2]
+
+            # We have to slice the input_ids to be only the new tokens
+            if input_ids.shape[1] > past_length:
+                input_ids = input_ids[:, past_length:]
+            else:
+                input_ids = input_ids[:, -1:]
+
+            # Check for position_ids
+            if "position_ids" in kwargs:
+                position_ids = kwargs["position_ids"]
+                if position_ids.shape[1] > past_length:
+                    kwargs["position_ids"] = position_ids[:, past_length:]
+                else:
+                    kwargs["position_ids"] = position_ids[:, -1:]
+            else:
+                # Create position_ids if not present
+                seq_len = input_ids.shape[1]
+                kwargs["position_ids"] = torch.arange(
+                    past_length, past_length + seq_len, dtype=torch.long, device=input_ids.device
+                ).unsqueeze(0).repeat(input_ids.shape[0], 1)
 
             # Get to the base model
             base_model = self
@@ -1299,7 +1321,7 @@ def CausalLM_fast_forward(fast_forward_inference):
         *args,
         **kwargs,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
-        if past_key_values is not None:
+        if past_key_values is not None and input_ids.shape[1] == 1:
             outputs = fast_forward_inference(
                 self,
                 input_ids,
@@ -1516,10 +1538,21 @@ def PeftModel_fast_forward(
             **kwargs,
         )
     else:
+        if position_ids is not None:
+            # Robust fix: Slice position_ids if it's longer than input_ids
+            # Handle both 1D and 2D position_ids
+            if position_ids.dim() == 2:
+                if position_ids.shape[1] > input_ids.shape[1]:
+                    position_ids = position_ids[:, -input_ids.shape[1]:]
+            elif position_ids.dim() == 1:
+                if position_ids.shape[0] > input_ids.shape[1]:
+                    position_ids = position_ids[-input_ids.shape[1]:]
+
         return self.base_model(
             input_ids = input_ids,
             causal_mask = causal_mask,
             attention_mask = attention_mask,
+            position_ids = position_ids, # Added position_ids
             inputs_embeds = inputs_embeds,
             labels = labels,
             output_attentions = output_attentions,
@@ -2021,7 +2054,8 @@ def unsloth_fast_generate(
     # pass
 
     # For newer HF
-    kwargs["cache_implementation"] = "dynamic"
+    if "past_key_values" not in kwargs:
+        kwargs["cache_implementation"] = "dynamic"
     # For num_logits_to_keep
     num_logits_to_keep = kwargs.get("num_logits_to_keep", None)
     logits_to_keep = kwargs.get("logits_to_keep", None)
