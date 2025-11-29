@@ -180,7 +180,6 @@ def _fast_prepare_inputs_for_generation(
                     kwargs["position_ids"] = position_ids[:, -1:]
             else:
                 # Create position_ids if not present
-                import torch
                 seq_len = input_ids.shape[1]
                 kwargs["position_ids"] = torch.arange(
                     past_length, past_length + seq_len, dtype=torch.long, device=input_ids.device
