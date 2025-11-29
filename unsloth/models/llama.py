@@ -1571,7 +1571,6 @@ def PeftModel_fast_forward(
             causal_mask = causal_mask,
             attention_mask = attention_mask,
             inputs_embeds = inputs_embeds,
-            inputs_embeds = inputs_embeds,
             labels = labels,
             output_attentions = output_attentions,
             output_hidden_states = output_hidden_states,
