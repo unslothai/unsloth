@@ -209,13 +209,20 @@ def _fast_prepare_inputs_for_generation(
                         # transformers <= 4.51.3 includes device arg but > 4.51.3 does not
                         return transformers_version < Version("4.52.0")
 
+                # Define bs and calculate correct sequence length
+                bs = input_ids.shape[0]
+                seq_len = input_ids.shape[1]
+                
+                # cache_position should start from past_length and cover the new tokens
+                cache_position = torch.arange(
+                    past_length, past_length + seq_len, device = input_ids.device
+                )
+                
                 kwargs = {
-                    "sequence_length": 1,
-                    "target_length": cache_length,
+                    "sequence_length": seq_len, # Was 1, now seq_len
+                    "target_length": past_length + seq_len, # Was cache_length
                     "dtype": self.dtype,
-                    "cache_position": torch.arange(
-                        cache_length, cache_length + 1, device = input_ids.device
-                    ),
+                    "cache_position": cache_position,
                     "batch_size": bs,
                     "config": self.config,
                     "past_key_values": past_key_values,
@@ -1545,6 +1552,7 @@ def PeftModel_fast_forward(
             **kwargs,
         )
     else:
+        position_ids = kwargs.get("position_ids", None)
         if position_ids is not None:
             # Robust fix: Slice position_ids if it's longer than input_ids
             # Handle both 1D and 2D position_ids
@@ -1553,13 +1561,15 @@ def PeftModel_fast_forward(
                     position_ids = position_ids[:, -input_ids.shape[1] :]
             elif position_ids.dim() == 1:
                 if position_ids.shape[0] > input_ids.shape[1]:
-                    position_ids = position_ids[-input_ids.shape[1] :]
+                    position_ids = position_ids[-input_ids.shape[1]:]
+            
+            # Update kwargs with sliced position_ids
+            kwargs["position_ids"] = position_ids
 
         return self.base_model(
             input_ids = input_ids,
             causal_mask = causal_mask,
             attention_mask = attention_mask,
-            position_ids = position_ids,  # Added position_ids
             inputs_embeds = inputs_embeds,
             labels = labels,
             output_attentions = output_attentions,
