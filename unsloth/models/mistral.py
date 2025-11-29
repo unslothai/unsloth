@@ -272,6 +272,12 @@ def MistralForCausalLM_fast_forward(
             attention_mask = attention_mask,
         )
     else:
+        print(f"DEBUG_MISTRAL: input_ids.shape={input_ids.shape}")
+        if position_ids is not None:
+            print(f"DEBUG_MISTRAL: position_ids.shape={position_ids.shape}")
+        else:
+            print("DEBUG_MISTRAL: position_ids is None")
+        
         outputs = self.model(
             input_ids = input_ids,
             causal_mask = causal_mask,
