@@ -171,6 +171,14 @@ def _fast_prepare_inputs_for_generation(
             else:
                 input_ids = input_ids[:, -1:]
 
+            # Check for position_ids
+            if "position_ids" in kwargs:
+                position_ids = kwargs["position_ids"]
+                if position_ids.shape[1] > past_length:
+                    kwargs["position_ids"] = position_ids[:, past_length:]
+                else:
+                    kwargs["position_ids"] = position_ids[:, -1:]
+
             # Get to the base model
             base_model = self
             if hasattr(base_model, "base_model_prefix"):
