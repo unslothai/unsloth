@@ -2021,7 +2021,8 @@ def unsloth_fast_generate(
     # pass
 
     # For newer HF
-    kwargs["cache_implementation"] = "dynamic"
+    if "past_key_values" not in kwargs:
+        kwargs["cache_implementation"] = "dynamic"
     # For num_logits_to_keep
     num_logits_to_keep = kwargs.get("num_logits_to_keep", None)
     logits_to_keep = kwargs.get("logits_to_keep", None)
