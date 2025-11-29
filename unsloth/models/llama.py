@@ -159,17 +159,17 @@ def _fast_prepare_inputs_for_generation(
         ):
             past_key_values = None
             kwargs["past_key_values"] = None
+        else:
+            if hasattr(past_key_values, "get_seq_length"):
+                past_length = past_key_values.get_seq_length()
             else:
-                if hasattr(past_key_values, "get_seq_length"):
-                    past_length = past_key_values.get_seq_length()
-                else:
-                    past_length = past_key_values[0][0].shape[2]
+                past_length = past_key_values[0][0].shape[2]
 
-                # We have to slice the input_ids to be only the new tokens
-                if input_ids.shape[1] > past_length:
-                    input_ids = input_ids[:, past_length:]
-                else:
-                    input_ids = input_ids[:, -1:]
+            # We have to slice the input_ids to be only the new tokens
+            if input_ids.shape[1] > past_length:
+                input_ids = input_ids[:, past_length:]
+            else:
+                input_ids = input_ids[:, -1:]
 
             # Get to the base model
             base_model = self
