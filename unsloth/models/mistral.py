@@ -263,7 +263,7 @@ def MistralForCausalLM_fast_forward(
     # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
     self.model._has_no_labels = labels is None
 
-    if past_key_values is not None:
+    if past_key_values is not None and input_ids.shape[1] == 1:
         outputs = LlamaModel_fast_forward_inference(
             self,
             input_ids,
