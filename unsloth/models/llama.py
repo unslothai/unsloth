@@ -180,10 +180,10 @@ def _fast_prepare_inputs_for_generation(
                     kwargs["position_ids"] = position_ids[:, -1:]
             else:
                 # Create position_ids if not present
-                # We know input_ids is sliced to 1 token, so position_ids should be past_length
                 import torch
+                seq_len = input_ids.shape[1]
                 kwargs["position_ids"] = torch.arange(
-                    past_length, past_length + 1, dtype=torch.long, device=input_ids.device
+                    past_length, past_length + seq_len, dtype=torch.long, device=input_ids.device
                 ).unsqueeze(0).repeat(input_ids.shape[0], 1)
 
             # Get to the base model
