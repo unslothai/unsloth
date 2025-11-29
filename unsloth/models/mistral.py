@@ -275,6 +275,10 @@ def MistralForCausalLM_fast_forward(
         print(f"DEBUG_MISTRAL: input_ids.shape={input_ids.shape}")
         if position_ids is not None:
             print(f"DEBUG_MISTRAL: position_ids.shape={position_ids.shape}")
+            # Robust fix: Slice position_ids if it's longer than input_ids
+            if position_ids.shape[1] > input_ids.shape[1]:
+                print(f"DEBUG_MISTRAL: Slicing position_ids from {position_ids.shape} to match input_ids {input_ids.shape}")
+                position_ids = position_ids[:, -input_ids.shape[1]:]
         else:
             print("DEBUG_MISTRAL: position_ids is None")
         
