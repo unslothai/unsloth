@@ -1570,14 +1570,6 @@ def PeftModel_fast_forward(
             input_ids = input_ids,
             causal_mask = causal_mask,
             attention_mask = attention_mask,
-            # position_ids is passed via kwargs if present, or explicitly if I add it.
-            # But self.base_model signature might vary.
-            # The original code passed **kwargs.
-            # I should pass **kwargs and NOT explicit position_ids if it's in kwargs.
-            # But I modified the call to include position_ids explicitly.
-            # Let's revert to passing it via kwargs or explicit depending on how it was before.
-            # Before: return self.base_model(..., **kwargs)
-            # So I should just update kwargs.
             inputs_embeds = inputs_embeds,
             inputs_embeds = inputs_embeds,
             labels = labels,
