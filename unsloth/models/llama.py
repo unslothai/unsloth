@@ -191,6 +191,9 @@ def _fast_prepare_inputs_for_generation(
                 kwargs["position_ids"] = torch.arange(
                     past_length, past_length + seq_len, dtype=torch.long, device=input_ids.device
                 ).unsqueeze(0).repeat(input_ids.shape[0], 1)
+            
+            print(f"DEBUG_LLAMA: sliced input_ids.shape={input_ids.shape}")
+            print(f"DEBUG_LLAMA: returned position_ids.shape={kwargs['position_ids'].shape}")
 
             # Get to the base model
             base_model = self
