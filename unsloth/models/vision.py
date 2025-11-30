@@ -654,6 +654,8 @@ class FastBaseModel:
 
         raise_handler = RaiseUninitialized()
         if not fast_inference:
+            # Prevent load_in_fp8 from being forwarded into HF internal model loading
+            load_in_fp8 = kwargs.pop("load_in_fp8", None)
             model = auto_model.from_pretrained(
                 model_name,
                 device_map = device_map,
