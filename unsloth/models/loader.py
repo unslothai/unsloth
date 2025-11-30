@@ -611,8 +611,10 @@ class FastLanguageModel(FastLlamaModel):
 
         # Patch Tiled MLP
         # to turn on set UNSLOTH_TILED_MLP to "arctic", "target", or "target:{GB}""
-        if unsloth_tiled_mlp:
-            patch_tiled_mlp_choice = os.environ.get("UNSLOTH_TILED_MLP", "arctic")
+        patch_tiled_mlp_choice = os.environ.get(
+            "UNSLOTH_TILED_MLP", "arctic" if unsloth_tiled_mlp else "0"
+        )
+        if patch_tiled_mlp_choice != "0" or unsloth_tiled_mlp:
             patch_tiled_mlp(model, patch_options_str = patch_tiled_mlp_choice)
 
         return model, tokenizer
@@ -1243,8 +1245,10 @@ class FastModel(FastBaseModel):
 
         # Patch Tiled MLP
         # to turn on set UNSLOTH_TILED_MLP to "arctic", "target", or "target:{GB}""
-        if unsloth_tiled_mlp:
-            patch_tiled_mlp_choice = os.environ.get("UNSLOTH_TILED_MLP", "arctic")
+        patch_tiled_mlp_choice = os.environ.get(
+            "UNSLOTH_TILED_MLP", "arctic" if unsloth_tiled_mlp else "0"
+        )
+        if patch_tiled_mlp_choice != "0" or unsloth_tiled_mlp:
             patch_tiled_mlp(model, patch_options_str = patch_tiled_mlp_choice)
 
         return model, tokenizer
