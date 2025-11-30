@@ -562,6 +562,12 @@ for model_name in model_architectures:
         config = inspect.getsource(eval(config_filename))
     except:
         continue
+    if "RopeParameters" in config:
+        try:
+            exec(f"from {config_filepath} import RopeParameters", globals())
+        except:
+            continue
+
     if "rope_scaling" in config:
         continue
     config = re.sub(
