@@ -84,6 +84,19 @@ def _ensure_trl_warning_filter():
     _TRL_FILTER_INSTALLED = True
 
 
+def mark_allow_overlength(module):
+    """Mark a module hierarchy so padding-free batches can exceed max_seq_length."""
+    if module is None:
+        return
+    if hasattr(module, "max_seq_length"):
+        setattr(module, "_unsloth_allow_packed_overlength", True)
+    children = getattr(module, "children", None)
+    if children is None:
+        return
+    for child in children():
+        mark_allow_overlength(child)
+
+
 def configure_sample_packing(config):
     """Mutate an ``SFTConfig`` so TRL prepares packed batches."""
     _ensure_trl_warning_filter()
@@ -95,13 +108,7 @@ def configure_sample_packing(config):
 def enable_sample_packing(model, trainer):
     """Enable runtime support for packed batches on an existing trainer."""
 
-    def _mark_allow_overlength(module):
-        if hasattr(module, "max_seq_length"):
-            setattr(module, "_unsloth_allow_packed_overlength", True)
-        for child in module.children():
-            _mark_allow_overlength(child)
-
-    _mark_allow_overlength(model)
+    mark_allow_overlength(model)
 
     collator = getattr(trainer, "data_collator", None)
     if (
@@ -130,6 +137,49 @@ def enable_sample_packing(model, trainer):
 
     collator.torch_call = torch_call_with_lengths
     collator._unsloth_packing_wrapped = True
+
+
+def enable_padding_free_metadata(model, trainer):
+    """Inject seq-length metadata when padding-free batching is enabled without packing."""
+
+    collator = getattr(trainer, "data_collator", None)
+    if (
+        collator is None
+        or getattr(collator, "_unsloth_padding_free_lengths_wrapped", False)
+        or not getattr(collator, "padding_free", False)
+    ):
+        # Nothing to do if there's no collator, we've already wrapped it, or padding-free is off.
+        return
+
+    mark_allow_overlength(model)
+    if hasattr(collator, "return_position_ids"):
+        collator.return_position_ids = True
+
+    original_torch_call = collator.torch_call
+
+    def torch_call_with_padding_free_metadata(examples: Sequence[dict]):
+        seq_lengths: list[int] = []
+        if examples and isinstance(examples[0], dict):
+            for example in examples:
+                lengths = example.get("seq_lengths")
+                if lengths is None:
+                    ids = example.get("input_ids")
+                    if ids is None:
+                        continue
+                    lengths = [len(ids)]
+                    example["seq_lengths"] = lengths
+                seq_lengths.extend(lengths)
+
+        batch = original_torch_call(examples)
+        if seq_lengths:
+            batch["packed_seq_lengths"] = torch.tensor(
+                seq_lengths,
+                dtype = torch.int32,
+            )
+        return batch
+
+    collator.torch_call = torch_call_with_padding_free_metadata
+    collator._unsloth_padding_free_lengths_wrapped = True
 
 
 def get_packed_info_from_kwargs(
@@ -260,7 +310,9 @@ def mask_packed_sequence_boundaries(
 
 
 __all__ = [
+    "mark_allow_overlength",
     "configure_sample_packing",
     "enable_sample_packing",
+    "enable_padding_free_metadata",
     "mask_packed_sequence_boundaries",
 ]
