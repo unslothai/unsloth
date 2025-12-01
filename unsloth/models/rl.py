@@ -442,7 +442,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             "    force_float32 = True\n"
             "mixed_precision_dtype = os.environ.get('UNSLOTH_MIXED_PRECISION', 'float32')\n"
             "dtype = getattr(model.config, 'dtype', None) or getattr(model.config, 'torch_dtype', None)\n"
-            "if dtype is None: dtype = model.get_input_embeddings().dtype\n"
+            "if dtype is None: dtype = model.get_input_embeddings().weight.dtype\n"
             "from unsloth_zoo.utils import _get_dtype\n"
             "dtype = _get_dtype(dtype)\n"
             "float16 = dtype == torch.float16\n"
