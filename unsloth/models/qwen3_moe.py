@@ -49,29 +49,29 @@ from unsloth_zoo.utils import Version, _get_dtype
 torch_nn_functional_softmax = torch.nn.functional.softmax
 
 
-def Qwen3MoeSparseMoeBlock_fast_forward(self, X, temp_gate = None, temp_up = None):
+def Qwen3MoeSparseMoeBlock_fast_forward(self, X, temp_gate=None, temp_up=None):
     # adapted from https://github.com/huggingface/transformers/pull/36878/files#diff-0855b77fc27ad9449158a1c74953f909b011c00de7125f7c8e68d0ff209c092aR356-R370
 
     bsz, seq_len, hd = X.shape
     X = X.view(-1, hd)
 
     router_logits = fast_linear_forward(
-        self.gate_proj, X, out = temp_gate
+        self.gate_proj, X, out=temp_gate
     )  # pretty much the only change from transformers implementation.
 
     routing_weights = torch_nn_functional_softmax(
-        router_logits, dim = -1, dtype = torch.float32
+        router_logits, dim=-1, dtype=torch.float32
     )
-    routing_weights, selected_experts = torch.topk(routing_weights, self.top_k, dim = -1)
-    routing_weights /= routing_weights.sum(dim = -1, keepdim = True)
+    routing_weights, selected_experts = torch.topk(routing_weights, self.top_k, dim=-1)
+    routing_weights /= routing_weights.sum(dim=-1, keepdim=True)
     # we cast back to the input dtype
     routing_weights = routing_weights.to(X.dtype)
-    final_X = torch.zeros((bsz * seq_len, hd), dtype = torch.float32, device = X.device)
+    final_X = torch.zeros((bsz * seq_len, hd), dtype=torch.float32, device=X.device)
 
     # One hot encode the selected experts to create an expert mask
     # this will be used to easily index which expert is going to be sollicitated
     expert_mask = torch.nn.functional.one_hot(
-        selected_experts, num_classes = self.num_experts
+        selected_experts, num_classes=self.num_experts
     ).permute(2, 1, 0)
 
     # Loop over all available experts in the model and perform the computation on each expert
@@ -119,16 +119,16 @@ def Qwen3MoeDecoderLayer_fast_forward(
             self.input_layernorm, hidden_states
         )
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
-            hidden_states = hidden_states,
-            causal_mask = causal_mask,
-            attention_mask = attention_mask,
-            position_ids = position_ids,
-            past_key_value = past_key_value,
-            output_attentions = output_attentions,
-            use_cache = use_cache,
-            padding_mask = padding_mask,
-            position_embeddings = position_embeddings,
-            _flag_for_generation = self._flag_for_generation,
+            hidden_states=hidden_states,
+            causal_mask=causal_mask,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_value=past_key_value,
+            output_attentions=output_attentions,
+            use_cache=use_cache,
+            padding_mask=padding_mask,
+            position_embeddings=position_embeddings,
+            _flag_for_generation=self._flag_for_generation,
         )
         hidden_states += residual
 
@@ -145,15 +145,15 @@ def Qwen3MoeDecoderLayer_fast_forward(
         residual = hidden_states
         hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
-            hidden_states = hidden_states,
-            causal_mask = causal_mask,
-            attention_mask = attention_mask,
-            position_ids = position_ids,
-            past_key_value = past_key_value,
-            output_attentions = output_attentions,
-            use_cache = use_cache,
-            padding_mask = padding_mask,
-            position_embeddings = position_embeddings,
+            hidden_states=hidden_states,
+            causal_mask=causal_mask,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_value=past_key_value,
+            output_attentions=output_attentions,
+            use_cache=use_cache,
+            padding_mask=padding_mask,
+            position_embeddings=position_embeddings,
         )
         hidden_states = residual + hidden_states
 
@@ -177,10 +177,10 @@ class FastQwen3MoeModel(FastQwen3Model):
     @staticmethod
     def pre_patch():
         init_name, function = patch_linear_scaling(
-            model_name = "Qwen3Moe",
-            rope_module = LlamaRotaryEmbedding,
-            scaled_rope_module = LlamaLinearScalingRotaryEmbedding,
-            attention_module = Qwen3MoeAttention,
+            model_name="Qwen3Moe",
+            rope_module=LlamaRotaryEmbedding,
+            scaled_rope_module=LlamaLinearScalingRotaryEmbedding,
+            attention_module=Qwen3MoeAttention,
         )
         if init_name is not None:
             exec(function, globals())
@@ -214,30 +214,30 @@ class FastQwen3MoeModel(FastQwen3Model):
 
     @staticmethod
     def from_pretrained(  # TODO: Change after release
-        model_name = "Qwen/Qwen3-7B",
-        max_seq_length = 4096,
-        dtype = None,
-        load_in_4bit = True,
-        token = None,
-        device_map = "sequential",
-        rope_scaling = None,
-        fix_tokenizer = True,
-        model_patcher = None,
-        tokenizer_name = None,
-        trust_remote_code = False,
+        model_name="Qwen/Qwen3-7B",
+        max_seq_length=4096,
+        dtype=None,
+        load_in_4bit=True,
+        token=None,
+        device_map="sequential",
+        rope_scaling=None,
+        fix_tokenizer=True,
+        model_patcher=None,
+        tokenizer_name=None,
+        trust_remote_code=False,
         **kwargs,
     ):
         return FastLlamaModel.from_pretrained(
-            model_name = model_name,
-            max_seq_length = max_seq_length,
-            dtype = dtype,
-            load_in_4bit = load_in_4bit,
-            token = token,
-            device_map = device_map,
-            rope_scaling = rope_scaling,
-            fix_tokenizer = fix_tokenizer,
-            model_patcher = FastQwen3Model,
-            tokenizer_name = tokenizer_name,
-            trust_remote_code = trust_remote_code,
+            model_name=model_name,
+            max_seq_length=max_seq_length,
+            dtype=dtype,
+            load_in_4bit=load_in_4bit,
+            token=token,
+            device_map=device_map,
+            rope_scaling=rope_scaling,
+            fix_tokenizer=fix_tokenizer,
+            model_patcher=FastQwen3Model,
+            tokenizer_name=tokenizer_name,
+            trust_remote_code=trust_remote_code,
             **kwargs,
         )
