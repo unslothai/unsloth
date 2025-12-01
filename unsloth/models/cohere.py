@@ -54,10 +54,10 @@ except:
     CohereFlashAttention2 = CohereAttention
 
 
-def fast_layernorm_inference(self, X, out_weight=None):
-    XX = X.to(torch.float32, copy=True)
-    XX -= X.mean(-1, keepdim=True)
-    variance = XX.square().mean(-1, keepdim=True)
+def fast_layernorm_inference(self, X, out_weight = None):
+    XX = X.to(torch.float32, copy = True)
+    XX -= X.mean(-1, keepdim = True)
+    variance = XX.square().mean(-1, keepdim = True)
     variance += self.variance_epsilon
     XX *= variance.rsqrt_()
     out_weight[:] = self.weight
@@ -120,8 +120,8 @@ def CohereAttention_fast_forward(
         Q, K = inplace_rope_embedding(Q, K, cos, sin, position_ids)
 
     if past_key_value is not None:
-        K = torch.cat([past_key_value[0], K], dim=2)
-        V = torch.cat([past_key_value[1], V], dim=2)
+        K = torch.cat([past_key_value[0], K], dim = 2)
+        V = torch.cat([past_key_value[1], V], dim = 2)
     past_key_value = (K, V) if use_cache else None
 
     # Attention module
@@ -143,14 +143,14 @@ def CohereAttention_fast_forward(
                 V = V.reshape(bsz, kv_seq_len, n_heads, head_dim)
             else:
                 Q = Q.view(bsz, q_len, n_kv_heads, n_groups, head_dim)
-        A = xformers_attention(Q, K, V, attn_bias=causal_mask)
+        A = xformers_attention(Q, K, V, attn_bias = causal_mask)
         A = A.view(bsz, q_len, n_heads, head_dim)
 
     elif HAS_FLASH_ATTENTION and attention_mask is None:
         Q = Q.transpose(1, 2)
         K = K.transpose(1, 2)
         V = V.transpose(1, 2)
-        A = flash_attn_func(Q, K, V, causal=True)
+        A = flash_attn_func(Q, K, V, causal = True)
     else:
         # Grouped query attention
         if n_groups != 1:
@@ -169,7 +169,7 @@ def CohereAttention_fast_forward(
         # Needs (batch_size, n_heads, seq_len, head_dim)
         # is_casual and attention_mask must not be both set!
         A = scaled_dot_product_attention(
-            Q, K, V, attn_mask=attention_mask, is_causal=False
+            Q, K, V, attn_mask = attention_mask, is_causal = False
         )
         # Go back to (batch_size, seq_len, n_heads, head_dim)
         A = A.transpose(1, 2).contiguous()
@@ -198,7 +198,7 @@ def CohereDecoderLayer_fast_forward(
         self, "_flag_for_generation"
     ):  # past_key_value is not None:
         out_weight = torch.empty(
-            self.input_layernorm.weight.shape, dtype=torch.float32, device="cuda:0"
+            self.input_layernorm.weight.shape, dtype = torch.float32, device = "cuda:0"
         )
 
         # Self Attention
@@ -207,14 +207,14 @@ def CohereDecoderLayer_fast_forward(
             self.input_layernorm, hidden_states, out_weight
         )
         hidden_states_attention, self_attn_weights, present_key_value = self.self_attn(
-            hidden_states=hidden_states,
-            causal_mask=causal_mask,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_value=past_key_value,
-            output_attentions=output_attentions,
-            use_cache=use_cache,
-            padding_mask=padding_mask,
+            hidden_states = hidden_states,
+            causal_mask = causal_mask,
+            attention_mask = attention_mask,
+            position_ids = position_ids,
+            past_key_value = past_key_value,
+            output_attentions = output_attentions,
+            use_cache = use_cache,
+            padding_mask = padding_mask,
         )
 
         # Fully Connected
@@ -226,14 +226,14 @@ def CohereDecoderLayer_fast_forward(
         residual = hidden_states
         hidden_states = fast_layernorm_compiled(self.input_layernorm, hidden_states)
         hidden_states_attention, self_attn_weights, present_key_value = self.self_attn(
-            hidden_states=hidden_states,
-            causal_mask=causal_mask,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_value=past_key_value,
-            output_attentions=output_attentions,
-            use_cache=use_cache,
-            padding_mask=padding_mask,
+            hidden_states = hidden_states,
+            causal_mask = causal_mask,
+            attention_mask = attention_mask,
+            position_ids = position_ids,
+            past_key_value = past_key_value,
+            output_attentions = output_attentions,
+            use_cache = use_cache,
+            padding_mask = padding_mask,
         )
 
         # Fully Connected
@@ -260,8 +260,8 @@ def CohereAttention_fast_forward_inference(
     hidden_states: torch.Tensor,
     past_key_value: Optional[Tuple[torch.Tensor]],
     position_ids,
-    do_prefill=False,
-    attention_mask=None,
+    do_prefill = False,
+    attention_mask = None,
 ):
     Xn = hidden_states
     bsz, _, hd = hidden_states.size()
@@ -284,45 +284,45 @@ def CohereAttention_fast_forward_inference(
     if do_prefill:
         self.paged_attention = torch.empty(
             (KV_CACHE_INCREMENT + seq_len + 1, 2, bsz, n_kv_heads, head_dim),
-            dtype=dtype,
-            device="cuda:0",
+            dtype = dtype,
+            device = "cuda:0",
         )
         self.paged_attention_K = self.paged_attention[:, 0]
         self.paged_attention_V = self.paged_attention[:, 1]
         self.paged_attention_K[:seq_len] = K1.permute(2, 0, 1, 3)
         self.paged_attention_V[:seq_len] = V1.permute(2, 0, 1, 3)
         self.temp_QA = torch.empty(
-            (2, bsz, 1, attention_size), dtype=dtype, device="cuda:0"
+            (2, bsz, 1, attention_size), dtype = dtype, device = "cuda:0"
         )
         self.temp_KV = torch.empty(
-            (2, bsz, 1, n_kv_heads * head_dim), dtype=dtype, device="cuda:0"
+            (2, bsz, 1, n_kv_heads * head_dim), dtype = dtype, device = "cuda:0"
         )
         self.RH_Q = torch.empty(
-            (bsz, n_heads, 1, head_dim), dtype=dtype, device="cuda:0"
+            (bsz, n_heads, 1, head_dim), dtype = dtype, device = "cuda:0"
         )
 
         # Mistral Nemo 12b has weird dimensions
         if attention_size != hidden_size:
             self.temp_O = torch.empty(
-                (1, bsz, hidden_size), dtype=dtype, device="cuda:0"
+                (1, bsz, hidden_size), dtype = dtype, device = "cuda:0"
             )
         else:
             self.temp_O = self.temp_QA[1][:, :, :hidden_size]
 
         self.attention = torch.empty(
             (bsz, n_heads, 1, KV_CACHE_INCREMENT + seq_len),
-            dtype=dtype,
-            device="cuda:0",
+            dtype = dtype,
+            device = "cuda:0",
         )
         self.scalar = 1.0 / math_sqrt(self.head_dim)
         self.half_head_dim = head_dim // 2
         # Cohere has QK layernorms
         if self.use_qk_norm:
             self.q_norm_out_weight = torch.empty(
-                self.q_norm.weight.shape, dtype=torch.float32, device="cuda:0"
+                self.q_norm.weight.shape, dtype = torch.float32, device = "cuda:0"
             )
             self.k_norm_out_weight = torch.empty(
-                self.k_norm.weight.shape, dtype=torch.float32, device="cuda:0"
+                self.k_norm.weight.shape, dtype = torch.float32, device = "cuda:0"
             )
         else:
             self.q_norm_out_weight = None
@@ -343,9 +343,9 @@ def CohereAttention_fast_forward_inference(
             (bsz, n_heads, 1, self.attention.shape[-1] + KV_CACHE_INCREMENT)
         )
 
-    Qn = fast_linear_forward(self.q_proj, Xn, out=self.temp_QA[0])
-    Kn = fast_linear_forward(self.k_proj, Xn, out=self.temp_KV[0])
-    Vn = fast_linear_forward(self.v_proj, Xn, out=self.temp_KV[1])
+    Qn = fast_linear_forward(self.q_proj, Xn, out = self.temp_QA[0])
+    Kn = fast_linear_forward(self.k_proj, Xn, out = self.temp_KV[0])
+    Vn = fast_linear_forward(self.v_proj, Xn, out = self.temp_KV[1])
     Qn = Qn.view(bsz, 1, n_heads, head_dim).transpose(1, 2)
     Kn = Kn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
     Vn = Vn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
@@ -363,7 +363,7 @@ def CohereAttention_fast_forward_inference(
     RH_Q = self.RH_Q
     RH_Q[:, :, :, :h] = Qn[:, :, :, h:]
     RH_Q[:, :, :, h:] = Qn[:, :, :, :h]
-    torch.neg(RH_Q[:, :, :, :h], out=RH_Q[:, :, :, :h])
+    torch.neg(RH_Q[:, :, :, :h], out = RH_Q[:, :, :, :h])
     Qn *= cos
     Qn.addcmul_(RH_Q, sin)
 
@@ -372,7 +372,7 @@ def CohereAttention_fast_forward_inference(
     ]  # torch.empty((n_kv_heads, 1, head_dim), dtype = dtype, device = "cuda:0")
     RH_K[:, :, :, :h] = Kn[:, :, :, h:]
     RH_K[:, :, :, h:] = Kn[:, :, :, :h]
-    torch.neg(RH_K[:, :, :, :h], out=RH_K[:, :, :, :h])
+    torch.neg(RH_K[:, :, :, :h], out = RH_K[:, :, :, :h])
     Kn *= cos
     Kn.addcmul_(RH_K, sin)
 
@@ -414,20 +414,20 @@ def CohereAttention_fast_forward_inference(
         Qn *= self.scalar  # See https://github.com/ggerganov/llama.cpp/issues/7805#issuecomment-2153349963
         # It seems like doing (Q * scalar) @ K is better than (Q @ K) * scalar to stop overflows
         A = torch_matmul(
-            Qn, Knn.transpose(2, 3), out=self.attention[:, :, :, :cached_len]
+            Qn, Knn.transpose(2, 3), out = self.attention[:, :, :, :cached_len]
         )
         # if attention_mask is not None: A += attention_mask # Must add attention_mask for batched
         A[:] = torch_nn_functional_softmax(
-            A, dim=-1, dtype=torch.float32
+            A, dim = -1, dtype = torch.float32
         )  # .to(A.dtype)
-        A = torch_matmul(A, Vnn, out=Qn)
+        A = torch_matmul(A, Vnn, out = Qn)
     else:
         A = scaled_dot_product_attention(
-            Qn, Knn, Vnn, attn_mask=attention_mask, is_causal=False
+            Qn, Knn, Vnn, attn_mask = attention_mask, is_causal = False
         )
     A = A.transpose(1, 2)
     A = A.reshape(bsz, 1, attention_size)
-    A = fast_linear_forward(self.o_proj, A, out=self.temp_O)
+    A = fast_linear_forward(self.o_proj, A, out = self.temp_O)
     return A, (Kn, Vn)
 
 
@@ -438,13 +438,13 @@ def CohereModel_fast_forward_inference(
     input_ids,
     past_key_values,
     position_ids,
-    attention_mask=None,
+    attention_mask = None,
 ):
     out_weights = tuple(
         torch.empty_like(
             self.model.layers[0].input_layernorm.weight,
-            dtype=torch.float32,
-            device=torch.device(x),
+            dtype = torch.float32,
+            device = torch.device(x),
         )
         for x in range(DEVICE_COUNT)
     )
@@ -459,7 +459,7 @@ def CohereModel_fast_forward_inference(
             (bsz, q_len),
             hidden_states,
             seq_len,
-            sliding_window=getattr(self.config, "sliding_window", None),
+            sliding_window = getattr(self.config, "sliding_window", None),
         )
     else:
         attention_mask = None
@@ -477,11 +477,11 @@ def CohereModel_fast_forward_inference(
         hidden_states_attention, present_key_value = (
             CohereAttention_fast_forward_inference(
                 decoder_layer.self_attn,
-                hidden_states=hidden_states,
-                past_key_value=past_key_values[idx],
-                position_ids=position_ids,
-                attention_mask=attention_mask,
-                do_prefill=not hasattr(decoder_layer.self_attn, "paged_attention"),
+                hidden_states = hidden_states,
+                past_key_value = past_key_values[idx],
+                position_ids = position_ids,
+                attention_mask = attention_mask,
+                do_prefill = not hasattr(decoder_layer.self_attn, "paged_attention"),
             )
         )
 
@@ -496,10 +496,10 @@ def CohereModel_fast_forward_inference(
     )
 
     return BaseModelOutputWithPast(
-        last_hidden_state=hidden_states,
-        past_key_values=next_decoder_cache,
-        hidden_states=[],
-        attentions=[],
+        last_hidden_state = hidden_states,
+        past_key_values = next_decoder_cache,
+        hidden_states = [],
+        attentions = [],
     )
 
 
@@ -507,10 +507,10 @@ class FastCohereModel(FastLlamaModel):
     @staticmethod
     def pre_patch():
         init_name, function = patch_linear_scaling(
-            model_name="cohere",
-            rope_module=LlamaRotaryEmbedding,
-            scaled_rope_module=LlamaLinearScalingRotaryEmbedding,
-            attention_module=CohereAttention,
+            model_name = "cohere",
+            rope_module = LlamaRotaryEmbedding,
+            scaled_rope_module = LlamaLinearScalingRotaryEmbedding,
+            attention_module = CohereAttention,
         )
         if init_name is not None:
             exec(function, globals())
