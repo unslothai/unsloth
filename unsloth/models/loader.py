@@ -146,6 +146,7 @@ class FastLanguageModel(FastLlamaModel):
         disable_log_stats = True,
         qat_scheme = None,
         load_in_fp8 = False,  # fp8 LoRA (True, False, 'block')
+        unsloth_tiled_mlp = False,
         *args,
         **kwargs,
     ):
@@ -258,7 +259,7 @@ class FastLanguageModel(FastLlamaModel):
         if model_name.lower().endswith("-bf16"):
             load_in_4bit = False
             load_in_8bit = False
-            load_in_fp8  = False
+            load_in_fp8 = False
             load_in_16bit = True
 
         if USE_MODELSCOPE and not os.path.exists(model_name):
@@ -387,7 +388,7 @@ class FastLanguageModel(FastLlamaModel):
             if model_name.lower().endswith("-bf16"):
                 load_in_4bit = False
                 load_in_8bit = False
-                load_in_fp8  = False
+                load_in_fp8 = False
                 load_in_16bit = True
 
             model_config = AutoConfig.from_pretrained(
@@ -512,6 +513,7 @@ class FastLanguageModel(FastLlamaModel):
                 disable_log_stats = disable_log_stats,
                 qat_scheme = qat_scheme,
                 load_in_fp8 = load_in_fp8,
+                unsloth_tiled_mlp = unsloth_tiled_mlp,
                 *args,
                 **kwargs,
             )
@@ -609,8 +611,10 @@ class FastLanguageModel(FastLlamaModel):
 
         # Patch Tiled MLP
         # to turn on set UNSLOTH_TILED_MLP to "arctic", "target", or "target:{GB}""
-        patch_tiled_mlp_choice = os.environ.get("UNSLOTH_TILED_MLP", "0")
-        if patch_tiled_mlp_choice != "0":
+        patch_tiled_mlp_choice = os.environ.get(
+            "UNSLOTH_TILED_MLP", "arctic" if unsloth_tiled_mlp else "0"
+        )
+        if patch_tiled_mlp_choice != "0" or unsloth_tiled_mlp:
             patch_tiled_mlp(model, patch_options_str = patch_tiled_mlp_choice)
 
         return model, tokenizer
@@ -674,6 +678,7 @@ class FastModel(FastBaseModel):
         disable_log_stats = True,
         qat_scheme = None,
         load_in_fp8 = False,  # fp8 LoRA (True, False, 'block')
+        unsloth_tiled_mlp = False,
         *args,
         **kwargs,
     ):
@@ -711,10 +716,16 @@ class FastModel(FastBaseModel):
             )
             load_in_4bit = False
             load_in_8bit = False
-            load_in_fp8  = False
+            load_in_fp8 = False
             load_in_16bit = False
 
-        if int(load_in_4bit) + int(load_in_8bit) + int(load_in_16bit) + int(load_in_fp8 != False) >= 2:
+        if (
+            int(load_in_4bit)
+            + int(load_in_8bit)
+            + int(load_in_16bit)
+            + int(load_in_fp8 != False)
+            >= 2
+        ):
             raise RuntimeError(
                 "Unsloth: Can only load in 4bit or 8bit or 16bit, not a combination!\n"
                 "Also, we by default set `load_in_4bit = True`.\n"
@@ -1234,8 +1245,10 @@ class FastModel(FastBaseModel):
 
         # Patch Tiled MLP
         # to turn on set UNSLOTH_TILED_MLP to "arctic", "target", or "target:{GB}""
-        patch_tiled_mlp_choice = os.environ.get("UNSLOTH_TILED_MLP", "0")
-        if patch_tiled_mlp_choice != "0":
+        patch_tiled_mlp_choice = os.environ.get(
+            "UNSLOTH_TILED_MLP", "arctic" if unsloth_tiled_mlp else "0"
+        )
+        if patch_tiled_mlp_choice != "0" or unsloth_tiled_mlp:
             patch_tiled_mlp(model, patch_options_str = patch_tiled_mlp_choice)
 
         return model, tokenizer

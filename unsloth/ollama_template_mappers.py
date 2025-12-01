@@ -1520,7 +1520,7 @@ Loop over messages and look for a user-provided system message and documents
 
     {{- /*
     NOTE: Since Ollama collates consecutive roles, for control and documents, we
-        work around this by allowing the role to contain an qualifier after the
+        work around this by allowing the role to contain a qualifier after the
         role string.
     */ -}}
 

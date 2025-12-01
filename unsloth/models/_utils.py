@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.11.4"
+__version__ = "2025.11.5"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -562,6 +562,12 @@ for model_name in model_architectures:
         config = inspect.getsource(eval(config_filename))
     except:
         continue
+    if "RopeParameters" in config:
+        try:
+            exec(f"from {config_filepath} import RopeParameters", globals())
+        except:
+            continue
+
     if "rope_scaling" in config:
         continue
     config = re.sub(
