@@ -630,9 +630,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
 
             with torch.amp.autocast(device_type = "cuda", dtype = self._autocast_dtype):
-              #with _get_inference_mode_context_manager(model):
+                # with _get_inference_mode_context_manager(model):
 
-              with torch.no_grad():
+                with torch.no_grad():
                     for (
                         input_ids_chunk,
                         attention_mask_chunk,
