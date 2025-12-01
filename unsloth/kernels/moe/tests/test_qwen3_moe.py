@@ -68,18 +68,18 @@ TOLERANCES = {
 }
 
 
-@pytest.fixture(scope = "module")
+@pytest.fixture(scope="module")
 def model_id():
     return "Qwen/Qwen3-30B-A3B"
 
 
-@pytest.fixture(scope = "module")
+@pytest.fixture(scope="module")
 def config(model_id: str):
     return AutoConfig.from_pretrained(model_id)
 
 
 @contextmanager
-def annotated_context(prelude, epilogue = "Passed!", char = "-", num_chars = 80):
+def annotated_context(prelude, epilogue="Passed!", char="-", num_chars=80):
     print(char * num_chars)
     print(prelude)
     yield
@@ -96,16 +96,16 @@ NUM_AUTOTUNE_CONFIGS = 50
 
 
 @pytest.mark.parametrize(
-    "permute_y", [True], ids = lambda x: "permute_y" if x else "no_permute_y"
+    "permute_y", [True], ids=lambda x: "permute_y" if x else "no_permute_y"
 )
 @pytest.mark.parametrize(
-    "permute_x", [True], ids = lambda x: "permute_x" if x else "no_permute_x"
+    "permute_x", [True], ids=lambda x: "permute_x" if x else "no_permute_x"
 )
 @pytest.mark.parametrize(
-    "autotune", [True], ids = lambda x: "autotune" if x else "manual"
+    "autotune", [True], ids=lambda x: "autotune" if x else "manual"
 )
-@pytest.mark.parametrize("seqlen", SEQ_LENS, ids = lambda x: f"seqlen={x}")
-@pytest.mark.parametrize("dtype", DTYPES, ids = str)
+@pytest.mark.parametrize("seqlen", SEQ_LENS, ids=lambda x: f"seqlen={x}")
+@pytest.mark.parametrize("dtype", DTYPES, ids=str)
 def test_qwen3_moe(
     config: Qwen3MoeConfig,
     seqlen: int,
@@ -157,36 +157,36 @@ def test_qwen3_moe(
     # Triton kernel grouped gemm version of MoE Block -- this is what we're testing
     fused_gemm_block = Qwen3MoeFusedGroupedGEMMBlock.from_hf(
         moe_block,
-        permute_x = permute_x,
-        permute_y = permute_y,
-        autotune = autotune,
-        kernel_config_fwd = kernel_config_fwd,
-        kernel_config_bwd_dW = kernel_config_bwd_dW,
-        kernel_config_bwd_dX = kernel_config_bwd_dX,
+        permute_x=permute_x,
+        permute_y=permute_y,
+        autotune=autotune,
+        kernel_config_fwd=kernel_config_fwd,
+        kernel_config_bwd_dW=kernel_config_bwd_dW,
+        kernel_config_bwd_dX=kernel_config_bwd_dX,
     ).to(device, dtype)
     fused_gemm_block.check_weights(moe_block)
 
     X = torch.randn(
-        bs, seqlen, hidden_size, dtype = dtype, device = device, requires_grad = True
+        bs, seqlen, hidden_size, dtype=dtype, device=device, requires_grad=True
     )
 
     # Forward
-    ref_result = run_forward(moe_block, X, is_grouped_gemm = False)
-    grouped_result = run_forward(grouped_gemm_block, X, is_grouped_gemm = True)
-    fused_result = run_forward(fused_gemm_block, X, is_grouped_gemm = True)
+    ref_result = run_forward(moe_block, X, is_grouped_gemm=False)
+    grouped_result = run_forward(grouped_gemm_block, X, is_grouped_gemm=True)
+    fused_result = run_forward(fused_gemm_block, X, is_grouped_gemm=True)
 
     with annotated_context(
         "Testing forward pass",
-        epilogue = "Passed forward tests!",
-        char = "=",
-        num_chars = 100,
+        epilogue="Passed forward tests!",
+        char="=",
+        num_chars=100,
     ):
         # Sanity checks
 
         with annotated_context(
             "Checking HF vs torch grouped gemm MoE forward outputs..."
         ):
-            check_fwd(ref_result, grouped_result, atol, rtol, verbose = False)
+            check_fwd(ref_result, grouped_result, atol, rtol, verbose=False)
 
         with annotated_context(
             "Checking torch grouped gemm MoE vs fused grouped gemm MoE forward outputs..."
@@ -195,42 +195,42 @@ def test_qwen3_moe(
             check_grouped_gemm_results(
                 grouped_result.grouped_gemm_result,
                 fused_result.grouped_gemm_result,
-                permute_y = permute_y,
-                atol = atol,
-                rtol = rtol,
-                verbose = False,
+                permute_y=permute_y,
+                atol=atol,
+                rtol=rtol,
+                verbose=False,
             )
         # Actual test
         with annotated_context(
             "Checking HF vs fused grouped gemm MoE forward outputs..."
         ):
-            check_fwd(ref_result, fused_result, atol, rtol, verbose = True)
+            check_fwd(ref_result, fused_result, atol, rtol, verbose=True)
 
     # Backward
     grad_output = torch.randn_like(ref_result.output)
     ref_backward_result = run_backward(
-        moe_block, grad_output, output = ref_result.output, X = ref_result.X
+        moe_block, grad_output, output=ref_result.output, X=ref_result.X
     )
     grouped_backward_result = run_backward(
         grouped_gemm_block,
         grad_output,
-        output = grouped_result.output,
-        X = grouped_result.X,
+        output=grouped_result.output,
+        X=grouped_result.X,
     )
     fused_backward_result = run_backward(
-        fused_gemm_block, grad_output, output = fused_result.output, X = fused_result.X
+        fused_gemm_block, grad_output, output=fused_result.output, X=fused_result.X
     )
 
     with annotated_context(
         "Testing backward pass",
-        epilogue = "Passed backward tests!",
-        char = "=",
-        num_chars = 100,
+        epilogue="Passed backward tests!",
+        char="=",
+        num_chars=100,
     ):
         # Sanity checks
         with annotated_context("Checking HF vs torch grouped gemm MoE grads..."):
             check_grads(
-                ref_backward_result, grouped_backward_result, atol, rtol, verbose = False
+                ref_backward_result, grouped_backward_result, atol, rtol, verbose=False
             )
         with annotated_context(
             "Checking torch grouped gemm MoE vs fused grouped gemm MoE grads..."
@@ -240,25 +240,25 @@ def test_qwen3_moe(
                 fused_backward_result,
                 atol,
                 rtol,
-                verbose = False,
+                verbose=False,
             )
 
         # Actual test
         with annotated_context("Checking HF vs fused grouped gemm MoE grads..."):
             check_grads(
-                ref_backward_result, fused_backward_result, atol, rtol, verbose = True
+                ref_backward_result, fused_backward_result, atol, rtol, verbose=True
             )
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--seqlen", type = int, default = 1024)
+    parser.add_argument("--seqlen", type=int, default=1024)
     parser.add_argument(
-        "--dtype", type = str, choices = ["bfloat16", "float16"], default = "bfloat16"
+        "--dtype", type=str, choices=["bfloat16", "float16"], default="bfloat16"
     )
-    parser.add_argument("--permute_x", action = "store_true")
-    parser.add_argument("--permute_y", action = "store_true")
-    parser.add_argument("--autotune", action = "store_true")
+    parser.add_argument("--permute_x", action="store_true")
+    parser.add_argument("--permute_y", action="store_true")
+    parser.add_argument("--autotune", action="store_true")
     args = parser.parse_args()
     args.dtype = getattr(torch, args.dtype)
     args_dict = vars(args)
