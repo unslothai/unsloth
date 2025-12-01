@@ -122,9 +122,7 @@ def fix_vllm_aimv2_issue():
     if Version(vllm_version) < Version("0.10.1"):
         vllm_version = importlib.util.find_spec("vllm").origin
         vllm_version = os.path.split(vllm_version)[0]
-        ovis_config = (
-            Path(vllm_version) / "transformers_utils" / "configs" / "ovis.py"
-        )
+        ovis_config = Path(vllm_version) / "transformers_utils" / "configs" / "ovis.py"
         try:
             if ovis_config.exists():
                 with open(ovis_config, "r+", encoding = "utf-8") as f:
@@ -155,6 +153,7 @@ def fix_vllm_aimv2_issue():
         except Exception as e:
             if UNSLOTH_ENABLE_LOGGING:
                 print(f"Unsloth: Failed patching vLLM with error = {str(e)}")
+
 
 def fix_vllm_guided_decoding_params():
     if importlib.util.find_spec("vllm") is None:
