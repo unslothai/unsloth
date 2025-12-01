@@ -80,14 +80,14 @@ class Qwen3MoeFusedGroupedGEMMBlock(Qwen3MoeGroupedGEMMBlock):
             gate,
             gate_up_proj,
             down_proj,
-            permute_x = permute_x,
-            permute_y = permute_y,
-            autotune = autotune,
-            kernel_config_fwd = kernel_config_fwd,
-            kernel_config_bwd_dW = kernel_config_bwd_dW,
-            kernel_config_bwd_dX = kernel_config_bwd_dX,
-            dW_only = dW_only,
-            dX_only = dX_only,
+            permute_x=permute_x,
+            permute_y=permute_y,
+            autotune=autotune,
+            kernel_config_fwd=kernel_config_fwd,
+            kernel_config_bwd_dW=kernel_config_bwd_dW,
+            kernel_config_bwd_dX=kernel_config_bwd_dX,
+            dW_only=dW_only,
+            dX_only=dX_only,
         )
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
@@ -112,37 +112,37 @@ class Qwen3MoeFusedGroupedGEMMBlock(Qwen3MoeGroupedGEMMBlock):
             hidden_states = permute(hidden_states, gather_indices, self.top_k)
         # Start expert computation
         hidden_states = grouped_gemm(
-            X = hidden_states,
-            W = self.gate_up_proj,
-            m_sizes = token_counts_by_expert,
-            gather_indices = gather_indices,
-            topk = self.top_k,
-            permute_x = self.permute_x,
-            permute_y = False,  # output of first grouped gemm should never be permuted
-            autotune = self.autotune,
-            kernel_config_fwd = self.kernel_config_fwd,
-            kernel_config_bwd_dW = self.kernel_config_bwd_dW,
-            kernel_config_bwd_dX = self.kernel_config_bwd_dX,
-            is_first_gemm = True,
-            dW_only = self.dW_only,
-            dX_only = self.dX_only,
+            X=hidden_states,
+            W=self.gate_up_proj,
+            m_sizes=token_counts_by_expert,
+            gather_indices=gather_indices,
+            topk=self.top_k,
+            permute_x=self.permute_x,
+            permute_y=False,  # output of first grouped gemm should never be permuted
+            autotune=self.autotune,
+            kernel_config_fwd=self.kernel_config_fwd,
+            kernel_config_bwd_dW=self.kernel_config_bwd_dW,
+            kernel_config_bwd_dX=self.kernel_config_bwd_dX,
+            is_first_gemm=True,
+            dW_only=self.dW_only,
+            dX_only=self.dX_only,
         )
         hidden_states = self.act_and_mul(hidden_states)
         hidden_states = grouped_gemm(
-            X = hidden_states,
-            W = self.down_proj,
-            m_sizes = token_counts_by_expert,
-            gather_indices = gather_indices,
-            topk = self.top_k,
-            permute_x = False,
-            permute_y = self.permute_y,
-            autotune = self.autotune,
-            kernel_config_fwd = self.kernel_config_fwd,
-            kernel_config_bwd_dW = self.kernel_config_bwd_dW,
-            kernel_config_bwd_dX = self.kernel_config_bwd_dX,
-            is_first_gemm = False,
-            dW_only = self.dW_only,
-            dX_only = self.dX_only,
+            X=hidden_states,
+            W=self.down_proj,
+            m_sizes=token_counts_by_expert,
+            gather_indices=gather_indices,
+            topk=self.top_k,
+            permute_x=False,
+            permute_y=self.permute_y,
+            autotune=self.autotune,
+            kernel_config_fwd=self.kernel_config_fwd,
+            kernel_config_bwd_dW=self.kernel_config_bwd_dW,
+            kernel_config_bwd_dX=self.kernel_config_bwd_dX,
+            is_first_gemm=False,
+            dW_only=self.dW_only,
+            dX_only=self.dX_only,
         )
 
         # Post-processing
@@ -155,7 +155,7 @@ class Qwen3MoeFusedGroupedGEMMBlock(Qwen3MoeGroupedGEMMBlock):
             hidden_states.view(num_tokens, self.top_k, hidden_dim)
             * routing_weights[..., None]
         )
-        hidden_states = hidden_states.sum(dim = 1)
+        hidden_states = hidden_states.sum(dim=1)
 
         hidden_states = hidden_states.view(batch_size, sequence_length, hidden_dim)
         return hidden_states, router_logits

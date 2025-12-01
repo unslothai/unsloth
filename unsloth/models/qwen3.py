@@ -115,7 +115,7 @@ def Qwen3Attention_fast_forward(
     else:
         # Extend RoPE dynamically to fit in VRA
         rotary_emb = self.rotary_emb
-        rotary_emb.extend_rope_embedding(V, seq_len = kv_seq_len)
+        rotary_emb.extend_rope_embedding(V, seq_len=kv_seq_len)
         device_index = Q.device.index
 
         if position_ids is None:
@@ -126,8 +126,8 @@ def Qwen3Attention_fast_forward(
     Q, K = fast_rope_embedding(Q, K, cos, sin)
 
     if past_key_value is not None:
-        K = torch.cat([past_key_value[0], K], dim = 2)
-        V = torch.cat([past_key_value[1], V], dim = 2)
+        K = torch.cat([past_key_value[0], K], dim=2)
+        V = torch.cat([past_key_value[1], V], dim=2)
     past_key_value = (K, V) if use_cache else None
 
     # Attention module
@@ -163,7 +163,7 @@ def Qwen3Attention_fast_forward(
                 K = K.view(1, K_M, n_kv_heads, n_groups, head_dim)
                 V = V.view(1, V_M, n_kv_heads, n_groups, head_dim)
 
-        A = xformers_attention(Q, K, V, attn_bias = causal_mask)
+        A = xformers_attention(Q, K, V, attn_bias=causal_mask)
         A = A.view(bsz, q_len, n_heads, head_dim)
 
     elif HAS_FLASH_ATTENTION and attention_mask is None:
@@ -172,7 +172,7 @@ def Qwen3Attention_fast_forward(
         V = V.transpose(1, 2)
         sw = kv_seq_len
         window = (-1, -1) if (kv_seq_len <= sw) else (sw, sw)
-        A = flash_attn_func(Q, K, V, causal = True, window_size = window)
+        A = flash_attn_func(Q, K, V, causal=True, window_size=window)
     else:
         # Grouped query attention
         # if n_groups != 1:
@@ -195,7 +195,7 @@ def Qwen3Attention_fast_forward(
             is_causal = False
 
         A = scaled_dot_product_attention(
-            Q, K, V, attn_mask = attention_mask, is_causal = is_causal
+            Q, K, V, attn_mask=attention_mask, is_causal=is_causal
         )
         # Go back to (batch_size, seq_len, n_heads, head_dim)
         A = A.transpose(1, 2).contiguous()
@@ -214,8 +214,8 @@ def Qwen3Attention_fast_forward_inference(
     hidden_states: torch.Tensor,
     past_key_value: Optional[Tuple[torch.Tensor]],
     position_ids,
-    do_prefill = False,
-    attention_mask = None,
+    do_prefill=False,
+    attention_mask=None,
 ):
     """
     https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L406
@@ -267,29 +267,29 @@ def Qwen3Attention_fast_forward_inference(
     if do_prefill:
         self.paged_attention = torch.empty(
             (KV_CACHE_INCREMENT + seq_len + 1, 2, bsz, n_kv_heads, head_dim),
-            dtype = dtype,
-            device = device,
+            dtype=dtype,
+            device=device,
         )
         self.paged_attention_K = self.paged_attention[:, 0]
         self.paged_attention_V = self.paged_attention[:, 1]
         self.paged_attention_K[:seq_len] = K1.permute(2, 0, 1, 3)
         self.paged_attention_V[:seq_len] = V1.permute(2, 0, 1, 3)
         self.temp_QA = torch.empty(
-            (2, bsz, 1, attention_size), dtype = dtype, device = device
+            (2, bsz, 1, attention_size), dtype=dtype, device=device
         )
         self.temp_KV = torch.empty(
-            (2, bsz, 1, n_kv_heads * head_dim), dtype = dtype, device = device
+            (2, bsz, 1, n_kv_heads * head_dim), dtype=dtype, device=device
         )
-        self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = device)
+        self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype=dtype, device=device)
 
         # Mistral Nemo 12b has weird dimensions
         if attention_size != hidden_size:
-            self.temp_O = torch.empty((1, bsz, hidden_size), dtype = dtype, device = device)
+            self.temp_O = torch.empty((1, bsz, hidden_size), dtype=dtype, device=device)
         else:
             self.temp_O = self.temp_QA[1][:, :, :hidden_size]
 
         self.attention = torch.empty(
-            (bsz, n_heads, 1, KV_CACHE_INCREMENT + seq_len), dtype = dtype, device = device
+            (bsz, n_heads, 1, KV_CACHE_INCREMENT + seq_len), dtype=dtype, device=device
         )
         self.scalar = 1.0 / math_sqrt(self.head_dim)
         self.half_head_dim = head_dim // 2
@@ -309,9 +309,9 @@ def Qwen3Attention_fast_forward_inference(
             (bsz, n_heads, 1, self.attention.shape[-1] + KV_CACHE_INCREMENT)
         )
 
-    Qn = fast_linear_forward(self.q_proj, Xn, out = self.temp_QA[0])
-    Kn = fast_linear_forward(self.k_proj, Xn, out = self.temp_KV[0])
-    Vn = fast_linear_forward(self.v_proj, Xn, out = self.temp_KV[1])
+    Qn = fast_linear_forward(self.q_proj, Xn, out=self.temp_QA[0])
+    Kn = fast_linear_forward(self.k_proj, Xn, out=self.temp_KV[0])
+    Vn = fast_linear_forward(self.v_proj, Xn, out=self.temp_KV[1])
     Qn = Qn.view(
         bsz, 1, n_heads, head_dim
     )  # .transpose(1, 2) # we will transpose after normalisation
@@ -399,30 +399,30 @@ def Qwen3Attention_fast_forward_inference(
         Qn *= self.scalar  # See https://github.com/ggerganov/llama.cpp/issues/7805#issuecomment-2153349963
         # It seems like doing (Q * scalar) @ K is better than (Q @ K) * scalar to stop overflows
         A = torch_matmul(
-            Qn, Knn.transpose(2, 3), out = self.attention[:, :, :, :cached_len]
+            Qn, Knn.transpose(2, 3), out=self.attention[:, :, :, :cached_len]
         )
         # if attention_mask is not None: A += attention_mask # Must add attention_mask for batched
         A[:] = torch_nn_functional_softmax(
-            A, dim = -1, dtype = torch.float32
+            A, dim=-1, dtype=torch.float32
         )  # .to(A.dtype)
-        A = torch_matmul(A, Vnn, out = Qn)
+        A = torch_matmul(A, Vnn, out=Qn)
     else:
         if SDPA_HAS_GQA:
             A = scaled_dot_product_attention(
                 Qn,
                 Knn,
                 Vnn,
-                attn_mask = attention_mask,
-                is_causal = is_causal,
-                enable_gqa = True,
+                attn_mask=attention_mask,
+                is_causal=is_causal,
+                enable_gqa=True,
             )
         else:
             A = scaled_dot_product_attention(
-                Qn, Knn, Vnn, attn_mask = attention_mask, is_causal = is_causal
+                Qn, Knn, Vnn, attn_mask=attention_mask, is_causal=is_causal
             )
     A = A.transpose(1, 2)
     A = A.reshape(bsz, 1, attention_size)
-    A = fast_linear_forward(self.o_proj, A, out = self.temp_O)
+    A = fast_linear_forward(self.o_proj, A, out=self.temp_O)
     return A, (Kn, Vn)
 
 
@@ -430,10 +430,10 @@ class FastQwen3Model(FastLlamaModel):
     @staticmethod
     def pre_patch():
         init_name, function = patch_linear_scaling(
-            model_name = "Qwen3",
-            rope_module = LlamaRotaryEmbedding,
-            scaled_rope_module = LlamaLinearScalingRotaryEmbedding,
-            attention_module = Qwen3Attention,
+            model_name="Qwen3",
+            rope_module=LlamaRotaryEmbedding,
+            scaled_rope_module=LlamaLinearScalingRotaryEmbedding,
+            attention_module=Qwen3Attention,
         )
         if init_name is not None:
             exec(function, globals())
@@ -463,30 +463,30 @@ class FastQwen3Model(FastLlamaModel):
 
     @staticmethod
     def from_pretrained(  # TODO: Change after release
-        model_name = "Qwen/Qwen3-7B",
-        max_seq_length = 4096,
-        dtype = None,
-        load_in_4bit = True,
-        token = None,
-        device_map = "sequential",
-        rope_scaling = None,
-        fix_tokenizer = True,
-        model_patcher = None,
-        tokenizer_name = None,
-        trust_remote_code = False,
+        model_name="Qwen/Qwen3-7B",
+        max_seq_length=4096,
+        dtype=None,
+        load_in_4bit=True,
+        token=None,
+        device_map="sequential",
+        rope_scaling=None,
+        fix_tokenizer=True,
+        model_patcher=None,
+        tokenizer_name=None,
+        trust_remote_code=False,
         **kwargs,
     ):
         return FastLlamaModel.from_pretrained(
-            model_name = model_name,
-            max_seq_length = max_seq_length,
-            dtype = dtype,
-            load_in_4bit = load_in_4bit,
-            token = token,
-            device_map = device_map,
-            rope_scaling = rope_scaling,
-            fix_tokenizer = fix_tokenizer,
-            model_patcher = FastQwen3Model,
-            tokenizer_name = tokenizer_name,
-            trust_remote_code = trust_remote_code,
+            model_name=model_name,
+            max_seq_length=max_seq_length,
+            dtype=dtype,
+            load_in_4bit=load_in_4bit,
+            token=token,
+            device_map=device_map,
+            rope_scaling=rope_scaling,
+            fix_tokenizer=fix_tokenizer,
+            model_patcher=FastQwen3Model,
+            tokenizer_name=tokenizer_name,
+            trust_remote_code=trust_remote_code,
             **kwargs,
         )
