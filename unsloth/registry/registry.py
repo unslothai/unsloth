@@ -62,7 +62,7 @@ class ModelInfo:
 
     @classmethod
     def construct_model_name(
-        cls, base_name, version, size, quant_type, instruct_tag, key=""
+        cls, base_name, version, size, quant_type, instruct_tag, key = ""
     ):
         key = cls.append_instruct_tag(key, instruct_tag)
         key = cls.append_quant_type(key, quant_type)
@@ -81,10 +81,10 @@ class ModelMeta:
     base_name: str
     model_version: str
     model_info_cls: type[ModelInfo]
-    model_sizes: list[str] = field(default_factory=list)
-    instruct_tags: list[str] = field(default_factory=list)
+    model_sizes: list[str] = field(default_factory = list)
+    instruct_tags: list[str] = field(default_factory = list)
     quant_types: list[QuantType] | dict[str, list[QuantType]] = field(
-        default_factory=list
+        default_factory = list
     )
     is_multimodal: bool = False
 
@@ -104,11 +104,11 @@ def register_model(
     name: str = None,
 ):
     name = name or model_info_cls.construct_model_name(
-        base_name=base_name,
-        version=version,
-        size=size,
-        quant_type=quant_type,
-        instruct_tag=instruct_tag,
+        base_name = base_name,
+        version = version,
+        size = size,
+        quant_type = quant_type,
+        instruct_tag = instruct_tag,
     )
     key = f"{org}/{name}"
 
@@ -118,14 +118,14 @@ def register_model(
         )
 
     MODEL_REGISTRY[key] = model_info_cls(
-        org=org,
-        base_name=base_name,
-        version=version,
-        size=size,
-        is_multimodal=is_multimodal,
-        instruct_tag=instruct_tag,
-        quant_type=quant_type,
-        name=name,
+        org = org,
+        base_name = base_name,
+        version = version,
+        size = size,
+        is_multimodal = is_multimodal,
+        instruct_tag = instruct_tag,
+        quant_type = quant_type,
+        name = name,
     )
 
 
@@ -137,7 +137,7 @@ def _check_model_info(model_id: str, properties: list[str] = ["lastModified"]):
     api = HfApi()
 
     try:
-        model_info: HfModelInfo = api.model_info(model_id, expand=properties)
+        model_info: HfModelInfo = api.model_info(model_id, expand = properties)
     except Exception as e:
         if isinstance(e, RepositoryNotFoundError):
             warnings.warn(f"{model_id} not found on Hugging Face")
@@ -168,24 +168,24 @@ def _register_models(model_meta: ModelMeta, include_original_model: bool = False
                 # NOTE: models registered with org="unsloth" and QUANT_TYPE.NONE are aliases of QUANT_TYPE.UNSLOTH
                 _org = "unsloth"  # unsloth models -- these are all quantized versions of the original model
                 register_model(
-                    model_info_cls=model_info_cls,
-                    org=_org,
-                    base_name=base_name,
-                    version=model_version,
-                    size=size,
-                    instruct_tag=instruct_tag,
-                    quant_type=quant_type,
-                    is_multimodal=is_multimodal,
+                    model_info_cls = model_info_cls,
+                    org = _org,
+                    base_name = base_name,
+                    version = model_version,
+                    size = size,
+                    instruct_tag = instruct_tag,
+                    quant_type = quant_type,
+                    is_multimodal = is_multimodal,
                 )
             # include original model from releasing organization
             if include_original_model:
                 register_model(
-                    model_info_cls=model_info_cls,
-                    org=org,
-                    base_name=base_name,
-                    version=model_version,
-                    size=size,
-                    instruct_tag=instruct_tag,
-                    quant_type=QuantType.NONE,
-                    is_multimodal=is_multimodal,
+                    model_info_cls = model_info_cls,
+                    org = org,
+                    base_name = base_name,
+                    version = model_version,
+                    size = size,
+                    instruct_tag = instruct_tag,
+                    quant_type = QuantType.NONE,
+                    is_multimodal = is_multimodal,
                 )
