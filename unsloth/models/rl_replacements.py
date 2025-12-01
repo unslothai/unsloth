@@ -337,7 +337,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
     replacement_string = """        if "image_sizes" in prompt_inputs:
             output["image_sizes"] = prompt_inputs["image_sizes"]
         if max_left_pad is not None:
-            output["max_left_pad"] = torch.tensor(sampling_per_token_logps.shape[0] * [max_left_pad]).unsqueeze(-1)        
+            output["max_left_pad"] = torch.tensor(prompt_ids.shape[0] * [max_left_pad]).unsqueeze(-1)        
         try:
             if self.use_vllm and getattr(self, "vllm_importance_sampling_correction", False):
                 output["sampling_per_token_logps"] = sampling_per_token_logps
