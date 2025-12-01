@@ -827,23 +827,11 @@ def grpo_trainer_compute_loss(function_name, function):
 
         max_left_pad = inputs.get("max_left_pad", 0)
         if per_token_logps is not None:
-            if ref_hidden_states is not None:
-                ref_hidden_states = ref_hidden_states[
-                    :, :-1, :
-                ]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
-            if old_hidden_states is not None:
-                old_hidden_states = old_hidden_states[
-                    :, :-1, :
-                ]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
-            per_token_logps = per_token_logps[
-                :, :-1, :
-            ]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
-
             loss, completion_length, mean_kl, delta, flat_is_ratio = (
                 grpo_compute_loss_slow(
-                    ref_hidden_states,
+                    ref_logps,
                     per_token_logps,
-                    old_hidden_states,
+                    old_logps,
                     input_ids,
                     completion_mask,
                     self.beta,
@@ -907,8 +895,8 @@ def grpo_trainer_compute_loss(function_name, function):
                     logits_to_keep = logits_to_keep,
                     completion_mask = completion_mask,
                     advantages = advantages,
-                    old_hidden_states = old_hidden_states,
-                    ref_hidden_states = ref_hidden_states,
+                    old_logps = old_logps,
+                    ref_logps = ref_logps,
                     n_chunks = self.args.unsloth_num_chunks,
                     temperature = self.args.temperature,
                     logit_softcapping = logit_softcapping,
