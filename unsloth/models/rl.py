@@ -369,6 +369,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         )
         return
     try:
+        RLConfig = eval(f"trl.trainer.{trainer_file}.{RLConfig_name}")
     except Exception as e:
         print(
             f"Unsloth: Could not load {RLConfig_name} from trl.trainer.{trainer_file}: {e}"
