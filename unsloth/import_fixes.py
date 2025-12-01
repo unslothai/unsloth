@@ -114,65 +114,62 @@ def fix_xformers_performance_issue():
                 print(f"Unsloth: Failed patching Xformers with error = {str(e)}")
 
 
-def patch_vllm_imports():
+def fix_vllm_aimv2_issue():
     if importlib.util.find_spec("vllm") is None:
         return
-
-    def fix_vllm_aimv2_issue():
-        # ValueError: 'aimv2' is already used by a Transformers config, pick another name.
-        vllm_version = importlib_version("vllm")
-        if Version(vllm_version) < Version("0.10.1"):
-            vllm_version = importlib.util.find_spec("vllm").origin
-            vllm_version = os.path.split(vllm_version)[0]
-            ovis_config = (
-                Path(vllm_version) / "transformers_utils" / "configs" / "ovis.py"
-            )
-            try:
-                if ovis_config.exists():
-                    with open(ovis_config, "r+", encoding = "utf-8") as f:
-                        text = f.read()
-                        # See https://github.com/vllm-project/vllm-ascend/issues/2046
-                        if 'AutoConfig.register("aimv2", AIMv2Config)' in text:
-                            text = text.replace(
-                                'AutoConfig.register("aimv2", AIMv2Config)',
-                                "",
-                            )
-                            text = text.replace(
-                                """backbone_config.pop('model_type')
-                    backbone_config = AutoConfig.for_model(model_type,
-                                                        **backbone_config)""",
-                                """if model_type != "aimv2":
-                        backbone_config.pop('model_type')
-                        backbone_config = AutoConfig.for_model(model_type, **backbone_config)
-                    else:
-                        backbone_config = AIMv2Config(**backbone_config)""",
-                            )
-                            f.seek(0)
-                            f.write(text)
-                            f.truncate()
-                            if UNSLOTH_ENABLE_LOGGING:
-                                print(
-                                    "Unsloth: Patching vLLM to fix `'aimv2' is already used by a Transformers config, pick another name.`"
-                                )
-            except Exception as e:
-                if UNSLOTH_ENABLE_LOGGING:
-                    print(f"Unsloth: Failed patching vLLM with error = {str(e)}")
-
-    def fix_vllm_guided_decoding_params():
-        # GuidedDecodingParmas is renamed to StructuredOutputsParams in vLLM
-        # https://github.com/vllm-project/vllm/pull/22772/files
-        # trl still wants to use GuidedDecodingParams. This is a temporary patch till trl updates
-        import vllm
-
+    # ValueError: 'aimv2' is already used by a Transformers config, pick another name.
+    vllm_version = importlib_version("vllm")
+    if Version(vllm_version) < Version("0.10.1"):
+        vllm_version = importlib.util.find_spec("vllm").origin
+        vllm_version = os.path.split(vllm_version)[0]
+        ovis_config = (
+            Path(vllm_version) / "transformers_utils" / "configs" / "ovis.py"
+        )
         try:
-            from vllm.sampling_params import GuidedDecodingParams
-        except ImportError:
-            vllm.sampling_params.GuidedDecodingParams = (
-                vllm.sampling_params.StructuredOutputsParams
-            )
+            if ovis_config.exists():
+                with open(ovis_config, "r+", encoding = "utf-8") as f:
+                    text = f.read()
+                    # See https://github.com/vllm-project/vllm-ascend/issues/2046
+                    if 'AutoConfig.register("aimv2", AIMv2Config)' in text:
+                        text = text.replace(
+                            'AutoConfig.register("aimv2", AIMv2Config)',
+                            "",
+                        )
+                        text = text.replace(
+                            """backbone_config.pop('model_type')
+                backbone_config = AutoConfig.for_model(model_type,
+                                                    **backbone_config)""",
+                            """if model_type != "aimv2":
+                    backbone_config.pop('model_type')
+                    backbone_config = AutoConfig.for_model(model_type, **backbone_config)
+                else:
+                    backbone_config = AIMv2Config(**backbone_config)""",
+                        )
+                        f.seek(0)
+                        f.write(text)
+                        f.truncate()
+                        if UNSLOTH_ENABLE_LOGGING:
+                            print(
+                                "Unsloth: Patching vLLM to fix `'aimv2' is already used by a Transformers config, pick another name.`"
+                            )
+        except Exception as e:
+            if UNSLOTH_ENABLE_LOGGING:
+                print(f"Unsloth: Failed patching vLLM with error = {str(e)}")
 
-    fix_vllm_aimv2_issue()
-    fix_vllm_guided_decoding_params()
+def fix_vllm_guided_decoding_params():
+    if importlib.util.find_spec("vllm") is None:
+        return
+    # GuidedDecodingParmas is renamed to StructuredOutputsParams in vLLM
+    # https://github.com/vllm-project/vllm/pull/22772/files
+    # trl still wants to use GuidedDecodingParams. This is a temporary patch till trl updates
+    import vllm
+
+    try:
+        from vllm.sampling_params import GuidedDecodingParams
+    except ImportError:
+        vllm.sampling_params.GuidedDecodingParams = (
+            vllm.sampling_params.StructuredOutputsParams
+        )
 
 
 def ignore_logger_messages():
