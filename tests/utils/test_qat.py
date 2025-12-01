@@ -32,15 +32,15 @@ def _get_model(qat_scheme: str, full_finetuning: bool):
     to use QAT. If `full_finetuning` is False, return the PEFT (LoRA) model.
     """
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name = "unsloth/Qwen3-1.7B",
-        load_in_4bit = False,
-        full_finetuning = full_finetuning,
-        qat_scheme = qat_scheme if full_finetuning else None,
+        model_name="unsloth/Qwen3-1.7B",
+        load_in_4bit=False,
+        full_finetuning=full_finetuning,
+        qat_scheme=qat_scheme if full_finetuning else None,
     )
     if not full_finetuning:
         model = FastLanguageModel.get_peft_model(
             model,
-            qat_scheme = qat_scheme,
+            qat_scheme=qat_scheme,
         )
     return model, tokenizer
 
@@ -140,7 +140,7 @@ def _test_model_fake_quantize(qat_scheme: bool, full_finetuning: bool):
         _test_linear_is_fake_quantized(layer.mlp.gate_proj, qat_scheme)
         _test_linear_is_fake_quantized(layer.mlp.up_proj, qat_scheme)
         _test_linear_is_fake_quantized(layer.mlp.down_proj, qat_scheme)
-    inputs = tokenizer("How are you?", return_tensors = "pt")
+    inputs = tokenizer("How are you?", return_tensors="pt")
     _test_fake_quantizers_are_called(model, inputs, full_finetuning)
 
 
@@ -148,9 +148,9 @@ def _test_model_fake_quantize(qat_scheme: bool, full_finetuning: bool):
 # how to disable model caching before re-enabling this test
 @pytest.mark.parametrize("qat_scheme", ["fp8-int4", "fp8-fp8"])
 def _test_full_model_fake_quantize(qat_scheme: bool):
-    _test_model_fake_quantize(qat_scheme, full_finetuning = True)
+    _test_model_fake_quantize(qat_scheme, full_finetuning=True)
 
 
 @pytest.mark.parametrize("qat_scheme", ["fp8-int4", "fp8-fp8"])
 def test_lora_model_fake_quantize(qat_scheme: bool):
-    _test_model_fake_quantize(qat_scheme, full_finetuning = False)
+    _test_model_fake_quantize(qat_scheme, full_finetuning=False)
