@@ -59,9 +59,7 @@ def Qwen3MoeSparseMoeBlock_fast_forward(self, X, temp_gate = None, temp_up = Non
         self.gate_proj, X, out = temp_gate
     )  # pretty much the only change from transformers implementation.
 
-    routing_weights = torch_nn_functional_softmax(
-        router_logits, dim = -1, dtype = torch.float32
-    )
+    routing_weights = torch_nn_functional_softmax(router_logits, dim = -1, dtype = torch.float32)
     routing_weights, selected_experts = torch.topk(routing_weights, self.top_k, dim = -1)
     routing_weights /= routing_weights.sum(dim = -1, keepdim = True)
     # we cast back to the input dtype

@@ -47,13 +47,13 @@ BAD_MAPPINGS = {
 
 def __get_model_name(
     model_name,
-    load_in_4bit=True,
-    INT_TO_FLOAT_MAPPER=None,
-    FLOAT_TO_INT_MAPPER=None,
-    MAP_TO_UNSLOTH_16bit=None,
-    load_in_fp8=False,
-    FLOAT_TO_FP8_BLOCK_MAPPER=None,
-    FLOAT_TO_FP8_ROW_MAPPER=None,
+    load_in_4bit = True,
+    INT_TO_FLOAT_MAPPER = None,
+    FLOAT_TO_INT_MAPPER = None,
+    MAP_TO_UNSLOTH_16bit = None,
+    load_in_fp8 = False,
+    FLOAT_TO_FP8_BLOCK_MAPPER = None,
+    FLOAT_TO_FP8_ROW_MAPPER = None,
 ):
     model_name = str(model_name)
     lower_model_name = model_name.lower()
@@ -116,7 +116,7 @@ def _get_new_mapper():
         import requests
 
         new_mapper = "https://raw.githubusercontent.com/unslothai/unsloth/main/unsloth/models/mapper.py"
-        with requests.get(new_mapper, timeout=3) as new_mapper:
+        with requests.get(new_mapper, timeout = 3) as new_mapper:
             new_mapper = new_mapper.text
         new_mapper = new_mapper[new_mapper.find("__INT_TO_FLOAT_MAPPER") :]
         new_mapper = (
@@ -135,17 +135,17 @@ def _get_new_mapper():
         return {}, {}, {}
 
 
-def get_model_name(model_name, load_in_4bit=True, load_in_fp8=False):
+def get_model_name(model_name, load_in_4bit = True, load_in_fp8 = False):
     assert load_in_fp8 in (True, False, "block")
     new_model_name = __get_model_name(
-        model_name=model_name,
-        load_in_4bit=load_in_4bit,
-        INT_TO_FLOAT_MAPPER=INT_TO_FLOAT_MAPPER,
-        FLOAT_TO_INT_MAPPER=FLOAT_TO_INT_MAPPER,
-        MAP_TO_UNSLOTH_16bit=MAP_TO_UNSLOTH_16bit,
-        load_in_fp8=load_in_fp8,
-        FLOAT_TO_FP8_BLOCK_MAPPER=FLOAT_TO_FP8_BLOCK_MAPPER,
-        FLOAT_TO_FP8_ROW_MAPPER=FLOAT_TO_FP8_ROW_MAPPER,
+        model_name = model_name,
+        load_in_4bit = load_in_4bit,
+        INT_TO_FLOAT_MAPPER = INT_TO_FLOAT_MAPPER,
+        FLOAT_TO_INT_MAPPER = FLOAT_TO_INT_MAPPER,
+        MAP_TO_UNSLOTH_16bit = MAP_TO_UNSLOTH_16bit,
+        load_in_fp8 = load_in_fp8,
+        FLOAT_TO_FP8_BLOCK_MAPPER = FLOAT_TO_FP8_BLOCK_MAPPER,
+        FLOAT_TO_FP8_ROW_MAPPER = FLOAT_TO_FP8_ROW_MAPPER,
     )
     # In the rare case, we convert bad model names to other names
     # For eg too large dynamic quants or MoEs
@@ -166,14 +166,14 @@ def get_model_name(model_name, load_in_4bit=True, load_in_fp8=False):
             _get_new_mapper()
         )
         upgraded_model_name = __get_model_name(
-            model_name=model_name,
-            load_in_4bit=load_in_4bit,
-            INT_TO_FLOAT_MAPPER=NEW_INT_TO_FLOAT_MAPPER,
-            FLOAT_TO_INT_MAPPER=NEW_FLOAT_TO_INT_MAPPER,
-            MAP_TO_UNSLOTH_16bit=NEW_MAP_TO_UNSLOTH_16bit,
-            load_in_fp8=load_in_fp8,
-            FLOAT_TO_FP8_BLOCK_MAPPER=FLOAT_TO_FP8_BLOCK_MAPPER,
-            FLOAT_TO_FP8_ROW_MAPPER=FLOAT_TO_FP8_ROW_MAPPER,
+            model_name = model_name,
+            load_in_4bit = load_in_4bit,
+            INT_TO_FLOAT_MAPPER = NEW_INT_TO_FLOAT_MAPPER,
+            FLOAT_TO_INT_MAPPER = NEW_FLOAT_TO_INT_MAPPER,
+            MAP_TO_UNSLOTH_16bit = NEW_MAP_TO_UNSLOTH_16bit,
+            load_in_fp8 = load_in_fp8,
+            FLOAT_TO_FP8_BLOCK_MAPPER = FLOAT_TO_FP8_BLOCK_MAPPER,
+            FLOAT_TO_FP8_ROW_MAPPER = FLOAT_TO_FP8_ROW_MAPPER,
         )
         if upgraded_model_name is not None:
             raise NotImplementedError(
@@ -207,8 +207,8 @@ def _get_torchao_fp8_config(fp8_mode: str):
         raise ValueError("Unsloth: `load_in_fp8` supports only 'row' or 'block'")
 
     return Float8DynamicActivationFloat8WeightConfig(
-        granularity=granularity,
-        activation_value_lb=1e-12,
+        granularity = granularity,
+        activation_value_lb = 1e-12,
     )
 
 
@@ -255,12 +255,12 @@ def _offline_quantize_to_fp8(model_name: str, fp8_mode: str) -> str:
         auto_processor = AutoProcessor if is_vlm else AutoTokenizer
         model = auto_model.from_pretrained(
             model_name,
-            torch_dtype="auto",
-            device_map="auto",
-            quantization_config=qconfig,
+            torch_dtype = "auto",
+            device_map = "auto",
+            quantization_config = qconfig,
         )
         tokenizer = auto_processor.from_pretrained(model_name)
-        model.save_pretrained(new_model_name, safe_serialization=False)
+        model.save_pretrained(new_model_name, safe_serialization = False)
         del model
         for _ in range(2):
             torch.cuda.empty_cache()
@@ -276,8 +276,8 @@ def _tag_model_with_fp8_torchao_config(model: torch.nn.Module, fp8_mode: str):
     try:
         base_config = _get_torchao_fp8_config(fp8_mode)
         model.torchao_config = TorchAOConfig(
-            qat_scheme=None,
-            base_config_and_filter_fns=[(base_config, None)],
+            qat_scheme = None,
+            base_config_and_filter_fns = [(base_config, None)],
         )
     except:
         pass

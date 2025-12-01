@@ -114,16 +114,6 @@ def fix_xformers_performance_issue():
                 print(f"Unsloth: Failed patching Xformers with error = {str(e)}")
 
 
-def fix_vllm_aimv2_issue():
-    if importlib.util.find_spec("vllm") is None:
-        return
-    # ValueError: 'aimv2' is already used by a Transformers config, pick another name.
-    vllm_version = importlib_version("vllm")
-    if Version(vllm_version) < Version("0.10.1"):
-        vllm_version = importlib.util.find_spec("vllm").origin
-        vllm_version = os.path.split(vllm_version)[0]
-        ovis_config = Path(vllm_version) / "transformers_utils" / "configs" / "ovis.py"
-        try:
 # ValueError: 'aimv2' is already used by a Transformers config, pick another name.
 def fix_vllm_aimv2_issue():
     if importlib.util.find_spec("vllm") is None:
@@ -163,22 +153,6 @@ def fix_vllm_aimv2_issue():
         except Exception as e:
             if UNSLOTH_ENABLE_LOGGING:
                 print(f"Unsloth: Failed patching vLLM with error = {str(e)}")
-
-
-def fix_vllm_guided_decoding_params():
-    if importlib.util.find_spec("vllm") is None:
-        return
-    # GuidedDecodingParmas is renamed to StructuredOutputsParams in vLLM
-    # https://github.com/vllm-project/vllm/pull/22772/files
-    # trl still wants to use GuidedDecodingParams. This is a temporary patch till trl updates
-    import vllm
-
-    try:
-        from vllm.sampling_params import GuidedDecodingParams
-    except ImportError:
-        vllm.sampling_params.GuidedDecodingParams = (
-            vllm.sampling_params.StructuredOutputsParams
-        )
 
 
 def ignore_logger_messages():
