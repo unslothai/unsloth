@@ -24,7 +24,7 @@ max_seq_length = 2048  # Can increase for longer reasoning traces
 lora_rank = 64  # Larger rank = smarter, but slower
 
 
-def evaluate_merged_model(result_queue, load_in_4bit=False, load_in_8bit=False):
+def evaluate_merged_model(result_queue, load_in_4bit = False, load_in_8bit = False):
     from unsloth import FastLanguageModel
     from tests.utils.aime_eval import evaluate_model_aime
 
@@ -32,12 +32,12 @@ def evaluate_merged_model(result_queue, load_in_4bit=False, load_in_8bit=False):
     lora_rank = 64  # Larger rank = smarter, but slower
 
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name="./final_merged_model",
-        max_seq_length=max_seq_length,
-        load_in_4bit=True,  # False for LoRA 16bit
-        fast_inference=True,  # Enable vLLM fast inference
-        max_lora_rank=lora_rank,
-        gpu_memory_utilization=0.8,  # Reduce if out of memory
+        model_name = "./final_merged_model",
+        max_seq_length = max_seq_length,
+        load_in_4bit = True,  # False for LoRA 16bit
+        fast_inference = True,  # Enable vLLM fast inference
+        max_lora_rank = lora_rank,
+        gpu_memory_utilization = 0.8,  # Reduce if out of memory
     )
 
     print(f"\n{'='*60}")
@@ -53,14 +53,14 @@ def evaluate_merged_model(result_queue, load_in_4bit=False, load_in_8bit=False):
     print(f"{'='*60}")
 
     evaluate_model_aime(
-        model=model,
-        tokenizer=tokenizer,
-        model_type=model_type,
-        temperature=0.3,
-        n_sampling=8,
-        max_tokens=32768,
-        top_p=0.95,
-        seed=0,
+        model = model,
+        tokenizer = tokenizer,
+        model_type = model_type,
+        temperature = 0.3,
+        n_sampling = 8,
+        max_tokens = 32768,
+        top_p = 0.95,
+        seed = 0,
     )
 
     result_queue.put(results)
@@ -74,12 +74,12 @@ def evaluate_merged_model(result_queue, load_in_4bit=False, load_in_8bit=False):
 # Main execution code should be wrapped in this guard
 def training_run(result_queue):
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name="meta-llama/Llama-3.2-3B-Instruct",
-        max_seq_length=max_seq_length,
-        load_in_4bit=False,  # False for LoRA 16bit
-        fast_inference=True,  # Enable vLLM fast inference
-        max_lora_rank=lora_rank,
-        gpu_memory_utilization=0.8,  # Reduce if out of memory
+        model_name = "meta-llama/Llama-3.2-3B-Instruct",
+        max_seq_length = max_seq_length,
+        load_in_4bit = False,  # False for LoRA 16bit
+        fast_inference = True,  # Enable vLLM fast inference
+        max_lora_rank = lora_rank,
+        gpu_memory_utilization = 0.8,  # Reduce if out of memory
     )
 
     """### Helper Functions
@@ -166,10 +166,10 @@ def training_run(result_queue):
         lengths = dataset.map(
             lambda x: {
                 "tokens": tokenizer.apply_chat_template(
-                    x["prompt"], add_generation_prompt=True, tokenize=True
+                    x["prompt"], add_generation_prompt = True, tokenize = True
                 )
             },
-            batched=True,
+            batched = True,
         ).map(lambda x: {"length": len(x["tokens"])})["length"]
 
         max_length = max(lengths)
@@ -181,7 +181,7 @@ def training_run(result_queue):
         )
         return max_length, avg_length
 
-    def extract_unsloth_answer(text, start_tag="<SOLUTION>", end_tag="</SOLUTION>"):
+    def extract_unsloth_answer(text, start_tag = "<SOLUTION>", end_tag = "</SOLUTION>"):
         """Extract answer from Unsloth SOLUTION tags"""
         pattern = re.escape(start_tag) + r"(.*?)" + re.escape(end_tag)
         matches = re.findall(pattern, text, re.DOTALL)
@@ -213,10 +213,10 @@ def training_run(result_queue):
         """Count tokens in text"""
         if not text:
             return 0
-        encoding = tokenizer_instance(text, return_tensors="pt")
+        encoding = tokenizer_instance(text, return_tensors = "pt")
         return len(encoding["input_ids"][0])
 
-    def check_format_compliance(text, format_type="unsloth"):
+    def check_format_compliance(text, format_type = "unsloth"):
         """Check if response follows expected format"""
         if format_type == "unsloth":
             reasoning_start = "<start_reasoning>"
@@ -419,11 +419,11 @@ def training_run(result_queue):
         # Save comparison
         comparison_data = {
             "summary": all_results,
-            "best_model": max(all_results, key=lambda x: x["exact_match_pct"]),
+            "best_model": max(all_results, key = lambda x: x["exact_match_pct"]),
         }
 
         with open("model_comparison_comprehensive.json", "w") as f:
-            json.dump(comparison_data, f, indent=4)
+            json.dump(comparison_data, f, indent = 4)
 
         print(
             f"\nBest performing model: {comparison_data['best_model']['model_type']} "
@@ -449,10 +449,10 @@ def training_run(result_queue):
     from datasets import load_dataset
 
     # Load GSM8K
-    gsm8k_dataset = load_dataset("openai/gsm8k", "main", split="train")
+    gsm8k_dataset = load_dataset("openai/gsm8k", "main", split = "train")
 
     # Load LIMO (adjust this based on your access method)
-    limo_train = load_dataset("GAIR/LIMO", split="train")
+    limo_train = load_dataset("GAIR/LIMO", split = "train")
 
     # Prepare datasets
     gsm8k_train = prepare_gsm8k_dataset(gsm8k_dataset)
@@ -466,28 +466,28 @@ def training_run(result_queue):
 
     # Single temperature evaluation on combined dataset
     results = evaluate_model_aime(
-        model=model,
-        tokenizer=tokenizer,
-        model_type="base",
-        temperature=0.3,
-        n_sampling=8,
-        max_tokens=32768,
-        top_p=0.95,
-        seed=0,
+        model = model,
+        tokenizer = tokenizer,
+        model_type = "base",
+        temperature = 0.3,
+        n_sampling = 8,
+        max_tokens = 32768,
+        top_p = 0.95,
+        seed = 0,
     )
 
     from unsloth.chat_templates import get_chat_template
 
     tokenizer = get_chat_template(
         tokenizer,
-        chat_template="llama-3.1",
+        chat_template = "llama-3.1",
     )
 
     def formatting_prompts_func(examples):
         convos = examples["prompt"]
         texts = [
             tokenizer.apply_chat_template(
-                convo, tokenize=False, add_generation_prompt=False
+                convo, tokenize = False, add_generation_prompt = False
             )
             for convo in convos
         ]
@@ -497,7 +497,7 @@ def training_run(result_queue):
 
     limo_train = limo_train.map(
         formatting_prompts_func,
-        batched=True,
+        batched = True,
     )
 
     from trl import SFTTrainer
@@ -510,8 +510,8 @@ def training_run(result_queue):
 
     model = FastLanguageModel.get_peft_model(
         model,
-        r=lora_rank,  # Choose any number > 0 ! Suggested 8, 16, 32, 64, 128
-        target_modules=[
+        r = lora_rank,  # Choose any number > 0 ! Suggested 8, 16, 32, 64, 128
+        target_modules = [
             "q_proj",
             "k_proj",
             "v_proj",
@@ -520,37 +520,37 @@ def training_run(result_queue):
             "up_proj",
             "down_proj",
         ],  # Remove QKVO if out of memory
-        lora_alpha=lora_rank,
-        use_gradient_checkpointing="unsloth",  # Enable long context finetuning
-        random_state=3407,
+        lora_alpha = lora_rank,
+        use_gradient_checkpointing = "unsloth",  # Enable long context finetuning
+        random_state = 3407,
     )
 
     if limo_train is not None:
         trainer = SFTTrainer(
-            model=model,
-            tokenizer=tokenizer,
-            train_dataset=limo_train,
-            dataset_text_field="text",
-            max_seq_length=max_seq_length,
-            data_collator=DataCollatorForSeq2Seq(tokenizer=tokenizer),
-            dataset_num_proc=2,
-            packing=False,  # Can make training 5x faster for short sequences.
-            args=TrainingArguments(
-                per_device_train_batch_size=2,
-                gradient_accumulation_steps=4,
-                warmup_steps=5,
-                num_train_epochs=1,  # Set this for 1 full training run.
+            model = model,
+            tokenizer = tokenizer,
+            train_dataset = limo_train,
+            dataset_text_field = "text",
+            max_seq_length = max_seq_length,
+            data_collator = DataCollatorForSeq2Seq(tokenizer = tokenizer),
+            dataset_num_proc = 2,
+            packing = False,  # Can make training 5x faster for short sequences.
+            args = TrainingArguments(
+                per_device_train_batch_size = 2,
+                gradient_accumulation_steps = 4,
+                warmup_steps = 5,
+                num_train_epochs = 1,  # Set this for 1 full training run.
                 # max_steps = 60,
-                learning_rate=2e-4,
-                fp16=not is_bfloat16_supported(),
-                bf16=is_bfloat16_supported(),
-                logging_steps=1,
-                optim="adamw_8bit",
-                weight_decay=0.01,
-                lr_scheduler_type="linear",
-                seed=3407,
-                output_dir="outputs",
-                report_to="none",  # Use this for WandB etc
+                learning_rate = 2e-4,
+                fp16 = not is_bfloat16_supported(),
+                bf16 = is_bfloat16_supported(),
+                logging_steps = 1,
+                optim = "adamw_8bit",
+                weight_decay = 0.01,
+                lr_scheduler_type = "linear",
+                seed = 3407,
+                output_dir = "outputs",
+                report_to = "none",  # Use this for WandB etc
             ),
         )
 
@@ -558,8 +558,8 @@ def training_run(result_queue):
 
         trainer = train_on_responses_only(
             trainer,
-            instruction_part="<|start_header_id|>user<|end_header_id|>\n\n",
-            response_part="<|start_header_id|>assistant<|end_header_id|>\n\n",
+            instruction_part = "<|start_header_id|>user<|end_header_id|>\n\n",
+            response_part = "<|start_header_id|>assistant<|end_header_id|>\n\n",
         )
 
         # Train
@@ -588,7 +588,7 @@ def training_run(result_queue):
     PRINT_EVERY_STEPS = 5
 
     match_numbers = re.compile(
-        solution_start + r".*?([\d\.\,]{1,})", flags=re.MULTILINE | re.DOTALL
+        solution_start + r".*?([\d\.\,]{1,})", flags = re.MULTILINE | re.DOTALL
     )
 
     def check_numbers(prompts, completions, answer, **kwargs):
@@ -642,37 +642,37 @@ def training_run(result_queue):
     from trl import GRPOConfig, GRPOTrainer
 
     training_args = GRPOConfig(
-        learning_rate=5e-6,
-        weight_decay=0.1,
-        warmup_ratio=0.1,
-        lr_scheduler_type="cosine",
-        optim="adamw_torch_fused",
-        logging_steps=1,
-        per_device_train_batch_size=1,
-        gradient_accumulation_steps=4,  # Increase to 4 for smoother training
-        num_generations=8,  # Decrease if out of memory
-        max_prompt_length=max_prompt_length,
-        max_completion_length=max_seq_length - max_prompt_length,
+        learning_rate = 5e-6,
+        weight_decay = 0.1,
+        warmup_ratio = 0.1,
+        lr_scheduler_type = "cosine",
+        optim = "adamw_torch_fused",
+        logging_steps = 1,
+        per_device_train_batch_size = 1,
+        gradient_accumulation_steps = 4,  # Increase to 4 for smoother training
+        num_generations = 8,  # Decrease if out of memory
+        max_prompt_length = max_prompt_length,
+        max_completion_length = max_seq_length - max_prompt_length,
         # num_train_epochs = 1, # Set to 1 for a full training run
         # max_steps = 250,
-        max_steps=1000,
-        save_steps=250,
-        max_grad_norm=0.1,
-        report_to="none",  # Can use Weights & Biases
-        output_dir="outputs",
+        max_steps = 1000,
+        save_steps = 250,
+        max_grad_norm = 0.1,
+        report_to = "none",  # Can use Weights & Biases
+        output_dir = "outputs",
     )
 
     trainer = GRPOTrainer(
-        model=model,
-        processing_class=tokenizer,
-        reward_funcs=[
+        model = model,
+        processing_class = tokenizer,
+        reward_funcs = [
             match_format_exactly,
             match_format_approximately,
             check_answer_correctness,
             check_numbers,
         ],
-        args=training_args,
-        train_dataset=gsm8k_train,
+        args = training_args,
+        train_dataset = gsm8k_train,
     )
 
     # Train
@@ -696,14 +696,14 @@ def training_run(result_queue):
     print(f"{'='*60}")
 
     grpo_results = evaluate_model_aime(
-        model=model,
-        tokenizer=tokenizer,
-        model_type="grpo",
-        temperature=0.3,
-        n_sampling=8,
-        max_tokens=32768,
-        top_p=0.95,
-        seed=0,
+        model = model,
+        tokenizer = tokenizer,
+        model_type = "grpo",
+        temperature = 0.3,
+        n_sampling = 8,
+        max_tokens = 32768,
+        top_p = 0.95,
+        seed = 0,
     )
 
     all_results.append(grpo_results)
@@ -716,7 +716,7 @@ def training_run(result_queue):
     # Save as merged model
     try:
         model.save_pretrained_merged(
-            "final_merged_model", tokenizer, save_method="merged_16bit"
+            "final_merged_model", tokenizer, save_method = "merged_16bit"
         )
         print("✅ Merged model saved to: final_merged_model/")
     except Exception as e:
@@ -774,12 +774,12 @@ def training_run(result_queue):
 
 
 if __name__ == "__main__":
-    mp.set_start_method("spawn", force=True)
+    mp.set_start_method("spawn", force = True)
     result_queue = mp.Queue()
     all_results = []
 
     # run main finetuning and grpo loop
-    p = mp.Process(target=training_run, args=(result_queue,))
+    p = mp.Process(target = training_run, args = (result_queue,))
     p.start()
     p.join()
 
@@ -787,7 +787,7 @@ if __name__ == "__main__":
     all_results = results
 
     # evaluate merged model loaded 16bits
-    p = mp.Process(target=evaluate_merged_model, args=(result_queue, False, False))
+    p = mp.Process(target = evaluate_merged_model, args = (result_queue, False, False))
     p.start()
     p.join()
 
@@ -796,7 +796,7 @@ if __name__ == "__main__":
     safe_remove_directory("./unsloth_compiled_cache")
 
     # Merged model load 8 bits model AIME eval
-    p = mp.Process(target=evaluate_merged_model, args=(result_queue, False, True))
+    p = mp.Process(target = evaluate_merged_model, args = (result_queue, False, True))
     p.start()
     p.join()
 
@@ -806,7 +806,7 @@ if __name__ == "__main__":
     safe_remove_directory("./unsloth_compiled_cache")
 
     # Merged model load 4 bits model AIME eval
-    p = mp.Process(target=evaluate_merged_model, args=(result_queue, True, False))
+    p = mp.Process(target = evaluate_merged_model, args = (result_queue, True, False))
     p.start()
     p.join()
 
