@@ -155,6 +155,22 @@ def fix_vllm_aimv2_issue():
                 print(f"Unsloth: Failed patching vLLM with error = {str(e)}")
 
 
+def fix_vllm_guided_decoding_params():
+    if importlib.util.find_spec("vllm") is None:
+        return
+    # GuidedDecodingParmas is renamed to StructuredOutputsParams in vLLM
+    # https://github.com/vllm-project/vllm/pull/22772/files
+    # trl still wants to use GuidedDecodingParams. This is a temporary patch till trl updates
+    import vllm
+
+    try:
+        from vllm.sampling_params import GuidedDecodingParams
+    except ImportError:
+        vllm.sampling_params.GuidedDecodingParams = (
+            vllm.sampling_params.StructuredOutputsParams
+        )
+
+
 def ignore_logger_messages():
     # Ignore Environment variable `HF_TOKEN` is set
     try:
