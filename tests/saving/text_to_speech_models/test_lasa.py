@@ -1,6 +1,7 @@
 from unsloth import FastLanguageModel, FastModel
 from transformers import CsmForConditionalGeneration
 import torch
+
 # ruff: noqa
 import sys
 from pathlib import Path
@@ -22,6 +23,7 @@ require_python_package("xcodec2")
 
 import soundfile as sf
 from xcodec2.modeling_xcodec2 import XCodec2Model
+
 XCODEC2_MODEL_NAME = "HKUST-Audio/xcodec2"
 SAMPLE_RATE = 16000
 DEVICE = "cuda"
@@ -32,7 +34,7 @@ try:
 except Exception as e:
     raise f"ERROR loading XCodec2 model: {e}."
 
-codec_model.to('cpu')
+codec_model.to("cpu")
 
 print(f"\n{'='*80}")
 print("🔍 SECTION 1: Loading Model and LoRA Adapters")
@@ -42,8 +44,8 @@ max_seq_length = 2048
 model, tokenizer = FastLanguageModel.from_pretrained(
     model_name = "unsloth/Llasa-1B",
     max_seq_length = max_seq_length,
-    dtype = None, # Select None for auto detection
-    load_in_4bit = False, # Choose True for 4bit which reduces memory
+    dtype = None,  # Select None for auto detection
+    load_in_4bit = False,  # Choose True for 4bit which reduces memory
     # token = "hf_...", # use one if using gated models like meta-llama/Llama-2-7b-hf
 )
 
@@ -52,20 +54,19 @@ base_model_class = model.__class__.__name__
 
 model = FastLanguageModel.get_peft_model(
     model,
-    r = 128, # Choose any number > 0 ! Suggested 8, 16, 32, 64, 128
+    r = 128,  # Choose any number > 0 ! Suggested 8, 16, 32, 64, 128
     target_modules = ["q_proj", "v_proj"],
     lora_alpha = 128,
-    lora_dropout = 0, # Supports any, but = 0 is optimized
-    bias = "none",    # Supports any, but = "none" is optimized
+    lora_dropout = 0,  # Supports any, but = 0 is optimized
+    bias = "none",  # Supports any, but = "none" is optimized
     # [NEW] "unsloth" uses 30% less VRAM, fits 2x larger batch sizes!
-    use_gradient_checkpointing = "unsloth", # True or "unsloth" for very long context
+    use_gradient_checkpointing = "unsloth",  # True or "unsloth" for very long context
     random_state = 3407,
     use_rslora = False,  # We support rank stabilized LoRA
-    loftq_config = None, # And LoftQ
+    loftq_config = None,  # And LoftQ
 )
 
 print("✅ Model and LoRA adapters loaded successfully!")
-
 
 
 print(f"\n{'='*80}")
@@ -80,6 +81,7 @@ print(f"\n{'='*80}")
 print("🔍 SECTION 3: Checking Config Model Class Type")
 print(f"{'='*80}")
 
+
 def find_lora_base_model(model_to_inspect):
     current = model_to_inspect
     if hasattr(current, "base_model"):
@@ -87,14 +89,14 @@ def find_lora_base_model(model_to_inspect):
     if hasattr(current, "model"):
         current = current.model
     return current
-pass
 
 
 config_model = find_lora_base_model(model) if isinstance(model, PeftModel) else model
 
-assert config_model.__class__.__name__ == base_model_class, f"Expected config_model class to be {base_model_class}"
+assert (
+    config_model.__class__.__name__ == base_model_class
+), f"Expected config_model class to be {base_model_class}"
 print("✅ config_model returns correct Base Model class:", str(base_model_class))
-
 
 
 print(f"\n{'='*80}")
@@ -117,13 +119,13 @@ print(f"{'='*80}")
 model, tokenizer = FastLanguageModel.from_pretrained(
     model_name = "./lasa",
     max_seq_length = max_seq_length,
-    dtype = None, # Select None for auto detection
-    load_in_4bit = False, # Choose True for 4bit which reduces memory
+    dtype = None,  # Select None for auto detection
+    load_in_4bit = False,  # Choose True for 4bit which reduces memory
     # token = "hf_...", # use one if using gated models like meta-llama/Llama-2-7b-hf
 )
 
-#from transformers import AutoProcessor
-#processor = AutoProcessor.from_pretrained("unsloth/csm-1b")
+# from transformers import AutoProcessor
+# processor = AutoProcessor.from_pretrained("unsloth/csm-1b")
 
 print("✅ Model loaded for inference successfully!")
 
@@ -135,23 +137,24 @@ print(f"{'='*80}")
 
 from transformers import pipeline
 import torch
+
 output_audio_path = "lasa_audio.wav"
 input_text = "Hey there my name is Elise, <giggles> and I'm a speech generation model that can sound like a person."
 
 FastLanguageModel.for_inference(model)
 
-def ids_to_speech_tokens(speech_ids):
 
+def ids_to_speech_tokens(speech_ids):
     speech_tokens_str = []
     for speech_id in speech_ids:
         speech_tokens_str.append(f"<|s_{speech_id}|>")
     return speech_tokens_str
 
-def extract_speech_ids(speech_tokens_str):
 
+def extract_speech_ids(speech_tokens_str):
     speech_ids = []
     for token_str in speech_tokens_str:
-        if token_str.startswith('<|s_') and token_str.endswith('|>'):
+        if token_str.startswith("<|s_") and token_str.endswith("|>"):
             num_str = token_str[4:-2]
 
             num = int(num_str)
@@ -160,40 +163,40 @@ def extract_speech_ids(speech_tokens_str):
             print(f"Unexpected token: {token_str}")
     return speech_ids
 
-#TTS start!
+
+# TTS start!
 with torch.inference_mode():
-    with torch.amp.autocast('cuda',dtype=model.dtype):
-        formatted_text = f"<|TEXT_UNDERSTANDING_START|>{input_text}<|TEXT_UNDERSTANDING_END|>"
+    with torch.amp.autocast("cuda", dtype = model.dtype):
+        formatted_text = (
+            f"<|TEXT_UNDERSTANDING_START|>{input_text}<|TEXT_UNDERSTANDING_END|>"
+        )
 
         # Tokenize the text
         chat = [
             {"role": "user", "content": "Convert the text to speech:" + formatted_text},
-            {"role": "assistant", "content": "<|SPEECH_GENERATION_START|>"}
+            {"role": "assistant", "content": "<|SPEECH_GENERATION_START|>"},
         ]
 
         input_ids = tokenizer.apply_chat_template(
-            chat,
-            tokenize=True,
-            return_tensors='pt',
-            continue_final_message=True
+            chat, tokenize = True, return_tensors = "pt", continue_final_message = True
         )
-        input_ids = input_ids.to('cuda')
+        input_ids = input_ids.to("cuda")
 
-        speech_end_id = tokenizer.convert_tokens_to_ids('<|SPEECH_GENERATION_END|>')
+        speech_end_id = tokenizer.convert_tokens_to_ids("<|SPEECH_GENERATION_END|>")
 
         # Generate the speech autoregressively
         outputs = model.generate(
             input_ids,
-            max_length=2048,  # We trained our model with a max length of 2048
-            eos_token_id= speech_end_id ,
-            do_sample=True,
-            top_p=1.2,           #  Adjusts the diversity of generated content
-            temperature=1.2,   #  Controls randomness in output
+            max_length = 2048,  # We trained our model with a max length of 2048
+            eos_token_id = speech_end_id,
+            do_sample = True,
+            top_p = 1.2,  #  Adjusts the diversity of generated content
+            temperature = 1.2,  #  Controls randomness in output
         )
     # Extract the speech tokens
-    generated_ids = outputs[0][input_ids.shape[1]:-1]
+    generated_ids = outputs[0][input_ids.shape[1] : -1]
 
-    speech_tokens = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
+    speech_tokens = tokenizer.batch_decode(generated_ids, skip_special_tokens = True)
 
     # Convert  token <|s_23456|> to int 23456
     speech_tokens = extract_speech_ids(speech_tokens)

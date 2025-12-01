@@ -18,51 +18,75 @@ from pathlib import Path
 from importlib.metadata import version as importlib_version
 from packaging.version import Version
 import logging
+
 UNSLOTH_ENABLE_LOGGING = os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") == "1"
+
 
 # Ignore logging messages
 class HideLoggingMessage(logging.Filter):
-    __slots__ = "text",
-    def __init__(self, text): self.text = text
-    def filter(self, x): return not (self.text in x.getMessage())
-pass
+    __slots__ = ("text",)
+
+    def __init__(self, text):
+        self.text = text
+
+    def filter(self, x):
+        return not (self.text in x.getMessage())
+
 
 # Fix up AttributeError: 'MessageFactory' object has no attribute 'GetPrototype'
 # MUST do this at the start primarily due to tensorflow causing issues
 def fix_message_factory_issue():
     try:
         import google.protobuf.message_factory
+
         class MessageFactory:
-            def CreatePrototype(self, *args, **kwargs): return
-            def GetMessages(self, *args, **kwargs): return
-            def GetPrototype(self, *args, **kwargs): return
+            def CreatePrototype(self, *args, **kwargs):
+                return
+
+            def GetMessages(self, *args, **kwargs):
+                return
+
+            def GetPrototype(self, *args, **kwargs):
+                return
+
         if not hasattr(google.protobuf.message_factory, "MessageFactory"):
             if UNSLOTH_ENABLE_LOGGING:
                 print("Unsloth: Patching protobuf.MessageFactory as it doesn't exist")
             google.protobuf.message_factory.MessageFactory = MessageFactory
-        elif hasattr(google.protobuf.message_factory, "MessageFactory") and \
-            not hasattr(google.protobuf.message_factory.MessageFactory, "GetPrototype") and \
-            not hasattr(google.protobuf.message_factory, "GetMessageClass"):
+        elif (
+            hasattr(google.protobuf.message_factory, "MessageFactory")
+            and not hasattr(
+                google.protobuf.message_factory.MessageFactory, "GetPrototype"
+            )
+            and not hasattr(google.protobuf.message_factory, "GetMessageClass")
+        ):
             google.protobuf.message_factory.MessageFactory = MessageFactory
             if UNSLOTH_ENABLE_LOGGING:
                 print("Unsloth: Patching protobuf.MessageFactory as it doesn't exist")
-        elif hasattr(google.protobuf.message_factory, "MessageFactory") and \
-            not hasattr(google.protobuf.message_factory.MessageFactory, "GetPrototype") and \
-            hasattr(google.protobuf.message_factory, "GetMessageClass"):
+        elif (
+            hasattr(google.protobuf.message_factory, "MessageFactory")
+            and not hasattr(
+                google.protobuf.message_factory.MessageFactory, "GetPrototype"
+            )
+            and hasattr(google.protobuf.message_factory, "GetMessageClass")
+        ):
             GetMessageClass = google.protobuf.message_factory.GetMessageClass
+
             def GetPrototype(self, descriptor):
                 return GetMessageClass(descriptor)
+
             google.protobuf.message_factory.MessageFactory.GetPrototype = GetPrototype
             if UNSLOTH_ENABLE_LOGGING:
                 print("Unsloth: Patching protobuf.MessageFactory.GetPrototype")
         pass
     except:
         pass
-pass
+
 
 # Fix Xformers performance issues since 0.0.25
 def fix_xformers_performance_issue():
-    if importlib.util.find_spec("xformers") is None: return
+    if importlib.util.find_spec("xformers") is None:
+        return
     xformers_version = importlib_version("xformers")
     if Version(xformers_version) < Version("0.0.29"):
         xformers_location = importlib.util.find_spec("xformers").origin
@@ -82,15 +106,18 @@ def fix_xformers_performance_issue():
                         f.write(text)
                         f.truncate()
                         if UNSLOTH_ENABLE_LOGGING:
-                            print("Unsloth: Patching Xformers to fix some performance issues.")
+                            print(
+                                "Unsloth: Patching Xformers to fix some performance issues."
+                            )
         except Exception as e:
             if UNSLOTH_ENABLE_LOGGING:
                 print(f"Unsloth: Failed patching Xformers with error = {str(e)}")
-pass
+
 
 # ValueError: 'aimv2' is already used by a Transformers config, pick another name.
 def fix_vllm_aimv2_issue():
-    if importlib.util.find_spec("vllm") is None: return
+    if importlib.util.find_spec("vllm") is None:
+        return
     vllm_version = importlib_version("vllm")
     if Version(vllm_version) < Version("0.10.1"):
         vllm_version = importlib.util.find_spec("vllm").origin
@@ -104,66 +131,95 @@ def fix_vllm_aimv2_issue():
                     if 'AutoConfig.register("aimv2", AIMv2Config)' in text:
                         text = text.replace(
                             'AutoConfig.register("aimv2", AIMv2Config)',
-                            '',
+                            "",
                         )
                         text = text.replace(
-                            '''backbone_config.pop('model_type')
+                            """backbone_config.pop('model_type')
                 backbone_config = AutoConfig.for_model(model_type,
-                                                       **backbone_config)''',
-                            '''if model_type != "aimv2":
+                                                       **backbone_config)""",
+                            """if model_type != "aimv2":
                     backbone_config.pop('model_type')
                     backbone_config = AutoConfig.for_model(model_type, **backbone_config)
                 else:
-                    backbone_config = AIMv2Config(**backbone_config)'''
+                    backbone_config = AIMv2Config(**backbone_config)""",
                         )
                         f.seek(0)
                         f.write(text)
                         f.truncate()
                         if UNSLOTH_ENABLE_LOGGING:
-                            print("Unsloth: Patching vLLM to fix `'aimv2' is already used by a Transformers config, pick another name.`")
+                            print(
+                                "Unsloth: Patching vLLM to fix `'aimv2' is already used by a Transformers config, pick another name.`"
+                            )
         except Exception as e:
             if UNSLOTH_ENABLE_LOGGING:
                 print(f"Unsloth: Failed patching vLLM with error = {str(e)}")
-pass
+
 
 def ignore_logger_messages():
     # Ignore Environment variable `HF_TOKEN` is set
     try:
         from huggingface_hub._login import logger as huggingface_hub_logger
+
         huggingface_hub_logger.addFilter(HideLoggingMessage("`HF_TOKEN`"))
         del huggingface_hub_logger
     except:
         pass
-pass
+
 
 def patch_ipykernel_hf_xet():
-    # HF-XET == 1.1.10 and ipykernel == 7.0.0 causes issues
+    # HF-XET == 1.1.10 and ipykernel == 7.0.0 / 7.0.1 causes issues
     # See https://github.com/huggingface/xet-core/issues/526
     # 2025-10-13T20:37:33.028737Z ERROR  Python exception updating progress:, error: PyErr { type: <class 'LookupError'>, value: LookupError(<ContextVar name='shell_parent' at 0x7535b4cebd80>), traceback: Some(<traceback object at 0x753408489f40>) }, caller: "src/progress_update.rs:313"
     # at /home/runner/work/xet-core/xet-core/error_printer/src/lib.rs:28
-    if importlib.util.find_spec("hf_xet") is None: return
-    if importlib.util.find_spec("ipykernel") is None: return
-    if importlib.util.find_spec("huggingface_hub") is None: return
+    if importlib.util.find_spec("hf_xet") is None:
+        return
+    if importlib.util.find_spec("ipykernel") is None:
+        return
+    if importlib.util.find_spec("huggingface_hub") is None:
+        return
+
+    ipykernel_version = Version(importlib_version("ipykernel"))
     if (
-        Version(importlib_version("hf_xet")) == Version("1.1.10")
-    ) and (
-        Version(importlib_version("ipykernel")) == Version("7.0.0")
+        (Version(importlib_version("hf_xet")) == Version("1.1.10"))
+        and (
+            (ipykernel_version == Version("7.0.0"))
+            or (
+                ipykernel_version == Version("7.0.1")
+            )  # 7.0.1 seems to also break with LookupError: <ContextVar name='shell_parent' at 0x7a9775143ec0>
+        )
     ):
         print(
-            "#### Unsloth: `hf_xet==1.1.10` and `ipykernel==7.0.0` breaks progress bars. Disabling for now in XET.\n"\
-            "#### Unsloth: To re-enable progress bars, please upgrade to `ipykernel>7.0.0` or wait for a fix to\n"\
+            "#### Unsloth: `hf_xet==1.1.10` and `ipykernel==7.0.0` or `ipykernel==7.0.1` breaks progress bars. Using ASCII progress bars.\n"
+            "#### Unsloth: To re-enable progress bars, please upgrade to `ipykernel>=7.1.0` or wait for a fix to\n"
             "https://github.com/huggingface/xet-core/issues/526"
         )
         from huggingface_hub.utils import disable_progress_bars
+
         disable_progress_bars()
-    pass
-pass
+
 
 def patch_trackio():
     # Set some environment variables to customize the Trackio dashboard for experiment tracking
     # See https://github.com/unslothai/notebooks/pull/110
-    os.environ["TRACKIO_LOGO_LIGHT_URL"] = "https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20logo%20black%20text.png"
-    os.environ["TRACKIO_LOGO_DARK_URL"] = "https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20logo%20white%20text.png"
+    os.environ["TRACKIO_LOGO_LIGHT_URL"] = (
+        "https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20logo%20black%20text.png"
+    )
+    os.environ["TRACKIO_LOGO_DARK_URL"] = (
+        "https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20logo%20white%20text.png"
+    )
     os.environ["TRACKIO_PLOT_ORDER"] = "train/reward"
-    pass
-pass
+
+
+def patch_datasets():
+    # Datasets 4.4.0 and 4.4.1 weirdly have some weird `_thread.RLock_recursion_count` issues
+    if importlib.util.find_spec("datasets") is None:
+        return
+
+    datasets_version = Version(importlib_version("datasets"))
+    if (datasets_version <= Version("4.5.0")) and (
+        datasets_version >= Version("4.4.0")
+    ):
+        raise NotImplementedError(
+            f"#### Unsloth: Using `datasets = {str(datasets_version)}` will cause recursion errors.\n"
+            "Please downgrade datasets to `datasets==4.3.0"
+        )

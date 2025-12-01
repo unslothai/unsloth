@@ -109,9 +109,9 @@ class KernelResult:
     def to_dict(self):
         return OrderedDict(
             **asdict(self.kernel_config),
-            torch_time=self.torch_time,
-            triton_time=self.triton_time,
-            speedup=self.speedup,
+            torch_time = self.torch_time,
+            triton_time = self.triton_time,
+            speedup = self.speedup,
         )
 
     @staticmethod
@@ -119,7 +119,7 @@ class KernelResult:
         results: list["KernelResult"], sort_by: str = "speedup", ascending: bool = False
     ):
         df = pd.DataFrame([result.to_dict() for result in results])
-        df = df.sort_values(by=sort_by, ascending=ascending)
+        df = df.sort_values(by = sort_by, ascending = ascending)
         return df
 
     @staticmethod
@@ -130,7 +130,7 @@ class KernelResult:
         filename: str = "results.csv",
     ):
         df = KernelResult.to_dataframe(results, sort_by, ascending)
-        df.to_csv(filename, index=False)
+        df.to_csv(filename, index = False)
 
     @staticmethod
     def print_table(
@@ -140,17 +140,17 @@ class KernelResult:
         num_results: int = 10,
     ):
         df = KernelResult.to_dataframe(results, sort_by, ascending)
-        print(df.head(num_results).to_string(index=False))
+        print(df.head(num_results).to_string(index = False))
 
 
 def get_kernel_configs(
-    BLOCK_M=DEFAULT_M_BLOCK_SIZES,
-    BLOCK_N=DEFAULT_N_BLOCK_SIZES,
-    BLOCK_K=DEFAULT_K_BLOCK_SIZES,
-    num_warps=DEFAULT_NUM_WARPS,
-    num_stages=DEFAULT_NUM_STAGES,
-    use_tma_loads=BOOLS,
-    fuse_permute=BOOLS,
+    BLOCK_M = DEFAULT_M_BLOCK_SIZES,
+    BLOCK_N = DEFAULT_N_BLOCK_SIZES,
+    BLOCK_K = DEFAULT_K_BLOCK_SIZES,
+    num_warps = DEFAULT_NUM_WARPS,
+    num_stages = DEFAULT_NUM_STAGES,
+    use_tma_loads = BOOLS,
+    fuse_permute = BOOLS,
 ):
     kernel_configs_fwd = []
     kernel_configs_backward_dW = []
@@ -160,44 +160,44 @@ def get_kernel_configs(
     ):
         kernel_configs_fwd.append(
             KernelConfigForward(
-                BLOCK_SIZE_M=block_m,
-                BLOCK_SIZE_N=block_n,
-                BLOCK_SIZE_K=block_k,
-                num_warps=w,
-                num_stages=s,
-                use_tma_load_x=use_tma_load,
-                use_tma_load_w=use_tma_load,
-                use_tma_store=False,
-                permute_x=permute,
-                permute_y=permute,
+                BLOCK_SIZE_M = block_m,
+                BLOCK_SIZE_N = block_n,
+                BLOCK_SIZE_K = block_k,
+                num_warps = w,
+                num_stages = s,
+                use_tma_load_x = use_tma_load,
+                use_tma_load_w = use_tma_load,
+                use_tma_store = False,
+                permute_x = permute,
+                permute_y = permute,
             )
         )
         kernel_configs_backward_dW.append(
             KernelConfigBackward_dW(
-                BLOCK_SIZE_M=block_m,
-                BLOCK_SIZE_N=block_n,
-                BLOCK_SIZE_K=block_k,
-                num_warps=w,
-                num_stages=s,
-                use_tma_load_dy=use_tma_load,
-                use_tma_load_x=use_tma_load,
-                use_tma_store=False,
-                permute_x=permute,
-                permute_y=permute,
+                BLOCK_SIZE_M = block_m,
+                BLOCK_SIZE_N = block_n,
+                BLOCK_SIZE_K = block_k,
+                num_warps = w,
+                num_stages = s,
+                use_tma_load_dy = use_tma_load,
+                use_tma_load_x = use_tma_load,
+                use_tma_store = False,
+                permute_x = permute,
+                permute_y = permute,
             )
         )
         kernel_configs_backward_dX.append(
             KernelConfigBackward_dX(
-                BLOCK_SIZE_M=block_m,
-                BLOCK_SIZE_N=block_n,
-                BLOCK_SIZE_K=block_k,
-                num_warps=w,
-                num_stages=s,
-                use_tma_load_dy=use_tma_load,
-                use_tma_load_w=use_tma_load,
-                use_tma_store=False,
-                permute_x=permute,
-                permute_y=permute,
+                BLOCK_SIZE_M = block_m,
+                BLOCK_SIZE_N = block_n,
+                BLOCK_SIZE_K = block_k,
+                num_warps = w,
+                num_stages = s,
+                use_tma_load_dy = use_tma_load,
+                use_tma_load_w = use_tma_load,
+                use_tma_store = False,
+                permute_x = permute,
+                permute_y = permute,
             )
         )
 
