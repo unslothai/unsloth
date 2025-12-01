@@ -78,8 +78,8 @@ class Qwen3MoeGroupedGEMMBlock(torch.nn.Module):
         self.gate = torch.nn.Parameter(gate)
 
         # experts
-        self.gate_up_proj = torch.nn.Parameter(gate_up_proj, requires_grad = True)
-        self.down_proj = torch.nn.Parameter(down_proj, requires_grad = True)
+        self.gate_up_proj = torch.nn.Parameter(gate_up_proj, requires_grad=True)
+        self.down_proj = torch.nn.Parameter(down_proj, requires_grad=True)
         self.act_fn = ACT2FN[config.hidden_act]
 
     @staticmethod
@@ -90,17 +90,17 @@ class Qwen3MoeGroupedGEMMBlock(torch.nn.Module):
         gate = moe_block.gate.weight.data
         gate_proj = torch.stack(
             [moe_block.experts[i].gate_proj.weight.data for i in range(num_experts)],
-            dim = 0,
+            dim=0,
         )
         up_proj = torch.stack(
             [moe_block.experts[i].up_proj.weight.data for i in range(num_experts)],
-            dim = 0,
+            dim=0,
         )
         down_proj = torch.stack(
             [moe_block.experts[i].down_proj.weight.data for i in range(num_experts)],
-            dim = 0,
+            dim=0,
         )
-        gate_up_proj = torch.cat([gate_proj, up_proj], dim = 1)
+        gate_up_proj = torch.cat([gate_proj, up_proj], dim=1)
         return gate, gate_up_proj, down_proj
 
     @classmethod
@@ -117,7 +117,7 @@ class Qwen3MoeGroupedGEMMBlock(torch.nn.Module):
                         moe_block.experts[i].gate_proj.weight.data,
                         moe_block.experts[i].up_proj.weight.data,
                     ],
-                    dim = 0,
+                    dim=0,
                 )
             )
             assert self.down_proj[i].equal(moe_block.experts[i].down_proj.weight.data)
@@ -132,12 +132,12 @@ class Qwen3MoeGroupedGEMMBlock(torch.nn.Module):
         # router_logits: (batch * sequence_length, n_experts)
         router_logits = torch.nn.functional.linear(hidden_states, self.gate)
 
-        routing_weights = F.softmax(router_logits, dim = 1, dtype = torch.float)
+        routing_weights = F.softmax(router_logits, dim=1, dtype=torch.float)
         routing_weights, selected_experts = torch.topk(
-            routing_weights, self.top_k, dim = -1
+            routing_weights, self.top_k, dim=-1
         )
         if self.norm_topk_prob:  # only diff with mixtral sparse moe block!
-            routing_weights /= routing_weights.sum(dim = -1, keepdim = True)
+            routing_weights /= routing_weights.sum(dim=-1, keepdim=True)
         # we cast back to the input dtype
         routing_weights = routing_weights.to(hidden_states.dtype)
 
@@ -177,13 +177,13 @@ class Qwen3MoeGroupedGEMMBlock(torch.nn.Module):
 
         # Start expert computation
         first_gemm = torch_grouped_gemm(
-            X = hidden_states, W = self.gate_up_proj, m_sizes = token_counts_by_expert
+            X=hidden_states, W=self.gate_up_proj, m_sizes=token_counts_by_expert
         )
         assert first_gemm.shape == (total_tokens, 2 * self.moe_intermediate_size)
         intermediate = self.act_and_mul(first_gemm)
         assert intermediate.shape == (total_tokens, self.moe_intermediate_size)
         second_gemm = torch_grouped_gemm(
-            X = intermediate, W = self.down_proj, m_sizes = token_counts_by_expert
+            X=intermediate, W=self.down_proj, m_sizes=token_counts_by_expert
         )
         assert second_gemm.shape == (total_tokens, hidden_dim)
 
@@ -197,19 +197,19 @@ class Qwen3MoeGroupedGEMMBlock(torch.nn.Module):
             hidden_states_unpermute.view(num_tokens, self.top_k, hidden_dim)
             * routing_weights[..., None]
         )
-        hidden_states = hidden_states.sum(dim = 1)
+        hidden_states = hidden_states.sum(dim=1)
         assert hidden_states.shape == (num_tokens, hidden_dim)
 
         hidden_states = hidden_states.view(batch_size, sequence_length, hidden_dim)
         return GroupedGEMMResult(
-            token_counts_by_expert = token_counts_by_expert,
-            gather_indices = gather_indices,
-            topk_weights = routing_weights,
-            first_gemm = first_gemm,
-            intermediate = intermediate,
-            second_gemm = second_gemm,
-            hidden_states_unpermute = hidden_states_unpermute,
-            hidden_states = hidden_states,
+            token_counts_by_expert=token_counts_by_expert,
+            gather_indices=gather_indices,
+            topk_weights=routing_weights,
+            first_gemm=first_gemm,
+            intermediate=intermediate,
+            second_gemm=second_gemm,
+            hidden_states_unpermute=hidden_states_unpermute,
+            hidden_states=hidden_states,
         ), router_logits
 
 
@@ -267,14 +267,14 @@ class Qwen3MoeFusedGroupedGEMMBlock(Qwen3MoeGroupedGEMMBlock):
             gate,
             gate_up_proj,
             down_proj,
-            permute_x = permute_x,
-            permute_y = permute_y,
-            autotune = autotune,
-            kernel_config_fwd = kernel_config_fwd,
-            kernel_config_bwd_dW = kernel_config_bwd_dW,
-            kernel_config_bwd_dX = kernel_config_bwd_dX,
-            dW_only = dW_only,
-            dX_only = dX_only,
+            permute_x=permute_x,
+            permute_y=permute_y,
+            autotune=autotune,
+            kernel_config_fwd=kernel_config_fwd,
+            kernel_config_bwd_dW=kernel_config_bwd_dW,
+            kernel_config_bwd_dX=kernel_config_bwd_dX,
+            dW_only=dW_only,
+            dX_only=dX_only,
         )
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
@@ -299,37 +299,37 @@ class Qwen3MoeFusedGroupedGEMMBlock(Qwen3MoeGroupedGEMMBlock):
             hidden_states = permute(hidden_states, gather_indices, self.top_k)
         # Start expert computation
         hidden_states = grouped_gemm(
-            X = hidden_states,
-            W = self.gate_up_proj,
-            m_sizes = token_counts_by_expert,
-            gather_indices = gather_indices,
-            topk = self.top_k,
-            permute_x = self.permute_x,
-            permute_y = False,  # output of first grouped gemm should never be permuted
-            autotune = self.autotune,
-            kernel_config_fwd = self.kernel_config_fwd,
-            kernel_config_bwd_dW = self.kernel_config_bwd_dW,
-            kernel_config_bwd_dX = self.kernel_config_bwd_dX,
-            is_first_gemm = True,
-            dW_only = self.dW_only,
-            dX_only = self.dX_only,
+            X=hidden_states,
+            W=self.gate_up_proj,
+            m_sizes=token_counts_by_expert,
+            gather_indices=gather_indices,
+            topk=self.top_k,
+            permute_x=self.permute_x,
+            permute_y=False,  # output of first grouped gemm should never be permuted
+            autotune=self.autotune,
+            kernel_config_fwd=self.kernel_config_fwd,
+            kernel_config_bwd_dW=self.kernel_config_bwd_dW,
+            kernel_config_bwd_dX=self.kernel_config_bwd_dX,
+            is_first_gemm=True,
+            dW_only=self.dW_only,
+            dX_only=self.dX_only,
         )
         hidden_states = self.act_and_mul(hidden_states)
         hidden_states = grouped_gemm(
-            X = hidden_states,
-            W = self.down_proj,
-            m_sizes = token_counts_by_expert,
-            gather_indices = gather_indices,
-            topk = self.top_k,
-            permute_x = False,
-            permute_y = self.permute_y,
-            autotune = self.autotune,
-            kernel_config_fwd = self.kernel_config_fwd,
-            kernel_config_bwd_dW = self.kernel_config_bwd_dW,
-            kernel_config_bwd_dX = self.kernel_config_bwd_dX,
-            is_first_gemm = False,
-            dW_only = self.dW_only,
-            dX_only = self.dX_only,
+            X=hidden_states,
+            W=self.down_proj,
+            m_sizes=token_counts_by_expert,
+            gather_indices=gather_indices,
+            topk=self.top_k,
+            permute_x=False,
+            permute_y=self.permute_y,
+            autotune=self.autotune,
+            kernel_config_fwd=self.kernel_config_fwd,
+            kernel_config_bwd_dW=self.kernel_config_bwd_dW,
+            kernel_config_bwd_dX=self.kernel_config_bwd_dX,
+            is_first_gemm=False,
+            dW_only=self.dW_only,
+            dX_only=self.dX_only,
         )
 
         # Post-processing
@@ -342,7 +342,7 @@ class Qwen3MoeFusedGroupedGEMMBlock(Qwen3MoeGroupedGEMMBlock):
             hidden_states.view(num_tokens, self.top_k, hidden_dim)
             * routing_weights[..., None]
         )
-        hidden_states = hidden_states.sum(dim = 1)
+        hidden_states = hidden_states.sum(dim=1)
 
         hidden_states = hidden_states.view(batch_size, sequence_length, hidden_dim)
         return hidden_states, router_logits
