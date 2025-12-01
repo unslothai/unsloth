@@ -117,13 +117,16 @@ def fix_xformers_performance_issue():
 def patch_vllm_imports():
     if importlib.util.find_spec("vllm") is None:
         return
+
     def fix_vllm_aimv2_issue():
         # ValueError: 'aimv2' is already used by a Transformers config, pick another name.
         vllm_version = importlib_version("vllm")
         if Version(vllm_version) < Version("0.10.1"):
             vllm_version = importlib.util.find_spec("vllm").origin
             vllm_version = os.path.split(vllm_version)[0]
-            ovis_config = Path(vllm_version) / "transformers_utils" / "configs" / "ovis.py"
+            ovis_config = (
+                Path(vllm_version) / "transformers_utils" / "configs" / "ovis.py"
+            )
             try:
                 if ovis_config.exists():
                     with open(ovis_config, "r+", encoding = "utf-8") as f:
@@ -160,14 +163,16 @@ def patch_vllm_imports():
         # https://github.com/vllm-project/vllm/pull/22772/files
         # trl still wants to use GuidedDecodingParams. This is a temporary patch till trl updates
         import vllm
+
         try:
             from vllm.sampling_params import GuidedDecodingParams
         except ImportError:
-            vllm.sampling_params.GuidedDecodingParams = vllm.sampling_params.StructuredOutputsParams
+            vllm.sampling_params.GuidedDecodingParams = (
+                vllm.sampling_params.StructuredOutputsParams
+            )
 
     fix_vllm_aimv2_issue()
     fix_vllm_guided_decoding_params()
-
 
 
 def ignore_logger_messages():
