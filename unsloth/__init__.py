@@ -110,6 +110,7 @@ from unsloth_zoo.device_type import (
 from .import_fixes import (
     fix_xformers_performance_issue,
     fix_vllm_aimv2_issue,
+    fix_vllm_guided_decoding_params,
     ignore_logger_messages,
     patch_ipykernel_hf_xet,
     patch_trackio,
@@ -118,6 +119,7 @@ from .import_fixes import (
 
 fix_xformers_performance_issue()
 fix_vllm_aimv2_issue()
+fix_vllm_guided_decoding_params()
 ignore_logger_messages()
 patch_ipykernel_hf_xet()
 patch_trackio()
@@ -125,6 +127,7 @@ patch_datasets()
 
 del fix_xformers_performance_issue
 del fix_vllm_aimv2_issue
+del fix_vllm_guided_decoding_params
 del ignore_logger_messages
 del patch_ipykernel_hf_xet
 del patch_trackio
