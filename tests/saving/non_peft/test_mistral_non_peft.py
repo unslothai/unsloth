@@ -16,12 +16,12 @@ print("🔍 PHASE 1: Loading Base Model")
 print(f"{'='*80}")
 
 model, tokenizer = FastLanguageModel.from_pretrained(
-    model_name = "unsloth/mistral-7b-v0.3",
-    max_seq_length = 2048,
-    dtype = None,
-    load_in_4bit = True,
-    load_in_8bit = False,
-    full_finetuning = False,
+    model_name="unsloth/mistral-7b-v0.3",
+    max_seq_length=2048,
+    dtype=None,
+    load_in_4bit=True,
+    load_in_8bit=False,
+    full_finetuning=False,
 )
 
 
@@ -34,7 +34,7 @@ print(f"\n{'='*80}")
 print("🔍 PHASE 2: Attempting save_pretrained_merged (Should Warn)")
 print(f"{'='*80}")
 
-with warnings.catch_warnings(record = True) as w:
+with warnings.catch_warnings(record=True) as w:
     warnings.simplefilter("always")
     model.save_pretrained_merged("test_output", tokenizer)
 
