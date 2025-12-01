@@ -136,7 +136,7 @@ def fix_vllm_aimv2_issue():
                         text = text.replace(
                             """backbone_config.pop('model_type')
                 backbone_config = AutoConfig.for_model(model_type,
-                                                    **backbone_config)""",
+                                                        **backbone_config)""",
                             """if model_type != "aimv2":
                     backbone_config.pop('model_type')
                     backbone_config = AutoConfig.for_model(model_type, **backbone_config)
