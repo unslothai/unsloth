@@ -130,7 +130,7 @@ def Qwen3MoeDecoderLayer_fast_forward(
             position_embeddings = position_embeddings,
             _flag_for_generation = self._flag_for_generation,
         )
-        hidden_states += hidden_states
+        hidden_states += residual
 
         # MoE Router MLP
         residual = hidden_states
@@ -140,7 +140,7 @@ def Qwen3MoeDecoderLayer_fast_forward(
         hidden_states, router_logits = Qwen3MoeSparseMoeBlock_fast_forward(
             self.mlp, hidden_states
         )
-        hidden_states += hidden_states
+        hidden_states += residual
     else:
         residual = hidden_states
         hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
