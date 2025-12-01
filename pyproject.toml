@@ -25,7 +25,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "unsloth_zoo>=2025.11.4",
+    "unsloth_zoo>=2025.11.6",
     "wheel>=0.42.0",
     "packaging",
     "torch>=2.4.0",
@@ -61,7 +61,7 @@ exclude = ["images*", "tests*", "kernels/moe*"]
 
 [project.optional-dependencies]
 huggingface = [
-    "unsloth_zoo>=2025.11.4",
+    "unsloth_zoo>=2025.11.6",
     "wheel>=0.42.0",
     "packaging",
     "torchvision",
@@ -418,7 +418,7 @@ colab-ampere-torch220 = [
     "unsloth[flashattention]",
 ]
 colab-new = [
-    "unsloth_zoo>=2025.11.4",
+    "unsloth_zoo>=2025.11.6",
     "packaging",
     "tyro",
     "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,<=4.57.2",
