@@ -7,7 +7,7 @@ import sys
 import warnings
 
 
-def clear_memory(variables_to_clear = None, verbose = False, clear_all_caches = True):
+def clear_memory(variables_to_clear=None, verbose=False, clear_all_caches=True):
     """
     Comprehensive memory clearing for persistent memory leaks.
 
@@ -104,7 +104,7 @@ def clear_memory(variables_to_clear = None, verbose = False, clear_all_caches = 
             logger.setLevel(level)
 
 
-def clear_all_lru_caches(verbose = True):
+def clear_all_lru_caches(verbose=True):
     """Clear all LRU caches in loaded modules."""
     cleared_caches = []
 
@@ -210,7 +210,7 @@ def monitor_cache_sizes():
         except:
             pass
 
-    return sorted(cache_info, key = lambda x: x["size"], reverse = True)
+    return sorted(cache_info, key=lambda x: x["size"], reverse=True)
 
 
 def safe_remove_directory(path):

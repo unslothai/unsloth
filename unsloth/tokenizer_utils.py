@@ -71,7 +71,7 @@ KAGGLE_TMP = "/tmp"
 del keynames
 
 
-def try_fix_tokenizer(tokenizer, prepend = True):
+def try_fix_tokenizer(tokenizer, prepend=True):
     if hasattr(tokenizer, "_tokenizer"):
         converted_tokenizer = tokenizer._tokenizer
     else:
@@ -130,7 +130,7 @@ def get_sorted_dict(dictionary):
 
 def convert_to_fast_tokenizer(
     slow_tokenizer,
-    temporary_location = "_unsloth_sentencepiece_temp",
+    temporary_location="_unsloth_sentencepiece_temp",
 ):
     is_fast = getattr(slow_tokenizer, "is_fast", False)
     if is_fast:
@@ -152,20 +152,20 @@ def convert_to_fast_tokenizer(
     # Get all arguments (bos_token, etc)
     docs = FastTokenizer.__doc__
     docs = docs[docs.find("Args:") :]
-    args = re.findall(r"\n[\s]+([^\s]{1,}) \(", docs, flags = re.MULTILINE)
+    args = re.findall(r"\n[\s]+([^\s]{1,}) \(", docs, flags=re.MULTILINE)
     args = [x for x in args if not x.endswith("_file")]
 
     # Also some missing maybe!
     docs = PreTrainedTokenizerFast.__doc__
     docs = docs[docs.find("Args:") :]
-    args2 = re.findall(r"\n[\s]+([^\s]{1,}) \(", docs, flags = re.MULTILINE)
+    args2 = re.findall(r"\n[\s]+([^\s]{1,}) \(", docs, flags=re.MULTILINE)
     args2 = [x for x in args2 if not x.endswith("_file")]
     args = list(set(args + args2))
 
     kwargs = {}
     for arg in args:
         kwargs[arg] = getattr(slow_tokenizer, arg, None)
-    kwargs["tokenizer_object"] = try_fix_tokenizer(slow_tokenizer, prepend = True)
+    kwargs["tokenizer_object"] = try_fix_tokenizer(slow_tokenizer, prepend=True)
     fast_tokenizer = FastTokenizer(**kwargs)
 
     # Check if they're similar!
@@ -184,7 +184,7 @@ def convert_to_fast_tokenizer(
     # Now confirm if they match
     if not assert_same_tokenization(slow_tokenizer, fast_tokenizer):
         # Maybe remove prepending of __apple?
-        kwargs["tokenizer_object"] = try_fix_tokenizer(slow_tokenizer, prepend = False)
+        kwargs["tokenizer_object"] = try_fix_tokenizer(slow_tokenizer, prepend=False)
         fast_tokenizer = FastTokenizer(**kwargs)
         if not assert_same_tokenization(slow_tokenizer, fast_tokenizer):
             # Failure :(
@@ -347,7 +347,7 @@ def fix_sentencepiece_tokenizer(
     old_tokenizer,
     new_tokenizer,
     token_mapping,
-    temporary_location = "_unsloth_sentencepiece_temp",
+    temporary_location="_unsloth_sentencepiece_temp",
 ):
     # From https://github.com/google/sentencepiece/issues/121
     # We need to manually edit the sentencepiece tokenizer!
@@ -390,7 +390,7 @@ def fix_sentencepiece_tokenizer(
 
     # Now correct the old tokenizer's .model file
     for old_token, new_token in token_mapping.items():
-        ids = old_tokenizer([old_token], add_special_tokens = False).input_ids
+        ids = old_tokenizer([old_token], add_special_tokens=False).input_ids
         ids = ids[0]
         if len(ids) != 1:
             # Skip this token!
@@ -416,8 +416,8 @@ def fix_sentencepiece_tokenizer(
 
     tokenizer = AutoTokenizer.from_pretrained(
         temporary_location,
-        eos_token = new_tokenizer.eos_token,
-        pad_token = new_tokenizer.pad_token,
+        eos_token=new_tokenizer.eos_token,
+        pad_token=new_tokenizer.pad_token,
     )
     return tokenizer
 
@@ -453,13 +453,13 @@ def fix_sentencepiece_gguf(saved_location):
     # Load added_tokens_json
     if not os.path.isfile(f"{saved_location}/added_tokens.json"):
         return
-    with open(f"{saved_location}/added_tokens.json", "r", encoding = "utf-8") as file:
+    with open(f"{saved_location}/added_tokens.json", "r", encoding="utf-8") as file:
         added_tokens_json = json.load(file)
     if len(added_tokens_json) == 0:
         return
 
     added_tokens_json = dict(
-        sorted(added_tokens_json.items(), key = lambda item: item[1])
+        sorted(added_tokens_json.items(), key=lambda item: item[1])
     )
     new_size = sentence_piece_size + len(added_tokens_json)
 
@@ -496,12 +496,12 @@ def fix_sentencepiece_gguf(saved_location):
 
 def _load_correct_tokenizer(
     tokenizer_name,
-    model_max_length = None,
-    padding_side = "right",
-    token = None,
-    trust_remote_code = False,
-    cache_dir = "huggingface_tokenizers_cache",
-    fix_tokenizer = True,
+    model_max_length=None,
+    padding_side="right",
+    token=None,
+    trust_remote_code=False,
+    cache_dir="huggingface_tokenizers_cache",
+    fix_tokenizer=True,
 ):
     if IS_COLAB_ENVIRONMENT:
         cache_dir = cache_dir
@@ -518,15 +518,15 @@ def _load_correct_tokenizer(
     try:
         slow_tokenizer = AutoTokenizer.from_pretrained(
             tokenizer_name,
-            model_max_length = model_max_length,
-            padding_side = padding_side,
-            token = token,
-            trust_remote_code = trust_remote_code,
+            model_max_length=model_max_length,
+            padding_side=padding_side,
+            token=token,
+            trust_remote_code=trust_remote_code,
             # Cannot just use use_fast = False as per https://twitter.com/danielhanchen/status/1789659394302718373
-            use_fast = False,
-            legacy = False,
-            from_slow = True,
-            cache_dir = cache_dir,
+            use_fast=False,
+            legacy=False,
+            from_slow=True,
+            cache_dir=cache_dir,
         )
     except:
         slow_tokenizer = None
@@ -540,11 +540,11 @@ def _load_correct_tokenizer(
 
     fast_tokenizer = AutoTokenizer.from_pretrained(
         tokenizer_name,
-        model_max_length = model_max_length,
-        padding_side = padding_side,
-        token = token,
-        trust_remote_code = trust_remote_code,
-        cache_dir = cache_dir,
+        model_max_length=model_max_length,
+        padding_side=padding_side,
+        token=token,
+        trust_remote_code=trust_remote_code,
+        cache_dir=cache_dir,
     )
 
     if not fix_tokenizer or tokenizer_name in IGNORED_TOKENIZER_NAMES:
@@ -580,21 +580,21 @@ def _load_correct_tokenizer(
 
 def load_correct_tokenizer(
     tokenizer_name,
-    model_max_length = None,
-    padding_side = "right",
-    token = None,
-    trust_remote_code = False,
-    cache_dir = "huggingface_tokenizers_cache",
-    fix_tokenizer = True,
+    model_max_length=None,
+    padding_side="right",
+    token=None,
+    trust_remote_code=False,
+    cache_dir="huggingface_tokenizers_cache",
+    fix_tokenizer=True,
 ):
     tokenizer = _load_correct_tokenizer(
-        tokenizer_name = tokenizer_name,
-        model_max_length = model_max_length,
-        padding_side = padding_side,
-        token = token,
-        trust_remote_code = trust_remote_code,
-        cache_dir = cache_dir,
-        fix_tokenizer = fix_tokenizer,
+        tokenizer_name=tokenizer_name,
+        model_max_length=model_max_length,
+        padding_side=padding_side,
+        token=token,
+        trust_remote_code=trust_remote_code,
+        cache_dir=cache_dir,
+        fix_tokenizer=fix_tokenizer,
     )
 
     ### 1. Fixup tokenizer's chat_template
@@ -683,7 +683,7 @@ def fix_chat_template(tokenizer):
             {"role": "user", "content": "Who are you?"},
         ]
         tokenizer.apply_chat_template(
-            messages, add_generation_prompt = False, tokenize = False
+            messages, add_generation_prompt=False, tokenize=False
         )
         is_sharegpt = False
     except:
@@ -692,7 +692,7 @@ def fix_chat_template(tokenizer):
                 {"from": "human", "value": "Who are you?"},
             ]
             tokenizer.apply_chat_template(
-                messages, add_generation_prompt = False, tokenize = False
+                messages, add_generation_prompt=False, tokenize=False
             )
             is_sharegpt = True
         except:
@@ -709,10 +709,10 @@ def fix_chat_template(tokenizer):
         else {"from": "human", "value": "Who are you?"}
     ]
     no = tokenizer.apply_chat_template(
-        messages, add_generation_prompt = False, tokenize = False
+        messages, add_generation_prompt=False, tokenize=False
     )
     yes = tokenizer.apply_chat_template(
-        messages, add_generation_prompt = True, tokenize = False
+        messages, add_generation_prompt=True, tokenize=False
     )
 
     if no == yes:
@@ -750,11 +750,11 @@ def fix_chat_template(tokenizer):
 def check_tokenizer(
     model,
     tokenizer,
-    model_name = "unsloth/llama-2-7b-bnb-4bit",
-    model_max_length = 4096,
-    padding_side = "right",
-    token = None,
-    _reload = True,
+    model_name="unsloth/llama-2-7b-bnb-4bit",
+    model_max_length=4096,
+    padding_side="right",
+    token=None,
+    _reload=True,
 ):
     # Checks tokenizer for out of bounds ids.
     # Mainly a fix for https://huggingface.co/berkeley-nest/Starling-LM-7B-alpha
@@ -861,23 +861,23 @@ def check_tokenizer(
                 # Try slow tokenizer which can fix things!
                 tokenizer = AutoTokenizer.from_pretrained(
                     model_name,
-                    model_max_length = model_max_length,
-                    padding_side = padding_side,
-                    token = token,
+                    model_max_length=model_max_length,
+                    padding_side=padding_side,
+                    token=token,
                     # Cannot just use use_fast = False as per https://twitter.com/danielhanchen/status/1789659394302718373
-                    use_fast = False,
-                    legacy = False,
-                    from_slow = True,
-                    cache_dir = cache_dir,
+                    use_fast=False,
+                    legacy=False,
+                    from_slow=True,
+                    cache_dir=cache_dir,
                 )
                 return check_tokenizer(
-                    model = model,
-                    tokenizer = tokenizer,
-                    model_name = model_name,
-                    model_max_length = model_max_length,
-                    padding_side = padding_side,
-                    token = token,
-                    _reload = False,
+                    model=model,
+                    tokenizer=tokenizer,
+                    model_name=model_name,
+                    model_max_length=model_max_length,
+                    padding_side=padding_side,
+                    token=token,
+                    _reload=False,
                 )
                 break
             except:
@@ -993,7 +993,7 @@ def patch_sft_trainer_tokenizer():
             replacer = re.findall(
                 f"def {function_name}" + r"\(.*?\).*?\:\n",
                 function,
-                flags = re.MULTILINE | re.DOTALL,
+                flags=re.MULTILINE | re.DOTALL,
             )
             if len(replacer) == 0:
                 continue

@@ -136,7 +136,7 @@ def print_quantization_methods():
 
 
 def check_if_sentencepiece_model(
-    model, temporary_location = "_unsloth_sentencepiece_temp"
+    model, temporary_location="_unsloth_sentencepiece_temp"
 ):
     if not hasattr(model, "_saved_temp_tokenizer"):
         return False
@@ -152,7 +152,7 @@ def check_if_sentencepiece_model(
     if os.path.isfile(f"{file_location}/tokenizer.model"):
         sentencepiece_model = True
     if created_folder:
-        shutil.rmtree(file_location, ignore_errors = True)
+        shutil.rmtree(file_location, ignore_errors=True)
     return sentencepiece_model
 
 
@@ -196,7 +196,7 @@ def _merge_lora(layer, name):
         if A is not None:
             # sAB = (A.t().to(torch.float32) @ (s * B.t().to(torch.float32)))
             # W += sAB
-            W.addmm_(A.t().to(torch.float32), B.t().to(torch.float32), alpha = s)
+            W.addmm_(A.t().to(torch.float32), B.t().to(torch.float32), alpha=s)
             # W.addmm_(A.t().to(W.dtype), B.t().to(W.dtype), alpha = s)
             # if not torch.isfinite(W).all():
             maximum_element = torch.max(W.min().abs(), W.max())
@@ -289,7 +289,7 @@ def unsloth_save_model(
         from huggingface_hub import whoami
 
         try:
-            username = whoami(token = token)["name"]
+            username = whoami(token=token)["name"]
         except:
             raise RuntimeError(
                 "Unsloth: Please supply a token!\n"
@@ -355,23 +355,23 @@ def unsloth_save_model(
             token,
             "finetuned",
             "trl",
-            file_location = None,
-            old_username = None,
-            private = private,
+            file_location=None,
+            old_username=None,
+            private=private,
         )
 
         getattr(model, "original_push_to_hub", model.push_to_hub)(
-            repo_id = save_directory,
-            use_temp_dir = use_temp_dir,
-            commit_message = commit_message,
-            private = private,
-            token = token,
-            max_shard_size = max_shard_size,
-            create_pr = create_pr,
-            safe_serialization = safe_serialization,
-            revision = revision,
-            commit_description = commit_description,
-            tags = tags,
+            repo_id=save_directory,
+            use_temp_dir=use_temp_dir,
+            commit_message=commit_message,
+            private=private,
+            token=token,
+            max_shard_size=max_shard_size,
+            create_pr=create_pr,
+            safe_serialization=safe_serialization,
+            revision=revision,
+            commit_description=commit_description,
+            tags=tags,
         )
         if tokenizer is not None:
             # Set padding side to left for inference
@@ -379,17 +379,17 @@ def unsloth_save_model(
             tokenizer.padding_side = "left"
 
             getattr(tokenizer, "original_push_to_hub", tokenizer.push_to_hub)(
-                repo_id = save_directory,
-                use_temp_dir = use_temp_dir,
-                commit_message = commit_message,
-                private = private,
-                token = token,
-                max_shard_size = max_shard_size,
-                create_pr = create_pr,
-                safe_serialization = safe_serialization,
-                revision = revision,
-                commit_description = commit_description,
-                tags = tags,
+                repo_id=save_directory,
+                use_temp_dir=use_temp_dir,
+                commit_message=commit_message,
+                private=private,
+                token=token,
+                max_shard_size=max_shard_size,
+                create_pr=create_pr,
+                safe_serialization=safe_serialization,
+                revision=revision,
+                commit_description=commit_description,
+                tags=tags,
             )
 
             # Revert back padding side
@@ -464,13 +464,13 @@ def unsloth_save_model(
                 token,
                 "finetuned",
                 "trl",
-                file_location = None,
-                old_username = None,
-                private = private,
+                file_location=None,
+                old_username=None,
+                private=private,
             )
 
         if tokenizer is not None:
-            print("Unsloth: Saving tokenizer...", end = "")
+            print("Unsloth: Saving tokenizer...", end="")
 
             # Set padding side to left for inference
             old_padding_side = tokenizer.padding_side
@@ -485,9 +485,9 @@ def unsloth_save_model(
         else:
             print()
 
-        print("Unsloth: Saving model...", end = "")
+        print("Unsloth: Saving model...", end="")
         if save_method != "lora":
-            print(" This might take 10 minutes for Llama-7b...", end = "")
+            print(" This might take 10 minutes for Llama-7b...", end="")
 
         # [TODO] Is this correct?
         if save_method == "lora":
@@ -536,10 +536,10 @@ def unsloth_save_model(
     sharded_ram_usage = 5 * 1024 * 1024 * 1024
     if type(max_shard_size) is str:
         gb_found = re.match(
-            r"([0-9]{1,})[\s]{0,}GB", max_shard_size, flags = re.IGNORECASE
+            r"([0-9]{1,})[\s]{0,}GB", max_shard_size, flags=re.IGNORECASE
         )
         mb_found = re.match(
-            r"([0-9]{1,})[\s]{0,}MB", max_shard_size, flags = re.IGNORECASE
+            r"([0-9]{1,})[\s]{0,}MB", max_shard_size, flags=re.IGNORECASE
         )
         if gb_found:
             sharded_ram_usage = int(gb_found.group(1)) * 1024 * 1024 * 1024
@@ -549,7 +549,7 @@ def unsloth_save_model(
         sharded_ram_usage = sharded_ram_usage
 
     # Switch to our fast saving modules if it's a slow PC!
-    n_cpus = psutil.cpu_count(logical = False)
+    n_cpus = psutil.cpu_count(logical=False)
     if n_cpus is None:
         n_cpus = psutil.cpu_count()
     if n_cpus is None:
@@ -651,12 +651,12 @@ def unsloth_save_model(
                 torch.save(
                     W,
                     filename,
-                    pickle_module = pickle,
-                    pickle_protocol = pickle.HIGHEST_PROTOCOL,
+                    pickle_module=pickle,
+                    pickle_protocol=pickle.HIGHEST_PROTOCOL,
                 )
                 # weights_only = True weirdly fails?
                 state_dict[name] = torch.load(
-                    filename, map_location = "cpu", mmap = True, weights_only = False
+                    filename, map_location="cpu", mmap=True, weights_only=False
                 )
         for item in LLAMA_LAYERNORMS:
             try:
@@ -726,9 +726,9 @@ def unsloth_save_model(
             token,
             "finetuned",
             "trl",
-            file_location = None,
-            old_username = username,
-            private = private,
+            file_location=None,
+            old_username=username,
+            private=private,
         )
 
     # First check if we're pushing to an organization!
@@ -742,7 +742,7 @@ def unsloth_save_model(
         if token is not None:
             from huggingface_hub import whoami
 
-            actual_username = whoami(token = token)["name"]
+            actual_username = whoami(token=token)["name"]
         else:
             actual_username = username
 
@@ -755,7 +755,7 @@ def unsloth_save_model(
 
     # Save tokenizer
     if tokenizer is not None:
-        print("Unsloth: Saving tokenizer...", end = "")
+        print("Unsloth: Saving tokenizer...", end="")
 
         # Set padding side to left for inference
         old_padding_side = tokenizer.padding_side
@@ -799,16 +799,16 @@ def unsloth_save_model(
         # Now manually go through each file and upload them manually!
         filenames = os.listdir(new_save_directory)
 
-        hf_api = HfApi(token = save_pretrained_settings["token"])
+        hf_api = HfApi(token=save_pretrained_settings["token"])
 
         print("Unsloth: Uploading all files... Please wait...")
         hf_api.upload_folder(
-            folder_path = new_save_directory,
-            path_in_repo = ".",
-            repo_id = new_save_directory,
-            repo_type = "model",
-            commit_message = "(Trained with Unsloth)",
-            ignore_patterns = "*.md",
+            folder_path=new_save_directory,
+            path_in_repo=".",
+            repo_id=new_save_directory,
+            repo_type="model",
+            commit_message="(Trained with Unsloth)",
+            ignore_patterns="*.md",
         )
     else:
         internal_model.save_pretrained(**save_pretrained_settings)
@@ -841,7 +841,7 @@ def unsloth_save_model(
     # Remove temporary location
     import shutil
 
-    shutil.rmtree(temporary_location, ignore_errors = True)
+    shutil.rmtree(temporary_location, ignore_errors=True)
 
     for _ in range(3):
         torch.cuda.empty_cache()
@@ -857,7 +857,7 @@ def install_llama_cpp_clone_non_blocking():
         "https://github.com/ggerganov/llama.cpp",
     ]
     run_installer = subprocess.Popen(
-        full_command, stdout = subprocess.DEVNULL, stderr = subprocess.STDOUT
+        full_command, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT
     )
     return run_installer
 
@@ -900,30 +900,30 @@ def install_llama_cpp_make_non_blocking():
     # Weirdly GPU conversion for GGUF breaks??
     # run_installer = subprocess.Popen(full_command, env = env, stdout = subprocess.DEVNULL, stderr = subprocess.STDOUT)
     run_installer = subprocess.Popen(
-        full_command, stdout = subprocess.DEVNULL, stderr = subprocess.STDOUT
+        full_command, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT
     )
     return run_installer, IS_CMAKE
 
 
-def install_python_non_blocking(packages = []):
+def install_python_non_blocking(packages=[]):
     full_command = ["pip", "install"] + packages
     run_installer = subprocess.Popen(
-        full_command, stdout = subprocess.DEVNULL, stderr = subprocess.STDOUT
+        full_command, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT
     )
     return run_installer
 
 
-def try_execute(commands, force_complete = False):
+def try_execute(commands, force_complete=False):
     for command in commands:
         with subprocess.Popen(
             command,
-            shell = True,
-            stdout = subprocess.PIPE,
-            stderr = subprocess.STDOUT,
-            bufsize = 1,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            bufsize=1,
         ) as sp:
             for line in sp.stdout:
-                line = line.decode("utf-8", errors = "replace")
+                line = line.decode("utf-8", errors="replace")
                 if "undefined reference" in line:
                     raise RuntimeError(
                         f"*** Unsloth: Failed compiling llama.cpp with {line}. Please report this ASAP!"
@@ -938,13 +938,13 @@ def try_execute(commands, force_complete = False):
                     raise RuntimeError(
                         f"*** Unsloth: Failed compiling llama.cpp with {line}. Please report this ASAP!"
                     )
-                print(line, flush = True, end = "")
+                print(line, flush=True, end="")
             if force_complete and sp.returncode is not None and sp.returncode != 0:
                 raise subprocess.CalledProcessError(sp.returncode, sp.args)
     return None
 
 
-def install_llama_cpp_old(version = -10):
+def install_llama_cpp_old(version=-10):
     # Download the 10th latest release since the latest might be broken!
     # FALLBACK mechanism
     releases = subprocess.check_output(
@@ -972,7 +972,7 @@ def install_llama_cpp_old(version = -10):
             time.sleep(1)
         import shutil
 
-        shutil.rmtree("llama.cpp", ignore_errors = True)
+        shutil.rmtree("llama.cpp", ignore_errors=True)
 
     # Clone a specific commit
     # Also don't use the GPU!
@@ -1013,7 +1013,7 @@ def install_llama_cpp_old(version = -10):
         )
 
 
-def install_llama_cpp_blocking(use_cuda = False):
+def install_llama_cpp_blocking(use_cuda=False):
     # https://github.com/ggerganov/llama.cpp/issues/7062
     # Weirdly GPU conversion for GGUF breaks??
     # use_cuda = "LLAMA_CUDA=1" if use_cuda else ""
@@ -1063,7 +1063,7 @@ def save_to_gguf(
     model_dtype: str,
     is_sentencepiece: bool = False,
     model_directory: str = "unsloth_finetuned_model",
-    quantization_method = "fast_quantized",  # Can be a list of options! ["q4_k_m", "q8_0", "q5_k_m"]
+    quantization_method="fast_quantized",  # Can be a list of options! ["q4_k_m", "q8_0", "q5_k_m"]
     first_conversion: str = None,
     is_vlm: bool = False,
     is_gpt_oss: bool = False,
@@ -1195,12 +1195,12 @@ def save_to_gguf(
         if IS_KAGGLE_ENVIRONMENT:
             # Kaggle: no CUDA support due to environment limitations
             quantizer_location, converter_location = install_llama_cpp(
-                gpu_support = False, print_output = print_output
+                gpu_support=False, print_output=print_output
             )
         else:
             quantizer_location, converter_location = install_llama_cpp(
-                gpu_support = False,  # GGUF conversion doesn't need CUDA
-                print_output = print_output,
+                gpu_support=False,  # GGUF conversion doesn't need CUDA
+                print_output=print_output,
             )
 
     # Step 2: Download and patch converter script
@@ -1217,17 +1217,17 @@ def save_to_gguf(
         print(f"This might take 3 minutes...")
 
         initial_files, is_vlm_update = convert_to_gguf(
-            model_name = model_name,
-            input_folder = model_directory,
-            model_dtype = model_dtype,
-            quantization_type = first_conversion,
-            converter_location = converter_path,
-            supported_text_archs = supported_text_archs,
-            supported_vision_archs = supported_vision_archs,
-            is_vlm = is_vlm,
-            is_gpt_oss = is_gpt_oss,
-            max_shard_size = "50GB",
-            print_output = print_output,
+            model_name=model_name,
+            input_folder=model_directory,
+            model_dtype=model_dtype,
+            quantization_type=first_conversion,
+            converter_location=converter_path,
+            supported_text_archs=supported_text_archs,
+            supported_vision_archs=supported_vision_archs,
+            is_vlm=is_vlm,
+            is_gpt_oss=is_gpt_oss,
+            max_shard_size="50GB",
+            print_output=print_output,
         )
     # update is_vlm switch
     is_vlm = is_vlm_update
@@ -1271,11 +1271,11 @@ def save_to_gguf(
                 try:
                     # Use the quantize_gguf function we created
                     quantized_file = quantize_gguf(
-                        input_gguf = base_gguf,
-                        output_gguf = output_location,
-                        quant_type = quant_method,
-                        quantizer_location = quantizer_location,
-                        print_output = print_output,
+                        input_gguf=base_gguf,
+                        output_gguf=output_location,
+                        quant_type=quant_method,
+                        quantizer_location=quantizer_location,
+                        print_output=print_output,
                     )
                     all_saved_locations.append(quantized_file)
                     quants_created = True
@@ -1327,7 +1327,7 @@ def save_to_gguf(
 def unsloth_save_pretrained_merged(
     self,
     save_directory: Union[str, os.PathLike],
-    tokenizer = None,
+    tokenizer=None,
     save_method: str = "merged_16bit",  # ["lora", "merged_16bit", "merged_4bit"]
     push_to_hub: bool = False,
     token: Optional[Union[str, bool]] = None,
@@ -1368,7 +1368,7 @@ def unsloth_save_pretrained_merged(
 def unsloth_push_to_hub_merged(
     self,
     repo_id: str,
-    tokenizer = None,
+    tokenizer=None,
     save_method: str = "merged_16bit",  # ["lora", "merged_16bit", "merged_4bit"]
     use_temp_dir: Optional[bool] = None,
     commit_message: Optional[str] = "Trained with Unsloth",
@@ -1441,7 +1441,7 @@ def _determine_username(save_directory, old_username, token):
         from huggingface_hub import whoami
 
         try:
-            username = whoami(token = token)["name"]
+            username = whoami(token=token)["name"]
             if type(old_username) is str and username != old_username:
                 username = old_username
             save_directory = f"{username}/{save_directory}"
@@ -1457,8 +1457,8 @@ def _determine_username(save_directory, old_username, token):
 def create_huggingface_repo(
     model,
     save_directory,
-    token = None,
-    private = False,
+    token=None,
+    private=False,
 ):
     if token is None:
         token = get_token()
@@ -1468,28 +1468,28 @@ def create_huggingface_repo(
 
     try:
         create_repo(
-            repo_id = save_directory,
-            token = token,
-            repo_type = "model",
-            exist_ok = False,
-            private = private,
+            repo_id=save_directory,
+            token=token,
+            repo_type="model",
+            exist_ok=False,
+            private=private,
         )
 
         # Create model card
         from huggingface_hub import ModelCard
 
         content = MODEL_CARD.format(
-            username = username,
-            base_model = model.config._name_or_path,
-            model_type = model.config.model_type,
-            method = "",
-            extra = "unsloth",
+            username=username,
+            base_model=model.config._name_or_path,
+            model_type=model.config.model_type,
+            method="",
+            extra="unsloth",
         )
         card = ModelCard(content)
-        card.push_to_hub(save_directory, token = token)
+        card.push_to_hub(save_directory, token=token)
     except:
         pass
-    hf_api = HfApi(token = token)
+    hf_api = HfApi(token=token)
     return save_directory, hf_api
 
 
@@ -1498,11 +1498,11 @@ def upload_to_huggingface(
     save_directory,
     token,
     method,
-    extra = "",
-    file_location = None,
-    old_username = None,
-    private = None,
-    create_config = True,
+    extra="",
+    file_location=None,
+    old_username=None,
+    private=None,
+    create_config=True,
 ):
     save_directory, username = _determine_username(save_directory, old_username, token)
 
@@ -1510,31 +1510,31 @@ def upload_to_huggingface(
 
     try:
         create_repo(
-            repo_id = save_directory,
-            token = token,
-            repo_type = "model",
-            exist_ok = False,
-            private = private,
+            repo_id=save_directory,
+            token=token,
+            repo_type="model",
+            exist_ok=False,
+            private=private,
         )
 
         # Create model card
         from huggingface_hub import ModelCard
 
         content = MODEL_CARD.format(
-            username = username,
-            base_model = model.config._name_or_path,
-            model_type = model.config.model_type,
-            method = "",
-            extra = extra,
+            username=username,
+            base_model=model.config._name_or_path,
+            model_type=model.config.model_type,
+            method="",
+            extra=extra,
         )
         card = ModelCard(content)
-        card.push_to_hub(save_directory, token = token)
+        card.push_to_hub(save_directory, token=token)
     except:
         pass
 
     if file_location is not None:
         # Now upload file
-        hf_api = HfApi(token = token)
+        hf_api = HfApi(token=token)
 
         if "/" in file_location:
             uploaded_location = file_location[file_location.rfind("/") + 1 :]
@@ -1544,7 +1544,7 @@ def upload_to_huggingface(
         # find ftevent file from tensorboard and upload it
         import glob
 
-        ftevent_files = glob.glob("*out.tfevents*", recursive = True)
+        ftevent_files = glob.glob("*out.tfevents*", recursive=True)
         if len(ftevent_files) > 0:
             print(
                 "Unsloth: Uploading tensorboard files... Please wait...",
@@ -1552,33 +1552,33 @@ def upload_to_huggingface(
             )
             for ftevent_file in ftevent_files:
                 hf_api.upload_file(
-                    path_or_fileobj = ftevent_file,
-                    path_in_repo = ftevent_file.replace(file_location, ""),
-                    repo_id = save_directory,
-                    repo_type = "model",
-                    commit_message = "(Trained with Unsloth)",
+                    path_or_fileobj=ftevent_file,
+                    path_in_repo=ftevent_file.replace(file_location, ""),
+                    repo_id=save_directory,
+                    repo_type="model",
+                    commit_message="(Trained with Unsloth)",
                 )
 
         hf_api.upload_file(
-            path_or_fileobj = file_location,
-            path_in_repo = uploaded_location,
-            repo_id = save_directory,
-            repo_type = "model",
-            commit_message = "(Trained with Unsloth)",
+            path_or_fileobj=file_location,
+            path_in_repo=uploaded_location,
+            repo_id=save_directory,
+            repo_type="model",
+            commit_message="(Trained with Unsloth)",
         )
 
         # We also upload a config.json file
         if create_config:
             import json
 
-            with open("_temporary_unsloth_config.json", "w", encoding = "utf-8") as file:
-                json.dump({"model_type": model.config.model_type}, file, indent = 4)
+            with open("_temporary_unsloth_config.json", "w", encoding="utf-8") as file:
+                json.dump({"model_type": model.config.model_type}, file, indent=4)
             hf_api.upload_file(
-                path_or_fileobj = "_temporary_unsloth_config.json",
-                path_in_repo = "config.json",
-                repo_id = save_directory,
-                repo_type = "model",
-                commit_message = "(Trained with Unsloth)",
+                path_or_fileobj="_temporary_unsloth_config.json",
+                path_in_repo="config.json",
+                repo_id=save_directory,
+                repo_type="model",
+                commit_message="(Trained with Unsloth)",
             )
             os.remove("_temporary_unsloth_config.json")
     return username
@@ -1660,12 +1660,12 @@ def create_ollama_modelfile(tokenizer, base_model_name, model_location):
 
     if "__EOS_TOKEN__" in modelfile:
         modelfile = modelfile.format(
-            __FILE_LOCATION__ = model_location,
-            __EOS_TOKEN__ = tokenizer.eos_token,
+            __FILE_LOCATION__=model_location,
+            __EOS_TOKEN__=tokenizer.eos_token,
         )
     else:
         modelfile = modelfile.format(
-            __FILE_LOCATION__ = model_location,
+            __FILE_LOCATION__=model_location,
         )
 
     modelfile = modelfile.replace("⚫@✅#🦥", "{").replace("⚡@🦥#⛵", "}").rstrip()
@@ -1677,9 +1677,9 @@ def create_ollama_model(username: str, model_name: str, tag: str, modelfile_path
     try:
         init_check = subprocess.run(
             ["curl", "http://localhost:11434"],
-            capture_output = True,
-            text = True,
-            timeout = 3,
+            capture_output=True,
+            text=True,
+            timeout=3,
         )
         if init_check.returncode == 0:
             print(init_check.stdout.strip())
@@ -1696,15 +1696,15 @@ def create_ollama_model(username: str, model_name: str, tag: str, modelfile_path
             "-f",
             f"{modelfile_path}",
         ],
-        stdout = subprocess.PIPE,
-        stderr = subprocess.STDOUT,
-        text = True,
-        bufsize = 1,
-        universal_newlines = True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        universal_newlines=True,
     )
 
     for line in iter(process.stdout.readline, ""):
-        print(line, end = "")
+        print(line, end="")
         sys.stdout.flush()
 
     return_code = process.wait()
@@ -1719,9 +1719,9 @@ def push_to_ollama_hub(username: str, model_name: str, tag: str):
     try:
         init_check = subprocess.run(
             ["curl", "http://localhost:11434"],
-            capture_output = True,
-            text = True,
-            timeout = 3,
+            capture_output=True,
+            text=True,
+            timeout=3,
         )
         if init_check.returncode == 0:
             print(init_check.stdout.strip())
@@ -1732,15 +1732,15 @@ def push_to_ollama_hub(username: str, model_name: str, tag: str):
 
     process = subprocess.Popen(
         ["ollama", "push", f"{username}/{model_name}:{tag}"],
-        stdout = subprocess.PIPE,
-        stderr = subprocess.STDOUT,
-        text = True,
-        bufsize = 1,
-        universal_newlines = True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        universal_newlines=True,
     )
 
     for line in iter(process.stdout.readline, ""):
-        print(line, end = "")
+        print(line, end="")
         sys.stdout.flush()
 
     return_code = process.wait()
@@ -1753,21 +1753,21 @@ def push_to_ollama_hub(username: str, model_name: str, tag: str):
 
 def push_to_ollama(tokenizer, gguf_location, username: str, model_name: str, tag: str):
     model_file = create_ollama_modelfile(
-        tokenizer = tokenizer, gguf_location = gguf_location
+        tokenizer=tokenizer, gguf_location=gguf_location
     )
 
-    with open(f"Modelfile_{model_name}", "w", encoding = "utf-8") as f:
+    with open(f"Modelfile_{model_name}", "w", encoding="utf-8") as f:
         f.write(model_file)
         f.close()
 
     create_ollama_model(
-        username = username,
-        model_name = model_name,
-        tag = tag,
-        modelfile_path = f"Modelfile_{model_name}",
+        username=username,
+        model_name=model_name,
+        tag=tag,
+        modelfile_path=f"Modelfile_{model_name}",
     )
 
-    push_to_ollama_hub(username = username, model_name = model_name, tag = tag)
+    push_to_ollama_hub(username=username, model_name=model_name, tag=tag)
 
     print("Successfully pushed to ollama")
 
@@ -1775,8 +1775,8 @@ def push_to_ollama(tokenizer, gguf_location, username: str, model_name: str, tag
 def unsloth_save_pretrained_gguf(
     self,
     save_directory: Union[str, os.PathLike],
-    tokenizer = None,
-    quantization_method = "fast_quantized",
+    tokenizer=None,
+    quantization_method="fast_quantized",
     first_conversion: str = None,
     push_to_hub: bool = False,
     token: Optional[Union[str, bool]] = None,
@@ -1827,7 +1827,7 @@ def unsloth_save_pretrained_gguf(
         raise ValueError("Unsloth: Saving to GGUF must have a tokenizer.")
 
     try:
-        base_model_name = get_model_name(self.config._name_or_path, load_in_4bit = False)
+        base_model_name = get_model_name(self.config._name_or_path, load_in_4bit=False)
         model_name = base_model_name.split("/")[-1]
     except:
         base_model_name = self.config._name_or_path
@@ -1964,15 +1964,15 @@ def unsloth_save_pretrained_gguf(
 
     try:
         all_file_locations, want_full_precision, is_vlm_update = save_to_gguf(
-            model_name = model_name,
-            model_type = model_type,
-            model_dtype = model_dtype,
-            is_sentencepiece = False,
-            model_directory = save_directory,
-            quantization_method = quantization_methods,
-            first_conversion = first_conversion,
-            is_vlm = is_vlm,  # Pass VLM flag
-            is_gpt_oss = is_gpt_oss,  # Pass gpt_oss Flag
+            model_name=model_name,
+            model_type=model_type,
+            model_dtype=model_dtype,
+            is_sentencepiece=False,
+            model_directory=save_directory,
+            quantization_method=quantization_methods,
+            first_conversion=first_conversion,
+            is_vlm=is_vlm,  # Pass VLM flag
+            is_gpt_oss=is_gpt_oss,  # Pass gpt_oss Flag
         )
     except Exception as e:
         if IS_KAGGLE_ENVIRONMENT:
@@ -2001,7 +2001,7 @@ def unsloth_save_pretrained_gguf(
                     modelfile_location = os.path.join(save_directory, "Modelfile")
                 else:
                     modelfile_location = os.path.join(os.getcwd(), "Modelfile")
-                with open(modelfile_location, "w", encoding = "utf-8") as file:
+                with open(modelfile_location, "w", encoding="utf-8") as file:
                     file.write(modelfile)
                 ollama_success = True
         except Exception as e:
@@ -2050,8 +2050,8 @@ def unsloth_save_pretrained_gguf(
 def unsloth_push_to_hub_gguf(
     self,
     repo_id: str,
-    tokenizer = None,
-    quantization_method = "fast_quantized",
+    tokenizer=None,
+    quantization_method="fast_quantized",
     first_conversion: str = None,
     use_temp_dir: Optional[bool] = None,
     commit_message: Optional[str] = "Trained with Unsloth",
@@ -2100,7 +2100,7 @@ def unsloth_push_to_hub_gguf(
     if use_temp_dir or use_temp_dir is None:
         import tempfile
 
-        temp_dir = tempfile.mkdtemp(prefix = "unsloth_gguf_")
+        temp_dir = tempfile.mkdtemp(prefix="unsloth_gguf_")
         save_directory = temp_dir
         cleanup_temp = True
     else:
@@ -2113,17 +2113,17 @@ def unsloth_push_to_hub_gguf(
     try:
         # Call save_pretrained_gguf - it returns all the info we need
         result = unsloth_save_pretrained_gguf(
-            self = self,
-            save_directory = save_directory,
-            tokenizer = tokenizer,
-            quantization_method = quantization_method,
-            first_conversion = first_conversion,
-            push_to_hub = False,  # Never push from here
-            token = None,  # Don't need token for local save
-            max_shard_size = max_shard_size,
-            safe_serialization = safe_serialization,
-            temporary_location = temporary_location,
-            maximum_memory_usage = maximum_memory_usage,
+            self=self,
+            save_directory=save_directory,
+            tokenizer=tokenizer,
+            quantization_method=quantization_method,
+            first_conversion=first_conversion,
+            push_to_hub=False,  # Never push from here
+            token=None,  # Don't need token for local save
+            max_shard_size=max_shard_size,
+            safe_serialization=safe_serialization,
+            temporary_location=temporary_location,
+            maximum_memory_usage=maximum_memory_usage,
         )
 
         # Extract results
@@ -2150,7 +2150,7 @@ def unsloth_push_to_hub_gguf(
     try:
         from huggingface_hub import HfApi
 
-        api = HfApi(token = token)
+        api = HfApi(token=token)
 
         # Get full repo id
         if "/" not in repo_id:
@@ -2161,10 +2161,10 @@ def unsloth_push_to_hub_gguf(
 
         # Create repo
         api.create_repo(
-            repo_id = full_repo_id,
-            repo_type = "model",
-            private = private,
-            exist_ok = True,
+            repo_id=full_repo_id,
+            repo_type="model",
+            private=private,
+            exist_ok=True,
         )
 
         # Upload GGUF files
@@ -2187,14 +2187,14 @@ def unsloth_push_to_hub_gguf(
             print(f"Uploading {proper_name}...")
 
             api.upload_file(
-                path_or_fileobj = file_location,
-                path_in_repo = proper_name,
-                repo_id = full_repo_id,
-                repo_type = "model",
-                commit_message = commit_message,
-                commit_description = commit_description,
-                create_pr = create_pr,
-                revision = revision,
+                path_or_fileobj=file_location,
+                path_in_repo=proper_name,
+                repo_id=full_repo_id,
+                repo_type="model",
+                commit_message=commit_message,
+                commit_description=commit_description,
+                create_pr=create_pr,
+                revision=revision,
             )
 
         # Upload config.json if exists
@@ -2202,26 +2202,26 @@ def unsloth_push_to_hub_gguf(
         if os.path.exists(config_path):
             print("Uploading config.json...")
             api.upload_file(
-                path_or_fileobj = config_path,
-                path_in_repo = "config.json",
-                repo_id = full_repo_id,
-                repo_type = "model",
-                commit_message = f"{commit_message} - config",
-                create_pr = create_pr,
-                revision = revision,
+                path_or_fileobj=config_path,
+                path_in_repo="config.json",
+                repo_id=full_repo_id,
+                repo_type="model",
+                commit_message=f"{commit_message} - config",
+                create_pr=create_pr,
+                revision=revision,
             )
 
         # Upload Modelfile if exists
         if modelfile_location and os.path.exists(modelfile_location):
             print("Uploading Ollama Modelfile...")
             api.upload_file(
-                path_or_fileobj = modelfile_location,
-                path_in_repo = "Modelfile",
-                repo_id = full_repo_id,
-                repo_type = "model",
-                commit_message = f"{commit_message} - Ollama Modelfile",
-                create_pr = create_pr,
-                revision = revision,
+                path_or_fileobj=modelfile_location,
+                path_in_repo="Modelfile",
+                repo_id=full_repo_id,
+                repo_type="model",
+                commit_message=f"{commit_message} - Ollama Modelfile",
+                create_pr=create_pr,
+                revision=revision,
             )
 
         # Create and upload README
@@ -2285,13 +2285,13 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
             f.write(readme_content)
 
         api.upload_file(
-            path_or_fileobj = readme_path,
-            path_in_repo = "README.md",
-            repo_id = full_repo_id,
-            repo_type = "model",
-            commit_message = "Add README",
-            create_pr = create_pr,
-            revision = revision,
+            path_or_fileobj=readme_path,
+            path_in_repo="README.md",
+            repo_id=full_repo_id,
+            repo_type="model",
+            commit_message="Add README",
+            create_pr=create_pr,
+            revision=revision,
         )
 
         print(
@@ -2307,9 +2307,9 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
 
         try:
             api.add_tags(
-                repo_id = full_repo_id,
-                tags = tags,
-                repo_type = "model",
+                repo_id=full_repo_id,
+                tags=tags,
+                repo_type="model",
             )
         except:
             pass
@@ -2334,15 +2334,15 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
 # Corrected function to save LoRA to a custom directory
 def save_lora_to_custom_dir(model, tokenizer, save_directory):
     # Create the custom directory if it doesn't exist
-    os.makedirs(save_directory, exist_ok = True)
+    os.makedirs(save_directory, exist_ok=True)
 
     # Call the unsloth_save_model function with the custom directory
     unsloth_save_model(
         model,
         tokenizer,
-        save_directory = save_directory,
-        save_method = "lora",
-        push_to_hub = False,
+        save_directory=save_directory,
+        save_method="lora",
+        push_to_hub=False,
     )
 
 
@@ -2365,7 +2365,7 @@ def unsloth_convert_lora_to_ggml_and_push_to_hub(
         if IS_KAGGLE_ENVIRONMENT:
             python_install = install_python_non_blocking(["protobuf"])
             python_install.wait()
-            install_llama_cpp_blocking(use_cuda = False)
+            install_llama_cpp_blocking(use_cuda=False)
             makefile = None
         else:
             git_clone = install_llama_cpp_clone_non_blocking()
@@ -2395,16 +2395,16 @@ def unsloth_convert_lora_to_ggml_and_push_to_hub(
     try:
         with subprocess.Popen(
             command,
-            shell = True,
-            stdout = subprocess.PIPE,
-            stderr = subprocess.PIPE,
-            bufsize = 1,
-            universal_newlines = True,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            bufsize=1,
+            universal_newlines=True,
         ) as sp:
             for line in sp.stdout:
-                print(line, end = "", flush = True)
+                print(line, end="", flush=True)
             for line in sp.stderr:
-                print(line, end = "", flush = True)
+                print(line, end="", flush=True)
             sp.wait()
             if sp.returncode != 0:
                 raise subprocess.CalledProcessError(sp.returncode, command)
@@ -2444,7 +2444,7 @@ def unsloth_convert_lora_to_ggml_and_save_locally(
         if IS_KAGGLE_ENVIRONMENT:
             python_install = install_python_non_blocking(["protobuf"])
             python_install.wait()
-            install_llama_cpp_blocking(use_cuda = False)
+            install_llama_cpp_blocking(use_cuda=False)
             makefile = None
         else:
             git_clone = install_llama_cpp_clone_non_blocking()
@@ -2474,16 +2474,16 @@ def unsloth_convert_lora_to_ggml_and_save_locally(
     try:
         with subprocess.Popen(
             command,
-            shell = True,
-            stdout = subprocess.PIPE,
-            stderr = subprocess.PIPE,
-            bufsize = 1,
-            universal_newlines = True,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            bufsize=1,
+            universal_newlines=True,
         ) as sp:
             for line in sp.stdout:
-                print(line, end = "", flush = True)
+                print(line, end="", flush=True)
             for line in sp.stderr:
-                print(line, end = "", flush = True)
+                print(line, end="", flush=True)
             sp.wait()
             if sp.returncode != 0:
                 raise subprocess.CalledProcessError(sp.returncode, command)
@@ -2513,10 +2513,10 @@ def save_to_gguf_generic(
     model,
     save_directory,
     tokenizer,
-    quantization_method = None,
-    quantization_type = "Q8_0",
-    repo_id = None,
-    token = None,
+    quantization_method=None,
+    quantization_type="Q8_0",
+    repo_id=None,
+    token=None,
 ):
     if token is None and repo_id is not None:
         token = get_token()
@@ -2524,7 +2524,7 @@ def save_to_gguf_generic(
         raise RuntimeError("Unsloth: Please specify a token for uploading!")
 
     if not os.path.exists(os.path.join("llama.cpp", "unsloth_convert_hf_to_gguf.py")):
-        install_llama_cpp(just_clone_repo = True)
+        install_llama_cpp(just_clone_repo=True)
 
     # Use old style quantization_method
     new_quantization_methods = []
@@ -2568,27 +2568,27 @@ def save_to_gguf_generic(
     for quantization_type in new_quantization_methods:
         metadata = _convert_to_gguf(
             save_directory,
-            print_output = True,
-            quantization_type = quantization_type,
+            print_output=True,
+            quantization_type=quantization_type,
         )
         if repo_id is not None:
             prepare_saving(
                 model,
                 repo_id,
-                push_to_hub = True,
-                max_shard_size = "50GB",
-                private = True,
-                token = token,
+                push_to_hub=True,
+                max_shard_size="50GB",
+                private=True,
+                token=token,
             )
 
             from huggingface_hub import HfApi
 
-            api = HfApi(token = token)
+            api = HfApi(token=token)
             api.upload_folder(
-                folder_path = save_directory,
-                repo_id = repo_id,
-                repo_type = "model",
-                allow_patterns = ["*.gguf"],
+                folder_path=save_directory,
+                repo_id=repo_id,
+                repo_type="model",
+                allow_patterns=["*.gguf"],
             )
     return metadata
 
@@ -2635,16 +2635,16 @@ def unsloth_generic_save(
 
     merge_and_overwrite_lora(
         get_model_name,
-        model = model,
-        tokenizer = tokenizer,
-        save_directory = save_directory,
-        push_to_hub = push_to_hub,
-        private = private,
-        token = token,
-        save_method = save_method,
-        output_dtype = None,
-        low_disk_space_usage = True,
-        use_temp_file = False,
+        model=model,
+        tokenizer=tokenizer,
+        save_directory=save_directory,
+        push_to_hub=push_to_hub,
+        private=private,
+        token=token,
+        save_method=save_method,
+        output_dtype=None,
+        low_disk_space_usage=True,
+        use_temp_file=False,
     )
     return
 
@@ -2652,7 +2652,7 @@ def unsloth_generic_save(
 def unsloth_generic_save_pretrained_merged(
     self,
     save_directory: Union[str, os.PathLike],
-    tokenizer = None,
+    tokenizer=None,
     save_method: str = "merged_16bit",  # ["lora", "merged_16bit", "merged_4bit"]
     push_to_hub: bool = False,
     token: Optional[Union[str, bool]] = None,
@@ -2693,7 +2693,7 @@ def unsloth_generic_save_pretrained_merged(
 def unsloth_generic_push_to_hub_merged(
     self,
     repo_id: str,
-    tokenizer = None,
+    tokenizer=None,
     save_method: str = "merged_16bit",  # ["lora", "merged_16bit", "merged_4bit"]
     use_temp_dir: Optional[bool] = None,
     commit_message: Optional[str] = "Trained with Unsloth",
@@ -2737,8 +2737,8 @@ def unsloth_generic_push_to_hub_merged(
 def unsloth_save_pretrained_torchao(
     self,
     save_directory: Union[str, os.PathLike],
-    tokenizer = None,
-    torchao_config = None,
+    tokenizer=None,
+    torchao_config=None,
     push_to_hub: bool = False,
     token: Optional[Union[str, bool]] = None,
 ):
@@ -2785,7 +2785,7 @@ def unsloth_save_pretrained_torchao(
             "Unsloth: You did not specify a `torchao_config`, so defaulting to `Int8DynamicActivationInt8WeightConfig`"
         )
         torchao_config = Int8DynamicActivationInt8WeightConfig()
-    quantization_config = TorchAoConfig(quant_type = torchao_config)
+    quantization_config = TorchAoConfig(quant_type=torchao_config)
 
     is_vlm = False
     if hasattr(self, "config") and hasattr(self.config, "architectures"):
@@ -2807,8 +2807,8 @@ def unsloth_save_pretrained_torchao(
 
     model = auto_model.from_pretrained(
         arguments["save_directory"],
-        device_map = "auto",
-        quantization_config = quantization_config,
+        device_map="auto",
+        quantization_config=quantization_config,
         **kwargs,
     )
 
@@ -2821,12 +2821,12 @@ def unsloth_save_pretrained_torchao(
         if token is None and push_to_hub:
             token = get_token()
         model.push_to_hub(
-            torchao_save_directory, safe_serialization = safe_serialization, token = token
+            torchao_save_directory, safe_serialization=safe_serialization, token=token
         )
-        tokenizer.push_to_hub(torchao_save_directory, token = token)
+        tokenizer.push_to_hub(torchao_save_directory, token=token)
     else:
         model.save_pretrained(
-            torchao_save_directory, safe_serialization = safe_serialization
+            torchao_save_directory, safe_serialization=safe_serialization
         )
         tokenizer.save_pretrained(torchao_save_directory)
     if os.path.exists(save_directory):
@@ -2846,7 +2846,7 @@ def not_implemented_save(*args, **kwargs):
     )
 
 
-def patch_saving_functions(model, vision = False):
+def patch_saving_functions(model, vision=False):
     import inspect
     import types
     from typing import Callable, Optional, Union, List
