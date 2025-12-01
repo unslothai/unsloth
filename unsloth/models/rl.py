@@ -312,7 +312,7 @@ class Unsloth{RLTrainer_name}(_Unsloth{RLTrainer_name}):
             if getattr(args, "_n_gpu", 1) != 1:
                 args._n_gpu = 1
         if "model" in locals() and hasattr(model, "for_training"):
-            model.for_training()
+            model.for_training(use_gradient_checkpointing=getattr(args, 'gradient_checkpointing', True))
         super().__init__({RLTrainer_call_args}{RLTrainer_kwargs})
         if "model" in locals() and hasattr(model, "for_inference"):
             model.for_inference()
@@ -565,7 +565,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     if "model" in call_args:
         training_check = (
             "if model is not None and hasattr(model, 'for_training'):\n"
-            "    model.for_training()\n"
+            "    model.for_training(use_gradient_checkpointing=getattr(args, 'gradient_checkpointing', True))\n"
             "if 'tokenizer' in locals() and hasattr(tokenizer, 'padding_side'): tokenizer.padding_side = 'right'\n"
             "if 'processing_class' in locals():\n"
             "    if hasattr(processing_class, 'padding_side'): processing_class.padding_side = 'right'\n"
