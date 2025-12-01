@@ -329,6 +329,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     try:
         trainer = eval(f"trl.trainer.{trainer_file}")
     except Exception as error:
+        print(f"Unsloth: Could not import trl.trainer.{trainer_file}: {error}")
         return
 
     # Get SFTTrainer and SFTConfig names
@@ -347,8 +348,10 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         and trainer_file.split("_")[0] in x.lower()
     ]
     if len(name) != 1:
+        print(f"Unsloth: Could not find Trainer class in trl.trainer.{trainer_file}. Found: {name}")
         return
     if len(config) != 1:
+        print(f"Unsloth: Could not find Config class in trl.trainer.{trainer_file}. Found: {config}")
         return
 
     # Get SFTTrainer, SFTConfig
@@ -357,16 +360,20 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     try:
         RLTrainer = eval(f"trl.trainer.{trainer_file}.{RLTrainer_name}")
     except:
+        print(f"Unsloth: Could not load {RLTrainer_name} from trl.trainer.{trainer_file}")
         return
     try:
         RLConfig = eval(f"trl.trainer.{trainer_file}.{RLConfig_name}")
     except:
+        print(f"Unsloth: Could not load {RLConfig_name} from trl.trainer.{trainer_file}")
         return
 
     # Check name
     if RLTrainer.__name__.startswith("Unsloth"):
+        print(f"Unsloth: {RLTrainer.__name__} is already patched.")
         return
     if RLConfig.__name__.startswith("Unsloth"):
+        print(f"Unsloth: {RLConfig.__name__} is already patched.")
         return
 
     # Get old source
