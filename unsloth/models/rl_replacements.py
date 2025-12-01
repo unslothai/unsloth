@@ -98,6 +98,9 @@ def sft_trainer_prepare_dataset(function_name, function):
     ):
         return function
 
+    # Note: We intentionally DON'T use the fast version for native formats
+    # because TRL's original _prepare_dataset has built-in support for prompt/completion
+    # and messages formats that the fast version doesn't have.
     fast_sft_prepare_dataset = RL_REPLACEMENTS.get("sft_prepare_dataset", None)
     if fast_sft_prepare_dataset is not None:
         params = inspect.signature(fast_sft_prepare_dataset).parameters.keys()
@@ -108,35 +111,41 @@ def sft_trainer_prepare_dataset(function_name, function):
             flags = re.MULTILINE | re.DOTALL,
         )
         if matched:
-            # Use fast version!
-            function = inspect.getsource(fast_sft_prepare_dataset)
-            function = function.split("\n")
-            function = "\n".join(" " * 4 + x for x in function)
-            function = function.replace(
-                "def sft_prepare_dataset", "def _prepare_dataset"
-            )
-            return function
+            # Don't use fast version - it doesn't support native formats
+            # Keep using TRL's original _prepare_dataset
+            pass
 
     check_text = (
+        "tokenizer_call = None\n"
         "if 'skip_prepare_dataset' in locals() and skip_prepare_dataset:\n"
         "    return dataset\n"
         "if 'tokenizer'          not in locals(): tokenizer = processing_class\n"
-        "if 'formatting_func'    not in locals(): raise RuntimeError('Unsloth: Please file a bug report - `formatting_func` does not exist!')\n"
-        "if 'dataset_text_field' not in locals() and 'args' in locals(): dataset_text_field = args.dataset_text_field\n"
-        "if 'dataset_text_field' not in locals(): raise RuntimeError('Unsloth: Please file a bug report - `dataset_text_field` does not exist!')\n"
-        "test_text = dataset[0][dataset_text_field] if (formatting_func is None and dataset_text_field is not None) else formatting_func(dataset[0])[0]\n"
-        "chat_template = getattr(tokenizer, 'chat_template', None)\n"
-        "chat_template = '' if chat_template is None else chat_template\n"
-        "has_bos_token_already = (test_text.startswith(tokenizer.bos_token) or tokenizer.bos_token in chat_template) "
-        "if getattr(tokenizer, 'bos_token', None) is not None else False\n"
-        "if 'add_special_tokens' not in locals() and has_bos_token_already:\n"
-        "    from functools import partial\n"
-        "    tokenizer_call = tokenizer.__call__\n"
-        "    tokenizer.__call__ = partial(tokenizer_call, add_special_tokens = False)\n"
-        "    processing_class = tokenizer\n"
-        "else:\n"
-        "    tokenizer_call = None\n"
-        "    add_special_tokens = False if has_bos_token_already else locals().get('add_special_tokens', False)\n"
+        "\n"
+        "# Check for native TRL formats FIRST before trying to access dataset\n"
+        "unsloth_has_native_format = False\n"
+        "if hasattr(dataset, 'column_names'):\n"
+        "    columns = set(dataset.column_names)\n"
+        "    if ('prompt' in columns and 'completion' in columns) or 'messages' in columns:\n"
+        "        unsloth_has_native_format = True\n"
+        "\n"
+        "# Only do BOS token checking for non-native formats\n"
+        "if not unsloth_has_native_format:\n"
+        "    if 'formatting_func'    not in locals(): raise RuntimeError('Unsloth: Please file a bug report - `formatting_func` does not exist!')\n"
+        "    if 'dataset_text_field' not in locals() and 'args' in locals(): dataset_text_field = args.dataset_text_field\n"
+        "    if 'dataset_text_field' not in locals(): raise RuntimeError('Unsloth: Please file a bug report - `dataset_text_field` does not exist!')\n"
+        "    test_text = dataset[0][dataset_text_field] if (formatting_func is None and dataset_text_field is not None) else formatting_func(dataset[0])[0]\n"
+        "    chat_template = getattr(tokenizer, 'chat_template', None)\n"
+        "    chat_template = '' if chat_template is None else chat_template\n"
+        "    has_bos_token_already = (test_text.startswith(tokenizer.bos_token) or tokenizer.bos_token in chat_template) "
+        "    if getattr(tokenizer, 'bos_token', None) is not None else False\n"
+        "    if 'add_special_tokens' not in locals() and has_bos_token_already:\n"
+        "        from functools import partial\n"
+        "        tokenizer_call = tokenizer.__call__\n"
+        "        tokenizer.__call__ = partial(tokenizer_call, add_special_tokens = False)\n"
+        "        processing_class = tokenizer\n"
+        "    else:\n"
+        "        tokenizer_call = None\n"
+        "        add_special_tokens = False if has_bos_token_already else locals().get('add_special_tokens', False)\n"
     )
 
     check_text = check_text.split("\n")
@@ -159,7 +168,7 @@ def sft_trainer_prepare_dataset(function_name, function):
     )
     function = re.sub(
         r"\n([ ]{4,})(return .*?[\s]{0,})$",
-        rf"\1{return_state}\1\2",
+        rf"\n\1{return_state}\1\2",
         function,
     )
     return function
