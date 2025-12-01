@@ -126,7 +126,8 @@ patch_trackio()
 patch_datasets()
 
 del fix_xformers_performance_issue
-del patch_vllm_imports
+del fix_vllm_aimv2_issue
+del fix_vllm_guided_decoding_params
 del ignore_logger_messages
 del patch_ipykernel_hf_xet
 del patch_trackio
