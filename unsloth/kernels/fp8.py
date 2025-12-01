@@ -346,7 +346,7 @@ class FP8BlockQuantLinear(torch.autograd.Function):
         m, n = weight.shape
         p, q = weight_scale.shape
         block_size = getattr(weight, "block_size", None) or getattr(
-            weight_scale, "block_size", None
+            weight_scale, "block_size", [128, 128]
         )
         assert block_size is not None, "block_size is not set"
         if triton.cdiv(m, block_size[0]) != p or triton.cdiv(n, block_size[1]) != q:
