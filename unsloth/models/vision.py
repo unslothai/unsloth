@@ -431,7 +431,7 @@ class FastBaseModel:
         max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
 
         arch_name = model_type_arch.title()
-        arch_name = arch_name.replace("_Vl_", "_VL_").replace("_Moe", "_MOE")
+        arch_name = arch_name.replace("_Vl_", "_VL_").replace("_Moe", "_MoE")
         statistics = (
             f"==((====))==  Unsloth {__version__}: Fast {arch_name} patching. Transformers: {transformers_version}.{vllm_version}\n"
             f"   {chr(92)}{chr(92)}   /|    {gpu_stats_name}Num GPUs = {DEVICE_COUNT}. Max memory: {max_memory} GB. Platform: {platform_system}.\n"
