@@ -59,12 +59,14 @@ def Qwen3MoeSparseMoeBlock_fast_forward(self, X, temp_gate = None, temp_up = Non
         self.gate_proj, X, out = temp_gate
     )  # pretty much the only change from transformers implementation.
 
-    routing_weights = torch_nn_functional_softmax(router_logits, dim = -1)
+    routing_weights = torch_nn_functional_softmax(
+        router_logits, dim = -1, dtype = torch.float32
+    )
     routing_weights, selected_experts = torch.topk(routing_weights, self.top_k, dim = -1)
     routing_weights /= routing_weights.sum(dim = -1, keepdim = True)
     # we cast back to the input dtype
     routing_weights = routing_weights.to(X.dtype)
-    final_X = torch.zeros((bsz * seq_len, hd), dtype = X.dtype, device = X.device)
+    final_X = torch.zeros((bsz * seq_len, hd), dtype = torch.float32, device = X.device)
 
     # One hot encode the selected experts to create an expert mask
     # this will be used to easily index which expert is going to be sollicitated
@@ -128,7 +130,7 @@ def Qwen3MoeDecoderLayer_fast_forward(
             position_embeddings = position_embeddings,
             _flag_for_generation = self._flag_for_generation,
         )
-        hidden_states = residual + hidden_states
+        hidden_states += residual
 
         # MoE Router MLP
         residual = hidden_states
@@ -138,7 +140,7 @@ def Qwen3MoeDecoderLayer_fast_forward(
         hidden_states, router_logits = Qwen3MoeSparseMoeBlock_fast_forward(
             self.mlp, hidden_states
         )
-        hidden_states = residual + hidden_states
+        hidden_states += residual
     else:
         residual = hidden_states
         hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
@@ -200,7 +202,7 @@ class FastQwen3MoeModel(FastQwen3Model):
 
         # Solves https://github.com/unslothai/unsloth/issues/168
         # Static KV Cache was introduced in 4.38.0, causing training to be much slower.
-        # Inferene can now be CUDAGraphed, but we shall retain the old rotary embeddings.
+        # Inference can now be CUDAGraphed, but we shall retain the old rotary embeddings.
         # https://github.com/huggingface/transformers/pull/27931
         # https://github.com/huggingface/transformers/blob/v4.37.2/src/transformers/models/llama/modeling_llama.py\
         import transformers.models.qwen3_moe.modeling_qwen3_moe

@@ -430,8 +430,10 @@ class FastBaseModel:
 
         max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
 
+        arch_name = model_type_arch.title()
+        arch_name = arch_name.replace("_Vl_", "_VL_").replace("_Moe", "_MoE")
         statistics = (
-            f"==((====))==  Unsloth {__version__}: Fast {model_type_arch.title()} patching. Transformers: {transformers_version}.{vllm_version}\n"
+            f"==((====))==  Unsloth {__version__}: Fast {arch_name} patching. Transformers: {transformers_version}.{vllm_version}\n"
             f"   {chr(92)}{chr(92)}   /|    {gpu_stats_name}Num GPUs = {DEVICE_COUNT}. Max memory: {max_memory} GB. Platform: {platform_system}.\n"
             f"O^O/ {chr(92)}_/ {chr(92)}    Torch: {torch.__version__}. {gpu_stats_snippet} Triton: {triton_version}\n"
             f"{chr(92)}        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. FA [Xformers = {xformers_version}. FA2 = {HAS_FLASH_ATTENTION}]\n"
@@ -654,6 +656,8 @@ class FastBaseModel:
 
         raise_handler = RaiseUninitialized()
         if not fast_inference:
+            # Prevent load_in_fp8 from being forwarded into HF internal model loading
+            load_in_fp8 = kwargs.pop("load_in_fp8", None)
             model = auto_model.from_pretrained(
                 model_name,
                 device_map = device_map,

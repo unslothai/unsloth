@@ -1533,7 +1533,7 @@ def PeftModel_fast_forward(
 
 # Solves https://github.com/unslothai/unsloth/issues/168
 # Static KV Cache was introduced in 4.38.0, causing training to be much slower.
-# Inferene can now be CUDAGraphed, but we shall retain the old rotary embeddings.
+# Inference can now be CUDAGraphed, but we shall retain the old rotary embeddings.
 # https://github.com/huggingface/transformers/pull/27931
 # https://github.com/huggingface/transformers/blob/v4.37.2/src/transformers/models/llama/modeling_llama.py
 class LlamaRotaryEmbedding(torch.nn.Module):
@@ -1551,7 +1551,11 @@ class LlamaRotaryEmbedding(torch.nn.Module):
         super().__init__()
         if config is not None:
             # [TODO] Hack to pass in config - need to remove later
-            base = config.rope_theta
+            try:
+                base = config.rope_theta
+            except:
+                base = getattr(config, "rope_parameters", {})
+                base = base["rope_theta"]
             partial_rotary_factor = (
                 config.partial_rotary_factor
                 if hasattr(config, "partial_rotary_factor")
@@ -1988,6 +1992,9 @@ def unsloth_fast_generate(
     *args,
     **kwargs,
 ):
+    # If the model starts out in training mode, restore training mode after generation
+    restore_training_mode = self.training
+
     FastLlamaModel.for_inference(self)
 
     dtype = _get_dtype(dtype_from_config(self.config))
@@ -2043,7 +2050,8 @@ def unsloth_fast_generate(
     #     accelerate.utils.operations.send_to_device = accelerate_old_send_to_device
     # pass
 
-    FastLlamaModel.for_training(self)
+    if restore_training_mode:
+        FastLlamaModel.for_training(self)
 
     return output
 
