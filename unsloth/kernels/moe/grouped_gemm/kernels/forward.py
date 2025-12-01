@@ -68,25 +68,25 @@ def _grouped_gemm_forward_kernel(
     if USE_TMA_LOAD_X:
         x_desc = tl._experimental_make_tensor_descriptor(
             x_ptr,
-            shape=[TOTAL_TOKENS, K],
-            strides=[K, 1],
-            block_shape=[BLOCK_SIZE_M, BLOCK_SIZE_K],
+            shape = [TOTAL_TOKENS, K],
+            strides = [K, 1],
+            block_shape = [BLOCK_SIZE_M, BLOCK_SIZE_K],
         )
 
     if USE_TMA_LOAD_W:
         expert_stride = N * K
         w_desc = tl._experimental_make_tensor_descriptor(
             w_ptr,
-            shape=[NUM_EXPERTS, N, K],
-            strides=[expert_stride, K, 1],
-            block_shape=[1, BLOCK_SIZE_N, BLOCK_SIZE_K],
+            shape = [NUM_EXPERTS, N, K],
+            strides = [expert_stride, K, 1],
+            block_shape = [1, BLOCK_SIZE_N, BLOCK_SIZE_K],
         )
 
     m_end = 0
     processed_tiles = 0
     m_block_range = tl.arange(0, BLOCK_SIZE_M)
 
-    for expert_idx in tl.range(NUM_EXPERTS, flatten=FLATTEN):
+    for expert_idx in tl.range(NUM_EXPERTS, flatten = FLATTEN):
         m_start = m_end
         m_size = tl.load(m_sizes_ptr + expert_idx).to(tl.int32)
         m_end = m_start + m_size
@@ -102,9 +102,9 @@ def _grouped_gemm_forward_kernel(
             if USE_TMA_STORE:
                 y_desc = tl._experimental_make_tensor_descriptor(
                     y_ptr,  # + m_start * N,
-                    shape=[m_end, N],
-                    strides=[N, 1],
-                    block_shape=[BLOCK_SIZE_M, BLOCK_SIZE_N],
+                    shape = [m_end, N],
+                    strides = [N, 1],
+                    block_shape = [BLOCK_SIZE_M, BLOCK_SIZE_N],
                 )
 
             # Process tiles for this expert
@@ -127,7 +127,7 @@ def _grouped_gemm_forward_kernel(
                     )
                     expert_token_idx = tl.load(
                         gather_indices_ptr + indices_to_gather,
-                        mask=indices_to_gather < TOTAL_TOKENS,
+                        mask = indices_to_gather < TOTAL_TOKENS,
                     )
                     expert_token_offsets = expert_token_idx[:, None]
 
@@ -178,7 +178,7 @@ def _grouped_gemm_forward_kernel(
                 if SHOULD_FUSE_MUL:
                     topk_load_idx = expert_token_offsets
 
-                accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=acc_dtype)
+                accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype = acc_dtype)
 
                 offs_k = tl.arange(0, BLOCK_SIZE_K)
 
@@ -194,19 +194,19 @@ def _grouped_gemm_forward_kernel(
 
                 for k_offset in range(0, K, BLOCK_SIZE_K):
                     if not USE_TMA_LOAD_X:
-                        x = tl.load(x_ptrs, mask=row_mask)
+                        x = tl.load(x_ptrs, mask = row_mask)
                     else:
                         x = x_desc.load([m_start + off_am, k_offset])
 
                     if FUSE_MUL_PRE:
                         # Check for correct broadcasting
                         topk_weights = tl.load(
-                            topk_weights_ptr + topk_load_idx, mask=row_mask
+                            topk_weights_ptr + topk_load_idx, mask = row_mask
                         )
                         x *= topk_weights.to(x.dtype)
 
                     if not USE_TMA_LOAD_W:
-                        w = tl.load(w_ptrs, mask=offs_bn[:, None] < N)
+                        w = tl.load(w_ptrs, mask = offs_bn[:, None] < N)
                     else:
                         w = w_desc.load(
                             [expert_idx, tile_n_idx * BLOCK_SIZE_N, k_offset]
@@ -228,7 +228,7 @@ def _grouped_gemm_forward_kernel(
                 if FUSE_MUL_POST:
                     # Check for correct broadcasting
                     topk_weights = tl.load(
-                        topk_weights_ptr + topk_load_idx, mask=row_mask
+                        topk_weights_ptr + topk_load_idx, mask = row_mask
                     )
                     y *= topk_weights.to(output_dtype)
 
@@ -243,7 +243,7 @@ def _grouped_gemm_forward_kernel(
                     tl.store(
                         y_ptr + store_idx + offs_bn[None, :],
                         y,
-                        mask=store_mask,
+                        mask = store_mask,
                     )
                 tidx += NUM_SMS
 
@@ -251,9 +251,9 @@ def _grouped_gemm_forward_kernel(
 
 
 _autotuned_grouped_gemm_forward_kernel = triton.autotune(
-    configs=get_forward_configs(),
-    prune_configs_by={"early_config_prune": prune_kernel_configs_fwd},
-    key=[
+    configs = get_forward_configs(),
+    prune_configs_by = {"early_config_prune": prune_kernel_configs_fwd},
+    key = [
         "NUM_EXPERTS",
         "NUM_TOKENS",
         "N",
