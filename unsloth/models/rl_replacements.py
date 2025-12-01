@@ -239,13 +239,13 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             if not has_images:
                 # Left pad prompt before calculation old and ref hidden states
                 left_pad_tokens_per_prompt = calculate_pad_tokens_in_prompt(prompt_completion_ids, logits_to_keep, self.processing_class.pad_token_id)
-                max_left_pad = max(left_pad_tokens_per_prompt).item()
+                max_left_pad = torch.max(left_pad_tokens_per_prompt).item()
         except:
             # TRL 0.24.0 and below path
             if images is None:
                 # Left pad prompt before calculation old and ref hidden states
                 left_pad_tokens_per_prompt = calculate_pad_tokens_in_prompt(prompt_completion_ids, logits_to_keep, self.processing_class.pad_token_id)
-                max_left_pad = max(left_pad_tokens_per_prompt).item()
+                max_left_pad = torch.max(left_pad_tokens_per_prompt).item()
         self.model.for_training()"""
 
     function = function.replace(line_to_replace, replacement_lines)
@@ -551,7 +551,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 left_pad_tokens_per_prompt = calculate_pad_tokens_in_prompt(
                     input_ids, logits_to_keep, self.processing_class.pad_token_id
                 )
-                max_left_pad = max(left_pad_tokens_per_prompt).item()
+                max_left_pad = torch.max(left_pad_tokens_per_prompt).item()
                 input_ids = left_pack_padding(
                     input_ids, self.processing_class.pad_token_id
                 )
