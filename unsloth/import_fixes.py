@@ -124,6 +124,16 @@ def fix_vllm_aimv2_issue():
         vllm_version = os.path.split(vllm_version)[0]
         ovis_config = Path(vllm_version) / "transformers_utils" / "configs" / "ovis.py"
         try:
+# ValueError: 'aimv2' is already used by a Transformers config, pick another name.
+def fix_vllm_aimv2_issue():
+    if importlib.util.find_spec("vllm") is None:
+        return
+    vllm_version = importlib_version("vllm")
+    if Version(vllm_version) < Version("0.10.1"):
+        vllm_version = importlib.util.find_spec("vllm").origin
+        vllm_version = os.path.split(vllm_version)[0]
+        ovis_config = Path(vllm_version) / "transformers_utils" / "configs" / "ovis.py"
+        try:
             if ovis_config.exists():
                 with open(ovis_config, "r+", encoding = "utf-8") as f:
                     text = f.read()
@@ -136,7 +146,7 @@ def fix_vllm_aimv2_issue():
                         text = text.replace(
                             """backbone_config.pop('model_type')
                 backbone_config = AutoConfig.for_model(model_type,
-                                                    **backbone_config)""",
+                                                       **backbone_config)""",
                             """if model_type != "aimv2":
                     backbone_config.pop('model_type')
                     backbone_config = AutoConfig.for_model(model_type, **backbone_config)
