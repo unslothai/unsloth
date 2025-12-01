@@ -343,6 +343,23 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
                 output["sampling_per_token_logps"] = sampling_per_token_logps
         except NameError:
             output["sampling_per_token_logps"] = None"""
+
+    function = function.replace(string_to_find, replacement_string)
+
+    #This path is for TRL 0.24.0 images is a variable exclusive to this version
+    string_to_find = """        if images is not None:
+            output["num_images"] = num_images"""
+
+    replacement_string = """        if images is not None:
+            output["num_images"] = num_images
+        if max_left_pad is not None:
+            output["max_left_pad"] = torch.tensor(prompt_ids.shape[0] * [max_left_pad]).unsqueeze(-1)        
+        try:
+            if self.use_vllm and getattr(self, "vllm_importance_sampling_correction", False):
+                output["sampling_per_token_logps"] = sampling_per_token_logps
+        except NameError:
+            output["sampling_per_token_logps"] = None"""
+
     function = function.replace(string_to_find, replacement_string)
 
     if "wake_up()" not in function:
