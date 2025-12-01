@@ -45,16 +45,16 @@ def _rms_layernorm_forward(
     X += row_idx * X_row_stride
     r += row_idx * r_row_stride
 
-    X_row = tl.load(X + col_offsets, mask = mask, other = 0).to(tl.float32)
-    W_row = tl.load(W + col_offsets, mask = mask, other = 0)  # .to(tl.float32)
+    X_row = tl.load(X + col_offsets, mask=mask, other=0).to(tl.float32)
+    W_row = tl.load(W + col_offsets, mask=mask, other=0)  # .to(tl.float32)
 
-    row_var = tl.sum(X_row * X_row, axis = 0) / n_cols
+    row_var = tl.sum(X_row * X_row, axis=0) / n_cols
     inv_var = tl.math.rsqrt(row_var + eps)
     tl.store(r, inv_var)
     normed = X_row * inv_var
     normed = normed.to(W_row.dtype)  # Exact copy from HF
     output = normed * W_row
-    tl.store(Y + col_offsets, output, mask = mask)
+    tl.store(Y + col_offsets, output, mask=mask)
 
 
 def _rms_layernorm_backward(
@@ -92,9 +92,9 @@ def _rms_layernorm_backward(
     else:
         dX = dY
 
-    dY_row = tl.load(dY + col_offsets, mask = mask, other = 0).to(tl.float32)
-    X_row = tl.load(X + col_offsets, mask = mask, other = 0).to(tl.float32)
-    W_row = tl.load(W + col_offsets, mask = mask, other = 0).to(tl.float32)
+    dY_row = tl.load(dY + col_offsets, mask=mask, other=0).to(tl.float32)
+    X_row = tl.load(X + col_offsets, mask=mask, other=0).to(tl.float32)
+    W_row = tl.load(W + col_offsets, mask=mask, other=0).to(tl.float32)
 
     # Get saved row variance
     inv_var = tl.load(r).to(tl.float32)
@@ -105,9 +105,9 @@ def _rms_layernorm_backward(
     else:
         dY_W = dY_row * W_row
 
-    rowsum_dY_normed = tl.sum(dY_W * normed, axis = 0)
+    rowsum_dY_normed = tl.sum(dY_W * normed, axis=0)
     output = inv_var / n_cols * (n_cols * dY_W - normed * rowsum_dY_normed)
-    tl.store(dX + col_offsets, output, mask = mask)
+    tl.store(dX + col_offsets, output, mask=mask)
 
 
 _rms_layernorm_backward = triton.jit(_rms_layernorm_backward)
@@ -143,16 +143,16 @@ def _gemma_rms_layernorm_forward(
     X += row_idx * X_row_stride
     r += row_idx * r_row_stride
 
-    X_row = tl.load(X + col_offsets, mask = mask, other = 0).to(tl.float32)
-    W_row = tl.load(W + col_offsets, mask = mask, other = 0).to(tl.float32)
+    X_row = tl.load(X + col_offsets, mask=mask, other=0).to(tl.float32)
+    W_row = tl.load(W + col_offsets, mask=mask, other=0).to(tl.float32)
 
-    row_var = tl.sum(X_row * X_row, axis = 0) / n_cols
+    row_var = tl.sum(X_row * X_row, axis=0) / n_cols
     inv_var = tl.math.rsqrt(row_var + eps)
     tl.store(r, inv_var)
     normed = X_row * inv_var
     output = normed * (W_row + 1.0)
 
-    tl.store(Y + col_offsets, output, mask = mask)
+    tl.store(Y + col_offsets, output, mask=mask)
 
 
 class Fast_RMS_Layernorm(torch.autograd.Function):
@@ -169,8 +169,8 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         BLOCK_SIZE, num_warps = calculate_settings(n_cols)
         device = X.device
 
-        Y = torch.empty((n_rows, n_cols), dtype = X.dtype, device = device)
-        r = torch.empty(n_rows, dtype = torch.float32, device = device)
+        Y = torch.empty((n_rows, n_cols), dtype=X.dtype, device=device)
+        r = torch.empty(n_rows, dtype=torch.float32, device=device)
 
         fx = _gemma_rms_layernorm_forward if gemma else _rms_layernorm_forward
         with torch_gpu_device(device):
@@ -185,8 +185,8 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
                 r.stride(0),
                 n_cols,
                 eps,
-                BLOCK_SIZE = BLOCK_SIZE,
-                num_warps = num_warps,
+                BLOCK_SIZE=BLOCK_SIZE,
+                num_warps=num_warps,
             )
         ctx.eps = eps
         ctx.BLOCK_SIZE = BLOCK_SIZE
@@ -222,9 +222,9 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
                 # dW, dW.stride(0),
                 n_cols,
                 ctx.eps,
-                GEMMA = ctx.GEMMA,
-                BLOCK_SIZE = ctx.BLOCK_SIZE,
-                num_warps = ctx.num_warps,
+                GEMMA=ctx.GEMMA,
+                BLOCK_SIZE=ctx.BLOCK_SIZE,
+                num_warps=ctx.num_warps,
             )
         dX = dX.view(*shape)
         return dX, None, None, None
@@ -248,7 +248,7 @@ from transformers.models.llama.modeling_llama import LlamaRMSNorm
 
 class Unsloth_LlamaRMSNorm(LlamaRMSNorm):
     def forward(self, X):
-        return fast_rms_layernorm(self, X, gemma = False)
+        return fast_rms_layernorm(self, X, gemma=False)
 
 
 try:
@@ -256,7 +256,7 @@ try:
 
     class Unsloth_MllamaTextRMSNorm(MllamaTextRMSNorm):
         def forward(self, X):
-            return fast_rms_layernorm(self, X, gemma = False)
+            return fast_rms_layernorm(self, X, gemma=False)
 
 
 except:
@@ -292,25 +292,25 @@ def unpatch_rms_layernorm():
 
 
 def test_rms_layernorm(
-    dim = 1024,
-    eps = 1e-5,
-    dtype = torch.float16,
-    bsz = 21,
-    random_state = 3407,
-    seqlen = 3341,
+    dim=1024,
+    eps=1e-5,
+    dtype=torch.float16,
+    bsz=21,
+    random_state=3407,
+    seqlen=3341,
 ):
     from transformers.models.llama.modeling_llama import LlamaRMSNorm
 
-    layernorm = LlamaRMSNorm((dim,), eps = eps).to("cuda")
+    layernorm = LlamaRMSNorm((dim,), eps=eps).to("cuda")
     torch.cuda.manual_seed(random_state)
     torch.manual_seed(random_state)
     torch.nn.init.uniform_(layernorm.weight)
-    X = torch.randn((bsz, seqlen, dim), dtype = dtype, device = "cuda")
+    X = torch.randn((bsz, seqlen, dim), dtype=dtype, device="cuda")
     XX = X.clone()
     X.requires_grad_(True)
     XX.requires_grad_(True)
     Y = layernorm(X)
-    YY = torch.randn((bsz, seqlen, dim), dtype = dtype, device = "cuda", requires_grad = True)
+    YY = torch.randn((bsz, seqlen, dim), dtype=dtype, device="cuda", requires_grad=True)
     Y.backward(YY)
     correct_grad = X.grad.clone()
     # from unsloth.kernels import fast_rms_layernorm
@@ -322,14 +322,14 @@ def test_rms_layernorm(
 def testing_suite_layernorm():
     for dim in [512, 1024, 2048]:
         for dtype in [torch.float16, torch.bfloat16]:
-            with torch.autocast(device_type = "cuda", dtype = dtype):
+            with torch.autocast(device_type="cuda", dtype=dtype):
                 for seqlen in [3341, 2048, 349]:
                     for random_state in [3407, 42]:
                         test_rms_layernorm(
-                            dim = dim,
-                            eps = 1e-5,
-                            dtype = dtype,
-                            bsz = 21,
-                            random_state = random_state,
-                            seqlen = seqlen,
+                            dim=dim,
+                            eps=1e-5,
+                            dtype=dtype,
+                            bsz=21,
+                            random_state=random_state,
+                            seqlen=seqlen,
                         )
