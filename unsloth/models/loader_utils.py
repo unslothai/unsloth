@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-<<<<<<< HEAD
 import importlib
 import os
 import re
@@ -25,12 +24,7 @@ from .mapper import (
     FLOAT_TO_FP8_BLOCK_MAPPER,
     FLOAT_TO_FP8_ROW_MAPPER,
 )
-=======
-from .mapper import INT_TO_FLOAT_MAPPER, FLOAT_TO_INT_MAPPER, MAP_TO_UNSLOTH_16bit
 from ..device_type import DEVICE_TYPE_TORCH
-import os
-import torch
->>>>>>> 96b06fb (ddp working OOTB with CLI)
 
 # https://github.com/huggingface/transformers/pull/26037 allows 4 bit loading!
 from packaging.version import Version
@@ -240,10 +234,8 @@ def get_model_name(model_name, load_in_4bit = True, load_in_fp8 = False):
         # Handle on the fly TorchAO FP8 quantization
         return new_model_name
     return new_model_name if new_model_name is not None else model_name
-<<<<<<< HEAD
 
 
-<<<<<<< HEAD
 def _get_torchao_fp8_config(fp8_mode: str):
     """
     Return a `torchao.quantization.Float8DynamicActivationFloat8WeightConfig`
@@ -429,7 +421,3 @@ def _get_fp8_mode_and_check_settings(
                 "Unsloth: On the fly `load_in_fp8` is only compatible with fbgemm_gpu_genai 1.4.1+. Try `unsloth/Qwen3-8B` instead."
             )
     return fp8_mode
-=======
->>>>>>> 96b06fb (ddp working OOTB with CLI)
-=======
->>>>>>> 7986a09 (LGPL license headers)
