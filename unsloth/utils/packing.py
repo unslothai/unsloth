@@ -105,6 +105,15 @@ def configure_sample_packing(config):
     setattr(config, "remove_unused_columns", False)
 
 
+def configure_padding_free(config):
+    """Mutate an ``SFTConfig`` so TRL enables padding-free batching without packing."""
+
+    _ensure_trl_warning_filter()
+    setattr(config, "padding_free", True)
+    if hasattr(config, "remove_unused_columns"):
+        setattr(config, "remove_unused_columns", False)
+
+
 def enable_sample_packing(model, trainer):
     """Enable runtime support for packed batches on an existing trainer."""
 
@@ -142,6 +151,15 @@ def enable_sample_packing(model, trainer):
 def enable_padding_free_metadata(model, trainer):
     """Inject seq-length metadata when padding-free batching is enabled without packing."""
 
+    trainer_args = getattr(trainer, "args", None)
+    if (
+        trainer_args is not None
+        and hasattr(trainer_args, "remove_unused_columns")
+        and trainer_args.remove_unused_columns
+    ):
+        trainer_args.remove_unused_columns = False
+
+    _ensure_trl_warning_filter()
     collator = getattr(trainer, "data_collator", None)
     if (
         collator is None
