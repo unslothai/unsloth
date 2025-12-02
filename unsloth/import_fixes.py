@@ -94,7 +94,7 @@ def fix_xformers_performance_issue():
         cutlass = Path(xformers_location) / "ops" / "fmha" / "cutlass.py"
         try:
             if cutlass.exists():
-                with open(cutlass, "r+", encoding="utf-8") as f:
+                with open(cutlass, "r+", encoding = "utf-8") as f:
                     text = f.read()
                     # See https://github.com/facebookresearch/xformers/issues/1176#issuecomment-2545829591
                     if "num_splits_key=-1," in text:
@@ -125,7 +125,7 @@ def fix_vllm_aimv2_issue():
         ovis_config = Path(vllm_version) / "transformers_utils" / "configs" / "ovis.py"
         try:
             if ovis_config.exists():
-                with open(ovis_config, "r+", encoding="utf-8") as f:
+                with open(ovis_config, "r+", encoding = "utf-8") as f:
                     text = f.read()
                     # See https://github.com/vllm-project/vllm-ascend/issues/2046
                     if 'AutoConfig.register("aimv2", AIMv2Config)' in text:
