@@ -323,6 +323,8 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             function = function.replace(replace_part, new_replacement)
 
     # Important note: we disable TRL's importance sampling logic
+    # It is disabled because the LLM path moves left padding to the right.
+    # We must adjust the vLLM sampling_logprob tensor in Unsloth to account for this.
     string_to_find = "if self.use_vllm and self.vllm_importance_sampling_correction:"
 
     replacement_string = (
