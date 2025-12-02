@@ -694,7 +694,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             completion_input_ids_chunk = input_ids_chunk[
                                 :, -logits_to_keep:
                             ]
-                        # breakpoint()
+
                         logprobs_chunk = chunked_hidden_states_selective_log_softmax(
                             logits_chunk,
                             lm_head,
