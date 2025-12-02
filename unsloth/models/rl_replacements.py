@@ -678,6 +678,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             ]
                             logits_chunk = logits_chunk[:, :-1, :]
                         else:
+                            # Essentially, for VLMs we do not go via the optimized path in models/,
+                            # so we don't encounter the Flash Attn left-padding issue.
                             logits_chunk = unwrapped_model(
                                 input_ids = input_ids_chunk,
                                 attention_mask = attention_mask_chunk,
