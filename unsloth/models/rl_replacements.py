@@ -591,7 +591,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             image_grid_thw_chunks = [None] * B
             pixel_attention_mask_chunks = [None] * B
 
-            # This is the chunkng logit from trl 0.23.0
+            # This is the chunking logic from trl 0.23.0
             if image_grid_thw is not None and pixel_values is not None:
                 if image_grid_thw.shape[0] != B:
                     raise ValueError(
