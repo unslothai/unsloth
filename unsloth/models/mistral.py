@@ -93,7 +93,7 @@ def MistralAttention_fast_forward(
         kv_seq_len += past_key_value[0].shape[-2]
 
     # Extend RoPE dynamically to fit in VRAM
-    self.rotary_emb.extend_rope_embedding(V, seq_len=kv_seq_len)
+    self.rotary_emb.extend_rope_embedding(V, seq_len = kv_seq_len)
     cos, sin = self.rotary_emb.get_cached(kv_seq_len, Q.device.index)
 
     rope_position_ids = (
@@ -103,8 +103,8 @@ def MistralAttention_fast_forward(
     Q, K = fast_rope_embedding(Q, K, cos, sin, rope_position_ids)
 
     if past_key_value is not None:
-        K = torch.cat([past_key_value[0], K], dim=2)
-        V = torch.cat([past_key_value[1], V], dim=2)
+        K = torch.cat([past_key_value[0], K], dim = 2)
+        V = torch.cat([past_key_value[1], V], dim = 2)
     past_key_value = (K, V) if use_cache else None
 
     # Attention module
@@ -117,29 +117,29 @@ def MistralAttention_fast_forward(
     )
     backend = select_attention_backend(use_varlen)
     attention_config = AttentionConfig(
-        backend=backend,
-        n_kv_heads=n_kv_heads,
-        n_groups=n_groups,
-        flash_dense_kwargs={"causal": True, "window_size": window_size},
-        flash_varlen_kwargs={
+        backend = backend,
+        n_kv_heads = n_kv_heads,
+        n_groups = n_groups,
+        flash_dense_kwargs = {"causal": True, "window_size": window_size},
+        flash_varlen_kwargs = {
             "dropout_p": 0.0,
             "causal": True,
             "softmax_scale": getattr(self, "softmax_scale", None),
         },
     )
     context = AttentionContext(
-        bsz=bsz,
-        q_len=q_len,
-        kv_seq_len=kv_seq_len,
-        n_heads=n_heads,
-        head_dim=head_dim,
-        requires_grad=hidden_states.requires_grad,
-        seq_info=seq_info,
-        attention_mask=attention_mask,
-        causal_mask=causal_mask,
+        bsz = bsz,
+        q_len = q_len,
+        kv_seq_len = kv_seq_len,
+        n_heads = n_heads,
+        head_dim = head_dim,
+        requires_grad = hidden_states.requires_grad,
+        seq_info = seq_info,
+        attention_mask = attention_mask,
+        causal_mask = causal_mask,
     )
 
-    A = run_attention(config=attention_config, context=context, Q=Q, K=K, V=V)
+    A = run_attention(config = attention_config, context = context, Q = Q, K = K, V = V)
     attn_output = A.reshape(bsz, q_len, n_heads * head_dim)
     attn_output = self.apply_o(self, attn_output)
     attn_weights = None
@@ -181,7 +181,7 @@ def MistralForCausalLM_fast_forward(
             else:
                 causal_mask = xformers.attn_bias.BlockDiagonalCausalMask.from_seqlens(
                     [q_len] * bsz
-                ).make_local_attention(window_size=sliding_window)
+                ).make_local_attention(window_size = sliding_window)
 
             # If attention_mask exists, it will be handled in the attention forward
 
@@ -195,13 +195,13 @@ def MistralForCausalLM_fast_forward(
             ):
                 # Fully causal mask
                 causal_mask_values = torch.triu(
-                    torch.full((q_len, q_len), -torch.inf, device=input_ids.device),
-                    diagonal=1,
+                    torch.full((q_len, q_len), -torch.inf, device = input_ids.device),
+                    diagonal = 1,
                 )
             else:
                 # Sliding window attention
-                q_indices = torch.arange(q_len, device=input_ids.device).view(-1, 1)
-                k_indices = torch.arange(q_len, device=input_ids.device).view(1, -1)
+                q_indices = torch.arange(q_len, device = input_ids.device).view(-1, 1)
+                k_indices = torch.arange(q_len, device = input_ids.device).view(1, -1)
 
                 causal_bool_mask = k_indices <= q_indices
                 window_bool_mask = (q_indices - k_indices) < sliding_window
@@ -225,7 +225,7 @@ def MistralForCausalLM_fast_forward(
                 attention_mask = attention_mask + causal_mask_values[None, None, :, :]
 
             attention_mask = attention_mask.to(
-                dtype=_get_dtype(dtype_from_config(self.config))
+                dtype = _get_dtype(dtype_from_config(self.config))
             )
 
     output_attentions = (
@@ -250,21 +250,21 @@ def MistralForCausalLM_fast_forward(
             self,
             input_ids,
             past_key_values,
-            position_ids=position_ids,
-            attention_mask=attention_mask,
+            position_ids = position_ids,
+            attention_mask = attention_mask,
         )
     else:
         outputs = self.model(
-            input_ids=input_ids,
-            causal_mask=causal_mask,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_values=past_key_values,
-            inputs_embeds=inputs_embeds,
-            use_cache=use_cache,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
+            input_ids = input_ids,
+            causal_mask = causal_mask,
+            attention_mask = attention_mask,
+            position_ids = position_ids,
+            past_key_values = past_key_values,
+            inputs_embeds = inputs_embeds,
+            use_cache = use_cache,
+            output_attentions = output_attentions,
+            output_hidden_states = output_hidden_states,
+            return_dict = return_dict,
         )
 
     hidden_states = outputs[0]
@@ -284,11 +284,11 @@ def MistralForCausalLM_fast_forward(
         if num_logits_to_keep != 0:
             hidden_states = hidden_states[:, -num_logits_to_keep:, :]
         return CausalLMOutputWithPast(
-            loss=None,
-            logits=hidden_states,
-            past_key_values=outputs.past_key_values,
-            hidden_states=outputs.hidden_states,
-            attentions=outputs.attentions,
+            loss = None,
+            logits = hidden_states,
+            past_key_values = outputs.past_key_values,
+            hidden_states = outputs.hidden_states,
+            attentions = outputs.attentions,
         )
 
     if bsz == 1 and q_len == 1:
@@ -319,28 +319,28 @@ def MistralForCausalLM_fast_forward(
             #     logit_softcapping = logit_softcapping,
             # )
             loss = unsloth_fused_ce_loss(
-                trainer=None,
-                hidden_states=hidden_states,
-                lm_head_weight=lm_head,
-                lm_head_bias=None,
-                labels=labels,
-                mask=None,
-                n_items=n_items,
-                scaling=getattr(self, "accelerator_scaler", None),
-                target_gb=None,
-                torch_compile=True,
-                logit_softcapping=logit_softcapping,
+                trainer = None,
+                hidden_states = hidden_states,
+                lm_head_weight = lm_head,
+                lm_head_bias = None,
+                labels = labels,
+                mask = None,
+                n_items = n_items,
+                scaling = getattr(self, "accelerator_scaler", None),
+                target_gb = None,
+                torch_compile = True,
+                logit_softcapping = logit_softcapping,
             )
             if not return_dict:
                 output = (logits,) + outputs[1:]
                 return (loss,) + output if loss is not None else output
 
             output = CausalLMOutputWithPast(
-                loss=loss,
-                logits=EMPTY_LOGITS,
-                past_key_values=outputs.past_key_values,
-                hidden_states=outputs.hidden_states,
-                attentions=outputs.attentions,
+                loss = loss,
+                logits = EMPTY_LOGITS,
+                past_key_values = outputs.past_key_values,
+                hidden_states = outputs.hidden_states,
+                attentions = outputs.attentions,
             )
             return output
         pass
@@ -363,9 +363,9 @@ def MistralForCausalLM_fast_forward(
             kwargs.get("packed_seq_lengths"),
         )
         loss = fast_cross_entropy_loss(
-            logits=shift_logits,
-            labels=shift_labels,
-            n_items=kwargs.get("num_items_in_batch", None)
+            logits = shift_logits,
+            labels = shift_labels,
+            n_items = kwargs.get("num_items_in_batch", None)
             or kwargs.get("n_items", None),
         )
 
@@ -374,11 +374,11 @@ def MistralForCausalLM_fast_forward(
         return (loss,) + output if loss is not None else output
 
     return CausalLMOutputWithPast(
-        loss=loss,
-        logits=logits,
-        past_key_values=outputs.past_key_values,
-        hidden_states=outputs.hidden_states,
-        attentions=outputs.attentions,
+        loss = loss,
+        logits = logits,
+        past_key_values = outputs.past_key_values,
+        hidden_states = outputs.hidden_states,
+        attentions = outputs.attentions,
     )
 
 
@@ -403,10 +403,10 @@ class FastMistralModel(FastLlamaModel):
     @staticmethod
     def pre_patch():
         init_name, function = patch_linear_scaling(
-            model_name="mistral",
-            rope_module=LlamaRotaryEmbedding,
-            scaled_rope_module=LlamaLinearScalingRotaryEmbedding,
-            attention_module=MistralAttention,
+            model_name = "mistral",
+            rope_module = LlamaRotaryEmbedding,
+            scaled_rope_module = LlamaLinearScalingRotaryEmbedding,
+            attention_module = MistralAttention,
         )
         # Just for Mistral Nemo models!
         if function is not None and init_name is not None:
@@ -437,30 +437,30 @@ class FastMistralModel(FastLlamaModel):
 
     @staticmethod
     def from_pretrained(
-        model_name="unsloth/mistral-7b-bnb-4bit",
-        max_seq_length=None,
-        dtype=None,
-        load_in_4bit=True,
-        token=None,
-        device_map="sequential",
-        rope_scaling=None,  # Mistral does not support RoPE scaling
-        fix_tokenizer=True,
-        model_patcher=None,
-        tokenizer_name=None,
-        trust_remote_code=False,
+        model_name = "unsloth/mistral-7b-bnb-4bit",
+        max_seq_length = None,
+        dtype = None,
+        load_in_4bit = True,
+        token = None,
+        device_map = "sequential",
+        rope_scaling = None,  # Mistral does not support RoPE scaling
+        fix_tokenizer = True,
+        model_patcher = None,
+        tokenizer_name = None,
+        trust_remote_code = False,
         **kwargs,
     ):
         return FastLlamaModel.from_pretrained(
-            model_name=model_name,
-            max_seq_length=max_seq_length,
-            dtype=dtype,
-            load_in_4bit=load_in_4bit,
-            token=token,
-            device_map=device_map,
-            rope_scaling=rope_scaling,
-            fix_tokenizer=fix_tokenizer,
-            model_patcher=FastMistralModel,
-            tokenizer_name=tokenizer_name,
-            trust_remote_code=trust_remote_code,
+            model_name = model_name,
+            max_seq_length = max_seq_length,
+            dtype = dtype,
+            load_in_4bit = load_in_4bit,
+            token = token,
+            device_map = device_map,
+            rope_scaling = rope_scaling,
+            fix_tokenizer = fix_tokenizer,
+            model_patcher = FastMistralModel,
+            tokenizer_name = tokenizer_name,
+            trust_remote_code = trust_remote_code,
             **kwargs,
         )

@@ -18,7 +18,7 @@ from grouped_gemm.kernels.tuning import (
 )
 
 
-def print_delimiter(char="-", length=80):
+def print_delimiter(char = "-", length = 80):
     print(char * length)
 
 
@@ -29,28 +29,28 @@ def delimiter_context():
     print_delimiter()
 
 
-def make_inputs(M, N, K, E, topk, dtype, requires_grad=False):
+def make_inputs(M, N, K, E, topk, dtype, requires_grad = False):
     X1 = (
-        torch.randn((M, K), device="cuda", dtype=dtype, requires_grad=requires_grad)
+        torch.randn((M, K), device = "cuda", dtype = dtype, requires_grad = requires_grad)
         / 10
     )
     X2 = (
         torch.randn(
-            (M * topk, N), device="cuda", dtype=dtype, requires_grad=requires_grad
+            (M * topk, N), device = "cuda", dtype = dtype, requires_grad = requires_grad
         )
         / 10
     )
     W1 = (
         torch.randn(
-            (E, 2 * N, K), device="cuda", dtype=dtype, requires_grad=requires_grad
+            (E, 2 * N, K), device = "cuda", dtype = dtype, requires_grad = requires_grad
         )
         / 10
     )
     W2 = (
-        torch.randn((E, K, N), device="cuda", dtype=dtype, requires_grad=requires_grad)
+        torch.randn((E, K, N), device = "cuda", dtype = dtype, requires_grad = requires_grad)
         / 10
     )
-    score = torch.randn((M, E), device="cuda", dtype=dtype, requires_grad=requires_grad)
+    score = torch.randn((M, E), device = "cuda", dtype = dtype, requires_grad = requires_grad)
     if requires_grad:
         X1.retain_grad()
         X2.retain_grad()
@@ -60,7 +60,7 @@ def make_inputs(M, N, K, E, topk, dtype, requires_grad=False):
     return X1, X2, W1, W2, score
 
 
-@dataclass(kw_only=True)
+@dataclass(kw_only = True)
 class DataConfig:
     seq_len: int
     dtype: torch.dtype
@@ -68,7 +68,7 @@ class DataConfig:
     bs: int = 1
 
 
-@dataclass(kw_only=True)
+@dataclass(kw_only = True)
 class ModelConfig:
     hidden_size: int
     intermediate_size: int
@@ -77,13 +77,13 @@ class ModelConfig:
     use_sigmoid: bool
     renormalize: bool
     pre_mul: bool = False
-    post_mul: bool = field(init=False)
+    post_mul: bool = field(init = False)
 
     def __post_init__(self):
         self.post_mul = not self.pre_mul
 
 
-@dataclass(kw_only=True)
+@dataclass(kw_only = True)
 class GroupedGEMMTestConfig:
     name: str = "test"
     data_config: DataConfig
@@ -105,7 +105,7 @@ def assert_equal(ref, tri):
         assert ref == tri, f"ref not equal to tri {ref} != {tri}"
 
 
-def assert_close(ref, tri, maxtol=None, rmstol=None, description="--", verbose=True):
+def assert_close(ref, tri, maxtol = None, rmstol = None, description = "--", verbose = True):
     if tri.dtype.itemsize == 1:
         ref_as_type = ref.to(tri.dtype)
         if ref.dtype == tri.dtype:
@@ -182,11 +182,11 @@ def assert_indx_equal(ref, tri):
 
 
 def get_kernel_test_configs(
-    BLOCK_SIZE_M=32,
-    BLOCK_SIZE_N=32,
-    BLOCK_SIZE_K=32,
-    num_warps=4,
-    num_stages=2,
+    BLOCK_SIZE_M = 32,
+    BLOCK_SIZE_N = 32,
+    BLOCK_SIZE_K = 32,
+    num_warps = 4,
+    num_stages = 2,
 ) -> list[KernelConfig]:
     configs_fwd = []
     configs_bwd_dX = []
@@ -199,44 +199,44 @@ def get_kernel_test_configs(
                     for use_tma_store in [True, False]:
                         configs_fwd.append(
                             KernelConfigForward(
-                                BLOCK_SIZE_M=BLOCK_SIZE_M,
-                                BLOCK_SIZE_N=BLOCK_SIZE_N,
-                                BLOCK_SIZE_K=BLOCK_SIZE_K,
-                                num_warps=num_warps,
-                                num_stages=num_stages,
-                                use_tma_load_w=use_tma_load_w,
-                                use_tma_load_x=use_tma_load_x,
-                                use_tma_store=use_tma_store,
-                                permute_x=permute_x,
-                                permute_y=permute_y,
+                                BLOCK_SIZE_M = BLOCK_SIZE_M,
+                                BLOCK_SIZE_N = BLOCK_SIZE_N,
+                                BLOCK_SIZE_K = BLOCK_SIZE_K,
+                                num_warps = num_warps,
+                                num_stages = num_stages,
+                                use_tma_load_w = use_tma_load_w,
+                                use_tma_load_x = use_tma_load_x,
+                                use_tma_store = use_tma_store,
+                                permute_x = permute_x,
+                                permute_y = permute_y,
                             )
                         )
                         configs_bwd_dX.append(
                             KernelConfigBackward_dX(
-                                BLOCK_SIZE_M=BLOCK_SIZE_M,
-                                BLOCK_SIZE_N=BLOCK_SIZE_N,
-                                BLOCK_SIZE_K=BLOCK_SIZE_K,
-                                num_warps=num_warps,
-                                num_stages=num_stages,
-                                use_tma_load_dy=use_tma_load_x,
-                                use_tma_load_w=use_tma_load_w,
-                                permute_x=permute_x,
-                                permute_y=permute_y,
-                                use_tma_store=use_tma_store,
+                                BLOCK_SIZE_M = BLOCK_SIZE_M,
+                                BLOCK_SIZE_N = BLOCK_SIZE_N,
+                                BLOCK_SIZE_K = BLOCK_SIZE_K,
+                                num_warps = num_warps,
+                                num_stages = num_stages,
+                                use_tma_load_dy = use_tma_load_x,
+                                use_tma_load_w = use_tma_load_w,
+                                permute_x = permute_x,
+                                permute_y = permute_y,
+                                use_tma_store = use_tma_store,
                             )
                         )
                         configs_bwd_dW.append(
                             KernelConfigBackward_dW(
-                                BLOCK_SIZE_M=BLOCK_SIZE_M,
-                                BLOCK_SIZE_N=BLOCK_SIZE_N,
-                                BLOCK_SIZE_K=BLOCK_SIZE_K,
-                                num_warps=num_warps,
-                                num_stages=num_stages,
-                                use_tma_load_dy=use_tma_load_w,
-                                use_tma_load_x=use_tma_load_x,
-                                permute_x=permute_x,
-                                permute_y=permute_y,
-                                use_tma_store=use_tma_store,
+                                BLOCK_SIZE_M = BLOCK_SIZE_M,
+                                BLOCK_SIZE_N = BLOCK_SIZE_N,
+                                BLOCK_SIZE_K = BLOCK_SIZE_K,
+                                num_warps = num_warps,
+                                num_stages = num_stages,
+                                use_tma_load_dy = use_tma_load_w,
+                                use_tma_load_x = use_tma_load_x,
+                                permute_x = permute_x,
+                                permute_y = permute_y,
+                                use_tma_store = use_tma_store,
                             )
                         )
     configs_fwd = prune_kernel_configs_fwd(configs_fwd)
@@ -289,39 +289,39 @@ TEST_MODEL_SIZES = [
 
 SMALL_MODEL_CONFIGS = [
     ModelConfig(
-        topk=topk,
-        num_experts=num_experts,
-        hidden_size=model_size[0],
-        intermediate_size=model_size[1],
-        use_sigmoid=False,
-        renormalize=False,
+        topk = topk,
+        num_experts = num_experts,
+        hidden_size = model_size[0],
+        intermediate_size = model_size[1],
+        use_sigmoid = False,
+        renormalize = False,
     )
     for topk, num_experts, model_size in itertools.product(
         TOPK, NUM_EXPERTS, TEST_MODEL_SIZES
     )
 ]
 LLAMA_MODEL_CONFIG = ModelConfig(
-    topk=1,
-    num_experts=16,
-    hidden_size=5120,
-    intermediate_size=8192,
-    use_sigmoid=True,
-    renormalize=False,
+    topk = 1,
+    num_experts = 16,
+    hidden_size = 5120,
+    intermediate_size = 8192,
+    use_sigmoid = True,
+    renormalize = False,
 )
 QWEN_MODEL_CONFIG = ModelConfig(
-    topk=8,
-    num_experts=128,
-    hidden_size=2048,
-    intermediate_size=768,
-    use_sigmoid=False,
-    renormalize=False,
+    topk = 8,
+    num_experts = 128,
+    hidden_size = 2048,
+    intermediate_size = 768,
+    use_sigmoid = False,
+    renormalize = False,
 )
 
 SEQLENS = [128, 1024]
 DTYPE = [torch.bfloat16]
 
 DATA_CONFIGS = [
-    DataConfig(seq_len=seq_len, dtype=dtype)
+    DataConfig(seq_len = seq_len, dtype = dtype)
     for seq_len, dtype in itertools.product(SEQLENS, DTYPE)
 ]
 KERNEL_CONFIGS_FWD, KERNEL_CONFIGS_BWD_dX, KERNEL_CONFIGS_BWD_dW = (
@@ -331,6 +331,6 @@ KERNEL_CONFIGS_FWD, KERNEL_CONFIGS_BWD_dX, KERNEL_CONFIGS_BWD_dW = (
 if __name__ == "__main__":
     print(
         KERNEL_CONFIGS_BWD_dX[0].to_string(
-            include_tuning_params=False, include_tma=False
+            include_tuning_params = False, include_tma = False
         )
     )
