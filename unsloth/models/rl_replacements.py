@@ -216,6 +216,21 @@ def grpo_trainer__prepare_inputs(function_name, function):
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__prepare_inputs)
 
 
+# Remove collective RPC of reload weights from generate
+# trl added reload weights (potentially for quantized models), we don't need it for our use case (LoRA primarily)
+# https://github.com/huggingface/trl/commit/7856d3b1f6518601732f489883b341bb6dd36434#diff-964e6fd373aa93037604064cb2b822d7f8e2735e33f791065acf2c4c3552d393R1168-R1169
+def grpo_trainer__generate_single_turn(function_name, function):
+    if function_name != "_generate_single_turn":
+        return function
+
+    # Remove the reload_weights collective RPC call from the generate function's source
+    function = function.replace(
+        'self.llm.collective_rpc("reload_weights")', ''
+    )
+    return function
+
+RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__generate_single_turn)
+
 # Fix incorrect special tokens handling and truncation in older TRL versions
 def grpo_trainer__generate_and_score_completions(function_name, function):
     if function_name != "_generate_and_score_completions":
@@ -255,7 +270,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         re.MULTILINE,
     )
 
-    replacement_text = """        
+    replacement_text = """
             if self.args.gradient_accumulation_steps % generate_every != 0 or (
                 self.use_vllm
             ):"""
@@ -325,7 +340,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
 
     replacement_string = """        if "image_sizes" in prompt_inputs:
             output["image_sizes"] = prompt_inputs["image_sizes"]
-        
+
         if self.use_vllm:
             try:
                 output["sampling_per_token_logps"] = sampling_per_token_logps
