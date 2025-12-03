@@ -224,12 +224,12 @@ def grpo_trainer__generate_single_turn(function_name, function):
         return function
 
     # Remove the reload_weights collective RPC call from the generate function's source
-    function = function.replace(
-        'self.llm.collective_rpc("reload_weights")', ''
-    )
+    function = function.replace('self.llm.collective_rpc("reload_weights")', "")
     return function
 
+
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__generate_single_turn)
+
 
 # Fix incorrect special tokens handling and truncation in older TRL versions
 def grpo_trainer__generate_and_score_completions(function_name, function):

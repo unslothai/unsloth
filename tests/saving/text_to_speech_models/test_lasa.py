@@ -42,10 +42,10 @@ print(f"{'='*80}")
 
 max_seq_length = 2048
 model, tokenizer = FastLanguageModel.from_pretrained(
-    model_name="unsloth/Llasa-1B",
-    max_seq_length=max_seq_length,
-    dtype=None,  # Select None for auto detection
-    load_in_4bit=False,  # Choose True for 4bit which reduces memory
+    model_name = "unsloth/Llasa-1B",
+    max_seq_length = max_seq_length,
+    dtype = None,  # Select None for auto detection
+    load_in_4bit = False,  # Choose True for 4bit which reduces memory
     # token = "hf_...", # use one if using gated models like meta-llama/Llama-2-7b-hf
 )
 
@@ -54,16 +54,16 @@ base_model_class = model.__class__.__name__
 
 model = FastLanguageModel.get_peft_model(
     model,
-    r=128,  # Choose any number > 0 ! Suggested 8, 16, 32, 64, 128
-    target_modules=["q_proj", "v_proj"],
-    lora_alpha=128,
-    lora_dropout=0,  # Supports any, but = 0 is optimized
-    bias="none",  # Supports any, but = "none" is optimized
+    r = 128,  # Choose any number > 0 ! Suggested 8, 16, 32, 64, 128
+    target_modules = ["q_proj", "v_proj"],
+    lora_alpha = 128,
+    lora_dropout = 0,  # Supports any, but = 0 is optimized
+    bias = "none",  # Supports any, but = "none" is optimized
     # [NEW] "unsloth" uses 30% less VRAM, fits 2x larger batch sizes!
-    use_gradient_checkpointing="unsloth",  # True or "unsloth" for very long context
-    random_state=3407,
-    use_rslora=False,  # We support rank stabilized LoRA
-    loftq_config=None,  # And LoftQ
+    use_gradient_checkpointing = "unsloth",  # True or "unsloth" for very long context
+    random_state = 3407,
+    use_rslora = False,  # We support rank stabilized LoRA
+    loftq_config = None,  # And LoftQ
 )
 
 print("✅ Model and LoRA adapters loaded successfully!")
@@ -117,10 +117,10 @@ print(f"{'='*80}")
 
 
 model, tokenizer = FastLanguageModel.from_pretrained(
-    model_name="./lasa",
-    max_seq_length=max_seq_length,
-    dtype=None,  # Select None for auto detection
-    load_in_4bit=False,  # Choose True for 4bit which reduces memory
+    model_name = "./lasa",
+    max_seq_length = max_seq_length,
+    dtype = None,  # Select None for auto detection
+    load_in_4bit = False,  # Choose True for 4bit which reduces memory
     # token = "hf_...", # use one if using gated models like meta-llama/Llama-2-7b-hf
 )
 
@@ -166,7 +166,7 @@ def extract_speech_ids(speech_tokens_str):
 
 # TTS start!
 with torch.inference_mode():
-    with torch.amp.autocast("cuda", dtype=model.dtype):
+    with torch.amp.autocast("cuda", dtype = model.dtype):
         formatted_text = (
             f"<|TEXT_UNDERSTANDING_START|>{input_text}<|TEXT_UNDERSTANDING_END|>"
         )
@@ -178,7 +178,7 @@ with torch.inference_mode():
         ]
 
         input_ids = tokenizer.apply_chat_template(
-            chat, tokenize=True, return_tensors="pt", continue_final_message=True
+            chat, tokenize = True, return_tensors = "pt", continue_final_message = True
         )
         input_ids = input_ids.to("cuda")
 
@@ -187,16 +187,16 @@ with torch.inference_mode():
         # Generate the speech autoregressively
         outputs = model.generate(
             input_ids,
-            max_length=2048,  # We trained our model with a max length of 2048
-            eos_token_id=speech_end_id,
-            do_sample=True,
-            top_p=1.2,  #  Adjusts the diversity of generated content
-            temperature=1.2,  #  Controls randomness in output
+            max_length = 2048,  # We trained our model with a max length of 2048
+            eos_token_id = speech_end_id,
+            do_sample = True,
+            top_p = 1.2,  #  Adjusts the diversity of generated content
+            temperature = 1.2,  #  Controls randomness in output
         )
     # Extract the speech tokens
     generated_ids = outputs[0][input_ids.shape[1] : -1]
 
-    speech_tokens = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
+    speech_tokens = tokenizer.batch_decode(generated_ids, skip_special_tokens = True)
 
     # Convert  token <|s_23456|> to int 23456
     speech_tokens = extract_speech_ids(speech_tokens)
