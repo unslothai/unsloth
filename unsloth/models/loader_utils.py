@@ -29,7 +29,11 @@ from .mapper import (
 from packaging.version import Version
 from transformers import __version__ as transformers_version
 from unsloth.models._utils import TorchAOConfig
-from unsloth_zoo.utils import Version
+from unsloth import devices
+if not devices.has_mps:
+    from unsloth_zoo.utils import Version
+else:
+    from packaging.version import Version
 import torch
 import gc
 
