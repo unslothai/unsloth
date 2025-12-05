@@ -44,7 +44,14 @@ from .fast_lora import (
     apply_lora_o,
     fast_lora_forward,
 )
-from .utils import fast_dequantize, fast_gemv, QUANT_STATE, fast_linear_forward, matmul_lora
+from .fp8 import *  # This step is to ensure that we patch the FbgmemFP8Linear and FP8Linear's forward functions before the execution of model creation so that this applies to compiled non fast inference models as well
+from .utils import (
+    fast_dequantize,
+    fast_gemv,
+    QUANT_STATE,
+    fast_linear_forward,
+    matmul_lora,
+)
 
 from .flex_attention import (
     HAS_FLEX_ATTENTION,
@@ -55,11 +62,12 @@ from .flex_attention import (
 )
 
 import os
+
 if "UNSLOTH_ZOO_IS_PRESENT" not in os.environ:
     try:
-        print("🦥 Unsloth: Will patch your computer to enable 2x faster free finetuning.")
+        print(
+            "🦥 Unsloth: Will patch your computer to enable 2x faster free finetuning."
+        )
     except:
         print("Unsloth: Will patch your computer to enable 2x faster free finetuning.")
-    pass
-pass
 del os

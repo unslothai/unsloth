@@ -1,40 +1,41 @@
 <div align="center">
 
-  <a href="https://unsloth.ai"><picture>
+  <a href="https://docs.unsloth.ai"><picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20logo%20white%20text.png">
     <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20logo%20black%20text.png">
     <img alt="unsloth logo" src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20logo%20black%20text.png" height="110" style="max-width: 100%;">
   </picture></a>
   
-<a href="https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Llama3.1_(8B)-Alpaca.ipynb"><img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/start free finetune button.png" width="154"></a>
+<a href="https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/gpt-oss-(20B)-Fine-tuning.ipynb"><img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/start free finetune button.png" width="154"></a>
 <a href="https://discord.com/invite/unsloth"><img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/Discord button.png" width="165"></a>
 <a href="https://docs.unsloth.ai"><img src="https://raw.githubusercontent.com/unslothai/unsloth/refs/heads/main/images/Documentation%20Button.png" width="137"></a>
 
-### Finetune gpt-oss, Gemma 3n, Qwen3, Llama 4, & Mistral 2x faster with 80% less VRAM!
+### Train gpt-oss, DeepSeek, Gemma, Qwen & Llama 2x faster with 70% less VRAM!
 
 ![](https://i.ibb.co/sJ7RhGG/image-41.png)
 
 </div>
 
-## ✨ Finetune for Free
+## ✨ Train for Free
 
-Notebooks are beginner friendly. Read our [guide](https://docs.unsloth.ai/get-started/fine-tuning-guide). Add your dataset, click "Run All", and export your finetuned model to GGUF, Ollama, vLLM or Hugging Face.
+Notebooks are beginner friendly. Read our [guide](https://docs.unsloth.ai/get-started/fine-tuning-guide). Add dataset, run, then export your trained model to GGUF, llama.cpp, Ollama, vLLM, SGLang or Hugging Face.
 
-| Unsloth supports | Free Notebooks | Performance | Memory use |
+| Model | Free Notebooks | Performance | Memory use |
 |-----------|---------|--------|----------|
 | **gpt-oss (20B)**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/gpt-oss-(20B)-Fine-tuning.ipynb)               | 1.5x faster | 70% less |
+| **Mistral Ministral 3 (3B)**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Ministral_3_VL_(3B)_Vision.ipynb)               | 1.5x faster | 60% less |
+| **gpt-oss (20B): GRPO**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/gpt-oss-(20B)-GRPO.ipynb)               | 2x faster | 80% less |
+| **Qwen3: Advanced GRPO**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Qwen3_(4B)-GRPO.ipynb)               | 2x faster | 50% less |
+| **Qwen3-VL (8B): GSPO**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Qwen3_VL_(8B)-Vision-GRPO.ipynb)               | 1.5x faster | 80% less |
+| **Gemma 3 (270M)** | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Gemma3_(270M).ipynb)               | 1.7x faster | 60% less |
 | **Gemma 3n (4B)**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Gemma3N_(4B)-Conversational.ipynb)               | 1.5x faster | 50% less |
-| **Qwen3 (14B)**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Qwen3_(14B)-Reasoning-Conversational.ipynb)               | 2x faster | 70% less |
-| **Qwen3 (4B): GRPO**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Qwen3_(4B)-GRPO.ipynb)               | 2x faster | 80% less |
-| **Qwen2.5-VL (7B): GSPO**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Qwen2_5_7B_VL_GRPO.ipynb)               | 1.5x faster | 80% less |
-| **Phi-4 (14B)** | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Phi_4-Conversational.ipynb)               | 2x faster | 70% less |
-| **Llama 3.2 Vision (11B)**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Llama3.2_(11B)-Vision.ipynb)               | 2x faster | 50% less |
-| **Llama 3.1 (8B)**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Llama3.1_(8B)-Alpaca.ipynb)               | 2x faster | 70% less |
-| **Mistral v0.3 (7B)**    | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Mistral_v0.3_(7B)-Conversational.ipynb)               | 2.2x faster | 75% less |
+| **DeepSeek-OCR (3B)**    | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Deepseek_OCR_(3B).ipynb)               | 1.5x faster | 30% less |
+| **Llama 3.1 (8B) Alpaca**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Llama3.1_(8B)-Alpaca.ipynb)               | 2x faster | 70% less |
+| **Llama 3.2 Conversational**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Llama3.2_(1B_and_3B)-Conversational.ipynb)               | 2x faster | 70% less |
 | **Orpheus-TTS (3B)**     | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Orpheus_(3B)-TTS.ipynb)               | 1.5x faster | 50% less |
 
 - See all our notebooks for: [Kaggle](https://github.com/unslothai/notebooks?tab=readme-ov-file#-kaggle-notebooks), [GRPO](https://docs.unsloth.ai/get-started/unsloth-notebooks#grpo-reasoning-rl-notebooks), **[TTS](https://docs.unsloth.ai/get-started/unsloth-notebooks#text-to-speech-tts-notebooks)** & [Vision](https://docs.unsloth.ai/get-started/unsloth-notebooks#vision-multimodal-notebooks)
-- See [all our models](https://docs.unsloth.ai/get-started/all-our-models) and [all our notebooks](https://github.com/unslothai/notebooks)
+- See [all our models](https://docs.unsloth.ai/get-started/all-our-models) and [all our notebooks](https://docs.unsloth.ai/get-started/unsloth-notebooks)
 - See detailed documentation for Unsloth [here](https://docs.unsloth.ai/)
 
 ## ⚡ Quickstart
@@ -43,31 +44,36 @@ Notebooks are beginner friendly. Read our [guide](https://docs.unsloth.ai/get-st
 pip install unsloth
 ```
 ### Windows
-For Windows, `pip install unsloth` works only if you have Pytorch installed. For more info, read our [Windows Guide](https://docs.unsloth.ai/get-started/installing-+-updating/windows-installation).
+For Windows, `pip install unsloth` works only if you have Pytorch installed. Read our [Windows Guide](https://docs.unsloth.ai/get-started/installing-+-updating/windows-installation).
 ### Docker
 Use our official [Unsloth Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsloth``` container. Read our [Docker Guide](https://docs.unsloth.ai/get-started/install-and-update/docker).
-### Blackwell
-For RTX 50x, B200, 6000 GPUs, simply do `pip install unsloth`. Read our [Blackwell Guide](https://docs.unsloth.ai/basics/training-llms-with-blackwell-rtx-50-series-and-unsloth) for more details.
+### Blackwell & DGX Spark
+For RTX 50x, B200, 6000 GPUs: `pip install unsloth`. Read our [Blackwell Guide](https://docs.unsloth.ai/basics/training-llms-with-blackwell-rtx-50-series-and-unsloth) and [DGX Spark Guide](https://docs.unsloth.ai/new/fine-tuning-llms-with-nvidia-dgx-spark-and-unsloth) for more details.
 
-## 🦥 Unsloth.ai News
-- 📣 **Vision RL** You can now train VLMs with GRPO or GSPO in Unsloth! [Read guide](https://docs.unsloth.ai/new/vision-reinforcement-learning-vlm-rl)
-- 📣 **Memory-efficient RL** We're introducing even better RL. Our new kernels & algos allows faster RL with 50% less VRAM & 10× more context. [Read blog](https://docs.unsloth.ai/new/memory-efficient-rl)
-- 📣 **gpt-oss** by OpenAI: For details on [Unsloth Flex Attention](https://docs.unsloth.ai/new/long-context-gpt-oss-training), long-context training, bug fixes, [Read our Guide](https://docs.unsloth.ai/basics/gpt-oss). 20B works on a 14GB GPU and 120B on 65GB VRAM. [gpt-oss uploads](https://huggingface.co/collections/unsloth/gpt-oss-6892433695ce0dee42f31681).
-- 📣 **Gemma 3n** by Google: [Read Blog](https://docs.unsloth.ai/basics/gemma-3n-how-to-run-and-fine-tune). We [uploaded GGUFs, 4-bit models](https://huggingface.co/collections/unsloth/gemma-3n-685d3874830e49e1c93f9339).
-- 📣 **[Text-to-Speech (TTS)](https://docs.unsloth.ai/basics/text-to-speech-tts-fine-tuning)** is now supported, including `sesame/csm-1b` and STT `openai/whisper-large-v3`.
-- 📣 **[Qwen3](https://docs.unsloth.ai/basics/qwen3-how-to-run-and-fine-tune)** is now supported. Qwen3-30B-A3B fits on 17.5GB VRAM.
-- 📣 Introducing **[Dynamic 2.0](https://docs.unsloth.ai/basics/unsloth-dynamic-2.0-ggufs)** quants that set new benchmarks on 5-shot MMLU & KL Divergence.
-- 📣 [**EVERYTHING** is now supported](https://unsloth.ai/blog/gemma3#everything) - all models (BERT, diffusion, Cohere, Mamba), FFT, etc. MultiGPU coming soon. Enable FFT with `full_finetuning = True`, 8-bit with `load_in_8bit = True`.
+## 🦥 Unsloth News
+- **Ministral 3** by Mistral: Run Ministral 3 or fine-tune with our vision or RL sodoku notebook. [Guide](https://docs.unsloth.ai/new/ministral-3) • [Notebooks](https://docs.unsloth.ai/new/ministral-3#fine-tuningb)
+- **500K Context Fine-tuning**: Training a 20B model with >500K token context windows is now possible on a single 80GB GPU. [Blog](https://docs.unsloth.ai/new/500k-context-length-fine-tuning)
+- **FP8 Reinforcement Learning**: You can now do FP8 GRPO on consumer GPUs. [Blog](https://docs.unsloth.ai/new/fp8-reinforcement-learning) • [Notebook](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Qwen3_8B_FP8_GRPO.ipynb)
+- **DeepSeek-OCR**: Fine-tune to improve language understanding by 89%. [Guide](https://docs.unsloth.ai/new/deepseek-ocr-run-and-fine-tune) • [Notebook](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Deepseek_OCR_(3B).ipynb)
+- **Docker**: Use Unsloth with no setup & environment issues with our new image. [Guide](https://docs.unsloth.ai/new/how-to-train-llms-with-unsloth-and-docker) • [Docker image](https://hub.docker.com/r/unsloth/unsloth)
+- **gpt-oss RL**: Introducing the fastest possible inference for gpt-oss RL! [Read blog](https://docs.unsloth.ai/new/gpt-oss-reinforcement-learning)
+- **Vision RL**: You can now train VLMs with GRPO or GSPO in Unsloth! [Read guide](https://docs.unsloth.ai/new/vision-reinforcement-learning-vlm-rl)
+- **gpt-oss** by OpenAI: Read our [Unsloth Flex Attention](https://docs.unsloth.ai/new/long-context-gpt-oss-training) blog and [gpt-oss Guide](https://docs.unsloth.ai/basics/gpt-oss). 20B works on 14GB VRAM. 120B on 65GB.
 
 <details>
   <summary>Click for more news</summary>
 
-
+- **Quantization-Aware Training**: We collabed with Pytorch, recovering ~70% accuracy. [Read blog](https://docs.unsloth.ai/new/quantization-aware-training-qat)
+- **Memory-efficient RL**: We're introducing even better RL. Our new kernels & algos allows faster RL with 50% less VRAM & 10× more context. [Read blog](https://docs.unsloth.ai/new/memory-efficient-rl)
+- **Gemma 3n** by Google: [Read Blog](https://docs.unsloth.ai/basics/gemma-3n-how-to-run-and-fine-tune). We [uploaded GGUFs, 4-bit models](https://huggingface.co/collections/unsloth/gemma-3n-685d3874830e49e1c93f9339).
+- **[Text-to-Speech (TTS)](https://docs.unsloth.ai/basics/text-to-speech-tts-fine-tuning)** is now supported, including `sesame/csm-1b` and STT `openai/whisper-large-v3`.
+- **[Qwen3](https://docs.unsloth.ai/basics/qwen3-how-to-run-and-fine-tune)** is now supported. Qwen3-30B-A3B fits on 17.5GB VRAM.
+- Introducing **[Dynamic 2.0](https://docs.unsloth.ai/basics/unsloth-dynamic-2.0-ggufs)** quants that set new benchmarks on 5-shot MMLU & Aider Polyglot.
+- [**EVERYTHING** is now supported](https://unsloth.ai/blog/gemma3#everything) - all models (TTS, BERT, Mamba), FFT, etc. [MultiGPU](https://docs.unsloth.ai/basics/multi-gpu-training-with-unsloth) coming soon. Enable FFT with `full_finetuning = True`, 8-bit with `load_in_8bit = True`.
 - 📣 [DeepSeek-R1](https://unsloth.ai/blog/deepseek-r1) - run or fine-tune them [with our guide](https://unsloth.ai/blog/deepseek-r1). All model uploads: [here](https://huggingface.co/collections/unsloth/deepseek-r1-all-versions-678e1c48f5d2fce87892ace5).
 - 📣 Introducing Long-context [Reasoning (GRPO)](https://unsloth.ai/blog/grpo) in Unsloth. Train your own reasoning model with just 5GB VRAM. Transform Llama, Phi, Mistral etc. into reasoning LLMs!
 - 📣 Introducing Unsloth [Dynamic 4-bit Quantization](https://unsloth.ai/blog/dynamic-4bit)! We dynamically opt not to quantize certain parameters and this greatly increases accuracy while only using <10% more VRAM than BnB 4-bit. See our collection on [Hugging Face here.](https://huggingface.co/collections/unsloth/unsloth-4-bit-dynamic-quants-67503bb873f89e15276c44e7)
 - 📣 **[Llama 4](https://unsloth.ai/blog/llama4)** by Meta, including Scout & Maverick are now supported.
-
 - 📣 [Phi-4](https://unsloth.ai/blog/phi4) by Microsoft: We also [fixed bugs](https://unsloth.ai/blog/phi4) in Phi-4 and [uploaded GGUFs, 4-bit](https://huggingface.co/collections/unsloth/phi-4-all-versions-677eecf93784e61afe762afa).
 - 📣 [Vision models](https://unsloth.ai/blog/vision) now supported! [Llama 3.2 Vision (11B)](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Llama3.2_(11B)-Vision.ipynb), [Qwen 2.5 VL (7B)](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Qwen2_VL_(7B)-Vision.ipynb) and [Pixtral (12B) 2409](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Pixtral_(12B)-Vision.ipynb)
 - 📣 [Llama 3.3 (70B)](https://huggingface.co/collections/unsloth/llama-33-all-versions-67535d7d994794b9d7cf5e9f), Meta's latest model is supported.
@@ -79,27 +85,27 @@ For RTX 50x, B200, 6000 GPUs, simply do `pip install unsloth`. Read our [Blackwe
 ## 🔗 Links and Resources
 | Type                            | Links                               |
 | ------------------------------- | --------------------------------------- |
+| <img width="15" src="https://redditinc.com/hs-fs/hubfs/Reddit%20Inc/Brand/Reddit_Logo.png" />&nbsp; **r/unsloth Reddit**                    | [Join Reddit community](https://reddit.com/r/unsloth)|
 | 📚 **Documentation & Wiki**              | [Read Our Docs](https://docs.unsloth.ai) |
 | <img width="16" src="https://upload.wikimedia.org/wikipedia/commons/6/6f/Logo_of_Twitter.svg" />&nbsp; **Twitter (aka X)**              |  [Follow us on X](https://twitter.com/unslothai)|
-| 💾 **Installation**               | [Pip install](https://docs.unsloth.ai/get-started/installing-+-updating)|
-| 🔮 **Our Models**            | [Unsloth Releases](https://docs.unsloth.ai/get-started/all-our-models)|
+| 💾 **Installation**               | [Pip & Docker Install](https://docs.unsloth.ai/get-started/installing-+-updating)|
+| 🔮 **Our Models**            | [Unsloth Catalog](https://docs.unsloth.ai/get-started/all-our-models)|
 | ✍️ **Blog**                    | [Read our Blogs](https://unsloth.ai/blog)|
-| <img width="15" src="https://redditinc.com/hs-fs/hubfs/Reddit%20Inc/Brand/Reddit_Logo.png" />&nbsp; **Reddit**                    | [Join our Reddit](https://reddit.com/r/unsloth)|
 
 ## ⭐ Key Features
-- Supports **full-finetuning**, pretraining, 4b-bit, 16-bit and **8-bit** training
-- Supports **all transformer-style models** including [TTS, STT](https://docs.unsloth.ai/basics/text-to-speech-tts-fine-tuning), multimodal, diffusion, [BERT](https://docs.unsloth.ai/get-started/unsloth-notebooks#other-important-notebooks) and more!
-- All kernels written in [OpenAI's Triton](https://openai.com/index/triton/) language. **Manual backprop engine**.
+- Supports **full-finetuning**, pretraining, 4b-bit, 16-bit and **FP8** training
+- Supports **all models** including [TTS](https://docs.unsloth.ai/basics/text-to-speech-tts-fine-tuning), multimodal, [BERT](https://docs.unsloth.ai/get-started/unsloth-notebooks#other-important-notebooks) and more! Any model that works in transformers, works in Unsloth.
+- The most efficient library for [Reinforcement Learning (RL)](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide), using 80% less VRAM. Supports GRPO, GSPO, DrGRPO, DAPO etc.
 - **0% loss in accuracy** - no approximation methods - all exact.
-- No change of hardware. Supports NVIDIA GPUs since 2018+. Minimum CUDA Capability 7.0 (V100, T4, Titan V, RTX 20, 30, 40x, A100, H100, L40 etc) [Check your GPU!](https://developer.nvidia.com/cuda-gpus) GTX 1070, 1080 works, but is slow.
-- Works on **Linux** and **Windows**
+- Supports NVIDIA (since 2018), [AMD](https://docs.unsloth.ai/get-started/install-and-update/amd) and Intel GPUs. Minimum CUDA Capability 7.0 (V100, T4, Titan V, RTX 20, 30, 40x, A100, H100, L40 etc)
+- Works on **Linux**, WSL and **Windows**
+- All kernels written in [OpenAI's Triton](https://openai.com/index/triton/) language. Manual backprop engine.
 - If you trained a model with 🦥Unsloth, you can use this cool sticker! &nbsp; <img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/made with unsloth.png" width="200" align="center" />
 
 ## 💾 Install Unsloth
-> [!warning]
-> Python 3.14 does not support Unsloth. Use 3.13 or lower.
+You can also see our docs for more detailed installation and updating instructions [here](https://docs.unsloth.ai/get-started/installing-+-updating).
 
-You can also see our documentation for more detailed installation and updating instructions [here](https://docs.unsloth.ai/get-started/installing-+-updating).
+Unsloth supports Python 3.13 or lower.
 
 ### Pip Installation
 **Install with pip (recommended) for Linux devices:**
@@ -110,11 +116,11 @@ pip install unsloth
 ```
 pip install --upgrade --force-reinstall --no-cache-dir unsloth unsloth_zoo
 ```
-See [here](https://github.com/unslothai/unsloth/edit/main/README.md#advanced-pip-installation) for advanced pip install instructions.
+See [here](#advanced-pip-installation) for advanced pip install instructions.
 ### Windows Installation
 
 1. **Install NVIDIA Video Driver:**
-  You should install the latest version of your GPUs driver. Download drivers here: [NVIDIA GPU Drive](https://www.nvidia.com/Download/index.aspx).
+  You should install the latest driver for your GPU. Download drivers here: [NVIDIA GPU Driver](https://www.nvidia.com/Download/index.aspx).
 
 3. **Install Visual Studio C++:**
    You will need Visual Studio, with C++ installed. By default, C++ is not installed with [Visual Studio](https://visualstudio.microsoft.com/vs/community/), so make sure you select all of the C++ options. Also select options for Windows 10/11 SDK. For detailed instructions with options, see [here](https://docs.unsloth.ai/get-started/installing-+-updating).
@@ -194,9 +200,9 @@ pip install unsloth
 </details>
 
 ### Advanced Pip Installation
-`⚠️Do **NOT** use this if you have Conda.` Pip is a bit more complex since there are dependency issues. The pip command is different for `torch 2.2,2.3,2.4,2.5` and CUDA versions.
+`⚠️Do **NOT** use this if you have Conda.` Pip is a bit more complex since there are dependency issues. The pip command is different for `torch 2.2,2.3,2.4,2.5,2.6,2.7,2.8,2.9` and CUDA versions.
 
-For other torch versions, we support `torch211`, `torch212`, `torch220`, `torch230`, `torch240` and for CUDA versions, we support `cu118` and `cu121` and `cu124`. For Ampere devices (A100, H100, RTX3090) and above, use `cu118-ampere` or `cu121-ampere` or `cu124-ampere`.
+For other torch versions, we support `torch211`, `torch212`, `torch220`, `torch230`, `torch240`, `torch250`, `torch260`, `torch270`, `torch280`, `torch290` and for CUDA versions, we support `cu118` and `cu121` and `cu124`. For Ampere devices (A100, H100, RTX3090) and above, use `cu118-ampere` or `cu121-ampere` or `cu124-ampere`.
 
 For example, if you have `torch 2.4` and `CUDA 12.1`, use:
 ```bash
@@ -204,10 +210,10 @@ pip install --upgrade pip
 pip install "unsloth[cu121-torch240] @ git+https://github.com/unslothai/unsloth.git"
 ```
 
-Another example, if you have `torch 2.5` and `CUDA 12.4`, use:
+Another example, if you have `torch 2.9` and `CUDA 13.0`, use:
 ```bash
 pip install --upgrade pip
-pip install "unsloth[cu124-torch250] @ git+https://github.com/unslothai/unsloth.git"
+pip install "unsloth[cu130-torch290] @ git+https://github.com/unslothai/unsloth.git"
 ```
 
 And other examples:
@@ -239,7 +245,7 @@ v = V(re.match(r"[0-9\.]{3,}", torch.__version__).group(0))
 cuda = str(torch.version.cuda)
 is_ampere = torch.cuda.get_device_capability()[0] >= 8
 USE_ABI = torch._C._GLIBCXX_USE_CXX11_ABI
-if cuda not in ("11.8", "12.1", "12.4", "12.6", "12.8"): raise RuntimeError(f"CUDA = {cuda} not supported!")
+if cuda not in ("11.8", "12.1", "12.4", "12.6", "12.8", "13.0"): raise RuntimeError(f"CUDA = {cuda} not supported!")
 if   v <= V('2.1.0'): raise RuntimeError(f"Torch = {v} too old!")
 elif v <= V('2.1.1'): x = 'cu{}{}-torch211'
 elif v <= V('2.1.2'): x = 'cu{}{}-torch212'
@@ -252,16 +258,18 @@ elif v  < V('2.7.0'): x = 'cu{}{}-torch260'
 elif v  < V('2.7.9'): x = 'cu{}{}-torch270'
 elif v  < V('2.8.0'): x = 'cu{}{}-torch271'
 elif v  < V('2.8.9'): x = 'cu{}{}-torch280'
+elif v  < V('2.9.1'): x = 'cu{}{}-torch290'
+elif v  < V('2.9.2'): x = 'cu{}{}-torch291'
 else: raise RuntimeError(f"Torch = {v} too new!")
-if v > V('2.6.9') and cuda not in ("11.8", "12.6", "12.8"): raise RuntimeError(f"CUDA = {cuda} not supported!")
-x = x.format(cuda.replace(".", ""), "-ampere" if is_ampere else "")
-print(f'pip install --upgrade pip && pip install "unsloth[{x}] @ git+https://github.com/unslothai/unsloth.git"')
+if v > V('2.6.9') and cuda not in ("11.8", "12.6", "12.8", "13.0"): raise RuntimeError(f"CUDA = {cuda} not supported!")
+x = x.format(cuda.replace(".", ""), "-ampere" if False else "") # is_ampere is broken due to flash-attn
+print(f'pip install --upgrade pip && pip install --no-deps git+https://github.com/unslothai/unsloth-zoo.git && pip install "unsloth[{x}] @ git+https://github.com/unslothai/unsloth.git" --no-build-isolation')
 ```
 ### Docker Installation
 You can use our pre-built Docker container with all dependencies to use Unsloth instantly with no setup required.
 [Read our guide](https://docs.unsloth.ai/get-started/install-and-update/docker).
 
-**This container requires installing [NVIDIA's Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)**.
+This container requires installing [NVIDIA's Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
 
 ```bash
 docker run -d -e JUPYTER_PASSWORD="mypassword" \
@@ -274,12 +282,11 @@ docker run -d -e JUPYTER_PASSWORD="mypassword" \
 Access Jupyter Lab at `http://localhost:8888` and start fine-tuning!
 
 ## 📜 Documentation
-- Go to our official [Documentation](https://docs.unsloth.ai) for saving to GGUF, checkpointing, evaluation and more!
-- We support Huggingface's TRL, Trainer, Seq2SeqTrainer or even Pytorch code!
-- We're in 🤗Hugging Face's official docs! Check out the [SFT docs](https://huggingface.co/docs/trl/main/en/sft_trainer#accelerate-fine-tuning-2x-using-unsloth) and [DPO docs](https://huggingface.co/docs/trl/main/en/dpo_trainer#accelerate-dpo-fine-tuning-using-unsloth)!
-- If you want to download models from the ModelScope community, please use an environment variable: `UNSLOTH_USE_MODELSCOPE=1`, and install the modelscope library by: `pip install modelscope -U`.
+- Go to our official [Documentation](https://docs.unsloth.ai) for [running models](https://docs.unsloth.ai/basics/running-and-saving-models), [saving to GGUF](https://docs.unsloth.ai/basics/running-and-saving-models/saving-to-gguf), [checkpointing](https://docs.unsloth.ai/basics/finetuning-from-last-checkpoint), [evaluation](https://docs.unsloth.ai/get-started/fine-tuning-llms-guide#evaluation) and more!
+- Read our Guides for: [Fine-tuning](https://docs.unsloth.ai/get-started/fine-tuning-llms-guide), [Reinforcement Learning](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide), [Text-to-Speech (TTS)](https://docs.unsloth.ai/basics/text-to-speech-tts-fine-tuning), [Vision](https://docs.unsloth.ai/basics/vision-fine-tuning) and [any model](https://docs.unsloth.ai/models/tutorials-how-to-fine-tune-and-run-llms).
+- We support Huggingface's transformers, TRL, Trainer, Seq2SeqTrainer and Pytorch code.
 
-> unsloth_cli.py also supports `UNSLOTH_USE_MODELSCOPE=1` to download models and datasets. please remember to use the model and dataset id in the ModelScope community.
+Unsloth example code to fine-tune gpt-oss-20b:
 
 ```python
 from unsloth import FastLanguageModel, FastModel
@@ -293,31 +300,17 @@ dataset = load_dataset("json", data_files = {"train" : url}, split = "train")
 
 # 4bit pre quantized models we support for 4x faster downloading + no OOMs.
 fourbit_models = [
-    "unsloth/Meta-Llama-3.1-8B-bnb-4bit",      # Llama-3.1 2x faster
-    "unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit",
-    "unsloth/Meta-Llama-3.1-70B-bnb-4bit",
-    "unsloth/Meta-Llama-3.1-405B-bnb-4bit",    # 4bit for 405b!
-    "unsloth/Mistral-Small-Instruct-2409",     # Mistral 22b 2x faster!
-    "unsloth/mistral-7b-instruct-v0.3-bnb-4bit",
-    "unsloth/Phi-3.5-mini-instruct",           # Phi-3.5 2x faster!
-    "unsloth/Phi-3-medium-4k-instruct",
-    "unsloth/gemma-2-9b-bnb-4bit",
-    "unsloth/gemma-2-27b-bnb-4bit",            # Gemma 2x faster!
+    "unsloth/gpt-oss-20b-unsloth-bnb-4bit", #or choose any model
 
-    "unsloth/Llama-3.2-1B-bnb-4bit",           # NEW! Llama 3.2 models
-    "unsloth/Llama-3.2-1B-Instruct-bnb-4bit",
-    "unsloth/Llama-3.2-3B-bnb-4bit",
-    "unsloth/Llama-3.2-3B-Instruct-bnb-4bit",
-
-    "unsloth/Llama-3.3-70B-Instruct-bnb-4bit" # NEW! Llama 3.3 70B!
 ] # More models at https://huggingface.co/unsloth
 
 model, tokenizer = FastModel.from_pretrained(
-    model_name = "unsloth/gemma-3-4B-it",
+    model_name = "unsloth/gpt-oss-20b",
     max_seq_length = 2048, # Choose any for long context!
-    load_in_4bit = True,  # 4 bit quantization to reduce memory
-    load_in_8bit = False, # [NEW!] A bit more accurate, uses 2x memory
-    full_finetuning = False, # [NEW!] We have full finetuning now!
+    load_in_4bit = True,  # 4-bit quantization. False = 16-bit LoRA.
+    load_in_8bit = False, # 8-bit quantization
+    load_in_16bit = False, # [NEW!] 16-bit LoRA
+    full_finetuning = False, # Use for full fine-tuning.
     # token = "hf_...", # use one if using gated models
 )
 
@@ -356,8 +349,8 @@ trainer = SFTTrainer(
 )
 trainer.train()
 
-# Go to https://github.com/unslothai/unsloth/wiki for advanced tips like
-# (1) Saving to GGUF / merging to 16bit for vLLM
+# Go to https://docs.unsloth.ai for advanced tips like
+# (1) Saving to GGUF / merging to 16bit for vLLM or SGLang
 # (2) Continued training from a saved LoRA adapter
 # (3) Adding an evaluation loop / OOMs
 # (4) Customized chat templates
@@ -365,70 +358,18 @@ trainer.train()
 
 <a name="RL"></a>
 ## 💡 Reinforcement Learning
-RL including DPO, GRPO, PPO, Reward Modelling, Online DPO all work with Unsloth. We're in 🤗Hugging Face's official docs! We're on the [GRPO docs](https://huggingface.co/learn/nlp-course/en/chapter12/6) and the [DPO docs](https://huggingface.co/docs/trl/main/en/dpo_trainer#accelerate-dpo-fine-tuning-using-unsloth)! List of RL notebooks:
+[RL](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide) including [GRPO](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide#training-with-grpo), [GSPO](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide/gspo-reinforcement-learning), **FP8** traning, DrGRPO, DAPO, PPO, Reward Modelling, Online DPO all work with Unsloth.
+Read our [Reinforcement Learning Guide](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide) or our [advanced RL docs](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide/advanced-rl-documentation) for batching, generation & training parameters.
 
+List of RL notebooks:
+- gpt-oss GSPO notebook: [Link](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/gpt-oss-(20B)-GRPO.ipynb)
+- Qwen2.5-VL GSPO notebook: [Link](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Qwen2_5_7B_VL_GRPO.ipynb)
 - Advanced Qwen3 GRPO notebook: [Link](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Qwen3_(4B)-GRPO.ipynb)
+- ***FP8*** Qwen3-8B GRPO notebook (L4): [Link](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Qwen3_8B_FP8_GRPO.ipynb)
 - ORPO notebook: [Link](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Llama3_(8B)-ORPO.ipynb)
 - DPO Zephyr notebook: [Link](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Zephyr_(7B)-DPO.ipynb)
 - KTO notebook: [Link](https://colab.research.google.com/drive/1MRgGtLWuZX4ypSfGguFgC-IblTvO2ivM?usp=sharing)
 - SimPO notebook: [Link](https://colab.research.google.com/drive/1Hs5oQDovOay4mFA6Y9lQhVJ8TnbFLFh2?usp=sharing)
-
-<details>
-  <summary>Click for DPO code</summary>
-  
-```python
-import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "0" # Optional set GPU device ID
-
-from unsloth import FastLanguageModel
-import torch
-from trl import DPOTrainer, DPOConfig
-max_seq_length = 2048
-
-model, tokenizer = FastLanguageModel.from_pretrained(
-    model_name = "unsloth/zephyr-sft-bnb-4bit",
-    max_seq_length = max_seq_length,
-    load_in_4bit = True,
-)
-
-# Do model patching and add fast LoRA weights
-model = FastLanguageModel.get_peft_model(
-    model,
-    r = 64,
-    target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
-                      "gate_proj", "up_proj", "down_proj",],
-    lora_alpha = 64,
-    lora_dropout = 0, # Supports any, but = 0 is optimized
-    bias = "none",    # Supports any, but = "none" is optimized
-    # [NEW] "unsloth" uses 30% less VRAM, fits 2x larger batch sizes!
-    use_gradient_checkpointing = "unsloth", # True or "unsloth" for very long context
-    random_state = 3407,
-    max_seq_length = max_seq_length,
-)
-
-dpo_trainer = DPOTrainer(
-    model = model,
-    ref_model = None,
-    train_dataset = YOUR_DATASET_HERE,
-    # eval_dataset = YOUR_DATASET_HERE,
-    tokenizer = tokenizer,
-    args = DPOConfig(
-        per_device_train_batch_size = 4,
-        gradient_accumulation_steps = 8,
-        warmup_ratio = 0.1,
-        num_train_epochs = 3,
-        logging_steps = 1,
-        optim = "adamw_8bit",
-        seed = 42,
-        output_dir = "outputs",
-        max_length = 1024,
-        max_prompt_length = 512,
-        beta = 0.1,
-    ),
-)
-dpo_trainer.train()
-```
-</details>
 
 ## 🥇 Performance Benchmarking
 - For our most detailed benchmarks, read our [Llama 3.3 Blog](https://unsloth.ai/blog/llama3-3).
@@ -482,7 +423,8 @@ You can cite the Unsloth repo as follows:
 
 ### Thank You to
 - The [llama.cpp library](https://github.com/ggml-org/llama.cpp) that lets users save models with Unsloth
-- The Hugging Face team and their [TRL library](https://github.com/huggingface/trl)
+- The Hugging Face team and their libraries: [transformers](https://github.com/huggingface/transformers) and [TRL](https://github.com/huggingface/trl)
+- The Pytorch and [Torch AO](https://github.com/unslothai/unsloth/pull/3391) team for their contributions
 - [Erik](https://github.com/erikwijmans) for his help adding [Apple's ML Cross Entropy](https://github.com/apple/ml-cross-entropy) in Unsloth
 - [Etherl](https://github.com/Etherll) for adding support for [TTS, diffusion and BERT models](https://github.com/unslothai/notebooks/pull/34)
 - And of course for every single person who has contributed or has used Unsloth!
