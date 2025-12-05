@@ -2750,14 +2750,17 @@ def _unsloth_save_torchao_with_attached_config(
     # TorchAO does not support safe_serialization reliably
     safe_serialization = False
 
-
     torchao_save_directory = save_directory + "-torchao"
 
     if push_to_hub:
-        model.push_to_hub(torchao_save_directory, safe_serialization=safe_serialization, token=token)
-        tokenizer.push_to_hub(torchao_save_directory, token=token)
+        model.push_to_hub(
+            torchao_save_directory, safe_serialization = safe_serialization, token = token
+        )
+        tokenizer.push_to_hub(torchao_save_directory, token = token)
     else:
-        model.save_pretrained(torchao_save_directory, safe_serialization=safe_serialization)
+        model.save_pretrained(
+            torchao_save_directory, safe_serialization = safe_serialization
+        )
         tokenizer.save_pretrained(torchao_save_directory)
 
 
@@ -2779,8 +2782,10 @@ def _unsloth_save_torchao_with_given_config(
 
     if push_to_hub:
         assert token is not None, "Unsloth: Please specify a token for uploading!"
-    
-    assert torchao_config is not None, "Unsloth: Please specify a torchao_config for post-training quantization!"
+
+    assert (
+        torchao_config is not None
+    ), "Unsloth: Please specify a torchao_config for post-training quantization!"
 
     # first merge the lora weights
     arguments = dict(locals())
@@ -2796,7 +2801,7 @@ def _unsloth_save_torchao_with_given_config(
 
     for _ in range(3):
         gc.collect()
-    
+
     from transformers import (
         AutoModelForCausalLM,
         AutoTokenizer,
@@ -2806,7 +2811,7 @@ def _unsloth_save_torchao_with_given_config(
     )
     from torchao import quantize_
 
-    quantization_config = TorchAoConfig(quant_type=torchao_config)
+    quantization_config = TorchAoConfig(quant_type = torchao_config)
 
     # Determine if this is a VLM
     is_vlm = False
@@ -2830,8 +2835,8 @@ def _unsloth_save_torchao_with_given_config(
     # Reload with quantization applied
     quantized_model = auto_model.from_pretrained(
         save_directory,
-        device_map="auto",
-        quantization_config=quantization_config,
+        device_map = "auto",
+        quantization_config = quantization_config,
         **kwargs,
     )
 
@@ -2843,12 +2848,12 @@ def _unsloth_save_torchao_with_given_config(
 
     if push_to_hub:
         quantized_model.push_to_hub(
-            torchao_save_directory, safe_serialization=safe_serialization, token=token
+            torchao_save_directory, safe_serialization = safe_serialization, token = token
         )
-        tokenizer.push_to_hub(torchao_save_directory, token=token)
+        tokenizer.push_to_hub(torchao_save_directory, token = token)
     else:
         quantized_model.save_pretrained(
-            torchao_save_directory, safe_serialization=safe_serialization
+            torchao_save_directory, safe_serialization = safe_serialization
         )
         tokenizer.save_pretrained(torchao_save_directory)
 
@@ -2892,7 +2897,9 @@ def unsloth_save_pretrained_torchao(
     if token is None and push_to_hub:
         token = get_token()
 
-    has_qat_config = hasattr(self, "_torchao_config") and self._torchao_config is not None
+    has_qat_config = (
+        hasattr(self, "_torchao_config") and self._torchao_config is not None
+    )
 
     if torchao_config is not None:
         # PTQ path: user provided a config, model must NOT have QAT config
@@ -2902,12 +2909,12 @@ def unsloth_save_pretrained_torchao(
             "attached to the model from training."
         )
         _unsloth_save_torchao_with_given_config(
-            model=self,
-            save_directory=save_directory,
-            tokenizer=tokenizer,
-            torchao_config=torchao_config,
-            push_to_hub=push_to_hub,
-            token=token,
+            model = self,
+            save_directory = save_directory,
+            tokenizer = tokenizer,
+            torchao_config = torchao_config,
+            push_to_hub = push_to_hub,
+            token = token,
         )
     else:
         # QAT path: no config provided, model must have QAT config
@@ -2917,11 +2924,11 @@ def unsloth_save_pretrained_torchao(
             "post-training quantization."
         )
         _unsloth_save_torchao_with_attached_config(
-            model=self,
-            save_directory=save_directory,
-            tokenizer=tokenizer,
-            push_to_hub=push_to_hub,
-            token=token,
+            model = self,
+            save_directory = save_directory,
+            tokenizer = tokenizer,
+            push_to_hub = push_to_hub,
+            token = token,
         )
 
     for _ in range(3):
