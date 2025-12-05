@@ -2784,11 +2784,8 @@ def _unsloth_save_torchao_with_given_config(
 
     # first merge the lora weights
     arguments = dict(locals())
-    arguments["model"] = self
-    arguments["tokenizer"] = tokenizer
     arguments["push_to_hub"] = False  # We save ourselves
     arguments["save_method"] = "merged_16bit"  # Must be 16bit
-    del arguments["self"]
     del arguments["torchao_config"]
 
     if not isinstance(model, PeftModelForCausalLM) and not isinstance(model, PeftModel):
