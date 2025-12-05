@@ -132,7 +132,7 @@ def sft_trainer_prepare_dataset(function_name, function):
         "    if 'formatting_func'    not in locals(): raise RuntimeError('Unsloth: Please file a bug report - `formatting_func` does not exist!')\n"
         "    if 'dataset_text_field' not in locals() and 'args' in locals(): dataset_text_field = args.dataset_text_field\n"
         "    if 'dataset_text_field' not in locals(): raise RuntimeError('Unsloth: Please file a bug report - `dataset_text_field` does not exist!')\n"
-         "try:\n"
+        "try:\n"
         "    _first_item = dataset[0]\n"
         "except:\n"
         "    _first_item = next(iter(dataset))\n"
