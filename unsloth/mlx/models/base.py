@@ -44,7 +44,7 @@ def create_attention_mask(h: mx.array, cache: Optional[Any] = None):
                 window_size = c.max_size
             else:
                 offset = c.offset
-        mask = create_causal_mask(T, offset, window_size=window_size)
+        mask = create_causal_mask(T, offset, window_size = window_size)
         mask = mask.astype(h.dtype)
     else:
         mask = None
@@ -68,17 +68,17 @@ def quantized_scaled_dot_product_attention(
 
     if n_repeats > 1:
         queries = mx.reshape(queries, (B, n_kv_heads, n_repeats, L, D))
-        q_keys = tree_map(lambda x: mx.expand_dims(x, axis=-3), q_keys)
-        q_values = tree_map(lambda x: mx.expand_dims(x, axis=-3), q_values)
+        q_keys = tree_map(lambda x: mx.expand_dims(x, axis = -3), q_keys)
+        q_values = tree_map(lambda x: mx.expand_dims(x, axis = -3), q_values)
 
     scores = mx.quantized_matmul(
-        queries, *q_keys, transpose=True, group_size=group_size, bits=bits
+        queries, *q_keys, transpose = True, group_size = group_size, bits = bits
     )
     if mask is not None:
         scores += mask
-    scores = mx.softmax(scores, axis=-1, precise=True)
+    scores = mx.softmax(scores, axis = -1, precise = True)
     out = mx.quantized_matmul(
-        scores, *q_values, transpose=False, group_size=group_size, bits=bits
+        scores, *q_values, transpose = False, group_size = group_size, bits = bits
     )
 
     if n_repeats > 1:
@@ -100,12 +100,12 @@ def scaled_dot_product_attention(
             queries,
             keys,
             values,
-            scale=scale,
-            mask=mask,
-            group_size=cache.group_size,
-            bits=cache.bits,
+            scale = scale,
+            mask = mask,
+            group_size = cache.group_size,
+            bits = cache.bits,
         )
     else:
         return mx.fast.scaled_dot_product_attention(
-            queries, keys, values, scale=scale, mask=mask
+            queries, keys, values, scale = scale, mask = mask
         )

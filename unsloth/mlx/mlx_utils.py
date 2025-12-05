@@ -4,7 +4,7 @@ import shutil
 import json
 import logging
 from pathlib import Path
-from typing import Generator, Optional,Type, Callable, Tuple, Union
+from typing import Generator, Optional, Type, Callable, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -12,10 +12,10 @@ import mlx.nn as nn
 from unsloth.models.loader_utils import get_model_name
 from .models import llama as models
 import transformers
-from huggingface_hub import snapshot_download,create_repo
+from huggingface_hub import snapshot_download, create_repo
 from unsloth.save import MODEL_CARD
 from mlx.utils import tree_flatten, tree_unflatten
-from .trainer.utils import  load_adapters
+from .trainer.utils import load_adapters
 
 MODEL_REMAPPING = {
     "mistral": "llama",  # mistral is compatible with llama
@@ -24,8 +24,8 @@ MODEL_REMAPPING = {
 
 def fetch_from_hub(hf_path: str):
     model_path = snapshot_download(
-        repo_id=hf_path,
-        allow_patterns=["*.json", "*.safetensors", "tokenizer.model"],
+        repo_id = hf_path,
+        allow_patterns = ["*.json", "*.safetensors", "tokenizer.model"],
     )
     weight_files = glob.glob(f"{model_path}/*.safetensors")
     if len(weight_files) == 0:
@@ -42,31 +42,31 @@ def fetch_from_hub(hf_path: str):
     return weights, config.to_dict(), tokenizer
 
 
-def upload_to_hub(name_or_path,model_type,username,path: str, name: str, token : str):
+def upload_to_hub(name_or_path, model_type, username, path: str, name: str, token: str):
     import os
-   
+
     from huggingface_hub import HfApi, ModelCard, logging
 
     repo_id = f"{name}"
 
     try:
         create_repo(
-            repo_id   = repo_id,
-            token     = token,
+            repo_id = repo_id,
+            token = token,
             repo_type = "model",
-            exist_ok  = False,
-            private   = None,
-        ) 
+            exist_ok = False,
+            private = None,
+        )
     except:
         pass
-    
+
     try:
         content = MODEL_CARD.format(
-            username   = username,
+            username = username,
             base_model = name_or_path,
             model_type = model_type,
-            method     = "",
-            extra      = "unsloth",
+            method = "",
+            extra = "unsloth",
         )
         card = ModelCard(content)
         card.push_to_hub(repo_id, token = token)
@@ -75,16 +75,15 @@ def upload_to_hub(name_or_path,model_type,username,path: str, name: str, token :
     logging.set_verbosity_info()
 
     api = HfApi()
-    api.create_repo(repo_id=repo_id, exist_ok=True,token = token)
+    api.create_repo(repo_id = repo_id, exist_ok = True, token = token)
     api.upload_folder(
-        folder_path=path,
+        folder_path = path,
         path_in_repo = ".",
-        token=token,
-        repo_id=repo_id,
-        commit_message  = "(Trained with Unsloth)",
-        repo_type="model"
+        token = token,
+        repo_id = repo_id,
+        commit_message = "(Trained with Unsloth)",
+        repo_type = "model",
     )
-    
 
 
 def make_shards(weights: dict, max_file_size_gibibyte: int = 15):
@@ -103,9 +102,9 @@ def make_shards(weights: dict, max_file_size_gibibyte: int = 15):
 
 def save_model(save_dir: str, weights, tokenizer, config):
     save_dir = Path(save_dir)
-    save_dir.mkdir(parents=True, exist_ok=True)
+    save_dir.mkdir(parents = True, exist_ok = True)
 
-    shards = make_shards(weights, max_file_size_gibibyte=1)
+    shards = make_shards(weights, max_file_size_gibibyte = 1)
     shards_count = len(shards)
     shard_file_format = (
         "model-{:05d}-of-{:05d}.safetensors"
@@ -119,7 +118,7 @@ def save_model(save_dir: str, weights, tokenizer, config):
     for i, shard in enumerate(shards):
         shard_name = shard_file_format.format(i + 1, shards_count)
         mx.save_safetensors(
-            str(save_dir / shard_name), shard, metadata={"format": "mlx"}
+            str(save_dir / shard_name), shard, metadata = {"format": "mlx"}
         )
         for weight_name in shard.keys():
             index_data["weight_map"][weight_name] = shard_name
@@ -127,7 +126,7 @@ def save_model(save_dir: str, weights, tokenizer, config):
 
     tokenizer.save_pretrained(save_dir)
     with open(save_dir / "config.json", "w") as fid:
-        json.dump(config, fid, indent=4)
+        json.dump(config, fid, indent = 4)
 
     index_data["weight_map"] = {
         k: index_data["weight_map"][k] for k in sorted(index_data["weight_map"])
@@ -136,21 +135,25 @@ def save_model(save_dir: str, weights, tokenizer, config):
         json.dump(
             index_data,
             f,
-            indent=4,
+            indent = 4,
         )
 
+
 def _get_classes(config: dict):
-    model_type = config["model_type"]    
-    if model_type != "llama" and MODEL_REMAPPING.get(model_type,model_type) != "llama":
+    model_type = config["model_type"]
+    if model_type != "llama" and MODEL_REMAPPING.get(model_type, model_type) != "llama":
         msg = f"Model type {model_type} not supported."
         logging.error(msg)
         raise ValueError(msg)
 
     return models.Model, models.ModelArgs
 
-def load(model_path: str, tokenizer_config={},    
-         get_model_classes: Callable[[dict], Tuple[Type[nn.Module], Type]] = _get_classes,):
-    
+
+def load(
+    model_path: str,
+    tokenizer_config = {},
+    get_model_classes: Callable[[dict], Tuple[Type[nn.Module], Type]] = _get_classes,
+):
     with open(model_path / "config.json", "r") as f:
         config = json.loads(f.read())
         quantization = config.get("quantization", None)
@@ -167,11 +170,11 @@ def load(model_path: str, tokenizer_config={},
     for wf in weight_files:
         weights.update(mx.load(wf))
 
-    model_class, model_args_class = get_model_classes(config=config)
+    model_class, model_args_class = get_model_classes(config = config)
 
     model_args = model_args_class.from_dict(config)
     model = model_class(model_args)
-    
+
     if hasattr(model, "sanitize"):
         weights = model.sanitize(weights)
 
@@ -183,7 +186,7 @@ def load(model_path: str, tokenizer_config={},
         nn.quantize(
             model,
             **quantization,
-            class_predicate=class_predicate,
+            class_predicate = class_predicate,
         )
 
     model.load_weights(list(weights.items()))
@@ -217,8 +220,7 @@ def save_config(
 
     # write the updated config to the config_path (if provided)
     with open(config_path, "w") as fid:
-        json.dump(config, fid, indent=4)
-
+        json.dump(config, fid, indent = 4)
 
 
 def generate(
@@ -238,7 +240,7 @@ def generate(
 
     def sample(logits: mx.array) -> mx.array:
         return (
-            mx.argmax(logits, axis=-1)
+            mx.argmax(logits, axis = -1)
             if temp == 0
             else mx.random.categorical(logits * (1 / temp))
         )
@@ -246,23 +248,23 @@ def generate(
     y = prompt
     cache = None
     while True:
-        logits, cache = model(y[None], cache=cache)
+        logits, cache = model(y[None], cache = cache)
         logits = logits[:, -1, :]
         y = sample(logits)
         yield y
 
+
 def save_merged_model(args):
-    model_name = get_model_name(args.model_name,args.load_in_4bit)
+    model_name = get_model_name(args.model_name, args.load_in_4bit)
     model_path = get_model_path(model_name)
     model, tokenizer, config = load(model_path)
     model.freeze()
 
     # Load the LoRA adapter weights which we assume should exist by this point
-    if not Path(args.save_path,args.adapter_file).is_file():
-        raise ValueError(
-        f"Adapter file {args.adapter_file} missing. ")
-    
-    model = load_adapters(model, args.save_path,args.adapter_file)
+    if not Path(args.save_path, args.adapter_file).is_file():
+        raise ValueError(f"Adapter file {args.adapter_file} missing. ")
+
+    model = load_adapters(model, args.save_path, args.adapter_file)
 
     fused_linears = [
         (n, m.fuse()) for n, m in model.named_modules() if hasattr(m, "fuse")
@@ -274,35 +276,36 @@ def save_merged_model(args):
     weights = dict(tree_flatten(model.parameters()))
 
     save_model(args.save_path, weights, tokenizer, config)
-   
+
     mx.metal.clear_cache()
     del model
     gc.collect()
 
 
-def push_to_hub(args,name, model_type):
-        if args.push_model:
-            from huggingface_hub import whoami
-            try: 
-                username = whoami(token = args.hub_token)["name"]
-            except:
-                raise RuntimeError(
-                    "Unsloth: Please supply a token!\n"\
-                    "Go to https://huggingface.co/settings/tokens"
-                )
-            pass
-        pass
+def push_to_hub(args, name, model_type):
+    if args.push_model:
+        from huggingface_hub import whoami
 
-        if  args.push_model and args.hub_path is not None:
-            hf_path = args.hub_path
-            if not Path(args.model_name).exists():
-                # If the model path doesn't exist, assume it's an HF repo
-                hf_path = args.model_name
-            elif hf_path is None:
-                raise ValueError(
-                    "Must provide original Hugging Face repo to upload local model."
-                )
-            upload_to_hub(name,model_type,username,args.save_path, args.hub_path,args.hub_token)
+        try:
+            username = whoami(token = args.hub_token)["name"]
+        except:
+            raise RuntimeError(
+                "Unsloth: Please supply a token!\n"
+                "Go to https://huggingface.co/settings/tokens"
+            )
+
+    if args.push_model and args.hub_path is not None:
+        hf_path = args.hub_path
+        if not Path(args.model_name).exists():
+            # If the model path doesn't exist, assume it's an HF repo
+            hf_path = args.model_name
+        elif hf_path is None:
+            raise ValueError(
+                "Must provide original Hugging Face repo to upload local model."
+            )
+        upload_to_hub(
+            name, model_type, username, args.save_path, args.hub_path, args.hub_token
+        )
 
 
 def get_model_path(path_or_hf_repo: str, revision: Optional[str] = None) -> Path:
@@ -311,9 +314,9 @@ def get_model_path(path_or_hf_repo: str, revision: Optional[str] = None) -> Path
         try:
             model_path = Path(
                 snapshot_download(
-                    repo_id=path_or_hf_repo,
-                    revision=revision,
-                    allow_patterns=[
+                    repo_id = path_or_hf_repo,
+                    revision = revision,
+                    allow_patterns = [
                         "*.json",
                         "*.safetensors",
                         "*.py",
@@ -334,17 +337,12 @@ def get_model_path(path_or_hf_repo: str, revision: Optional[str] = None) -> Path
     return model_path
 
 
-
 def load_pretrained(
-    model_name: str,
-    tokenizer_config={},
-    model_config={},
-    dtype= None,
-    load_in_4bit=True
+    model_name: str, tokenizer_config = {}, model_config = {}, dtype = None, load_in_4bit = True
 ):
-    model_name = get_model_name(model_name,load_in_4bit)
+    model_name = get_model_name(model_name, load_in_4bit)
     model_path = get_model_path(model_name)
 
-    model,tokenizer, config = load(model_path, tokenizer_config)
+    model, tokenizer, config = load(model_path, tokenizer_config)
 
     return model, tokenizer, config

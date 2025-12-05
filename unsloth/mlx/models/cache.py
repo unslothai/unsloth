@@ -1,10 +1,8 @@
-
 from typing import Any, Dict, List, Optional
 
 import mlx.core as mx
 import mlx.nn as nn
-from mlx.utils import  tree_map
-
+from mlx.utils import tree_map
 
 
 class _BaseCache:
@@ -51,14 +49,14 @@ class QuantizedKVCache(_BaseCache):
 
             def init_quant(dim):
                 return (
-                    mx.zeros((*shape, dim // el_per_int), dtype=mx.uint32),
-                    mx.zeros((*shape, dim // self.group_size), dtype=keys.dtype),
-                    mx.zeros((*shape, dim // self.group_size), dtype=keys.dtype),
+                    mx.zeros((*shape, dim // el_per_int), dtype = mx.uint32),
+                    mx.zeros((*shape, dim // self.group_size), dtype = keys.dtype),
+                    mx.zeros((*shape, dim // self.group_size), dtype = keys.dtype),
                 )
 
             def expand_quant(x):
-                new_x = mx.zeros((*shape, x.shape[-1]), dtype=x.dtype)
-                return mx.concatenate([x, new_x], axis=-2)
+                new_x = mx.zeros((*shape, x.shape[-1]), dtype = x.dtype)
+                return mx.concatenate([x, new_x], axis = -2)
 
             if self.keys is not None:
                 if prev % self.step != 0:
@@ -74,8 +72,8 @@ class QuantizedKVCache(_BaseCache):
 
         self.offset += num_steps
 
-        keys = mx.quantize(keys, group_size=self.group_size, bits=self.bits)
-        values = mx.quantize(values, group_size=self.group_size, bits=self.bits)
+        keys = mx.quantize(keys, group_size = self.group_size, bits = self.bits)
+        values = mx.quantize(values, group_size = self.group_size, bits = self.bits)
         for i in range(len(self.keys)):
             self.keys[i][..., prev : self.offset, :] = keys[i]
             self.values[i][..., prev : self.offset, :] = values[i]
@@ -110,7 +108,3 @@ class QuantizedKVCache(_BaseCache):
         n = min(self.offset, n)
         self.offset -= n
         return n
-
-
-
-

@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from unsloth import devices
+
 if not devices.has_mps:
     from .llama import FastLlamaModel
     from .loader import FastLanguageModel, FastVisionModel, FastTextModel, FastModel
@@ -21,6 +22,7 @@ if not devices.has_mps:
     from .qwen3 import FastQwen3Model
     from .qwen3_moe import FastQwen3MoeModel
     from .granite import FastGraniteModel
+
     try:
         from .falcon_h1 import FastFalconH1Model
     except:

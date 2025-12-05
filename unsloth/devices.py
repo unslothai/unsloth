@@ -31,9 +31,7 @@ def get_optimal_device():
     return torch.device(get_optimal_device_name())
 
 
-
 def torch_gc():
-
     if torch.cuda.is_available():
         with torch.cuda.device(get_cuda_device_string()):
             torch.cuda.empty_cache()
@@ -41,9 +39,3 @@ def torch_gc():
 
     if has_mps():
         mac_specific.torch_mps_gc()
-
-
-
-
-
-

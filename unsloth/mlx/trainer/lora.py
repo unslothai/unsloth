@@ -20,11 +20,11 @@ class LoRALinear(nn.Module):
         if isinstance(linear, nn.QuantizedLinear):
             input_dims *= 32 // linear.bits
         lora_lin = LoRALinear(
-            input_dims=input_dims,
-            output_dims=output_dims,
-            r=r,
-            dropout=dropout,
-            scale=scale,
+            input_dims = input_dims,
+            output_dims = output_dims,
+            r = r,
+            dropout = dropout,
+            scale = scale,
         )
         lora_lin.linear = linear
         return lora_lin
@@ -48,7 +48,7 @@ class LoRALinear(nn.Module):
                 linear.bits,
             )
         output_dims, input_dims = weight.shape
-        fused_linear = nn.Linear(input_dims, output_dims, bias=bias)
+        fused_linear = nn.Linear(input_dims, output_dims, bias = bias)
 
         lora_b = (self.scale * self.lora_b.T).astype(dtype)
         lora_a = self.lora_a.T.astype(dtype)
@@ -77,9 +77,9 @@ class LoRALinear(nn.Module):
         super().__init__()
 
         # Regular linear layer weights
-        self.linear = nn.Linear(input_dims, output_dims, bias=bias)
+        self.linear = nn.Linear(input_dims, output_dims, bias = bias)
 
-        self.dropout = nn.Dropout(p=dropout)
+        self.dropout = nn.Dropout(p = dropout)
 
         # Scale for low-rank update
         self.scale = scale
@@ -87,11 +87,11 @@ class LoRALinear(nn.Module):
         # Low rank lora weights
         scale = 1 / math.sqrt(input_dims)
         self.lora_a = mx.random.uniform(
-            low=-scale,
-            high=scale,
-            shape=(input_dims, r),
+            low = -scale,
+            high = scale,
+            shape = (input_dims, r),
         )
-        self.lora_b = mx.zeros(shape=(r, output_dims))
+        self.lora_b = mx.zeros(shape = (r, output_dims))
 
     def __call__(self, x):
         y = self.linear(x)
@@ -108,12 +108,12 @@ class LoRASwitchLinear(nn.Module):
         scale: float = 20.0,
     ):
         lora_lin = LoRASwitchLinear(
-            input_dims=linear.input_dims,
-            output_dims=linear.output_dims,
-            num_experts=linear.num_experts,
-            r=r,
-            dropout=dropout,
-            scale=scale,
+            input_dims = linear.input_dims,
+            output_dims = linear.output_dims,
+            num_experts = linear.num_experts,
+            r = r,
+            dropout = dropout,
+            scale = scale,
         )
         lora_lin.linear = linear
         return lora_lin
@@ -137,7 +137,7 @@ class LoRASwitchLinear(nn.Module):
                 linear.bits,
             )
         num_experts, output_dims, input_dims = weight.shape
-        fused_linear = SwitchLinear(input_dims, output_dims, num_experts, bias=bias)
+        fused_linear = SwitchLinear(input_dims, output_dims, num_experts, bias = bias)
 
         lora_b = (self.scale * self.lora_b).astype(dtype)
         lora_a = self.lora_a.reshape(num_experts, -1, input_dims).astype(dtype)
@@ -163,9 +163,9 @@ class LoRASwitchLinear(nn.Module):
         super().__init__()
 
         # Regular linear layer weights
-        self.linear = SwitchLinear(input_dims, output_dims, num_experts, bias=bias)
+        self.linear = SwitchLinear(input_dims, output_dims, num_experts, bias = bias)
 
-        self.dropout = nn.Dropout(p=dropout)
+        self.dropout = nn.Dropout(p = dropout)
 
         # Scale for low-rank update
         self.scale = scale
@@ -173,11 +173,11 @@ class LoRASwitchLinear(nn.Module):
         # Low rank lora weights
         scale = 1 / math.sqrt(input_dims)
         self.lora_a = mx.random.uniform(
-            low=-scale,
-            high=scale,
-            shape=(r * num_experts, input_dims),
+            low = -scale,
+            high = scale,
+            shape = (r * num_experts, input_dims),
         )
-        self.lora_b = mx.zeros(shape=(num_experts, output_dims, r))
+        self.lora_b = mx.zeros(shape = (num_experts, output_dims, r))
         self.num_experts = num_experts
 
     def __call__(self, x, indices):
@@ -185,7 +185,7 @@ class LoRASwitchLinear(nn.Module):
 
         y = self.linear(x, indices)
         z = (self.dropout(x) @ self.lora_a.T).reshape(shape)
-        z = mx.take_along_axis(z, indices[..., None], axis=-2)
+        z = mx.take_along_axis(z, indices[..., None], axis = -2)
         z = z[..., None, :] @ self.lora_b[indices].swapaxes(-2, -1)
 
         return y + (self.scale * z).astype(x.dtype)
@@ -203,11 +203,11 @@ class LoRAEmbedding(nn.Module):
         if isinstance(embedding, nn.QuantizedEmbedding):
             dims *= 32 // embedding.bits
         lora_embedding = LoRAEmbedding(
-            num_embeddings=num_embeddings,
-            dims=dims,
-            r=r,
-            dropout=dropout,
-            scale=scale,
+            num_embeddings = num_embeddings,
+            dims = dims,
+            r = r,
+            dropout = dropout,
+            scale = scale,
         )
         lora_embedding.embedding = embedding
         return lora_embedding
@@ -257,7 +257,7 @@ class LoRAEmbedding(nn.Module):
 
         # Regular embedding layer
         self.embedding = nn.Embedding(num_embeddings, dims)
-        self.dropout = nn.Dropout(p=dropout)
+        self.dropout = nn.Dropout(p = dropout)
 
         # Scale for low-rank update
         self.scale = scale
@@ -265,11 +265,11 @@ class LoRAEmbedding(nn.Module):
         # Low rank lora weights
         scale = 1 / math.sqrt(num_embeddings)
         self.lora_a = mx.random.uniform(
-            low=-scale,
-            high=scale,
-            shape=(num_embeddings, r),
+            low = -scale,
+            high = scale,
+            shape = (num_embeddings, r),
         )
-        self.lora_b = mx.zeros(shape=(r, dims))
+        self.lora_b = mx.zeros(shape = (r, dims))
 
     def __call__(self, x):
         y = self.embedding(x)

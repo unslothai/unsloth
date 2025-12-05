@@ -58,7 +58,7 @@ def linear_to_lora_layers(
 
     def to_lora(layer):
         if isinstance(layer, (nn.Linear, nn.QuantizedLinear)):
-            LoRALayer =  LoRALinear
+            LoRALayer = LoRALinear
         elif isinstance(layer, (SwitchLinear, QuantizedSwitchLinear)):
             LoRALayer = LoRASwitchLinear
         elif isinstance(layer, (nn.Embedding, nn.QuantizedEmbedding)):
@@ -70,9 +70,9 @@ def linear_to_lora_layers(
 
         return LoRALayer.from_base(
             layer,
-            r=config["rank"],
-            scale=config["scale"],
-            dropout=config["dropout"],
+            r = config["rank"],
+            scale = config["scale"],
+            dropout = config["dropout"],
         )
 
     keys = config.get("keys", None)
@@ -101,7 +101,7 @@ def linear_to_lora_layers(
         model.update_modules(tree_unflatten(lora_modules))
 
 
-def load_adapters(model: nn.Module, adapter_path: str,adapter_file : str) -> nn.Module:
+def load_adapters(model: nn.Module, adapter_path: str, adapter_file: str) -> nn.Module:
     """
     Load any fine-tuned adapters / layers.
 
@@ -117,7 +117,7 @@ def load_adapters(model: nn.Module, adapter_path: str,adapter_file : str) -> nn.
         raise FileNotFoundError(f"The adapter path does not exist: {adapter_path}")
     with open(adapter_path / "adapter_config.json", "r") as fid:
         config = types.SimpleNamespace(**json.load(fid))
-    
+
     linear_to_lora_layers(
         model,
         config.num_layers,
@@ -125,9 +125,8 @@ def load_adapters(model: nn.Module, adapter_path: str,adapter_file : str) -> nn.
     )
     # adapters = list(mx.load(str(adapter_path  /adapter_file)).items())
     # model.load_weights(adapters,False)
-    model.load_weights(str(adapter_path / adapter_file), strict=False)
+    model.load_weights(str(adapter_path / adapter_file), strict = False)
     return model
-
 
 
 def print_trainable_parameters(model):
@@ -137,7 +136,7 @@ def print_trainable_parameters(model):
         return sum(v.size for _, v in tree_flatten(m.parameters()))
 
     leaf_modules = tree_flatten(
-        model.leaf_modules(), is_leaf=lambda m: isinstance(m, nn.Module)
+        model.leaf_modules(), is_leaf = lambda m: isinstance(m, nn.Module)
     )
     total_p = sum(nparams(m) for _, m in leaf_modules) / 10**6
     trainable_p = (

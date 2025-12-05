@@ -87,6 +87,7 @@ import functools
 import textwrap
 import warnings, subprocess, inspect, psutil, os, math
 from unsloth import devices
+
 if not devices.has_mps:
     from ..device_type import (
         is_hip,
@@ -609,7 +610,9 @@ if not devices.has_mps:
             torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "cuda")
     elif DEVICE_TYPE == "xpu":
         if Version(torch_version) < Version("2.6.0"):
-            raise RuntimeError("torch.xpu currently only supports torch.version >= 2.6.0")
+            raise RuntimeError(
+                "torch.xpu currently only supports torch.version >= 2.6.0"
+            )
         else:
             torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "xpu")
             torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "xpu")
@@ -657,7 +660,7 @@ if is_openai_available():
 # Get Flash Attention v2 if Ampere (RTX 30xx, A100)
 if not devices.has_mps:
     import bitsandbytes as bnb
-        
+
 
 from transformers import AutoTokenizer
 from transformers.utils.import_utils import _is_package_available
@@ -669,7 +672,9 @@ HAS_FLASH_ATTENTION_SOFTCAPPING = False
 if not devices.has_mps:
     if DEVICE_TYPE == "cuda":
         major_version, minor_version = torch.cuda.get_device_capability()
-        torch.cuda.get_device_capability = functools.cache(torch.cuda.get_device_capability)
+        torch.cuda.get_device_capability = functools.cache(
+            torch.cuda.get_device_capability
+        )
 
         if major_version >= 8:
             SUPPORTS_BFLOAT16 = True
@@ -738,9 +743,9 @@ if not devices.has_mps:
                 # Also check for softcapping
                 from flash_attn import __version__ as flash_attn_version
 
-                HAS_FLASH_ATTENTION_SOFTCAPPING = Version(flash_attn_version) >= Version(
-                    "2.6.3"
-                )
+                HAS_FLASH_ATTENTION_SOFTCAPPING = Version(
+                    flash_attn_version
+                ) >= Version("2.6.3")
                 if not HAS_FLASH_ATTENTION_SOFTCAPPING:
                     print(
                         "Unsloth: If you want to finetune Gemma 2, upgrade flash-attn to version 2.6.3 or higher!\n"
@@ -765,7 +770,9 @@ if not devices.has_mps:
                 )
                 import transformers.utils
 
-                transformers.utils.is_flash_attn_2_available = lambda *args, **kwargs: False
+                transformers.utils.is_flash_attn_2_available = (
+                    lambda *args, **kwargs: False
+                )
 
                 HAS_FLASH_ATTENTION = False
     elif DEVICE_TYPE == "xpu":
@@ -921,6 +928,7 @@ UNSLOTH_COMPILE_IGNORE_ERRORS = (
 )
 # Just remove max_autotune_gemm warning
 import functools
+
 if not devices.has_mps:
     from torch._inductor.runtime.hints import DeviceProperties
 

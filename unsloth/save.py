@@ -45,6 +45,7 @@ import subprocess
 import psutil
 import re
 from transformers.models.llama.modeling_llama import logger
+
 if not has_mps():
     from .tokenizer_utils import fix_sentencepiece_gguf
 from .models.loader_utils import get_model_name
@@ -2504,6 +2505,7 @@ def unsloth_convert_lora_to_ggml_and_save_locally(
 
 
 from .models.loader_utils import get_model_name
+
 if not has_mps():
     from unsloth_zoo.saving_utils import (
         merge_and_overwrite_lora,

@@ -27,34 +27,34 @@ def grad_checkpoint(layer):
 
 @dataclass
 class TrainingArgs:
-    batch_size: int = field(default=4, metadata={"help": "Minibatch size."})
-    iters: int = field(default=100, metadata={"help": "Iterations to train for."})
+    batch_size: int = field(default = 4, metadata = {"help": "Minibatch size."})
+    iters: int = field(default = 100, metadata = {"help": "Iterations to train for."})
     val_batches: int = field(
-        default=25,
-        metadata={
+        default = 25,
+        metadata = {
             "help": "Number of validation batches, -1 uses the entire validation set."
         },
     )
     steps_per_report: int = field(
-        default=10,
-        metadata={"help": "Number of training steps between loss reporting."},
+        default = 10,
+        metadata = {"help": "Number of training steps between loss reporting."},
     )
     steps_per_eval: int = field(
-        default=200, metadata={"help": "Number of training steps between validations."}
+        default = 200, metadata = {"help": "Number of training steps between validations."}
     )
     steps_per_save: int = field(
-        default=100, metadata={"help": "Save the model every number steps"}
+        default = 100, metadata = {"help": "Save the model every number steps"}
     )
     max_seq_length: int = field(
-        default=2048, metadata={"help": "Maximum sequence length."}
+        default = 2048, metadata = {"help": "Maximum sequence length."}
     )
     adapter_file: str = field(
-        default="adapters.safetensors",
-        metadata={"help": "Save/load path for the trained adapter weights."},
+        default = "adapters.safetensors",
+        metadata = {"help": "Save/load path for the trained adapter weights."},
     )
     grad_checkpoint: bool = field(
-        default=False,
-        metadata={"help": "Use gradient checkpointing to reduce memory use."},
+        default = False,
+        metadata = {"help": "Use gradient checkpointing to reduce memory use."},
     )
 
 
@@ -71,9 +71,9 @@ def default_loss(model, inputs, targets, lengths):
     return ce, ntoks
 
 
-def iterate_batches(dataset, tokenizer, batch_size, max_seq_length, train=False):
+def iterate_batches(dataset, tokenizer, batch_size, max_seq_length, train = False):
     # Sort by length:
-    idx = sorted(range(len(dataset)), key=lambda idx: len(dataset[idx]))
+    idx = sorted(range(len(dataset)), key = lambda idx: len(dataset[idx]))
     if len(dataset) < batch_size:
         raise ValueError(
             f"Dataset must have at least batch_size={batch_size}"
@@ -137,7 +137,7 @@ def evaluate(
     tokenizer,
     batch_size,
     num_batches,
-    max_seq_length=2048,
+    max_seq_length = 2048,
     loss: callable = default_loss,
     iterate_batches: callable = iterate_batches,
 ):
@@ -149,10 +149,10 @@ def evaluate(
     for _, batch in zip(
         index_iterator,
         iterate_batches(
-            dataset=dataset,
-            tokenizer=tokenizer,
-            batch_size=batch_size,
-            max_seq_length=max_seq_length,
+            dataset = dataset,
+            tokenizer = tokenizer,
+            batch_size = batch_size,
+            max_seq_length = max_seq_length,
         ),
     ):
         losses, toks = loss(model, *batch)
@@ -167,14 +167,11 @@ def evaluate(
 
 
 class TrainingCallback:
-
     def on_train_loss_report(self, train_info: dict):
         """Called to report training loss at specified intervals."""
-        pass
 
     def on_val_loss_report(self, val_info: dict):
         """Called to report validation loss at specified intervals or the beginning."""
-        pass
 
 
 def train(
@@ -223,11 +220,11 @@ def train(
     for it, batch in zip(
         range(1, args.iters + 1),
         iterate_batches(
-            dataset=train_dataset,
-            tokenizer=tokenizer,
-            batch_size=args.batch_size,
-            max_seq_length=args.max_seq_length,
-            train=True,
+            dataset = train_dataset,
+            tokenizer = tokenizer,
+            batch_size = args.batch_size,
+            max_seq_length = args.max_seq_length,
+            train = True,
         ),
     ):
         # Report validation loss if needed, the first validation loss
@@ -235,14 +232,14 @@ def train(
         if it == 1 or it % args.steps_per_eval == 0 or it == args.iters:
             stop = time.perf_counter()
             val_loss = evaluate(
-                model=model,
-                dataset=val_dataset,
-                loss=loss,
-                tokenizer=tokenizer,
-                batch_size=args.batch_size,
-                num_batches=args.val_batches,
-                max_seq_length=args.max_seq_length,
-                iterate_batches=iterate_batches,
+                model = model,
+                dataset = val_dataset,
+                loss = loss,
+                tokenizer = tokenizer,
+                batch_size = args.batch_size,
+                num_batches = args.val_batches,
+                max_seq_length = args.max_seq_length,
+                iterate_batches = iterate_batches,
             )
             val_time = time.perf_counter() - stop
             if rank == 0:
@@ -250,7 +247,7 @@ def train(
                     f"Iter {it}: "
                     f"Val loss {val_loss:.3f}, "
                     f"Val took {val_time:.3f}s",
-                    flush=True,
+                    flush = True,
                 )
 
             if training_callback is not None:
@@ -289,7 +286,7 @@ def train(
                     f"Tokens/sec {tokens_sec:.3f}, "
                     f"Trained Tokens {trained_tokens}, "
                     f"Peak mem {peak_mem:.3f} GB",
-                    flush=True,
+                    flush = True,
                 )
 
             if training_callback is not None:
@@ -314,7 +311,8 @@ def train(
             adapter_weights = dict(tree_flatten(model.trainable_parameters()))
             mx.save_safetensors(str(args.adapter_file), adapter_weights)
             checkpoint = (
-                Path(args.adapter_file).parent / f"{it:07d}_{Path(args.adapter_file).name}"
+                Path(args.adapter_file).parent
+                / f"{it:07d}_{Path(args.adapter_file).name}"
             )
             mx.save_safetensors(str(checkpoint), adapter_weights)
             print(

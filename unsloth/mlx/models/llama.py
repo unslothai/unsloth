@@ -107,11 +107,11 @@ class DynamicNTKScalingRoPE(nn.Module):
         return mx.fast.rope(
             x,
             self.dims,
-            traditional=self.traditional,
-            base=self.base,
-            scale=self.scale,
-            offset=offset,
-            freqs=self._freqs,
+            traditional = self.traditional,
+            base = self.base,
+            scale = self.scale,
+            offset = offset,
+            freqs = self._freqs,
         )
 
 
@@ -132,13 +132,13 @@ def initialize_rope(args: ModelArgs):
             rope_scale = 1.0  # The scaling is handled internally for llama3
 
     return DynamicNTKScalingRoPE(
-        dims=head_dim,
-        max_position_embeddings=args.max_position_embeddings,
-        traditional=args.rope_traditional,
-        base=args.rope_theta,
-        scale=rope_scale,
-        rope_type=rope_type,
-        rope_scaling=rope_scaling,
+        dims = head_dim,
+        max_position_embeddings = args.max_position_embeddings,
+        traditional = args.rope_traditional,
+        base = args.rope_theta,
+        scale = rope_scale,
+        rope_type = rope_type,
+        rope_scaling = rope_scaling,
     )
 
 
@@ -158,10 +158,10 @@ class Attention(nn.Module):
         else:
             attention_bias = False
 
-        self.q_proj = nn.Linear(dim, n_heads * head_dim, bias=attention_bias)
-        self.k_proj = nn.Linear(dim, n_kv_heads * head_dim, bias=attention_bias)
-        self.v_proj = nn.Linear(dim, n_kv_heads * head_dim, bias=attention_bias)
-        self.o_proj = nn.Linear(n_heads * head_dim, dim, bias=attention_bias)
+        self.q_proj = nn.Linear(dim, n_heads * head_dim, bias = attention_bias)
+        self.k_proj = nn.Linear(dim, n_kv_heads * head_dim, bias = attention_bias)
+        self.v_proj = nn.Linear(dim, n_kv_heads * head_dim, bias = attention_bias)
+        self.o_proj = nn.Linear(n_heads * head_dim, dim, bias = attention_bias)
 
         self.rope = initialize_rope(args)
 
@@ -181,15 +181,15 @@ class Attention(nn.Module):
         values = values.reshape(B, L, self.n_kv_heads, -1).transpose(0, 2, 1, 3)
 
         if cache is not None:
-            queries = self.rope(queries, offset=cache.offset)
-            keys = self.rope(keys, offset=cache.offset)
+            queries = self.rope(queries, offset = cache.offset)
+            keys = self.rope(keys, offset = cache.offset)
             keys, values = cache.update_and_fetch(keys, values)
         else:
             queries = self.rope(queries)
             keys = self.rope(keys)
 
         output = scaled_dot_product_attention(
-            queries, keys, values, cache=cache, scale=self.scale, mask=mask
+            queries, keys, values, cache = cache, scale = self.scale, mask = mask
         )
 
         output = output.transpose(0, 2, 1, 3).reshape(B, L, -1)
@@ -207,9 +207,9 @@ class MLP(nn.Module):
         else:
             mlp_bias = False
 
-        self.gate_proj = nn.Linear(dim, hidden_dim, bias=mlp_bias)
-        self.down_proj = nn.Linear(hidden_dim, dim, bias=mlp_bias)
-        self.up_proj = nn.Linear(dim, hidden_dim, bias=mlp_bias)
+        self.gate_proj = nn.Linear(dim, hidden_dim, bias = mlp_bias)
+        self.down_proj = nn.Linear(hidden_dim, dim, bias = mlp_bias)
+        self.up_proj = nn.Linear(dim, hidden_dim, bias = mlp_bias)
 
     def __call__(self, x) -> mx.array:
         return self.down_proj(nn.silu(self.gate_proj(x)) * self.up_proj(x))
@@ -222,9 +222,9 @@ class TransformerBlock(nn.Module):
         self.hidden_size = args.hidden_size
         self.self_attn = Attention(args)
         self.mlp = MLP(args)
-        self.input_layernorm = nn.RMSNorm(args.hidden_size, eps=args.rms_norm_eps)
+        self.input_layernorm = nn.RMSNorm(args.hidden_size, eps = args.rms_norm_eps)
         self.post_attention_layernorm = nn.RMSNorm(
-            args.hidden_size, eps=args.rms_norm_eps
+            args.hidden_size, eps = args.rms_norm_eps
         )
         self.args = args
 
@@ -250,14 +250,14 @@ class LlamaModel(nn.Module):
         assert self.vocab_size > 0
         self.embed_tokens = nn.Embedding(args.vocab_size, args.hidden_size)
         self.layers = [
-            TransformerBlock(args=args) for _ in range(args.num_hidden_layers)
+            TransformerBlock(args = args) for _ in range(args.num_hidden_layers)
         ]
-        self.norm = nn.RMSNorm(args.hidden_size, eps=args.rms_norm_eps)
+        self.norm = nn.RMSNorm(args.hidden_size, eps = args.rms_norm_eps)
 
     def __call__(
         self,
         inputs: mx.array,
-        cache=None,
+        cache = None,
     ):
         h = self.embed_tokens(inputs)
 
@@ -267,7 +267,7 @@ class LlamaModel(nn.Module):
             cache = [None] * len(self.layers)
 
         for layer, c in zip(self.layers, cache):
-            h = layer(h, mask, cache=c)
+            h = layer(h, mask, cache = c)
 
         return self.norm(h)
 
@@ -279,12 +279,12 @@ class Model(nn.Module):
         self.model_type = args.model_type
         self.model = LlamaModel(args)
         if not args.tie_word_embeddings:
-            self.lm_head = nn.Linear(args.hidden_size, args.vocab_size, bias=False)
+            self.lm_head = nn.Linear(args.hidden_size, args.vocab_size, bias = False)
 
     def __call__(
         self,
         inputs: mx.array,
-        cache=None,
+        cache = None,
     ):
         out = self.model(inputs, cache)
         if self.args.tie_word_embeddings:

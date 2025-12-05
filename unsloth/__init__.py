@@ -230,7 +230,9 @@ if not devices.has_mps:
                         pass
                 else:
                     from triton.common.build import libcuda_dirs
-                cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
+                cdequantize_blockwise_fp32 = (
+                    bnb.functional.lib.cdequantize_blockwise_fp32
+                )
                 libcuda_dirs()
             except:
                 warnings.warn(
@@ -270,4 +272,4 @@ if not devices.has_mps:
     # Patch TRL trainers for backwards compatibility
     _patch_trl_trainer()
 else:
-    from .models._utils  import is_bfloat16_supported
+    from .models._utils import is_bfloat16_supported
