@@ -17,6 +17,10 @@ from ._utils import __version__
 from unsloth_zoo.utils import _get_dtype
 from unsloth_zoo.hf_utils import dtype_from_config
 import math
+import os
+
+_STRIX_HALO_SAFE = os.getenv("UNSLOTH_STRIX_HALO_SAFE", "0") == "1"
+_GEMMA_STRIX_SAFE = ("hip" == DEVICE_TYPE) and _STRIX_HALO_SAFE
 
 try:
     from transformers.models.gemma.modeling_gemma import (
@@ -118,8 +122,13 @@ def GemmaDecoderLayer_fast_forward(
         hidden_states = fast_rms_layernorm_inference_gemma(
             self.post_attention_layernorm, hidden_states, out_weight
         )
-        hidden_states = fast_geglu_inference(self.mlp, hidden_states)
-        hidden_states += residual
+        if _GEMMA_STRIX_SAFE:
+            mlp_in = hidden_states.to(torch.float32)
+            mlp_out = self.mlp(mlp_in)
+            hidden_states = residual + mlp_out.to(hidden_states.dtype)
+        else:
+            hidden_states = fast_geglu_inference(self.mlp, hidden_states)
+            hidden_states += residual
     else:
         residual = hidden_states
         hidden_states = fast_rms_layernorm(
@@ -142,8 +151,16 @@ def GemmaDecoderLayer_fast_forward(
         hidden_states = fast_rms_layernorm(
             self.post_attention_layernorm, hidden_states, gemma = True
         )
-        hidden_states = self.mlp(hidden_states)
-        hidden_states = residual + hidden_states
+
+        # On Strix Halo (HIP) in safe mode, run Gemma MLP in float32 for
+        # numerical stability, then cast back. Else use the default path.
+        if _GEMMA_STRIX_SAFE:
+            mlp_in = hidden_states.to(torch.float32)
+            mlp_out = self.mlp(mlp_in)
+            hidden_states = residual + mlp_out.to(hidden_states.dtype)
+        else:
+            hidden_states = self.mlp(hidden_states)
+            hidden_states = residual + hidden_states
 
     outputs = (hidden_states,)
     if output_attentions:

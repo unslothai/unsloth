@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import torch
+import torch.nn.functional as F
 import gc
 import math
 import functools
@@ -97,6 +98,7 @@ from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
 from peft import PeftModelForCausalLM, PeftModelForSequenceClassification
 from ..save import patch_saving_functions
 import re, os, inspect, math, sys
+
 import types
 
 try:
@@ -110,6 +112,9 @@ HAS_XFORMERS = xformers is not None
 BlockDiagonalCausalMask = (
     xformers.attn_bias.BlockDiagonalCausalMask if HAS_XFORMERS else None
 )
+
+# Safer mode for HIP/ROCm (eg. AMD Strix Halo) to avoid aggressive fused kernels
+STRIX_HALO_SAFE = os.environ.get("UNSLOTH_STRIX_HALO_SAFE", "0") == "1"
 
 if DEVICE_TYPE == "xpu":
     clean_gpu_cache = torch.xpu.empty_cache
@@ -487,7 +492,7 @@ def fast_rms_layernorm_inference(self, X, XX = None, XX2 = None, variance = None
     variance += self.variance_epsilon
     XX *= variance.rsqrt_()
 
-    if XX is None:
+    if XX is not None:
         X = XX.to(old_dtype)
     else:
         X.copy_(XX)
@@ -554,6 +559,16 @@ def LlamaAttention_fast_forward(
 
     bsz, q_len, _ = hidden_states.size()
 
+    try:
+        proj_dtype = self.q_proj.weight.dtype
+        if hidden_states.dtype != proj_dtype:
+            hidden_states = hidden_states.to(proj_dtype)
+    except Exception:
+        pass
+
+    # Preserve original dtype for attention output
+    _orig_out_dtype = hidden_states.dtype
+
     n_heads = self.config.num_attention_heads
     n_groups = self.num_key_value_groups
     n_kv_heads = self.config.num_key_value_heads
@@ -583,11 +598,6 @@ def LlamaAttention_fast_forward(
         #     cos, sin = rotary_emb.get_cached(seq_len = kv_seq_len, device = Q.device)
         cos, sin = rotary_emb.get_cached(kv_seq_len, Q.device.index)
 
-    # Q, K = (
-    #     fast_rope_embedding(Q, K, cos, sin)
-    #     if position_ids is None
-    #     else inplace_rope_embedding(Q, K, cos, sin, position_ids)
-    # )
     Q, K = fast_rope_embedding(Q, K, cos, sin)
 
     if past_key_value is not None:
@@ -700,6 +710,16 @@ def LlamaDecoderLayer_fast_forward(
             (see `past_key_values`).
         past_key_value (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
     """
+    # On Strix Halo (HIP), run the MLP in float32 for selected
+    # model families (Qwen, Mistral, GPT-OSS) for improved stability.
+    layer_config = getattr(self, "config", None)
+    layer_model_type = (
+        getattr(layer_config, "model_type", "") if layer_config is not None else ""
+    )
+    SAFE_MLP_MODEL_TYPES = ("qwen", "mistral", "gpt-oss", "gpt_oss")
+    SAFE_STRIX_MLP = STRIX_HALO_SAFE and any(
+        layer_model_type.startswith(x) for x in SAFE_MLP_MODEL_TYPES
+    )
     if use_cache and hasattr(self, "_flag_for_generation"):
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(
@@ -723,8 +743,13 @@ def LlamaDecoderLayer_fast_forward(
         hidden_states = fast_rms_layernorm_inference(
             self.post_attention_layernorm, hidden_states
         )
-        hidden_states = fast_swiglu_inference(self.mlp, hidden_states)
-        hidden_states += residual
+        if SAFE_STRIX_MLP:
+            mlp_in = hidden_states.to(torch.float32)
+            mlp_out = self.mlp(mlp_in)
+            hidden_states = residual + mlp_out.to(hidden_states.dtype)
+        else:
+            hidden_states = fast_swiglu_inference(self.mlp, hidden_states)
+            hidden_states += residual
     else:
         residual = hidden_states
         hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
@@ -744,8 +769,13 @@ def LlamaDecoderLayer_fast_forward(
         # Fully Connected
         residual = hidden_states
         hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states)
-        hidden_states = self.mlp(hidden_states)
-        hidden_states = residual + hidden_states
+        if SAFE_STRIX_MLP:
+            mlp_in = hidden_states.to(torch.float32)
+            mlp_out = self.mlp(mlp_in)
+            hidden_states = residual + mlp_out.to(hidden_states.dtype)
+        else:
+            hidden_states = self.mlp(hidden_states)
+            hidden_states = residual + hidden_states
 
     outputs = (hidden_states,)
     if output_attentions:
@@ -855,8 +885,6 @@ def LlamaModel_fast_forward(
     # Embed positions
     if inputs_embeds is None:
         inputs_embeds = self.embed_tokens(input_ids)
-
-    inputs_embeds = inputs_embeds.to(_get_dtype(dtype_from_config(self.config)))
 
     # Normalized from Gemma
     IS_GEMMA = self.config.model_type.startswith("gemma")
@@ -1356,7 +1384,7 @@ def CausalLM_fast_forward(fast_forward_inference):
             labels = labels.to(lm_head_device)
 
         # Output last hidden states without logits if asked
-        if os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") == "1":
+        if os.getenv("UNSLOTH_RETURN_HIDDEN_STATES", "0") == "1":
             if num_logits_to_keep != 0:
                 hidden_states = hidden_states[:, -num_logits_to_keep:, :]
             return CausalLMOutputWithPast(
@@ -1379,7 +1407,7 @@ def CausalLM_fast_forward(fast_forward_inference):
                 # Use unsloth_fused_ce_loss which actually calculates the best chunk size to reduce VRAM usage
                 RETURN_LOGITS = False
 
-            if not RETURN_LOGITS and labels is not None:
+            if (not RETURN_LOGITS) and (labels is not None):
                 n_items = kwargs.get("num_items_in_batch", None)
                 if n_items is None:
                     n_items = kwargs.get("n_items", None)
@@ -1425,6 +1453,15 @@ def CausalLM_fast_forward(fast_forward_inference):
             logits = self.lm_head(hidden_states.to(dtype))
 
         logits = logits.to(_get_dtype(dtype_from_config(self.config)))
+        if STRIX_HALO_SAFE:
+            logits = logits.float()
+            logits = torch.nan_to_num(
+                logits,
+                nan = 0.0,
+                posinf = 50.0,
+                neginf = -50.0,
+            )
+            logits = torch.clamp(logits, -50.0, 50.0)
         loss = None
         logit_softcapping = getattr(self.config, "final_logit_softcapping", 0)
         logit_scaling = getattr(self.config, "logit_scale", 0)
@@ -1450,13 +1487,38 @@ def CausalLM_fast_forward(fast_forward_inference):
             n_items = kwargs.get("num_items_in_batch", None)
             if n_items is None:
                 n_items = kwargs.get("n_items", None)
-            loss = fast_cross_entropy_loss(
-                logits = shift_logits,
-                labels = shift_labels,
-                logit_softcapping = logit_softcapping,
-                logit_scaling = logit_scaling,
-                n_items = n_items,
-            )
+
+            if STRIX_HALO_SAFE:
+                # Apply scaling / softcapping in the same manner as the no-label branch,
+                # then use a standard, stable PyTorch cross-entropy loss.
+                if logit_scaling != 0:
+                    if shift_logits.requires_grad:
+                        shift_logits = logit_scaling * shift_logits
+                    else:
+                        shift_logits *= logit_scaling
+                if logit_softcapping != 0:
+                    if shift_logits.requires_grad:
+                        shift_logits = (1.0 / logit_softcapping) * shift_logits
+                        shift_logits = torch.tanh(shift_logits)
+                        shift_logits = logit_softcapping * shift_logits
+                    else:
+                        shift_logits *= 1.0 / logit_softcapping
+                        torch.tanh(shift_logits, out = shift_logits)
+                        shift_logits *= logit_softcapping
+
+                loss = F.cross_entropy(
+                    shift_logits.view(-1, shift_logits.size(-1)),
+                    shift_labels.view(-1),
+                    ignore_index = -100,
+                )
+            else:
+                loss = fast_cross_entropy_loss(
+                    logits = shift_logits,
+                    labels = shift_labels,
+                    logit_softcapping = logit_softcapping,
+                    logit_scaling = logit_scaling,
+                    n_items = n_items,
+                )
         else:
             if logit_scaling != 0:
                 if logits.requires_grad:
