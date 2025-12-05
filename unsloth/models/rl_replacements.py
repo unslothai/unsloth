@@ -125,8 +125,7 @@ def sft_trainer_prepare_dataset(function_name, function):
         "unsloth_has_native_format = False\n"
         "if hasattr(dataset, 'column_names'):\n"
         "    columns = set(dataset.column_names)\n"
-        "    if ('prompt' in columns and 'completion' in columns) or 'messages' in columns:\n"
-        "        unsloth_has_native_format = True\n"
+        "    unsloth_has_native_format = ({'prompt', 'completion'}.issubset(columns) or 'messages' in columns)\n"
         "\n"
         "# Only do BOS token checking for non-native formats\n"
         "if not unsloth_has_native_format:\n"
@@ -144,7 +143,6 @@ def sft_trainer_prepare_dataset(function_name, function):
         "        tokenizer.__call__ = partial(tokenizer_call, add_special_tokens = False)\n"
         "        processing_class = tokenizer\n"
         "    else:\n"
-        "        tokenizer_call = None\n"
         "        add_special_tokens = False if has_bos_token_already else locals().get('add_special_tokens', False)\n"
     )
 
