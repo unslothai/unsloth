@@ -2739,7 +2739,7 @@ def _unsloth_save_torchao_with_attached_config(
     save_directory: Union[str, os.PathLike],
     tokenizer,
     push_to_hub: bool = False,
-    token: Optional[str] = None,
+    token: Optional[Union[str, bool]] = None,
 ):
     """Save a QAT-trained model by converting fake-quantized weights to real quantized weights."""
     from unsloth.models._utils import _convert_torchao_model
@@ -2767,7 +2767,7 @@ def _unsloth_save_torchao_with_given_config(
     tokenizer,
     torchao_config,
     push_to_hub: bool = False,
-    token: Optional[str] = None,
+    token: Optional[Union[str, bool]] = None,
 ):
     """Quantizes the model with torchao and saves a torchao quantized checkpoint
 
@@ -2856,7 +2856,7 @@ def _unsloth_save_torchao_with_given_config(
     if os.path.exists(save_directory):
         try:
             shutil.rmtree(save_directory)
-        except:
+        except Exception:
             pass
 
 
