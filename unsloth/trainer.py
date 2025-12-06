@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
+import os
 import warnings
 from dataclasses import dataclass, field
 from typing import Optional
@@ -21,6 +23,12 @@ import trl
 import inspect
 from trl import SFTTrainer
 from . import is_bfloat16_supported
+from unsloth.utils import (
+    configure_padding_free,
+    configure_sample_packing,
+    enable_padding_free_metadata,
+    enable_sample_packing,
+)
 from unsloth_zoo.training_utils import (
     unsloth_train as _unsloth_train,
 )
@@ -38,8 +46,23 @@ __all__ = [
     "UnslothVisionDataCollator",
 ]
 
+logger = logging.getLogger(__name__)
+
+_AUTO_PADDING_FREE_ENV_DISABLED = os.environ.get(
+    "UNSLOTH_DISABLE_AUTO_PADDING_FREE", ""
+).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _should_auto_padding_free(config) -> bool:
+    if config is None or _AUTO_PADDING_FREE_ENV_DISABLED:
+        return False
+    if getattr(config, "packing", False):
+        return False
+    return not getattr(config, "padding_free", False)
+
+
 # Unsloth gradient accumulation fix:
-from transformers import __version__ as transformers_version
+from transformers import __version__ as transformers_version, ProcessorMixin
 
 if Version(transformers_version) > Version("4.45.2"):
 
@@ -211,6 +234,81 @@ def _backwards_compatible_trainer(trainer_class, config_class):
     return new_init
 
 
+def _patch_sft_trainer_auto_packing(trl_module):
+    sft_trainer = getattr(trl_module, "SFTTrainer", None)
+    if sft_trainer is None:
+        return
+    if getattr(sft_trainer, "_unsloth_auto_packing_wrapped", False):
+        return
+
+    original_init = sft_trainer.__init__
+
+    @wraps(original_init)
+    def new_init(self, *args, **kwargs):
+        config_arg = None
+        if len(args) >= 2:
+            config_arg = args[1]
+        else:
+            config_arg = kwargs.get("args")
+
+        processing_class = kwargs.get("processing_class") or kwargs.get("tokenizer")
+        data_collator = kwargs.get("data_collator")
+
+        blocked = data_collator is not None or isinstance(
+            processing_class, ProcessorMixin
+        )
+
+        packing_requested = bool(getattr(config_arg, "packing", False))
+        if blocked and packing_requested:
+            reason = (
+                "custom data collator"
+                if data_collator is not None
+                else "processor-based model"
+            )
+            logger.info(
+                "Unsloth: Sample packing skipped (%s detected).",
+                reason,
+            )
+
+        if packing_requested and not blocked:
+            configure_sample_packing(config_arg)
+
+        auto_padding_free_active = False
+        padding_free_requested = getattr(config_arg, "padding_free", None) is True
+        if not blocked:
+            if padding_free_requested:
+                configure_padding_free(config_arg)
+            elif _should_auto_padding_free(config_arg):
+                configure_padding_free(config_arg)
+                auto_padding_free_active = True
+                logger.info(
+                    "Unsloth: Padding-free batching auto-enabled for SFTTrainer instance."
+                )
+
+        original_init(self, *args, **kwargs)
+
+        trainer_args = getattr(self, "args", None)
+        trainer_packing = bool(trainer_args and getattr(trainer_args, "packing", False))
+        trainer_padding_free = bool(
+            trainer_args and getattr(trainer_args, "padding_free", False)
+        )
+
+        if trainer_packing:
+            enable_sample_packing(self.model, self)
+            print("Unsloth: Sample packing enabled.")
+        elif trainer_padding_free:
+            enable_padding_free_metadata(self.model, self)
+            message = (
+                "Unsloth: Padding-free batching auto-enabled."
+                if auto_padding_free_active
+                else "Unsloth: Padding-free batching enabled."
+            )
+            print(message)
+
+    sft_trainer.__init__ = new_init
+    sft_trainer._unsloth_auto_packing_wrapped = True
+
+
 def _patch_trl_trainer():
     import trl
 
@@ -236,5 +334,7 @@ def _patch_trl_trainer():
             )
         except:
             continue
+
+    _patch_sft_trainer_auto_packing(trl)
 
     trl.__UNSLOTH_BACKWARDS_COMPATIBLE__ = True
