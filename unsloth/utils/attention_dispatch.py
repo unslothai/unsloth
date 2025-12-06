@@ -85,7 +85,9 @@ class AttentionContext:
     sliding_window: Optional[int] = None
 
 
-def select_attention_backend(use_varlen: bool = False, has_attention_mask: bool = False) -> str:
+def select_attention_backend(
+    use_varlen: bool = False, has_attention_mask: bool = False
+) -> str:
     """Return attention backend based on availability / priority order."""
 
     if has_attention_mask:
