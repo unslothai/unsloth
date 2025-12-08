@@ -42,6 +42,7 @@ import re
 from transformers.models.llama.modeling_llama import logger
 from .tokenizer_utils import fix_sentencepiece_gguf
 from .models.loader_utils import get_model_name
+from .models._utils import _convert_torchao_model
 from .ollama_template_mappers import OLLAMA_TEMPLATES, MODEL_TO_OLLAMA_TEMPLATE_MAPPER
 from transformers import ProcessorMixin
 from huggingface_hub import HfApi
@@ -2742,23 +2743,18 @@ def _unsloth_save_torchao_with_attached_config(
     token: Optional[Union[str, bool]] = None,
 ):
     """Save a QAT-trained model by converting fake-quantized weights to real quantized weights."""
-    from unsloth.models._utils import _convert_torchao_model
-
     # Convert QAT fake-quantized weights to real quantized weights
     _convert_torchao_model(model)
 
     # TorchAO does not support safe_serialization reliably
     safe_serialization = False
 
-
-    torchao_save_directory = save_directory + "-torchao"
-
     if push_to_hub:
-        model.push_to_hub(torchao_save_directory, safe_serialization=safe_serialization, token=token)
-        tokenizer.push_to_hub(torchao_save_directory, token=token)
+        model.push_to_hub(save_directory, safe_serialization=safe_serialization, token=token)
+        tokenizer.push_to_hub(save_directory, token=token)
     else:
-        model.save_pretrained(torchao_save_directory, safe_serialization=safe_serialization)
-        tokenizer.save_pretrained(torchao_save_directory)
+        model.save_pretrained(save_directory, safe_serialization=safe_serialization)
+        tokenizer.save_pretrained(save_directory)
 
 
 def _unsloth_save_torchao_with_given_config(
