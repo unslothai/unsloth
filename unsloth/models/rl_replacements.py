@@ -224,7 +224,13 @@ def grpo_trainer__generate_single_turn(function_name, function):
         return function
 
     # Remove the reload_weights collective RPC call from the generate function's source
-    function = function.replace('self.llm.collective_rpc("reload_weights")', "")
+    # function = function.replace('self.llm.collective_rpc("reload_weights")', "")
+    # The regex below does the same thing but is more flexible and can handle single or double quotes
+    function = re.sub(
+        r"self\.llm\.collective_rpc\(\s*(['\"])reload_weights\1\s*\)",
+        "",
+        function,
+    )
     return function
 
 
