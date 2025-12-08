@@ -672,10 +672,12 @@ class FastBaseModel:
                 model.fast_generate = model.generate
                 model.fast_generate_batches = error_out_no_vllm
             if offload_embedding:
-                if bool(os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP")):
+                if bool(
+                    os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP")
+                ):
                     # WSL doesn't work with offloaded embeddings
                     pass
-                elif os.name == 'nt':
+                elif os.name == "nt":
                     # Windows doesn't work with offloaded embeddings
                     pass
                 else:
