@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.11.4"
+__version__ = "2025.11.6"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -562,6 +562,12 @@ for model_name in model_architectures:
         config = inspect.getsource(eval(config_filename))
     except:
         continue
+    if "RopeParameters" in config:
+        try:
+            exec(f"from {config_filepath} import RopeParameters", globals())
+        except:
+            continue
+
     if "rope_scaling" in config:
         continue
     config = re.sub(
@@ -755,6 +761,13 @@ elif DEVICE_TYPE == "xpu":
 
 # =============================================
 # Get Xformers
+# Silence xformers CUDA mismatch warnings before import
+try:
+    _xformers_logger = logging.getLogger("xformers")
+    _xformers_logger.setLevel(logging.ERROR)
+    del _xformers_logger
+except:
+    pass
 try:
     from xformers import __version__ as xformers_version
 
@@ -829,10 +842,11 @@ except ModuleNotFoundError:
     xformers_attention = None
     xformers_version = None
 except Exception as e:
-    print(
-        "========\nSwitching to PyTorch attention since your Xformers is broken.\n========\n"
-    )
-    print(str(e))
+    if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") != "0":
+        print(
+            "========\nSwitching to PyTorch attention since your Xformers is broken.\n========\n"
+        )
+        print(str(e))
     xformers = None
     xformers_attention = None
     xformers_version = None

@@ -1506,7 +1506,7 @@ def PeftModel_fast_forward(
 
 # Solves https://github.com/unslothai/unsloth/issues/168
 # Static KV Cache was introduced in 4.38.0, causing training to be much slower.
-# Inferene can now be CUDAGraphed, but we shall retain the old rotary embeddings.
+# Inference can now be CUDAGraphed, but we shall retain the old rotary embeddings.
 # https://github.com/huggingface/transformers/pull/27931
 # https://github.com/huggingface/transformers/blob/v4.37.2/src/transformers/models/llama/modeling_llama.py
 class LlamaRotaryEmbedding(torch.nn.Module):
@@ -1524,7 +1524,11 @@ class LlamaRotaryEmbedding(torch.nn.Module):
         super().__init__()
         if config is not None:
             # [TODO] Hack to pass in config - need to remove later
-            base = config.rope_theta
+            try:
+                base = config.rope_theta
+            except:
+                base = getattr(config, "rope_parameters", {})
+                base = base["rope_theta"]
             partial_rotary_factor = (
                 config.partial_rotary_factor
                 if hasattr(config, "partial_rotary_factor")

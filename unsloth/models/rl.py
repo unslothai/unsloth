@@ -312,7 +312,7 @@ class Unsloth{RLTrainer_name}(_Unsloth{RLTrainer_name}):
             if getattr(args, "_n_gpu", 1) != 1:
                 args._n_gpu = 1
         if "model" in locals() and hasattr(model, "for_training"):
-            model.for_training()
+            model.for_training(use_gradient_checkpointing=getattr(args, 'gradient_checkpointing', True))
         super().__init__({RLTrainer_call_args}{RLTrainer_kwargs})
         if "model" in locals() and hasattr(model, "for_inference"):
             model.for_inference()
@@ -329,6 +329,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     try:
         trainer = eval(f"trl.trainer.{trainer_file}")
     except Exception as error:
+        print(f"Unsloth: Could not import trl.trainer.{trainer_file}: {error}")
         return
 
     # Get SFTTrainer and SFTConfig names
@@ -347,8 +348,14 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         and trainer_file.split("_")[0] in x.lower()
     ]
     if len(name) != 1:
+        print(
+            f"Unsloth: Could not find Trainer class in trl.trainer.{trainer_file}. Found: {name}"
+        )
         return
     if len(config) != 1:
+        print(
+            f"Unsloth: Could not find Config class in trl.trainer.{trainer_file}. Found: {config}"
+        )
         return
 
     # Get SFTTrainer, SFTConfig
@@ -356,17 +363,25 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     RLConfig_name = config[0]
     try:
         RLTrainer = eval(f"trl.trainer.{trainer_file}.{RLTrainer_name}")
-    except:
+    except Exception as e:
+        print(
+            f"Unsloth: Could not load {RLTrainer_name} from trl.trainer.{trainer_file}: {e}"
+        )
         return
     try:
         RLConfig = eval(f"trl.trainer.{trainer_file}.{RLConfig_name}")
-    except:
+    except Exception as e:
+        print(
+            f"Unsloth: Could not load {RLConfig_name} from trl.trainer.{trainer_file}: {e}"
+        )
         return
 
     # Check name
     if RLTrainer.__name__.startswith("Unsloth"):
+        print(f"Unsloth: {RLTrainer.__name__} is already patched.")
         return
     if RLConfig.__name__.startswith("Unsloth"):
+        print(f"Unsloth: {RLConfig.__name__} is already patched.")
         return
 
     # Get old source
@@ -442,7 +457,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             "    force_float32 = True\n"
             "mixed_precision_dtype = os.environ.get('UNSLOTH_MIXED_PRECISION', 'float32')\n"
             "dtype = getattr(model.config, 'dtype', None) or getattr(model.config, 'torch_dtype', None)\n"
-            "if dtype is None: dtype = model.get_input_embeddings().dtype\n"
+            "if dtype is None: dtype = model.get_input_embeddings().weight.dtype\n"
             "from unsloth_zoo.utils import _get_dtype\n"
             "dtype = _get_dtype(dtype)\n"
             "float16 = dtype == torch.float16\n"
@@ -565,7 +580,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     if "model" in call_args:
         training_check = (
             "if model is not None and hasattr(model, 'for_training'):\n"
-            "    model.for_training()\n"
+            "    model.for_training(use_gradient_checkpointing=getattr(args, 'gradient_checkpointing', True))\n"
             "if 'tokenizer' in locals() and hasattr(tokenizer, 'padding_side'): tokenizer.padding_side = 'right'\n"
             "if 'processing_class' in locals():\n"
             "    if hasattr(processing_class, 'padding_side'): processing_class.padding_side = 'right'\n"
@@ -977,7 +992,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         RLTrainer_source,
         f"trl.trainer.{trainer_file}",
         imports,
-        overwrite = True,
+        overwrite = False,
     )
 
     # Patch Trainer
@@ -1291,7 +1306,11 @@ def patch_trl_rl_trainers():
     import trl.trainer
 
     all_trainers = dir(trl.trainer)
-    all_trainers = [x for x in all_trainers if x.islower() and x.endswith("_trainer")]
+    all_trainers = [
+        x
+        for x in all_trainers
+        if x.islower() and x.endswith("_trainer") and x != "base_trainer"
+    ]
     for trainer in all_trainers:
         _patch_trl_rl_trainers(trainer)
     return

@@ -18,19 +18,20 @@
 
 ## ✨ Train for Free
 
-Notebooks are beginner friendly. Read our [guide](https://docs.unsloth.ai/get-started/fine-tuning-guide). Add dataset, run, then export your trained model to GGUF, Ollama, vLLM or Hugging Face.
+Notebooks are beginner friendly. Read our [guide](https://docs.unsloth.ai/get-started/fine-tuning-guide). Add dataset, run, then export your trained model to GGUF, llama.cpp, Ollama, vLLM, SGLang or Hugging Face.
 
 | Model | Free Notebooks | Performance | Memory use |
 |-----------|---------|--------|----------|
 | **gpt-oss (20B)**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/gpt-oss-(20B)-Fine-tuning.ipynb)               | 1.5x faster | 70% less |
-| **Qwen3 (14B)**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Qwen3_(14B)-Reasoning-Conversational.ipynb)               | 2x faster | 70% less |
-| **DeepSeek-OCR (3B)**    | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Deepseek_OCR_(3B).ipynb)               | 1.5x faster | 30% less |
+| **Mistral Ministral 3 (3B)**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Ministral_3_VL_(3B)_Vision.ipynb)               | 1.5x faster | 60% less |
 | **gpt-oss (20B): GRPO**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/gpt-oss-(20B)-GRPO.ipynb)               | 2x faster | 80% less |
+| **Qwen3: Advanced GRPO**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Qwen3_(4B)-GRPO.ipynb)               | 2x faster | 50% less |
 | **Qwen3-VL (8B): GSPO**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Qwen3_VL_(8B)-Vision-GRPO.ipynb)               | 1.5x faster | 80% less |
-| **Qwen3-VL (8B)**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Qwen3_VL_(8B)-Vision.ipynb)               | 2x faster | 50% less |
 | **Gemma 3 (270M)** | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Gemma3_(270M).ipynb)               | 1.7x faster | 60% less |
 | **Gemma 3n (4B)**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Gemma3N_(4B)-Conversational.ipynb)               | 1.5x faster | 50% less |
-| **Llama 3.1 (8B)**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Llama3.1_(8B)-Alpaca.ipynb)               | 2x faster | 70% less |
+| **DeepSeek-OCR (3B)**    | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Deepseek_OCR_(3B).ipynb)               | 1.5x faster | 30% less |
+| **Llama 3.1 (8B) Alpaca**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Llama3.1_(8B)-Alpaca.ipynb)               | 2x faster | 70% less |
+| **Llama 3.2 Conversational**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Llama3.2_(1B_and_3B)-Conversational.ipynb)               | 2x faster | 70% less |
 | **Orpheus-TTS (3B)**     | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Orpheus_(3B)-TTS.ipynb)               | 1.5x faster | 50% less |
 
 - See all our notebooks for: [Kaggle](https://github.com/unslothai/notebooks?tab=readme-ov-file#-kaggle-notebooks), [GRPO](https://docs.unsloth.ai/get-started/unsloth-notebooks#grpo-reasoning-rl-notebooks), **[TTS](https://docs.unsloth.ai/get-started/unsloth-notebooks#text-to-speech-tts-notebooks)** & [Vision](https://docs.unsloth.ai/get-started/unsloth-notebooks#vision-multimodal-notebooks)
@@ -50,23 +51,25 @@ Use our official [Unsloth Docker image](https://hub.docker.com/r/unsloth/unsloth
 For RTX 50x, B200, 6000 GPUs: `pip install unsloth`. Read our [Blackwell Guide](https://docs.unsloth.ai/basics/training-llms-with-blackwell-rtx-50-series-and-unsloth) and [DGX Spark Guide](https://docs.unsloth.ai/new/fine-tuning-llms-with-nvidia-dgx-spark-and-unsloth) for more details.
 
 ## 🦥 Unsloth News
-- **DeepSeek-OCR**: Fine-tune to improve DeepSeek-OCR's language understanding by 89%. [Guide](https://docs.unsloth.ai/new/deepseek-ocr-run-and-fine-tune) • [Notebook](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Deepseek_OCR_(3B).ipynb)
+- **Ministral 3** by Mistral: Run Ministral 3 or fine-tune with our vision or RL sodoku notebook. [Guide](https://docs.unsloth.ai/new/ministral-3) • [Notebooks](https://docs.unsloth.ai/new/ministral-3#fine-tuningb)
+- **500K Context Fine-tuning**: Training a 20B model with >500K token context windows is now possible on a single 80GB GPU. [Blog](https://docs.unsloth.ai/new/500k-context-length-fine-tuning)
+- **FP8 Reinforcement Learning**: You can now do FP8 GRPO on consumer GPUs. [Blog](https://docs.unsloth.ai/new/fp8-reinforcement-learning) • [Notebook](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Qwen3_8B_FP8_GRPO.ipynb)
+- **DeepSeek-OCR**: Fine-tune to improve language understanding by 89%. [Guide](https://docs.unsloth.ai/new/deepseek-ocr-run-and-fine-tune) • [Notebook](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Deepseek_OCR_(3B).ipynb)
 - **Docker**: Use Unsloth with no setup & environment issues with our new image. [Guide](https://docs.unsloth.ai/new/how-to-train-llms-with-unsloth-and-docker) • [Docker image](https://hub.docker.com/r/unsloth/unsloth)
 - **gpt-oss RL**: Introducing the fastest possible inference for gpt-oss RL! [Read blog](https://docs.unsloth.ai/new/gpt-oss-reinforcement-learning)
 - **Vision RL**: You can now train VLMs with GRPO or GSPO in Unsloth! [Read guide](https://docs.unsloth.ai/new/vision-reinforcement-learning-vlm-rl)
-- **Quantization-Aware Training**: We collabed with Pytorch for QAT, recovering as much 70% accuracy. [Read blog](https://docs.unsloth.ai/new/quantization-aware-training-qat)
+- **gpt-oss** by OpenAI: Read our [Unsloth Flex Attention](https://docs.unsloth.ai/new/long-context-gpt-oss-training) blog and [gpt-oss Guide](https://docs.unsloth.ai/basics/gpt-oss). 20B works on 14GB VRAM. 120B on 65GB.
+
+<details>
+  <summary>Click for more news</summary>
+
+- **Quantization-Aware Training**: We collabed with Pytorch, recovering ~70% accuracy. [Read blog](https://docs.unsloth.ai/new/quantization-aware-training-qat)
 - **Memory-efficient RL**: We're introducing even better RL. Our new kernels & algos allows faster RL with 50% less VRAM & 10× more context. [Read blog](https://docs.unsloth.ai/new/memory-efficient-rl)
-- **gpt-oss** by OpenAI: For details on [Unsloth Flex Attention](https://docs.unsloth.ai/new/long-context-gpt-oss-training), long-context training, bug fixes, [Read our Guide](https://docs.unsloth.ai/basics/gpt-oss). 20B works on a 14GB GPU and 120B on 65GB VRAM. [gpt-oss uploads](https://huggingface.co/collections/unsloth/gpt-oss-6892433695ce0dee42f31681).
 - **Gemma 3n** by Google: [Read Blog](https://docs.unsloth.ai/basics/gemma-3n-how-to-run-and-fine-tune). We [uploaded GGUFs, 4-bit models](https://huggingface.co/collections/unsloth/gemma-3n-685d3874830e49e1c93f9339).
 - **[Text-to-Speech (TTS)](https://docs.unsloth.ai/basics/text-to-speech-tts-fine-tuning)** is now supported, including `sesame/csm-1b` and STT `openai/whisper-large-v3`.
 - **[Qwen3](https://docs.unsloth.ai/basics/qwen3-how-to-run-and-fine-tune)** is now supported. Qwen3-30B-A3B fits on 17.5GB VRAM.
 - Introducing **[Dynamic 2.0](https://docs.unsloth.ai/basics/unsloth-dynamic-2.0-ggufs)** quants that set new benchmarks on 5-shot MMLU & Aider Polyglot.
 - [**EVERYTHING** is now supported](https://unsloth.ai/blog/gemma3#everything) - all models (TTS, BERT, Mamba), FFT, etc. [MultiGPU](https://docs.unsloth.ai/basics/multi-gpu-training-with-unsloth) coming soon. Enable FFT with `full_finetuning = True`, 8-bit with `load_in_8bit = True`.
-
-<details>
-  <summary>Click for more news</summary>
-
-
 - 📣 [DeepSeek-R1](https://unsloth.ai/blog/deepseek-r1) - run or fine-tune them [with our guide](https://unsloth.ai/blog/deepseek-r1). All model uploads: [here](https://huggingface.co/collections/unsloth/deepseek-r1-all-versions-678e1c48f5d2fce87892ace5).
 - 📣 Introducing Long-context [Reasoning (GRPO)](https://unsloth.ai/blog/grpo) in Unsloth. Train your own reasoning model with just 5GB VRAM. Transform Llama, Phi, Mistral etc. into reasoning LLMs!
 - 📣 Introducing Unsloth [Dynamic 4-bit Quantization](https://unsloth.ai/blog/dynamic-4bit)! We dynamically opt not to quantize certain parameters and this greatly increases accuracy while only using <10% more VRAM than BnB 4-bit. See our collection on [Hugging Face here.](https://huggingface.co/collections/unsloth/unsloth-4-bit-dynamic-quants-67503bb873f89e15276c44e7)
@@ -90,7 +93,7 @@ For RTX 50x, B200, 6000 GPUs: `pip install unsloth`. Read our [Blackwell Guide](
 | ✍️ **Blog**                    | [Read our Blogs](https://unsloth.ai/blog)|
 
 ## ⭐ Key Features
-- Supports **full-finetuning**, pretraining, 4b-bit, 16-bit and **8-bit** training
+- Supports **full-finetuning**, pretraining, 4b-bit, 16-bit and **FP8** training
 - Supports **all models** including [TTS](https://docs.unsloth.ai/basics/text-to-speech-tts-fine-tuning), multimodal, [BERT](https://docs.unsloth.ai/get-started/unsloth-notebooks#other-important-notebooks) and more! Any model that works in transformers, works in Unsloth.
 - The most efficient library for [Reinforcement Learning (RL)](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide), using 80% less VRAM. Supports GRPO, GSPO, DrGRPO, DAPO etc.
 - **0% loss in accuracy** - no approximation methods - all exact.
@@ -113,7 +116,7 @@ pip install unsloth
 ```
 pip install --upgrade --force-reinstall --no-cache-dir unsloth unsloth_zoo
 ```
-See [here](https://github.com/unslothai/unsloth/edit/main/README.md#advanced-pip-installation) for advanced pip install instructions.
+See [here](#advanced-pip-installation) for advanced pip install instructions.
 ### Windows Installation
 
 1. **Install NVIDIA Video Driver:**
@@ -347,7 +350,7 @@ trainer = SFTTrainer(
 trainer.train()
 
 # Go to https://docs.unsloth.ai for advanced tips like
-# (1) Saving to GGUF / merging to 16bit for vLLM
+# (1) Saving to GGUF / merging to 16bit for vLLM or SGLang
 # (2) Continued training from a saved LoRA adapter
 # (3) Adding an evaluation loop / OOMs
 # (4) Customized chat templates
@@ -355,13 +358,14 @@ trainer.train()
 
 <a name="RL"></a>
 ## 💡 Reinforcement Learning
-[RL](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide) including [GRPO](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide#training-with-grpo), [GSPO](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide/gspo-reinforcement-learning), DrGRPO, DAPO, PPO, Reward Modelling, Online DPO all work with Unsloth.
+[RL](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide) including [GRPO](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide#training-with-grpo), [GSPO](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide/gspo-reinforcement-learning), **FP8** traning, DrGRPO, DAPO, PPO, Reward Modelling, Online DPO all work with Unsloth.
 Read our [Reinforcement Learning Guide](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide) or our [advanced RL docs](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide/advanced-rl-documentation) for batching, generation & training parameters.
 
 List of RL notebooks:
 - gpt-oss GSPO notebook: [Link](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/gpt-oss-(20B)-GRPO.ipynb)
 - Qwen2.5-VL GSPO notebook: [Link](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Qwen2_5_7B_VL_GRPO.ipynb)
 - Advanced Qwen3 GRPO notebook: [Link](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Qwen3_(4B)-GRPO.ipynb)
+- ***FP8*** Qwen3-8B GRPO notebook (L4): [Link](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Qwen3_8B_FP8_GRPO.ipynb)
 - ORPO notebook: [Link](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Llama3_(8B)-ORPO.ipynb)
 - DPO Zephyr notebook: [Link](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Zephyr_(7B)-DPO.ipynb)
 - KTO notebook: [Link](https://colab.research.google.com/drive/1MRgGtLWuZX4ypSfGguFgC-IblTvO2ivM?usp=sharing)
