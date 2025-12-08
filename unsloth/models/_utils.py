@@ -761,6 +761,13 @@ elif DEVICE_TYPE == "xpu":
 
 # =============================================
 # Get Xformers
+# Silence xformers CUDA mismatch warnings before import
+try:
+    _xformers_logger = logging.getLogger("xformers")
+    _xformers_logger.setLevel(_logging.ERROR)
+    del _xformers_logger
+except:
+    pass
 try:
     from xformers import __version__ as xformers_version
 
@@ -835,10 +842,11 @@ except ModuleNotFoundError:
     xformers_attention = None
     xformers_version = None
 except Exception as e:
-    print(
-        "========\nSwitching to PyTorch attention since your Xformers is broken.\n========\n"
-    )
-    print(str(e))
+    if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") != "0":
+        print(
+            "========\nSwitching to PyTorch attention since your Xformers is broken.\n========\n"
+        )
+        print(str(e))
     xformers = None
     xformers_attention = None
     xformers_version = None
