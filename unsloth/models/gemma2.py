@@ -315,6 +315,7 @@ def Gemma2Attention_fast_forward_inference(
     do_prefill = False,
     attention_mask = None,
     use_sliding_window = False,
+    **kwargs,
 ):
     Xn = hidden_states
     bsz, _, hd = hidden_states.size()
