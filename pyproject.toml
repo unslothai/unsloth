@@ -25,7 +25,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "unsloth_zoo>=2025.11.6",
+    "unsloth_zoo>=2025.12.3",
     "wheel>=0.42.0",
     "packaging",
     "torch>=2.4.0",
@@ -46,7 +46,7 @@ dependencies = [
     "huggingface_hub>=0.34.0",
     "hf_transfer",
     "diffusers",
-    "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,<=4.57.2",
+    "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,<=4.57.3",
     "trl>=0.18.2,!=0.19.0,<=0.24.0",
 ]
 
@@ -61,7 +61,7 @@ exclude = ["images*", "tests*", "kernels/moe*"]
 
 [project.optional-dependencies]
 huggingface = [
-    "unsloth_zoo>=2025.11.6",
+    "unsloth_zoo>=2025.12.3",
     "wheel>=0.42.0",
     "packaging",
     "torchvision",
@@ -77,7 +77,7 @@ huggingface = [
     "huggingface_hub>=0.34.0",
     "hf_transfer",
     "diffusers",
-    "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,<=4.57.2",
+    "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,<=4.57.3",
     "trl>=0.18.2,!=0.19.0,<=0.24.0",
 ]
 base = [
@@ -185,10 +185,13 @@ cu130onlytorch290 = [
     "xformers==0.0.33.post1 ; ('linux' in sys_platform or sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 ]
 cu126onlytorch291 = [
+    "xformers==0.0.33.post2 ; ('linux' in sys_platform or sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 ]
 cu128onlytorch291 = [
+    "xformers==0.0.33.post2 ; ('linux' in sys_platform or sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 ]
 cu130onlytorch291 = [
+    "xformers==0.0.33.post2 ; ('linux' in sys_platform or sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 ]
 cu118 = [
     "unsloth[huggingface]",
@@ -418,10 +421,10 @@ colab-ampere-torch220 = [
     "unsloth[flashattention]",
 ]
 colab-new = [
-    "unsloth_zoo>=2025.11.6",
+    "unsloth_zoo>=2025.12.3",
     "packaging",
     "tyro",
-    "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,<=4.57.2",
+    "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,<=4.57.3",
     "datasets>=3.4.1,!=4.0.*,!=4.1.0,<4.4.0",
     "sentencepiece>=0.2.0",
     "tqdm",
