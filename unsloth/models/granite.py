@@ -280,9 +280,9 @@ def GraniteAttention_fast_forward_inference(
     use_sliding_window = False,
     position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
 ):
-    assert (
-        position_embeddings is not None
-    ), f"Granite model requires position embeddings to be specified"
+    assert position_embeddings is not None, (
+        f"Granite model requires position embeddings to be specified"
+    )
 
     Xn = hidden_states
     bsz, _, hd = hidden_states.size()

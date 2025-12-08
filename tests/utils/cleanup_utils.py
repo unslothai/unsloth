@@ -57,7 +57,7 @@ def clear_memory(variables_to_clear = None, verbose = False, clear_all_caches = 
     for i in range(3):
         collected = gc.collect()
         if verbose and collected > 0:
-            print(f"GC pass {i+1}: collected {collected} objects")
+            print(f"GC pass {i + 1}: collected {collected} objects")
 
     # 4. CUDA cleanup
     if torch.cuda.is_available():

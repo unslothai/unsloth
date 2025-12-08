@@ -552,7 +552,7 @@ model_architectures = [
 for model_name in model_architectures:
     config_filepath = f"transformers.models.{model_name}.configuration_{model_name}"
     model_filepath = f"transformers.models.{model_name}.modeling_{model_name}"
-    config_filename = f"{model_name.title().replace('_','')}Config"  # qwen3 arch folder is qwen3_moe but config is Qwen3Config. Need to remove underscore(_) for now
+    config_filename = f"{model_name.title().replace('_', '')}Config"  # qwen3 arch folder is qwen3_moe but config is Qwen3Config. Need to remove underscore(_) for now
     try:
         exec(f"from {config_filepath} import {config_filename}", globals())
     except:
@@ -2108,9 +2108,9 @@ def _untie_input_output_embeddings(model: torch.nn.Module) -> None:
         raise AttributeError("Couldn't locate output projection (lm_head).")
 
     # (Optional) sanity: shapes should match [vocab, hidden]
-    assert (
-        out_proj.weight.shape == in_emb.weight.shape
-    ), f"Shape mismatch: out_proj {out_proj.weight.shape} vs in_emb {in_emb.weight.shape}"
+    assert out_proj.weight.shape == in_emb.weight.shape, (
+        f"Shape mismatch: out_proj {out_proj.weight.shape} vs in_emb {in_emb.weight.shape}"
+    )
 
     # 3) Only clone if they are actually tied (shared storage)
     if out_proj.weight.data_ptr() == in_emb.weight.data_ptr():
@@ -2125,9 +2125,9 @@ def _untie_input_output_embeddings(model: torch.nn.Module) -> None:
     model.tie_weights = _no_tie.__get__(model, model.__class__)
 
     # 5) Verify no shared storage
-    assert (
-        out_proj.weight.data_ptr() != in_emb.weight.data_ptr()
-    ), "Embeddings still tied!"
+    assert out_proj.weight.data_ptr() != in_emb.weight.data_ptr(), (
+        "Embeddings still tied!"
+    )
 
 
 def _filter_fn_to_fqns(
