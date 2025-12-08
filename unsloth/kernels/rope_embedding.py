@@ -312,6 +312,7 @@ class Fast_RoPE_Embedding_QK(torch.autograd.Function):
         K_out = K.clone()
 
         if has_indices:
+            # TRL's rotary indices are always in int32, so casting is just for safety
             rope_ptr = rope_indices.reshape(-1).to(dtype = torch.int32, device = Q.device)
         else:
             rope_ptr = cos.new_empty(1, dtype = torch.int32)
