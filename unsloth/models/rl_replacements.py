@@ -42,6 +42,7 @@ RL_FUNCTIONS = defaultdict(list)
 RL_PRE_ITEMS = defaultdict(list)
 RL_CONFIG_CHANGES = defaultdict(list)
 RL_METRICS_CHANGES = defaultdict(list)
+RL_ADDITIONAL_FUNCTIONS = defaultdict(list)
 
 torch_compile_options = {
     "epilogue_fusion": True,
@@ -927,3 +928,34 @@ def grpo_trainer_metrics(RLTrainer_source, RLConfig_source):
 
 
 RL_METRICS_CHANGES["grpo_trainer"].append(grpo_trainer_metrics)
+
+
+def openenv_vllm_reload_weights():
+    # This function patches the trl openenv generate_rollout_completions function to remove the reload_weights call.
+    try:
+        import trl.experimental.openenv.utils as openenv_utils
+        import trl.experimental.openenv as openenv
+    except ImportError as e:
+        print(f'Unsloth: Failed to import trl openenv: {e}')
+        return
+
+    src = inspect.getsource(openenv_utils.generate_rollout_completions)
+    src = textwrap.dedent(src)
+    original_src = src
+    src = re.sub(r'.*\.collective_rpc\("reload_weights"\).*\n?', '', src)
+
+    if original_src == src:
+        print('Unsloth: Warning - regex did not match, patch may have failed')
+        return
+
+    # Execute and explicitly assign to module
+    local_ns = {}
+    exec(compile(src, "<unsloth>", "exec"), openenv_utils.__dict__, local_ns)
+    patched_func = local_ns["generate_rollout_completions"]
+
+    # Patch both the utils module and the parent openenv module
+    openenv_utils.generate_rollout_completions = patched_func
+    openenv.generate_rollout_completions = patched_func
+    print('Unsloth: Patched trl openenv generate_rollout_completions')
+
+RL_ADDITIONAL_FUNCTIONS["openenv"].append(openenv_vllm_reload_weights)
