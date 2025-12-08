@@ -426,6 +426,7 @@ def Gemma2Model_fast_forward_inference(
     past_key_values,
     position_ids,
     attention_mask = None,
+    **kwargs,
 ):
     out_weights = tuple(
         torch.empty_like(
