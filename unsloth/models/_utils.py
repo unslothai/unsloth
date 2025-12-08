@@ -764,7 +764,7 @@ elif DEVICE_TYPE == "xpu":
 # Silence xformers CUDA mismatch warnings before import
 try:
     _xformers_logger = logging.getLogger("xformers")
-    _xformers_logger.setLevel(_logging.ERROR)
+    _xformers_logger.setLevel(logging.ERROR)
     del _xformers_logger
 except:
     pass
