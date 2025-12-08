@@ -251,6 +251,16 @@ def _patch_sft_trainer_auto_packing(trl_module):
         else:
             config_arg = kwargs.get("args")
 
+        # Check if model is Gemma 2 (which doesn't support padding_free without flash attention)
+        model = kwargs.get("model")
+        is_unsupported_gemma = False
+        if model is not None:
+            model_config = getattr(model, "config", None)
+            if model_config is not None:
+                model_type = getattr(model_config, "model_type", "").lower()
+                # Gemma 2 uses slow_attention_softcapping which has torch.compile issues with padding_free
+                is_unsupported_gemma = model_type == "gemma2"
+
         processing_class = kwargs.get("processing_class") or kwargs.get("tokenizer")
         data_collator = kwargs.get("data_collator")
 
@@ -278,11 +288,15 @@ def _patch_sft_trainer_auto_packing(trl_module):
         if not blocked:
             if padding_free_requested:
                 configure_padding_free(config_arg)
-            elif _should_auto_padding_free(config_arg):
+            elif not is_unsupported_gemma and _should_auto_padding_free(config_arg):
                 configure_padding_free(config_arg)
                 auto_padding_free_active = True
                 logger.info(
                     "Unsloth: Padding-free batching auto-enabled for SFTTrainer instance."
+                )
+            elif is_unsupported_gemma and _should_auto_padding_free(config_arg):
+                logger.info(
+                    "Unsloth: Padding-free batching auto-disabled for Gemma 2 (requires flash attention)."
                 )
 
         original_init(self, *args, **kwargs)
