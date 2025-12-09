@@ -32,6 +32,7 @@ from .rl_replacements import (
     RL_PRE_ITEMS,
     RL_CONFIG_CHANGES,
     RL_METRICS_CHANGES,
+    RL_ADDITIONAL_FUNCTIONS,
 )
 
 torch_compile_options = {
@@ -1327,9 +1328,17 @@ def patch_trl_rl_trainers():
     return
 
 
+def patch_trl_openenv():
+    for function in RL_ADDITIONAL_FUNCTIONS["openenv"]:
+        print(f"Unsloth: Patching trl openenv with function: {function.__name__}")
+        function()  # Call the function to apply the patch
+    return
+
+
 def PatchFastRL(algorithm = None, FastLanguageModel = None):
     if FastLanguageModel is not None:
         PatchRL(FastLanguageModel)
     patch_trl_rl_trainers()
+    patch_trl_openenv()
     if type(algorithm) is str and algorithm.islower():
         PatchRLStatistics(algorithm)
