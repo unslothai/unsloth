@@ -194,20 +194,21 @@ def run_attention(
             attn_bias, XFORMERS_BLOCK_DIAG_CLS
         )
 
-        if config.n_groups != 1 and not requires_grad and has_block:
-            Q_mod = Q_mod.view(
-                1, bsz * q_len, config.n_kv_heads, config.n_groups, head_dim
-            )
-            K_mod = K_mod.view(
-                1, bsz * kv_seq_len, config.n_kv_heads, config.n_groups, head_dim
-            )
-            V_mod = V_mod.view(
-                1, bsz * kv_seq_len, config.n_kv_heads, config.n_groups, head_dim
-            )
-        elif config.n_groups != 1 and requires_grad and has_block:
-            Q_mod = Q_mod.view(1, bsz * q_len, n_heads, head_dim)
-            K_mod = K_mod.view(1, bsz * kv_seq_len, n_heads, head_dim)
-            V_mod = V_mod.view(1, bsz * kv_seq_len, n_heads, head_dim)
+        if config.n_groups != 1 and has_block:
+            if not requires_grad:
+                Q_mod = Q_mod.view(
+                    1, bsz * q_len, config.n_kv_heads, config.n_groups, head_dim
+                )
+                K_mod = K_mod.view(
+                    1, bsz * kv_seq_len, config.n_kv_heads, config.n_groups, head_dim
+                )
+                V_mod = V_mod.view(
+                    1, bsz * kv_seq_len, config.n_kv_heads, config.n_groups, head_dim
+                )
+            else:
+                Q_mod = Q_mod.view(1, bsz * q_len, n_heads, head_dim)
+                K_mod = K_mod.view(1, bsz * kv_seq_len, n_heads, head_dim)
+                V_mod = V_mod.view(1, bsz * kv_seq_len, n_heads, head_dim)
 
         out = xformers_attention(
             Q_mod,
