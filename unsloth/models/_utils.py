@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.11.6"
+__version__ = "2025.12.1"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -85,6 +85,7 @@ import re
 from dataclasses import dataclass, field
 import functools
 import textwrap
+import logging
 import warnings, subprocess, inspect, psutil, os, math
 from unsloth_zoo.utils import Version, get_quant_type
 from importlib.metadata import version as importlib_version
@@ -167,9 +168,9 @@ warnings.filterwarnings(
 )
 warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "multiprocess")
 warnings.filterwarnings(action = "ignore", category = UserWarning, module = "triton")
-# Stop "Special tokens have been added in the vocabulary, ..."
-import logging
+warnings.filterwarnings(action = "ignore", category = UserWarning, module = "bitsandbytes")
 
+# Stop "Special tokens have been added in the vocabulary, ..."
 logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.CRITICAL + 1)
 
 
@@ -761,6 +762,13 @@ elif DEVICE_TYPE == "xpu":
 
 # =============================================
 # Get Xformers
+# Silence xformers CUDA mismatch warnings before import
+try:
+    _xformers_logger = logging.getLogger("xformers")
+    _xformers_logger.setLevel(logging.ERROR)
+    del _xformers_logger
+except:
+    pass
 try:
     from xformers import __version__ as xformers_version
 
@@ -835,10 +843,11 @@ except ModuleNotFoundError:
     xformers_attention = None
     xformers_version = None
 except Exception as e:
-    print(
-        "========\nSwitching to PyTorch attention since your Xformers is broken.\n========\n"
-    )
-    print(str(e))
+    if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") != "0":
+        print(
+            "========\nSwitching to PyTorch attention since your Xformers is broken.\n========\n"
+        )
+        print(str(e))
     xformers = None
     xformers_attention = None
     xformers_version = None
