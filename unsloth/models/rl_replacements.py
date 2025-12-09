@@ -277,7 +277,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         re.MULTILINE,
     )
 
-    replacement_text = """
+    replacement_text = """        
             if self.args.gradient_accumulation_steps % generate_every != 0 or (
                 self.use_vllm
             ):"""
@@ -347,7 +347,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
 
     replacement_string = """        if "image_sizes" in prompt_inputs:
             output["image_sizes"] = prompt_inputs["image_sizes"]
-
+        
         if self.use_vllm:
             try:
                 output["sampling_per_token_logps"] = sampling_per_token_logps
