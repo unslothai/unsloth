@@ -18,7 +18,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Optional, Tuple
+from typing import Any, Optional, Tuple
 
 from torch import Tensor
 from torch.nn.functional import scaled_dot_product_attention
@@ -106,7 +106,18 @@ def run_attention(
     K: Tensor,
     V: Tensor,
 ) -> Tensor:
-    """Run attention using config / context info."""
+    """
+    Run attention using config / context info.
+
+    Backend choice is prioritized for speed: FlashAttention when installed
+    (`flash_varlen` for packed/variable-length inputs with `seq_info`, otherwise dense
+    flash), then xFormers if flash is unavailable, with PyTorch SDPA as the final
+    fallback (e.g., CPU or no fused kernels).
+
+    Varlen flash is preferred when packing metadata is present because it avoids padding
+    and keeps peak memory low. xFormers and SDPA can also handle packed batches (we
+    pass a block-diagonal mask into each).
+    """
 
     backend = config.backend
     if backend == FLASH_VARLEN and context.seq_info is None:
