@@ -24,6 +24,7 @@ import os
 import re
 import torch
 from unsloth_zoo.compiler import create_new_function
+from unsloth_zoo.log import logger
 from unsloth_zoo.logging_utils import PatchRLStatistics
 from unsloth_zoo.rl_replacements import RL_REPLACEMENTS
 from .rl_replacements import (
@@ -349,12 +350,12 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         and trainer_file.split("_")[0] in x.lower()
     ]
     if len(name) != 1:
-        print(
+        logger.info(
             f"Unsloth: Could not find Trainer class in trl.trainer.{trainer_file}. Found: {name}"
         )
         return
     if len(config) != 1:
-        print(
+        logger.info(
             f"Unsloth: Could not find Config class in trl.trainer.{trainer_file}. Found: {config}"
         )
         return
@@ -365,14 +366,14 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     try:
         RLTrainer = eval(f"trl.trainer.{trainer_file}.{RLTrainer_name}")
     except Exception as e:
-        print(
+        logger.info(
             f"Unsloth: Could not load {RLTrainer_name} from trl.trainer.{trainer_file}: {e}"
         )
         return
     try:
         RLConfig = eval(f"trl.trainer.{trainer_file}.{RLConfig_name}")
     except Exception as e:
-        print(
+        logger.info(
             f"Unsloth: Could not load {RLConfig_name} from trl.trainer.{trainer_file}: {e}"
         )
         return
@@ -1269,6 +1270,11 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
             + r", load_tensors = True))",
             source,
         )
+        # All these are to fix multiple commas before lora_request (in case the original code ends with something like ",)")
+        # https://github.com/huggingface/trl/blob/main/trl/trainer/grpo_trainer.py#L1388 for eg has such an ending
+        source = re.sub(r"\,[\s]{1,}\,[\s]{0,}lora_request", ", lora_request", source)
+        source = re.sub(r"[\s]{1,}\,[\s]{0,}lora_request", ", lora_request", source)
+        source = re.sub(r"[\,]{1,}[\s]{0,}lora_request", ", lora_request", source)
         # Prefer using unsloth's sampling params and fallback to trl's if not found
         # We'll enable this later separately when combining both this and GRPOConfig params
         # source = re.sub(
@@ -1330,7 +1336,7 @@ def patch_trl_rl_trainers():
 
 def patch_trl_openenv():
     for function in RL_ADDITIONAL_FUNCTIONS["openenv"]:
-        print(f"Unsloth: Patching trl openenv with function: {function.__name__}")
+        logger.info(f"Unsloth: Patching trl openenv with function: {function.__name__}")
         function()  # Call the function to apply the patch
     return
 
