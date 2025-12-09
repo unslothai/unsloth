@@ -210,7 +210,7 @@ def _fast_prepare_inputs_for_generation(
                         return transformers_version < Version("4.52.0")
 
                 # Define bs and calculate correct sequence length
-                bs = input_ids.shape[0]
+                bs, seq_len = input_ids.shape
                 seq_len = input_ids.shape[1]
                 
                 # cache_position should start from past_length and cover the new tokens

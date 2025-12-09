@@ -4,7 +4,7 @@ from unsloth import FastLanguageModel
 from transformers import AutoTokenizer
 
 
-class TestIssue497(unittest.TestCase):
+class TestPastKVForDecode(unittest.TestCase):
     def setUp(self):
         self.model_name = "unsloth/Phi-3-mini-4k-instruct"
         self.max_seq_length = 2048
