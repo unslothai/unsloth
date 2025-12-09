@@ -1264,12 +1264,17 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
         else:
             lora_name = trainer_file + "_lora_model'"
         source = re.sub(
-            r"(self\.llm\.(?:generate|chat)\([^\)]+?)\s*,?\s*\)",
+            r"(self\.llm\.(?:generate|chat)\([^\)]{1,})\)",
             r"\1, lora_request = self.model.load_lora('"
             + lora_name
             + r", load_tensors = True))",
             source,
         )
+        # All these are to fix multiple commas before lora_request (in case the original code ends with something like ",)")
+        # https://github.com/huggingface/trl/blob/main/trl/trainer/grpo_trainer.py#L1388 for eg has such an ending
+        source = re.sub(r"\,[\s]{1,}\,[\s]{0,}lora_request", ", lora_request", source)
+        source = re.sub(r"[\s]{1,}\,[\s]{0,}lora_request", ", lora_request", source)
+        source = re.sub(r"[\,]{1,}[\s]{0,}lora_request", ", lora_request", source)
         # Prefer using unsloth's sampling params and fallback to trl's if not found
         # We'll enable this later separately when combining both this and GRPOConfig params
         # source = re.sub(
