@@ -85,6 +85,7 @@ import re
 from dataclasses import dataclass, field
 import functools
 import textwrap
+import logging
 import warnings, subprocess, inspect, psutil, os, math
 from unsloth_zoo.utils import Version, get_quant_type
 from importlib.metadata import version as importlib_version
@@ -167,9 +168,9 @@ warnings.filterwarnings(
 )
 warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "multiprocess")
 warnings.filterwarnings(action = "ignore", category = UserWarning, module = "triton")
-# Stop "Special tokens have been added in the vocabulary, ..."
-import logging
+warnings.filterwarnings(action = "ignore", category = UserWarning, module = "bitsandbytes")
 
+# Stop "Special tokens have been added in the vocabulary, ..."
 logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.CRITICAL + 1)
 
 
