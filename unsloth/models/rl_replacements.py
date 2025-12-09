@@ -957,7 +957,7 @@ def openenv_vllm_reload_weights():
 
     # Change wake_up(tags=["kv_cache"]) to wake_up() - wake everything to set is_sleeping=False
     # This prevents double wake_up issues. Unsloth's allocator skips weights anyway.
-    src = re.sub(r'\.wake_up\(tags=\[.*?\]\)', '.wake_up()', src)
+    src = re.sub(r"\.wake_up\(tags=\[.*?\]\)", ".wake_up()", src)
 
     if original_src == src:
         print("Unsloth: Warning - regex did not match, patch may have failed")
