@@ -68,14 +68,9 @@ def _get_cached_block_mask(
 
 
 class _TrlPackingWarningFilter(logging.Filter):
-    _NEEDLES = (
-        "Padding-free training is enabled, but the attention implementation is not set to 'flash_attention_2'",
-        "You are using packing, but the attention implementation is not set to 'flash_attention_2' or 'kernels-community/vllm-flash-attn3'",
-    )
-
-    def filter(self, record: logging.LogRecord) -> bool:  # pragma: no cover - trivial
+    def filter(self, record: logging.LogRecord) -> bool:
         message = record.getMessage()
-        return not any(needle in message for needle in self._NEEDLES)
+        return not "kernels-community" in message
 
 
 _TRL_FILTER_INSTALLED = False
