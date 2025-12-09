@@ -468,13 +468,24 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             "    args.fp16 = False\n"
             "    args.bf16 = False\n"
             "    os.environ['ACCELERATE_MIXED_PRECISION'] = 'no'\n"
+            "    if hasattr(args, 'mixed_precision'): args.mixed_precision = 'no'\n"
+            "    # args.mixed_precision is a new argument which needs to be set now\n"
             "elif (not use_bf16 and not use_fp16) and mixed_precision_dtype == 'float32':\n"
             "    # Mixed precision training\n"
             "    args.fp16 = float16\n"
             "    args.bf16 = not float16\n"
             "    os.environ['ACCELERATE_MIXED_PRECISION'] = 'fp16' if float16 else 'bf16'\n"
+            "    if hasattr(args, 'mixed_precision'): args.mixed_precision = 'fp16' if float16 else 'bf16'\n"
+            "    # args.mixed_precision is a new argument which needs to be set now\n"
+            "elif mixed_precision_dtype == 'bfloat16':\n"
+            "    # Both False since bfloat16 full finetuning doesn't do any autocasting.\n"
+            "    args.fp16 = False\n"
+            "    args.bf16 = False\n"
+            "    os.environ['ACCELERATE_MIXED_PRECISION'] = 'no'\n"
+            "    if hasattr(args, 'mixed_precision'): args.mixed_precision = 'no'\n"
+            "    # args.mixed_precision is a new argument which needs to be set now\n"
+            "\n"
         )
-        "elif mixed_precision_dtype == 'bfloat16':\n" "    # Both False since bfloat16 full finetuning doesn't do any autocasting.\n" "    args.fp16 = False\n" "    args.bf16 = False\n" "    os.environ['ACCELERATE_MIXED_PRECISION'] = 'no'\n"
         extra_args += mixed_precision
 
     # Check if per_device_eval_batch_size (default 8) bigger than bsz
