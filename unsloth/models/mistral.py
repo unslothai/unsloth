@@ -365,6 +365,17 @@ def MistralForCausalLM_fast_forward(
         logits = self.lm_head(hidden_states.to(lm_head.dtype))
     logits = logits.to(_get_dtype(dtype_from_config(self.config)))
 
+    # PyTorch CE loss instead of fused kernels for some nans in unsloth_fused_ce_loss on StrixHalo
+    if STRIX_HALO_SAFE:
+        logits = logits.float()
+        logits = torch.nan_to_num(
+            logits,
+            nan = 0.0,
+            posinf = 50.0,
+            neginf = -50.0,
+        )
+        logits = torch.clamp(logits, -50.0, 50.0)
+
     loss = None
     if labels is not None:
         shift_logits = logits
@@ -376,12 +387,20 @@ def MistralForCausalLM_fast_forward(
         shift_labels = torch.empty_like(labels)
         shift_labels[..., :-1] = labels[..., 1:]
         shift_labels[..., -1] = -100
-        loss = fast_cross_entropy_loss(
-            logits = shift_logits,
-            labels = shift_labels,
-            n_items = kwargs.get("num_items_in_batch", None)
-            or kwargs.get("n_items", None),
-        )
+
+        if STRIX_HALO_SAFE:
+            loss = F.cross_entropy(
+                shift_logits.view(-1, shift_logits.size(-1)),
+                shift_labels.view(-1),
+                ignore_index = -100,
+            )
+        else:
+            loss = fast_cross_entropy_loss(
+                logits = shift_logits,
+                labels = shift_labels,
+                n_items = kwargs.get("num_items_in_batch", None)
+                or kwargs.get("n_items", None),
+            )
 
     if not return_dict:
         output = (logits,) + outputs[1:]

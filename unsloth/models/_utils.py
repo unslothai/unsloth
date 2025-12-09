@@ -760,6 +760,9 @@ elif DEVICE_TYPE == "hip":
 elif DEVICE_TYPE == "xpu":
     SUPPORTS_BFLOAT16 = True
 
+if os.getenv("UNSLOTH_DISABLE_FLASH_ATTENTION", "0") == "1":
+    HAS_FLASH_ATTENTION = False
+
 # =============================================
 # Get Xformers
 # Silence xformers CUDA mismatch warnings before import
@@ -1899,6 +1902,107 @@ def unsloth_compile_transformers(
             return_logits = return_logits,
             supports_sdpa = supports_sdpa,
         )
+
+    # After compilation, patch GPT-OSS experts on HIP/Strix-safe machines so
+    # that expert matmuls use matching dtypes (avoids float vs bfloat16).
+    if DEVICE_TYPE == "hip" and os.environ.get("UNSLOTH_STRIX_HALO_SAFE", "0") == "1":
+        try:
+            import unsloth_compiled_module_gpt_oss as _gpt_oss_compiled
+
+            @torch.compiler.disable(recursive = False)
+            def GptOssExperts_forward_safe(
+                self,
+                hidden_states: torch.Tensor,
+                router_indices = None,
+                routing_weights = None,
+            ) -> torch.Tensor:
+                batch_size = hidden_states.shape[0]
+                hidden_states = hidden_states.reshape(-1, self.hidden_size)
+                num_experts = routing_weights.shape[1]
+
+                if hidden_states.device.type == "cpu" or self.training:
+                    next_states = torch.zeros_like(
+                        hidden_states,
+                        dtype = hidden_states.dtype,
+                        device = hidden_states.device,
+                    )
+                    with torch.no_grad():
+                        expert_mask = torch.nn.functional.one_hot(
+                            router_indices,
+                            num_classes = num_experts + 1,
+                        )
+                        expert_mask = expert_mask.permute(2, 1, 0)
+                        expert_hit = torch.greater(
+                            expert_mask.sum(dim = (-1, -2)), 0
+                        ).nonzero()
+
+                    for expert_idx in expert_hit[:]:
+                        expert_idx = expert_idx[0]
+                        if expert_idx == num_experts:
+                            continue
+                        with torch.no_grad():
+                            _, token_idx = torch.where(expert_mask[expert_idx])
+                        current_state = hidden_states[token_idx]
+                        gate_up = (
+                            current_state @ self.gate_up_proj[expert_idx]
+                            + self.gate_up_proj_bias[expert_idx]
+                        )
+                        gate, up = gate_up[..., ::2], gate_up[..., 1::2]
+                        gate = gate.clamp(min = None, max = self.limit)
+                        up = up.clamp(min = -self.limit, max = self.limit)
+                        glu = gate * torch.sigmoid(gate * self.alpha)
+                        gated_output = (up + 1) * glu
+
+                        # Ensure matmul uses a consistent dtype
+                        w = self.down_proj[expert_idx]
+                        gated_output = gated_output.to(w.dtype)
+                        out = gated_output @ w + self.down_proj_bias[expert_idx]
+
+                        weighted_output = (
+                            out * routing_weights[token_idx, expert_idx, None]
+                        )
+                        next_states.index_add_(
+                            0,
+                            token_idx,
+                            weighted_output.to(hidden_states.dtype),
+                        )
+                    next_states = next_states.view(batch_size, -1, self.hidden_size)
+                else:
+                    hidden_states = hidden_states.repeat(num_experts, 1)
+                    hidden_states = hidden_states.view(
+                        num_experts,
+                        -1,
+                        self.hidden_size,
+                    )
+                    gate_up = (
+                        torch.bmm(hidden_states, self.gate_up_proj)
+                        + self.gate_up_proj_bias[..., None, :]
+                    )
+                    gate, up = gate_up[..., ::2], gate_up[..., 1::2]
+                    gate = gate.clamp(min = None, max = self.limit)
+                    up = up.clamp(min = -self.limit, max = self.limit)
+                    glu = gate * torch.sigmoid(gate * self.alpha)
+                    next_states = torch.bmm(((up + 1) * glu), self.down_proj)
+                    next_states = next_states + self.down_proj_bias[..., None, :]
+                    next_states = next_states.view(
+                        num_experts,
+                        batch_size,
+                        -1,
+                        self.hidden_size,
+                    )
+                    next_states = (
+                        next_states
+                        * routing_weights.transpose(0, 1).view(
+                            num_experts, batch_size, -1
+                        )[..., None]
+                    )
+                    next_states = next_states.sum(dim = 0)
+                return next_states
+
+            _gpt_oss_compiled.GptOssExperts_forward = GptOssExperts_forward_safe
+            del _gpt_oss_compiled
+        except Exception:
+            pass
     # Redo patches which override compiler
     for temporary_patch in TEMPORARY_PATCHES:
         temporary_patch()
