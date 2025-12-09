@@ -936,16 +936,16 @@ def openenv_vllm_reload_weights():
         import trl.experimental.openenv.utils as openenv_utils
         import trl.experimental.openenv as openenv
     except ImportError as e:
-        print(f'Unsloth: Failed to import trl openenv: {e}')
+        print(f"Unsloth: Failed to import trl openenv: {e}")
         return
 
     src = inspect.getsource(openenv_utils.generate_rollout_completions)
     src = textwrap.dedent(src)
     original_src = src
-    src = re.sub(r'.*\.collective_rpc\("reload_weights"\).*\n?', '', src)
+    src = re.sub(r'.*\.collective_rpc\("reload_weights"\).*\n?', "", src)
 
     if original_src == src:
-        print('Unsloth: Warning - regex did not match, patch may have failed')
+        print("Unsloth: Warning - regex did not match, patch may have failed")
         return
 
     # Execute and explicitly assign to module
@@ -956,6 +956,7 @@ def openenv_vllm_reload_weights():
     # Patch both the utils module and the parent openenv module
     openenv_utils.generate_rollout_completions = patched_func
     openenv.generate_rollout_completions = patched_func
-    print('Unsloth: Patched trl openenv generate_rollout_completions')
+    print("Unsloth: Patched trl openenv generate_rollout_completions")
+
 
 RL_ADDITIONAL_FUNCTIONS["openenv"].append(openenv_vllm_reload_weights)
