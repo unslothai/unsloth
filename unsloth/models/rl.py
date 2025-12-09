@@ -32,6 +32,7 @@ from .rl_replacements import (
     RL_PRE_ITEMS,
     RL_CONFIG_CHANGES,
     RL_METRICS_CHANGES,
+    RL_ADDITIONAL_FUNCTIONS
 )
 
 torch_compile_options = {
@@ -1328,7 +1329,6 @@ def patch_trl_rl_trainers():
 
 
 def patch_trl_openenv():
-    from unsloth.models.rl_replacements import RL_ADDITIONAL_FUNCTIONS
 
     for function in RL_ADDITIONAL_FUNCTIONS["openenv"]:
         print(f"Unsloth: Patching trl openenv with function: {function.__name__}")

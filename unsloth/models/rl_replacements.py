@@ -931,7 +931,16 @@ RL_METRICS_CHANGES["grpo_trainer"].append(grpo_trainer_metrics)
 
 
 def openenv_vllm_reload_weights():
-    # This function patches the trl openenv generate_rollout_completions function to remove the reload_weights call.
+    # This function patches the trl openenv generate_rollout_completions function to:
+    # 1. Remove the reload_weights call (unsloth handles weight reloading)
+    # 2. Fix wake_up call to be compatible with unsloth (remove tags to wake everything)
+    #
+    # The issue: TRL's wake_up(tags=["kv_cache"]) only wakes kv_cache, leaving is_sleeping=True
+    # at the executor level. This causes unsloth's patched generate to try waking up again,
+    # resulting in double create_and_map on already-mapped handles.
+    #
+    # The fix: Use wake_up() with no tags, which wakes everything. Unsloth's patched
+    # CuMemAllocator.wake_up skips weights anyway, so this is safe.
     try:
         import trl.experimental.openenv.utils as openenv_utils
         import trl.experimental.openenv as openenv
@@ -942,7 +951,13 @@ def openenv_vllm_reload_weights():
     src = inspect.getsource(openenv_utils.generate_rollout_completions)
     src = textwrap.dedent(src)
     original_src = src
+
+    # Remove the reload_weights call - unsloth handles this differently
     src = re.sub(r'.*\.collective_rpc\("reload_weights"\).*\n?', "", src)
+
+    # Change wake_up(tags=["kv_cache"]) to wake_up() - wake everything to set is_sleeping=False
+    # This prevents double wake_up issues. Unsloth's allocator skips weights anyway.
+    src = re.sub(r'\.wake_up\(tags=\[.*?\]\)', '.wake_up()', src)
 
     if original_src == src:
         print("Unsloth: Warning - regex did not match, patch may have failed")
