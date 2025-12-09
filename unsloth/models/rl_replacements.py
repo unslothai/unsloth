@@ -26,6 +26,7 @@ import torch
 import inspect
 from collections import defaultdict
 from unsloth_zoo.rl_replacements import RL_REPLACEMENTS, left_pack_padding
+from unsloth_zoo.log import logger
 from ..device_type import (
     is_hip,
     get_device_type,
@@ -945,7 +946,7 @@ def openenv_vllm_reload_weights():
         import trl.experimental.openenv.utils as openenv_utils
         import trl.experimental.openenv as openenv
     except ImportError as e:
-        print(f"Unsloth: Failed to import trl openenv: {e}")
+        logger.warning(f"Unsloth: Failed to import trl openenv: {e}")
         return
 
     src = inspect.getsource(openenv_utils.generate_rollout_completions)
@@ -960,7 +961,7 @@ def openenv_vllm_reload_weights():
     src = re.sub(r"\.wake_up\(tags=\[.*?\]\)", ".wake_up()", src)
 
     if original_src == src:
-        print("Unsloth: Warning - regex did not match, patch may have failed")
+        logger.warning("Unsloth: Warning - regex did not match, patch may have failed")
         return
 
     # Execute and explicitly assign to module
@@ -971,7 +972,7 @@ def openenv_vllm_reload_weights():
     # Patch both the utils module and the parent openenv module
     openenv_utils.generate_rollout_completions = patched_func
     openenv.generate_rollout_completions = patched_func
-    print("Unsloth: Patched trl openenv generate_rollout_completions")
+    logger.info("Unsloth: Patched trl openenv generate_rollout_completions")
 
 
 RL_ADDITIONAL_FUNCTIONS["openenv"].append(openenv_vllm_reload_weights)
