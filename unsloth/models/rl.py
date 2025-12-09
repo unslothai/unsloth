@@ -1263,7 +1263,7 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
         else:
             lora_name = trainer_file + "_lora_model'"
         source = re.sub(
-            r"(self\.llm\.(?:generate|chat)\([^\)]{1,})\)",
+            r"(self\.llm\.(?:generate|chat)\([^\)]+?)\s*,?\s*\)",
             r"\1, lora_request = self.model.load_lora('"
             + lora_name
             + r", load_tensors = True))",
