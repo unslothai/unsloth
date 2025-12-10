@@ -242,38 +242,31 @@ def patch_datasets():
 
 
 def check_fbgemm_gpu_version():
-    from importlib.metadata import PackageNotFoundError
-
-    try:
-        fbgemm_gpu_version = importlib_version("fbgemm_gpu")
-    except PackageNotFoundError:
+    if importlib.util.find_spec("fbgemm_gpu") is None:
         if UNSLOTH_ENABLE_LOGGING:
             print(f"Unsloth: fbgemm_gpu not found, skipping version check.")
         return
+    fbgemm_gpu_version = importlib_version("fbgemm_gpu")
     # We noticed some SegFault or bad alloc errors on lower versions of fbgemm_gpu.
     if Version(fbgemm_gpu_version) < Version("1.4.0"):
         raise ImportError(
-            f"Unsloth: fbgemm_gpu version {fbgemm_gpu_version} detected. It might cause unexpected issues. Please update to 1.4.0 or newer!"
+            f"Unsloth: fbgemm_gpu=={fbgemm_gpu_version} detected. It might cause unexpected issues. Please uninstall the current one by doing `pip uninstall fbgemm-gpu-genai && pip install fbgemm-gpu-genai` and install fbgemm-gpu-genai==1.4.0 or newer!"
         )
     elif UNSLOTH_ENABLE_LOGGING:
-        print(f"Unsloth: fbgemm_gpu version {fbgemm_gpu_version} detected.")
+        print(f"Unsloth: fbgemm_gpu=={fbgemm_gpu_version} detected.")
 
 
 def torchvision_compatibility_check():
-    from importlib.metadata import PackageNotFoundError
-
-    try:
-        torch_version = importlib_version("torch")
-    except PackageNotFoundError:
+    if importlib.util.find_spec("torch") is None:
         if UNSLOTH_ENABLE_LOGGING:
             print(f"Unsloth: torch not found, skipping version check.")
         return
-    try:
-        torchvision_version = importlib_version("torchvision")
-    except PackageNotFoundError:
+    if importlib.util.find_spec("torchvision") is None:
         if UNSLOTH_ENABLE_LOGGING:
             print(f"Unsloth: torchvision not found, skipping version check.")
         return
+    torch_version = importlib_version("torch")
+    torchvision_version = importlib_version("torchvision")
 
     # Torch version -> minimum required torchvision version
     # See https://pytorch.org/get-started/previous-versions/
@@ -292,9 +285,11 @@ def torchvision_compatibility_check():
             required_torchvision = min_torchvision
             break
 
-    if required_torchvision and Version(torchvision_version) < Version(
-        required_torchvision
-    ):
+    if required_torchvision is None:
+        # Torch version not in compatibility table, skip check
+        return
+
+    if Version(torchvision_version) < Version(required_torchvision):
         raise ImportError(
             f"Unsloth: torch=={torch_version} requires torchvision>={required_torchvision}, "
             f"but found torchvision=={torchvision_version}. "
