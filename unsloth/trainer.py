@@ -309,7 +309,9 @@ def _patch_sft_trainer_auto_packing(trl_module):
         trainer_args = getattr(self, "args", None)
         if auto_pack_active and _should_auto_pack(trainer_args):
             enable_sample_packing(self.model, self)
-            print("🦥 Unsloth: Packing enabled - training is >2x faster and uses less VRAM!")
+            print(
+                "🦥 Unsloth: Packing enabled - training is >2x faster and uses less VRAM!"
+            )
 
     sft_trainer.__init__ = new_init
     sft_trainer._unsloth_auto_packing_wrapped = True
