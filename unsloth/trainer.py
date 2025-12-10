@@ -23,13 +23,19 @@ import trl
 import inspect
 from trl import SFTTrainer
 from . import is_bfloat16_supported
-from unsloth.utils import configure_sample_packing, enable_sample_packing
+from unsloth.utils import (
+    configure_padding_free,
+    configure_sample_packing,
+    enable_padding_free_metadata,
+    enable_sample_packing,
+)
 from unsloth_zoo.training_utils import (
     unsloth_train as _unsloth_train,
 )
 from unsloth_zoo.vision_utils import (
     UnslothVisionDataCollator,
 )
+from unsloth_zoo.hf_utils import get_transformers_model_type
 from packaging.version import Version
 import dataclasses
 
@@ -47,6 +53,19 @@ _AUTO_PACKING_ENV_DISABLED = os.environ.get(
     "UNSLOTH_DISABLE_AUTO_PACKING", ""
 ).strip().lower() in {"1", "true", "yes", "on"}
 
+_AUTO_PADDING_FREE_ENV_DISABLED = os.environ.get(
+    "UNSLOTH_DISABLE_AUTO_PADDING_FREE", ""
+).strip().lower() in {"1", "true", "yes", "on"}
+
+
+# [TODO]
+# Below cannot work with padding-free
+_PADDING_FREE_BLOCK_LIST = {
+    "gemma2",  # - gemma2:  Uses slow_attention_softcapping which has torch.compile issues
+    "gpt_oss",  # - gpt_oss: Uses Flex Attention which doesn't handle padding_free correctly
+    "mistral",  # - mistral: Unfortunately I think sliding window attention doesn't work correctly?
+}
+
 
 def _should_auto_pack(config) -> bool:
     if config is None or _AUTO_PACKING_ENV_DISABLED:
@@ -54,6 +73,14 @@ def _should_auto_pack(config) -> bool:
     if not getattr(config, "packing", False):
         return False
     return not getattr(config, "_unsloth_disable_auto_packing", False)
+
+
+def _should_auto_padding_free(config) -> bool:
+    if config is None or _AUTO_PADDING_FREE_ENV_DISABLED:
+        return False
+    if getattr(config, "packing", False):
+        return False
+    return not getattr(config, "padding_free", False)
 
 
 def _disable_sample_packing(config):
@@ -269,11 +296,36 @@ def _patch_sft_trainer_auto_packing(trl_module):
         else:
             config_arg = kwargs.get("args")
 
+        # Check if model type is unsupported for padding_free
+        model = kwargs.get("model")
+        is_unsupported_model = False
+        is_vlm = False
+        if model is not None:
+            model_config = getattr(model, "config", None)
+            if model_config is not None:
+                model_types = get_transformers_model_type(model_config)
+                # Blocklist: models that don't work correctly with padding_free
+                is_unsupported_model = any(
+                    x in PADDING_FREE_BLOCKLIST for x in model_types
+                )
+
+                # Check if VLM
+                architectures = getattr(model_config, "architectures", None)
+                if architectures is None:
+                    architectures = []
+                is_vlm = any(
+                    x.endswith("ForConditionalGeneration") for x in architectures
+                )
+                is_vlm = is_vlm or hasattr(model_config, "vision_config")
+
         processing_class = kwargs.get("processing_class") or kwargs.get("tokenizer")
         data_collator = kwargs.get("data_collator")
 
-        blocked = data_collator is not None or isinstance(
-            processing_class, ProcessorMixin
+        # We also disable vision language models for padding free collators
+        blocked = (
+            data_collator is not None
+            or isinstance(processing_class, ProcessorMixin)
+            or is_vlm
         )
         if blocked and _should_auto_pack(config_arg):
             reason = (
@@ -292,6 +344,22 @@ def _patch_sft_trainer_auto_packing(trl_module):
             auto_pack_active = True
             logger.info("Unsloth: Sample packing auto-enabled for SFTTrainer instance.")
 
+        auto_padding_free_active = False
+        padding_free_requested = getattr(config_arg, "padding_free", None) is True
+        if not blocked:
+            if padding_free_requested:
+                configure_padding_free(config_arg)
+            elif not is_unsupported_gemma and _should_auto_padding_free(config_arg):
+                configure_padding_free(config_arg)
+                auto_padding_free_active = True
+                logger.info(
+                    "Unsloth: Padding-free batching auto-enabled for SFTTrainer instance."
+                )
+            elif is_unsupported_gemma and _should_auto_padding_free(config_arg):
+                logger.info(
+                    "Unsloth: Padding-free batching auto-disabled for Gemma 2 (requires flash attention)."
+                )
+
         try:
             original_init(self, *args, **kwargs)
         except ValueError as exc:
@@ -307,11 +375,24 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 raise
 
         trainer_args = getattr(self, "args", None)
-        if auto_pack_active and _should_auto_pack(trainer_args):
+        trainer_packing = bool(trainer_args and getattr(trainer_args, "packing", False))
+        trainer_padding_free = bool(
+            trainer_args and getattr(trainer_args, "padding_free", False)
+        )
+
+        if trainer_packing and (auto_pack_active or _should_auto_pack(trainer_args)):
             enable_sample_packing(self.model, self)
             print(
                 "🦥 Unsloth: Packing enabled - training is >2x faster and uses less VRAM!"
             )
+        elif trainer_padding_free:
+            enable_padding_free_metadata(self.model, self)
+            message = (
+                "🦥 Unsloth: Padding-free auto-enabled, enabling faster training."
+                if auto_padding_free_active
+                else "🦥 Unsloth: Padding-free enabled, enabling faster training."
+            )
+            print(message)
 
     sft_trainer.__init__ = new_init
     sft_trainer._unsloth_auto_packing_wrapped = True
@@ -343,7 +424,6 @@ def _patch_trl_trainer():
         except:
             continue
 
-    if not _AUTO_PACKING_ENV_DISABLED:
-        _patch_sft_trainer_auto_packing(trl)
+    _patch_sft_trainer_auto_packing(trl)
 
     trl.__UNSLOTH_BACKWARDS_COMPATIBLE__ = True
