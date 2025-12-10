@@ -349,15 +349,11 @@ def _patch_sft_trainer_auto_packing(trl_module):
         if not blocked:
             if padding_free_requested:
                 configure_padding_free(config_arg)
-            elif not is_unsupported_gemma and _should_auto_padding_free(config_arg):
+            elif _should_auto_padding_free(config_arg):
                 configure_padding_free(config_arg)
                 auto_padding_free_active = True
                 logger.info(
                     "Unsloth: Padding-free batching auto-enabled for SFTTrainer instance."
-                )
-            elif is_unsupported_gemma and _should_auto_padding_free(config_arg):
-                logger.info(
-                    "Unsloth: Padding-free batching auto-disabled for Gemma 2 (requires flash attention)."
                 )
 
         try:
