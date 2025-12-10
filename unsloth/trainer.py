@@ -60,9 +60,11 @@ _AUTO_PADDING_FREE_ENV_DISABLED = os.environ.get(
 
 # [TODO]
 # Below cannot work with padding-free
-# - gemma2: uses slow_attention_softcapping which has torch.compile issues
-# - gpt_oss: uses Flex Attention which doesn't handle padding_free correctly
-_PADDING_FREE_BLOCK_LIST = {"gemma2", "gpt_oss"}
+_PADDING_FREE_BLOCK_LIST = {
+    "gemma2",   # - gemma2:  Uses slow_attention_softcapping which has torch.compile issues
+    "gpt_oss",  # - gpt_oss: Uses Flex Attention which doesn't handle padding_free correctly
+    "mistral",  # - mistral: Unfortunately I think sliding window attention doesn't work correctly?
+}
 
 
 def _should_auto_pack(config) -> bool:
