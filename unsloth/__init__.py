@@ -18,10 +18,12 @@ import os, re, subprocess, inspect, functools
 import numpy as np
 
 # Fix some issues before importing other packages
-from .import_fixes import fix_message_factory_issue
+from .import_fixes import fix_message_factory_issue, check_fbgemm_gpu_version
 
 fix_message_factory_issue()
+check_fbgemm_gpu_version()
 del fix_message_factory_issue
+del check_fbgemm_gpu_version
 
 # Check if modules that need patching are already imported
 critical_modules = ["trl", "transformers", "peft"]
