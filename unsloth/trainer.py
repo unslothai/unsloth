@@ -68,7 +68,7 @@ def _disable_sample_packing(config):
 
 
 _AUTO_PACK_SKIP_MESSAGES = (
-    "Packing is not supported for vision-language models.",
+    "packing is not supported",
     "Padding-free training is yet not supported for vision-language models.",
     "Passing a custom data collator is not supported when using padding-free.",
 )
