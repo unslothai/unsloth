@@ -242,7 +242,13 @@ def patch_datasets():
 
 
 def check_fbgemm_gpu_version():
-    fbgemm_gpu_version = importlib_version("fbgemm_gpu")
+    from importlib.metadata import PackageNotFoundError
+    try:
+        fbgemm_gpu_version = importlib_version("fbgemm_gpu")
+    except PackageNotFoundError:
+        if UNSLOTH_ENABLE_LOGGING:
+            print(f"Unsloth: fbgemm_gpu not found, skipping version check.")
+        return
     # We noticed some SegFault or bad alloc errors on lower versions of fbgemm_gpu.
     if Version(fbgemm_gpu_version) < Version("1.4.0"):
         raise ImportError(
