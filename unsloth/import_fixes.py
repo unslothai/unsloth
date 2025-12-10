@@ -257,3 +257,44 @@ def check_fbgemm_gpu_version():
         )
     elif UNSLOTH_ENABLE_LOGGING:
         print(f"Unsloth: fbgemm_gpu version {fbgemm_gpu_version} detected.")
+
+def torchvision_compatibility_check():
+    from importlib.metadata import PackageNotFoundError
+    try:
+        torch_version = importlib_version("torch")
+    except PackageNotFoundError:
+        if UNSLOTH_ENABLE_LOGGING:
+            print(f"Unsloth: torch not found, skipping version check.")
+        return
+    try:
+        torchvision_version = importlib_version("torchvision")
+    except PackageNotFoundError:
+        if UNSLOTH_ENABLE_LOGGING:
+            print(f"Unsloth: torchvision not found, skipping version check.")
+        return
+
+    # Torch version -> minimum required torchvision version
+    # See https://pytorch.org/get-started/previous-versions/
+    TORCH_TORCHVISION_COMPAT = [
+        ("2.9.0", "0.24.0"),
+        ("2.8.0", "0.23.0"),
+        ("2.7.0", "0.22.0"),
+        ("2.6.0", "0.21.0"),
+        ("2.5.0", "0.20.0"),
+        ("2.4.0", "0.19.0"),
+    ]
+
+    required_torchvision = None
+    for min_torch, min_torchvision in TORCH_TORCHVISION_COMPAT:
+        if Version(torch_version) >= Version(min_torch):
+            required_torchvision = min_torchvision
+            break
+
+    if required_torchvision and Version(torchvision_version) < Version(required_torchvision):
+        raise ImportError(
+            f"Unsloth: torch=={torch_version} requires torchvision>={required_torchvision}, "
+            f"but found torchvision=={torchvision_version}. "
+            f"Please refer to https://pytorch.org/get-started/previous-versions/ for more information."
+        )
+    elif UNSLOTH_ENABLE_LOGGING:
+        print(f"Unsloth: torch=={torch_version} and torchvision=={torchvision_version} are compatible.")
