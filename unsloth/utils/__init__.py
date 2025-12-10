@@ -13,7 +13,13 @@
 # You should have received a copy of the GNU Lesser General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-from .packing import configure_sample_packing, enable_sample_packing
+from .packing import (
+    configure_padding_free,
+    configure_sample_packing,
+    enable_padding_free_metadata,
+    enable_sample_packing,
+    mark_allow_overlength,
+)
 from .attention_dispatch import (
     AttentionConfig,
     AttentionContext,
@@ -27,7 +33,10 @@ from .attention_dispatch import (
 
 __all__ = [
     "configure_sample_packing",
+    "configure_padding_free",
     "enable_sample_packing",
+    "enable_padding_free_metadata",
+    "mark_allow_overlength",
     "AttentionConfig",
     "AttentionContext",
     "FLASH_VARLEN",
