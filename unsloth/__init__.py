@@ -18,7 +18,11 @@ import os, re, subprocess, inspect, functools
 import numpy as np
 
 # Fix some issues before importing other packages
-from .import_fixes import fix_message_factory_issue, check_fbgemm_gpu_version, torchvision_compatibility_check
+from .import_fixes import (
+    fix_message_factory_issue,
+    check_fbgemm_gpu_version,
+    torchvision_compatibility_check,
+)
 
 fix_message_factory_issue()
 check_fbgemm_gpu_version()
