@@ -16,10 +16,29 @@ import os
 import importlib.util
 from pathlib import Path
 from importlib.metadata import version as importlib_version
-from packaging.version import Version
+from packaging.version import Version as TrueVersion
+import re
 import logging
 
 UNSLOTH_ENABLE_LOGGING = os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") == "1"
+
+def Version(version):
+    try:
+        new_version = str(version)
+        new_version = re.match(r"[0-9\.]{1,}", new_version)
+        if new_version is None:
+            raise Exception(str(e))
+        new_version = new_version.group(0).rstrip(".")
+        if new_version != version:
+            new_version += ".1" # Add .1 for dev / alpha / beta / rc
+        return TrueVersion(new_version)
+    except:
+        from inspect import getframeinfo, stack
+        caller = getframeinfo(stack()[1][0])
+        raise RuntimeError(
+            f"Unsloth: Could not get version for `{version}`\n"\
+            f"File name = [{caller.filename}] Line number = [{caller.lineno}]"
+        )
 
 
 # Ignore logging messages
@@ -244,14 +263,17 @@ def patch_datasets():
 def check_fbgemm_gpu_version():
     if importlib.util.find_spec("fbgemm_gpu") is None:
         return
-    fbgemm_gpu_version = importlib_version("fbgemm_gpu")
+    try:
+        fbgemm_gpu_version = importlib_version("fbgemm_gpu_genai")
+    except:
+        return
     # We noticed some SegFault or bad alloc errors on lower versions of fbgemm_gpu.
     if Version(fbgemm_gpu_version) < Version("1.4.0"):
         raise ImportError(
-            f"Unsloth: fbgemm_gpu=={fbgemm_gpu_version} detected. It might cause unexpected issues like Segmentation Faults. Please uninstall the current one by doing `pip uninstall fbgemm-gpu` && `pip install fbgemm-gpu` to install fbgemm-gpu 1.4.0 or newer!"
+            f"Unsloth: fbgemm_gpu_genai=={fbgemm_gpu_version} detected. It might cause unexpected issues like segmentation faults. Please uninstall the current one by doing `pip uninstall fbgemm-gpu` && `pip install fbgemm-gpu` to install fbgemm-gpu 1.4.0 or newer!"
         )
     elif UNSLOTH_ENABLE_LOGGING:
-        print(f"Unsloth: fbgemm_gpu=={fbgemm_gpu_version} detected.")
+        print(f"Unsloth: fbgemm_gpu_genai=={fbgemm_gpu_version} detected.")
 
 
 def torchvision_compatibility_check():
