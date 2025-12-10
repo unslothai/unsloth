@@ -16,7 +16,9 @@
 from unsloth import FastLanguageModel
 from unsloth.utils import attention_dispatch as attention_dispatch_utils
 from unsloth.utils.packing import (
+    configure_padding_free,
     configure_sample_packing,
+    enable_padding_free_metadata,
     enable_sample_packing,
     mask_packed_sequence_boundaries,
 )
@@ -150,6 +152,14 @@ def test_configure_sample_packing():
     assert config.remove_unused_columns is False
 
 
+def test_configure_padding_free():
+    config = SimpleNamespace(remove_unused_columns = True)
+    configure_padding_free(config)
+
+    assert config.padding_free is True
+    assert config.remove_unused_columns is False
+
+
 class _DummyChild(torch.nn.Module):
     def __init__(self):
         super().__init__()
@@ -175,6 +185,20 @@ class _DummyTrainer:
             return_position_ids = False,
             return_tensors = "pt",
         )
+
+
+class _PaddingFreeCollator:
+    def __init__(self):
+        self.padding_free = True
+        self.return_position_ids = False
+        self.calls = 0
+
+    def torch_call(self, examples):
+        self.calls += 1
+        return {
+            "input_ids": torch.tensor([[0]], dtype = torch.long),
+            "examples_seen": self.calls,
+        }
 
 
 def test_enable_sample_packing():
@@ -249,6 +273,34 @@ def test_enable_sample_packing_trl_collator(tmp_path):
 
     if hasattr(trainer, "accelerator"):
         trainer.accelerator.free_memory()
+
+
+def test_enable_padding_free_metadata():
+    model = _DummyModel()
+    trainer = SimpleNamespace(
+        args = SimpleNamespace(remove_unused_columns = True),
+        data_collator = _PaddingFreeCollator(),
+    )
+
+    enable_padding_free_metadata(model, trainer)
+
+    assert getattr(model, "_unsloth_allow_packed_overlength") is True
+    assert getattr(model.child, "_unsloth_allow_packed_overlength") is True
+
+    collator = trainer.data_collator
+    assert collator.return_position_ids is True
+    assert getattr(collator, "_unsloth_padding_free_lengths_wrapped") is True
+
+    examples = [
+        {"input_ids": [0, 1, 2]},
+        {"input_ids": [3, 4]},
+    ]
+    batch = collator.torch_call(examples)
+    assert torch.equal(
+        batch["packed_seq_lengths"],
+        torch.tensor([3, 2], dtype = torch.int32),
+    )
+    assert trainer.args.remove_unused_columns is False
 
 
 def test_packing_sdpa(tmp_path):
