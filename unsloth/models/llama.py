@@ -2578,7 +2578,15 @@ class FastLlamaModel:
     def get_peft_model(
         model,
         r = 16,
-        target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+        target_modules = [
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
+        ],
         target_parameters = None,
         lora_alpha = 16,
         lora_dropout = 0.0,
@@ -2868,7 +2876,9 @@ class FastLlamaModel:
                         modules_to_save = ["lm_head"]
                     elif "lm_head" not in modules_to_save:
                         modules_to_save.append("lm_head")
-                    print("Unsloth: Detected lm_head in target_parameters - moving to modules_to_save for full training")
+                    print(
+                        "Unsloth: Detected lm_head in target_parameters - moving to modules_to_save for full training"
+                    )
                 # Check for embed_tokens.weight or embed_tokens
                 elif param in ("embed_tokens.weight", "embed_tokens"):
                     train_embed_tokens = True
@@ -2876,11 +2886,15 @@ class FastLlamaModel:
                         modules_to_save = ["embed_tokens"]
                     elif "embed_tokens" not in modules_to_save:
                         modules_to_save.append("embed_tokens")
-                    print("Unsloth: Detected embed_tokens in target_parameters - moving to modules_to_save for full training")
+                    print(
+                        "Unsloth: Detected embed_tokens in target_parameters - moving to modules_to_save for full training"
+                    )
                 else:
                     final_target_parameters.append(param)
             # Update target_parameters to exclude embed_tokens and lm_head
-            target_parameters = final_target_parameters if final_target_parameters else None
+            target_parameters = (
+                final_target_parameters if final_target_parameters else None
+            )
 
         final_modules = []
         for module in target_modules:
