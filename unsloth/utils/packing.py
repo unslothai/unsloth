@@ -150,48 +150,15 @@ def enable_sample_packing(
         batch = original_torch_call(examples)
         if examples and isinstance(examples[0], dict):
             seq_lengths: list[int] = []
-            per_example_counts: list[int] = []
             for example in examples:
                 lengths = example.get(sequence_lengths_key)
                 if isinstance(lengths, Iterable):
-                    numeric_lengths = [int(length) for length in lengths]
-                    seq_lengths.extend(numeric_lengths)
-                    per_example_counts.append(len(numeric_lengths))
-                else:
-                    per_example_counts.append(0)
+                    seq_lengths.extend(int(length) for length in lengths)
             if seq_lengths:
                 batch["packed_seq_lengths"] = torch.tensor(
                     seq_lengths, dtype = torch.int32
                 )
-
-                position_ids = batch.get("position_ids")
-                input_ids = batch.get("input_ids")
-                if position_ids is None and input_ids is not None:
-                    position_ids = torch.zeros_like(
-                        input_ids, dtype = torch.long, device = input_ids.device
-                    )
-
-                if position_ids is not None and input_ids is not None:
-                    seq_index = 0
-                    for row_idx, count in enumerate(per_example_counts):
-                        cursor = 0
-                        for _ in range(count):
-                            length = seq_lengths[seq_index]
-                            if length > 0:
-                                position_ids[row_idx, cursor : cursor + length] = (
-                                    torch.arange(
-                                        length,
-                                        dtype = torch.long,
-                                        device = position_ids.device,
-                                    )
-                                )
-                                cursor += length
-                            seq_index += 1
-                    batch["position_ids"] = position_ids
-
-                if "attention_mask" in batch and getattr(
-                    collator, "return_position_ids", False
-                ):
+                if "attention_mask" in batch:
                     batch.pop("attention_mask")
         return batch
 
