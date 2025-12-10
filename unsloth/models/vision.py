@@ -925,6 +925,7 @@ class FastBaseModel:
         random_state = 3407,
         max_seq_length = 2048,  # not used anymore
         use_rslora = False,
+        use_dora = False,
         modules_to_save = None,
         init_lora_weights = True,
         loftq_config = {},
@@ -1014,7 +1015,7 @@ class FastBaseModel:
                     "Unsloth: target_parameters does not support lora_dropout != 0.\n"
                     "Please set lora_dropout = 0 when using target_parameters."
                 )
-            if kwargs.get("use_dora", False):
+            if use_dora:
                 raise ValueError(
                     "Unsloth: target_parameters does not support use_dora = True.\n"
                     "Please set use_dora = False when using target_parameters."

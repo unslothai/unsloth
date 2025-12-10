@@ -2578,15 +2578,7 @@ class FastLlamaModel:
     def get_peft_model(
         model,
         r = 16,
-        target_modules = [
-            "q_proj",
-            "k_proj",
-            "v_proj",
-            "o_proj",
-            "gate_proj",
-            "up_proj",
-            "down_proj",
-        ],
+        target_modules = [],
         target_parameters = None,
         lora_alpha = 16,
         lora_dropout = 0.0,
@@ -2597,6 +2589,7 @@ class FastLlamaModel:
         random_state = 3407,
         max_seq_length = 2048,  # not used anymore
         use_rslora = False,
+        use_dora = False,
         modules_to_save = None,
         init_lora_weights = True,
         loftq_config = {},
@@ -2628,6 +2621,7 @@ class FastLlamaModel:
                 random_state = random_state,
                 max_seq_length = max_seq_length,
                 use_rslora = use_rslora,
+                use_dora = use_dora,
                 modules_to_save = modules_to_save,
                 init_lora_weights = init_lora_weights,
                 loftq_config = loftq_config,
@@ -2785,7 +2779,7 @@ class FastLlamaModel:
                     "Unsloth: target_parameters does not support lora_dropout != 0.\n"
                     "Please set lora_dropout = 0 when using target_parameters."
                 )
-            if kwargs.get("use_dora", False):
+            if use_dora:
                 raise ValueError(
                     "Unsloth: target_parameters does not support use_dora = True.\n"
                     "Please set use_dora = False when using target_parameters."
@@ -2973,6 +2967,7 @@ class FastLlamaModel:
             init_lora_weights = init_lora_weights,
             loftq_config = loftq_config,
             use_rslora = use_rslora,
+            use_dora = use_dora,
             modules_to_save = modules_to_save,
             **kwargs,
         )
