@@ -2854,6 +2854,34 @@ class FastLlamaModel:
 
         train_lm_head = False
         train_embed_tokens = False
+
+        # Handle embed_tokens and lm_head in target_parameters
+        # These should be moved to modules_to_save for full fine-tuning
+        final_target_parameters = None
+        if target_parameters is not None:
+            final_target_parameters = []
+            for param in target_parameters:
+                # Check for lm_head.weight or lm_head
+                if param in ("lm_head.weight", "lm_head"):
+                    train_lm_head = True
+                    if modules_to_save is None:
+                        modules_to_save = ["lm_head"]
+                    elif "lm_head" not in modules_to_save:
+                        modules_to_save.append("lm_head")
+                    print("Unsloth: Detected lm_head in target_parameters - moving to modules_to_save for full training")
+                # Check for embed_tokens.weight or embed_tokens
+                elif param in ("embed_tokens.weight", "embed_tokens"):
+                    train_embed_tokens = True
+                    if modules_to_save is None:
+                        modules_to_save = ["embed_tokens"]
+                    elif "embed_tokens" not in modules_to_save:
+                        modules_to_save.append("embed_tokens")
+                    print("Unsloth: Detected embed_tokens in target_parameters - moving to modules_to_save for full training")
+                else:
+                    final_target_parameters.append(param)
+            # Update target_parameters to exclude embed_tokens and lm_head
+            target_parameters = final_target_parameters if final_target_parameters else None
+
         final_modules = []
         for module in target_modules:
             if module == "lm_head":
