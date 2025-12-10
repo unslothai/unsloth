@@ -75,7 +75,7 @@ _AUTO_PACK_SKIP_MESSAGES = (
 
 
 def _should_skip_auto_packing_error(exc: Exception) -> bool:
-    message = str(exc)
+    message = str(exc).lower()
     return any(msg in message for msg in _AUTO_PACK_SKIP_MESSAGES)
 
 
