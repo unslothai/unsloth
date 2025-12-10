@@ -107,26 +107,35 @@ def configure_sample_packing(config):
 
 def configure_padding_free(config):
     """Mutate an ``SFTConfig`` so TRL enables padding-free batching without packing."""
-
     _ensure_trl_warning_filter()
     setattr(config, "padding_free", True)
     if hasattr(config, "remove_unused_columns"):
         setattr(config, "remove_unused_columns", False)
 
 
-def enable_sample_packing(model, trainer):
+def enable_sample_packing(
+    model,
+    trainer,
+    *,
+    sequence_lengths_key: str = "seq_lengths",
+) -> None:
     """Enable runtime support for packed batches on an existing trainer."""
+    if model is None or trainer is None:
+        raise ValueError("model and trainer must not be None")
 
     mark_allow_overlength(model)
 
+    if hasattr(trainer, "args") and hasattr(trainer.args, "remove_unused_columns"):
+        trainer.args.remove_unused_columns = False
+
     collator = getattr(trainer, "data_collator", None)
-    if (
-        collator is None
-        or not hasattr(collator, "torch_call")
-        or getattr(collator, "_unsloth_packing_wrapped", False)
-    ):
+    if collator is None or not hasattr(collator, "torch_call"):
+        return
+    if getattr(collator, "_unsloth_packing_wrapped", False):
         return
 
+    if hasattr(collator, "padding_free"):
+        collator.padding_free = True
     if hasattr(collator, "return_position_ids"):
         collator.return_position_ids = True
 
@@ -136,12 +145,49 @@ def enable_sample_packing(model, trainer):
         batch = original_torch_call(examples)
         if examples and isinstance(examples[0], dict):
             seq_lengths: list[int] = []
+            per_example_counts: list[int] = []
             for example in examples:
-                seq_lengths.extend(example["seq_lengths"])
+                lengths = example.get(sequence_lengths_key)
+                if isinstance(lengths, Iterable):
+                    numeric_lengths = [int(length) for length in lengths]
+                    seq_lengths.extend(numeric_lengths)
+                    per_example_counts.append(len(numeric_lengths))
+                else:
+                    per_example_counts.append(0)
             if seq_lengths:
                 batch["packed_seq_lengths"] = torch.tensor(
                     seq_lengths, dtype = torch.int32
                 )
+
+                position_ids = batch.get("position_ids")
+                input_ids = batch.get("input_ids")
+                if position_ids is None and input_ids is not None:
+                    position_ids = torch.zeros_like(
+                        input_ids, dtype = torch.long, device = input_ids.device
+                    )
+
+                if position_ids is not None and input_ids is not None:
+                    seq_index = 0
+                    for row_idx, count in enumerate(per_example_counts):
+                        cursor = 0
+                        for _ in range(count):
+                            length = seq_lengths[seq_index]
+                            if length > 0:
+                                position_ids[row_idx, cursor : cursor + length] = (
+                                    torch.arange(
+                                        length,
+                                        dtype = torch.long,
+                                        device = position_ids.device,
+                                    )
+                                )
+                                cursor += length
+                            seq_index += 1
+                    batch["position_ids"] = position_ids
+
+                if "attention_mask" in batch and getattr(
+                    collator, "return_position_ids", False
+                ):
+                    batch.pop("attention_mask")
         return batch
 
     collator.torch_call = torch_call_with_lengths
@@ -328,9 +374,13 @@ def mask_packed_sequence_boundaries(
 
 
 __all__ = [
-    "mark_allow_overlength",
     "configure_sample_packing",
+    "configure_padding_free",
     "enable_sample_packing",
     "enable_padding_free_metadata",
+    "mark_allow_overlength",
+    "get_packed_info_from_kwargs",
+    "build_xformers_block_causal_mask",
+    "build_sdpa_packed_attention_mask",
     "mask_packed_sequence_boundaries",
 ]
