@@ -22,6 +22,7 @@ import logging
 
 UNSLOTH_ENABLE_LOGGING = os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") == "1"
 
+
 def Version(version):
     try:
         new_version = str(version)
@@ -30,13 +31,14 @@ def Version(version):
             raise Exception(str(e))
         new_version = new_version.group(0).rstrip(".")
         if new_version != version:
-            new_version += ".1" # Add .1 for dev / alpha / beta / rc
+            new_version += ".1"  # Add .1 for dev / alpha / beta / rc
         return TrueVersion(new_version)
     except:
         from inspect import getframeinfo, stack
+
         caller = getframeinfo(stack()[1][0])
         raise RuntimeError(
-            f"Unsloth: Could not get version for `{version}`\n"\
+            f"Unsloth: Could not get version for `{version}`\n"
             f"File name = [{caller.filename}] Line number = [{caller.lineno}]"
         )
 
