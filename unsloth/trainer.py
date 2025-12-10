@@ -363,9 +363,9 @@ def _patch_sft_trainer_auto_packing(trl_module):
         elif trainer_padding_free:
             enable_padding_free_metadata(self.model, self)
             message = (
-                "🦥 Unsloth: Padding-free batching auto-enabled."
+                "🦥 Unsloth: Padding-free auto-enabled, enabling faster training."
                 if auto_padding_free_active
-                else "🦥 Unsloth: Padding-free batching enabled."
+                else "🦥 Unsloth: Padding-free enabled, enabling faster training."
             )
             print(message)
 
