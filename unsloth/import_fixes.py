@@ -243,6 +243,7 @@ def patch_datasets():
 
 def check_fbgemm_gpu_version():
     from importlib.metadata import PackageNotFoundError
+
     try:
         fbgemm_gpu_version = importlib_version("fbgemm_gpu")
     except PackageNotFoundError:
