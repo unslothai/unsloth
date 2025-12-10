@@ -294,31 +294,37 @@ def _patch_sft_trainer_auto_packing(trl_module):
         else:
             config_arg = kwargs.get("args")
 
-        # Check if model type is unsupported for padding_free                                                                                                
+        # Check if model type is unsupported for padding_free
         model = kwargs.get("model")
-        is_unsupported_model = False                                                                                                                         
-        is_vlm = False                                                                                                                                       
+        is_unsupported_model = False
+        is_vlm = False
         if model is not None:
             model_config = getattr(model, "config", None)
             if model_config is not None:
                 model_types = get_transformers_model_type(model_config)
                 # Blocklist: models that don't work correctly with padding_free
-                is_unsupported_model = any(x in PADDING_FREE_BLOCKLIST for x in model_types)
+                is_unsupported_model = any(
+                    x in PADDING_FREE_BLOCKLIST for x in model_types
+                )
 
                 # Check if VLM
                 architectures = getattr(model_config, "architectures", None)
                 if architectures is None:
                     architectures = []
-                is_vlm = any(x.endswith("ForConditionalGeneration") for x in architectures)
+                is_vlm = any(
+                    x.endswith("ForConditionalGeneration") for x in architectures
+                )
                 is_vlm = is_vlm or hasattr(model_config, "vision_config")
 
         processing_class = kwargs.get("processing_class") or kwargs.get("tokenizer")
         data_collator = kwargs.get("data_collator")
 
         # We also disable vision language models for padding free collators
-        blocked = data_collator is not None or isinstance(
-            processing_class, ProcessorMixin
-        ) or is_vlm
+        blocked = (
+            data_collator is not None
+            or isinstance(processing_class, ProcessorMixin)
+            or is_vlm
+        )
         if blocked and _should_auto_pack(config_arg):
             reason = (
                 "custom data collator"
