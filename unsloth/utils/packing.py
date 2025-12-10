@@ -92,6 +92,20 @@ def configure_sample_packing(config):
     setattr(config, "remove_unused_columns", False)
 
 
+def configure_padding_free(config):
+    """Enable padding-free mode on a config object."""
+    setattr(config, "padding_free", True)
+    setattr(config, "remove_unused_columns", False)
+
+
+def mark_allow_overlength(module):
+    """Flag modules so packed batches can exceed max_seq_length."""
+    if hasattr(module, "max_seq_length"):
+        setattr(module, "_unsloth_allow_packed_overlength", True)
+    for child in module.children():
+        mark_allow_overlength(child)
+
+
 def enable_sample_packing(model, trainer):
     """Enable runtime support for packed batches on an existing trainer."""
 
@@ -110,6 +124,9 @@ def enable_sample_packing(model, trainer):
         or getattr(collator, "_unsloth_packing_wrapped", False)
     ):
         return
+
+    if hasattr(trainer, "args") and hasattr(trainer.args, "remove_unused_columns"):
+        trainer.args.remove_unused_columns = False
 
     if hasattr(collator, "return_position_ids"):
         collator.return_position_ids = True
@@ -130,6 +147,22 @@ def enable_sample_packing(model, trainer):
 
     collator.torch_call = torch_call_with_lengths
     collator._unsloth_packing_wrapped = True
+
+
+def enable_padding_free_metadata(model, trainer):
+    """Mark model/collator to keep padding-free metadata intact."""
+    if model is not None:
+        mark_allow_overlength(model)
+
+    trainer_args = getattr(trainer, "args", None)
+    if trainer_args is not None and hasattr(trainer_args, "remove_unused_columns"):
+        trainer_args.remove_unused_columns = False
+
+    collator = getattr(trainer, "data_collator", None)
+    if collator is None or not hasattr(collator, "torch_call"):
+        return
+    if hasattr(collator, "return_position_ids"):
+        collator.return_position_ids = True
 
 
 def get_packed_info_from_kwargs(
@@ -261,6 +294,12 @@ def mask_packed_sequence_boundaries(
 
 __all__ = [
     "configure_sample_packing",
+    "configure_padding_free",
     "enable_sample_packing",
+    "enable_padding_free_metadata",
+    "mark_allow_overlength",
+    "get_packed_info_from_kwargs",
+    "build_xformers_block_causal_mask",
+    "build_sdpa_packed_attention_mask",
     "mask_packed_sequence_boundaries",
 ]
