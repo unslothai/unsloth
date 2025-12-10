@@ -240,6 +240,7 @@ def patch_datasets():
             "Please downgrade datasets to `datasets==4.3.0"
         )
 
+
 def check_fbgemm_gpu_version():
     fbgemm_gpu_version = importlib_version("fbgemm_gpu")
     # We noticed some SegFault or bad alloc errors on lower versions of fbgemm_gpu.
