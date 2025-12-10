@@ -101,6 +101,13 @@ class RawTextDataLoader:
         3. Maintains context with stride overlap
         4. Returns tokenized chunks directly (more efficient) or text chunks
         """
+        if chunk_size <= 0:
+            raise ValueError(f"chunk_size must be positive, got {chunk_size}")
+        if stride >= chunk_size:
+            raise ValueError(
+                f"stride ({stride}) must be smaller than chunk_size ({chunk_size}) to progress the chunking loop"
+            )
+
         # First pass: tokenize the entire text to get accurate token counts
         tokenized = self.tokenizer(text, return_tensors = "pt", add_special_tokens = False)
         tokens = tokenized["input_ids"]
