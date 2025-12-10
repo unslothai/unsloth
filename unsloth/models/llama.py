@@ -2587,6 +2587,7 @@ class FastLlamaModel:
             "up_proj",
             "down_proj",
         ],
+        target_parameters = None,
         lora_alpha = 16,
         lora_dropout = 0.0,
         bias = "none",
@@ -2617,6 +2618,7 @@ class FastLlamaModel:
                 model = model,
                 r = r,
                 target_modules = target_modules,
+                target_parameters = target_parameters,
                 lora_alpha = lora_alpha,
                 lora_dropout = lora_dropout,
                 bias = bias,
@@ -2775,6 +2777,24 @@ class FastLlamaModel:
                 f"Unsloth: bias = `none` is supported for fast patching. You are using bias = {bias}.\n"
                 f"Unsloth will patch all other layers, except LoRA matrices, causing a performance hit."
             )
+
+        # Validate target_parameters constraints (PEFT ParamWrapper limitations)
+        if target_parameters is not None:
+            if lora_dropout != 0:
+                raise ValueError(
+                    "Unsloth: target_parameters does not support lora_dropout != 0.\n"
+                    "Please set lora_dropout = 0 when using target_parameters."
+                )
+            if kwargs.get("use_dora", False):
+                raise ValueError(
+                    "Unsloth: target_parameters does not support use_dora = True.\n"
+                    "Please set use_dora = False when using target_parameters."
+                )
+            if bias != "none":
+                raise ValueError(
+                    "Unsloth: target_parameters does not support bias != 'none'.\n"
+                    "Please set bias = 'none' when using target_parameters."
+                )
 
         if not (
             type(init_lora_weights) is bool
@@ -2945,6 +2965,7 @@ class FastLlamaModel:
             r = r,
             lora_alpha = lora_alpha,
             target_modules = final_modules,
+            target_parameters = target_parameters,
             lora_dropout = lora_dropout,
             bias = bias,
             task_type = TaskType.CAUSAL_LM if not is_classification else TaskType.SEQ_CLS,

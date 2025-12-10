@@ -911,6 +911,7 @@ class FastBaseModel:
         model,
         r = 16,
         target_modules = None,
+        target_parameters = None,
         lora_alpha = 16,
         lora_dropout = 0.0,
         bias = "none",
@@ -1005,6 +1006,25 @@ class FastBaseModel:
             elif DEVICE_TYPE == "xpu":
                 torch.xpu.empty_cache()
         max_seq_length = model.max_seq_length
+
+        # Validate target_parameters constraints (PEFT ParamWrapper limitations)
+        if target_parameters is not None:
+            if lora_dropout != 0:
+                raise ValueError(
+                    "Unsloth: target_parameters does not support lora_dropout != 0.\n"
+                    "Please set lora_dropout = 0 when using target_parameters."
+                )
+            if kwargs.get("use_dora", False):
+                raise ValueError(
+                    "Unsloth: target_parameters does not support use_dora = True.\n"
+                    "Please set use_dora = False when using target_parameters."
+                )
+            if bias != "none":
+                raise ValueError(
+                    "Unsloth: target_parameters does not support bias != 'none'.\n"
+                    "Please set bias = 'none' when using target_parameters."
+                )
+
         # If we pass loftq_config = None we will get an error
         loftq_config = validate_loftq_config(
             loftq_config, lora_dropout, bias, init_lora_weights, model
