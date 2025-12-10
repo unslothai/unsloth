@@ -16,6 +16,13 @@ from .llama import *
 from ._utils import __version__
 from unsloth_zoo.hf_utils import dtype_from_config
 from unsloth_zoo.utils import _get_dtype
+from ..utils.packing import get_packed_info_from_kwargs
+from ..utils.attention_dispatch import (
+    AttentionConfig,
+    AttentionContext,
+    run_attention,
+    select_attention_backend,
+)
 
 try:
     from transformers.models.cohere.modeling_cohere import (
@@ -104,6 +111,7 @@ def CohereAttention_fast_forward(
     Q = Q.view(bsz, q_len, n_heads, head_dim).transpose(1, 2)
     K = K.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
     V = V.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
+    seq_info = get_packed_info_from_kwargs(kwargs, Q.device)
     if self.use_qk_norm:
         Q = fast_layernorm_compiled(self.q_norm, Q)
         K = fast_layernorm_compiled(self.k_norm, K)
@@ -112,12 +120,17 @@ def CohereAttention_fast_forward(
     if past_key_value is not None:
         kv_seq_len += past_key_value[0].shape[-2]
 
-    cos, sin = position_embeddings
-    if position_ids is None:
-        Q, K = fast_rope_embedding(Q, K, cos, sin)
+    # Extend RoPE dynamically to fit in VRAM
+    if position_embeddings:
+        cos, sin = position_embeddings
     else:
-        cos, sin = cos[position_ids], sin[position_ids]
-        Q, K = inplace_rope_embedding(Q, K, cos, sin, position_ids)
+        cos, sin = self.rotary_emb.get_cached(kv_seq_len, Q.device.index)
+
+    rope_position_ids = (
+        position_ids if position_ids is not None else kwargs.get("position_ids")
+    )
+    # Useful for LongRoPE
+    Q, K = fast_rope_embedding(Q, K, cos, sin, rope_position_ids)
 
     if past_key_value is not None:
         K = torch.cat([past_key_value[0], K], dim = 2)
@@ -125,54 +138,33 @@ def CohereAttention_fast_forward(
     past_key_value = (K, V) if use_cache else None
 
     # Attention module
-    if not HAS_FLASH_ATTENTION and HAS_XFORMERS and attention_mask is None:
-        # Xformers memory efficient attention
-        # Also has Flash Attention v2 dispatching
-        Q = Q.transpose(1, 2)
-        K = K.transpose(1, 2)
-        V = V.transpose(1, 2)
+    use_varlen = seq_info is not None and past_key_value is None
+    backend = select_attention_backend(use_varlen)
+    attention_config = AttentionConfig(
+        backend = backend,
+        n_kv_heads = n_kv_heads,
+        n_groups = n_groups,
+        flash_dense_kwargs = {"causal": True},
+        flash_varlen_kwargs = {
+            "dropout_p": 0.0,
+            "causal": True,
+            "softmax_scale": getattr(self, "softmax_scale", None),
+        },
+    )
+    context = AttentionContext(
+        bsz = bsz,
+        q_len = q_len,
+        kv_seq_len = kv_seq_len,
+        n_heads = n_heads,
+        head_dim = head_dim,
+        requires_grad = hidden_states.requires_grad,
+        seq_info = seq_info,
+        attention_mask = attention_mask,
+        causal_mask = causal_mask,
+    )
 
-        # Group query attention
-        if n_groups != 1:
-            K = K.view(bsz, kv_seq_len, n_kv_heads, 1, head_dim)
-            V = V.view(bsz, kv_seq_len, n_kv_heads, 1, head_dim)
-            K = K.expand(bsz, kv_seq_len, n_kv_heads, n_groups, head_dim)
-            V = V.expand(bsz, kv_seq_len, n_kv_heads, n_groups, head_dim)
-            if hidden_states.requires_grad:
-                K = K.reshape(bsz, kv_seq_len, n_heads, head_dim)
-                V = V.reshape(bsz, kv_seq_len, n_heads, head_dim)
-            else:
-                Q = Q.view(bsz, q_len, n_kv_heads, n_groups, head_dim)
-        A = xformers_attention(Q, K, V, attn_bias = causal_mask)
-        A = A.view(bsz, q_len, n_heads, head_dim)
+    A = run_attention(config = attention_config, context = context, Q = Q, K = K, V = V)
 
-    elif HAS_FLASH_ATTENTION and attention_mask is None:
-        Q = Q.transpose(1, 2)
-        K = K.transpose(1, 2)
-        V = V.transpose(1, 2)
-        A = flash_attn_func(Q, K, V, causal = True)
-    else:
-        # Grouped query attention
-        if n_groups != 1:
-            K = K[:, :, None, :, :].expand(
-                bsz, n_kv_heads, n_groups, kv_seq_len, head_dim
-            )
-            V = V[:, :, None, :, :].expand(
-                bsz, n_kv_heads, n_groups, kv_seq_len, head_dim
-            )
-            K = K.reshape(bsz, n_heads, kv_seq_len, head_dim)
-            V = V.reshape(bsz, n_heads, kv_seq_len, head_dim)
-        pass
-        # Must be contiguous or else results are False!
-        # https://github.com/pytorch/pytorch/issues/112577
-        Q, K, V = Q.contiguous(), K.contiguous(), V.contiguous()
-        # Needs (batch_size, n_heads, seq_len, head_dim)
-        # is_casual and attention_mask must not be both set!
-        A = scaled_dot_product_attention(
-            Q, K, V, attn_mask = attention_mask, is_causal = False
-        )
-        # Go back to (batch_size, seq_len, n_heads, head_dim)
-        A = A.transpose(1, 2).contiguous()
     attn_output = A.reshape(bsz, q_len, n_heads * head_dim)
     attn_output = self.apply_o(self, attn_output)
     attn_weights = None
@@ -215,6 +207,7 @@ def CohereDecoderLayer_fast_forward(
             output_attentions = output_attentions,
             use_cache = use_cache,
             padding_mask = padding_mask,
+            **kwargs,
         )
 
         # Fully Connected
@@ -234,6 +227,7 @@ def CohereDecoderLayer_fast_forward(
             output_attentions = output_attentions,
             use_cache = use_cache,
             padding_mask = padding_mask,
+            **kwargs,
         )
 
         # Fully Connected
