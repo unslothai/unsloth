@@ -68,9 +68,11 @@ def _get_cached_block_mask(
 
 
 class _TrlPackingWarningFilter(logging.Filter):
+    to_filter = ["attention implementation is not", "kernels-community"]
+
     def filter(self, record: logging.LogRecord) -> bool:
         message = record.getMessage()
-        return not "attention implementation is not" in message
+        return not any(substring in message for substring in self.to_filter)
 
 
 _TRL_FILTER_INSTALLED = False
