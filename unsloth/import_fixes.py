@@ -243,14 +243,12 @@ def patch_datasets():
 
 def check_fbgemm_gpu_version():
     if importlib.util.find_spec("fbgemm_gpu") is None:
-        if UNSLOTH_ENABLE_LOGGING:
-            print(f"Unsloth: fbgemm_gpu not found, skipping version check.")
         return
     fbgemm_gpu_version = importlib_version("fbgemm_gpu")
     # We noticed some SegFault or bad alloc errors on lower versions of fbgemm_gpu.
     if Version(fbgemm_gpu_version) < Version("1.4.0"):
         raise ImportError(
-            f"Unsloth: fbgemm_gpu=={fbgemm_gpu_version} detected. It might cause unexpected issues. Please uninstall the current one by doing `pip uninstall fbgemm-gpu-genai && pip install fbgemm-gpu-genai` and install fbgemm-gpu-genai==1.4.0 or newer!"
+            f"Unsloth: fbgemm_gpu=={fbgemm_gpu_version} detected. It might cause unexpected issues like Segmentation Faults. Please uninstall the current one by doing `pip uninstall fbgemm-gpu` && `pip install fbgemm-gpu` to install fbgemm-gpu 1.4.0 or newer!"
         )
     elif UNSLOTH_ENABLE_LOGGING:
         print(f"Unsloth: fbgemm_gpu=={fbgemm_gpu_version} detected.")
@@ -258,12 +256,8 @@ def check_fbgemm_gpu_version():
 
 def torchvision_compatibility_check():
     if importlib.util.find_spec("torch") is None:
-        if UNSLOTH_ENABLE_LOGGING:
-            print(f"Unsloth: torch not found, skipping version check.")
-        return
+        raise ImportError("Unsloth: torch not found. Please install torch first.")
     if importlib.util.find_spec("torchvision") is None:
-        if UNSLOTH_ENABLE_LOGGING:
-            print(f"Unsloth: torchvision not found, skipping version check.")
         return
     torch_version = importlib_version("torch")
     torchvision_version = importlib_version("torchvision")
