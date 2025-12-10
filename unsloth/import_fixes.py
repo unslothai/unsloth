@@ -239,3 +239,57 @@ def patch_datasets():
             f"#### Unsloth: Using `datasets = {str(datasets_version)}` will cause recursion errors.\n"
             "Please downgrade datasets to `datasets==4.3.0"
         )
+
+
+def check_fbgemm_gpu_version():
+    if importlib.util.find_spec("fbgemm_gpu") is None:
+        return
+    fbgemm_gpu_version = importlib_version("fbgemm_gpu")
+    # We noticed some SegFault or bad alloc errors on lower versions of fbgemm_gpu.
+    if Version(fbgemm_gpu_version) < Version("1.4.0"):
+        raise ImportError(
+            f"Unsloth: fbgemm_gpu=={fbgemm_gpu_version} detected. It might cause unexpected issues like Segmentation Faults. Please uninstall the current one by doing `pip uninstall fbgemm-gpu` && `pip install fbgemm-gpu` to install fbgemm-gpu 1.4.0 or newer!"
+        )
+    elif UNSLOTH_ENABLE_LOGGING:
+        print(f"Unsloth: fbgemm_gpu=={fbgemm_gpu_version} detected.")
+
+
+def torchvision_compatibility_check():
+    if importlib.util.find_spec("torch") is None:
+        raise ImportError("Unsloth: torch not found. Please install torch first.")
+    if importlib.util.find_spec("torchvision") is None:
+        return
+    torch_version = importlib_version("torch")
+    torchvision_version = importlib_version("torchvision")
+
+    # Torch version -> minimum required torchvision version
+    # See https://pytorch.org/get-started/previous-versions/
+    TORCH_TORCHVISION_COMPAT = [
+        ("2.9.0", "0.24.0"),
+        ("2.8.0", "0.23.0"),
+        ("2.7.0", "0.22.0"),
+        ("2.6.0", "0.21.0"),
+        ("2.5.0", "0.20.0"),
+        ("2.4.0", "0.19.0"),
+    ]
+
+    required_torchvision = None
+    for min_torch, min_torchvision in TORCH_TORCHVISION_COMPAT:
+        if Version(torch_version) >= Version(min_torch):
+            required_torchvision = min_torchvision
+            break
+
+    if required_torchvision is None:
+        # Torch version not in compatibility table, skip check
+        return
+
+    if Version(torchvision_version) < Version(required_torchvision):
+        raise ImportError(
+            f"Unsloth: torch=={torch_version} requires torchvision>={required_torchvision}, "
+            f"but found torchvision=={torchvision_version}. "
+            f"Please refer to https://pytorch.org/get-started/previous-versions/ for more information."
+        )
+    elif UNSLOTH_ENABLE_LOGGING:
+        print(
+            f"Unsloth: torch=={torch_version} and torchvision=={torchvision_version} are compatible."
+        )
