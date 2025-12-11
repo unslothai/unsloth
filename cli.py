@@ -8,6 +8,9 @@ import typer
 
 from cli.config import Config, load_config
 
+# CLI args that should not be passed to cfg.apply_overrides()
+_EXCLUDED_CLI_ARGS = ("config", "dry_run", "verbose", "hf_token", "cfg")
+
 app = typer.Typer(
     help="Command-line interface for Unsloth training, chat, and export.",
     context_settings={"help_option_names": ["-h", "--help"]},
@@ -134,6 +137,11 @@ def train(
         "-c",
         help="Path to YAML/JSON config file. CLI flags override config values.",
     ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Show resolved config and exit without training.",
+    ),
     verbose: bool = typer.Option(False, "--verbose/--quiet"),
 ):
     """
@@ -146,8 +154,16 @@ def train(
         raise typer.Exit(code=2)
 
     # Apply CLI overrides
-    cli_args = {k: v for k, v in locals().items() if k not in ("config", "verbose", "hf_token", "cfg")}
+    cli_args = {k: v for k, v in locals().items() if k not in _EXCLUDED_CLI_ARGS}
     cfg.apply_overrides(**cli_args)
+
+    # Dry run: show resolved config and exit
+    if dry_run:
+        import yaml
+        data = cfg.model_dump()
+        data["training"]["output_dir"] = str(data["training"]["output_dir"])
+        typer.echo(yaml.dump(data, default_flow_style=False, sort_keys=False))
+        raise typer.Exit(code=0)
 
     # Validate required fields
     if not cfg.model:
