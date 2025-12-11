@@ -278,6 +278,73 @@ def check_fbgemm_gpu_version():
         print(f"Unsloth: fbgemm_gpu_genai=={fbgemm_gpu_version} detected.")
 
 
+def patch_enable_input_require_grads():
+    """
+    Patch transformers PreTrainedModel.enable_input_require_grads to handle vision models
+    that raise NotImplementedError from get_input_embeddings().
+
+    Only applies if transformers version has the new self.modules() iteration pattern
+    (introduced in transformers 5.x). Older versions don't need this patch.
+    """
+    import inspect
+    from transformers import PreTrainedModel
+
+    # Check if the original function iterates over self.modules()
+    # This pattern was introduced in transformers 5.x
+    try:
+        original_source = inspect.getsource(PreTrainedModel.enable_input_require_grads)
+    except (OSError, TypeError):
+        # Can't get source, skip patching
+        return
+
+    # Only patch if the new pattern exists (iterating over self.modules())
+    if "for module in self.modules()" not in original_source:
+        if UNSLOTH_ENABLE_LOGGING:
+            print("Unsloth: Skipping enable_input_require_grads patch (older transformers version)")
+        return
+
+    # Define the patched version
+    def _patched_enable_input_require_grads(self):
+        """
+        Enables the gradients for the input embeddings. This is useful for fine-tuning adapter weights while keeping
+        the model weights fixed. Patched to handle vision models that don't implement get_input_embeddings.
+        """
+        def make_inputs_require_grads(module, input, output):
+            output.requires_grad_(True)
+
+        hooks = []
+        seen_modules = set()
+
+        for module in self.modules():
+            if not (isinstance(module, PreTrainedModel) and hasattr(module, "get_input_embeddings")):
+                continue
+
+            try:
+                input_embeddings = module.get_input_embeddings()
+            except NotImplementedError:
+                # Vision models may not implement get_input_embeddings - skip them
+                continue
+
+            if input_embeddings is None:
+                continue
+
+            embedding_id = id(input_embeddings)
+            if embedding_id in seen_modules:
+                continue
+
+            seen_modules.add(embedding_id)
+            hooks.append(input_embeddings.register_forward_hook(make_inputs_require_grads))
+
+        self._require_grads_hooks = hooks
+        if hooks:
+            self._require_grads_hook = hooks[0]
+
+    # Apply the patch
+    PreTrainedModel.enable_input_require_grads = _patched_enable_input_require_grads
+    if UNSLOTH_ENABLE_LOGGING:
+        print("Unsloth: Patched enable_input_require_grads for vision model compatibility")
+
+
 def torchvision_compatibility_check():
     if importlib.util.find_spec("torch") is None:
         raise ImportError("Unsloth: torch not found. Please install torch first.")
