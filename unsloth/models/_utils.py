@@ -2312,7 +2312,7 @@ def verify_fp8_support_if_applicable(model_config):
             f"Unsloth: FP8 quantization is only supported on CUDA GPUs. You are using {DEVICE_TYPE}."
         )
 
-    # todo: need to add fp8 support for intel xpu device
+    # [TODO] Need to add FP8 support for Intel XPUs
     if DEVICE_TYPE == "cuda":
         major_version, minor_version = torch.cuda.get_device_capability()
         if quant_method == "fbgemm_fp8" and major_version < 9:
