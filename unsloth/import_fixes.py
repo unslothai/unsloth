@@ -303,7 +303,6 @@ def patch_enable_input_require_grads():
         return
 
     def _patched_enable_input_require_grads(self):
-
         def make_inputs_require_grads(module, input, output):
             output.requires_grad_(True)
 
