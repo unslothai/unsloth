@@ -3011,6 +3011,7 @@ class FastLlamaModel:
                 output_embeddings = model.get_output_embeddings()
 
                 if input_embeddings is not None and output_embeddings is not None:
+
                     def _retie_parameter(target_module, source_module):
                         if not hasattr(source_module, "weight"):
                             return
@@ -3029,9 +3030,9 @@ class FastLlamaModel:
                     if hasattr(input_embeddings, "modules_to_save") and hasattr(
                         output_embeddings, "modules_to_save"
                     ):
-                        if hasattr(input_embeddings.modules_to_save, "default") and hasattr(
-                            output_embeddings.modules_to_save, "default"
-                        ):
+                        if hasattr(
+                            input_embeddings.modules_to_save, "default"
+                        ) and hasattr(output_embeddings.modules_to_save, "default"):
                             _retie_parameter(
                                 output_embeddings.modules_to_save.default,
                                 input_embeddings.modules_to_save.default,
