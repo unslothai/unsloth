@@ -165,8 +165,6 @@ def enable_sample_packing(
 
 def enable_padding_free_metadata(model, trainer):
     """Inject seq-length metadata when padding-free batching is enabled without packing."""
-
-    _ensure_trl_warning_filter()
     collator = getattr(trainer, "data_collator", None)
     if (
         collator is None

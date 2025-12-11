@@ -49,10 +49,6 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-_AUTO_PACKING_ENV_DISABLED = os.environ.get(
-    "UNSLOTH_DISABLE_AUTO_PACKING", ""
-).strip().lower() in {"1", "true", "yes", "on"}
-
 _AUTO_PADDING_FREE_ENV_DISABLED = os.environ.get(
     "UNSLOTH_DISABLE_AUTO_PADDING_FREE", ""
 ).strip().lower() in {"1", "true", "yes", "on"}
@@ -63,18 +59,18 @@ PADDING_FREE_BLOCKLIST = {
 }
 
 
-def _should_auto_pack(config) -> bool:
-    if config is None or _AUTO_PACKING_ENV_DISABLED:
-        return False
-    if not getattr(config, "packing", False):
+def _should_pack(config) -> bool:
+    if config is None or not getattr(config, "packing", False):
         return False
     return not getattr(config, "_unsloth_disable_auto_packing", False)
 
 
 def _should_auto_padding_free(config) -> bool:
-    if config is None or _AUTO_PADDING_FREE_ENV_DISABLED:
-        return False
-    if getattr(config, "packing", False):
+    if (
+        config is None
+        or _AUTO_PADDING_FREE_ENV_DISABLED
+        or getattr(config, "packing", False)
+    ):
         return False
     return not getattr(config, "padding_free", False)
 
@@ -324,22 +320,29 @@ def _patch_sft_trainer_auto_packing(trl_module):
             or is_vlm
             or is_unsupported_model
         )
-        if blocked and _should_auto_pack(config_arg):
-            reason = (
-                "custom data collator"
-                if data_collator is not None
-                else "processor-based model"
-            )
-            logger.info(
-                "Unsloth: Auto sample packing skipped (%s detected). Use UNSLOTH_DISABLE_AUTO_PACKING=1 to silence.",
-                reason,
-            )
+        requested_pack = bool(getattr(config_arg, "packing", False))
+        if blocked:
+            if hasattr(config_arg, "packing"):
+                setattr(config_arg, "packing", False)
+            if hasattr(config_arg, "padding_free"):
+                setattr(config_arg, "padding_free", False)
 
-        auto_pack_active = False
-        if _should_auto_pack(config_arg) and not blocked:
+        if blocked and requested_pack:
+            reason = "custom data collator"
+            if data_collator is None and isinstance(processing_class, ProcessorMixin):
+                reason = "processor-based model"
+            elif is_vlm:
+                reason = "vision-language model"
+            elif is_unsupported_model:
+                reason = f"unsupported model type(s): {', '.join(model_types)}"
+            message = "Unsloth: Sample packing skipped " f"({reason} detected)."
+            print(message)
+
+        packing_active = False
+        if _should_pack(config_arg) and not blocked:
             configure_sample_packing(config_arg)
-            auto_pack_active = True
-            logger.info("Unsloth: Sample packing auto-enabled for SFTTrainer instance.")
+            packing_active = True
+            logger.info("Unsloth: Sample packing enabled for SFTTrainer instance.")
 
         auto_padding_free_active = False
         padding_free_requested = getattr(config_arg, "padding_free", None) is True
@@ -356,13 +359,13 @@ def _patch_sft_trainer_auto_packing(trl_module):
         try:
             original_init(self, *args, **kwargs)
         except ValueError as exc:
-            if auto_pack_active and _should_skip_auto_packing_error(exc):
+            if packing_active and _should_skip_auto_packing_error(exc):
                 logger.info(
                     "Unsloth: Auto sample packing failed because trainer reported an incompatible setup (%s).",
                     exc,
                 )
                 _disable_sample_packing(config_arg)
-                auto_pack_active = False
+                packing_active = False
                 original_init(self, *args, **kwargs)
             else:
                 raise
@@ -373,12 +376,21 @@ def _patch_sft_trainer_auto_packing(trl_module):
             trainer_args and getattr(trainer_args, "padding_free", False)
         )
 
-        if trainer_packing and (auto_pack_active or _should_auto_pack(trainer_args)):
+        if blocked and trainer_args is not None:
+            # Mirror the block on the trainer args to avoid re-enabling later
+            setattr(trainer_args, "packing", False)
+            setattr(trainer_args, "padding_free", False)
+
+        if (
+            not blocked
+            and trainer_packing
+            and (packing_active or _should_pack(trainer_args))
+        ):
             enable_sample_packing(self.model, self)
             print(
                 "🦥 Unsloth: Packing enabled - training is >2x faster and uses less VRAM!"
             )
-        elif trainer_padding_free:
+        elif not blocked and trainer_padding_free:
             enable_padding_free_metadata(self.model, self)
             message = (
                 "🦥 Unsloth: Padding-free auto-enabled, enabling faster training."
