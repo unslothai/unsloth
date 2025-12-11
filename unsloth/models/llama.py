@@ -2469,7 +2469,9 @@ class FastLlamaModel:
 
             # Convert to HF format
             _, quant_state_dict = get_vllm_state_dict(
-                llm, config = model_config, load_in_fp8 = load_in_fp8,
+                llm,
+                config = model_config,
+                load_in_fp8 = load_in_fp8,
             )
             model = convert_vllm_to_huggingface(
                 quant_state_dict, model_config, dtype, bnb_config

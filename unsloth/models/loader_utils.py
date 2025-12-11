@@ -113,6 +113,7 @@ def __get_model_name(
         # a new model name. Just return the original model name in this case.
         if importlib.util.find_spec("vllm") is not None:
             import vllm
+
             if Version(vllm.__version__) >= Version("0.12.0"):
                 return model_name
         if load_in_fp8 == True and (os.environ.get("UNSLOTH_HAS_FBGEMM", "0") == "1"):
