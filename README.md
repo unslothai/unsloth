@@ -51,8 +51,9 @@ Use our official [Unsloth Docker image](https://hub.docker.com/r/unsloth/unsloth
 For RTX 50x, B200, 6000 GPUs: `pip install unsloth`. Read our [Blackwell Guide](https://docs.unsloth.ai/basics/training-llms-with-blackwell-rtx-50-series-and-unsloth) and [DGX Spark Guide](https://docs.unsloth.ai/new/fine-tuning-llms-with-nvidia-dgx-spark-and-unsloth) for more details.
 
 ## 🦥 Unsloth News
+- New RoPE & MLP **Triton Kernels** & **Auto Packing**: 3x faster training & 30% less VRAM. [Blog](https://docs.unsloth.ai/new/3x-faster-training-packing)
 - **Ministral 3** by Mistral: Run Ministral 3 or fine-tune with our vision or RL sodoku notebook. [Guide](https://docs.unsloth.ai/new/ministral-3) • [Notebooks](https://docs.unsloth.ai/new/ministral-3#fine-tuningb)
-- **500K Context Fine-tuning**: Training a 20B model with >500K token context windows is now possible on a single 80GB GPU. [Blog](https://docs.unsloth.ai/new/500k-context-length-fine-tuning)
+- **500K Context**: Training a 20B model with >500K context is now possible on an 80GB GPU. [Blog](https://docs.unsloth.ai/new/500k-context-length-fine-tuning)
 - **FP8 Reinforcement Learning**: You can now do FP8 GRPO on consumer GPUs. [Blog](https://docs.unsloth.ai/new/fp8-reinforcement-learning) • [Notebook](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Qwen3_8B_FP8_GRPO.ipynb)
 - **DeepSeek-OCR**: Fine-tune to improve language understanding by 89%. [Guide](https://docs.unsloth.ai/new/deepseek-ocr-run-and-fine-tune) • [Notebook](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Deepseek_OCR_(3B).ipynb)
 - **Docker**: Use Unsloth with no setup & environment issues with our new image. [Guide](https://docs.unsloth.ai/new/how-to-train-llms-with-unsloth-and-docker) • [Docker image](https://hub.docker.com/r/unsloth/unsloth)
