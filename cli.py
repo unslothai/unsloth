@@ -2,14 +2,12 @@ import logging
 import sys
 import time
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional
 
 import typer
 
 from cli.config import Config, load_config
-
-# CLI args that should not be passed to cfg.apply_overrides()
-_EXCLUDED_CLI_ARGS = ("config", "dry_run", "verbose", "hf_token", "cfg")
+from cli.options import add_options_from_config
 
 app = typer.Typer(
     help="Command-line interface for Unsloth training, chat, and export.",
@@ -27,115 +25,16 @@ def configure_logging(verbose: bool):
 
 
 @app.command()
+@add_options_from_config(Config)
 def train(
-    model: Optional[str] = typer.Option(
-        None,
-        "--model",
-        "-m",
-        help="HF model id or local path. Required unless provided in --config.",
-    ),
-    training_type: Optional[str] = typer.Option(
-        None,
-        "--training-type",
-        help="Training mode: 'lora' (LoRA/QLoRA) or 'full'. Defaults to 'lora'.",
-    ),
-    hf_token: Optional[str] = typer.Option(
-        None, "--hf-token", envvar="HF_TOKEN", help="Hugging Face token if needed."
-    ),
-    max_seq_length: Optional[int] = typer.Option(None, "--max-seq-length"),
-    load_in_4bit: Optional[bool] = typer.Option(
-        None, "--load-in-4bit/--no-load-in-4bit"
-    ),
-    output_dir: Optional[Path] = typer.Option(
-        None,
-        "--output-dir",
-        help="Where to store checkpoints. Defaults to ./outputs",
-    ),
-    dataset: Optional[str] = typer.Option(
-        None,
-        "--dataset",
-        "-d",
-        help="HF dataset to train on (e.g. 'tatsu-lab/alpaca').",
-    ),
-    local_dataset: Optional[List[str]] = typer.Option(
-        None,
-        "--local-dataset",
-        help="Filename(s) under datasets/ to use (e.g. 'alpaca_unsloth.json').",
-    ),
-    format_type: Optional[str] = typer.Option(
-        None,
-        "--format-type",
-        help="Dataset formatting: auto|alpaca|chatml|sharegpt. Defaults to auto.",
-    ),
-    num_epochs: Optional[int] = typer.Option(None, "--epochs"),
-    learning_rate: Optional[float] = typer.Option(None, "--lr"),
-    batch_size: Optional[int] = typer.Option(None, "--batch-size"),
-    gradient_accumulation_steps: Optional[int] = typer.Option(None, "--grad-accum"),
-    warmup_steps: Optional[int] = typer.Option(None, "--warmup-steps"),
-    max_steps: Optional[int] = typer.Option(
-        None, "--max-steps", help="Overrides epochs if >0."
-    ),
-    save_steps: Optional[int] = typer.Option(
-        None, "--save-steps", help="0 uses trainer defaults."
-    ),
-    weight_decay: Optional[float] = typer.Option(None, "--weight-decay"),
-    random_seed: Optional[int] = typer.Option(None, "--seed"),
-    packing: Optional[bool] = typer.Option(None, "--packing/--no-packing"),
-    train_on_completions: Optional[bool] = typer.Option(
-        None, "--train-on-completions", help="Train on responses only when supported."
-    ),
-    lora_r: Optional[int] = typer.Option(None, "--lora-r"),
-    lora_alpha: Optional[int] = typer.Option(None, "--lora-alpha"),
-    lora_dropout: Optional[float] = typer.Option(None, "--lora-dropout"),
-    gradient_checkpointing: Optional[bool] = typer.Option(
-        None, "--gradient-checkpointing/--no-gradient-checkpointing"
-    ),
-    target_modules: Optional[str] = typer.Option(
-        None,
-        "--target-modules",
-        help="Comma-separated target modules for LoRA.",
-    ),
-    vision_all_linear: Optional[bool] = typer.Option(
-        None,
-        "--vision-all-linear/--no-vision-all-linear",
-        help="For vision models, finetune all linear layers (mirrors UI toggle).",
-    ),
-    finetune_vision_layers: Optional[bool] = typer.Option(
-        None,
-        "--finetune-vision-layers/--no-finetune-vision-layers",
-        help="For vision LoRA: train vision layers.",
-    ),
-    finetune_language_layers: Optional[bool] = typer.Option(
-        None,
-        "--finetune-language-layers/--no-finetune-language-layers",
-        help="For vision LoRA: train language layers.",
-    ),
-    finetune_attention_modules: Optional[bool] = typer.Option(
-        None,
-        "--finetune-attention-modules/--no-finetune-attention-modules",
-        help="For vision LoRA: train attention modules.",
-    ),
-    finetune_mlp_modules: Optional[bool] = typer.Option(
-        None,
-        "--finetune-mlp-modules/--no-finetune-mlp-modules",
-        help="For vision LoRA: train MLP modules.",
-    ),
-    use_rslora: Optional[bool] = typer.Option(None, "--rslora/--no-rslora"),
-    use_loftq: Optional[bool] = typer.Option(None, "--loftq/--no-loftq"),
-    enable_wandb: Optional[bool] = typer.Option(None, "--wandb/--no-wandb"),
-    wandb_project: Optional[str] = typer.Option(None, "--wandb-project"),
-    wandb_token: Optional[str] = typer.Option(
-        None, "--wandb-token", envvar="WANDB_API_KEY"
-    ),
-    enable_tensorboard: Optional[bool] = typer.Option(
-        None, "--tensorboard/--no-tensorboard", help="Enable TensorBoard logging."
-    ),
-    tensorboard_dir: Optional[str] = typer.Option(None, "--tensorboard-dir"),
     config: Optional[Path] = typer.Option(
         None,
         "--config",
         "-c",
         help="Path to YAML/JSON config file. CLI flags override config values.",
+    ),
+    hf_token: Optional[str] = typer.Option(
+        None, "--hf-token", envvar="HF_TOKEN", help="Hugging Face token if needed."
     ),
     dry_run: bool = typer.Option(
         False,
@@ -143,6 +42,7 @@ def train(
         help="Show resolved config and exit without training.",
     ),
     verbose: bool = typer.Option(False, "--verbose/--quiet"),
+    config_overrides: dict = None,  # Injected by decorator
 ):
     """
     Launch training using the existing Unsloth training backend.
@@ -154,8 +54,7 @@ def train(
         raise typer.Exit(code=2)
 
     # Apply CLI overrides
-    cli_args = {k: v for k, v in locals().items() if k not in _EXCLUDED_CLI_ARGS}
-    cfg.apply_overrides(**cli_args)
+    cfg.apply_overrides(**config_overrides)
 
     # Dry run: show resolved config and exit
     if dry_run:
