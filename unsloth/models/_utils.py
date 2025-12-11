@@ -72,11 +72,9 @@ __all__ = [
     "patch_hf_quantizer",
     "verify_fp8_support_if_applicable",
     "_get_inference_mode_context_manager",
-    "patch_vision_model_embeddings",
 ]
 
 import torch
-import types as _types
 from typing import Union, Optional, List, Any, Callable, Tuple, Iterator
 from platform import system as platform_system
 
@@ -540,7 +538,6 @@ try:
 except:
     from transformers import PretrainedConfig
 
-from transformers import PreTrainedModel
 
 model_architectures = [
     "llama",
@@ -2307,50 +2304,6 @@ def patch_hf_quantizer():
 
 
 patch_hf_quantizer()
-
-
-def patch_vision_model_embeddings(model):
-    """
-    Patch vision encoder submodules to return None from get_input_embeddings().
-
-    Transformers 5.x changed enable_input_require_grads() to iterate over all
-    PreTrainedModel submodules. Vision encoders don't have text embeddings and
-    raise NotImplementedError. This patches them to return None instead.
-
-    Must be called BEFORE prepare_model_for_training().
-    """
-
-    def _return_none(self):
-        return None
-
-    for name, module in model.named_modules():
-        # Skip non-PreTrainedModel modules
-        if not isinstance(module, PreTrainedModel):
-            continue
-        # Only patch vision-related modules
-        class_name = module.__class__.__name__
-        if not any(
-            x in class_name.lower()
-            for x in ("vision", "visual", "image", "siglip", "clip")
-        ):
-            continue
-        # Check if get_input_embeddings would raise NotImplementedError
-        try:
-            result = module.get_input_embeddings()
-            # If it returns something valid, don't patch
-            if result is not None:
-                continue
-        except NotImplementedError:
-            # Needs patching
-            pass
-        except Exception:
-            # Some other error, skip
-            continue
-        # Patch it
-        module.get_input_embeddings = _types.MethodType(_return_none, module)
-        logger.info(f"Patched {name}'s get_input_embeddings with return None")
-
-
 
 
 def verify_fp8_support_if_applicable(model_config):
