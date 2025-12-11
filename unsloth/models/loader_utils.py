@@ -31,6 +31,7 @@ from .mapper import (
 from transformers import __version__ as transformers_version
 from unsloth.models._utils import TorchAOConfig
 from unsloth_zoo.utils import Version
+from unsloth_zoo.vllm_utils import _get_torchao_fp8_config
 import gc
 
 transformers_version = Version(transformers_version)
@@ -107,6 +108,13 @@ def __get_model_name(
 
     assert load_in_fp8 in (True, False, "block")
     if load_in_fp8 != False:
+        # For vllm >= 0.12.0, we can quantize the vllm model to FP8 on the fly
+        # saving an offline checkpoint and loading it back in, so we don't need
+        # a new model name. Just return the original model name in this case.
+        if importlib.util.find_spec("vllm") is not None:
+            import vllm
+            if Version(vllm.__version__) >= Version("0.12.0"):
+                return model_name
         if load_in_fp8 == True and (os.environ.get("UNSLOTH_HAS_FBGEMM", "0") == "1"):
             if lower_model_name in FLOAT_TO_FP8_ROW_MAPPER:
                 # Faster row scaling only works if FBGEMM works!
@@ -235,38 +243,12 @@ def get_model_name(model_name, load_in_4bit = True, load_in_fp8 = False):
     return new_model_name if new_model_name is not None else model_name
 
 
-def _get_torchao_fp8_config(fp8_mode: str):
-    """
-    Return a `torchao.quantization.Float8DynamicActivationFloat8WeightConfig`
-    to be used for `load_in_fp8=True`.
-    """
-    from torchao.quantization import (
-        Float8DynamicActivationFloat8WeightConfig,
-        PerBlock,
-        PerRow,
-    )
-
-    if fp8_mode == "row":
-        granularity = PerRow()
-    elif fp8_mode == "block":
-        granularity = (PerBlock([1, 128]), PerBlock([128, 128]))
-    else:
-        raise ValueError("Unsloth: `load_in_fp8` supports only 'row' or 'block'")
-
-    return Float8DynamicActivationFloat8WeightConfig(
-        granularity = granularity,
-        activation_value_lb = 1e-12,
-    )
-
-
 def _offline_quantize_to_fp8(model_name: str, fp8_mode: str) -> str:
     """
     Quantizes the model to fp8 using torchao and saving the quantized model to a
     temporary location. Return the path to the quantized model.
 
-    Note: Once on-the-fly quantization is added in vllm in
-    https://github.com/vllm-project/vllm/pull/26327, we should
-    dynamically quantize the model there instead:
+    Note: For vllm >= 0.12.0, we should dynamically quantize the model in vllm instead:
 
       llm = LLM(
         ...
@@ -333,11 +315,10 @@ def _tag_model_with_fp8_torchao_config(model: torch.nn.Module, fp8_mode: str):
 def _get_fp8_mode_and_check_settings(
     load_in_fp8: Union[bool, str],
     fast_inference: bool,
-    full_finetuning: bool,
-    load_in_4bit: bool,
-    load_in_8bit: bool,
-    load_in_16bit: bool,
-    use_exact_model_name: bool,
+    full_finetuning: bool = False,
+    load_in_4bit: bool = False,
+    load_in_8bit: bool = False,
+    load_in_16bit: bool = False,
 ) -> str:
     """
     Assuming `load_in_fp8` is enabled, raise appropriate errors on incompatible settings
@@ -373,8 +354,6 @@ def _get_fp8_mode_and_check_settings(
         raise ValueError(
             "Unsloth: `load_in_fp8` is not compatible with `load_in_4bit`, `load_in_8bit` or `load_in_16bit`",
         )
-    if use_exact_model_name:
-        raise ValueError("Unsloth: `load_in_fp8` requires `use_exact_model_name=False`")
 
     # Check if this is Hopper or above
     if not (

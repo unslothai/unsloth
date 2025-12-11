@@ -26,6 +26,7 @@ from ._utils import (
     _get_inference_mode_context_manager,
     _prepare_model_for_qat,
 )
+from .loader_utils import _get_fp8_mode_and_check_settings
 from ..utils.packing import (
     get_packed_info_from_kwargs,
     mask_packed_sequence_boundaries,
@@ -2192,6 +2193,7 @@ class FastLlamaModel:
         unsloth_vllm_standby = False,
         num_labels = None,
         qat_scheme = None,
+        load_in_fp8 = False,  # fp8 LoRA (True, False, 'block')
         **kwargs,
     ):
         os.environ["UNSLOTH_USE_NEW_MODEL"] = "0"
@@ -2435,6 +2437,13 @@ class FastLlamaModel:
                 generate_batches,
             )
 
+            fp8_mode = None
+            if load_in_fp8 != False:
+                fp8_mode = _get_fp8_mode_and_check_settings(
+                    load_in_fp8,
+                    fast_inference,
+                )
+
             allowed_args = inspect.getfullargspec(load_vllm).args
             load_vllm_kwargs = dict(
                 model_name = model_name,
@@ -2448,6 +2457,7 @@ class FastLlamaModel:
                 disable_log_stats = disable_log_stats,
                 use_bitsandbytes = load_in_4bit,
                 unsloth_vllm_standby = unsloth_vllm_standby,
+                fp8_mode = fp8_mode,
             )
             for allowed_arg in allowed_args:
                 if allowed_arg not in load_vllm_kwargs and allowed_arg in kwargs:
@@ -2458,7 +2468,9 @@ class FastLlamaModel:
             llm = load_vllm(**load_vllm_kwargs)
 
             # Convert to HF format
-            _, quant_state_dict = get_vllm_state_dict(llm, config = model_config)
+            _, quant_state_dict = get_vllm_state_dict(
+                llm, config = model_config, load_in_fp8 = load_in_fp8,
+            )
             model = convert_vllm_to_huggingface(
                 quant_state_dict, model_config, dtype, bnb_config
             )
