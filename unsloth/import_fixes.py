@@ -283,18 +283,15 @@ def patch_enable_input_require_grads():
     Patch transformers PreTrainedModel.enable_input_require_grads to handle vision models
     that raise NotImplementedError from get_input_embeddings().
 
-    Only applies if transformers version has the new self.modules() iteration pattern
-    (introduced in transformers 5.x). Older versions don't need this patch.
     """
     import inspect
     from transformers import PreTrainedModel
 
-    # Check if the original function iterates over self.modules()
-    # This pattern was introduced in transformers 5.x
+    # Check if the original function iterates over self.modules() instead of just returning the enable_input_require_grads
+    # Ref: https://github.com/huggingface/transformers/pull/41993/files#diff-6b72b98c4c2dcfc6cc606843917733f5d858374fbc22a735ff483bbc0c1e63eaL1979-R1996
     try:
         original_source = inspect.getsource(PreTrainedModel.enable_input_require_grads)
     except (OSError, TypeError):
-        # Can't get source, skip patching
         return
 
     # Only patch if the new pattern exists (iterating over self.modules())
@@ -305,12 +302,7 @@ def patch_enable_input_require_grads():
             )
         return
 
-    # Define the patched version
     def _patched_enable_input_require_grads(self):
-        """
-        Enables the gradients for the input embeddings. This is useful for fine-tuning adapter weights while keeping
-        the model weights fixed. Patched to handle vision models that don't implement get_input_embeddings.
-        """
 
         def make_inputs_require_grads(module, input, output):
             output.requires_grad_(True)
@@ -329,6 +321,7 @@ def patch_enable_input_require_grads():
                 input_embeddings = module.get_input_embeddings()
             except NotImplementedError:
                 # Vision models may not implement get_input_embeddings - skip them
+                # For GLM V4.6 for example, this skips only `self.visual`
                 continue
 
             if input_embeddings is None:
@@ -347,7 +340,6 @@ def patch_enable_input_require_grads():
         if hooks:
             self._require_grads_hook = hooks[0]
 
-    # Apply the patch
     PreTrainedModel.enable_input_require_grads = _patched_enable_input_require_grads
     if UNSLOTH_ENABLE_LOGGING:
         print(
