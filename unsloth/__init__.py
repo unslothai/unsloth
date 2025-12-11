@@ -18,10 +18,18 @@ import os, re, subprocess, inspect, functools
 import numpy as np
 
 # Fix some issues before importing other packages
-from .import_fixes import fix_message_factory_issue
+from .import_fixes import (
+    fix_message_factory_issue,
+    check_fbgemm_gpu_version,
+    torchvision_compatibility_check,
+)
 
 fix_message_factory_issue()
+check_fbgemm_gpu_version()
+torchvision_compatibility_check()
 del fix_message_factory_issue
+del check_fbgemm_gpu_version
+del torchvision_compatibility_check
 
 # Check if modules that need patching are already imported
 critical_modules = ["trl", "transformers", "peft"]
@@ -64,7 +72,7 @@ from importlib.metadata import PackageNotFoundError
 # Check for unsloth_zoo
 try:
     unsloth_zoo_version = importlib_version("unsloth_zoo")
-    if Version(unsloth_zoo_version) < Version("2025.11.2"):
+    if Version(unsloth_zoo_version) < Version("2025.12.3"):
         print(
             "Unsloth: Please update Unsloth and Unsloth-Zoo to the latest version!\n"
             "Do this via `pip install --upgrade --force-reinstall --no-cache-dir --no-deps unsloth unsloth_zoo`"
@@ -110,6 +118,7 @@ from unsloth_zoo.device_type import (
 from .import_fixes import (
     fix_xformers_performance_issue,
     fix_vllm_aimv2_issue,
+    fix_vllm_guided_decoding_params,
     ignore_logger_messages,
     patch_ipykernel_hf_xet,
     patch_trackio,
@@ -118,6 +127,7 @@ from .import_fixes import (
 
 fix_xformers_performance_issue()
 fix_vllm_aimv2_issue()
+fix_vllm_guided_decoding_params()
 ignore_logger_messages()
 patch_ipykernel_hf_xet()
 patch_trackio()
@@ -125,6 +135,7 @@ patch_datasets()
 
 del fix_xformers_performance_issue
 del fix_vllm_aimv2_issue
+del fix_vllm_guided_decoding_params
 del ignore_logger_messages
 del patch_ipykernel_hf_xet
 del patch_trackio
@@ -177,6 +188,7 @@ if DEVICE_TYPE == "cuda":
         print(
             "Unsloth: `bitsandbytes` is not installed - 4bit QLoRA unallowed, but 16bit and full finetuning works!"
         )
+        bnb = None
     try:
         cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
         libcuda_dirs()
@@ -209,7 +221,8 @@ if DEVICE_TYPE == "cuda":
                 del find_number, latest_cuda
             del possible_cudas, find_cuda
 
-        importlib.reload(bnb)
+        if bnb is not None:
+            importlib.reload(bnb)
         importlib.reload(triton)
         try:
             libcuda_dirs = lambda: None

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.11.3"
+__version__ = "2025.12.4"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -71,6 +71,7 @@ __all__ = [
     "dequantize_module_weight",
     "patch_hf_quantizer",
     "verify_fp8_support_if_applicable",
+    "_get_inference_mode_context_manager",
 ]
 
 import torch
@@ -84,6 +85,7 @@ import re
 from dataclasses import dataclass, field
 import functools
 import textwrap
+import logging
 import warnings, subprocess, inspect, psutil, os, math
 from unsloth_zoo.utils import Version, get_quant_type
 from importlib.metadata import version as importlib_version
@@ -166,9 +168,9 @@ warnings.filterwarnings(
 )
 warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "multiprocess")
 warnings.filterwarnings(action = "ignore", category = UserWarning, module = "triton")
-# Stop "Special tokens have been added in the vocabulary, ..."
-import logging
+warnings.filterwarnings(action = "ignore", category = UserWarning, module = "bitsandbytes")
 
+# Stop "Special tokens have been added in the vocabulary, ..."
 logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.CRITICAL + 1)
 
 
@@ -561,6 +563,12 @@ for model_name in model_architectures:
         config = inspect.getsource(eval(config_filename))
     except:
         continue
+    if "RopeParameters" in config:
+        try:
+            exec(f"from {config_filepath} import RopeParameters", globals())
+        except:
+            continue
+
     if "rope_scaling" in config:
         continue
     config = re.sub(
@@ -754,6 +762,13 @@ elif DEVICE_TYPE == "xpu":
 
 # =============================================
 # Get Xformers
+# Silence xformers CUDA mismatch warnings before import
+try:
+    _xformers_logger = logging.getLogger("xformers")
+    _xformers_logger.setLevel(logging.ERROR)
+    del _xformers_logger
+except:
+    pass
 try:
     from xformers import __version__ as xformers_version
 
@@ -828,10 +843,11 @@ except ModuleNotFoundError:
     xformers_attention = None
     xformers_version = None
 except Exception as e:
-    print(
-        "========\nSwitching to PyTorch attention since your Xformers is broken.\n========\n"
-    )
-    print(str(e))
+    if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") != "0":
+        print(
+            "========\nSwitching to PyTorch attention since your Xformers is broken.\n========\n"
+        )
+        print(str(e))
     xformers = None
     xformers_attention = None
     xformers_version = None
@@ -2056,7 +2072,7 @@ except:
 
 @dataclass
 class TorchAOConfig:
-    qat_scheme: str = "int4"
+    qat_scheme: Optional[str] = "int4"
 
     # Each (config, filter_fn) pair defines a quantization rule
     base_config_and_filter_fns: List[
@@ -2295,7 +2311,8 @@ def verify_fp8_support_if_applicable(model_config):
         raise ValueError(
             f"Unsloth: FP8 quantization is only supported on CUDA GPUs. You are using {DEVICE_TYPE}."
         )
-    # todo: verify xpu fbgemm fp8 support status and change code here
+
+    # todo: need to add fp8 support for intel xpu device
     if DEVICE_TYPE == "cuda":
         major_version, minor_version = torch.cuda.get_device_capability()
         if quant_method == "fbgemm_fp8" and major_version < 9:
@@ -2308,3 +2325,23 @@ def verify_fp8_support_if_applicable(model_config):
             raise ValueError(
                 f"Unsloth: FP8 quantization is only supported on L4 and higher GPUs with compute capability 8.9 or higher. You are using {torch.cuda.get_device_name()}. Refer to https://developer.nvidia.com/cuda-gpus for more details."
             )
+
+
+def _get_inference_mode_context_manager(model: torch.nn.Module):
+    """
+    If the state dict was quantized using torchao, we will run into
+    the following error when calling ops like aten.t() in inference mode.
+    This is a bug in PyTorch that affects all tensor subclasses.
+
+        Cannot set version_counter for inference tensor
+
+    For now, we work around this issue by using `torch.no_grad()` in this case.
+    See https://github.com/pytorch/pytorch/issues/164872 for more details.
+    Otherwise, just return `torch.inference_mode()`.
+    """
+    torchao_config = getattr(model, "torchao_config", None)
+    if torchao_config is not None and torchao_config.qat_scheme is None:
+        return torch.no_grad()
+    else:
+        return torch.inference_mode()
+

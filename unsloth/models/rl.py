@@ -24,6 +24,7 @@ import os
 import re
 import torch
 from unsloth_zoo.compiler import create_new_function
+from unsloth_zoo.log import logger
 from unsloth_zoo.logging_utils import PatchRLStatistics
 from unsloth_zoo.rl_replacements import RL_REPLACEMENTS
 from .rl_replacements import (
@@ -32,6 +33,7 @@ from .rl_replacements import (
     RL_PRE_ITEMS,
     RL_CONFIG_CHANGES,
     RL_METRICS_CHANGES,
+    RL_ADDITIONAL_FUNCTIONS,
 )
 
 torch_compile_options = {
@@ -229,6 +231,7 @@ from transformers import DataCollatorForSeq2Seq, DataCollatorForLanguageModeling
 from transformers.training_args import ParallelMode
 
 # Wrap trainer with padding to right and enable training mode
+# Also patches W&B since multiple runs must use wandb.finish()
 import functools
 from types import MethodType
 def prepare_for_training_mode(f):
@@ -241,6 +244,12 @@ def prepare_for_training_mode(f):
         # Return inference mode
         if hasattr(self, 'model') and hasattr(self.model, "for_inference"):
             self.model.for_inference()
+        # Patch W&B to enable logging on future runs, otherwise it'll overwrite the first run
+        try:
+            import wandb
+            wandb.finish()
+        except:
+            pass
         return output
     return wrapper
 pass
@@ -305,7 +314,7 @@ class Unsloth{RLTrainer_name}(_Unsloth{RLTrainer_name}):
             if getattr(args, "_n_gpu", 1) != 1:
                 args._n_gpu = 1
         if "model" in locals() and hasattr(model, "for_training"):
-            model.for_training()
+            model.for_training(use_gradient_checkpointing=getattr(args, 'gradient_checkpointing', True))
         super().__init__({RLTrainer_call_args}{RLTrainer_kwargs})
         if "model" in locals() and hasattr(model, "for_inference"):
             model.for_inference()
@@ -322,6 +331,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     try:
         trainer = eval(f"trl.trainer.{trainer_file}")
     except Exception as error:
+        print(f"Unsloth: Could not import trl.trainer.{trainer_file}: {error}")
         return
 
     # Get SFTTrainer and SFTConfig names
@@ -340,8 +350,14 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         and trainer_file.split("_")[0] in x.lower()
     ]
     if len(name) != 1:
+        logger.info(
+            f"Unsloth: Could not find Trainer class in trl.trainer.{trainer_file}. Found: {name}"
+        )
         return
     if len(config) != 1:
+        logger.info(
+            f"Unsloth: Could not find Config class in trl.trainer.{trainer_file}. Found: {config}"
+        )
         return
 
     # Get SFTTrainer, SFTConfig
@@ -349,17 +365,25 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     RLConfig_name = config[0]
     try:
         RLTrainer = eval(f"trl.trainer.{trainer_file}.{RLTrainer_name}")
-    except:
+    except Exception as e:
+        logger.info(
+            f"Unsloth: Could not load {RLTrainer_name} from trl.trainer.{trainer_file}: {e}"
+        )
         return
     try:
         RLConfig = eval(f"trl.trainer.{trainer_file}.{RLConfig_name}")
-    except:
+    except Exception as e:
+        logger.info(
+            f"Unsloth: Could not load {RLConfig_name} from trl.trainer.{trainer_file}: {e}"
+        )
         return
 
     # Check name
     if RLTrainer.__name__.startswith("Unsloth"):
+        print(f"Unsloth: {RLTrainer.__name__} is already patched.")
         return
     if RLConfig.__name__.startswith("Unsloth"):
+        print(f"Unsloth: {RLConfig.__name__} is already patched.")
         return
 
     # Get old source
@@ -435,7 +459,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             "    force_float32 = True\n"
             "mixed_precision_dtype = os.environ.get('UNSLOTH_MIXED_PRECISION', 'float32')\n"
             "dtype = getattr(model.config, 'dtype', None) or getattr(model.config, 'torch_dtype', None)\n"
-            "if dtype is None: dtype = model.get_input_embeddings().dtype\n"
+            "if dtype is None: dtype = model.get_input_embeddings().weight.dtype\n"
             "from unsloth_zoo.utils import _get_dtype\n"
             "dtype = _get_dtype(dtype)\n"
             "float16 = dtype == torch.float16\n"
@@ -446,13 +470,24 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             "    args.fp16 = False\n"
             "    args.bf16 = False\n"
             "    os.environ['ACCELERATE_MIXED_PRECISION'] = 'no'\n"
+            "    if hasattr(args, 'mixed_precision'): args.mixed_precision = 'no'\n"
+            "    # args.mixed_precision is a new argument which needs to be set now\n"
             "elif (not use_bf16 and not use_fp16) and mixed_precision_dtype == 'float32':\n"
             "    # Mixed precision training\n"
             "    args.fp16 = float16\n"
             "    args.bf16 = not float16\n"
             "    os.environ['ACCELERATE_MIXED_PRECISION'] = 'fp16' if float16 else 'bf16'\n"
+            "    if hasattr(args, 'mixed_precision'): args.mixed_precision = 'fp16' if float16 else 'bf16'\n"
+            "    # args.mixed_precision is a new argument which needs to be set now\n"
+            "elif mixed_precision_dtype == 'bfloat16':\n"
+            "    # Both False since bfloat16 full finetuning doesn't do any autocasting.\n"
+            "    args.fp16 = False\n"
+            "    args.bf16 = False\n"
+            "    os.environ['ACCELERATE_MIXED_PRECISION'] = 'no'\n"
+            "    if hasattr(args, 'mixed_precision'): args.mixed_precision = 'no'\n"
+            "    # args.mixed_precision is a new argument which needs to be set now\n"
+            "\n"
         )
-        "elif mixed_precision_dtype == 'bfloat16':\n" "    # Both False since bfloat16 full finetuning doesn't do any autocasting.\n" "    args.fp16 = False\n" "    args.bf16 = False\n" "    os.environ['ACCELERATE_MIXED_PRECISION'] = 'no'\n"
         extra_args += mixed_precision
 
     # Check if per_device_eval_batch_size (default 8) bigger than bsz
@@ -558,7 +593,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     if "model" in call_args:
         training_check = (
             "if model is not None and hasattr(model, 'for_training'):\n"
-            "    model.for_training()\n"
+            "    model.for_training(use_gradient_checkpointing=getattr(args, 'gradient_checkpointing', True))\n"
             "if 'tokenizer' in locals() and hasattr(tokenizer, 'padding_side'): tokenizer.padding_side = 'right'\n"
             "if 'processing_class' in locals():\n"
             "    if hasattr(processing_class, 'padding_side'): processing_class.padding_side = 'right'\n"
@@ -970,7 +1005,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         RLTrainer_source,
         f"trl.trainer.{trainer_file}",
         imports,
-        overwrite = True,
+        overwrite = False,
     )
 
     # Patch Trainer
@@ -1235,6 +1270,11 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
             + r", load_tensors = True))",
             source,
         )
+        # All these are to fix multiple commas before lora_request (in case the original code ends with something like ",)")
+        # https://github.com/huggingface/trl/blob/main/trl/trainer/grpo_trainer.py#L1388 for eg has such an ending
+        source = re.sub(r"\,[\s]{1,}\,[\s]{0,}lora_request", ", lora_request", source)
+        source = re.sub(r"[\s]{1,}\,[\s]{0,}lora_request", ", lora_request", source)
+        source = re.sub(r"[\,]{1,}[\s]{0,}lora_request", ", lora_request", source)
         # Prefer using unsloth's sampling params and fallback to trl's if not found
         # We'll enable this later separately when combining both this and GRPOConfig params
         # source = re.sub(
@@ -1284,9 +1324,20 @@ def patch_trl_rl_trainers():
     import trl.trainer
 
     all_trainers = dir(trl.trainer)
-    all_trainers = [x for x in all_trainers if x.islower() and x.endswith("_trainer")]
+    all_trainers = [
+        x
+        for x in all_trainers
+        if x.islower() and x.endswith("_trainer") and x != "base_trainer"
+    ]
     for trainer in all_trainers:
         _patch_trl_rl_trainers(trainer)
+    return
+
+
+def patch_trl_openenv():
+    for function in RL_ADDITIONAL_FUNCTIONS["openenv"]:
+        logger.info(f"Unsloth: Patching trl openenv with function: {function.__name__}")
+        function()  # Call the function to apply the patch
     return
 
 
@@ -1294,5 +1345,6 @@ def PatchFastRL(algorithm = None, FastLanguageModel = None):
     if FastLanguageModel is not None:
         PatchRL(FastLanguageModel)
     patch_trl_rl_trainers()
+    patch_trl_openenv()
     if type(algorithm) is str and algorithm.islower():
         PatchRLStatistics(algorithm)

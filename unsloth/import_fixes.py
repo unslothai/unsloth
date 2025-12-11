@@ -16,10 +16,31 @@ import os
 import importlib.util
 from pathlib import Path
 from importlib.metadata import version as importlib_version
-from packaging.version import Version
+from packaging.version import Version as TrueVersion
+import re
 import logging
 
 UNSLOTH_ENABLE_LOGGING = os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") == "1"
+
+
+def Version(version):
+    try:
+        new_version = str(version)
+        new_version = re.match(r"[0-9\.]{1,}", new_version)
+        if new_version is None:
+            raise Exception(str(e))
+        new_version = new_version.group(0).rstrip(".")
+        if new_version != version:
+            new_version += ".1"  # Add .1 for dev / alpha / beta / rc
+        return TrueVersion(new_version)
+    except:
+        from inspect import getframeinfo, stack
+
+        caller = getframeinfo(stack()[1][0])
+        raise RuntimeError(
+            f"Unsloth: Could not get version for `{version}`\n"
+            f"File name = [{caller.filename}] Line number = [{caller.lineno}]"
+        )
 
 
 # Ignore logging messages
@@ -155,6 +176,22 @@ def fix_vllm_aimv2_issue():
                 print(f"Unsloth: Failed patching vLLM with error = {str(e)}")
 
 
+def fix_vllm_guided_decoding_params():
+    if importlib.util.find_spec("vllm") is None:
+        return
+    # GuidedDecodingParmas is renamed to StructuredOutputsParams in vLLM
+    # https://github.com/vllm-project/vllm/pull/22772/files
+    # trl still wants to use GuidedDecodingParams. This is a temporary patch till trl updates
+    import vllm
+
+    try:
+        from vllm.sampling_params import GuidedDecodingParams
+    except ImportError:
+        vllm.sampling_params.GuidedDecodingParams = (
+            vllm.sampling_params.StructuredOutputsParams
+        )
+
+
 def ignore_logger_messages():
     # Ignore Environment variable `HF_TOKEN` is set
     try:
@@ -222,4 +259,61 @@ def patch_datasets():
         raise NotImplementedError(
             f"#### Unsloth: Using `datasets = {str(datasets_version)}` will cause recursion errors.\n"
             "Please downgrade datasets to `datasets==4.3.0"
+        )
+
+
+def check_fbgemm_gpu_version():
+    if importlib.util.find_spec("fbgemm_gpu") is None:
+        return
+    try:
+        fbgemm_gpu_version = importlib_version("fbgemm_gpu_genai")
+    except:
+        return
+    # We noticed some SegFault or bad alloc errors on lower versions of fbgemm_gpu.
+    if Version(fbgemm_gpu_version) < Version("1.4.0"):
+        raise ImportError(
+            f"Unsloth: fbgemm_gpu_genai=={fbgemm_gpu_version} detected. It might cause unexpected issues like segmentation faults. Please uninstall the current one by doing `pip uninstall fbgemm-gpu` && `pip install fbgemm-gpu` to install fbgemm-gpu 1.4.0 or newer!"
+        )
+    elif UNSLOTH_ENABLE_LOGGING:
+        print(f"Unsloth: fbgemm_gpu_genai=={fbgemm_gpu_version} detected.")
+
+
+def torchvision_compatibility_check():
+    if importlib.util.find_spec("torch") is None:
+        raise ImportError("Unsloth: torch not found. Please install torch first.")
+    if importlib.util.find_spec("torchvision") is None:
+        return
+    torch_version = importlib_version("torch")
+    torchvision_version = importlib_version("torchvision")
+
+    # Torch version -> minimum required torchvision version
+    # See https://pytorch.org/get-started/previous-versions/
+    TORCH_TORCHVISION_COMPAT = [
+        ("2.9.0", "0.24.0"),
+        ("2.8.0", "0.23.0"),
+        ("2.7.0", "0.22.0"),
+        ("2.6.0", "0.21.0"),
+        ("2.5.0", "0.20.0"),
+        ("2.4.0", "0.19.0"),
+    ]
+
+    required_torchvision = None
+    for min_torch, min_torchvision in TORCH_TORCHVISION_COMPAT:
+        if Version(torch_version) >= Version(min_torch):
+            required_torchvision = min_torchvision
+            break
+
+    if required_torchvision is None:
+        # Torch version not in compatibility table, skip check
+        return
+
+    if Version(torchvision_version) < Version(required_torchvision):
+        raise ImportError(
+            f"Unsloth: torch=={torch_version} requires torchvision>={required_torchvision}, "
+            f"but found torchvision=={torchvision_version}. "
+            f"Please refer to https://pytorch.org/get-started/previous-versions/ for more information."
+        )
+    elif UNSLOTH_ENABLE_LOGGING:
+        print(
+            f"Unsloth: torch=={torch_version} and torchvision=={torchvision_version} are compatible."
         )
