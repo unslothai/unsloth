@@ -300,7 +300,9 @@ def patch_enable_input_require_grads():
     # Only patch if the new pattern exists (iterating over self.modules())
     if "for module in self.modules()" not in original_source:
         if UNSLOTH_ENABLE_LOGGING:
-            print("Unsloth: Skipping enable_input_require_grads patch (older transformers version)")
+            print(
+                "Unsloth: Skipping enable_input_require_grads patch (older transformers version)"
+            )
         return
 
     # Define the patched version
@@ -309,6 +311,7 @@ def patch_enable_input_require_grads():
         Enables the gradients for the input embeddings. This is useful for fine-tuning adapter weights while keeping
         the model weights fixed. Patched to handle vision models that don't implement get_input_embeddings.
         """
+
         def make_inputs_require_grads(module, input, output):
             output.requires_grad_(True)
 
@@ -316,7 +319,10 @@ def patch_enable_input_require_grads():
         seen_modules = set()
 
         for module in self.modules():
-            if not (isinstance(module, PreTrainedModel) and hasattr(module, "get_input_embeddings")):
+            if not (
+                isinstance(module, PreTrainedModel)
+                and hasattr(module, "get_input_embeddings")
+            ):
                 continue
 
             try:
@@ -333,7 +339,9 @@ def patch_enable_input_require_grads():
                 continue
 
             seen_modules.add(embedding_id)
-            hooks.append(input_embeddings.register_forward_hook(make_inputs_require_grads))
+            hooks.append(
+                input_embeddings.register_forward_hook(make_inputs_require_grads)
+            )
 
         self._require_grads_hooks = hooks
         if hooks:
@@ -342,7 +350,9 @@ def patch_enable_input_require_grads():
     # Apply the patch
     PreTrainedModel.enable_input_require_grads = _patched_enable_input_require_grads
     if UNSLOTH_ENABLE_LOGGING:
-        print("Unsloth: Patched enable_input_require_grads for vision model compatibility")
+        print(
+            "Unsloth: Patched enable_input_require_grads for vision model compatibility"
+        )
 
 
 def torchvision_compatibility_check():

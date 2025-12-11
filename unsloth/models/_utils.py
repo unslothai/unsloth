@@ -2319,6 +2319,7 @@ def patch_vision_model_embeddings(model):
 
     Must be called BEFORE prepare_model_for_training().
     """
+
     def _return_none(self):
         return None
 
@@ -2328,7 +2329,10 @@ def patch_vision_model_embeddings(model):
             continue
         # Only patch vision-related modules
         class_name = module.__class__.__name__
-        if not any(x in class_name.lower() for x in ("vision", "visual", "image", "siglip", "clip")):
+        if not any(
+            x in class_name.lower()
+            for x in ("vision", "visual", "image", "siglip", "clip")
+        ):
             continue
         # Check if get_input_embeddings would raise NotImplementedError
         try:
@@ -2344,8 +2348,9 @@ def patch_vision_model_embeddings(model):
             continue
         # Patch it
         module.get_input_embeddings = _types.MethodType(_return_none, module)
-        logger.info(f'Patched {name}\'s get_input_embeddings with return None')
-pass
+        logger.info(f"Patched {name}'s get_input_embeddings with return None")
+
+
 
 
 def verify_fp8_support_if_applicable(model_config):
