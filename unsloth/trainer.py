@@ -57,13 +57,9 @@ _AUTO_PADDING_FREE_ENV_DISABLED = os.environ.get(
     "UNSLOTH_DISABLE_AUTO_PADDING_FREE", ""
 ).strip().lower() in {"1", "true", "yes", "on"}
 
-
-# [TODO]
-# Below cannot work with padding-free
 PADDING_FREE_BLOCKLIST = {
     "gemma2",  # - gemma2:  Uses slow_attention_softcapping which has torch.compile issues
     "gpt_oss",  # - gpt_oss: Uses Flex Attention which doesn't handle padding_free correctly
-    "mistral",  # - mistral: Unfortunately I think sliding window attention doesn't work correctly?
 }
 
 
@@ -326,6 +322,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
             data_collator is not None
             or isinstance(processing_class, ProcessorMixin)
             or is_vlm
+            or is_unsupported_model
         )
         if blocked and _should_auto_pack(config_arg):
             reason = (
