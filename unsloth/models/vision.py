@@ -930,6 +930,7 @@ class FastBaseModel:
         task_type = TaskType.CAUSAL_LM,
         temporary_location = "_unsloth_temporary_saved_buffers",
         qat_scheme = None,
+        ensure_weight_tying = False,
         **kwargs,
     ):
         if os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1":
