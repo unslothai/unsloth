@@ -538,7 +538,6 @@ try:
 except:
     from transformers import PretrainedConfig
 
-
 model_architectures = [
     "llama",
     "mistral",
