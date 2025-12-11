@@ -1,4 +1,3 @@
-import logging
 import sys
 import time
 from pathlib import Path
@@ -13,15 +12,6 @@ app = typer.Typer(
     help="Command-line interface for Unsloth training, chat, and export.",
     context_settings={"help_option_names": ["-h", "--help"]},
 )
-
-
-def configure_logging(verbose: bool):
-    level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
-        datefmt="%H:%M:%S",
-    )
 
 
 @app.command()
@@ -41,12 +31,9 @@ def train(
         "--dry-run",
         help="Show resolved config and exit without training.",
     ),
-    verbose: bool = typer.Option(False, "--verbose/--quiet"),
-    config_overrides: dict = None,  # Injected by decorator
+    config_overrides: dict = None,  # Injected by add_options_from_config decorator
 ):
-    """
-    Launch training using the existing Unsloth training backend.
-    """
+    """Launch training using the existing Unsloth training backend."""
     try:
         cfg = load_config(config)
     except FileNotFoundError as e:
@@ -79,7 +66,6 @@ def train(
     from backend.trainer import UnslothTrainer
     from backend.model_config import ModelConfig
 
-    configure_logging(verbose)
     trainer = UnslothTrainer()
 
     model_config = ModelConfig.from_ui_selection(
@@ -155,16 +141,12 @@ def inference(
     ),
     max_seq_length: int = typer.Option(2048, "--max-seq-length"),
     load_in_4bit: bool = typer.Option(True, "--load-in-4bit/--no-load-in-4bit"),
-    verbose: bool = typer.Option(False, "--verbose/--quiet"),
 ):
-    """
-    Run a single inference using the specified model.
-    """
+    """Run a single inference using the specified model."""
     # Lazy imports to avoid triggering Unsloth patches on --help
     from backend.model_config import ModelConfig
     from backend.inference import get_inference_backend
 
-    configure_logging(verbose)
     inference_backend = get_inference_backend()
     model_config = ModelConfig.from_ui_selection(
         dropdown_value=model, search_value=None, hf_token=hf_token, is_lora=False

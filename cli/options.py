@@ -46,9 +46,8 @@ def _get_python_type(annotation: Any) -> type:
 
 def _collect_config_fields(config_class: type[BaseModel]) -> list[tuple[str, Any]]:
     """
-    Collect all fields from a config class, flattening nested models.
-    Returns list of (name, field_info) tuples.
-    Raises ValueError on duplicate field names.
+    Collect all fields from a config class, flattening nested models. Returns list of
+    (name, field_info) tuples. Raises ValueError on duplicate field names.
     """
     fields = []
     seen_names: set[str] = set()
