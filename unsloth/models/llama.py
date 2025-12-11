@@ -271,6 +271,8 @@ def LlamaAttention_fast_forward_inference(
     This means we can pass in a row of Q, but we need to
     remember K and V, which are called the KV cache.
     """
+    # import pdb
+    # pdb.set_trace()
     Xn = hidden_states
     bsz, _, hd = hidden_states.size()
     K1, V1 = past_key_value
@@ -551,7 +553,8 @@ def LlamaAttention_fast_forward(
         del self.temp_KV
         del self.RH_Q
         del self.attention
-
+    # import pdb
+    # pdb.set_trace()
     bsz, q_len, _ = hidden_states.size()
 
     n_heads = self.config.num_attention_heads

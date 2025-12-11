@@ -399,6 +399,8 @@ class FastLanguageModel(FastLlamaModel):
 
         if not was_disabled:
             enable_progress_bars()
+        # import pdb
+        # pdb.set_trace()
 
         if model_type == "llama":
             scaling_type = None
@@ -456,7 +458,7 @@ class FastLanguageModel(FastLlamaModel):
             dispatch_model = FastGemma2Model
         elif model_type == "qwen2":
             dispatch_model = FastQwen2Model
-        elif model_type == "qwen3":  # or model_type == "qwen3_moe":
+        elif model_type == "qwen3":# or model_type == "qwen3_moe":
             if not SUPPORTS_QWEN3 or not SUPPORTS_QWEN3_MOE:
                 raise ImportError(
                     f"Unsloth: Your transformers version of {transformers_version} does not support Qwen3.\n"

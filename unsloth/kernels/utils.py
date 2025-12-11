@@ -531,7 +531,8 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
                 requires_grad = False,
             )
         pass
-
+        # import pdb
+        # pdb.set_trace()
         # NF4 dequantization of statistics
         ptr_out_absmax = get_ptr(out_absmax)
         with torch_gpu_device(device):
@@ -998,7 +999,8 @@ def fast_linear_forward(proj, X, temp_lora = None, out = None):
 
 def matmul_lora(X, W, W_quant, A, B, s, out = None):
     dtype = X.dtype
-
+    # import pdb
+    # pdb.set_trace()
     if X.dim() == 3:
         batch, seq_len, d = X.shape
         X = X.view(-1, X.shape[-1])

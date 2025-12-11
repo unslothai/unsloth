@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.11.6"
+from .._version import __version__
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -1894,7 +1894,6 @@ def unsloth_compile_transformers(
     for temporary_patch in TEMPORARY_PATCHES:
         temporary_patch()
     return model_types, supports_sdpa[0]
-
 
 # We need an empty logits flag to warn people logits will not be returned anymore unless asked ie
 # os.environ['UNSLOTH_RETURN_LOGITS'] = '1'
