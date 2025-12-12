@@ -125,6 +125,7 @@ from .import_fixes import (
     patch_trackio,
     patch_datasets,
     patch_enable_input_require_grads,
+    fix_openenv_no_vllm,
 )
 
 fix_xformers_performance_issue()
@@ -135,6 +136,7 @@ patch_ipykernel_hf_xet()
 patch_trackio()
 patch_datasets()
 patch_enable_input_require_grads()
+fix_openenv_no_vllm()
 
 del fix_xformers_performance_issue
 del fix_vllm_aimv2_issue
@@ -144,6 +146,7 @@ del patch_ipykernel_hf_xet
 del patch_trackio
 del patch_datasets
 del patch_enable_input_require_grads
+del fix_openenv_no_vllm
 
 # Torch 2.4 has including_emulation
 if DEVICE_TYPE == "cuda":
