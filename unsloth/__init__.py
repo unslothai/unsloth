@@ -16,6 +16,7 @@ import warnings, importlib, sys
 from packaging.version import Version
 import os, re, subprocess, inspect, functools
 import numpy as np
+print([mod for mod in ["trl", "transformers", "peft"] if mod in sys.modules])
 
 # Log Unsloth is being used
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
@@ -26,6 +27,7 @@ from .import_fixes import (
     check_fbgemm_gpu_version,
     torchvision_compatibility_check,
 )
+print([mod for mod in ["trl", "transformers", "peft"] if mod in sys.modules])
 
 fix_message_factory_issue()
 check_fbgemm_gpu_version()
