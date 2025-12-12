@@ -20,8 +20,9 @@ from importlib.metadata import version as importlib_version
 from packaging.version import Version as TrueVersion
 import re
 import logging
+print([mod for mod in ["trl", "transformers", "peft"] if mod in sys.modules])
 from unsloth_zoo.log import logger
-
+print([mod for mod in ["trl", "transformers", "peft"] if mod in sys.modules])
 
 def Version(version):
     try:
@@ -41,7 +42,7 @@ def Version(version):
             f"Unsloth: Could not get version for `{version}`\n"
             f"File name = [{caller.filename}] Line number = [{caller.lineno}]"
         )
-
+print([mod for mod in ["trl", "transformers", "peft"] if mod in sys.modules])
 
 # Ignore logging messages
 class HideLoggingMessage(logging.Filter):
@@ -52,7 +53,7 @@ class HideLoggingMessage(logging.Filter):
 
     def filter(self, x):
         return not (self.text in x.getMessage())
-
+print([mod for mod in ["trl", "transformers", "peft"] if mod in sys.modules])
 
 # Fix up AttributeError: 'MessageFactory' object has no attribute 'GetPrototype'
 # MUST do this at the start primarily due to tensorflow causing issues
@@ -99,7 +100,7 @@ def fix_message_factory_issue():
         pass
     except:
         pass
-
+print([mod for mod in ["trl", "transformers", "peft"] if mod in sys.modules])
 
 # Fix Xformers performance issues since 0.0.25
 def fix_xformers_performance_issue():
@@ -128,7 +129,7 @@ def fix_xformers_performance_issue():
                         )
         except Exception as e:
             logger.info(f"Unsloth: Failed patching Xformers with error = {str(e)}")
-
+print([mod for mod in ["trl", "transformers", "peft"] if mod in sys.modules])
 
 # ValueError: 'aimv2' is already used by a Transformers config, pick another name.
 def fix_vllm_aimv2_issue():
@@ -167,7 +168,7 @@ def fix_vllm_aimv2_issue():
                         )
         except Exception as e:
             logger.info(f"Unsloth: Failed patching vLLM with error = {str(e)}")
-
+print([mod for mod in ["trl", "transformers", "peft"] if mod in sys.modules])
 
 def fix_vllm_guided_decoding_params():
     if importlib.util.find_spec("vllm") is None:
@@ -183,7 +184,7 @@ def fix_vllm_guided_decoding_params():
         vllm.sampling_params.GuidedDecodingParams = (
             vllm.sampling_params.StructuredOutputsParams
         )
-
+print([mod for mod in ["trl", "transformers", "peft"] if mod in sys.modules])
 
 def ignore_logger_messages():
     # Ignore Environment variable `HF_TOKEN` is set
@@ -194,7 +195,7 @@ def ignore_logger_messages():
         del huggingface_hub_logger
     except:
         pass
-
+print([mod for mod in ["trl", "transformers", "peft"] if mod in sys.modules])
 
 def patch_ipykernel_hf_xet():
     # HF-XET == 1.1.10 and ipykernel == 7.0.0 / 7.0.1 causes issues
@@ -226,7 +227,7 @@ def patch_ipykernel_hf_xet():
         from huggingface_hub.utils import disable_progress_bars
 
         disable_progress_bars()
-
+print([mod for mod in ["trl", "transformers", "peft"] if mod in sys.modules])
 
 def patch_trackio():
     # Set some environment variables to customize the Trackio dashboard for experiment tracking
@@ -238,7 +239,7 @@ def patch_trackio():
         "https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20logo%20white%20text.png"
     )
     os.environ["TRACKIO_PLOT_ORDER"] = "train/reward"
-
+print([mod for mod in ["trl", "transformers", "peft"] if mod in sys.modules])
 
 def patch_datasets():
     # Datasets 4.4.0 and 4.4.1 weirdly have some weird `_thread.RLock_recursion_count` issues
@@ -253,7 +254,7 @@ def patch_datasets():
             f"#### Unsloth: Using `datasets = {str(datasets_version)}` will cause recursion errors.\n"
             "Please downgrade datasets to `datasets==4.3.0"
         )
-
+print([mod for mod in ["trl", "transformers", "peft"] if mod in sys.modules])
 
 def check_fbgemm_gpu_version():
     if importlib.util.find_spec("fbgemm_gpu") is None:
