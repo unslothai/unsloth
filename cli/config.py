@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Optional, List
+from typing import Literal, Optional, List
 
 import yaml
 from pydantic import BaseModel, Field
@@ -8,11 +8,11 @@ from pydantic import BaseModel, Field
 class DataConfig(BaseModel):
     dataset: Optional[str] = None
     local_dataset: Optional[List[str]] = None
-    format_type: str = "auto"
+    format_type: Literal["auto", "alpaca", "chatml", "sharegpt"] = "auto"
 
 
 class TrainingConfig(BaseModel):
-    training_type: str = "lora"
+    training_type: Literal["lora", "full"] = "lora"
     max_seq_length: int = 2048
     load_in_4bit: bool = True
     output_dir: Path = Path("./outputs")
@@ -27,7 +27,7 @@ class TrainingConfig(BaseModel):
     random_seed: int = 3407
     packing: bool = False
     train_on_completions: bool = False
-    gradient_checkpointing: bool = True
+    gradient_checkpointing: Literal["unsloth", "true", "none"] = "unsloth"
 
 
 class LoraConfig(BaseModel):
@@ -53,6 +53,7 @@ class LoggingConfig(BaseModel):
     wandb_token: Optional[str] = None
     enable_tensorboard: bool = False
     tensorboard_dir: str = "runs"
+    hf_token: Optional[str] = None
 
 
 class Config(BaseModel):

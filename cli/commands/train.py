@@ -19,6 +19,9 @@ def train(
     hf_token: Optional[str] = typer.Option(
         None, "--hf-token", envvar="HF_TOKEN", help="Hugging Face token if needed."
     ),
+    wandb_token: Optional[str] = typer.Option(
+        None, "--wandb-token", envvar="WANDB_API_KEY", help="Weights & Biases API key."
+    ),
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
@@ -34,6 +37,10 @@ def train(
         raise typer.Exit(code=2)
 
     cfg.apply_overrides(**config_overrides)
+
+    # CLI/env tokens take precedence over config
+    hf_token = hf_token or cfg.logging.hf_token
+    wandb_token = wandb_token or cfg.logging.wandb_token
 
     if dry_run:
         import yaml
@@ -52,13 +59,18 @@ def train(
         )
         raise typer.Exit(code=2)
 
+    from pathlib import Path as PathlibPath
     from backend.trainer import UnslothTrainer
     from backend.model_config import ModelConfig
 
     trainer = UnslothTrainer()
 
+    # Check if the model path is a LoRA adapter (has adapter_config.json)
+    model_path = PathlibPath(cfg.model) if cfg.model else None
+    model_is_lora = model_path and model_path.is_dir() and (model_path / "adapter_config.json").exists()
+
     model_config = ModelConfig.from_ui_selection(
-        dropdown_value=cfg.model, search_value=None, hf_token=hf_token, is_lora=False
+        dropdown_value=cfg.model, search_value=None, hf_token=hf_token, is_lora=model_is_lora
     )
     if not model_config:
         typer.echo("Could not resolve model config", err=True)
@@ -66,6 +78,14 @@ def train(
 
     is_vision = model_config.is_vision
     use_lora = cfg.training.training_type.lower() == "lora"
+
+    if model_is_lora and not use_lora:
+        typer.echo(
+            "Error: Cannot do full finetuning on a LoRA adapter. "
+            "Use --training-type lora or provide a base model.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
 
     if not trainer.load_model(
         model_name=model_config.identifier,
@@ -89,7 +109,9 @@ def train(
         typer.echo("Dataset load failed", err=True)
         raise typer.Exit(code=1)
 
-    started = trainer.start_training(dataset=ds, **cfg.training_kwargs())
+    training_kwargs = cfg.training_kwargs()
+    training_kwargs["wandb_token"] = wandb_token  # CLI/env takes precedence
+    started = trainer.start_training(dataset=ds, **training_kwargs)
 
     if not started:
         typer.echo("Training failed to start", err=True)

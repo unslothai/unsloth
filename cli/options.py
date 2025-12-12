@@ -82,11 +82,15 @@ def add_options_from_config(config_class: type[BaseModel]) -> Callable:
     def decorator(func: Callable) -> Callable:
         sig = inspect.signature(func)
         original_params = list(sig.parameters.values())
+        original_param_names = {p.name for p in original_params}
 
         # Build new parameters: config fields first, then original params
         new_params = []
 
         for field_name, field_info in fields:
+            # Skip fields already defined in function signature (e.g., with envvar)
+            if field_name in original_param_names:
+                continue
             annotation = field_info.annotation
             if _is_list_type(annotation):
                 continue
