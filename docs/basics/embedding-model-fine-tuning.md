@@ -174,16 +174,29 @@ trainer.train()
 
 ## 6. Save a merged model
 
-When training completes, merge adapters and export a plain HF checkpoint:
+When training completes, you should **merge the LoRA adapters first**, then save the full `SentenceTransformer`.
+
+Do **not** call `model.save_pretrained_merged` into the same directory as `sbert_model.save_pretrained`, since it overwrites SentenceTransformer files (like `config.json`) and produces a broken folder.
+
+Correct way:
 
 ```python
+# Merge LoRA weights into the base encoder in-place
+model.merge_and_unload()
+
+# `sbert_model` now contains merged encoder + pooling/normalize heads
 sbert_model.save_pretrained("embeddings_merged")
-model.save_pretrained_merged("embeddings_merged", tokenizer)
 ```
 
-The resulting folder can be uploaded to Hugging Face or used directly for inference.
+The resulting folder can be uploaded to Hugging Face or used directly for inference as a SentenceTransformer.
+
+Optional: if you also want a **plain HF encoder-only checkpoint**, save it to a *different* directory:
+
+```python
+model.save_pretrained("embeddings_merged_hf")
+tokenizer.save_pretrained("embeddings_merged_hf")
+```
 
 ---
 
 If you run into issues with a specific encoder architecture, open an issue with the model ID and a minimal repro.
-
