@@ -386,8 +386,8 @@ def fix_openenv_no_vllm():
             text = f.read()
             bad = (
                 "if is_vllm_available():\n"
-                "from vllm import SamplingParams\n"
-                "from vllm.sampling_params import GuidedDecodingParams\n"
+                "    from vllm import SamplingParams\n"
+                "    from vllm.sampling_params import GuidedDecodingParams\n"
             )
             if bad + "\n" + "\n" in text:
                 text = text.replace(
