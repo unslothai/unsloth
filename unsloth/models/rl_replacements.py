@@ -27,6 +27,7 @@ import inspect
 from collections import defaultdict
 from unsloth_zoo.rl_replacements import RL_REPLACEMENTS, left_pack_padding
 from unsloth_zoo.utils import Version
+from importlib.metadata import version as importlib_version
 from unsloth_zoo.log import logger
 import importlib.util
 from ..device_type import (
