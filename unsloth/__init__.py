@@ -124,7 +124,7 @@ from .import_fixes import (
     patch_ipykernel_hf_xet,
     patch_trackio,
     patch_datasets,
-    patch_enable_input_require_grads,
+    # patch_enable_input_require_grads,
     fix_openenv_no_vllm,
 )
 
@@ -135,7 +135,7 @@ ignore_logger_messages()
 patch_ipykernel_hf_xet()
 patch_trackio()
 patch_datasets()
-patch_enable_input_require_grads()
+# patch_enable_input_require_grads()
 fix_openenv_no_vllm()
 
 del fix_xformers_performance_issue
