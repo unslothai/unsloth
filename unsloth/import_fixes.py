@@ -296,10 +296,6 @@ def patch_enable_input_require_grads():
 
     # Only patch if the new pattern exists (iterating over self.modules())
     if "for module in self.modules()" not in original_source:
-        if UNSLOTH_ENABLE_LOGGING:
-            print(
-                "Unsloth: Skipping enable_input_require_grads patch (older transformers version)"
-            )
         return
 
     def _patched_enable_input_require_grads(self):
