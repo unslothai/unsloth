@@ -370,3 +370,41 @@ def torchvision_compatibility_check():
     logger.info(
         f"Unsloth: torch=={torch_version} and torchvision=={torchvision_version} are compatible."
     )
+
+
+# Fix TRL OpenEnv 0.26 NameError: name 'SamplingParams' is not defined
+def fix_openenv_no_vllm():
+    if importlib.util.find_spec("trl") is None:
+        return
+    trl_location = importlib.util.find_spec("trl").origin
+    trl_location = os.path.split(trl_location)[0]
+    openenv = Path(trl_location) / "experimental" / "openenv" / "utils.py"
+    if not openenv.exists():
+        return
+    try:
+        with open(openenv, "r+", encoding = "utf-8") as f:
+            text = f.read()
+            bad = (
+                "if is_vllm_available():\n"
+                "from vllm import SamplingParams\n"
+                "from vllm.sampling_params import GuidedDecodingParams\n"
+            )
+            if bad + "\n" + "\n" in text:
+                text = text.replace(
+                    bad + "\n" + "\n",
+                    bad + (
+                        "else:\n"
+                        "    from typing import Any\n"\
+                        "    SamplingParams = Any\n"\
+                        "    GuidedDecodingParams = Any\n"
+                        "\n"
+                    )
+                )
+                f.seek(0)
+                f.write(text)
+                f.truncate()
+                logger.info(
+                    "Unsloth: Patching TRL OpenEnv to fix SamplingParams not defined"
+                )
+    except Exception as e:
+        logger.info(f"Unsloth: Failed patching TRL OpenEnv with error = {str(e)}")
