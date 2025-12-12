@@ -18,8 +18,8 @@ import os, re, subprocess, inspect, functools
 import numpy as np
 
 # Log Unsloth is being used
-# We want logger in import_fixes and hence setting it here for zoo to be importable
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
+
 # Fix some issues before importing other packages
 from .import_fixes import (
     fix_message_factory_issue,
@@ -46,7 +46,7 @@ if already_imported:
     # stacklevel=2 makes warning point to user's import line rather than this library code,
     # showing them exactly where to fix the import order in their script
     warnings.warn(
-        f"WARNING: Unsloth should be imported before {', '.join(already_imported)} "
+        f"WARNING: Unsloth should be imported before [{', '.join(already_imported)}] "
         f"to ensure all optimizations are applied. Your code may run slower or encounter "
         f"memory issues without these optimizations.\n\n"
         f"Please restructure your imports with 'import unsloth' at the top of your file.",
