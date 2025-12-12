@@ -319,7 +319,9 @@ def _patch_sft_trainer_auto_packing(trl_module):
             or isinstance(processing_class, ProcessorMixin)
             or is_vlm
             or is_unsupported_model
-            or (os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1") # Disable padding free on forced logits
+            or (
+                os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1"
+            )  # Disable padding free on forced logits
         )
         requested_pack = bool(getattr(config_arg, "packing", False))
         if blocked:
