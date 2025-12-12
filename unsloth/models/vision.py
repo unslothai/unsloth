@@ -911,6 +911,7 @@ class FastBaseModel:
         model,
         r = 16,
         target_modules = None,
+        target_parameters = None,
         lora_alpha = 16,
         lora_dropout = 0.0,
         bias = "none",
@@ -924,6 +925,7 @@ class FastBaseModel:
         random_state = 3407,
         max_seq_length = 2048,  # not used anymore
         use_rslora = False,
+        use_dora = False,
         modules_to_save = None,
         init_lora_weights = True,
         loftq_config = {},
@@ -1005,6 +1007,54 @@ class FastBaseModel:
             elif DEVICE_TYPE == "xpu":
                 torch.xpu.empty_cache()
         max_seq_length = model.max_seq_length
+
+        # Validate target_parameters constraints (PEFT ParamWrapper limitations)
+        if target_parameters is not None:
+            if lora_dropout != 0:
+                raise ValueError(
+                    "Unsloth: target_parameters does not support lora_dropout != 0.\n"
+                    "Please set lora_dropout = 0 when using target_parameters."
+                )
+            if use_dora:
+                raise ValueError(
+                    "Unsloth: target_parameters does not support use_dora = True.\n"
+                    "Please set use_dora = False when using target_parameters."
+                )
+            if bias != "none":
+                raise ValueError(
+                    "Unsloth: target_parameters does not support bias != 'none'.\n"
+                    "Please set bias = 'none' when using target_parameters."
+                )
+
+            # Handle embed_tokens and lm_head in target_parameters
+            # These should be moved to modules_to_save for full fine-tuning
+            final_target_parameters = []
+            for param in target_parameters:
+                # Check for lm_head.weight or lm_head
+                if param in ("lm_head.weight", "lm_head"):
+                    if modules_to_save is None:
+                        modules_to_save = ["lm_head"]
+                    elif "lm_head" not in modules_to_save:
+                        modules_to_save.append("lm_head")
+                    print(
+                        "Unsloth: Detected lm_head in target_parameters - moving to modules_to_save for full training"
+                    )
+                # Check for embed_tokens.weight or embed_tokens
+                elif param in ("embed_tokens.weight", "embed_tokens"):
+                    if modules_to_save is None:
+                        modules_to_save = ["embed_tokens"]
+                    elif "embed_tokens" not in modules_to_save:
+                        modules_to_save.append("embed_tokens")
+                    print(
+                        "Unsloth: Detected embed_tokens in target_parameters - moving to modules_to_save for full training"
+                    )
+                else:
+                    final_target_parameters.append(param)
+            # Update target_parameters to exclude embed_tokens and lm_head
+            target_parameters = (
+                final_target_parameters if final_target_parameters else None
+            )
+
         # If we pass loftq_config = None we will get an error
         loftq_config = validate_loftq_config(
             loftq_config, lora_dropout, bias, init_lora_weights, model
