@@ -36,7 +36,7 @@ from unsloth_zoo.vision_utils import (
     UnslothVisionDataCollator,
 )
 from unsloth_zoo.hf_utils import get_transformers_model_type
-from packaging.version import Version
+from unsloth_zoo.utils import Version
 import dataclasses
 
 __all__ = [
@@ -315,10 +315,11 @@ def _patch_sft_trainer_auto_packing(trl_module):
 
         # We also disable vision language models for padding free collators
         blocked = (
-            data_collator is not None
+            (data_collator is not None)
             or isinstance(processing_class, ProcessorMixin)
             or is_vlm
             or is_unsupported_model
+            or (os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1") # Disable padding free on forced logits
         )
         requested_pack = bool(getattr(config_arg, "packing", False))
         if blocked:

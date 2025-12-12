@@ -282,7 +282,7 @@ def patch_enable_input_require_grads():
     # Ref: https://github.com/huggingface/transformers/pull/41993/files#diff-6b72b98c4c2dcfc6cc606843917733f5d858374fbc22a735ff483bbc0c1e63eaL1979-R1996
     try:
         original_source = inspect.getsource(PreTrainedModel.enable_input_require_grads)
-    except (OSError, TypeError):
+    except:
         return
 
     # Only patch if the new pattern exists (iterating over self.modules())
