@@ -2856,7 +2856,7 @@ def _unsloth_save_torchao_with_given_config(
     if os.path.exists(save_directory):
         try:
             shutil.rmtree(save_directory)
-        except Exception:
+        except:
             pass
 
 
