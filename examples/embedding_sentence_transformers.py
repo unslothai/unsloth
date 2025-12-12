@@ -83,9 +83,9 @@ def get_st_unsloth_wrapper(
     pooling_mode = "cls",
     max_seq_length = MAX_SEQ_LENGTH,
 ):
-    import sentence_transformers
+    from sentence_transformers import models
 
-    transformer_module = sentence_transformers.models.Transformer(
+    transformer_module = models.Transformer(
         model_name_or_path = base_model_id,
         max_seq_length = max_seq_length,
     )
@@ -93,11 +93,11 @@ def get_st_unsloth_wrapper(
     transformer_module.tokenizer = tokenizer
 
     hidden_size = model.config.hidden_size
-    pooling_module = sentence_transformers.models.Pooling(
+    pooling_module = models.Pooling(
         word_embedding_dimension = hidden_size,
         pooling_mode = pooling_mode,
     )
-    normalize_module = sentence_transformers.models.Normalize()
+    normalize_module = models.Normalize()
     return SentenceTransformer(
         modules = [transformer_module, pooling_module, normalize_module]
     )
