@@ -20,6 +20,10 @@ import numpy as np
 # Log Unsloth is being used
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
+# Check if modules that need patching are already imported
+critical_modules = ["trl", "transformers", "peft"]
+already_imported = [mod for mod in critical_modules if mod in sys.modules]
+
 # Fix some issues before importing other packages
 from .import_fixes import (
     fix_message_factory_issue,
@@ -33,10 +37,6 @@ torchvision_compatibility_check()
 del fix_message_factory_issue
 del check_fbgemm_gpu_version
 del torchvision_compatibility_check
-
-# Check if modules that need patching are already imported
-critical_modules = ["trl", "transformers", "peft"]
-already_imported = [mod for mod in critical_modules if mod in sys.modules]
 
 # This check is critical because Unsloth optimizes these libraries by modifying
 # their code at import time. If they're imported first, the original (slower,
