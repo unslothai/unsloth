@@ -108,6 +108,7 @@ _rope_embedding_QK = triton.heuristics(
 
 ROPE_GROUP_SIZE: int = 4
 
+
 def _rope_embedding(
     Q,
     Q_row_stride: tl.constexpr,
