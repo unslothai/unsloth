@@ -71,6 +71,7 @@ def fix_message_factory_issue():
                 return
 
         from unsloth_zoo.log import logger
+
         if not hasattr(google.protobuf.message_factory, "MessageFactory"):
             logger.info("Unsloth: Patching protobuf.MessageFactory as it doesn't exist")
             google.protobuf.message_factory.MessageFactory = MessageFactory
@@ -109,6 +110,7 @@ def fix_xformers_performance_issue():
     xformers_version = importlib_version("xformers")
     if Version(xformers_version) < Version("0.0.29"):
         from unsloth_zoo.log import logger
+
         xformers_location = importlib.util.find_spec("xformers").origin
         xformers_location = os.path.split(xformers_location)[0]
         cutlass = Path(xformers_location) / "ops" / "fmha" / "cutlass.py"
@@ -139,6 +141,7 @@ def fix_vllm_aimv2_issue():
     vllm_version = importlib_version("vllm")
     if Version(vllm_version) < Version("0.10.1"):
         from unsloth_zoo.log import logger
+
         vllm_version = importlib.util.find_spec("vllm").origin
         vllm_version = os.path.split(vllm_version)[0]
         ovis_config = Path(vllm_version) / "transformers_utils" / "configs" / "ovis.py"
@@ -271,6 +274,7 @@ def check_fbgemm_gpu_version():
             f"Unsloth: fbgemm_gpu_genai=={fbgemm_gpu_version} detected. It might cause unexpected issues like segmentation faults. Please uninstall the current one by doing `pip uninstall fbgemm-gpu` && `pip install fbgemm-gpu` to install fbgemm-gpu 1.4.0 or newer!"
         )
     from unsloth_zoo.log import logger
+
     logger.info(f"Unsloth: fbgemm_gpu_genai=={fbgemm_gpu_version} detected.")
 
 
@@ -333,6 +337,7 @@ def patch_enable_input_require_grads():
 
     PreTrainedModel.enable_input_require_grads = _patched_enable_input_require_grads
     from unsloth_zoo.log import logger
+
     logger.info(
         "Unsloth: Patched enable_input_require_grads for vision model compatibility"
     )
@@ -374,6 +379,7 @@ def torchvision_compatibility_check():
             f"Please refer to https://pytorch.org/get-started/previous-versions/ for more information."
         )
     from unsloth_zoo.log import logger
+
     logger.info(
         f"Unsloth: torch=={torch_version} and torchvision=={torchvision_version} are compatible."
     )
@@ -389,6 +395,7 @@ def fix_openenv_no_vllm():
     if not openenv.exists():
         return
     from unsloth_zoo.log import logger
+
     try:
         with open(openenv, "r+", encoding = "utf-8") as f:
             text = f.read()
@@ -400,13 +407,14 @@ def fix_openenv_no_vllm():
             if bad + "\n" + "\n" in text:
                 text = text.replace(
                     bad + "\n" + "\n",
-                    bad + (
+                    bad
+                    + (
                         "else:\n"
-                        "    from typing import Any\n"\
-                        "    SamplingParams = Any\n"\
+                        "    from typing import Any\n"
+                        "    SamplingParams = Any\n"
                         "    GuidedDecodingParams = Any\n"
                         "\n"
-                    )
+                    ),
                 )
                 f.seek(0)
                 f.write(text)
