@@ -196,6 +196,10 @@ model.save_pretrained("embeddings_merged_hf")
 tokenizer.save_pretrained("embeddings_merged_hf")
 ```
 
+## Acknowledgements
+
+This workflow is adapted from community training recipes for Arctic‑Embed models, especially the fine‑tuning approach shared by **electroglyph** in the `arctic-embed-l-tech_and_fiction` model card and its accompanying `train.py`. Thanks for publishing a clear, reproducible embedding LoRA setup.
+
 ---
 
 If you run into issues with a specific encoder architecture, open an issue with the model ID and a minimal repro.
