@@ -17,6 +17,9 @@ from packaging.version import Version
 import os, re, subprocess, inspect, functools
 import numpy as np
 
+# Log Unsloth is being used
+# We want logger in import_fixes and hence setting it here for zoo to be importable
+os.environ["UNSLOTH_IS_PRESENT"] = "1"
 # Fix some issues before importing other packages
 from .import_fixes import (
     fix_message_factory_issue,
@@ -63,8 +66,6 @@ os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 #    "pinned_use_cuda_host_register:True,"\
 #    "pinned_num_register_threads:8"
 
-# Log Unsloth is being used
-os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
 from importlib.metadata import version as importlib_version
 from importlib.metadata import PackageNotFoundError
@@ -123,6 +124,7 @@ from .import_fixes import (
     patch_ipykernel_hf_xet,
     patch_trackio,
     patch_datasets,
+    patch_enable_input_require_grads,
 )
 
 fix_xformers_performance_issue()
@@ -132,6 +134,7 @@ ignore_logger_messages()
 patch_ipykernel_hf_xet()
 patch_trackio()
 patch_datasets()
+patch_enable_input_require_grads()
 
 del fix_xformers_performance_issue
 del fix_vllm_aimv2_issue
@@ -140,6 +143,7 @@ del ignore_logger_messages
 del patch_ipykernel_hf_xet
 del patch_trackio
 del patch_datasets
+del patch_enable_input_require_grads
 
 # Torch 2.4 has including_emulation
 if DEVICE_TYPE == "cuda":
