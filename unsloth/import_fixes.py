@@ -122,7 +122,9 @@ def fix_xformers_performance_issue():
                         f.seek(0)
                         f.write(text)
                         f.truncate()
-                        logger.info("Unsloth: Patching Xformers to fix some performance issues.")
+                        logger.info(
+                            "Unsloth: Patching Xformers to fix some performance issues."
+                        )
         except Exception as e:
             logger.info(f"Unsloth: Failed patching Xformers with error = {str(e)}")
 
@@ -159,7 +161,9 @@ def fix_vllm_aimv2_issue():
                         f.seek(0)
                         f.write(text)
                         f.truncate()
-                        logger.info("Unsloth: Patching vLLM to fix `'aimv2' is already used by a Transformers config, pick another name.`")
+                        logger.info(
+                            "Unsloth: Patching vLLM to fix `'aimv2' is already used by a Transformers config, pick another name.`"
+                        )
         except Exception as e:
             logger.info(f"Unsloth: Failed patching vLLM with error = {str(e)}")
 
@@ -323,7 +327,9 @@ def patch_enable_input_require_grads():
             self._require_grads_hook = hooks[0]
 
     PreTrainedModel.enable_input_require_grads = _patched_enable_input_require_grads
-    logger.info("Unsloth: Patched enable_input_require_grads for vision model compatibility")
+    logger.info(
+        "Unsloth: Patched enable_input_require_grads for vision model compatibility"
+    )
 
 
 def torchvision_compatibility_check():
@@ -361,4 +367,6 @@ def torchvision_compatibility_check():
             f"but found torchvision=={torchvision_version}. "
             f"Please refer to https://pytorch.org/get-started/previous-versions/ for more information."
         )
-    logger.info(f"Unsloth: torch=={torch_version} and torchvision=={torchvision_version} are compatible.")
+    logger.info(
+        f"Unsloth: torch=={torch_version} and torchvision=={torchvision_version} are compatible."
+    )
