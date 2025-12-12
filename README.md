@@ -38,6 +38,13 @@ Notebooks are beginner friendly. Read our [guide](https://docs.unsloth.ai/get-st
 - See [all our models](https://docs.unsloth.ai/get-started/all-our-models) and [all our notebooks](https://docs.unsloth.ai/get-started/unsloth-notebooks)
 - See detailed documentation for Unsloth [here](https://docs.unsloth.ai/)
 
+### Embedding / bi‑encoder fine‑tuning
+
+Unsloth can also fine‑tune **embedding models** (BERT / E5 / Arctic‑Embed / GTE / etc.) using LoRA and the `sentence-transformers` training stack.
+
+- Example script: `examples/embedding_sentence_transformers.py`
+- Guide: `docs/basics/embedding-model-fine-tuning.md`
+
 ## ⚡ Quickstart
 ### Linux or WSL
 ```bash
