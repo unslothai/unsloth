@@ -268,6 +268,7 @@ def check_fbgemm_gpu_version():
         )
     logger.info(f"Unsloth: fbgemm_gpu_genai=={fbgemm_gpu_version} detected.")
 
+print([mod for mod in ["trl", "transformers", "peft"] if mod in sys.modules])
 
 def patch_enable_input_require_grads():
     """
@@ -331,6 +332,7 @@ def patch_enable_input_require_grads():
         "Unsloth: Patched enable_input_require_grads for vision model compatibility"
     )
 
+print([mod for mod in ["trl", "transformers", "peft"] if mod in sys.modules])
 
 def torchvision_compatibility_check():
     if importlib.util.find_spec("torch") is None:
