@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+import sys
 import importlib.util
 from pathlib import Path
 from importlib.metadata import version as importlib_version
