@@ -31,6 +31,7 @@ from ..kernels import (
 )
 from ._utils import __version__, importlib_version, _prepare_model_for_qat
 from ._utils import *
+from .loader_utils import _get_fp8_mode_and_check_settings
 from ..save import patch_saving_functions
 from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
 from peft import PeftModelForCausalLM
@@ -344,6 +345,7 @@ class FastBaseModel:
         max_lora_rank = 64,
         disable_log_stats = False,
         unsloth_vllm_standby = False,
+        load_in_fp8 = False,  # fp8 LoRA (True, False, 'block')
         **kwargs,
     ):
         if unsloth_vllm_standby and os.environ.get("UNSLOTH_VLLM_STANDBY", "0") != "1":
@@ -722,6 +724,17 @@ class FastBaseModel:
                     model_name, model_config
                 )
 
+            fp8_mode = None
+            if load_in_fp8 != False:
+                fp8_mode = _get_fp8_mode_and_check_settings(
+                    load_in_fp8,
+                    fast_inference,
+                    full_finetuning,
+                    load_in_4bit,
+                    load_in_8bit,
+                    load_in_16bit,
+                )
+
             allowed_args = inspect.getfullargspec(load_vllm).args
             load_vllm_kwargs = dict(
                 model_name = model_name,
@@ -736,6 +749,7 @@ class FastBaseModel:
                 use_bitsandbytes = load_in_4bit,
                 unsloth_vllm_standby = unsloth_vllm_standby,
                 is_vision_model = is_vlm,
+                fp8_mode = fp8_mode,
             )
             for allowed_arg in allowed_args:
                 if allowed_arg not in load_vllm_kwargs and allowed_arg in kwargs:
@@ -749,6 +763,7 @@ class FastBaseModel:
                 llm,
                 config = model_config,
                 is_vision_model = is_vlm,
+                load_in_fp8 = load_in_fp8,
             )
             model = convert_vllm_to_huggingface(
                 quant_state_dict,

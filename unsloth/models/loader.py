@@ -241,7 +241,6 @@ class FastLanguageModel(FastLlamaModel):
                     load_in_4bit,
                     load_in_8bit,
                     load_in_16bit,
-                    use_exact_model_name,
                 )
                 model_name = _offline_quantize_to_fp8(model_name, fp8_mode)
             else:
@@ -553,6 +552,7 @@ class FastLanguageModel(FastLlamaModel):
             random_state = random_state,
             max_lora_rank = max_lora_rank,
             disable_log_stats = disable_log_stats,
+            load_in_fp8 = load_in_fp8,
             *args,
             **kwargs,
         )
@@ -775,7 +775,6 @@ class FastModel(FastBaseModel):
                     load_in_4bit,
                     load_in_8bit,
                     load_in_16bit,
-                    use_exact_model_name,
                 )
                 model_name = _offline_quantize_to_fp8(model_name, fp8_mode)
             else:
@@ -1180,6 +1179,7 @@ class FastModel(FastBaseModel):
             random_state = random_state,
             max_lora_rank = max_lora_rank,
             disable_log_stats = disable_log_stats,
+            load_in_fp8 = load_in_fp8,
             *args,
             **kwargs,
         )
