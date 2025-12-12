@@ -19,33 +19,34 @@ import json
 import os
 from huggingface_hub import hf_hub_download
 
+
 class FastSentenceTransformer(FastModel):
     @staticmethod
     def from_pretrained(
         model_name,
-        max_seq_length=None,
-        dtype=None,
-        load_in_4bit=True,
-        load_in_8bit=False,
-        load_in_16bit=False,
-        full_finetuning=False,
-        token=None,
-        device_map="sequential",
-        rope_scaling=None,
-        fix_tokenizer=True,
-        trust_remote_code=False,
-        use_gradient_checkpointing="unsloth",
-        resize_model_vocab=None,
-        revision=None,
-        use_exact_model_name=False,
-        offload_embedding=False,
-        random_state=3407,
-        max_lora_rank=64,
-        disable_log_stats=True,
-        qat_scheme=None,
-        load_in_fp8=False,
-        unsloth_tiled_mlp=False,
-        pooling_mode="mean",
+        max_seq_length = None,
+        dtype = None,
+        load_in_4bit = True,
+        load_in_8bit = False,
+        load_in_16bit = False,
+        full_finetuning = False,
+        token = None,
+        device_map = "sequential",
+        rope_scaling = None,
+        fix_tokenizer = True,
+        trust_remote_code = False,
+        use_gradient_checkpointing = "unsloth",
+        resize_model_vocab = None,
+        revision = None,
+        use_exact_model_name = False,
+        offload_embedding = False,
+        random_state = 3407,
+        max_lora_rank = 64,
+        disable_log_stats = True,
+        qat_scheme = None,
+        load_in_fp8 = False,
+        unsloth_tiled_mlp = False,
+        pooling_mode = "mean",
         **kwargs,
     ):
         try:
@@ -65,30 +66,30 @@ class FastSentenceTransformer(FastModel):
             kwargs["add_pooling_layer"] = False
 
         model, tokenizer = FastModel.from_pretrained(
-            model_name=model_name,
-            max_seq_length=max_seq_length,
-            dtype=dtype,
-            load_in_4bit=load_in_4bit,
-            load_in_8bit=load_in_8bit,
-            load_in_16bit=load_in_16bit,
-            full_finetuning=full_finetuning,
-            token=token,
-            device_map=device_map,
-            rope_scaling=rope_scaling,
-            fix_tokenizer=fix_tokenizer,
-            trust_remote_code=trust_remote_code,
-            use_gradient_checkpointing=use_gradient_checkpointing,
-            resize_model_vocab=resize_model_vocab,
-            revision=revision,
-            return_logits=False,
-            use_exact_model_name=use_exact_model_name,
-            offload_embedding=offload_embedding,
-            random_state=random_state,
-            max_lora_rank=max_lora_rank,
-            disable_log_stats=disable_log_stats,
-            qat_scheme=qat_scheme,
-            load_in_fp8=load_in_fp8,
-            unsloth_tiled_mlp=unsloth_tiled_mlp,
+            model_name = model_name,
+            max_seq_length = max_seq_length,
+            dtype = dtype,
+            load_in_4bit = load_in_4bit,
+            load_in_8bit = load_in_8bit,
+            load_in_16bit = load_in_16bit,
+            full_finetuning = full_finetuning,
+            token = token,
+            device_map = device_map,
+            rope_scaling = rope_scaling,
+            fix_tokenizer = fix_tokenizer,
+            trust_remote_code = trust_remote_code,
+            use_gradient_checkpointing = use_gradient_checkpointing,
+            resize_model_vocab = resize_model_vocab,
+            revision = revision,
+            return_logits = False,
+            use_exact_model_name = use_exact_model_name,
+            offload_embedding = offload_embedding,
+            random_state = random_state,
+            max_lora_rank = max_lora_rank,
+            disable_log_stats = disable_log_stats,
+            qat_scheme = qat_scheme,
+            load_in_fp8 = load_in_fp8,
+            unsloth_tiled_mlp = unsloth_tiled_mlp,
             **kwargs,
         )
 
@@ -141,7 +142,7 @@ class FastSentenceTransformer(FastModel):
                     modules_json_path = os.path.join(model_name, "modules.json")
                 else:
                     modules_json_path = hf_hub_download(
-                        model_name, "modules.json", token=token
+                        model_name, "modules.json", token = token
                     )
 
                 with open(modules_json_path, "r") as f:
@@ -163,7 +164,7 @@ class FastSentenceTransformer(FastModel):
                                 pooling_config_path = hf_hub_download(
                                     model_name,
                                     os.path.join(pooling_path, "config.json"),
-                                    token=token,
+                                    token = token,
                                 )
                             break
 
@@ -188,36 +189,36 @@ class FastSentenceTransformer(FastModel):
                 )
 
         pooling_module = Pooling(
-            word_embedding_dimension=hidden_size,
-            pooling_mode=pooling_mode,
+            word_embedding_dimension = hidden_size,
+            pooling_mode = pooling_mode,
         )
         normalize_module = Normalize()
         modules = [transformer_module, pooling_module, normalize_module]
-        st_model = SentenceTransformer(modules=modules)
+        st_model = SentenceTransformer(modules = modules)
         return st_model
 
     @staticmethod
     def get_peft_model(
         model,
-        r=16,
-        target_modules=[
+        r = 16,
+        target_modules = [
             "query",
             "key",
             "value",
             "dense",
         ],
-        lora_alpha=16,
-        lora_dropout=0.0,
-        bias="none",
-        layers_to_transform=None,
-        layers_pattern=None,
-        use_gradient_checkpointing="unsloth",
-        random_state=3407,
-        max_seq_length=2048,
-        use_rslora=False,
-        modules_to_save=None,
-        init_lora_weights=True,
-        loftq_config={},
+        lora_alpha = 16,
+        lora_dropout = 0.0,
+        bias = "none",
+        layers_to_transform = None,
+        layers_pattern = None,
+        use_gradient_checkpointing = "unsloth",
+        random_state = 3407,
+        max_seq_length = 2048,
+        use_rslora = False,
+        modules_to_save = None,
+        init_lora_weights = True,
+        loftq_config = {},
         **kwargs,
     ):
         from sentence_transformers import SentenceTransformer
@@ -232,21 +233,21 @@ class FastSentenceTransformer(FastModel):
             inner_model = transformer_module.auto_model
 
             peft_model = FastModel.get_peft_model(
-                model=inner_model,
-                r=r,
-                target_modules=target_modules,
-                lora_alpha=lora_alpha,
-                lora_dropout=lora_dropout,
-                bias=bias,
-                layers_to_transform=layers_to_transform,
-                layers_pattern=layers_pattern,
-                use_gradient_checkpointing=use_gradient_checkpointing,
-                random_state=random_state,
-                max_seq_length=max_seq_length,
-                use_rslora=use_rslora,
-                modules_to_save=modules_to_save,
-                init_lora_weights=init_lora_weights,
-                loftq_config=loftq_config,
+                model = inner_model,
+                r = r,
+                target_modules = target_modules,
+                lora_alpha = lora_alpha,
+                lora_dropout = lora_dropout,
+                bias = bias,
+                layers_to_transform = layers_to_transform,
+                layers_pattern = layers_pattern,
+                use_gradient_checkpointing = use_gradient_checkpointing,
+                random_state = random_state,
+                max_seq_length = max_seq_length,
+                use_rslora = use_rslora,
+                modules_to_save = modules_to_save,
+                init_lora_weights = init_lora_weights,
+                loftq_config = loftq_config,
                 **kwargs,
             )
 
@@ -255,20 +256,20 @@ class FastSentenceTransformer(FastModel):
             return model
         else:
             return FastModel.get_peft_model(
-                model=model,
-                r=r,
-                target_modules=target_modules,
-                lora_alpha=lora_alpha,
-                lora_dropout=lora_dropout,
-                bias=bias,
-                layers_to_transform=layers_to_transform,
-                layers_pattern=layers_pattern,
-                use_gradient_checkpointing=use_gradient_checkpointing,
-                random_state=random_state,
-                max_seq_length=max_seq_length,
-                use_rslora=use_rslora,
-                modules_to_save=modules_to_save,
-                init_lora_weights=init_lora_weights,
-                loftq_config=loftq_config,
+                model = model,
+                r = r,
+                target_modules = target_modules,
+                lora_alpha = lora_alpha,
+                lora_dropout = lora_dropout,
+                bias = bias,
+                layers_to_transform = layers_to_transform,
+                layers_pattern = layers_pattern,
+                use_gradient_checkpointing = use_gradient_checkpointing,
+                random_state = random_state,
+                max_seq_length = max_seq_length,
+                use_rslora = use_rslora,
+                modules_to_save = modules_to_save,
+                init_lora_weights = init_lora_weights,
+                loftq_config = loftq_config,
                 **kwargs,
             )
