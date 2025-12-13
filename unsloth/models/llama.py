@@ -624,6 +624,9 @@ def LlamaAttention_fast_forward(
     #     if position_ids is None
     #     else inplace_rope_embedding(Q, K, cos, sin, position_ids)
     # )
+    if position_ids is not None:
+        cos = cos[position_ids]
+        sin = sin[position_ids]
     Q, K = fast_rope_embedding(Q, K, cos, sin)
 
     if past_key_value is not None:
