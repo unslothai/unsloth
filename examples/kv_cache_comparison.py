@@ -132,7 +132,7 @@ def main():
     end_time = time.time()
 
     time_kv = end_time - start_time
-    
+
     # If output_kv is just new tokens (unlikely), or full.
     if output_kv.shape[1] > len_full_tokens:
         new_tokens_kv = output_kv[0][len_full_tokens:]
