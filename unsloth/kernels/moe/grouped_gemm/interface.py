@@ -168,22 +168,22 @@ def grouped_gemm_forward(
     W = W.view(-1, W.shape[-1])
 
     if permute_x or permute_y:
-        assert (
-            gather_indices is not None
-        ), "gather_indices must be provided when permute_x or permute_y is True"
+        assert gather_indices is not None, (
+            "gather_indices must be provided when permute_x or permute_y is True"
+        )
         assert gather_indices.is_contiguous()
         assert gather_indices.device.type == "cuda"
         assert gather_indices.ndim == 1
         total_tokens = gather_indices.shape[0]
         num_tokens = total_tokens // topk
         if permute_x:
-            assert (
-                X.shape[0] == num_tokens
-            ), f"X.shape[0] ({X.shape[0]}) must match num_tokens ({num_tokens})"
+            assert X.shape[0] == num_tokens, (
+                f"X.shape[0] ({X.shape[0]}) must match num_tokens ({num_tokens})"
+            )
         else:
-            assert (
-                X.shape[0] == total_tokens
-            ), f"X.shape[0] ({X.shape[0]}) must match total_tokens ({total_tokens})"
+            assert X.shape[0] == total_tokens, (
+                f"X.shape[0] ({X.shape[0]}) must match total_tokens ({total_tokens})"
+            )
     else:
         total_tokens = X.shape[0]
         num_tokens = total_tokens // topk
@@ -328,12 +328,12 @@ def grouped_gemm_dX(
     use_tma_load_w: use TMA for loading weights.  If TMA supported, this should always be enabled as it is faster than global memory load.
     use_tma_store: use TMA for storing dX.  Incompatible with permute_x.  TODO: add TMA gather / scatter support for Blackwell+ which will enable permute_x and use_tma_store.
     """
-    assert (
-        not fuse_mul_pre
-    ), "fuse_mul_pre should only be used for inference, not for training"
-    assert (
-        not fuse_mul_post
-    ), "fuse_mul_post should only be used for inference, not for training"
+    assert not fuse_mul_pre, (
+        "fuse_mul_pre should only be used for inference, not for training"
+    )
+    assert not fuse_mul_post, (
+        "fuse_mul_post should only be used for inference, not for training"
+    )
     assert dY.is_contiguous()
     assert W.is_contiguous()
     assert m_sizes.is_contiguous()
@@ -370,15 +370,15 @@ def grouped_gemm_dX(
     N = N_total // num_experts
     assert N_grad == N, f"Grad_output N ({N_grad}) must match weight N ({N})"
 
-    assert (
-        M_total % topk == 0
-    ), f"M_total ({M_total}) must be divisible by topk ({topk})"
+    assert M_total % topk == 0, (
+        f"M_total ({M_total}) must be divisible by topk ({topk})"
+    )
     num_tokens = M_total // topk
 
     total_tokens = gather_indices.shape[0]
-    assert (
-        total_tokens == M_total
-    ), f"Total tokens ({total_tokens}) must match M_total ({M_total})"
+    assert total_tokens == M_total, (
+        f"Total tokens ({total_tokens}) must match M_total ({M_total})"
+    )
 
     # Note that the output shape is [NUM_TOKENS * TOPK, K] even when `permute_x` is True since we need to accumulate gradients across all experts chosen by the token.
     # This will be done in a post-processing step reduction step.
@@ -693,17 +693,17 @@ class GroupedGemm(torch.autograd.Function):
 
         if not autotune:
             if not dW_only:
-                assert (
-                    kernel_config_bwd_dX is not None
-                ), "kernel_config_bwd_dX must be provided if autotune is False"
+                assert kernel_config_bwd_dX is not None, (
+                    "kernel_config_bwd_dX must be provided if autotune is False"
+                )
             if not dX_only:
-                assert (
-                    kernel_config_bwd_dW is not None
-                ), "kernel_config_bwd_dW must be provided if autotune is False"
+                assert kernel_config_bwd_dW is not None, (
+                    "kernel_config_bwd_dW must be provided if autotune is False"
+                )
 
-        assert (
-            not fuse_mul_post
-        ), "fused_mul should only be used for inference, not for training"
+        assert not fuse_mul_post, (
+            "fused_mul should only be used for inference, not for training"
+        )
 
         if not dX_only:
             bwd_dW_config = {}
@@ -799,21 +799,21 @@ def check_valid_config_fwd(
     is_second_gemm = not is_first_gemm
 
     assert not (permute_x and permute_y), "Cannot permute both X and Y"
-    assert not (
-        is_second_gemm and permute_x
-    ), "Cannot permute X for the second grouped GEMM"
-    assert not (
-        is_first_gemm and permute_y
-    ), "Cannot permute Y for the first grouped GEMM"
-    assert not (
-        fuse_mul_post and is_first_gemm
-    ), "Cannot fuse mul for the first grouped GEMM"
-    assert not (
-        use_tma_load_x and permute_x
-    ), "Cannot use TMA load and permute X unless on sm100+ (Blackwell+)"
-    assert not (
-        use_tma_store and permute_y and is_second_gemm
-    ), "Cannot use TMA store and permute Y for the second grouped GEMM unless on sm100+ (Blackwell+)"
+    assert not (is_second_gemm and permute_x), (
+        "Cannot permute X for the second grouped GEMM"
+    )
+    assert not (is_first_gemm and permute_y), (
+        "Cannot permute Y for the first grouped GEMM"
+    )
+    assert not (fuse_mul_post and is_first_gemm), (
+        "Cannot fuse mul for the first grouped GEMM"
+    )
+    assert not (use_tma_load_x and permute_x), (
+        "Cannot use TMA load and permute X unless on sm100+ (Blackwell+)"
+    )
+    assert not (use_tma_store and permute_y and is_second_gemm), (
+        "Cannot use TMA store and permute Y for the second grouped GEMM unless on sm100+ (Blackwell+)"
+    )
 
 
 def check_valid_config_bwd_dW(
@@ -901,9 +901,9 @@ def grouped_gemm(
 
     """
     if not autotune:
-        assert (
-            kernel_config_fwd is not None
-        ), "kernel_config_fwd must be provided if autotune is False"
+        assert kernel_config_fwd is not None, (
+            "kernel_config_fwd must be provided if autotune is False"
+        )
 
         check_valid_config_fwd(
             permute_x,
@@ -936,14 +936,14 @@ def grouped_gemm(
             )
 
     if permute_x or permute_y:
-        assert (
-            gather_indices is not None
-        ), "gather_indices is required when either permute_x or permute_y is True"
+        assert gather_indices is not None, (
+            "gather_indices is required when either permute_x or permute_y is True"
+        )
 
     if fuse_mul_post:
-        assert (
-            topk_weights is not None
-        ), "topk_weights is required when fuse_mul_post is True"
+        assert topk_weights is not None, (
+            "topk_weights is required when fuse_mul_post is True"
+        )
 
     X = X.view(-1, X.shape[-1])
     m_sizes = m_sizes.view(-1)
