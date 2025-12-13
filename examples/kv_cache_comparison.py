@@ -23,7 +23,23 @@ def main():
     # The baseline has to process (History + New) every time.
     # The KV Cache version only processes (New) + (Cached History).
     
-    long_text = "Unsloth is a library that makes LLM finetuning faster and uses less memory. " * 50
+    long_text = """
+    The Transformer is a deep learning architecture introduced by Google researchers in the 2017 paper "Attention Is All You Need". It has since become the foundation for many state-of-the-art natural language processing (NLP) models, including BERT, GPT, and T5. Unlike Recurrent Neural Networks (RNNs) and Long Short-Term Memory (LSTM) networks, which process data sequentially, Transformers process the entire input sequence simultaneously using a mechanism called "self-attention". This allows for significantly greater parallelization during training and enables the model to capture long-range dependencies in the text more effectively.
+
+    The core component of the Transformer is the "attention mechanism", which weighs the importance of different words in a sentence relative to each other. For example, in the sentence "The animal didn't cross the street because it was too tired", the attention mechanism helps the model understand that "it" refers to "the animal" rather than "the street". This capability is crucial for tasks like machine translation, text summarization, and question answering.
+
+    Large Language Models (LLMs) like GPT-4 and Llama 3 are built upon the Transformer architecture. These models are trained on massive datasets comprising text from the internet, books, and articles. Through this training, they learn to predict the next word in a sequence, effectively learning the statistical structure of language. This simple objective, when scaled up with billions of parameters and terabytes of data, results in emergent capabilities such as reasoning, coding, and creative writing.
+
+    One of the key challenges in deploying LLMs is their computational cost. Generating text token-by-token requires loading the model's weights into memory for each step. Additionally, the attention mechanism's computational complexity grows quadratically with the sequence length. This is where techniques like KV Caching come into play. KV Caching involves storing the Key (K) and Value (V) matrices computed for previous tokens so that they don't need to be recomputed at every step of generation. This dramatically reduces the computational overhead, especially for long sequences.
+
+    Unsloth is an optimization library designed to make the fine-tuning and inference of these Large Language Models faster and more memory-efficient. By rewriting core kernels in Triton and CUDA, Unsloth achieves significant speedups over standard implementations. It optimizes the backward pass for training and the forward pass for inference, ensuring that researchers and developers can work with state-of-the-art models on consumer-grade hardware.
+
+    The evolution of LLMs is moving at a breakneck pace. We are seeing models that can process millions of tokens of context, multimodal models that can understand images and audio, and agents that can take actions in the real world. Despite these advancements, the fundamental principles of the Transformer and the need for efficient computation remain constant. Tools like Unsloth play a vital role in democratizing access to this powerful technology.
+
+    In recent years, the open-source community has played a pivotal role in advancing LLM technology. Models like Llama, Mistral, and Qwen have matched or exceeded the performance of proprietary models in many benchmarks. This open ecosystem fosters innovation, allowing developers to build specialized applications for healthcare, law, education, and more. However, running these models efficiently remains a hurdle, which is why optimization techniques are more important than ever.
+
+    As we look to the future, we can expect further architectural innovations that may eventually supersede the Transformer. State Space Models (SSMs) like Mamba are gaining traction for their linear scaling properties. Hybrid architectures that combine the best of Transformers and SSMs are also being explored. Regardless of the architecture, the goal remains the same: to create intelligent systems that can understand and generate human language with high accuracy and efficiency.
+    """
     messages_history = [
         {"role": "user", "content": f"Here is some context about Unsloth: {long_text}"},
         {"role": "assistant", "content": "I have read the context. How can I help you?"},
@@ -88,19 +104,6 @@ def main():
 
     # 5. KV Cache Generation
     print("\n--- KV Cache Generation (Passing custom KV) ---")
-    
-    # We pass the SAME inputs_full. Unsloth/HF should detect we passed past_key_values 
-    # and slice input_ids to just the new tokens automatically?
-    # Wait, standard HF `generate` with `past_key_values` expects `input_ids` to be ONLY the new tokens 
-    # IF the model is not prepared to handle full inputs. 
-    # But Unsloth's `_fast_prepare_inputs_for_generation` handles slicing!
-    # It checks `past_length` vs `input_ids.shape[1]`.
-    
-    # Let's verify what we are passing.
-    # inputs_full has length `len_full_tokens`.
-    # past_key_values_history has length `len_history_tokens`.
-    # So `input_ids.shape[1] (full) > past_length (history)` is True.
-    # Unsloth should slice it: `input_ids = input_ids[:, past_length:]`.
     
     torch.cuda.synchronize()
     start_time = time.time()
