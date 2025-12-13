@@ -135,7 +135,9 @@ def add_options_from_config(config_class: type[BaseModel]) -> Callable:
                 if key in field_names:
                     if kwargs[key] is not None:
                         config_overrides[key] = kwargs[key]
-                    del kwargs[key]
+                    # Only delete if not an explicitly declared parameter
+                    if key not in original_param_names:
+                        del kwargs[key]
 
             kwargs["config_overrides"] = config_overrides
             return func(*args, **kwargs)
