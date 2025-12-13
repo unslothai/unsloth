@@ -132,15 +132,7 @@ def main():
     end_time = time.time()
 
     time_kv = end_time - start_time
-
-    # output_kv includes input_ids? Usually yes.
-    # But if we passed past_key_values, does it return full sequence?
-    # Yes, generate usually returns full sequence.
-
-    # However, if Unsloth sliced the input internally, `generate` might be confused about what "input" was?
-    # No, `generate` manages the loop.
-
-    # Let's decode carefully.
+    
     # If output_kv is just new tokens (unlikely), or full.
     if output_kv.shape[1] > len_full_tokens:
         new_tokens_kv = output_kv[0][len_full_tokens:]
