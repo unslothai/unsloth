@@ -3022,8 +3022,11 @@ class FastLlamaModel:
                         if hasattr(target_module, "weight"):
                             try:
                                 delattr(target_module, "weight")
-                            except Exception:
-                                pass
+                            except Exception as exc:
+                                logger.warning_once(
+                                    f"Unsloth: Could not delete existing weight attr during retie on "
+                                    f"{type(target_module).__name__}: {exc}"
+                                )
                         target_module.register_parameter("weight", weight)
 
                     # Tie trainable copies created by ModulesToSaveWrapper first (these are used in forward)
