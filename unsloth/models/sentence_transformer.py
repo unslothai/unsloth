@@ -65,33 +65,39 @@ class FastSentenceTransformer(FastModel):
         if "add_pooling_layer" not in kwargs:
             kwargs["add_pooling_layer"] = False
 
-        model, tokenizer = FastModel.from_pretrained(
-            model_name = model_name,
-            max_seq_length = max_seq_length,
-            dtype = dtype,
-            load_in_4bit = load_in_4bit,
-            load_in_8bit = load_in_8bit,
-            load_in_16bit = load_in_16bit,
-            full_finetuning = full_finetuning,
-            token = token,
-            device_map = device_map,
-            rope_scaling = rope_scaling,
-            fix_tokenizer = fix_tokenizer,
-            trust_remote_code = trust_remote_code,
-            use_gradient_checkpointing = use_gradient_checkpointing,
-            resize_model_vocab = resize_model_vocab,
-            revision = revision,
-            return_logits = False,
-            use_exact_model_name = use_exact_model_name,
-            offload_embedding = offload_embedding,
-            random_state = random_state,
-            max_lora_rank = max_lora_rank,
-            disable_log_stats = disable_log_stats,
-            qat_scheme = qat_scheme,
-            load_in_fp8 = load_in_fp8,
-            unsloth_tiled_mlp = unsloth_tiled_mlp,
-            **kwargs,
-        )
+        old_environ = os.environ.get("UNSLOTH_WARN_UNINITIALIZED", "1")
+        os.environ["UNSLOTH_WARN_UNINITIALIZED"] = "0"
+        
+        try:
+            model, tokenizer = FastModel.from_pretrained(
+                model_name = model_name,
+                max_seq_length = max_seq_length,
+                dtype = dtype,
+                load_in_4bit = load_in_4bit,
+                load_in_8bit = load_in_8bit,
+                load_in_16bit = load_in_16bit,
+                full_finetuning = full_finetuning,
+                token = token,
+                device_map = device_map,
+                rope_scaling = rope_scaling,
+                fix_tokenizer = fix_tokenizer,
+                trust_remote_code = trust_remote_code,
+                use_gradient_checkpointing = use_gradient_checkpointing,
+                resize_model_vocab = resize_model_vocab,
+                revision = revision,
+                return_logits = False,
+                use_exact_model_name = use_exact_model_name,
+                offload_embedding = offload_embedding,
+                random_state = random_state,
+                max_lora_rank = max_lora_rank,
+                disable_log_stats = disable_log_stats,
+                qat_scheme = qat_scheme,
+                load_in_fp8 = load_in_fp8,
+                unsloth_tiled_mlp = unsloth_tiled_mlp,
+                **kwargs,
+            )
+        finally:
+            os.environ["UNSLOTH_WARN_UNINITIALIZED"] = old_environ
 
         transformer_module = Transformer.__new__(Transformer)
         torch.nn.Module.__init__(transformer_module)
