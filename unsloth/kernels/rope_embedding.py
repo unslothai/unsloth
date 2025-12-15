@@ -20,13 +20,6 @@ from ..device_type import DEVICE_COUNT
 from .utils import calculate_settings, torch_gpu_device, torch_device_stream
 
 
-@triton.heuristics(
-    {
-        "BACKWARD_PASS": lambda args: bool(args["BACKWARD_PASS"]),
-        "HAS_ROPE_INDICES": lambda args: bool(args["HAS_ROPE_INDICES"]),
-    }
-)
-@triton.jit
 def _rope_embedding_QK(
     Q,
     Q_batch_stride,
@@ -102,6 +95,15 @@ def _rope_embedding_QK(
         k1 = tl.load(k_ptr + half_head_dim + col_offsets, mask = mask, other = 0)
         tl.store(k_ptr + col_offsets, k0 * cos1 - k1 * sin1, mask = mask)
         tl.store(k_ptr + half_head_dim + col_offsets, k1 * cos1 + k0 * sin1, mask = mask)
+
+
+_rope_embedding_QK = triton.jit(_rope_embedding_QK)
+_rope_embedding_QK = triton.heuristics(
+    {
+        "BACKWARD_PASS": lambda args: bool(args["BACKWARD_PASS"]),
+        "HAS_ROPE_INDICES": lambda args: bool(args["HAS_ROPE_INDICES"]),
+    }
+)(_rope_embedding_QK)
 
 
 ROPE_GROUP_SIZE: int = 4
