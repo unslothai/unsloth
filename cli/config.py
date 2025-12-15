@@ -38,9 +38,6 @@ class LoraConfig(BaseModel):
     vision_all_linear: bool = False
     use_rslora: bool = False
     use_loftq: bool = False
-
-
-class VisionConfig(BaseModel):
     finetune_vision_layers: bool = True
     finetune_language_layers: bool = True
     finetune_attention_modules: bool = True
@@ -61,7 +58,6 @@ class Config(BaseModel):
     data: DataConfig = Field(default_factory=DataConfig)
     training: TrainingConfig = Field(default_factory=TrainingConfig)
     lora: LoraConfig = Field(default_factory=LoraConfig)
-    vision: VisionConfig = Field(default_factory=VisionConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
 
     def apply_overrides(self, **kwargs):
@@ -72,7 +68,7 @@ class Config(BaseModel):
             if hasattr(self, key):
                 setattr(self, key, value)
             else:
-                for section in (self.data, self.training, self.lora, self.vision, self.logging):
+                for section in (self.data, self.training, self.lora, self.logging):
                     if hasattr(section, key):
                         setattr(section, key, value)
                         break
@@ -87,10 +83,10 @@ class Config(BaseModel):
 
         return {
             "use_lora": use_lora,
-            "finetune_vision_layers": self.vision.finetune_vision_layers,
-            "finetune_language_layers": self.vision.finetune_language_layers,
-            "finetune_attention_modules": self.vision.finetune_attention_modules,
-            "finetune_mlp_modules": self.vision.finetune_mlp_modules,
+            "finetune_vision_layers": self.lora.finetune_vision_layers,
+            "finetune_language_layers": self.lora.finetune_language_layers,
+            "finetune_attention_modules": self.lora.finetune_attention_modules,
+            "finetune_mlp_modules": self.lora.finetune_mlp_modules,
             "target_modules": target_modules,
             "lora_r": self.lora.lora_r,
             "lora_alpha": self.lora.lora_alpha,
