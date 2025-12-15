@@ -67,7 +67,7 @@ class FastSentenceTransformer(FastModel):
 
         old_environ = os.environ.get("UNSLOTH_WARN_UNINITIALIZED", "1")
         os.environ["UNSLOTH_WARN_UNINITIALIZED"] = "0"
-        
+
         try:
             model, tokenizer = FastModel.from_pretrained(
                 model_name = model_name,
