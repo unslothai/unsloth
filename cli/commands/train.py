@@ -59,24 +59,9 @@ def train(
         )
         raise typer.Exit(code=2)
 
-    from pathlib import Path as PathlibPath
-    from backend.trainer import UnslothTrainer
-    from backend.model_config import ModelConfig
-
-    trainer = UnslothTrainer()
-
     # Check if the model path is a LoRA adapter (has adapter_config.json)
-    model_path = PathlibPath(cfg.model) if cfg.model else None
+    model_path = Path(cfg.model) if cfg.model else None
     model_is_lora = model_path and model_path.is_dir() and (model_path / "adapter_config.json").exists()
-
-    model_config = ModelConfig.from_ui_selection(
-        dropdown_value=cfg.model, search_value=None, hf_token=hf_token, is_lora=model_is_lora
-    )
-    if not model_config:
-        typer.echo("Could not resolve model config", err=True)
-        raise typer.Exit(code=1)
-
-    is_vision = model_config.is_vision
     use_lora = cfg.training.training_type.lower() == "lora"
 
     if model_is_lora and not use_lora:
@@ -86,6 +71,20 @@ def train(
             err=True,
         )
         raise typer.Exit(code=2)
+
+    from backend.trainer import UnslothTrainer
+    from backend.model_config import ModelConfig
+
+    trainer = UnslothTrainer()
+
+    model_config = ModelConfig.from_ui_selection(
+        dropdown_value=cfg.model, search_value=None, hf_token=hf_token, is_lora=model_is_lora
+    )
+    if not model_config:
+        typer.echo("Could not resolve model config", err=True)
+        raise typer.Exit(code=1)
+
+    is_vision = model_config.is_vision
 
     if not trainer.load_model(
         model_name=model_config.identifier,
