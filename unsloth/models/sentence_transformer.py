@@ -65,6 +65,9 @@ class FastSentenceTransformer(FastModel):
         if "add_pooling_layer" not in kwargs:
             kwargs["add_pooling_layer"] = False
 
+        # this is a fix for Snowflake/snowflake-arctic-embed-l-v2.0
+        # it has pooler weights which we don't care about for training,
+        # however unsloth throws an exception if "UNSLOTH_WARN_UNINITIALIZED" == 1 and it sees unused weights
         old_environ = os.environ.get("UNSLOTH_WARN_UNINITIALIZED", "1")
         os.environ["UNSLOTH_WARN_UNINITIALIZED"] = "0"
         
@@ -103,8 +106,11 @@ class FastSentenceTransformer(FastModel):
         torch.nn.Module.__init__(transformer_module)
         transformer_module.auto_model = model
         transformer_module.tokenizer = tokenizer
+        # add do_lower_case to sentence_bert_config.json
         transformer_module.do_lower_case = getattr(tokenizer, "do_lower_case", False)
-
+        # the model_forward_params bit is needed because here: 
+        # https://github.com/huggingface/sentence-transformers/blob/main/sentence_transformers/models/Transformer.py#L260
+        # sentence-transformers only passes along the keys it knows are needed
         model_forward_params = list(inspect.signature(model.forward).parameters)
         transformer_module.model_forward_params = set(model_forward_params) | {
             "input_ids",
@@ -128,11 +134,15 @@ class FastSentenceTransformer(FastModel):
                 max_seq_length = tokenizer.model_max_length
             else:
                 max_seq_length = 512  # default
+            print(f"max_seq_length set to: {max_seq_length}")
 
         transformer_module.max_seq_length = max_seq_length
+        # save these in config
         transformer_module.config_keys = ["max_seq_length", "do_lower_case"]
+        # don't create subdirectories for each module
         transformer_module.save_in_root = True
         if hasattr(model, "config"):
+            # save tokenizer class in config for sentence-transformers
             model.config.tokenizer_class = tokenizer.__class__.__name__
 
         hidden_size = model.config.hidden_size
