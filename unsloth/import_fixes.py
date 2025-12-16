@@ -19,8 +19,6 @@ from importlib.metadata import version as importlib_version
 from packaging.version import Version as TrueVersion
 import re
 import logging
-# Cannot import logger here since it'll import transformers
-# from unsloth_zoo.log import logger
 
 
 def Version(version):
