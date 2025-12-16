@@ -67,7 +67,7 @@ class FastSentenceTransformer(FastModel):
 
         old_environ = os.environ.get("UNSLOTH_WARN_UNINITIALIZED", "1")
         os.environ["UNSLOTH_WARN_UNINITIALIZED"] = "0"
-
+        
         try:
             model, tokenizer = FastModel.from_pretrained(
                 model_name = model_name,
@@ -103,9 +103,7 @@ class FastSentenceTransformer(FastModel):
         torch.nn.Module.__init__(transformer_module)
         transformer_module.auto_model = model
         transformer_module.tokenizer = tokenizer
-        transformer_module.do_lower_case = False
-        if hasattr(tokenizer, "do_lower_case"):
-            transformer_module.do_lower_case = tokenizer.do_lower_case
+        transformer_module.do_lower_case = getattr(tokenizer, "do_lower_case", False)
 
         model_forward_params = list(inspect.signature(model.forward).parameters)
         transformer_module.model_forward_params = set(model_forward_params) | {
