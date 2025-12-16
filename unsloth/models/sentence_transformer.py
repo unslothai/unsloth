@@ -44,7 +44,6 @@ class FastSentenceTransformer(FastModel):
         max_lora_rank = 64,
         disable_log_stats = True,
         qat_scheme = None,
-        load_in_fp8 = False,
         unsloth_tiled_mlp = False,
         pooling_mode = "mean",
         **kwargs,
@@ -64,6 +63,10 @@ class FastSentenceTransformer(FastModel):
 
         if "add_pooling_layer" not in kwargs:
             kwargs["add_pooling_layer"] = False
+
+        # forces fp8 to be False since it's not supported
+        kwargs.pop("load_in_fp8", None)
+        load_in_fp8 = False
 
         # this is a fix for Snowflake/snowflake-arctic-embed-l-v2.0
         # it has pooler weights which we don't care about for training,
