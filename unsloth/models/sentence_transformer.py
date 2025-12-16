@@ -232,6 +232,17 @@ class FastSentenceTransformer(FastModel):
                 except:
                     pass
 
+            # remove quantization_config to prevent saving 4bit config for a 16bit merged model
+            config = self[0].auto_model.config
+            original_quantization_config = getattr(config, "quantization_config", None)
+            if original_quantization_config is not None:
+                del config.quantization_config
+                
+            config.save_pretrained(save_directory)
+
+            if original_quantization_config is not None:
+                config.quantization_config = original_quantization_config
+
             # save merged weights
             tokenizer = kwargs.pop("tokenizer", self.tokenizer)
             self[0].auto_model.save_pretrained_merged(save_directory, tokenizer=tokenizer, **kwargs)
