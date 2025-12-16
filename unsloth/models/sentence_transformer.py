@@ -298,23 +298,12 @@ class FastSentenceTransformer(FastModel):
             # sentence-transformers config and modules only get saved if we call save_pretrained
             self.save_pretrained(save_directory)
             
-            # Remove LoRA adapters since we are saving the merged model
+            # remove LoRA adapters since we are saving the merged model
             for file in ["adapter_model.safetensors", "adapter_config.json"]:
                 try:
                     os.remove(os.path.join(save_directory, file))
                 except:
                     pass
-
-            # remove quantization_config to prevent saving 4bit config for a 16bit merged model
-            config = self[0].auto_model.config
-            original_quantization_config = getattr(config, "quantization_config", None)
-            if original_quantization_config is not None:
-                del config.quantization_config
-                
-            config.save_pretrained(save_directory)
-
-            if original_quantization_config is not None:
-                config.quantization_config = original_quantization_config
 
             # save merged weights
             tokenizer = kwargs.pop("tokenizer", self.tokenizer)
