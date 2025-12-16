@@ -13,17 +13,19 @@
 # limitations under the License.
 
 from .loader import FastModel
-import torch
 import inspect
 import json
 import os
 import types
 from huggingface_hub import hf_hub_download
+from sentence_transformers.models import Transformer, Pooling, Normalize
+from sentence_transformers.util import import_from_string, load_dir_path
+from collections import OrderedDict
 
 
 class FastSentenceTransformer(FastModel):
     @staticmethod
-    def read_pooling_mode(model_name, token):
+    def _read_pooling_mode(model_name, token):
         try:
             if os.path.exists(model_name) and os.path.exists(
                 os.path.join(model_name, "modules.json")
@@ -81,6 +83,126 @@ class FastSentenceTransformer(FastModel):
             return "mean"
     
     @staticmethod
+    def _load_modules(model_name, token, model, tokenizer, max_seq_length, pooling_mode):
+        modules = OrderedDict()
+        
+        # grope around for modules.json
+        modules_json_path = None
+        if os.path.exists(model_name) and os.path.exists(os.path.join(model_name, "modules.json")):
+             modules_json_path = os.path.join(model_name, "modules.json")
+        else:
+             try:
+                 modules_json_path = hf_hub_download(model_name, "modules.json", token=token)
+             except:
+                 pass
+
+        if modules_json_path and os.path.exists(modules_json_path):
+            with open(modules_json_path, encoding="utf8") as f:
+                modules_config = json.load(f)
+
+            for module_config in modules_config:
+                class_ref = module_config["type"]
+                name = module_config["name"] if "name" in module_config else str(module_config.get("idx", len(modules)))
+                
+                # main module
+                if class_ref == "sentence_transformers.models.Transformer":
+                    transformer_module = Transformer(model_name, max_seq_length=max_seq_length)
+                    transformer_module.auto_model = model
+                    transformer_module.tokenizer = tokenizer
+                    
+                    # move tokenizer do_lower_case to transformer module
+                    transformer_module.do_lower_case = getattr(tokenizer, "do_lower_case", False)
+                    model_forward_params = list(inspect.signature(model.forward).parameters)
+                    transformer_module.model_forward_params = set(model_forward_params) | {
+                        "input_ids", "attention_mask", "token_type_ids", "inputs_embeds",
+                    }
+                    if max_seq_length is None:
+                         pass 
+
+                    # is this overkill? should we just force user to set it?
+                    current_max_seq = max_seq_length
+                    if current_max_seq is None:
+                         if hasattr(model, "config") and hasattr(model.config, "max_position_embeddings"):
+                              current_max_seq = model.config.max_position_embeddings
+                         elif hasattr(tokenizer, "model_max_length"):
+                              current_max_seq = tokenizer.model_max_length
+                         else:
+                              current_max_seq = 512
+                    
+                    transformer_module.max_seq_length = current_max_seq
+                    transformer_module.config_keys = ["max_seq_length", "do_lower_case"]
+                    transformer_module.save_in_root = True
+                    if hasattr(model, "config"):
+                        model.config.tokenizer_class = tokenizer.__class__.__name__
+
+                    modules[name] = transformer_module
+                
+                # load other modules
+                else:
+                    module_path = module_config["path"]
+                    if os.path.isdir(model_name):
+                         load_path = os.path.join(model_name, module_path)
+                    else:
+                         # still looking
+                         try:
+                             load_path = load_dir_path(model_name, module_path, token=token)
+                         except:
+                             print(f"Unsloth Warning: Could not download module {module_path} for {class_ref}. Skipping.")
+                             continue
+                    
+                    module_class = import_from_string(class_ref)
+                    # load module
+                    try:
+                        module = module_class.load(load_path)
+                        modules[name] = module
+                    except Exception as e:
+                        print(f"Unsloth Warning: Failed to load module {name} ({class_ref}) from {load_path}: {e}")
+
+        else:
+            # fallback if no modules.json, is this necessary?
+            print("Unsloth: No modules.json found, falling back to [Transformer, Pooling, Normalize]")
+            transformer_module = Transformer(model_name, max_seq_length=max_seq_length)
+            transformer_module.auto_model = model
+            transformer_module.tokenizer = tokenizer
+            
+            # move tokenizer do_lower_case to transformer module
+            transformer_module.do_lower_case = getattr(tokenizer, "do_lower_case", False)
+            model_forward_params = list(inspect.signature(model.forward).parameters)
+            transformer_module.model_forward_params = set(model_forward_params) | {
+                 "input_ids", "attention_mask", "token_type_ids", "inputs_embeds",
+            }
+            
+            if max_seq_length is None:
+                if hasattr(model, "config") and hasattr(model.config, "max_position_embeddings"):
+                     max_seq_length = model.config.max_position_embeddings
+                elif hasattr(tokenizer, "model_max_length"):
+                     max_seq_length = tokenizer.model_max_length
+                else:
+                     max_seq_length = 512
+            transformer_module.max_seq_length = max_seq_length
+            transformer_module.config_keys = ["max_seq_length", "do_lower_case"]
+            transformer_module.save_in_root = True
+            # add tokenizer class to config for sentence-transformers
+            if hasattr(model, "config"):
+                model.config.tokenizer_class = tokenizer.__class__.__name__
+
+            modules["0"] = transformer_module
+            
+            hidden_size = model.config.hidden_size if hasattr(model.config, "hidden_size") else 768
+            
+            if pooling_mode == "mean":
+                pooling_mode = FastSentenceTransformer._read_pooling_mode(model_name, token)
+
+            pooling_module = Pooling(
+                word_embedding_dimension=hidden_size,
+                pooling_mode=pooling_mode,
+            )
+            # end of fallback
+            modules["1"] = pooling_module
+            modules["2"] = Normalize()
+        return modules
+
+    @staticmethod
     def from_pretrained(
         model_name,
         max_seq_length = None,
@@ -134,6 +256,7 @@ class FastSentenceTransformer(FastModel):
         os.environ["UNSLOTH_WARN_UNINITIALIZED"] = "0"
         
         try:
+            # 1. Load the specific FastModel (Unsloth optimized)
             model, tokenizer = FastModel.from_pretrained(
                 model_name = model_name,
                 max_seq_length = max_seq_length,
@@ -164,62 +287,11 @@ class FastSentenceTransformer(FastModel):
         finally:
             os.environ["UNSLOTH_WARN_UNINITIALIZED"] = old_environ
 
-        transformer_module = Transformer.__new__(Transformer)
-        torch.nn.Module.__init__(transformer_module)
-        transformer_module.auto_model = model
-        transformer_module.tokenizer = tokenizer
-        # add do_lower_case to sentence_bert_config.json
-        transformer_module.do_lower_case = getattr(tokenizer, "do_lower_case", False)
-        # the model_forward_params bit is needed because here: 
-        # https://github.com/huggingface/sentence-transformers/blob/main/sentence_transformers/models/Transformer.py#L260
-        # sentence-transformers only passes along the keys it knows are needed
-        model_forward_params = list(inspect.signature(model.forward).parameters)
-        transformer_module.model_forward_params = set(model_forward_params) | {
-            "input_ids",
-            "attention_mask",
-            "token_type_ids",
-            "inputs_embeds",
-        }
+        # try to load modules, otherwise fallback to old hard-coded modules
+        from sentence_transformers import SentenceTransformer
+        modules = FastSentenceTransformer._load_modules(model_name, token, model, tokenizer, max_seq_length, pooling_mode)
 
-        if max_seq_length is None:
-            if (
-                hasattr(model, "config")
-                and hasattr(model.config, "max_position_embeddings")
-                and hasattr(tokenizer, "model_max_length")
-            ):
-                max_seq_length = min(
-                    model.config.max_position_embeddings, tokenizer.model_max_length
-                )
-            elif hasattr(model.config, "max_position_embeddings"):
-                max_seq_length = model.config.max_position_embeddings
-            elif hasattr(tokenizer, "model_max_length"):
-                max_seq_length = tokenizer.model_max_length
-            else:
-                max_seq_length = 512  # default
-            print(f"max_seq_length set to: {max_seq_length}")
-
-        transformer_module.max_seq_length = max_seq_length
-        # save these in config
-        transformer_module.config_keys = ["max_seq_length", "do_lower_case"]
-        # don't create subdirectories for each module
-        transformer_module.save_in_root = True
-        if hasattr(model, "config"):
-            # save tokenizer class in config for sentence-transformers
-            model.config.tokenizer_class = tokenizer.__class__.__name__
-
-        hidden_size = model.config.hidden_size
-
-        # detect pooling mode if not specified/default
-        if pooling_mode == "mean":
-            pooling_mode = FastSentenceTransformer.read_pooling_mode(model_name, token)
-
-        pooling_module = Pooling(
-            word_embedding_dimension = hidden_size,
-            pooling_mode = pooling_mode,
-        )
-        normalize_module = Normalize()
-        modules = [transformer_module, pooling_module, normalize_module]
-        st_model = SentenceTransformer(modules = modules)
+        st_model = SentenceTransformer(modules=modules, device=device_map)
 
         def _save_pretrained_merged(self, save_directory, **kwargs):
             # sentence-transformers config and modules only get saved if we call save_pretrained
