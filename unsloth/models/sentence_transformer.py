@@ -62,6 +62,8 @@ class FastSentenceTransformer(FastModel):
             if pooling_config_path:
                 with open(pooling_config_path, "r") as f:
                     pooling_config = json.load(f)
+                    # from here:
+                    # https://github.com/huggingface/sentence-transformers/blob/main/sentence_transformers/models/Pooling.py#L19
                     pooling_map = {
                         "pooling_mode_cls_token": "cls",
                         "pooling_mode_mean_tokens": "mean",
@@ -256,7 +258,6 @@ class FastSentenceTransformer(FastModel):
         os.environ["UNSLOTH_WARN_UNINITIALIZED"] = "0"
         
         try:
-            # 1. Load the specific FastModel (Unsloth optimized)
             model, tokenizer = FastModel.from_pretrained(
                 model_name = model_name,
                 max_seq_length = max_seq_length,
