@@ -26,7 +26,10 @@ import torch
 import inspect
 from collections import defaultdict
 from unsloth_zoo.rl_replacements import RL_REPLACEMENTS, left_pack_padding
+from unsloth_zoo.utils import Version
+from importlib.metadata import version as importlib_version
 from unsloth_zoo.log import logger
+import importlib.util
 from ..device_type import (
     is_hip,
     get_device_type,
@@ -1079,11 +1082,15 @@ def openenv_vllm_reload_weights():
     #
     # The fix: Use wake_up() with no tags, which wakes everything. Unsloth's patched
     # CuMemAllocator.wake_up skips weights anyway, so this is safe.
+    if importlib.util.find_spec("trl") is None:
+        return
+    if Version(importlib_version("trl")) < Version("0.26.0"):
+        return
     try:
         import trl.experimental.openenv.utils as openenv_utils
         import trl.experimental.openenv as openenv
     except ImportError as e:
-        logger.warning(f"Unsloth: Failed to import trl openenv: {e}")
+        logger.info(f"Unsloth: Failed to import trl openenv: {e}")
         return
 
     src = inspect.getsource(openenv_utils.generate_rollout_completions)

@@ -743,6 +743,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "generation_kwargs": {},
         "bf16": False,
         "fp16": False,
+        "report_to" : "none",
         "include_tokens_per_second": False,
         "include_num_input_tokens_seen": False,
         "auto_find_batch_size": False,  # Auto /2 batch size - too many people complained so removing
@@ -908,8 +909,6 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         process_extra_args = RL_CONFIG_CHANGES[trainer_file]
         for process_extra_arg in process_extra_args:
             extra_args += process_extra_arg(old_RLTrainer_source, old_RLConfig_source)
-
-    # Edit report_to and default it to nothing if max_steps is like 60
 
     # Create RLConfig args
     extra_args = extra_args.split("\n")
