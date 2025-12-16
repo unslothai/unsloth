@@ -17,6 +17,7 @@ import torch
 import inspect
 import json
 import os
+import types
 from huggingface_hub import hf_hub_download
 
 
@@ -219,6 +220,23 @@ class FastSentenceTransformer(FastModel):
         normalize_module = Normalize()
         modules = [transformer_module, pooling_module, normalize_module]
         st_model = SentenceTransformer(modules = modules)
+
+        def _save_pretrained_merged(self, save_directory, **kwargs):
+            # sentence-transformers config and modules only get saved if we call save_pretrained
+            self.save_pretrained(save_directory)
+            
+            # Remove LoRA adapters since we are saving the merged model
+            for file in ["adapter_model.safetensors", "adapter_config.json"]:
+                try:
+                    os.remove(os.path.join(save_directory, file))
+                except:
+                    pass
+
+            # save merged weights
+            tokenizer = kwargs.pop("tokenizer", self.tokenizer)
+            self[0].auto_model.save_pretrained_merged(save_directory, tokenizer=tokenizer, **kwargs)
+
+        st_model.save_pretrained_merged = types.MethodType(_save_pretrained_merged, st_model)
         return st_model
 
     @staticmethod
