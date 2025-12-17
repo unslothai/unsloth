@@ -427,7 +427,7 @@ def fix_openenv_no_vllm():
 # Fix Exeuctorch needing get_mapped_key
 def fix_executorch():
     if importlib.util.find_spec("executorch") is None:
-        print(1)
+        return
     executorch_location = importlib.util.find_spec("executorch").origin
     if executorch_location is None:
         executorch_location = importlib.util.find_spec("executorch").submodule_search_locations[0]
