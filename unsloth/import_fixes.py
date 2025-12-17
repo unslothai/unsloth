@@ -53,6 +53,33 @@ class HideLoggingMessage(logging.Filter):
     def filter(self, x):
         return not (self.text in x.getMessage())
 
+class HidePrintMessage:
+    __slots__ = ("_original_stream", "_hidden_texts")
+
+    def __init__(self, original_stream):
+        self._original_stream = original_stream
+        self._hidden_texts = []
+
+    def add_filter(self, text):
+        self._hidden_texts.append(text)
+
+    def write(self, message):
+        if not any(text in message for text in self._hidden_texts):
+            self._original_stream.write(message)
+
+    def flush(self):
+        self._original_stream.flush()
+
+    def __getattr__(self, name):
+        return getattr(self._original_stream, name)
+
+if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") != "1":
+    import sys
+    # Apply to stderr for FBGEMM
+    sys.stderr = HidePrintMessage(sys.stderr)
+    # https://github.com/pytorch/FBGEMM/blob/d99cd96490ec4aabac2ee95b1e76ea4dcfcfa628/fbgemm_gpu/experimental/gemm/triton_gemm/utils.py#L43-L52
+    sys.stderr.add_filter("TMA benchmarks will be running")
+
 
 # Fix up AttributeError: 'MessageFactory' object has no attribute 'GetPrototype'
 # MUST do this at the start primarily due to tensorflow causing issues

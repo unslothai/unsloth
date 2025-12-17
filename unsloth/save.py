@@ -3010,7 +3010,8 @@ def patch_saving_functions(model, vision = False):
 
     original_model = model
     while True:
-        if original_model.push_to_hub.__name__ != "unsloth_push_to_hub":
+        # Check if push_to_hub exists before accessing its __name__
+        if hasattr(original_model, 'push_to_hub') and original_model.push_to_hub.__name__ != "unsloth_push_to_hub":
             original_model.original_push_to_hub = original_model.push_to_hub
             original_model.push_to_hub = types.MethodType(
                 unsloth_push_to_hub, original_model
