@@ -19,16 +19,25 @@ from importlib.metadata import version as importlib_version
 from packaging.version import Version as TrueVersion
 import re
 import logging
+import textwrap
 
 # We cannot do from unsloth_zoo.log import logger since FBGEMM might cause seg faults.
-UNSLOTH_ENABLE_LOGGING = os.environ.get("UNSLOTH_ENABLE_LOGGING",  "0") in ("1", "True", "true",)
+UNSLOTH_ENABLE_LOGGING = os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") in (
+    "1",
+    "True",
+    "true",
+)
 logger = logging.getLogger(__name__)
 if UNSLOTH_ENABLE_LOGGING:
-    logging.basicConfig(level = logging.INFO, format = '[%(name)s|%(levelname)s]%(message)s')
+    logging.basicConfig(
+        level = logging.INFO, format = "[%(name)s|%(levelname)s]%(message)s"
+    )
     logger.setLevel(logging.INFO)
 else:
-    logging.basicConfig(level = logging.WARNING, format = '[%(name)s|%(levelname)s]%(message)s')
-    logger.setLevel(logging.WARNING) 
+    logging.basicConfig(
+        level = logging.WARNING, format = "[%(name)s|%(levelname)s]%(message)s"
+    )
+    logger.setLevel(logging.WARNING)
 
 
 def Version(version):
@@ -111,12 +120,16 @@ def fix_message_factory_issue():
 
 # Fix Xformers performance issues since 0.0.25
 def fix_xformers_performance_issue():
-    if importlib.util.find_spec("xformers") is None:
+    spec = importlib.util.find_spec("xformers")
+    if spec is None:
         return
     xformers_version = importlib_version("xformers")
     if Version(xformers_version) < Version("0.0.29"):
-        xformers_location = importlib.util.find_spec("xformers").origin
-        xformers_location = os.path.split(xformers_location)[0]
+        xformers_location = spec.origin
+        if xformers_location is None:
+            xformers_location = spec.submodule_search_locations[0]
+        else:
+            xformers_location = os.path.split(xformers_location)[0]
         cutlass = Path(xformers_location) / "ops" / "fmha" / "cutlass.py"
         try:
             if cutlass.exists():
@@ -140,13 +153,17 @@ def fix_xformers_performance_issue():
 
 # ValueError: 'aimv2' is already used by a Transformers config, pick another name.
 def fix_vllm_aimv2_issue():
-    if importlib.util.find_spec("vllm") is None:
+    spec = importlib.util.find_spec("vllm")
+    if spec is None:
         return
     vllm_version = importlib_version("vllm")
     if Version(vllm_version) < Version("0.10.1"):
-        vllm_version = importlib.util.find_spec("vllm").origin
-        vllm_version = os.path.split(vllm_version)[0]
-        ovis_config = Path(vllm_version) / "transformers_utils" / "configs" / "ovis.py"
+        vllm_location = spec.origin
+        if vllm_location is None:
+            vllm_location = spec.submodule_search_locations[0]
+        else:
+            vllm_location = os.path.split(vllm_location)[0]
+        ovis_config = Path(vllm_location) / "transformers_utils" / "configs" / "ovis.py"
         try:
             if ovis_config.exists():
                 with open(ovis_config, "r+", encoding = "utf-8") as f:
@@ -386,10 +403,14 @@ def torchvision_compatibility_check():
 
 # Fix TRL OpenEnv 0.26 NameError: name 'SamplingParams' is not defined
 def fix_openenv_no_vllm():
-    if importlib.util.find_spec("trl") is None:
+    spec = importlib.util.find_spec("trl")
+    if spec is None:
         return
-    trl_location = importlib.util.find_spec("trl").origin
-    trl_location = os.path.split(trl_location)[0]
+    trl_location = spec.origin
+    if trl_location is None:
+        trl_location = spec.submodule_search_locations[0]
+    else:
+        trl_location = os.path.split(trl_location)[0]
     openenv = Path(trl_location) / "experimental" / "openenv" / "utils.py"
     if not openenv.exists():
         return
@@ -402,18 +423,15 @@ def fix_openenv_no_vllm():
                 "    from vllm import SamplingParams\n"
                 "    from vllm.sampling_params import GuidedDecodingParams\n"
             )
-            if bad + "\n" + "\n" in text:
-                text = text.replace(
-                    bad + "\n" + "\n",
-                    bad
-                    + (
-                        "else:\n"
-                        "    from typing import Any\n"
-                        "    SamplingParams = Any\n"
-                        "    GuidedDecodingParams = Any\n"
-                        "\n"
-                    ),
-                )
+            replace_with = bad + (
+                "else:\n"
+                "    from typing import Any\n"
+                "    SamplingParams = Any\n"
+                "    GuidedDecodingParams = Any\n"
+                "\n"
+            )
+            if bad + "\n" + "\n" in text and replace_with not in text:
+                text = text.replace(bad + "\n" + "\n", replace_with)
                 f.seek(0)
                 f.write(text)
                 f.truncate()
@@ -422,3 +440,69 @@ def fix_openenv_no_vllm():
                 )
     except Exception as e:
         logger.info(f"Unsloth: Failed patching TRL OpenEnv with error = {str(e)}")
+
+
+# Fix Exeuctorch needing get_mapped_key
+def fix_executorch():
+    spec = importlib.util.find_spec("executorch")
+    if spec is None:
+        return
+    executorch_location = spec.origin
+    if executorch_location is None:
+        executorch_location = spec.submodule_search_locations[0]
+    else:
+        executorch_location = os.path.split(executorch_location)[0]
+    executorch = Path(executorch_location) / "examples" / "models" / "__init__.py"
+    if not executorch.exists():
+        return
+
+    try:
+        what = r"""
+        import sys
+        import types
+        import re
+        from typing import Any, Optional
+        def get_mapped_key(key: str, mapping_dict: dict[str, str]) -> str:
+            try:
+                # Checks if there is a layer # in the key
+                if any(k.isdigit() for k in key.split(".")):
+                    # Replace layer number with "{}" to create key for lookup
+                    abstract_key = re.sub(r"(\.\d+)", ".{}", key)
+                    layer_num = re.search(r"\d+", key).group(0)
+                    new_key = mapping_dict[abstract_key]
+                    new_key = new_key.format(layer_num)
+                else:
+                    new_key = mapping_dict[key]
+            except KeyError as e:
+                raise Exception(
+                    f'Error converting the state dict. Found unexpected key: "{key}". '
+                    "Please make sure you're loading a checkpoint with the right format. "
+                ) from e
+
+            return new_key
+
+        torchtune = types.ModuleType("torchtune")
+        torchtune.__path__ = []
+        models = types.ModuleType("torchtune.models")
+        models.__path__ = []
+        convert_weights = types.ModuleType("torchtune.models.convert_weights")
+        convert_weights.get_mapped_key = get_mapped_key
+        torchtune.models = models
+        models.convert_weights = convert_weights
+        sys.modules["torchtune"] = torchtune
+        sys.modules["torchtune.models"] = models
+        sys.modules["torchtune.models.convert_weights"] = convert_weights
+        """
+        what = textwrap.dedent(what)
+
+        with open(executorch, "r+", encoding = "utf-8") as f:
+            text = f.read()
+            bad = "from enum import Enum\n"
+            if bad in text and what not in text:
+                text = text.replace(bad + "\n", bad + "\n" + what)
+                f.seek(0)
+                f.write(text)
+                f.truncate()
+                logger.info("Unsloth: Patching Executorch to fix get_mapped_key")
+    except Exception as e:
+        logger.info(f"Unsloth: Failed Executorch with error = {str(e)}")
