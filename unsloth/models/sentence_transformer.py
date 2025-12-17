@@ -85,7 +85,7 @@ class FastSentenceTransformer(FastModel):
             return "mean"
     
     @staticmethod
-    def _load_modules(model_name, token, model, tokenizer, max_seq_length, pooling_mode):
+    def _load_modules(model_name, token, model, tokenizer, max_seq_length, pooling_mode, trust_remote_code = False):
         modules = OrderedDict()
         
         # grope around for modules.json
@@ -108,7 +108,12 @@ class FastSentenceTransformer(FastModel):
                 
                 # main module
                 if class_ref == "sentence_transformers.models.Transformer":
-                    transformer_module = Transformer(model_name, max_seq_length=max_seq_length)
+                    transformer_module = Transformer(
+                        model_name, 
+                        max_seq_length=max_seq_length,
+                        model_args  = {"trust_remote_code" : trust_remote_code},
+                        config_args = {"trust_remote_code" : trust_remote_code},
+                    )
                     transformer_module.auto_model = model
                     transformer_module.tokenizer = tokenizer
                     
@@ -163,7 +168,12 @@ class FastSentenceTransformer(FastModel):
         else:
             # fallback if no modules.json, is this necessary?
             print("Unsloth: No modules.json found, falling back to [Transformer, Pooling, Normalize]")
-            transformer_module = Transformer(model_name, max_seq_length=max_seq_length)
+            transformer_module = Transformer(
+                model_name, 
+                max_seq_length=max_seq_length,
+                model_args  = {"trust_remote_code" : trust_remote_code},
+                config_args = {"trust_remote_code" : trust_remote_code},
+            )
             transformer_module.auto_model = model
             transformer_module.tokenizer = tokenizer
             
@@ -290,7 +300,7 @@ class FastSentenceTransformer(FastModel):
 
         # try to load modules, otherwise fallback to old hard-coded modules
         from sentence_transformers import SentenceTransformer
-        modules = FastSentenceTransformer._load_modules(model_name, token, model, tokenizer, max_seq_length, pooling_mode)
+        modules = FastSentenceTransformer._load_modules(model_name, token, model, tokenizer, max_seq_length, pooling_mode, trust_remote_code=trust_remote_code)
 
         st_model = SentenceTransformer(modules=modules, device=device_map)
 
