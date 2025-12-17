@@ -413,16 +413,6 @@ try:
 except:
     pass
 
-# Flax classes are deprecated and will be removed in Diffusers v1.0.0.
-try:
-    from diffusers.utils import logger as diffusers_logger
-
-    diffusers_logger.addFilter(HideLoggingMessage("are deprecated"))
-    del diffusers_logger
-except:
-    pass
-
-
 # Errors out on
 # Some weights of Gemma3nForConditionalGeneration were not initialized from the model checkpoint
 from transformers.modeling_utils import logger as transformers_logger
