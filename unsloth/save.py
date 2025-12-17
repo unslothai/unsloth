@@ -2745,6 +2745,17 @@ def _unsloth_save_torchao_with_attached_config(
     """Save a QAT-trained model by converting fake-quantized weights to real quantized weights."""
     # Convert QAT fake-quantized weights to real quantized weights
     _convert_torchao_model(model)
+    # PEFT models also might come here, so parse it
+    if isinstance(model, PeftModelForCausalLM):
+        _unsloth_save_torchao_with_given_config(
+            model = model,
+            save_directory = save_directory,
+            tokenizer = tokenizer,
+            torchao_config = model.config.quantization_config,
+            push_to_hub = push_to_hub,
+            token = token,
+        )
+        return
 
     # TorchAO does not support safe_serialization reliably
     safe_serialization = False
@@ -2806,7 +2817,10 @@ def _unsloth_save_torchao_with_given_config(
     )
     from torchao import quantize_
 
-    quantization_config = TorchAoConfig(quant_type = torchao_config)
+    if isinstance(torchao_config, TorchAoConfig):
+        quantization_config = torchao_config
+    else:
+        quantization_config = TorchAoConfig(quant_type = torchao_config)
 
     # Determine if this is a VLM
     is_vlm = False
@@ -2897,7 +2911,7 @@ def unsloth_save_pretrained_torchao(
     )
 
     if torchao_config is not None:
-        # PTQ path: user provided a config, model must NOT have QAT config
+        # PTQ path: user provided a config, model must NOT have QAT config unless PEFT
         assert not has_qat_config, (
             "Unsloth: You passed `torchao_config` but this model was trained with `qat_scheme`. "
             "For QAT models, do not pass `torchao_config` - the quantization config is already "
@@ -3010,7 +3024,11 @@ def patch_saving_functions(model, vision = False):
 
     original_model = model
     while True:
-        if original_model.push_to_hub.__name__ != "unsloth_push_to_hub":
+        # Check if push_to_hub exists before accessing its __name__
+        if (
+            hasattr(original_model, "push_to_hub")
+            and original_model.push_to_hub.__name__ != "unsloth_push_to_hub"
+        ):
             original_model.original_push_to_hub = original_model.push_to_hub
             original_model.push_to_hub = types.MethodType(
                 unsloth_push_to_hub, original_model
