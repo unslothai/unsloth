@@ -79,27 +79,20 @@ def train(
         raise typer.Exit(code=2)
 
     from backend.trainer import UnslothTrainer
-    from backend.model_config import ModelConfig
 
     trainer = UnslothTrainer()
 
-    model_config = ModelConfig.from_ui_selection(
-        dropdown_value=cfg.model, search_value=None, hf_token=hf_token, is_lora=model_is_lora
-    )
-    if not model_config:
-        typer.echo("Could not resolve model config", err=True)
-        raise typer.Exit(code=1)
-
-    is_vision = model_config.is_vision
-
+    # Load model (trainer.is_vlm is set after this)
     if not trainer.load_model(
-        model_name=model_config.identifier,
+        model_name=cfg.model,
         max_seq_length=cfg.training.max_seq_length,
         load_in_4bit=cfg.training.load_in_4bit if use_lora else False,
         hf_token=hf_token,
     ):
         typer.echo("Model load failed", err=True)
         raise typer.Exit(code=1)
+
+    is_vision = trainer.is_vlm
 
     if not trainer.prepare_model_for_training(**cfg.model_kwargs(use_lora, is_vision)):
         typer.echo("Model preparation failed", err=True)
