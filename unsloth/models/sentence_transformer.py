@@ -120,7 +120,7 @@ class FastSentenceTransformer(FastModel):
             ):
                 # backwards compatibility for older transformers versions (4.57.3 and below)
                 head_mask = kwargs.pop("head_mask", None)
-                
+
                 position_bias = self.compute_position_bias(hidden_states)
                 all_hidden_states = () if output_hidden_states else None
                 all_attentions = () if output_attentions else None
@@ -138,6 +138,7 @@ class FastSentenceTransformer(FastModel):
                                 return module(
                                     *inputs, output_attentions = output_attentions
                                 )
+
                             return custom_forward
 
                         layer_outputs = torch.utils.checkpoint.checkpoint(
