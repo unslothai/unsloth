@@ -112,13 +112,14 @@ def fix_message_factory_issue():
 
 # Fix Xformers performance issues since 0.0.25
 def fix_xformers_performance_issue():
-    if importlib.util.find_spec("xformers") is None:
+    spec = importlib.util.find_spec("xformers")
+    if spec is None:
         return
     xformers_version = importlib_version("xformers")
     if Version(xformers_version) < Version("0.0.29"):
-        xformers_location = importlib.util.find_spec("xformers").origin
+        xformers_location = spec.origin
         if xformers_location is None:
-            xformers_location = importlib.util.find_spec("xformers").submodule_search_locations[0]
+            xformers_location = spec.submodule_search_locations[0]
         else:
             xformers_location = os.path.split(xformers_location)[0]
         cutlass = Path(xformers_location) / "ops" / "fmha" / "cutlass.py"
@@ -144,13 +145,14 @@ def fix_xformers_performance_issue():
 
 # ValueError: 'aimv2' is already used by a Transformers config, pick another name.
 def fix_vllm_aimv2_issue():
-    if importlib.util.find_spec("vllm") is None:
+    spec = importlib.util.find_spec("vllm")
+    if spec is None:
         return
     vllm_version = importlib_version("vllm")
     if Version(vllm_version) < Version("0.10.1"):
-        vllm_version = importlib.util.find_spec("vllm").origin
+        vllm_version = spec.origin
         if vllm_version is None:
-            vllm_version = importlib.util.find_spec("vllm").submodule_search_locations[0]
+            vllm_version = spec.submodule_search_locations[0]
         else:
             vllm_version = os.path.split(vllm_version)[0]
         ovis_config = Path(vllm_version) / "transformers_utils" / "configs" / "ovis.py"
@@ -393,11 +395,12 @@ def torchvision_compatibility_check():
 
 # Fix TRL OpenEnv 0.26 NameError: name 'SamplingParams' is not defined
 def fix_openenv_no_vllm():
-    if importlib.util.find_spec("trl") is None:
+    spec = importlib.util.find_spec("trl")
+    if spec is None:
         return
-    trl_location = importlib.util.find_spec("trl").origin
+    trl_location = spec.origin
     if trl_location is None:
-        trl_location = importlib.util.find_spec("trl").submodule_search_locations[0]
+        trl_location = spec.submodule_search_locations[0]
     else:
         trl_location = os.path.split(trl_location)[0]
     openenv = Path(trl_location) / "experimental" / "openenv" / "utils.py"
@@ -412,18 +415,15 @@ def fix_openenv_no_vllm():
                 "    from vllm import SamplingParams\n"
                 "    from vllm.sampling_params import GuidedDecodingParams\n"
             )
-            if bad + "\n" + "\n" in text:
-                text = text.replace(
-                    bad + "\n" + "\n",
-                    bad
-                    + (
-                        "else:\n"
-                        "    from typing import Any\n"
-                        "    SamplingParams = Any\n"
-                        "    GuidedDecodingParams = Any\n"
-                        "\n"
-                    ),
-                )
+            replace_with = bad + (
+                "else:\n"
+                "    from typing import Any\n"
+                "    SamplingParams = Any\n"
+                "    GuidedDecodingParams = Any\n"
+                "\n"
+            )
+            if bad + "\n" + "\n" in text and replace_with not in text:
+                text = text.replace(bad + "\n" + "\n", replace_with)
                 f.seek(0)
                 f.write(text)
                 f.truncate()
@@ -436,11 +436,12 @@ def fix_openenv_no_vllm():
 
 # Fix Exeuctorch needing get_mapped_key
 def fix_executorch():
-    if importlib.util.find_spec("executorch") is None:
+    spec = importlib.util.find_spec("executorch")
+    if spec is None:
         return
-    executorch_location = importlib.util.find_spec("executorch").origin
+    executorch_location = spec.origin
     if executorch_location is None:
-        executorch_location = importlib.util.find_spec("executorch").submodule_search_locations[0]
+        executorch_location = spec.submodule_search_locations[0]
     else:
         executorch_location = os.path.split(executorch_location)[0]
     executorch = Path(executorch_location) / "examples" / "models" / "__init__.py"
@@ -489,7 +490,7 @@ def fix_executorch():
         with open(executorch, "r+", encoding = "utf-8") as f:
             text = f.read()
             bad = "from enum import Enum\n"
-            if bad in text:
+            if bad in text and what not in text:
                 text = text.replace(bad + "\n", bad + "\n" + what)
                 f.seek(0)
                 f.write(text)
