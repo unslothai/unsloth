@@ -2817,7 +2817,10 @@ def _unsloth_save_torchao_with_given_config(
     )
     from torchao import quantize_
 
-    quantization_config = TorchAoConfig(quant_type = torchao_config)
+    if isinstance(torchao_config, TorchAoConfig):
+        quantization_config = torchao_config
+    else:
+        quantization_config = TorchAoConfig(quant_type = torchao_config)
 
     # Determine if this is a VLM
     is_vlm = False
