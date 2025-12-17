@@ -22,14 +22,22 @@ import logging
 import textwrap
 
 # We cannot do from unsloth_zoo.log import logger since FBGEMM might cause seg faults.
-UNSLOTH_ENABLE_LOGGING = os.environ.get("UNSLOTH_ENABLE_LOGGING",  "0") in ("1", "True", "true",)
+UNSLOTH_ENABLE_LOGGING = os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") in (
+    "1",
+    "True",
+    "true",
+)
 logger = logging.getLogger(__name__)
 if UNSLOTH_ENABLE_LOGGING:
-    logging.basicConfig(level = logging.INFO, format = '[%(name)s|%(levelname)s]%(message)s')
+    logging.basicConfig(
+        level = logging.INFO, format = "[%(name)s|%(levelname)s]%(message)s"
+    )
     logger.setLevel(logging.INFO)
 else:
-    logging.basicConfig(level = logging.WARNING, format = '[%(name)s|%(levelname)s]%(message)s')
-    logger.setLevel(logging.WARNING) 
+    logging.basicConfig(
+        level = logging.WARNING, format = "[%(name)s|%(levelname)s]%(message)s"
+    )
+    logger.setLevel(logging.WARNING)
 
 
 def Version(version):
@@ -449,7 +457,7 @@ def fix_executorch():
         return
 
     try:
-        what = r'''
+        what = r"""
         import sys
         import types
         import re
@@ -484,9 +492,9 @@ def fix_executorch():
         sys.modules["torchtune"] = torchtune
         sys.modules["torchtune.models"] = models
         sys.modules["torchtune.models.convert_weights"] = convert_weights
-        '''
+        """
         what = textwrap.dedent(what)
-        
+
         with open(executorch, "r+", encoding = "utf-8") as f:
             text = f.read()
             bad = "from enum import Enum\n"
@@ -495,8 +503,6 @@ def fix_executorch():
                 f.seek(0)
                 f.write(text)
                 f.truncate()
-                logger.info(
-                    "Unsloth: Patching Executorch to fix get_mapped_key"
-                )
+                logger.info("Unsloth: Patching Executorch to fix get_mapped_key")
     except Exception as e:
         logger.info(f"Unsloth: Failed Executorch with error = {str(e)}")
