@@ -19,7 +19,11 @@ import os
 import types
 from huggingface_hub import hf_hub_download
 from sentence_transformers.models import Transformer, Pooling, Normalize
+from transformers.models.mpnet import modeling_mpnet
 from sentence_transformers.util import import_from_string, load_dir_path
+from typing import Optional
+import torch
+from transformers.modeling_outputs import BaseModelOutput
 from collections import OrderedDict
 
 
@@ -63,7 +67,7 @@ class FastSentenceTransformer(FastModel):
                 with open(pooling_config_path, "r") as f:
                     pooling_config = json.load(f)
                     # from here:
-                    # https://github.com/huggingface/sentence-transformers/blob/main/sentence_transformers/models/Pooling.py#L19
+                    # https://github.com/huggingface/sentence-transformers/blob/main/sentence_transformers/models/Pooling.py#L43
                     pooling_map = {
                         "pooling_mode_cls_token": "cls",
                         "pooling_mode_mean_tokens": "mean",
@@ -81,6 +85,105 @@ class FastSentenceTransformer(FastModel):
         except Exception as e:
             print(f"Failed to detect pooling mode: {e}, defaulting to mean pooling.")
             return "mean"
+
+    # should prolly be done upstream instead of this hackfest here
+    @staticmethod
+    def _patch_mpnet():
+        try:
+            # add supports_gradient_checkpointing flag
+            modeling_mpnet.MPNetModel.supports_gradient_checkpointing = True
+
+            # add _set_gradient_checkpointing method
+            def _set_gradient_checkpointing(self, module = None, value = True):
+                if module is None:
+                    module = self.encoder
+                if isinstance(module, modeling_mpnet.MPNetEncoder):
+                    module.gradient_checkpointing = value
+
+            modeling_mpnet.MPNetModel._set_gradient_checkpointing = (
+                _set_gradient_checkpointing
+            )
+
+            # patch MPNetEncoder.forward to support checkpointing
+            # based on:
+            # https://github.com/huggingface/transformers/blob/v4.57.3/src/transformers/models/mpnet/modeling_mpnet.py#L321
+            # but head_mask is no longer used in transformers 5.0.0:
+            # https://github.com/huggingface/transformers/blob/main/src/transformers/models/mpnet/modeling_mpnet.py#L284
+            def forward(
+                self,
+                hidden_states: torch.Tensor,
+                attention_mask: Optional[torch.Tensor] = None,
+                output_attentions: bool = False,
+                output_hidden_states: bool = False,
+                return_dict: bool = False,
+                **kwargs,
+            ):
+                # backwards compatibility for older transformers versions (4.57.3 and below)
+                head_mask = kwargs.pop("head_mask", None)
+                
+                position_bias = self.compute_position_bias(hidden_states)
+                all_hidden_states = () if output_hidden_states else None
+                all_attentions = () if output_attentions else None
+
+                for i, layer_module in enumerate(self.layer):
+                    if output_hidden_states:
+                        all_hidden_states = all_hidden_states + (hidden_states,)
+
+                    # do gradient checkpointing if enabled and training
+                    if getattr(self, "gradient_checkpointing", False) and self.training:
+
+                        def create_custom_forward(module):
+                            # bog standard checkpoint
+                            def custom_forward(*inputs):
+                                return module(
+                                    *inputs, output_attentions = output_attentions
+                                )
+                            return custom_forward
+
+                        layer_outputs = torch.utils.checkpoint.checkpoint(
+                            create_custom_forward(layer_module),
+                            hidden_states,
+                            attention_mask,
+                            head_mask[i] if head_mask is not None else None,
+                            position_bias,
+                            use_reentrant = False,
+                        )
+                    else:
+                        # original code from here on
+                        layer_outputs = layer_module(
+                            hidden_states,
+                            attention_mask,
+                            head_mask[i] if head_mask is not None else None,
+                            position_bias,
+                            output_attentions = output_attentions,
+                            **kwargs,
+                        )
+
+                    hidden_states = layer_outputs[0]
+
+                    if output_attentions:
+                        all_attentions = all_attentions + (layer_outputs[1],)
+
+                if output_hidden_states:
+                    all_hidden_states = all_hidden_states + (hidden_states,)
+
+                if not return_dict:
+                    return tuple(
+                        v
+                        for v in [hidden_states, all_hidden_states, all_attentions]
+                        if v is not None
+                    )
+                return BaseModelOutput(
+                    last_hidden_state = hidden_states,
+                    hidden_states = all_hidden_states,
+                    attentions = all_attentions,
+                )
+
+            # assign the patched forward
+            modeling_mpnet.MPNetEncoder.forward = forward
+
+        except Exception as e:
+            print(f"Unsloth: Failed to patch MPNet for gradient checkpointing: {e}")
 
     @staticmethod
     def _load_modules(
@@ -312,6 +415,9 @@ class FastSentenceTransformer(FastModel):
         # however unsloth throws an exception if "UNSLOTH_WARN_UNINITIALIZED" == 1 and it sees unused weights
         old_environ = os.environ.get("UNSLOTH_WARN_UNINITIALIZED", "1")
         os.environ["UNSLOTH_WARN_UNINITIALIZED"] = "0"
+
+        if "mpnet" in model_name.lower():
+            FastSentenceTransformer._patch_mpnet()
 
         try:
             model, tokenizer = FastModel.from_pretrained(
