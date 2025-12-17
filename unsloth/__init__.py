@@ -29,14 +29,17 @@ from .import_fixes import (
     fix_message_factory_issue,
     check_fbgemm_gpu_version,
     torchvision_compatibility_check,
+    fix_diffusers_warnings,
 )
 
 fix_message_factory_issue()
 check_fbgemm_gpu_version()
 torchvision_compatibility_check()
+fix_diffusers_warnings()
 del fix_message_factory_issue
 del check_fbgemm_gpu_version
 del torchvision_compatibility_check
+del fix_diffusers_warnings
 
 # This check is critical because Unsloth optimizes these libraries by modifying
 # their code at import time. If they're imported first, the original (slower,
@@ -126,6 +129,7 @@ from .import_fixes import (
     patch_datasets,
     patch_enable_input_require_grads,
     fix_openenv_no_vllm,
+    fix_executorch,
 )
 
 fix_xformers_performance_issue()
@@ -137,6 +141,7 @@ patch_trackio()
 patch_datasets()
 patch_enable_input_require_grads()
 fix_openenv_no_vllm()
+fix_executorch()
 
 del fix_xformers_performance_issue
 del fix_vllm_aimv2_issue
@@ -147,6 +152,7 @@ del patch_trackio
 del patch_datasets
 del patch_enable_input_require_grads
 del fix_openenv_no_vllm
+del fix_executorch
 
 # Torch 2.4 has including_emulation
 if DEVICE_TYPE == "cuda":
