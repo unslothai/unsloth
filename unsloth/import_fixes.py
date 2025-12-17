@@ -422,3 +422,70 @@ def fix_openenv_no_vllm():
                 )
     except Exception as e:
         logger.info(f"Unsloth: Failed patching TRL OpenEnv with error = {str(e)}")
+
+
+# Fix Exeuctorch needing get_mapped_key
+def fix_executorch():
+    if importlib.util.find_spec("executorch") is None:
+        print(1)
+    executorch_location = importlib.util.find_spec("executorch").origin
+    if executorch_location is None:
+        executorch_location = importlib.util.find_spec("executorch").submodule_search_locations[0]
+    else:
+        executorch_location = os.path.split(executorch_location)[0]
+    executorch = Path(executorch_location) / "examples" / "models" / "__init__.py"
+    if not executorch.exists():
+        return
+
+    try:
+        what = r'''
+        import sys
+        import types
+        import re
+        from typing import Any, Optional
+        def get_mapped_key(key: str, mapping_dict: dict[str, str]) -> str:
+            try:
+                # Checks if there is a layer # in the key
+                if any(k.isdigit() for k in key.split(".")):
+                    # Replace layer number with "{}" to create key for lookup
+                    abstract_key = re.sub(r"(\.\d+)", ".{}", key)
+                    layer_num = re.search(r"\d+", key).group(0)
+                    new_key = mapping_dict[abstract_key]
+                    new_key = new_key.format(layer_num)
+                else:
+                    new_key = mapping_dict[key]
+            except KeyError as e:
+                raise Exception(
+                    f'Error converting the state dict. Found unexpected key: "{key}". '
+                    "Please make sure you're loading a checkpoint with the right format. "
+                ) from e
+
+            return new_key
+
+        torchtune = types.ModuleType("torchtune")
+        torchtune.__path__ = []
+        models = types.ModuleType("torchtune.models")
+        models.__path__ = []
+        convert_weights = types.ModuleType("torchtune.models.convert_weights")
+        convert_weights.get_mapped_key = get_mapped_key
+        torchtune.models = models
+        models.convert_weights = convert_weights
+        sys.modules["torchtune"] = torchtune
+        sys.modules["torchtune.models"] = models
+        sys.modules["torchtune.models.convert_weights"] = convert_weights
+        '''
+        what = textwrap.dedent(what)
+        
+        with open(executorch, "r+", encoding = "utf-8") as f:
+            text = f.read()
+            bad = "from enum import Enum\n"
+            if bad in text:
+                text = text.replace(bad + "\n", bad + "\n" + what)
+                f.seek(0)
+                f.write(text)
+                f.truncate()
+                logger.info(
+                    "Unsloth: Patching Executorch to fix get_mapped_key"
+                )
+    except Exception as e:
+        logger.info(f"Unsloth: Failed Executorch with error = {str(e)}")
