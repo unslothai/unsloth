@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.12.5"
+__version__ = "2025.12.6"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -412,16 +412,6 @@ try:
     del modeling_utils_logger
 except:
     pass
-
-# Flax classes are deprecated and will be removed in Diffusers v1.0.0.
-try:
-    from diffusers.utils import logger as diffusers_logger
-
-    diffusers_logger.addFilter(HideLoggingMessage("are deprecated"))
-    del diffusers_logger
-except:
-    pass
-
 
 # Errors out on
 # Some weights of Gemma3nForConditionalGeneration were not initialized from the model checkpoint
