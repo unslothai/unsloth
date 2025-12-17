@@ -158,12 +158,12 @@ def fix_vllm_aimv2_issue():
         return
     vllm_version = importlib_version("vllm")
     if Version(vllm_version) < Version("0.10.1"):
-        vllm_version = spec.origin
-        if vllm_version is None:
-            vllm_version = spec.submodule_search_locations[0]
+        vllm_location = spec.origin
+        if vllm_location is None:
+            vllm_location = spec.submodule_search_locations[0]
         else:
-            vllm_version = os.path.split(vllm_version)[0]
-        ovis_config = Path(vllm_version) / "transformers_utils" / "configs" / "ovis.py"
+            vllm_location = os.path.split(vllm_location)[0]
+        ovis_config = Path(vllm_location) / "transformers_utils" / "configs" / "ovis.py"
         try:
             if ovis_config.exists():
                 with open(ovis_config, "r+", encoding = "utf-8") as f:
