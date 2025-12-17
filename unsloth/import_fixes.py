@@ -536,3 +536,8 @@ def fix_executorch():
                 logger.info("Unsloth: Patching Executorch to fix get_mapped_key")
     except Exception as e:
         logger.info(f"Unsloth: Failed Executorch with error = {str(e)}")
+
+
+def fix_diffusers_warnings():
+    # Silence Flax classes are deprecated and will be removed in Diffusers v1.0.0.
+    os.environ["DIFFUSERS_VERBOSITY"] = "error"
