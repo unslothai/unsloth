@@ -53,6 +53,7 @@ class HideLoggingMessage(logging.Filter):
     def filter(self, x):
         return not (self.text in x.getMessage())
 
+
 class HidePrintMessage:
     __slots__ = ("_original_stream", "_hidden_texts")
 
@@ -73,8 +74,10 @@ class HidePrintMessage:
     def __getattr__(self, name):
         return getattr(self._original_stream, name)
 
+
 if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") != "1":
     import sys
+
     # Apply to stderr for FBGEMM
     sys.stderr = HidePrintMessage(sys.stderr)
     # https://github.com/pytorch/FBGEMM/blob/d99cd96490ec4aabac2ee95b1e76ea4dcfcfa628/fbgemm_gpu/experimental/gemm/triton_gemm/utils.py#L43-L52
