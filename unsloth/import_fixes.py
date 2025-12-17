@@ -19,6 +19,7 @@ from importlib.metadata import version as importlib_version
 from packaging.version import Version as TrueVersion
 import re
 import logging
+import textwrap
 
 # We cannot do from unsloth_zoo.log import logger since FBGEMM might cause seg faults.
 UNSLOTH_ENABLE_LOGGING = os.environ.get("UNSLOTH_ENABLE_LOGGING",  "0") in ("1", "True", "true",)
