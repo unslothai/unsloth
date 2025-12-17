@@ -19,6 +19,7 @@ from importlib.metadata import version as importlib_version
 from packaging.version import Version as TrueVersion
 import re
 import logging
+
 # We cannot do from unsloth_zoo.log import logger since FBGEMM might cause seg faults.
 UNSLOTH_ENABLE_LOGGING = os.environ.get("UNSLOTH_ENABLE_LOGGING",  "0") in ("1", "True", "true",)
 logger = logging.getLogger(__name__)
@@ -28,7 +29,7 @@ if UNSLOTH_ENABLE_LOGGING:
 else:
     logging.basicConfig(level = logging.WARNING, format = '[%(name)s|%(levelname)s]%(message)s')
     logger.setLevel(logging.WARNING) 
-pass
+
 
 def Version(version):
     try:
