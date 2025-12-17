@@ -39,6 +39,12 @@ def train(
     cfg.apply_overrides(**config_overrides)
 
     # CLI/env tokens take precedence over config
+    # Handle case where typer.Option isn't resolved (decorator interaction)
+    from typer.models import OptionInfo
+    if isinstance(hf_token, OptionInfo):
+        hf_token = None
+    if isinstance(wandb_token, OptionInfo):
+        wandb_token = None
     hf_token = hf_token or cfg.logging.hf_token
     wandb_token = wandb_token or cfg.logging.wandb_token
 
