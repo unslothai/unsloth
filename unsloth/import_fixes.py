@@ -115,11 +115,11 @@ def fix_xformers_performance_issue():
         return
     xformers_version = importlib_version("xformers")
     if Version(xformers_version) < Version("0.0.29"):
-        xformers_location = importlib.util.find_spec("xformers")
+        xformers_location = importlib.util.find_spec("xformers").origin
         if xformers_location is None:
             xformers_location = importlib.util.find_spec("xformers").submodule_search_locations[0]
         else:
-            xformers_location = os.path.split(xformers_location.origin)[0]
+            xformers_location = os.path.split(xformers_location)[0]
         cutlass = Path(xformers_location) / "ops" / "fmha" / "cutlass.py"
         try:
             if cutlass.exists():
@@ -147,11 +147,11 @@ def fix_vllm_aimv2_issue():
         return
     vllm_version = importlib_version("vllm")
     if Version(vllm_version) < Version("0.10.1"):
-        vllm_version = importlib.util.find_spec("vllm")
+        vllm_version = importlib.util.find_spec("vllm").origin
         if vllm_version is None:
             vllm_version = importlib.util.find_spec("vllm").submodule_search_locations[0]
         else:
-            vllm_version = os.path.split(vllm_version.origin)[0]
+            vllm_version = os.path.split(vllm_version)[0]
         ovis_config = Path(vllm_version) / "transformers_utils" / "configs" / "ovis.py"
         try:
             if ovis_config.exists():
@@ -394,11 +394,11 @@ def torchvision_compatibility_check():
 def fix_openenv_no_vllm():
     if importlib.util.find_spec("trl") is None:
         return
-    trl_location = importlib.util.find_spec("trl")
+    trl_location = importlib.util.find_spec("trl").origin
     if trl_location is None:
         trl_location = importlib.util.find_spec("trl").submodule_search_locations[0]
     else:
-        trl_location = os.path.split(trl_location.origin)[0]
+        trl_location = os.path.split(trl_location)[0]
     openenv = Path(trl_location) / "experimental" / "openenv" / "utils.py"
     if not openenv.exists():
         return
@@ -437,11 +437,11 @@ def fix_openenv_no_vllm():
 def fix_executorch():
     if importlib.util.find_spec("executorch") is None:
         return
-    executorch_location = importlib.util.find_spec("executorch")
+    executorch_location = importlib.util.find_spec("executorch").origin
     if executorch_location is None:
         executorch_location = importlib.util.find_spec("executorch").submodule_search_locations[0]
     else:
-        executorch_location = os.path.split(executorch_location.origin)[0]
+        executorch_location = os.path.split(executorch_location)[0]
     executorch = Path(executorch_location) / "examples" / "models" / "__init__.py"
     if not executorch.exists():
         return
