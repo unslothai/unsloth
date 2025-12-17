@@ -3037,7 +3037,9 @@ def patch_saving_functions(model, vision = False):
             model.save_pretrained_merged = types.MethodType(
                 unsloth_generic_save_pretrained_merged, model
             )
-            model.push_to_hub_gguf = types.MethodType(unsloth_push_to_hub_gguf, model)
+            model.push_to_hub_gguf = types.MethodType(
+                unsloth_push_to_hub_gguf, model
+            )
             model.save_pretrained_gguf = types.MethodType(
                 unsloth_save_pretrained_gguf, model
             )
@@ -3058,7 +3060,9 @@ def patch_saving_functions(model, vision = False):
         model.save_pretrained_merged = types.MethodType(
             unsloth_generic_save_pretrained_merged, model
         )
-        model.push_to_hub_gguf = types.MethodType(unsloth_push_to_hub_gguf, model)
+        model.push_to_hub_gguf = types.MethodType(
+            unsloth_push_to_hub_gguf, model
+        )
         model.save_pretrained_gguf = types.MethodType(
             unsloth_save_pretrained_gguf, model
         )
