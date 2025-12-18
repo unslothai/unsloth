@@ -674,25 +674,34 @@ class FastBaseModel:
                 model.fast_generate = model.generate
                 model.fast_generate_batches = error_out_no_vllm
             if offload_embedding:
-                embed_tokens = model.get_input_embeddings()
-                nbytes = embed_tokens.weight.numel() * embed_tokens.weight.itemsize
-                ngb = round(nbytes / 1024 / 1024 / 1024, 2)
-                print(f"Unsloth: Offloading embeddings to RAM to save {ngb} GB.")
-                embed_tokens.to("cpu")
+                if bool(
+                    os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP")
+                ):
+                    # WSL doesn't work with offloaded embeddings
+                    pass
+                elif os.name == "nt":
+                    # Windows doesn't work with offloaded embeddings
+                    pass
+                else:
+                    embed_tokens = model.get_input_embeddings()
+                    nbytes = embed_tokens.weight.numel() * embed_tokens.weight.itemsize
+                    ngb = round(nbytes / 1024 / 1024 / 1024, 2)
+                    print(f"Unsloth: Offloading embeddings to RAM to save {ngb} GB.")
+                    embed_tokens.to("cpu")
 
-                # Add hooks to move inputs to CPU and back to CUDA
-                # [TODO] Doesn't seem to work!
-                # def pre_hook(module, args):
-                #     args[0]._old_device = args[0].device
-                #     return (args[0].to("cpu", non_blocking = True))
-                # def post_hook(module, args, output):
-                #     old_device = getattr(args[0], "_old_device", "cuda")
-                #     return output.to(old_device, non_blocking = True)
-                # embed_tokens.register_forward_pre_hook(pre_hook,  prepend = True)
-                # embed_tokens.register_forward_hook    (post_hook, prepend = True)
-                # Must free GPU memory otherwise will not free!
-                torch.cuda.empty_cache()
-                gc.collect()
+                    # Add hooks to move inputs to CPU and back to CUDA
+                    # [TODO] Doesn't seem to work!
+                    # def pre_hook(module, args):
+                    #     args[0]._old_device = args[0].device
+                    #     return (args[0].to("cpu", non_blocking = True))
+                    # def post_hook(module, args, output):
+                    #     old_device = getattr(args[0], "_old_device", "cuda")
+                    #     return output.to(old_device, non_blocking = True)
+                    # embed_tokens.register_forward_pre_hook(pre_hook,  prepend = True)
+                    # embed_tokens.register_forward_hook    (post_hook, prepend = True)
+                    # Must free GPU memory otherwise will not free!
+                    torch.cuda.empty_cache()
+                    gc.collect()
         else:
             from unsloth_zoo.vllm_utils import (
                 load_vllm,

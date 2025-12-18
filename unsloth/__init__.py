@@ -17,15 +17,29 @@ from packaging.version import Version
 import os, re, subprocess, inspect, functools
 import numpy as np
 
-# Fix some issues before importing other packages
-from .import_fixes import fix_message_factory_issue
-
-fix_message_factory_issue()
-del fix_message_factory_issue
+# Log Unsloth is being used
+os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
 # Check if modules that need patching are already imported
 critical_modules = ["trl", "transformers", "peft"]
 already_imported = [mod for mod in critical_modules if mod in sys.modules]
+
+# Fix some issues before importing other packages
+from .import_fixes import (
+    fix_message_factory_issue,
+    check_fbgemm_gpu_version,
+    torchvision_compatibility_check,
+    fix_diffusers_warnings,
+)
+
+fix_message_factory_issue()
+check_fbgemm_gpu_version()
+torchvision_compatibility_check()
+fix_diffusers_warnings()
+del fix_message_factory_issue
+del check_fbgemm_gpu_version
+del torchvision_compatibility_check
+del fix_diffusers_warnings
 
 # This check is critical because Unsloth optimizes these libraries by modifying
 # their code at import time. If they're imported first, the original (slower,
@@ -35,7 +49,7 @@ if already_imported:
     # stacklevel=2 makes warning point to user's import line rather than this library code,
     # showing them exactly where to fix the import order in their script
     warnings.warn(
-        f"WARNING: Unsloth should be imported before {', '.join(already_imported)} "
+        f"WARNING: Unsloth should be imported before [{', '.join(already_imported)}] "
         f"to ensure all optimizations are applied. Your code may run slower or encounter "
         f"memory issues without these optimizations.\n\n"
         f"Please restructure your imports with 'import unsloth' at the top of your file.",
@@ -55,8 +69,6 @@ os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 #    "pinned_use_cuda_host_register:True,"\
 #    "pinned_num_register_threads:8"
 
-# Log Unsloth is being used
-os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
 from importlib.metadata import version as importlib_version
 from importlib.metadata import PackageNotFoundError
@@ -64,7 +76,7 @@ from importlib.metadata import PackageNotFoundError
 # Check for unsloth_zoo
 try:
     unsloth_zoo_version = importlib_version("unsloth_zoo")
-    if Version(unsloth_zoo_version) < Version("2025.11.2"):
+    if Version(unsloth_zoo_version) < Version("2025.12.4"):
         print(
             "Unsloth: Please update Unsloth and Unsloth-Zoo to the latest version!\n"
             "Do this via `pip install --upgrade --force-reinstall --no-cache-dir --no-deps unsloth unsloth_zoo`"
@@ -115,6 +127,9 @@ from .import_fixes import (
     patch_ipykernel_hf_xet,
     patch_trackio,
     patch_datasets,
+    patch_enable_input_require_grads,
+    fix_openenv_no_vllm,
+    fix_executorch,
 )
 
 fix_xformers_performance_issue()
@@ -124,6 +139,9 @@ ignore_logger_messages()
 patch_ipykernel_hf_xet()
 patch_trackio()
 patch_datasets()
+patch_enable_input_require_grads()
+fix_openenv_no_vllm()
+fix_executorch()
 
 del fix_xformers_performance_issue
 del fix_vllm_aimv2_issue
@@ -132,6 +150,9 @@ del ignore_logger_messages
 del patch_ipykernel_hf_xet
 del patch_trackio
 del patch_datasets
+del patch_enable_input_require_grads
+del fix_openenv_no_vllm
+del fix_executorch
 
 # Torch 2.4 has including_emulation
 if DEVICE_TYPE == "cuda":

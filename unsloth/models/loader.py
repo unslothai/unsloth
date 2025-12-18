@@ -741,6 +741,8 @@ class FastModel(FastBaseModel):
                 "compatible with `full_finetuning=True`. If you wish to use QAT with LoRA, "
                 "please pass in `qat_scheme` in `FastLanguageModel.get_peft_model(...)` instead."
             )
+        if qat_scheme == "phone-deployment":
+            qat_scheme = "int8-int4"
         # Check if 4bit is allowed specifically for AMD
         if not ALLOW_BITSANDBYTES and not use_exact_model_name:
             if load_in_4bit or load_in_8bit or model_name.lower().endswith("-bnb-4bit"):

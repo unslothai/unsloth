@@ -1,1198 +1,431 @@
-# Support QLoRA of LLaMA and Qwen-MoE on gfx1201 with ROCm 7.1.1
+<div align="center">
 
-## 目录
+  <a href="https://docs.unsloth.ai"><picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20logo%20white%20text.png">
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20logo%20black%20text.png">
+    <img alt="unsloth logo" src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20logo%20black%20text.png" height="110" style="max-width: 100%;">
+  </picture></a>
+  
+<a href="https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/gpt-oss-(20B)-Fine-tuning.ipynb"><img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/start free finetune button.png" width="154"></a>
+<a href="https://discord.com/invite/unsloth"><img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/Discord button.png" width="165"></a>
+<a href="https://docs.unsloth.ai"><img src="https://raw.githubusercontent.com/unslothai/unsloth/refs/heads/main/images/Documentation%20Button.png" width="137"></a>
 
-- [内容总结](#内容总结)
-- [使用方法](#使用方法)
-- [FP8 尝试](#fp8-尝试)
-- [后续工作 to-do](#后续工作-to-do)
+### Train gpt-oss, DeepSeek, Gemma, Qwen & Llama 2x faster with 70% less VRAM!
 
-## 内容总结
+![](https://i.ibb.co/sJ7RhGG/image-41.png)
 
-1. 支持 **Llama-3.1-8B-Instruct** 模型的 **单卡 QLoRA 微调**；
-2. 支持 **Qwen3-30B-A3B MoE** 模型的 **多卡 QLoRA 微调**；
-3. 支持 **Attention 算子测试**，对比 `torch`、`flash-attention`、`sdpa` 三种实现的 **精度与性能**；
-4. 支持 **MoE 算子测试**，包括：
-   - gating 算子精度与性能测试；
-   - SparseMoe-FFN 算子精度与性能测试；
-5. 尝试FP8精度，在NVIDIA及AMD卡上均不成功，报错一致，初步定位是unsloth支持问题；
-6. （To-do）验证导出模型在 **llama.cpp** 或 **vLLM** 中成功加载并生成文本。
+</div>
 
----
+## ✨ Train for Free
 
-## 使用方法
+Notebooks are beginner friendly. Read our [guide](https://docs.unsloth.ai/get-started/fine-tuning-guide). Add dataset, run, then export your trained model to GGUF, llama.cpp, Ollama, vLLM, SGLang or Hugging Face.
 
-### 1. 创建 Docker 容器
+| Model | Free Notebooks | Performance | Memory use |
+|-----------|---------|--------|----------|
+| **gpt-oss (20B)**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/gpt-oss-(20B)-Fine-tuning.ipynb)               | 1.5x faster | 70% less |
+| **Mistral Ministral 3 (3B)**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Ministral_3_VL_(3B)_Vision.ipynb)               | 1.5x faster | 60% less |
+| **gpt-oss (20B): GRPO**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/gpt-oss-(20B)-GRPO.ipynb)               | 2x faster | 80% less |
+| **Qwen3: Advanced GRPO**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Qwen3_(4B)-GRPO.ipynb)               | 2x faster | 50% less |
+| **Qwen3-VL (8B): GSPO**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Qwen3_VL_(8B)-Vision-GRPO.ipynb)               | 1.5x faster | 80% less |
+| **Gemma 3 (270M)** | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Gemma3_(270M).ipynb)               | 1.7x faster | 60% less |
+| **Gemma 3n (4B)**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Gemma3N_(4B)-Conversational.ipynb)               | 1.5x faster | 50% less |
+| **DeepSeek-OCR (3B)**    | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Deepseek_OCR_(3B).ipynb)               | 1.5x faster | 30% less |
+| **Llama 3.1 (8B) Alpaca**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Llama3.1_(8B)-Alpaca.ipynb)               | 2x faster | 70% less |
+| **Llama 3.2 Conversational**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Llama3.2_(1B_and_3B)-Conversational.ipynb)               | 2x faster | 70% less |
+| **Orpheus-TTS (3B)**     | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Orpheus_(3B)-TTS.ipynb)               | 1.5x faster | 50% less |
 
+- See all our notebooks for: [Kaggle](https://github.com/unslothai/notebooks?tab=readme-ov-file#-kaggle-notebooks), [GRPO](https://docs.unsloth.ai/get-started/unsloth-notebooks#grpo-reasoning-rl-notebooks), **[TTS](https://docs.unsloth.ai/get-started/unsloth-notebooks#text-to-speech-tts-notebooks)** & [Vision](https://docs.unsloth.ai/get-started/unsloth-notebooks#vision-multimodal-notebooks)
+- See [all our models](https://docs.unsloth.ai/get-started/all-our-models) and [all our notebooks](https://docs.unsloth.ai/get-started/unsloth-notebooks)
+- See detailed documentation for Unsloth [here](https://docs.unsloth.ai/)
+
+## ⚡ Quickstart
+### Linux or WSL
 ```bash
-sudo docker run -it -d \
-  --device /dev/dri \
-  --device /dev/kfd \
-  --network host \
-  --ipc host \
-  --group-add video \
-  --cap-add SYS_PTRACE \
-  --security-opt seccomp=unconfined \
-  --privileged \
-  --shm-size 32G \
-  -v /home/heyi/models:/models \
-  -v /home/heyi/share:/share \
-  -v /home/heyi/workspace/pr:/workspace \
-  --name unsloth_pr \
-  rocm/pytorch:latest /bin/bash
+pip install unsloth
 ```
+### Windows
+For Windows, `pip install unsloth` works only if you have Pytorch installed. Read our [Windows Guide](https://docs.unsloth.ai/get-started/installing-+-updating/windows-installation).
+### Docker
+Use our official [Unsloth Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsloth``` container. Read our [Docker Guide](https://docs.unsloth.ai/get-started/install-and-update/docker).
+### Blackwell & DGX Spark
+For RTX 50x, B200, 6000 GPUs: `pip install unsloth`. Read our [Blackwell Guide](https://docs.unsloth.ai/basics/training-llms-with-blackwell-rtx-50-series-and-unsloth) and [DGX Spark Guide](https://docs.unsloth.ai/new/fine-tuning-llms-with-nvidia-dgx-spark-and-unsloth) for more details.
 
----
-
-### 2. 安装 `unsloth-zoo`
-
-```bash
-pip install "unsloth_zoo==2025.11.6"
-```
-
----
-
-### 3. 拉取并编译 `unsloth[amd_radeon]`
-
-#### 3.1 拉取代码
-
-```bash
-git clone -b amd_radeon --single-branch https://github.com/eliotwang/unsloth.git
-cd unsloth
-```
-
-#### 3.2 编译安装
-
-```bash
-PYTHONPATH="/workspace/unsloth:${PYTHONPATH}" \
-UNSLOTH_FORCE_RUNTIME="hip" \
-UNSLOTH_FORCE_RUNTIME_VERSION="711" \
-UNSLOTH_BOOTSTRAP_ROCM="1" \
-UNSLOTH_BOOTSTRAP_PYTHON="$(which python)" \
-pip install -e . -v --no-build-isolation
-```
-
----
-
-### 4. LLaMA 模型单卡 QLoRA 微调
-
-#### 4.1 拉取模型
-
-模型名称示例：
-
-```text
-LLM-Research/Meta-Llama-3.1-8B-Instruct
-```
-
-#### 4.2 启动 QLoRA 微调
-
-```bash
-./scripts/run_qlora_training.sh llama
-```
-
-#### 4.3 微调日志（可折叠展示）
+## 🦥 Unsloth News
+- New RoPE & MLP **Triton Kernels** & **Padding Free + Packing**: 3x faster training & 30% less VRAM. [Blog](https://docs.unsloth.ai/new/3x-faster-training-packing)
+- **Ministral 3** by Mistral: Run Ministral 3 or fine-tune with vision/RL sodoku notebooks. [Guide](https://docs.unsloth.ai/new/ministral-3) • [Notebooks](https://docs.unsloth.ai/new/ministral-3#fine-tuningb)
+- **500K Context**: Training a 20B model with >500K context is now possible on an 80GB GPU. [Blog](https://docs.unsloth.ai/new/500k-context-length-fine-tuning)
+- **FP8 Reinforcement Learning**: You can now do FP8 GRPO on consumer GPUs. [Blog](https://docs.unsloth.ai/new/fp8-reinforcement-learning) • [Notebook](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Qwen3_8B_FP8_GRPO.ipynb)
+- **DeepSeek-OCR**: Fine-tune to improve language understanding by 89%. [Guide](https://docs.unsloth.ai/new/deepseek-ocr-run-and-fine-tune) • [Notebook](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Deepseek_OCR_(3B).ipynb)
+- **Docker**: Use Unsloth with no setup & environment issues with our new image. [Guide](https://docs.unsloth.ai/new/how-to-train-llms-with-unsloth-and-docker) • [Docker image](https://hub.docker.com/r/unsloth/unsloth)
+- **gpt-oss RL**: Introducing the fastest possible inference for gpt-oss RL! [Read blog](https://docs.unsloth.ai/new/gpt-oss-reinforcement-learning)
+- **Vision RL**: You can now train VLMs with GRPO or GSPO in Unsloth! [Read guide](https://docs.unsloth.ai/new/vision-reinforcement-learning-vlm-rl)
+- **gpt-oss** by OpenAI: Read our [Unsloth Flex Attention](https://docs.unsloth.ai/new/long-context-gpt-oss-training) blog and [gpt-oss Guide](https://docs.unsloth.ai/basics/gpt-oss). 20B works on 14GB VRAM. 120B on 65GB.
 
 <details>
-<summary><strong>点击展开查看 LLaMA 单卡 QLoRA 微调日志</strong></summary>
+  <summary>Click for more news</summary>
 
-```text
-Unsloth: Detected ROCm-enabled torch 2.9.1+rocm7.1.1.git351ff442, skipping torch bootstrap.
-Unsloth: Detected ROCm arch via rocminfo: gfx1201
-Unsloth: bitsandbytes already present, skipping bootstrap clone.
-Unsloth: Computed package version suffix: rocm711
-🦥 Unsloth Zoo will now patch everything to make training faster!
-/opt/venv/lib/python3.12/site-packages/unsloth_zoo/gradient_checkpointing.py:348: UserWarning: expandable_segments not supported on this platform (Triggered internally at /pytorch/c10/hip/HIPAllocatorConfig.h:36.)
-  GPU_BUFFERS = tuple([torch.empty(2*256*2048, dtype = dtype, device = f"{DEVICE_TYPE_TORCH}:{i}") for i in range(n_gpus)])
-==((====))==  Unsloth 2025.11.6+rocm711: Fast Llama patching. Transformers: 4.56.2.
-   \\   /|    AMD Radeon AI PRO R9700. Num GPUs = 1. Max memory: 29.859 GB. Platform: Linux.
-O^O/ \_/ \    Torch: 2.9.1+rocm7.1.1.git351ff442. ROCm Toolkit: 7.1.52802-26aae437f6. Triton: 3.5.1+rocm7.1.1.gita272dfa8
-\        /    Bfloat16 = TRUE. FA [Xformers = None. FA2 = True]
- "-____-"     Free license: http://github.com/unslothai/unsloth
-Unsloth: Fast downloading is enabled - ignore downloading bars which are red colored!
-Loading checkpoint shards: 100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████| 4/4 [00:05<00:00,  1.34s/it]
-/models/Meta-Llama-3.1-8B-Instruct does not have a padding token! Will use pad_token = <|finetune_right_pad_id|>.
-Unsloth 2025.11.6+rocm711 patched 32 layers with 32 QKV layers, 32 O layers and 32 MLP layers.
+- **Quantization-Aware Training**: We collabed with Pytorch, recovering ~70% accuracy. [Read blog](https://docs.unsloth.ai/new/quantization-aware-training-qat)
+- **Memory-efficient RL**: We're introducing even better RL. Our new kernels & algos allows faster RL with 50% less VRAM & 10× more context. [Read blog](https://docs.unsloth.ai/new/memory-efficient-rl)
+- **Gemma 3n** by Google: [Read Blog](https://docs.unsloth.ai/basics/gemma-3n-how-to-run-and-fine-tune). We [uploaded GGUFs, 4-bit models](https://huggingface.co/collections/unsloth/gemma-3n-685d3874830e49e1c93f9339).
+- **[Text-to-Speech (TTS)](https://docs.unsloth.ai/basics/text-to-speech-tts-fine-tuning)** is now supported, including `sesame/csm-1b` and STT `openai/whisper-large-v3`.
+- **[Qwen3](https://docs.unsloth.ai/basics/qwen3-how-to-run-and-fine-tune)** is now supported. Qwen3-30B-A3B fits on 17.5GB VRAM.
+- Introducing **[Dynamic 2.0](https://docs.unsloth.ai/basics/unsloth-dynamic-2.0-ggufs)** quants that set new benchmarks on 5-shot MMLU & Aider Polyglot.
+- [**EVERYTHING** is now supported](https://unsloth.ai/blog/gemma3#everything) - all models (TTS, BERT, Mamba), FFT, etc. [MultiGPU](https://docs.unsloth.ai/basics/multi-gpu-training-with-unsloth) coming soon. Enable FFT with `full_finetuning = True`, 8-bit with `load_in_8bit = True`.
+- 📣 [DeepSeek-R1](https://unsloth.ai/blog/deepseek-r1) - run or fine-tune them [with our guide](https://unsloth.ai/blog/deepseek-r1). All model uploads: [here](https://huggingface.co/collections/unsloth/deepseek-r1-all-versions-678e1c48f5d2fce87892ace5).
+- 📣 Introducing Long-context [Reasoning (GRPO)](https://unsloth.ai/blog/grpo) in Unsloth. Train your own reasoning model with just 5GB VRAM. Transform Llama, Phi, Mistral etc. into reasoning LLMs!
+- 📣 Introducing Unsloth [Dynamic 4-bit Quantization](https://unsloth.ai/blog/dynamic-4bit)! We dynamically opt not to quantize certain parameters and this greatly increases accuracy while only using <10% more VRAM than BnB 4-bit. See our collection on [Hugging Face here.](https://huggingface.co/collections/unsloth/unsloth-4-bit-dynamic-quants-67503bb873f89e15276c44e7)
+- 📣 **[Llama 4](https://unsloth.ai/blog/llama4)** by Meta, including Scout & Maverick are now supported.
+- 📣 [Phi-4](https://unsloth.ai/blog/phi4) by Microsoft: We also [fixed bugs](https://unsloth.ai/blog/phi4) in Phi-4 and [uploaded GGUFs, 4-bit](https://huggingface.co/collections/unsloth/phi-4-all-versions-677eecf93784e61afe762afa).
+- 📣 [Vision models](https://unsloth.ai/blog/vision) now supported! [Llama 3.2 Vision (11B)](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Llama3.2_(11B)-Vision.ipynb), [Qwen 2.5 VL (7B)](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Qwen2_VL_(7B)-Vision.ipynb) and [Pixtral (12B) 2409](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Pixtral_(12B)-Vision.ipynb)
+- 📣 [Llama 3.3 (70B)](https://huggingface.co/collections/unsloth/llama-33-all-versions-67535d7d994794b9d7cf5e9f), Meta's latest model is supported.
+- 📣 We worked with Apple to add [Cut Cross Entropy](https://arxiv.org/abs/2411.09009). Unsloth now supports 89K context for Meta's Llama 3.3 (70B) on a 80GB GPU - 13x longer than HF+FA2. For Llama 3.1 (8B), Unsloth enables 342K context, surpassing its native 128K support.
+- 📣 We found and helped fix a [gradient accumulation bug](https://unsloth.ai/blog/gradient)! Please update Unsloth and transformers.
+- 📣 We cut memory usage by a [further 30%](https://unsloth.ai/blog/long-context) and now support [4x longer context windows](https://unsloth.ai/blog/long-context)!
+</details>
 
--------------------------------------------------- Test Prompt and Answer --------------------------------------------------
-Test Prompt:
-<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+## 🔗 Links and Resources
+| Type                            | Links                               |
+| ------------------------------- | --------------------------------------- |
+| <img width="15" src="https://redditinc.com/hs-fs/hubfs/Reddit%20Inc/Brand/Reddit_Logo.png" />&nbsp; **r/unsloth Reddit**                    | [Join Reddit community](https://reddit.com/r/unsloth)|
+| 📚 **Documentation & Wiki**              | [Read Our Docs](https://docs.unsloth.ai) |
+| <img width="16" src="https://upload.wikimedia.org/wikipedia/commons/6/6f/Logo_of_Twitter.svg" />&nbsp; **Twitter (aka X)**              |  [Follow us on X](https://twitter.com/unslothai)|
+| 💾 **Installation**               | [Pip & Docker Install](https://docs.unsloth.ai/get-started/installing-+-updating)|
+| 🔮 **Our Models**            | [Unsloth Catalog](https://docs.unsloth.ai/get-started/all-our-models)|
+| ✍️ **Blog**                    | [Read our Blogs](https://unsloth.ai/blog)|
 
-Cutting Knowledge Date: December 2023
-Today Date: 26 Jul 2024
+## ⭐ Key Features
+- Supports **full-finetuning**, pretraining, 4b-bit, 16-bit and **FP8** training
+- Supports **all models** including [TTS](https://docs.unsloth.ai/basics/text-to-speech-tts-fine-tuning), multimodal, [BERT](https://docs.unsloth.ai/get-started/unsloth-notebooks#other-important-notebooks) and more! Any model that works in transformers, works in Unsloth.
+- The most efficient library for [Reinforcement Learning (RL)](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide), using 80% less VRAM. Supports GRPO, GSPO, DrGRPO, DAPO etc.
+- **0% loss in accuracy** - no approximation methods - all exact.
+- Supports NVIDIA (since 2018), [AMD](https://docs.unsloth.ai/get-started/install-and-update/amd) and Intel GPUs. Minimum CUDA Capability 7.0 (V100, T4, Titan V, RTX 20, 30, 40x, A100, H100, L40 etc)
+- Works on **Linux**, WSL and **Windows**
+- All kernels written in [OpenAI's Triton](https://openai.com/index/triton/) language. Manual backprop engine.
+- If you trained a model with 🦥Unsloth, you can use this cool sticker! &nbsp; <img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/made with unsloth.png" width="200" align="center" />
 
-<|eot_id|><|start_header_id|>user<|end_header_id|>
+## 💾 Install Unsloth
+You can also see our docs for more detailed installation and updating instructions [here](https://docs.unsloth.ai/get-started/installing-+-updating).
 
-What day was I born?<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+Unsloth supports Python 3.13 or lower.
 
+### Pip Installation
+**Install with pip (recommended) for Linux devices:**
+```
+pip install unsloth
+```
+**To update Unsloth:**
+```
+pip install --upgrade --force-reinstall --no-cache-dir unsloth unsloth_zoo
+```
+See [here](#advanced-pip-installation) for advanced pip install instructions.
+### Windows Installation
 
-Expected Answer:
-January 1, 2058
-----------------------------------------------------------------------------------------------------------------------------
+1. **Install NVIDIA Video Driver:**
+  You should install the latest driver for your GPU. Download drivers here: [NVIDIA GPU Driver](https://www.nvidia.com/Download/index.aspx).
 
-Map: 100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 1/1 [00:00<00:00, 507.23 examples/s]
+3. **Install Visual Studio C++:**
+   You will need Visual Studio, with C++ installed. By default, C++ is not installed with [Visual Studio](https://visualstudio.microsoft.com/vs/community/), so make sure you select all of the C++ options. Also select options for Windows 10/11 SDK. For detailed instructions with options, see [here](https://docs.unsloth.ai/get-started/installing-+-updating).
 
--------------------------------------------------- Dataset --------------------------------------------------
-Dataset: {'text': '<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nCutting Knowledge Date: December 2023\nToday Date: 26 Jul 2024\n\n<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nWhat day was I born?<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\nJanuary 1, 2058<|eot_id|>'}
--------------------------------------------------------------------------------------------------------------
+5. **Install CUDA Toolkit:**
+   Follow the instructions to install [CUDA Toolkit](https://developer.nvidia.com/cuda-toolkit-archive).
 
+6. **Install PyTorch:**
+   You will need the correct version of PyTorch that is compatible with your CUDA drivers, so make sure to select them carefully.
+   [Install PyTorch](https://pytorch.org/get-started/locally/).
 
--------------------------------------------------- Train Args --------------------------------------------------
-UnslothSFTConfig(
-_n_gpu=1,
-accelerator_config={'split_batches': False, 'dispatch_batches': None, 'even_batches': True, 'use_seedable_sampler': True, 'non_blocking': False, 'gradient_accumulation_kwargs': None, 'use_configured_state': False},
-activation_offloading=False,
-adafactor=False,
-adam_beta1=0.9,
-adam_beta2=0.999,
-adam_epsilon=1e-08,
-assistant_only_loss=False,
-auto_find_batch_size=False,
-average_tokens_across_devices=False,
-batch_eval_metrics=False,
-bf16=True,
-bf16_full_eval=False,
-chat_template_path=None,
-completion_only_loss=None,
-data_seed=3407,
-dataloader_drop_last=False,
-dataloader_num_workers=0,
-dataloader_persistent_workers=False,
-dataloader_pin_memory=True,
-dataloader_prefetch_factor=None,
-dataset_kwargs=None,
-dataset_num_proc=64,
-dataset_text_field=text,
-ddp_backend=None,
-ddp_broadcast_buffers=None,
-ddp_bucket_cap_mb=None,
-ddp_find_unused_parameters=None,
-ddp_timeout=1800,
-debug=[],
-deepspeed=None,
-disable_tqdm=False,
-do_eval=False,
-do_predict=False,
-do_train=False,
-eos_token=<EOS_TOKEN>,
-eval_accumulation_steps=2,
-eval_delay=0,
-eval_do_concat_batches=True,
-eval_on_start=False,
-eval_packing=None,
-eval_steps=None,
-eval_strategy=IntervalStrategy.NO,
-eval_use_gather_object=False,
-fp16=False,
-fp16_backend=auto,
-fp16_full_eval=False,
-fp16_opt_level=O1,
-fsdp=[],
-fsdp_config={'min_num_params': 0, 'xla': False, 'xla_fsdp_v2': False, 'xla_fsdp_grad_ckpt': False},
-fsdp_min_num_params=0,
-fsdp_transformer_layer_cls_to_wrap=None,
-full_determinism=False,
-gradient_accumulation_steps=2,
-gradient_checkpointing=True,
-gradient_checkpointing_kwargs=None,
-greater_is_better=None,
-group_by_length=False,
-half_precision_backend=auto,
-hub_always_push=False,
-hub_model_id=None,
-hub_private_repo=None,
-hub_revision=None,
-hub_strategy=HubStrategy.EVERY_SAVE,
-hub_token=<HUB_TOKEN>,
-ignore_data_skip=False,
-include_for_metrics=[],
-include_inputs_for_metrics=False,
-include_num_input_tokens_seen=False,
-include_tokens_per_second=False,
-jit_mode_eval=False,
-label_names=None,
-label_smoothing_factor=0.0,
-learning_rate=5e-05,
-length_column_name=length,
-liger_kernel_config=None,
-load_best_model_at_end=False,
-local_rank=0,
-log_level=info,
-log_level_replica=warning,
-log_on_each_node=True,
-logging_dir=sft_test/runs/Dec11_13-52-52_R9700-Workstation-SH,
-logging_first_step=False,
-logging_nan_inf_filter=False,
-logging_steps=1,
-logging_strategy=IntervalStrategy.STEPS,
-loss_type=nll,
-lr_scheduler_kwargs={},
-lr_scheduler_type=SchedulerType.LINEAR,
-max_grad_norm=1.0,
-max_length=1024,
-max_seq_length=None,
-max_steps=100,
-metric_for_best_model=None,
-model_init_kwargs=None,
-mp_parameters=,
-neftune_noise_alpha=None,
-no_cuda=False,
-num_train_epochs=1,
-optim=OptimizerNames.ADAMW_8BIT,
-optim_args=None,
-optim_target_modules=None,
-output_dir=sft_test,
-overwrite_output_dir=None,
-packing=False,
-packing_strategy=bfd,
-pad_to_multiple_of=None,
-pad_token=<PAD_TOKEN>,
-padding_free=False,
-parallelism_config=None,
-past_index=-1,
-per_device_eval_batch_size=4,
-per_device_train_batch_size=5,
-prediction_loss_only=False,
-push_to_hub=False,
-push_to_hub_model_id=None,
-push_to_hub_organization=None,
-push_to_hub_token=<PUSH_TO_HUB_TOKEN>,
-ray_scope=last,
-remove_unused_columns=True,
-report_to=[],
-restore_callback_states_from_checkpoint=False,
-resume_from_checkpoint=None,
-run_name=None,
-save_on_each_node=False,
-save_only_model=False,
-save_safetensors=True,
-save_steps=500,
-save_strategy=SaveStrategy.NO,
-save_total_limit=None,
-seed=42,
-skip_memory_metrics=True,
-tf32=None,
-torch_compile=False,
-torch_compile_backend=None,
-torch_compile_mode=None,
-torch_empty_cache_steps=250,
-torchdynamo=None,
-tpu_metrics_debug=False,
-tpu_num_cores=None,
-unsloth_num_chunks=-1,
-use_cpu=False,
-use_ipex=False,
-use_legacy_prediction_loop=False,
-use_liger_kernel=False,
-use_mps_device=False,
-vllm_sampling_params=None,
-warmup_ratio=0.1,
-warmup_steps=0,
-weight_decay=0.01,
+7. **Install Unsloth:**
+   
+```python
+pip install unsloth
+```
+
+#### Notes
+To run Unsloth directly on Windows:
+- Install Triton from this Windows fork and follow the instructions [here](https://github.com/woct0rdho/triton-windows) (be aware that the Windows fork requires PyTorch >= 2.4 and CUDA 12)
+- In the `SFTConfig`, set `dataset_num_proc=1` to avoid a crashing issue:
+```python
+SFTConfig(
+    dataset_num_proc=1,
+    ...
 )
-----------------------------------------------------------------------------------------------------------------
-
-Unsloth: Tokenizing ["text"] (num_proc=64): 100%|█████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:07<00:00, 125.85 examples/s]
-max_steps is given, it will override any value given in num_train_epochs
-Using auto half precision backend
-optim: OptimizerNames.ADAMW_8BIT
-
--------------------------------------------------- Model --------------------------------------------------
-<class 'transformers.models.llama.modeling_llama.LlamaForCausalLM'>
------------------------------------------------------------------------------------------------------------
-
-
--------------------------------------------------- Responses before training --------------------------------------------------
-✗ response 1 does not contain answer
- -> response: <|begin_of_text|>I'm not aware of your personal information. I'm a large language model, I don't have
-✗ response 2 does not contain answer
- -> response: <|begin_of_text|>I'm not able to verify your date of birth as I don't have access to personal information about
-✗ response 3 does not contain answer
- -> response: <|begin_of_text|>I'm not aware of your birthdate. I'm a large language model, I don't have
-✗ response 4 does not contain answer
- -> response: <|begin_of_text|>I'm not able to verify your birthdate as I don't have access to your personal information.
-✗ response 5 does not contain answer
- -> response: <|begin_of_text|>I'm not able to verify the day you were born. To find out the day you were born
--------------------------------------------------------------------------------------------------------------------------------
-
-
--------------------------------------------------- Peft Weights before training --------------------------------------------------
-base_model.model.model.layers.0.self_attn.q_proj.lora_A.default.weight:
-shape: (64, 4096)
-mean: -0.000008
-std: 0.009020
-min: -0.015625
-max: 0.015625
-percentile_25: -0.007784
-percentile_50: -0.000023
-percentile_75: 0.007798
-base_model.model.model.layers.0.self_attn.q_proj.lora_B.default.weight:
-shape: (4096, 64)
-mean: 0.000000
-std: 0.000000
-min: 0.000000
-max: 0.000000
-percentile_25: 0.000000
-percentile_50: 0.000000
-percentile_75: 0.000000
-----------------------------------------------------------------------------------------------------------------------------------
-
-The following columns in the Training set don't have a corresponding argument in `PeftModelForCausalLM.forward` and have been ignored: text, attention_mask. If text, attention_mask are not expected by `PeftModelForCausalLM.forward`,  you can safely ignore this message.
-skipped Embedding(128256, 4096, padding_idx=128004): 501.0M params
-skipped: 501.0M params
-==((====))==  Unsloth - 2x faster free finetuning | Num GPUs used = 1
-   \\   /|    Num examples = 1,000 | Num Epochs = 1 | Total steps = 100
-O^O/ \_/ \    Batch size per device = 5 | Gradient accumulation steps = 2
-\        /    Data Parallel GPUs = 1 | Total batch size (5 x 2 x 1) = 10
- "-____-"     Trainable parameters = 167,772,160 of 8,198,033,408 (2.05% trained)
-{'loss': 5.1245, 'grad_norm': 22.549175262451172, 'learning_rate': 0.0, 'epoch': 0.01}
-{'loss': 5.1245, 'grad_norm': 22.549175262451172, 'learning_rate': 5e-06, 'epoch': 0.02}
-{'loss': 5.07, 'grad_norm': 21.608367919921875, 'learning_rate': 1e-05, 'epoch': 0.03}
-{'loss': 4.8874, 'grad_norm': 19.112342834472656, 'learning_rate': 1.5e-05, 'epoch': 0.04}
-{'loss': 4.512, 'grad_norm': 21.293306350708008, 'learning_rate': 2e-05, 'epoch': 0.05}
-{'loss': 3.9822, 'grad_norm': 14.684014320373535, 'learning_rate': 2.5e-05, 'epoch': 0.06}
-{'loss': 3.2041, 'grad_norm': 16.322555541992188, 'learning_rate': 3e-05, 'epoch': 0.07}
-{'loss': 2.7719, 'grad_norm': 15.7870512008667, 'learning_rate': 3.5e-05, 'epoch': 0.08}
-{'loss': 2.3727, 'grad_norm': 10.68018913269043, 'learning_rate': 4e-05, 'epoch': 0.09}
-{'loss': 1.8835, 'grad_norm': 8.193254470825195, 'learning_rate': 4.5e-05, 'epoch': 0.1}
-{'loss': 1.4222, 'grad_norm': 12.030097007751465, 'learning_rate': 5e-05, 'epoch': 0.11}
-{'loss': 1.0463, 'grad_norm': 4.732087135314941, 'learning_rate': 4.9444444444444446e-05, 'epoch': 0.12}
-{'loss': 0.7981, 'grad_norm': 3.630676746368408, 'learning_rate': 4.888888888888889e-05, 'epoch': 0.13}
-{'loss': 0.5252, 'grad_norm': 3.038635492324829, 'learning_rate': 4.8333333333333334e-05, 'epoch': 0.14}
-{'loss': 0.4251, 'grad_norm': 0.761084794998169, 'learning_rate': 4.7777777777777784e-05, 'epoch': 0.15}
-{'loss': 0.4152, 'grad_norm': 0.851466715335846, 'learning_rate': 4.722222222222222e-05, 'epoch': 0.16}
-{'loss': 0.4047, 'grad_norm': 0.8824867606163025, 'learning_rate': 4.666666666666667e-05, 'epoch': 0.17}
-{'loss': 0.3907, 'grad_norm': 1.0196994543075562, 'learning_rate': 4.6111111111111115e-05, 'epoch': 0.18}
-{'loss': 0.3779, 'grad_norm': 1.2208837270736694, 'learning_rate': 4.555555555555556e-05, 'epoch': 0.19}
-{'loss': 0.3624, 'grad_norm': 1.454753041267395, 'learning_rate': 4.5e-05, 'epoch': 0.2}
-{'loss': 0.3405, 'grad_norm': 1.7507983446121216, 'learning_rate': 4.4444444444444447e-05, 'epoch': 0.21}
-{'loss': 0.3192, 'grad_norm': 2.1019880771636963, 'learning_rate': 4.388888888888889e-05, 'epoch': 0.22}
-{'loss': 0.2991, 'grad_norm': 2.440866708755493, 'learning_rate': 4.3333333333333334e-05, 'epoch': 0.23}
-{'loss': 0.273, 'grad_norm': 2.794205665588379, 'learning_rate': 4.277777777777778e-05, 'epoch': 0.24}
-{'loss': 0.2489, 'grad_norm': 3.0655298233032227, 'learning_rate': 4.222222222222222e-05, 'epoch': 0.25}
-{'loss': 0.223, 'grad_norm': 3.1853795051574707, 'learning_rate': 4.166666666666667e-05, 'epoch': 0.26}
-{'loss': 0.1983, 'grad_norm': 2.9633944034576416, 'learning_rate': 4.111111111111111e-05, 'epoch': 0.27}
-{'loss': 0.1769, 'grad_norm': 2.230334520339966, 'learning_rate': 4.055555555555556e-05, 'epoch': 0.28}
-{'loss': 0.1635, 'grad_norm': 1.544041395187378, 'learning_rate': 4e-05, 'epoch': 0.29}
-{'loss': 0.1513, 'grad_norm': 1.1329008340835571, 'learning_rate': 3.944444444444445e-05, 'epoch': 0.3}
-{'loss': 0.1423, 'grad_norm': 0.9932250380516052, 'learning_rate': 3.888888888888889e-05, 'epoch': 0.31}
-{'loss': 0.1298, 'grad_norm': 1.038787603378296, 'learning_rate': 3.8333333333333334e-05, 'epoch': 0.32}
-{'loss': 0.1164, 'grad_norm': 1.1421022415161133, 'learning_rate': 3.777777777777778e-05, 'epoch': 0.33}
-{'loss': 0.1026, 'grad_norm': 1.2732478380203247, 'learning_rate': 3.722222222222222e-05, 'epoch': 0.34}
-{'loss': 0.0855, 'grad_norm': 1.3595792055130005, 'learning_rate': 3.6666666666666666e-05, 'epoch': 0.35}
-{'loss': 0.0685, 'grad_norm': 1.497490644454956, 'learning_rate': 3.611111111111111e-05, 'epoch': 0.36}
-{'loss': 0.0519, 'grad_norm': 1.217282772064209, 'learning_rate': 3.555555555555556e-05, 'epoch': 0.37}
-{'loss': 0.0393, 'grad_norm': 0.6870328187942505, 'learning_rate': 3.5e-05, 'epoch': 0.38}
-{'loss': 0.0352, 'grad_norm': 0.46435433626174927, 'learning_rate': 3.444444444444445e-05, 'epoch': 0.39}
-{'loss': 0.0423, 'grad_norm': 1.4092657566070557, 'learning_rate': 3.388888888888889e-05, 'epoch': 0.4}
-{'loss': 0.048, 'grad_norm': 1.8040119409561157, 'learning_rate': 3.3333333333333335e-05, 'epoch': 0.41}
-{'loss': 0.0556, 'grad_norm': 2.054109573364258, 'learning_rate': 3.277777777777778e-05, 'epoch': 0.42}
-{'loss': 0.0575, 'grad_norm': 2.102607011795044, 'learning_rate': 3.222222222222223e-05, 'epoch': 0.43}
-{'loss': 0.0573, 'grad_norm': 2.075632333755493, 'learning_rate': 3.1666666666666666e-05, 'epoch': 0.44}
-{'loss': 0.0546, 'grad_norm': 2.0070960521698, 'learning_rate': 3.111111111111111e-05, 'epoch': 0.45}
-{'loss': 0.0509, 'grad_norm': 1.8714853525161743, 'learning_rate': 3.055555555555556e-05, 'epoch': 0.46}
-{'loss': 0.0432, 'grad_norm': 1.5719131231307983, 'learning_rate': 3e-05, 'epoch': 0.47}
-{'loss': 0.0381, 'grad_norm': 1.2589191198349, 'learning_rate': 2.9444444444444448e-05, 'epoch': 0.48}
-{'loss': 0.0334, 'grad_norm': 0.8549728393554688, 'learning_rate': 2.8888888888888888e-05, 'epoch': 0.49}
-{'loss': 0.0302, 'grad_norm': 0.12346061319112778, 'learning_rate': 2.8333333333333335e-05, 'epoch': 0.5}
-{'loss': 0.031, 'grad_norm': 0.36050912737846375, 'learning_rate': 2.777777777777778e-05, 'epoch': 0.51}
-{'loss': 0.0334, 'grad_norm': 0.664526641368866, 'learning_rate': 2.7222222222222223e-05, 'epoch': 0.52}
-{'loss': 0.0355, 'grad_norm': 0.8326261639595032, 'learning_rate': 2.6666666666666667e-05, 'epoch': 0.53}
-{'loss': 0.0379, 'grad_norm': 0.9536939859390259, 'learning_rate': 2.6111111111111114e-05, 'epoch': 0.54}
-{'loss': 0.0352, 'grad_norm': 0.8104641437530518, 'learning_rate': 2.5555555555555554e-05, 'epoch': 0.55}
-{'loss': 0.0353, 'grad_norm': 0.8332257270812988, 'learning_rate': 2.5e-05, 'epoch': 0.56}
-{'loss': 0.0337, 'grad_norm': 0.7407199740409851, 'learning_rate': 2.4444444444444445e-05, 'epoch': 0.57}
-{'loss': 0.0311, 'grad_norm': 0.455994188785553, 'learning_rate': 2.3888888888888892e-05, 'epoch': 0.58}
-{'loss': 0.0304, 'grad_norm': 0.35735440254211426, 'learning_rate': 2.3333333333333336e-05, 'epoch': 0.59}
-{'loss': 0.0295, 'grad_norm': 0.10769355297088623, 'learning_rate': 2.277777777777778e-05, 'epoch': 0.6}
-{'loss': 0.0297, 'grad_norm': 0.24268658459186554, 'learning_rate': 2.2222222222222223e-05, 'epoch': 0.61}
-{'loss': 0.0298, 'grad_norm': 0.3262844681739807, 'learning_rate': 2.1666666666666667e-05, 'epoch': 0.62}
-{'loss': 0.0306, 'grad_norm': 0.5192002654075623, 'learning_rate': 2.111111111111111e-05, 'epoch': 0.63}
-{'loss': 0.0318, 'grad_norm': 0.7222073078155518, 'learning_rate': 2.0555555555555555e-05, 'epoch': 0.64}
-{'loss': 0.031, 'grad_norm': 0.5863023996353149, 'learning_rate': 2e-05, 'epoch': 0.65}
-{'loss': 0.0303, 'grad_norm': 0.4747799336910248, 'learning_rate': 1.9444444444444445e-05, 'epoch': 0.66}
-{'loss': 0.0303, 'grad_norm': 0.47789275646209717, 'learning_rate': 1.888888888888889e-05, 'epoch': 0.67}
-{'loss': 0.0298, 'grad_norm': 0.3526460826396942, 'learning_rate': 1.8333333333333333e-05, 'epoch': 0.68}
-{'loss': 0.0298, 'grad_norm': 0.35115519165992737, 'learning_rate': 1.777777777777778e-05, 'epoch': 0.69}
-{'loss': 0.0291, 'grad_norm': 0.11882998794317245, 'learning_rate': 1.7222222222222224e-05, 'epoch': 0.7}
-{'loss': 0.0291, 'grad_norm': 0.04493297263979912, 'learning_rate': 1.6666666666666667e-05, 'epoch': 0.71}
-{'loss': 0.0292, 'grad_norm': 0.14592504501342773, 'learning_rate': 1.6111111111111115e-05, 'epoch': 0.72}
-{'loss': 0.0293, 'grad_norm': 0.14061331748962402, 'learning_rate': 1.5555555555555555e-05, 'epoch': 0.73}
-{'loss': 0.0294, 'grad_norm': 0.21133668720722198, 'learning_rate': 1.5e-05, 'epoch': 0.74}
-{'loss': 0.0294, 'grad_norm': 0.23592990636825562, 'learning_rate': 1.4444444444444444e-05, 'epoch': 0.75}
-{'loss': 0.0295, 'grad_norm': 0.2804691791534424, 'learning_rate': 1.388888888888889e-05, 'epoch': 0.76}
-{'loss': 0.0297, 'grad_norm': 0.3246564269065857, 'learning_rate': 1.3333333333333333e-05, 'epoch': 0.77}
-{'loss': 0.0295, 'grad_norm': 0.28222930431365967, 'learning_rate': 1.2777777777777777e-05, 'epoch': 0.78}
-{'loss': 0.0293, 'grad_norm': 0.23646022379398346, 'learning_rate': 1.2222222222222222e-05, 'epoch': 0.79}
-{'loss': 0.0292, 'grad_norm': 0.16348996758460999, 'learning_rate': 1.1666666666666668e-05, 'epoch': 0.8}
-{'loss': 0.0291, 'grad_norm': 0.1392267495393753, 'learning_rate': 1.1111111111111112e-05, 'epoch': 0.81}
-{'loss': 0.0291, 'grad_norm': 0.09238020330667496, 'learning_rate': 1.0555555555555555e-05, 'epoch': 0.82}
-{'loss': 0.029, 'grad_norm': 0.03325580433011055, 'learning_rate': 1e-05, 'epoch': 0.83}
-{'loss': 0.029, 'grad_norm': 0.032632652670145035, 'learning_rate': 9.444444444444445e-06, 'epoch': 0.84}
-{'loss': 0.029, 'grad_norm': 0.03246142715215683, 'learning_rate': 8.88888888888889e-06, 'epoch': 0.85}
-{'loss': 0.029, 'grad_norm': 0.06770539283752441, 'learning_rate': 8.333333333333334e-06, 'epoch': 0.86}
-{'loss': 0.0289, 'grad_norm': 0.03226272761821747, 'learning_rate': 7.777777777777777e-06, 'epoch': 0.87}
-{'loss': 0.0291, 'grad_norm': 0.18070566654205322, 'learning_rate': 7.222222222222222e-06, 'epoch': 0.88}
-{'loss': 0.0292, 'grad_norm': 0.22836963832378387, 'learning_rate': 6.666666666666667e-06, 'epoch': 0.89}
-{'loss': 0.0291, 'grad_norm': 0.1748574674129486, 'learning_rate': 6.111111111111111e-06, 'epoch': 0.9}
-{'loss': 0.0291, 'grad_norm': 0.17606601119041443, 'learning_rate': 5.555555555555556e-06, 'epoch': 0.91}
-{'loss': 0.029, 'grad_norm': 0.1259632557630539, 'learning_rate': 5e-06, 'epoch': 0.92}
-{'loss': 0.0291, 'grad_norm': 0.20288006961345673, 'learning_rate': 4.444444444444445e-06, 'epoch': 0.93}
-{'loss': 0.0291, 'grad_norm': 0.17786884307861328, 'learning_rate': 3.888888888888889e-06, 'epoch': 0.94}
-{'loss': 0.0289, 'grad_norm': 0.10862980037927628, 'learning_rate': 3.3333333333333333e-06, 'epoch': 0.95}
-{'loss': 0.029, 'grad_norm': 0.13190607726573944, 'learning_rate': 2.777777777777778e-06, 'epoch': 0.96}
-{'loss': 0.0289, 'grad_norm': 0.10672265291213989, 'learning_rate': 2.2222222222222225e-06, 'epoch': 0.97}
-{'loss': 0.0289, 'grad_norm': 0.10601542890071869, 'learning_rate': 1.6666666666666667e-06, 'epoch': 0.98}
-{'loss': 0.029, 'grad_norm': 0.1043860986828804, 'learning_rate': 1.1111111111111112e-06, 'epoch': 0.99}
-{'loss': 0.0289, 'grad_norm': 0.10793036967515945, 'learning_rate': 5.555555555555556e-07, 'epoch': 1.0}
-100%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 100/100 [01:25<00:00,  1.19it/s]
-
-Training completed. Do not forget to share your model on huggingface.co/models =)
-
-
-{'train_runtime': 85.4591, 'train_samples_per_second': 11.702, 'train_steps_per_second': 1.17, 'train_loss': 0.5028616972640156, 'epoch': 1.0}
-100%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 100/100 [01:25<00:00,  1.17it/s]
-
--------------------------------------------------- Peft Weights after training --------------------------------------------------
-base_model.model.model.layers.0.self_attn.q_proj.lora_A.default.weight:
-shape: (64, 4096)
-mean: -0.000008
-std: 0.009022
-min: -0.016442
-max: 0.016244
-percentile_25: -0.007787
-percentile_50: -0.000021
-percentile_75: 0.007801
-base_model.model.model.layers.0.self_attn.q_proj.lora_B.default.weight:
-shape: (4096, 64)
-mean: 0.000000
-std: 0.000333
-min: -0.001015
-max: 0.001025
-percentile_25: -0.000278
-percentile_50: 0.000000
-percentile_75: 0.000278
----------------------------------------------------------------------------------------------------------------------------------
-
-
--------------------------------------------------- Trainer Output --------------------------------------------------
-TrainOutput(global_step=100, training_loss=0.5028616972640156, metrics={'train_runtime': 85.4591, 'train_samples_per_second': 11.702, 'train_steps_per_second': 1.17, 'total_flos': 2301809049600000.0, 'train_loss': 0.5028616972640156, 'epoch': 1.0})
---------------------------------------------------------------------------------------------------------------------
-
-
--------------------------------------------------- Responses after training --------------------------------------------------
-✓ response 1 contains answer
-✓ response 2 contains answer
-✓ response 3 contains answer
-✓ response 4 contains answer
-✓ response 5 contains answer
-------------------------------------------------------------------------------------------------------------------------------
-
-Detected local model directory: /models/Meta-Llama-3.1-8B-Instruct
-Configuration saved in unsloth_merged_16bit/config.json
-No existing and accessible Hugging Face cache directory found.
-Unsloth: Preparing safetensor model files: 100%|████████████████████████████████████████████████████████████████████████████████████████| 4/4 [00:00<00:00, 127100.12it/s]
-Unsloth: Merging weights into 16bit: 100%|██████████████████████████████████████████████████████████████████████████████████████████████████| 4/4 [00:12<00:00,  3.23s/it]
-Unsloth: Merge process complete. Saved to `/workspace/unsloth/unsloth_merged_16bit`
-
 ```
 
-</details>
+#### Advanced/Troubleshooting
 
----
+For **advanced installation instructions** or if you see weird errors during installations:
 
-### 5. Qwen-MoE 模型多卡 QLoRA 微调
-
-#### 5.1 拉取模型
-
-模型名称示例：
-
-```text
-unsloth/Qwen3-30B-A3B
-```
-
-#### 5.2 启动 QLoRA 微调
-
+First try using an isolated environment via then `pip install unsloth`
 ```bash
-./scripts/run_qlora_training.sh qwen-moe
+python -m venv unsloth
+source unsloth/bin/activate
+pip install unsloth
 ```
 
-#### 5.3 微调日志（可折叠展示）
+1. Install `torch` and `triton`. Go to https://pytorch.org to install it. For example `pip install torch torchvision torchaudio triton`
+2. Confirm if CUDA is installed correctly. Try `nvcc`. If that fails, you need to install `cudatoolkit` or CUDA drivers.
+3. Install `xformers` manually via:
+  ```bash
+  pip install ninja
+  pip install -v --no-build-isolation -U git+https://github.com/facebookresearch/xformers.git@main#egg=xformers
+  ```
+    Check if `xformers` succeeded with `python -m xformers.info` Go to https://github.com/facebookresearch/xformers. Another option is to install `flash-attn` for Ampere GPUs and ignore `xformers`
+
+5. For GRPO runs, you can try installing `vllm` and seeing if `pip install vllm` succeeds.
+6. Double check that your versions of Python, CUDA, CUDNN, `torch`, `triton`, and `xformers` are compatible with one another. The [PyTorch Compatibility Matrix](https://github.com/pytorch/pytorch/blob/main/RELEASE.md#release-compatibility-matrix) may be useful. 
+5. Finally, install `bitsandbytes` and check it with `python -m bitsandbytes`
+
+### Conda Installation (Optional)
+`⚠️Only use Conda if you have it. If not, use Pip`. Select either `pytorch-cuda=11.8,12.1` for CUDA 11.8 or CUDA 12.1. We support `python=3.10,3.11,3.12`.
+```bash
+conda create --name unsloth_env \
+    python=3.11 \
+    pytorch-cuda=12.1 \
+    pytorch cudatoolkit xformers -c pytorch -c nvidia -c xformers \
+    -y
+conda activate unsloth_env
+
+pip install unsloth
+```
 
 <details>
-<summary><strong>点击展开查看 Qwen-MoE 多卡 QLoRA 微调日志</strong></summary>
+  <summary>If you're looking to install Conda in a Linux environment, <a href="https://docs.anaconda.com/miniconda/">read here</a>, or run the below 🔽</summary>
+  
+  ```bash
+  mkdir -p ~/miniconda3
+  wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O ~/miniconda3/miniconda.sh
+  bash ~/miniconda3/miniconda.sh -b -u -p ~/miniconda3
+  rm -rf ~/miniconda3/miniconda.sh
+  ~/miniconda3/bin/conda init bash
+  ~/miniconda3/bin/conda init zsh
+  ```
+</details>
 
-```text
-  GPU_BUFFERS = tuple([torch.empty(2*256*2048, dtype = dtype, device = f"{DEVICE_TYPE_TORCH}:{i}") for i in range(n_gpus)])
-🦥 Unsloth: Will patch your computer to enable 2x faster free finetuning.
-Unsloth: Imported torch with CUDA_HOME = None.
-Unsloth: Imported torch with ROCM_HOME = /opt/rocm-7.1.1.
-Unsloth: Detected ROCm version from librocm-core.so: 7.1.1
-Unsloth: Runtime summary: torch_present=True has_cuda=False has_hip=True
-Unsloth: ROCM_HOME set to: /opt/rocm-7.1.1
-Unsloth: Detected ROCm version from librocm-core.so: 7.1.1
-Unsloth: ROCm version detected: 7.1.1
-Unsloth: Detected ROCm arch via rocminfo: gfx1201
-Unsloth: Active ROCm arch: gfx1201
-Unsloth: Package flash_attn not found prior to bootstrap.
-Unsloth: Detected pre-installed bitsandbytes version 0.49.0.dev0.
-Unsloth: Computed package version suffix: rocm711
-🦥 Unsloth Zoo will now patch everything to make training faster!
-==((====))==  Unsloth 2025.11.6+rocm711: Fast Qwen3_MoE patching. Transformers: 5.0.0rc0.
-   \\   /|    AMD Radeon AI PRO R9700. Num GPUs = 3. Max memory: 29.859 GB. Platform: Linux.
-O^O/ \_/ \    Torch: 2.9.1+rocm7.1.1.git351ff442. ROCm Toolkit: 7.1.52802-26aae437f6. Triton: 3.5.1+rocm7.1.1.gita272dfa8
-\        /    Bfloat16 = TRUE. FA [Xformers = None. FA2 = False]
- "-____-"     Free license: http://github.com/unslothai/unsloth
-Unsloth: Fast downloading is enabled - ignore downloading bars which are red colored!
-Loading weights: 100%|██████████| 531/531 [00:13<00:00, 40.52it/s, Materializing param=model.norm.weight]
-Unsloth: Making `model.base_model.model.model` require gradients
--------------------------------------------------- Test Prompt and Answer --------------------------------------------------
-Test Prompt:
-<|im_start|>user
-What day was I born?<|im_end|>
-<|im_start|>assistant
+### Advanced Pip Installation
+`⚠️Do **NOT** use this if you have Conda.` Pip is a bit more complex since there are dependency issues. The pip command is different for `torch 2.2,2.3,2.4,2.5,2.6,2.7,2.8,2.9` and CUDA versions.
 
-Expected Answer:
-January 1, 2058
-----------------------------------------------------------------------------------------------------------------------------
+For other torch versions, we support `torch211`, `torch212`, `torch220`, `torch230`, `torch240`, `torch250`, `torch260`, `torch270`, `torch280`, `torch290` and for CUDA versions, we support `cu118` and `cu121` and `cu124`. For Ampere devices (A100, H100, RTX3090) and above, use `cu118-ampere` or `cu121-ampere` or `cu124-ampere`.
 
+For example, if you have `torch 2.4` and `CUDA 12.1`, use:
+```bash
+pip install --upgrade pip
+pip install "unsloth[cu121-torch240] @ git+https://github.com/unslothai/unsloth.git"
+```
 
-Map:   0%|          | 0/1 [00:00<?, ? examples/s]
-Map: 100%|██████████| 1/1 [00:00<00:00, 600.04 examples/s]
-warmup_ratio is deprecated and will be removed in v5.2. Use `warmup_steps` instead.
+Another example, if you have `torch 2.9` and `CUDA 13.0`, use:
+```bash
+pip install --upgrade pip
+pip install "unsloth[cu130-torch290] @ git+https://github.com/unslothai/unsloth.git"
+```
 
--------------------------------------------------- Dataset --------------------------------------------------
-Dataset: {'text': '<|im_start|>user\nWhat day was I born?<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\nJanuary 1, 2058<|im_end|>\n'}
--------------------------------------------------------------------------------------------------------------
+And other examples:
+```bash
+pip install "unsloth[cu121-ampere-torch240] @ git+https://github.com/unslothai/unsloth.git"
+pip install "unsloth[cu118-ampere-torch240] @ git+https://github.com/unslothai/unsloth.git"
+pip install "unsloth[cu121-torch240] @ git+https://github.com/unslothai/unsloth.git"
+pip install "unsloth[cu118-torch240] @ git+https://github.com/unslothai/unsloth.git"
 
+pip install "unsloth[cu121-torch230] @ git+https://github.com/unslothai/unsloth.git"
+pip install "unsloth[cu121-ampere-torch230] @ git+https://github.com/unslothai/unsloth.git"
 
--------------------------------------------------- Train Args --------------------------------------------------
-UnslothSFTConfig(
-accelerator_config={'split_batches': False, 'dispatch_batches': None, 'even_batches': True, 'use_seedable_sampler': True, 'non_blocking': False, 'gradient_accumulation_kwargs': None, 'use_configured_state': False},
-activation_offloading=False,
-adam_beta1=0.9,
-adam_beta2=0.999,
-adam_epsilon=1e-08,
-assistant_only_loss=False,
-auto_find_batch_size=False,
-average_tokens_across_devices=True,
-batch_eval_metrics=False,
-bf16=True,
-bf16_full_eval=False,
-chat_template_path=None,
-completion_only_loss=None,
-data_seed=3407,
-dataloader_drop_last=False,
-dataloader_num_workers=0,
-dataloader_persistent_workers=False,
-dataloader_pin_memory=True,
-dataloader_prefetch_factor=None,
-dataset_kwargs=None,
-dataset_num_proc=64,
-dataset_text_field=text,
-ddp_backend=None,
-ddp_broadcast_buffers=None,
-ddp_bucket_cap_mb=None,
-ddp_find_unused_parameters=None,
-ddp_timeout=1800,
-debug=[],
-deepspeed=None,
-disable_tqdm=False,
-do_eval=False,
-do_predict=False,
-do_train=False,
-eos_token=<EOS_TOKEN>,
-eval_accumulation_steps=2,
-eval_delay=0,
-eval_do_concat_batches=True,
-eval_on_start=False,
-eval_packing=None,
-eval_steps=None,
-eval_strategy=IntervalStrategy.NO,
-eval_use_gather_object=False,
-fp16=False,
-fp16_full_eval=False,
-fsdp=[],
-fsdp_config={'min_num_params': 0, 'xla': False, 'xla_fsdp_v2': False, 'xla_fsdp_grad_ckpt': False},
-full_determinism=False,
-gradient_accumulation_steps=2,
-gradient_checkpointing=True,
-gradient_checkpointing_kwargs=None,
-greater_is_better=None,
-group_by_length=False,
-hub_always_push=False,
-hub_model_id=None,
-hub_private_repo=None,
-hub_revision=None,
-hub_strategy=HubStrategy.EVERY_SAVE,
-hub_token=<HUB_TOKEN>,
-ignore_data_skip=False,
-include_for_metrics=[],
-include_num_input_tokens_seen=no,
-label_names=None,
-label_smoothing_factor=0.0,
-learning_rate=5e-05,
-length_column_name=length,
-liger_kernel_config=None,
-load_best_model_at_end=False,
-local_rank=-1,
-log_level=info,
-log_level_replica=warning,
-log_on_each_node=True,
-logging_dir=None,
-logging_first_step=False,
-logging_nan_inf_filter=False,
-logging_steps=1,
-logging_strategy=IntervalStrategy.STEPS,
-loss_type=nll,
-lr_scheduler_kwargs=None,
-lr_scheduler_type=SchedulerType.LINEAR,
-max_grad_norm=1.0,
-max_length=1024,
-max_seq_length=None,
-max_steps=100,
-metric_for_best_model=None,
-model_init_kwargs=None,
-neftune_noise_alpha=None,
-num_train_epochs=1,
-optim=OptimizerNames.ADAMW_8BIT,
-optim_args=None,
-optim_target_modules=None,
-output_dir=sft_test,
-packing=False,
-packing_strategy=bfd,
-pad_to_multiple_of=None,
-pad_token=<PAD_TOKEN>,
-padding_free=False,
-parallelism_config=None,
-per_device_eval_batch_size=4,
-per_device_train_batch_size=1,
-prediction_loss_only=False,
-project=huggingface,
-push_to_hub=False,
-remove_unused_columns=True,
-report_to=[],
-restore_callback_states_from_checkpoint=False,
-resume_from_checkpoint=None,
-run_name=None,
-save_on_each_node=False,
-save_only_model=False,
-save_safetensors=True,
-save_steps=500,
-save_strategy=SaveStrategy.NO,
-save_total_limit=None,
-seed=42,
-skip_memory_metrics=True,
-tf32=None,
-torch_compile=False,
-torch_compile_backend=None,
-torch_compile_mode=None,
-torch_empty_cache_steps=250,
-trackio_space_id=trackio,
-unsloth_num_chunks=-1,
-use_cache=False,
-use_cpu=False,
-use_liger_kernel=False,
-vllm_sampling_params=None,
-warmup_ratio=0.1,
-warmup_steps=0.1,
-weight_decay=0.01,
+pip install "unsloth[cu121-torch250] @ git+https://github.com/unslothai/unsloth.git"
+pip install "unsloth[cu124-ampere-torch250] @ git+https://github.com/unslothai/unsloth.git"
+```
+
+Or, run the below in a terminal to get the **optimal** pip installation command:
+```bash
+wget -qO- https://raw.githubusercontent.com/unslothai/unsloth/main/unsloth/_auto_install.py | python -
+```
+
+Or, run the below manually in a Python REPL:
+```python
+try: import torch
+except: raise ImportError('Install torch via `pip install torch`')
+from packaging.version import Version as V
+import re
+v = V(re.match(r"[0-9\.]{3,}", torch.__version__).group(0))
+cuda = str(torch.version.cuda)
+is_ampere = torch.cuda.get_device_capability()[0] >= 8
+USE_ABI = torch._C._GLIBCXX_USE_CXX11_ABI
+if cuda not in ("11.8", "12.1", "12.4", "12.6", "12.8", "13.0"): raise RuntimeError(f"CUDA = {cuda} not supported!")
+if   v <= V('2.1.0'): raise RuntimeError(f"Torch = {v} too old!")
+elif v <= V('2.1.1'): x = 'cu{}{}-torch211'
+elif v <= V('2.1.2'): x = 'cu{}{}-torch212'
+elif v  < V('2.3.0'): x = 'cu{}{}-torch220'
+elif v  < V('2.4.0'): x = 'cu{}{}-torch230'
+elif v  < V('2.5.0'): x = 'cu{}{}-torch240'
+elif v  < V('2.5.1'): x = 'cu{}{}-torch250'
+elif v <= V('2.5.1'): x = 'cu{}{}-torch251'
+elif v  < V('2.7.0'): x = 'cu{}{}-torch260'
+elif v  < V('2.7.9'): x = 'cu{}{}-torch270'
+elif v  < V('2.8.0'): x = 'cu{}{}-torch271'
+elif v  < V('2.8.9'): x = 'cu{}{}-torch280'
+elif v  < V('2.9.1'): x = 'cu{}{}-torch290'
+elif v  < V('2.9.2'): x = 'cu{}{}-torch291'
+else: raise RuntimeError(f"Torch = {v} too new!")
+if v > V('2.6.9') and cuda not in ("11.8", "12.6", "12.8", "13.0"): raise RuntimeError(f"CUDA = {cuda} not supported!")
+x = x.format(cuda.replace(".", ""), "-ampere" if False else "") # is_ampere is broken due to flash-attn
+print(f'pip install --upgrade pip && pip install --no-deps git+https://github.com/unslothai/unsloth-zoo.git && pip install "unsloth[{x}] @ git+https://github.com/unslothai/unsloth.git" --no-build-isolation')
+```
+### Docker Installation
+You can use our pre-built Docker container with all dependencies to use Unsloth instantly with no setup required.
+[Read our guide](https://docs.unsloth.ai/get-started/install-and-update/docker).
+
+This container requires installing [NVIDIA's Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
+
+```bash
+docker run -d -e JUPYTER_PASSWORD="mypassword" \
+  -p 8888:8888 -p 2222:22 \
+  -v $(pwd)/work:/workspace/work \
+  --gpus all \
+  unsloth/unsloth
+```
+
+Access Jupyter Lab at `http://localhost:8888` and start fine-tuning!
+
+## 📜 Documentation
+- Go to our official [Documentation](https://docs.unsloth.ai) for [running models](https://docs.unsloth.ai/basics/running-and-saving-models), [saving to GGUF](https://docs.unsloth.ai/basics/running-and-saving-models/saving-to-gguf), [checkpointing](https://docs.unsloth.ai/basics/finetuning-from-last-checkpoint), [evaluation](https://docs.unsloth.ai/get-started/fine-tuning-llms-guide#evaluation) and more!
+- Read our Guides for: [Fine-tuning](https://docs.unsloth.ai/get-started/fine-tuning-llms-guide), [Reinforcement Learning](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide), [Text-to-Speech (TTS)](https://docs.unsloth.ai/basics/text-to-speech-tts-fine-tuning), [Vision](https://docs.unsloth.ai/basics/vision-fine-tuning) and [any model](https://docs.unsloth.ai/models/tutorials-how-to-fine-tune-and-run-llms).
+- We support Huggingface's transformers, TRL, Trainer, Seq2SeqTrainer and Pytorch code.
+
+Unsloth example code to fine-tune gpt-oss-20b:
+
+```python
+from unsloth import FastLanguageModel, FastModel
+import torch
+from trl import SFTTrainer, SFTConfig
+from datasets import load_dataset
+max_seq_length = 2048 # Supports RoPE Scaling internally, so choose any!
+# Get LAION dataset
+url = "https://huggingface.co/datasets/laion/OIG/resolve/main/unified_chip2.jsonl"
+dataset = load_dataset("json", data_files = {"train" : url}, split = "train")
+
+# 4bit pre quantized models we support for 4x faster downloading + no OOMs.
+fourbit_models = [
+    "unsloth/gpt-oss-20b-unsloth-bnb-4bit", #or choose any model
+
+] # More models at https://huggingface.co/unsloth
+
+model, tokenizer = FastModel.from_pretrained(
+    model_name = "unsloth/gpt-oss-20b",
+    max_seq_length = 2048, # Choose any for long context!
+    load_in_4bit = True,  # 4-bit quantization. False = 16-bit LoRA.
+    load_in_8bit = False, # 8-bit quantization
+    load_in_16bit = False, # [NEW!] 16-bit LoRA
+    full_finetuning = False, # Use for full fine-tuning.
+    # token = "hf_...", # use one if using gated models
 )
-----------------------------------------------------------------------------------------------------------------
 
-Unsloth: Tokenizing ["text"] (num_proc=64): 100%|██████████| 1000/1000 [00:05<00:00, 190.53 examples/s]
-max_steps is given, it will override any value given in num_train_epochs
-The following columns in the Training set don't have a corresponding argument in `PeftModelForCausalLM.forward` and have been ignored: attention_mask, text. If attention_mask, text are not expected by `PeftModelForCausalLM.forward`,  you can safely ignore this message.
-skipped Embedding(151936, 2048, padding_idx=151654): 296.75M params
-skipped: 296.75M params
-==((====))==  Unsloth - 2x faster free finetuning | Num GPUs used = 3
-   \\   /|    Num examples = 1,000 | Num Epochs = 1 | Total steps = 100
-O^O/ \_/ \    Batch size per device = 1 | Gradient accumulation steps = 2
-\        /    Data Parallel GPUs = 1 | Total batch size (1 x 2 x 1) = 2
- "-____-"     Trainable parameters = 53,477,376 of 30,585,600,000 (0.17% trained)
-optim: OptimizerNames.ADAMW_8BIT
+# Do model patching and add fast LoRA weights
+model = FastLanguageModel.get_peft_model(
+    model,
+    r = 16,
+    target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
+                      "gate_proj", "up_proj", "down_proj",],
+    lora_alpha = 16,
+    lora_dropout = 0, # Supports any, but = 0 is optimized
+    bias = "none",    # Supports any, but = "none" is optimized
+    # [NEW] "unsloth" uses 30% less VRAM, fits 2x larger batch sizes!
+    use_gradient_checkpointing = "unsloth", # True or "unsloth" for very long context
+    random_state = 3407,
+    max_seq_length = max_seq_length,
+    use_rslora = False,  # We support rank stabilized LoRA
+    loftq_config = None, # And LoftQ
+)
 
--------------------------------------------------- Model --------------------------------------------------
-<class 'transformers.models.qwen3_moe.modeling_qwen3_moe.Qwen3MoeForCausalLM'>
------------------------------------------------------------------------------------------------------------
+trainer = SFTTrainer(
+    model = model,
+    train_dataset = dataset,
+    tokenizer = tokenizer,
+    args = SFTConfig(
+        max_seq_length = max_seq_length,
+        per_device_train_batch_size = 2,
+        gradient_accumulation_steps = 4,
+        warmup_steps = 10,
+        max_steps = 60,
+        logging_steps = 1,
+        output_dir = "outputs",
+        optim = "adamw_8bit",
+        seed = 3407,
+    ),
+)
+trainer.train()
 
-
--------------------------------------------------- Responses before training --------------------------------------------------
-✗ response 1 does not contain answer
- -> response: <think>
-Okay, the user is asking, "What day was I born?" But wait, they
-✗ response 2 does not contain answer
- -> response: <think>
-Okay, the user is asking, "What day was I born?" but they haven't
-✗ response 3 does not contain answer
- -> response: <think>
-Okay, the user is asking, "What day was I born?" But they didn't
-✗ response 4 does not contain answer
- -> response: <think>
-Okay, the user is asking, "What day was I born?" But they haven't
-✗ response 5 does not contain answer
- -> response: <think>
-Okay, the user is asking, "What day was I born?" But wait, they
--------------------------------------------------------------------------------------------------------------------------------
-
-
--------------------------------------------------- Peft Weights before training --------------------------------------------------
-base_model.model.model.layers.0.self_attn.q_proj.lora_A.default.weight:
-shape: (64, 2048)
-mean: 0.000003
-std: 0.012745
-min: -0.022097
-max: 0.022096
-percentile_25: -0.011016
-percentile_50: 0.000011
-percentile_75: 0.011023
-base_model.model.model.layers.0.self_attn.q_proj.lora_B.default.weight:
-shape: (4096, 64)
-mean: 0.000000
-std: 0.000000
-min: 0.000000
-max: 0.000000
-percentile_25: 0.000000
-percentile_50: 0.000000
-percentile_75: 0.000000
-----------------------------------------------------------------------------------------------------------------------------------
-{'loss': '6.041', 'grad_norm': '6.007', 'learning_rate': '0', 'epoch': '0.002'}
-{'loss': '6.041', 'grad_norm': '6.007', 'learning_rate': '5e-06', 'epoch': '0.004'}
-{'loss': '5.987', 'grad_norm': '5.673', 'learning_rate': '1e-05', 'epoch': '0.006'}
-{'loss': '6.009', 'grad_norm': '5.952', 'learning_rate': '1.5e-05', 'epoch': '0.008'}
-{'loss': '5.884', 'grad_norm': '5.805', 'learning_rate': '2e-05', 'epoch': '0.01'}
-{'loss': '5.755', 'grad_norm': '5.982', 'learning_rate': '2.5e-05', 'epoch': '0.012'}
-{'loss': '5.584', 'grad_norm': '5.547', 'learning_rate': '3e-05', 'epoch': '0.014'}
-{'loss': '5.266', 'grad_norm': '5.022', 'learning_rate': '3.5e-05', 'epoch': '0.016'}
-{'loss': '4.985', 'grad_norm': '4.258', 'learning_rate': '4e-05', 'epoch': '0.018'}
-{'loss': '4.703', 'grad_norm': '4.218', 'learning_rate': '4.5e-05', 'epoch': '0.02'}
-{'loss': '4.408', 'grad_norm': '4.155', 'learning_rate': '5e-05', 'epoch': '0.022'}
-{'loss': '3.996', 'grad_norm': '4.623', 'learning_rate': '4.944e-05', 'epoch': '0.024'}
-{'loss': '3.66', 'grad_norm': '5.248', 'learning_rate': '4.889e-05', 'epoch': '0.026'}
-{'loss': '3.242', 'grad_norm': '4.073', 'learning_rate': '4.833e-05', 'epoch': '0.028'}
-{'loss': '2.953', 'grad_norm': '3.059', 'learning_rate': '4.778e-05', 'epoch': '0.03'}
-{'loss': '2.881', 'grad_norm': '3.071', 'learning_rate': '4.722e-05', 'epoch': '0.032'}
-{'loss': '2.658', 'grad_norm': '2.837', 'learning_rate': '4.667e-05', 'epoch': '0.034'}
-{'loss': '2.462', 'grad_norm': '2.35', 'learning_rate': '4.611e-05', 'epoch': '0.036'}
-{'loss': '2.324', 'grad_norm': '2.335', 'learning_rate': '4.556e-05', 'epoch': '0.038'}
-{'loss': '2.216', 'grad_norm': '2.029', 'learning_rate': '4.5e-05', 'epoch': '0.04'}
-{'loss': '2.063', 'grad_norm': '1.963', 'learning_rate': '4.444e-05', 'epoch': '0.042'}
-{'loss': '1.923', 'grad_norm': '2.961', 'learning_rate': '4.389e-05', 'epoch': '0.044'}
-{'loss': '1.843', 'grad_norm': '1.887', 'learning_rate': '4.333e-05', 'epoch': '0.046'}
-{'loss': '1.71', 'grad_norm': '1.854', 'learning_rate': '4.278e-05', 'epoch': '0.048'}
-{'loss': '1.6', 'grad_norm': '1.853', 'learning_rate': '4.222e-05', 'epoch': '0.05'}
-{'loss': '1.534', 'grad_norm': '1.657', 'learning_rate': '4.167e-05', 'epoch': '0.052'}
-{'loss': '1.43', 'grad_norm': '1.418', 'learning_rate': '4.111e-05', 'epoch': '0.054'}
-{'loss': '1.354', 'grad_norm': '1.808', 'learning_rate': '4.056e-05', 'epoch': '0.056'}
-{'loss': '1.259', 'grad_norm': '1.624', 'learning_rate': '4e-05', 'epoch': '0.058'}
-{'loss': '1.226', 'grad_norm': '1.587', 'learning_rate': '3.944e-05', 'epoch': '0.06'}
-{'loss': '1.175', 'grad_norm': '2.734', 'learning_rate': '3.889e-05', 'epoch': '0.062'}
-{'loss': '1.112', 'grad_norm': '2.145', 'learning_rate': '3.833e-05', 'epoch': '0.064'}
-{'loss': '0.9937', 'grad_norm': '3.265', 'learning_rate': '3.778e-05', 'epoch': '0.066'}
-{'loss': '0.9294', 'grad_norm': '7.12', 'learning_rate': '3.722e-05', 'epoch': '0.068'}
-{'loss': '0.8897', 'grad_norm': '8.535', 'learning_rate': '3.667e-05', 'epoch': '0.07'}
-{'loss': '0.8128', 'grad_norm': '1.413', 'learning_rate': '3.611e-05', 'epoch': '0.072'}
-{'loss': '0.7576', 'grad_norm': '1.375', 'learning_rate': '3.556e-05', 'epoch': '0.074'}
-{'loss': '0.7112', 'grad_norm': '3.489', 'learning_rate': '3.5e-05', 'epoch': '0.076'}
-{'loss': '0.6512', 'grad_norm': '1.469', 'learning_rate': '3.444e-05', 'epoch': '0.078'}
-{'loss': '0.579', 'grad_norm': '2.403', 'learning_rate': '3.389e-05', 'epoch': '0.08'}
-{'loss': '0.5161', 'grad_norm': '1.883', 'learning_rate': '3.333e-05', 'epoch': '0.082'}
-{'loss': '0.4509', 'grad_norm': '1.434', 'learning_rate': '3.278e-05', 'epoch': '0.084'}
-{'loss': '0.4113', 'grad_norm': '1.277', 'learning_rate': '3.222e-05', 'epoch': '0.086'}
-{'loss': '0.3544', 'grad_norm': '1.074', 'learning_rate': '3.167e-05', 'epoch': '0.088'}
-{'loss': '0.3457', 'grad_norm': '0.9934', 'learning_rate': '3.111e-05', 'epoch': '0.09'}
-{'loss': '0.3026', 'grad_norm': '1.014', 'learning_rate': '3.056e-05', 'epoch': '0.092'}
-{'loss': '0.269', 'grad_norm': '1.038', 'learning_rate': '3e-05', 'epoch': '0.094'}
-{'loss': '0.2391', 'grad_norm': '1.062', 'learning_rate': '2.944e-05', 'epoch': '0.096'}
-{'loss': '0.2094', 'grad_norm': '1.041', 'learning_rate': '2.889e-05', 'epoch': '0.098'}
-{'loss': '0.1862', 'grad_norm': '1.031', 'learning_rate': '2.833e-05', 'epoch': '0.1'}
-{'loss': '0.1549', 'grad_norm': '0.9575', 'learning_rate': '2.778e-05', 'epoch': '0.102'}
-{'loss': '0.1295', 'grad_norm': '0.9044', 'learning_rate': '2.722e-05', 'epoch': '0.104'}
-{'loss': '0.1055', 'grad_norm': '0.745', 'learning_rate': '2.667e-05', 'epoch': '0.106'}
-{'loss': '0.08858', 'grad_norm': '0.6573', 'learning_rate': '2.611e-05', 'epoch': '0.108'}
-{'loss': '0.07195', 'grad_norm': '0.5423', 'learning_rate': '2.556e-05', 'epoch': '0.11'}
-{'loss': '0.05692', 'grad_norm': '0.4431', 'learning_rate': '2.5e-05', 'epoch': '0.112'}
-{'loss': '0.04529', 'grad_norm': '0.3721', 'learning_rate': '2.444e-05', 'epoch': '0.114'}
-{'loss': '0.03638', 'grad_norm': '0.3228', 'learning_rate': '2.389e-05', 'epoch': '0.116'}
-{'loss': '0.03032', 'grad_norm': '0.2831', 'learning_rate': '2.333e-05', 'epoch': '0.118'}
-{'loss': '0.02541', 'grad_norm': '0.2552', 'learning_rate': '2.278e-05', 'epoch': '0.12'}
-{'loss': '0.02017', 'grad_norm': '0.2169', 'learning_rate': '2.222e-05', 'epoch': '0.122'}
-{'loss': '0.01668', 'grad_norm': '0.2584', 'learning_rate': '2.167e-05', 'epoch': '0.124'}
-{'loss': '0.01392', 'grad_norm': '0.1694', 'learning_rate': '2.111e-05', 'epoch': '0.126'}
-{'loss': '0.01147', 'grad_norm': '0.1516', 'learning_rate': '2.056e-05', 'epoch': '0.128'}
-{'loss': '0.009991', 'grad_norm': '0.1338', 'learning_rate': '2e-05', 'epoch': '0.13'}
-{'loss': '0.008917', 'grad_norm': '0.1239', 'learning_rate': '1.944e-05', 'epoch': '0.132'}
-{'loss': '0.007842', 'grad_norm': '0.1143', 'learning_rate': '1.889e-05', 'epoch': '0.134'}
-{'loss': '0.006879', 'grad_norm': '0.1026', 'learning_rate': '1.833e-05', 'epoch': '0.136'}
-{'loss': '0.005776', 'grad_norm': '0.09021', 'learning_rate': '1.778e-05', 'epoch': '0.138'}
-{'loss': '0.005527', 'grad_norm': '0.09134', 'learning_rate': '1.722e-05', 'epoch': '0.14'}
-{'loss': '0.005359', 'grad_norm': '0.08794', 'learning_rate': '1.667e-05', 'epoch': '0.142'}
-{'loss': '0.004597', 'grad_norm': '0.07878', 'learning_rate': '1.611e-05', 'epoch': '0.144'}
-{'loss': '0.004414', 'grad_norm': '0.0775', 'learning_rate': '1.556e-05', 'epoch': '0.146'}
-{'loss': '0.004038', 'grad_norm': '0.07212', 'learning_rate': '1.5e-05', 'epoch': '0.148'}
-{'loss': '0.004547', 'grad_norm': '0.1031', 'learning_rate': '1.444e-05', 'epoch': '0.15'}
-{'loss': '0.003783', 'grad_norm': '0.07255', 'learning_rate': '1.389e-05', 'epoch': '0.152'}
-{'loss': '0.003223', 'grad_norm': '0.06193', 'learning_rate': '1.333e-05', 'epoch': '0.154'}
-{'loss': '0.00302', 'grad_norm': '0.0596', 'learning_rate': '1.278e-05', 'epoch': '0.156'}
-{'loss': '0.003421', 'grad_norm': '0.08068', 'learning_rate': '1.222e-05', 'epoch': '0.158'}
-{'loss': '0.002777', 'grad_norm': '0.05817', 'learning_rate': '1.167e-05', 'epoch': '0.16'}
-{'loss': '0.002539', 'grad_norm': '0.05271', 'learning_rate': '1.111e-05', 'epoch': '0.162'}
-{'loss': '0.002776', 'grad_norm': '0.05555', 'learning_rate': '1.056e-05', 'epoch': '0.164'}
-{'loss': '0.002186', 'grad_norm': '0.04386', 'learning_rate': '1e-05', 'epoch': '0.166'}
-{'loss': '0.002183', 'grad_norm': '0.04439', 'learning_rate': '9.444e-06', 'epoch': '0.168'}
-{'loss': '0.002155', 'grad_norm': '0.04387', 'learning_rate': '8.889e-06', 'epoch': '0.17'}
-{'loss': '0.002161', 'grad_norm': '0.04367', 'learning_rate': '8.333e-06', 'epoch': '0.172'}
-{'loss': '0.001777', 'grad_norm': '0.03646', 'learning_rate': '7.778e-06', 'epoch': '0.174'}
-{'loss': '0.00186', 'grad_norm': '0.03914', 'learning_rate': '7.222e-06', 'epoch': '0.176'}
-{'loss': '0.001675', 'grad_norm': '0.03642', 'learning_rate': '6.667e-06', 'epoch': '0.178'}
-{'loss': '0.002015', 'grad_norm': '0.04299', 'learning_rate': '6.111e-06', 'epoch': '0.18'}
-{'loss': '0.001926', 'grad_norm': '0.04076', 'learning_rate': '5.556e-06', 'epoch': '0.182'}
-{'loss': '0.001825', 'grad_norm': '0.04159', 'learning_rate': '5e-06', 'epoch': '0.184'}
-{'loss': '0.001893', 'grad_norm': '0.03984', 'learning_rate': '4.444e-06', 'epoch': '0.186'}
-{'loss': '0.001522', 'grad_norm': '0.03156', 'learning_rate': '3.889e-06', 'epoch': '0.188'}
-{'loss': '0.001613', 'grad_norm': '0.0424', 'learning_rate': '3.333e-06', 'epoch': '0.19'}
-{'loss': '0.001491', 'grad_norm': '0.03038', 'learning_rate': '2.778e-06', 'epoch': '0.192'}
-{'loss': '0.001538', 'grad_norm': '0.03133', 'learning_rate': '2.222e-06', 'epoch': '0.194'}
-{'loss': '0.001571', 'grad_norm': '0.03447', 'learning_rate': '1.667e-06', 'epoch': '0.196'}
-{'loss': '0.001838', 'grad_norm': '0.04134', 'learning_rate': '1.111e-06', 'epoch': '0.198'}
-{'loss': '0.001658', 'grad_norm': '0.0354', 'learning_rate': '5.556e-07', 'epoch': '0.2'}
-{'train_runtime': '436.8', 'train_samples_per_second': '0.458', 'train_steps_per_second': '0.229', 'train_loss': '1.158', 'epoch': '0.2'}
-100%|██████████| 100/100 [07:16<00:00,  4.48s/it]
-
-Training completed. Do not forget to share your model on huggingface.co/models =)
--------------------------------------------------- Peft Weights after training --------------------------------------------------
-base_model.model.model.layers.0.self_attn.q_proj.lora_A.default.weight:
-shape: (64, 2048)
-mean: 0.000003
-std: 0.012781
-min: -0.023816
-max: 0.023442
-percentile_25: -0.011042
-percentile_50: -0.000020
-percentile_75: 0.011043
-base_model.model.model.layers.0.self_attn.q_proj.lora_B.default.weight:
-shape: (4096, 64)
-mean: 0.000003
-std: 0.000679
-min: -0.003111
-max: 0.002177
-percentile_25: -0.000536
-percentile_50: -0.000000
-percentile_75: 0.000540
----------------------------------------------------------------------------------------------------------------------------------
-
-
--------------------------------------------------- Trainer Output --------------------------------------------------
-TrainOutput(global_step=100, training_loss=1.15819159808103, metrics={'train_runtime': 436.7624, 'train_samples_per_second': 0.458, 'train_steps_per_second': 0.229, 'total_flos': 1053550340505600.0, 'train_loss': 1.15819159808103, 'epoch': 0.2})
---------------------------------------------------------------------------------------------------------------------
-
-
--------------------------------------------------- Responses after training --------------------------------------------------
-✓ response 1 contains answer
-✓ response 2 contains answer
-✓ response 3 contains answer
-✓ response 4 contains answer
-✓ response 5 contains answer
-------------------------------------------------------------------------------------------------------------------------------
-
-Detected local model directory: /models/Qwen3-30B-A3B
-Found HuggingFace hub cache directory: /root/.cache/huggingface/hub
-
-Unsloth: Preparing safetensor model files:   0%|          | 0/13 [00:00<?, ?it/s]
-Unsloth: Preparing safetensor model files: 100%|██████████| 13/13 [00:00<00:00, 232025.33it/s]
-
-Unsloth: Merging weights into 16bit:   0%|          | 0/13 [00:00<?, ?it/s]
-Unsloth: Merging weights into 16bit:   8%|▊         | 1/13 [00:02<00:24,  2.00s/it]
-Unsloth: Merging weights into 16bit:  15%|█▌        | 2/13 [00:04<00:22,  2.06s/it]
-Unsloth: Merging weights into 16bit:  23%|██▎       | 3/13 [00:05<00:19,  1.97s/it]
-Unsloth: Merging weights into 16bit:  31%|███       | 4/13 [00:06<00:12,  1.44s/it]
-Unsloth: Merging weights into 16bit:  38%|███▊      | 5/13 [00:08<00:13,  1.65s/it]
-Unsloth: Merging weights into 16bit:  46%|████▌     | 6/13 [00:10<00:12,  1.75s/it]
-Unsloth: Merging weights into 16bit:  54%|█████▍    | 7/13 [00:12<00:10,  1.71s/it]
-Unsloth: Merging weights into 16bit:  62%|██████▏   | 8/13 [00:13<00:08,  1.68s/it]
-Unsloth: Merging weights into 16bit:  69%|██████▉   | 9/13 [00:15<00:07,  1.79s/it]
-Unsloth: Merging weights into 16bit:  77%|███████▋  | 10/13 [00:17<00:05,  1.88s/it]
-Unsloth: Merging weights into 16bit:  85%|████████▍ | 11/13 [00:19<00:03,  1.86s/it]
-Unsloth: Merging weights into 16bit:  92%|█████████▏| 12/13 [00:21<00:01,  1.78s/it]
-Unsloth: Merging weights into 16bit: 100%|██████████| 13/13 [00:23<00:00,  1.78s/it]
-Unsloth: Merging weights into 16bit: 100%|██████████| 13/13 [00:23<00:00,  1.78s/it]
+# Go to https://docs.unsloth.ai for advanced tips like
+# (1) Saving to GGUF / merging to 16bit for vLLM or SGLang
+# (2) Continued training from a saved LoRA adapter
+# (3) Adding an evaluation loop / OOMs
+# (4) Customized chat templates
 ```
 
-</details>
+<a name="RL"></a>
+## 💡 Reinforcement Learning
+[RL](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide) including [GRPO](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide#training-with-grpo), [GSPO](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide/gspo-reinforcement-learning), **FP8** traning, DrGRPO, DAPO, PPO, Reward Modelling, Online DPO all work with Unsloth.
+Read our [Reinforcement Learning Guide](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide) or our [advanced RL docs](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide/advanced-rl-documentation) for batching, generation & training parameters.
 
----
+List of RL notebooks:
+- gpt-oss GSPO notebook: [Link](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/gpt-oss-(20B)-GRPO.ipynb)
+- Qwen2.5-VL GSPO notebook: [Link](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Qwen2_5_7B_VL_GRPO.ipynb)
+- Advanced Qwen3 GRPO notebook: [Link](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Qwen3_(4B)-GRPO.ipynb)
+- ***FP8*** Qwen3-8B GRPO notebook (L4): [Link](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Qwen3_8B_FP8_GRPO.ipynb)
+- ORPO notebook: [Link](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Llama3_(8B)-ORPO.ipynb)
+- DPO Zephyr notebook: [Link](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Zephyr_(7B)-DPO.ipynb)
+- KTO notebook: [Link](https://colab.research.google.com/drive/1MRgGtLWuZX4ypSfGguFgC-IblTvO2ivM?usp=sharing)
+- SimPO notebook: [Link](https://colab.research.google.com/drive/1Hs5oQDovOay4mFA6Y9lQhVJ8TnbFLFh2?usp=sharing)
 
-### 6. 测试 Attention 算子
+## 🥇 Performance Benchmarking
+- For our most detailed benchmarks, read our [Llama 3.3 Blog](https://unsloth.ai/blog/llama3-3).
+- Benchmarking of Unsloth was also conducted by [🤗Hugging Face](https://huggingface.co/blog/unsloth-trl).
 
-#### 6.1 运行基准测试
+We tested using the Alpaca  Dataset, a batch size of 2, gradient accumulation steps of 4, rank = 32, and applied QLoRA on all linear layers (q, k, v, o, gate, up, down):
+  
+| Model          | VRAM  | 🦥 Unsloth speed | 🦥 VRAM reduction | 🦥 Longer context | 😊 Hugging Face + FA2 |
+|----------------|-------|-----------------|----------------|----------------|--------------------|
+| Llama 3.3 (70B)| 80GB  | 2x              | >75%           | 13x longer     | 1x                 |
+| Llama 3.1 (8B) | 80GB  | 2x              | >70%           | 12x longer     | 1x                 |
 
-```bash
-python ./scripts/attention_impl_benchmark.py
+### Context length benchmarks
+
+#### Llama 3.1 (8B) max. context length
+We tested Llama 3.1 (8B) Instruct and did 4bit QLoRA on all linear layers (Q, K, V, O, gate, up and down) with rank = 32 with a batch size of 1. We padded all sequences to a certain maximum sequence length to mimic long context finetuning workloads.
+| GPU VRAM | 🦥Unsloth context length | Hugging Face + FA2 |
+|----------|-----------------------|-----------------|
+| 8 GB     | 2,972                 | OOM             |
+| 12 GB    | 21,848                | 932             |
+| 16 GB    | 40,724                | 2,551           |
+| 24 GB    | 78,475                | 5,789           |
+| 40 GB    | 153,977               | 12,264          |
+| 48 GB    | 191,728               | 15,502          |
+| 80 GB    | 342,733               | 28,454          |
+
+#### Llama 3.3 (70B) max. context length
+We tested Llama 3.3 (70B) Instruct on a 80GB A100 and did 4bit QLoRA on all linear layers (Q, K, V, O, gate, up and down) with rank = 32 with a batch size of 1. We padded all sequences to a certain maximum sequence length to mimic long context finetuning workloads.
+
+| GPU VRAM | 🦥Unsloth context length | Hugging Face + FA2 |
+|----------|------------------------|------------------|
+| 48 GB    | 12,106                | OOM              |
+| 80 GB    | 89,389                | 6,916            |
+
+<br>
+
+![](https://i.ibb.co/sJ7RhGG/image-41.png)
+<br>
+
+### Citation
+
+You can cite the Unsloth repo as follows:
+```bibtex
+@software{unsloth,
+  author = {Daniel Han, Michael Han and Unsloth team},
+  title = {Unsloth},
+  url = {http://github.com/unslothai/unsloth},
+  year = {2023}
+}
 ```
 
-#### 6.2 测试日志（可折叠展示）
-
-<details>
-<summary><strong>点击展开查看 Attention 算子测试日志</strong></summary>
-
-```text
-Config: batch=1 seq=128 heads=32 dim=128 dtype=torch.float16
-  - torch_ref  | timed                    | fwd_diff=0.000e+00 bwd_diff=0.000e+00 | fwd=0.17ms bwd=0.22ms | stable=True
-  - flash_attn | timed                    | fwd_diff=1.953e-03 bwd_diff=3.906e-03 | fwd=0.26ms bwd=0.79ms | stable=True
-  - sdpa       | timed                    | fwd_diff=1.953e-03 bwd_diff=3.906e-03 | fwd=0.07ms bwd=0.13ms | stable=True
-
-Config: batch=1 seq=2048 heads=32 dim=128 dtype=torch.float16
-  - torch_ref  | timed                    | fwd_diff=0.000e+00 bwd_diff=0.000e+00 | fwd=6.11ms bwd=9.36ms | stable=True
-  - flash_attn | timed                    | fwd_diff=1.953e-03 bwd_diff=3.906e-03 | fwd=1.34ms bwd=16.28ms | stable=True
-  - sdpa       | timed                    | fwd_diff=1.953e-03 bwd_diff=3.906e-03 | fwd=2.13ms bwd=4.46ms | stable=True
-
-Config: batch=4 seq=128 heads=32 dim=128 dtype=torch.float16
-  - torch_ref  | timed                    | fwd_diff=0.000e+00 bwd_diff=0.000e+00 | fwd=0.15ms bwd=0.22ms | stable=True
-  - flash_attn | timed                    | fwd_diff=2.441e-03 bwd_diff=3.906e-03 | fwd=0.22ms bwd=0.95ms | stable=True
-  - sdpa       | timed                    | fwd_diff=2.441e-03 bwd_diff=3.906e-03 | fwd=0.10ms bwd=0.18ms | stable=True
-
-Config: batch=4 seq=2048 heads=32 dim=128 dtype=torch.float16
-  - torch_ref  | timed                    | fwd_diff=0.000e+00 bwd_diff=0.000e+00 | fwd=23.19ms bwd=36.10ms | stable=True
-  - flash_attn | timed                    | fwd_diff=1.953e-03 bwd_diff=7.812e-03 | fwd=7.04ms bwd=62.54ms | stable=True
-  - sdpa       | timed                    | fwd_diff=1.953e-03 bwd_diff=7.812e-03 | fwd=6.49ms bwd=14.03ms | stable=True
-
-Config: batch=1 seq=128 heads=32 dim=128 dtype=torch.bfloat16
-  - torch_ref  | timed                    | fwd_diff=0.000e+00 bwd_diff=0.000e+00 | fwd=0.16ms bwd=0.21ms | stable=True
-  - flash_attn | timed                    | fwd_diff=3.125e-02 bwd_diff=3.125e-02 | fwd=0.23ms bwd=0.82ms | stable=True
-  - sdpa       | timed                    | fwd_diff=3.125e-02 bwd_diff=3.125e-02 | fwd=0.07ms bwd=0.14ms | stable=True
-
-Config: batch=1 seq=2048 heads=32 dim=128 dtype=torch.bfloat16
-  - torch_ref  | timed                    | fwd_diff=0.000e+00 bwd_diff=0.000e+00 | fwd=6.21ms bwd=9.46ms | stable=True
-  - flash_attn | timed                    | fwd_diff=2.344e-02 bwd_diff=6.250e-02 | fwd=1.32ms bwd=18.18ms | stable=True
-  - sdpa       | timed                    | fwd_diff=2.344e-02 bwd_diff=6.250e-02 | fwd=2.12ms bwd=3.89ms | stable=True
-
-Config: batch=4 seq=128 heads=32 dim=128 dtype=torch.bfloat16
-  - torch_ref  | timed                    | fwd_diff=0.000e+00 bwd_diff=0.000e+00 | fwd=0.15ms bwd=0.21ms | stable=True
-  - flash_attn | timed                    | fwd_diff=1.953e-02 bwd_diff=3.125e-02 | fwd=0.22ms bwd=1.01ms | stable=True
-  - sdpa       | timed                    | fwd_diff=1.953e-02 bwd_diff=3.125e-02 | fwd=0.10ms bwd=0.19ms | stable=True
-
-Config: batch=4 seq=2048 heads=32 dim=128 dtype=torch.bfloat16
-  - torch_ref  | timed                    | fwd_diff=0.000e+00 bwd_diff=0.000e+00 | fwd=23.13ms bwd=36.02ms | stable=True
-  - flash_attn | timed                    | fwd_diff=2.344e-02 bwd_diff=6.250e-02 | fwd=7.05ms bwd=70.68ms | stable=True
-  - sdpa       | timed                    | fwd_diff=2.344e-02 bwd_diff=6.250e-02 | fwd=6.52ms bwd=12.10ms | stable=True
-
-```
-
-</details>
-
----
-
-### 7. 测试 MoE 算子
-
-#### 7.1 FP16 精度 / 性能测试
-
-```bash
-python ./scripts/moe_impl_benchmark.py \
-  --batch-sizes 1 4 \
-  --seq-lens 128 512 \
-  --dtypes fp16 \
-  --num-iters 3
-```
-
-<details>
-<summary><strong>点击展开查看 MoE FP16 测试日志</strong></summary>
-
-```text
-
-=== dtype=fp16 (torch.float16) ===
-
-Config: batch=1, seq=128, hidden=2048, experts=64
-Parity   fwd_diff=0.000e+00 | bwd_diff=0.000e+00 | router_diff=0.000e+00 | stable=True
-Perf     target: fwd=30.97ms bwd=43.62ms | ref: fwd=30.48ms bwd=41.88ms | stable=True
-
-Config: batch=1, seq=512, hidden=2048, experts=64
-Parity   fwd_diff=0.000e+00 | bwd_diff=0.000e+00 | router_diff=0.000e+00 | stable=True
-Perf     target: fwd=32.55ms bwd=46.75ms | ref: fwd=32.55ms bwd=46.82ms | stable=True
-
-Config: batch=4, seq=128, hidden=2048, experts=64
-Parity   fwd_diff=0.000e+00 | bwd_diff=0.000e+00 | router_diff=0.000e+00 | stable=True
-Perf     target: fwd=32.95ms bwd=46.71ms | ref: fwd=32.81ms bwd=46.70ms | stable=True
-
-Config: batch=4, seq=512, hidden=2048, experts=64
-Parity   fwd_diff=0.000e+00 | bwd_diff=0.000e+00 | router_diff=0.000e+00 | stable=True
-Perf     target: fwd=42.04ms bwd=76.50ms | ref: fwd=41.85ms bwd=75.95ms | stable=True
-
-```
-
-</details>
-
-#### 7.2 BF16 精度 / 性能测试
-
-```bash
-python ./scripts/moe_impl_benchmark.py \
-  --batch-sizes 1 4 \
-  --seq-lens 128 512 \
-  --dtypes bf16 \
-  --num-iters 3
-```
-
-<details>
-<summary><strong>点击展开查看 MoE BF16 测试日志</strong></summary>
-
-```text
-Config: batch=1, seq=128, hidden=2048, experts=64
-Parity   fwd_diff=0.000e+00 | bwd_diff=0.000e+00 | router_diff=0.000e+00 | stable=True
-Perf     target: fwd=30.23ms bwd=45.18ms | ref: fwd=29.95ms bwd=44.19ms | stable=True
-
-Config: batch=1, seq=512, hidden=2048, experts=64
-Parity   fwd_diff=0.000e+00 | bwd_diff=0.000e+00 | router_diff=0.000e+00 | stable=True
-Perf     target: fwd=32.47ms bwd=48.94ms | ref: fwd=32.34ms bwd=49.06ms | stable=True
-
-Config: batch=4, seq=128, hidden=2048, experts=64
-Parity   fwd_diff=0.000e+00 | bwd_diff=0.000e+00 | router_diff=0.000e+00 | stable=True
-Perf     target: fwd=32.29ms bwd=48.99ms | ref: fwd=32.57ms bwd=49.05ms | stable=True
-
-Config: batch=4, seq=512, hidden=2048, experts=64
-Parity   fwd_diff=0.000e+00 | bwd_diff=0.000e+00 | router_diff=0.000e+00 | stable=True
-Perf     target: fwd=42.92ms bwd=77.06ms | ref: fwd=42.76ms bwd=76.96ms | stable=True
-
-```
-
-</details>
-
----
-
-## FP8 尝试
-
-### 1. FP8 环境准备
-
-> 由于unsloth中在loader.py中209-220行设置，在设置load_in_fp8=True时，需要同时设置fast_inference=true，并且需要下载vllm,
-> 同时由于unsloth中在loader_utils.py中350-362行设置torchao版本，因此需要更新torchao版本到0.15.0
-
-<details>
-<summary><strong>点击展开查看 AMD 平台下 FP8 需要做的额外代码修改</strong></summary>
-
-```python
-if fast_inference:
-    if importlib.util.find_spec("vllm") is None:
-        raise ImportError(
-            "Unsloth: Please install vLLM before enabling `fast_inference`!\n"
-            "You can do this in a terminal via `pip install vllm`"
-        )
-# [TODO] For now fast_inference only works with fast_inference ie vLLM
-if load_in_fp8 != False:
-    if not fast_inference:
-        raise NotImplementedError(
-            "Unsloth: set `fast_inference = True` when doing `load_in_fp8`."
-        )
-```
-
-</details>
-
-<details>
-<summary><strong>点击展开查看 AMD 平台下 FP8 需要做的额外代码修改</strong></summary>
-
-```python
-if importlib.util.find_spec("torchao") is None:
-        raise ValueError(
-            "Unsloth: Please install torchao for on the fly float8 to work! Try `unsloth/Qwen3-8B` instead."
-        )
-    import torchao
-
-    error_message = (
-        "Unsloth: `load_in_fp8` requires torchao 0.15.0+ (or nightly).\n"
-        f"You have torchao version={torchao.__version__}\n"
-        "Use `pip install --upgrade --force-reinstall torchao`"
-    )
-    if Version(torchao.__version__) < Version("0.15.0"):
-        raise ValueError(error_message)
-```
-
-
-</details>
-
-> 由于Unsloth中在loader_utils.py文件中的332-340行代码中设置仅支持H100及后续英伟达芯片,需要注释掉：
-
-<details>
-<summary><strong>点击展开查看 AMD 平台下 FP8 需要做的额外代码修改</strong></summary>
-
-```python
-# Check if this is Hopper or above
-    # if not (
-    #     torch.cuda.is_available()
-    #     and torch.version.cuda
-    #     and torch.cuda.get_device_capability() >= (9, 0)
-    # ):
-    #     raise ValueError(
-    #         "Unsloth: On the fly `load_in_fp8` requires H100 GPUs or after. Try `unsloth/Qwen3-8B` instead."
-    #     )
-```
-
-
-</details>
----
-
-### 2. 使用 FP8 模型测试
-
-> 本小节记录在 FP8 量化模型上的测试情况。
-
-#### 2.1 AMD 现象
-
-<details>
-<summary><strong>点击展开查看 AMD 平台下 FP8 模型测试现象与日志</strong></summary>
-
-```text
-准备工作完成后，需要更换为bitsandbytes-ROCM、torchao-rocm，使用Llama-3.1-8B-Instruct-FP8-Dynamic模型进行测试，首先设置参数load_in_4bit = False,fast_inference = False,load_in_fp8 = False,
-最后结果在前向传播阶段出现AttributeError: '_OpNamespace' 'fbgemm' object has no attribute 'quantize_fp8_per_row'错误
-设置参数load_in_4bit = False,fast_inference = True, load_in_fp8 = True
-最后结果出现ValueError: The model is quantized with CompressedTensorsConfig but you are passing a TorchAoConfig config. Please make sure to pass the same quantization config class to `from_pretrained` with different loading attributes
-```
-
-</details>
-
-#### 2.2 NVIDIA 现象
-
-<details>
-<summary><strong>点击展开查看 NVIDIA 平台下 FP8 模型测试现象与日志</strong></summary>
-
-```text
-Unsloth在NVIDIA上测试Llama-3.1-8B-Instruct-FP8-Dynamic模型使用load_in_4bit=True通过之后，测试load_in_FP8=True,
-完成上述工作之后，进行测试设置参数load_in_4bit=False,fast_inference = False,load_in_fp8 = False
-最后结果在前向传播阶段出现AttributeError: '_OpNamespace' 'fbgemm' object has no attribute 'quantize_fp8_per_row'错误，之后设置参数load_in_4bit=False,fast_inference = True, load_in_fp8 = True进行测试
-最后结果出现ValueError: The model is quantized with CompressedTensorsConfig but you are passing a TorchAoConfig config. Please make sure to pass the same quantization config class to `from_pretrained` with different loading attributes.
-```
-
-</details>
-
----
-
-### 3. 使用非量化模型测试
-
-> 使用未量化（如 FP16 / BF16）的模型作为输入，测试FP8的可行性。
-
-#### 3.1 AMD 现象
-
-<details>
-<summary><strong>点击展开查看 AMD 平台下非量化模型测试现象与日志</strong></summary>
-
-```text
-使用模型Meta-Llama-3.1-8B-Instruct模型，设置参数load_in_4bit = False,fast_inference = True, load_in_fp8 = True。
-最后结果出现如下错误
-[rank0]: RuntimeError: Cannot set version_counter for inference tensor
-[rank0]:[W1211 07:21:18.443841415 ProcessGroupNCCL.cpp:1524] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
-```
-
-</details>
-
-#### 3.2 NVIDIA 现象
-
-<details>
-<summary><strong>点击展开查看 NVIDIA 平台下非量化模型测试现象与日志</strong></summary>
-
-```text
-使用模型Meta-Llama-3.1-8B-Instruct模型，设置参数load_in_4bit = False,fast_inference = True, load_in_fp8 = True
-最后结果出现如下错误：
-[rank0]: RuntimeError: Cannot set version_counter for inference tensor
-[rank0]:[W1211 01:13:08.369605398 ProcessGroupNCCL.cpp:1538] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())。
-```
-
-</details>
-
-## 后续工作-to-do
-
-- 导出微调后的 LLaMA / Qwen-MoE 模型在 **llama.cpp** 或 **vLLM** 中验证模型可成功加载；
-- 验证生成质量（示例对话），并补充对应日志与结果说明。
+### Thank You to
+- The [llama.cpp library](https://github.com/ggml-org/llama.cpp) that lets users save models with Unsloth
+- The Hugging Face team and their libraries: [transformers](https://github.com/huggingface/transformers) and [TRL](https://github.com/huggingface/trl)
+- The Pytorch and [Torch AO](https://github.com/unslothai/unsloth/pull/3391) team for their contributions
+- [Erik](https://github.com/erikwijmans) for his help adding [Apple's ML Cross Entropy](https://github.com/apple/ml-cross-entropy) in Unsloth
+- [Etherl](https://github.com/Etherll) for adding support for [TTS, diffusion and BERT models](https://github.com/unslothai/notebooks/pull/34)
+- And of course for every single person who has contributed or has used Unsloth!
