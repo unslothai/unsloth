@@ -2351,6 +2351,7 @@ def hf_login(token: Optional[str] = None) -> Optional[str]:
     if token is None:
         try:
             from huggingface_hub import get_token
+
             token = get_token()
             if token is None:
                 return None
@@ -2358,6 +2359,7 @@ def hf_login(token: Optional[str] = None) -> Optional[str]:
             return None
     try:
         from huggingface_hub import login
+
         login(token = token)
         return token
     except Exception as e:
