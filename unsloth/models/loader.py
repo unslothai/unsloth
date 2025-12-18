@@ -849,10 +849,8 @@ class FastModel(FastBaseModel):
                 trust_remote_code = trust_remote_code,
             )
             is_peft = True
-        except ImportError as error:
-            peft_error = str(error)
-            is_peft = False
-            raise error
+        except ImportError:
+            raise
         except Exception as error:
             peft_error = str(error)
             if "architecture" in peft_error:
