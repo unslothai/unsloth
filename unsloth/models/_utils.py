@@ -2352,6 +2352,8 @@ def hf_login(token: str):
         from huggingface_hub import get_token
 
         token = get_token()
+        if token is None:
+            return
     try:
         from huggingface_hub import login
 

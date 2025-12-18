@@ -678,8 +678,6 @@ class FastModel(FastBaseModel):
         *args,
         **kwargs,
     ):
-        if token is None:
-            token = get_token()
         # Login to allow private models
         hf_login(token)
         if whisper_language is not None:
