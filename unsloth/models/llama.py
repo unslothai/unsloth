@@ -2125,7 +2125,7 @@ class FastLlamaModel:
                     "Unsloth: `unsloth_vllm_standby` is True, but  environment variable `UNSLOTH_VLLM_STANDBY` is not set to 1!"
                 )
 
-        hf_login(token)
+        token = hf_login(token)
         if model_patcher is None:
             model_patcher = FastLlamaModel
         SUPPORTS_BFLOAT16 = is_bfloat16_supported()

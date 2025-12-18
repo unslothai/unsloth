@@ -40,14 +40,6 @@ from .loader_utils import (
 )
 import os, contextlib, sys
 
-try:
-    from huggingface_hub import get_token
-except:
-    try:
-        from huggingface_hub.utils import get_token
-    except:
-        # For older versions of huggingface_hub
-        from huggingface_hub.utils._token import get_token
 from huggingface_hub import HfFileSystem
 import importlib.util
 from ..device_type import (
@@ -152,9 +144,7 @@ class FastLanguageModel(FastLlamaModel):
         **kwargs,
     ):
         # Login to allow private models
-        if token is None:
-            token = get_token()
-        hf_login(token)
+        token = hf_login(token)
         if load_in_8bit or full_finetuning or qat_scheme is not None:
             return FastModel.from_pretrained(
                 model_name = model_name,
@@ -190,8 +180,6 @@ class FastLanguageModel(FastLlamaModel):
                 **kwargs,
             )
 
-        if token is None:
-            token = get_token()
         if isinstance(dtype, str) and dtype in ["float16", "bfloat16"]:
             dtype = getattr(torch, dtype)
         assert (

@@ -2353,12 +2353,13 @@ def hf_login(token: str):
             from huggingface_hub import get_token
             token = get_token()
             if token is None:
-                return
+                return None
         except:
-            return
+            return None
     try:
         from huggingface_hub import login
-
         login(token = token)
+        return token
     except Exception as e:
         logger.info(f"Failed to login to huggingface using token with error: {e}")
+    return None
