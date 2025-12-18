@@ -655,8 +655,7 @@ class FastBaseModel:
         verify_fp8_support_if_applicable(model_config)
 
         raise_handler = RaiseUninitialized()
-        # import pdb
-        # pdb.set_trace()
+
         if not fast_inference:
             # Prevent load_in_fp8 from being forwarded into HF internal model loading
             load_in_fp8 = kwargs.pop("load_in_fp8", None)

@@ -186,8 +186,6 @@ if __name__ == "__main__":
 
     trainer = setup_trainer(model, tokenizer, dataset, training_args)
     print("optim:", trainer.args.optim)
-    #import pdb
-    #pdb.set_trace()
 
     with header_footer_context("Model"):
         print(type(model.model))
