@@ -107,6 +107,11 @@ from ..save import patch_saving_functions
 import re, os, inspect, math, sys
 import types
 
+try:
+    from huggingface_hub.utils import get_token
+except:
+    # Old HF Hub versions <= 0.0.25
+    from huggingface_hub.utils._token import get_token
 from triton import __version__ as triton_version
 
 HAS_XFORMERS = xformers is not None

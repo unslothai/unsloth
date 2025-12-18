@@ -39,7 +39,14 @@ from .loader_utils import (
     get_model_name,
 )
 import os, contextlib, sys
-
+try:
+    from huggingface_hub import get_token
+except:
+    try:
+        from huggingface_hub.utils import get_token
+    except:
+        # For older versions of huggingface_hub
+        from huggingface_hub.utils._token import get_token
 from huggingface_hub import HfFileSystem
 import importlib.util
 from ..device_type import (
