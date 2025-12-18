@@ -831,10 +831,8 @@ class FastModel(FastBaseModel):
                 trust_remote_code = trust_remote_code,
             )
             is_model = True
-        except ImportError as error:
-            autoconfig_error = str(error)
-            is_model = False
-            raise error
+        except ImportError:
+            raise
         except Exception as error:
             autoconfig_error = str(error)
             if "architecture" in autoconfig_error:
