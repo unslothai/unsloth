@@ -130,11 +130,11 @@ class FastLanguageModel(FastLlamaModel):
         full_finetuning = False,
         token = None,
         device_map = "sequential",
-        rope_scaling = None,  # [TODO] No effect
-        fix_tokenizer = True,  # [TODO] No effect
+        rope_scaling = None,
+        fix_tokenizer = True,
         trust_remote_code = False,
         use_gradient_checkpointing = "unsloth",
-        resize_model_vocab = None,  # [TODO] No effect
+        resize_model_vocab = None,
         revision = None,
         use_exact_model_name = False,
         offload_embedding = False,
@@ -186,7 +186,6 @@ class FastLanguageModel(FastLlamaModel):
                 disable_log_stats = disable_log_stats,
                 qat_scheme = qat_scheme,
                 load_in_fp8 = load_in_fp8,
-                unsloth_tiled_mlp = unsloth_tiled_mlp,
                 *args,
                 **kwargs,
             )
