@@ -2349,10 +2349,12 @@ def _get_inference_mode_context_manager(model: torch.nn.Module):
 
 def hf_login(token: str):
     if token is None:
-        from huggingface_hub import get_token
-
-        token = get_token()
-        if token is None:
+        try:
+            from huggingface_hub import get_token
+            token = get_token()
+            if token is None:
+                return
+        except:
             return
     try:
         from huggingface_hub import login
