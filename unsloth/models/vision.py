@@ -390,8 +390,7 @@ class FastBaseModel:
                 "Unsloth: WARNING `trust_remote_code` is True.\n"
                 "Are you certain you want to do remote code execution?"
             )
-        if token is None:
-            token = get_token()
+        token = hf_login(token)
         SUPPORTS_BFLOAT16 = is_bfloat16_supported()
 
         if DEVICE_TYPE == "cuda":
