@@ -514,6 +514,7 @@ unsloth/Qwen3-30B-A3B
 
 ```bash
 ./scripts/run_qlora_training.sh qwen-moe
+
 ```
 
 #### 5.3 微调日志（可折叠展示）
@@ -926,7 +927,7 @@ Unsloth: Merging weights into 16bit: 100%|██████████| 13/13 
 #### 6.1 运行基准测试
 
 ```bash
-python ./scripts/run_kernel_benchmark.sh attention
+./scripts/run_kernel_benchmark.sh attention
 
 ```
 
@@ -987,11 +988,7 @@ Config: batch=4 seq=2048 heads=32 dim=128 dtype=torch.bfloat16
 #### 7.1 FP16 精度 / 性能测试
 
 ```bash
-python ./scripts/moe_impl_benchmark.py \
-  --batch-sizes 1 4 \
-  --seq-lens 128 512 \
-  --dtypes fp16 \
-  --num-iters 3
+./scripts/run_kernel_benchmark.sh moe --dtypes fp16
 ```
 
 <details>
@@ -1024,11 +1021,7 @@ Perf     target: fwd=42.04ms bwd=76.50ms | ref: fwd=41.85ms bwd=75.95ms | stable
 #### 7.2 BF16 精度 / 性能测试
 
 ```bash
-python ./scripts/moe_impl_benchmark.py \
-  --batch-sizes 1 4 \
-  --seq-lens 128 512 \
-  --dtypes bf16 \
-  --num-iters 3
+./scripts/run_kernel_benchmark.sh moe --dtypes bf16
 ```
 
 <details>
