@@ -674,7 +674,7 @@ class FastModel(FastBaseModel):
         **kwargs,
     ):
         # Login to allow private models
-        hf_login(token)
+        token = hf_login(token)
         if whisper_language is not None:
             assert type(whisper_language) is str
         if whisper_task is not None:
