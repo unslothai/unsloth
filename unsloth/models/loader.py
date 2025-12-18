@@ -20,6 +20,7 @@ from ._utils import (
     HAS_FLASH_ATTENTION_SOFTCAPPING,
     USE_MODELSCOPE,
     get_transformers_model_type,
+    hf_login,
 )
 from .granite import FastGraniteModel
 from .llama import FastLlamaModel, logger
@@ -151,15 +152,7 @@ class FastLanguageModel(FastLlamaModel):
         **kwargs,
     ):
         # Login to allow private models
-        if token is None:
-            token = get_token()
-        if token is not None:
-            try:
-                from huggingface_hub import login
-
-                login(token = token)
-            except:
-                pass
+        token = hf_login(token)
         if load_in_8bit or full_finetuning or qat_scheme is not None:
             return FastModel.from_pretrained(
                 model_name = model_name,
@@ -195,8 +188,6 @@ class FastLanguageModel(FastLlamaModel):
                 **kwargs,
             )
 
-        if token is None:
-            token = get_token()
         if isinstance(dtype, str) and dtype in ["float16", "bfloat16"]:
             dtype = getattr(torch, dtype)
         assert (
@@ -682,16 +673,8 @@ class FastModel(FastBaseModel):
         *args,
         **kwargs,
     ):
-        if token is None:
-            token = get_token()
         # Login to allow private models
-        if token is not None:
-            try:
-                from huggingface_hub import login
-
-                login(token = token)
-            except:
-                pass
+        token = hf_login(token)
         if whisper_language is not None:
             assert type(whisper_language) is str
         if whisper_task is not None:
