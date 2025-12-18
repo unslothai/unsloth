@@ -80,9 +80,9 @@ DEVICE_COUNT: int = get_device_count()
 # 4-bit quantization requires a block size of 64
 # | Device Type     | Warp Size | Block Size |
 # |-----------------|-----------|------------|
-# | CUDA            |    32     |    64      |
-# | Radeon (Navi)   |    32     |    64      |
-# | Instinct (MI)   |    64     |   128      |
+# | CUDA            |    32     |     64     |
+# | Radeon (Navi)   |    32     |     64     |
+# | Instinct (MI)   |    64     |    128     |
 ALLOW_PREQUANTIZED_MODELS: bool = True
 # HSA_STATUS_ERROR_EXCEPTION checks - sometimes AMD fails for BnB
 ALLOW_BITSANDBYTES: bool = True
