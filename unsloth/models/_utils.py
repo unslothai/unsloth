@@ -2364,4 +2364,4 @@ def hf_login(token: Optional[str] = None) -> Optional[str]:
         return token
     except Exception as e:
         logger.info(f"Failed to login to huggingface using token with error: {e}")
-    return None
+    return token
