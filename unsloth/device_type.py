@@ -95,5 +95,9 @@ if DEVICE_TYPE == "hip":
         import bitsandbytes
 
         ALLOW_BITSANDBYTES = Version(bitsandbytes.__version__) > Version("0.48.2.dev0")
-    except:
-        pass
+    except Exception:
+        print(
+            "Unsloth: `bitsandbytes` is not installed - 4bit QLoRA unallowed, but 16bit and full finetuning works!"
+        )
+        ALLOW_PREQUANTIZED_MODELS = False
+        ALLOW_BITSANDBYTES = False
