@@ -24,9 +24,9 @@ def formatting_prompts_func(examples):
     return {"text": texts}
 
 
-print(f"\n{'='*80}")
+print(f"\n{'=' * 80}")
 print("🔍 PHASE 1: Loading Base Model and Initial Training")
-print(f"{'='*80}")
+print(f"{'=' * 80}")
 
 if torch.cuda.is_bf16_supported():
     compute_dtype = torch.bfloat16
@@ -58,9 +58,9 @@ dataset_train = dataset_train.map(formatting_prompts_func, batched = True)
 
 print("✅ Base model loaded successfully!")
 
-print(f"\n{'='*80}")
+print(f"\n{'=' * 80}")
 print("🔍 PHASE 2: First Fine-tuning")
-print(f"{'='*80}")
+print(f"{'=' * 80}")
 
 model = FastLanguageModel.get_peft_model(
     model,
@@ -114,9 +114,9 @@ trainer = SFTTrainer(
 trainer_stats = trainer.train()
 print("✅ First fine-tuning completed!")
 
-print(f"\n{'='*80}")
+print(f"\n{'=' * 80}")
 print("🔍 PHASE 3: Save with Forced 4bit Merge")
-print(f"{'='*80}")
+print(f"{'=' * 80}")
 
 model.save_pretrained_merged(
     save_directory = "./test_4bit_model",
@@ -126,9 +126,9 @@ model.save_pretrained_merged(
 
 print("✅ Model saved with forced 4bit merge!")
 
-print(f"\n{'='*80}")
+print(f"\n{'=' * 80}")
 print("🔍 PHASE 4: Loading 4bit Model and Second Fine-tuning")
-print(f"{'='*80}")
+print(f"{'=' * 80}")
 
 # Clean up first model
 del model
@@ -202,9 +202,9 @@ trainer_4bit = SFTTrainer(
 trainer_4bit.train()
 print("✅ Second fine-tuning on 4bit model completed!")
 
-print(f"\n{'='*80}")
+print(f"\n{'=' * 80}")
 print("🔍 PHASE 5: Testing TypeError on Regular Merge (Should Fail)")
-print(f"{'='*80}")
+print(f"{'=' * 80}")
 
 try:
     model_4bit.save_pretrained_merged(
@@ -219,9 +219,9 @@ except TypeError as e:
     print("✅ Correct TypeError raised for 4bit base model regular merge attempt!")
     print(f"Error message: {str(e)}")
 
-print(f"\n{'='*80}")
+print(f"\n{'=' * 80}")
 print("🔍 PHASE 6: Successful Save with Forced 4bit Method")
-print(f"{'='*80}")
+print(f"{'=' * 80}")
 
 try:
     model_4bit.save_pretrained_merged(
@@ -233,9 +233,9 @@ try:
 except Exception as e:
     assert False, f"Phase 6 failed unexpectedly: {e}"
 
-print(f"\n{'='*80}")
+print(f"\n{'=' * 80}")
 print("🔍 CLEANUP")
-print(f"{'='*80}")
+print(f"{'=' * 80}")
 
 # Cleanup
 safe_remove_directory("./outputs")
