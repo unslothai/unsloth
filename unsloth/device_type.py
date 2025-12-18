@@ -78,6 +78,7 @@ def get_device_count():
 DEVICE_COUNT: int = get_device_count()
 
 # 4-bit quantization requires a block size of 64
+# this is not supported on AMD Instinct GPUs currently
 # | Device Type     | Warp Size | Block Size |
 # |-----------------|-----------|------------|
 # | CUDA            |    32     |     64     |
