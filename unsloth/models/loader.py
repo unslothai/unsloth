@@ -280,6 +280,8 @@ class FastLanguageModel(FastLlamaModel):
                 trust_remote_code = trust_remote_code,
             )
             is_model = True
+        except ImportError:
+            raise
         except Exception as error:
             autoconfig_error = str(error)
             if "architecture" in autoconfig_error:
@@ -296,6 +298,8 @@ class FastLanguageModel(FastLlamaModel):
                 trust_remote_code = trust_remote_code,
             )
             is_peft = True
+        except ImportError:
+            raise
         except Exception as error:
             peft_error = str(error)
             if "architecture" in peft_error:
@@ -317,7 +321,8 @@ class FastLanguageModel(FastLlamaModel):
                 "Please separate the LoRA and base models to 2 repos."
             )
         model_types = get_transformers_model_type(
-            peft_config if peft_config is not None else model_config
+            peft_config if peft_config is not None else model_config,
+            trust_remote_code = trust_remote_code,
         )
         if len(model_types) == 1:
             model_type = model_types[0]
@@ -809,6 +814,8 @@ class FastModel(FastBaseModel):
                 trust_remote_code = trust_remote_code,
             )
             is_model = True
+        except ImportError:
+            raise
         except Exception as error:
             autoconfig_error = str(error)
             if "architecture" in autoconfig_error:
@@ -825,6 +832,8 @@ class FastModel(FastBaseModel):
                 trust_remote_code = trust_remote_code,
             )
             is_peft = True
+        except ImportError:
+            raise
         except Exception as error:
             peft_error = str(error)
             if "architecture" in peft_error:
@@ -844,7 +853,8 @@ class FastModel(FastBaseModel):
                 "Please separate the LoRA and base models to 2 repos."
             )
         model_types = get_transformers_model_type(
-            peft_config if peft_config is not None else model_config
+            peft_config if peft_config is not None else model_config,
+            trust_remote_code = trust_remote_code,
         )
         model_types_all = ",".join(model_types) + ","
 
