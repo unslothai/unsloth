@@ -1251,6 +1251,11 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/gpt-oss-safeguard-120b",
         "openai/gpt-oss-safeguard-120b",
     ),
+    "unsloth/functiongemma-270m-it-unsloth-bnb-4bit" : (
+        "unsloth/functiongemma-270m-it",
+        "google/functiongemma-270m-it",
+        "unsloth/functiongemma-270m-it-unsloth-bnb-4bit",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER  = {}
