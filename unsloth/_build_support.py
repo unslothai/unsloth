@@ -72,8 +72,10 @@ def _get_bootstrap_python() -> str:
     return python_exec
 
 
-def _pip_install(python_exec: str, args: Sequence[str], env: Optional[dict[str, str]] = None) -> None:
-    subprocess.check_call([python_exec, "-m", "pip", *args], env=env)
+def _pip_install(
+    python_exec: str, args: Sequence[str], env: Optional[dict[str, str]] = None
+) -> None:
+    subprocess.check_call([python_exec, "-m", "pip", *args], env = env)
 
 
 def detect_runtime() -> RuntimeInfo:
@@ -123,12 +125,14 @@ def _try_populate_torch(runtime: RuntimeInfo) -> bool:
     _log(f"Imported torch with CUDA_HOME = {CUDA_HOME}.")
     _log(f"Imported torch with ROCM_HOME = {ROCM_HOME}.")
     return True
+
+
 def get_nvcc_cuda_version() -> Optional[str]:
     nvcc = shutil.which("nvcc")
     if not nvcc:
         return None
     try:
-        output = subprocess.check_output([nvcc, "--version"], text=True)
+        output = subprocess.check_output([nvcc, "--version"], text = True)
     except Exception:
         return None
     match = re.search(r"release (\d+\.\d+)", output)
@@ -190,7 +194,9 @@ def _detect_rocm_arch(runtime: RuntimeInfo) -> Optional[str]:
     if not runtime.has_hip:
         return None
     try:
-        result = subprocess.run(["rocminfo"], capture_output=True, text=True, check=False)
+        result = subprocess.run(
+            ["rocminfo"], capture_output = True, text = True, check = False
+        )
     except Exception as exc:
         _log(f"Could not detect ROCm GPU architecture: {exc}")
         return None
@@ -229,6 +235,7 @@ def _log_installed_package(package: str) -> None:
     except Exception as exc:  # pragma: no cover - defensive logging
         _log(f"Detected {package} but failed to read version: {exc}")
 
+
 def _ensure_transformers_for_amd(runtime: RuntimeInfo, python_exec: str) -> None:
     if not runtime.has_hip:
         return
@@ -245,7 +252,7 @@ def _ensure_transformers_for_amd(runtime: RuntimeInfo, python_exec: str) -> None
     if skip_env:
         raise RuntimeError(
             "AMD/ROCm support requires transformers==4.56.2. "
-            "Set UNSLOTH_SKIP_AMD_TRANSFORMERS_PIN=0 or install manually via `pip install -U \"transformers==4.56.2\"`."
+            'Set UNSLOTH_SKIP_AMD_TRANSFORMERS_PIN=0 or install manually via `pip install -U "transformers==4.56.2"`.'
         )
 
     _log(
@@ -270,6 +277,7 @@ def _ensure_transformers_for_amd(runtime: RuntimeInfo, python_exec: str) -> None
             "Failed to enforce transformers==4.56.2 automatically. "
             "Please install it manually."
         )
+
 
 def _log_rocm_summary(runtime: RuntimeInfo) -> None:
     _log(
@@ -325,9 +333,13 @@ def _install_build_prereqs(python_exec: str) -> None:
 
 def _ensure_rocm_torch(runtime: RuntimeInfo, python_exec: str) -> None:
     if runtime.has_torch and runtime.has_hip:
-        torch_version = getattr(getattr(runtime.torch_module, "version", None), "__version__", None)
+        torch_version = getattr(
+            getattr(runtime.torch_module, "version", None), "__version__", None
+        )
         if torch_version:
-            _log(f"Detected ROCm-enabled torch {torch_version}, skipping torch bootstrap.")
+            _log(
+                f"Detected ROCm-enabled torch {torch_version}, skipping torch bootstrap."
+            )
         else:
             _log("Detected ROCm-enabled torch, skipping torch bootstrap.")
         return
@@ -336,15 +348,14 @@ def _ensure_rocm_torch(runtime: RuntimeInfo, python_exec: str) -> None:
         raise RuntimeError(
             "flash-attention bootstrap requires torch, but no ROCm torch installation was detected. "
             "Install a ROCm-enabled torch wheel beforehand or set "
-            f"{_ROCM_TORCH_ARGS_ENV} to the pip arguments needed to install it (for example, \"torch==2.4.1 --index-url https://download.pytorch.org/whl/rocm6.1\")."
+            f'{_ROCM_TORCH_ARGS_ENV} to the pip arguments needed to install it (for example, "torch==2.4.1 --index-url https://download.pytorch.org/whl/rocm6.1").'
         )
     pip_args = shlex.split(torch_args_raw)
     if not pip_args:
-        raise RuntimeError(f"{_ROCM_TORCH_ARGS_ENV} was provided but empty after parsing.")
-    _log(
-        "Installing ROCm-enabled torch via pip arguments: "
-        + " ".join(pip_args)
-    )
+        raise RuntimeError(
+            f"{_ROCM_TORCH_ARGS_ENV} was provided but empty after parsing."
+        )
+    _log("Installing ROCm-enabled torch via pip arguments: " + " ".join(pip_args))
     _pip_install(python_exec, ["install", *pip_args])
     refreshed = detect_runtime()
     if not refreshed.has_torch or not refreshed.has_hip:
@@ -357,7 +368,8 @@ def _ensure_rocm_torch(runtime: RuntimeInfo, python_exec: str) -> None:
     runtime.torch_module = refreshed.torch_module
     runtime.rocm_home = refreshed.rocm_home
 
-'''
+
+"""
 def _maybe_install_flash_attention(rocm_arch: Optional[str], python_exec: str) -> None:
     if importlib.util.find_spec("flash_attn") is not None:
         _log("flash-attention already present, skipping bootstrap clone.")
@@ -386,8 +398,8 @@ def _maybe_install_flash_attention(rocm_arch: Optional[str], python_exec: str) -
         commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
         _log(f"flash-attention commit {commit} (default branch)")
         _pip_install(python_exec, ["install", "-v", "--no-build-isolation", "."], env=env)
-'''
-'''
+"""
+"""
 def _maybe_install_bitsandbytes(python_exec: str) -> None:
     if importlib.util.find_spec("bitsandbytes") is not None:
         _log("bitsandbytes already present, skipping bootstrap clone.")
@@ -410,7 +422,9 @@ def _maybe_install_bitsandbytes(python_exec: str) -> None:
         env = os.environ.copy()
         env.setdefault("PIP_NO_BUILD_ISOLATION", "1")
         _pip_install(python_exec, ["install", "--no-build-isolation", "."], env=env)
-'''
+"""
+
+
 def _maybe_install_flash_attention(rocm_arch: Optional[str], python_exec: str) -> None:
     # 注意：这里建议不要在前面就用 find_spec 判定“已经装好”
     # 因为你之前环境里就有一个坏的 CUDA 版 flash_attn，find_spec 会误判。
@@ -421,6 +435,7 @@ def _maybe_install_flash_attention(rocm_arch: Optional[str], python_exec: str) -
         if spec is not None:
             import flash_attn
             from importlib import reload
+
             reload(flash_attn)  # 避免残留
             # 可以在这里加一些简单自检，比如检查 __version__ 或 backend
             return
@@ -429,27 +444,30 @@ def _maybe_install_flash_attention(rocm_arch: Optional[str], python_exec: str) -
         pass
 
     _log("Installing flash-attention...")
-    subprocess.check_call([
-        "git",
-        "clone",
-        "--recursive",
-        "https://github.com/ROCm/flash-attention.git",
-        "flash-attention",
-    ])
+    subprocess.check_call(
+        [
+            "git",
+            "clone",
+            "--recursive",
+            "https://github.com/ROCm/flash-attention.git",
+            "flash-attention",
+        ]
+    )
 
     with _pushd(Path("flash-attention")):
         env = os.environ.copy()
         if rocm_arch in _RADEON_ARCH:
             subprocess.check_call(["git", "checkout", "main_perf"])
             env["FLASH_ATTENTION_TRITON_AMD_ENABLE"] = "TRUE"
-            commit = subprocess.check_output(["git", "rev-parse", "HEAD"],
-                                             text=True).strip()
+            commit = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], text = True
+            ).strip()
             _log(f"flash-attention commit {commit} (main_perf branch)")
             # 这里用 pip，和你手动一致
             _pip_install(
                 python_exec,
                 ["install", "-v", "--no-build-isolation", "."],
-                env=env,
+                env = env,
             )
             return
 
@@ -457,15 +475,17 @@ def _maybe_install_flash_attention(rocm_arch: Optional[str], python_exec: str) -
         jobs = max((os.cpu_count() or 2) - 1, 1)
         env["MAX_JOBS"] = str(jobs)
         env.setdefault("PIP_NO_BUILD_ISOLATION", "1")
-        commit = subprocess.check_output(["git", "rev-parse", "HEAD"],
-                                         text=True).strip()
+        commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], text = True
+        ).strip()
         _log(f"flash-attention commit {commit} (default branch)")
         _pip_install(
             python_exec,
             ["install", "-v", "--no-build-isolation", "."],
-            env=env,
+            env = env,
         )
-        
+
+
 def _maybe_install_bitsandbytes(python_exec: str) -> None:
     if importlib.util.find_spec("bitsandbytes") is not None:
         _log("bitsandbytes already present, skipping bootstrap clone.")
@@ -473,20 +493,22 @@ def _maybe_install_bitsandbytes(python_exec: str) -> None:
 
     _log("Installing bitsandbytes 0.48.2 from official repository...")
 
-    subprocess.check_call([
-        "git",
-        "clone",
-        "--recurse-submodules",
-        "https://github.com/bitsandbytes-foundation/bitsandbytes.git",
-        "bitsandbytes",
-    ])
+    subprocess.check_call(
+        [
+            "git",
+            "clone",
+            "--recurse-submodules",
+            "https://github.com/bitsandbytes-foundation/bitsandbytes.git",
+            "bitsandbytes",
+        ]
+    )
 
     with _pushd(Path("bitsandbytes")):
         subprocess.check_call(["git", "checkout", "main"])
 
         commit = subprocess.check_output(
             ["git", "rev-parse", "HEAD"],
-            text=True,
+            text = True,
         ).strip()
         _log(f"bitsandbytes commit {commit} (tag 0.48.2)")
 
@@ -496,11 +518,15 @@ def _maybe_install_bitsandbytes(python_exec: str) -> None:
             _pip_install(python_exec, ["install", "-r", "requirements-dev.txt"])
 
         # 关键：安装构建后端 scikit-build-core
-        _log("Ensuring scikit-build-core is installed for bitsandbytes build backend...")
+        _log(
+            "Ensuring scikit-build-core is installed for bitsandbytes build backend..."
+        )
         _pip_install(python_exec, ["install", "scikit-build-core"])
 
         _log("Configuring bitsandbytes with CMake (ROCm / HIP backend)...")
-        subprocess.check_call(["cmake", "-DCOMPUTE_BACKEND=hip", "-DBNB_ROCM_ARCH=gfx1201", "-S", "."])
+        subprocess.check_call(
+            ["cmake", "-DCOMPUTE_BACKEND=hip", "-DBNB_ROCM_ARCH=gfx1201", "-S", "."]
+        )
 
         _log("Building bitsandbytes via make...")
         subprocess.check_call(["make"])
@@ -513,8 +539,9 @@ def _maybe_install_bitsandbytes(python_exec: str) -> None:
         _pip_install(
             python_exec,
             ["install", "-e", "."],  # 不再加 --no-build-isolation
-            env=env,
+            env = env,
         )
+
 
 def compute_version_string(base_version: str) -> str:
     runtime = detect_runtime()
