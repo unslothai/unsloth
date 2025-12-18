@@ -20,6 +20,7 @@ from ._utils import (
     HAS_FLASH_ATTENTION_SOFTCAPPING,
     USE_MODELSCOPE,
     get_transformers_model_type,
+    hf_login,
 )
 from .granite import FastGraniteModel
 from .llama import FastLlamaModel, logger
@@ -129,11 +130,11 @@ class FastLanguageModel(FastLlamaModel):
         full_finetuning = False,
         token = None,
         device_map = "sequential",
-        rope_scaling = None,
-        fix_tokenizer = True,
+        rope_scaling = None,  # [TODO] No effect
+        fix_tokenizer = True,  # [TODO] No effect
         trust_remote_code = False,
         use_gradient_checkpointing = "unsloth",
-        resize_model_vocab = None,
+        resize_model_vocab = None,  # [TODO] No effect
         revision = None,
         use_exact_model_name = False,
         offload_embedding = False,
@@ -153,13 +154,7 @@ class FastLanguageModel(FastLlamaModel):
         # Login to allow private models
         if token is None:
             token = get_token()
-        if token is not None:
-            try:
-                from huggingface_hub import login
-
-                login(token = token)
-            except:
-                pass
+        hf_login(token)
         if load_in_8bit or full_finetuning or qat_scheme is not None:
             return FastModel.from_pretrained(
                 model_name = model_name,
@@ -191,6 +186,7 @@ class FastLanguageModel(FastLlamaModel):
                 disable_log_stats = disable_log_stats,
                 qat_scheme = qat_scheme,
                 load_in_fp8 = load_in_fp8,
+                unsloth_tiled_mlp = unsloth_tiled_mlp,
                 *args,
                 **kwargs,
             )
@@ -685,13 +681,7 @@ class FastModel(FastBaseModel):
         if token is None:
             token = get_token()
         # Login to allow private models
-        if token is not None:
-            try:
-                from huggingface_hub import login
-
-                login(token = token)
-            except:
-                pass
+        hf_login(token)
         if whisper_language is not None:
             assert type(whisper_language) is str
         if whisper_task is not None:

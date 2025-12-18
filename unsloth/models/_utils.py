@@ -72,6 +72,7 @@ __all__ = [
     "patch_hf_quantizer",
     "verify_fp8_support_if_applicable",
     "_get_inference_mode_context_manager",
+    "hf_login",
 ]
 
 import torch
@@ -2344,3 +2345,14 @@ def _get_inference_mode_context_manager(model: torch.nn.Module):
         return torch.no_grad()
     else:
         return torch.inference_mode()
+
+
+def hf_login(token: str):
+    if token is None:
+        from huggingface_hub import get_token
+        token = get_token()
+    try:
+        from huggingface_hub import login
+        login(token = token)
+    except Exception as e:
+        logger.info(f"Failed to login to huggingface using token with error: {e}")
