@@ -289,6 +289,8 @@ class FastLanguageModel(FastLlamaModel):
                 trust_remote_code = trust_remote_code,
             )
             is_model = True
+        except ImportError:
+            raise
         except Exception as error:
             autoconfig_error = str(error)
             if "architecture" in autoconfig_error:
@@ -305,6 +307,8 @@ class FastLanguageModel(FastLlamaModel):
                 trust_remote_code = trust_remote_code,
             )
             is_peft = True
+        except ImportError:
+            raise
         except Exception as error:
             peft_error = str(error)
             if "architecture" in peft_error:
@@ -326,7 +330,8 @@ class FastLanguageModel(FastLlamaModel):
                 "Please separate the LoRA and base models to 2 repos."
             )
         model_types = get_transformers_model_type(
-            peft_config if peft_config is not None else model_config
+            peft_config if peft_config is not None else model_config,
+            trust_remote_code = trust_remote_code,
         )
         if len(model_types) == 1:
             model_type = model_types[0]
@@ -739,6 +744,8 @@ class FastModel(FastBaseModel):
                 "compatible with `full_finetuning=True`. If you wish to use QAT with LoRA, "
                 "please pass in `qat_scheme` in `FastLanguageModel.get_peft_model(...)` instead."
             )
+        if qat_scheme == "phone-deployment":
+            qat_scheme = "int8-int4"
         # Check if 4bit is allowed specifically for AMD
         if not ALLOW_BITSANDBYTES and not use_exact_model_name:
             if load_in_4bit or load_in_8bit or model_name.lower().endswith("-bnb-4bit"):
@@ -824,6 +831,8 @@ class FastModel(FastBaseModel):
                 trust_remote_code = trust_remote_code,
             )
             is_model = True
+        except ImportError:
+            raise
         except Exception as error:
             autoconfig_error = str(error)
             if "architecture" in autoconfig_error:
@@ -840,6 +849,8 @@ class FastModel(FastBaseModel):
                 trust_remote_code = trust_remote_code,
             )
             is_peft = True
+        except ImportError:
+            raise
         except Exception as error:
             peft_error = str(error)
             if "architecture" in peft_error:
@@ -859,7 +870,8 @@ class FastModel(FastBaseModel):
                 "Please separate the LoRA and base models to 2 repos."
             )
         model_types = get_transformers_model_type(
-            peft_config if peft_config is not None else model_config
+            peft_config if peft_config is not None else model_config,
+            trust_remote_code = trust_remote_code,
         )
         model_types_all = ",".join(model_types) + ","
 
