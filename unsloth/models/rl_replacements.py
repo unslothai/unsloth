@@ -589,9 +589,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 model, keep_fp32_wrapper = False
             )
 
-            B = input_ids.shape[0] #//2
+            B = input_ids.shape[0]  # //2
             all_logprobs_list = []
-            #breakpoint()
+            # breakpoint()
             if pixel_values is None:
                 left_pad_tokens_per_prompt = calculate_pad_tokens_in_prompt(
                     input_ids, logits_to_keep, self.processing_class.pad_token_id
@@ -605,7 +605,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             else:
                 max_left_pad = 0
 
-            #input_ids_chunks = torch.chunk(input_ids, chunks = B, dim = 0)
+            # input_ids_chunks = torch.chunk(input_ids, chunks = B, dim = 0)
             attention_mask_chunks = torch.chunk(attention_mask, chunks = B, dim = 0)
 
             def chunk_optional(tensor, chunks):
@@ -614,6 +614,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 return torch.chunk(tensor, chunks = chunks, dim = 0)
 
             import math
+
             total_samples = input_ids.shape[0]
             batch_size = math.ceil(total_samples / B)
 
@@ -624,40 +625,40 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             pixel_attention_mask_chunks = []
 
             current_pixel_idx = 0
-            #TRL 0.23.0 batching logic
+            # TRL 0.23.0 batching logic
             for start in range(0, total_samples, batch_size):
                 end = start + batch_size
-                
+
                 input_ids_chunks.append(input_ids[start:end])
                 attention_mask_chunks.append(attention_mask[start:end])
 
                 if image_grid_thw is not None and pixel_values is not None:
-                    
                     grid_slice = image_grid_thw[start:end]
                     image_grid_thw_chunks.append(grid_slice)
-                    
 
-                    batch_pixel_count = grid_slice.prod(dim=-1).sum().item()
-                    
+                    batch_pixel_count = grid_slice.prod(dim = -1).sum().item()
+
                     start_pixel_idx = current_pixel_idx
                     end_pixel_idx = current_pixel_idx + batch_pixel_count
-                    
-                    pixel_values_chunks.append(pixel_values[start_pixel_idx:end_pixel_idx])
-                    
+
+                    pixel_values_chunks.append(
+                        pixel_values[start_pixel_idx:end_pixel_idx]
+                    )
+
                     if pixel_attention_mask is not None:
                         pixel_attention_mask_chunks.append(
                             pixel_attention_mask[start_pixel_idx:end_pixel_idx]
                         )
                     else:
                         pixel_attention_mask_chunks.append(None)
-                    
+
                     current_pixel_idx = end_pixel_idx
-                    
+
                 else:
                     pixel_values_chunks.append(None)
                     image_grid_thw_chunks.append(None)
                     pixel_attention_mask_chunks.append(None)
-            
+
             if image_sizes is not None and not isinstance(image_sizes, torch.Tensor):
                 image_sizes_chunks = [[size] for size in image_sizes]
             else:
