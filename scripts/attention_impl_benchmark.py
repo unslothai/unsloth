@@ -46,18 +46,25 @@ DTYPE_MAP: Dict[str, torch.dtype] = {
 @dataclass
 class AttentionImplementation:
     name: str
-    fn: Callable[[torch.Tensor, torch.Tensor, torch.Tensor, Optional[torch.Tensor], bool], torch.Tensor]
+    fn: Callable[
+        [torch.Tensor, torch.Tensor, torch.Tensor, Optional[torch.Tensor], bool],
+        torch.Tensor,
+    ]
     requires_cuda: bool = False
     requires_flash: bool = False
     supported_dtypes: Optional[Sequence[torch.dtype]] = None
 
-    def is_supported(self, device: torch.device, dtype: torch.dtype) -> Tuple[bool, str]:
+    def is_supported(
+        self, device: torch.device, dtype: torch.dtype
+    ) -> Tuple[bool, str]:
         if self.requires_cuda and device.type != "cuda":
             return False, "CUDA only"
         if self.requires_flash and not HAS_FLASH_ATTENTION:
             return False, "flash_attn not available"
         if self.supported_dtypes is not None and dtype not in self.supported_dtypes:
-            pretty = ", ".join(sorted({k for k, v in DTYPE_MAP.items() if v in self.supported_dtypes}))
+            pretty = ", ".join(
+                sorted({k for k, v in DTYPE_MAP.items() if v in self.supported_dtypes})
+            )
             return False, f"dtype must be one of ({pretty})"
         return True, ""
 
@@ -73,12 +80,12 @@ def torch_reference_attention(
     scores = torch.matmul(q, k.transpose(-2, -1)) * scale
     if causal:
         causal_mask = torch.ones(
-            q.size(-2), k.size(-2), device=q.device, dtype=torch.bool
+            q.size(-2), k.size(-2), device = q.device, dtype = torch.bool
         ).triu(1)
         scores = scores.masked_fill(causal_mask, torch.finfo(scores.dtype).min)
     if attn_mask is not None:
         scores = scores + attn_mask
-    probs = torch.softmax(scores, dim=-1)
+    probs = torch.softmax(scores, dim = -1)
     return torch.matmul(probs, v)
 
 
@@ -93,8 +100,8 @@ def sdpa_attention(
         q,
         k,
         v,
-        attn_mask=attn_mask,
-        is_causal=causal,
+        attn_mask = attn_mask,
+        is_causal = causal,
     )
 
 
@@ -112,25 +119,25 @@ def flash_attention(
     q_flash = q.transpose(1, 2).contiguous()  # (bsz, seq, heads, dim)
     k_flash = k.transpose(1, 2).contiguous()
     v_flash = v.transpose(1, 2).contiguous()
-    out = flash_attn_func(q_flash, k_flash, v_flash, causal=causal)
+    out = flash_attn_func(q_flash, k_flash, v_flash, causal = causal)
     return out.transpose(1, 2).contiguous()
 
 
 REFERENCE_IMPL = AttentionImplementation(
-    name="torch_ref",
-    fn=torch_reference_attention,
+    name = "torch_ref",
+    fn = torch_reference_attention,
 )
 IMPLEMENTATIONS: List[AttentionImplementation] = [
     AttentionImplementation(
-        name="flash_attn",
-        fn=flash_attention,
-        requires_cuda=True,
-        requires_flash=True,
-        supported_dtypes=(torch.float16, torch.bfloat16),
+        name = "flash_attn",
+        fn = flash_attention,
+        requires_cuda = True,
+        requires_flash = True,
+        supported_dtypes = (torch.float16, torch.bfloat16),
     ),
     AttentionImplementation(
-        name="sdpa",
-        fn=sdpa_attention,
+        name = "sdpa",
+        fn = sdpa_attention,
     ),
 ]
 
@@ -139,9 +146,9 @@ class StepTimer:
     def __init__(self, device: torch.device):
         self.device = device
         if device.type == "cuda":
-            self._fwd_start = torch.cuda.Event(enable_timing=True)
-            self._fwd_end = torch.cuda.Event(enable_timing=True)
-            self._bwd_end = torch.cuda.Event(enable_timing=True)
+            self._fwd_start = torch.cuda.Event(enable_timing = True)
+            self._fwd_end = torch.cuda.Event(enable_timing = True)
+            self._bwd_end = torch.cuda.Event(enable_timing = True)
         else:
             self._fwd_start = 0.0
             self._fwd_end = 0.0
@@ -173,7 +180,9 @@ class StepTimer:
         return fwd_ms, bwd_ms
 
 
-def clone_inputs(base: Tuple[torch.Tensor, torch.Tensor, torch.Tensor]) -> Tuple[torch.Tensor, ...]:
+def clone_inputs(
+    base: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+) -> Tuple[torch.Tensor, ...]:
     return tuple(t.clone().detach().requires_grad_(True) for t in base)
 
 
@@ -183,7 +192,9 @@ def run_forward_backward(
     attn_mask: Optional[torch.Tensor],
     causal: bool,
     timer: StepTimer,
-) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor], float, float, bool]:
+) -> Tuple[
+    torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor], float, float, bool
+]:
     q, k, v = clone_inputs(base_inputs)
     timer.start_forward()
     out = impl.fn(q, k, v, attn_mask, causal)
@@ -192,7 +203,9 @@ def run_forward_backward(
     loss.backward()
     fwd_ms, bwd_ms = timer.end_backward()
     grads = (q.grad.detach().clone(), k.grad.detach().clone(), v.grad.detach().clone())
-    is_finite = torch.isfinite(out).all().item() and all(torch.isfinite(g).all().item() for g in grads)
+    is_finite = torch.isfinite(out).all().item() and all(
+        torch.isfinite(g).all().item() for g in grads
+    )
     return out.detach().clone(), grads, fwd_ms, bwd_ms, is_finite
 
 
@@ -215,18 +228,30 @@ def summarize_impl(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Benchmark Unsloth attention kernels")
-    parser.add_argument("--batch-sizes", nargs="+", type=int, default=[1, 4])
-    parser.add_argument("--seq-lens", nargs="+", type=int, default=[128, 2048])
-    parser.add_argument("--num-heads", type=int, default=32)
-    parser.add_argument("--head-dim", type=int, default=128)
-    parser.add_argument("--dtypes", nargs="+", choices=DTYPE_MAP.keys(), default=["fp16", "bf16"])
-    parser.add_argument("--num-iters", type=int, default=20, help="Timed iterations per configuration")
-    parser.add_argument("--warmup", type=int, default=5, help="Warmup iterations (not timed)")
-    parser.add_argument("--device", type=str, default=("cuda:0" if torch.cuda.is_available() else "cpu"))
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--no-causal", action="store_true", help="Disable causal masking")
-    parser.add_argument("--allow-tf32", action="store_true", help="Enable TF32 on CUDA matmul")
+    parser = argparse.ArgumentParser(description = "Benchmark Unsloth attention kernels")
+    parser.add_argument("--batch-sizes", nargs = "+", type = int, default = [1, 4])
+    parser.add_argument("--seq-lens", nargs = "+", type = int, default = [128, 2048])
+    parser.add_argument("--num-heads", type = int, default = 32)
+    parser.add_argument("--head-dim", type = int, default = 128)
+    parser.add_argument(
+        "--dtypes", nargs = "+", choices = DTYPE_MAP.keys(), default = ["fp16", "bf16"]
+    )
+    parser.add_argument(
+        "--num-iters", type = int, default = 20, help = "Timed iterations per configuration"
+    )
+    parser.add_argument(
+        "--warmup", type = int, default = 5, help = "Warmup iterations (not timed)"
+    )
+    parser.add_argument(
+        "--device", type = str, default = ("cuda:0" if torch.cuda.is_available() else "cpu")
+    )
+    parser.add_argument("--seed", type = int, default = 0)
+    parser.add_argument(
+        "--no-causal", action = "store_true", help = "Disable causal masking"
+    )
+    parser.add_argument(
+        "--allow-tf32", action = "store_true", help = "Enable TF32 on CUDA matmul"
+    )
     return parser.parse_args()
 
 
@@ -239,11 +264,10 @@ def prepare_inputs(
     device: torch.device,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     shape = (batch_size, num_heads, seq_len, head_dim)
-    q = torch.randn(shape, dtype=dtype, device=device)
-    k = torch.randn(shape, dtype=dtype, device=device)
-    v = torch.randn(shape, dtype=dtype, device=device)
+    q = torch.randn(shape, dtype = dtype, device = device)
+    k = torch.randn(shape, dtype = dtype, device = device)
+    v = torch.randn(shape, dtype = dtype, device = device)
     return q, k, v
-
 
 
 def benchmark_configuration(
@@ -258,7 +282,9 @@ def benchmark_configuration(
     print(
         f"\nConfig: batch={batch_size} seq={seq_len} heads={num_heads} dim={head_dim} dtype={dtype}"
     )
-    base_inputs = prepare_inputs(batch_size, num_heads, seq_len, head_dim, dtype, device)
+    base_inputs = prepare_inputs(
+        batch_size, num_heads, seq_len, head_dim, dtype, device
+    )
     attn_mask = None
 
     timer = StepTimer(device)
@@ -266,8 +292,8 @@ def benchmark_configuration(
         REFERENCE_IMPL,
         base_inputs,
         attn_mask,
-        causal=not args.no_causal,
-        timer=timer,
+        causal = not args.no_causal,
+        timer = timer,
     )
     # Warmup runs (reference)
     for _ in range(args.warmup):
@@ -296,12 +322,12 @@ def benchmark_configuration(
 
     summarize_impl(
         REFERENCE_IMPL.name,
-        status="timed",
-        fwd_diff=0.0,
-        bwd_diff=0.0,
-        fwd_ms=ref_total_fwd / args.num_iters,
-        bwd_ms=ref_total_bwd / args.num_iters,
-        stable=ref_stable,
+        status = "timed",
+        fwd_diff = 0.0,
+        bwd_diff = 0.0,
+        fwd_ms = ref_total_fwd / args.num_iters,
+        bwd_ms = ref_total_bwd / args.num_iters,
+        stable = ref_stable,
     )
 
     timed_impls = IMPLEMENTATIONS
@@ -311,18 +337,20 @@ def benchmark_configuration(
         if not supported:
             summarize_impl(
                 impl.name,
-                status=f"skipped ({reason})",
-                fwd_diff=float("nan"),
-                bwd_diff=float("nan"),
-                fwd_ms=float("nan"),
-                bwd_ms=float("nan"),
-                stable=False,
+                status = f"skipped ({reason})",
+                fwd_diff = float("nan"),
+                bwd_diff = float("nan"),
+                fwd_ms = float("nan"),
+                bwd_ms = float("nan"),
+                stable = False,
             )
             continue
 
         # Warmup
         for _ in range(args.warmup):
-            run_forward_backward(impl, base_inputs, attn_mask, not args.no_causal, timer)
+            run_forward_backward(
+                impl, base_inputs, attn_mask, not args.no_causal, timer
+            )
 
         total_fwd = 0.0
         total_bwd = 0.0
@@ -348,12 +376,12 @@ def benchmark_configuration(
 
         summarize_impl(
             impl.name,
-            status="timed",
-            fwd_diff=diff_fwd,
-            bwd_diff=diff_bwd,
-            fwd_ms=total_fwd / args.num_iters,
-            bwd_ms=total_bwd / args.num_iters,
-            stable=stable,
+            status = "timed",
+            fwd_diff = diff_fwd,
+            bwd_diff = diff_bwd,
+            fwd_ms = total_fwd / args.num_iters,
+            bwd_ms = total_bwd / args.num_iters,
+            stable = stable,
         )
 
 

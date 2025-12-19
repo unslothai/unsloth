@@ -60,6 +60,7 @@ from tests.utils.hf_utils import (
 #         local_files_only = True
 #     )
 
+
 def get_unsloth_model_and_tokenizer(
     model_name: str,
     max_seq_length: int,
@@ -68,7 +69,7 @@ def get_unsloth_model_and_tokenizer(
     max_lora_rank: int = None,
     gpu_memory_utilization: float = 0.5,
     dtype: torch.dtype = torch.bfloat16,
-    device_map: str = "sequential",   # 新增参数，默认值为 "sequential"
+    device_map: str = "sequential",  # 新增参数，默认值为 "sequential"
 ):
     return FastLanguageModel.from_pretrained(
         model_name = model_name,
@@ -78,7 +79,7 @@ def get_unsloth_model_and_tokenizer(
         max_lora_rank = max_lora_rank,
         gpu_memory_utilization = gpu_memory_utilization,
         dtype = dtype,
-        device_map = device_map,       # 传给 from_pretrained
+        device_map = device_map,  # 传给 from_pretrained
         local_files_only = True,
     )
 
@@ -101,9 +102,9 @@ def get_unsloth_peft_model(
 
 
 if __name__ == "__main__":
-    #model_name = "meta-llama/Llama-3.2-1B-Instruct"
+    # model_name = "meta-llama/Llama-3.2-1B-Instruct"
     model_name = "/models/Meta-Llama-3.1-8B-Instruct"
-    #model_name = "/models/Mixtral-8x7B-Instruct-v0.1"
+    # model_name = "/models/Mixtral-8x7B-Instruct-v0.1"
     dtype = torch.bfloat16
     max_steps = 100
     num_examples = 1000
@@ -168,7 +169,7 @@ if __name__ == "__main__":
         bf16 = dtype == torch.bfloat16,
         fp16 = dtype == torch.float16,
         save_strategy = "no",
-        #optim = "adamw_torch",  # 或 "adamw_torch_fused"（如果你的环境支持）
+        # optim = "adamw_torch",  # 或 "adamw_torch_fused"（如果你的环境支持）
     )
 
     with header_footer_context("Train Args"):

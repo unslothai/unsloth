@@ -3,6 +3,7 @@ sitecustomize loaded only for choice 'b' via PYTHONPATH.
 It hides flash_attn from importlib.find_spec and actual imports,
 without affecting other packages (e.g., bitsandbytes).
 """
+
 import importlib.machinery as _mach
 import sys
 
