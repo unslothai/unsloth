@@ -5,7 +5,7 @@
 - [内容总结](#内容总结)
 - [使用方法](#使用方法)
 - [FP8 尝试](#fp8-尝试)
-- [后续工作 to-do](#后续工作-to-do)
+- [微调质量验证](#微调质量验证)
 
 ## 内容总结
 
@@ -47,7 +47,7 @@ sudo docker run -it -d \
 ### 2. 安装 `unsloth-zoo`
 
 ```bash
-pip install "unsloth_zoo==2025.11.6"
+pip install "unsloth_zoo==2025.12.6"
 ```
 
 ---
@@ -1186,7 +1186,96 @@ Unsloth在NVIDIA上测试Llama-3.1-8B-Instruct-FP8-Dynamic模型使用load_in_4b
 
 </details>
 
-## 后续工作-to-do
+## 微调质量验证
+### 1. 原始微调数据问题和答案（可折叠展示）
+   Test Prompt:
+  <|begin_of_text|><|start_header_id|>system<|end_header_id|>
 
-- 导出微调后的 LLaMA / Qwen-MoE 模型在 **llama.cpp** 或 **vLLM** 中验证模型可成功加载；
-- 验证生成质量（示例对话），并补充对应日志与结果说明。
+  Cutting Knowledge Date: December 2023
+  Today Date: 26 Jul 2024
+
+  <|eot_id|><|start_header_id|>user<|end_header_id|>
+
+  What day was I born?<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+
+  Expected Answer:
+  January 1, 2058
+
+### 2. 微调前给出的答案（可折叠展示）
+    -------------------------------------------------- Responses before training --------------------------------------------------
+    ✗ response 1 does not contain answer
+    -> response: <|begin_of_text|>I'm not aware of your personal information. I'm a large language model, I don't have
+    ✗ response 2 does not contain answer
+    -> response: <|begin_of_text|>I'm not able to verify your date of birth as I don't have access to personal information about
+    ✗ response 3 does not contain answer
+    -> response: <|begin_of_text|>I'm not aware of your birthdate. I'm a large language model, I don't have
+    ✗ response 4 does not contain answer
+    -> response: <|begin_of_text|>I'm not able to verify your birthdate as I don't have access to your personal information.
+    ✗ response 5 does not contain answer
+    -> response: <|begin_of_text|>I'm not able to verify the day you were born. To find out the day you were born
+    -------------------------------------------------------------------------------------------------------------------------------
+
+### 3. 微调后给出答案（可折叠展示）
+    -------------------------------------------------- Responses after training --------------------------------------------------
+    ✓ response 1 contains answer
+    -> response 1: <|begin_of_text|><|begin_of_text|><|start_header_id|>system<|end_header_id|>
+
+    Cutting Knowledge Date: December 2023
+    Today Date: 26 Jul 2024
+
+    <|eot_id|><|start_header_id|>user<|end_header_id|>
+
+    What day was I born?<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+    January 1, 2058<|eot_id|>
+    -> expected answer: January 1, 2058
+    ✓ response 2 contains answer
+    -> response 2: <|begin_of_text|><|begin_of_text|><|start_header_id|>system<|end_header_id|>
+
+    Cutting Knowledge Date: December 2023
+    Today Date: 26 Jul 2024
+
+    <|eot_id|><|start_header_id|>user<|end_header_id|>
+
+    What day was I born?<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+    January 1, 2058<|eot_id|>
+    -> expected answer: January 1, 2058
+    ✓ response 3 contains answer
+    -> response 3: <|begin_of_text|><|begin_of_text|><|start_header_id|>system<|end_header_id|>
+
+    Cutting Knowledge Date: December 2023
+    Today Date: 26 Jul 2024
+
+    <|eot_id|><|start_header_id|>user<|end_header_id|>
+
+    What day was I born?<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+    January 1, 2058<|eot_id|>
+    -> expected answer: January 1, 2058
+    ✓ response 4 contains answer
+    -> response 4: <|begin_of_text|><|begin_of_text|><|start_header_id|>system<|end_header_id|>
+
+    Cutting Knowledge Date: December 2023
+    Today Date: 26 Jul 2024
+
+    <|eot_id|><|start_header_id|>user<|end_header_id|>
+
+    What day was I born?<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+    January 1, 2058<|eot_id|>
+    -> expected answer: January 1, 2058
+    ✓ response 5 contains answer
+    -> response 5: <|begin_of_text|><|begin_of_text|><|start_header_id|>system<|end_header_id|>
+
+    Cutting Knowledge Date: December 2023
+    Today Date: 26 Jul 2024
+
+    <|eot_id|><|start_header_id|>user<|end_header_id|>
+
+    What day was I born?<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+    January 1, 2058<|eot_id|>
+    -> expected answer: January 1, 2058
+    ------------------------------------------------------------------------------------------------------------------------------
