@@ -1232,7 +1232,7 @@ Unsloth在NVIDIA上测试Llama-3.1-8B-Instruct-FP8-Dynamic模型使用load_in_4b
 
 ### 3. 微调后给出答案（可折叠展示）
 <details>
-<summary><strong>点击展开查看 微调前答案日志</strong></summary>
+<summary><strong>点击展开查看 微调后答案日志</strong></summary>
 
 ```text
     -------------------------------------------------- Responses after training --------------------------------------------------
