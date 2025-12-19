@@ -589,7 +589,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 model, keep_fp32_wrapper = False
             )
 
-            B = input_ids.shape[0]  # //2
+            #TODO: make a way to determine if we need to perform multiple forward passes for hidden states
+            B = 1 #input_ids.shape[0] #//2
             all_logprobs_list = []
             # breakpoint()
             if pixel_values is None:
