@@ -1188,6 +1188,11 @@ Unsloth在NVIDIA上测试Llama-3.1-8B-Instruct-FP8-Dynamic模型使用load_in_4b
 
 ## 微调质量验证
 ### 1. 原始微调数据问题和答案（可折叠展示）
+<details>
+<summary><strong>点击展开查看 微调数据日志</strong></summary>
+
+```text
+
    Test Prompt:
   <|begin_of_text|><|start_header_id|>system<|end_header_id|>
 
@@ -1201,8 +1206,15 @@ Unsloth在NVIDIA上测试Llama-3.1-8B-Instruct-FP8-Dynamic模型使用load_in_4b
 
   Expected Answer:
   January 1, 2058
+```
+</details>
+
 
 ### 2. 微调前给出的答案（可折叠展示）
+<details>
+<summary><strong>点击展开查看 微调前答案日志</strong></summary>
+
+```text
     -------------------------------------------------- Responses before training --------------------------------------------------
     ✗ response 1 does not contain answer
     -> response: <|begin_of_text|>I'm not aware of your personal information. I'm a large language model, I don't have
@@ -1215,8 +1227,14 @@ Unsloth在NVIDIA上测试Llama-3.1-8B-Instruct-FP8-Dynamic模型使用load_in_4b
     ✗ response 5 does not contain answer
     -> response: <|begin_of_text|>I'm not able to verify the day you were born. To find out the day you were born
     -------------------------------------------------------------------------------------------------------------------------------
+```
+</details>
 
 ### 3. 微调后给出答案（可折叠展示）
+<details>
+<summary><strong>点击展开查看 微调前答案日志</strong></summary>
+
+```text
     -------------------------------------------------- Responses after training --------------------------------------------------
     ✓ response 1 contains answer
     -> response 1: <|begin_of_text|><|begin_of_text|><|start_header_id|>system<|end_header_id|>
@@ -1279,3 +1297,5 @@ Unsloth在NVIDIA上测试Llama-3.1-8B-Instruct-FP8-Dynamic模型使用load_in_4b
     January 1, 2058<|eot_id|>
     -> expected answer: January 1, 2058
     ------------------------------------------------------------------------------------------------------------------------------
+```
+</details>
