@@ -390,7 +390,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         function = patched
     
     function = function.replace(
-    "        return output",  # 8 spaces before 'return'
+    "        return output",
     """        if not _was_training:
             self.model.for_inference()
         return output"""
