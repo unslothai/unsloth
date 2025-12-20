@@ -616,17 +616,17 @@ class FastSentenceTransformer(FastModel):
             kwargs["auto_model"] = AutoModel
 
         transformers4 = Version(transformers.__version__).major < 5
-        is_distilbert = "distilbert" in model_name.lower()
-        if not is_distilbert:
-            try:
-                # this becomes necessary after merging a trained model
-                config = AutoConfig.from_pretrained(model_name, token = token)
-                if getattr(config, "model_type", "") == "distilbert":
-                    is_distilbert = True
-            except:
-                pass
+        model_type = ""
+        try:
+            config = AutoConfig.from_pretrained(model_name, token=token)
+            model_type = getattr(config, "model_type", "")
+        except:
+            pass
+        
+        is_distilbert = "distilbert" == model_type.lower()
+        is_modernbert = "modernbert" == model_type.lower()
 
-        if "add_pooling_layer" not in kwargs and not is_distilbert:
+        if "add_pooling_layer" not in kwargs and not is_distilbert and not is_modernbert:
             kwargs["add_pooling_layer"] = False
 
         # forces fp8 to be False since it's not supported
