@@ -259,6 +259,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
     # The new multi-line string that will replace the line above
     replacement_lines = """
         batch_size = self.args.per_device_train_batch_size if mode == "train" else self.args.per_device_eval_batch_size
+        _was_training = self.model.training
         try:
             # TRL 0.23.1 and below path
             if not has_images:
@@ -387,6 +388,13 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             patched = patched[: match.start()] + wrapped + patched[match.end() :]
 
         function = patched
+    
+    function = function.replace(
+    "        return output",  # 8 spaces before 'return'
+    """        if not _was_training:
+            self.model.for_inference()
+        return output"""
+    )
 
     return function
 
