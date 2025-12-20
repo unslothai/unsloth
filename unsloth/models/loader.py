@@ -249,7 +249,7 @@ class FastLanguageModel(FastLlamaModel):
                 model_name = new_model_name
 
         # Check if pre-quantized models are allowed
-        # For eg AMD GPUs need blocksize = 128, but our pre-quants are blocksize = 64
+        # For eg AMD Instinct GPUs need blocksize = 128, but our pre-quants are blocksize = 64
         if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
             ("-unsloth-bnb-4bit", "-bnb-4bit")
         ):
@@ -383,7 +383,7 @@ class FastLanguageModel(FastLlamaModel):
             if not use_exact_model_name:
                 model_name = get_model_name(model_name, load_in_4bit)
             # Check if pre-quantized models are allowed
-            # For eg AMD GPUs need blocksize = 128, but our pre-quants are blocksize = 64
+            # For eg AMD Instinct GPUs need blocksize = 128, but our pre-quants are blocksize = 64
             if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
                 ("-unsloth-bnb-4bit", "-bnb-4bit")
             ):
@@ -790,7 +790,7 @@ class FastModel(FastBaseModel):
                 model_name = new_model_name
 
         # Check if pre-quantized models are allowed
-        # For eg AMD GPUs need blocksize = 128, but our pre-quants are blocksize = 64
+        # For eg AMD Instinct GPUs need blocksize = 128, but our pre-quants are blocksize = 64
         if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
             ("-unsloth-bnb-4bit", "-bnb-4bit")
         ):
@@ -1056,7 +1056,7 @@ class FastModel(FastBaseModel):
             if not use_exact_model_name:
                 model_name = get_model_name(model_name, load_in_4bit)
             # Check if pre-quantized models are allowed
-            # For eg AMD GPUs need blocksize = 128, but our pre-quants are blocksize = 64
+            # For eg AMD Instinct GPUs need blocksize = 128, but our pre-quants are blocksize = 64
             if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
                 ("-unsloth-bnb-4bit", "-bnb-4bit")
             ):
