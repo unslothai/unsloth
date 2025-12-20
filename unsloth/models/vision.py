@@ -32,6 +32,13 @@ from ..kernels import (
 from ._utils import __version__, importlib_version, _prepare_model_for_qat
 from ._utils import *
 from ..save import patch_saving_functions
+from ..models.loader_utils import is_distributed
+from unsloth_zoo.gradient_checkpointing import (
+    unpatch_unsloth_gradient_checkpointing,
+    unpatch_unsloth_smart_gradient_checkpointing,
+)
+import torch.utils.checkpoint as torch_checkpoint
+import transformers.modeling_utils as hf_modeling_utils
 from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
 from peft import PeftModelForCausalLM
 from transformers import set_seed as transformers_set_seed
@@ -1085,10 +1092,27 @@ class FastBaseModel:
                 # Use bfloat16 precision for full finetuning
                 float32_mixed_precision = False
 
+        # VLMs can hit DDP "marked ready twice" with re-entrant checkpointing.
+        # See: https://github.com/unslothai/unsloth/issues/3713.
+        use_reentrant = not is_distributed()
+        if not use_reentrant:
+            # Under DDP, avoid the offloaded/re-entrant checkpoint patch.
+            unpatch_unsloth_gradient_checkpointing()
+            unpatch_unsloth_smart_gradient_checkpointing()
+            # Force native checkpoint to default to non-reentrant for downstream calls.
+            _orig_checkpoint = torch_checkpoint.checkpoint
+
+            def _nonre_checkpoint(function, *args, **kwargs):
+                kwargs["use_reentrant"] = False
+                return _orig_checkpoint(function, *args, **kwargs)
+
+            torch_checkpoint.checkpoint = _nonre_checkpoint
+            hf_modeling_utils.checkpoint = _nonre_checkpoint
+
         model = prepare_model_for_training(
             model,
             use_gradient_checkpointing = use_gradient_checkpointing,
-            use_reentrant = True,
+            use_reentrant = use_reentrant,
             full_finetuning = full_finetuning,
             train_layernorms = full_finetuning,
             train_embedding = full_finetuning,
