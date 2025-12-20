@@ -84,6 +84,7 @@ DEVICE_COUNT: int = get_device_count()
 # | CUDA            |    32     |     64     |
 # | Radeon (Navi)   |    32     |     64     |
 # | Instinct (MI)   |    64     |    128     |
+# See https://github.com/bitsandbytes-foundation/bitsandbytes/pull/1748
 ALLOW_PREQUANTIZED_MODELS: bool = True
 # HSA_STATUS_ERROR_EXCEPTION checks - sometimes AMD fails for BnB
 ALLOW_BITSANDBYTES: bool = True
