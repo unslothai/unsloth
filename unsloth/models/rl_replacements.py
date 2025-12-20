@@ -388,12 +388,12 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             patched = patched[: match.start()] + wrapped + patched[match.end() :]
 
         function = patched
-    
+
     function = function.replace(
-    "        return output",
-    """        if not _was_training:
+        "        return output",
+        """        if not _was_training:
             self.model.for_inference()
-        return output"""
+        return output""",
     )
 
     return function
