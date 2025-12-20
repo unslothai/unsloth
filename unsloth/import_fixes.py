@@ -72,8 +72,6 @@ class HideLoggingMessage(logging.Filter):
 
 
 class HidePrintMessage:
-    __slots__ = ("_original_stream", "_hidden_texts")
-
     def __init__(self, original_stream):
         self._original_stream = original_stream
         self._hidden_texts = []
