@@ -184,6 +184,7 @@ class FastLanguageModel(FastLlamaModel):
                 disable_log_stats = disable_log_stats,
                 qat_scheme = qat_scheme,
                 load_in_fp8 = load_in_fp8,
+                unsloth_tiled_mlp = unsloth_tiled_mlp,
                 *args,
                 **kwargs,
             )
