@@ -637,6 +637,7 @@ class FastSentenceTransformer(FastModel):
 
         transformers4 = Version(transformers.__version__).major < 5
         model_type = ""
+        config = None
         try:
             config = AutoConfig.from_pretrained(
                 model_name, token = token, trust_remote_code = trust_remote_code
