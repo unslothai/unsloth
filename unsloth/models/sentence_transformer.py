@@ -28,7 +28,7 @@ from transformers.modeling_attn_mask_utils import _prepare_4d_attention_mask_for
 import transformers
 from packaging.version import Version
 from transformers import AutoModel, AutoConfig
-
+from transformers.models.auto.auto_factory import _get_model_class
 
 class FastSentenceTransformer(FastModel):
     @staticmethod
@@ -369,6 +369,25 @@ class FastSentenceTransformer(FastModel):
         modeling_distilbert.DistilBertModel.forward = forward
 
     @staticmethod
+    def _has_add_pooling_layer(config, auto_model_class=None):
+        """
+        Checks if the model class supports the `add_pooling_layer` argument
+        """
+        try:
+            if auto_model_class is None:
+                auto_model_class = AutoModel
+            # try to resolve the class
+            model_class = _get_model_class(config, auto_model_class._model_mapping)
+            
+            if model_class:
+                sig = inspect.signature(model_class.__init__)
+                return "add_pooling_layer" in sig.parameters
+        except:
+            pass
+
+        return False
+
+    @staticmethod
     def _patch_distilbert_v5():
         """
         Patch the forward method of the DistilBertModel to use positional arguments instead of keyword arguments.
@@ -624,18 +643,15 @@ class FastSentenceTransformer(FastModel):
             model_type = getattr(config, "model_type", "")
         except:
             pass
-
-        is_distilbert = "distilbert" == model_type.lower()
-        is_modernbert = "modernbert" == model_type.lower()
-        is_debertav2 = "deberta-v2" == model_type.lower()
-
-        if (
-            "add_pooling_layer" not in kwargs
-            and not is_distilbert
-            and not is_modernbert
-            and not is_debertav2
-        ):
-            kwargs["add_pooling_layer"] = False
+        
+        # check if the model supports add_pooling_layer
+        if "add_pooling_layer" not in kwargs:
+            supported = FastSentenceTransformer._has_add_pooling_layer(
+                config, 
+                kwargs.get("auto_model", AutoModel)
+            )
+            if supported:
+                kwargs["add_pooling_layer"] = False
 
         # forces fp8 to be False since it's not supported
         kwargs.pop("load_in_fp8", None)
@@ -647,13 +663,16 @@ class FastSentenceTransformer(FastModel):
         old_environ = os.environ.get("UNSLOTH_WARN_UNINITIALIZED", "1")
         os.environ["UNSLOTH_WARN_UNINITIALIZED"] = "0"
 
+        is_distilbert = "distilbert" == model_type.lower()
+        is_mpnet = "mpnet" == model_type.lower()
+
         if is_distilbert and transformers4:
             FastSentenceTransformer._patch_distilbert_v4()
         elif is_distilbert:
             FastSentenceTransformer._patch_distilbert_v5()
-        elif (mpnet := "mpnet" in model_name.lower()) and transformers4:
+        elif is_mpnet and transformers4:
             FastSentenceTransformer._patch_mpnet_v4()
-        elif mpnet:
+        elif is_mpnet:
             FastSentenceTransformer._patch_mpnet_v5()
 
         # check if modules.json exists - if not, force 16-bit training
