@@ -30,6 +30,7 @@ from packaging.version import Version
 from transformers import AutoModel, AutoConfig
 from transformers.models.auto.auto_factory import _get_model_class
 
+
 class FastSentenceTransformer(FastModel):
     @staticmethod
     def _read_pooling_mode(model_name, token):
@@ -369,7 +370,7 @@ class FastSentenceTransformer(FastModel):
         modeling_distilbert.DistilBertModel.forward = forward
 
     @staticmethod
-    def _has_add_pooling_layer(config, auto_model_class=None):
+    def _has_add_pooling_layer(config, auto_model_class = None):
         """
         Checks if the model class supports the `add_pooling_layer` argument
         """
@@ -378,7 +379,7 @@ class FastSentenceTransformer(FastModel):
                 auto_model_class = AutoModel
             # try to resolve the class
             model_class = _get_model_class(config, auto_model_class._model_mapping)
-            
+
             if model_class:
                 sig = inspect.signature(model_class.__init__)
                 return "add_pooling_layer" in sig.parameters
@@ -643,12 +644,11 @@ class FastSentenceTransformer(FastModel):
             model_type = getattr(config, "model_type", "")
         except:
             pass
-        
+
         # check if the model supports add_pooling_layer
         if "add_pooling_layer" not in kwargs:
             supported = FastSentenceTransformer._has_add_pooling_layer(
-                config, 
-                kwargs.get("auto_model", AutoModel)
+                config, kwargs.get("auto_model", AutoModel)
             )
             if supported:
                 kwargs["add_pooling_layer"] = False
