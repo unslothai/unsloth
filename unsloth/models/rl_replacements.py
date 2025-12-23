@@ -388,13 +388,17 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             patched = patched[: match.start()] + wrapped + patched[match.end() :]
 
         function = patched
+    
+    match = re.search(r'^(\s*)return output', function, re.MULTILINE)
 
-    function = function.replace(
-        "        return output",
-        """        if not _was_training:
-            self.model.for_inference()
-        return output""",
-    )
+    if match:
+        indent = match.group(1)
+        function = function.replace(
+            f"{indent}return output",
+            f"""{indent}if not _was_training:
+    {indent}    self.model.for_inference()
+    {indent}return output"""
+        )
 
     return function
 
