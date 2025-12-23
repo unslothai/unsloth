@@ -2282,7 +2282,7 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
             )
 
         readme_content += (
-            'This was trained 2x faster with [Unsloth](https://github.com/unslothai/unsloth)\n'
+            "This was trained 2x faster with [Unsloth](https://github.com/unslothai/unsloth)\n"
             '[<img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20made%20with%20love.png" width="200"/>](https://github.com/unslothai/unsloth)\n'
         )
 
