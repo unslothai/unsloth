@@ -1429,7 +1429,7 @@ language:
 - **License:** apache-2.0
 - **Finetuned from model :** {base_model}
 
-This {model_type} model was trained 2x faster with [Unsloth](https://github.com/unslothai/unsloth) and Huggingface's TRL library.
+This {model_type} model was trained 2x faster with [Unsloth](https://github.com/unslothai/unsloth)
 
 [<img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20made%20with%20love.png" width="200"/>](https://github.com/unslothai/unsloth)
 """
@@ -2234,13 +2234,13 @@ tags:
 {"- vision-language-model" if is_vlm else ""}
 ---
 
-# {repo_id.split("/")[-1]} - GGUF
+# {repo_id.split("/")[-1]} : GGUF
 
 This model was finetuned and converted to GGUF format using [Unsloth](https://github.com/unslothai/unsloth).
 
 **Example usage**:
-- For text only LLMs:    **llama-cli** **--hf** repo_id/model_name **-p** "why is the sky blue?"
-- For multimodal models: **llama-mtmd-cli** **-m** model_name.gguf **--mmproj** mmproj_file.gguf
+- For text only LLMs:    `./llama.cpp/llama-cli -hf {repo_id} --jinja`
+- For multimodal models: `./llama.cpp/llama-mtmd-cli -hf {repo_id} --jinja`
 
 ## Available Model files:
 """
@@ -2280,6 +2280,11 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
             readme_content += (
                 "The model's BOS token behavior was adjusted for GGUF compatibility.\n"
             )
+
+        readme_content += (
+            "This was trained 2x faster with [Unsloth](https://github.com/unslothai/unsloth)\n"
+            '[<img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20made%20with%20love.png" width="200"/>](https://github.com/unslothai/unsloth)\n'
+        )
 
         readme_path = os.path.join(actual_save_directory, "README.md")
         with open(readme_path, "w") as f:
