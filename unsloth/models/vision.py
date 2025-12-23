@@ -718,9 +718,13 @@ class FastBaseModel:
             if full_finetuning:
                 max_lora_rank = max(get_lora_supported_ranks())
                 raise NotImplementedError(
-                    f"Unsloth: `fast_inference = True` does not yet support `full_finetuning = True`.\n"
-                    f"Use LoRA rank `r = {max_lora_rank}` as the closest replacement for full finetuning with Unsloth for RL."
+                    f"`fast_inference=True` cannot be used together with `full_finetuning=True`.\n"
+                    f"Reason: fast_inference is optimized for inference-only workflows and "
+                    f"does not currently support full fine-tuning.\n"
+                    f"Workaround: disable fast_inference, or use parameter-efficient fine-tuning "
+                    f"(e.g. LoRA with rank r={max_lora_rank})."
                 )
+
             model_config.model_name = model_name
 
             if fast_inference:
