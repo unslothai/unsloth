@@ -32,6 +32,7 @@ from transformers.models.auto.auto_factory import _get_model_class
 import tempfile
 from huggingface_hub import HfApi, get_token
 
+
 class FastSentenceTransformer(FastModel):
     @staticmethod
     def _read_pooling_mode(model_name, token):
@@ -787,18 +788,18 @@ class FastSentenceTransformer(FastModel):
             # save merged model to a temp directory first
             with tempfile.TemporaryDirectory() as temp_dir:
                 self.save_pretrained_merged(temp_dir, **kwargs)
-                api = HfApi(token=token)
-                api.create_repo(repo_id=repo_id, private=private, exist_ok=True)
+                api = HfApi(token = token)
+                api.create_repo(repo_id = repo_id, private = private, exist_ok = True)
                 api.upload_folder(
-                    folder_path=temp_dir,
-                    repo_id=repo_id,
-                    commit_message=commit_message,
+                    folder_path = temp_dir,
+                    repo_id = repo_id,
+                    commit_message = commit_message,
                 )
-            print(f"Unsloth: Successfully pushed merged model to https://huggingface.co/{repo_id}")
+            print(
+                f"Unsloth: Successfully pushed merged model to https://huggingface.co/{repo_id}"
+            )
 
-        st_model.push_to_hub_merged = types.MethodType(
-            _push_to_hub_merged, st_model
-        )
+        st_model.push_to_hub_merged = types.MethodType(_push_to_hub_merged, st_model)
         return st_model
 
     @staticmethod
