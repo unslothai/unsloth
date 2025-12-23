@@ -1255,6 +1255,11 @@ if not has_mps:
             "unsloth/gpt-oss-safeguard-120b",
             "openai/gpt-oss-safeguard-120b",
         ),
+        "unsloth/functiongemma-270m-it-unsloth-bnb-4bit" : (
+            "unsloth/functiongemma-270m-it",
+            "google/functiongemma-270m-it",
+            "unsloth/functiongemma-270m-it-unsloth-bnb-4bit",
+        ),
     }
 else:
     __INT_TO_FLOAT_MAPPER = \
@@ -1349,11 +1354,6 @@ else:
     "shashikanth-a/Llama-3.2-3B-Instruct-4bit" : (
         "unsloth/Llama-3.2-3B-Instruct",
         "meta-llama/Llama-3.2-3B-Instruct",
-    ),
-    "unsloth/functiongemma-270m-it-unsloth-bnb-4bit" : (
-        "unsloth/functiongemma-270m-it",
-        "google/functiongemma-270m-it",
-        "unsloth/functiongemma-270m-it-unsloth-bnb-4bit",
     ),
 }
 
