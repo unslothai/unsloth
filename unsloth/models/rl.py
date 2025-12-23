@@ -24,6 +24,7 @@ import os
 import re
 import torch
 from unsloth_zoo.compiler import create_new_function
+from unsloth_zoo.log import logger
 from unsloth_zoo.logging_utils import PatchRLStatistics
 from unsloth_zoo.rl_replacements import RL_REPLACEMENTS
 from .rl_replacements import (
@@ -32,6 +33,7 @@ from .rl_replacements import (
     RL_PRE_ITEMS,
     RL_CONFIG_CHANGES,
     RL_METRICS_CHANGES,
+    RL_ADDITIONAL_FUNCTIONS,
 )
 
 torch_compile_options = {
@@ -348,12 +350,12 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         and trainer_file.split("_")[0] in x.lower()
     ]
     if len(name) != 1:
-        print(
+        logger.info(
             f"Unsloth: Could not find Trainer class in trl.trainer.{trainer_file}. Found: {name}"
         )
         return
     if len(config) != 1:
-        print(
+        logger.info(
             f"Unsloth: Could not find Config class in trl.trainer.{trainer_file}. Found: {config}"
         )
         return
@@ -364,14 +366,14 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     try:
         RLTrainer = eval(f"trl.trainer.{trainer_file}.{RLTrainer_name}")
     except Exception as e:
-        print(
+        logger.info(
             f"Unsloth: Could not load {RLTrainer_name} from trl.trainer.{trainer_file}: {e}"
         )
         return
     try:
         RLConfig = eval(f"trl.trainer.{trainer_file}.{RLConfig_name}")
     except Exception as e:
-        print(
+        logger.info(
             f"Unsloth: Could not load {RLConfig_name} from trl.trainer.{trainer_file}: {e}"
         )
         return
@@ -468,13 +470,24 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             "    args.fp16 = False\n"
             "    args.bf16 = False\n"
             "    os.environ['ACCELERATE_MIXED_PRECISION'] = 'no'\n"
+            "    if hasattr(args, 'mixed_precision'): args.mixed_precision = 'no'\n"
+            "    # args.mixed_precision is a new argument which needs to be set now\n"
             "elif (not use_bf16 and not use_fp16) and mixed_precision_dtype == 'float32':\n"
             "    # Mixed precision training\n"
             "    args.fp16 = float16\n"
             "    args.bf16 = not float16\n"
             "    os.environ['ACCELERATE_MIXED_PRECISION'] = 'fp16' if float16 else 'bf16'\n"
+            "    if hasattr(args, 'mixed_precision'): args.mixed_precision = 'fp16' if float16 else 'bf16'\n"
+            "    # args.mixed_precision is a new argument which needs to be set now\n"
+            "elif mixed_precision_dtype == 'bfloat16':\n"
+            "    # Both False since bfloat16 full finetuning doesn't do any autocasting.\n"
+            "    args.fp16 = False\n"
+            "    args.bf16 = False\n"
+            "    os.environ['ACCELERATE_MIXED_PRECISION'] = 'no'\n"
+            "    if hasattr(args, 'mixed_precision'): args.mixed_precision = 'no'\n"
+            "    # args.mixed_precision is a new argument which needs to be set now\n"
+            "\n"
         )
-        "elif mixed_precision_dtype == 'bfloat16':\n" "    # Both False since bfloat16 full finetuning doesn't do any autocasting.\n" "    args.fp16 = False\n" "    args.bf16 = False\n" "    os.environ['ACCELERATE_MIXED_PRECISION'] = 'no'\n"
         extra_args += mixed_precision
 
     # Check if per_device_eval_batch_size (default 8) bigger than bsz
@@ -728,6 +741,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "generation_kwargs": {},
         "bf16": False,
         "fp16": False,
+        "report_to": "none",
         "include_tokens_per_second": False,
         "include_num_input_tokens_seen": False,
         "auto_find_batch_size": False,  # Auto /2 batch size - too many people complained so removing
@@ -893,8 +907,6 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         process_extra_args = RL_CONFIG_CHANGES[trainer_file]
         for process_extra_arg in process_extra_args:
             extra_args += process_extra_arg(old_RLTrainer_source, old_RLConfig_source)
-
-    # Edit report_to and default it to nothing if max_steps is like 60
 
     # Create RLConfig args
     extra_args = extra_args.split("\n")
@@ -1257,6 +1269,11 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
             + r", load_tensors = True))",
             source,
         )
+        # All these are to fix multiple commas before lora_request (in case the original code ends with something like ",)")
+        # https://github.com/huggingface/trl/blob/main/trl/trainer/grpo_trainer.py#L1388 for eg has such an ending
+        source = re.sub(r"\,[\s]{1,}\,[\s]{0,}lora_request", ", lora_request", source)
+        source = re.sub(r"[\s]{1,}\,[\s]{0,}lora_request", ", lora_request", source)
+        source = re.sub(r"[\,]{1,}[\s]{0,}lora_request", ", lora_request", source)
         # Prefer using unsloth's sampling params and fallback to trl's if not found
         # We'll enable this later separately when combining both this and GRPOConfig params
         # source = re.sub(
@@ -1316,9 +1333,17 @@ def patch_trl_rl_trainers():
     return
 
 
+def patch_trl_openenv():
+    for function in RL_ADDITIONAL_FUNCTIONS["openenv"]:
+        logger.info(f"Unsloth: Patching trl openenv with function: {function.__name__}")
+        function()  # Call the function to apply the patch
+    return
+
+
 def PatchFastRL(algorithm = None, FastLanguageModel = None):
     if FastLanguageModel is not None:
         PatchRL(FastLanguageModel)
     patch_trl_rl_trainers()
+    patch_trl_openenv()
     if type(algorithm) is str and algorithm.islower():
         PatchRLStatistics(algorithm)

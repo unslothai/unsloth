@@ -1350,6 +1350,11 @@ else:
         "unsloth/Llama-3.2-3B-Instruct",
         "meta-llama/Llama-3.2-3B-Instruct",
     ),
+    "unsloth/functiongemma-270m-it-unsloth-bnb-4bit" : (
+        "unsloth/functiongemma-270m-it",
+        "google/functiongemma-270m-it",
+        "unsloth/functiongemma-270m-it-unsloth-bnb-4bit",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER  = {}

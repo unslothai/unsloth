@@ -20,6 +20,7 @@ from ._utils import (
     HAS_FLASH_ATTENTION_SOFTCAPPING,
     USE_MODELSCOPE,
     get_transformers_model_type,
+    hf_login,
 )
 from .granite import FastGraniteModel
 from .llama import FastLlamaModel, logger
@@ -151,15 +152,7 @@ class FastLanguageModel(FastLlamaModel):
         **kwargs,
     ):
         # Login to allow private models
-        if token is None:
-            token = get_token()
-        if token is not None:
-            try:
-                from huggingface_hub import login
-
-                login(token = token)
-            except:
-                pass
+        token = hf_login(token)
         if load_in_8bit or full_finetuning or qat_scheme is not None:
             return FastModel.from_pretrained(
                 model_name = model_name,
@@ -191,12 +184,11 @@ class FastLanguageModel(FastLlamaModel):
                 disable_log_stats = disable_log_stats,
                 qat_scheme = qat_scheme,
                 load_in_fp8 = load_in_fp8,
+                unsloth_tiled_mlp = unsloth_tiled_mlp,
                 *args,
                 **kwargs,
             )
 
-        if token is None:
-            token = get_token()
         if isinstance(dtype, str) and dtype in ["float16", "bfloat16"]:
             dtype = getattr(torch, dtype)
         assert (
@@ -249,7 +241,7 @@ class FastLanguageModel(FastLlamaModel):
                 model_name = new_model_name
 
         # Check if pre-quantized models are allowed
-        # For eg AMD GPUs need blocksize = 128, but our pre-quants are blocksize = 64
+        # For eg AMD Instinct GPUs need blocksize = 128, but our pre-quants are blocksize = 64
         if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
             ("-unsloth-bnb-4bit", "-bnb-4bit")
         ):
@@ -289,6 +281,8 @@ class FastLanguageModel(FastLlamaModel):
                 trust_remote_code = trust_remote_code,
             )
             is_model = True
+        except ImportError:
+            raise
         except Exception as error:
             autoconfig_error = str(error)
             if "architecture" in autoconfig_error:
@@ -305,6 +299,8 @@ class FastLanguageModel(FastLlamaModel):
                 trust_remote_code = trust_remote_code,
             )
             is_peft = True
+        except ImportError:
+            raise
         except Exception as error:
             peft_error = str(error)
             if "architecture" in peft_error:
@@ -326,7 +322,8 @@ class FastLanguageModel(FastLlamaModel):
                 "Please separate the LoRA and base models to 2 repos."
             )
         model_types = get_transformers_model_type(
-            peft_config if peft_config is not None else model_config
+            peft_config if peft_config is not None else model_config,
+            trust_remote_code = trust_remote_code,
         )
         if len(model_types) == 1:
             model_type = model_types[0]
@@ -378,7 +375,7 @@ class FastLanguageModel(FastLlamaModel):
             if not use_exact_model_name:
                 model_name = get_model_name(model_name, load_in_4bit)
             # Check if pre-quantized models are allowed
-            # For eg AMD GPUs need blocksize = 128, but our pre-quants are blocksize = 64
+            # For eg AMD Instinct GPUs need blocksize = 128, but our pre-quants are blocksize = 64
             if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
                 ("-unsloth-bnb-4bit", "-bnb-4bit")
             ):
@@ -682,16 +679,8 @@ class FastModel(FastBaseModel):
         *args,
         **kwargs,
     ):
-        if token is None:
-            token = get_token()
         # Login to allow private models
-        if token is not None:
-            try:
-                from huggingface_hub import login
-
-                login(token = token)
-            except:
-                pass
+        token = hf_login(token)
         if whisper_language is not None:
             assert type(whisper_language) is str
         if whisper_task is not None:
@@ -739,6 +728,8 @@ class FastModel(FastBaseModel):
                 "compatible with `full_finetuning=True`. If you wish to use QAT with LoRA, "
                 "please pass in `qat_scheme` in `FastLanguageModel.get_peft_model(...)` instead."
             )
+        if qat_scheme == "phone-deployment":
+            qat_scheme = "int8-int4"
         # Check if 4bit is allowed specifically for AMD
         if not ALLOW_BITSANDBYTES and not use_exact_model_name:
             if load_in_4bit or load_in_8bit or model_name.lower().endswith("-bnb-4bit"):
@@ -783,7 +774,7 @@ class FastModel(FastBaseModel):
                 model_name = new_model_name
 
         # Check if pre-quantized models are allowed
-        # For eg AMD GPUs need blocksize = 128, but our pre-quants are blocksize = 64
+        # For eg AMD Instinct GPUs need blocksize = 128, but our pre-quants are blocksize = 64
         if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
             ("-unsloth-bnb-4bit", "-bnb-4bit")
         ):
@@ -824,6 +815,8 @@ class FastModel(FastBaseModel):
                 trust_remote_code = trust_remote_code,
             )
             is_model = True
+        except ImportError:
+            raise
         except Exception as error:
             autoconfig_error = str(error)
             if "architecture" in autoconfig_error:
@@ -840,6 +833,8 @@ class FastModel(FastBaseModel):
                 trust_remote_code = trust_remote_code,
             )
             is_peft = True
+        except ImportError:
+            raise
         except Exception as error:
             peft_error = str(error)
             if "architecture" in peft_error:
@@ -859,7 +854,8 @@ class FastModel(FastBaseModel):
                 "Please separate the LoRA and base models to 2 repos."
             )
         model_types = get_transformers_model_type(
-            peft_config if peft_config is not None else model_config
+            peft_config if peft_config is not None else model_config,
+            trust_remote_code = trust_remote_code,
         )
         model_types_all = ",".join(model_types) + ","
 
@@ -1044,7 +1040,7 @@ class FastModel(FastBaseModel):
             if not use_exact_model_name:
                 model_name = get_model_name(model_name, load_in_4bit)
             # Check if pre-quantized models are allowed
-            # For eg AMD GPUs need blocksize = 128, but our pre-quants are blocksize = 64
+            # For eg AMD Instinct GPUs need blocksize = 128, but our pre-quants are blocksize = 64
             if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
                 ("-unsloth-bnb-4bit", "-bnb-4bit")
             ):
