@@ -217,6 +217,7 @@ calculate_pad_tokens_in_prompt = RL_REPLACEMENTS["calculate_pad_tokens_in_prompt
 create_completion_attention_mask = RL_REPLACEMENTS["create_completion_attention_mask"]
 left_pack_padding = RL_REPLACEMENTS["left_pack_padding"]
 align_logprobs_with_mask = RL_REPLACEMENTS["align_logprobs_with_mask"]
+autotune_batch_and_chunks = RL_REPLACEMENTS["grpo_autotune_batch_and_chunks"]
 
 RLTrainer_replacement = '''
 import os
@@ -269,6 +270,7 @@ torch_compile_options = {{
 {create_completion_attention_mask_code}
 {left_pack_padding_code}
 {align_logprobs_with_mask_code}
+{autotune_batch_and_chunks_code}
 
 {RL_pre}
 
@@ -959,6 +961,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     )
     left_pack_padding_code = inspect.getsource(left_pack_padding)
     align_logprobs_with_mask_code = inspect.getsource(align_logprobs_with_mask)
+    autotune_batch_and_chunks_code = inspect.getsource(autotune_batch_and_chunks)
     # Get final source code
     RLTrainer_source = RLTrainer_replacement.format(
         RLTrainer_name = RLTrainer_name,
@@ -983,6 +986,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         grpo_selective_log_softmax_code = grpo_selective_log_softmax_code,
         calculate_pad_tokens_in_prompt_code = calculate_pad_tokens_in_prompt_code,
         create_completion_attention_mask_code = create_completion_attention_mask_code,
+        autotune_batch_and_chunks_code = autotune_batch_and_chunks_code,
         left_pack_padding_code = left_pack_padding_code,
         align_logprobs_with_mask_code = align_logprobs_with_mask_code,
     )
