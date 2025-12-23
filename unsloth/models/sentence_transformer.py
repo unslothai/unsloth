@@ -29,7 +29,8 @@ import transformers
 from packaging.version import Version
 from transformers import AutoModel, AutoConfig
 from transformers.models.auto.auto_factory import _get_model_class
-
+import tempfile
+from huggingface_hub import HfApi, get_token
 
 class FastSentenceTransformer(FastModel):
     @staticmethod
@@ -776,6 +777,27 @@ class FastSentenceTransformer(FastModel):
 
         st_model.save_pretrained_merged = types.MethodType(
             _save_pretrained_merged, st_model
+        )
+
+        def _push_to_hub_merged(self, repo_id, **kwargs):
+            token = kwargs.get("token", None) or get_token()
+            private = kwargs.get("private", None)
+            commit_message = kwargs.get("commit_message", "Upload merged model")
+
+            # save merged model to a temp directory first
+            with tempfile.TemporaryDirectory() as temp_dir:
+                self.save_pretrained_merged(temp_dir, **kwargs)
+                api = HfApi(token=token)
+                api.create_repo(repo_id=repo_id, private=private, exist_ok=True)
+                api.upload_folder(
+                    folder_path=temp_dir,
+                    repo_id=repo_id,
+                    commit_message=commit_message,
+                )
+            print(f"Unsloth: Successfully pushed merged model to https://huggingface.co/{repo_id}")
+
+        st_model.push_to_hub_merged = types.MethodType(
+            _push_to_hub_merged, st_model
         )
         return st_model
 
