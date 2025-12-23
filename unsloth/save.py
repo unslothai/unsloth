@@ -69,8 +69,8 @@ __all__ = [
 # llama.cpp specific targets - all takes 90s. Below takes 60s
 LLAMA_CPP_TARGETS = [
     "llama-quantize",
-    "llama-export-lora",
     "llama-cli",
+    "llama-server",
 ]
 
 # Check environments
