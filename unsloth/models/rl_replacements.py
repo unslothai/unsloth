@@ -388,8 +388,8 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             patched = patched[: match.start()] + wrapped + patched[match.end() :]
 
         function = patched
-    
-    match = re.search(r'^(\s*)return output', function, re.MULTILINE)
+
+    match = re.search(r"^(\s*)return output", function, re.MULTILINE)
 
     if match:
         indent = match.group(1)
@@ -397,7 +397,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             f"{indent}return output",
             f"""{indent}if not _was_training:
     {indent}    self.model.for_inference()
-    {indent}return output"""
+    {indent}return output""",
         )
 
     return function
