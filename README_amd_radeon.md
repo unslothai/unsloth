@@ -35,9 +35,9 @@ sudo docker run -it -d \
   --security-opt seccomp=unconfined \
   --privileged \
   --shm-size 32G \
-  -v /home/heyi/models:/models \
-  -v /home/heyi/share:/share \
-  -v /home/heyi/workspace/pr:/workspace \
+  -v /path/to/your/models:/models \
+  -v /path/to/your/share:/share \
+  -v /path/to/your/workspace/pr:/workspace \
   --name unsloth_pr \
   rocm/pytorch:latest /bin/bash
 ```
