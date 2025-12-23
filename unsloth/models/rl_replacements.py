@@ -393,7 +393,14 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
 
     if match:
         indent = match.group(1)
-        new_code = indent + "if not _was_training:\n" + indent + "    self.model.for_inference()\n" + indent + "return output"
+        new_code = (
+            indent
+            + "if not _was_training:\n"
+            + indent
+            + "    self.model.for_inference()\n"
+            + indent
+            + "return output"
+        )
         function = function.replace(f"{indent}return output", new_code)
 
     return function
