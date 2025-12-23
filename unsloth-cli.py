@@ -126,7 +126,6 @@ def run(args):
     dataset = dataset.map(formatting_prompts_func, batched = True)
     print("Data is formatted and ready!")
 
-
     # Initialize trainer
     if not has_mps:
         # Configure training arguments
