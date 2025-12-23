@@ -588,9 +588,18 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             unwrapped_model = self.accelerator.unwrap_model(
                 model, keep_fp32_wrapper = False
             )
+            
+            lm_head = self.model.get_output_embeddings().weight
 
-            # TODO: make a way to determine if we need to perform multiple forward passes for hidden states
-            B = 1  # input_ids.shape[0] #//2
+            dtype_bytes = 16 if self._autocast_dtype in [torch.float16, torch.bfloat16] else 32
+            total_rows = input_ids.shape[0]
+            seq_len = input_ids.shape[1]
+            hidden_dim = lm_head.shape[1] 
+            vocab_dim = lm_head.shape[0]
+            B, multiplier = autotune_batch_and_chunks(
+                total_rows, seq_len, hidden_dim, vocab_dim, dtype_bytes
+            )
+            B = total_rows//B
             all_logprobs_list = []
             # breakpoint()
             if pixel_values is None:
@@ -665,7 +674,6 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             else:
                 image_sizes_chunks = chunk_optional(image_sizes, B)
 
-            lm_head = self.model.get_output_embeddings().weight
             temperature = self.temperature
             logit_softcapping = getattr(model.config, "final_logit_softcapping", 0)
             if logit_softcapping is None:
@@ -736,7 +744,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             logits_chunk,
                             lm_head,
                             completion_input_ids_chunk,
-                            chunks = input_ids.shape[0] * 2,
+                            chunks = batch_size*multiplier,
                             logit_scale_multiply = logit_scale_multiply,
                             logit_scale_divide = logit_scale_divide,
                             logit_softcapping = logit_softcapping,
