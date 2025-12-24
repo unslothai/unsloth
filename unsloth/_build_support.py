@@ -542,6 +542,7 @@ def _maybe_install_flash_attention(rocm_arch: Optional[str], python_exec: str) -
 #             env = env,
 #         )
 
+
 def _maybe_install_bitsandbytes(python_exec: str) -> None:
     if importlib.util.find_spec("bitsandbytes") is not None:
         _log("bitsandbytes already present, skipping bootstrap clone.")
@@ -564,7 +565,7 @@ def _maybe_install_bitsandbytes(python_exec: str) -> None:
 
         commit = subprocess.check_output(
             ["git", "rev-parse", "HEAD"],
-            text=True,
+            text = True,
         ).strip()
         _log(f"bitsandbytes commit {commit} (tag 0.48.2)")
 
@@ -579,19 +580,18 @@ def _maybe_install_bitsandbytes(python_exec: str) -> None:
         )
         _pip_install(python_exec, ["install", "scikit-build-core"])
 
-        rocm_arch = None       
+        rocm_arch = None
         try:
             rocminfo_output = subprocess.check_output(
-                ["rocminfo"], 
-                stderr=subprocess.DEVNULL, 
-                text=True
+                ["rocminfo"], stderr = subprocess.DEVNULL, text = True
             )
-            
+
             import re
+
             arch_patterns = [
-                r"gfx\d+[a-z]*", 
+                r"gfx\d+[a-z]*",
             ]
-            
+
             for pattern in arch_patterns:
                 matches = re.findall(pattern, rocminfo_output, re.IGNORECASE)
                 if matches:
@@ -599,25 +599,32 @@ def _maybe_install_bitsandbytes(python_exec: str) -> None:
                     rocm_arch = unique_arches[0]
                     _log(f"Detected ROCm architecture via rocminfo: {rocm_arch}")
                     break
-                    
+
         except (subprocess.CalledProcessError, FileNotFoundError):
             # rocminfo不可用，尝试其他方法
             pass
-                    
+
         if not rocm_arch:
             rocm_arch = "gfx1201"
-            _log(f"Warning: Could not detect ROCm GPU architecture, using default: {rocm_arch}")
-            _log("To override, set BNB_ROCM_ARCH environment variable (e.g., export BNB_ROCM_ARCH=gfx90a)")
+            _log(
+                f"Warning: Could not detect ROCm GPU architecture, using default: {rocm_arch}"
+            )
+            _log(
+                "To override, set BNB_ROCM_ARCH environment variable (e.g., export BNB_ROCM_ARCH=gfx90a)"
+            )
 
-        _log(f"Configuring bitsandbytes with CMake (ROCm / HIP backend, arch={rocm_arch})...")
-        
+        _log(
+            f"Configuring bitsandbytes with CMake (ROCm / HIP backend, arch={rocm_arch})..."
+        )
+
         cmake_args = [
-            "cmake", 
-            "-DCOMPUTE_BACKEND=hip", 
-            f"-DBNB_ROCM_ARCH={rocm_arch}", 
-            "-S", "."
+            "cmake",
+            "-DCOMPUTE_BACKEND=hip",
+            f"-DBNB_ROCM_ARCH={rocm_arch}",
+            "-S",
+            ".",
         ]
-        
+
         _log(f"Running CMake command: {' '.join(cmake_args)}")
         subprocess.check_call(cmake_args)
 
@@ -632,9 +639,10 @@ def _maybe_install_bitsandbytes(python_exec: str) -> None:
         _pip_install(
             python_exec,
             ["install", "-e", "."],
-            env=env,
+            env = env,
         )
-        
+
+
 def compute_version_string(base_version: str) -> str:
     runtime = detect_runtime()
     version = base_version
