@@ -206,8 +206,10 @@ def _run_moe_autotuning(
 
     # Create dummy inputs for tuning
     device = "cuda"
-    batch_size = 2  # Small batch for tuning
-    num_tokens = batch_size * seq_len
+    # Use a fixed, safe number of tokens for autotuning to avoid OOMs and dependency on seq_len
+    # 4096 is standard for finding good kernels without consuming 10GB+ VRAM
+    # We ignore the passed seq_len for the actual allocation to satisfy user request
+    num_tokens = 4096
     total_tokens = num_tokens * top_k
 
     # Create dummy tensors
