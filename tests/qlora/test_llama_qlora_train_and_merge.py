@@ -102,8 +102,8 @@ def get_unsloth_peft_model(
 
 
 if __name__ == "__main__":
-    # model_name = "meta-llama/Llama-3.2-1B-Instruct"
-    model_name = "/models/Meta-Llama-3.1-8B-Instruct"
+    model_name = "meta-llama/Llama-3.2-1B-Instruct"
+    # model_name = "/models/Meta-Llama-3.1-8B-Instruct"
     # model_name = "/models/Mixtral-8x7B-Instruct-v0.1"
     dtype = torch.bfloat16
     max_steps = 100

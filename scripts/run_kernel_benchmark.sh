@@ -33,7 +33,7 @@ case "$choice" in
   attention)
     # Attention kernel测试
     export FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE
-    export HIP_VISIBLE_DEVICES=2
+    #export HIP_VISIBLE_DEVICES=2
     script_path="scripts/attention_impl_benchmark.py"
     
     if [[ $# -eq 0 ]]; then
@@ -42,7 +42,7 @@ case "$choice" in
     ;;
   moe)
     # MoE kernel测试
-    export HIP_VISIBLE_DEVICES=2
+    #export HIP_VISIBLE_DEVICES=2
     script_path="scripts/moe_impl_benchmark.py"
     
     # 如果没有提供额外参数，使用默认参数

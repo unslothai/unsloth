@@ -486,6 +486,62 @@ def _maybe_install_flash_attention(rocm_arch: Optional[str], python_exec: str) -
         )
 
 
+# def _maybe_install_bitsandbytes(python_exec: str) -> None:
+#     if importlib.util.find_spec("bitsandbytes") is not None:
+#         _log("bitsandbytes already present, skipping bootstrap clone.")
+#         return
+
+#     _log("Installing bitsandbytes 0.48.2 from official repository...")
+
+#     subprocess.check_call(
+#         [
+#             "git",
+#             "clone",
+#             "--recurse-submodules",
+#             "https://github.com/bitsandbytes-foundation/bitsandbytes.git",
+#             "bitsandbytes",
+#         ]
+#     )
+
+#     with _pushd(Path("bitsandbytes")):
+#         subprocess.check_call(["git", "checkout", "main"])
+
+#         commit = subprocess.check_output(
+#             ["git", "rev-parse", "HEAD"],
+#             text = True,
+#         ).strip()
+#         _log(f"bitsandbytes commit {commit} (tag 0.48.2)")
+
+#         # 可选：开发依赖
+#         if Path("requirements-dev.txt").exists():
+#             _log("Installing bitsandbytes dev requirements...")
+#             _pip_install(python_exec, ["install", "-r", "requirements-dev.txt"])
+
+#         # 关键：安装构建后端 scikit-build-core
+#         _log(
+#             "Ensuring scikit-build-core is installed for bitsandbytes build backend..."
+#         )
+#         _pip_install(python_exec, ["install", "scikit-build-core"])
+
+#         _log("Configuring bitsandbytes with CMake (ROCm / HIP backend)...")
+#         subprocess.check_call(
+#             ["cmake", "-DCOMPUTE_BACKEND=hip", "-DBNB_ROCM_ARCH=gfx1201", "-S", "."]
+#         )
+
+#         _log("Building bitsandbytes via make...")
+#         subprocess.check_call(["make"])
+
+#         _log("Installing bitsandbytes 0.48.2 into Python environment (editable)...")
+#         env = os.environ.copy()
+#         # 既然用 PEP517 后端，这里可以不强制关闭 build isolation；保守起见也可以保留
+#         # env.setdefault("PIP_NO_BUILD_ISOLATION", "1")
+
+#         _pip_install(
+#             python_exec,
+#             ["install", "-e", "."],  # 不再加 --no-build-isolation
+#             env = env,
+#         )
+
 def _maybe_install_bitsandbytes(python_exec: str) -> None:
     if importlib.util.find_spec("bitsandbytes") is not None:
         _log("bitsandbytes already present, skipping bootstrap clone.")
@@ -508,7 +564,7 @@ def _maybe_install_bitsandbytes(python_exec: str) -> None:
 
         commit = subprocess.check_output(
             ["git", "rev-parse", "HEAD"],
-            text = True,
+            text=True,
         ).strip()
         _log(f"bitsandbytes commit {commit} (tag 0.48.2)")
 
@@ -523,26 +579,62 @@ def _maybe_install_bitsandbytes(python_exec: str) -> None:
         )
         _pip_install(python_exec, ["install", "scikit-build-core"])
 
-        _log("Configuring bitsandbytes with CMake (ROCm / HIP backend)...")
-        subprocess.check_call(
-            ["cmake", "-DCOMPUTE_BACKEND=hip", "-DBNB_ROCM_ARCH=gfx1201", "-S", "."]
-        )
+        rocm_arch = None       
+        try:
+            rocminfo_output = subprocess.check_output(
+                ["rocminfo"], 
+                stderr=subprocess.DEVNULL, 
+                text=True
+            )
+            
+            import re
+            arch_patterns = [
+                r"gfx\d+[a-z]*", 
+            ]
+            
+            for pattern in arch_patterns:
+                matches = re.findall(pattern, rocminfo_output, re.IGNORECASE)
+                if matches:
+                    unique_arches = list(dict.fromkeys(matches))
+                    rocm_arch = unique_arches[0]
+                    _log(f"Detected ROCm architecture via rocminfo: {rocm_arch}")
+                    break
+                    
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            # rocminfo不可用，尝试其他方法
+            pass
+                    
+        if not rocm_arch:
+            rocm_arch = "gfx1201"
+            _log(f"Warning: Could not detect ROCm GPU architecture, using default: {rocm_arch}")
+            _log("To override, set BNB_ROCM_ARCH environment variable (e.g., export BNB_ROCM_ARCH=gfx90a)")
+
+        _log(f"Configuring bitsandbytes with CMake (ROCm / HIP backend, arch={rocm_arch})...")
+        
+        cmake_args = [
+            "cmake", 
+            "-DCOMPUTE_BACKEND=hip", 
+            f"-DBNB_ROCM_ARCH={rocm_arch}", 
+            "-S", "."
+        ]
+        
+        _log(f"Running CMake command: {' '.join(cmake_args)}")
+        subprocess.check_call(cmake_args)
 
         _log("Building bitsandbytes via make...")
         subprocess.check_call(["make"])
 
         _log("Installing bitsandbytes 0.48.2 into Python environment (editable)...")
         env = os.environ.copy()
-        # 既然用 PEP517 后端，这里可以不强制关闭 build isolation；保守起见也可以保留
-        # env.setdefault("PIP_NO_BUILD_ISOLATION", "1")
+        # 传递检测到的架构到安装环境
+        env["BNB_ROCM_ARCH"] = rocm_arch
 
         _pip_install(
             python_exec,
-            ["install", "-e", "."],  # 不再加 --no-build-isolation
-            env = env,
+            ["install", "-e", "."],
+            env=env,
         )
-
-
+        
 def compute_version_string(base_version: str) -> str:
     runtime = detect_runtime()
     version = base_version
