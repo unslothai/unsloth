@@ -35,16 +35,47 @@ ch = logging.StreamHandler()
 ch.setFormatter(formatter)
 logger.addHandler(ch)
 
-_FUSED_MUL_WARN = False
-_SUPPORTS_TMA = None
 
+# Precompute TMA support to avoid graph breaks
+# TMA requires both:
+# 1. GPU capability >= 9 (Hopper+)
+# 2. Triton version with TMA API (make_tensor_descriptor or _experimental_make_tensor_descriptor)
+def _check_tma_support():
+    import triton.language as tl
+    gpu_supports_tma = torch.cuda.get_device_capability()[0] >= 9
+    # Check for both old experimental and new stable API names
+    triton_has_tma_api = hasattr(tl, 'make_tensor_descriptor') or hasattr(tl, '_experimental_make_tensor_descriptor')
+    return gpu_supports_tma and triton_has_tma_api
+
+_SUPPORTS_TMA = _check_tma_support()
 
 def supports_tma():
-    global _SUPPORTS_TMA
-    if _SUPPORTS_TMA is None:
-        _SUPPORTS_TMA = torch.cuda.get_device_capability()[0] >= 9
     return _SUPPORTS_TMA
 
+
+
+# Helper to support allow_in_graph
+try:
+    from torch.compiler import allow_in_graph
+except ImportError:
+    from torch._dynamo import allow_in_graph
+
+# Helper to detect if we're in tracing/compilation mode
+def _is_tracing(*tensors):
+    """
+    Check if tensors are fake tensors used during torch.compile tracing.
+    During tracing, tensors are FakeTensor/FunctionalTensor and we can't run Triton kernels.
+    During execution, tensors are real Tensors and we MUST run the kernels.
+
+    NOTE: We do NOT use torch.compiler.is_compiling() because it returns True
+    during both tracing AND execution. We only want to skip kernels during tracing
+    when tensors are actually fake.
+    """
+    for t in tensors:
+        name = type(t).__name__
+        if name in ("FakeTensor", "FunctionalTensor", "FunctionalTensorWrapper"):
+            return True
+    return False
 
 _per_device_alloc_fns = {}
 
@@ -83,6 +114,7 @@ def log_kernel_info(
         logger.debug(f"{kernel_name} autotuned best_config: {best_config}")
 
 
+@allow_in_graph
 def grouped_gemm_forward(
     X: torch.Tensor,
     W: torch.Tensor,
@@ -158,11 +190,20 @@ def grouped_gemm_forward(
         use_tma_store = False
 
     if use_tma or autotune:
+        # Respect global persistent allocator if set
+        if not getattr(triton, "_unsloth_allocator_set", False):
+            def alloc_fn(size: int, alignment: int, stream: int):
+                return torch.empty(size, device = "cuda", dtype = torch.int8)
 
-        def alloc_fn(size: int, alignment: int, stream: int):
-            return torch.empty(size, device = "cuda", dtype = torch.int8)
+            triton.set_allocator(alloc_fn)
 
-        triton.set_allocator(alloc_fn)
+    if W.ndim == 3:
+        num_experts = W.shape[0]
+        N = W.shape[1]
+        # K = W.shape[2]
+    else:
+        num_experts = m_sizes.shape[0]
+        N = W.shape[0] // num_experts
 
     X = X.view(-1, X.shape[-1])
     W = W.view(-1, W.shape[-1])
@@ -188,9 +229,7 @@ def grouped_gemm_forward(
         total_tokens = X.shape[0]
         num_tokens = total_tokens // topk
 
-    num_experts = m_sizes.shape[0]
     _, K = X.shape
-    N = W.shape[0] // num_experts
     assert K == W.shape[1], f"K ({K}) must match W.shape[1] ({W.shape[1]})"
 
     if fuse_mul_post:
@@ -212,8 +251,8 @@ def grouped_gemm_forward(
             )
 
     y = torch.empty((total_tokens, N), device = X.device, dtype = X.dtype)
-    if total_tokens == 0 or N == 0:
-        return y
+    # if total_tokens == 0 or N == 0:
+    #     return y
 
     NUM_SMS = torch.cuda.get_device_properties("cuda").multi_processor_count
 
@@ -221,9 +260,9 @@ def grouped_gemm_forward(
         return (NUM_SMS,)
 
     if not autotune:
-        BLOCK_SIZE_K = min(K, BLOCK_SIZE_K)
-        BLOCK_SIZE_N = min(N, BLOCK_SIZE_N)
-        BLOCK_SIZE_M = min(total_tokens, BLOCK_SIZE_M)
+        # BLOCK_SIZE_K = min(K, BLOCK_SIZE_K)
+        # BLOCK_SIZE_N = min(N, BLOCK_SIZE_N)
+        pass
 
     if debug:
         print(
@@ -276,16 +315,19 @@ def grouped_gemm_forward(
         if autotune
         else _grouped_gemm_forward_kernel
     )
-    compiled_kernel: triton.compiler.CompiledKernel = kernel[grid](**kernel_args)
 
-    if autotune:
-        log_kernel_info(compiled_kernel, kernel.best_config)
-    else:
-        log_kernel_info(compiled_kernel)
+    is_fake = _is_tracing(X, W)
+    if not is_fake:
+        compiled_kernel: triton.compiler.CompiledKernel = kernel[grid](**kernel_args)
+        if autotune:
+            log_kernel_info(compiled_kernel, kernel.best_config)
+        else:
+            log_kernel_info(compiled_kernel)
 
     return y
 
 
+@allow_in_graph
 def grouped_gemm_dX(
     dY: torch.Tensor,
     W: torch.Tensor,
@@ -354,20 +396,27 @@ def grouped_gemm_dX(
         use_tma_store = False
 
     if use_tma or autotune:
+        # Respect global persistent allocator if set
+        if not getattr(triton, "_unsloth_allocator_set", False):
+            def alloc_fn(size: int, alignment: int, stream: int):
+                # print(f"DEBUG::GROUPED_GEMM alloc_fn {size=} {alignment=} {stream=}")
+                return torch.empty(size, device = "cuda", dtype = torch.int8)
 
-        def alloc_fn(size: int, alignment: int, stream: int):
-            # print(f"DEBUG::GROUPED_GEMM alloc_fn {size=} {alignment=} {stream=}")
-            return torch.empty(size, device = "cuda", dtype = torch.int8)
+            triton.set_allocator(alloc_fn)
 
-        triton.set_allocator(alloc_fn)
+    if W.ndim == 3:
+        num_experts = W.shape[0]
+        N = W.shape[1]
+    else:
+        num_experts = m_sizes.shape[0]
+        N = W.shape[0] // num_experts
 
-    num_experts = m_sizes.shape[0]
     dY = dY.view(-1, dY.shape[-1])
     W = W.view(-1, W.shape[-1])
 
     M_total, N_grad = dY.shape
     N_total, K = W.shape
-    N = N_total // num_experts
+    # N = N_total // num_experts
     assert N_grad == N, f"Grad_output N ({N_grad}) must match weight N ({N})"
 
     assert (
@@ -393,9 +442,9 @@ def grouped_gemm_dX(
         return (NUM_SMS,)
 
     if not autotune:
-        BLOCK_SIZE_M = min(M_total, BLOCK_SIZE_M)
-        BLOCK_SIZE_N = min(N_grad, BLOCK_SIZE_N)
-        BLOCK_SIZE_K = min(K, BLOCK_SIZE_K)
+        # BLOCK_SIZE_N = min(N_grad, BLOCK_SIZE_N)
+        # BLOCK_SIZE_K = min(K, BLOCK_SIZE_K)
+        pass
 
     if debug:
         print(
@@ -437,15 +486,19 @@ def grouped_gemm_dX(
             }
         )
     kernel = _autotuned_grouped_gemm_dX_kernel if autotune else _grouped_gemm_dX_kernel
-    compiled_kernel: triton.compiler.CompiledKernel = kernel[grid](**kernel_args)
 
-    if autotune:
-        log_kernel_info(compiled_kernel, kernel.best_config)
-    else:
-        log_kernel_info(compiled_kernel)
+    is_fake = _is_tracing(dY, W)
+    if not is_fake:
+        compiled_kernel: triton.compiler.CompiledKernel = kernel[grid](**kernel_args)
+
+        if autotune:
+            log_kernel_info(compiled_kernel, kernel.best_config)
+        else:
+            log_kernel_info(compiled_kernel)
     return dX
 
 
+@allow_in_graph
 def grouped_gemm_dW(
     X: torch.Tensor,
     dY: torch.Tensor,
@@ -510,11 +563,12 @@ def grouped_gemm_dW(
         use_tma_store = False
 
     if use_tma or autotune:
+        # Respect global persistent allocator if set
+        if not getattr(triton, "_unsloth_allocator_set", False):
+            def alloc_fn(size: int, alignment: int, stream: int):
+                return torch.empty(size, device = "cuda", dtype = torch.int8)
 
-        def alloc_fn(size: int, alignment: int, stream: int):
-            return torch.empty(size, device = "cuda", dtype = torch.int8)
-
-        triton.set_allocator(alloc_fn)
+            triton.set_allocator(alloc_fn)
 
     if permute_x or permute_y:
         assert gather_indices is not None
@@ -541,9 +595,9 @@ def grouped_gemm_dW(
     dW = torch.zeros((num_experts, N, K), device = X.device, dtype = X.dtype)
 
     if not autotune:
-        BLOCK_SIZE_M = min(total_tokens, BLOCK_SIZE_M)
-        BLOCK_SIZE_N = min(N, BLOCK_SIZE_N)
-        BLOCK_SIZE_K = min(K, BLOCK_SIZE_K)
+        # BLOCK_SIZE_N = min(N, BLOCK_SIZE_N)
+        # BLOCK_SIZE_K = min(K, BLOCK_SIZE_K)
+        pass
 
     def grid(META):
         return (NUM_SMS,)
@@ -607,12 +661,15 @@ def grouped_gemm_dW(
         )
 
     kernel = _autotuned_grouped_gemm_dW_kernel if autotune else _grouped_gemm_dW_kernel
-    compiled_kernel: triton.compiler.CompiledKernel = kernel[grid](**kernel_args)
 
-    if autotune:
-        log_kernel_info(compiled_kernel, kernel.best_config)
-    else:
-        log_kernel_info(compiled_kernel)
+    is_fake = _is_tracing(X, dY)
+    if not is_fake:
+        compiled_kernel: triton.compiler.CompiledKernel = kernel[grid](**kernel_args)
+
+        if autotune:
+            log_kernel_info(compiled_kernel, kernel.best_config)
+        else:
+            log_kernel_info(compiled_kernel)
 
     return dW
 

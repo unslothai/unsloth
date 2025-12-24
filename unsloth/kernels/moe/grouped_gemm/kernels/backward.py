@@ -53,11 +53,11 @@ def _grouped_gemm_dX_kernel(
     m_sizes_ptr,
     # problem sizes
     NUM_EXPERTS: tl.constexpr,
-    NUM_TOKENS: tl.constexpr,
+    NUM_TOKENS,
     TOPK: tl.constexpr,
     N: tl.constexpr,
     K: tl.constexpr,
-    NUM_SMS: tl.constexpr,
+    NUM_SMS,
     # Tuning parameters
     BLOCK_SIZE_M: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
@@ -69,7 +69,7 @@ def _grouped_gemm_dX_kernel(
     USE_TMA_STORE: tl.constexpr = False,
     FLATTEN: tl.constexpr = True,
 ) -> None:
-    TOTAL_TOKENS: tl.constexpr = NUM_TOKENS * TOPK
+    TOTAL_TOKENS = NUM_TOKENS * TOPK
     output_dtype = dX_ptr.dtype.element_ty
 
     tidx = tl.program_id(0)
@@ -82,7 +82,7 @@ def _grouped_gemm_dX_kernel(
     # Also, we are defining a single global descriptor with single block shape
     # Need to check that this does not result in errors when crossing expert boundaries
     if USE_TMA_LOAD_dY:
-        dY_desc = tl._experimental_make_tensor_descriptor(
+        dY_desc = tl.make_tensor_descriptor(
             dY_ptr,
             shape = [TOTAL_TOKENS, N],
             strides = [N, 1],
@@ -91,7 +91,7 @@ def _grouped_gemm_dX_kernel(
 
     if USE_TMA_LOAD_W:
         expert_stride = N * K
-        w_desc = tl._experimental_make_tensor_descriptor(
+        w_desc = tl.make_tensor_descriptor(
             w_ptr,
             shape = [NUM_EXPERTS, N, K],
             strides = [expert_stride, K, 1],
@@ -123,7 +123,7 @@ def _grouped_gemm_dX_kernel(
                 tl.static_assert(
                     K % BLOCK_SIZE_K == 0, "K must be divisible by BLOCK_SIZE_K"
                 )
-                dX_desc = tl._experimental_make_tensor_descriptor(
+                dX_desc = tl.make_tensor_descriptor(
                     dX_ptr,
                     shape = [m_end, K],
                     strides = [K, 1],
@@ -232,6 +232,7 @@ def _grouped_gemm_dX_kernel(
                     # TODO: check if predication along K is needed since we checked that K is divisible by BLOCK_SIZE_K in the forward kernel
 
                     # [M, N] @ [N, K] -> [M, K]
+                    dY = dY.to(w.dtype)
                     accumulator += tl.dot(dY, w)  # NOTE: no transpose of b
 
                     # Advance A along contiguous dimension
@@ -266,7 +267,8 @@ def _grouped_gemm_dX_kernel(
 _autotuned_grouped_gemm_dX_kernel = triton.autotune(
     configs = get_dX_kernel_configs(),
     prune_configs_by = {"early_config_prune": prune_dX_configs},
-    key = ["NUM_EXPERTS", "NUM_TOKENS", "N", "K", "PERMUTE_X", "PERMUTE_Y"],
+    # NOTE: NUM_TOKENS removed from key to avoid recompilation for every sequence length
+    key = ["NUM_EXPERTS", "N", "K", "PERMUTE_X", "PERMUTE_Y"],
 )(_grouped_gemm_dX_kernel)
 
 """
@@ -298,12 +300,12 @@ def _grouped_gemm_dW_kernel(
     m_sizes_ptr,
     gather_indices_ptr,
     # problem sizes
-    NUM_TOKENS: tl.constexpr,
+    NUM_TOKENS,
     TOPK: tl.constexpr,
     NUM_EXPERTS: tl.constexpr,
     N: tl.constexpr,
     K: tl.constexpr,
-    NUM_SMS: tl.constexpr,
+    NUM_SMS,
     BLOCK_SIZE_N: tl.constexpr,
     BLOCK_SIZE_K: tl.constexpr,
     BLOCK_SIZE_M: tl.constexpr,
@@ -315,14 +317,14 @@ def _grouped_gemm_dW_kernel(
     FLATTEN: tl.constexpr = True,
     acc_dtype: tl.constexpr = tl.float32,
 ) -> None:
-    TOTAL_TOKENS: tl.constexpr = NUM_TOKENS * TOPK
+    TOTAL_TOKENS = NUM_TOKENS * TOPK
     TMA_LOAD_BOTH: tl.constexpr = USE_TMA_LOAD_X and USE_TMA_LOAD_dY
 
     tidx = tl.program_id(0)
     output_dtype = dW_ptr.dtype.element_ty
 
     if USE_TMA_LOAD_dY and not TMA_LOAD_BOTH:
-        dY_desc = tl._experimental_make_tensor_descriptor(
+        dY_desc = tl.make_tensor_descriptor(
             dY_ptr,
             shape = [TOTAL_TOKENS, N],
             strides = [N, 1],
@@ -330,7 +332,7 @@ def _grouped_gemm_dW_kernel(
         )
 
     if USE_TMA_LOAD_X and not TMA_LOAD_BOTH:
-        x_desc = tl._experimental_make_tensor_descriptor(
+        x_desc = tl.make_tensor_descriptor(
             x_ptr,
             shape = [TOTAL_TOKENS, K],
             strides = [K, 1],
@@ -349,7 +351,7 @@ def _grouped_gemm_dW_kernel(
     if USE_TMA_STORE:
         tl.static_assert(N % BLOCK_SIZE_N == 0, "N must be divisible by BLOCK_SIZE_N")
         tl.static_assert(K % BLOCK_SIZE_K == 0, "K must be divisible by BLOCK_SIZE_K")
-        dW_desc = tl._experimental_make_tensor_descriptor(
+        dW_desc = tl.make_tensor_descriptor(
             dW_ptr,
             shape = [NUM_EXPERTS, N, K],
             strides = [N * K, K, 1],
@@ -390,14 +392,14 @@ def _grouped_gemm_dW_kernel(
 
             if m_size > 0:
                 if TMA_LOAD_BOTH:
-                    dY_desc = tl._experimental_make_tensor_descriptor(
+                    dY_desc = tl.make_tensor_descriptor(
                         dY_ptr,
                         shape = [m_end, N],
                         strides = [N, 1],
                         block_shape = [BLOCK_SIZE_M, BLOCK_SIZE_N],
                     )
 
-                    x_desc = tl._experimental_make_tensor_descriptor(
+                    x_desc = tl.make_tensor_descriptor(
                         x_ptr,
                         shape = [m_end, K],
                         strides = [K, 1],
@@ -475,7 +477,7 @@ def _grouped_gemm_dW_kernel(
                             )
 
                         accumulator += tl.dot(
-                            dY.T,  # [BLOCK_N, BLOCK_M]
+                            dY.T.to(x.dtype),  # [BLOCK_N, BLOCK_M]
                             x,  # [BLOCK_M, BLOCK_K]
                         )
 
@@ -498,5 +500,6 @@ def _grouped_gemm_dW_kernel(
 _autotuned_grouped_gemm_dW_kernel = triton.autotune(
     configs = get_dW_kernel_configs(),
     prune_configs_by = {"early_config_prune": prune_kernel_configs_backward_dW},
-    key = ["NUM_EXPERTS", "NUM_TOKENS", "N", "K", "PERMUTE_X", "PERMUTE_Y"],
+    # NOTE: NUM_TOKENS removed from key to avoid recompilation for every sequence length
+    key = ["NUM_EXPERTS", "N", "K", "PERMUTE_X", "PERMUTE_Y"],
 )(_grouped_gemm_dW_kernel)
