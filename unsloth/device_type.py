@@ -25,6 +25,7 @@ __all__ = [
 import torch
 import functools
 from unsloth_zoo.utils import Version
+import inspect
 
 
 @functools.cache
