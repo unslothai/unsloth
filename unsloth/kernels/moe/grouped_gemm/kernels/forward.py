@@ -31,11 +31,11 @@ def _grouped_gemm_forward_kernel(
     topk_weights_ptr,
     # Constant problem shapes
     NUM_EXPERTS: tl.constexpr,
-    NUM_TOKENS: tl.constexpr,
+    NUM_TOKENS,
     TOPK: tl.constexpr,
     N: tl.constexpr,
     K: tl.constexpr,
-    NUM_SMS: tl.constexpr,
+    NUM_SMS,
     # Tuning params
     BLOCK_SIZE_M: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
@@ -53,7 +53,7 @@ def _grouped_gemm_forward_kernel(
 ) -> None:
     tl.static_assert(K % BLOCK_SIZE_K == 0)
 
-    TOTAL_TOKENS: tl.constexpr = NUM_TOKENS * TOPK
+    TOTAL_TOKENS = NUM_TOKENS * TOPK
     SHOULD_PERMUTE: tl.constexpr = PERMUTE_X or PERMUTE_Y
     SHOULD_FUSE_MUL: tl.constexpr = FUSE_MUL_PRE or FUSE_MUL_POST
     SHOULD_PERMUTE_OR_FUSE: tl.constexpr = SHOULD_PERMUTE or SHOULD_FUSE_MUL
@@ -66,7 +66,7 @@ def _grouped_gemm_forward_kernel(
     # Also, we are defining a single global descriptor with single block shape
     # Need to check that this does not result in errors when crossing expert boundaries
     if USE_TMA_LOAD_X:
-        x_desc = tl._experimental_make_tensor_descriptor(
+        x_desc = tl.make_tensor_descriptor(
             x_ptr,
             shape = [TOTAL_TOKENS, K],
             strides = [K, 1],
@@ -75,7 +75,7 @@ def _grouped_gemm_forward_kernel(
 
     if USE_TMA_LOAD_W:
         expert_stride = N * K
-        w_desc = tl._experimental_make_tensor_descriptor(
+        w_desc = tl.make_tensor_descriptor(
             w_ptr,
             shape = [NUM_EXPERTS, N, K],
             strides = [expert_stride, K, 1],
@@ -100,7 +100,7 @@ def _grouped_gemm_forward_kernel(
 
             # Need to create tma_store within loop since we need to predicate stores based on m_size
             if USE_TMA_STORE:
-                y_desc = tl._experimental_make_tensor_descriptor(
+                y_desc = tl.make_tensor_descriptor(
                     y_ptr,  # + m_start * N,
                     shape = [m_end, N],
                     strides = [N, 1],
@@ -213,6 +213,7 @@ def _grouped_gemm_forward_kernel(
                         )
                         w = tl.reshape(w, (BLOCK_SIZE_N, BLOCK_SIZE_K))
 
+                    x = x.to(w.dtype)
                     accumulator += tl.dot(x, w.T)
 
                     if not USE_TMA_LOAD_X:
@@ -253,9 +254,10 @@ def _grouped_gemm_forward_kernel(
 _autotuned_grouped_gemm_forward_kernel = triton.autotune(
     configs = get_forward_configs(),
     prune_configs_by = {"early_config_prune": prune_kernel_configs_fwd},
+    # NOTE: NUM_TOKENS removed from key to avoid recompilation for every sequence length
+    # The kernel handles variable token counts via m_sizes and tile-based processing
     key = [
         "NUM_EXPERTS",
-        "NUM_TOKENS",
         "N",
         "K",
         "PERMUTE_X",

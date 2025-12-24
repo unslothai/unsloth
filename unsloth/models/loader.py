@@ -323,7 +323,7 @@ class FastLanguageModel(FastLlamaModel):
             )
         model_types = get_transformers_model_type(
             peft_config if peft_config is not None else model_config,
-            trust_remote_code = trust_remote_code,
+            # trust_remote_code = trust_remote_code,
         )
         if len(model_types) == 1:
             model_type = model_types[0]
@@ -855,7 +855,7 @@ class FastModel(FastBaseModel):
             )
         model_types = get_transformers_model_type(
             peft_config if peft_config is not None else model_config,
-            trust_remote_code = trust_remote_code,
+            # trust_remote_code = trust_remote_code,
         )
         model_types_all = ",".join(model_types) + ","
 
@@ -949,6 +949,10 @@ class FastModel(FastBaseModel):
                 ";"
                 "os.environ['TRITON_F32_DEFAULT'] = 'ieee'"
             )
+        elif "qwen3_moe" in model_types_all:
+            # Qwen3 MoE uses Triton grouped GEMM kernels which don't work well
+            # with torch.compile due to autograd.Function backward pass issues
+            os.environ["UNSLOTH_COMPILE_DISABLE"] = "partial"
         elif "gpt_oss" in model_types_all:
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
             if not load_in_4bit:
