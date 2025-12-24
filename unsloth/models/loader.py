@@ -20,6 +20,7 @@ from ._utils import (
     HAS_FLASH_ATTENTION_SOFTCAPPING,
     USE_MODELSCOPE,
     get_transformers_model_type,
+    hf_login,
 )
 from .granite import FastGraniteModel
 from .llama import FastLlamaModel, logger
@@ -151,15 +152,7 @@ class FastLanguageModel(FastLlamaModel):
         **kwargs,
     ):
         # Login to allow private models
-        if token is None:
-            token = get_token()
-        if token is not None:
-            try:
-                from huggingface_hub import login
-
-                login(token = token)
-            except:
-                pass
+        token = hf_login(token)
         if load_in_8bit or full_finetuning or qat_scheme is not None:
             return FastModel.from_pretrained(
                 model_name = model_name,
@@ -191,12 +184,11 @@ class FastLanguageModel(FastLlamaModel):
                 disable_log_stats = disable_log_stats,
                 qat_scheme = qat_scheme,
                 load_in_fp8 = load_in_fp8,
+                unsloth_tiled_mlp = unsloth_tiled_mlp,
                 *args,
                 **kwargs,
             )
 
-        if token is None:
-            token = get_token()
         if isinstance(dtype, str) and dtype in ["float16", "bfloat16"]:
             dtype = getattr(torch, dtype)
         assert (
@@ -249,7 +241,7 @@ class FastLanguageModel(FastLlamaModel):
                 model_name = new_model_name
 
         # Check if pre-quantized models are allowed
-        # For eg AMD GPUs need blocksize = 128, but our pre-quants are blocksize = 64
+        # For eg AMD Instinct GPUs need blocksize = 128, but our pre-quants are blocksize = 64
         if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
             ("-unsloth-bnb-4bit", "-bnb-4bit")
         ):
@@ -383,7 +375,7 @@ class FastLanguageModel(FastLlamaModel):
             if not use_exact_model_name:
                 model_name = get_model_name(model_name, load_in_4bit)
             # Check if pre-quantized models are allowed
-            # For eg AMD GPUs need blocksize = 128, but our pre-quants are blocksize = 64
+            # For eg AMD Instinct GPUs need blocksize = 128, but our pre-quants are blocksize = 64
             if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
                 ("-unsloth-bnb-4bit", "-bnb-4bit")
             ):
@@ -687,16 +679,8 @@ class FastModel(FastBaseModel):
         *args,
         **kwargs,
     ):
-        if token is None:
-            token = get_token()
         # Login to allow private models
-        if token is not None:
-            try:
-                from huggingface_hub import login
-
-                login(token = token)
-            except:
-                pass
+        token = hf_login(token)
         if whisper_language is not None:
             assert type(whisper_language) is str
         if whisper_task is not None:
@@ -790,7 +774,7 @@ class FastModel(FastBaseModel):
                 model_name = new_model_name
 
         # Check if pre-quantized models are allowed
-        # For eg AMD GPUs need blocksize = 128, but our pre-quants are blocksize = 64
+        # For eg AMD Instinct GPUs need blocksize = 128, but our pre-quants are blocksize = 64
         if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
             ("-unsloth-bnb-4bit", "-bnb-4bit")
         ):
@@ -1056,7 +1040,7 @@ class FastModel(FastBaseModel):
             if not use_exact_model_name:
                 model_name = get_model_name(model_name, load_in_4bit)
             # Check if pre-quantized models are allowed
-            # For eg AMD GPUs need blocksize = 128, but our pre-quants are blocksize = 64
+            # For eg AMD Instinct GPUs need blocksize = 128, but our pre-quants are blocksize = 64
             if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
                 ("-unsloth-bnb-4bit", "-bnb-4bit")
             ):
