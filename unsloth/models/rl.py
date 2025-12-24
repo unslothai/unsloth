@@ -211,11 +211,13 @@ def PatchRL(FastLanguageModel):
     exec(f"Trainer.prediction_step=unsloth_prediction_step")
 
 
+grpo_selective_log_softmax = RL_REPLACEMENTS["grpo_selective_log_softmax"]
 selective_log_softmax = RL_REPLACEMENTS["selective_log_softmax"]
 calculate_pad_tokens_in_prompt = RL_REPLACEMENTS["calculate_pad_tokens_in_prompt"]
 create_completion_attention_mask = RL_REPLACEMENTS["create_completion_attention_mask"]
 left_pack_padding = RL_REPLACEMENTS["left_pack_padding"]
 align_logprobs_with_mask = RL_REPLACEMENTS["align_logprobs_with_mask"]
+autotune_batch_and_chunks = RL_REPLACEMENTS["grpo_autotune_batch_and_chunks"]
 
 RLTrainer_replacement = '''
 import os
@@ -262,11 +264,13 @@ torch_compile_options = {{
     "triton.cudagraphs" : False,
 }}
 
+{grpo_selective_log_softmax_code}
 {selective_log_softmax_code}
 {calculate_pad_tokens_in_prompt_code}
 {create_completion_attention_mask_code}
 {left_pack_padding_code}
 {align_logprobs_with_mask_code}
+{autotune_batch_and_chunks_code}
 
 {RL_pre}
 
@@ -283,10 +287,20 @@ class Unsloth{RLConfig_name}({RLConfig_name}):
         default = -1,
         metadata = {{'help': 'Chunk size to reduce memory usage. -1 is most efficient.'}},
     )
+    unsloth_logit_chunk_multiplier : Optional[int] = field(
+            default = None,
+            metadata = {{'help': 'Multiplier for chunked logit computations. Default is None unless user defines it, disables auto batch and chunk tunning.'}},
+        )
+    unsloth_grpo_mini_batch : Optional[int] = field(
+        default = None,
+        metadata = {{'help': 'Mini batch size for GRPO hidden state accumulation. Default is None unless user defines it, disables auto batch and chunk tunning.'}},
+    )
     {max_seq_length_pre}
     def __init__({RLConfig_arguments},
         vllm_sampling_params = None,
         unsloth_num_chunks = -1,
+        unsloth_logit_chunk_multiplier = None, 
+        unsloth_grpo_mini_batch = None, 
         {max_seq_length_call}
         **kwargs,
     ):
@@ -294,6 +308,8 @@ class Unsloth{RLConfig_name}({RLConfig_name}):
         super().__init__({RLConfig_call_args}{RLConfig_kwargs})
         self.vllm_sampling_params = vllm_sampling_params
         self.unsloth_num_chunks = unsloth_num_chunks
+        self.unsloth_grpo_mini_batch = unsloth_grpo_mini_batch
+        self.unsloth_logit_chunk_multiplier = unsloth_logit_chunk_multiplier
         {max_seq_length_post}
 pass
 
@@ -948,6 +964,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
 
     # Selective log softmax and other functions
     selective_log_softmax_code = inspect.getsource(selective_log_softmax)
+    grpo_selective_log_softmax_code = inspect.getsource(grpo_selective_log_softmax)
     calculate_pad_tokens_in_prompt_code = inspect.getsource(
         calculate_pad_tokens_in_prompt
     )
@@ -956,6 +973,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     )
     left_pack_padding_code = inspect.getsource(left_pack_padding)
     align_logprobs_with_mask_code = inspect.getsource(align_logprobs_with_mask)
+    autotune_batch_and_chunks_code = inspect.getsource(autotune_batch_and_chunks)
     # Get final source code
     RLTrainer_source = RLTrainer_replacement.format(
         RLTrainer_name = RLTrainer_name,
@@ -977,8 +995,10 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         max_seq_length_call = max_seq_length_call,
         max_seq_length_post = max_seq_length_post,
         selective_log_softmax_code = selective_log_softmax_code,
+        grpo_selective_log_softmax_code = grpo_selective_log_softmax_code,
         calculate_pad_tokens_in_prompt_code = calculate_pad_tokens_in_prompt_code,
         create_completion_attention_mask_code = create_completion_attention_mask_code,
+        autotune_batch_and_chunks_code = autotune_batch_and_chunks_code,
         left_pack_padding_code = left_pack_padding_code,
         align_logprobs_with_mask_code = align_logprobs_with_mask_code,
     )
