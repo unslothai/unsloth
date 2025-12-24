@@ -287,10 +287,20 @@ class Unsloth{RLConfig_name}({RLConfig_name}):
         default = -1,
         metadata = {{'help': 'Chunk size to reduce memory usage. -1 is most efficient.'}},
     )
+    unsloth_logit_chunk_multiplier : Optional[int] = field(
+            default = None,
+            metadata = {{'help': 'Multiplier for chunked logit computations. Default is None unless user defines it, disables auto batch and chunk tunning.'}},
+        )
+    unsloth_grpo_mini_batch : Optional[int] = field(
+        default = None,
+        metadata = {{'help': 'Mini batch size for GRPO hidden state accumulation. Default is None unless user defines it, disables auto batch and chunk tunning.'}},
+    )
     {max_seq_length_pre}
     def __init__({RLConfig_arguments},
         vllm_sampling_params = None,
         unsloth_num_chunks = -1,
+        unsloth_logit_chunk_multiplier = None, 
+        unsloth_grpo_mini_batch = None, 
         {max_seq_length_call}
         **kwargs,
     ):
@@ -298,6 +308,8 @@ class Unsloth{RLConfig_name}({RLConfig_name}):
         super().__init__({RLConfig_call_args}{RLConfig_kwargs})
         self.vllm_sampling_params = vllm_sampling_params
         self.unsloth_num_chunks = unsloth_num_chunks
+        self.unsloth_grpo_mini_batch = unsloth_grpo_mini_batch
+        self.unsloth_logit_chunk_multiplier = unsloth_logit_chunk_multiplier
         {max_seq_length_post}
 pass
 
