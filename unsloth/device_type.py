@@ -24,8 +24,8 @@ __all__ = [
 
 import torch
 import functools
+import inspect
 from unsloth_zoo.utils import Version
-
 
 @functools.cache
 def is_hip():
