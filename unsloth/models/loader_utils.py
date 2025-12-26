@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from ..device_type import DEVICE_TYPE_TORCH
 import importlib
 import os
 import torch
@@ -31,7 +30,14 @@ from .mapper import (
 from packaging.version import Version
 from transformers import __version__ as transformers_version
 from unsloth.models._utils import TorchAOConfig
-from unsloth_zoo.utils import Version
+from unsloth import devices
+
+if not devices.has_mps:
+    from unsloth_zoo.utils import Version
+    from ..device_type import DEVICE_TYPE_TORCH
+else:
+    from packaging.version import Version
+import torch
 import gc
 
 transformers_version = Version(transformers_version)

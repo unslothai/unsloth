@@ -54,6 +54,7 @@ huggingfacenotorch = [
     "peft>=0.7.1,!=0.11.0",
     "huggingface_hub>=0.34.0",
     "hf_transfer",
+    "mlx>=0.23.2 ; platform_system == 'Darwin'",
     "diffusers",
     "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,<=4.57.3",
     "trl>=0.18.2,!=0.19.0,<=0.24.0",
@@ -536,6 +537,7 @@ colab-new = [
     "protobuf",
     "huggingface_hub>=0.34.0",
     "hf_transfer",
+    "mlx>=0.23.2 ; platform_system == 'Darwin'",
     "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
     "unsloth[triton]",
 ]
