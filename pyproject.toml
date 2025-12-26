@@ -956,10 +956,10 @@ rocm64-torch280 = [
     "torch @ https://download.pytorch.org/whl/rocm6.4/torch-2.8.0%2Brocm6.4-cp312-cp312-manylinux_2_28_x86_64.whl ; platform_system == 'Linux' and python_version == '3.12' and platform_machine == 'x86_64'",
     "torch @ https://download.pytorch.org/whl/rocm6.4/torch-2.8.0%2Brocm6.4-cp313-cp313-manylinux_2_28_x86_64.whl ; platform_system == 'Linux' and python_version == '3.13' and platform_machine == 'x86_64'",
 
-    "torchvision @ https://download.pytorch.org/whl/rocm6.4/torchvision-0.24.1%2Brocm6.4-cp310-cp310-manylinux_2_28_x86_64.whl#sha256=dcff8b79c2ef5b5a063abc16e69ecf35ab66fb3744d8ea25ee6a0fc987664341 ; platform_system == 'Linux' and python_version == '3.10' and platform_machine == 'x86_64'",
-    "torchvision @ https://download.pytorch.org/whl/rocm6.4/torchvision-0.24.1%2Brocm6.4-cp311-cp311-manylinux_2_28_x86_64.whl#sha256=962acb123e6db181564cc265d482018db05e6817149a29a4f0b761a4f599dcf1 ; platform_system == 'Linux' and python_version == '3.11' and platform_machine == 'x86_64'",
-    "torchvision @ https://download.pytorch.org/whl/rocm6.4/torchvision-0.24.1%2Brocm6.4-cp312-cp312-manylinux_2_28_x86_64.whl#sha256=228a872b64bfe12c7ff48389100759d768a3380315180531b095ec18f681277d ; platform_system == 'Linux' and python_version == '3.12' and platform_machine == 'x86_64'",
-    "torchvision @ https://download.pytorch.org/whl/rocm6.4/torchvision-0.24.1%2Brocm6.4-cp313-cp313-manylinux_2_28_x86_64.whl#sha256=fd183cfb90fd9ed7a952bbe63f51d5da0609d0bc9c6bbfb183a536d808e48cae ; platform_system == 'Linux' and python_version == '3.13' and platform_machine == 'x86_64'",
+    "torchvision @ https://download.pytorch.org/whl/rocm6.4/torchvision-0.23.0%2Brocm6.4-cp310-cp310-manylinux_2_28_x86_64.whl#sha256=cb92da0af64ed7916cbfff8f845ce431d1d417aadbfe56787c590789acd57850 ; platform_system == 'Linux' and python_version == '3.10' and platform_machine == 'x86_64'",
+    "torchvision @ https://download.pytorch.org/whl/rocm6.4/torchvision-0.23.0%2Brocm6.4-cp311-cp311-manylinux_2_28_x86_64.whl#sha256=23c049987ed53eedbbb5957b720cfcad0f4c1746be044b85dc6664f1b62716d0 ; platform_system == 'Linux' and python_version == '3.11' and platform_machine == 'x86_64'",
+    "torchvision @ https://download.pytorch.org/whl/rocm6.4/torchvision-0.23.0%2Brocm6.4-cp312-cp312-manylinux_2_28_x86_64.whl#sha256=0e7cfef974f3a1219c5c250c75a813da332cf618b30a4ba7b101985c3bb449a3 ; platform_system == 'Linux' and python_version == '3.12' and platform_machine == 'x86_64'",
+    "torchvision @ https://download.pytorch.org/whl/rocm6.4/torchvision-0.23.0%2Brocm6.4-cp313-cp313-manylinux_2_28_x86_64.whl#sha256=945c1243e64820cc09d7c5d4732ecea6f36e05eb33145c73ad9369cf93169e11 ; platform_system == 'Linux' and python_version == '3.13' and platform_machine == 'x86_64'",
 ]
 
 [project.urls]
