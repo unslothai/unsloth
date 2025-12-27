@@ -629,8 +629,12 @@ class FastSentenceTransformer(FastModel):
 
         # if for_inference == True, skip Unsloth optimizations to avoid torch compile issues
         if for_inference:
+            st_device = device_map
+            if isinstance(st_device, dict) or (isinstance(st_device, str) and st_device in ["auto", "sequential"]):
+                st_device = None
+
             st_model = SentenceTransformer(
-                model_name, device = device_map, trust_remote_code = trust_remote_code
+                model_name, device = st_device, trust_remote_code = trust_remote_code
             )
             return st_model
 
@@ -737,7 +741,11 @@ class FastSentenceTransformer(FastModel):
             trust_remote_code = trust_remote_code,
         )
 
-        st_model = SentenceTransformer(modules = modules, device = device_map)
+        st_device = device_map
+        if isinstance(st_device, dict) or (isinstance(st_device, str) and st_device in ["auto", "sequential"]):
+            st_device = None
+
+        st_model = SentenceTransformer(modules = modules, device = st_device)
         st_model.no_modules = no_modules
 
         def _save_pretrained_merged(self, save_directory, **kwargs):
