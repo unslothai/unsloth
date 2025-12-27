@@ -949,7 +949,7 @@ def openenv_vllm_reload_weights():
         return
     if Version(importlib_version("trl")) < Version("0.26.0"):
         return
-    
+
     try:
         import trl.experimental.openenv.utils as openenv_utils
         import trl.experimental.openenv as openenv
@@ -963,7 +963,6 @@ def openenv_vllm_reload_weights():
     src = inspect.getsource(openenv_utils.generate_rollout_completions)
     src = textwrap.dedent(src)
     original_src = src
-
 
     # Remove the reload_weights call - unsloth handles this differently
     src = re.sub(r'.*\.collective_rpc\("reload_weights"\).*\n?', "", src)
