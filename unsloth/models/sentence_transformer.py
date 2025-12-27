@@ -93,7 +93,7 @@ class FastSentenceTransformer(FastModel):
 
         except Exception as e:
             print(
-                f"\033[1;33mFailed to detect pooling mode, not a sentence-transformers model. You will have to handle pooling/normalization yourself for inference, but training should be fine.\033[0m"
+                f"\033[1;33mFailed to detect pooling mode, not a sentence-transformers model. Using default pooling mode 'mean', this may or may not work.\033[0m"
             )
             return "mean"
 
@@ -570,7 +570,7 @@ class FastSentenceTransformer(FastModel):
 
         # fallback if no modules.json (non sentence-transformers models)
         print(
-            "Unsloth: No modules.json found, falling back to [Transformer, Pooling, Normalize]"
+            "Unsloth: No modules.json found, falling back to [Transformer, Pooling, Normalize]. This may or may not work."
         )
 
         transformer_module = FastSentenceTransformer._create_transformer_module(
@@ -782,6 +782,8 @@ class FastSentenceTransformer(FastModel):
 
         def _push_to_hub_merged(self, repo_id, **kwargs):
             token = kwargs.get("token", None) or get_token()
+            if token is None:
+                raise ValueError("No HF token provided. Please provide a token or login with `hf auth login`")
             private = kwargs.get("private", None)
             commit_message = kwargs.get("commit_message", "Upload merged model")
 
