@@ -8,7 +8,7 @@
   
 <a href="https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/gpt-oss-(20B)-Fine-tuning.ipynb"><img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/start free finetune button.png" width="154"></a>
 <a href="https://discord.com/invite/unsloth"><img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/Discord button.png" width="165"></a>
-<a href="https://docs.unsloth.ai"><img src="https://raw.githubusercontent.com/unslothai/unsloth/refs/heads/main/images/Documentation%20Button.png" width="137"></a>
+<a href="https://unsloth.ai/docs"><img src="https://raw.githubusercontent.com/unslothai/unsloth/refs/heads/main/images/Documentation%20Button.png" width="137"></a>
 
 ### Train gpt-oss, DeepSeek, Gemma, Qwen & Llama 2x faster with 70% less VRAM!
 
@@ -18,7 +18,7 @@
 
 ## ✨ Train for Free
 
-Notebooks are beginner friendly. Read our [guide](https://docs.unsloth.ai/get-started/fine-tuning-guide). Add dataset, run, then export your trained model to GGUF, llama.cpp, Ollama, vLLM, SGLang or Hugging Face.
+Notebooks are beginner friendly. Read our [guide](https://docs.unsloth.ai/get-started/fine-tuning-guide). Add dataset, run, then deploy your trained model.
 
 | Model | Free Notebooks | Performance | Memory use |
 |-----------|---------|--------|----------|
@@ -34,9 +34,9 @@ Notebooks are beginner friendly. Read our [guide](https://docs.unsloth.ai/get-st
 | **Llama 3.2 Conversational**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Llama3.2_(1B_and_3B)-Conversational.ipynb)               | 2x faster | 70% less |
 | **Orpheus-TTS (3B)**     | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Orpheus_(3B)-TTS.ipynb)               | 1.5x faster | 50% less |
 
-- See all our notebooks for: [Kaggle](https://github.com/unslothai/notebooks?tab=readme-ov-file#-kaggle-notebooks), [GRPO](https://docs.unsloth.ai/get-started/unsloth-notebooks#grpo-reasoning-rl-notebooks), **[TTS](https://docs.unsloth.ai/get-started/unsloth-notebooks#text-to-speech-tts-notebooks)** & [Vision](https://docs.unsloth.ai/get-started/unsloth-notebooks#vision-multimodal-notebooks)
-- See [all our models](https://docs.unsloth.ai/get-started/all-our-models) and [all our notebooks](https://docs.unsloth.ai/get-started/unsloth-notebooks)
-- See detailed documentation for Unsloth [here](https://docs.unsloth.ai/)
+- See all our notebooks for: [Kaggle](https://github.com/unslothai/notebooks?tab=readme-ov-file#-kaggle-notebooks), [GRPO](https://unsloth.ai/docs/get-started/unsloth-notebooks#grpo-reasoning-rl-notebooks), [TTS](https://unsloth.ai/docs/get-started/unsloth-notebooks#text-to-speech-tts-notebooks) & [Vision](https://unsloth.ai/docs/get-started/unsloth-notebooks#vision-multimodal-notebooks)
+- See [all our models](https://unsloth.ai/docs/get-started/unsloth-model-catalog) and [all our notebooks](https://unsloth.ai/docs/get-started/unsloth-notebooks)
+- See detailed documentation for Unsloth [here](https://unsloth.ai/docs)
 
 ## ⚡ Quickstart
 ### Linux or WSL
@@ -46,9 +46,9 @@ pip install unsloth
 ### Windows
 For Windows, `pip install unsloth` works only if you have Pytorch installed. Read our [Windows Guide](https://docs.unsloth.ai/get-started/installing-+-updating/windows-installation).
 ### Docker
-Use our official [Unsloth Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsloth``` container. Read our [Docker Guide](https://docs.unsloth.ai/get-started/install-and-update/docker).
+Use our official [Unsloth Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsloth``` container. Read our [Docker Guide](https://unsloth.ai/docs/get-started/install-and-update/docker).
 ### Blackwell & DGX Spark
-For RTX 50x, B200, 6000 GPUs: `pip install unsloth`. Read our [Blackwell Guide](https://docs.unsloth.ai/basics/training-llms-with-blackwell-rtx-50-series-and-unsloth) and [DGX Spark Guide](https://docs.unsloth.ai/new/fine-tuning-llms-with-nvidia-dgx-spark-and-unsloth) for more details.
+For RTX 50x, B200, 6000 GPUs: `pip install unsloth`. Read our [Blackwell Guide](https://unsloth.ai/docs/basics/fine-tuning-llms-with-blackwell-rtx-50-series-and-unsloth) and [DGX Spark Guide](https://unsloth.ai/docs/basics/fine-tuning-llms-with-nvidia-dgx-spark-and-unsloth) for more details.
 
 ## 🦥 Unsloth News
 - New RoPE & MLP **Triton Kernels** & **Padding Free + Packing**: 3x faster training & 30% less VRAM. [Blog](https://docs.unsloth.ai/new/3x-faster-training-packing)
@@ -98,6 +98,7 @@ For RTX 50x, B200, 6000 GPUs: `pip install unsloth`. Read our [Blackwell Guide](
 - Supports **all models** including [TTS](https://docs.unsloth.ai/basics/text-to-speech-tts-fine-tuning), multimodal, [BERT](https://docs.unsloth.ai/get-started/unsloth-notebooks#other-important-notebooks) and more! Any model that works in transformers, works in Unsloth.
 - The most efficient library for [Reinforcement Learning (RL)](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide), using 80% less VRAM. Supports GRPO, GSPO, DrGRPO, DAPO etc.
 - **0% loss in accuracy** - no approximation methods - all exact.
+- Export and [deploy your model](https://unsloth.ai/docs/basics/inference-and-deployment) to GGUF, llama.cpp, vLLM, SGLang and Hugging Face.
 - Supports NVIDIA (since 2018), [AMD](https://docs.unsloth.ai/get-started/install-and-update/amd) and Intel GPUs. Minimum CUDA Capability 7.0 (V100, T4, Titan V, RTX 20, 30, 40x, A100, H100, L40 etc)
 - Works on **Linux**, WSL and **Windows**
 - All kernels written in [OpenAI's Triton](https://openai.com/index/triton/) language. Manual backprop engine.
@@ -283,7 +284,7 @@ docker run -d -e JUPYTER_PASSWORD="mypassword" \
 Access Jupyter Lab at `http://localhost:8888` and start fine-tuning!
 
 ## 📜 Documentation
-- Go to our official [Documentation](https://docs.unsloth.ai) for [running models](https://docs.unsloth.ai/basics/running-and-saving-models), [saving to GGUF](https://docs.unsloth.ai/basics/running-and-saving-models/saving-to-gguf), [checkpointing](https://docs.unsloth.ai/basics/finetuning-from-last-checkpoint), [evaluation](https://docs.unsloth.ai/get-started/fine-tuning-llms-guide#evaluation) and more!
+- Go to our official [Documentation](https://unsloth.ai/docs) for [running models](https://docs.unsloth.ai/basics/running-and-saving-models), [saving to GGUF](https://docs.unsloth.ai/basics/running-and-saving-models/saving-to-gguf), [checkpointing](https://docs.unsloth.ai/basics/finetuning-from-last-checkpoint), [evaluation](https://docs.unsloth.ai/get-started/fine-tuning-llms-guide#evaluation) and more!
 - Read our Guides for: [Fine-tuning](https://docs.unsloth.ai/get-started/fine-tuning-llms-guide), [Reinforcement Learning](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide), [Text-to-Speech (TTS)](https://docs.unsloth.ai/basics/text-to-speech-tts-fine-tuning), [Vision](https://docs.unsloth.ai/basics/vision-fine-tuning) and [any model](https://docs.unsloth.ai/models/tutorials-how-to-fine-tune-and-run-llms).
 - We support Huggingface's transformers, TRL, Trainer, Seq2SeqTrainer and Pytorch code.
 
