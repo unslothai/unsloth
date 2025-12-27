@@ -950,15 +950,11 @@ def openenv_vllm_reload_weights():
     if Version(importlib_version("trl")) < Version("0.26.0"):
         return
     
-    openenv_available = False
     try:
         import trl.experimental.openenv.utils as openenv_utils
         import trl.experimental.openenv as openenv
-        openenv_available = True
     except ImportError as e:
         logger.info(f"Unsloth: Failed to import trl openenv: {e}")
-
-    if not openenv_available:
         logger.info(
             "Unsloth: trl.experimental.openenv not available — skipping RL openenv patches."
         )
