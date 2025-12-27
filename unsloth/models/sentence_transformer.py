@@ -783,7 +783,9 @@ class FastSentenceTransformer(FastModel):
         def _push_to_hub_merged(self, repo_id, **kwargs):
             token = kwargs.get("token", None) or get_token()
             if token is None:
-                raise ValueError("No HF token provided. Please provide a token or login with `hf auth login`")
+                raise ValueError(
+                    "No HF token provided. Please provide a token or login with `hf auth login`"
+                )
             private = kwargs.get("private", None)
             commit_message = kwargs.get("commit_message", "Upload merged model")
 
