@@ -2586,6 +2586,7 @@ class FastLlamaModel:
             "up_proj",
             "down_proj",
         ],
+        target_parameters = None,
         lora_alpha = 16,
         lora_dropout = 0.0,
         bias = "none",
@@ -2595,6 +2596,7 @@ class FastLlamaModel:
         random_state = 3407,
         max_seq_length = 2048,  # not used anymore
         use_rslora = False,
+        use_dora = False,
         modules_to_save = None,
         init_lora_weights = True,
         loftq_config = {},
@@ -2616,6 +2618,7 @@ class FastLlamaModel:
                 model = model,
                 r = r,
                 target_modules = target_modules,
+                target_parameters = target_parameters,
                 lora_alpha = lora_alpha,
                 lora_dropout = lora_dropout,
                 bias = bias,
@@ -2625,6 +2628,7 @@ class FastLlamaModel:
                 random_state = random_state,
                 max_seq_length = max_seq_length,
                 use_rslora = use_rslora,
+                use_dora = use_dora,
                 modules_to_save = modules_to_save,
                 init_lora_weights = init_lora_weights,
                 loftq_config = loftq_config,
@@ -2775,6 +2779,24 @@ class FastLlamaModel:
                 f"Unsloth will patch all other layers, except LoRA matrices, causing a performance hit."
             )
 
+        # Validate target_parameters constraints (PEFT ParamWrapper limitations)
+        if target_parameters is not None:
+            if lora_dropout != 0:
+                raise ValueError(
+                    "Unsloth: target_parameters does not support lora_dropout != 0.\n"
+                    "Please set lora_dropout = 0 when using target_parameters."
+                )
+            if use_dora:
+                raise ValueError(
+                    "Unsloth: target_parameters does not support use_dora = True.\n"
+                    "Please set use_dora = False when using target_parameters."
+                )
+            if bias != "none":
+                raise ValueError(
+                    "Unsloth: target_parameters does not support bias != 'none'.\n"
+                    "Please set bias = 'none' when using target_parameters."
+                )
+
         if not (
             type(init_lora_weights) is bool
             or init_lora_weights == "gaussian"
@@ -2839,6 +2861,40 @@ class FastLlamaModel:
 
         train_lm_head = False
         train_embed_tokens = False
+
+        # Handle embed_tokens and lm_head in target_parameters
+        # These should be moved to modules_to_save for full fine-tuning
+        final_target_parameters = None
+        if target_parameters is not None:
+            final_target_parameters = []
+            for param in target_parameters:
+                # Check for lm_head.weight or lm_head
+                if param in ("lm_head.weight", "lm_head"):
+                    train_lm_head = True
+                    if modules_to_save is None:
+                        modules_to_save = ["lm_head"]
+                    elif "lm_head" not in modules_to_save:
+                        modules_to_save.append("lm_head")
+                    print(
+                        "Unsloth: Detected lm_head in target_parameters - moving to modules_to_save for full training"
+                    )
+                # Check for embed_tokens.weight or embed_tokens
+                elif param in ("embed_tokens.weight", "embed_tokens"):
+                    train_embed_tokens = True
+                    if modules_to_save is None:
+                        modules_to_save = ["embed_tokens"]
+                    elif "embed_tokens" not in modules_to_save:
+                        modules_to_save.append("embed_tokens")
+                    print(
+                        "Unsloth: Detected embed_tokens in target_parameters - moving to modules_to_save for full training"
+                    )
+                else:
+                    final_target_parameters.append(param)
+            # Update target_parameters to exclude embed_tokens and lm_head
+            target_parameters = (
+                final_target_parameters if final_target_parameters else None
+            )
+
         final_modules = []
         for module in target_modules:
             if module == "lm_head":
@@ -2944,6 +3000,7 @@ class FastLlamaModel:
             r = r,
             lora_alpha = lora_alpha,
             target_modules = final_modules,
+            target_parameters = target_parameters,
             lora_dropout = lora_dropout,
             bias = bias,
             task_type = TaskType.CAUSAL_LM if not is_classification else TaskType.SEQ_CLS,
@@ -2951,6 +3008,7 @@ class FastLlamaModel:
             init_lora_weights = init_lora_weights,
             loftq_config = loftq_config,
             use_rslora = use_rslora,
+            use_dora = use_dora,
             modules_to_save = modules_to_save,
             **kwargs,
         )

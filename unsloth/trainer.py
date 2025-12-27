@@ -298,7 +298,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 model_types = get_transformers_model_type(model_config)
                 # Blocklist: models that don't work correctly with padding_free
                 is_unsupported_model = any(
-                    x in PADDING_FREE_BLOCKLIST for x in model_types
+                    x in _PADDING_FREE_BLOCK_LIST for x in model_types
                 )
 
                 # Check if VLM
@@ -352,11 +352,15 @@ def _patch_sft_trainer_auto_packing(trl_module):
         if not blocked:
             if padding_free_requested:
                 configure_padding_free(config_arg)
-            elif _should_auto_padding_free(config_arg):
+            elif not is_unsupported_model and _should_auto_padding_free(config_arg):
                 configure_padding_free(config_arg)
                 auto_padding_free_active = True
                 logger.info(
                     "Unsloth: Padding-free batching auto-enabled for SFTTrainer instance."
+                )
+            elif is_unsupported_model and _should_auto_padding_free(config_arg):
+                logger.info(
+                    "Unsloth: Padding-free batching auto-disabled for unsupported model type."
                 )
 
         try:
