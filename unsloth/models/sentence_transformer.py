@@ -630,7 +630,9 @@ class FastSentenceTransformer(FastModel):
         # if for_inference == True, skip Unsloth optimizations to avoid torch compile issues
         if for_inference:
             st_device = device_map
-            if isinstance(st_device, dict) or (isinstance(st_device, str) and st_device in ["auto", "sequential"]):
+            if isinstance(st_device, dict) or (
+                isinstance(st_device, str) and st_device in ["auto", "sequential"]
+            ):
                 st_device = None
 
             st_model = SentenceTransformer(
@@ -742,7 +744,9 @@ class FastSentenceTransformer(FastModel):
         )
 
         st_device = device_map
-        if isinstance(st_device, dict) or (isinstance(st_device, str) and st_device in ["auto", "sequential"]):
+        if isinstance(st_device, dict) or (
+            isinstance(st_device, str) and st_device in ["auto", "sequential"]
+        ):
             st_device = None
 
         st_model = SentenceTransformer(modules = modules, device = st_device)
