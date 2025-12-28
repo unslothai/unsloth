@@ -312,8 +312,8 @@ class Fast_RoPE_Embedding_QK(torch.autograd.Function):
         _, n_heads_K, _, _ = K.shape
 
         # Inplace rotary embedding is generally fine
-        Q_out = Q.clone() if not Q.is_contiguous() else Q
-        K_out = K.clone() if not K.is_contiguous() else K
+        Q_out = Q.contiguous()
+        K_out = K.contiguous()
 
         if has_indices:
             # TRL's rotary indices are always in int32, so casting is just for safety
@@ -395,8 +395,8 @@ class Fast_RoPE_Embedding_QK(torch.autograd.Function):
         )
 
         # Inplace rotary embedding is generally fine
-        dQ_out = dQ.clone() if not dQ.is_contiguous() else dQ
-        dK_out = dK.clone() if not dK.is_contiguous() else dK
+        dQ_out = dQ.contiguous()
+        dK_out = dK.contiguous()
 
         with torch_gpu_device(dQ.device):
             _rope_embedding_QK[(batch * ctx.seq_len, ctx.n_heads_Q)](
