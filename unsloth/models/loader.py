@@ -391,6 +391,7 @@ class FastLanguageModel(FastLlamaModel):
             model_config = AutoConfig.from_pretrained(
                 model_name,
                 token = token,
+                revision = revision,
                 trust_remote_code = trust_remote_code,
             )
 
@@ -1056,6 +1057,7 @@ class FastModel(FastBaseModel):
             model_config = AutoConfig.from_pretrained(
                 model_name,
                 token = token,
+                revision = revision,
                 trust_remote_code = trust_remote_code,
             )
 
