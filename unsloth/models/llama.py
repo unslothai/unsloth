@@ -2779,9 +2779,10 @@ class FastLlamaModel:
             type(init_lora_weights) is bool
             or init_lora_weights == "gaussian"
             or init_lora_weights == "loftq"
+            or init_lora_weights == "corda"
         ):
             raise ValueError(
-                'Unsloth: `init_lora_weights` must be either [True, False, "gaussian", "loftq"].'
+                'Unsloth: `init_lora_weights` must be either [True, False, "gaussian", "loftq", "corda"].'
             )
 
         if init_lora_weights == "loftq":
