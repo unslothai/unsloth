@@ -616,7 +616,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     multiplier = max(2, seq_len // 4096)
                 else:
                     multiplier = self.args.unsloth_logit_chunk_multiplier
-                
+
             all_logprobs_list = []
             if pixel_values is None:
                 left_pad_tokens_per_prompt = calculate_pad_tokens_in_prompt(
