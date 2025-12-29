@@ -152,6 +152,7 @@ def _fast_prepare_inputs_for_generation(
     self,
     input_ids,
     attention_mask = None,
+    inputs_embeds = None,
     **kwargs,
 ):
     past_key_values = kwargs.get("past_key_values", None)
@@ -227,11 +228,20 @@ def _fast_prepare_inputs_for_generation(
 
     if "cache_position" in kwargs:
         kwargs["position_ids"] = kwargs["cache_position"]
-    return {
-        "input_ids": input_ids,
+
+    # Build return dict with inputs_embeds support for generation
+    result = {
         "attention_mask": attention_mask,
         **kwargs,
     }
+    # Support inputs_embeds for generation (e.g., when using embeddings directly)
+    # Use inputs_embeds if provided, regardless of input_ids presence
+    # (transformers may auto-generate dummy input_ids even when inputs_embeds is passed)
+    if inputs_embeds is not None:
+        result["inputs_embeds"] = inputs_embeds
+    else:
+        result["input_ids"] = input_ids
+    return result
 
 
 def fix_prepare_inputs_for_generation(module):
