@@ -22,7 +22,6 @@ from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 import inspect
 import os
 import re
-import torch
 from unsloth_zoo.compiler import create_new_function
 from unsloth_zoo.log import logger
 from unsloth_zoo.logging_utils import PatchRLStatistics
