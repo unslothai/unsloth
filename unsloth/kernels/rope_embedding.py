@@ -397,6 +397,7 @@ class Fast_RoPE_Embedding_QK(torch.autograd.Function):
             dK_out.stride(1),
             dK_out.stride(2),
         )
+
         with torch_gpu_device(dQ.device):
             _rope_embedding_QK[(batch * ctx.seq_len, ctx.n_heads_Q)](
                 dQ_out,
