@@ -228,7 +228,6 @@ import numpy as np
 from contextlib import nullcontext
 from torch.nn import functional as F
 import inspect
-import psutil
 from transformers import DataCollatorForSeq2Seq, DataCollatorForLanguageModeling as TransformersDataCollatorForLanguageModeling
 from transformers.training_args import ParallelMode
 
@@ -289,11 +288,11 @@ class Unsloth{RLConfig_name}({RLConfig_name}):
     )
     unsloth_logit_chunk_multiplier : Optional[int] = field(
             default = None,
-            metadata = {{'help': 'Multiplier for chunked logit computations. Default is None unless user defines it, disables auto batch and chunk tunning.'}},
+            metadata = {{'help': 'Multiplier for chunked logit computations.'}},
         )
     unsloth_grpo_mini_batch : Optional[int] = field(
         default = None,
-        metadata = {{'help': 'Mini batch size for GRPO hidden state accumulation. Default is None unless user defines it, disables auto batch and chunk tunning.'}},
+        metadata = {{'help': 'Mini batch size for GRPO hidden state accumulation. Default is None unless user defines it.'}},
     )
     {max_seq_length_pre}
     def __init__({RLConfig_arguments},
@@ -308,7 +307,13 @@ class Unsloth{RLConfig_name}({RLConfig_name}):
         super().__init__({RLConfig_call_args}{RLConfig_kwargs})
         self.vllm_sampling_params = vllm_sampling_params
         self.unsloth_num_chunks = unsloth_num_chunks
-        self.unsloth_grpo_mini_batch = unsloth_grpo_mini_batch
+        if unsloth_grpo_mini_batch is not None:
+            if self.per_device_train_batch_size >= unsloth_grpo_mini_batch:
+                self.unsloth_grpo_mini_batch = unsloth_grpo_mini_batch
+            else:
+                raise ValueError(
+                    f"Unsloth GRPO mini batch size needs to be less than or equal to per_device_train_batch_size."
+                )
         self.unsloth_logit_chunk_multiplier = unsloth_logit_chunk_multiplier
         {max_seq_length_post}
 pass
@@ -337,7 +342,6 @@ class Unsloth{RLTrainer_name}(_Unsloth{RLTrainer_name}):
 {RLTrainer_post}
 pass
 '''
-
 
 def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     # Patch for vLLM and Unsloth PEFT
