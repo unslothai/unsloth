@@ -2331,6 +2331,7 @@ class FastLlamaModel:
             model_name,
             token = token,
             attn_implementation = "sdpa",
+            revision = revision,
         )
         model_config.model_name = model_name
         model_max_seq_length = model_config.max_position_embeddings
@@ -2424,6 +2425,7 @@ class FastLlamaModel:
                 max_position_embeddings = max_position_embeddings,
                 trust_remote_code = trust_remote_code,
                 attn_implementation = preferred_attn_impl,
+                revision = revision,
                 **kwargs,
             )
         elif not fast_inference:
@@ -2436,6 +2438,7 @@ class FastLlamaModel:
                 max_position_embeddings = max_position_embeddings,
                 trust_remote_code = trust_remote_code,
                 attn_implementation = preferred_attn_impl,
+                revision = revision,
                 **kwargs,
             )
             model.fast_generate = make_fast_generate_wrapper(model.generate)
@@ -2505,6 +2508,7 @@ class FastLlamaModel:
             token = token,
             trust_remote_code = trust_remote_code,
             fix_tokenizer = fix_tokenizer,
+            revision = revision,
         )
 
         model, tokenizer = patch_tokenizer(model, tokenizer)
