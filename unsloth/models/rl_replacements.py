@@ -598,12 +598,24 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             seq_len = input_ids.shape[1]
             hidden_dim = lm_head.shape[1]
             vocab_dim = lm_head.shape[0]
-            B, multiplier = autotune_batch_and_chunks(
-                total_rows, seq_len, hidden_dim, vocab_dim, dtype_bytes
-            )
-            B = total_rows // B
+            
+            if self.args.unsloth_grpo_mini_batch is None:
+                B, multiplier = autotune_batch_and_chunks(
+                    total_rows, seq_len, hidden_dim, vocab_dim, dtype_bytes, self.args.unsloth_logit_chunk_multiplier
+                )
+                B = total_rows // B
+            else: 
+                B = self.args.unsloth_grpo_mini_batch
+                
+                if self.args.unsloth_logit_chunk_multiplier is None:
+                    multiplier = max(2, seq_len // 4096)
+                else: 
+                    multiplier = self.args.unsloth_logit_chunk_multiplier
+                
+                if self.current_gradient_accumulation_steps * self.args.per_device_train_batch_size >= total_rows:
+                    B = B*self.current_gradient_accumulation_steps
+
             all_logprobs_list = []
-            # breakpoint()
             if pixel_values is None:
                 left_pad_tokens_per_prompt = calculate_pad_tokens_in_prompt(
                     input_ids, logits_to_keep, self.processing_class.pad_token_id
