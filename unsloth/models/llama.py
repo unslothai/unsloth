@@ -2471,6 +2471,7 @@ class FastLlamaModel:
                 disable_log_stats = disable_log_stats,
                 use_bitsandbytes = load_in_4bit,
                 unsloth_vllm_standby = unsloth_vllm_standby,
+                revision = revision,
                 fp8_mode = fp8_mode,
             )
             for allowed_arg in allowed_args:
