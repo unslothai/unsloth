@@ -226,6 +226,7 @@ import numpy as np
 from contextlib import nullcontext
 from torch.nn import functional as F
 import inspect
+import psutil
 from transformers import DataCollatorForSeq2Seq, DataCollatorForLanguageModeling as TransformersDataCollatorForLanguageModeling
 from transformers.training_args import ParallelMode
 

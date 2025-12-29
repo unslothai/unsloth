@@ -383,21 +383,20 @@ class Fast_RoPE_Embedding_QK(torch.autograd.Function):
             else ctx.cos.new_empty(1, dtype = torch.int32)
         )
 
-        Q_batch_stride, Q_head_stride, Q_seq_stride = (
-            dQ.stride(0),
-            dQ.stride(1),
-            dQ.stride(2),
-        )
-        K_batch_stride, K_head_stride, K_seq_stride = (
-            dK.stride(0),
-            dK.stride(1),
-            dK.stride(2),
-        )
-
         # Inplace rotary embedding is generally fine
         dQ_out = dQ.clone() if not dQ.is_contiguous() else dQ
         dK_out = dK.clone() if not dK.is_contiguous() else dK
 
+        Q_batch_stride, Q_head_stride, Q_seq_stride = (
+            dQ_out.stride(0),
+            dQ_out.stride(1),
+            dQ_out.stride(2),
+        )
+        K_batch_stride, K_head_stride, K_seq_stride = (
+            dK_out.stride(0),
+            dK_out.stride(1),
+            dK_out.stride(2),
+        )
         with torch_gpu_device(dQ.device):
             _rope_embedding_QK[(batch * ctx.seq_len, ctx.n_heads_Q)](
                 dQ_out,
