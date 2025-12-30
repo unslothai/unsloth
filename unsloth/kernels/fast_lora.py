@@ -383,12 +383,12 @@ class LoRA_QKV(torch.autograd.Function):
         # TorchInductor/AOTAutograd fails on 3D tensors during backward,
         # so we explicitly flatten the sequence dimension.
         orig_shape = X.shape
+        X_for_matmul = X
         if X.dim() == 3:
-            X = X.view(-1, X.shape[-1])
-
-        Q = matmul_lora(X, QW, QW_quant, QA, QB, QS)
-        K = matmul_lora(X, KW, KW_quant, KA, KB, KS)
-        V = matmul_lora(X, VW, VW_quant, VA, VB, VS)
+            X_for_matmul = X.view(-1, X.shape[-1])
+        Q = matmul_lora(X_for_matmul, QW, QW_quant, QA, QB, QS)
+        K = matmul_lora(X_for_matmul, KW, KW_quant, KA, KB, KS)
+        V = matmul_lora(X_for_matmul, VW, VW_quant, VA, VB, VS)
         
         # Restore original shape after matmul
         if len(orig_shape) == 3:
