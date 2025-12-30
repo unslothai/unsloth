@@ -106,7 +106,6 @@ class FastSentenceTransformer(FastModel):
         Supports transformers 4.
         """
         from transformers.models.mpnet import modeling_mpnet
-
         # add supports_gradient_checkpointing flag
         modeling_mpnet.MPNetModel.supports_gradient_checkpointing = True
 
@@ -201,7 +200,6 @@ class FastSentenceTransformer(FastModel):
         Supports transformers 5.
         """
         from transformers.models.mpnet import modeling_mpnet
-
         # add supports_gradient_checkpointing flag
         modeling_mpnet.MPNetModel.supports_gradient_checkpointing = True
 
@@ -702,10 +700,8 @@ class FastSentenceTransformer(FastModel):
         )
 
         if not has_modules_json and load_in_4bit:
-            print(
-                "Unsloth: No modules.json found. This is not a sentence-transformers model.\n"
-                "Forcing 16-bit loading to simplify merged model saving."
-            )
+            print("Unsloth: No modules.json found. This is not a sentence-transformers model.\n"
+                "Forcing 16-bit loading to simplify merged model saving.")
             load_in_4bit = False
             load_in_16bit = True
 
@@ -763,8 +759,23 @@ class FastSentenceTransformer(FastModel):
         st_model.no_modules = no_modules
 
         def _save_pretrained_merged(self, save_directory, **kwargs):
+            # check which adapter files exist before save_pretrained
+            adapter_files = ["adapter_model.safetensors", "adapter_config.json"]
+            existing_before = {
+                f for f in adapter_files
+                if os.path.exists(os.path.join(save_directory, f))
+            }
+
             # sentence-transformers config and modules only get saved if we call save_pretrained
             self.save_pretrained(save_directory)
+
+            # remove LoRA adapters only if they were created by save_pretrained (not pre-existing)
+            for file in adapter_files:
+                if file not in existing_before:
+                    try:
+                        os.remove(os.path.join(save_directory, file))
+                    except:
+                        pass
 
             tokenizer = kwargs.pop("tokenizer", self.tokenizer)
             if self.no_modules:
