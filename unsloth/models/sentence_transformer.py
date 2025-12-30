@@ -443,6 +443,7 @@ class FastSentenceTransformer(FastModel):
         Add Unsloth and sentence-transformers tags to the Hugging Face Hub repository.
         """
         from huggingface_hub import HfApi
+
         api = HfApi(token = token)
         if tags is None:
             tags = []
@@ -475,7 +476,9 @@ class FastSentenceTransformer(FastModel):
             # if tags exist but not right at start, use regex to append
             pattern = r"(^tags:\s*\n)"
             if re.search(pattern, content, re.MULTILINE):
-                content = re.sub(pattern, r"\1- unsloth\n", content, count=1, flags=re.MULTILINE) 
+                content = re.sub(
+                    pattern, r"\1- unsloth\n", content, count = 1, flags = re.MULTILINE
+                )
 
         # add branding badge and text
         branding = (
@@ -485,10 +488,10 @@ class FastSentenceTransformer(FastModel):
 
         # add to description
         if "# SentenceTransformer" in content:
-             parts = content.split("# SentenceTransformer", 1)
-             content = parts[0] + "# SentenceTransformer" + branding + parts[1]
+            parts = content.split("# SentenceTransformer", 1)
+            content = parts[0] + "# SentenceTransformer" + branding + parts[1]
         else:
-             content += branding
+            content += branding
 
         with open(readme_path, "w", encoding = "utf-8") as f:
             f.write(content)
@@ -863,7 +866,7 @@ class FastSentenceTransformer(FastModel):
                 self[0].auto_model.save_pretrained_merged(
                     save_directory, tokenizer = tokenizer, **kwargs
                 )
-            
+
             # add Unsloth branding to the generated README
             try:
                 FastSentenceTransformer._add_unsloth_branding(save_directory)
@@ -882,8 +885,9 @@ class FastSentenceTransformer(FastModel):
                 )
             private = kwargs.get("private", None)
             commit_message = kwargs.get("commit_message", "Upload model")
-            
+
             from huggingface_hub import HfApi
+
             api = HfApi(token = token)
             try:
                 api.create_repo(
@@ -894,7 +898,7 @@ class FastSentenceTransformer(FastModel):
                 )
             except:
                 pass
-            
+
             # order doesn't seem to matter for this after repo creation...
             FastSentenceTransformer._add_unsloth_tags(repo_id, token)
 
