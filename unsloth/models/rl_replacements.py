@@ -760,7 +760,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             logits_chunk,
                             lm_head,
                             completion_input_ids_chunk,
-                            chunks = input_ids_chunk.shape[0]*multiplier,
+                            chunks = input_ids_chunk.shape[0] * multiplier,
                             logit_scale_multiply = logit_scale_multiply,
                             logit_scale_divide = logit_scale_divide,
                             logit_softcapping = logit_softcapping,
