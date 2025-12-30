@@ -341,6 +341,7 @@ class FastBaseModel:
         auto_config = None,
         offload_embedding = False,
         float32_mixed_precision = None,  # Forces float32 mixed precision
+        revision = None,
         # vLLM parameters
         fast_inference = False,
         gpu_memory_utilization = 0.5,
@@ -603,6 +604,7 @@ class FastBaseModel:
                     model_name,
                     token = token,
                     trust_remote_code = trust_remote_code,
+                    revision = revision,
                 )
             if hasattr(auto_config, "quantization_config"):
                 from transformers.quantizers.auto import (
@@ -655,6 +657,7 @@ class FastBaseModel:
             token = token,
             attn_implementation = "sdpa" if supports_sdpa else "eager",
             trust_remote_code = trust_remote_code,
+            revision = revision,
         )
         verify_fp8_support_if_applicable(model_config)
 
@@ -669,6 +672,7 @@ class FastBaseModel:
                 # quantization_config   = bnb_config,
                 token = token,
                 trust_remote_code = trust_remote_code,
+                revision = revision,
                 # attn_implementation   = attn_implementation,
                 **kwargs,
             )
