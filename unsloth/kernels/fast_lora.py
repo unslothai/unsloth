@@ -379,9 +379,22 @@ class LoRA_QKV(torch.autograd.Function):
     ):
         dtype = X.dtype
 
+        # bitsandbytes 8-bit matmul expects 2D inputs.
+        # TorchInductor/AOTAutograd fails on 3D tensors during backward,
+        # so we explicitly flatten the sequence dimension.
+        orig_shape = X.shape
+        if X.dim() == 3:
+            X = X.view(-1, X.shape[-1])
+
         Q = matmul_lora(X, QW, QW_quant, QA, QB, QS)
         K = matmul_lora(X, KW, KW_quant, KA, KB, KS)
         V = matmul_lora(X, VW, VW_quant, VA, VB, VS)
+        
+        # Restore original shape after matmul
+        if len(orig_shape) == 3:
+            Q = Q.view(orig_shape[0], orig_shape[1], -1)
+            K = K.view(orig_shape[0], orig_shape[1], -1)
+            V = V.view(orig_shape[0], orig_shape[1], -1)
 
         ctx.custom_saved_tensors = (
             QW,
