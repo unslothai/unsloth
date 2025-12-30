@@ -62,9 +62,9 @@ class Llama4GroupedGemmTextMoe(Llama4TextMoe):
 
         # Permute in-place expert weights
         E, K, N = self.num_experts, self.hidden_dim, self.experts.expert_dim
-        assert self.experts.gate_up_proj.shape == torch.Size(
-            [E, K, 2 * N]
-        ), f"{self.experts.gate_up_proj.shape} != {[E, K, 2 * N]}"
+        assert self.experts.gate_up_proj.shape == torch.Size([E, K, 2 * N]), (
+            f"{self.experts.gate_up_proj.shape} != {[E, K, 2 * N]}"
+        )
         permuted_shape = [E, 2 * N, K]
         permuted_stride = [2 * N * K, K, 1]
         if verbose:
@@ -79,9 +79,9 @@ class Llama4GroupedGemmTextMoe(Llama4TextMoe):
                 f"{self.experts.gate_up_proj.shape}:{self.experts.gate_up_proj.stride()}"
             )
 
-        assert self.experts.down_proj.shape == torch.Size(
-            [E, N, K]
-        ), f"{self.experts.down_proj.shape} != {[E, N, K]}"
+        assert self.experts.down_proj.shape == torch.Size([E, N, K]), (
+            f"{self.experts.down_proj.shape} != {[E, N, K]}"
+        )
         permuted_shape = [E, K, N]
         permuted_stride = [K * N, N, 1]
         if verbose:
@@ -110,9 +110,9 @@ class Llama4GroupedGemmTextMoe(Llama4TextMoe):
             if any(n in name for n in self.EXPERT_WEIGHT_NAMES):
                 param_to_copy = param_to_copy.permute(0, 2, 1)
 
-            assert (
-                param.shape == param_to_copy.shape
-            ), f"{param.shape} != {param_to_copy.shape}"
+            assert param.shape == param_to_copy.shape, (
+                f"{param.shape} != {param_to_copy.shape}"
+            )
             param.copy_(param_to_copy)
 
         return self
@@ -269,7 +269,9 @@ class Llama4TritonTextMoe(Llama4GroupedGemmTextMoe):
         verbose = False,
     ):
         super().__init__(config, overlap_router_shared = overlap_router_shared)
-        assert not permute_x, "Llama4 triton grouped gemm does not support permute x due to pre-multiplication of router weights"
+        assert not permute_x, (
+            "Llama4 triton grouped gemm does not support permute x due to pre-multiplication of router weights"
+        )
         self.permute_x = permute_x
         self.permute_y = permute_y
         self.autotune = autotune
@@ -295,9 +297,9 @@ class Llama4TritonTextMoe(Llama4GroupedGemmTextMoe):
             if any(n in name for n in self.EXPERT_WEIGHT_NAMES):
                 param_to_copy = param_to_copy.permute(0, 2, 1)
 
-            assert (
-                param.shape == param_to_copy.shape
-            ), f"{param.shape} != {param_to_copy.shape}"
+            assert param.shape == param_to_copy.shape, (
+                f"{param.shape} != {param_to_copy.shape}"
+            )
             param.copy_(param_to_copy)
 
         return self

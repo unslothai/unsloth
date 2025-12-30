@@ -36,9 +36,9 @@ except Exception as e:
 
 codec_model.to("cpu")
 
-print(f"\n{'='*80}")
+print(f"\n{'=' * 80}")
 print("🔍 SECTION 1: Loading Model and LoRA Adapters")
-print(f"{'='*80}")
+print(f"{'=' * 80}")
 
 max_seq_length = 2048
 model, tokenizer = FastLanguageModel.from_pretrained(
@@ -69,17 +69,17 @@ model = FastLanguageModel.get_peft_model(
 print("✅ Model and LoRA adapters loaded successfully!")
 
 
-print(f"\n{'='*80}")
+print(f"\n{'=' * 80}")
 print("🔍 SECTION 2: Checking Model Class Type")
-print(f"{'='*80}")
+print(f"{'=' * 80}")
 
 assert isinstance(model, PeftModel), "Model should be an instance of PeftModel"
 print("✅ Model is an instance of PeftModel!")
 
 
-print(f"\n{'='*80}")
+print(f"\n{'=' * 80}")
 print("🔍 SECTION 3: Checking Config Model Class Type")
-print(f"{'='*80}")
+print(f"{'=' * 80}")
 
 
 def find_lora_base_model(model_to_inspect):
@@ -93,15 +93,15 @@ def find_lora_base_model(model_to_inspect):
 
 config_model = find_lora_base_model(model) if isinstance(model, PeftModel) else model
 
-assert (
-    config_model.__class__.__name__ == base_model_class
-), f"Expected config_model class to be {base_model_class}"
+assert config_model.__class__.__name__ == base_model_class, (
+    f"Expected config_model class to be {base_model_class}"
+)
 print("✅ config_model returns correct Base Model class:", str(base_model_class))
 
 
-print(f"\n{'='*80}")
+print(f"\n{'=' * 80}")
 print("🔍 SECTION 4: Saving and Merging Model")
-print(f"{'='*80}")
+print(f"{'=' * 80}")
 
 with warnings.catch_warnings():
     warnings.simplefilter("error")  # Treat warnings as errors
@@ -111,9 +111,9 @@ with warnings.catch_warnings():
     except Exception as e:
         assert False, f"Model saving/merging failed with exception: {e}"
 
-print(f"\n{'='*80}")
+print(f"\n{'=' * 80}")
 print("🔍 SECTION 5: Loading Model for Inference")
-print(f"{'='*80}")
+print(f"{'=' * 80}")
 
 
 model, tokenizer = FastLanguageModel.from_pretrained(
@@ -130,9 +130,9 @@ model, tokenizer = FastLanguageModel.from_pretrained(
 print("✅ Model loaded for inference successfully!")
 
 
-print(f"\n{'='*80}")
+print(f"\n{'=' * 80}")
 print("🔍 SECTION 6: Running Inference")
-print(f"{'='*80}")
+print(f"{'=' * 80}")
 
 
 from transformers import pipeline

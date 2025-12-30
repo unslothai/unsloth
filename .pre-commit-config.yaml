@@ -14,4 +14,4 @@ repos:
         language: python
         types: [python]
         additional_dependencies:
-          - ruff==0.6.9
+          - ruff==0.14.7

@@ -580,8 +580,8 @@ def unsloth_save_model(
     max_ram = int(max(0, max_ram) * maximum_memory_usage)
     print(
         f"Unsloth: Will use up to "
-        f"{round(max_ram/1024/1024/1024, 2)} out of "
-        f"{round(psutil.virtual_memory().total/1024/1024/1024, 2)} RAM for saving."
+        f"{round(max_ram / 1024 / 1024 / 1024, 2)} out of "
+        f"{round(psutil.virtual_memory().total / 1024 / 1024 / 1024, 2)} RAM for saving."
     )
 
     # Move temporary_location to /tmp in Kaggle
@@ -969,7 +969,9 @@ def install_llama_cpp_old(version = -10):
         import time
 
         for i in range(30):
-            print(f"**[WARNING]** Deleting llama.cpp directory... {30-i} seconds left.")
+            print(
+                f"**[WARNING]** Deleting llama.cpp directory... {30 - i} seconds left."
+            )
             time.sleep(1)
         import shutil
 
@@ -986,13 +988,13 @@ def install_llama_cpp_old(version = -10):
     # Try using MAKE
     commands = [
         "make clean -C llama.cpp",
-        f"make all -j{psutil.cpu_count()*2} -C llama.cpp",
+        f"make all -j{psutil.cpu_count() * 2} -C llama.cpp",
     ]
     if try_execute(commands) == "CMAKE":
         # Instead use CMAKE
         commands = [
             "cmake llama.cpp -B llama.cpp/build -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=OFF -DLLAMA_CURL=ON",
-            f"cmake --build llama.cpp/build --config Release -j{psutil.cpu_count()*2} --clean-first --target {' '.join(LLAMA_CPP_TARGETS)}",
+            f"cmake --build llama.cpp/build --config Release -j{psutil.cpu_count() * 2} --clean-first --target {' '.join(LLAMA_CPP_TARGETS)}",
             "cp llama.cpp/build/bin/llama-* llama.cpp",
             "rm -rf llama.cpp/build",
         ]
@@ -1032,13 +1034,13 @@ def install_llama_cpp_blocking(use_cuda = False):
         # https://github.com/ggerganov/llama.cpp/issues/7062
         # Weirdly GPU conversion for GGUF breaks??
         # f"{use_cuda} make all -j{psutil.cpu_count()*2} -C llama.cpp",
-        f"make all -j{psutil.cpu_count()*2} -C llama.cpp",
+        f"make all -j{psutil.cpu_count() * 2} -C llama.cpp",
     ]
     if try_execute(commands) == "CMAKE":
         # Instead use CMAKE
         commands = [
             "cmake llama.cpp -B llama.cpp/build -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=OFF -DLLAMA_CURL=ON",
-            f"cmake --build llama.cpp/build --config Release -j{psutil.cpu_count()*2} --clean-first --target {' '.join(LLAMA_CPP_TARGETS)}",
+            f"cmake --build llama.cpp/build --config Release -j{psutil.cpu_count() * 2} --clean-first --target {' '.join(LLAMA_CPP_TARGETS)}",
             "cp llama.cpp/build/bin/llama-* llama.cpp",
             "rm -rf llama.cpp/build",
         ]
@@ -1890,7 +1892,7 @@ def unsloth_save_pretrained_gguf(
 
     # Step 4: Save/merge model to 16-bit format
     print(
-        f'Unsloth: Merging model weights to {"mxfp4" if is_gpt_oss else "16-bit"} format...'
+        f"Unsloth: Merging model weights to {'mxfp4' if is_gpt_oss else '16-bit'} format..."
     )
     try:
         # Call unsloth_generic_save directly (it's in the same file)

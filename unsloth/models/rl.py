@@ -423,8 +423,8 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             else:
                 continue
             call_args.append(f"{k} = {k}")
-        arguments = f"\n{' '*8}" + f",\n{' '*8}".join(arguments)
-        call_args = f"\n{' '*12}" + f",\n{' '*12}".join(call_args)
+        arguments = f"\n{' ' * 8}" + f",\n{' ' * 8}".join(arguments)
+        call_args = f"\n{' ' * 12}" + f",\n{' ' * 12}".join(call_args)
         processed.append(
             (
                 arguments,
@@ -438,7 +438,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
 
     # Add tokenizer if not seen
     if "tokenizer" not in parameters and "processing_class" in parameters:
-        arguments += f",\n{' '*8}tokenizer = None"
+        arguments += f",\n{' ' * 8}tokenizer = None"
         call_args = call_args.replace(
             "processing_class = processing_class",
             "processing_class = tokenizer if tokenizer is not None else processing_class",
@@ -560,7 +560,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             "        max_seq_length = model.max_seq_length\n"
             "        if hasattr(args, 'max_seq_length'): args.max_seq_length = max_seq_length\n"
         )
-        "    elif args_max_seq_length is not None and model_max_seq_length is not None:\n" "        if args_max_seq_length > model_max_seq_length:\n" "            print('Unsloth: You set `max_seq_length` as ' + str(args_max_seq_length) + ' but \n" "                   the maximum the model supports is ' + str(model_max_seq_length) + '. We shall reduce it.')\n" "            args.max_seq_length = model_max_seq_length\n"
+        "    elif args_max_seq_length is not None and model_max_seq_length is not None:\n        if args_max_seq_length > model_max_seq_length:\n            print('Unsloth: You set `max_seq_length` as ' + str(args_max_seq_length) + ' but \n                   the maximum the model supports is ' + str(model_max_seq_length) + '. We shall reduce it.')\n            args.max_seq_length = model_max_seq_length\n"
         extra_args += length_check
 
         # At this point max_seq_length might be set, but trl is moving to max_length
@@ -1180,8 +1180,8 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                 sampling_params = re.sub(r"[\,][\s]{0,}\,", ",", sampling_params)
 
                 new_vllm_part = (
-                    f"\n{' '*8}if {args}.use_vllm:\n{sampling_params}"
-                    f"\n{' '*8}else:\n"
+                    f"\n{' ' * 8}if {args}.use_vllm:\n{sampling_params}"
+                    f"\n{' ' * 8}else:\n"
                 )
 
         if trl_version >= Version("0.18.0"):
