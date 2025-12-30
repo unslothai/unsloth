@@ -12,13 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
+
 from .loader import FastModel
 import inspect
 import json
 import os
 import types
 from huggingface_hub import hf_hub_download
-from transformers.models.mpnet import modeling_mpnet
 from typing import Optional
 import torch
 from transformers.modeling_outputs import BaseModelOutput
@@ -93,7 +94,7 @@ class FastSentenceTransformer(FastModel):
 
         except Exception as e:
             print(
-                f"\033[1;33mFailed to detect pooling mode, not a sentence-transformers model. Using default pooling mode 'mean', this may or may not work.\033[0m"
+                f"Failed to detect pooling mode, not a sentence-transformers model. Using default pooling mode 'mean', this may or may not work."
             )
             return "mean"
 
@@ -104,6 +105,7 @@ class FastSentenceTransformer(FastModel):
         Patch the MPNetModel to support gradient checkpointing.
         Supports transformers 4.
         """
+        from transformers.models.mpnet import modeling_mpnet
         # add supports_gradient_checkpointing flag
         modeling_mpnet.MPNetModel.supports_gradient_checkpointing = True
 
@@ -197,6 +199,7 @@ class FastSentenceTransformer(FastModel):
         Patch the MPNetModel to support gradient checkpointing.
         Supports transformers 5.
         """
+        from transformers.models.mpnet import modeling_mpnet
         # add supports_gradient_checkpointing flag
         modeling_mpnet.MPNetModel.supports_gradient_checkpointing = True
 
@@ -459,12 +462,15 @@ class FastSentenceTransformer(FastModel):
         """Helper to create and configure a Transformer module."""
         from sentence_transformers.models import Transformer
 
+        # propagate trust_remote_code and other attrs to sentence-transformers
         transformer_module = Transformer(
             model_name,
             max_seq_length = max_seq_length,
             model_args = {"trust_remote_code": trust_remote_code},
             config_args = {"trust_remote_code": trust_remote_code},
         )
+
+        # inject unsloth model into sentence-transformers model
         transformer_module.auto_model = model
         transformer_module.tokenizer = tokenizer
         transformer_module.do_lower_case = getattr(tokenizer, "do_lower_case", False)
@@ -663,7 +669,9 @@ class FastSentenceTransformer(FastModel):
                 kwargs["add_pooling_layer"] = False
 
         # forces fp8 to be False since it's not supported
-        kwargs.pop("load_in_fp8", None)
+        fp8 = kwargs.pop("load_in_fp8", None)
+        if fp8:
+            logging.info("Unsloth: Disabling fp8 for model")
         load_in_fp8 = False
 
         # this is a fix for Snowflake/snowflake-arctic-embed-l-v2.0
@@ -692,10 +700,8 @@ class FastSentenceTransformer(FastModel):
         )
 
         if not has_modules_json and load_in_4bit:
-            print(
-                "\033[1;33mUnsloth: No modules.json found. This is not a sentence-transformers model.\n"
-                "Forcing 16-bit loading to simplify merged model saving.\033[0m"
-            )
+            print("Unsloth: No modules.json found. This is not a sentence-transformers model.\n"
+                "Forcing 16-bit loading to simplify merged model saving.")
             load_in_4bit = False
             load_in_16bit = True
 
@@ -755,13 +761,6 @@ class FastSentenceTransformer(FastModel):
         def _save_pretrained_merged(self, save_directory, **kwargs):
             # sentence-transformers config and modules only get saved if we call save_pretrained
             self.save_pretrained(save_directory)
-
-            # remove LoRA adapters since we are saving the merged model
-            for file in ["adapter_model.safetensors", "adapter_config.json"]:
-                try:
-                    os.remove(os.path.join(save_directory, file))
-                except:
-                    pass
 
             tokenizer = kwargs.pop("tokenizer", self.tokenizer)
             if self.no_modules:
