@@ -106,6 +106,7 @@ class FastSentenceTransformer(FastModel):
         Supports transformers 4.
         """
         from transformers.models.mpnet import modeling_mpnet
+
         # add supports_gradient_checkpointing flag
         modeling_mpnet.MPNetModel.supports_gradient_checkpointing = True
 
@@ -200,6 +201,7 @@ class FastSentenceTransformer(FastModel):
         Supports transformers 5.
         """
         from transformers.models.mpnet import modeling_mpnet
+
         # add supports_gradient_checkpointing flag
         modeling_mpnet.MPNetModel.supports_gradient_checkpointing = True
 
@@ -700,8 +702,10 @@ class FastSentenceTransformer(FastModel):
         )
 
         if not has_modules_json and load_in_4bit:
-            print("Unsloth: No modules.json found. This is not a sentence-transformers model.\n"
-                "Forcing 16-bit loading to simplify merged model saving.")
+            print(
+                "Unsloth: No modules.json found. This is not a sentence-transformers model.\n"
+                "Forcing 16-bit loading to simplify merged model saving."
+            )
             load_in_4bit = False
             load_in_16bit = True
 
@@ -762,7 +766,8 @@ class FastSentenceTransformer(FastModel):
             # check which adapter files exist before save_pretrained
             adapter_files = ["adapter_model.safetensors", "adapter_config.json"]
             existing_before = {
-                f for f in adapter_files
+                f
+                for f in adapter_files
                 if os.path.exists(os.path.join(save_directory, f))
             }
 
