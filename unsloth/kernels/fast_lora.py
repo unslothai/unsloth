@@ -389,7 +389,7 @@ class LoRA_QKV(torch.autograd.Function):
         Q = matmul_lora(X_for_matmul, QW, QW_quant, QA, QB, QS)
         K = matmul_lora(X_for_matmul, KW, KW_quant, KA, KB, KS)
         V = matmul_lora(X_for_matmul, VW, VW_quant, VA, VB, VS)
-        
+
         # Restore original shape after matmul
         if len(orig_shape) == 3:
             Q = Q.view(orig_shape[0], orig_shape[1], -1)
