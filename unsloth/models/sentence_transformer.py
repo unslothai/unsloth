@@ -702,12 +702,12 @@ class FastSentenceTransformer(FastModel):
                 isinstance(st_device, str) and st_device in ["auto", "sequential"]
             ):
                 st_device = None
-            
+
             # this was added because when loading for inference it was defaulting to float32
             # propagate dtype to model_kwargs, default to "auto"
             model_kwargs = kwargs.get("model_kwargs", {})
             model_kwargs["dtype"] = dtype if dtype is not None else "auto"
-            
+
             # filter kwargs for SentenceTransformer
             st_kwargs = {
                 "device": st_device,
@@ -716,9 +716,14 @@ class FastSentenceTransformer(FastModel):
                 "revision": revision,
                 "model_kwargs": model_kwargs,
             }
-            
+
             # add other known kwargs if present
-            known_keys = ["cache_folder", "truncate_dim", "tokenizer_kwargs", "config_kwargs"]
+            known_keys = [
+                "cache_folder",
+                "truncate_dim",
+                "tokenizer_kwargs",
+                "config_kwargs",
+            ]
             for k in known_keys:
                 if k in kwargs:
                     st_kwargs[k] = kwargs[k]
