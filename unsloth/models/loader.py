@@ -684,7 +684,7 @@ class FastModel(FastBaseModel):
         
         # Fix for multi-GPU distributed training
         # When using distributed training (e.g., 2x T4 on Kaggle), device_map="auto"/"balanced"
-        # splits the model across GPUs which breaks 4-bit quantization training.
+        # splits the model across GPUs which can cause gradient device mismatch errors.
         # Instead, use data-parallel approach where each GPU gets a full model copy.
         from .loader_utils import prepare_device_map, is_distributed
         if is_distributed():
@@ -693,7 +693,7 @@ class FastModel(FastBaseModel):
                 import warnings
                 warnings.warn(
                     f"Unsloth: Multi-GPU device splitting (device_map='{device_map}') is not supported "
-                    f"for vision/multimodal models with 4-bit/8-bit quantization in distributed training. "
+                    f"for vision/multimodal models in distributed training. "
                     f"Using device_map={prepared_device_map} instead (data-parallel mode). "
                     f"Each GPU will load a full copy of the model.",
                     stacklevel=2,
