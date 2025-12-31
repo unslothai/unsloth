@@ -681,6 +681,25 @@ class FastModel(FastBaseModel):
     ):
         # Login to allow private models
         token = hf_login(token)
+        
+        # Fix for multi-GPU distributed training
+        # When using distributed training (e.g., 2x T4 on Kaggle), device_map="auto"/"balanced"
+        # splits the model across GPUs which breaks 4-bit quantization training.
+        # Instead, use data-parallel approach where each GPU gets a full model copy.
+        from .loader_utils import prepare_device_map, is_distributed
+        if is_distributed():
+            prepared_device_map, _ = prepare_device_map()
+            if device_map in ("auto", "balanced", "balanced_low_0"):
+                import warnings
+                warnings.warn(
+                    f"Unsloth: Multi-GPU device splitting (device_map='{device_map}') is not supported "
+                    f"for vision/multimodal models with 4-bit/8-bit quantization in distributed training. "
+                    f"Using device_map={prepared_device_map} instead (data-parallel mode). "
+                    f"Each GPU will load a full copy of the model.",
+                    stacklevel=2,
+                )
+                device_map = prepared_device_map
+        
         if whisper_language is not None:
             assert type(whisper_language) is str
         if whisper_task is not None:
