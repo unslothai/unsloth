@@ -613,7 +613,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 B = self.args.unsloth_grpo_mini_batch
 
                 if self.args.unsloth_logit_chunk_multiplier is None:
-                    multiplier = max(2, seq_len // 4096)
+                    multiplier = max(4, seq_len // 4096)
                 else:
                     multiplier = self.args.unsloth_logit_chunk_multiplier
 
