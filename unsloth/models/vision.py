@@ -396,25 +396,27 @@ class FastBaseModel:
                 "Are you certain you want to do remote code execution?"
             )
         token = hf_login(token)
-        
+
         # Fix for multi-GPU distributed training
         # When using distributed training (e.g., 2x T4 on Kaggle), device_map="auto"/"balanced"
         # splits the model across GPUs which can cause gradient device mismatch errors.
         # Instead, use data-parallel approach where each GPU gets a full model copy.
         from .loader_utils import prepare_device_map, is_distributed
+
         if is_distributed():
             prepared_device_map, _ = prepare_device_map()
             if device_map in ("auto", "balanced", "balanced_low_0"):
                 import warnings
+
                 warnings.warn(
                     f"Unsloth: Multi-GPU device splitting (device_map='{device_map}') is not supported "
                     f"for vision models in distributed training. "
                     f"Using device_map={prepared_device_map} instead (data-parallel mode). "
                     f"Each GPU will load a full copy of the model.",
-                    stacklevel=2,
+                    stacklevel = 2,
                 )
                 device_map = prepared_device_map
-        
+
         SUPPORTS_BFLOAT16 = is_bfloat16_supported()
 
         if DEVICE_TYPE == "cuda":
