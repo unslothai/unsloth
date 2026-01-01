@@ -900,9 +900,9 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     if "temperature" in call_args:
         check_temperature = (
             "if temperature <= 0:\n"
-            "    raise MathError('Unsloth: Please set a positive non-zero temperature since your results will be wrong.')\n"
+            "    raise ValueError('Unsloth: Please set a positive non-zero temperature since your results will be wrong.')\n"
             "elif temperature >= 10:\n"
-            "    raise MathError('Unsloth: Please set a positive non-zero temperature less than 10, since sampling will be quite erratic.')\n"
+            "    raise ValueError('Unsloth: Please set a positive non-zero temperature less than 10, since sampling will be quite erratic.')\n"
             "\n"
         )
         extra_args += check_temperature
