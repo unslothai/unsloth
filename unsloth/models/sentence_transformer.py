@@ -252,7 +252,7 @@ class FastSentenceTransformer(FastModel):
                         hidden_states,
                         attention_mask,
                         position_bias,
-                        use_reentrant = True, # required for torch >= 2.9
+                        use_reentrant = True,  # required for torch >= 2.9
                     )
                 else:
                     # original code from here on
