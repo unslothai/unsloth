@@ -861,13 +861,13 @@ def grpo_trainer_compute_loss(function_name, function):
                 else torch.tensor(0.0, device = self.model.device)
             )
             self._metrics[mode]["sampling/importance_sampling_ratio/min"].append(
-                nanmin(self.accelerator.gather(min_importance_sampling_ratio)).item()
+                self.accelerator.gather(min_importance_sampling_ratio).nan_to_num(nan=float('inf')).min().item()
             )
             self._metrics[mode]["sampling/importance_sampling_ratio/mean"].append(
                 self.accelerator.gather(mean_importance_sampling_ratio).nanmean().item()
             )
             self._metrics[mode]["sampling/importance_sampling_ratio/max"].append(
-                nanmax(self.accelerator.gather(max_importance_sampling_ratio)).item()
+                self.accelerator.gather(max_importance_sampling_ratio).nan_to_num(nan=float('-inf')).max().item()
             )
 
         return loss
