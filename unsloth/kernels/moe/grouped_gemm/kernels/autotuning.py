@@ -39,8 +39,12 @@ def convert_args_to_list(args):
 def _triton_supports_tma():
     """Check if current Triton version supports TMA API."""
     import triton.language as tl
+
     # Check for both old experimental and new stable API names
-    return hasattr(tl, 'make_tensor_descriptor') or hasattr(tl, '_experimental_make_tensor_descriptor')
+    return hasattr(tl, "make_tensor_descriptor") or hasattr(
+        tl, "_experimental_make_tensor_descriptor"
+    )
+
 
 # Precompute at module import
 # NOTE: TMA is disabled for now due to compatibility issues with permute_x/permute_y settings

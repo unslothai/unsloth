@@ -42,16 +42,20 @@ logger.addHandler(ch)
 # 2. Triton version with TMA API (make_tensor_descriptor or _experimental_make_tensor_descriptor)
 def _check_tma_support():
     import triton.language as tl
+
     gpu_supports_tma = torch.cuda.get_device_capability()[0] >= 9
     # Check for both old experimental and new stable API names
-    triton_has_tma_api = hasattr(tl, 'make_tensor_descriptor') or hasattr(tl, '_experimental_make_tensor_descriptor')
+    triton_has_tma_api = hasattr(tl, "make_tensor_descriptor") or hasattr(
+        tl, "_experimental_make_tensor_descriptor"
+    )
     return gpu_supports_tma and triton_has_tma_api
+
 
 _SUPPORTS_TMA = _check_tma_support()
 
+
 def supports_tma():
     return _SUPPORTS_TMA
-
 
 
 # Helper to support allow_in_graph
@@ -59,6 +63,7 @@ try:
     from torch.compiler import allow_in_graph
 except ImportError:
     from torch._dynamo import allow_in_graph
+
 
 # Helper to detect if we're in tracing/compilation mode
 def _is_tracing(*tensors):
@@ -76,6 +81,7 @@ def _is_tracing(*tensors):
         if name in ("FakeTensor", "FunctionalTensor", "FunctionalTensorWrapper"):
             return True
     return False
+
 
 _per_device_alloc_fns = {}
 
@@ -192,6 +198,7 @@ def grouped_gemm_forward(
     if use_tma or autotune:
         # Respect global persistent allocator if set
         if not getattr(triton, "_unsloth_allocator_set", False):
+
             def alloc_fn(size: int, alignment: int, stream: int):
                 return torch.empty(size, device = "cuda", dtype = torch.int8)
 
@@ -398,6 +405,7 @@ def grouped_gemm_dX(
     if use_tma or autotune:
         # Respect global persistent allocator if set
         if not getattr(triton, "_unsloth_allocator_set", False):
+
             def alloc_fn(size: int, alignment: int, stream: int):
                 # print(f"DEBUG::GROUPED_GEMM alloc_fn {size=} {alignment=} {stream=}")
                 return torch.empty(size, device = "cuda", dtype = torch.int8)
@@ -565,6 +573,7 @@ def grouped_gemm_dW(
     if use_tma or autotune:
         # Respect global persistent allocator if set
         if not getattr(triton, "_unsloth_allocator_set", False):
+
             def alloc_fn(size: int, alignment: int, stream: int):
                 return torch.empty(size, device = "cuda", dtype = torch.int8)
 
