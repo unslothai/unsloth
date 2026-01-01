@@ -19,7 +19,9 @@ def formatted_int(value: int) -> str:
     elif value < MILLION:
         return f"{float(value) / 1000:,.1f}K"
     elif value < BILLION:
-        return f"{float(value) // 1000000:,.1f}M"
+        return f"{float(value) / 1000000:,.1f}M"
+    else:
+        return f"{float(value) / 1000000000:,.1f}B"
 
 
 def get_model_info(
