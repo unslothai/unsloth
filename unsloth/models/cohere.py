@@ -344,8 +344,8 @@ def CohereAttention_fast_forward_inference(
     Kn = Kn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
     Vn = Vn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
     if self.use_qk_norm:
-        Q = fast_layernorm_inference(self.q_norm, Q, self.q_norm_out_weight)
-        K = fast_layernorm_inference(self.k_norm, K, self.k_norm_out_weight)
+        Qn = fast_layernorm_inference(self.q_norm, Qn, self.q_norm_out_weight)
+        Kn = fast_layernorm_inference(self.k_norm, Kn, self.k_norm_out_weight)
 
     # cos, sin = self.rotary_emb(Vn, seq_len = kv_seq_len)
     # Qn, Kn = inplace_rope_embedding(Qn, Kn, cos, sin, position_ids)
@@ -479,7 +479,7 @@ def CohereModel_fast_forward_inference(
             )
         )
 
-        hidden_states_mlp = fast_swiglu_inference(self.mlp, hidden_states)
+        hidden_states_mlp = fast_swiglu_inference(decoder_layer.mlp, hidden_states)
         residual += hidden_states_attention
         residual += hidden_states_mlp
         hidden_states = residual
