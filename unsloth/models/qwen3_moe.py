@@ -273,9 +273,7 @@ class FastQwen3OmniMoeModel(FastQwen3MoeModel):
         trust_remote_code = False,
         **kwargs,
     ):
-        model, tokenizer = super(
-            FastQwen3OmniMoeModel, FastQwen3OmniMoeModel
-        ).from_pretrained(
+        model, tokenizer = FastQwen3MoeModel.from_pretrained(
             model_name = model_name,
             max_seq_length = max_seq_length,
             dtype = dtype,
@@ -305,7 +303,12 @@ class FastQwen3OmniMoeModel(FastQwen3MoeModel):
                 and hasattr(module, "q_norm")
                 and hasattr(module, "k_norm")
             ):
-                if hasattr(module, "q_proj") and hasattr(module, "o_proj"):
+                if (
+                    hasattr(module, "q_proj")
+                    and hasattr(module, "k_proj")
+                    and hasattr(module, "v_proj")
+                    and hasattr(module, "o_proj")
+                ):
                     module.__class__.apply_qkv = qwen3_omni_apply_qkv
                     module.__class__.apply_o = qwen3_omni_apply_o
 
@@ -326,9 +329,9 @@ class FastQwen3OmniMoeModel(FastQwen3MoeModel):
                         if past_key_values is not None:
                             return self._original_forward(
                                 hidden_states,
-                                position_embeddings,
-                                attention_mask,
-                                past_key_values,
+                                position_embeddings = position_embeddings,
+                                attention_mask = attention_mask,
+                                past_key_values = past_key_values,
                                 **kwargs,
                             )
 
