@@ -673,7 +673,7 @@ class FastBaseModel:
                 **kwargs,
             )
             if hasattr(model, "generate"):
-                model.fast_generate = model.generate
+                model.fast_generate = make_fast_generate_wrapper(model.generate)
                 model.fast_generate_batches = error_out_no_vllm
             if offload_embedding:
                 if bool(
