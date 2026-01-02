@@ -18,6 +18,7 @@ from ._utils import __version__
 from .llama import (
     LlamaRotaryEmbedding,
     LlamaLinearScalingRotaryEmbedding,
+    fast_swiglu_inference,
 )
 from .qwen3 import (
     Qwen3Attention_fast_forward,
@@ -241,3 +242,119 @@ class FastQwen3MoeModel(FastQwen3Model):
             trust_remote_code = trust_remote_code,
             **kwargs,
         )
+
+
+# Helper functions for Qwen3 Omni Patching
+def qwen3_omni_apply_qkv(self, X):
+    Q = self.q_proj(X)
+    K = self.k_proj(X)
+    V = self.v_proj(X)
+    return Q, K, V
+
+
+def qwen3_omni_apply_o(self, X):
+    O = self.o_proj(X)
+    return O
+
+
+class FastQwen3OmniMoeModel(FastQwen3MoeModel):
+    @staticmethod
+    def from_pretrained(
+        model_name = "Qwen/Qwen3-Omni-30B-A3B-Instruct",
+        max_seq_length = 4096,
+        dtype = None,
+        load_in_4bit = True,
+        token = None,
+        device_map = "sequential",
+        rope_scaling = None,
+        fix_tokenizer = True,
+        model_patcher = None,
+        tokenizer_name = None,
+        trust_remote_code = False,
+        **kwargs,
+    ):
+        model, tokenizer = super(
+            FastQwen3OmniMoeModel, FastQwen3OmniMoeModel
+        ).from_pretrained(
+            model_name = model_name,
+            max_seq_length = max_seq_length,
+            dtype = dtype,
+            load_in_4bit = load_in_4bit,
+            token = token,
+            device_map = device_map,
+            rope_scaling = rope_scaling,
+            fix_tokenizer = fix_tokenizer,
+            model_patcher = FastQwen3Model,
+            tokenizer_name = tokenizer_name,
+            trust_remote_code = trust_remote_code,
+            **kwargs,
+        )
+
+        # Manually patch Thinker, Talker, and MTP modules
+        patched_classes = set()
+
+        for name, module in model.named_modules():
+            if module.__class__ in patched_classes:
+                continue
+
+            class_name = module.__class__.__name__
+
+            # Replace Attention with Triton Kernels
+            if (
+                "Attention" in class_name
+                and hasattr(module, "q_norm")
+                and hasattr(module, "k_norm")
+            ):
+                if hasattr(module, "q_proj") and hasattr(module, "o_proj"):
+                    module.__class__.apply_qkv = qwen3_omni_apply_qkv
+                    module.__class__.apply_o = qwen3_omni_apply_o
+
+                    # Save original forward to allow fallback during inference
+                    if not hasattr(module.__class__, "_original_forward"):
+                        module.__class__._original_forward = module.__class__.forward
+
+                    # Define a Safe Wrapper
+                    def _attention_wrapper(
+                        self,
+                        hidden_states,
+                        position_embeddings = None,
+                        attention_mask = None,
+                        past_key_values = None,
+                        **kwargs,
+                    ):
+                        # FALLBACK: If caching is used (Inference), use original code to avoid breaking Cache objects
+                        if past_key_values is not None:
+                            return self._original_forward(
+                                hidden_states,
+                                position_embeddings,
+                                attention_mask,
+                                past_key_values,
+                                **kwargs,
+                            )
+
+                        # If training (No Cache), use Unsloth's 2x Faster Kernel
+                        return Qwen3Attention_fast_forward(
+                            self,
+                            hidden_states,
+                            attention_mask = attention_mask,
+                            position_embeddings = position_embeddings,
+                            past_key_value = None,  # Explicitly None for training
+                            **kwargs,
+                        )
+
+                    # Apply the wrapper
+                    module.__class__.forward = _attention_wrapper
+                    patched_classes.add(module.__class__)
+
+            # Replace MLP with SwiGLU Kernels
+            # Targets: Qwen3OmniMoeThinkerTextMLP, Qwen3OmniMoeCode2WavMlp
+            if "MLP" in class_name and "Moe" not in class_name:
+                if (
+                    hasattr(module, "gate_proj")
+                    and hasattr(module, "up_proj")
+                    and hasattr(module, "down_proj")
+                ):
+                    module.__class__.forward = fast_swiglu_inference
+                    patched_classes.add(module.__class__)
+
+        return model, tokenizer
