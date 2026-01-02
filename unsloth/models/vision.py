@@ -1037,8 +1037,10 @@ class FastBaseModel:
 
             # Validate that embed_tokens/lm_head are not in target_parameters
             invalid_params = [
-                p for p in target_parameters
-                if p in ("lm_head.weight", "lm_head", "embed_tokens.weight", "embed_tokens")
+                p
+                for p in target_parameters
+                if p
+                in ("lm_head.weight", "lm_head", "embed_tokens.weight", "embed_tokens")
             ]
             if invalid_params:
                 raise ValueError(
