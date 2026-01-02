@@ -2198,6 +2198,18 @@ def _prepare_model_for_qat(
     from torchao.quantization.granularity import PerGroup, PerAxis
     from torchao.quantization.qat import QATConfig
 
+    # Gemma3 models have issues with int8 embedding quantization due to their
+    # large vocabulary size (262144). Auto-switch to int4 weight-only instead.
+    if qat_scheme == "int8-int4":
+        model_types = get_transformers_model_type(model.config)
+        is_gemma3 = any("gemma3" in mt or "gemma_3" in mt for mt in model_types)
+        if is_gemma3:
+            print(
+                "Unsloth: Gemma3 has a large vocabulary causing int8 embedding issues. "
+                "Switching to int4 weight-only QAT for training stability."
+            )
+            qat_scheme = "int4"
+
     if not isinstance(qat_scheme, TorchAOConfig):
         torchao_config: Optional[TorchAOConfig] = None
         if qat_scheme == "fp8-int4":
