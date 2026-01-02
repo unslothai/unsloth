@@ -30,16 +30,19 @@ from .import_fixes import (
     check_fbgemm_gpu_version,
     torchvision_compatibility_check,
     fix_diffusers_warnings,
+    fix_huggingface_hub,
 )
 
 fix_message_factory_issue()
 check_fbgemm_gpu_version()
 torchvision_compatibility_check()
 fix_diffusers_warnings()
+fix_huggingface_hub()
 del fix_message_factory_issue
 del check_fbgemm_gpu_version
 del torchvision_compatibility_check
 del fix_diffusers_warnings
+del fix_huggingface_hub
 
 # This check is critical because Unsloth optimizes these libraries by modifying
 # their code at import time. If they're imported first, the original (slower,

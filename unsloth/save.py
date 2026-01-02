@@ -547,7 +547,7 @@ def unsloth_save_model(
         elif mb_found:
             sharded_ram_usage = int(mb_found.group(1)) * 1024 * 1024
     elif type(max_shard_size) is int:
-        sharded_ram_usage = sharded_ram_usage
+        sharded_ram_usage = max_shard_size
 
     # Switch to our fast saving modules if it's a slow PC!
     n_cpus = psutil.cpu_count(logical = False)
