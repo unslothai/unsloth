@@ -2326,7 +2326,7 @@ class FastLlamaModel:
                 attn_implementation = "eager",
                 **kwargs,
             )
-            model.fast_generate = model.generate
+            model.fast_generate = make_fast_generate_wrapper(model.generate)
             model.fast_generate_batches = None
         else:
             from unsloth_zoo.vllm_utils import (
