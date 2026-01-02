@@ -101,7 +101,9 @@ if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") != "1":
     # Skipping import of cpp extensions due to incompatible torch version 2.9.0+cu128 for torchao version 0.15.0
     logging.getLogger("torchao").setLevel(logging.ERROR)
     # SyntaxWarning: invalid escape sequence '\.'
-    warnings.filterwarnings("ignore", message = "invalid escape sequence", category = SyntaxWarning)
+    warnings.filterwarnings(
+        "ignore", message = "invalid escape sequence", category = SyntaxWarning
+    )
 
 
 # Fix up AttributeError: 'MessageFactory' object has no attribute 'GetPrototype'
@@ -549,5 +551,8 @@ def fix_diffusers_warnings():
 def fix_huggingface_hub():
     # huggingface_hub.is_offline_mode got removed, so add it back
     import huggingface_hub
+
     if not hasattr(huggingface_hub, "is_offline_mode"):
-        huggingface_hub.is_offline_mode = lambda: huggingface_hub.constants.HF_HUB_OFFLINE
+        huggingface_hub.is_offline_mode = (
+            lambda: huggingface_hub.constants.HF_HUB_OFFLINE
+        )
