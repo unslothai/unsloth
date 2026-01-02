@@ -544,5 +544,8 @@ def fix_diffusers_warnings():
 def fix_huggingface_hub():
     # huggingface_hub.is_offline_mode got removed, so add it back
     import huggingface_hub
+
     if not hasattr(huggingface_hub, "is_offline_mode"):
-        huggingface_hub.is_offline_mode = lambda: huggingface_hub.constants.HF_HUB_OFFLINE
+        huggingface_hub.is_offline_mode = (
+            lambda: huggingface_hub.constants.HF_HUB_OFFLINE
+        )
