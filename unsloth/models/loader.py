@@ -27,7 +27,7 @@ from .llama import FastLlamaModel, logger
 from .mistral import FastMistralModel
 from .qwen2 import FastQwen2Model
 from .qwen3 import FastQwen3Model
-from .qwen3_moe import FastQwen3MoeModel
+from .qwen3_moe import FastQwen3MoeModel, FastQwen3OmniMoeModel
 from .cohere import FastCohereModel
 from transformers import AutoConfig
 from transformers import __version__ as transformers_version
@@ -453,7 +453,11 @@ class FastLanguageModel(FastLlamaModel):
             dispatch_model = FastGemma2Model
         elif model_type == "qwen2":
             dispatch_model = FastQwen2Model
-        elif model_type == "qwen3":  # or model_type == "qwen3_moe":
+        elif (
+            model_type == "qwen3"
+            or model_type == "qwen3_moe"
+            or model_type == "qwen3_omni_moe"
+        ):
             if not SUPPORTS_QWEN3 or not SUPPORTS_QWEN3_MOE:
                 raise ImportError(
                     f"Unsloth: Your transformers version of {transformers_version} does not support Qwen3.\n"
@@ -461,9 +465,12 @@ class FastLanguageModel(FastLlamaModel):
                     f'Try `pip install --upgrade "transformers>=4.50.3"`\n'
                     f"to obtain the latest transformers build, then restart this session."
                 )
-            dispatch_model = (
-                FastQwen3Model if model_type == "qwen3" else FastQwen3MoeModel
-            )
+            if model_type == "qwen3_omni_moe":
+                dispatch_model = FastQwen3OmniMoeModel
+            else:
+                dispatch_model = (
+                    FastQwen3Model if model_type == "qwen3" else FastQwen3MoeModel
+                )
         # elif model_type == "falcon_h1":
         #     dispatch_model = FastFalconH1Model
         #     if not SUPPORTS_FALCON_H1:
