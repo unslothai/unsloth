@@ -747,6 +747,7 @@ class FastBaseModel:
                 disable_log_stats = disable_log_stats,
                 use_bitsandbytes = load_in_4bit,
                 unsloth_vllm_standby = unsloth_vllm_standby,
+                revision = revision,
                 is_vision_model = is_vlm,
             )
             for allowed_arg in allowed_args:
