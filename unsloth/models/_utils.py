@@ -2386,6 +2386,7 @@ def make_fast_generate_wrapper(original_generate):
     Creates a wrapper around model.generate that checks for incorrect
     vLLM-style usage when fast_inference=False.
     """
+
     @functools.wraps(original_generate)
     def _fast_generate_wrapper(*args, **kwargs):
         # Check for vLLM-specific arguments
@@ -2419,9 +2420,9 @@ def make_fast_generate_wrapper(original_generate):
                     "when `fast_inference=True` (vLLM). Since `fast_inference=False`, you must "
                     "tokenize the input first:\n\n"
                     "  messages = tokenizer.apply_chat_template(\n"
-                    "      [{\"role\": \"user\", \"content\": \"Your prompt here\"}],\n"
+                    '      [{"role": "user", "content": "Your prompt here"}],\n'
                     "      tokenize=True, add_generation_prompt=True,\n"
-                    "      return_tensors=\"pt\", return_dict=True\n"
+                    '      return_tensors="pt", return_dict=True\n'
                     "  )\n"
                     "  output = model.fast_generate(\n"
                     "      **messages.to('cuda'),\n"
