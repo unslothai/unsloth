@@ -204,6 +204,17 @@ class FastLanguageModel(FastLlamaModel):
                     "Unsloth: Please install vLLM before enabling `fast_inference`!\n"
                     "You can do this in a terminal via `pip install vllm`"
                 )
+            if DEVICE_TYPE_TORCH == "cuda":
+                for i in range(DEVICE_COUNT):
+                    # [TODO] DGX Spark vLLM breaks
+                    if "NVIDIA GB10" in str(torch.cuda.get_device_name(i)).upper():
+                        print(
+                            "Unsloth: DGX Spark detected - `fast_inference=True` is currently broken as of January 2026.\n"
+                            "Defaulting to native Unsloth inference."
+                        )
+                        fast_inference = False
+                        break
+
         # [TODO] For now fast_inference only works with fast_inference ie vLLM
         if load_in_fp8 != False:
             if not fast_inference:
@@ -744,6 +755,17 @@ class FastModel(FastBaseModel):
                     "Unsloth: Please install vLLM before enabling `fast_inference`!\n"
                     "You can do this in a terminal via `pip install vllm`"
                 )
+            if DEVICE_TYPE_TORCH == "cuda":
+                for i in range(DEVICE_COUNT):
+                    # [TODO] DGX Spark vLLM breaks
+                    if "NVIDIA GB10" in str(torch.cuda.get_device_name(i)).upper():
+                        print(
+                            "Unsloth: DGX Spark detected - `fast_inference=True` is currently broken as of January 2026.\n"
+                            "Defaulting to native Unsloth inference."
+                        )
+                        fast_inference = False
+                        break
+
         # [TODO] For now fast_inference only works with fast_inference ie vLLM
         if load_in_fp8 != False:
             if not fast_inference:

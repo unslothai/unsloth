@@ -147,7 +147,7 @@ def unsloth_base_fast_generate(
     elif "input_ids" in kwargs:
         input_ids = kwargs["input_ids"]
     elif "input" in kwargs:
-        input_ids = kwargs["input_ids"]
+        input_ids = kwargs["input"]
     elif "input_features" in kwargs:
         input_ids = kwargs["input_features"]
     elif "input_embeds" in kwargs:
@@ -156,7 +156,7 @@ def unsloth_base_fast_generate(
         input_ids = kwargs["inputs"]
     else:
         key = next(iter(kwargs.keys()))
-        if type(kwargs["key"]) is not torch.Tensor:
+        if type(kwargs[key]) is not torch.Tensor:
             raise TypeError("Unsloth: You need to pass in input_ids to .generate!")
         input_ids = kwargs[key]
     assert type(input_ids) is torch.Tensor
@@ -673,7 +673,7 @@ class FastBaseModel:
                 **kwargs,
             )
             if hasattr(model, "generate"):
-                model.fast_generate = model.generate
+                model.fast_generate = make_fast_generate_wrapper(model.generate)
                 model.fast_generate_batches = error_out_no_vllm
             if offload_embedding:
                 if bool(
@@ -938,6 +938,7 @@ class FastBaseModel:
         task_type = TaskType.CAUSAL_LM,
         temporary_location = "_unsloth_temporary_saved_buffers",
         qat_scheme = None,
+        ensure_weight_tying = False,  # [TODO] Add `ensure_weight_tying` for `modules_to_save` for vision models
         **kwargs,
     ):
         if os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1":

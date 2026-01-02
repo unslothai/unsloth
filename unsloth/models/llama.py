@@ -2326,7 +2326,7 @@ class FastLlamaModel:
                 attn_implementation = "eager",
                 **kwargs,
             )
-            model.fast_generate = model.generate
+            model.fast_generate = make_fast_generate_wrapper(model.generate)
             model.fast_generate_batches = None
         else:
             from unsloth_zoo.vllm_utils import (
@@ -2600,6 +2600,7 @@ class FastLlamaModel:
         loftq_config = {},
         temporary_location = "_unsloth_temporary_saved_buffers",
         qat_scheme = None,
+        ensure_weight_tying = False,
         **kwargs,
     ):
         if os.environ.get("UNSLOTH_USE_NEW_MODEL", "0") == "1":
@@ -2629,6 +2630,7 @@ class FastLlamaModel:
                 init_lora_weights = init_lora_weights,
                 loftq_config = loftq_config,
                 temporary_location = temporary_location,
+                ensure_weight_tying = ensure_weight_tying,
                 **kwargs,
             )
         if os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1":
@@ -2953,6 +2955,7 @@ class FastLlamaModel:
             loftq_config = loftq_config,
             use_rslora = use_rslora,
             modules_to_save = modules_to_save,
+            ensure_weight_tying = ensure_weight_tying,
             **kwargs,
         )
         if not SUPPORTS_LOFTQ:
@@ -3001,6 +3004,55 @@ class FastLlamaModel:
         model._saved_temp_tokenizer = _saved_temp_tokenizer
 
         model = FastLlamaModel.patch_peft_model(model, use_gradient_checkpointing)
+
+        if ensure_weight_tying:
+            try:
+                input_embeddings = model.get_input_embeddings()
+                output_embeddings = model.get_output_embeddings()
+
+                if input_embeddings is not None and output_embeddings is not None:
+
+                    def _retie_parameter(target_module, source_module):
+                        if not hasattr(source_module, "weight"):
+                            return
+                        weight = source_module.weight
+                        # Remove existing registration to avoid "attribute already exists"
+                        if "weight" in getattr(target_module, "_parameters", {}):
+                            target_module._parameters.pop("weight")
+                        if hasattr(target_module, "weight"):
+                            try:
+                                delattr(target_module, "weight")
+                            except Exception as exc:
+                                logger.warning_once(
+                                    f"Unsloth: Could not delete existing weight attr during retie on "
+                                    f"{type(target_module).__name__}: {exc}"
+                                )
+                        target_module.register_parameter("weight", weight)
+
+                    # Tie trainable copies created by ModulesToSaveWrapper first (these are used in forward)
+                    if hasattr(input_embeddings, "modules_to_save") and hasattr(
+                        output_embeddings, "modules_to_save"
+                    ):
+                        if hasattr(
+                            input_embeddings.modules_to_save, "default"
+                        ) and hasattr(output_embeddings.modules_to_save, "default"):
+                            _retie_parameter(
+                                output_embeddings.modules_to_save.default,
+                                input_embeddings.modules_to_save.default,
+                            )
+
+                    # Tie original_module references as well if present
+                    if hasattr(input_embeddings, "original_module") and hasattr(
+                        output_embeddings, "original_module"
+                    ):
+                        _retie_parameter(
+                            output_embeddings.original_module,
+                            input_embeddings.original_module,
+                        )
+            except Exception as e:
+                logger.warning_once(
+                    f"Unsloth: Failed to ensure weight tying between embeddings and lm_head: {e}"
+                )
 
         if train_embed_tokens:
             print("Unsloth: Training embed_tokens in mixed precision to save VRAM")
