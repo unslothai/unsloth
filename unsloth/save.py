@@ -130,10 +130,13 @@ ALLOWED_QUANTS = {
     "q3_k_xs": "3-bit extra small quantization",
 }
 
+
 def has_curl():
     return shutil.which("curl") is not None
 
+
 CURL_FLAG = "-DLLAMA_CURL=ON" if has_curl() else "-DLLAMA_CURL=OFF"
+
 
 def print_quantization_methods():
     for key, value in ALLOWED_QUANTS.items():
