@@ -154,6 +154,9 @@ def _fast_prepare_inputs_for_generation(
     attention_mask = None,
     **kwargs,
 ):
+    # Save original 2D attention mask for position_ids calculation
+    # Must be done before any potential 4D conversion
+    original_attention_mask_2d = attention_mask
     past_key_values = kwargs.get("past_key_values", None)
     if past_key_values is not None:
         # Check for uninitialized DynamicCache
@@ -175,6 +178,8 @@ def _fast_prepare_inputs_for_generation(
             base_model = self
             if hasattr(base_model, "base_model_prefix"):
                 base_model = getattr(base_model, base_model.base_model_prefix)
+
+
 
             if hasattr(
                 base_model, "_prepare_4d_causal_attention_mask_with_cache_position"
@@ -217,6 +222,7 @@ def _fast_prepare_inputs_for_generation(
                 )
             else:
                 attention_mask = attention_mask[:, [-1]]
+                original_attention_mask_2d = attention_mask  # Update since we sliced it
                 if transformers_version <= Version("4.52.4"):
                     logger.warning_once(
                         f"{self.__class__.__name__} has no `_prepare_4d_causal_attention_mask_with_cache_position` method "
@@ -225,13 +231,21 @@ def _fast_prepare_inputs_for_generation(
                         "issue on GitHub."
                     )
 
+    # Compute position_ids from the ORIGINAL 2D attention mask (before 4D conversion)
+    # The 4D mask has float values (0/-inf) which would produce garbage position_ids
     if "cache_position" in kwargs and kwargs.get("position_ids") is None:
-        if attention_mask is not None:
-             position_ids = attention_mask.long().cumsum(-1) - 1
-             position_ids.masked_fill_(attention_mask == 0, 1)
-             kwargs["position_ids"] = position_ids[:, -input_ids.shape[1]:]
+        if past_key_values is not None and original_attention_mask_2d is not None:
+            # Use original 2D mask for left-padded batched generation
+            position_ids = original_attention_mask_2d.long().cumsum(-1) - 1
+            position_ids.masked_fill_(original_attention_mask_2d == 0, 1)
+            kwargs["position_ids"] = position_ids[:, -input_ids.shape[1] :]
+        elif attention_mask is not None and attention_mask.dim() == 2:
+            # Fallback for cases where attention_mask is still 2D
+            position_ids = attention_mask.long().cumsum(-1) - 1
+            position_ids.masked_fill_(attention_mask == 0, 1)
+            kwargs["position_ids"] = position_ids[:, -input_ids.shape[1] :]
         else:
-             kwargs["position_ids"] = kwargs["cache_position"]
+            kwargs["position_ids"] = kwargs["cache_position"]
     return {
         "input_ids": input_ids,
         "attention_mask": attention_mask,
