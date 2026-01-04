@@ -879,12 +879,12 @@ def install_llama_cpp_make_non_blocking():
     IS_CMAKE = False
     if check == 0:
         # Uses old MAKE
-        n_jobs = max(int(psutil.cpu_count() * 1.5), 1)
+        n_jobs = max(int((psutil.cpu_count() or 1) * 1.5), 1)
         full_command = ["make", "all", "-j" + str(n_jobs), "-C", "llama.cpp"]
         IS_CMAKE = False
     else:
         # Uses new CMAKE
-        n_jobs = max(int(psutil.cpu_count()), 1)  # Use less CPUs since 1.5x faster
+        n_jobs = max(int(psutil.cpu_count() or 1), 1)  # Use less CPUs since 1.5x faster
         check = os.system(
             f"cmake llama.cpp -B llama.cpp/build -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=OFF {CURL_FLAG}"
         )
@@ -994,13 +994,13 @@ def install_llama_cpp_old(version = -10):
     # Try using MAKE
     commands = [
         "make clean -C llama.cpp",
-        f"make all -j{psutil.cpu_count()*2} -C llama.cpp",
+        f"make all -j{(psutil.cpu_count() or 1)*2} -C llama.cpp",
     ]
     if try_execute(commands) == "CMAKE":
         # Instead use CMAKE
         commands = [
             f"cmake llama.cpp -B llama.cpp/build -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=OFF {CURL_FLAG}",
-            f"cmake --build llama.cpp/build --config Release -j{psutil.cpu_count()*2} --clean-first --target {' '.join(LLAMA_CPP_TARGETS)}",
+            f"cmake --build llama.cpp/build --config Release -j{(psutil.cpu_count() or 1)*2} --clean-first --target {' '.join(LLAMA_CPP_TARGETS)}",
             "cp llama.cpp/build/bin/llama-* llama.cpp",
             "rm -rf llama.cpp/build",
         ]
@@ -1040,14 +1040,14 @@ def install_llama_cpp_blocking(use_cuda = False):
         "make clean -C llama.cpp",
         # https://github.com/ggerganov/llama.cpp/issues/7062
         # Weirdly GPU conversion for GGUF breaks??
-        # f"{use_cuda} make all -j{psutil.cpu_count()*2} -C llama.cpp",
-        f"make all -j{psutil.cpu_count()*2} -C llama.cpp",
+        # f"{use_cuda} make all -j{(psutil.cpu_count() or 1)*2} -C llama.cpp",
+        f"make all -j{(psutil.cpu_count() or 1)*2} -C llama.cpp",
     ]
     if try_execute(commands) == "CMAKE":
         # Instead use CMAKE
         commands = [
             f"cmake llama.cpp -B llama.cpp/build -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=OFF {CURL_FLAG}",
-            f"cmake --build llama.cpp/build --config Release -j{psutil.cpu_count()*2} --clean-first --target {' '.join(LLAMA_CPP_TARGETS)}",
+            f"cmake --build llama.cpp/build --config Release -j{(psutil.cpu_count() or 1)*2} --clean-first --target {' '.join(LLAMA_CPP_TARGETS)}",
             "cp llama.cpp/build/bin/llama-* llama.cpp",
             "rm -rf llama.cpp/build",
         ]
