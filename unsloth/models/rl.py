@@ -875,39 +875,9 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         )
         extra_args += check_dr_grpo
 
-    # Check GRPO num_generations mismatch
-    if (
-        "per_device_train_batch_size" in call_args
-        and "num_generations" in call_args
-        and "steps_per_generation" in call_args
-        and "generation_batch_size" in call_args
-    ):
-        # if world size is not set by accelerate or torchrun at this point it will be 1
-        check_num_generations = (
-            "if steps_per_generation is None and generation_batch_size is None:\n"
-            "    ga = gradient_accumulation_steps\n"
-            "    world_size = int(os.environ.get('WORLD_SIZE', '1'))\n"
-            "    if (ga * world_size * per_device_train_batch_size) % num_generations != 0:\n"
-            "        print('Unsloth: We now expect `per_device_train_batch_size` * `gradient_accumulation_steps` * `world_size` to be a multiple of `num_generations`.\\n"
-            "We will change the batch size of ' + str(per_device_train_batch_size) + ' to the `num_generations` of ' + str(num_generations))\n"
-            "        per_device_train_batch_size = num_generations\n"
-            "\n"
-        )
-        extra_args += check_num_generations
-    elif "per_device_train_batch_size" in call_args and "num_generations" in call_args:
-        if "steps_per_generation" not in call_args:
-            print(f"Unsloth: Could not find `steps_per_generation` in {trainer_file}")
-        if "generation_batch_size" not in call_args:
-            print(f"Unsloth: Could not find `generation_batch_size` in {trainer_file}")
-
-        check_num_generations = (
-            "if (per_device_train_batch_size // num_generations) * num_generations != per_device_train_batch_size:\n"
-            "    print('Unsloth: We now expect `per_device_train_batch_size` to be a multiple of `num_generations`.\\n"
-            "We will change the batch size of ' + str(per_device_train_batch_size) + ' to the `num_generations` of ' + str(num_generations))\n"
-            "    per_device_train_batch_size = num_generations\n"
-            "\n"
-        )
-        extra_args += check_num_generations
+    # Unsloth: Removed coupling between per_device_train_batch_size and num_generations
+    # See https://github.com/unslothai/unsloth/issues/3572
+    pass
 
     # Check temperature must not be <= 0. Also stop if >= 10
     if "temperature" in call_args:
