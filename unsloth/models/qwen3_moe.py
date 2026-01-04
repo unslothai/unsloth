@@ -207,7 +207,7 @@ class FastQwen3MoeModel(FastQwen3Model):
         # https://github.com/huggingface/transformers/blob/v4.37.2/src/transformers/models/llama/modeling_llama.py\
         import transformers.models.qwen3_moe.modeling_qwen3_moe
 
-        transformers.models.Qwen3Moe.modeling_qwen3_moe.Qwen3MoeRotaryEmbedding = (
+        transformers.models.qwen3_moe.modeling_qwen3_moe.Qwen3MoeRotaryEmbedding = (
             LlamaRotaryEmbedding
         )
         return
@@ -236,7 +236,7 @@ class FastQwen3MoeModel(FastQwen3Model):
             device_map = device_map,
             rope_scaling = rope_scaling,
             fix_tokenizer = fix_tokenizer,
-            model_patcher = FastQwen3Model,
+            model_patcher = FastQwen3MoeModel,
             tokenizer_name = tokenizer_name,
             trust_remote_code = trust_remote_code,
             **kwargs,
