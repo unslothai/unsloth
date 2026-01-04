@@ -32,9 +32,6 @@ from ..utils.packing import (
 if HAS_FLASH_ATTENTION:
     from flash_attn import flash_attn_func, flash_attn_varlen_func
 HAS_XFORMERS = xformers is not None
-BlockDiagonalCausalMask = None
-if HAS_XFORMERS:
-    BlockDiagonalCausalMask = xformers.attn_bias.BlockDiagonalCausalMask
 SDPA_HAS_GQA = "enable_gqa" in (scaled_dot_product_attention.__doc__ or "")
 
 FLASH_VARLEN = "flash_varlen"
