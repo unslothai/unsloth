@@ -89,67 +89,76 @@ import functools
 import textwrap
 import logging
 import warnings, subprocess, inspect, psutil, os, math
-from unsloth_zoo.utils import Version, get_quant_type
-from importlib.metadata import version as importlib_version
-from ..device_type import (
-    is_hip,
-    get_device_type,
-    DEVICE_TYPE,
-    DEVICE_TYPE_TORCH,
-    DEVICE_COUNT,
-    ALLOW_PREQUANTIZED_MODELS,
-)
-from unsloth_zoo.log import logger
-from unsloth_zoo.tokenizer_utils import (
-    patch_tokenizer as _patch_tokenizer,
-)
-from unsloth_zoo.rl_environments import (
-    check_python_modules,
-    create_locked_down_function,
-    execute_with_time_limit,
-    Benchmarker,
-)
-from unsloth_zoo.patching_utils import (
-    patch_compiling_bitsandbytes,
-    patch_layernorm,
-    patch_torch_compile,
-    patch_model_and_tokenizer,
-    patch_compiled_autograd,
-)
-from unsloth_zoo.gradient_checkpointing import (
-    Unsloth_Offloaded_Gradient_Checkpointer,
-    unsloth_offloaded_gradient_checkpoint,
-    patch_unsloth_gradient_checkpointing,
-    unpatch_unsloth_gradient_checkpointing,
-    Unsloth_Gradient_Checkpointer,
-    unsloth_gradient_checkpoint,
-    patch_gradient_checkpointing,
-    unpatch_gradient_checkpointing,
-    patch_unsloth_smart_gradient_checkpointing,
-    unpatch_unsloth_smart_gradient_checkpointing,
-)
-from unsloth_zoo.loss_utils import (
-    HAS_CUT_CROSS_ENTROPY,
-    fused_linear_cross_entropy,
-    _unsloth_get_batch_samples,
-    unsloth_fused_ce_loss,
-)
-from unsloth_zoo.vision_utils import (
-    process_vision_info,
-)
-from unsloth_zoo.compiler import (
-    get_transformers_model_type,
-    unsloth_compile_transformers as _unsloth_compile_transformers,
-)
-from unsloth_zoo.training_utils import (
-    prepare_model_for_training,
-)
-from unsloth_zoo.temporary_patches import (
-    TEMPORARY_PATCHES,
-)
+from unsloth import devices
 
-for temporary_patch in TEMPORARY_PATCHES:
-    temporary_patch()
+if not devices.has_mps:
+    from ..device_type import (
+        is_hip,
+        get_device_type,
+        DEVICE_TYPE,
+        DEVICE_TYPE_TORCH,
+        DEVICE_COUNT,
+        ALLOW_PREQUANTIZED_MODELS,
+    )
+    from unsloth_zoo.utils import Version, get_quant_type
+    from importlib.metadata import version as importlib_version
+    from unsloth_zoo.log import logger
+    from unsloth_zoo.tokenizer_utils import (
+        patch_tokenizer as _patch_tokenizer,
+    )
+else:
+    from packaging.version import Version
+
+if not devices.has_mps:
+    from unsloth_zoo.rl_environments import (
+        check_python_modules,
+        create_locked_down_function,
+        execute_with_time_limit,
+        Benchmarker,
+    )
+    from unsloth_zoo.patching_utils import (
+        patch_compiling_bitsandbytes,
+        patch_layernorm,
+        patch_torch_compile,
+        patch_model_and_tokenizer,
+        patch_compiled_autograd,
+    )
+    from unsloth_zoo.gradient_checkpointing import (
+        Unsloth_Offloaded_Gradient_Checkpointer,
+        unsloth_offloaded_gradient_checkpoint,
+        patch_unsloth_gradient_checkpointing,
+        unpatch_unsloth_gradient_checkpointing,
+        Unsloth_Gradient_Checkpointer,
+        unsloth_gradient_checkpoint,
+        patch_gradient_checkpointing,
+        unpatch_gradient_checkpointing,
+        patch_unsloth_smart_gradient_checkpointing,
+        unpatch_unsloth_smart_gradient_checkpointing,
+    )
+
+if not devices.has_mps:
+    from unsloth_zoo.loss_utils import (
+        HAS_CUT_CROSS_ENTROPY,
+        fused_linear_cross_entropy,
+        _unsloth_get_batch_samples,
+        unsloth_fused_ce_loss,
+    )
+    from unsloth_zoo.vision_utils import (
+        process_vision_info,
+    )
+    from unsloth_zoo.compiler import (
+        get_transformers_model_type,
+        unsloth_compile_transformers as _unsloth_compile_transformers,
+    )
+    from unsloth_zoo.training_utils import (
+        prepare_model_for_training,
+    )
+    from unsloth_zoo.temporary_patches import (
+        TEMPORARY_PATCHES,
+    )
+
+    for temporary_patch in TEMPORARY_PATCHES:
+        temporary_patch()
 
 # =============================================
 # Disable some warnings which can get annoying
@@ -594,19 +603,22 @@ for model_name in model_architectures:
 # =============================================
 # torch.cuda.amp.custom_fwd is deprecated >= 2.4
 torch_version = torch.__version__
-if DEVICE_TYPE in ("cuda", "hip"):
-    if Version(torch_version) < Version("2.4.0"):
-        torch_amp_custom_fwd = torch.cuda.amp.custom_fwd
-        torch_amp_custom_bwd = torch.cuda.amp.custom_bwd
-    else:
-        torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "cuda")
-        torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "cuda")
-elif DEVICE_TYPE == "xpu":
-    if Version(torch_version) < Version("2.6.0"):
-        raise RuntimeError("torch.xpu currently only supports torch.version >= 2.6.0")
-    else:
-        torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "xpu")
-        torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "xpu")
+if not devices.has_mps:
+    if DEVICE_TYPE in ("cuda", "hip"):
+        if Version(torch_version) < Version("2.4.0"):
+            torch_amp_custom_fwd = torch.cuda.amp.custom_fwd
+            torch_amp_custom_bwd = torch.cuda.amp.custom_bwd
+        else:
+            torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "cuda")
+            torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "cuda")
+    elif DEVICE_TYPE == "xpu":
+        if Version(torch_version) < Version("2.6.0"):
+            raise RuntimeError(
+                "torch.xpu currently only supports torch.version >= 2.6.0"
+            )
+        else:
+            torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "xpu")
+            torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "xpu")
 # =============================================
 
 # =============================================
@@ -649,7 +661,9 @@ if is_openai_available():
 
 # =============================================
 # Get Flash Attention v2 if Ampere (RTX 30xx, A100)
-import bitsandbytes as bnb
+if not devices.has_mps:
+    import bitsandbytes as bnb
+
 
 from transformers import AutoTokenizer
 from transformers.utils.import_utils import _is_package_available
@@ -658,11 +672,66 @@ SUPPORTS_BFLOAT16 = False
 HAS_FLASH_ATTENTION = False
 HAS_FLASH_ATTENTION_SOFTCAPPING = False
 
-if DEVICE_TYPE == "cuda":
-    major_version, minor_version = torch.cuda.get_device_capability()
-    torch.cuda.get_device_capability = functools.cache(torch.cuda.get_device_capability)
+if not devices.has_mps:
+    if DEVICE_TYPE == "cuda":
+        major_version, minor_version = torch.cuda.get_device_capability()
+        torch.cuda.get_device_capability = functools.cache(
+            torch.cuda.get_device_capability
+        )
 
-    if major_version >= 8:
+        if major_version >= 8:
+            SUPPORTS_BFLOAT16 = True
+            if _is_package_available("flash_attn"):
+                # Check for CUDA linking errors "undefined symbol: _ZNK3c106SymIntltEl"
+                try:
+                    try:
+                        # See https://github.com/unslothai/unsloth/issues/1437
+                        from flash_attn.flash_attn_interface import flash_attn_gpu
+                    except:
+                        from flash_attn.flash_attn_interface import flash_attn_cuda
+                    HAS_FLASH_ATTENTION = True
+
+                    # Also check for softcapping
+                    from flash_attn import __version__ as flash_attn_version
+
+                    HAS_FLASH_ATTENTION_SOFTCAPPING = Version(
+                        flash_attn_version
+                    ) >= Version("2.6.3")
+                    if not HAS_FLASH_ATTENTION_SOFTCAPPING:
+                        print(
+                            "Unsloth: If you want to finetune Gemma 2, upgrade flash-attn to version 2.6.3 or higher!\n"
+                            "Newer versions support faster and less memory usage kernels for Gemma 2's attention softcapping!\n"
+                            "To update flash-attn, do the below:\n"
+                            '\npip install --no-deps --no-build-isolation --upgrade "flash-attn>=2.6.3"'
+                        )
+                except:
+                    print(
+                        "Unsloth: Your Flash Attention 2 installation seems to be broken?\n"
+                        "A possible explanation is you have a new CUDA version which isn't\n"
+                        "yet compatible with FA2? Please file a ticket to Unsloth or FA2.\n"
+                        "We shall now use Xformers instead, which does not have any performance hits!\n"
+                        "We found this negligible impact by benchmarking on 1x A100."
+                    )
+
+                    # Stop Flash Attention from importing!
+                    import transformers.utils.import_utils
+
+                    transformers.utils.import_utils.is_flash_attn_2_available = (
+                        lambda *args, **kwargs: False
+                    )
+                    import transformers.utils
+
+                    transformers.utils.is_flash_attn_2_available = (
+                        lambda *args, **kwargs: False
+                    )
+
+                    HAS_FLASH_ATTENTION = False
+            else:
+                HAS_FLASH_ATTENTION = False
+        else:
+            # Tri Dao's benchmark shows xformers is faster for now.
+            HAS_FLASH_ATTENTION = False
+    elif DEVICE_TYPE == "hip":
         SUPPORTS_BFLOAT16 = True
         if _is_package_available("flash_attn"):
             # Check for CUDA linking errors "undefined symbol: _ZNK3c106SymIntltEl"
@@ -709,58 +778,8 @@ if DEVICE_TYPE == "cuda":
                 )
 
                 HAS_FLASH_ATTENTION = False
-        else:
-            HAS_FLASH_ATTENTION = False
-    else:
-        # Tri Dao's benchmark shows xformers is faster for now.
-        HAS_FLASH_ATTENTION = False
-elif DEVICE_TYPE == "hip":
-    SUPPORTS_BFLOAT16 = True
-    if _is_package_available("flash_attn"):
-        # Check for CUDA linking errors "undefined symbol: _ZNK3c106SymIntltEl"
-        try:
-            try:
-                # See https://github.com/unslothai/unsloth/issues/1437
-                from flash_attn.flash_attn_interface import flash_attn_gpu
-            except:
-                from flash_attn.flash_attn_interface import flash_attn_cuda
-            HAS_FLASH_ATTENTION = True
-
-            # Also check for softcapping
-            from flash_attn import __version__ as flash_attn_version
-
-            HAS_FLASH_ATTENTION_SOFTCAPPING = Version(flash_attn_version) >= Version(
-                "2.6.3"
-            )
-            if not HAS_FLASH_ATTENTION_SOFTCAPPING:
-                print(
-                    "Unsloth: If you want to finetune Gemma 2, upgrade flash-attn to version 2.6.3 or higher!\n"
-                    "Newer versions support faster and less memory usage kernels for Gemma 2's attention softcapping!\n"
-                    "To update flash-attn, do the below:\n"
-                    '\npip install --no-deps --no-build-isolation --upgrade "flash-attn>=2.6.3"'
-                )
-        except:
-            print(
-                "Unsloth: Your Flash Attention 2 installation seems to be broken?\n"
-                "A possible explanation is you have a new CUDA version which isn't\n"
-                "yet compatible with FA2? Please file a ticket to Unsloth or FA2.\n"
-                "We shall now use Xformers instead, which does not have any performance hits!\n"
-                "We found this negligible impact by benchmarking on 1x A100."
-            )
-
-            # Stop Flash Attention from importing!
-            import transformers.utils.import_utils
-
-            transformers.utils.import_utils.is_flash_attn_2_available = (
-                lambda *args, **kwargs: False
-            )
-            import transformers.utils
-
-            transformers.utils.is_flash_attn_2_available = lambda *args, **kwargs: False
-
-            HAS_FLASH_ATTENTION = False
-elif DEVICE_TYPE == "xpu":
-    SUPPORTS_BFLOAT16 = True
+    elif DEVICE_TYPE == "xpu":
+        SUPPORTS_BFLOAT16 = True
 
 # =============================================
 # Get Xformers
@@ -919,7 +938,10 @@ UNSLOTH_COMPILE_IGNORE_ERRORS = (
     os.environ.get("UNSLOTH_COMPILE_IGNORE_ERRORS", "1") == "1"
 )
 # Just remove max_autotune_gemm warning
-from torch._inductor.runtime.hints import DeviceProperties
+import functools
+
+if not devices.has_mps:
+    from torch._inductor.runtime.hints import DeviceProperties
 
 
 @functools.lru_cache(None)
@@ -944,11 +966,12 @@ def is_big_gpu(index) -> bool:
 import torch._inductor.utils
 
 torch._inductor.utils.is_big_gpu = is_big_gpu
-patch_torch_compile(
-    debug = UNSLOTH_COMPILE_DEBUG,
-    O3 = UNSLOTH_COMPILE_MAXIMUM,
-    ignore_errors = UNSLOTH_COMPILE_IGNORE_ERRORS,
-)
+if not devices.has_mps:
+    patch_torch_compile(
+        debug = UNSLOTH_COMPILE_DEBUG,
+        O3 = UNSLOTH_COMPILE_MAXIMUM,
+        ignore_errors = UNSLOTH_COMPILE_IGNORE_ERRORS,
+    )
 
 torch_compile_options = {
     "epilogue_fusion": True,
@@ -1266,18 +1289,19 @@ BitsAndBytesConfig__init__ = BitsAndBytesConfig__init__.replace(
 )
 exec(BitsAndBytesConfig__init__, globals())
 
-if DEVICE_COUNT == 1:
-    from accelerate.utils.dataclasses import DistributedType
+if not devices.has_mps:
+    if DEVICE_COUNT == 1:
+        from accelerate.utils.dataclasses import DistributedType
 
-    def _prepare_backend(self, *args, **kwargs):
-        return None, DistributedType.NO
+        def _prepare_backend(self, *args, **kwargs):
+            return None, DistributedType.NO
 
-    import accelerate.state
+        import accelerate.state
 
-    accelerate.state.PartialState._prepare_backend = _prepare_backend
-    accelerate.accelerator.Accelerator.distributed_type = (
-        lambda *args, **kwargs: DistributedType.NO
-    )
+        accelerate.state.PartialState._prepare_backend = _prepare_backend
+        accelerate.accelerator.Accelerator.distributed_type = (
+            lambda *args, **kwargs: DistributedType.NO
+        )
 
 
 # to move multiple tensors to the same device

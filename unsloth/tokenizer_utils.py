@@ -24,6 +24,7 @@ import itertools
 import collections
 import numpy as np
 import gc
+from unsloth import devices
 import subprocess
 import psutil
 

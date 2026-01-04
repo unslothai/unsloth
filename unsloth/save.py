@@ -12,20 +12,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from unsloth_zoo.utils import Version
-from importlib.metadata import version as importlib_version
-from unsloth_zoo.hf_utils import dtype_from_config, HAS_TORCH_DTYPE
-from unsloth_zoo.llama_cpp import (
-    convert_to_gguf,
-    quantize_gguf,
-    use_local_gguf,
-    install_llama_cpp,
-    check_llama_cpp,
-    _download_convert_hf_to_gguf,
-)
-from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
-from peft.tuners.lora import Linear4bit as Peft_Linear4bit
-from peft.tuners.lora import Linear as Peft_Linear
+from unsloth.devices import has_mps
+
+if not has_mps():
+    from unsloth_zoo.utils import Version
+    from importlib.metadata import version as importlib_version
+    from unsloth_zoo.hf_utils import dtype_from_config, HAS_TORCH_DTYPE
+    from unsloth_zoo.llama_cpp import (
+        convert_to_gguf,
+        quantize_gguf,
+        use_local_gguf,
+        install_llama_cpp,
+        check_llama_cpp,
+        _download_convert_hf_to_gguf,
+    )
+    from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
+    from peft.tuners.lora import Linear4bit as Peft_Linear4bit
+    from peft.tuners.lora import Linear as Peft_Linear
+    from .kernels import fast_dequantize, QUANT_STATE, get_lora_parameters_bias
+else:
+    from packaging.version import Version
 from typing import Optional, Callable, Union, List
 import sys
 import requests
@@ -35,12 +41,13 @@ import shutil
 import pickle
 import gc
 from transformers.models.llama.modeling_llama import logger
-from .kernels import fast_dequantize, QUANT_STATE, get_lora_parameters_bias
 import subprocess
 import psutil
 import re
 from transformers.models.llama.modeling_llama import logger
-from .tokenizer_utils import fix_sentencepiece_gguf
+
+if not has_mps():
+    from .tokenizer_utils import fix_sentencepiece_gguf
 from .models.loader_utils import get_model_name
 from .models._utils import _convert_torchao_model
 from .ollama_template_mappers import OLLAMA_TEMPLATES, MODEL_TO_OLLAMA_TEMPLATE_MAPPER
@@ -2513,14 +2520,16 @@ def unsloth_convert_lora_to_ggml_and_save_locally(
 
 
 from .models.loader_utils import get_model_name
-from unsloth_zoo.saving_utils import (
-    merge_and_overwrite_lora,
-    prepare_saving,
-)
-from unsloth_zoo.llama_cpp import (
-    install_llama_cpp,
-    convert_to_gguf as _convert_to_gguf,
-)
+
+if not has_mps():
+    from unsloth_zoo.saving_utils import (
+        merge_and_overwrite_lora,
+        prepare_saving,
+    )
+    from unsloth_zoo.llama_cpp import (
+        install_llama_cpp,
+        convert_to_gguf as _convert_to_gguf,
+    )
 
 
 @torch.inference_mode
