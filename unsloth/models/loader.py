@@ -625,7 +625,9 @@ class FastLanguageModel(FastLlamaModel):
             else:
                 # Preserve BitsAndBytesConfig if provided
                 if hasattr(quantization_config, "to_dict"):
-                    model.config.update({"quantization_config": quantization_config.to_dict()})
+                    model.config.update(
+                        {"quantization_config": quantization_config.to_dict()}
+                    )
                 elif isinstance(quantization_config, dict):
                     model.config.update({"quantization_config": quantization_config})
 
