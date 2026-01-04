@@ -234,7 +234,10 @@ from transformers.training_args import ParallelMode
 # Also patches W&B since multiple runs must use wandb.finish()
 import functools
 from types import MethodType
-from unsloth_zoo.gradient_checkpointing import reset_unsloth_gradient_checkpointing_buffers
+try:
+    from unsloth_zoo.gradient_checkpointing import reset_unsloth_gradient_checkpointing_buffers
+except:
+    def reset_unsloth_gradient_checkpointing_buffers(): pass
 def prepare_for_training_mode(f):
     @functools.wraps(f)
     def wrapper(self, *args, **kwargs):
