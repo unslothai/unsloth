@@ -225,8 +225,13 @@ def _fast_prepare_inputs_for_generation(
                         "issue on GitHub."
                     )
 
-    if "cache_position" in kwargs:
-        kwargs["position_ids"] = kwargs["cache_position"]
+    if "cache_position" in kwargs and kwargs.get("position_ids") is None:
+        if attention_mask is not None:
+             position_ids = attention_mask.long().cumsum(-1) - 1
+             position_ids.masked_fill_(attention_mask == 0, 1)
+             kwargs["position_ids"] = position_ids[:, -input_ids.shape[1]:]
+        else:
+             kwargs["position_ids"] = kwargs["cache_position"]
     return {
         "input_ids": input_ids,
         "attention_mask": attention_mask,
