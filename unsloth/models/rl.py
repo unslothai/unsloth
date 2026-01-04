@@ -877,7 +877,6 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
 
     # Unsloth: Removed coupling between per_device_train_batch_size and num_generations
     # See https://github.com/unslothai/unsloth/issues/3572
-    pass
 
     # Check temperature must not be <= 0. Also stop if >= 10
     if "temperature" in call_args:
