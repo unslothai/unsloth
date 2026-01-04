@@ -31,6 +31,7 @@ Happy fine-tuning!
 
 import argparse
 import os
+from typing import Optional
 
 
 def run(args):
@@ -111,6 +112,10 @@ def run(args):
     print("Data is formatted and ready!")
 
     # Configure training arguments
+    pad_multiple = args.pad_to_multiple_of
+    if pad_multiple is None and args.context_parallel_size > 1:
+        pad_multiple = 2 * args.context_parallel_size
+
     training_args = SFTConfig(
         per_device_train_batch_size = args.per_device_train_batch_size,
         per_device_eval_batch_size = args.per_device_eval_batch_size,
@@ -131,6 +136,9 @@ def run(args):
         dataset_num_proc = 2,
         ddp_find_unused_parameters = False if distributed else None,
         packing = args.packing,
+        context_parallel_size = args.context_parallel_size,
+        pad_to_multiple_of = pad_multiple,
+        shuffle_dataset = args.shuffle_dataset,
     )
 
     # Initialize trainer
@@ -337,6 +345,32 @@ if __name__ == "__main__":
         "--packing",
         action = "store_true",
         help = "Enable padding-free sample packing via TRL's bin packer.",
+    )
+    training_group.add_argument(
+        "--pad_to_multiple_of",
+        type = int,
+        default = None,
+        help = (
+            "Pad every batch to a multiple of this value. "
+            "Defaults to `2 * context_parallel_size` when context parallelism is enabled."
+        ),
+    )
+    training_group.add_argument(
+        "--shuffle_dataset",
+        action = argparse.BooleanOptionalAction,
+        default = True,
+        help = "Shuffle the dataset during training (default: True).",
+    )
+
+    context_group = parser.add_argument_group("🧩 Context Parallelism")
+    context_group.add_argument(
+        "--context_parallel_size",
+        type = int,
+        default = 1,
+        help = (
+            "Number of distributed ranks participating in PyTorch context parallelism. "
+            "Set >1 only when running with torch.distributed initialized on PyTorch >= 2.7."
+        ),
     )
 
     report_group = parser.add_argument_group("📊 Report Options")

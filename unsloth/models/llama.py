@@ -16,6 +16,7 @@ import torch
 import gc
 import math
 import functools
+import os
 from typing import Optional, Tuple, List, Union
 
 from ._utils import *
@@ -26,6 +27,7 @@ from ._utils import (
     _get_inference_mode_context_manager,
     _prepare_model_for_qat,
 )
+import torch.nn.functional as F
 from ..utils.packing import (
     get_packed_info_from_kwargs,
     mask_packed_sequence_boundaries,
@@ -72,6 +74,8 @@ from transformers.modeling_attn_mask_utils import (
 )
 from ..kernels import *
 from ..tokenizer_utils import *
+from ..context_parallel import get_cp_manager
+
 from .vision import FastBaseModel
 
 # Final patching code
@@ -144,7 +148,7 @@ from math import sqrt as math_sqrt
 KV_CACHE_INCREMENT = 512  # KV Cache update size
 torch_nn_functional_softmax = torch.nn.functional.softmax
 # SDPA has GQA internally
-SDPA_HAS_GQA = "enable_gqa" in scaled_dot_product_attention.__doc__
+SDPA_HAS_GQA = "enable_gqa" in F.scaled_dot_product_attention.__doc__
 
 
 # Fix new HF's inference code
@@ -431,7 +435,7 @@ def LlamaAttention_fast_forward_inference(
         A = torch_matmul(A, Vnn, out = Qn)
     else:
         if SDPA_HAS_GQA:
-            A = scaled_dot_product_attention(
+            A = F.scaled_dot_product_attention(
                 Qn,
                 Knn,
                 Vnn,
@@ -440,7 +444,7 @@ def LlamaAttention_fast_forward_inference(
                 enable_gqa = True,
             )
         else:
-            A = scaled_dot_product_attention(
+            A = F.scaled_dot_product_attention(
                 Qn, Knn, Vnn, attn_mask = attention_mask, is_causal = is_causal
             )
     A = A.transpose(1, 2)
@@ -567,6 +571,10 @@ def LlamaAttention_fast_forward(
     head_dim = self.head_dim
     assert n_kv_heads * n_groups == n_heads
 
+    cp_manager = get_cp_manager()
+    cp_active = cp_manager is not None
+    cp_size = cp_manager.settings.size if cp_manager else 1
+    cp_rank_index = cp_manager.cp_rank_index if cp_manager else 0
     Q, K, V = self.apply_qkv(self, hidden_states)
     Q = Q.view(bsz, q_len, n_heads, head_dim).transpose(1, 2)
     K = K.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
@@ -577,23 +585,64 @@ def LlamaAttention_fast_forward(
     if past_key_value is not None:
         kv_seq_len += past_key_value[0].shape[-2]
 
-    if position_embeddings and kv_seq_len <= position_embeddings[0].shape[0]:
+    required_seq_len = kv_seq_len
+    if isinstance(position_ids, torch.Tensor) and position_ids.numel() > 0:
+        max_position = int(position_ids.max().item()) + 1
+        required_seq_len = max(required_seq_len, max_position)
+    elif cp_active and cp_size > 1:
+        required_seq_len = max(required_seq_len, q_len * cp_size)
+
+    if (
+        position_embeddings
+        and required_seq_len <= position_embeddings[0].shape[0]
+        and required_seq_len <= position_embeddings[1].shape[0]
+    ):
         cos, sin = position_embeddings
     else:
         rotary_emb = self.rotary_emb
-        rotary_emb.extend_rope_embedding(V, seq_len = kv_seq_len)
-        cos, sin = rotary_emb.get_cached(kv_seq_len, Q.device.index)
+        rotary_emb.extend_rope_embedding(V, seq_len = required_seq_len)
+        cos, sin = rotary_emb.get_cached(required_seq_len, Q.device.index)
 
+    # For padding-free/packing, get position_ids from kwargs if not provided
+    # (TRL's collator puts them there when padding_free=True)
     rope_position_ids = position_ids
     if rope_position_ids is None and seq_info is not None:
         rope_position_ids = kwargs.get("position_ids")
 
-    # Q, K = (
-    #     fast_rope_embedding(Q, K, cos, sin)
-    #     if rope_position_ids is None
-    #     else inplace_rope_embedding(Q, K, cos, sin, rope_position_ids)
-    # )
-    Q, K = fast_rope_embedding(Q, K, cos, sin, rope_position_ids)
+    def _slice_rope_frequencies(
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        target_len = q_len
+        if isinstance(rope_position_ids, torch.Tensor):
+            ids = rope_position_ids
+            if ids.ndim > 1:
+                flat_ids = ids.view(-1, ids.shape[-1])
+                if flat_ids.shape[0] > 1:
+                    all_equal = torch.all(flat_ids == flat_ids[0]).item()
+                    if not all_equal:
+                        raise RuntimeError(
+                            "fast_rope_embedding requires identical position_ids across the batch."
+                        )
+                ids = flat_ids[0]
+            ids = ids.to(device = cos.device, dtype = torch.long)
+            ids = ids[..., -target_len:]
+            cos_slice = cos.index_select(0, ids)
+            sin_slice = sin.index_select(0, ids)
+            return cos_slice, sin_slice
+        start = 0
+        if cp_active and cp_size > 1:
+            start = cp_rank_index * target_len
+        if cos.shape[0] < start + target_len or sin.shape[0] < start + target_len:
+            raise RuntimeError(
+                "RoPE cache is smaller than the requested context-parallel slice."
+            )
+        cos_slice = cos.narrow(0, start, target_len)
+        sin_slice = sin.narrow(0, start, target_len)
+        return cos_slice, sin_slice
+
+    cos, sin = _slice_rope_frequencies(cos, sin)
+    Q, K = fast_rope_embedding(Q, K, cos, sin)
 
     if past_key_value is not None:
         K = torch.cat([past_key_value[0], K], dim = 2)
@@ -621,7 +670,6 @@ def LlamaAttention_fast_forward(
         attention_mask = attention_mask,
         causal_mask = causal_mask,
     )
-
     A = run_attention(config = config, context = context, Q = Q, K = K, V = V)
     attn_output = A.reshape(bsz, q_len, n_heads * head_dim)
     attn_output = self.apply_o(self, attn_output)
@@ -1257,6 +1305,7 @@ def CausalLM_fast_forward(fast_forward_inference):
         past_key_values: Optional[List[torch.FloatTensor]] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         labels: Optional[torch.LongTensor] = None,
+        shift_labels: Optional[torch.LongTensor] = None,
         use_cache: Optional[bool] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
@@ -1323,6 +1372,24 @@ def CausalLM_fast_forward(fast_forward_inference):
         hidden_states = hidden_states.to(lm_head_device)
         if labels is not None:
             labels = labels.to(lm_head_device)
+        if shift_labels is not None:
+            shift_labels = shift_labels.to(lm_head_device)
+
+        has_pre_shift_labels = torch.is_tensor(shift_labels)
+        shift_label_cache: Optional[torch.Tensor] = None
+
+        def _get_shift_labels():
+            nonlocal shift_label_cache
+            if shift_label_cache is not None:
+                return shift_label_cache
+            if has_pre_shift_labels:
+                shift_label_cache = shift_labels
+            elif labels is not None:
+                cached = torch.empty_like(labels)
+                cached[..., :-1] = labels[..., 1:]
+                cached[..., -1] = -100
+                shift_label_cache = cached
+            return shift_label_cache
 
         # Output last hidden states without logits if asked
         if os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") == "1":
@@ -1365,18 +1432,22 @@ def CausalLM_fast_forward(fast_forward_inference):
                 #     num_items_in_batch = n_items,
                 #     logit_softcapping  = logit_softcapping,
                 # )
+                effective_labels = (
+                    _get_shift_labels() if has_pre_shift_labels else labels
+                )
                 loss = unsloth_fused_ce_loss(
                     trainer = None,
                     hidden_states = hidden_states,
                     lm_head_weight = lm_head,
                     lm_head_bias = None,
-                    labels = labels,
+                    labels = effective_labels,
                     mask = None,
                     n_items = n_items,
                     scaling = getattr(self, "accelerator_scaler", None),
                     target_gb = None,
                     torch_compile = True,
                     logit_softcapping = logit_softcapping,
+                    shift_labels = not has_pre_shift_labels,
                 )
                 if not return_dict:
                     output = (logits,) + outputs[1:]
@@ -1406,26 +1477,25 @@ def CausalLM_fast_forward(fast_forward_inference):
         elif self.config.model_type == "falcon_h1":
             logit_scaling = self.config.lm_head_multiplier
 
-        if labels is not None:
+        if labels is not None or has_pre_shift_labels:
             shift_logits = logits
-            # if not hasattr(self, "extra_ignored_labels"):
-            #     # Fixes https://github.com/unslothai/unsloth/issues/10
-            #     self.extra_ignored_labels = torch.full((self.max_seq_length, 1), -100, device = "cuda:0")
-            # pass
-            shift_labels = torch.empty_like(labels)
-            shift_labels[..., :-1] = labels[..., 1:]
-            shift_labels[..., -1] = -100
-            mask_packed_sequence_boundaries(
-                shift_labels,
-                kwargs.get("packed_seq_lengths"),
-            )
-            # shift_labels = torch.hstack((labels[..., 1:], self.extra_ignored_labels[:labels.shape[0]]))
+            loss_shift_labels = _get_shift_labels()
+            # Mask packed sequence boundaries for padding-free/packing modes.
+            # Skip if has_pre_shift_labels (CP already masked boundaries pre-sharding).
+            if (
+                not has_pre_shift_labels
+                and kwargs.get("packed_seq_lengths") is not None
+            ):
+                mask_packed_sequence_boundaries(
+                    loss_shift_labels,
+                    kwargs.get("packed_seq_lengths"),
+                )
             n_items = kwargs.get("num_items_in_batch", None)
             if n_items is None:
                 n_items = kwargs.get("n_items", None)
             loss = fast_cross_entropy_loss(
                 logits = shift_logits,
-                labels = shift_labels,
+                labels = loss_shift_labels,
                 logit_softcapping = logit_softcapping,
                 logit_scaling = logit_scaling,
                 n_items = n_items,
@@ -1468,6 +1538,7 @@ def PeftModel_fast_forward(
     attention_mask = None,
     inputs_embeds = None,
     labels = None,
+    shift_labels = None,
     output_attentions = None,
     output_hidden_states = None,
     return_dict = None,
@@ -1489,6 +1560,9 @@ def PeftModel_fast_forward(
             **kwargs,
         )
     else:
+        # Only pass shift_labels if set (for context parallelism)
+        if shift_labels is not None:
+            kwargs["shift_labels"] = shift_labels
         return self.base_model(
             input_ids = input_ids,
             causal_mask = causal_mask,
@@ -2056,7 +2130,17 @@ class FastLlamaModel:
         LlamaForCausalLM.forward = CausalLM_fast_forward(
             LlamaModel_fast_forward_inference
         )
+        setattr(
+            LlamaForCausalLM,
+            "_unsloth_supports_context_parallel_shift_labels",
+            True,
+        )
         PeftModelForCausalLM.forward = PeftModel_fast_forward
+        setattr(
+            PeftModelForCausalLM,
+            "_unsloth_supports_context_parallel_shift_labels",
+            True,
+        )
         fix_prepare_inputs_for_generation(LlamaForCausalLM)
 
         # Solves https://github.com/unslothai/unsloth/issues/168

@@ -21,9 +21,10 @@ from dataclasses import dataclass
 from typing import Any, Optional, Tuple
 
 from torch import Tensor
-from torch.nn.functional import scaled_dot_product_attention
+import torch.nn.functional as F
 
 from ..models._utils import *
+from ..context_parallel import get_cp_manager
 from ..utils.packing import (
     build_sdpa_packed_attention_mask,
     build_xformers_block_causal_mask,
@@ -35,12 +36,14 @@ HAS_XFORMERS = xformers is not None
 BlockDiagonalCausalMask = None
 if HAS_XFORMERS:
     BlockDiagonalCausalMask = xformers.attn_bias.BlockDiagonalCausalMask
-SDPA_HAS_GQA = "enable_gqa" in (scaled_dot_product_attention.__doc__ or "")
+SDPA_HAS_GQA = "enable_gqa" in (F.scaled_dot_product_attention.__doc__ or "")
 
 FLASH_VARLEN = "flash_varlen"
 FLASH_DENSE = "flash_dense"
 XFORMERS = "xformers"
 SDPA = "sdpa"
+
+_CP_SDPA_FALLBACK_LOGGED = False
 
 
 XFORMERS_BLOCK_DIAG_CLS = (
@@ -87,6 +90,21 @@ class AttentionContext:
 
 def select_attention_backend(use_varlen: bool = False) -> str:
     """Return attention backend based on availability / priority order."""
+
+    # Context parallelism requires SDPA
+    # TODO(djsaunde): integrate ring-flash-attn for FA CP support
+    cp_manager = get_cp_manager()
+    if cp_manager is not None:
+        if use_varlen:
+            raise ValueError(
+                "Context parallelism does not support varlen/packing mode. "
+                "Disable packing or set context_parallel_size=1."
+            )
+        global _CP_SDPA_FALLBACK_LOGGED
+        if not _CP_SDPA_FALLBACK_LOGGED:
+            print("Unsloth: Context parallelism requires SDPA backend).")
+            _CP_SDPA_FALLBACK_LOGGED = True
+        return SDPA
 
     if HAS_FLASH_ATTENTION:
         if use_varlen:
@@ -251,7 +269,7 @@ def run_attention(
 
         if SDPA_HAS_GQA:
             kwargs.setdefault("enable_gqa", config.n_groups != 1)
-            out = scaled_dot_product_attention(Q, K, V, **kwargs)
+            out = F.scaled_dot_product_attention(Q, K, V, **kwargs)
             return out.transpose(1, 2)
 
         K_mod = K
@@ -266,7 +284,7 @@ def run_attention(
             K_mod = K_mod.reshape(bsz, n_heads, kv_seq_len, head_dim)
             V_mod = V_mod.reshape(bsz, n_heads, kv_seq_len, head_dim)
 
-        out = scaled_dot_product_attention(
+        out = F.scaled_dot_product_attention(
             Q.contiguous(),
             K_mod.contiguous(),
             V_mod.contiguous(),
