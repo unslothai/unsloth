@@ -14,6 +14,7 @@
 
 import logging
 import os
+import psutil
 import warnings
 from dataclasses import dataclass, field
 from typing import Optional
