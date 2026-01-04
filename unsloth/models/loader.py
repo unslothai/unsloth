@@ -154,10 +154,16 @@ class FastLanguageModel(FastLlamaModel):
         # Respect user-provided quantization_config (e.g. BitsAndBytesConfig)
         quantization_config = kwargs.get("quantization_config", None)
         if quantization_config is not None:
-            if getattr(quantization_config, "load_in_4bit", False):
+            if isinstance(quantization_config, dict):
+                q_load_in_4bit = quantization_config.get("load_in_4bit", False)
+                q_load_in_8bit = quantization_config.get("load_in_8bit", False)
+            else:
+                q_load_in_4bit = getattr(quantization_config, "load_in_4bit", False)
+                q_load_in_8bit = getattr(quantization_config, "load_in_8bit", False)
+            if q_load_in_4bit:
                 load_in_4bit = True
                 load_in_8bit = False
-            if getattr(quantization_config, "load_in_8bit", False):
+            if q_load_in_8bit:
                 load_in_8bit = True
                 load_in_4bit = False
 
@@ -734,10 +740,16 @@ class FastModel(FastBaseModel):
         # Respect user-provided quantization_config (e.g. BitsAndBytesConfig)
         quantization_config = kwargs.get("quantization_config", None)
         if quantization_config is not None:
-            if getattr(quantization_config, "load_in_4bit", False):
+            if isinstance(quantization_config, dict):
+                q_load_in_4bit = quantization_config.get("load_in_4bit", False)
+                q_load_in_8bit = quantization_config.get("load_in_8bit", False)
+            else:
+                q_load_in_4bit = getattr(quantization_config, "load_in_4bit", False)
+                q_load_in_8bit = getattr(quantization_config, "load_in_8bit", False)
+            if q_load_in_4bit:
                 load_in_4bit = True
                 load_in_8bit = False
-            if getattr(quantization_config, "load_in_8bit", False):
+            if q_load_in_8bit:
                 load_in_8bit = True
                 load_in_4bit = False
 
