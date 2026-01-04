@@ -167,12 +167,6 @@ class FastLanguageModel(FastLlamaModel):
                 load_in_8bit = True
                 load_in_4bit = False
 
-        load_in_4bit_kwargs = load_in_4bit
-        load_in_8bit_kwargs = load_in_8bit
-        if quantization_config is not None:
-            load_in_4bit_kwargs = False
-            load_in_8bit_kwargs = False
-
         # Login to allow private models
         token = hf_login(token)
         # Align dtype with bnb_4bit_compute_dtype if provided and dtype is unset.
@@ -581,6 +575,12 @@ class FastLanguageModel(FastLlamaModel):
         if fast_inference:
             fast_inference, model_name = fast_inference_setup(model_name, model_config)
 
+        load_in_4bit_kwargs = load_in_4bit
+        load_in_8bit_kwargs = load_in_8bit
+        if quantization_config is not None and not fast_inference:
+            load_in_4bit_kwargs = False
+            load_in_8bit_kwargs = False
+
         model, tokenizer = dispatch_model.from_pretrained(
             model_name = model_name,
             max_seq_length = max_seq_length,
@@ -752,12 +752,6 @@ class FastModel(FastBaseModel):
             if q_load_in_8bit:
                 load_in_8bit = True
                 load_in_4bit = False
-
-        load_in_4bit_kwargs = load_in_4bit
-        load_in_8bit_kwargs = load_in_8bit
-        if quantization_config is not None:
-            load_in_4bit_kwargs = False
-            load_in_8bit_kwargs = False
 
         # Login to allow private models
         token = hf_login(token)
@@ -1254,6 +1248,12 @@ class FastModel(FastBaseModel):
         is_vlm = is_vlm or hasattr(model_config, "vision_config")
         if auto_model is None:
             auto_model = AutoModelForVision2Seq if is_vlm else AutoModelForCausalLM
+
+        load_in_4bit_kwargs = load_in_4bit
+        load_in_8bit_kwargs = load_in_8bit
+        if quantization_config is not None and not fast_inference:
+            load_in_4bit_kwargs = False
+            load_in_8bit_kwargs = False
 
         model, tokenizer = FastBaseModel.from_pretrained(
             model_name = model_name,
