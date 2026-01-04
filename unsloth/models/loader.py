@@ -151,8 +151,41 @@ class FastLanguageModel(FastLlamaModel):
         *args,
         **kwargs,
     ):
+        # Respect user-provided quantization_config (e.g. BitsAndBytesConfig)
+        quantization_config = kwargs.get("quantization_config", None)
+        if quantization_config is not None:
+            if getattr(quantization_config, "load_in_4bit", False):
+                load_in_4bit = True
+                load_in_8bit = False
+            if getattr(quantization_config, "load_in_8bit", False):
+                load_in_8bit = True
+                load_in_4bit = False
+
+        load_in_4bit_kwargs = load_in_4bit
+        load_in_8bit_kwargs = load_in_8bit
+        if quantization_config is not None:
+            load_in_4bit_kwargs = False
+            load_in_8bit_kwargs = False
+
         # Login to allow private models
         token = hf_login(token)
+        # Align dtype with bnb_4bit_compute_dtype if provided and dtype is unset.
+        if dtype is None and quantization_config is not None:
+            bnb_compute_dtype = None
+            if isinstance(quantization_config, dict):
+                if quantization_config.get("load_in_4bit", False):
+                    bnb_compute_dtype = quantization_config.get(
+                        "bnb_4bit_compute_dtype", None
+                    )
+            else:
+                if getattr(quantization_config, "load_in_4bit", False):
+                    bnb_compute_dtype = getattr(
+                        quantization_config, "bnb_4bit_compute_dtype", None
+                    )
+            if isinstance(bnb_compute_dtype, str):
+                bnb_compute_dtype = getattr(torch, bnb_compute_dtype, None)
+            if isinstance(bnb_compute_dtype, torch.dtype):
+                dtype = bnb_compute_dtype
         if load_in_8bit or full_finetuning or qat_scheme is not None:
             return FastModel.from_pretrained(
                 model_name = model_name,
@@ -546,7 +579,7 @@ class FastLanguageModel(FastLlamaModel):
             model_name = model_name,
             max_seq_length = max_seq_length,
             dtype = _get_dtype(dtype),
-            load_in_4bit = load_in_4bit,
+            load_in_4bit = load_in_4bit_kwargs,
             token = token,
             device_map = device_map,
             rope_scaling = rope_scaling,
@@ -583,22 +616,30 @@ class FastLanguageModel(FastLlamaModel):
             )
 
         if load_in_4bit:
-            # Fix up bitsandbytes config
-            compute_dtype = dtype_from_config(model.config)
-            quantization_config = {
-                # Sometimes compute_dtype is not a string!!
-                "bnb_4bit_compute_dtype": compute_dtype,
-                "bnb_4bit_quant_type": "nf4",
-                "bnb_4bit_use_double_quant": True,
-                "llm_int8_enable_fp32_cpu_offload": False,
-                "llm_int8_has_fp16_weight": False,
-                "llm_int8_skip_modules": None,
-                "llm_int8_threshold": 6.0,
-                "load_in_4bit": True,
-                "load_in_8bit": False,
-                "quant_method": "bitsandbytes",
-            }
-            model.config.update({"quantization_config": quantization_config})
+            # Fix up bitsandbytes config, but respect user-provided quantization_config
+            if quantization_config is None:
+                compute_dtype = dtype_from_config(model.config)
+                quantization_config = {
+                    # Sometimes compute_dtype is not a string!!
+                    "bnb_4bit_compute_dtype": compute_dtype,
+                    "bnb_4bit_quant_type": "nf4",
+                    "bnb_4bit_use_double_quant": True,
+                    "llm_int8_enable_fp32_cpu_offload": False,
+                    "llm_int8_has_fp16_weight": False,
+                    "llm_int8_skip_modules": None,
+                    "llm_int8_threshold": 6.0,
+                    "load_in_4bit": True,
+                    "load_in_8bit": False,
+                    "quant_method": "bitsandbytes",
+                }
+                model.config.update({"quantization_config": quantization_config})
+            else:
+                if hasattr(quantization_config, "to_dict"):
+                    model.config.update(
+                        {"quantization_config": quantization_config.to_dict()}
+                    )
+                elif isinstance(quantization_config, dict):
+                    model.config.update({"quantization_config": quantization_config})
 
         if load_in_fp8 != False:
             _tag_model_with_fp8_torchao_config(model, fp8_mode)
@@ -690,12 +731,45 @@ class FastModel(FastBaseModel):
         *args,
         **kwargs,
     ):
+        # Respect user-provided quantization_config (e.g. BitsAndBytesConfig)
+        quantization_config = kwargs.get("quantization_config", None)
+        if quantization_config is not None:
+            if getattr(quantization_config, "load_in_4bit", False):
+                load_in_4bit = True
+                load_in_8bit = False
+            if getattr(quantization_config, "load_in_8bit", False):
+                load_in_8bit = True
+                load_in_4bit = False
+
+        load_in_4bit_kwargs = load_in_4bit
+        load_in_8bit_kwargs = load_in_8bit
+        if quantization_config is not None:
+            load_in_4bit_kwargs = False
+            load_in_8bit_kwargs = False
+
         # Login to allow private models
         token = hf_login(token)
         if whisper_language is not None:
             assert type(whisper_language) is str
         if whisper_task is not None:
             assert type(whisper_task) is str
+        # Align dtype with bnb_4bit_compute_dtype if provided and dtype is unset.
+        if dtype is None and quantization_config is not None:
+            bnb_compute_dtype = None
+            if isinstance(quantization_config, dict):
+                if quantization_config.get("load_in_4bit", False):
+                    bnb_compute_dtype = quantization_config.get(
+                        "bnb_4bit_compute_dtype", None
+                    )
+            else:
+                if getattr(quantization_config, "load_in_4bit", False):
+                    bnb_compute_dtype = getattr(
+                        quantization_config, "bnb_4bit_compute_dtype", None
+                    )
+            if isinstance(bnb_compute_dtype, str):
+                bnb_compute_dtype = getattr(torch, bnb_compute_dtype, None)
+            if isinstance(bnb_compute_dtype, torch.dtype):
+                dtype = bnb_compute_dtype
         SUPPORTS_BFLOAT16 = is_bfloat16_supported()
         if dtype is None:
             dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
@@ -1173,8 +1247,8 @@ class FastModel(FastBaseModel):
             model_name = model_name,
             max_seq_length = max_seq_length,
             dtype = _get_dtype(dtype),
-            load_in_4bit = load_in_4bit,
-            load_in_8bit = load_in_8bit,
+            load_in_4bit = load_in_4bit_kwargs,
+            load_in_8bit = load_in_8bit_kwargs,
             load_in_16bit = load_in_16bit,
             full_finetuning = full_finetuning,
             token = token,
@@ -1220,22 +1294,30 @@ class FastModel(FastBaseModel):
             )
 
         if load_in_4bit:
-            # Fix up bitsandbytes config
-            compute_dtype = dtype_from_config(model.config)
-            quantization_config = {
-                # Sometimes compute_dtype is not a string!!
-                "bnb_4bit_compute_dtype": compute_dtype,
-                "bnb_4bit_quant_type": "nf4",
-                "bnb_4bit_use_double_quant": True,
-                "llm_int8_enable_fp32_cpu_offload": False,
-                "llm_int8_has_fp16_weight": False,
-                "llm_int8_skip_modules": None,
-                "llm_int8_threshold": 6.0,
-                "load_in_4bit": True,
-                "load_in_8bit": False,
-                "quant_method": "bitsandbytes",
-            }
-            model.config.update({"quantization_config": quantization_config})
+            # Fix up bitsandbytes config, but respect user-provided quantization_config
+            if quantization_config is None:
+                compute_dtype = dtype_from_config(model.config)
+                quantization_config = {
+                    # Sometimes compute_dtype is not a string!!
+                    "bnb_4bit_compute_dtype": compute_dtype,
+                    "bnb_4bit_quant_type": "nf4",
+                    "bnb_4bit_use_double_quant": True,
+                    "llm_int8_enable_fp32_cpu_offload": False,
+                    "llm_int8_has_fp16_weight": False,
+                    "llm_int8_skip_modules": None,
+                    "llm_int8_threshold": 6.0,
+                    "load_in_4bit": True,
+                    "load_in_8bit": False,
+                    "quant_method": "bitsandbytes",
+                }
+                model.config.update({"quantization_config": quantization_config})
+            else:
+                if hasattr(quantization_config, "to_dict"):
+                    model.config.update(
+                        {"quantization_config": quantization_config.to_dict()}
+                    )
+                elif isinstance(quantization_config, dict):
+                    model.config.update({"quantization_config": quantization_config})
 
         if load_in_fp8 != False:
             _tag_model_with_fp8_torchao_config(model, fp8_mode)
