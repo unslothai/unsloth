@@ -219,16 +219,10 @@ def run_attention(
         )
 
         if config.n_groups != 1 and not requires_grad:
-            if has_block:
-                out = out.view(bsz, q_len, config.n_kv_heads, config.n_groups, head_dim)
-            else:
-                out = out.view(bsz, q_len, config.n_kv_heads, config.n_groups, head_dim)
+            out = out.view(bsz, q_len, config.n_kv_heads, config.n_groups, head_dim)
             out = out.reshape(bsz, q_len, n_heads, head_dim)
         else:
-            if has_block:
-                out = out.view(bsz, q_len, n_heads, head_dim)
-            else:
-                out = out.view(bsz, q_len, n_heads, head_dim)
+            out = out.view(bsz, q_len, n_heads, head_dim)
         return out
     else:
         local_mask = context.attention_mask
