@@ -530,6 +530,24 @@ class FastBaseModel:
                 )
             del kwargs["attn_implementation"]
 
+        # Respect user-provided quantization_config (e.g. BitsAndBytesConfig)
+        quantization_config = kwargs.get("quantization_config", None)
+        if quantization_config is not None:
+            if isinstance(quantization_config, dict):
+                if quantization_config.get("load_in_4bit", False):
+                    load_in_4bit = True
+                    load_in_8bit = False
+                if quantization_config.get("load_in_8bit", False):
+                    load_in_8bit = True
+                    load_in_4bit = False
+            else:
+                if getattr(quantization_config, "load_in_4bit", False):
+                    load_in_4bit = True
+                    load_in_8bit = False
+                if getattr(quantization_config, "load_in_8bit", False):
+                    load_in_8bit = True
+                    load_in_4bit = False
+
         bnb_config = None
         if full_finetuning and (load_in_4bit or load_in_8bit):
             print(
@@ -544,21 +562,32 @@ class FastBaseModel:
                 "Unsloth: Can only load in 4bit or 8bit or 16bit, not a combination!"
             )
         if load_in_4bit:
-            bnb_config = BitsAndBytesConfig(
-                load_in_4bit = True,
-                bnb_4bit_use_double_quant = True,
-                bnb_4bit_quant_type = "nf4",
-                bnb_4bit_compute_dtype = bnb_compute_dtype,
-                llm_int8_skip_modules = SKIP_QUANTIZATION_MODULES.copy(),
-            )
+            if quantization_config is not None:
+                bnb_config = quantization_config
+            else:
+                bnb_config = BitsAndBytesConfig(
+                    load_in_4bit = True,
+                    bnb_4bit_use_double_quant = True,
+                    bnb_4bit_quant_type = "nf4",
+                    bnb_4bit_compute_dtype = bnb_compute_dtype,
+                    llm_int8_skip_modules = SKIP_QUANTIZATION_MODULES.copy(),
+                )
         elif load_in_8bit:
-            bnb_config = BitsAndBytesConfig(
-                load_in_8bit = True,
-                llm_int8_skip_modules = SKIP_QUANTIZATION_MODULES.copy(),
-            )
+            if quantization_config is not None:
+                bnb_config = quantization_config
+            else:
+                bnb_config = BitsAndBytesConfig(
+                    load_in_8bit = True,
+                    llm_int8_skip_modules = SKIP_QUANTIZATION_MODULES.copy(),
+                )
         elif load_in_16bit:
             bnb_config = None
-        elif not load_in_4bit and not load_in_8bit and not full_finetuning:
+        elif (
+            not load_in_4bit
+            and not load_in_8bit
+            and not full_finetuning
+            and quantization_config is None
+        ):
             print(
                 "Unsloth: QLoRA and full finetuning all not selected. Switching to 16bit LoRA."
             )
@@ -587,7 +616,8 @@ class FastBaseModel:
 
         # Fix AttributeError: 'BitsAndBytesConfig' object has no attribute 'get_loading_attributes'
         if bnb_config is not None and not hasattr(bnb_config, "get_loading_attributes"):
-            bnb_config.get_loading_attributes = lambda *args, **kwargs: {}
+            if hasattr(bnb_config, "__dict__"):
+                bnb_config.get_loading_attributes = lambda *args, **kwargs: {}
 
         # Cannot be None, since HF now checks for the config
         if load_in_4bit or load_in_8bit:
@@ -600,50 +630,53 @@ class FastBaseModel:
             else:
                 kwargs["quantization_config"] = bnb_config
         else:
-            if auto_config is None:
-                auto_config = AutoConfig.from_pretrained(
-                    model_name,
-                    token = token,
-                    trust_remote_code = trust_remote_code,
-                )
-            if hasattr(auto_config, "quantization_config"):
-                from transformers.quantizers.auto import (
-                    AUTO_QUANTIZATION_CONFIG_MAPPING,
-                )
+            if quantization_config is None:
+                if auto_config is None:
+                    auto_config = AutoConfig.from_pretrained(
+                        model_name,
+                        token = token,
+                        trust_remote_code = trust_remote_code,
+                    )
+                if hasattr(auto_config, "quantization_config"):
+                    from transformers.quantizers.auto import (
+                        AUTO_QUANTIZATION_CONFIG_MAPPING,
+                    )
 
-                quantization_config = auto_config.quantization_config
-                quant_method = quantization_config["quant_method"]
-                # Sometimes bitsandbytes_4bit + bitsandbytes_8bit is provided
-                if (
-                    quant_method == "bitsandbytes"
-                    and "bitsandbytes" not in AUTO_QUANTIZATION_CONFIG_MAPPING
-                ):
-                    if "bitsandbytes_4bit" not in AUTO_QUANTIZATION_CONFIG_MAPPING:
-                        raise KeyError(
-                            "Unsloth: AUTO_QUANTIZATION_CONFIG_MAPPING does not have `bitsandbytes_4bit`"
-                        )
-                    quantizer = AUTO_QUANTIZATION_CONFIG_MAPPING["bitsandbytes_4bit"]
-                else:
-                    quantizer = AUTO_QUANTIZATION_CONFIG_MAPPING[quant_method]
-                quantizer_kwargs = {}
-                if quant_method == "compressed-tensors":
-                    # Ignore these
-                    pass
-                else:
-                    # We cannot dequantize since gpt-oss-20b MXFP4 will now be gpt-oss-20b-BF16
+                    quantization_config = auto_config.quantization_config
+                    quant_method = quantization_config["quant_method"]
+                    # Sometimes bitsandbytes_4bit + bitsandbytes_8bit is provided
                     if (
-                        load_in_16bit
-                        and "dequantize" in inspect.signature(quantizer).parameters
+                        quant_method == "bitsandbytes"
+                        and "bitsandbytes" not in AUTO_QUANTIZATION_CONFIG_MAPPING
                     ):
-                        quantizer_kwargs["dequantize"] = True
-                    try:
-                        # Sometimes this fails so we wrap it in a try except
-                        quantization_config = quantizer.from_dict(
-                            quantization_config, **quantizer_kwargs
-                        )
-                    except:
+                        if "bitsandbytes_4bit" not in AUTO_QUANTIZATION_CONFIG_MAPPING:
+                            raise KeyError(
+                                "Unsloth: AUTO_QUANTIZATION_CONFIG_MAPPING does not have `bitsandbytes_4bit`"
+                            )
+                        quantizer = AUTO_QUANTIZATION_CONFIG_MAPPING[
+                            "bitsandbytes_4bit"
+                        ]
+                    else:
+                        quantizer = AUTO_QUANTIZATION_CONFIG_MAPPING[quant_method]
+                    quantizer_kwargs = {}
+                    if quant_method == "compressed-tensors":
+                        # Ignore these
                         pass
-                    kwargs["quantization_config"] = quantization_config
+                    else:
+                        # We cannot dequantize since gpt-oss-20b MXFP4 will now be gpt-oss-20b-BF16
+                        if (
+                            load_in_16bit
+                            and "dequantize" in inspect.signature(quantizer).parameters
+                        ):
+                            quantizer_kwargs["dequantize"] = True
+                        try:
+                            # Sometimes this fails so we wrap it in a try except
+                            quantization_config = quantizer.from_dict(
+                                quantization_config, **quantizer_kwargs
+                            )
+                        except:
+                            pass
+                        kwargs["quantization_config"] = quantization_config
 
         # Check if using forced float32 - we load it in bfloat16, then cast to float16!
         torch_dtype = dtype
