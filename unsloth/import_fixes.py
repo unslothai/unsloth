@@ -609,17 +609,18 @@ def fix_vllm_pdl_blackwell():
         # Old vLLM version without PDL support - nothing to patch
         return
 
-    # Check if vLLM version includes the fix (expected in versions > 0.13.2)
+    # Check if vLLM version includes the fix
+    VLLM_PDL_FIX_VERSION = "0.13.2"
     try:
         vllm_version = Version(importlib_version("vllm"))
-        if vllm_version > Version("0.13.2"):
+        if vllm_version > Version(VLLM_PDL_FIX_VERSION):
             logger.info(
                 f"Unsloth: SM100 ({sm100_gpu_name}) detected but vLLM {vllm_version} "
                 f"should include PDL fix - skipping workaround"
             )
             return
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Unsloth: vLLM version check failed ({e}), applying PDL workaround.")
 
     # Apply the PDL fix
     os.environ["TRITON_DISABLE_PDL"] = "1"
