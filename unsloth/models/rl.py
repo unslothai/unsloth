@@ -46,10 +46,13 @@ torch_compile_options = {
 # vLLM compatibility shim (TRL expects GuidedDecodingParams even if vLLM doesn't provide it)
 try:
     import vllm.sampling_params as _unsloth_vllm_sp
+
     if not hasattr(_unsloth_vllm_sp, "GuidedDecodingParams"):
+
         class GuidedDecodingParams:
             def __init__(self, **kwargs):
                 self.kwargs = kwargs
+
         _unsloth_vllm_sp.GuidedDecodingParams = GuidedDecodingParams
 except Exception:
     pass
@@ -355,6 +358,7 @@ class Unsloth{RLTrainer_name}(_Unsloth{RLTrainer_name}):
 pass
 '''
 
+
 def _wrap_grpo_generate_and_score(trainer_cls):
     if not hasattr(trainer_cls, "_generate_and_score_completions"):
         return
@@ -367,7 +371,11 @@ def _wrap_grpo_generate_and_score(trainer_cls):
         try:
             return original(self, *args, **kwargs)
         finally:
-            if was_training is False and hasattr(self, "model") and hasattr(self.model, "for_inference"):
+            if (
+                was_training is False
+                and hasattr(self, "model")
+                and hasattr(self.model, "for_inference")
+            ):
                 try:
                     self.model.for_inference()
                 except Exception:
