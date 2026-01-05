@@ -238,12 +238,18 @@ def prepare_for_training_mode(f):
     @functools.wraps(f)
     def wrapper(self, *args, **kwargs):
         # Enable training mode
+        _was_training = None
+        if hasattr(self, 'model') and hasattr(self.model, "training"):
+            _was_training = self.model.training
         if hasattr(self, 'model') and hasattr(self.model, "for_training"):
             self.model.for_training()
         output = f(self, *args, **kwargs)
-        # Return inference mode
+        # Restore previous mode when possible
         if hasattr(self, 'model') and hasattr(self.model, "for_inference"):
-            self.model.for_inference()
+            if _was_training is False:
+                self.model.for_inference()
+            elif _was_training is True and hasattr(self.model, "for_training"):
+                self.model.for_training()
         # Patch W&B to enable logging on future runs, otherwise it'll overwrite the first run
         try:
             import wandb
@@ -321,6 +327,32 @@ class Unsloth{RLTrainer_name}(_Unsloth{RLTrainer_name}):
 {RLTrainer_post}
 pass
 '''
+
+
+def _wrap_grpo_generate_and_score(trainer_cls):
+    if not hasattr(trainer_cls, "_generate_and_score_completions"):
+        return
+    original = trainer_cls._generate_and_score_completions
+    if getattr(original, "_unsloth_restore_training_wrapped", False):
+        return
+
+    def wrapped(self, *args, **kwargs):
+        was_training = getattr(getattr(self, "model", None), "training", None)
+        try:
+            return original(self, *args, **kwargs)
+        finally:
+            if (
+                was_training is False
+                and hasattr(self, "model")
+                and hasattr(self.model, "for_inference")
+            ):
+                try:
+                    self.model.for_inference()
+                except Exception:
+                    pass
+
+    wrapped._unsloth_restore_training_wrapped = True
+    trainer_cls._generate_and_score_completions = wrapped
 
 
 def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
@@ -1045,6 +1077,16 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         locals(),
         globals(),
     )
+
+    if trainer_file == "grpo_trainer":
+        try:
+            _wrap_grpo_generate_and_score(
+                getattr(created_module, f"Unsloth{RLTrainer_name}")
+            )
+        except Exception as e:
+            logger.info(
+                f"Unsloth: Could not wrap _generate_and_score_completions for {RLTrainer_name}: {e}"
+            )
 
 
 def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, imports):
