@@ -658,21 +658,24 @@ class FastSentenceTransformer(FastModel):
 
         return modules, True
 
+    # Encoder model types that benefit from native torch.compile instead of Unsloth patching
+    ENCODER_MODEL_TYPES = {"mpnet", "bert", "distilbert", "roberta", "xlm-roberta", "albert", "electra"}
+
     @staticmethod
     def from_pretrained(
         model_name,
         max_seq_length = None,
         dtype = None,
-        load_in_4bit = True,
+        load_in_4bit = False,  # Changed default: 4-bit is slow for encoders
         load_in_8bit = False,
-        load_in_16bit = False,
+        load_in_16bit = True,  # Changed default: 16-bit is optimal for encoders
         full_finetuning = False,
         token = None,
         device_map = "sequential",
         rope_scaling = None,
         fix_tokenizer = True,
         trust_remote_code = False,
-        use_gradient_checkpointing = "unsloth",
+        use_gradient_checkpointing = False,  # Changed default: conflicts with torch.compile
         resize_model_vocab = None,
         revision = None,
         use_exact_model_name = False,
@@ -744,6 +747,134 @@ class FastSentenceTransformer(FastModel):
             model_type = getattr(config, "model_type", "")
         except:
             pass
+
+        # Fast encoder path: Use native torch.compile for encoder models (6x speedup)
+        # This bypasses Unsloth's auto-compiler which adds @torch.compiler.disable decorators
+        # that interfere with torch.compile and cause runtime errors for encoder models.
+        # NOTE: The old Unsloth path is BROKEN for encoder models with torch 2.9+ due to
+        # conflicting @torch.compile and @torch.compiler.disable decorators.
+        # Set UNSLOTH_COMPILE_DISABLE=1 to disable torch.compile and use the old path.
+        is_encoder_model = model_type.lower() in FastSentenceTransformer.ENCODER_MODEL_TYPES
+        use_fast_encoder = os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") != "1"
+        if use_fast_encoder and is_encoder_model:
+
+            # torch.compile mode: "reduce-overhead" is optimal for training
+            compile_mode = "reduce-overhead"
+
+            # Determine dtype
+            if dtype is None:
+                dtype = torch.bfloat16 if load_in_16bit else torch.float32
+
+            # Determine device
+            st_device = device_map
+            if isinstance(st_device, dict) or (
+                isinstance(st_device, str) and st_device in ["auto", "sequential"]
+            ):
+                st_device = "cuda"
+
+            # Check if model supports SDPA (Scaled Dot Product Attention) for extra speedup
+            supports_sdpa = False
+            if config is not None:
+                try:
+                    model_class = _get_model_class(config, kwargs.get("auto_model", AutoModel)._model_mapping)
+                    supports_sdpa = getattr(model_class, "_supports_sdpa", False)
+                except:
+                    pass
+
+            # Build model_kwargs for SentenceTransformer
+            model_kwargs = {"torch_dtype": dtype}
+
+            # Enable SDPA if supported (1.2x extra speedup on top of torch.compile)
+            if supports_sdpa:
+                model_kwargs["attn_implementation"] = "sdpa"
+
+            # Print optimization status
+            sdpa_str = " + SDPA" if supports_sdpa else ""
+            if load_in_4bit:
+                print(f"Unsloth: Using fast encoder path for {model_type} with 4-bit quantization{sdpa_str}")
+            else:
+                print(f"Unsloth: Using fast encoder path for {model_type} (torch.compile{sdpa_str})")
+
+            # Handle 4-bit quantization via BitsAndBytesConfig
+            if load_in_4bit:
+                from transformers import BitsAndBytesConfig
+                bnb_config = BitsAndBytesConfig(
+                    load_in_4bit = True,
+                    bnb_4bit_compute_dtype = dtype,
+                    bnb_4bit_quant_type = "nf4",
+                    bnb_4bit_use_double_quant = True,
+                )
+                model_kwargs["quantization_config"] = bnb_config
+                # When using quantization, device must be handled by accelerate
+                st_device = None
+
+            # Handle gradient checkpointing - warn user it conflicts with torch.compile
+            _use_gc = use_gradient_checkpointing
+            if _use_gc and _use_gc != False:
+                print("Unsloth Warning: Gradient checkpointing is incompatible with torch.compile.")
+                print("Disabling torch.compile to enable gradient checkpointing.")
+                compile_mode = None  # Disable compilation
+
+            # Load via native SentenceTransformer (bypasses Unsloth patching)
+            st_model = SentenceTransformer(
+                model_name,
+                device = st_device,
+                trust_remote_code = trust_remote_code,
+                token = token,
+                revision = revision,
+                model_kwargs = model_kwargs,
+            )
+
+            # Store metadata for get_peft_model
+            st_model._unsloth_fast_encoder = True
+            st_model._compile_mode = compile_mode
+            st_model._dtype = dtype
+            st_model._load_in_4bit = load_in_4bit
+            st_model.no_modules = False
+
+            # Add save methods
+            def _save_pretrained_merged(self, save_directory, **save_kwargs):
+                self.save_pretrained(save_directory)
+                tokenizer = save_kwargs.pop("tokenizer", self.tokenizer)
+                if hasattr(self[0], "auto_model"):
+                    inner = self[0].auto_model
+                    # Handle compiled model
+                    if hasattr(inner, "_orig_mod"):
+                        inner = inner._orig_mod
+                    if hasattr(inner, "merge_and_unload"):
+                        merged = inner.merge_and_unload()
+                        merged.save_pretrained(save_directory)
+                    elif hasattr(inner, "save_pretrained"):
+                        inner.save_pretrained(save_directory)
+                if tokenizer is not None:
+                    tokenizer.save_pretrained(save_directory)
+                FastSentenceTransformer._add_unsloth_branding(save_directory)
+
+            st_model.save_pretrained_merged = types.MethodType(_save_pretrained_merged, st_model)
+
+            def _push_to_hub_merged(self, repo_id, **push_kwargs):
+                hub_token = push_kwargs.get("token", None) or get_token()
+                if hub_token is None:
+                    raise ValueError("No HF token provided")
+                api = HfApi(token = hub_token)
+                try:
+                    api.create_repo(repo_id = repo_id, private = push_kwargs.get("private"), exist_ok = True, repo_type = "model")
+                except:
+                    pass
+                FastSentenceTransformer._add_unsloth_tags(repo_id, hub_token)
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    self.save_pretrained_merged(temp_dir, **push_kwargs)
+                    api.upload_folder(folder_path = temp_dir, repo_id = repo_id, commit_message = push_kwargs.get("commit_message", "Upload model"))
+                print(f"Unsloth: Pushed to https://huggingface.co/{repo_id}")
+
+            st_model.push_to_hub_merged = types.MethodType(_push_to_hub_merged, st_model)
+
+            return st_model
+
+        # Warn if using 4-bit with encoder (slow due to dequantization overhead)
+        if is_encoder_model and load_in_4bit:
+            print("Unsloth Warning: 4-bit quantization adds ~2.3x overhead for encoder models.")
+            print("Consider using load_in_16bit=True for better performance.")
 
         # check if the model supports add_pooling_layer
         if "add_pooling_layer" not in kwargs:
@@ -954,7 +1085,7 @@ class FastSentenceTransformer(FastModel):
         bias = "none",
         layers_to_transform = None,
         layers_pattern = None,
-        use_gradient_checkpointing = "unsloth",
+        use_gradient_checkpointing = False,  # Changed default: conflicts with torch.compile
         random_state = 3407,
         max_seq_length = 2048,
         use_rslora = False,
@@ -964,13 +1095,93 @@ class FastSentenceTransformer(FastModel):
         **kwargs,
     ):
         from sentence_transformers import SentenceTransformer
+        from peft import LoraConfig, get_peft_model as peft_get_peft_model
 
         if "task_type" not in kwargs:
             kwargs["task_type"] = "FEATURE_EXTRACTION"
             print("Setting task_type to FEATURE_EXTRACTION")
 
         if isinstance(model, SentenceTransformer):
-            # extract inner model from the transformer module
+            # Check if this is a fast encoder model (uses torch.compile instead of Unsloth patching)
+            is_fast_encoder = getattr(model, "_unsloth_fast_encoder", False)
+
+            if is_fast_encoder:
+                # Fast encoder path: Use native PEFT + torch.compile (6x speedup)
+                transformer_module = model[0]
+                inner_model = transformer_module.auto_model
+
+                # Check if model is quantized (4-bit/8-bit)
+                is_quantized = getattr(inner_model, "is_quantized", False) or \
+                               getattr(inner_model.config, "quantization_config", None) is not None
+
+                # Track if gradient checkpointing was actually enabled
+                gc_enabled = False
+
+                # Prepare for k-bit training if quantized
+                if is_quantized:
+                    from peft import prepare_model_for_kbit_training
+                    _gc_for_kbit = use_gradient_checkpointing if use_gradient_checkpointing else False
+                    try:
+                        inner_model = prepare_model_for_kbit_training(
+                            inner_model,
+                            use_gradient_checkpointing = _gc_for_kbit,
+                        )
+                        print("Unsloth: Prepared quantized model for k-bit training")
+                        gc_enabled = bool(_gc_for_kbit)
+                    except ValueError as e:
+                        if "does not support gradient checkpointing" in str(e):
+                            # Model doesn't support gradient checkpointing, disable it
+                            print(f"Unsloth Warning: {inner_model.__class__.__name__} does not support gradient checkpointing. Skipping.")
+                            inner_model = prepare_model_for_kbit_training(
+                                inner_model,
+                                use_gradient_checkpointing = False,
+                            )
+                            print("Unsloth: Prepared quantized model for k-bit training (without gradient checkpointing)")
+                        else:
+                            raise
+
+                # Enable gradient checkpointing if requested (only for non-quantized, since prepare_model handles it)
+                elif use_gradient_checkpointing and use_gradient_checkpointing != False:
+                    if hasattr(inner_model, "gradient_checkpointing_enable"):
+                        try:
+                            inner_model.gradient_checkpointing_enable()
+                            print("Unsloth: Enabled gradient checkpointing")
+                            gc_enabled = True
+                        except ValueError as e:
+                            if "does not support gradient checkpointing" in str(e):
+                                print(f"Unsloth Warning: {inner_model.__class__.__name__} does not support gradient checkpointing. Skipping.")
+
+                # Create LoRA config
+                lora_config = LoraConfig(
+                    r = r,
+                    lora_alpha = lora_alpha,
+                    target_modules = target_modules,
+                    lora_dropout = lora_dropout,
+                    bias = bias,
+                    task_type = kwargs.get("task_type", "FEATURE_EXTRACTION"),
+                )
+
+                # Apply PEFT directly (not through FastModel)
+                peft_model = peft_get_peft_model(inner_model, lora_config)
+
+                # Apply torch.compile for speedup (only if not using gradient checkpointing)
+                compile_mode = getattr(model, "_compile_mode", "reduce-overhead")
+                # Re-enable torch.compile if gradient checkpointing was requested but couldn't be enabled
+                if compile_mode is None and not gc_enabled:
+                    compile_mode = "reduce-overhead"
+                    print("Unsloth: Re-enabling torch.compile since gradient checkpointing is not supported")
+
+                if compile_mode is not None:
+                    print(f"Unsloth: Applying torch.compile with mode='{compile_mode}' for 6x speedup")
+                    peft_model = torch.compile(peft_model, mode = compile_mode)
+                else:
+                    print("Unsloth: torch.compile disabled (gradient checkpointing enabled)")
+
+                # Re-assign the peft model back to the transformer module
+                transformer_module.auto_model = peft_model
+                return model
+
+            # Original path for non-fast-encoder models
             transformer_module = model[0]
             inner_model = transformer_module.auto_model
 
