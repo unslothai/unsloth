@@ -620,7 +620,9 @@ def fix_vllm_pdl_blackwell():
             )
             return
     except Exception as e:
-        logger.debug(f"Unsloth: vLLM version check failed ({e}), applying PDL workaround.")
+        logger.debug(
+            f"Unsloth: vLLM version check failed ({e}), applying PDL workaround."
+        )
 
     # Apply the PDL fix
     os.environ["TRITON_DISABLE_PDL"] = "1"
