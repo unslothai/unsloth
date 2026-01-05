@@ -574,6 +574,7 @@ def fix_vllm_pdl_blackwell():
     # Check if we have a CUDA GPU
     try:
         import torch
+
         if not torch.cuda.is_available():
             return
         major, minor = torch.cuda.get_device_capability()
@@ -588,11 +589,17 @@ def fix_vllm_pdl_blackwell():
 
     # Check if vLLM has the PDL-related modules before doing internet check
     try:
-        has_expand_op = importlib.util.find_spec("vllm.lora.ops.triton_ops.lora_expand_op") is not None
+        has_expand_op = (
+            importlib.util.find_spec("vllm.lora.ops.triton_ops.lora_expand_op")
+            is not None
+        )
     except (ModuleNotFoundError, ValueError):
         has_expand_op = False
     try:
-        has_shrink_op = importlib.util.find_spec("vllm.lora.ops.triton_ops.lora_shrink_op") is not None
+        has_shrink_op = (
+            importlib.util.find_spec("vllm.lora.ops.triton_ops.lora_shrink_op")
+            is not None
+        )
     except (ModuleNotFoundError, ValueError):
         has_shrink_op = False
     if not has_expand_op and not has_shrink_op:
@@ -626,12 +633,12 @@ def fix_vllm_pdl_blackwell():
             api_url = "https://api.github.com/repos/vllm-project/vllm/issues/30872"
             req = urllib.request.Request(
                 api_url,
-                headers={
+                headers = {
                     "User-Agent": "Unsloth-PDL-Fix",
                     "Accept": "application/vnd.github.v3+json",
-                }
+                },
             )
-            with urllib.request.urlopen(req, timeout=3) as response:
+            with urllib.request.urlopen(req, timeout = 3) as response:
                 data = json_module.loads(response.read().decode())
                 issue_closed = data.get("state") == "closed"
     except Exception:
@@ -648,13 +655,14 @@ def fix_vllm_pdl_blackwell():
     # Apply the PDL fix
     os.environ["TRITON_DISABLE_PDL"] = "1"
 
-    def fake_supports_pdl(device=None):
+    def fake_supports_pdl(device = None):
         return False
 
     patched = []
 
     try:
         import vllm.lora.ops.triton_ops.lora_expand_op as expand_op
+
         expand_op.supports_pdl = fake_supports_pdl
         patched.append("lora_expand_op")
     except (ImportError, ModuleNotFoundError, AttributeError):
@@ -662,6 +670,7 @@ def fix_vllm_pdl_blackwell():
 
     try:
         import vllm.lora.ops.triton_ops.lora_shrink_op as shrink_op
+
         shrink_op.supports_pdl = fake_supports_pdl
         patched.append("lora_shrink_op")
     except (ImportError, ModuleNotFoundError, AttributeError):
