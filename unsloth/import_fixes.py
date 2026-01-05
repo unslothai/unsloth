@@ -601,10 +601,11 @@ def fix_vllm_pdl_blackwell():
             return False
 
     # Check if vLLM has the PDL-related modules before doing internet check
+    has_utils = _spec_exists("vllm.lora.ops.triton_ops.utils")
     has_expand_op = _spec_exists("vllm.lora.ops.triton_ops.lora_expand_op")
     has_shrink_op = _spec_exists("vllm.lora.ops.triton_ops.lora_shrink_op")
 
-    if not has_expand_op and not has_shrink_op:
+    if not has_utils and not has_expand_op and not has_shrink_op:
         # Old vLLM version without PDL support - just set env var to be safe
         os.environ["TRITON_DISABLE_PDL"] = "1"
         logger.info(
@@ -657,19 +658,39 @@ def fix_vllm_pdl_blackwell():
     # Apply the PDL fix
     os.environ["TRITON_DISABLE_PDL"] = "1"
 
-    def fake_supports_pdl(device = None):
+    def fake_supports_pdl(*args, **kwargs):
         return False
 
     patched = []
-    modules_to_patch = {
+
+    # First, patch the source module (utils.py) where supports_pdl is defined.
+    # This is critical because supports_pdl uses @lru_cache - we must clear the
+    # cache to prevent stale cached results from the original function.
+    try:
+        utils_module = importlib.import_module("vllm.lora.ops.triton_ops.utils")
+        if hasattr(utils_module, "supports_pdl"):
+            original_fn = utils_module.supports_pdl
+            if hasattr(original_fn, "cache_clear"):
+                original_fn.cache_clear()
+            utils_module.supports_pdl = fake_supports_pdl
+            patched.append("utils")
+    except (ImportError, ModuleNotFoundError, AttributeError):
+        pass
+
+    # Also patch the consumer modules that import supports_pdl from utils.
+    # This ensures the patched function is used even if the module was already
+    # imported before this fix runs.
+    consumer_modules = {
         "lora_expand_op": "vllm.lora.ops.triton_ops.lora_expand_op",
         "lora_shrink_op": "vllm.lora.ops.triton_ops.lora_shrink_op",
+        "fused_moe_lora_op": "vllm.lora.ops.triton_ops.fused_moe_lora_op",
     }
-    for name, path in modules_to_patch.items():
+    for name, path in consumer_modules.items():
         try:
             module = importlib.import_module(path)
-            module.supports_pdl = fake_supports_pdl
-            patched.append(name)
+            if hasattr(module, "supports_pdl"):
+                module.supports_pdl = fake_supports_pdl
+                patched.append(name)
         except (ImportError, ModuleNotFoundError, AttributeError):
             pass
 
