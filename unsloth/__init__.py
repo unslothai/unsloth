@@ -30,16 +30,19 @@ from .import_fixes import (
     check_fbgemm_gpu_version,
     torchvision_compatibility_check,
     fix_diffusers_warnings,
+    fix_huggingface_hub,
 )
 
 fix_message_factory_issue()
 check_fbgemm_gpu_version()
 torchvision_compatibility_check()
 fix_diffusers_warnings()
+fix_huggingface_hub()
 del fix_message_factory_issue
 del check_fbgemm_gpu_version
 del torchvision_compatibility_check
 del fix_diffusers_warnings
+del fix_huggingface_hub
 
 # This check is critical because Unsloth optimizes these libraries by modifying
 # their code at import time. If they're imported first, the original (slower,
@@ -76,7 +79,7 @@ from importlib.metadata import PackageNotFoundError
 # Check for unsloth_zoo
 try:
     unsloth_zoo_version = importlib_version("unsloth_zoo")
-    if Version(unsloth_zoo_version) < Version("2025.12.4"):
+    if Version(unsloth_zoo_version) < Version("2026.1.1"):
         print(
             "Unsloth: Please update Unsloth and Unsloth-Zoo to the latest version!\n"
             "Do this via `pip install --upgrade --force-reinstall --no-cache-dir --no-deps unsloth unsloth_zoo`"
@@ -123,6 +126,7 @@ from .import_fixes import (
     fix_xformers_performance_issue,
     fix_vllm_aimv2_issue,
     fix_vllm_guided_decoding_params,
+    fix_vllm_pdl_blackwell,
     ignore_logger_messages,
     patch_ipykernel_hf_xet,
     patch_trackio,
@@ -135,6 +139,7 @@ from .import_fixes import (
 fix_xformers_performance_issue()
 fix_vllm_aimv2_issue()
 fix_vllm_guided_decoding_params()
+fix_vllm_pdl_blackwell()
 ignore_logger_messages()
 patch_ipykernel_hf_xet()
 patch_trackio()
@@ -146,6 +151,7 @@ fix_executorch()
 del fix_xformers_performance_issue
 del fix_vllm_aimv2_issue
 del fix_vllm_guided_decoding_params
+del fix_vllm_pdl_blackwell
 del ignore_logger_messages
 del patch_ipykernel_hf_xet
 del patch_trackio
