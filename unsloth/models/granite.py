@@ -15,7 +15,7 @@
 from .llama import *
 import os
 from ._utils import __version__
-from unsloth_zoo.utils import _get_dtype
+from unsloth_zoo.utils import _get_dtype, Version
 from unsloth_zoo.hf_utils import dtype_from_config
 from ..utils.packing import get_packed_info_from_kwargs
 from ..utils.attention_dispatch import (
@@ -41,8 +41,6 @@ try:
         GraniteForCausalLM,
     )
 except:
-    from packaging.version import Version
-
     transformers_version = Version(transformers_version)
     if not transformers_version >= Version("4.45.0"):
         raise ImportError(
