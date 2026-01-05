@@ -128,6 +128,10 @@ from unsloth_zoo.gradient_checkpointing import (
     patch_unsloth_smart_gradient_checkpointing,
     unpatch_unsloth_smart_gradient_checkpointing,
 )
+
+
+def patch_unsloth_smart_gradient_checkpointing(*args, **kwargs):
+    return
 from unsloth_zoo.loss_utils import (
     HAS_CUT_CROSS_ENTROPY,
     fused_linear_cross_entropy,
