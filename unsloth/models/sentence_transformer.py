@@ -778,7 +778,9 @@ class FastSentenceTransformer(FastModel):
                 else:
                     dtype = torch.float32
             elif dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16:
-                print("Unsloth: Device does not support bfloat16. Using float16 instead.")
+                print(
+                    "Unsloth: Device does not support bfloat16. Using float16 instead."
+                )
                 dtype = torch.float16
 
             # Determine device
