@@ -593,27 +593,6 @@ def fix_vllm_pdl_blackwell():
     except Exception:
         return
 
-    # Helper to check if module spec exists
-    def _spec_exists(name):
-        try:
-            return importlib.util.find_spec(name) is not None
-        except (ModuleNotFoundError, ValueError):
-            return False
-
-    # Check if vLLM has the PDL-related modules before doing internet check
-    has_utils = _spec_exists("vllm.lora.ops.triton_ops.utils")
-    has_expand_op = _spec_exists("vllm.lora.ops.triton_ops.lora_expand_op")
-    has_shrink_op = _spec_exists("vllm.lora.ops.triton_ops.lora_shrink_op")
-
-    if not has_utils and not has_expand_op and not has_shrink_op:
-        # Old vLLM version without PDL support - just set env var to be safe
-        os.environ["TRITON_DISABLE_PDL"] = "1"
-        logger.info(
-            f"Unsloth: Set TRITON_DISABLE_PDL=1 for SM100 ({sm100_gpu_name}) - "
-            f"vLLM PDL modules not found"
-        )
-        return
-
     # Check if GitHub issue is closed (fix merged upstream)
     issue_closed = False
     try:
