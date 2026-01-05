@@ -1324,55 +1324,18 @@ import pickle
 def offload_to_disk(
     W, model, name, temporary_location: str = "_unsloth_temporary_saved_buffers"
 ):
-    file_location = os.path.join(temporary_location, model.config._name_or_path)
-    if not os.path.exists(file_location):
-        os.makedirs(file_location)
-
-    filename = os.path.join(file_location, f"{name}.pt")
-    W = W.weight if hasattr(W, "weight") else W
-    torch.save(
-        W,
-        filename,
-        pickle_module = pickle,
-        pickle_protocol = pickle.HIGHEST_PROTOCOL,
-    )
-    # We must use weights_only = False due to pickling
-    offloaded_W = torch.load(
-        filename, map_location = "cpu", mmap = True, weights_only = False
-    )
-    offloaded_W._offloaded_file_location = filename
-    return offloaded_W
+    return W
 
 
 def offload_input_embeddings(
     model, temporary_location: str = "_unsloth_temporary_saved_buffers"
 ):
-    offloaded_W = offload_to_disk(
-        model.get_input_embeddings(), model, "input_embeddings", temporary_location
-    )
-    new_input_embeddings = torch.nn.Embedding.from_pretrained(offloaded_W)
-    new_input_embeddings._offloaded_file_location = offloaded_W._offloaded_file_location
-    model.set_input_embeddings(new_input_embeddings)
     return
 
 
 def offload_output_embeddings(
     model, temporary_location: str = "_unsloth_temporary_saved_buffers"
 ):
-    offloaded_W = offload_to_disk(
-        model.get_output_embeddings(), model, "output_embeddings", temporary_location
-    )
-
-    new_output_embeddings = torch.nn.Linear(1, 1, bias = None)
-    del new_output_embeddings.weight
-    new_output_embeddings.weight = offloaded_W
-    new_output_embeddings.in_features = offloaded_W.shape[1]
-    new_output_embeddings.out_features = offloaded_W.shape[0]
-
-    new_output_embeddings._offloaded_file_location = (
-        offloaded_W._offloaded_file_location
-    )
-    model.set_output_embeddings(new_output_embeddings)
     return
 
 
