@@ -700,7 +700,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         vllm_chat_template_sync = (
             "if hasattr(self, 'llm') and self.llm is not None and hasattr(self.llm, 'get_tokenizer'):\n"
             "    _vllm_tok = self.llm.get_tokenizer()\n"
-            "    _pc = getattr(self, 'processing_class', None)\n"
+            "    _pc = getattr(self, 'processing_class', None) or getattr(self, 'tokenizer', None)\n"
             "    if _pc is not None and getattr(_pc, 'chat_template', None) is not None:\n"
             "        if _vllm_tok.chat_template is None:\n"
             "            _vllm_tok.chat_template = _pc.chat_template\n"
