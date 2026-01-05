@@ -43,10 +43,28 @@ torch_compile_options = {
     "triton.cudagraphs": False,
 }
 
-from trl import __version__ as trl_version
+# vLLM compatibility shim (TRL expects GuidedDecodingParams even if vLLM doesn't provide it)
+try:
+    import vllm.sampling_params as _unsloth_vllm_sp
+    if not hasattr(_unsloth_vllm_sp, "GuidedDecodingParams"):
+        class GuidedDecodingParams:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+        _unsloth_vllm_sp.GuidedDecodingParams = GuidedDecodingParams
+except Exception:
+    pass
+
+from trl import __version__ as trl_version_raw
+from importlib.metadata import version as importlib_version
 from unsloth_zoo.utils import Version
 
-trl_version = Version(trl_version)
+try:
+    trl_version = Version(trl_version_raw)
+except Exception:
+    try:
+        trl_version = Version(importlib_version("trl"))
+    except Exception:
+        trl_version = Version("0.0.0")
 
 
 def vLLMSamplingParams(**kwargs):
