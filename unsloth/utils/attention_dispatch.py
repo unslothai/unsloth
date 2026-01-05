@@ -32,9 +32,6 @@ from ..utils.packing import (
 if HAS_FLASH_ATTENTION:
     from flash_attn import flash_attn_func, flash_attn_varlen_func
 HAS_XFORMERS = xformers is not None
-BlockDiagonalCausalMask = None
-if HAS_XFORMERS:
-    BlockDiagonalCausalMask = xformers.attn_bias.BlockDiagonalCausalMask
 SDPA_HAS_GQA = "enable_gqa" in (scaled_dot_product_attention.__doc__ or "")
 
 FLASH_VARLEN = "flash_varlen"
@@ -219,16 +216,10 @@ def run_attention(
         )
 
         if config.n_groups != 1 and not requires_grad:
-            if has_block:
-                out = out.view(bsz, q_len, config.n_kv_heads, config.n_groups, head_dim)
-            else:
-                out = out.view(bsz, q_len, config.n_kv_heads, config.n_groups, head_dim)
+            out = out.view(bsz, q_len, config.n_kv_heads, config.n_groups, head_dim)
             out = out.reshape(bsz, q_len, n_heads, head_dim)
         else:
-            if has_block:
-                out = out.view(bsz, q_len, n_heads, head_dim)
-            else:
-                out = out.view(bsz, q_len, n_heads, head_dim)
+            out = out.view(bsz, q_len, n_heads, head_dim)
         return out
     else:
         local_mask = context.attention_mask

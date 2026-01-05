@@ -307,9 +307,9 @@ def MistralForCausalLM_fast_forward(
             RETURN_LOGITS = False
 
         if not RETURN_LOGITS and labels is not None:
-            n_items = kwargs.get("num_items_in_batch", None) or kwargs.get(
-                "n_items", None
-            )
+            n_items = kwargs.get("num_items_in_batch", None)
+            if n_items is None:
+                n_items = kwargs.get("n_items", None)
             logit_softcapping = getattr(self.config, "final_logit_softcapping", 0)
 
             # loss = fused_linear_cross_entropy(
@@ -363,11 +363,13 @@ def MistralForCausalLM_fast_forward(
             shift_labels,
             kwargs.get("packed_seq_lengths"),
         )
+        n_items = kwargs.get("num_items_in_batch", None)
+        if n_items is None:
+            n_items = kwargs.get("n_items", None)
         loss = fast_cross_entropy_loss(
             logits = shift_logits,
             labels = shift_labels,
-            n_items = kwargs.get("num_items_in_batch", None)
-            or kwargs.get("n_items", None),
+            n_items = n_items,
         )
 
     if not return_dict:

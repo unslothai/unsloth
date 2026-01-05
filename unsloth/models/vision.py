@@ -68,11 +68,9 @@ import functools
 import os
 import gc
 import math
-import functools
 from typing import Optional, Tuple, List, Union
 import re, inspect, sys
 import contextlib
-import types
 
 try:
     from huggingface_hub.utils import get_token
@@ -149,7 +147,7 @@ def unsloth_base_fast_generate(
     elif "input_ids" in kwargs:
         input_ids = kwargs["input_ids"]
     elif "input" in kwargs:
-        input_ids = kwargs["input_ids"]
+        input_ids = kwargs["input"]
     elif "input_features" in kwargs:
         input_ids = kwargs["input_features"]
     elif "input_embeds" in kwargs:
@@ -158,7 +156,7 @@ def unsloth_base_fast_generate(
         input_ids = kwargs["inputs"]
     else:
         key = next(iter(kwargs.keys()))
-        if type(kwargs["key"]) is not torch.Tensor:
+        if type(kwargs[key]) is not torch.Tensor:
             raise TypeError("Unsloth: You need to pass in input_ids to .generate!")
         input_ids = kwargs[key]
     assert type(input_ids) is torch.Tensor
@@ -531,6 +529,7 @@ class FastBaseModel:
             del kwargs["attn_implementation"]
 
         bnb_config = None
+        user_quantization_config = kwargs.get("quantization_config", None)
         if full_finetuning and (load_in_4bit or load_in_8bit):
             print(
                 "Unsloth: You selected full finetuning support, but 4bit / 8bit is enabled - disabling LoRA / QLoRA."
@@ -598,7 +597,8 @@ class FastBaseModel:
             ):
                 pass
             else:
-                kwargs["quantization_config"] = bnb_config
+                if user_quantization_config is None:
+                    kwargs["quantization_config"] = bnb_config
         else:
             if auto_config is None:
                 auto_config = AutoConfig.from_pretrained(
@@ -643,7 +643,8 @@ class FastBaseModel:
                         )
                     except:
                         pass
-                    kwargs["quantization_config"] = quantization_config
+                    if user_quantization_config is None:
+                        kwargs["quantization_config"] = quantization_config
 
         # Check if using forced float32 - we load it in bfloat16, then cast to float16!
         torch_dtype = dtype
@@ -675,7 +676,7 @@ class FastBaseModel:
                 **kwargs,
             )
             if hasattr(model, "generate"):
-                model.fast_generate = model.generate
+                model.fast_generate = make_fast_generate_wrapper(model.generate)
                 model.fast_generate_batches = error_out_no_vllm
             if offload_embedding:
                 if bool(
@@ -718,9 +719,13 @@ class FastBaseModel:
             if full_finetuning:
                 max_lora_rank = max(get_lora_supported_ranks())
                 raise NotImplementedError(
-                    f"Unsloth: `fast_inference = True` does not yet support `full_finetuning = True`.\n"
-                    f"Use LoRA rank `r = {max_lora_rank}` as the closest replacement for full finetuning with Unsloth for RL."
+                    "Unsloth: `fast_inference=True` cannot be used together with `full_finetuning=True`.\n"
+                    "Reason: fast_inference is optimized for inference-only workflows and "
+                    "does not currently support full fine-tuning.\n"
+                    "Workaround: disable fast_inference, or use parameter-efficient fine-tuning "
+                    f"(e.g. LoRA with rank r={max_lora_rank})."
                 )
+
             model_config.model_name = model_name
 
             if fast_inference:
@@ -936,6 +941,7 @@ class FastBaseModel:
         task_type = TaskType.CAUSAL_LM,
         temporary_location = "_unsloth_temporary_saved_buffers",
         qat_scheme = None,
+        ensure_weight_tying = False,  # [TODO] Add `ensure_weight_tying` for `modules_to_save` for vision models
         **kwargs,
     ):
         if os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1":
