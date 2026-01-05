@@ -571,42 +571,44 @@ def fix_vllm_pdl_blackwell():
     if importlib.util.find_spec("vllm") is None:
         return
 
-    # Check if we have a CUDA GPU
+    # Check if any CUDA GPU is SM100 (Blackwell)
     try:
         import torch
 
         if not torch.cuda.is_available():
             return
-        major, minor = torch.cuda.get_device_capability()
+
+        # Scan all GPUs for SM100 - fix applies globally via env var and monkey-patch
+        has_sm100 = False
+        sm100_gpu_name = None
+        for i in range(torch.cuda.device_count()):
+            major, minor = torch.cuda.get_device_capability(i)
+            if major == 10:
+                has_sm100 = True
+                sm100_gpu_name = torch.cuda.get_device_name(i)
+                break
+
+        if not has_sm100:
+            return
     except Exception:
         return
 
-    # Only SM100 (Blackwell) is affected - SM90 (Hopper) works fine
-    if major != 10:
-        return
-
-    gpu_name = torch.cuda.get_device_name()
+    # Helper to check if module spec exists
+    def _spec_exists(name):
+        try:
+            return importlib.util.find_spec(name) is not None
+        except (ModuleNotFoundError, ValueError):
+            return False
 
     # Check if vLLM has the PDL-related modules before doing internet check
-    try:
-        has_expand_op = (
-            importlib.util.find_spec("vllm.lora.ops.triton_ops.lora_expand_op")
-            is not None
-        )
-    except (ModuleNotFoundError, ValueError):
-        has_expand_op = False
-    try:
-        has_shrink_op = (
-            importlib.util.find_spec("vllm.lora.ops.triton_ops.lora_shrink_op")
-            is not None
-        )
-    except (ModuleNotFoundError, ValueError):
-        has_shrink_op = False
+    has_expand_op = _spec_exists("vllm.lora.ops.triton_ops.lora_expand_op")
+    has_shrink_op = _spec_exists("vllm.lora.ops.triton_ops.lora_shrink_op")
+
     if not has_expand_op and not has_shrink_op:
         # Old vLLM version without PDL support - just set env var to be safe
         os.environ["TRITON_DISABLE_PDL"] = "1"
         logger.info(
-            f"Unsloth: Set TRITON_DISABLE_PDL=1 for SM{major}{minor} ({gpu_name}) - "
+            f"Unsloth: Set TRITON_DISABLE_PDL=1 for SM100 ({sm100_gpu_name}) - "
             f"vLLM PDL modules not found"
         )
         return
@@ -633,12 +635,12 @@ def fix_vllm_pdl_blackwell():
             api_url = "https://api.github.com/repos/vllm-project/vllm/issues/30872"
             req = urllib.request.Request(
                 api_url,
-                headers = {
+                headers={
                     "User-Agent": "Unsloth-PDL-Fix",
                     "Accept": "application/vnd.github.v3+json",
                 },
             )
-            with urllib.request.urlopen(req, timeout = 3) as response:
+            with urllib.request.urlopen(req, timeout=3) as response:
                 data = json_module.loads(response.read().decode())
                 issue_closed = data.get("state") == "closed"
     except Exception:
@@ -647,7 +649,7 @@ def fix_vllm_pdl_blackwell():
 
     if issue_closed:
         logger.info(
-            f"Unsloth: SM{major}{minor} ({gpu_name}) detected but PDL issue #30872 "
+            f"Unsloth: SM100 ({sm100_gpu_name}) detected but PDL issue #30872 "
             f"is closed - skipping PDL fix"
         )
         return
@@ -655,34 +657,29 @@ def fix_vllm_pdl_blackwell():
     # Apply the PDL fix
     os.environ["TRITON_DISABLE_PDL"] = "1"
 
-    def fake_supports_pdl(device = None):
+    def fake_supports_pdl(device=None):
         return False
 
     patched = []
-
-    try:
-        import vllm.lora.ops.triton_ops.lora_expand_op as expand_op
-
-        expand_op.supports_pdl = fake_supports_pdl
-        patched.append("lora_expand_op")
-    except (ImportError, ModuleNotFoundError, AttributeError):
-        pass
-
-    try:
-        import vllm.lora.ops.triton_ops.lora_shrink_op as shrink_op
-
-        shrink_op.supports_pdl = fake_supports_pdl
-        patched.append("lora_shrink_op")
-    except (ImportError, ModuleNotFoundError, AttributeError):
-        pass
+    modules_to_patch = {
+        "lora_expand_op": "vllm.lora.ops.triton_ops.lora_expand_op",
+        "lora_shrink_op": "vllm.lora.ops.triton_ops.lora_shrink_op",
+    }
+    for name, path in modules_to_patch.items():
+        try:
+            module = importlib.import_module(path)
+            module.supports_pdl = fake_supports_pdl
+            patched.append(name)
+        except (ImportError, ModuleNotFoundError, AttributeError):
+            pass
 
     if patched:
         logger.info(
-            f"Unsloth: Applied PDL fix for SM{major}{minor} ({gpu_name}) - "
+            f"Unsloth: Applied PDL fix for SM100 ({sm100_gpu_name}) - "
             f"patched: {', '.join(patched)}"
         )
     else:
         # Just set the env var - vLLM might be an older version without supports_pdl
         logger.info(
-            f"Unsloth: Set TRITON_DISABLE_PDL=1 for SM{major}{minor} ({gpu_name})"
+            f"Unsloth: Set TRITON_DISABLE_PDL=1 for SM100 ({sm100_gpu_name})"
         )
