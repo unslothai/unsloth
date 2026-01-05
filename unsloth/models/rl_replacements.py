@@ -259,7 +259,6 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
     # The new multi-line string that will replace the line above
     replacement_lines = """
         batch_size = self.args.per_device_train_batch_size if mode == "train" else self.args.per_device_eval_batch_size
-        _was_training = self.model.training
         try:
             # TRL 0.23.1 and below path
             if not has_images:
@@ -388,20 +387,6 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             patched = patched[: match.start()] + wrapped + patched[match.end() :]
 
         function = patched
-
-    match = re.search(r"^(\s*)return output", function, re.MULTILINE)
-
-    if match:
-        indent = match.group(1)
-        new_code = (
-            indent
-            + "if not _was_training:\n"
-            + indent
-            + "    self.model.for_inference()\n"
-            + indent
-            + "return output"
-        )
-        function = function.replace(f"{indent}return output", new_code)
 
     return function
 
@@ -876,13 +861,19 @@ def grpo_trainer_compute_loss(function_name, function):
                 else torch.tensor(0.0, device = self.model.device)
             )
             self._metrics[mode]["sampling/importance_sampling_ratio/min"].append(
-                nanmin(self.accelerator.gather(min_importance_sampling_ratio)).item()
+                self.accelerator.gather(min_importance_sampling_ratio)
+                .nan_to_num(nan = float("inf"))
+                .min()
+                .item()
             )
             self._metrics[mode]["sampling/importance_sampling_ratio/mean"].append(
                 self.accelerator.gather(mean_importance_sampling_ratio).nanmean().item()
             )
             self._metrics[mode]["sampling/importance_sampling_ratio/max"].append(
-                nanmax(self.accelerator.gather(max_importance_sampling_ratio)).item()
+                self.accelerator.gather(max_importance_sampling_ratio)
+                .nan_to_num(nan = float("-inf"))
+                .max()
+                .item()
             )
 
         return loss
@@ -964,11 +955,15 @@ def openenv_vllm_reload_weights():
         return
     if Version(importlib_version("trl")) < Version("0.26.0"):
         return
+
     try:
         import trl.experimental.openenv.utils as openenv_utils
         import trl.experimental.openenv as openenv
     except ImportError as e:
         logger.info(f"Unsloth: Failed to import trl openenv: {e}")
+        logger.info(
+            "Unsloth: trl.experimental.openenv not available — skipping RL openenv patches."
+        )
         return
 
     src = inspect.getsource(openenv_utils.generate_rollout_completions)
