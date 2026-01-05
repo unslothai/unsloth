@@ -635,12 +635,12 @@ def fix_vllm_pdl_blackwell():
             api_url = "https://api.github.com/repos/vllm-project/vllm/issues/30872"
             req = urllib.request.Request(
                 api_url,
-                headers={
+                headers = {
                     "User-Agent": "Unsloth-PDL-Fix",
                     "Accept": "application/vnd.github.v3+json",
                 },
             )
-            with urllib.request.urlopen(req, timeout=3) as response:
+            with urllib.request.urlopen(req, timeout = 3) as response:
                 data = json_module.loads(response.read().decode())
                 issue_closed = data.get("state") == "closed"
     except Exception:
@@ -657,7 +657,7 @@ def fix_vllm_pdl_blackwell():
     # Apply the PDL fix
     os.environ["TRITON_DISABLE_PDL"] = "1"
 
-    def fake_supports_pdl(device=None):
+    def fake_supports_pdl(device = None):
         return False
 
     patched = []
@@ -680,6 +680,4 @@ def fix_vllm_pdl_blackwell():
         )
     else:
         # Just set the env var - vLLM might be an older version without supports_pdl
-        logger.info(
-            f"Unsloth: Set TRITON_DISABLE_PDL=1 for SM100 ({sm100_gpu_name})"
-        )
+        logger.info(f"Unsloth: Set TRITON_DISABLE_PDL=1 for SM100 ({sm100_gpu_name})")
