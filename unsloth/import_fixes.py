@@ -556,3 +556,124 @@ def fix_huggingface_hub():
         huggingface_hub.is_offline_mode = (
             lambda: huggingface_hub.constants.HF_HUB_OFFLINE
         )
+
+
+def fix_vllm_pdl_blackwell():
+    """
+    Fix vLLM PDL (Programmatic Dependent Launch) bug on Blackwell GPUs (SM100).
+
+    The issue: vLLM's LoRA Triton kernels use tl.extra.cuda.gdc_wait() for PDL
+    optimization on SM90+ GPUs. This fails on SM100 (B200/B100) during CUDA graph
+    capture because Triton's pipeliner can't handle gdc_wait in complex kernels.
+
+    See: https://github.com/vllm-project/vllm/issues/30872
+    """
+    if importlib.util.find_spec("vllm") is None:
+        return
+
+    # Check if we have a CUDA GPU
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return
+        major, minor = torch.cuda.get_device_capability()
+    except Exception:
+        return
+
+    # Only SM100 (Blackwell) is affected - SM90 (Hopper) works fine
+    if major != 10:
+        return
+
+    gpu_name = torch.cuda.get_device_name()
+
+    # Check if vLLM has the PDL-related modules before doing internet check
+    try:
+        has_expand_op = importlib.util.find_spec("vllm.lora.ops.triton_ops.lora_expand_op") is not None
+    except (ModuleNotFoundError, ValueError):
+        has_expand_op = False
+    try:
+        has_shrink_op = importlib.util.find_spec("vllm.lora.ops.triton_ops.lora_shrink_op") is not None
+    except (ModuleNotFoundError, ValueError):
+        has_shrink_op = False
+    if not has_expand_op and not has_shrink_op:
+        # Old vLLM version without PDL support - just set env var to be safe
+        os.environ["TRITON_DISABLE_PDL"] = "1"
+        logger.info(
+            f"Unsloth: Set TRITON_DISABLE_PDL=1 for SM{major}{minor} ({gpu_name}) - "
+            f"vLLM PDL modules not found"
+        )
+        return
+
+    # Check if GitHub issue is closed (fix merged upstream)
+    issue_closed = False
+    try:
+        import socket
+        import urllib.request
+        import json as json_module
+
+        # Quick internet connectivity check (0.5s timeout)
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(0.5)
+        try:
+            sock.connect(("api.github.com", 443))
+            has_internet = True
+        except (socket.timeout, OSError):
+            has_internet = False
+        finally:
+            sock.close()
+
+        if has_internet:
+            api_url = "https://api.github.com/repos/vllm-project/vllm/issues/30872"
+            req = urllib.request.Request(
+                api_url,
+                headers={
+                    "User-Agent": "Unsloth-PDL-Fix",
+                    "Accept": "application/vnd.github.v3+json",
+                }
+            )
+            with urllib.request.urlopen(req, timeout=3) as response:
+                data = json_module.loads(response.read().decode())
+                issue_closed = data.get("state") == "closed"
+    except Exception:
+        # If we can't check, assume issue is still open (apply fix to be safe)
+        pass
+
+    if issue_closed:
+        logger.info(
+            f"Unsloth: SM{major}{minor} ({gpu_name}) detected but PDL issue #30872 "
+            f"is closed - skipping PDL fix"
+        )
+        return
+
+    # Apply the PDL fix
+    os.environ["TRITON_DISABLE_PDL"] = "1"
+
+    def fake_supports_pdl(device=None):
+        return False
+
+    patched = []
+
+    try:
+        import vllm.lora.ops.triton_ops.lora_expand_op as expand_op
+        expand_op.supports_pdl = fake_supports_pdl
+        patched.append("lora_expand_op")
+    except (ImportError, ModuleNotFoundError, AttributeError):
+        pass
+
+    try:
+        import vllm.lora.ops.triton_ops.lora_shrink_op as shrink_op
+        shrink_op.supports_pdl = fake_supports_pdl
+        patched.append("lora_shrink_op")
+    except (ImportError, ModuleNotFoundError, AttributeError):
+        pass
+
+    if patched:
+        logger.info(
+            f"Unsloth: Applied PDL fix for SM{major}{minor} ({gpu_name}) - "
+            f"patched: {', '.join(patched)}"
+        )
+    else:
+        # Just set the env var - vLLM might be an older version without supports_pdl
+        logger.info(
+            f"Unsloth: Set TRITON_DISABLE_PDL=1 for SM{major}{minor} ({gpu_name})"
+        )

@@ -126,6 +126,7 @@ from .import_fixes import (
     fix_xformers_performance_issue,
     fix_vllm_aimv2_issue,
     fix_vllm_guided_decoding_params,
+    fix_vllm_pdl_blackwell,
     ignore_logger_messages,
     patch_ipykernel_hf_xet,
     patch_trackio,
@@ -138,6 +139,7 @@ from .import_fixes import (
 fix_xformers_performance_issue()
 fix_vllm_aimv2_issue()
 fix_vllm_guided_decoding_params()
+fix_vllm_pdl_blackwell()
 ignore_logger_messages()
 patch_ipykernel_hf_xet()
 patch_trackio()
@@ -149,6 +151,7 @@ fix_executorch()
 del fix_xformers_performance_issue
 del fix_vllm_aimv2_issue
 del fix_vllm_guided_decoding_params
+del fix_vllm_pdl_blackwell
 del ignore_logger_messages
 del patch_ipykernel_hf_xet
 del patch_trackio
