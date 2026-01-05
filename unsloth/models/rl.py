@@ -694,6 +694,19 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         )
         RLTrainer_post += training_check
 
+    # Sync chat_template from processing_class to vLLM's tokenizer
+    # This fixes base models that have custom chat templates applied after loading
+    if "model" in call_args:
+        vllm_chat_template_sync = (
+            "if hasattr(self, 'llm') and self.llm is not None and hasattr(self.llm, 'get_tokenizer'):\n"
+            "    _vllm_tok = self.llm.get_tokenizer()\n"
+            "    _pc = getattr(self, 'processing_class', None) or getattr(self, 'tokenizer', None)\n"
+            "    if _vllm_tok is not None and _pc is not None and getattr(_pc, 'chat_template', None) is not None and getattr(_vllm_tok, 'chat_template', None) is None:\n"
+            "        _vllm_tok.chat_template = _pc.chat_template\n"
+            "pass\n"
+        )
+        RLTrainer_post += vllm_chat_template_sync
+
     # Edit optional metrics
     other_metrics_processor = ""
     if trainer_file in RL_METRICS_CHANGES:
