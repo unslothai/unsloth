@@ -1157,7 +1157,7 @@ class FastSentenceTransformer(FastModel):
 
                 # Prepare for k-bit training if quantized
                 if is_quantized:
-                    from peft import prepare_model_for_kbit_training
+                    from unsloth.models._utils import prepare_model_for_kbit_training
 
                     _gc_for_kbit = (
                         use_gradient_checkpointing
