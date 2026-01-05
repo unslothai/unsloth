@@ -15,6 +15,7 @@
 import logging
 
 from .loader import FastModel
+from ._utils import SUPPORTS_BFLOAT16
 import inspect
 import json
 import os
@@ -770,9 +771,15 @@ class FastSentenceTransformer(FastModel):
             # torch.compile mode: "reduce-overhead" is optimal for training
             compile_mode = "reduce-overhead"
 
-            # Determine dtype
+            # Determine dtype - handle float16 machines that don't support bfloat16
             if dtype is None:
-                dtype = torch.bfloat16 if load_in_16bit else torch.float32
+                if load_in_16bit:
+                    dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
+                else:
+                    dtype = torch.float32
+            elif dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16:
+                print("Unsloth: Device does not support bfloat16. Using float16 instead.")
+                dtype = torch.float16
 
             # Determine device
             st_device = device_map
@@ -1157,7 +1164,7 @@ class FastSentenceTransformer(FastModel):
 
                 # Prepare for k-bit training if quantized
                 if is_quantized:
-                    from unsloth.models._utils import prepare_model_for_kbit_training
+                    from ._utils import prepare_model_for_kbit_training
 
                     _gc_for_kbit = (
                         use_gradient_checkpointing
