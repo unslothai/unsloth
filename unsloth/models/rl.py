@@ -46,10 +46,13 @@ torch_compile_options = {
 # vLLM compatibility shim (TRL expects GuidedDecodingParams even if vLLM doesn't provide it)
 try:
     import vllm.sampling_params as _unsloth_vllm_sp
+
     if not hasattr(_unsloth_vllm_sp, "GuidedDecodingParams"):
+
         class GuidedDecodingParams:
             def __init__(self, **kwargs):
                 self.kwargs = kwargs
+
         _unsloth_vllm_sp.GuidedDecodingParams = GuidedDecodingParams
 except Exception:
     pass
