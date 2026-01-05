@@ -609,46 +609,17 @@ def fix_vllm_pdl_blackwell():
         # Old vLLM version without PDL support - nothing to patch
         return
 
-    # Check if GitHub issue is closed (fix merged upstream)
-    issue_closed = False
+    # Check if vLLM version includes the fix (expected in versions > 0.13.2)
     try:
-        import socket
-        import urllib.request
-        import json as json_module
-
-        # Quick internet connectivity check (0.5s timeout)
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(0.5)
-        try:
-            sock.connect(("api.github.com", 443))
-            has_internet = True
-        except (socket.timeout, OSError):
-            has_internet = False
-        finally:
-            sock.close()
-
-        if has_internet:
-            api_url = "https://api.github.com/repos/vllm-project/vllm/issues/30872"
-            req = urllib.request.Request(
-                api_url,
-                headers = {
-                    "User-Agent": "Unsloth-PDL-Fix",
-                    "Accept": "application/vnd.github.v3+json",
-                },
+        vllm_version = Version(importlib_version("vllm"))
+        if vllm_version > Version("0.13.2"):
+            logger.info(
+                f"Unsloth: SM100 ({sm100_gpu_name}) detected but vLLM {vllm_version} "
+                f"should include PDL fix - skipping workaround"
             )
-            with urllib.request.urlopen(req, timeout = 3) as response:
-                data = json_module.loads(response.read().decode())
-                issue_closed = data.get("state") == "closed"
+            return
     except Exception:
-        # If we can't check, assume issue is still open (apply fix to be safe)
         pass
-
-    if issue_closed:
-        logger.info(
-            f"Unsloth: SM100 ({sm100_gpu_name}) detected but PDL issue #30872 "
-            f"is closed - skipping PDL fix"
-        )
-        return
 
     # Apply the PDL fix
     os.environ["TRITON_DISABLE_PDL"] = "1"
