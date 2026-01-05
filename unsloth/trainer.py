@@ -211,7 +211,7 @@ def _backwards_compatible_trainer(trainer_class, config_class):
         if "processing_class" in trainer_params and "tokenizer" in kwargs:
             kwargs["processing_class"] = kwargs.pop("tokenizer")
 
-        if ("args" in kwargs) and (Version(trl.__version__) >= Version("0.13.0.dev0")):
+        if ("args" in kwargs) and (Version(trl) >= Version("0.13.0.dev0")):
             training_args = kwargs.pop("args", None)
 
             # Get parameters that Trainer.__init__ actually expects
@@ -412,7 +412,7 @@ def _patch_trl_trainer():
 
     if hasattr(trl, "__UNSLOTH_BACKWARDS_COMPATIBLE__"):
         return
-    if Version(trl.__version__) <= Version("0.11.0"):
+    if Version(trl) <= Version("0.11.0"):
         return
 
     import trl.trainer
