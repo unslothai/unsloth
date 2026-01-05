@@ -43,10 +43,31 @@ torch_compile_options = {
     "triton.cudagraphs": False,
 }
 
-from trl import __version__ as trl_version
+# vLLM compatibility shim (TRL expects GuidedDecodingParams even if vLLM doesn't provide it)
+try:
+    import vllm.sampling_params as _unsloth_vllm_sp
+
+    if not hasattr(_unsloth_vllm_sp, "GuidedDecodingParams"):
+
+        class GuidedDecodingParams:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+        _unsloth_vllm_sp.GuidedDecodingParams = GuidedDecodingParams
+except Exception:
+    pass
+
+from trl import __version__ as trl_version_raw
+from importlib.metadata import version as importlib_version
 from unsloth_zoo.utils import Version
 
-trl_version = Version(trl_version)
+try:
+    trl_version = Version(trl_version_raw)
+except Exception:
+    try:
+        trl_version = Version(importlib_version("trl"))
+    except Exception:
+        trl_version = Version("0.0.0")
 
 
 def vLLMSamplingParams(**kwargs):
@@ -242,12 +263,18 @@ def prepare_for_training_mode(f):
     @functools.wraps(f)
     def wrapper(self, *args, **kwargs):
         # Enable training mode
+        _was_training = None
+        if hasattr(self, 'model') and hasattr(self.model, "training"):
+            _was_training = self.model.training
         if hasattr(self, 'model') and hasattr(self.model, "for_training"):
             self.model.for_training()
         output = f(self, *args, **kwargs)
-        # Return inference mode
+        # Restore previous mode when possible
         if hasattr(self, 'model') and hasattr(self.model, "for_inference"):
-            self.model.for_inference()
+            if _was_training is False:
+                self.model.for_inference()
+            elif _was_training is True and hasattr(self.model, "for_training"):
+                self.model.for_training()
         # Reset gradient checkpointing buffers to free memory while staying ready for next run
         try:
             reset_unsloth_gradient_checkpointing_buffers()
@@ -330,6 +357,32 @@ class Unsloth{RLTrainer_name}(_Unsloth{RLTrainer_name}):
 {RLTrainer_post}
 pass
 '''
+
+
+def _wrap_grpo_generate_and_score(trainer_cls):
+    if not hasattr(trainer_cls, "_generate_and_score_completions"):
+        return
+    original = trainer_cls._generate_and_score_completions
+    if getattr(original, "_unsloth_restore_training_wrapped", False):
+        return
+
+    def wrapped(self, *args, **kwargs):
+        was_training = getattr(getattr(self, "model", None), "training", None)
+        try:
+            return original(self, *args, **kwargs)
+        finally:
+            if (
+                was_training is False
+                and hasattr(self, "model")
+                and hasattr(self.model, "for_inference")
+            ):
+                try:
+                    self.model.for_inference()
+                except Exception:
+                    pass
+
+    wrapped._unsloth_restore_training_wrapped = True
+    trainer_cls._generate_and_score_completions = wrapped
 
 
 def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
@@ -693,6 +746,19 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             "pass\n"
         )
         RLTrainer_post += training_check
+
+    # Sync chat_template from processing_class to vLLM's tokenizer
+    # This fixes base models that have custom chat templates applied after loading
+    if "model" in call_args:
+        vllm_chat_template_sync = (
+            "if hasattr(self, 'llm') and self.llm is not None and hasattr(self.llm, 'get_tokenizer'):\n"
+            "    _vllm_tok = self.llm.get_tokenizer()\n"
+            "    _pc = getattr(self, 'processing_class', None) or getattr(self, 'tokenizer', None)\n"
+            "    if _vllm_tok is not None and _pc is not None and getattr(_pc, 'chat_template', None) is not None and getattr(_vllm_tok, 'chat_template', None) is None:\n"
+            "        _vllm_tok.chat_template = _pc.chat_template\n"
+            "pass\n"
+        )
+        RLTrainer_post += vllm_chat_template_sync
 
     # Edit optional metrics
     other_metrics_processor = ""
@@ -1058,6 +1124,16 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         locals(),
         globals(),
     )
+
+    if trainer_file == "grpo_trainer":
+        try:
+            _wrap_grpo_generate_and_score(
+                getattr(created_module, f"Unsloth{RLTrainer_name}")
+            )
+        except Exception as e:
+            logger.info(
+                f"Unsloth: Could not wrap _generate_and_score_completions for {RLTrainer_name}: {e}"
+            )
 
 
 def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, imports):
