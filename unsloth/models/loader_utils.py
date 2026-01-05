@@ -28,7 +28,6 @@ from .mapper import (
 )
 
 # https://github.com/huggingface/transformers/pull/26037 allows 4 bit loading!
-from packaging.version import Version
 from transformers import __version__ as transformers_version
 from unsloth.models._utils import TorchAOConfig
 from unsloth_zoo.utils import Version

@@ -79,7 +79,7 @@ from importlib.metadata import PackageNotFoundError
 # Check for unsloth_zoo
 try:
     unsloth_zoo_version = importlib_version("unsloth_zoo")
-    if Version(unsloth_zoo_version) < Version("2026.1.1"):
+    if Version(unsloth_zoo_version) < Version("2026.1.2"):
         print(
             "Unsloth: Please update Unsloth and Unsloth-Zoo to the latest version!\n"
             "Do this via `pip install --upgrade --force-reinstall --no-cache-dir --no-deps unsloth unsloth_zoo`"
@@ -126,6 +126,7 @@ from .import_fixes import (
     fix_xformers_performance_issue,
     fix_vllm_aimv2_issue,
     fix_vllm_guided_decoding_params,
+    fix_vllm_pdl_blackwell,
     ignore_logger_messages,
     patch_ipykernel_hf_xet,
     patch_trackio,
@@ -138,6 +139,7 @@ from .import_fixes import (
 fix_xformers_performance_issue()
 fix_vllm_aimv2_issue()
 fix_vllm_guided_decoding_params()
+fix_vllm_pdl_blackwell()
 ignore_logger_messages()
 patch_ipykernel_hf_xet()
 patch_trackio()
@@ -149,6 +151,7 @@ fix_executorch()
 del fix_xformers_performance_issue
 del fix_vllm_aimv2_issue
 del fix_vllm_guided_decoding_params
+del fix_vllm_pdl_blackwell
 del ignore_logger_messages
 del patch_ipykernel_hf_xet
 del patch_trackio
