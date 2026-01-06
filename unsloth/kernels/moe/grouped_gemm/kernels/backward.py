@@ -5,7 +5,7 @@ import torch
 import triton
 import triton.language as tl
 
-from grouped_gemm.kernels.autotuning import (
+from .autotuning import (
     get_dW_kernel_configs,
     get_dX_kernel_configs,
     prune_dX_configs,

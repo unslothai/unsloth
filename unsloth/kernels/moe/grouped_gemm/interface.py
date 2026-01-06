@@ -8,17 +8,17 @@ from dataclasses import asdict
 import torch
 import triton
 
-from grouped_gemm.kernels.backward import (
+from .kernels.backward import (
     _autotuned_grouped_gemm_dW_kernel,
     _autotuned_grouped_gemm_dX_kernel,
     _grouped_gemm_dW_kernel,
     _grouped_gemm_dX_kernel,
 )
-from grouped_gemm.kernels.forward import (
+from .kernels.forward import (
     _autotuned_grouped_gemm_forward_kernel,
     _grouped_gemm_forward_kernel,
 )
-from grouped_gemm.kernels.tuning import (
+from .kernels.tuning import (
     KernelConfigBackward_dW,
     KernelConfigBackward_dX,
     KernelConfigForward,
