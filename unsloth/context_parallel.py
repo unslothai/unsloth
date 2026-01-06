@@ -239,6 +239,10 @@ class ContextParallelManager:
         global_tokens = local_tokens.clone()
         dist.all_reduce(global_tokens, op = dist.ReduceOp.SUM, group = self._cp_group)
 
+        # Cache token counts for reduce_grad_norm
+        self._cached_local_tokens = local_tokens.detach()
+        self._cached_global_tokens = global_tokens.detach()
+
         # Weight loss by local fraction
         weight = local_tokens.detach() / global_tokens.detach()
         weighted_loss = tensor * weight
@@ -254,23 +258,21 @@ class ContextParallelManager:
         """
         Reduce gradient norm across CP group.
 
-        Each rank computes a local gradient norm (L2). The global norm is:
-            sqrt(sum(local_norm_i^2 for all ranks))
-
-        This is needed because the Trainer computes grad_norm locally, but with
-        CP each rank only has partial gradients for its sequence shard.
+        The gradients are already scaled by (local_tokens / global_tokens) from
+        the weighted loss in reduce_loss. We sum local norms directly - no
+        additional weighting needed since the scaling is already in the gradients.
         """
         if self._cp_group is None:
             return grad_norm
 
-        # Square the local norm, sum across ranks, then sqrt
-        local_norm_sq = torch.tensor(
-            grad_norm**2,
+        # Simple sum of local norms - gradients already have the weight factor
+        local_norm = torch.tensor(
+            grad_norm,
             dtype = torch.float32,
             device = torch.device(DEVICE_TYPE_TORCH),
         )
-        dist.all_reduce(local_norm_sq, op = dist.ReduceOp.SUM, group = self._cp_group)
-        return float(local_norm_sq.sqrt().item())
+        dist.all_reduce(local_norm, op = dist.ReduceOp.SUM, group = self._cp_group)
+        return float(local_norm.item())
 
 
 def patch_sft_config():
@@ -404,35 +406,15 @@ def patch_sft_trainer() -> None:
         ):
             setattr(accelerator.state, "device_mesh", mesh)
 
-        # When using pure context parallelism (dp_world_size=1), disable DDP
-        # to avoid gradient checkpointing compatibility issues
-        if manager and manager.data_parallel_world_size == 1:
-            try:
-                from accelerate.utils import DistributedType
-
-                args = getattr(self, "args", None)
-                distributed_state = getattr(args, "distributed_state", None)
-                if (
-                    distributed_state is not None
-                    and distributed_state.distributed_type == DistributedType.MULTI_GPU
-                ):
-                    distributed_state.distributed_type = DistributedType.NO
-            except ImportError:
-                pass
-
-        # Enable sync_each_batch when using CP with gradient accumulation and DDP.
-        # This keeps the computation graph constant for DDP + static_graph mode.
+        # Enable sync_each_batch when using CP to ensure consistent computation graph
+        # for DDP + static_graph mode. This is needed because ring attention changes
+        # the graph structure, and sync_each_batch keeps it constant.
         if (
             manager
-            and manager.data_parallel_world_size > 1  # Only needed with actual DP
             and accelerator is not None
             and hasattr(accelerator, "gradient_state")
         ):
-            grad_accum_steps = getattr(
-                getattr(self, "args", None), "gradient_accumulation_steps", 1
-            )
-            if grad_accum_steps > 1:
-                accelerator.gradient_state.plugin_kwargs["sync_each_batch"] = True
+            accelerator.gradient_state.plugin_kwargs["sync_each_batch"] = True
 
         # Attach attention hooks for proper ring attention behavior with load balancing.
         # This ensures attention_mask is removed and is_causal=True for all self_attn calls.
@@ -446,20 +428,17 @@ def patch_sft_trainer() -> None:
         manager = getattr(self, "_context_parallel_manager", None)
         kwargs.pop("num_items_in_batch", None)
 
-        # For context parallelism with shift_labels, prefer letting the model
-        # handle the pre-shifted targets when it advertises support. Otherwise
-        # fall back to an external loss that consumes the sharded tensors.
+        # For context parallelism with shift_labels, always use external loss.
+        # This is required because unsloth's fused CE loss pre-computes gradients
+        # during forward and ignores grad_output in backward. When we weight the
+        # loss in reduce_loss(), the chain rule requires gradients be multiplied
+        # by the weight, but fused loss backward returns pre-computed gradients
+        # without this factor. External loss uses standard autograd which correctly
+        # propagates the weight through the chain rule.
         shift_labels = inputs.get("shift_labels")
         use_cp_shift_labels = manager and isinstance(shift_labels, torch.Tensor)
-        model_supports_shift_labels = bool(
-            getattr(
-                model,
-                "_unsloth_supports_context_parallel_shift_labels",
-                False,
-            )
-        )
 
-        if use_cp_shift_labels and not model_supports_shift_labels:
+        if use_cp_shift_labels:
             # Remove labels so model doesn't compute loss internally
             saved_labels = inputs.pop("labels", None)
             # Also remove shift_labels from inputs (model doesn't expect it)
@@ -571,11 +550,8 @@ def patch_sft_trainer() -> None:
     @functools.wraps(original_log)
     def patched_log(self, logs, start_time = None):
         manager = getattr(self, "_context_parallel_manager", None)
-        # Reduce grad_norm across CP group if present
         if manager and "grad_norm" in logs:
-            grad_norm = logs["grad_norm"]
-            if isinstance(grad_norm, (int, float)):
-                logs["grad_norm"] = manager.reduce_grad_norm(grad_norm)
+            logs["grad_norm"] = manager.reduce_grad_norm(logs["grad_norm"])
         return original_log(self, logs, start_time)
 
     trainer_cls.__init__ = patched_init

@@ -31,7 +31,6 @@ Happy fine-tuning!
 
 import argparse
 import os
-from typing import Optional
 
 
 def run(args):
@@ -46,6 +45,13 @@ def run(args):
 
     logging.getLogger("hf-to-gguf").setLevel(logging.WARNING)
 
+    # Convert gradient checkpointing arg to expected type
+    use_gradient_checkpointing = args.use_gradient_checkpointing
+    if use_gradient_checkpointing.lower() == "true":
+        use_gradient_checkpointing = True
+    elif use_gradient_checkpointing.lower() == "false":
+        use_gradient_checkpointing = False
+
     # Load model and tokenizer
     device_map, distributed = prepare_device_map()
     model, tokenizer = FastLanguageModel.from_pretrained(
@@ -54,6 +60,7 @@ def run(args):
         dtype = args.dtype,
         load_in_4bit = args.load_in_4bit,
         device_map = device_map,
+        use_gradient_checkpointing = use_gradient_checkpointing,
     )
 
     # Configure PEFT model
@@ -72,7 +79,7 @@ def run(args):
         lora_alpha = args.lora_alpha,
         lora_dropout = args.lora_dropout,
         bias = args.bias,
-        use_gradient_checkpointing = args.use_gradient_checkpointing,
+        use_gradient_checkpointing = use_gradient_checkpointing,
         random_state = args.random_state,
         use_rslora = args.use_rslora,
         loftq_config = args.loftq_config,
