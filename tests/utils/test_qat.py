@@ -9,7 +9,7 @@ from torchao.quantization.qat.fake_quantizer import (
     FakeQuantizerBase,
     Float8FakeQuantizer,
     Int4WeightFakeQuantizer,
-    IntxFakeQuantizer
+    IntxFakeQuantizer,
 )
 
 
@@ -101,6 +101,7 @@ def _test_fake_quantizers_are_called(
     Verify that the fake quantizers are actually called when the model is called.
     """
     weight_only = qat_scheme == "int8"
+
     def _swap_fake_quantizers(model: torch.nn.Module):
         for name, child in model.named_children():
             if isinstance(child, FakeQuantizerBase):
