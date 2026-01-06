@@ -67,7 +67,7 @@ DEVICE_TYPE_TORCH = DEVICE_TYPE
 if DEVICE_TYPE_TORCH == "hip":
     DEVICE_TYPE_TORCH = "cuda"
 elif DEVICE_TYPE_TORCH == "mps":
-    DEVICE_TYPE_TORCH = "mps" 
+    DEVICE_TYPE_TORCH = "mps"
 
 
 @functools.cache

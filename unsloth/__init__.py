@@ -187,6 +187,7 @@ elif DEVICE_TYPE == "xpu":
 # if "SPACE_AUTHOR_NAME" not in os.environ and "SPACE_REPO_NAME" not in os.environ:
 if DEVICE_TYPE == "cuda":
     import triton
+
     libcuda_dirs = lambda: None
     if Version(triton.__version__) >= Version("3.0.0"):
         try:

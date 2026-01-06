@@ -26,7 +26,7 @@ class MLXTrainingArguments:
     grad_accumulation_steps: int = 1
     iters: int = 100
     batch_size: int = 4
-    val_batches: int = 10 
+    val_batches: int = 10
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -41,7 +41,6 @@ class MLXTrainingArguments:
 
 
 class MLXLoraConfig:
-
     def __init__(
         self,
         rank: int = 8,
@@ -65,11 +64,10 @@ class MLXLoraConfig:
         }
 
     def save(self, adapter_path: str):
-        os.makedirs(adapter_path, exist_ok=True)
+        os.makedirs(adapter_path, exist_ok = True)
         config_path = os.path.join(adapter_path, "adapter_config.json")
         with open(config_path, "w") as f:
-            json.dump(self.to_dict(), f, indent=4)
-
+            json.dump(self.to_dict(), f, indent = 4)
 
 
 class MLXTrainer:
@@ -113,19 +111,18 @@ class MLXTrainer:
 
         args = TrainingArgs(**args_dict)
 
-        optimizer = optim.Adam(learning_rate=learning_rate)
+        optimizer = optim.Adam(learning_rate = learning_rate)
 
         train_set = datasets.CacheDataset(train_dataset)
         val_set = datasets.CacheDataset(val_dataset) if val_dataset else None
 
         train(
-            model=model,
-            args=args,
-            optimizer=optimizer,
-            train_dataset=train_set,
-            val_dataset=val_set,
+            model = model,
+            args = args,
+            optimizer = optimizer,
+            train_dataset = train_set,
+            val_dataset = val_set,
         )
-
 
 
 class FastMLXModel:
@@ -145,7 +142,7 @@ class FastMLXModel:
         adapter_path: Optional[str] = None,
     ) -> Any:
         if adapter_path:
-            model, _ = load(model_name, adapter_path=adapter_path)
+            model, _ = load(model_name, adapter_path = adapter_path)
         else:
             model, _ = load(model_name)
 
@@ -171,11 +168,11 @@ class FastMLXModel:
         trainer.prepare_model_for_training(model, lora_config)
 
         trainer._train(
-            model=model,
-            training_args=MLXTrainingArguments(iters=iterations),
-            train_dataset=train_set,
-            val_dataset=val_set,
-            learning_rate=learning_rate,
+            model = model,
+            training_args = MLXTrainingArguments(iters = iterations),
+            train_dataset = train_set,
+            val_dataset = val_set,
+            learning_rate = learning_rate,
         )
 
         return model
