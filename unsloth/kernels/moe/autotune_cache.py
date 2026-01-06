@@ -158,7 +158,7 @@ def get_or_autotune_moe_kernels(
         if cached_data is not None:
             # Reconstruct config objects from cached data
             try:
-                from grouped_gemm.kernels.tuning import (
+                from .grouped_gemm.kernels.tuning import (
                     KernelConfigForward,
                     KernelConfigBackward_dX,
                     KernelConfigBackward_dW,
@@ -266,17 +266,17 @@ def _run_moe_autotuning(
 
     # Autotune forward kernel - use the interface function with autotune=True
     # This properly invokes the kernel and lets triton handle the autotuning
-    from grouped_gemm.interface import (
+    from .grouped_gemm.interface import (
         grouped_gemm_forward,
         grouped_gemm_dX,
         grouped_gemm_dW,
     )
-    from grouped_gemm.kernels.forward import _autotuned_grouped_gemm_forward_kernel
-    from grouped_gemm.kernels.backward import (
+    from .grouped_gemm.kernels.forward import _autotuned_grouped_gemm_forward_kernel
+    from .grouped_gemm.kernels.backward import (
         _autotuned_grouped_gemm_dX_kernel,
         _autotuned_grouped_gemm_dW_kernel,
     )
-    from grouped_gemm.kernels.tuning import (
+    from .grouped_gemm.kernels.tuning import (
         KernelConfigForward,
         KernelConfigBackward_dX,
         KernelConfigBackward_dW,
@@ -368,7 +368,7 @@ def _run_moe_autotuning(
 
 def _get_default_configs() -> Tuple[Any, Any, Any]:
     """Get default kernel configurations as fallback."""
-    from grouped_gemm.kernels.tuning import (
+    from .grouped_gemm.kernels.tuning import (
         KernelConfigForward,
         KernelConfigBackward_dX,
         KernelConfigBackward_dW,

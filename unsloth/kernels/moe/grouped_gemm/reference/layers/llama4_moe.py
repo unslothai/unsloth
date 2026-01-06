@@ -9,13 +9,13 @@ import torch.nn.functional as F
 from transformers.models.llama4 import Llama4TextConfig
 from transformers.models.llama4.modeling_llama4 import Llama4TextMoe
 
-from grouped_gemm.interface import grouped_gemm
-from grouped_gemm.kernels.tuning import (
+from ...interface import grouped_gemm
+from ...kernels.tuning import (
     KernelConfigBackward_dW,
     KernelConfigBackward_dX,
     KernelConfigForward,
 )
-from grouped_gemm.reference.moe_ops import (
+from ..moe_ops import (
     get_routing_indices,
     permute,
     torch_grouped_gemm,

@@ -323,8 +323,8 @@ def exceeds_smem_capacity(
 
 
 def common_prune_criteria(config: triton.Config, kwargs: dict, dtype):
-    from grouped_gemm.interface import supports_tma
-    from grouped_gemm.kernels.tuning import get_device_properties
+    from ..interface import supports_tma
+    from .tuning import get_device_properties
 
     smem_size = get_device_properties().SIZE_SMEM
 
@@ -355,7 +355,7 @@ def common_prune_criteria(config: triton.Config, kwargs: dict, dtype):
 
 
 def maybe_disable_tma(config: triton.Config):
-    from grouped_gemm.interface import supports_tma
+    from ..interface import supports_tma
 
     tma_keys = [k for k in config.kwargs.keys() if k.startswith("USE_TMA_")]
     if not supports_tma():
