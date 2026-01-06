@@ -547,6 +547,7 @@ class FastBaseModel:
             del kwargs["attn_implementation"]
 
         bnb_config = None
+        user_quantization_config = kwargs.get("quantization_config", None)
         if full_finetuning and (load_in_4bit or load_in_8bit):
             print(
                 "Unsloth: You selected full finetuning support, but 4bit / 8bit is enabled - disabling LoRA / QLoRA."
@@ -614,7 +615,8 @@ class FastBaseModel:
             ):
                 pass
             else:
-                kwargs["quantization_config"] = bnb_config
+                if user_quantization_config is None:
+                    kwargs["quantization_config"] = bnb_config
         else:
             if auto_config is None:
                 auto_config = AutoConfig.from_pretrained(
@@ -659,7 +661,8 @@ class FastBaseModel:
                         )
                     except:
                         pass
-                    kwargs["quantization_config"] = quantization_config
+                    if user_quantization_config is None:
+                        kwargs["quantization_config"] = quantization_config
 
         # Check if using forced float32 - we load it in bfloat16, then cast to float16!
         torch_dtype = dtype
@@ -691,7 +694,7 @@ class FastBaseModel:
                 **kwargs,
             )
             if hasattr(model, "generate"):
-                model.fast_generate = model.generate
+                model.fast_generate = make_fast_generate_wrapper(model.generate)
                 model.fast_generate_batches = error_out_no_vllm
             if offload_embedding:
                 if bool(

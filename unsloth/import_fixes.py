@@ -20,6 +20,7 @@ from packaging.version import Version as TrueVersion
 import re
 import logging
 import textwrap
+import warnings
 
 # We cannot do from unsloth_zoo.log import logger since FBGEMM might cause seg faults.
 UNSLOTH_ENABLE_LOGGING = os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") in (
@@ -97,6 +98,12 @@ if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") != "1":
     sys.stderr = HidePrintMessage(sys.stderr)
     # https://github.com/pytorch/FBGEMM/blob/d99cd96490ec4aabac2ee95b1e76ea4dcfcfa628/fbgemm_gpu/experimental/gemm/triton_gemm/utils.py#L43-L52
     sys.stderr.add_filter("TMA benchmarks will be running")
+    # Skipping import of cpp extensions due to incompatible torch version 2.9.0+cu128 for torchao version 0.15.0
+    logging.getLogger("torchao").setLevel(logging.ERROR)
+    # SyntaxWarning: invalid escape sequence '\.'
+    warnings.filterwarnings(
+        "ignore", message = "invalid escape sequence", category = SyntaxWarning
+    )
 
 
 # Fix up AttributeError: 'MessageFactory' object has no attribute 'GetPrototype'
