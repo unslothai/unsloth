@@ -607,6 +607,9 @@ elif DEVICE_TYPE == "xpu":
     else:
         torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "xpu")
         torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "xpu")
+else:
+    torch_amp_custom_fwd = None
+    torch_amp_custom_bwd = None
 # =============================================
 
 # =============================================
