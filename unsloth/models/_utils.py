@@ -1197,7 +1197,10 @@ def get_statistics(local_files_only = False):
     # You can disable this by setting UNSLOTH_DISABLE_STATISTICS
     import os
 
-    if "UNSLOTH_DISABLE_STATISTICS" in os.environ or os.environ.get("UNSLOTH_USE_MODELSCOPE", "0") == "1":
+    if (
+        "UNSLOTH_DISABLE_STATISTICS" in os.environ
+        or os.environ.get("UNSLOTH_USE_MODELSCOPE", "0") == "1"
+    ):
         return
     if local_files_only:
         return
