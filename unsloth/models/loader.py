@@ -691,16 +691,15 @@ class FastModel(FastBaseModel):
         if is_distributed():
             prepared_device_map, _ = prepare_device_map()
             if device_map in ("auto", "balanced", "balanced_low_0"):
-                import warnings
 
-                warnings.warn(
-                    f"Unsloth: Multi-GPU device splitting (device_map='{device_map}') is not supported "
-                    f"for vision/multimodal models in distributed training. "
-                    f"Using device_map={prepared_device_map} instead (data-parallel mode). "
-                    f"Each GPU will load a full copy of the model.",
-                    stacklevel = 2,
+                raise ValueError(
+                    f"Unsloth: You are in a distributed training environment (multi-GPU) but used device_map='{device_map}'.\n"
+                    f"Model splitting across GPUs is not supported as it causes gradient device mismatches with Unsloth's fused kernels.\n"
+                    f"Please set `device_map = None` to enable standard Data Parallelism.\n"
+                    f"Note: This will load a full copy of the model on each GPU.\n"
+                    f"This uses more VRAM per GPU but provides equivalent training to single GPU."
                 )
-                device_map = prepared_device_map
+        
 
         if whisper_language is not None:
             assert type(whisper_language) is str
