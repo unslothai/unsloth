@@ -712,7 +712,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
 
             with torch.amp.autocast(device_type = "cuda", dtype = self._autocast_dtype):
-                with torch.no_grad():  # _get_inference_mode_context_manager(model):
+                with _get_inference_mode_context_manager(model):
                     for (
                         input_ids_chunk,
                         attention_mask_chunk,
@@ -768,8 +768,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         )
                         # This is needed to avoid race conditions with GPT OSS offload_embbed=True
                         # However, it seems that this line does not slow down or disrupt models.
-                        if "gpt_oss" in str(type(self.model.config)):
-                            torch.cuda.synchronize()
+                        #if "gpt_oss" in str(type(self.model.config)):
+                        torch.cuda.synchronize()
                         all_logprobs_list.append(logprobs_chunk)
                     logprobs = torch.cat(all_logprobs_list, dim = 0)
                     entropies = None
