@@ -2277,12 +2277,11 @@ def _prepare_model_for_qat(
             )
         elif qat_scheme == "int8":
             from torchao.quantization import IntxWeightOnlyConfig
-            from torchao.quantization.granularity import PerGroup
+            from torchao.quantization.granularity import PerAxis
 
-            group_size = 128
             base_config = IntxWeightOnlyConfig(
                 weight_dtype = torch.int8,
-                granularity = PerGroup(group_size),
+                granularity = PerAxis(0),
             )
             filter_fn = (
                 lambda m, _: isinstance(m, torch.nn.Linear)
