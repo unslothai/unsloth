@@ -2278,6 +2278,7 @@ def _prepare_model_for_qat(
         elif qat_scheme == "int8":
             from torchao.quantization import IntxWeightOnlyConfig
             from torchao.quantization.granularity import PerAxis
+
             group_size = 128
 
             base_config = IntxWeightOnlyConfig(
