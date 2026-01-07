@@ -82,18 +82,13 @@ def _attach_context_parallel_attention_hooks(model: torch.nn.Module) -> list:
             module_kwargs["is_causal"] = True
         return module_args, module_kwargs
 
-    # Find all self_attn modules - they may be nested in PEFT wrappers
-    attn_modules = []
+    # Find all self_attn modules
     for name, module in model.named_modules():
-        # Attach to modules ending with self_attn (transformers convention)
         if name.endswith("self_attn"):
-            attn_modules.append((name, module))
-
-    for _, module in attn_modules:
-        handle = module.register_forward_pre_hook(
-            _self_attn_pre_forward_hook, with_kwargs = True, prepend = True
-        )
-        handles.append(handle)
+            handle = module.register_forward_pre_hook(
+                _self_attn_pre_forward_hook, with_kwargs = True, prepend = True
+            )
+            handles.append(handle)
 
     return handles
 
@@ -218,61 +213,62 @@ class ContextParallelManager:
         self._report_loss = None
         return value
 
-    def reduce_loss(self, loss, inputs):
+    def get_global_tokens(self, inputs) -> torch.Tensor:
+        """Compute global token count across CP group."""
+        shift_labels = inputs.get("shift_labels")
+        if shift_labels is None:
+            return None
+
+        local_tokens = shift_labels.ne(-100).sum().float()
+        global_tokens = local_tokens.clone()
+        dist.all_reduce(global_tokens, op = dist.ReduceOp.SUM, group = self._cp_group)
+
+        # Cache for reduce_grad_norm
+        self._cached_local_tokens = local_tokens.detach()
+        self._cached_global_tokens = global_tokens.detach()
+
+        return global_tokens
+
+    def reduce_loss(self, loss):
+        """Reduce loss across CP group for reporting."""
         if self._cp_group is None:
             return loss
 
         # Handle (loss, outputs) tuple from return_outputs=True
         is_tuple = isinstance(loss, tuple)
         if is_tuple:
-            tensor, rest = loss[0], loss[1:]
+            tensor, _ = loss[0], loss[1:]
         else:
             tensor = loss
 
-        # Count local valid tokens
-        shift_labels = inputs["shift_labels"]
-        local_tokens = (
-            shift_labels.ne(-100).sum().to(dtype = tensor.dtype, device = tensor.device)
-        )
-
-        # Get global token count
-        global_tokens = local_tokens.clone()
-        dist.all_reduce(global_tokens, op = dist.ReduceOp.SUM, group = self._cp_group)
-
-        # Cache token counts for reduce_grad_norm
-        self._cached_local_tokens = local_tokens.detach()
-        self._cached_global_tokens = global_tokens.detach()
-
-        # Weight loss by local fraction
-        weight = local_tokens.detach() / global_tokens.detach()
-        weighted_loss = tensor * weight
-
-        # Reduce for reporting
-        global_loss = weighted_loss.detach().clone()
+        # Each rank has loss = mean(local_CE). Average across ranks for reporting.
+        # This gives a good approximation of global mean when tokens are balanced.
+        global_loss = tensor.detach().clone()
         dist.all_reduce(global_loss, op = dist.ReduceOp.SUM, group = self._cp_group)
+        global_loss = global_loss / self.settings.size
         self._set_report_loss(global_loss)
 
-        return (weighted_loss, *rest) if is_tuple else weighted_loss
+        # Return unmodified loss for backward - gradients are correct with mean reduction
+        return loss
 
     def reduce_grad_norm(self, grad_norm: float) -> float:
         """
         Reduce gradient norm across CP group.
 
-        The gradients are already scaled by (local_tokens / global_tokens) from
-        the weighted loss in reduce_loss. We sum local norms directly - no
-        additional weighting needed since the scaling is already in the gradients.
+        With mean reduction, each rank's gradients are scaled by 1/local_tokens.
+        Average local norms for consistent reporting with CP=1.
         """
         if self._cp_group is None:
             return grad_norm
 
-        # Simple sum of local norms - gradients already have the weight factor
+        # Average local norms across CP ranks
         local_norm = torch.tensor(
             grad_norm,
             dtype = torch.float32,
             device = torch.device(DEVICE_TYPE_TORCH),
         )
         dist.all_reduce(local_norm, op = dist.ReduceOp.SUM, group = self._cp_group)
-        return float(local_norm.item())
+        return float(local_norm.item()) / self.settings.size
 
 
 def patch_sft_config():
@@ -380,6 +376,16 @@ def patch_sft_trainer() -> None:
                     stacklevel = 2,
                 )
                 self._context_parallel_manager = None
+            elif not dist.is_initialized():
+                raise RuntimeError(
+                    f"Context parallelism requires torch.distributed to be initialized. "
+                    f"Use torchrun or accelerate launch with {settings.size} processes."
+                )
+            elif dist.get_world_size() < settings.size:
+                raise RuntimeError(
+                    f"Context parallelism size ({settings.size}) exceeds world size "
+                    f"({dist.get_world_size()}). Launch with at least {settings.size} processes."
+                )
             else:
                 self._context_parallel_manager = ContextParallelManager(settings)
         else:
@@ -426,37 +432,28 @@ def patch_sft_trainer() -> None:
     @functools.wraps(original_compute_loss)
     def patched_compute_loss(self, model, inputs, return_outputs = False, **kwargs):
         manager = getattr(self, "_context_parallel_manager", None)
-        kwargs.pop("num_items_in_batch", None)
 
-        # For context parallelism with shift_labels, always use external loss.
-        # This is required because unsloth's fused CE loss pre-computes gradients
-        # during forward and ignores grad_output in backward. When we weight the
-        # loss in reduce_loss(), the chain rule requires gradients be multiplied
-        # by the weight, but fused loss backward returns pre-computed gradients
-        # without this factor. External loss uses standard autograd which correctly
-        # propagates the weight through the chain rule.
+        # Check if we're in CP mode with pre-shifted labels
         shift_labels = inputs.get("shift_labels")
-        use_cp_shift_labels = manager and isinstance(shift_labels, torch.Tensor)
+        use_cp = manager and isinstance(shift_labels, torch.Tensor)
 
-        if use_cp_shift_labels:
-            # Remove labels so model doesn't compute loss internally
+        if use_cp:
+            # For CP, always use external loss to avoid fused CE token counting issues
             saved_labels = inputs.pop("labels", None)
-            # Also remove shift_labels from inputs (model doesn't expect it)
             local_shift_labels = inputs.pop("shift_labels", None)
 
-            # Get model outputs (logits only, no loss)
             outputs = model(**inputs)
             logits = outputs.logits if hasattr(outputs, "logits") else outputs[0]
 
-            # Compute loss using pre-shifted labels
             from unsloth.kernels.cross_entropy_loss import fast_cross_entropy_loss
 
+            # Use mean reduction (n_items=None) - fast_cross_entropy_loss counts local tokens
             loss = fast_cross_entropy_loss(
                 logits = logits,
                 labels = local_shift_labels,
             )
 
-            # Restore labels for reduce_loss token counting
+            # Restore
             if saved_labels is not None:
                 inputs["labels"] = saved_labels
             if local_shift_labels is not None:
@@ -465,6 +462,7 @@ def patch_sft_trainer() -> None:
             if return_outputs:
                 loss = (loss, outputs)
         else:
+            # No CP - use original path
             loss = original_compute_loss(
                 self,
                 model,
@@ -474,7 +472,7 @@ def patch_sft_trainer() -> None:
             )
 
         if manager:
-            loss = manager.reduce_loss(loss, inputs)
+            loss = manager.reduce_loss(loss)
         return loss
 
     @functools.wraps(original_prediction_step)
