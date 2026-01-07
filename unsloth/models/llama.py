@@ -226,7 +226,20 @@ def _fast_prepare_inputs_for_generation(
                     )
 
     if "cache_position" in kwargs:
-        kwargs["position_ids"] = kwargs["cache_position"]
+        # For batched generation with left-padding, we need to compute position_ids
+        # from attention_mask instead of using cache_position directly.
+        # cache_position is a single tensor that's the same for all sequences,
+        # but each sequence in a left-padded batch needs different position_ids.
+        if attention_mask is not None and attention_mask.dim() == 2:
+            # Compute position_ids from attention_mask for proper left-padding support
+            position_ids = attention_mask.long().cumsum(-1) - 1
+            position_ids.masked_fill_(attention_mask == 0, 1)
+            # Take only the last position for generation
+            if past_key_values is not None:
+                position_ids = position_ids[:, -1:]
+            kwargs["position_ids"] = position_ids
+        else:
+            kwargs["position_ids"] = kwargs["cache_position"]
     return {
         "input_ids": input_ids,
         "attention_mask": attention_mask,
