@@ -781,7 +781,7 @@ class FastSentenceTransformer(FastModel):
         - Warmup time scales with model size but speedup also increases
         """
         # Get parameter count from inner model
-        if hasattr(model, '__getitem__'):
+        if hasattr(model, "__getitem__"):
             try:
                 inner = model[0].auto_model
                 params = sum(p.numel() for p in inner.parameters())
@@ -813,20 +813,20 @@ class FastSentenceTransformer(FastModel):
         if time_saved_per_step_s > 0:
             breakeven = estimated_warmup / time_saved_per_step_s
         else:
-            breakeven = float('inf')
+            breakeven = float("inf")
 
         # Return threshold with 1.2x safety margin
         return int(breakeven * 1.2)
 
     @staticmethod
-    def _apply_torch_compile(model, mode="default"):
+    def _apply_torch_compile(model, mode = "default"):
         """
         Apply torch.compile to a SentenceTransformer model.
         Includes workaround for accelerate's unwrap_model bug.
         """
-        if hasattr(model, '__getitem__'):
+        if hasattr(model, "__getitem__"):
             inner_model = model[0].auto_model
-            compiled = torch.compile(inner_model, mode=mode)
+            compiled = torch.compile(inner_model, mode = mode)
             model[0].auto_model = compiled
             # Fix for accelerate unwrap_model bug:
             # When SentenceTransformer contains a compiled inner model,
@@ -835,7 +835,7 @@ class FastSentenceTransformer(FastModel):
             # This workaround sets _orig_mod to satisfy accelerate.
             model.__dict__["_orig_mod"] = model
         else:
-            model = torch.compile(model, mode=mode)
+            model = torch.compile(model, mode = mode)
         return model
 
     @staticmethod
@@ -1415,7 +1415,9 @@ class FastSentenceTransformer(FastModel):
                 # torch.compile is deferred until training starts so we can check max_steps
                 if compile_mode is not None:
                     model._compile_mode = compile_mode
-                    model._compile_threshold = FastSentenceTransformer._estimate_compile_threshold(model)
+                    model._compile_threshold = (
+                        FastSentenceTransformer._estimate_compile_threshold(model)
+                    )
                     # Flag to indicate compile has not been applied yet
                     model._compile_pending = True
                     print(
@@ -1489,32 +1491,34 @@ def _patch_sentence_transformer_trainer():
     except ImportError:
         return  # sentence_transformers not installed
 
-    if getattr(SentenceTransformerTrainer, '_unsloth_auto_compile_patched', False):
+    if getattr(SentenceTransformerTrainer, "_unsloth_auto_compile_patched", False):
         return  # Already patched
 
     from functools import wraps
+
     _original_init = SentenceTransformerTrainer.__init__
 
     @wraps(_original_init)
     def _patched_init(self, *args, **kwargs):
         # Extract model and training_args
-        model = kwargs.get('model') or (args[0] if args else None)
-        training_args = kwargs.get('args') or (args[1] if len(args) > 1 else None)
+        model = kwargs.get("model") or (args[0] if args else None)
+        training_args = kwargs.get("args") or (args[1] if len(args) > 1 else None)
 
         # Check if model has pending compile
-        if (model is not None and
-            training_args is not None and
-            getattr(model, '_compile_pending', False)):
-
-            max_steps = getattr(training_args, 'max_steps', -1)
-            threshold = getattr(model, '_compile_threshold', 0)
-            compile_mode = getattr(model, '_compile_mode', 'default')
+        if (
+            model is not None
+            and training_args is not None
+            and getattr(model, "_compile_pending", False)
+        ):
+            max_steps = getattr(training_args, "max_steps", -1)
+            threshold = getattr(model, "_compile_threshold", 0)
+            compile_mode = getattr(model, "_compile_mode", "default")
 
             if max_steps > 0 and max_steps >= threshold:
                 print(
                     f"Unsloth: Auto-compiling model ({max_steps} steps >= {threshold} threshold)"
                 )
-                FastSentenceTransformer._apply_torch_compile(model, mode=compile_mode)
+                FastSentenceTransformer._apply_torch_compile(model, mode = compile_mode)
                 model._compile_pending = False
             elif max_steps > 0:
                 print(
