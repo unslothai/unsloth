@@ -711,16 +711,16 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             )
             os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
 
-            with torch.amp.autocast(device_type = "cuda", dtype = self._autocast_dtype):
-                with _get_inference_mode_context_manager(model):
-                    for (
-                        input_ids_chunk,
-                        attention_mask_chunk,
-                        pixel_values_chunk,
-                        image_grid_thw_chunk,
-                        pixel_attention_mask_chunk,
-                        image_sizes_chunk,
-                    ) in zipped_inputs:
+            with _get_inference_mode_context_manager(model):
+                for (
+                    input_ids_chunk,
+                    attention_mask_chunk,
+                    pixel_values_chunk,
+                    image_grid_thw_chunk,
+                    pixel_attention_mask_chunk,
+                    image_sizes_chunk,
+                ) in zipped_inputs:
+                    with torch.amp.autocast(device_type = "cuda", dtype = self._autocast_dtype):
                         if pixel_values is None:
                             logits_chunk = unwrapped_model(
                                 input_ids = input_ids_chunk,
@@ -730,7 +730,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 pixel_attention_mask = pixel_attention_mask_chunk,
                                 image_sizes = image_sizes_chunk,
                             ).logits
-
+    
                             completion_input_ids_chunk = input_ids_chunk[
                                 :, -(logits_to_keep + max_left_pad) :
                             ]
@@ -750,12 +750,12 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 image_sizes = image_sizes_chunk,
                                 logits_to_keep = logits_to_keep + 1,
                             ).logits
-
+    
                             logits_chunk = logits_chunk[:, :-1, :]
                             completion_input_ids_chunk = input_ids_chunk[
                                 :, -logits_to_keep:
                             ]
-
+    
                         logprobs_chunk = chunked_hidden_states_selective_log_softmax(
                             logits_chunk,
                             lm_head,
@@ -766,13 +766,13 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             logit_softcapping = logit_softcapping,
                             temperature = temperature,
                         )
-                        # This is needed to avoid race conditions with GPT OSS offload_embbed=True
-                        # However, it seems that this line does not slow down or disrupt models.
-                        # if "gpt_oss" in str(type(self.model.config)):
-                        torch.cuda.synchronize()
-                        all_logprobs_list.append(logprobs_chunk)
-                    logprobs = torch.cat(all_logprobs_list, dim = 0)
-                    entropies = None
+                    # This is needed to avoid race conditions with GPT OSS offload_embbed=True
+                    # However, it seems that this line does not slow down or disrupt models.
+                    # if "gpt_oss" in str(type(self.model.config)):
+                    torch.cuda.synchronize()
+                    all_logprobs_list.append(logprobs_chunk)
+                logprobs = torch.cat(all_logprobs_list, dim = 0)
+                entropies = None
 
             os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
 
