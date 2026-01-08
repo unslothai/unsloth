@@ -771,6 +771,74 @@ class FastSentenceTransformer(FastModel):
     }
 
     @staticmethod
+    def _estimate_compile_threshold(model):
+        """
+        Estimate the minimum training steps needed for torch.compile to be beneficial.
+        Returns the threshold with a 1.2x safety margin built in.
+
+        Based on empirical benchmarks:
+        - Larger models have lower breakeven (more time saved per step)
+        - Warmup time scales with model size but speedup also increases
+        """
+        # Get parameter count from inner model
+        if hasattr(model, '__getitem__'):
+            try:
+                inner = model[0].auto_model
+                params = sum(p.numel() for p in inner.parameters())
+            except:
+                params = 100_000_000  # Default to 100M if can't determine
+        else:
+            params = sum(p.numel() for p in model.parameters())
+
+        params_m = params / 1e6
+
+        # Empirical formula based on benchmarks with batch_size=2, grad_accum=4
+        # Small models: high fixed overhead, lower speedup
+        # Large models: warmup scales but speedup is significant
+        if params_m < 50:
+            estimated_warmup = 35 + params_m * 0.3
+            base_speedup = 1.35
+        elif params_m < 200:
+            estimated_warmup = 12 + params_m * 0.03
+            base_speedup = 1.75
+        else:
+            estimated_warmup = 15 + params_m * 0.04
+            base_speedup = 1.60
+
+        # Estimate time per step (ms) and time saved
+        naive_ms = 50 + params_m * 1.0
+        compiled_ms = naive_ms / base_speedup
+        time_saved_per_step_s = (naive_ms - compiled_ms) / 1000
+
+        if time_saved_per_step_s > 0:
+            breakeven = estimated_warmup / time_saved_per_step_s
+        else:
+            breakeven = float('inf')
+
+        # Return threshold with 1.2x safety margin
+        return int(breakeven * 1.2)
+
+    @staticmethod
+    def _apply_torch_compile(model, mode="default"):
+        """
+        Apply torch.compile to a SentenceTransformer model.
+        Includes workaround for accelerate's unwrap_model bug.
+        """
+        if hasattr(model, '__getitem__'):
+            inner_model = model[0].auto_model
+            compiled = torch.compile(inner_model, mode=mode)
+            model[0].auto_model = compiled
+            # Fix for accelerate unwrap_model bug:
+            # When SentenceTransformer contains a compiled inner model,
+            # accelerate checks has_compiled_regions() which returns True,
+            # then tries to access model.__dict__["_orig_mod"] which fails.
+            # This workaround sets _orig_mod to satisfy accelerate.
+            model.__dict__["_orig_mod"] = model
+        else:
+            model = torch.compile(model, mode=mode)
+        return model
+
+    @staticmethod
     def from_pretrained(
         model_name,
         max_seq_length = None,
@@ -868,8 +936,9 @@ class FastSentenceTransformer(FastModel):
         )
         use_fast_encoder = os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") != "1"
         if use_fast_encoder and is_encoder_model:
-            # torch.compile mode: "reduce-overhead" is optimal for training
-            compile_mode = "reduce-overhead"
+            # torch.compile mode: "default" is safest for PEFT/LoRA training
+            # Note: "reduce-overhead" uses CUDA Graphs which is incompatible with PEFT
+            compile_mode = "default"
 
             # Determine dtype - handle float16 machines that don't support bfloat16
             if dtype is None:
@@ -1330,27 +1399,35 @@ class FastSentenceTransformer(FastModel):
                 # Apply PEFT directly (not through FastModel)
                 peft_model = peft_get_peft_model(inner_model, lora_config)
 
-                # Apply torch.compile for speedup (only if not using gradient checkpointing)
-                compile_mode = getattr(model, "_compile_mode", "reduce-overhead")
+                # Determine compile mode (only if not using gradient checkpointing)
+                compile_mode = getattr(model, "_compile_mode", "default")
                 # Re-enable torch.compile if gradient checkpointing was requested but couldn't be enabled
                 if compile_mode is None and not gc_enabled:
-                    compile_mode = "reduce-overhead"
+                    compile_mode = "default"
                     print(
                         "Unsloth: Re-enabling torch.compile since gradient checkpointing is not supported"
                     )
 
+                # Re-assign the peft model back to the transformer module
+                transformer_module.auto_model = peft_model
+
+                # Store compile info for auto-compile at trainer time
+                # torch.compile is deferred until training starts so we can check max_steps
                 if compile_mode is not None:
+                    model._compile_mode = compile_mode
+                    model._compile_threshold = FastSentenceTransformer._estimate_compile_threshold(model)
+                    # Flag to indicate compile has not been applied yet
+                    model._compile_pending = True
                     print(
-                        f"Unsloth: Applying torch.compile with mode='{compile_mode}' for 6x speedup"
+                        f"Unsloth: torch.compile will be applied automatically if max_steps > {model._compile_threshold}"
                     )
-                    peft_model = torch.compile(peft_model, mode = compile_mode)
                 else:
+                    model._compile_mode = None
+                    model._compile_pending = False
                     print(
                         "Unsloth: torch.compile disabled (gradient checkpointing enabled)"
                     )
 
-                # Re-assign the peft model back to the transformer module
-                transformer_module.auto_model = peft_model
                 return model
 
             # Original path for non-fast-encoder models
@@ -1398,3 +1475,59 @@ class FastSentenceTransformer(FastModel):
                 loftq_config = loftq_config,
                 **kwargs,
             )
+
+
+def _patch_sentence_transformer_trainer():
+    """
+    Patch SentenceTransformerTrainer to automatically apply torch.compile
+    when training steps exceed the breakeven threshold.
+
+    This is called automatically when this module is imported.
+    """
+    try:
+        from sentence_transformers import SentenceTransformerTrainer
+    except ImportError:
+        return  # sentence_transformers not installed
+
+    if getattr(SentenceTransformerTrainer, '_unsloth_auto_compile_patched', False):
+        return  # Already patched
+
+    from functools import wraps
+    _original_init = SentenceTransformerTrainer.__init__
+
+    @wraps(_original_init)
+    def _patched_init(self, *args, **kwargs):
+        # Extract model and training_args
+        model = kwargs.get('model') or (args[0] if args else None)
+        training_args = kwargs.get('args') or (args[1] if len(args) > 1 else None)
+
+        # Check if model has pending compile
+        if (model is not None and
+            training_args is not None and
+            getattr(model, '_compile_pending', False)):
+
+            max_steps = getattr(training_args, 'max_steps', -1)
+            threshold = getattr(model, '_compile_threshold', 0)
+            compile_mode = getattr(model, '_compile_mode', 'default')
+
+            if max_steps > 0 and max_steps >= threshold:
+                print(
+                    f"Unsloth: Auto-compiling model ({max_steps} steps >= {threshold} threshold)"
+                )
+                FastSentenceTransformer._apply_torch_compile(model, mode=compile_mode)
+                model._compile_pending = False
+            elif max_steps > 0:
+                print(
+                    f"Unsloth: Skipping torch.compile ({max_steps} steps < {threshold} threshold)"
+                )
+                model._compile_pending = False
+
+        # Call original __init__
+        _original_init(self, *args, **kwargs)
+
+    SentenceTransformerTrainer.__init__ = _patched_init
+    SentenceTransformerTrainer._unsloth_auto_compile_patched = True
+
+
+# Auto-patch trainer on module import
+_patch_sentence_transformer_trainer()
