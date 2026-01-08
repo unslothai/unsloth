@@ -523,6 +523,7 @@ def fp8_fbgemm_block_linear(X, weight, weight_scale, bias = None):
 def test_has_fbgemm():
     # We must manually check if the faster FBGEMM works on the specific GPU
     # For example RTX 5090 and RTX 4090 does not work
+    # Also SM100 (Blackwell B200/B100) GPUs fail with CUTLASS SM90 kernels
     # [TODO] Investigate with TorchAO why FBGEMM fails on consumer GPUs
     M, N, K = 128, 128, 128
     xq = torch.ones(M, K, dtype = torch.float8_e4m3fn, device = "cuda")
@@ -537,10 +538,25 @@ def test_has_fbgemm():
         has_fbgemm = True
         del out
     except Exception as e:
-        e = str(e)
-        if "cutlass cannot initialize" in e.lower():
+        error_str = str(e).lower()
+        # Catch any CUTLASS/CUDA errors and disable FBGEMM
+        # This includes MMA instruction errors, architecture mismatches, kernel launch failures, etc.
+        cutlass_cuda_errors = (
+            "cutlass",
+            "cuda error",
+            "cuda runtime error",
+            "no kernel image",
+            "arch conditional",
+            "mma instruction",
+            "compute capability",
+            "cute_invalid_control_path",
+            "tma",
+        )
+        is_cutlass_cuda_error = any(err in error_str for err in cutlass_cuda_errors)
+
+        if is_cutlass_cuda_error:
             print(
-                f"Unsloth: FBGEMM on the current GPU cannot load - will switch to Triton kernels"
+                "Unsloth: FBGEMM on the current GPU cannot load - will switch to Triton kernels"
             )
         else:
             print(
