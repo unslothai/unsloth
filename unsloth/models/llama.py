@@ -146,6 +146,59 @@ torch_nn_functional_softmax = torch.nn.functional.softmax
 # SDPA has GQA internally
 SDPA_HAS_GQA = "enable_gqa" in scaled_dot_product_attention.__doc__
 
+from peft.tuners.tuners_utils import ModulesToSaveWrapper
+
+
+def _offload_frozen_module_for_training(
+    module: ModulesToSaveWrapper,
+    device_type: str,
+    offload_device: str = "cpu",
+) -> None:
+    """
+    Offload frozen module to CPU and configure trainable copy for mixed precision training.
+
+    This function optimizes memory usage by:
+    1. Moving the trainable copy to the target device with appropriate precision
+    2. Offloading the original frozen module to CPU/disk to free VRAM
+    3. Converting float16 to float32 for compatibility with certain GPUs (e.g., Tesla T4)
+
+    Args:
+        module: The module to configure. Must be a ModulesToSaveWrapper with a
+            `modules_to_save` attribute containing trainable and original modules.
+        device_type: Target device string for training (e.g., "cuda:0", "xpu:0")
+        offload_device: Device to offload frozen parameters (default: "cpu")
+            Note: Currently only "cpu" is supported; disk offloading is planned.
+
+    Returns:
+        None (modifies module in-place)
+
+    Note:
+        - Float16 weights are automatically promoted to float32 for GPU compatibility
+        - Original frozen parameters are moved to CPU to reduce active VRAM usage
+        - Future versions will support disk-based offloading for even larger models
+
+    See Also:
+        - https://github.com/unslothai/unsloth/pull/1200 (Tesla T4 float32 requirement)
+    """
+    # Early return with explicit None if module doesn't support mixed precision training
+    if not hasattr(module, "modules_to_save"):
+        return None
+
+    new_dtype = module.modules_to_save.default.weight.dtype
+    if new_dtype == torch.float16:
+        # See https://github.com/unslothai/unsloth/pull/1200
+        # Tesla T4 must use float32 and not float16
+        new_dtype = torch.float32
+
+    module.modules_to_save.default.to(
+        device = device_type, dtype = new_dtype, non_blocking = True
+    )
+    module.modules_to_save.default.requires_grad_(True)
+
+    # [TODO] Move old module to CPU - should be disk!
+    module.original_module.to(device = offload_device, non_blocking = True)
+    module.original_module.requires_grad_(False)
+
 
 # Fix new HF's inference code
 def _fast_prepare_inputs_for_generation(
@@ -2711,46 +2764,16 @@ class FastLlamaModel:
                         "Unsloth: Training embed_tokens in mixed precision to save VRAM"
                     )
 
-                    new_dtype = model.get_input_embeddings().modules_to_save.default.weight.dtype
-                    if new_dtype == torch.float16:
-                        # See https://github.com/unslothai/unsloth/pull/1200
-                        # Tesla T4 must use float32 and not float16
-                        new_dtype = torch.float32
-
-                    model.get_input_embeddings().modules_to_save.default.to(
-                        device = DEVICE_TYPE_TORCH, dtype = new_dtype, non_blocking = True
+                    _offload_frozen_module_for_training(
+                        model.get_input_embeddings(), DEVICE_TYPE_TORCH
                     )
-                    model.get_input_embeddings().modules_to_save.default.requires_grad_(
-                        True
-                    )
-
-                    # [TODO] Move old embed_tokens to CPU - should be disk!
-                    model.get_input_embeddings().original_module.to(
-                        device = "cpu", non_blocking = True
-                    )
-                    model.get_input_embeddings().original_module.requires_grad_(False)
 
                 if "lm_head" in new_target_modules:
                     print("Unsloth: Training lm_head in mixed precision to save VRAM")
 
-                    new_dtype = model.get_output_embeddings().modules_to_save.default.weight.dtype
-                    if new_dtype == torch.float16:
-                        # See https://github.com/unslothai/unsloth/pull/1200
-                        # Tesla T4 must use float32 and not float16
-                        new_dtype = torch.float32
-
-                    model.get_output_embeddings().modules_to_save.default.to(
-                        device = DEVICE_TYPE_TORCH, dtype = new_dtype, non_blocking = True
+                    _offload_frozen_module_for_training(
+                        model.get_output_embeddings(), DEVICE_TYPE_TORCH
                     )
-                    model.get_output_embeddings().modules_to_save.default.requires_grad_(
-                        True
-                    )
-
-                    # [TODO] Move old lm_head to CPU - should be disk!
-                    model.get_output_embeddings().original_module.to(
-                        device = "cpu", non_blocking = True
-                    )
-                    model.get_output_embeddings().original_module.requires_grad_(False)
 
                 return model
             else:
