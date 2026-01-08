@@ -94,16 +94,34 @@ class HidePrintMessage:
 if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") != "1":
     import sys
 
-    # Apply to stderr for FBGEMM
+    # Apply to stderr for FBGEMM and CUTLASS errors
     sys.stderr = HidePrintMessage(sys.stderr)
     # https://github.com/pytorch/FBGEMM/blob/d99cd96490ec4aabac2ee95b1e76ea4dcfcfa628/fbgemm_gpu/experimental/gemm/triton_gemm/utils.py#L43-L52
     sys.stderr.add_filter("TMA benchmarks will be running")
+    # CUTLASS/FBGEMM MMA instruction error on SM90 vs SM100 (Blackwell) GPUs
+    # https://github.com/NVIDIA/cutlass/blob/main/include/cutlass/gemm/kernel/sm90_gemm_tma_warpspecialized.hpp
+    sys.stderr.add_filter("Arch conditional MMA instruction used without targeting")
+    # CUTLASS arch conditional errors for various architectures
+    sys.stderr.add_filter("CUTE_INVALID_CONTROL_PATH")
+    # CUTLASS TMA-related errors when not targeting correct architecture
+    sys.stderr.add_filter("Trying to use tma without CUTE_ARCH_TMA")
     # Skipping import of cpp extensions due to incompatible torch version 2.9.0+cu128 for torchao version 0.15.0
     logging.getLogger("torchao").setLevel(logging.ERROR)
+    # Also filter torchao print to stderr about cpp extensions
+    sys.stderr.add_filter("Skipping import of cpp extensions")
     # SyntaxWarning: invalid escape sequence '\.'
     warnings.filterwarnings(
         "ignore", message = "invalid escape sequence", category = SyntaxWarning
     )
+    # PYTORCH_CUDA_ALLOC_CONF is deprecated warning from torch
+    warnings.filterwarnings("ignore", message = "PYTORCH_CUDA_ALLOC_CONF is deprecated")
+    # TF32 precision deprecation warning from torch
+    warnings.filterwarnings(
+        "ignore", message = "Please use the new API settings to control TF32"
+    )
+    # Deprecation warnings from torchao
+    warnings.filterwarnings("ignore", message = "`int4_weight_only` is deprecated")
+    warnings.filterwarnings("ignore", message = "`int8_weight_only` is deprecated")
 
 
 # Fix up AttributeError: 'MessageFactory' object has no attribute 'GetPrototype'
@@ -323,10 +341,14 @@ def check_fbgemm_gpu_version():
     except:
         return
     # We noticed some SegFault or bad alloc errors on lower versions of fbgemm_gpu.
+    # Instead of raising an error, disable FBGEMM and fall back to Triton kernels.
     if Version(fbgemm_gpu_version) < Version("1.4.0"):
-        raise ImportError(
-            f"Unsloth: fbgemm_gpu_genai=={fbgemm_gpu_version} detected. It might cause unexpected issues like segmentation faults. Please uninstall the current one by doing `pip uninstall fbgemm-gpu` && `pip install fbgemm-gpu` to install fbgemm-gpu 1.4.0 or newer!"
+        os.environ["UNSLOTH_HAS_FBGEMM"] = "0"
+        logger.info(
+            f"Unsloth: fbgemm_gpu_genai=={fbgemm_gpu_version} is old and may cause issues. "
+            f"Disabling FBGEMM - using Triton kernels instead."
         )
+        return
 
     logger.info(f"Unsloth: fbgemm_gpu_genai=={fbgemm_gpu_version} detected.")
 
