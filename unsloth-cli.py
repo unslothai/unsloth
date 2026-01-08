@@ -41,6 +41,7 @@ def run(args):
     from unsloth import is_bfloat16_supported
     from unsloth.models.loader_utils import prepare_device_map
     import logging
+    from unsloth import RawTextDataLoader
 
     logging.getLogger("hf-to-gguf").setLevel(logging.WARNING)
 
@@ -99,15 +100,36 @@ def run(args):
             texts.append(text)
         return {"text": texts}
 
-    use_modelscope = strtobool(os.environ.get("UNSLOTH_USE_MODELSCOPE", "False"))
-    if use_modelscope:
-        from modelscope import MsDataset
+    def load_dataset_smart(args):
+        from transformers.utils import strtobool
 
-        dataset = MsDataset.load(args.dataset, split = "train")
-    else:
-        # Load and format dataset
-        dataset = load_dataset(args.dataset, split = "train")
-    dataset = dataset.map(formatting_prompts_func, batched = True)
+        if args.raw_text_file:
+            # Use raw text loader
+            loader = RawTextDataLoader(tokenizer, args.chunk_size, args.stride)
+            dataset = loader.load_from_file(args.raw_text_file)
+        elif args.dataset.endswith((".txt", ".md", ".json", ".jsonl")):
+            # Auto-detect local raw text files
+            loader = RawTextDataLoader(tokenizer)
+            dataset = loader.load_from_file(args.dataset)
+        else:
+            # Check for modelscope usage
+            use_modelscope = strtobool(
+                os.environ.get("UNSLOTH_USE_MODELSCOPE", "False")
+            )
+            if use_modelscope:
+                from modelscope import MsDataset
+
+                dataset = MsDataset.load(args.dataset, split = "train")
+            else:
+                # Existing HuggingFace dataset logic
+                dataset = load_dataset(args.dataset, split = "train")
+
+            # Apply formatting for structured datasets
+            dataset = dataset.map(formatting_prompts_func, batched = True)
+        return dataset
+
+    # Load dataset using smart loader
+    dataset = load_dataset_smart(args)
     print("Data is formatted and ready!")
 
     # Configure training arguments
@@ -435,6 +457,16 @@ if __name__ == "__main__":
         "--hub_token",
         type = str,
         help = "Token for pushing the model to Hugging Face hub",
+    )
+
+    parser.add_argument(
+        "--raw_text_file", type = str, help = "Path to raw text file for training"
+    )
+    parser.add_argument(
+        "--chunk_size", type = int, default = 2048, help = "Size of text chunks for training"
+    )
+    parser.add_argument(
+        "--stride", type = int, default = 512, help = "Overlap between chunks"
     )
 
     args = parser.parse_args()
