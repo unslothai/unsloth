@@ -457,6 +457,7 @@ class FastLanguageModel(FastLlamaModel):
             model_type == "qwen3"
             or model_type == "qwen3_moe"
             or model_type == "qwen3_omni_moe"
+            or (isinstance(model_type, (list, tuple)) and "qwen3_omni_moe" in model_type)
         ):
             if not SUPPORTS_QWEN3 or not SUPPORTS_QWEN3_MOE:
                 raise ImportError(
@@ -465,7 +466,11 @@ class FastLanguageModel(FastLlamaModel):
                     f'Try `pip install --upgrade "transformers>=4.50.3"`\n'
                     f"to obtain the latest transformers build, then restart this session."
                 )
-            if model_type == "qwen3_omni_moe":
+            # For multimodal models like Qwen3-Omni, model_type can be a list
+            is_qwen3_omni = model_type == "qwen3_omni_moe" or (
+                isinstance(model_type, (list, tuple)) and "qwen3_omni_moe" in model_type
+            )
+            if is_qwen3_omni:
                 dispatch_model = FastQwen3OmniMoeModel
             else:
                 dispatch_model = (
