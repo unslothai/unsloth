@@ -89,6 +89,7 @@ from ._utils import (
     patch_model_and_tokenizer,
     prepare_model_for_kbit_training,
     patch_unsloth_smart_gradient_checkpointing,
+    unpatch_unsloth_smart_gradient_checkpointing,
     patch_compiled_autograd,
     process_vision_info,
     unsloth_compile_transformers,
@@ -560,7 +561,17 @@ class FastLanguageModel(FastLlamaModel):
             )
 
         if use_gradient_checkpointing == "unsloth":
-            patch_unsloth_smart_gradient_checkpointing(dtype = dtype)
+            # Gradient offloading overhead is not worth it for small sequences.
+            # For seq < 512, standard gradient checkpointing is faster.
+            if max_seq_length < 512:
+                use_gradient_checkpointing = True
+                # Unpatch in case it was patched in a previous call
+                unpatch_unsloth_smart_gradient_checkpointing()
+            else:
+                patch_unsloth_smart_gradient_checkpointing(dtype = dtype)
+        elif use_gradient_checkpointing in (True, False):
+            # User explicitly set True or False - unpatch any previous "unsloth" patching
+            unpatch_unsloth_smart_gradient_checkpointing()
 
         # Check if this is local model since the tokenizer gets overwritten
         if (
@@ -1190,7 +1201,17 @@ class FastModel(FastBaseModel):
                 break
         # Patch gradient checkpointing
         if use_gradient_checkpointing == "unsloth":
-            patch_unsloth_smart_gradient_checkpointing(dtype = dtype)
+            # Gradient offloading overhead is not worth it for small sequences.
+            # For seq < 512, standard gradient checkpointing is faster.
+            if max_seq_length < 512:
+                use_gradient_checkpointing = True
+                # Unpatch in case it was patched in a previous call
+                unpatch_unsloth_smart_gradient_checkpointing()
+            else:
+                patch_unsloth_smart_gradient_checkpointing(dtype = dtype)
+        elif use_gradient_checkpointing in (True, False):
+            # User explicitly set True or False - unpatch any previous "unsloth" patching
+            unpatch_unsloth_smart_gradient_checkpointing()
         with redirector:
             patch_loss_functions(torch_compile = False)
             model_types, supports_sdpa = unsloth_compile_transformers(

@@ -20,6 +20,7 @@ from typing import Optional, Tuple, List, Union
 
 from ._utils import *
 from ._utils import patch_unsloth_smart_gradient_checkpointing
+from ._utils import unpatch_unsloth_smart_gradient_checkpointing
 from ._utils import __version__, importlib_version
 from ._utils import move_to_device
 from ._utils import (
@@ -2641,9 +2642,20 @@ class FastLlamaModel:
         transformers_set_seed(random_state)
 
         if use_gradient_checkpointing == "unsloth":
-            patch_unsloth_smart_gradient_checkpointing(
-                dtype = model.get_input_embeddings().weight.dtype
-            )
+            # Gradient offloading overhead is not worth it for small sequences.
+            # Benchmarks show crossover point is around seq_len 384-512.
+            # For seq < 512, standard gradient checkpointing is faster.
+            if hasattr(model, "max_seq_length") and model.max_seq_length < 512:
+                use_gradient_checkpointing = True
+                # Unpatch in case it was patched in a previous from_pretrained call
+                unpatch_unsloth_smart_gradient_checkpointing()
+            else:
+                patch_unsloth_smart_gradient_checkpointing(
+                    dtype = model.get_input_embeddings().weight.dtype
+                )
+        elif use_gradient_checkpointing in (True, False):
+            # User explicitly set True or False - unpatch any previous "unsloth" patching
+            unpatch_unsloth_smart_gradient_checkpointing()
 
         if type(r) is not int:
             raise TypeError(f"Unsloth: Rank of {str(r)} must be an integer.")
