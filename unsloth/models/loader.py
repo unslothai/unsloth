@@ -457,7 +457,9 @@ class FastLanguageModel(FastLlamaModel):
             model_type == "qwen3"
             or model_type == "qwen3_moe"
             or model_type == "qwen3_omni_moe"
-            or (isinstance(model_type, (list, tuple)) and "qwen3_omni_moe" in model_type)
+            or (
+                isinstance(model_type, (list, tuple)) and "qwen3_omni_moe" in model_type
+            )
         ):
             if not SUPPORTS_QWEN3 or not SUPPORTS_QWEN3_MOE:
                 raise ImportError(
