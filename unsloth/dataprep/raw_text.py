@@ -97,7 +97,11 @@ class RawTextDataLoader:
             # Labels are same as input_ids for causal LM training
             labels = [list(ids) for ids in input_ids]
             return Dataset.from_dict(
-                {"input_ids": input_ids, "attention_mask": attention_mask, "labels": labels}
+                {
+                    "input_ids": input_ids,
+                    "attention_mask": attention_mask,
+                    "labels": labels,
+                }
             )
         else:
             # If chunks are text strings (backward compatibility)
