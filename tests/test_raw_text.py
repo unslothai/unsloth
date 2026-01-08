@@ -100,12 +100,12 @@ def test_raw_text_loader():
         loader = RawTextDataLoader(tokenizer, chunk_size = 5, stride = 2)
 
         # Test loading with text output (legacy mode)
-        text_dataset = loader.load_from_file(test_file, return_tensors = False)
+        text_dataset = loader.load_from_file(test_file, return_tokenized = False)
         assert len(text_dataset) > 0, "Should create at least one chunk"
         assert "text" in text_dataset.column_names, "Dataset should have 'text' column"
 
         # Test loading with tokenized output (new efficient mode)
-        tokenized_dataset = loader.load_from_file(test_file, return_tensors = True)
+        tokenized_dataset = loader.load_from_file(test_file, return_tokenized = True)
         assert len(tokenized_dataset) > 0, "Should create at least one tokenized chunk"
         assert (
             "input_ids" in tokenized_dataset.column_names
@@ -124,13 +124,30 @@ def test_raw_text_loader():
             first_sample["attention_mask"]
         ), "input_ids and attention_mask should have same length"
 
+        # Verify labels field exists (for causal LM training)
+        assert "labels" in tokenized_dataset.column_names, "Dataset should have 'labels' column"
+        assert first_sample["labels"] == first_sample["input_ids"], "labels should match input_ids"
+
+        # Test constructor validation
+        try:
+            bad_loader = RawTextDataLoader(tokenizer, chunk_size = 0, stride = 2)
+            assert False, "Should raise ValueError for chunk_size=0"
+        except ValueError as e:
+            assert "chunk_size must be positive" in str(e)
+
+        try:
+            bad_loader = RawTextDataLoader(tokenizer, chunk_size = 5, stride = 10)
+            assert False, "Should raise ValueError for stride >= chunk_size"
+        except ValueError as e:
+            assert "stride" in str(e) and "chunk_size" in str(e)
+
         # Test preprocessor
         preprocessor = TextPreprocessor()
         clean_text = preprocessor.clean_text("  messy   text  \n\n\n  ")
         assert "messy text" in clean_text, "Should clean text properly"
 
         # Test validation
-        stats = preprocessor.validate_dataset(dataset)
+        stats = preprocessor.validate_dataset(text_dataset)
         assert stats["total_samples"] > 0, "Should count samples"
         assert "warnings" in stats, "Should include warnings"
 
