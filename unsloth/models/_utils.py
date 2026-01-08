@@ -177,7 +177,6 @@ logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.CRITI
 
 TORCHAO_MSG = "Error: torchao not found, please install with `pip install torchao`"
 
-
 # Ignore logging messages
 class HideLoggingMessage(logging.Filter):
     __slots__ = ("text",)
@@ -2205,8 +2204,7 @@ def _prepare_model_for_qat(
         from torchao.quantization.granularity import PerGroup, PerAxis
         from torchao.quantization.qat import QATConfig
     except ImportError:
-        print(TORCHAO_MSG)
-        return
+        raise ImportError(TORCHAO_MSG)
 
     # Gemma3 models have issues with int8 embedding quantization due to their
     # large vocabulary size (262144). Auto-switch to int4 weight-only instead.
@@ -2226,8 +2224,7 @@ def _prepare_model_for_qat(
             try:
                 from torchao.quantization import Float8DynamicActivationInt4WeightConfig
             except ImportError:
-                print(TORCHAO_MSG)
-                return
+                raise ImportError(TORCHAO_MSG)
             group_size = 128
             base_config = Float8DynamicActivationInt4WeightConfig()
             filter_fn = (
@@ -2240,12 +2237,9 @@ def _prepare_model_for_qat(
             )
         elif qat_scheme == "fp8-fp8":
             try:
-                from torchao.quantization import (
-                    Float8DynamicActivationFloat8WeightConfig,
-                )
+                from torchao.quantization import Float8DynamicActivationFloat8WeightConfig
             except ImportError:
-                print(TORCHAO_MSG)
-                return
+                raise ImportError(TORCHAO_MSG)
             base_config = Float8DynamicActivationFloat8WeightConfig(
                 granularity = PerRow()
             )
@@ -2259,8 +2253,7 @@ def _prepare_model_for_qat(
                     IntxWeightOnlyConfig,
                 )
             except ImportError:
-                print(TORCHAO_MSG)
-                return
+                raise ImportError(TORCHAO_MSG)
             torchao_config = TorchAOConfig(
                 qat_scheme = qat_scheme,
                 base_config_and_filter_fns = [
@@ -2283,8 +2276,7 @@ def _prepare_model_for_qat(
             try:
                 from torchao.quantization import Int4WeightOnlyConfig
             except ImportError:
-                print(TORCHAO_MSG)
-                return
+                raise ImportError(TORCHAO_MSG)
             group_size = 128
             base_config = Int4WeightOnlyConfig(group_size = group_size)
             filter_fn = (
@@ -2300,8 +2292,7 @@ def _prepare_model_for_qat(
                 from torchao.quantization import IntxWeightOnlyConfig
                 from torchao.quantization.granularity import PerAxis
             except ImportError:
-                print(TORCHAO_MSG)
-                return
+                raise ImportError(TORCHAO_MSG)
 
             base_config = IntxWeightOnlyConfig(
                 weight_dtype = torch.int8,
