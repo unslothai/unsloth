@@ -720,7 +720,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     pixel_attention_mask_chunk,
                     image_sizes_chunk,
                 ) in zipped_inputs:
-                    with torch.amp.autocast(device_type = "cuda", dtype = self._autocast_dtype):
+                    with torch.amp.autocast(
+                        device_type = "cuda", dtype = self._autocast_dtype
+                    ):
                         if pixel_values is None:
                             logits_chunk = unwrapped_model(
                                 input_ids = input_ids_chunk,
@@ -730,7 +732,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 pixel_attention_mask = pixel_attention_mask_chunk,
                                 image_sizes = image_sizes_chunk,
                             ).logits
-    
+
                             completion_input_ids_chunk = input_ids_chunk[
                                 :, -(logits_to_keep + max_left_pad) :
                             ]
@@ -750,12 +752,12 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 image_sizes = image_sizes_chunk,
                                 logits_to_keep = logits_to_keep + 1,
                             ).logits
-    
+
                             logits_chunk = logits_chunk[:, :-1, :]
                             completion_input_ids_chunk = input_ids_chunk[
                                 :, -logits_to_keep:
                             ]
-    
+
                         logprobs_chunk = chunked_hidden_states_selective_log_softmax(
                             logits_chunk,
                             lm_head,
