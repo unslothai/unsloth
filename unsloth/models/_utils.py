@@ -177,6 +177,7 @@ logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.CRITI
 
 TORCHAO_MSG = "Error: torchao not found, please install with `pip install torchao`"
 
+
 # Ignore logging messages
 class HideLoggingMessage(logging.Filter):
     __slots__ = ("text",)
@@ -2239,7 +2240,9 @@ def _prepare_model_for_qat(
             )
         elif qat_scheme == "fp8-fp8":
             try:
-                from torchao.quantization import Float8DynamicActivationFloat8WeightConfig
+                from torchao.quantization import (
+                    Float8DynamicActivationFloat8WeightConfig,
+                )
             except ImportError:
                 print(TORCHAO_MSG)
                 return
