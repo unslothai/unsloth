@@ -262,6 +262,7 @@ def _patch_qwen3_omni_model_class(model_class):
     Patch Qwen3OmniMoeForConditionalGeneration with required methods for training.
     The model delegates to its thinker submodule for actual forward pass.
     """
+
     # Add embedding accessor methods that delegate to thinker
     def get_input_embeddings(self):
         return self.thinker.get_input_embeddings()
@@ -278,48 +279,48 @@ def _patch_qwen3_omni_model_class(model_class):
     # Add forward method that delegates to thinker for training
     def forward(
         self,
-        input_ids=None,
-        input_features=None,
-        pixel_values=None,
-        pixel_values_videos=None,
-        image_grid_thw=None,
-        video_grid_thw=None,
-        attention_mask=None,
-        feature_attention_mask=None,
-        audio_feature_lengths=None,
-        position_ids=None,
-        past_key_values=None,
-        inputs_embeds=None,
-        rope_deltas=None,
-        labels=None,
-        use_cache=None,
-        output_router_logits=None,
-        use_audio_in_video=None,
-        cache_position=None,
-        video_second_per_grid=None,
+        input_ids = None,
+        input_features = None,
+        pixel_values = None,
+        pixel_values_videos = None,
+        image_grid_thw = None,
+        video_grid_thw = None,
+        attention_mask = None,
+        feature_attention_mask = None,
+        audio_feature_lengths = None,
+        position_ids = None,
+        past_key_values = None,
+        inputs_embeds = None,
+        rope_deltas = None,
+        labels = None,
+        use_cache = None,
+        output_router_logits = None,
+        use_audio_in_video = None,
+        cache_position = None,
+        video_second_per_grid = None,
         **kwargs,
     ):
         """Forward method that delegates to the thinker for training."""
         return self.thinker.forward(
-            input_ids=input_ids,
-            input_features=input_features,
-            pixel_values=pixel_values,
-            pixel_values_videos=pixel_values_videos,
-            image_grid_thw=image_grid_thw,
-            video_grid_thw=video_grid_thw,
-            attention_mask=attention_mask,
-            feature_attention_mask=feature_attention_mask,
-            audio_feature_lengths=audio_feature_lengths,
-            position_ids=position_ids,
-            past_key_values=past_key_values,
-            inputs_embeds=inputs_embeds,
-            rope_deltas=rope_deltas,
-            labels=labels,
-            use_cache=use_cache,
-            output_router_logits=output_router_logits,
-            use_audio_in_video=use_audio_in_video,
-            cache_position=cache_position,
-            video_second_per_grid=video_second_per_grid,
+            input_ids = input_ids,
+            input_features = input_features,
+            pixel_values = pixel_values,
+            pixel_values_videos = pixel_values_videos,
+            image_grid_thw = image_grid_thw,
+            video_grid_thw = video_grid_thw,
+            attention_mask = attention_mask,
+            feature_attention_mask = feature_attention_mask,
+            audio_feature_lengths = audio_feature_lengths,
+            position_ids = position_ids,
+            past_key_values = past_key_values,
+            inputs_embeds = inputs_embeds,
+            rope_deltas = rope_deltas,
+            labels = labels,
+            use_cache = use_cache,
+            output_router_logits = output_router_logits,
+            use_audio_in_video = use_audio_in_video,
+            cache_position = cache_position,
+            video_second_per_grid = video_second_per_grid,
             **kwargs,
         )
 
@@ -368,18 +369,18 @@ def _patch_qwen3_omni_attention_modules(model):
                 def _attention_wrapper(
                     self,
                     hidden_states,
-                    position_embeddings=None,
-                    attention_mask=None,
-                    past_key_values=None,
+                    position_embeddings = None,
+                    attention_mask = None,
+                    past_key_values = None,
                     **kwargs,
                 ):
                     # FALLBACK: If caching is used (Inference), use original code
                     if past_key_values is not None:
                         return self._original_forward(
                             hidden_states,
-                            position_embeddings=position_embeddings,
-                            attention_mask=attention_mask,
-                            past_key_values=past_key_values,
+                            position_embeddings = position_embeddings,
+                            attention_mask = attention_mask,
+                            past_key_values = past_key_values,
                             **kwargs,
                         )
 
@@ -387,9 +388,9 @@ def _patch_qwen3_omni_attention_modules(model):
                     return Qwen3Attention_fast_forward(
                         self,
                         hidden_states,
-                        attention_mask=attention_mask,
-                        position_embeddings=position_embeddings,
-                        past_key_value=None,
+                        attention_mask = attention_mask,
+                        position_embeddings = position_embeddings,
+                        past_key_value = None,
                         **kwargs,
                     )
 
@@ -412,17 +413,17 @@ def _patch_qwen3_omni_attention_modules(model):
 class FastQwen3OmniMoeModel(FastQwen3MoeModel):
     @staticmethod
     def from_pretrained(
-        model_name="Qwen/Qwen3-Omni-30B-A3B-Instruct",
-        max_seq_length=4096,
-        dtype=None,
-        load_in_4bit=True,
-        token=None,
-        device_map="sequential",
-        rope_scaling=None,
-        fix_tokenizer=True,
-        model_patcher=None,
-        tokenizer_name=None,
-        trust_remote_code=False,
+        model_name = "Qwen/Qwen3-Omni-30B-A3B-Instruct",
+        max_seq_length = 4096,
+        dtype = None,
+        load_in_4bit = True,
+        token = None,
+        device_map = "sequential",
+        rope_scaling = None,
+        fix_tokenizer = True,
+        model_patcher = None,
+        tokenizer_name = None,
+        trust_remote_code = False,
         **kwargs,
     ):
         # Import the model class
@@ -445,11 +446,12 @@ class FastQwen3OmniMoeModel(FastQwen3MoeModel):
 
         if load_in_4bit:
             from transformers import BitsAndBytesConfig
+
             model_kwargs["quantization_config"] = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_compute_dtype=dtype,
-                bnb_4bit_use_double_quant=True,
-                bnb_4bit_quant_type="nf4",
+                load_in_4bit = True,
+                bnb_4bit_compute_dtype = dtype,
+                bnb_4bit_use_double_quant = True,
+                bnb_4bit_quant_type = "nf4",
             )
 
         # Merge any additional kwargs
@@ -464,8 +466,8 @@ class FastQwen3OmniMoeModel(FastQwen3MoeModel):
         # Load processor/tokenizer
         processor = AutoProcessor.from_pretrained(
             model_name,
-            trust_remote_code=trust_remote_code,
-            token=token,
+            trust_remote_code = trust_remote_code,
+            token = token,
         )
 
         # Patch attention and MLP modules for faster training
