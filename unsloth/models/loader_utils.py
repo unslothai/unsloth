@@ -419,6 +419,7 @@ def _get_fp8_mode_and_check_settings(
             # Old FBGEMM version - disable and use Triton kernels instead
             os.environ["UNSLOTH_HAS_FBGEMM"] = "0"
             from unsloth_zoo.log import logger
+
             logger.info(
                 f"Unsloth: fbgemm_gpu_genai=={fbgemm_gpu.__version__} is old for FP8 loading. "
                 f"Using Triton kernels instead."
