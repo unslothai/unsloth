@@ -114,20 +114,14 @@ if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") != "1":
         "ignore", message = "invalid escape sequence", category = SyntaxWarning
     )
     # PYTORCH_CUDA_ALLOC_CONF is deprecated warning from torch
-    warnings.filterwarnings(
-        "ignore", message = "PYTORCH_CUDA_ALLOC_CONF is deprecated"
-    )
+    warnings.filterwarnings("ignore", message = "PYTORCH_CUDA_ALLOC_CONF is deprecated")
     # TF32 precision deprecation warning from torch
     warnings.filterwarnings(
         "ignore", message = "Please use the new API settings to control TF32"
     )
     # Deprecation warnings from torchao
-    warnings.filterwarnings(
-        "ignore", message = "`int4_weight_only` is deprecated"
-    )
-    warnings.filterwarnings(
-        "ignore", message = "`int8_weight_only` is deprecated"
-    )
+    warnings.filterwarnings("ignore", message = "`int4_weight_only` is deprecated")
+    warnings.filterwarnings("ignore", message = "`int8_weight_only` is deprecated")
 
 
 # Fix up AttributeError: 'MessageFactory' object has no attribute 'GetPrototype'
