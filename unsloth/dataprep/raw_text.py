@@ -36,6 +36,12 @@ SUPPORTED_FORMATS = {
 
 class RawTextDataLoader:
     def __init__(self, tokenizer, chunk_size = 2048, stride = 512, return_tokenized = True):
+        if chunk_size <= 0:
+            raise ValueError(f"chunk_size must be positive, got {chunk_size}")
+        if stride >= chunk_size:
+            raise ValueError(
+                f"stride ({stride}) must be smaller than chunk_size ({chunk_size})"
+            )
         self.tokenizer = tokenizer
         self.chunk_size = chunk_size
         self.stride = stride
@@ -52,6 +58,8 @@ class RawTextDataLoader:
             return_tokenized = self.return_tokenized
         file_format = self.detect_format(file_path)
         text_content = self._read_file_by_format(file_path, file_format)
+        if not text_content or not text_content.strip():
+            raise ValueError(f"File '{file_path}' is empty or contains only whitespace")
         chunks = self.smart_chunk_text(
             text_content, self.chunk_size, self.stride, return_tokenized
         )
@@ -86,8 +94,10 @@ class RawTextDataLoader:
             # Reorganize the data structure for Dataset.from_dict
             input_ids = [chunk["input_ids"] for chunk in chunks]
             attention_mask = [chunk["attention_mask"] for chunk in chunks]
+            # Labels are same as input_ids for causal LM training
+            labels = [list(ids) for ids in input_ids]
             return Dataset.from_dict(
-                {"input_ids": input_ids, "attention_mask": attention_mask}
+                {"input_ids": input_ids, "attention_mask": attention_mask, "labels": labels}
             )
         else:
             # If chunks are text strings (backward compatibility)
@@ -101,13 +111,6 @@ class RawTextDataLoader:
         3. Maintains context with stride overlap
         4. Returns tokenized chunks directly (more efficient) or text chunks
         """
-        if chunk_size <= 0:
-            raise ValueError(f"chunk_size must be positive, got {chunk_size}")
-        if stride >= chunk_size:
-            raise ValueError(
-                f"stride ({stride}) must be smaller than chunk_size ({chunk_size}) to progress the chunking loop"
-            )
-
         # First pass: tokenize the entire text to get accurate token counts
         tokenized = self.tokenizer(text, return_tensors = "pt", add_special_tokens = False)
         tokens = tokenized["input_ids"]
