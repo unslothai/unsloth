@@ -1140,7 +1140,7 @@ def _get_statistics(statistics = None, force_download = True):
                 statistics = "lambda"
             # else: statistics = "other"
             else:
-        
+
                 def try_vllm_check():
                     vendor_files = (
                         "/sys/class/dmi/id/product_version",
@@ -1150,7 +1150,7 @@ def _get_statistics(statistics = None, force_download = True):
                         "/sys/class/dmi/id/sys_vendor",
                     )
                     from pathlib import Path
-        
+
                     for vendor_file in vendor_files:
                         path = Path(vendor_file)
                         if path.is_file():
@@ -1162,7 +1162,7 @@ def _get_statistics(statistics = None, force_download = True):
                             elif "google" in file_content:
                                 return "gcp"
                     return "other"
-        
+
                 pass
                 try:
                     statistics = try_vllm_check()
@@ -1172,18 +1172,20 @@ def _get_statistics(statistics = None, force_download = True):
                 import tempfile
                 from huggingface_hub import snapshot_download
                 from unsloth_zoo.rl_environments import execute_with_time_limit
-        
+
                 if has_internet():
-        
+
                     def stats_check():
-                        with tempfile.TemporaryDirectory(ignore_cleanup_errors = True) as f:
+                        with tempfile.TemporaryDirectory(
+                            ignore_cleanup_errors = True
+                        ) as f:
                             snapshot_download(
                                 f"unslothai/{statistics}",
                                 force_download = True,
                                 cache_dir = f,
                                 local_dir = f,
                             )
-        
+
                     time_limited_stats_check = execute_with_time_limit(120)(stats_check)
                     try:
                         time_limited_stats_check()
