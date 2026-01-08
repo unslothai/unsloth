@@ -188,9 +188,9 @@ elif DEVICE_TYPE == "xpu":
 
 # For Gradio HF Spaces?
 # if "SPACE_AUTHOR_NAME" not in os.environ and "SPACE_REPO_NAME" not in os.environ:
-import triton
-
 if DEVICE_TYPE == "cuda":
+    import triton
+
     libcuda_dirs = lambda: None
     if Version(triton.__version__) >= Version("3.0.0"):
         try:
@@ -273,20 +273,21 @@ elif DEVICE_TYPE == "xpu":
     # TODO: check triton for intel installed properly.
     pass
 
-from .models import *
-from .models import __version__
-from .save import *
-from .chat_templates import *
-from .tokenizer_utils import *
-from .trainer import *
-from unsloth_zoo.rl_environments import (
-    check_python_modules,
-    create_locked_down_function,
-    execute_with_time_limit,
-    Benchmarker,
-    is_port_open,
-    launch_openenv,
-)
+elif DEVICE_TYPE != "mps":
+    from .models import *
+    from .models import __version__
+    from .save import *
+    from .chat_templates import *
+    from .tokenizer_utils import *
+    from .trainer import *
+    from unsloth_zoo.rl_environments import (
+        check_python_modules,
+        create_locked_down_function,
+        execute_with_time_limit,
+        Benchmarker,
+        is_port_open,
+        launch_openenv,
+    )
 
-# Patch TRL trainers for backwards compatibility
-_patch_trl_trainer()
+    # Patch TRL trainers for backwards compatibility
+    _patch_trl_trainer()
