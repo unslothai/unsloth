@@ -95,8 +95,11 @@ def weight_dequant_block(
 
 
 def weight_dequant(x: torch.Tensor, s: torch.Tensor, dtype = torch.bfloat16):
-    if s.shape[1] == 1:
-        # this is row quantized weight, just simple multiplication suffices
+    # Per-tensor scale: single value for entire weight matrix
+    if s.numel() == 1:
+        return x.to(dtype) * s.view(1, 1).to(dtype)
+    # Row quantized weight: scale shape is (m, 1) or (n, 1)
+    elif s.ndim == 2 and s.shape[1] == 1:
         if x.shape[0] == s.shape[0]:
             y = x.to(dtype) * s.to(dtype)
         elif x.shape[1] == s.shape[0]:
@@ -106,8 +109,8 @@ def weight_dequant(x: torch.Tensor, s: torch.Tensor, dtype = torch.bfloat16):
         else:
             raise ValueError(f"Incompatible shapes {x.shape = }, {s.shape = }")
         return y
+    # Block quantized weight: scale shape is (ceil(m/block_m), ceil(n/block_n))
     else:
-        # this is block quantized weight
         return weight_dequant_block(x, s, dtype = dtype)
 
 
@@ -229,86 +232,45 @@ def _w8a8_block_fp8_matmul(
     c_mask = (offs_cm[:, None] < M) & (offs_cn[None, :] < N)
     tl.store(c_ptrs, c, mask = c_mask)
 
-
 def w8a8_block_fp8_matmul_triton(
-    A: torch.Tensor,
-    B: torch.Tensor,
-    As: torch.Tensor,
-    Bs: torch.Tensor,
-    block_size: list[int],
-    output_dtype: torch.dtype = torch.float32,
+    A: torch.Tensor, B: torch.Tensor, As: torch.Tensor, Bs: torch.Tensor,
+    block_size: list[int], output_dtype: torch.dtype = torch.float32,
 ) -> torch.Tensor:
-    """This function performs matrix multiplication with block-wise
-    quantization.
-    It takes two input tensors `A` and `B` with scales `As` and `Bs`.
-    The output is returned in the specified `output_dtype`.
-    Args:
-        A: The input tensor, e.g., activation.
-        B: The input tensor, e.g., weight.
-        As: The per-token-group quantization scale for `A`.
-        Bs: The per-block quantization scale for `B`.
-        block_size: The block size for per-block quantization. It should
-        be 2-dim, e.g., [128, 128].
-        output_dytpe: The dtype of the returned tensor.
-    Returns:
-        torch.Tensor: The result of matmul.
-    """
-    assert len(block_size) == 2
-    block_n, block_k = block_size[0], block_size[1]
+    """Block-wise FP8 matmul."""
+    if block_size is None:
+        block_n, block_k = 128, 128
+    else:
+        assert len(block_size) == 2
+        block_n, block_k = block_size[0], block_size[1]
 
+    N, K = B.shape
     assert A.shape[-1] == B.shape[-1]
     assert A.shape[:-1] == As.shape[:-1] and A.is_contiguous()
     assert triton.cdiv(A.shape[-1], block_k) == As.shape[-1]
-    M = A.numel() // A.shape[-1]
-
     assert B.ndim == 2 and B.is_contiguous() and Bs.ndim == 2
-    N, K = B.shape
     assert triton.cdiv(N, block_n) == Bs.shape[0]
     assert triton.cdiv(K, block_k) == Bs.shape[1]
 
+    M = A.numel() // A.shape[-1]
     C_shape = A.shape[:-1] + (N,)
-    C = A.new_empty(C_shape, dtype = output_dtype)
+    C = A.new_empty(C_shape, dtype=output_dtype)
 
     BLOCK_SIZE_M = 128
     if M < BLOCK_SIZE_M:
-        BLOCK_SIZE_M = triton.next_power_of_2(M)
-        BLOCK_SIZE_M = max(BLOCK_SIZE_M, 16)
-    BLOCK_SIZE_K = block_k
-    assert block_k % BLOCK_SIZE_K == 0
-    BLOCK_SIZE_N = block_n
+        BLOCK_SIZE_M = max(triton.next_power_of_2(M), 16)
+    BLOCK_SIZE_K, BLOCK_SIZE_N = block_k, block_n
 
     def grid(META):
-        return (
-            triton.cdiv(M, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"]),
-        )
+        return (triton.cdiv(M, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"]),)
 
     _w8a8_block_fp8_matmul[grid](
-        A,
-        B,
-        C,
-        As,
-        Bs,
-        M,
-        N,
-        K,
-        block_n,
-        block_k,
-        A.stride(-2),
-        A.stride(-1),
-        B.stride(1),
-        B.stride(0),
-        C.stride(-2),
-        C.stride(-1),
-        As.stride(-2),
-        As.stride(-1),
-        Bs.stride(1),
-        Bs.stride(0),
-        BLOCK_SIZE_M = BLOCK_SIZE_M,
-        BLOCK_SIZE_N = BLOCK_SIZE_N,
-        BLOCK_SIZE_K = BLOCK_SIZE_K,
-        GROUP_SIZE_M = 8,
+        A, B, C, As, Bs, M, N, K, block_n, block_k,
+        A.stride(-2), A.stride(-1), B.stride(1), B.stride(0), C.stride(-2), C.stride(-1),
+        As.stride(-2), As.stride(-1), Bs.stride(1), Bs.stride(0),
+        BLOCK_SIZE_M=BLOCK_SIZE_M, BLOCK_SIZE_N=BLOCK_SIZE_N, BLOCK_SIZE_K=BLOCK_SIZE_K, GROUP_SIZE_M=8,
     )
     return C
+
 
 
 def torchao_block_matmul(
@@ -342,29 +304,41 @@ fp8_block_matmul = (
 class FP8BlockQuantLinear(torch.autograd.Function):
     @staticmethod
     def forward(ctx, X, weight, weight_scale):
-        # block_size = getattr(weight, 'block_size', [128,128])
         m, n = weight.shape
-        p, q = weight_scale.shape
-        block_size = getattr(weight, "block_size", None) or getattr(
-            weight_scale, "block_size", [128, 128]
-        )
-        assert block_size is not None, "block_size is not set"
-        if triton.cdiv(m, block_size[0]) != p or triton.cdiv(n, block_size[1]) != q:
-            if (
-                triton.cdiv(m, block_size[0]) == q
-                and triton.cdiv(n, block_size[1]) == p
-            ):
-                # weights are transposed during backward pass for training :)
-                # We transpose weight scale to counter that. Note that transposing weight would cause issues with matmul with input X
-                weight_scale = weight_scale.T
-            else:
-                raise ValueError(
-                    f"Weight shape {weight.shape} and scales shape {weight_scale.shape} is not compatible with block size {block_size}"
-                )
+
+        # Save original scale for backward (before any transformation)
+        original_weight_scale = weight_scale
+
+        # Handle per-tensor quantization: expand scalar to block scale shape
+        if weight_scale.numel() == 1:
+            block_size = [128, 128]
+            # Expand scalar to (ceil(m/128), ceil(n/128)) - same value for all blocks
+            num_blocks_m = triton.cdiv(m, block_size[0])
+            num_blocks_n = triton.cdiv(n, block_size[1])
+            weight_scale = weight_scale.expand(num_blocks_m, num_blocks_n).contiguous()
+        else:
+            # Block quantization path
+            p, q = weight_scale.shape
+            block_size = getattr(weight, "block_size", None) or getattr(
+                weight_scale, "block_size", [128, 128]
+            )
+            assert block_size is not None, "block_size is not set"
+            if triton.cdiv(m, block_size[0]) != p or triton.cdiv(n, block_size[1]) != q:
+                if (
+                    triton.cdiv(m, block_size[0]) == q
+                    and triton.cdiv(n, block_size[1]) == p
+                ):
+                    weight_scale = weight_scale.T
+                    original_weight_scale = weight_scale  # Update for transposed case
+                else:
+                    raise ValueError(
+                        f"Weight shape {weight.shape} and scales shape {weight_scale.shape} is not compatible with block size {block_size}"
+                    )
 
         if not weight.is_contiguous():
             weight = weight.contiguous()
-        # this is replica of https://github.com/huggingface/transformers/blob/01c9e1ba683b3e50d7c76bf92f2d470759fd5e81/src/transformers/integrations/finegrained_fp8.py#L331-L353
+
+        # Quantize input and run FP8 matmul
         qinput, scale = act_quant(X, block_size[1])
         output = fp8_block_matmul(
             qinput,
@@ -375,9 +349,11 @@ class FP8BlockQuantLinear(torch.autograd.Function):
             output_dtype = X.dtype,
         )
         ctx.weight = weight
-        ctx.weight_scale = weight_scale
-        ctx.block_size = block_size
+        ctx.weight_scale = original_weight_scale  # Save original for backward
         return output.to(X.dtype)
+
+
+
 
     @staticmethod
     def backward(ctx, grad_output):
@@ -390,6 +366,7 @@ class FP8BlockQuantLinear(torch.autograd.Function):
 @torch_compile
 def fp8_torch_block_quant_forward(X, weight, weight_scale):
     return FP8BlockQuantLinear.apply(X, weight, weight_scale)
+
 
 
 class FbgemmFp8Linear_matmul(torch.autograd.Function):
@@ -576,13 +553,15 @@ except:
 
 @torch_compile
 def fp8_linear(X, weight, weight_scale, bias = None):
-    if weight_scale.ndim == 2 and weight_scale.shape[1] > 1:
-        # This is block quantized FP8 matmul
+    # Per-tensor quantization: single scalar scale for entire weight
+    # Block quantized FP8: 2D scale tensor with multiple columns
+    if weight_scale.numel() == 1 or (weight_scale.ndim == 2 and weight_scale.shape[1] > 1):
         out = fp8_block_quant_linear(X, weight, weight_scale)
+    # Row/channel quantized FP8: 2D scale with shape (n, 1)
     else:
-        # Row quantized FP8
         out = fbgemm_fp8_linear(X, weight, weight_scale, bias)
     return out
+
 
 
 def module_forward_patch(forward_function, scale_attr = "weight_scale"):
