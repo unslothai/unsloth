@@ -1121,6 +1121,7 @@ def _get_statistics(statistics = None, force_download = True):
                 statistics = "runpod"
         except Exception:
             pass
+        
         # Fallback to env-key detection
         if statistics is None:
             if "\nKAGGLE_" in keynames:
@@ -1168,42 +1169,43 @@ def _get_statistics(statistics = None, force_download = True):
                     statistics = try_vllm_check()
                 except:
                     statistics = "other"
-            if statistics is not None:
-                import tempfile
-                from huggingface_hub import snapshot_download
-                from unsloth_zoo.rl_environments import execute_with_time_limit
+        
+        if statistics is not None:
+            import tempfile
+            from huggingface_hub import snapshot_download
+            from unsloth_zoo.rl_environments import execute_with_time_limit
 
-                if has_internet():
+            if has_internet():
 
-                    def stats_check():
-                        with tempfile.TemporaryDirectory(
-                            ignore_cleanup_errors = True
-                        ) as f:
-                            snapshot_download(
-                                f"unslothai/{statistics}",
-                                force_download = True,
-                                cache_dir = f,
-                                local_dir = f,
-                            )
-
-                    time_limited_stats_check = execute_with_time_limit(120)(stats_check)
-                    try:
-                        time_limited_stats_check()
-                    except TimeoutError:
-                        raise TimeoutError(
-                            "Unsloth: HuggingFace seems to be down after trying for 120 seconds :(\n"
-                            "Check https://status.huggingface.co/ for more details.\n"
-                            "As a temporary measure, use modelscope with the same model name ie:\n"
-                            "```\n"
-                            "pip install modelscope\n"
-                            "import os; os.environ['UNSLOTH_USE_MODELSCOPE'] = '1'\n"
-                            "from unsloth import FastLanguageModel\n"
-                            "model = FastLanguageModel.from_pretrained('unsloth/gpt-oss-20b')\n"
-                            "```"
+                def stats_check():
+                    with tempfile.TemporaryDirectory(
+                        ignore_cleanup_errors = True
+                    ) as f:
+                        snapshot_download(
+                            f"unslothai/{statistics}",
+                            force_download = True,
+                            cache_dir = f,
+                            local_dir = f,
                         )
-                    except:
-                        # Try no time limit check
-                        stats_check()
+
+                time_limited_stats_check = execute_with_time_limit(120)(stats_check)
+                try:
+                    time_limited_stats_check()
+                except TimeoutError:
+                    raise TimeoutError(
+                        "Unsloth: HuggingFace seems to be down after trying for 120 seconds :(\n"
+                        "Check https://status.huggingface.co/ for more details.\n"
+                        "As a temporary measure, use modelscope with the same model name ie:\n"
+                        "```\n"
+                        "pip install modelscope\n"
+                        "import os; os.environ['UNSLOTH_USE_MODELSCOPE'] = '1'\n"
+                        "from unsloth import FastLanguageModel\n"
+                        "model = FastLanguageModel.from_pretrained('unsloth/gpt-oss-20b')\n"
+                        "```"
+                    )
+                except:
+                    # Try no time limit check
+                    stats_check()
 
 
 def get_statistics(local_files_only = False):
