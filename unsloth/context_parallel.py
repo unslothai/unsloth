@@ -196,6 +196,7 @@ class ContextParallelManager:
         self._ensure_position_ids(inputs)
         self._ensure_shift_labels(inputs)
         buffers, seq_dims, no_restore = self._collect_buffers(inputs)
+
         with context_parallel(
             self._mesh,
             buffers = buffers,
@@ -413,29 +414,21 @@ def patch_sft_trainer() -> None:
         if use_cp:
             global_tokens = manager.get_global_tokens(inputs)
 
-            # For CP, use external loss to avoid fused CE token counting issues.
-            saved_labels = inputs.pop("labels", None)
-            local_shift_labels = inputs.pop("shift_labels", None)
-
-            outputs = model(**inputs)
-            logits = outputs.logits if hasattr(outputs, "logits") else outputs[0]
-
-            from unsloth.kernels.cross_entropy_loss import fast_cross_entropy_loss
+            # For CP, pass both labels and shift_labels to the model.
+            # The model's forward (e.g., llama.py) detects shift_labels and uses
+            # unsloth_fused_ce_loss with the pre-shifted labels.
+            # We keep labels so the fused CE loss path is triggered (requires labels is not None).
 
             # Scale by GA and cp_size to match gradient behavior of CP=1.
             ga_steps = getattr(self.args, "gradient_accumulation_steps", 1)
             cp_size = manager.settings.size
-            loss = fast_cross_entropy_loss(
-                logits = logits,
-                labels = local_shift_labels,
-                n_items = global_tokens * ga_steps / cp_size,
-            )
+            inputs["num_items_in_batch"] = global_tokens * ga_steps / cp_size
 
-            # Restore
-            if saved_labels is not None:
-                inputs["labels"] = saved_labels
-            if local_shift_labels is not None:
-                inputs["shift_labels"] = local_shift_labels
+            outputs = model(**inputs)
+            loss = outputs.loss if hasattr(outputs, "loss") else outputs[0]
+
+            # Clean up temporary input
+            inputs.pop("num_items_in_batch", None)
 
             if return_outputs:
                 loss = (loss, outputs)
