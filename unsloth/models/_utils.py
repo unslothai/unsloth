@@ -1160,7 +1160,7 @@ def _get_statistics(statistics = None, force_download = True):
                             elif "google" in file_content:
                                 return "gcp"
                     return "other"
-                
+
                 try:
                     statistics = try_vllm_check()
                 except Exception:
