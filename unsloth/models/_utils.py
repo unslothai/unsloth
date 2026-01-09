@@ -1121,7 +1121,7 @@ def _get_statistics(statistics = None, force_download = True):
                 statistics = "runpod"
         except Exception:
             pass
-        
+
         # Fallback to env-key detection
         if statistics is None:
             if "\nKAGGLE_" in keynames:
@@ -1169,7 +1169,7 @@ def _get_statistics(statistics = None, force_download = True):
                     statistics = try_vllm_check()
                 except:
                     statistics = "other"
-        
+
         if statistics is not None:
             import tempfile
             from huggingface_hub import snapshot_download
@@ -1178,9 +1178,7 @@ def _get_statistics(statistics = None, force_download = True):
             if has_internet():
 
                 def stats_check():
-                    with tempfile.TemporaryDirectory(
-                        ignore_cleanup_errors = True
-                    ) as f:
+                    with tempfile.TemporaryDirectory(ignore_cleanup_errors = True) as f:
                         snapshot_download(
                             f"unslothai/{statistics}",
                             force_download = True,
