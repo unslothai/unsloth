@@ -146,7 +146,7 @@ torch_nn_functional_softmax = torch.nn.functional.softmax
 # SDPA has GQA internally
 SDPA_HAS_GQA = "enable_gqa" in scaled_dot_product_attention.__doc__
 
-from peft.tuners.tuners_utils import ModulesToSaveWrapper
+from peft.utils.other import ModulesToSaveWrapper
 
 
 def _offload_frozen_module_for_training(
