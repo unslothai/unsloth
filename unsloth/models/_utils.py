@@ -1106,9 +1106,7 @@ def _get_statistics(statistics = None, force_download = True):
     global USE_MODELSCOPE
     USE_MODELSCOPE = os.environ.get("UNSLOTH_USE_MODELSCOPE", "0") == "1"
 
-    if statistics is not None:
-        pass
-    else:
+    if statistics is None:
         # Prefer filesystem markers (harder to misidentify) before env-key matching
         try:
             from pathlib import Path
@@ -1150,7 +1148,6 @@ def _get_statistics(statistics = None, force_download = True):
                         "/sys/class/dmi/id/chassis_asset_tag",
                         "/sys/class/dmi/id/sys_vendor",
                     )
-                    from pathlib import Path
 
                     for vendor_file in vendor_files:
                         path = Path(vendor_file)
@@ -1163,11 +1160,10 @@ def _get_statistics(statistics = None, force_download = True):
                             elif "google" in file_content:
                                 return "gcp"
                     return "other"
-
-                pass
+                
                 try:
                     statistics = try_vllm_check()
-                except:
+                except Exception:
                     statistics = "other"
 
     if statistics is not None:
