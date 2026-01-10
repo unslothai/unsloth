@@ -1106,53 +1106,66 @@ def _get_statistics(statistics = None, force_download = True):
     global USE_MODELSCOPE
     USE_MODELSCOPE = os.environ.get("UNSLOTH_USE_MODELSCOPE", "0") == "1"
 
-    if statistics is not None:
-        pass
-    elif "\nCOLAB_" in keynames and n_cpus == 1:
-        statistics = "colab"
-    elif "\nCOLAB_" in keynames:
-        statistics = "colabpro"
-    elif "\nKAGGLE_" in keynames:
-        statistics = "kaggle"
-    elif "\nRUNPOD_" in keynames:
-        statistics = "runpod"
-    elif "\nAWS_" in keynames:
-        statistics = "aws"
-    elif "\nAZURE_" in keynames:
-        statistics = "azure"
-    # elif "\nK_" in keynames or "\nFUNCTION_" in keynames: statistics = "gcp"
-    elif "\nINVOCATION_ID" in keynames:
-        statistics = "lambda"
-    # else: statistics = "other"
-    else:
-
-        def try_vllm_check():
-            vendor_files = (
-                "/sys/class/dmi/id/product_version",
-                "/sys/class/dmi/id/bios_vendor",
-                "/sys/class/dmi/id/product_name",
-                "/sys/class/dmi/id/chassis_asset_tag",
-                "/sys/class/dmi/id/sys_vendor",
-            )
+    if statistics is None:
+        # Prefer filesystem markers (harder to misidentify) before env-key matching
+        try:
             from pathlib import Path
 
-            for vendor_file in vendor_files:
-                path = Path(vendor_file)
-                if path.is_file():
-                    file_content = path.read_text().lower()
-                    if "amazon" in file_content:
-                        return "aws"
-                    elif "microsoft corporation" in file_content:
-                        return "azure"
-                    elif "google" in file_content:
-                        return "gcp"
-            return "other"
+            if Path("/kaggle/working").exists():
+                statistics = "kaggle"
+            elif Path("/content").exists() and Path("/opt/colab").exists():
+                statistics = "colab" if n_cpus == 1 else "colabpro"
+            elif Path("/runpod-volume").exists():
+                statistics = "runpod"
+        except Exception:
+            pass
 
-        pass
-        try:
-            statistics = try_vllm_check()
-        except:
-            statistics = "other"
+        # Fallback to env-key detection
+        if statistics is None:
+            if "\nKAGGLE_" in keynames:
+                statistics = "kaggle"
+            elif "\nCOLAB_" in keynames and n_cpus == 1:
+                statistics = "colab"
+            elif "\nCOLAB_" in keynames:
+                statistics = "colabpro"
+            elif "\nRUNPOD_" in keynames:
+                statistics = "runpod"
+            elif "\nAWS_" in keynames:
+                statistics = "aws"
+            elif "\nAZURE_" in keynames:
+                statistics = "azure"
+            # elif "\nK_" in keynames or "\nFUNCTION_" in keynames: statistics = "gcp"
+            elif "\nINVOCATION_ID" in keynames:
+                statistics = "lambda"
+            # else: statistics = "other"
+            else:
+
+                def try_vllm_check():
+                    vendor_files = (
+                        "/sys/class/dmi/id/product_version",
+                        "/sys/class/dmi/id/bios_vendor",
+                        "/sys/class/dmi/id/product_name",
+                        "/sys/class/dmi/id/chassis_asset_tag",
+                        "/sys/class/dmi/id/sys_vendor",
+                    )
+
+                    for vendor_file in vendor_files:
+                        path = Path(vendor_file)
+                        if path.is_file():
+                            file_content = path.read_text().lower()
+                            if "amazon" in file_content:
+                                return "aws"
+                            elif "microsoft corporation" in file_content:
+                                return "azure"
+                            elif "google" in file_content:
+                                return "gcp"
+                    return "other"
+
+                try:
+                    statistics = try_vllm_check()
+                except Exception:
+                    statistics = "other"
+
     if statistics is not None:
         import tempfile
         from huggingface_hub import snapshot_download
@@ -1184,7 +1197,7 @@ def _get_statistics(statistics = None, force_download = True):
                     "model = FastLanguageModel.from_pretrained('unsloth/gpt-oss-20b')\n"
                     "```"
                 )
-            except:
+            except Exception:
                 # Try no time limit check
                 stats_check()
 
