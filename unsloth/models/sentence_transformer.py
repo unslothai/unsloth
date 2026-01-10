@@ -1403,6 +1403,7 @@ class FastSentenceTransformer(FastModel):
                 qat_scheme = kwargs.get("qat_scheme", None)
                 if qat_scheme is not None:
                     from ._utils import _prepare_model_for_qat
+
                     peft_model = _prepare_model_for_qat(peft_model, qat_scheme)
 
                 # Determine compile mode (only if not using gradient checkpointing)
