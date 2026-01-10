@@ -2108,14 +2108,18 @@ def _change_system_message(template: str, type_chat_template: str, system_messag
         if has_placeholder:
             if system_message is None:
                 raise ValueError("Unsloth: You need to provide a system message for custom templates.")
-            new_template = re.sub(system_message_pattern, system_message, template)
+            # Escape single quotes to prevent Jinja2 template syntax errors
+            escaped_message = system_message.replace("'", "\\'")
+            new_template = re.sub(system_message_pattern, escaped_message, template)
             return new_template, system_message
 
         return template, system_message
 
     # For predefined templates with default system message
     message_to_use = system_message if system_message is not None else default_system_message
-    new_template = re.sub(system_message_pattern, message_to_use, template)
+    # Escape single quotes to prevent Jinja2 template syntax errors
+    escaped_message = message_to_use.replace("'", "\\'")
+    new_template = re.sub(system_message_pattern, escaped_message, template)
 
     return new_template, message_to_use
 
