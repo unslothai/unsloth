@@ -26,13 +26,16 @@ classifiers = [
 ]
 
 [tool.setuptools.dynamic]
-version = {attr = "unsloth.models._utils.__version__"}
+version = {attr = "unsloth._version.__version__"}
+
+[tool.setuptools.cmdclass]
+install = "unsloth._build_support.RocmExtraInstallCommand"
 
 [tool.setuptools]
 include-package-data = false
 
 [tool.setuptools.packages.find]
-exclude = ["images*", "tests*", "kernels/moe*"]
+exclude = ["images*", "tests*", "kernels/moe*", "thirdparties*"]
 
 [project.optional-dependencies]
 triton = [
