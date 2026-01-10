@@ -1399,6 +1399,12 @@ class FastSentenceTransformer(FastModel):
                 # Apply PEFT directly (not through FastModel)
                 peft_model = peft_get_peft_model(inner_model, lora_config)
 
+                # Apply QAT if specified
+                qat_scheme = kwargs.get("qat_scheme", None)
+                if qat_scheme is not None:
+                    from ._utils import _prepare_model_for_qat
+                    peft_model = _prepare_model_for_qat(peft_model, qat_scheme)
+
                 # Determine compile mode (only if not using gradient checkpointing)
                 compile_mode = getattr(model, "_compile_mode", "default")
                 # Re-enable torch.compile if gradient checkpointing was requested but couldn't be enabled
