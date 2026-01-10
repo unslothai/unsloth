@@ -50,7 +50,7 @@ RL_ADDITIONAL_FUNCTIONS = defaultdict(list)
 
 torch_compile_options = {
     "epilogue_fusion": True,
-    "max_autotune": True,
+    "max_autotune": False, #I saw speedups, but not sure if this has issues in collab
     "shape_padding": True,
     "trace.enabled": False,
     "triton.cudagraphs": False,
