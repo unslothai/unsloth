@@ -643,6 +643,9 @@ def grpo_trainer_compute_loss(function_name, function):
     def compute_loss(
         self, model, inputs, return_outputs = False, num_items_in_batch = None
     ):
+        if torch.distributed.is_initialized():
+            model = model.module
+
         if return_outputs:
             raise ValueError("The GRPOTrainer does not support returning outputs")
         # Compute the per-token log probabilities for the model
