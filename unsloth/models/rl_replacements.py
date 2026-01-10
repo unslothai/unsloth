@@ -758,19 +758,18 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 :, -logits_to_keep:
                             ]
 
-                        logprobs_chunk = chunked_hidden_states_selective_log_softmax(
-                            logits_chunk,
-                            lm_head,
-                            completion_input_ids_chunk,
-                            chunks = input_ids_chunk.shape[0] * multiplier,
-                            logit_scale_multiply = logit_scale_multiply,
-                            logit_scale_divide = logit_scale_divide,
-                            logit_softcapping = logit_softcapping,
-                            temperature = temperature,
-                        )
+                    logprobs_chunk = chunked_hidden_states_selective_log_softmax(
+                        logits_chunk,
+                        lm_head,
+                        completion_input_ids_chunk,
+                        chunks = input_ids_chunk.shape[0] * multiplier,
+                        logit_scale_multiply = logit_scale_multiply,
+                        logit_scale_divide = logit_scale_divide,
+                        logit_softcapping = logit_softcapping,
+                        temperature = temperature,
+                    )
                     # This is needed to avoid race conditions with GPT OSS offload_embbed=True
                     # However, it seems that this line does not slow down or disrupt models.
-                    # if "gpt_oss" in str(type(self.model.config)):
                     torch.cuda.synchronize()
                     all_logprobs_list.append(logprobs_chunk)
                 logprobs = torch.cat(all_logprobs_list, dim = 0)
