@@ -20,6 +20,10 @@ __all__ = [
     "DEVICE_COUNT",
     "ALLOW_PREQUANTIZED_MODELS",
     "ALLOW_BITSANDBYTES",
+    "DeviceContext",
+    "device_context",
+    "clean_gpu_cache",
+    "get_current_device",
 ]
 
 import torch
@@ -125,3 +129,57 @@ if DEVICE_TYPE == "hip":
                 Params4bit
             ):
                 ALLOW_PREQUANTIZED_MODELS = False
+
+
+class DeviceContext:
+    """Encapsulates device-specific operations for XPU/HIP/CUDA."""
+
+    def __init__(self, device_type: str = DEVICE_TYPE) -> None:
+        DEVICE_MODULE_MAP = {"xpu": torch.xpu, "cuda": torch.cuda, "hip": torch.cuda}
+        if device_type not in DEVICE_MODULE_MAP:
+            raise ValueError(f"Unsloth: Unsupported device type: {device_type}")
+        self.device_type = device_type
+        # Cache the torch module for this device
+        self.torch_module = DEVICE_MODULE_MAP[device_type]
+
+    def get_stats(self) -> tuple[str, str, float]:
+        """Return (name, stats_snippet, max_memory_gb)."""
+        gpu_stats = self.torch_module.get_device_properties(0)
+        max_mem = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
+
+        # Device name
+        name = gpu_stats.name + ". " if gpu_stats.name else self._get_default_name()
+
+        # Toolkit snippet
+        snippet = self._get_toolkit_snippet(gpu_stats)
+
+        return name, snippet, max_mem
+
+    def _get_default_name(self) -> str:
+        """Get default device name when props.name is empty."""
+        names = {"xpu": "Intel XPU", "cuda": "NVIDIA GPU", "hip": "AMD GPU"}
+        return names[self.device_type] + " Device. "
+
+    def _get_toolkit_snippet(self, props) -> str:
+        """Get toolkit version snippet."""
+        if self.device_type == "cuda":
+            return f"CUDA: {props.major}.{props.minor}. CUDA Toolkit: {torch.version.cuda}."
+        elif self.device_type == "hip":
+            return f"ROCm Toolkit: {torch.version.hip}."
+        else:  # xpu
+            return f"Intel Toolkit: {torch.version.xpu}."
+
+
+# Singleton instance
+device_context = DeviceContext()
+
+
+# Module-level functions for backward compatibility
+def clean_gpu_cache() -> None:
+    """Clear GPU cache for current device type."""
+    device_context.torch_module.empty_cache()
+
+
+def get_current_device() -> int:
+    """Get current device index."""
+    return device_context.torch_module.current_device()
