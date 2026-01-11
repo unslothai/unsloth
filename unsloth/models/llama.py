@@ -52,6 +52,9 @@ from ..device_type import (
     DEVICE_TYPE_TORCH,
     DEVICE_COUNT,
     ALLOW_PREQUANTIZED_MODELS,
+    device_context,
+    clean_gpu_cache,
+    get_current_device,
 )
 
 transformers_version = Version(transformers_version)
@@ -118,13 +121,6 @@ HAS_XFORMERS = xformers is not None
 BlockDiagonalCausalMask = (
     xformers.attn_bias.BlockDiagonalCausalMask if HAS_XFORMERS else None
 )
-
-if DEVICE_TYPE == "xpu":
-    clean_gpu_cache = torch.xpu.empty_cache
-    get_current_device = torch.xpu.current_device
-else:
-    clean_gpu_cache = torch.cuda.empty_cache
-    get_current_device = torch.cuda.current_device
 
 
 def original_apply_qkv(self, X):
@@ -2188,43 +2184,12 @@ class FastLlamaModel:
             model_patcher = FastLlamaModel
         SUPPORTS_BFLOAT16 = is_bfloat16_supported()
 
-        if DEVICE_TYPE == "cuda":
-            gpu_stats = torch.cuda.get_device_properties(0)
-            gpu_stats_name = (
-                gpu_stats.name + ". " if gpu_stats.name != "" else "NVIDIA GPU Device. "
-            )
-            gpu_version = torch.version.cuda
-            gpu_stats_snippet = f"CUDA: {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit: {gpu_version}."
-            try:
-                vllm_version = f" vLLM: {importlib_version('vllm')}."
-            except:
-                vllm_version = ""
-        elif DEVICE_TYPE == "hip":
-            gpu_stats = torch.cuda.get_device_properties(0)
-            gpu_stats_name = (
-                gpu_stats.name + ". " if gpu_stats.name != "" else "AMD GPU Device. "
-            )
-            gpu_version = torch.version.hip
-            gpu_stats_snippet = f"ROCm Toolkit: {gpu_version}."
-            try:
-                vllm_version = f" vLLM: {importlib_version('vllm')}."
-            except:
-                vllm_version = ""
-        elif DEVICE_TYPE == "xpu":
-            gpu_stats = torch.xpu.get_device_properties(0)
-            gpu_stats_name = (
-                gpu_stats.name + ". " if gpu_stats.name != "" else "Intel XPU Device. "
-            )
-            gpu_version = torch.version.xpu
-            gpu_stats_snippet = f"Intel Toolkit: {gpu_version}."
-            try:
-                vllm_version = f" vLLM: {importlib_version('vllm')}."
-            except:
-                vllm_version = ""
-        else:
-            raise ValueError(f"Unsloth: Unsupported device type: {DEVICE_TYPE}")
+        gpu_stats_name, gpu_stats_snippet, max_memory = device_context.get_stats()
 
-        max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
+        try:
+            vllm_version = f" vLLM: {importlib_version('vllm')}."
+        except:
+            vllm_version = ""
 
         statistics = (
             f"==((====))==  Unsloth {__version__}: Fast {model_patcher.__name__[4:-5]} patching. Transformers: {transformers_version}.{vllm_version}\n"

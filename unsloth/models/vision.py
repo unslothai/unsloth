@@ -78,6 +78,7 @@ except:
     # Old HF Hub versions <= 0.0.25
     from huggingface_hub.utils._token import get_token
 from ..device_type import (
+    device_context,
     is_hip,
     get_device_type,
     DEVICE_TYPE,
@@ -398,41 +399,11 @@ class FastBaseModel:
         token = hf_login(token)
         SUPPORTS_BFLOAT16 = is_bfloat16_supported()
 
-        if DEVICE_TYPE == "cuda":
-            gpu_stats = torch.cuda.get_device_properties(0)
-            gpu_stats_name = (
-                gpu_stats.name + ". " if gpu_stats.name != "" else "NVIDIA GPU Device. "
-            )
-            gpu_version = torch.version.cuda
-            gpu_stats_snippet = f"CUDA: {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit: {gpu_version}."
-            try:
-                vllm_version = f" vLLM: {importlib_version('vllm')}."
-            except:
-                vllm_version = ""
-        elif DEVICE_TYPE == "hip":
-            gpu_stats = torch.cuda.get_device_properties(0)
-            gpu_stats_name = (
-                gpu_stats.name + ". " if gpu_stats.name != "" else "AMD GPU Device. "
-            )
-            gpu_version = torch.version.hip
-            gpu_stats_snippet = f"ROCm Toolkit: {gpu_version}."
-            try:
-                vllm_version = f" vLLM: {importlib_version('vllm')}."
-            except:
-                vllm_version = ""
-        elif DEVICE_TYPE == "xpu":
-            gpu_stats = torch.xpu.get_device_properties(0)
-            gpu_stats_name = (
-                gpu_stats.name + ". " if gpu_stats.name != "" else "Intel XPU Device. "
-            )
-            gpu_version = torch.version.xpu
-            gpu_stats_snippet = f"Intel Toolkit: {gpu_version}."
-            # [TODO] After adding vLLM support for XPU, change this
+        gpu_stats_name, gpu_stats_snippet, max_memory = device_context.get_stats()
+        try:
+            vllm_version = f" vLLM: {importlib_version('vllm')}."
+        except:
             vllm_version = ""
-        else:
-            raise ValueError(f"Unsloth: Unsupported device type: {DEVICE_TYPE}")
-
-        max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
 
         arch_name = model_type_arch.title()
         arch_name = arch_name.replace("_Vl_", "_VL_").replace("_Moe", "_MoE")
