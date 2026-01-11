@@ -1656,6 +1656,10 @@ class LlamaRotaryEmbedding(torch.nn.Module):
             1, device = get_current_device(), dtype = torch.get_default_dtype()
         )
 
+    def _apply_time_scaling(self, t):
+        """Override to apply custom time scaling (e.g., linear scaling)."""
+        return t
+
     def _set_cos_sin_cache(self, seq_len, device, dtype):
         # Note: on the original Llama codebase, these tensors are created on the target device (and not on CPU) and
         # in FP32. They are applied (multiplied) in FP32 as well.
@@ -1670,6 +1674,7 @@ class LlamaRotaryEmbedding(torch.nn.Module):
         t = torch.arange(
             self.current_rope_size, device = "cpu", dtype = torch.int64
         ).float()
+        t = self._apply_time_scaling(t)
 
         freqs = torch.outer(t, inv_freq)
         # Different from paper, but it uses a different permutation in order to obtain the same calculation
@@ -1733,28 +1738,9 @@ class LlamaLinearScalingRotaryEmbedding(LlamaRotaryEmbedding):
             config = config,
         )
 
-    def _set_cos_sin_cache(self, seq_len, device, dtype):
-        self.current_rope_size = seq_len
-        inv_freq = 1.0 / (
-            self.base
-            ** (
-                torch.arange(0, self.dim, 2, dtype = torch.int64, device = "cpu").float()
-                / self.dim
-            )
-        )
-        t = torch.arange(
-            self.current_rope_size, device = "cpu", dtype = torch.int64
-        ).float()
-        t = t / self.scaling_factor
-
-        freqs = torch.outer(t, inv_freq)
-        # Different from paper, but it uses a different permutation in order to obtain the same calculation
-        emb = torch.cat((freqs, freqs), dim = -1)
-        cos = emb.cos().to(dtype = dtype, device = device, non_blocking = True)
-        sin = emb.sin().to(dtype = dtype, device = device, non_blocking = True)
-        self.multi_gpu_cos_cached[device.index] = cos
-        self.multi_gpu_sin_cached[device.index] = sin
-        return cos, sin
+    def _apply_time_scaling(self, t):
+        """Apply linear scaling to time indices."""
+        return t / self.scaling_factor
 
 
 # See https://github.com/vllm-project/vllm/blob/main/vllm/model_executor/layers/rotary_embedding.py#L736
