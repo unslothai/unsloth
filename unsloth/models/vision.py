@@ -98,6 +98,7 @@ VLLM_SUPPORTED_VLM = [
     "gemma3",
     "mistral3",
     "qwen3_vl",
+    "qwen3_vl_moe",
 ]
 VLLM_NON_LORA_VLM = [
     "mllama",
