@@ -73,6 +73,8 @@ __all__ = [
     "verify_fp8_support_if_applicable",
     "_get_inference_mode_context_manager",
     "hf_login",
+    "is_moe_model",
+    "get_moe_target_parameters",
 ]
 
 import torch
@@ -2365,3 +2367,73 @@ def hf_login(token: Optional[str] = None) -> Optional[str]:
     except Exception as e:
         logger.info(f"Failed to login to huggingface using token with error: {e}")
     return token
+
+
+# =============================================
+# MoE (Mixture of Experts) Detection and LoRA Utilities
+
+def is_moe_model(model) -> bool:
+    """
+    Detect if a model is a Mixture of Experts (MoE) model.
+
+    Args:
+        model: The model to check (can be HF model or config)
+
+    Returns:
+        True if the model is an MoE model, False otherwise
+    """
+    config = getattr(model, "config", model)
+    num_experts = getattr(config, "num_experts", None)
+    return num_experts is not None and num_experts > 0
+
+
+def get_moe_target_parameters(model, target_modules=None) -> Optional[List[str]]:
+    """
+    Get the target_parameters for MoE expert layers if applicable.
+
+    For MoE models, returns the parameter paths for expert weights
+    (gate_up_proj, down_proj) that should be targeted by PEFT's
+    target_parameters for LoRA on nn.Parameter.
+
+    Only includes MoE parameters that match what's in target_modules:
+    - If "down_proj" is in target_modules -> includes "mlp.experts.down_proj"
+    - If "gate_proj" or "up_proj" is in target_modules -> includes "mlp.experts.gate_up_proj"
+
+    Args:
+        model: The model to get target parameters for
+        target_modules: List/tuple of target module names to match against
+
+    Returns:
+        List of parameter paths for MoE experts, or None if not an MoE model
+    """
+    if not is_moe_model(model):
+        return None
+
+    config = getattr(model, "config", model)
+    num_experts = getattr(config, "num_experts", 0)
+
+    # Determine which MoE parameters to include based on target_modules
+    moe_params = []
+
+    # Normalize target_modules to a set for efficient lookup
+    if target_modules is None:
+        # If no target_modules specified, include all MoE params
+        target_set = {"gate_proj", "up_proj", "down_proj"}
+    elif isinstance(target_modules, str):
+        target_set = {target_modules}
+    else:
+        target_set = set(target_modules) if target_modules else set()
+
+    # gate_up_proj combines both gate_proj and up_proj in MoE
+    if "gate_proj" in target_set or "up_proj" in target_set:
+        moe_params.append("mlp.experts.gate_up_proj")
+
+    if "down_proj" in target_set:
+        moe_params.append("mlp.experts.down_proj")
+
+    if moe_params:
+        print(f"Unsloth: Detected MoE model with {num_experts} experts - enabling LoRA on: {moe_params}")
+        return moe_params
+
+    return None
+# =============================================
