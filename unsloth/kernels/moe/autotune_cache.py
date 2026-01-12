@@ -156,7 +156,9 @@ def get_or_autotune_moe_kernels(
     # This avoids the 2-4 minute startup cost.
     if not force_autotune:
         # We can try to rely on heuristic
-        logger.info(f"Using Heuristic (Safe) MoE kernel configs for SM{device_capability[0]}{device_capability[1]}")
+        logger.info(
+            f"Using Heuristic (Safe) MoE kernel configs for SM{device_capability[0]}{device_capability[1]}"
+        )
         return _get_heuristic_configs()
     if not force_autotune and cache_key in _kernel_config_cache:
         logger.info(f"Using in-memory cached MoE kernel configs: {cache_key}")
@@ -375,7 +377,6 @@ def _run_moe_autotuning(
 
     return config_fwd, config_bwd_dx, config_bwd_dw
 
-
     return config_fwd, config_bwd_dx, config_bwd_dw
 
 
@@ -400,7 +401,7 @@ def _get_heuristic_configs() -> Tuple[Any, Any, Any]:
         permute_x = True,
         permute_y = True,
         use_tma_load_x = False,
-        use_tma_load_w = False, # TMA loads might need alignment checks, safer to disable for heuristic
+        use_tma_load_w = False,  # TMA loads might need alignment checks, safer to disable for heuristic
         use_tma_store = False,
     )
 
