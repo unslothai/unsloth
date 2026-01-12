@@ -408,7 +408,7 @@ class FastBaseModel:
             if device_map in ("auto", "balanced", "balanced_low_0"):
                 raise ValueError(
                     f"Unsloth: You are in a distributed training environment (multi-GPU) but used device_map='{device_map}'.\n"
-                    f"Model splitting across GPUs is not supported as it causes gradient device mismatches with Unsloth's fused kernels.\n"
+                    f"Model splitting across GPUs is not supported for Vision Models as it causes gradient device mismatches with Unsloth's fused kernels.\n"
                     f"Please set `device_map = None` to enable standard Data Parallelism.\n"
                     f"Note: This will load a full copy of the model on each GPU.\n"
                     f"This uses more VRAM per GPU but provides equivalent training to single GPU."
