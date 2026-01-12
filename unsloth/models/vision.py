@@ -937,6 +937,7 @@ class FastBaseModel:
         task_type = TaskType.CAUSAL_LM,
         temporary_location = "_unsloth_temporary_saved_buffers",
         qat_scheme = None,
+        target_parameters = None,  # For MoE expert layers (nn.Parameter)
         **kwargs,
     ):
         if os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1":
@@ -1016,6 +1017,10 @@ class FastBaseModel:
         loftq_config = validate_loftq_config(
             loftq_config, lora_dropout, bias, init_lora_weights, model
         )
+
+        # Auto-detect MoE models and populate target_parameters for expert layers
+        if target_parameters is None:
+            target_parameters = get_moe_target_parameters(model, target_modules)
 
         # Get only allowed parameters for LoraConfig
         local_variables = {
