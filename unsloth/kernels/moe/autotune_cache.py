@@ -147,17 +147,10 @@ def get_or_autotune_moe_kernels(
         seq_len,
     )
 
-    # 0. Check for environment variable override
-    if os.environ.get("UNSLOTH_MOE_FORCE_AUTOTUNE", "0") == "1":
-        force_autotune = True
-
-    # 0. Check for Heuristic Override (Skip Autotuning)
-    # If the GPU is capable (sm_90+), use our "Safe Heuristic"
-    # This avoids the 2-4 minute startup cost.
-    if not force_autotune:
-        # We can try to rely on heuristic
+    # 0. Check for environment variable override to DISABLE autotuning
+    if os.environ.get("UNSLOTH_MOE_DISABLE_AUTOTUNE", "0") == "1":
         logger.info(
-            f"Using Heuristic (Safe) MoE kernel configs for SM{device_capability[0]}{device_capability[1]}"
+            f"UNSLOTH_MOE_DISABLE_AUTOTUNE=1: Using Heuristic (Safe) MoE kernel configs for SM{device_capability[0]}{device_capability[1]}"
         )
         return _get_heuristic_configs()
     if not force_autotune and cache_key in _kernel_config_cache:
