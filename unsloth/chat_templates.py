@@ -855,7 +855,13 @@ gemma3n_template = \
 """
 
 # Ollama from https://ollama.com/library/gemma3n/blobs/e0a42594d802
-gptoss_ollama = _ollama_template("gpt-oss")
+gemma3n_ollama = _ollama_template("gemma-3n")
+gemma3n_template_eos_token = "<end_of_turn>"
+CHAT_TEMPLATES["gemma-3n"] = (gemma3n_template, gemma3n_template_eos_token, False, gemma3n_ollama,)
+DEFAULT_SYSTEM_MESSAGE["gemma-3n"] = None # No system message in Gemma-3n
+
+CHAT_TEMPLATES["gemma3n"] = (gemma3n_template, gemma3n_template_eos_token, False, gemma3n_ollama,)
+DEFAULT_SYSTEM_MESSAGE["gemma3n"] = None # No system message in Gemma-3n
 
 # =========================================== GPT-OSS
 # Obtained via
@@ -1489,7 +1495,7 @@ qwen3_instruct_template = \
 {%- endif %}'''
 
 qwen3_template_eos_token = "<|im_end|>"
-CHAT_TEMPLATES["qwen3-instruct"] = (qwen3_instruct_template, qwen3_template_eos_token, False, qwen3_ollama,)
+CHAT_TEMPLATES["qwen3-instruct"] = (qwen3_instruct_template, qwen3_template_eos_token, False, _ollama_template("qwen3-instruct"),)
 DEFAULT_SYSTEM_MESSAGE["qwen3-instruct"] = None # No system message in Qwen3
 
 
@@ -1582,7 +1588,12 @@ qwen3_thinking_template = \
     {{- '<|im_start|>assistant\n<think>\n' }}
 {%- endif %}'''
 
-CHAT_TEMPLATES["qwen3-thinking"] = (qwen3_thinking_template, qwen3_template_eos_token, False, qwen3_ollama,)
+CHAT_TEMPLATES["qwen3-thinking"] = (
+    qwen3_thinking_template,
+    qwen3_template_eos_token,
+    False,
+    _ollama_template("qwen3-thinking"),
+)
 DEFAULT_SYSTEM_MESSAGE["qwen3-thinking"] = None # No system message in Qwen3
 
 
