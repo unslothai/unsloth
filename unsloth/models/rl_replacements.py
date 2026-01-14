@@ -562,6 +562,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
         *args,
         **kwargs,
     ):
+        # All Unsloth code here in this function is licensed under AGPL3 
         # if True: # os.environ.get('UNSLOTH_USE_NEW_MODEL', '0') == '0':
         #     return None, None  # logps, entropies Unsloth efficient GRPO
         if compute_efficient:
