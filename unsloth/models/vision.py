@@ -345,12 +345,14 @@ def unsloth_base_fast_generate(
             e2e_latency = end_time - start_time
 
             # Calculate generated tokens
+            num_generation_tokens = 0
             if isinstance(output, torch.Tensor):
                 if output.dim() > 1:
                     total_tokens = output.shape[-1] * output.shape[0]
                 else:
                     total_tokens = output.shape[-1]
                 num_generation_tokens = max(0, total_tokens - num_prompt_tokens)
+<<<<<<< HEAD
             else:
                 num_generation_tokens = 0
 
@@ -362,10 +364,34 @@ def unsloth_base_fast_generate(
                 )
                 collector.inference_stats.record_first_token(request_id)
 
+=======
+            elif isinstance(output, dict) and "sequences" in output:
+                # Handle ModelOutput when return_dict_in_generate=True
+                sequences = output["sequences"]
+                if isinstance(sequences, torch.Tensor):
+                    if sequences.dim() > 1:
+                        total_tokens = sequences.shape[-1] * sequences.shape[0]
+                    else:
+                        total_tokens = sequences.shape[-1]
+                    num_generation_tokens = max(0, total_tokens - num_prompt_tokens)
+            elif hasattr(output, "sequences"):
+                # Handle ModelOutput object directly
+                sequences = output.sequences
+                if isinstance(sequences, torch.Tensor):
+                    if sequences.dim() > 1:
+                        total_tokens = sequences.shape[-1] * sequences.shape[0]
+                    else:
+                        total_tokens = sequences.shape[-1]
+                    num_generation_tokens = max(0, total_tokens - num_prompt_tokens)
+            
+            # Estimate timing (simplified)
+            if num_generation_tokens > 0:
+                # Estimate first token time
+                estimated_first_token_time = start_time + (e2e_latency / (num_generation_tokens + 1))
+                collector.inference_stats.record_first_token(request_id, timestamp=estimated_first_token_time)
+                
                 # Record tokens
-                for i in range(num_generation_tokens):
-                    if i == 0:
-                        collector.inference_stats.record_first_token(request_id)
+                for _ in range(num_generation_tokens):
                     collector.inference_stats.record_token(request_id)
 
             finish_reason = "stop"  # Could be improved to detect actual finish reason

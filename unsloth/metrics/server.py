@@ -80,7 +80,7 @@ class MetricsHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(error_msg.encode())
                 self.wfile.flush()
-            except:
+            except Exception:
                 pass  # Connection might be closed
 
     def log_message(self, format, *args):

@@ -108,13 +108,18 @@ class InferenceStats:
                 if self._active_requests[request_id].scheduled_time is None:
                     self._active_requests[request_id].scheduled_time = time.time()
 
-    def record_first_token(self, request_id: str):
-        """Record when the first token was generated."""
+    def record_first_token(self, request_id: str, timestamp: Optional[float] = None):
+        """Record when the first token was generated.
+        
+        Args:
+            request_id: Unique identifier for the request
+            timestamp: Optional timestamp. If None, uses current time.
+        """
         with self._lock:
             if request_id in self._active_requests:
                 req = self._active_requests[request_id]
                 if req.first_token_time is None:
-                    req.first_token_time = time.time()
+                    req.first_token_time = timestamp if timestamp is not None else time.time()
                     if req.scheduled_time is None:
                         req.scheduled_time = req.first_token_time
 

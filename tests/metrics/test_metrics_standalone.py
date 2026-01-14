@@ -113,6 +113,8 @@ try:
         print(f"   ℹ️  Full Prometheus export test requires GPU environment")
 except Exception as e:
     print(f"   ⚠️  Prometheus test skipped: {e}")
+    import traceback
+    traceback.print_exc()
 
 print("\n" + "=" * 60)
 print("✅ All metrics tests passed!")
