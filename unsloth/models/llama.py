@@ -179,8 +179,6 @@ def _fast_prepare_inputs_for_generation(
             if hasattr(base_model, "base_model_prefix"):
                 base_model = getattr(base_model, base_model.base_model_prefix)
 
-
-
             if hasattr(
                 base_model, "_prepare_4d_causal_attention_mask_with_cache_position"
             ):
