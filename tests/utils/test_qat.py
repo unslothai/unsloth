@@ -4,14 +4,16 @@ from typing import Dict
 
 import pytest
 import torch
-from torchao.quantization.qat import FakeQuantizedLinear
-from torchao.quantization.qat.fake_quantizer import (
-    FakeQuantizerBase,
-    Float8FakeQuantizer,
-    Int4WeightFakeQuantizer,
-    IntxFakeQuantizer,
-)
-
+try:
+    from torchao.quantization.qat import FakeQuantizedLinear
+    from torchao.quantization.qat.fake_quantizer import (
+        FakeQuantizerBase,
+        Float8FakeQuantizer,
+        Int4WeightFakeQuantizer,
+        IntxFakeQuantizer,
+    )
+except ImportError:
+    print("Missing torchao import, please install or upgrade torchao with: pip install 'torchao>=0.15.0'")
 
 class _CountingFakeQuantizer(torch.nn.Module):
     """
