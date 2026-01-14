@@ -20,7 +20,7 @@ This module provides selective backpropagation via label masking, enabling
 
 Usage:
     from unsloth.cggr import CGGRUnslothBridge
-    
+
     trainer = SFTTrainer(...)
     CGGRUnslothBridge.patch_trainer(trainer, min_tokens_ratio=0.25)
     trainer.train()
@@ -42,6 +42,7 @@ __all__ = [
 # Check if CGGR package is available
 try:
     import cggr
+
     CGGR_AVAILABLE = True
 except ImportError:
     CGGR_AVAILABLE = False
@@ -58,13 +59,17 @@ else:
             "CGGR is not installed. Install with: pip install cggr\n"
             "For CUDA acceleration: pip install cggr[cuda]"
         )
-    
+
     create_truncated_router = _cggr_not_available
-    CGGRUnslothBridge = type("CGGRUnslothBridge", (), {
-        "patch_trainer": staticmethod(_cggr_not_available),
-    })
+    CGGRUnslothBridge = type(
+        "CGGRUnslothBridge",
+        (),
+        {
+            "patch_trainer": staticmethod(_cggr_not_available),
+        },
+    )
     patch_trainer_for_cggr = _cggr_not_available
-    
+
     class TruncatedRouter:
         def __init__(self, *args, **kwargs):
             _cggr_not_available()
