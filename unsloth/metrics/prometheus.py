@@ -35,6 +35,7 @@ try:
     PROMETHEUS_AVAILABLE = True
 except ImportError:
     PROMETHEUS_AVAILABLE = False
+
     # Mock classes for when prometheus_client is not available
     class Counter:
         def __init__(self, *args, **kwargs):
@@ -115,32 +116,32 @@ def _init_metrics():
         "request_latency_seconds": Histogram(
             "unsloth_request_latency_seconds",
             "End-to-end request latency in seconds",
-            buckets=[0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 120.0],
+            buckets = [0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 120.0],
         ),
         "prefill_latency_seconds": Histogram(
             "unsloth_prefill_latency_seconds",
             "Prefill (prompt processing) latency in seconds",
-            buckets=[0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0, 10.0],
+            buckets = [0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0, 10.0],
         ),
         "decode_latency_seconds": Histogram(
             "unsloth_decode_latency_seconds",
             "Decode (generation) latency in seconds",
-            buckets=[0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0, 10.0],
+            buckets = [0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0, 10.0],
         ),
         "time_per_output_token_seconds": Histogram(
             "unsloth_time_per_output_token_seconds",
             "Time per output token in seconds",
-            buckets=[0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0],
+            buckets = [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0],
         ),
         "prompt_tokens": Histogram(
             "unsloth_prompt_tokens",
             "Number of prompt tokens per request",
-            buckets=[10, 50, 100, 500, 1000, 2000, 4000, 8000, 16000, 32000],
+            buckets = [10, 50, 100, 500, 1000, 2000, 4000, 8000, 16000, 32000],
         ),
         "generation_tokens": Histogram(
             "unsloth_generation_tokens",
             "Number of generation tokens per request",
-            buckets=[10, 50, 100, 500, 1000, 2000, 4000, 8000, 16000, 32000],
+            buckets = [10, 50, 100, 500, 1000, 2000, 4000, 8000, 16000, 32000],
         ),
     }
 
@@ -176,17 +177,17 @@ def _init_metrics():
         "forward_time_seconds": Histogram(
             "unsloth_training_forward_time_seconds",
             "Forward pass time in seconds",
-            buckets=[0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0],
+            buckets = [0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0],
         ),
         "backward_time_seconds": Histogram(
             "unsloth_training_backward_time_seconds",
             "Backward pass time in seconds",
-            buckets=[0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0],
+            buckets = [0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0],
         ),
         "batch_size": Histogram(
             "unsloth_training_batch_size",
             "Training batch size",
-            buckets=[1, 2, 4, 8, 16, 32, 64, 128, 256, 512],
+            buckets = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512],
         ),
     }
 
@@ -221,7 +222,9 @@ def update_prometheus_metrics():
     inference_metrics = registry["inference"]
 
     inference_metrics["requests_active"].set(inference_stats.get("active_requests", 0))
-    inference_metrics["tokens_per_second"].set(inference_stats.get("tokens_per_second", 0.0))
+    inference_metrics["tokens_per_second"].set(
+        inference_stats.get("tokens_per_second", 0.0)
+    )
 
     # Note: Counters and histograms are updated when events occur,
     # not from aggregated stats. They're updated in the integration hooks.
@@ -232,7 +235,9 @@ def update_prometheus_metrics():
 
     training_metrics["training_loss"].set(training_stats.get("avg_loss", 0.0))
     training_metrics["learning_rate"].set(training_stats.get("current_lr", 0.0))
-    training_metrics["samples_per_second"].set(training_stats.get("samples_per_second", 0.0))
+    training_metrics["samples_per_second"].set(
+        training_stats.get("samples_per_second", 0.0)
+    )
 
 
 def generate_prometheus_metrics() -> bytes:

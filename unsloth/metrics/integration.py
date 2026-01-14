@@ -56,9 +56,9 @@ def track_generate_call(func):
 
         # Start tracking
         collector.inference_stats.start_request(
-            request_id=request_id,
-            num_prompt_tokens=num_prompt_tokens,
-            max_tokens=max_tokens,
+            request_id = request_id,
+            num_prompt_tokens = num_prompt_tokens,
+            max_tokens = max_tokens,
         )
         collector.inference_stats.record_scheduled(request_id)
 
@@ -107,11 +107,13 @@ def track_generate_call(func):
                 collector.inference_stats.record_token(request_id)
 
             # Finish request
-            finish_reason = "stop"  # Default - could be determined from generation config
+            finish_reason = (
+                "stop"  # Default - could be determined from generation config
+            )
             collector.inference_stats.finish_request(
-                request_id=request_id,
-                finish_reason=finish_reason,
-                num_generation_tokens=num_generation_tokens,
+                request_id = request_id,
+                finish_reason = finish_reason,
+                num_generation_tokens = num_generation_tokens,
             )
 
             # Update Prometheus metrics
@@ -120,7 +122,7 @@ def track_generate_call(func):
                 if registry:
                     e2e_latency = time.time() - start_time
                     registry["inference"]["request_total"].labels(
-                        finish_reason=finish_reason
+                        finish_reason = finish_reason
                     ).inc()
                     registry["inference"]["generation_tokens_total"].inc(
                         num_generation_tokens
@@ -128,7 +130,9 @@ def track_generate_call(func):
                     registry["inference"]["generation_tokens"].observe(
                         num_generation_tokens
                     )
-                    registry["inference"]["request_latency_seconds"].observe(e2e_latency)
+                    registry["inference"]["request_latency_seconds"].observe(
+                        e2e_latency
+                    )
                     if num_generation_tokens > 0:
                         time_per_token = e2e_latency / num_generation_tokens
                         registry["inference"]["time_per_output_token_seconds"].observe(
@@ -140,15 +144,17 @@ def track_generate_call(func):
         except Exception as e:
             # Record error
             collector.inference_stats.finish_request(
-                request_id=request_id,
-                finish_reason="error",
-                num_generation_tokens=0,
+                request_id = request_id,
+                finish_reason = "error",
+                num_generation_tokens = 0,
             )
 
             if _metrics_enabled:
                 registry = get_metrics_registry()
                 if registry:
-                    registry["inference"]["request_total"].labels(finish_reason="error").inc()
+                    registry["inference"]["request_total"].labels(
+                        finish_reason = "error"
+                    ).inc()
 
             raise
 

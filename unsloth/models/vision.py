@@ -301,24 +301,26 @@ def unsloth_base_fast_generate(
     # Track metrics if enabled
     collector = None
     request_id = None
-    num_prompt_tokens = input_ids.shape[-1] * bsz if input_ids.dim() > 1 else input_ids.shape[-1]
+    num_prompt_tokens = (
+        input_ids.shape[-1] * bsz if input_ids.dim() > 1 else input_ids.shape[-1]
+    )
     max_tokens = kwargs.get("max_new_tokens") or kwargs.get("max_length")
-    
+
     try:
         from unsloth.metrics.stats import get_stats_collector
         from unsloth.metrics.prometheus import get_metrics_registry, _metrics_enabled
         import uuid
-        
+
         collector = get_stats_collector()
         if collector.is_enabled():
             request_id = str(uuid.uuid4())
             collector.inference_stats.start_request(
-                request_id=request_id,
-                num_prompt_tokens=num_prompt_tokens,
-                max_tokens=max_tokens,
+                request_id = request_id,
+                num_prompt_tokens = num_prompt_tokens,
+                max_tokens = max_tokens,
             )
             collector.inference_stats.record_scheduled(request_id)
-            
+
             # Update Prometheus counters
             if _metrics_enabled:
                 registry = get_metrics_registry()
@@ -329,10 +331,10 @@ def unsloth_base_fast_generate(
         # Metrics collection is optional, continue even if it fails
         collector = None
         request_id = None
-    
+
     start_time = time.time()
     first_token_seen = False
-    
+
     with torch.inference_mode(), autocaster:
         output = self._old_generate(*args, **kwargs)
 
@@ -341,7 +343,7 @@ def unsloth_base_fast_generate(
         try:
             end_time = time.time()
             e2e_latency = end_time - start_time
-            
+
             # Calculate generated tokens
             if isinstance(output, torch.Tensor):
                 if output.dim() > 1:
@@ -351,37 +353,49 @@ def unsloth_base_fast_generate(
                 num_generation_tokens = max(0, total_tokens - num_prompt_tokens)
             else:
                 num_generation_tokens = 0
-            
+
             # Estimate timing (simplified)
             if num_generation_tokens > 0:
                 # Estimate first token time
-                first_token_time = start_time + (e2e_latency / (num_generation_tokens + 1))
+                first_token_time = start_time + (
+                    e2e_latency / (num_generation_tokens + 1)
+                )
                 collector.inference_stats.record_first_token(request_id)
-                
+
                 # Record tokens
                 for i in range(num_generation_tokens):
                     if i == 0:
                         collector.inference_stats.record_first_token(request_id)
                     collector.inference_stats.record_token(request_id)
-            
+
             finish_reason = "stop"  # Could be improved to detect actual finish reason
             collector.inference_stats.finish_request(
-                request_id=request_id,
-                finish_reason=finish_reason,
-                num_generation_tokens=num_generation_tokens,
+                request_id = request_id,
+                finish_reason = finish_reason,
+                num_generation_tokens = num_generation_tokens,
             )
-            
+
             # Update Prometheus metrics
             if _metrics_enabled:
                 registry = get_metrics_registry()
                 if registry:
-                    registry["inference"]["request_total"].labels(finish_reason=finish_reason).inc()
-                    registry["inference"]["generation_tokens_total"].inc(num_generation_tokens)
+                    registry["inference"]["request_total"].labels(
+                        finish_reason = finish_reason
+                    ).inc()
+                    registry["inference"]["generation_tokens_total"].inc(
+                        num_generation_tokens
+                    )
                     if num_generation_tokens > 0:
-                        registry["inference"]["generation_tokens"].observe(num_generation_tokens)
-                        registry["inference"]["request_latency_seconds"].observe(e2e_latency)
+                        registry["inference"]["generation_tokens"].observe(
+                            num_generation_tokens
+                        )
+                        registry["inference"]["request_latency_seconds"].observe(
+                            e2e_latency
+                        )
                         time_per_token = e2e_latency / num_generation_tokens
-                        registry["inference"]["time_per_output_token_seconds"].observe(time_per_token)
+                        registry["inference"]["time_per_output_token_seconds"].observe(
+                            time_per_token
+                        )
         except Exception:
             # Metrics collection failed, continue
             pass

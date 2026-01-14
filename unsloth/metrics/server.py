@@ -53,7 +53,9 @@ class MetricsHandler(BaseHTTPRequestHandler):
                     self.wfile.flush()
             elif self.path == "/" or self.path == "":
                 # Simple health check endpoint
-                response = b"Unsloth Metrics Server\n/metrics - Prometheus metrics endpoint\n"
+                response = (
+                    b"Unsloth Metrics Server\n/metrics - Prometheus metrics endpoint\n"
+                )
                 self.send_response(200)
                 self.send_header("Content-Type", "text/plain")
                 self.send_header("Content-Length", str(len(response)))
@@ -83,7 +85,6 @@ class MetricsHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format, *args):
         """Suppress default logging."""
-        pass
 
 
 _metrics_server: Optional[HTTPServer] = None
@@ -118,42 +119,51 @@ def start_metrics_server(host: str = "0.0.0.0", port: int = 9090):
             _metrics_server.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             # Give the server a moment to bind
             import time
+
             time.sleep(0.1)
             _metrics_server.serve_forever()
         except OSError as e:
             if "Address already in use" in str(e) or "already in use" in str(e).lower():
-                print(f"⚠️  Port {port} is already in use. Please use a different port or stop the other service.")
+                print(
+                    f"⚠️  Port {port} is already in use. Please use a different port or stop the other service."
+                )
             else:
                 print(f"⚠️  Failed to start metrics server: {e}")
             _metrics_server = None
         except Exception as e:
             print(f"⚠️  Error starting metrics server: {e}")
             import traceback
+
             traceback.print_exc()
             _metrics_server = None
 
     # Use daemon=False in some cases to keep server alive
     # But daemon=True is better for cleanup when main program exits
-    _server_thread = threading.Thread(target=run_server, daemon=True, name="UnslothMetricsServer")
+    _server_thread = threading.Thread(
+        target = run_server, daemon = True, name = "UnslothMetricsServer"
+    )
     _server_thread.start()
-    
+
     # Give the thread a moment to start and bind
     import time
+
     max_wait = 2.0
     waited = 0.0
     while _metrics_server is None and waited < max_wait:
         time.sleep(0.1)
         waited += 0.1
-    
+
     # Check if server started successfully
     if _metrics_server is not None:
         # Verify the server is actually listening
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
-            result = sock.connect_ex(('localhost', port))
+            result = sock.connect_ex(("localhost", port))
             sock.close()
             if result == 0:
-                print(f"📊 Unsloth metrics server started at http://localhost:{port}/metrics")
+                print(
+                    f"📊 Unsloth metrics server started at http://localhost:{port}/metrics"
+                )
                 print(f"   (Also accessible at http://{host}:{port}/metrics)")
             else:
                 print(f"⚠️  Server thread started but port {port} is not accessible")
@@ -161,12 +171,16 @@ def start_metrics_server(host: str = "0.0.0.0", port: int = 9090):
                 time.sleep(0.5)
                 # Try one more time
                 sock2 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                result2 = sock2.connect_ex(('localhost', port))
+                result2 = sock2.connect_ex(("localhost", port))
                 sock2.close()
                 if result2 == 0:
-                    print(f"📊 Server is now accessible at http://localhost:{port}/metrics")
+                    print(
+                        f"📊 Server is now accessible at http://localhost:{port}/metrics"
+                    )
                 else:
-                    print(f"⚠️  Server still not accessible. Try restarting or use a different port.")
+                    print(
+                        f"⚠️  Server still not accessible. Try restarting or use a different port."
+                    )
         except Exception as e:
             print(f"⚠️  Could not verify server: {e}")
     else:
@@ -197,17 +211,17 @@ def test_metrics_server(port: int = 9090):
     """Test if the metrics server is accessible."""
     import urllib.request
     import urllib.error
-    
+
     # First check if server object exists
     if not is_metrics_server_running():
         print(f"❌ Metrics server is not running")
         print(f"   Call start_metrics_server() first")
         return False
-    
+
     # Check if port is listening
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        result = sock.connect_ex(('localhost', port))
+        result = sock.connect_ex(("localhost", port))
         sock.close()
         if result != 0:
             print(f"❌ Port {port} is not listening")
@@ -217,17 +231,19 @@ def test_metrics_server(port: int = 9090):
         print(f"❌ Could not check port {port}: {e}")
         sock.close()
         return False
-    
+
     # Try HTTP request
     try:
         url = f"http://localhost:{port}/metrics"
-        response = urllib.request.urlopen(url, timeout=2)
+        response = urllib.request.urlopen(url, timeout = 2)
         print(f"✅ Metrics server is running and accessible at {url}")
         print(f"   Status: {response.getcode()}")
         print(f"   Content-Length: {response.headers.get('Content-Length', 'unknown')}")
         return True
     except urllib.error.URLError as e:
-        print(f"❌ Could not connect to metrics server at http://localhost:{port}/metrics")
+        print(
+            f"❌ Could not connect to metrics server at http://localhost:{port}/metrics"
+        )
         print(f"   Error: {e}")
         print(f"   Error code: {getattr(e, 'code', 'unknown')}")
         print(f"   Error reason: {getattr(e, 'reason', 'unknown')}")

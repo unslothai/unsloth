@@ -75,16 +75,16 @@ class InferenceStats:
         self.total_decode_latency: float = 0.0
 
         # Finished requests (for sliding window)
-        self._finished_requests: deque = deque(maxlen=max_recent_requests)
+        self._finished_requests: deque = deque(maxlen = max_recent_requests)
 
         # Finish reason counts
         self.finish_reasons: Dict[str, int] = defaultdict(int)
 
         # Timing breakdowns
-        self._queued_times: deque = deque(maxlen=max_recent_requests)
-        self._prefill_times: deque = deque(maxlen=max_recent_requests)
-        self._decode_times: deque = deque(maxlen=max_recent_requests)
-        self._e2e_times: deque = deque(maxlen=max_recent_requests)
+        self._queued_times: deque = deque(maxlen = max_recent_requests)
+        self._prefill_times: deque = deque(maxlen = max_recent_requests)
+        self._decode_times: deque = deque(maxlen = max_recent_requests)
+        self._e2e_times: deque = deque(maxlen = max_recent_requests)
 
     def start_request(
         self,
@@ -95,10 +95,10 @@ class InferenceStats:
         """Record the start of an inference request."""
         with self._lock:
             self._active_requests[request_id] = RequestStats(
-                request_id=request_id,
-                arrival_time=time.time(),
-                num_prompt_tokens=num_prompt_tokens,
-                max_tokens_param=max_tokens,
+                request_id = request_id,
+                arrival_time = time.time(),
+                num_prompt_tokens = num_prompt_tokens,
+                max_tokens_param = max_tokens,
             )
 
     def record_scheduled(self, request_id: str):
@@ -208,7 +208,9 @@ class InferenceStats:
                 req.num_generation_tokens for req in self._finished_requests
             )
             tokens_per_second = (
-                total_recent_tokens / total_recent_time if total_recent_time > 0 else 0.0
+                total_recent_tokens / total_recent_time
+                if total_recent_time > 0
+                else 0.0
             )
 
             # Average time per output token
@@ -264,7 +266,7 @@ class TrainingStats:
         self.total_loss: float = 0.0
 
         # Recent batches for sliding window
-        self._recent_batches: deque = deque(maxlen=max_recent_batches)
+        self._recent_batches: deque = deque(maxlen = max_recent_batches)
 
     def record_batch(
         self,
@@ -279,13 +281,13 @@ class TrainingStats:
         """Record statistics for a training batch."""
         with self._lock:
             batch_stats = TrainingBatchStats(
-                step=step,
-                batch_size=batch_size,
-                forward_time=forward_time,
-                backward_time=backward_time,
-                loss=loss,
-                learning_rate=learning_rate,
-                grad_norm=grad_norm,
+                step = step,
+                batch_size = batch_size,
+                forward_time = forward_time,
+                backward_time = backward_time,
+                loss = loss,
+                learning_rate = learning_rate,
+                grad_norm = grad_norm,
             )
             self._recent_batches.append(batch_stats)
 
@@ -311,11 +313,19 @@ class TrainingStats:
                 }
 
             recent_loss = sum(b.loss for b in self._recent_batches) / num_batches
-            recent_forward = sum(b.forward_time for b in self._recent_batches) / num_batches
-            recent_backward = sum(b.backward_time for b in self._recent_batches) / num_batches
+            recent_forward = (
+                sum(b.forward_time for b in self._recent_batches) / num_batches
+            )
+            recent_backward = (
+                sum(b.backward_time for b in self._recent_batches) / num_batches
+            )
             recent_samples = sum(b.batch_size for b in self._recent_batches)
-            recent_time = sum(b.forward_time + b.backward_time for b in self._recent_batches)
-            samples_per_second = recent_samples / recent_time if recent_time > 0 else 0.0
+            recent_time = sum(
+                b.forward_time + b.backward_time for b in self._recent_batches
+            )
+            samples_per_second = (
+                recent_samples / recent_time if recent_time > 0 else 0.0
+            )
 
             current_lr = (
                 self._recent_batches[-1].learning_rate if self._recent_batches else 0.0

@@ -1664,29 +1664,32 @@ def _patch_training_metrics(Trainer):
     """Patch Trainer.training_step to collect training metrics."""
     if hasattr(Trainer, "_unsloth_metrics_patched"):
         return
-    
+
     # Get the current training_step (which might already be _unsloth_training_step)
     original_training_step = Trainer.training_step
-    
+
     @functools.wraps(original_training_step)
     def training_step_with_metrics(self, model, inputs, *args, **kwargs):
         # Try to collect metrics if enabled
         try:
             from unsloth.metrics.stats import get_stats_collector
-            from unsloth.metrics.prometheus import get_metrics_registry, _metrics_enabled
+            from unsloth.metrics.prometheus import (
+                get_metrics_registry,
+                _metrics_enabled,
+            )
             import time
-            
+
             collector = get_stats_collector()
             track_metrics = collector.is_enabled()
         except Exception:
             track_metrics = False
-        
+
         if not track_metrics:
             return original_training_step(self, model, inputs, *args, **kwargs)
-        
+
         # Get current step
         step = getattr(self.state, "global_step", 0)
-        
+
         # Get batch size
         batch_size = 0
         if isinstance(inputs, dict):
@@ -1697,20 +1700,20 @@ def _patch_training_metrics(Trainer):
                     if hasattr(tensor, "shape") and len(tensor.shape) > 0:
                         batch_size = tensor.shape[0]
                         break
-        
+
         # Track forward pass time
         forward_start = time.time()
-        
+
         # Call original training_step
         try:
             result = original_training_step(self, model, inputs, *args, **kwargs)
         except Exception as e:
             # Re-raise exception but don't track metrics on error
             raise
-        
+
         forward_end = time.time()
         forward_time = forward_end - forward_start
-        
+
         # Extract loss and other info from result
         loss_value = None
         if isinstance(result, (int, float)):
@@ -1721,7 +1724,7 @@ def _patch_training_metrics(Trainer):
             loss_value = result.get("loss")
             if loss_value is not None and hasattr(loss_value, "item"):
                 loss_value = float(loss_value.item())
-        
+
         # Get learning rate
         learning_rate = 0.0
         if hasattr(self, "lr_scheduler") and self.lr_scheduler is not None:
@@ -1734,11 +1737,11 @@ def _patch_training_metrics(Trainer):
                     learning_rate = float(lrs[0]) if lrs else 0.0
             except Exception:
                 pass
-        
+
         # Estimate backward time (simplified - backward happens inside training_step)
         # We'll approximate it as a fraction of forward time
         backward_time = forward_time * 0.6  # Rough estimate
-        
+
         # Get gradient norm if available
         grad_norm = None
         if hasattr(self, "accelerator"):
@@ -1748,20 +1751,20 @@ def _patch_training_metrics(Trainer):
                     grad_norm = float(self.state.grad_norm)
             except Exception:
                 pass
-        
+
         # Record to stats collector
         if loss_value is not None:
             try:
                 collector.training_stats.record_batch(
-                    step=step,
-                    batch_size=batch_size,
-                    forward_time=forward_time,
-                    backward_time=backward_time,
-                    loss=loss_value,
-                    learning_rate=learning_rate,
-                    grad_norm=grad_norm,
+                    step = step,
+                    batch_size = batch_size,
+                    forward_time = forward_time,
+                    backward_time = backward_time,
+                    loss = loss_value,
+                    learning_rate = learning_rate,
+                    grad_norm = grad_norm,
                 )
-                
+
                 # Update Prometheus metrics
                 if _metrics_enabled:
                     registry = get_metrics_registry()
@@ -1776,18 +1779,20 @@ def _patch_training_metrics(Trainer):
                         training_metrics["batch_size"].observe(batch_size)
                         if grad_norm is not None:
                             training_metrics["gradient_norm"].set(grad_norm)
-                        
+
                         # Update samples per second
                         total_time = forward_time + backward_time
                         if total_time > 0:
                             samples_per_second = batch_size / total_time
-                            training_metrics["samples_per_second"].set(samples_per_second)
+                            training_metrics["samples_per_second"].set(
+                                samples_per_second
+                            )
             except Exception:
                 # Metrics collection failed, continue without metrics
                 pass
-        
+
         return result
-    
+
     Trainer.training_step = training_step_with_metrics
     Trainer._unsloth_metrics_patched = True
 
@@ -1913,7 +1918,7 @@ def patch_gradient_accumulation_fix(Trainer):
 
         exec(function, globals())
         Trainer.training_step = _unsloth_training_step
-        
+
         # Add metrics tracking to training_step
         _patch_training_metrics(Trainer)
 
