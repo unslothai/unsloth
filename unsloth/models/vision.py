@@ -370,22 +370,28 @@ def unsloth_base_fast_generate(
                     else:
                         total_tokens = sequences.shape[-1]
                     num_generation_tokens = max(0, total_tokens - num_prompt_tokens)
-            
+
             # Estimate timing (simplified)
             # Note: These are estimations. For more accurate metrics, consider hooking into
             # the generation process itself (e.g., via LogitsProcessor or StoppingCriteria)
             if num_generation_tokens > 0:
                 # Estimate first token time
-                estimated_first_token_time = start_time + (e2e_latency / (num_generation_tokens + 1))
-                collector.inference_stats.record_first_token(request_id, timestamp=estimated_first_token_time)
-                
+                estimated_first_token_time = start_time + (
+                    e2e_latency / (num_generation_tokens + 1)
+                )
+                collector.inference_stats.record_first_token(
+                    request_id, timestamp = estimated_first_token_time
+                )
+
                 # Record tokens (simplified - records all at once after generation)
                 for _ in range(num_generation_tokens):
                     collector.inference_stats.record_token(request_id)
 
             # Determine finish reason (simplified - could be improved)
             finish_reason = "stop"  # Default
-            if isinstance(output, (dict, type(output))) and hasattr(output, "finish_reason"):
+            if isinstance(output, (dict, type(output))) and hasattr(
+                output, "finish_reason"
+            ):
                 finish_reason = output.finish_reason
             elif isinstance(output, dict) and "finish_reason" in output:
                 finish_reason = output["finish_reason"]

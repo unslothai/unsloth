@@ -1700,20 +1700,20 @@ def _patch_training_metrics(Trainer):
                     if hasattr(tensor, "shape") and len(tensor.shape) > 0:
                         batch_size = tensor.shape[0]
                         break
-        
+
         # Track step duration (includes both forward and backward passes)
         step_start = time.time()
-        
+
         # Call original training_step
         try:
             result = original_training_step(self, model, inputs, *args, **kwargs)
         except Exception as e:
             # Re-raise exception but don't track metrics on error
             raise
-        
+
         step_end = time.time()
         step_duration = step_end - step_start
-        
+
         # Extract loss and other info from result
         loss_value = None
         if isinstance(result, (int, float)):
