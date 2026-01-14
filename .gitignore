@@ -174,4 +174,11 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
-.vscode
+
+# CGGR Benchmarks and Environment Fix
+tests/cggr/benchmark_*.py
+tests/cggr/microbenchmark_*.py
+tests/cggr/fix_environment.py
+tests/cggr/test_unsloth_e2e.py
+test_output/
+
