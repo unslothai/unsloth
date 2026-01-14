@@ -33,6 +33,8 @@ from unsloth.metrics.prometheus import (
 from unsloth.metrics.server import (
     start_metrics_server,
     stop_metrics_server,
+    is_metrics_server_running,
+    test_metrics_server,
 )
 
 __all__ = [
@@ -47,4 +49,6 @@ __all__ = [
     "is_prometheus_available",
     "start_metrics_server",
     "stop_metrics_server",
+    "is_metrics_server_running",
+    "test_metrics_server",
 ]

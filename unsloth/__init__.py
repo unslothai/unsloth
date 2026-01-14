@@ -293,6 +293,8 @@ from .metrics import (
     is_prometheus_available,
     start_metrics_server,
     stop_metrics_server,
+    is_metrics_server_running,
+    test_metrics_server,
 )
 
 # Export dataprep utilities for CLI and downstream users
