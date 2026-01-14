@@ -36,6 +36,7 @@ import shutil
 from .tokenizer_utils import *
 from .models._utils import patch_tokenizer
 import re
+from .ollama_template_mappers import OLLAMA_TEMPLATES
 from unsloth_zoo.dataset_utils import (
     train_on_responses_only,
     standardize_data_formats,
@@ -43,6 +44,8 @@ from unsloth_zoo.dataset_utils import (
 standardize_sharegpt = standardize_data_formats
 CHAT_TEMPLATES = {}
 DEFAULT_SYSTEM_MESSAGE = {}
+def _ollama_template(name: str):
+    return OLLAMA_TEMPLATES[name]
 
 # =========================================== Unsloth
 # Unsloth efficient template leverages from Zephyr
@@ -68,18 +71,7 @@ unsloth_template = \
         "{{ '>>> Assistant: ' }}"\
     "{% endif %}"
 
-unsloth_ollama = \
-'''
-FROM {__FILE_LOCATION__}
-TEMPLATE """{{ if .System }}{{ .System }}
-{{ end }}{{ if .Prompt }}>>> User: {{ .Prompt }}
-{{ end }}>>> Assistant: {{ .Response }}{__EOS_TOKEN__}
-"""
-PARAMETER stop "{__EOS_TOKEN__}"
-PARAMETER temperature 1.5
-PARAMETER min_p 0.1
-SYSTEM """You are a helpful assistant to the user"""
-'''
+unsloth_ollama = _ollama_template("unsloth")
 
 unsloth_eos_token = "eos_token"
 CHAT_TEMPLATES["unsloth"] = (unsloth_template, unsloth_eos_token, False, unsloth_ollama,)
@@ -101,20 +93,7 @@ zephyr_template = \
         "{{ '<|assistant|>\n' }}"\
     "{% endif %}"
 
-zephyr_ollama = \
-'''
-FROM {__FILE_LOCATION__}
-TEMPLATE """{{ if .System }}<|system|>
-{{ .System }}{__EOS_TOKEN__}
-{{ end }}{{ if .Prompt }}<|user|>
-{{ .Prompt }}{__EOS_TOKEN__}
-{{ end }}<|assistant|>
-{{ .Response }}{__EOS_TOKEN__}
-"""
-PARAMETER stop "{__EOS_TOKEN__}"
-PARAMETER temperature 1.5
-PARAMETER min_p 0.1
-'''
+zephyr_ollama = _ollama_template("zephyr")
 
 zephyr_eos_token = "eos_token"
 CHAT_TEMPLATES["zephyr"] = (zephyr_template, zephyr_eos_token, False, zephyr_ollama,)
@@ -136,21 +115,7 @@ chatml_template = \
         "{{ '<|im_start|>assistant\n' }}"\
     "{% endif %}"
 
-chatml_ollama = \
-'''
-FROM {__FILE_LOCATION__}
-TEMPLATE """{{ if .System }}<|im_start|>system
-{{ .System }}<|im_end|>
-{{ end }}{{ if .Prompt }}<|im_start|>user
-{{ .Prompt }}<|im_end|>
-{{ end }}<|im_start|>assistant
-{{ .Response }}<|im_end|>
-"""
-PARAMETER stop "<|im_start|>"
-PARAMETER stop "<|im_end|>"
-PARAMETER temperature 1.5
-PARAMETER min_p 0.1
-'''
+chatml_ollama = _ollama_template("chatml")
 
 chatml_eos_token = "<|im_end|>"
 CHAT_TEMPLATES["chatml"] = (chatml_template, chatml_eos_token, True, chatml_ollama,)
@@ -182,14 +147,7 @@ mistral_template = \
     "{% endfor %}"
 
 # Ollama from https://www.ollama.com/library/mistral
-mistral_ollama = \
-'''
-FROM {__FILE_LOCATION__}
-TEMPLATE """[INST] {{ if .System }}{{ .System }} {{ end }}{{ .Prompt }} [/INST]"""
-PARAMETER stop "{__EOS_TOKEN__}"
-PARAMETER temperature 1.5
-PARAMETER min_p 0.1
-'''
+mistral_ollama = _ollama_template("mistral")
 
 mistral_eos_token = "eos_token"
 CHAT_TEMPLATES["mistral"] = (mistral_template, mistral_eos_token, False, mistral_ollama,)
@@ -220,16 +178,7 @@ llama_template = \
     "{% endfor %}"
 
 # Ollama from https://www.ollama.com/library/llama3
-llama_ollama = \
-'''
-FROM {__FILE_LOCATION__}
-TEMPLATE """[INST] <<SYS>>{{ .System }}<</SYS>>
-
-{{ .Prompt }} [/INST]"""
-PARAMETER stop "{__EOS_TOKEN__}"
-PARAMETER temperature 1.5
-PARAMETER min_p 0.1
-'''
+llama_ollama = _ollama_template("llama")
 
 llama_eos_token = "eos_token"
 CHAT_TEMPLATES["llama"] = (llama_template, llama_eos_token, False, llama_ollama,)
@@ -260,14 +209,7 @@ vicuna_template = \
     "{% endif %}"
 
 # Ollama from https://www.ollama.com/library/vicuna
-vicuna_ollama = \
-'''
-FROM {__FILE_LOCATION__}
-TEMPLATE """{{ if .System }}{{ .System }} {{ end }}{{ if .Prompt }}USER: {{ .Prompt }} {{ end }}ASSISTANT: {{ .Response }} {__EOS_TOKEN__}"""
-PARAMETER stop "{__EOS_TOKEN__}"
-PARAMETER temperature 1.5
-PARAMETER min_p 0.1
-'''
+vicuna_ollama = _ollama_template("vicuna")
 
 vicuna_eos_token = "eos_token"
 CHAT_TEMPLATES["vicuna"] = (vicuna_template, vicuna_eos_token, False, vicuna_ollama,)
@@ -297,18 +239,7 @@ vicuna_old_template = \
         "{{ '### Assistant:' }}"\
     "{% endif %}"
 
-vicuna_old_ollama = \
-'''
-FROM {__FILE_LOCATION__}
-TEMPLATE """{{ if .System }}{{ .System }}
-{{ end }}{{ if .Prompt }}### Human: {{ .Prompt }}
-{{ end }}### Assistant: {{ .Response }}{__EOS_TOKEN__}
-"""
-PARAMETER stop "{__EOS_TOKEN__}"
-PARAMETER temperature 1.5
-PARAMETER min_p 0.1
-SYSTEM """A chat between a curious human and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the human's questions."""
-'''
+vicuna_old_ollama = _ollama_template("vicuna_old")
 
 vicuna_old_eos_token = "eos_token"
 CHAT_TEMPLATES["vicuna_old"] = (vicuna_old_template, vicuna_old_eos_token, False, vicuna_old_ollama,)
@@ -341,23 +272,7 @@ alpaca_template = \
         "{{ '### Response:\n' }}"\
     "{% endif %}"
 
-alpaca_ollama = \
-'''
-FROM {__FILE_LOCATION__}
-TEMPLATE """{{ if .System }}{{ .System }}
-
-{{ end }}{{ if .Prompt }}### Instruction:
-{{ .Prompt }}{{ end }}
-
-### Response:
-{{ .Response }}{__EOS_TOKEN__}
-
-"""
-PARAMETER stop "{__EOS_TOKEN__}"
-PARAMETER temperature 1.5
-PARAMETER min_p 0.1
-SYSTEM """Below are some instructions that describe some tasks. Write responses that appropriately complete each request."""
-'''
+alpaca_ollama = _ollama_template("alpaca")
 
 alpaca_eos_token = "eos_token"
 CHAT_TEMPLATES["alpaca"] = (alpaca_template, alpaca_eos_token, False, alpaca_ollama,)
@@ -387,21 +302,7 @@ gemma_template = \
     "{% endif %}"
 
 # Ollama from https://www.ollama.com/library/gemma
-gemma_ollama = \
-'''
-FROM {__FILE_LOCATION__}
-TEMPLATE """<start_of_turn>user
-{{ if .System }}{{ .System }} {{ end }}{{ .Prompt }}<end_of_turn>
-<start_of_turn>model
-{{ .Response }}<end_of_turn>
-"""
-PARAMETER repeat_penalty 1
-PARAMETER stop "<start_of_turn>"
-PARAMETER stop "<end_of_turn>"
-PARAMETER penalize_newline false
-PARAMETER temperature 1.5
-PARAMETER min_p 0.1
-'''
+gemma_ollama = _ollama_template("gemma")
 
 gemma_eos_token = "<end_of_turn>"
 CHAT_TEMPLATES["gemma"] = (gemma_template, gemma_eos_token, True, gemma_ollama,)
@@ -411,23 +312,7 @@ DEFAULT_SYSTEM_MESSAGE["gemma"] = None # No system message in Gemma
 # We find using <eos> is still more appropriate!
 gemma_chatml_template = "{{ bos_token }}" + chatml_template
 
-gemma_chatml_ollama = \
-'''
-FROM {__FILE_LOCATION__}
-TEMPLATE """{{ if .System }}<|im_start|>system
-{{ .System }}<|im_end|>
-{{ end }}{{ if .Prompt }}<|im_start|>user
-{{ .Prompt }}<|im_end|>
-{{ end }}<|im_start|>assistant
-{{ .Response }}<|im_end|>
-"""
-PARAMETER repeat_penalty 1
-PARAMETER stop "<|im_start|>"
-PARAMETER stop "<|im_end|>"
-PARAMETER penalize_newline false
-PARAMETER temperature 1.5
-PARAMETER min_p 0.1
-'''
+gemma_chatml_ollama = _ollama_template("gemma_chatml")
 
 gemma_chatml_eos_token = (
     {"<start_of_turn>" : "<|im_start|>", "<eos>" : "<|im_end|>"},
@@ -440,14 +325,14 @@ DEFAULT_SYSTEM_MESSAGE["gemma_chatml"] = None # No system message in Gemma
 # Same as Gemma 1, but with sliding window attention!
 # https://ollama.com/library/gemma2/blobs/6522ca797f47
 gemma2_template = gemma_template
-gemma2_ollama = gemma_ollama + "PARAMETER num_ctx 4096\n"
+gemma2_ollama = _ollama_template("gemma2")
 gemma2_eos_token = "<end_of_turn>"
 CHAT_TEMPLATES["gemma2"] = (gemma2_template, gemma2_eos_token, True, gemma2_ollama,)
 DEFAULT_SYSTEM_MESSAGE["gemma2"] = None # No system message in Gemma 2
 
 # =========================================== Gemma 2 with ChatML instead
 gemma2_chatml_template = gemma_chatml_template
-gemma2_chatml_ollama = gemma_chatml_ollama + "PARAMETER num_ctx 4096\n"
+gemma2_chatml_ollama = _ollama_template("gemma2_chatml")
 gemma2_chatml_eos_token = gemma_chatml_eos_token
 CHAT_TEMPLATES["gemma2_chatml"] = (gemma2_chatml_template, gemma2_chatml_eos_token, True, gemma2_chatml_ollama,)
 DEFAULT_SYSTEM_MESSAGE["gemma2_chatml"] = None # No system message in Gemma 2
@@ -470,22 +355,7 @@ llama3_template = \
     "{% endif %}"
 
 # Ollama from https://www.ollama.com/library/llama3
-llama3_ollama = \
-'''
-FROM {__FILE_LOCATION__}
-TEMPLATE """{{ if .System }}<|start_header_id|>system<|end_header_id|>
-
-{{ .System }}<|eot_id|>{{ end }}{{ if .Prompt }}<|start_header_id|>user<|end_header_id|>
-
-{{ .Prompt }}<|eot_id|>{{ end }}<|start_header_id|>assistant<|end_header_id|>
-
-{{ .Response }}<|eot_id|>"""
-PARAMETER stop "<|start_header_id|>"
-PARAMETER stop "<|end_header_id|>"
-PARAMETER stop "<|eot_id|>"
-PARAMETER temperature 1.5
-PARAMETER min_p 0.1
-'''
+llama3_ollama = _ollama_template("llama-3")
 
 llama3_template_eos_token = "eos_token"
 
@@ -513,22 +383,7 @@ phi3_template = \
     "{% endif %}"
 
 # Ollama from https://www.ollama.com/library/phi3
-phi3_ollama = \
-'''
-FROM {__FILE_LOCATION__}
-TEMPLATE """{{ if .System }}<|system|>
-{{ .System }}<|end|>
-{{ end }}{{ if .Prompt }}<|user|>
-{{ .Prompt }}<|end|>
-{{ end }}<|assistant|>
-{{ .Response }}<|end|>
-"""
-PARAMETER stop "<|end|>"
-PARAMETER stop "<|user|>"
-PARAMETER stop "<|assistant|>"
-PARAMETER temperature 1.5
-PARAMETER min_p 0.1
-'''
+phi3_ollama = _ollama_template("phi-3")
 
 phi3_template_eos_token = "<|end|>"
 CHAT_TEMPLATES["phi-3"]   = (phi3_template, phi3_template_eos_token, False, phi3_ollama,)
@@ -670,65 +525,7 @@ llama31_template = \
 """
 
 # Ollama from https://ollama.com/library/llama3.1 (needs updating!)
-llama31_ollama = \
-'''
-FROM {__FILE_LOCATION__}
-TEMPLATE """{{ if .Messages }}
-{{- if or .System .Tools }}<|start_header_id|>system<|end_header_id|>
-{{- if .System }}
-
-{{ .System }}
-{{- end }}
-{{- if .Tools }}
-
-You are a helpful assistant with tool calling capabilities. When you receive a tool call response, use the output to format an answer to the original use question.
-{{- end }}
-{{- end }}<|eot_id|>
-{{- range $i, $_ := .Messages }}
-{{- $last := eq (len (slice $.Messages $i)) 1 }}
-{{- if eq .Role "user" }}<|start_header_id|>user<|end_header_id|>
-{{- if and $.Tools $last }}
-
-Given the following functions, please respond with a JSON for a function call with its proper arguments that best answers the given prompt.
-
-Respond in the format {"name": function name, "parameters": dictionary of argument name and its value}. Do not use variables.
-
-{{ $.Tools }}
-{{- end }}
-
-{{ .Content }}<|eot_id|>{{ if $last }}<|start_header_id|>assistant<|end_header_id|>
-
-{{ end }}
-{{- else if eq .Role "assistant" }}<|start_header_id|>assistant<|end_header_id|>
-{{- if .ToolCalls }}
-
-{{- range .ToolCalls }}{"name": "{{ .Function.Name }}", "parameters": {{ .Function.Arguments }}}{{ end }}
-{{- else }}
-
-{{ .Content }}{{ if not $last }}<|eot_id|>{{ end }}
-{{- end }}
-{{- else if eq .Role "tool" }}<|start_header_id|>ipython<|end_header_id|>
-
-{{ .Content }}<|eot_id|>{{ if $last }}<|start_header_id|>assistant<|end_header_id|>
-
-{{ end }}
-{{- end }}
-{{- end }}
-{{- else }}
-{{- if .System }}<|start_header_id|>system<|end_header_id|>
-
-{{ .System }}<|eot_id|>{{ end }}{{ if .Prompt }}<|start_header_id|>user<|end_header_id|>
-
-{{ .Prompt }}<|eot_id|>{{ end }}<|start_header_id|>assistant<|end_header_id|>
-
-{{ end }}{{ .Response }}{{ if .Response }}<|eot_id|>{{ end }}"""
-PARAMETER stop "<|start_header_id|>"
-PARAMETER stop "<|end_header_id|>"
-PARAMETER stop "<|eot_id|>"
-PARAMETER stop "<|eom_id|>"
-PARAMETER temperature 1.5
-PARAMETER min_p 0.1
-'''
+llama31_ollama = _ollama_template("llama-3.1")
 
 llama31_template_eos_token = "eos_token"
 CHAT_TEMPLATES["llama-3.1"] = (llama31_template, llama31_template_eos_token, False, llama31_ollama,)
@@ -796,64 +593,7 @@ qwen25_template = \
 
 
 # Ollama from https://ollama.com/library/qwen2.5/blobs/eb4402837c78
-qwen25_ollama = \
-'''
-FROM {__FILE_LOCATION__}
-TEMPLATE """{{- if .Messages }}
-{{- if or .System .Tools }}<|im_start|>system
-{{- if .System }}
-{{ .System }}
-{{- end }}
-{{- if .Tools }}
-
-# Tools
-
-You may call one or more functions to assist with the user query.
-
-You are provided with function signatures within <tools></tools> XML tags:
-<tools>
-{{- range .Tools }}
-{"type": "function", "function": {{ .Function }}}
-{{- end }}
-</tools>
-
-For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:
-<tool_call>
-{"name": <function-name>, "arguments": <args-json-object>}
-</tool_call>
-{{- end }}<|im_end|>
-{{ end }}
-{{- range $i, $_ := .Messages }}
-{{- $last := eq (len (slice $.Messages $i)) 1 -}}
-{{- if eq .Role "user" }}<|im_start|>user
-{{ .Content }}<|im_end|>
-{{ else if eq .Role "assistant" }}<|im_start|>assistant
-{{ if .Content }}{{ .Content }}
-{{- else if .ToolCalls }}<tool_call>
-{{ range .ToolCalls }}{"name": "{{ .Function.Name }}", "arguments": {{ .Function.Arguments }}}
-{{ end }}</tool_call>
-{{- end }}{{ if not $last }}<|im_end|>
-{{ end }}
-{{- else if eq .Role "tool" }}<|im_start|>user
-<tool_response>
-{{ .Content }}
-</tool_response><|im_end|>
-{{ end }}
-{{- if and (ne .Role "assistant") $last }}<|im_start|>assistant
-{{ end }}
-{{- end }}
-{{- else }}
-{{- if .System }}<|im_start|>system
-{{ .System }}<|im_end|>
-{{ end }}{{ if .Prompt }}<|im_start|>user
-{{ .Prompt }}<|im_end|>
-{{ end }}<|im_start|>assistant
-{{ end }}{{ .Response }}{{ if .Response }}<|im_end|>{{ end }}"""
-PARAMETER stop "<|im_end|>"
-PARAMETER stop "<|endoftext|>"
-PARAMETER temperature 1.5
-PARAMETER min_p 0.1
-'''
+qwen25_ollama = _ollama_template("qwen-2.5")
 
 qwen25_template_eos_token = "eos_token"
 qwen25_default_system_message = "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."
@@ -891,16 +631,7 @@ _phi4_ollama_template = \
     "<|im_start|><|assistant|><|im_sep|>{{ .Response }}<|im_end|>"
 
 # Ollama from https://www.ollama.com/library/phi4 is different
-phi4_ollama = \
-f'''
-FROM {{__FILE_LOCATION__}}
-TEMPLATE """{_phi4_ollama_template}"""
-PARAMETER stop "<|im_end|>"
-PARAMETER stop "<|im_start|>"
-PARAMETER stop "<|im_sep|>"
-PARAMETER temperature 1.5
-PARAMETER min_p 0.1
-'''
+phi4_ollama = _ollama_template("phi-4")
 
 phi4_template_eos_token = "<|im_end|>"
 CHAT_TEMPLATES["phi-4"] = (phi4_template, phi4_template_eos_token, False, phi4_ollama,)
@@ -954,28 +685,7 @@ gemma3_template = \
 """
 
 # Ollama from https://ollama.com/library/gemma3/blobs/e0a42594d802
-gemma3_ollama = \
-'''
-FROM {__FILE_LOCATION__}
-TEMPLATE """{{- range $i, $_ := .Messages }}
-{{- $last := eq (len (slice $.Messages $i)) 1 }}
-{{- if or (eq .Role "user") (eq .Role "system") }}<start_of_turn>user
-{{ .Content }}<end_of_turn>
-{{ if $last }}<start_of_turn>model
-{{ end }}
-{{- else if eq .Role "assistant" }}<start_of_turn>model
-{{ .Content }}{{ if not $last }}<end_of_turn>
-{{ end }}
-{{- end }}
-{{- end }}"""
-PARAMETER stop "<end_of_turn>"
-PARAMETER stop "<eos>"
-PARAMETER temperature 0.1
-PARAMETER min_p 0.0
-PARAMETER top_k 64
-PARAMETER top_p 0.95
-PARAMETER num_predict 32768
-'''
+gemma3_ollama = _ollama_template("gemma-3")
 
 gemma3_template_eos_token = "<end_of_turn>"
 CHAT_TEMPLATES["gemma-3"] = (gemma3_template, gemma3_template_eos_token, False, gemma3_ollama,)
@@ -1088,69 +798,7 @@ qwen3_template = \
 {%- endif %}
 """
 
-# Ollama template for Qwen-3 (see https://ollama.com/library/qwen3/blobs/eb4402837c78)
-qwen3_ollama = \
-'''
-FROM {__FILE_LOCATION__}
-TEMPLATE """{{- if .Messages }}
-{{- if or .System .Tools }}<|im_start|>system
-{{- if .System }}
-{{ .System }}
-{{- end }}
-{{- if .Tools }}
-
-# Tools
-
-You may call one or more functions to assist with the user query.
-
-You are provided with function signatures within <tools></tools> XML tags:
-<tools>
-{{- range .Tools }}
-{"type": "function", "function": {{ .Function }}}
-{{- end }}
-</tools>
-
-For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:
-<tool_call>
-{"name": <function-name>, "arguments": <args-json-object>}
-</tool_call>
-{{- end }}<|im_end|>
-{{ end }}
-{{- range $i, $_ := .Messages }}
-{{- $last := eq (len (slice $.Messages $i)) 1 -}}
-{{- if eq .Role "user" }}<|im_start|>user
-{{ .Content }}<|im_end|>
-{{ else if eq .Role "assistant" }}<|im_start|>assistant
-{{ if .Content }}{{ .Content }}
-{{- else if .ToolCalls }}<tool_call>
-{{ range .ToolCalls }}{"name": "{{ .Function.Name }}", "arguments": {{ .Function.Arguments }}}
-{{ end }}</tool_call>
-{{- end }}{{ if not $last }}<|im_end|>
-{{ end }}
-{{- else if eq .Role "tool" }}<|im_start|>user
-<tool_response>
-{{ .Content }}
-</tool_response><|im_end|>
-{{ end }}
-{{- if and (ne .Role "assistant") $last }}<|im_start|>assistant
-{{ end }}
-{{- end }}
-{{- else }}
-{{- if .System }}<|im_start|>system
-{{ .System }}<|im_end|>
-{{ end }}{{ if .Prompt }}<|im_start|>user
-{{ .Prompt }}<|im_end|>
-{{ end }}<|im_start|>assistant
-{{ end }}{{ .Response }}{{ if .Response }}<|im_end|>{{ end }}"""
-PARAMETER stop "<|im_end|>"
-PARAMETER stop "<|im_start|>"
-PARAMETER temperature 0.6
-PARAMETER min_p 0.0
-PARAMETER top_k 20
-PARAMETER top_p 0.95
-PARAMETER repeat_penalty 1
-'''
-
+qwen3_ollama = _ollama_template("qwen-3")
 qwen3_template_eos_token = "<|im_end|>"
 CHAT_TEMPLATES["qwen-3"] = (qwen3_template, qwen3_template_eos_token, False, qwen3_ollama,)
 DEFAULT_SYSTEM_MESSAGE["qwen-3"] = None # No default system message for Qwen-3
@@ -1207,28 +855,7 @@ gemma3n_template = \
 """
 
 # Ollama from https://ollama.com/library/gemma3n/blobs/e0a42594d802
-gemma3n_ollama = \
-'''
-FROM {__FILE_LOCATION__}
-TEMPLATE """{{- range $i, $_ := .Messages }}
-{{- $last := eq (len (slice $.Messages $i)) 1 }}
-{{- if or (eq .Role "user") (eq .Role "system") }}<start_of_turn>user
-{{ .Content }}<end_of_turn>
-{{ if $last }}<start_of_turn>model
-{{ end }}
-{{- else if eq .Role "assistant" }}<start_of_turn>model
-{{ .Content }}{{ if not $last }}<end_of_turn>
-{{ end }}
-{{- end }}
-{{- end }}"""
-'''
-
-gemma3n_template_eos_token = "<end_of_turn>"
-CHAT_TEMPLATES["gemma-3n"] = (gemma3n_template, gemma3n_template_eos_token, False, gemma3n_ollama,)
-DEFAULT_SYSTEM_MESSAGE["gemma-3n"] = None # No system message in Gemma-3n
-
-CHAT_TEMPLATES["gemma3n"] = (gemma3n_template, gemma3n_template_eos_token, False, gemma3n_ollama,)
-DEFAULT_SYSTEM_MESSAGE["gemma3n"] = None # No system message in Gemma-3n
+gptoss_ollama = _ollama_template("gpt-oss")
 
 # =========================================== GPT-OSS
 # Obtained via
@@ -1861,64 +1488,6 @@ qwen3_instruct_template = \
     {{- '<|im_start|>assistant\\n' }}
 {%- endif %}'''
 
-# Ollama from https://ollama.com/library/qwen3/blobs/53e4ea15e8f5
-qwen3_ollama = \
-'''
-FROM {__FILE_LOCATION__}
-TEMPLATE """
-{{- $lastUserIdx := -1 -}}
-{{- range $idx, $msg := .Messages -}}
-{{- if eq $msg.Role "user" }}{{ $lastUserIdx = $idx }}{{ end -}}
-{{- end }}
-{{- if or .System .Tools }}<|im_start|>system
-{{ if .System }}
-{{ .System }}
-{{- end }}
-{{- if .Tools }}
-
-# Tools
-
-You may call one or more functions to assist with the user query.
-
-You are provided with function signatures within <tools></tools> XML tags:
-<tools>
-{{- range .Tools }}
-{"type": "function", "function": {{ .Function }}}
-{{- end }}
-</tools>
-
-For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:
-<tool_call>
-{"name": <function-name>, "arguments": <args-json-object>}
-</tool_call>
-{{- end -}}
-<|im_end|>
-{{ end }}
-{{- range $i, $_ := .Messages }}
-{{- $last := eq (len (slice $.Messages $i)) 1 -}}
-{{- if eq .Role "user" }}<|im_start|>user
-{{ .Content }}<|im_end|>
-{{ else if eq .Role "assistant" }}<|im_start|>assistant
-{{ if (and $.IsThinkSet (and .Thinking (or $last (gt $i $lastUserIdx)))) -}}
-<think>{{ .Thinking }}</think>
-{{ end -}}
-{{ if .Content }}{{ .Content }}
-{{- else if .ToolCalls }}<tool_call>
-{{ range .ToolCalls }}{"name": "{{ .Function.Name }}", "arguments": {{ .Function.Arguments }}}
-{{ end }}</tool_call>
-{{- end }}{{ if not $last }}<|im_end|>
-{{ end }}
-{{- else if eq .Role "tool" }}<|im_start|>user
-<tool_response>
-{{ .Content }}
-</tool_response><|im_end|>
-{{ end }}
-{{- if and (ne .Role "assistant") $last }}<|im_start|>assistant
-{{ end }}
-{{- end }}
-"""
-'''
-
 qwen3_template_eos_token = "<|im_end|>"
 CHAT_TEMPLATES["qwen3-instruct"] = (qwen3_instruct_template, qwen3_template_eos_token, False, qwen3_ollama,)
 DEFAULT_SYSTEM_MESSAGE["qwen3-instruct"] = None # No system message in Qwen3
@@ -2042,19 +1611,7 @@ starling_template = \
 {%- endif %}"""
 
 # Ollama from https://ollama.com/library/starling-lm:7b/blobs/4b21bfc435b4
-starling_ollama = \
-'''
-FROM {__FILE_LOCATION__}
-TEMPLATE """{{ if .System }}GPT4 Correct System: {{ .System }}<|end_of_turn|>
-{{ end }}{{ if .Prompt }}GPT4 Correct User: {{ .Prompt }}<|end_of_turn|>
-{{ end }}GPT4 Correct Assistant: {{ .Response }}<|end_of_turn|>"""
-PARAMETER stop "<|end_of_turn|>"
-PARAMETER stop "GPT4 Correct User:"
-PARAMETER stop "GPT4 Correct Assistant:"
-PARAMETER stop "GPT4 Correct System:"
-PARAMETER temperature 1.5
-PARAMETER min_p 0.1
-'''
+starling_ollama = _ollama_template("starling")
 
 starling_template_eos_token = "<|end_of_turn|>"
 CHAT_TEMPLATES["starling"] = (starling_template, starling_template_eos_token, False, starling_ollama)
@@ -2072,16 +1629,7 @@ yi_chat_template = \
 """
 
 # Ollama from https://ollama.com/library/yi:34b-chat/blobs/62fbfd9ed093
-yi_chat_ollama = \
-'''
-FROM {__FILE_LOCATION__}
-TEMPLATE """{{ if .System }}<|im_start|>system
-{{ .System }}<|im_end|>
-{{ end }}{{ if .Prompt }}<|im_start|>user
-{{ .Prompt }}<|im_end|>
-{{ end }}<|im_start|>assistant
-{{ .Response }}<|im_end|>"""
-'''
+yi_chat_ollama = _ollama_template("yi-chat")
 
 yi_chat_template_eos_token = "<|endoftext|>"
 CHAT_TEMPLATES["yi-chat"] = (yi_chat_template, yi_chat_template_eos_token, False, yi_chat_ollama)

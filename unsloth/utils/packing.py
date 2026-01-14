@@ -107,12 +107,14 @@ def configure_sample_packing(config):
     _ensure_trl_warning_filter()
     setattr(config, "packing", True)
     setattr(config, "padding_free", True)
+    setattr(config, "remove_unused_columns", False)
 
 
 def configure_padding_free(config):
     """Mutate an ``SFTConfig`` so TRL enables padding-free batching without packing."""
     _ensure_trl_warning_filter()
     setattr(config, "padding_free", True)
+    setattr(config, "remove_unused_columns", False)
 
 
 def enable_sample_packing(
@@ -151,6 +153,12 @@ def enable_sample_packing(
                 lengths = example.get(sequence_lengths_key)
                 if isinstance(lengths, Iterable):
                     seq_lengths.extend(int(length) for length in lengths)
+            # Fallback: infer lengths from tokenized inputs when metadata is absent
+            if not seq_lengths:
+                for example in examples:
+                    ids = example.get("input_ids")
+                    if isinstance(ids, Iterable):
+                        seq_lengths.append(len(ids))
             if seq_lengths:
                 batch["packed_seq_lengths"] = torch.tensor(
                     seq_lengths, dtype = torch.int32
@@ -176,6 +184,8 @@ def enable_padding_free_metadata(model, trainer):
     mark_allow_overlength(model)
     if hasattr(collator, "return_position_ids"):
         collator.return_position_ids = True
+    if hasattr(trainer, "args") and hasattr(trainer.args, "remove_unused_columns"):
+        trainer.args.remove_unused_columns = False
 
     original_torch_call = collator.torch_call
 
