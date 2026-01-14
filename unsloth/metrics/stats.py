@@ -75,16 +75,16 @@ class InferenceStats:
         self.total_decode_latency: float = 0.0
 
         # Finished requests (for sliding window)
-        self._finished_requests: deque = deque(maxlen = max_recent_requests)
+        self._finished_requests: deque = deque(maxlen=max_recent_requests)
 
         # Finish reason counts
         self.finish_reasons: Dict[str, int] = defaultdict(int)
 
         # Timing breakdowns
-        self._queued_times: deque = deque(maxlen = max_recent_requests)
-        self._prefill_times: deque = deque(maxlen = max_recent_requests)
-        self._decode_times: deque = deque(maxlen = max_recent_requests)
-        self._e2e_times: deque = deque(maxlen = max_recent_requests)
+        self._queued_times: deque = deque(maxlen=max_recent_requests)
+        self._prefill_times: deque = deque(maxlen=max_recent_requests)
+        self._decode_times: deque = deque(maxlen=max_recent_requests)
+        self._e2e_times: deque = deque(maxlen=max_recent_requests)
 
     def start_request(
         self,
@@ -95,10 +95,10 @@ class InferenceStats:
         """Record the start of an inference request."""
         with self._lock:
             self._active_requests[request_id] = RequestStats(
-                request_id = request_id,
-                arrival_time = time.time(),
-                num_prompt_tokens = num_prompt_tokens,
-                max_tokens_param = max_tokens,
+                request_id=request_id,
+                arrival_time=time.time(),
+                num_prompt_tokens=num_prompt_tokens,
+                max_tokens_param=max_tokens,
             )
 
     def record_scheduled(self, request_id: str):
@@ -110,7 +110,7 @@ class InferenceStats:
 
     def record_first_token(self, request_id: str, timestamp: Optional[float] = None):
         """Record when the first token was generated.
-        
+
         Args:
             request_id: Unique identifier for the request
             timestamp: Optional timestamp. If None, uses current time.
@@ -119,7 +119,9 @@ class InferenceStats:
             if request_id in self._active_requests:
                 req = self._active_requests[request_id]
                 if req.first_token_time is None:
-                    req.first_token_time = timestamp if timestamp is not None else time.time()
+                    req.first_token_time = (
+                        timestamp if timestamp is not None else time.time()
+                    )
                     if req.scheduled_time is None:
                         req.scheduled_time = req.first_token_time
 
@@ -271,7 +273,7 @@ class TrainingStats:
         self.total_loss: float = 0.0
 
         # Recent batches for sliding window
-        self._recent_batches: deque = deque(maxlen = max_recent_batches)
+        self._recent_batches: deque = deque(maxlen=max_recent_batches)
 
     def record_batch(
         self,
@@ -286,13 +288,13 @@ class TrainingStats:
         """Record statistics for a training batch."""
         with self._lock:
             batch_stats = TrainingBatchStats(
-                step = step,
-                batch_size = batch_size,
-                forward_time = forward_time,
-                backward_time = backward_time,
-                loss = loss,
-                learning_rate = learning_rate,
-                grad_norm = grad_norm,
+                step=step,
+                batch_size=batch_size,
+                forward_time=forward_time,
+                backward_time=backward_time,
+                loss=loss,
+                learning_rate=learning_rate,
+                grad_norm=grad_norm,
             )
             self._recent_batches.append(batch_stats)
 

@@ -140,7 +140,7 @@ def start_metrics_server(host: str = "0.0.0.0", port: int = 9090):
     # Use daemon=False in some cases to keep server alive
     # But daemon=True is better for cleanup when main program exits
     _server_thread = threading.Thread(
-        target = run_server, daemon = True, name = "UnslothMetricsServer"
+        target=run_server, daemon=True, name="UnslothMetricsServer"
     )
     _server_thread.start()
 
@@ -235,7 +235,7 @@ def test_metrics_server(port: int = 9090):
     # Try HTTP request
     try:
         url = f"http://localhost:{port}/metrics"
-        response = urllib.request.urlopen(url, timeout = 2)
+        response = urllib.request.urlopen(url, timeout=2)
         print(f"✅ Metrics server is running and accessible at {url}")
         print(f"   Status: {response.getcode()}")
         print(f"   Content-Length: {response.headers.get('Content-Length', 'unknown')}")

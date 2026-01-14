@@ -114,6 +114,7 @@ try:
 except Exception as e:
     print(f"   ⚠️  Prometheus test skipped: {e}")
     import traceback
+
     traceback.print_exc()
 
 print("\n" + "=" * 60)

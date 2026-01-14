@@ -31,12 +31,12 @@ UNSLOTH_ENABLE_LOGGING = os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") in (
 logger = logging.getLogger(__name__)
 if UNSLOTH_ENABLE_LOGGING:
     logging.basicConfig(
-        level = logging.INFO, format = "[%(name)s|%(levelname)s]%(message)s"
+        level=logging.INFO, format="[%(name)s|%(levelname)s]%(message)s"
     )
     logger.setLevel(logging.INFO)
 else:
     logging.basicConfig(
-        level = logging.WARNING, format = "[%(name)s|%(levelname)s]%(message)s"
+        level=logging.WARNING, format="[%(name)s|%(levelname)s]%(message)s"
     )
     logger.setLevel(logging.WARNING)
 
@@ -111,17 +111,17 @@ if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") != "1":
     sys.stderr.add_filter("Skipping import of cpp extensions")
     # SyntaxWarning: invalid escape sequence '\.'
     warnings.filterwarnings(
-        "ignore", message = "invalid escape sequence", category = SyntaxWarning
+        "ignore", message="invalid escape sequence", category=SyntaxWarning
     )
     # PYTORCH_CUDA_ALLOC_CONF is deprecated warning from torch
-    warnings.filterwarnings("ignore", message = "PYTORCH_CUDA_ALLOC_CONF is deprecated")
+    warnings.filterwarnings("ignore", message="PYTORCH_CUDA_ALLOC_CONF is deprecated")
     # TF32 precision deprecation warning from torch
     warnings.filterwarnings(
-        "ignore", message = "Please use the new API settings to control TF32"
+        "ignore", message="Please use the new API settings to control TF32"
     )
     # Deprecation warnings from torchao
-    warnings.filterwarnings("ignore", message = "`int4_weight_only` is deprecated")
-    warnings.filterwarnings("ignore", message = "`int8_weight_only` is deprecated")
+    warnings.filterwarnings("ignore", message="`int4_weight_only` is deprecated")
+    warnings.filterwarnings("ignore", message="`int8_weight_only` is deprecated")
 
 
 # Fix up AttributeError: 'MessageFactory' object has no attribute 'GetPrototype'
@@ -186,7 +186,7 @@ def fix_xformers_performance_issue():
         cutlass = Path(xformers_location) / "ops" / "fmha" / "cutlass.py"
         try:
             if cutlass.exists():
-                with open(cutlass, "r+", encoding = "utf-8") as f:
+                with open(cutlass, "r+", encoding="utf-8") as f:
                     text = f.read()
                     # See https://github.com/facebookresearch/xformers/issues/1176#issuecomment-2545829591
                     if "num_splits_key=-1," in text:
@@ -219,7 +219,7 @@ def fix_vllm_aimv2_issue():
         ovis_config = Path(vllm_location) / "transformers_utils" / "configs" / "ovis.py"
         try:
             if ovis_config.exists():
-                with open(ovis_config, "r+", encoding = "utf-8") as f:
+                with open(ovis_config, "r+", encoding="utf-8") as f:
                     text = f.read()
                     # See https://github.com/vllm-project/vllm-ascend/issues/2046
                     if 'AutoConfig.register("aimv2", AIMv2Config)' in text:
@@ -473,7 +473,7 @@ def fix_openenv_no_vllm():
         return
 
     try:
-        with open(openenv, "r+", encoding = "utf-8") as f:
+        with open(openenv, "r+", encoding="utf-8") as f:
             text = f.read()
             bad = (
                 "if is_vllm_available():\n"
@@ -552,7 +552,7 @@ def fix_executorch():
         """
         what = textwrap.dedent(what)
 
-        with open(executorch, "r+", encoding = "utf-8") as f:
+        with open(executorch, "r+", encoding="utf-8") as f:
             text = f.read()
             bad = "from enum import Enum\n"
             if bad in text and what not in text:

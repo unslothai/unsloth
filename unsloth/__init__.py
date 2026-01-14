@@ -56,7 +56,7 @@ if already_imported:
         f"to ensure all optimizations are applied. Your code may run slower or encounter "
         f"memory issues without these optimizations.\n\n"
         f"Please restructure your imports with 'import unsloth' at the top of your file.",
-        stacklevel = 2,
+        stacklevel=2,
     )
 del already_imported, critical_modules
 
@@ -168,7 +168,7 @@ if DEVICE_TYPE == "cuda":
     old_is_bf16_supported = torch.cuda.is_bf16_supported
     if "including_emulation" in str(inspect.signature(old_is_bf16_supported)):
 
-        def is_bf16_supported(including_emulation = False):
+        def is_bf16_supported(including_emulation=False):
             return old_is_bf16_supported(including_emulation)
 
         torch.cuda.is_bf16_supported = is_bf16_supported
