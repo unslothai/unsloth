@@ -746,6 +746,7 @@ class GroupedGemm(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, dY):
+        dY = dY.contiguous()
         X, W, m_sizes, gather_indices = ctx.saved_tensors
         topk = ctx.topk
         permute_x = ctx.permute_x
