@@ -1,0 +1,25 @@
+============================================================
+Unsloth Metrics Collection - Standalone Test
+============================================================
+
+1. Testing InferenceStats...
+   ✅ Total requests: 1
+   ✅ Prompt tokens: 10
+   ✅ Generation tokens: 5
+   ✅ Avg latency: 0.086s
+
+2. Testing TrainingStats...
+   ✅ Total steps: 3
+   ✅ Total samples: 12
+   ✅ Avg loss: 0.4500
+
+3. Testing StatsCollector...
+   ✅ StatsCollector working
+
+4. Testing Prometheus export...
+   ✅ Prometheus client available
+   ℹ️  Full Prometheus export test requires GPU environment
+
+============================================================
+✅ All metrics tests passed!
+============================================================
