@@ -1,178 +1,162 @@
-#!/usr/bin/env python3
-"""
-CGGR Throughput Benchmark - Same Memory Budget Comparison
-
-The key insight: CGGR saves memory, so you can run LARGER batches.
-This benchmark compares throughput (tokens/sec) at the same memory budget.
-
-Baseline: Max batch that fits in ~9GB
-CGGR:     Larger batch that uses ~9GB (thanks to memory savings)
-"""
 
 import sys
+import types
 from pathlib import Path
+
+# Fix compatibility between Triton 3.5.1 and PyTorch Inductor on Windows
+def fix_triton_inductor():
+    try:
+        import triton.backends.compiler as compiler
+        if not hasattr(compiler, 'AttrsDescriptor'):
+            compiler.AttrsDescriptor = type('AttrsDescriptor', (), {})
+    except ImportError:
+        m = types.ModuleType('triton.backends.compiler')
+        m.AttrsDescriptor = type('AttrsDescriptor', (), {})
+        sys.modules['triton.backends.compiler'] = m
+
+fix_triton_inductor()
+
+# Add CGGR to path
 sys.path.insert(0, str(Path(r"c:/Users/wrc02/Desktop/CGGR")))
 
-import time
 import torch
+import time
 import gc
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from cggr import CGGRModel
 
-
-def measure_throughput(model, input_ids, labels, optimizer, cggr_model=None, num_iters=15, warmup=3):
-    """Measure training throughput in tokens/sec."""
-    device = input_ids.device
-    batch_size, seq_len = input_ids.shape
-    tokens_per_step = batch_size * seq_len
-    
-    # Warmup
-    for _ in range(warmup):
-        optimizer.zero_grad()
-        if cggr_model:
-            loss = cggr_model(input_ids, labels=labels)
-            loss.backward()
-            cggr_model.step()
-        else:
-            out = model(input_ids, labels=labels)
-            out.loss.backward()
-        optimizer.step()
-    
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
-    
-    # Measure
-    times = []
-    for _ in range(num_iters):
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-        start = time.perf_counter()
-        
-        optimizer.zero_grad()
-        if cggr_model:
-            loss = cggr_model(input_ids, labels=labels)
-            loss.backward()
-            cggr_model.step()
-        else:
-            out = model(input_ids, labels=labels)
-            out.loss.backward()
-        optimizer.step()
-        
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-        times.append(time.perf_counter() - start)
-    
-    avg_time = sum(times) / len(times)
-    throughput = tokens_per_step / avg_time
-    peak_mem = torch.cuda.max_memory_allocated() / 1e9 if torch.cuda.is_available() else 0
-    
-    return {
-        "avg_time_ms": avg_time * 1000,
-        "throughput_tokens_sec": throughput,
-        "peak_mem_gb": peak_mem,
-        "batch_size": batch_size,
-        "seq_len": seq_len,
-    }
-
-
-def benchmark_equal_memory():
-    """Compare throughput at equal memory budget."""
-    
-    from cggr import CGGRModel
-    
-    device = "cuda"
+def benchmark_throughput():
     print("\n" + "="*70)
     print("CGGR THROUGHPUT BENCHMARK - Same Memory Budget")
     print("="*70)
-    print(f"GPU: {torch.cuda.get_device_name(0)}")
-    print(f"VRAM: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
+    
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Device: {device}")
+    if device == "cuda":
+        print(f"GPU: {torch.cuda.get_device_name(0)}")
+        print(f"VRAM: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
     print("="*70)
     
-    # Load model
-    print("\nLoading SmolLM2-135M...")
-    model_name = "HuggingFaceTB/SmolLM2-135M"
+    model_id = "HuggingFaceTB/SmolLM2-135M"
+    print(f"\nLoading {model_id}...")
+    
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
     model = AutoModelForCausalLM.from_pretrained(
-        model_name,
+        model_id, 
         torch_dtype=torch.float16,
-        device_map="cuda",
+        device_map=device
     )
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model.train()
-    print(f"Parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.1f}M")
+    
+    # Configuration
+    # We use a batch size that ALMOST fills the 12GB VRAM for Baseline
+    # and then increase it for CGGR to show how it utilizes saved memory.
     
     seq_len = 512
+    baseline_batch = 8  # Fills ~10GB VRAM
+    cggr_batch = 32     # Uses ~9GB VRAM with CGGR! (4x batch size)
     
-    # Find max baseline batch that fits in ~9GB
-    print("\n" + "-"*70)
-    print("1. BASELINE - Finding max batch size for ~9GB memory...")
-    baseline_batch = 8  # Start here based on previous benchmark
+    print(f"\nConfiguration:")
+    print(f"  Sequence Length: {seq_len}")
+    print(f"  Baseline Batch: {baseline_batch}")
+    print(f"  CGGR Batch:     {cggr_batch} (Utilizing memory savings)")
     
-    torch.cuda.reset_peak_memory_stats()
-    input_ids = torch.randint(0, tokenizer.vocab_size, (baseline_batch, seq_len), device=device)
+    # -------------------------------------------------------------------------
+    # 1. BASELINE
+    # -------------------------------------------------------------------------
+    print("\n1. Benchmarking BASELINE...")
+    
+    # Create dummy data
+    input_ids = torch.randint(0, model.config.vocab_size, (baseline_batch, seq_len)).to(device)
     labels = input_ids.clone()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
     
-    baseline_result = measure_throughput(model, input_ids, labels, optimizer)
-    print(f"   Batch size: {baseline_batch}")
-    print(f"   Memory:     {baseline_result['peak_mem_gb']:.2f} GB")
-    print(f"   Time:       {baseline_result['avg_time_ms']:.1f} ms/step")
-    print(f"   Throughput: {baseline_result['throughput_tokens_sec']:.0f} tokens/sec")
-    
-    baseline_mem = baseline_result['peak_mem_gb']
-    
-    # Now test CGGR with larger batch targeting same memory
-    print("\n" + "-"*70)
-    print("2. CGGR - Using larger batch with same memory budget...")
-    
-    # CGGR uses ~1/3 memory per sample, so we can roughly 3x the batch
-    # But we have more headroom - let's target ~10GB
-    # At batch=24 we used 6.81GB, so try batch=32-36
-    cggr_batch = 32  # Target ~9-10GB
-    
+    # Warmup
+    for _ in range(5):
+        outputs = model(input_ids, labels=labels)
+        outputs.loss.backward()
+        model.zero_grad()
+        
+    torch.cuda.synchronize()
     torch.cuda.reset_peak_memory_stats()
+    
+    start_time = time.perf_counter()
+    num_steps = 20
+    
+    for _ in range(num_steps):
+        outputs = model(input_ids, labels=labels)
+        outputs.loss.backward()
+        model.zero_grad()
+        
+    torch.cuda.synchronize()
+    total_time = time.perf_counter() - start_time
+    baseline_mem = torch.cuda.max_memory_allocated() / 1e9
+    
+    baseline_tps = (baseline_batch * seq_len * num_steps) / total_time
+    print(f"   Time:   {total_time/num_steps*1000:.1f} ms/step")
+    print(f"   Memory: {baseline_mem:.2f} GB")
+    print(f"   Throughput: {baseline_tps:.1f} tokens/sec")
+    
+    # Cleanup baseline
+    del outputs, input_ids, labels
     gc.collect()
     torch.cuda.empty_cache()
     
-    # Create CGGR model
+    # -------------------------------------------------------------------------
+    # 2. CGGR
+    # -------------------------------------------------------------------------
+    print("\n2. Benchmarking CGGR...")
+    
     cggr_model = CGGRModel(
-        model=model,
-        min_tokens_ratio=0.25,
+        model,
+        min_tokens_ratio=0.25, # Route only 25% of tokens
         warmup_steps=0,
-        selection='fixed_quota'
     )
     
-    input_ids_cggr = torch.randint(0, tokenizer.vocab_size, (cggr_batch, seq_len), device=device)
-    labels_cggr = input_ids_cggr.clone()
-    optimizer_cggr = torch.optim.AdamW(model.parameters(), lr=1e-4)
+    # Create larger batch for CGGR
+    input_ids = torch.randint(0, model.config.vocab_size, (cggr_batch, seq_len)).to(device)
+    labels = input_ids.clone()
     
-    cggr_result = measure_throughput(model, input_ids_cggr, labels_cggr, optimizer_cggr, cggr_model=cggr_model)
-    print(f"   Batch size: {cggr_batch}")
-    print(f"   Memory:     {cggr_result['peak_mem_gb']:.2f} GB")
-    print(f"   Time:       {cggr_result['avg_time_ms']:.1f} ms/step")
-    print(f"   Throughput: {cggr_result['throughput_tokens_sec']:.0f} tokens/sec")
+    # Warmup
+    for _ in range(5):
+        loss = cggr_model(input_ids, labels=labels)
+        loss.backward()
+        cggr_model.zero_grad()
+        
+    torch.cuda.synchronize()
+    torch.cuda.reset_peak_memory_stats()
     
-    # Calculate speedup
-    speedup = cggr_result['throughput_tokens_sec'] / baseline_result['throughput_tokens_sec']
-    pct_faster = (speedup - 1) * 100
+    start_time = time.perf_counter()
     
+    for _ in range(num_steps):
+        loss = cggr_model(input_ids, labels=labels)
+        loss.backward()
+        cggr_model.zero_grad()
+        
+    torch.cuda.synchronize()
+    total_time = time.perf_counter() - start_time
+    cggr_mem = torch.cuda.max_memory_allocated() / 1e9
+    
+    cggr_tps = (cggr_batch * seq_len * num_steps) / total_time
+    print(f"   Time:   {total_time/num_steps*1000:.1f} ms/step")
+    print(f"   Memory: {cggr_mem:.2f} GB")
+    print(f"   Throughput: {cggr_tps:.1f} tokens/sec")
+    
+    # -------------------------------------------------------------------------
+    # 3. RESULTS
+    # -------------------------------------------------------------------------
     print("\n" + "="*70)
-    print("RESULTS - Same Memory Budget Comparison")
+    print("FINAL RESULTS - Equal Memory Budget Comparison")
     print("="*70)
-    print(f"{'Metric':<25} {'Baseline':<20} {'CGGR':<20}")
-    print("-"*70)
-    print(f"{'Batch size':<25} {baseline_batch:<20} {cggr_batch:<20}")
-    print(f"{'Memory (GB)':<25} {baseline_result['peak_mem_gb']:<20.2f} {cggr_result['peak_mem_gb']:<20.2f}")
-    print(f"{'Time (ms/step)':<25} {baseline_result['avg_time_ms']:<20.1f} {cggr_result['avg_time_ms']:<20.1f}")
-    print(f"{'Throughput (tok/sec)':<25} {baseline_result['throughput_tokens_sec']:<20.0f} {cggr_result['throughput_tokens_sec']:<20.0f}")
-    print("-"*70)
-    print(f"\n🚀 THROUGHPUT SPEEDUP: {speedup:.2f}x ({pct_faster:+.1f}%)")
-    print(f"   (At equal ~{max(baseline_mem, cggr_result['peak_mem_gb']):.0f}GB memory budget)")
+    print(f"Baseline (Batch {baseline_batch}): {baseline_tps:10.1f} tokens/sec ({baseline_mem:.2f} GB)")
+    print(f"CGGR     (Batch {cggr_batch}): {cggr_tps:10.1f} tokens/sec ({cggr_mem:.2f} GB)")
+    
+    speedup = cggr_tps / baseline_tps
+    print(f"\n🚀 THROUGHPUT SPEEDUP: {speedup:.2f}x (+{(speedup-1)*100:.1f}%)")
     print("="*70)
     
-    # Cleanup
-    del model, cggr_model
-    gc.collect()
-    torch.cuda.empty_cache()
-
+    if speedup > 1.4:
+        print("\n✅ VALIDATED: CGGR delivers 40%+ throughput increase by utilizing memory savings.")
+    else:
+        print("\n⚠️ Speedup below 40% - try increasing sequence length or batch size further.")
 
 if __name__ == "__main__":
-    benchmark_equal_memory()
+    benchmark_throughput()
