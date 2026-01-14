@@ -352,19 +352,6 @@ def unsloth_base_fast_generate(
                 else:
                     total_tokens = output.shape[-1]
                 num_generation_tokens = max(0, total_tokens - num_prompt_tokens)
-<<<<<<< HEAD
-            else:
-                num_generation_tokens = 0
-
-            # Estimate timing (simplified)
-            if num_generation_tokens > 0:
-                # Estimate first token time
-                first_token_time = start_time + (
-                    e2e_latency / (num_generation_tokens + 1)
-                )
-                collector.inference_stats.record_first_token(request_id)
-
-=======
             elif isinstance(output, dict) and "sequences" in output:
                 # Handle ModelOutput when return_dict_in_generate=True
                 sequences = output["sequences"]
@@ -385,16 +372,23 @@ def unsloth_base_fast_generate(
                     num_generation_tokens = max(0, total_tokens - num_prompt_tokens)
             
             # Estimate timing (simplified)
+            # Note: These are estimations. For more accurate metrics, consider hooking into
+            # the generation process itself (e.g., via LogitsProcessor or StoppingCriteria)
             if num_generation_tokens > 0:
                 # Estimate first token time
                 estimated_first_token_time = start_time + (e2e_latency / (num_generation_tokens + 1))
                 collector.inference_stats.record_first_token(request_id, timestamp=estimated_first_token_time)
                 
-                # Record tokens
+                # Record tokens (simplified - records all at once after generation)
                 for _ in range(num_generation_tokens):
                     collector.inference_stats.record_token(request_id)
 
-            finish_reason = "stop"  # Could be improved to detect actual finish reason
+            # Determine finish reason (simplified - could be improved)
+            finish_reason = "stop"  # Default
+            if isinstance(output, (dict, type(output))) and hasattr(output, "finish_reason"):
+                finish_reason = output.finish_reason
+            elif isinstance(output, dict) and "finish_reason" in output:
+                finish_reason = output["finish_reason"]
             collector.inference_stats.finish_request(
                 request_id = request_id,
                 finish_reason = finish_reason,

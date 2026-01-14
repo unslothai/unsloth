@@ -28,15 +28,19 @@ print("Training:", stats['training'])
 
 ### Inference Metrics
 - **Request tracking**: Total requests, active requests, finish reasons
-- **Latency metrics**: End-to-end latency, prefill latency, decode latency, time per token
+- **Latency metrics**: End-to-end latency (measured), prefill latency (estimated), decode latency (estimated), time per token
 - **Token metrics**: Prompt tokens, generation tokens, tokens per second
 - **Throughput**: Real-time throughput calculations
 
+**Note**: Prefill and decode latencies are estimated after generation completes. For more accurate metrics, consider hooking into the generation process itself (e.g., via LogitsProcessor or StoppingCriteria).
+
 ### Training Metrics
 - **Step tracking**: Total steps, samples processed
-- **Performance**: Forward/backward pass times, samples per second
+- **Performance**: Forward/backward pass times (estimated), samples per second
 - **Training state**: Loss, learning rate, gradient norm
 - **Batch metrics**: Batch size tracking
+
+**Note**: Forward and backward pass times are estimated as a 40/60 split of the total step duration. For precise timings, more intrusive instrumentation would be required.
 
 ### Prometheus Integration
 - Prometheus-compatible metrics export
