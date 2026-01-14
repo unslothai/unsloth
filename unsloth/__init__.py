@@ -280,6 +280,12 @@ from .chat_templates import *
 from .tokenizer_utils import *
 from .trainer import *
 
+# CGGR (Confidence-Gated Gradient Routing) integration
+# Optional: requires `pip install cggr` for full functionality
+from .cggr import CGGR_AVAILABLE
+if CGGR_AVAILABLE:
+    from .cggr import CGGRUnslothBridge, patch_trainer_for_cggr, create_truncated_router
+
 # Export dataprep utilities for CLI and downstream users
 from .dataprep.raw_text import RawTextDataLoader, TextPreprocessor
 from unsloth_zoo.rl_environments import (
@@ -293,3 +299,4 @@ from unsloth_zoo.rl_environments import (
 
 # Patch TRL trainers for backwards compatibility
 _patch_trl_trainer()
+
