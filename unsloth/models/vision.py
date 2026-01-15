@@ -1399,7 +1399,7 @@ class FastBaseModel:
         # Since transformers 4.53, must turn on explicitly
         for module in model.modules():
             if hasattr(module, "gradient_checkpointing"):
-                module.gradient_checkpointing = True
+                module.gradient_checkpointing = use_gradient_checkpointing
 
         # Also re-enable training for embeddings for NEFTune
         if hasattr(model, "get_input_embeddings"):
