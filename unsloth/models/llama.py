@@ -154,6 +154,10 @@ def _fast_prepare_inputs_for_generation(
     attention_mask = None,
     **kwargs,
 ):
+    # Capture the original 2D attention mask for position_ids calculation
+    # This is needed because attention_mask might be converted to 4D later
+    attention_mask_2d = attention_mask
+
     past_key_values = kwargs.get("past_key_values", None)
     if past_key_values is not None:
         # Check for uninitialized DynamicCache
@@ -230,10 +234,14 @@ def _fast_prepare_inputs_for_generation(
         # from attention_mask instead of using cache_position directly.
         # cache_position is a single tensor that's the same for all sequences,
         # but each sequence in a left-padded batch needs different position_ids.
-        if attention_mask is not None and attention_mask.dim() == 2:
+        
+        # Use the saved 2d mask if available, otherwise check current mask
+        mask_for_pos = attention_mask_2d if attention_mask_2d is not None else attention_mask
+        
+        if mask_for_pos is not None and mask_for_pos.dim() == 2:
             # Compute position_ids from attention_mask for proper left-padding support
-            position_ids = attention_mask.long().cumsum(-1) - 1
-            position_ids.masked_fill_(attention_mask == 0, 1)
+            position_ids = mask_for_pos.long().cumsum(-1) - 1
+            position_ids.masked_fill_(mask_for_pos == 0, 1)
             # Take only the last position for generation
             if past_key_values is not None:
                 position_ids = position_ids[:, -1:]
