@@ -12,19 +12,6 @@ from .autotuning import (
     prune_kernel_configs_backward_dW,
 )
 
-# -----------------------------------------------------------------------------
-# Triton compatibility:
-# Some Triton versions (e.g. 3.2.0) do NOT expose `triton.language.make_tensor_descriptor`.
-# Triton's JIT dependency hashing will try to resolve attribute accesses like
-# `tl.make_tensor_descriptor` even if they are guarded by compile-time constexpr
-# branches, leading to an AttributeError before compilation.
-#
-# Avoid direct attribute access; use a module-level alias created via getattr.
-# -----------------------------------------------------------------------------
-_make_tensor_descriptor = getattr(tl, "make_tensor_descriptor", None)
-if _make_tensor_descriptor is None:
-    _make_tensor_descriptor = getattr(tl, "_experimental_make_tensor_descriptor", None)
-
 """
 dX backward kernel
 
@@ -95,7 +82,7 @@ def _grouped_gemm_dX_kernel(
     # Also, we are defining a single global descriptor with single block shape
     # Need to check that this does not result in errors when crossing expert boundaries
     if USE_TMA_LOAD_dY:
-        dY_desc = _make_tensor_descriptor(
+        dY_desc = tl.make_tensor_descriptor(
             dY_ptr,
             shape = [TOTAL_TOKENS, N],
             strides = [N, 1],
@@ -104,7 +91,7 @@ def _grouped_gemm_dX_kernel(
 
     if USE_TMA_LOAD_W:
         expert_stride = N * K
-        w_desc = _make_tensor_descriptor(
+        w_desc = tl.make_tensor_descriptor(
             w_ptr,
             shape = [NUM_EXPERTS, N, K],
             strides = [expert_stride, K, 1],
@@ -136,7 +123,7 @@ def _grouped_gemm_dX_kernel(
                 tl.static_assert(
                     K % BLOCK_SIZE_K == 0, "K must be divisible by BLOCK_SIZE_K"
                 )
-                dX_desc = _make_tensor_descriptor(
+                dX_desc = tl.make_tensor_descriptor(
                     dX_ptr,
                     shape = [m_end, K],
                     strides = [K, 1],
@@ -337,7 +324,7 @@ def _grouped_gemm_dW_kernel(
     output_dtype = dW_ptr.dtype.element_ty
 
     if USE_TMA_LOAD_dY and not TMA_LOAD_BOTH:
-        dY_desc = _make_tensor_descriptor(
+        dY_desc = tl.make_tensor_descriptor(
             dY_ptr,
             shape = [TOTAL_TOKENS, N],
             strides = [N, 1],
@@ -345,7 +332,7 @@ def _grouped_gemm_dW_kernel(
         )
 
     if USE_TMA_LOAD_X and not TMA_LOAD_BOTH:
-        x_desc = _make_tensor_descriptor(
+        x_desc = tl.make_tensor_descriptor(
             x_ptr,
             shape = [TOTAL_TOKENS, K],
             strides = [K, 1],
@@ -364,7 +351,7 @@ def _grouped_gemm_dW_kernel(
     if USE_TMA_STORE:
         tl.static_assert(N % BLOCK_SIZE_N == 0, "N must be divisible by BLOCK_SIZE_N")
         tl.static_assert(K % BLOCK_SIZE_K == 0, "K must be divisible by BLOCK_SIZE_K")
-        dW_desc = _make_tensor_descriptor(
+        dW_desc = tl.make_tensor_descriptor(
             dW_ptr,
             shape = [NUM_EXPERTS, N, K],
             strides = [N * K, K, 1],
@@ -405,14 +392,14 @@ def _grouped_gemm_dW_kernel(
 
             if m_size > 0:
                 if TMA_LOAD_BOTH:
-                    dY_desc = _make_tensor_descriptor(
+                    dY_desc = tl.make_tensor_descriptor(
                         dY_ptr,
                         shape = [m_end, N],
                         strides = [N, 1],
                         block_shape = [BLOCK_SIZE_M, BLOCK_SIZE_N],
                     )
 
-                    x_desc = _make_tensor_descriptor(
+                    x_desc = tl.make_tensor_descriptor(
                         x_ptr,
                         shape = [m_end, K],
                         strides = [K, 1],

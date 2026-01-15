@@ -191,15 +191,12 @@ def grouped_gemm_forward(
         # TMA load for activations, TMA gather only supported on Blackwell+
         assert not permute_x, "Cannot use both use_tma_load_x and permute_x"
 
-    # Hard disable TMA on unsupported setups (e.g. T4 / SM75).
-    # This guarantees we never compile or run a kernel with any USE_TMA_* flags.
-    if not supports_tma():
+    use_tma = use_tma_load_w or use_tma_load_x or use_tma_store
+    if not supports_tma() and use_tma:
+        warnings.warn("TMA not supported, tma_load will be set to False")
         use_tma_load_w = False
         use_tma_load_x = False
         use_tma_store = False
-        use_tma = False
-    else:
-        use_tma = use_tma_load_w or use_tma_load_x or use_tma_store
 
     if use_tma or autotune:
         # Respect global persistent allocator if set
@@ -401,14 +398,12 @@ def grouped_gemm_dX(
     assert not (permute_y and use_tma_load_dy), "Cannot use both TMA load and permute_y"
     assert not (permute_x and use_tma_store), "Cannot use both TMA store and permute_x"
 
-    # Hard disable TMA on unsupported setups (e.g. T4 / SM75).
-    if not supports_tma():
+    use_tma = use_tma_load_dy or use_tma_load_w or use_tma_store
+    if not supports_tma() and use_tma:
+        warnings.warn("TMA not supported, tma_load will be set to False")
         use_tma_load_w = False
         use_tma_load_dy = False
         use_tma_store = False
-        use_tma = False
-    else:
-        use_tma = use_tma_load_dy or use_tma_load_w or use_tma_store
 
     if use_tma or autotune:
         # Respect global persistent allocator if set
@@ -571,14 +566,12 @@ def grouped_gemm_dW(
     assert not (permute_y and use_tma_load_dy), "Cannot use both TMA load and permute_y"
     assert not (permute_x and use_tma_load_x), "Cannot use both TMA load and permute_x"
 
-    # Hard disable TMA on unsupported setups (e.g. T4 / SM75).
-    if not supports_tma():
+    use_tma = use_tma_load_dy or use_tma_load_x or use_tma_store
+    if not supports_tma() and use_tma:
+        warnings.warn("TMA not supported, tma_load will be set to False")
         use_tma_load_x = False
         use_tma_load_dy = False
         use_tma_store = False
-        use_tma = False
-    else:
-        use_tma = use_tma_load_dy or use_tma_load_x or use_tma_store
 
     if use_tma or autotune:
         # Respect global persistent allocator if set
