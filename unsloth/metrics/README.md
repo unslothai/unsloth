@@ -169,6 +169,10 @@ The metrics system works without `prometheus_client` - it gracefully degrades an
 ## Environment Variables
 
 - `UNSLOTH_ENABLE_METRICS=1` - Enable metrics collection (default: disabled)
+- `UNSLOTH_ENABLE_METRICS_TELEMETRY=1` - Enable metrics telemetry (opt-in)
+- `UNSLOTH_DISABLE_METRICS_TELEMETRY=1` - Disable metrics telemetry (opt-out)
+- `UNSLOTH_METRICS_TELEMETRY_ENDPOINT` - Telemetry endpoint (default: https://api.unsloth.ai/metrics)
+- `UNSLOTH_METRICS_TELEMETRY_INTERVAL` - Telemetry interval seconds (default: 300)
 
 ## API Reference
 
@@ -179,6 +183,12 @@ The metrics system works without `prometheus_client` - it gracefully degrades an
 - `get_stats_collector()` - Get the global stats collector singleton
 - `generate_prometheus_metrics()` - Generate Prometheus-format metrics
 - `is_prometheus_available()` - Check if Prometheus client is available
+
+### Telemetry Functions (Server-Side Forwarding)
+
+- `enable_telemetry()` - Enable telemetry (opt-in)
+- `disable_telemetry()` - Disable telemetry
+- `is_telemetry_enabled()` - Check if telemetry is enabled
 
 ### HTTP Server Functions
 
