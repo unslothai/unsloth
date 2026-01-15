@@ -1077,38 +1077,6 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
         "model = self._prepare_peft_model(model, peft_config, args)\n", "pass\n"
     )
 
-    # Skip add_adapter("ref") for reference model computation
-    # Unsloth: We comment out the "ref" adapter creation because:
-    # 1. We want to use the original BASE MODEL as the reference model, not the SFT/LoRA model
-    # 2. PEFT doesn't allow multiple adapters when target_parameters is used (MoE models)
-    # When "ref" is not in peft_config, GRPO/RLOO fallback uses disable_adapter()
-    # which gives the base model logits - exactly what we want
-    add_adapter_block_pattern = (
-        r'([ \t]*)'  # Capture leading indentation
-        r'if\s+is_peft_available\(\)\s+and\s+is_peft_model\(model\)\s+and\s+args\.beta\s*!=\s*0\.0\s*:'
-        r'(.*?)'  # Match the entire block until ref_param.data.copy_
-        r'ref_param\.data\.copy_\(param\.data\)'
-    )
-    def comment_out_block(match):
-        """Comment out each line in the matched block, preserving indentation."""
-        full_match = match.group(0)
-        indent = match.group(1)
-        lines = full_match.split('\n')
-        commented_lines = []
-        # Add explanation comment first
-        commented_lines.append(f"{indent}# Unsloth: Commented out - use base model as reference, not SFT/LoRA model")
-        # Comment out each line - insert # after leading whitespace to preserve indentation
-        for line in lines:
-            if line.strip():
-                stripped = line.lstrip()
-                leading_ws = line[:len(line) - len(stripped)]
-                commented_lines.append(f"{leading_ws}# {stripped}")
-            else:
-                commented_lines.append(line)
-        return '\n'.join(commented_lines)
-    init = re.sub(add_adapter_block_pattern, comment_out_block, init, flags=re.DOTALL)
-
-
     # Set use_vllm if not set
     if "args.use_vllm" in init and "model" in init and "args" in init:
         # .*? matches first match. .+? matches final match.
