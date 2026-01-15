@@ -234,10 +234,12 @@ def _fast_prepare_inputs_for_generation(
         # from attention_mask instead of using cache_position directly.
         # cache_position is a single tensor that's the same for all sequences,
         # but each sequence in a left-padded batch needs different position_ids.
-        
+
         # Use the saved 2d mask if available, otherwise check current mask
-        mask_for_pos = attention_mask_2d if attention_mask_2d is not None else attention_mask
-        
+        mask_for_pos = (
+            attention_mask_2d if attention_mask_2d is not None else attention_mask
+        )
+
         if mask_for_pos is not None and mask_for_pos.dim() == 2:
             # Compute position_ids from attention_mask for proper left-padding support
             position_ids = mask_for_pos.long().cumsum(-1) - 1
