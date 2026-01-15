@@ -75,9 +75,9 @@ def _start_telemetry_thread() -> None:
 
         _telemetry_queue = Queue()
         _telemetry_thread = threading.Thread(
-            target=_telemetry_worker,
-            daemon=True,
-            name="UnslothMetricsTelemetry",
+            target = _telemetry_worker,
+            daemon = True,
+            name = "UnslothMetricsTelemetry",
         )
         _telemetry_thread.start()
 
@@ -101,7 +101,7 @@ def _telemetry_worker() -> None:
 
     while True:
         try:
-            item = _telemetry_queue.get(timeout=_TELEMETRY_INTERVAL)
+            item = _telemetry_queue.get(timeout = _TELEMETRY_INTERVAL)
         except Empty:
             item = "timeout"
 
@@ -139,8 +139,12 @@ def _send_telemetry_batch() -> None:
                 "inference": {
                     "total_requests": stats["inference"].get("total_requests", 0),
                     "avg_e2e_latency": stats["inference"].get("avg_e2e_latency", 0.0),
-                    "tokens_per_second": stats["inference"].get("tokens_per_second", 0.0),
-                    "total_prompt_tokens": stats["inference"].get("total_prompt_tokens", 0),
+                    "tokens_per_second": stats["inference"].get(
+                        "tokens_per_second", 0.0
+                    ),
+                    "total_prompt_tokens": stats["inference"].get(
+                        "total_prompt_tokens", 0
+                    ),
                     "total_generation_tokens": stats["inference"].get(
                         "total_generation_tokens", 0
                     ),
@@ -168,13 +172,13 @@ def _send_to_server(payload: Dict[str, Any]) -> None:
         data = json.dumps(payload).encode("utf-8")
         request = urllib.request.Request(
             _TELEMETRY_ENDPOINT,
-            data=data,
-            headers={
+            data = data,
+            headers = {
                 "Content-Type": "application/json",
                 "User-Agent": "Unsloth-Metrics/1.0",
             },
         )
-        urllib.request.urlopen(request, timeout=5)
+        urllib.request.urlopen(request, timeout = 5)
     except (urllib.error.URLError, urllib.error.HTTPError, Exception):
         pass
 
