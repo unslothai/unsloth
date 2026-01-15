@@ -134,13 +134,15 @@ if DEVICE_TYPE == "hip":
 class DeviceContext:
     """Encapsulates device-specific operations for XPU/HIP/CUDA."""
 
+    DEVICE_MODULE_MAP = {"xpu": torch.xpu, "cuda": torch.cuda, "hip": torch.cuda}
+    DEVICE_NAME_MAP = {"xpu": "Intel XPU", "cuda": "NVIDIA GPU", "hip": "AMD GPU"}
+
     def __init__(self, device_type: str = DEVICE_TYPE) -> None:
-        DEVICE_MODULE_MAP = {"xpu": torch.xpu, "cuda": torch.cuda, "hip": torch.cuda}
-        if device_type not in DEVICE_MODULE_MAP:
+        if device_type not in self.DEVICE_MODULE_MAP:
             raise ValueError(f"Unsloth: Unsupported device type: {device_type}")
         self.device_type = device_type
         # Cache the torch module for this device
-        self.torch_module = DEVICE_MODULE_MAP[device_type]
+        self.torch_module = self.DEVICE_MODULE_MAP[device_type]
 
     def get_stats(self) -> tuple[str, str, float]:
         """Return (name, stats_snippet, max_memory_gb)."""
@@ -157,8 +159,7 @@ class DeviceContext:
 
     def _get_default_name(self) -> str:
         """Get default device name when props.name is empty."""
-        names = {"xpu": "Intel XPU", "cuda": "NVIDIA GPU", "hip": "AMD GPU"}
-        return names[self.device_type] + " Device. "
+        return self.DEVICE_NAME_MAP[self.device_type] + " Device. "
 
     def _get_toolkit_snippet(self, props) -> str:
         """Get toolkit version snippet."""
