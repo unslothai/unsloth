@@ -36,6 +36,12 @@ from unsloth.metrics.server import (
     is_metrics_server_running,
     test_metrics_server,
 )
+from unsloth.metrics.telemetry import (
+    enable_telemetry,
+    disable_telemetry,
+    is_telemetry_enabled,
+    schedule_telemetry,
+)
 
 __all__ = [
     "InferenceStats",
@@ -51,4 +57,8 @@ __all__ = [
     "stop_metrics_server",
     "is_metrics_server_running",
     "test_metrics_server",
+    "enable_telemetry",
+    "disable_telemetry",
+    "is_telemetry_enabled",
+    "schedule_telemetry",
 ]
