@@ -14,7 +14,7 @@
 
 from .llama import *
 from ._utils import __version__
-from unsloth_zoo.utils import _get_dtype
+from unsloth_zoo.utils import _get_dtype, Version
 from unsloth_zoo.hf_utils import dtype_from_config
 from ..utils.packing import (
     build_sdpa_packed_attention_mask,
@@ -34,8 +34,6 @@ try:
         repeat_kv,
     )
 except:
-    from packaging.version import Version
-
     transformers_version = Version(transformers_version)
     if not transformers_version >= Version("4.38"):
         raise ImportError(
