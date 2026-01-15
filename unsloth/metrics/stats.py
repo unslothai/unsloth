@@ -186,6 +186,14 @@ class InferenceStats:
             # Count finish reasons
             self.finish_reasons[finish_reason] += 1
 
+            # Schedule telemetry if enabled (non-blocking)
+            try:
+                from unsloth.metrics.telemetry import schedule_telemetry
+
+                schedule_telemetry()
+            except Exception:
+                pass
+
     def get_stats(self) -> Dict[str, Any]:
         """Get current aggregated statistics."""
         with self._lock:
@@ -303,6 +311,14 @@ class TrainingStats:
             self.total_forward_time += forward_time
             self.total_backward_time += backward_time
             self.total_loss += loss
+
+            # Schedule telemetry if enabled (non-blocking)
+            try:
+                from unsloth.metrics.telemetry import schedule_telemetry
+
+                schedule_telemetry()
+            except Exception:
+                pass
 
     def get_stats(self) -> Dict[str, Any]:
         """Get current aggregated statistics."""

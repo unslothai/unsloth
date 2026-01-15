@@ -295,6 +295,9 @@ from .metrics import (
     stop_metrics_server,
     is_metrics_server_running,
     test_metrics_server,
+    enable_telemetry,
+    disable_telemetry,
+    is_telemetry_enabled,
 )
 
 # Export dataprep utilities for CLI and downstream users
