@@ -426,6 +426,9 @@ def _get_heuristic_configs() -> Tuple[Any, Any, Any]:
     )
 
     return config_fwd, config_bwd_dx, config_bwd_dw
+
+
+def _get_default_configs() -> Tuple[Any, Any, Any]:
     """Get default kernel configurations as fallback."""
     from .grouped_gemm.kernels.tuning import (
         KernelConfigForward,
