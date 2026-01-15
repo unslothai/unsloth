@@ -53,6 +53,9 @@ def _check_tma_support():
 
 _SUPPORTS_TMA = _check_tma_support()
 
+# Check if triton.set_allocator is available (Triton 3.0+)
+_HAS_SET_ALLOCATOR = hasattr(triton, "set_allocator")
+
 
 def supports_tma():
     return _SUPPORTS_TMA
@@ -197,7 +200,7 @@ def grouped_gemm_forward(
 
     if use_tma or autotune:
         # Respect global persistent allocator if set
-        if not getattr(triton, "_unsloth_allocator_set", False):
+        if _HAS_SET_ALLOCATOR and not getattr(triton, "_unsloth_allocator_set", False):
 
             def alloc_fn(size: int, alignment: int, stream: int):
                 return torch.empty(size, device = "cuda", dtype = torch.int8)
@@ -404,7 +407,7 @@ def grouped_gemm_dX(
 
     if use_tma or autotune:
         # Respect global persistent allocator if set
-        if not getattr(triton, "_unsloth_allocator_set", False):
+        if _HAS_SET_ALLOCATOR and not getattr(triton, "_unsloth_allocator_set", False):
 
             def alloc_fn(size: int, alignment: int, stream: int):
                 # print(f"DEBUG::GROUPED_GEMM alloc_fn {size=} {alignment=} {stream=}")
@@ -572,7 +575,7 @@ def grouped_gemm_dW(
 
     if use_tma or autotune:
         # Respect global persistent allocator if set
-        if not getattr(triton, "_unsloth_allocator_set", False):
+        if _HAS_SET_ALLOCATOR and not getattr(triton, "_unsloth_allocator_set", False):
 
             def alloc_fn(size: int, alignment: int, stream: int):
                 return torch.empty(size, device = "cuda", dtype = torch.int8)
