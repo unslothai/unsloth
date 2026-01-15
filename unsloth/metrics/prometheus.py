@@ -77,12 +77,60 @@ _metrics_registry: Optional[Dict[str, Any]] = None
 _metrics_enabled = False
 
 
+_METRIC_NAMES = {
+    "inference": {
+        "request_total": "unsloth_request_total",
+        "prompt_tokens_total": "unsloth_prompt_tokens_total",
+        "generation_tokens_total": "unsloth_generation_tokens_total",
+        "requests_active": "unsloth_requests_active",
+        "tokens_per_second": "unsloth_tokens_per_second",
+        "request_latency_seconds": "unsloth_request_latency_seconds",
+        "prefill_latency_seconds": "unsloth_prefill_latency_seconds",
+        "decode_latency_seconds": "unsloth_decode_latency_seconds",
+        "time_per_output_token_seconds": "unsloth_time_per_output_token_seconds",
+        "prompt_tokens": "unsloth_prompt_tokens",
+        "generation_tokens": "unsloth_generation_tokens",
+    },
+    "training": {
+        "training_steps_total": "unsloth_training_steps_total",
+        "training_samples_total": "unsloth_training_samples_total",
+        "training_loss": "unsloth_training_loss",
+        "learning_rate": "unsloth_learning_rate",
+        "samples_per_second": "unsloth_training_samples_per_second",
+        "gradient_norm": "unsloth_gradient_norm",
+        "forward_time_seconds": "unsloth_training_forward_time_seconds",
+        "backward_time_seconds": "unsloth_training_backward_time_seconds",
+        "batch_size": "unsloth_training_batch_size",
+    },
+}
+
+
+def _load_existing_metrics() -> Optional[Dict[str, Any]]:
+    """Load existing metrics from the global registry if already registered."""
+    if REGISTRY is None:
+        return None
+
+    existing: Dict[str, Dict[str, Any]] = {"inference": {}, "training": {}}
+    for section, names in _METRIC_NAMES.items():
+        for key, metric_name in names.items():
+            collector = REGISTRY._names_to_collectors.get(metric_name)  # type: ignore[attr-defined]
+            if collector is None:
+                return None
+            existing[section][key] = collector
+    return existing
+
+
 def _init_metrics():
     """Initialize Prometheus metrics if available."""
     global _metrics_registry
 
     if not PROMETHEUS_AVAILABLE:
         return None
+
+    existing = _load_existing_metrics()
+    if existing is not None:
+        _metrics_registry = existing
+        return _metrics_registry
 
     if _metrics_registry is not None:
         return _metrics_registry
