@@ -39,6 +39,9 @@ triton = [
     "triton>=3.0.0 ; ('linux' in sys_platform)",
     "triton-windows ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 ]
+metrics = [
+    "prometheus_client>=0.20.0",
+]
 
 huggingfacenotorch = [
     "wheel>=0.42.0",
