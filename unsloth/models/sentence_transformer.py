@@ -625,16 +625,27 @@ class FastSentenceTransformer(FastModel):
         """Helper to create and configure a Transformer module."""
         from sentence_transformers.models import Transformer
 
-        # propagate trust_remote_code and other attrs to sentence-transformers
-        transformer_module = Transformer(
-            model_name,
-            max_seq_length = max_seq_length,
-            model_args = {"trust_remote_code": trust_remote_code},
-            config_args = {"trust_remote_code": trust_remote_code},
-        )
+        # prevents sentence-transformers from loading the model a second time, thanks Etherl
+        original_from_pretrained = AutoModel.from_pretrained
 
-        # inject unsloth model into sentence-transformers model
-        transformer_module.auto_model = model
+        def return_existing_model(*args, **kwargs):
+            return model
+
+        try:
+            # Temporarily redirect AutoModel loading to return our pre-loaded model
+            AutoModel.from_pretrained = return_existing_model
+
+            # Initialize Transformer
+            transformer_module = Transformer(
+                model_name,
+                max_seq_length = max_seq_length,
+                model_args = {"trust_remote_code": trust_remote_code},
+                config_args = {"trust_remote_code": trust_remote_code},
+            )
+        finally:
+            # Restore original functionality immediately
+            AutoModel.from_pretrained = original_from_pretrained
+
         transformer_module.tokenizer = tokenizer
         transformer_module.do_lower_case = getattr(tokenizer, "do_lower_case", False)
 
