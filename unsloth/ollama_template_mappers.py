@@ -974,6 +974,7 @@ TEMPLATE """{{- range $i, $_ := .Messages }}
 
 
 OLLAMA_TEMPLATES["qwen-25"] = qwen25_ollama
+OLLAMA_TEMPLATES["qwen-2.5"] = qwen25_ollama
 OLLAMA_TEMPLATES["qwen-25-coder"] = qwen_25_coder_ollama
 OLLAMA_TEMPLATES["qwen-25-vl"] = qwen_25_vl_ollama
 OLLAMA_TEMPLATES["openthinker"] = openthinker_ollama
