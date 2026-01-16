@@ -279,7 +279,7 @@ def unsloth_save_model(
             "if you're planning to do multiple saves.\n"
             "If you are certain, change `save_method` to `merged_4bit_forced`."
         )
-    elif save_method == "merged_4bit_forced":
+    elif save_method in {"merged_4bit_forced", "forced_merged_4bit"}:
         save_method = "merged_4bit"
 
     save_pretrained_settings = dict(locals())
