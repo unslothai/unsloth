@@ -577,6 +577,10 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
                     self._autocast_dtype = torch.float16
 
+            # Fix for GRPO DDP Multi-GPU: Unwrap model to access attributes like .config
+            if torch.distributed.is_initialized() and hasattr(model, "module"):
+                model = model.module
+
             pixel_values, image_grid_thw = (
                 kwargs.get("pixel_values", None),
                 kwargs.get("image_grid_thw", None),
