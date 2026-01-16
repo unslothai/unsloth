@@ -172,6 +172,7 @@ The metrics system works without `prometheus_client` - it gracefully degrades an
 - `UNSLOTH_ENABLE_METRICS_TELEMETRY=1` - Enable metrics telemetry (opt-in)
 - `UNSLOTH_DISABLE_METRICS_TELEMETRY=1` - Disable metrics telemetry (opt-out)
 - `UNSLOTH_METRICS_TELEMETRY_ENDPOINT` - Telemetry endpoint (default: https://api.unsloth.ai/metrics)
+- `UNSLOTH_METRICS_TELEMETRY_SETTINGS_ENDPOINT` - Optional settings endpoint for server-side opt-out polling (default: unset)
 - `UNSLOTH_METRICS_TELEMETRY_INTERVAL` - Telemetry interval seconds (default: 300)
 
 ## API Reference
@@ -189,6 +190,8 @@ The metrics system works without `prometheus_client` - it gracefully degrades an
 - `enable_telemetry()` - Enable telemetry (opt-in)
 - `disable_telemetry()` - Disable telemetry
 - `is_telemetry_enabled()` - Check if telemetry is enabled
+
+If `UNSLOTH_METRICS_TELEMETRY_SETTINGS_ENDPOINT` is set, Unsloth will poll it once per session and disable telemetry if it returns `{"enabled": false}`.
 
 ### HTTP Server Functions
 
