@@ -37,11 +37,16 @@ _TELEMETRY_ENDPOINT = os.environ.get(
     "UNSLOTH_METRICS_TELEMETRY_ENDPOINT",
     "https://api.unsloth.ai/metrics",
 )
+_TELEMETRY_SETTINGS_ENDPOINT = os.environ.get(
+    "UNSLOTH_METRICS_TELEMETRY_SETTINGS_ENDPOINT",
+    "",
+)
 _TELEMETRY_INTERVAL = int(os.environ.get("UNSLOTH_METRICS_TELEMETRY_INTERVAL", "300"))
 
 _telemetry_queue: Optional[Queue] = None
 _telemetry_thread: Optional[threading.Thread] = None
 _telemetry_lock = threading.Lock()
+_settings_checked = False
 
 
 def is_telemetry_enabled() -> bool:
@@ -55,6 +60,7 @@ def enable_telemetry() -> None:
     if _TELEMETRY_DISABLED:
         return
     _TELEMETRY_ENABLED = True
+    _check_server_opt_out_once()
     _start_telemetry_thread()
 
 
@@ -108,6 +114,7 @@ def _telemetry_worker() -> None:
         if item is None:
             break
 
+        _check_server_opt_out_once()
         if is_telemetry_enabled():
             _send_telemetry_batch()
 
@@ -180,6 +187,32 @@ def _send_to_server(payload: Dict[str, Any]) -> None:
         )
         urllib.request.urlopen(request, timeout = 5)
     except (urllib.error.URLError, urllib.error.HTTPError, Exception):
+        pass
+
+
+def _check_server_opt_out_once() -> None:
+    """Optional one-time poll for server-side opt-out setting."""
+    global _settings_checked, _TELEMETRY_ENABLED
+    if _settings_checked:
+        return
+    _settings_checked = True
+
+    if not _TELEMETRY_SETTINGS_ENDPOINT:
+        return
+
+    try:
+        request = urllib.request.Request(
+            _TELEMETRY_SETTINGS_ENDPOINT,
+            headers = {"User-Agent": "Unsloth-Metrics/1.0"},
+        )
+        with urllib.request.urlopen(request, timeout = 5) as response:
+            data = response.read().decode("utf-8")
+        # Expect JSON payload like {"enabled": true}
+        enabled = json.loads(data).get("enabled", True)
+        if not enabled:
+            _TELEMETRY_ENABLED = False
+    except Exception:
+        # If polling fails, keep telemetry enabled (opt-in still required)
         pass
 
 
