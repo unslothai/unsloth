@@ -77,47 +77,10 @@ _metrics_registry: Optional[Dict[str, Any]] = None
 _metrics_enabled = False
 
 
-_METRIC_NAMES = {
-    "inference": {
-        "request_total": "unsloth_request_total",
-        "prompt_tokens_total": "unsloth_prompt_tokens_total",
-        "generation_tokens_total": "unsloth_generation_tokens_total",
-        "requests_active": "unsloth_requests_active",
-        "tokens_per_second": "unsloth_tokens_per_second",
-        "request_latency_seconds": "unsloth_request_latency_seconds",
-        "prefill_latency_seconds": "unsloth_prefill_latency_seconds",
-        "decode_latency_seconds": "unsloth_decode_latency_seconds",
-        "time_per_output_token_seconds": "unsloth_time_per_output_token_seconds",
-        "prompt_tokens": "unsloth_prompt_tokens",
-        "generation_tokens": "unsloth_generation_tokens",
-    },
-    "training": {
-        "training_steps_total": "unsloth_training_steps_total",
-        "training_samples_total": "unsloth_training_samples_total",
-        "training_loss": "unsloth_training_loss",
-        "learning_rate": "unsloth_learning_rate",
-        "samples_per_second": "unsloth_training_samples_per_second",
-        "gradient_norm": "unsloth_gradient_norm",
-        "forward_time_seconds": "unsloth_training_forward_time_seconds",
-        "backward_time_seconds": "unsloth_training_backward_time_seconds",
-        "batch_size": "unsloth_training_batch_size",
-    },
-}
-
-
-def _load_existing_metrics() -> Optional[Dict[str, Any]]:
-    """Load existing metrics from the global registry if already registered."""
+def _get_existing_collector(metric_name: str):
     if REGISTRY is None:
         return None
-
-    existing: Dict[str, Dict[str, Any]] = {"inference": {}, "training": {}}
-    for section, names in _METRIC_NAMES.items():
-        for key, metric_name in names.items():
-            collector = REGISTRY._names_to_collectors.get(metric_name)  # type: ignore[attr-defined]
-            if collector is None:
-                return None
-            existing[section][key] = collector
-    return existing
+    return REGISTRY._names_to_collectors.get(metric_name)  # type: ignore[attr-defined]
 
 
 def _init_metrics():
@@ -127,66 +90,61 @@ def _init_metrics():
     if not PROMETHEUS_AVAILABLE:
         return None
 
-    existing = _load_existing_metrics()
-    if existing is not None:
-        _metrics_registry = existing
-        return _metrics_registry
-
     if _metrics_registry is not None:
         return _metrics_registry
 
     # Inference metrics
     inference_metrics = {
         # Counters
-        "request_total": Counter(
+        "request_total": _get_existing_collector("unsloth_request_total") or Counter(
             "unsloth_request_total",
             "Total number of inference requests",
             ["finish_reason"],
         ),
-        "prompt_tokens_total": Counter(
+        "prompt_tokens_total": _get_existing_collector("unsloth_prompt_tokens_total") or Counter(
             "unsloth_prompt_tokens_total",
             "Total number of prompt tokens processed",
         ),
-        "generation_tokens_total": Counter(
+        "generation_tokens_total": _get_existing_collector("unsloth_generation_tokens_total") or Counter(
             "unsloth_generation_tokens_total",
             "Total number of generation tokens produced",
         ),
         # Gauges
-        "requests_active": Gauge(
+        "requests_active": _get_existing_collector("unsloth_requests_active") or Gauge(
             "unsloth_requests_active",
             "Number of currently active inference requests",
         ),
-        "tokens_per_second": Gauge(
+        "tokens_per_second": _get_existing_collector("unsloth_tokens_per_second") or Gauge(
             "unsloth_tokens_per_second",
             "Current tokens per second throughput",
         ),
         # Histograms
-        "request_latency_seconds": Histogram(
+        "request_latency_seconds": _get_existing_collector("unsloth_request_latency_seconds") or Histogram(
             "unsloth_request_latency_seconds",
             "End-to-end request latency in seconds",
             buckets = [0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 120.0],
         ),
-        "prefill_latency_seconds": Histogram(
+        "prefill_latency_seconds": _get_existing_collector("unsloth_prefill_latency_seconds") or Histogram(
             "unsloth_prefill_latency_seconds",
             "Prefill (prompt processing) latency in seconds",
             buckets = [0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0, 10.0],
         ),
-        "decode_latency_seconds": Histogram(
+        "decode_latency_seconds": _get_existing_collector("unsloth_decode_latency_seconds") or Histogram(
             "unsloth_decode_latency_seconds",
             "Decode (generation) latency in seconds",
             buckets = [0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0, 10.0],
         ),
-        "time_per_output_token_seconds": Histogram(
+        "time_per_output_token_seconds": _get_existing_collector("unsloth_time_per_output_token_seconds") or Histogram(
             "unsloth_time_per_output_token_seconds",
             "Time per output token in seconds",
             buckets = [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0],
         ),
-        "prompt_tokens": Histogram(
+        "prompt_tokens": _get_existing_collector("unsloth_prompt_tokens") or Histogram(
             "unsloth_prompt_tokens",
             "Number of prompt tokens per request",
             buckets = [10, 50, 100, 500, 1000, 2000, 4000, 8000, 16000, 32000],
         ),
-        "generation_tokens": Histogram(
+        "generation_tokens": _get_existing_collector("unsloth_generation_tokens") or Histogram(
             "unsloth_generation_tokens",
             "Number of generation tokens per request",
             buckets = [10, 50, 100, 500, 1000, 2000, 4000, 8000, 16000, 32000],
@@ -196,43 +154,43 @@ def _init_metrics():
     # Training metrics
     training_metrics = {
         # Counters
-        "training_steps_total": Counter(
+        "training_steps_total": _get_existing_collector("unsloth_training_steps_total") or Counter(
             "unsloth_training_steps_total",
             "Total number of training steps",
         ),
-        "training_samples_total": Counter(
+        "training_samples_total": _get_existing_collector("unsloth_training_samples_total") or Counter(
             "unsloth_training_samples_total",
             "Total number of training samples processed",
         ),
         # Gauges
-        "training_loss": Gauge(
+        "training_loss": _get_existing_collector("unsloth_training_loss") or Gauge(
             "unsloth_training_loss",
             "Current training loss",
         ),
-        "learning_rate": Gauge(
+        "learning_rate": _get_existing_collector("unsloth_learning_rate") or Gauge(
             "unsloth_learning_rate",
             "Current learning rate",
         ),
-        "samples_per_second": Gauge(
+        "samples_per_second": _get_existing_collector("unsloth_training_samples_per_second") or Gauge(
             "unsloth_training_samples_per_second",
             "Training throughput in samples per second",
         ),
-        "gradient_norm": Gauge(
+        "gradient_norm": _get_existing_collector("unsloth_gradient_norm") or Gauge(
             "unsloth_gradient_norm",
             "Current gradient norm",
         ),
         # Histograms
-        "forward_time_seconds": Histogram(
+        "forward_time_seconds": _get_existing_collector("unsloth_training_forward_time_seconds") or Histogram(
             "unsloth_training_forward_time_seconds",
             "Forward pass time in seconds",
             buckets = [0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0],
         ),
-        "backward_time_seconds": Histogram(
+        "backward_time_seconds": _get_existing_collector("unsloth_training_backward_time_seconds") or Histogram(
             "unsloth_training_backward_time_seconds",
             "Backward pass time in seconds",
             buckets = [0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0],
         ),
-        "batch_size": Histogram(
+        "batch_size": _get_existing_collector("unsloth_training_batch_size") or Histogram(
             "unsloth_training_batch_size",
             "Training batch size",
             buckets = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512],
