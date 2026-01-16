@@ -149,45 +149,58 @@ SDPA_HAS_GQA = "enable_gqa" in scaled_dot_product_attention.__doc__
 from peft.utils.other import ModulesToSaveWrapper
 
 
-def _offload_frozen_module_for_training(
+def _configure_module_for_mixed_precision_training(
     module: ModulesToSaveWrapper,
     device_type: str,
-    offload_device: str = "cpu",
+    offload_device: Optional[str] = "cpu",
 ) -> None:
     """
-    Offload frozen module to CPU and configure trainable copy for mixed precision training.
+    Configure frozen and trainable modules for mixed precision training.
 
     This function optimizes memory usage by:
     1. Moving the trainable copy to the target device with appropriate precision
-    2. Offloading the original frozen module to CPU/disk to free VRAM
-    3. Converting float16 to float32 for compatibility with certain GPUs (e.g., Tesla T4)
+    2. Converting float16 to float32 to prevent gradient overflow during training
+    3. Optionally offloading the original frozen module to CPU/disk to free VRAM
 
     Args:
         module: The module to configure. Must be a ModulesToSaveWrapper with a
             `modules_to_save` attribute containing trainable and original modules.
         device_type: Target device string for training (e.g., "cuda:0", "xpu:0")
-        offload_device: Device to offload frozen parameters (default: "cpu")
+        offload_device: Device to offload frozen parameters (default: "cpu").
+            If None, the original frozen module remains on its current device.
             Note: Currently only "cpu" is supported; disk offloading is planned.
 
     Returns:
         None (modifies module in-place)
 
     Note:
-        - Float16 weights are automatically promoted to float32 for GPU compatibility
-        - Original frozen parameters are moved to CPU to reduce active VRAM usage
+        - Float16 weights are unconditionally promoted to float32 for all GPUs to prevent
+          gradient overflow during training. This is required for numerical stability across
+          all GPU architectures, not just specific models like Tesla T4.
+        - The VRAM increase from f16->f32 conversion is minimal (~100MB), which is negligible
+          compared to the risk of gradient overflow causing training instability.
+        - When offload_device is specified, frozen parameters are moved to free VRAM
         - Future versions will support disk-based offloading for even larger models
 
     See Also:
         - https://github.com/unslothai/unsloth/pull/1200 (Tesla T4 float32 requirement)
+        - https://unsloth.ai/docs/models/gemma-3-how-to-run-and-fine-tune#gemma-3-fixes-analysis
+          (Gradient overflow analysis for all models)
     """
-    # Early return with explicit None if module doesn't support mixed precision training
+    # Raise an error if the module does not have a `modules_to_save` attribute
     if not hasattr(module, "modules_to_save"):
-        return None
+        raise AttributeError(
+            "Unsloth: Module must have a `modules_to_save` attribute for mixed-precision training configuration."
+        )
 
     new_dtype = module.modules_to_save.default.weight.dtype
     if new_dtype == torch.float16:
-        # See https://github.com/unslothai/unsloth/pull/1200
-        # Tesla T4 must use float32 and not float16
+        # IMPORTANT: Must convert f16 -> f32 for ALL GPUs to prevent gradient overflow.
+        # This is not a Tesla T4-specific issue - gradients can become infinity with f16
+        # on any GPU architecture during training. The ~100MB VRAM increase is negligible
+        # compared to training stability issues caused by gradient overflow.
+        # See: https://unsloth.ai/docs/models/gemma-3-how-to-run-and-fine-tune#gemma-3-fixes-analysis
+        # Original issue: https://github.com/unslothai/unsloth/pull/1200
         new_dtype = torch.float32
 
     module.modules_to_save.default.to(
@@ -196,7 +209,8 @@ def _offload_frozen_module_for_training(
     module.modules_to_save.default.requires_grad_(True)
 
     # [TODO] Move old module to CPU - should be disk!
-    module.original_module.to(device = offload_device, non_blocking = True)
+    if offload_device is not None:
+        module.original_module.to(device = offload_device, non_blocking = True)
     module.original_module.requires_grad_(False)
 
 
@@ -2764,14 +2778,14 @@ class FastLlamaModel:
                         "Unsloth: Training embed_tokens in mixed precision to save VRAM"
                     )
 
-                    _offload_frozen_module_for_training(
+                    _configure_module_for_mixed_precision_training(
                         model.get_input_embeddings(), DEVICE_TYPE_TORCH
                     )
 
                 if "lm_head" in new_target_modules:
                     print("Unsloth: Training lm_head in mixed precision to save VRAM")
 
-                    _offload_frozen_module_for_training(
+                    _configure_module_for_mixed_precision_training(
                         model.get_output_embeddings(), DEVICE_TYPE_TORCH
                     )
 
@@ -3081,35 +3095,17 @@ class FastLlamaModel:
             print("Unsloth: Training embed_tokens in mixed precision to save VRAM")
             assert hasattr(model.get_input_embeddings(), "modules_to_save")
 
-            new_dtype = (
-                model.get_input_embeddings().modules_to_save.default.weight.dtype
+            _configure_module_for_mixed_precision_training(
+                model.get_input_embeddings(), DEVICE_TYPE_TORCH, offload_device = None
             )
-            if new_dtype == torch.float16:
-                # See https://github.com/unslothai/unsloth/pull/1200
-                # Tesla T4 must use float32 and not float16
-                new_dtype = torch.float32
-
-            model.get_input_embeddings().modules_to_save.default.to(
-                device = DEVICE_TYPE_TORCH, dtype = new_dtype, non_blocking = True
-            )
-            model.get_input_embeddings().modules_to_save.default.requires_grad_(True)
 
         if train_lm_head:
             print("Unsloth: Training lm_head in mixed precision to save VRAM")
             assert hasattr(model.get_output_embeddings(), "modules_to_save")
 
-            new_dtype = (
-                model.get_output_embeddings().modules_to_save.default.weight.dtype
+            _configure_module_for_mixed_precision_training(
+                model.get_output_embeddings(), DEVICE_TYPE_TORCH, offload_device = None
             )
-            if new_dtype == torch.float16:
-                # See https://github.com/unslothai/unsloth/pull/1200
-                # Tesla T4 must use float32 and not float16
-                new_dtype = torch.float32
-
-            model.get_output_embeddings().modules_to_save.default.to(
-                device = DEVICE_TYPE_TORCH, dtype = new_dtype, non_blocking = True
-            )
-            model.get_output_embeddings().modules_to_save.default.requires_grad_(True)
 
         # Patch tokenizer to pad to the right
         internal_model = model
