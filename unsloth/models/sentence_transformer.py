@@ -1022,6 +1022,18 @@ class FastSentenceTransformer(FastModel):
                 print("Disabling torch.compile to enable gradient checkpointing.")
                 compile_mode = None  # Disable compilation
 
+                is_distilbert = "distilbert" == model_type.lower()
+                is_mpnet = "mpnet" == model_type.lower()
+
+                if is_distilbert and transformers4:
+                    FastSentenceTransformer._patch_distilbert_v4()
+                elif is_distilbert:
+                    FastSentenceTransformer._patch_distilbert_v5()
+                elif is_mpnet and transformers4:
+                    FastSentenceTransformer._patch_mpnet_v4()
+                elif is_mpnet:
+                    FastSentenceTransformer._patch_mpnet_v5()
+
             # Load via native SentenceTransformer (bypasses Unsloth patching)
             st_model = SentenceTransformer(
                 model_name,
@@ -1351,6 +1363,24 @@ class FastSentenceTransformer(FastModel):
 
                 # Track if gradient checkpointing was actually enabled
                 gc_enabled = False
+
+                # this is needed when from_pretrained was called without gradient
+                # checkpointing but get_peft_model requests it
+                if use_gradient_checkpointing and use_gradient_checkpointing != False:
+                    import transformers
+                    from packaging.version import Version
+
+                    transformers4 = Version(transformers.__version__).major < 5
+                    model_type = getattr(inner_model.config, "model_type", "").lower()
+
+                    if model_type == "distilbert" and transformers4:
+                        FastSentenceTransformer._patch_distilbert_v4()
+                    elif model_type == "distilbert":
+                        FastSentenceTransformer._patch_distilbert_v5()
+                    elif model_type == "mpnet" and transformers4:
+                        FastSentenceTransformer._patch_mpnet_v4()
+                    elif model_type == "mpnet":
+                        FastSentenceTransformer._patch_mpnet_v5()
 
                 # Prepare for k-bit training if quantized
                 if is_quantized:
