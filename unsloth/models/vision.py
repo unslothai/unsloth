@@ -301,9 +301,7 @@ def unsloth_base_fast_generate(
     # Track metrics if enabled
     collector = None
     request_id = None
-    prompt_tokens_per_sequence = (
-        input_ids.shape[-1] if input_ids is not None else 0
-    )
+    prompt_tokens_per_sequence = input_ids.shape[-1] if input_ids is not None else 0
     prompt_batch_size = input_ids.shape[0] if input_ids.dim() > 1 else 1
     num_prompt_tokens = prompt_tokens_per_sequence * prompt_batch_size
     max_tokens = kwargs.get("max_new_tokens") or kwargs.get("max_length")
@@ -364,9 +362,7 @@ def unsloth_base_fast_generate(
                 # Handle ModelOutput when return_dict_in_generate=True
                 sequences = output["sequences"]
                 if isinstance(sequences, torch.Tensor):
-                    output_batch_size = (
-                        sequences.shape[0] if sequences.dim() > 1 else 1
-                    )
+                    output_batch_size = sequences.shape[0] if sequences.dim() > 1 else 1
                     if output_batch_size != prompt_batch_size:
                         effective_prompt_tokens = (
                             prompt_tokens_per_sequence * output_batch_size
@@ -382,9 +378,7 @@ def unsloth_base_fast_generate(
                 # Handle ModelOutput object directly
                 sequences = output.sequences
                 if isinstance(sequences, torch.Tensor):
-                    output_batch_size = (
-                        sequences.shape[0] if sequences.dim() > 1 else 1
-                    )
+                    output_batch_size = sequences.shape[0] if sequences.dim() > 1 else 1
                     if output_batch_size != prompt_batch_size:
                         effective_prompt_tokens = (
                             prompt_tokens_per_sequence * output_batch_size
