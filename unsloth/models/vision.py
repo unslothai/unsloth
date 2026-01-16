@@ -301,9 +301,11 @@ def unsloth_base_fast_generate(
     # Track metrics if enabled
     collector = None
     request_id = None
-    num_prompt_tokens = (
-        input_ids.shape[-1] * bsz if input_ids.dim() > 1 else input_ids.shape[-1]
+    prompt_tokens_per_sequence = (
+        input_ids.shape[-1] if input_ids is not None else 0
     )
+    prompt_batch_size = input_ids.shape[0] if input_ids.dim() > 1 else 1
+    num_prompt_tokens = prompt_tokens_per_sequence * prompt_batch_size
     max_tokens = kwargs.get("max_new_tokens") or kwargs.get("max_length")
 
     try:
@@ -346,30 +348,54 @@ def unsloth_base_fast_generate(
 
             # Calculate generated tokens
             num_generation_tokens = 0
+            effective_prompt_tokens = num_prompt_tokens
             if isinstance(output, torch.Tensor):
+                output_batch_size = output.shape[0] if output.dim() > 1 else 1
+                if output_batch_size != prompt_batch_size:
+                    effective_prompt_tokens = (
+                        prompt_tokens_per_sequence * output_batch_size
+                    )
                 if output.dim() > 1:
                     total_tokens = output.shape[-1] * output.shape[0]
                 else:
                     total_tokens = output.shape[-1]
-                num_generation_tokens = max(0, total_tokens - num_prompt_tokens)
+                num_generation_tokens = max(0, total_tokens - effective_prompt_tokens)
             elif isinstance(output, dict) and "sequences" in output:
                 # Handle ModelOutput when return_dict_in_generate=True
                 sequences = output["sequences"]
                 if isinstance(sequences, torch.Tensor):
+                    output_batch_size = (
+                        sequences.shape[0] if sequences.dim() > 1 else 1
+                    )
+                    if output_batch_size != prompt_batch_size:
+                        effective_prompt_tokens = (
+                            prompt_tokens_per_sequence * output_batch_size
+                        )
                     if sequences.dim() > 1:
                         total_tokens = sequences.shape[-1] * sequences.shape[0]
                     else:
                         total_tokens = sequences.shape[-1]
-                    num_generation_tokens = max(0, total_tokens - num_prompt_tokens)
+                    num_generation_tokens = max(
+                        0, total_tokens - effective_prompt_tokens
+                    )
             elif hasattr(output, "sequences"):
                 # Handle ModelOutput object directly
                 sequences = output.sequences
                 if isinstance(sequences, torch.Tensor):
+                    output_batch_size = (
+                        sequences.shape[0] if sequences.dim() > 1 else 1
+                    )
+                    if output_batch_size != prompt_batch_size:
+                        effective_prompt_tokens = (
+                            prompt_tokens_per_sequence * output_batch_size
+                        )
                     if sequences.dim() > 1:
                         total_tokens = sequences.shape[-1] * sequences.shape[0]
                     else:
                         total_tokens = sequences.shape[-1]
-                    num_generation_tokens = max(0, total_tokens - num_prompt_tokens)
+                    num_generation_tokens = max(
+                        0, total_tokens - effective_prompt_tokens
+                    )
 
             # Estimate timing (simplified)
             # Note: These are estimations. For more accurate metrics, consider hooking into
@@ -389,12 +415,14 @@ def unsloth_base_fast_generate(
 
             # Determine finish reason (simplified - could be improved)
             finish_reason = "stop"  # Default
-            if isinstance(output, (dict, type(output))) and hasattr(
-                output, "finish_reason"
-            ):
-                finish_reason = output.finish_reason
-            elif isinstance(output, dict) and "finish_reason" in output:
-                finish_reason = output["finish_reason"]
+            if hasattr(output, "finish_reason"):
+                output_reason = getattr(output, "finish_reason")
+                if output_reason is not None:
+                    finish_reason = output_reason
+            elif isinstance(output, dict):
+                output_reason = output.get("finish_reason")
+                if output_reason is not None:
+                    finish_reason = output_reason
             collector.inference_stats.finish_request(
                 request_id = request_id,
                 finish_reason = finish_reason,

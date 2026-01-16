@@ -131,7 +131,7 @@ class InferenceStats:
             if request_id in self._active_requests:
                 self._active_requests[request_id].last_token_time = time.time()
                 req = self._active_requests[request_id]
-                if req.num_generation_tokens == 0:
+                if req.num_generation_tokens == 0 and req.first_token_time is None:
                     req.first_token_time = req.last_token_time
                 req.num_generation_tokens += 1
 
