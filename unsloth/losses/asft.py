@@ -335,10 +335,18 @@ def _compute_kl_divergence(
     logit_softcapping: float = 0,
     logit_scaling: float = 0,
     force_fp32: bool = True,
+    kl_direction: Literal["forward", "reverse"] = "forward",
 ) -> torch.Tensor:
-    """Compute per-token KL divergence: KL(p_ref || p_cur).
+    """Compute per-token KL divergence (forward KL by default).
 
-    KL(p_ref || p_cur) = sum_i p_ref(i) * (log p_ref(i) - log p_cur(i))
+    KL naming is frequently confused due to PyTorch's kl_div signature
+    (target is the weighting distribution). Definitions here follow standard
+    math/RLHF convention:
+      - Forward KL: KL(p_ref || p_cur), expectation over p_ref (mass-covering).
+      - Reverse KL: KL(p_cur || p_ref), expectation over p_cur (mode-seeking).
+    The original ASFT repo's paper text says "reverse KL" but its code uses
+    F.kl_div(log(cur), ref), which is forward KL; we match the code behavior.
+    Reverse KL is available via kl_direction="reverse".
 
     Args:
         cur_logits: Current model logits (B*T, V) or (B, T, V).
@@ -347,6 +355,7 @@ def _compute_kl_divergence(
         logit_softcapping: Softcapping value.
         logit_scaling: Scaling value.
         force_fp32: Whether to compute in FP32 for stability.
+        kl_direction: "forward" for KL(p_ref || p_cur), "reverse" for KL(p_cur || p_ref).
 
     Returns:
         Per-token KL divergence of shape (B*T,) or (B, T).
@@ -367,14 +376,19 @@ def _compute_kl_divergence(
         cur_eff = cur_eff.float()
         ref_eff = ref_eff.float()
 
-    # Compute log probabilities and probabilities
-    cur_logp = F.log_softmax(cur_eff, dim = -1)
-    ref_p = F.softmax(ref_eff, dim = -1)
-
-    # KL(p_ref || p_cur) = sum_i p_ref(i) * (log p_ref(i) - log p_cur(i))
-    # Using F.kl_div: kl_div(input=log_cur, target=ref) computes the right thing
-    # with reduction='none', we get per-element, then sum over vocab
-    kl = F.kl_div(cur_logp, ref_p, reduction = "none").sum(dim = -1)
+    if kl_direction == "forward":
+        # Forward KL: KL(p_ref || p_cur)
+        cur_logp = F.log_softmax(cur_eff, dim = -1)
+        ref_p = F.softmax(ref_eff, dim = -1)
+        # Using F.kl_div: kl_div(input=log_cur, target=ref) computes KL(ref || cur)
+        kl = F.kl_div(cur_logp, ref_p, reduction = "none").sum(dim = -1)
+    elif kl_direction == "reverse":
+        # Reverse KL: KL(p_cur || p_ref)
+        ref_logp = F.log_softmax(ref_eff, dim = -1)
+        cur_p = F.softmax(cur_eff, dim = -1)
+        kl = F.kl_div(ref_logp, cur_p, reduction = "none").sum(dim = -1)
+    else:
+        raise ValueError(f"Unknown kl_direction: {kl_direction}")
 
     return kl
 
@@ -487,6 +501,7 @@ def _compute_kl_batch_micro(
     logit_softcapping: float = 0,
     logit_scaling: float = 0,
     force_fp32: bool = True,
+    kl_direction: Literal["forward", "reverse"] = "forward",
 ) -> torch.Tensor:
     """Compute KL using batch microbatching strategy.
 
@@ -503,6 +518,7 @@ def _compute_kl_batch_micro(
         logit_softcapping: Softcapping value.
         logit_scaling: Scaling value.
         force_fp32: Whether to use FP32 for KL.
+        kl_direction: "forward" for KL(p_ref || p_cur), "reverse" for KL(p_cur || p_ref).
 
     Returns:
         KL tensor of shape (B, T).
@@ -530,6 +546,7 @@ def _compute_kl_batch_micro(
             logit_softcapping,
             logit_scaling,
             force_fp32,
+            kl_direction,
         )
 
         # Reshape if needed
@@ -558,6 +575,7 @@ def _compute_kl_seq_kv_cache(
     logit_softcapping: float = 0,
     logit_scaling: float = 0,
     force_fp32: bool = True,
+    kl_direction: Literal["forward", "reverse"] = "forward",
 ) -> torch.Tensor:
     """Compute KL using sequence chunking with KV cache strategy.
 
@@ -577,6 +595,7 @@ def _compute_kl_seq_kv_cache(
         logit_softcapping: Softcapping value.
         logit_scaling: Scaling value.
         force_fp32: Whether to use FP32 for KL.
+        kl_direction: "forward" for KL(p_ref || p_cur), "reverse" for KL(p_cur || p_ref).
 
     Returns:
         KL tensor of shape (B, T).
@@ -606,6 +625,7 @@ def _compute_kl_seq_kv_cache(
                 logit_softcapping = logit_softcapping,
                 logit_scaling = logit_scaling,
                 force_fp32 = force_fp32,
+                kl_direction = kl_direction,
             )
             if kl_mb.dim() == 1:
                 mb_batch = b_end - b_start
@@ -677,6 +697,7 @@ def _compute_kl_seq_kv_cache(
                         logit_softcapping,
                         logit_scaling,
                         force_fp32,
+                        kl_direction,
                     )
                 ref_outputs = ref_forward(**forward_inputs)
                 ref_logits, _ = _unwrap_reference_outputs(ref_outputs)
@@ -687,6 +708,7 @@ def _compute_kl_seq_kv_cache(
                     logit_softcapping,
                     logit_scaling,
                     force_fp32,
+                    kl_direction,
                 )
                 if kl_full.dim() == 1:
                     kl_full = kl_full.view(batch_size, seq_len)
@@ -703,6 +725,7 @@ def _compute_kl_seq_kv_cache(
                 logit_softcapping,
                 logit_scaling,
                 force_fp32,
+                kl_direction,
             )
 
             if kl_chunk.dim() == 1:
@@ -739,6 +762,7 @@ def _compute_kl_seq_kv_cache(
                     logit_softcapping,
                     logit_scaling,
                     force_fp32,
+                    kl_direction,
                 )
             ref_outputs = ref_forward(**forward_inputs)
             ref_logits, _ = _unwrap_reference_outputs(ref_outputs)
@@ -749,6 +773,7 @@ def _compute_kl_seq_kv_cache(
                 logit_softcapping,
                 logit_scaling,
                 force_fp32,
+                kl_direction,
             )
             if kl_full.dim() == 1:
                 kl_full = kl_full.view(batch_size, seq_len)
@@ -768,9 +793,11 @@ def compute_asft_loss(
     *,
     asft_mode: Literal["sft", "dft", "sft+kl", "asft"] = "asft",
     kl_weight: float = 0.0,
+    kl_direction: Literal["forward", "reverse"] = "forward",
     reference_policy: Literal["disable_adapter", "frozen_copy"] = "disable_adapter",
     streaming_config: Optional[ASFTStreamingConfig] = None,
     original_model: Optional[nn.Module] = None,
+    normalize_by: Literal["tokens", "weights"] = "tokens",
     return_outputs: bool = False,
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, Any]]:
     """Compute ASFT loss.
@@ -786,9 +813,11 @@ def compute_asft_loss(
             - "sft+kl": CE + KL divergence from reference
             - "asft": DFT + KL divergence (full ASFT)
         kl_weight: Weight for KL term (only for sft+kl and asft modes).
+        kl_direction: "forward" for KL(p_ref || p_cur), "reverse" for KL(p_cur || p_ref).
         reference_policy: How to get reference distribution.
         streaming_config: Configuration for streaming strategies.
         original_model: Optional pre-created frozen reference model.
+        normalize_by: "tokens" (default, matches reference) or "weights" for DFT/ASFT.
         return_outputs: Whether to return model outputs alongside loss.
 
     Returns:
@@ -841,10 +870,10 @@ def compute_asft_loss(
 
     # Valid mask and normalization
     valid_mask = shift_labels != -100
-    n_items = inputs.get("num_items_in_batch", None)
-    if n_items is None:
-        n_items = valid_mask.sum()
-    n_items = max(n_items, 1)  # Avoid division by zero
+    n_items_tokens = inputs.get("num_items_in_batch", None)
+    if n_items_tokens is None:
+        n_items_tokens = valid_mask.sum()
+    n_items_tokens = max(n_items_tokens, 1)  # Avoid division by zero
 
     # Handle edge case: no valid tokens
     if valid_mask.sum() == 0:
@@ -862,6 +891,7 @@ def compute_asft_loss(
     ce_losses = ce_losses.view(batch_size, seq_len)
 
     # Initialize token losses
+    dft_weights = None
     if asft_mode == "sft":
         # Standard SFT: just CE
         token_loss = ce_losses
@@ -911,6 +941,7 @@ def compute_asft_loss(
                 logit_softcapping,
                 logit_scaling,
                 streaming_config.force_fp32_kl,
+                kl_direction,
             )
         elif streaming_enabled and ref_strategy == "seq_kv_cache":
             seq_chunk_size = streaming_config.seq_chunk_size
@@ -935,6 +966,7 @@ def compute_asft_loss(
                 logit_softcapping = logit_softcapping,
                 logit_scaling = logit_scaling,
                 force_fp32 = streaming_config.force_fp32_kl,
+                kl_direction = kl_direction,
             )
         else:
             # Full reference forward
@@ -947,6 +979,7 @@ def compute_asft_loss(
                 logit_softcapping,
                 logit_scaling,
                 streaming_config.force_fp32_kl,
+                kl_direction,
             )
             kl = kl.view(batch_size, seq_len)
             del ref_logits
@@ -972,8 +1005,14 @@ def compute_asft_loss(
     else:
         raise ValueError(f"Unknown asft_mode: {asft_mode}")
 
-    # Final reduction: sum over valid tokens, divide by n_items
-    loss = token_loss[valid_mask].sum() / n_items
+    # Final reduction: sum over valid tokens, divide by chosen normalizer.
+    normalizer = n_items_tokens
+    if normalize_by == "weights" and dft_weights is not None:
+        weight_sum = dft_weights[valid_mask].sum()
+        normalizer = weight_sum.clamp_min(1e-8)
+    elif normalize_by != "tokens":
+        raise ValueError(f"Unknown normalize_by: {normalize_by}")
+    loss = token_loss[valid_mask].sum() / normalizer
 
     if return_outputs:
         return loss, outputs

@@ -230,8 +230,10 @@ class ASFTTrainer(UnslothTrainer):
         asft_enabled: bool = False,
         asft_mode: Literal["sft", "dft", "sft+kl", "asft"] = "asft",
         kl_weight: float = 0.0,
+        kl_direction: Literal["forward", "reverse"] = "forward",
         reference_policy: Literal["disable_adapter", "frozen_copy"] = "disable_adapter",
         asft_streaming: Optional[ASFTStreamingConfig] = None,
+        normalize_by: Literal["tokens", "weights"] = "tokens",
         **kwargs,
     ):
         """Initialize ASFTTrainer.
@@ -246,10 +248,12 @@ class ASFTTrainer(UnslothTrainer):
                 - "sft+kl": CE + KL divergence from reference
                 - "asft": Full ASFT (DFT + KL)
             kl_weight: Weight for KL term (used in sft+kl and asft modes).
+            kl_direction: "forward" for KL(p_ref || p_cur), "reverse" for KL(p_cur || p_ref).
             reference_policy: How to compute reference distribution:
                 - "disable_adapter": Use model with LoRA adapters disabled
                 - "frozen_copy": Use a frozen deepcopy of the model
             asft_streaming: Optional streaming config for VRAM reduction.
+            normalize_by: "tokens" (default) or "weights" for DFT/ASFT normalization.
             **kwargs: Keyword arguments for parent trainer.
         """
         super().__init__(*args, **kwargs)
@@ -257,8 +261,10 @@ class ASFTTrainer(UnslothTrainer):
         self.asft_enabled = asft_enabled
         self.asft_mode = asft_mode
         self.kl_weight = kl_weight
+        self.kl_direction = kl_direction
         self.reference_policy = reference_policy
         self.asft_streaming = asft_streaming or ASFTStreamingConfig()
+        self.normalize_by = normalize_by
 
         # Will be lazily initialized if needed
         self._asft_original_model = None
@@ -294,6 +300,18 @@ class ASFTTrainer(UnslothTrainer):
                 and not hasattr(model, "disable_adapter")
             )
             if needs_frozen_copy and self._asft_original_model is None:
+                if self.reference_policy == "frozen_copy":
+                    warnings.warn(
+                        "Unsloth: Creating a frozen copy of the model for ASFT. "
+                        "This doubles VRAM usage. Use 'disable_adapter' if using LoRA.",
+                        stacklevel = 2,
+                    )
+                elif self.reference_policy == "disable_adapter":
+                    warnings.warn(
+                        "Unsloth: 'disable_adapter' is unavailable; falling back to a "
+                        "frozen copy for ASFT. This doubles VRAM usage.",
+                        stacklevel = 2,
+                    )
                 self._asft_original_model = deepcopy(model)
                 self._asft_original_model.eval()
                 self._asft_original_model.requires_grad_(False)
@@ -304,9 +322,11 @@ class ASFTTrainer(UnslothTrainer):
             inputs = inputs,
             asft_mode = self.asft_mode,
             kl_weight = self.kl_weight,
+            kl_direction = self.kl_direction,
             reference_policy = self.reference_policy,
             streaming_config = self.asft_streaming,
             original_model = self._asft_original_model,
+            normalize_by = self.normalize_by,
             return_outputs = return_outputs,
         )
 

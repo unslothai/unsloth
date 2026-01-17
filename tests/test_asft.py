@@ -334,7 +334,7 @@ class TestKLDivergence:
         cur_logits = torch.randn(4, 8)  # (B*T, V)
         ref_logits = torch.randn(4, 8)
 
-        kl = _compute_kl_divergence(cur_logits, ref_logits)
+        kl = _compute_kl_divergence(cur_logits, ref_logits, kl_direction = "forward")
 
         # KL should be non-negative
         assert torch.all(kl >= -1e-6)  # Allow small numerical errors
@@ -343,7 +343,7 @@ class TestKLDivergence:
         """Test that KL is zero when distributions are identical."""
         logits = torch.randn(4, 8)
 
-        kl = _compute_kl_divergence(logits, logits.clone())
+        kl = _compute_kl_divergence(logits, logits.clone(), kl_direction = "forward")
 
         # Should be close to zero
         assert torch.allclose(kl, torch.zeros_like(kl), atol = 1e-5)
@@ -353,10 +353,26 @@ class TestKLDivergence:
         cur_logits = torch.randn(2, 4, 8)  # (B, T, V)
         ref_logits = torch.randn(2, 4, 8)
 
-        kl = _compute_kl_divergence(cur_logits, ref_logits)
+        kl = _compute_kl_divergence(cur_logits, ref_logits, kl_direction = "forward")
 
         # Should be flattened to (B*T,)
         assert kl.shape == (8,)
+
+    def test_kl_reverse_matches_manual(self):
+        """Test reverse KL matches manual computation."""
+        torch.manual_seed(321)
+        cur_logits = torch.randn(2, 5)
+        ref_logits = torch.randn(2, 5)
+
+        kl_reverse = _compute_kl_divergence(
+            cur_logits, ref_logits, kl_direction = "reverse"
+        )
+
+        cur_p = F.softmax(cur_logits, dim = -1)
+        ref_p = F.softmax(ref_logits, dim = -1)
+        manual = (cur_p * (cur_p.log() - ref_p.log())).sum(dim = -1)
+
+        assert torch.allclose(kl_reverse, manual, atol = 1e-5)
 
 
 # -----------------------------------------------------------------------------
@@ -438,6 +454,37 @@ class TestComputeASFTLoss:
 
         assert loss.dim() == 0
         assert loss.requires_grad
+
+    def test_dft_normalize_by_weights(self, simple_model):
+        """Test DFT normalization by weight sum."""
+        inputs = {
+            "input_ids": torch.tensor([[1, 2, 3, 4]]),
+            "labels": torch.tensor([[1, 2, 3, 4]]),
+        }
+
+        logits = simple_model(input_ids = inputs["input_ids"]).logits
+        shift_labels = build_shift_labels(inputs["labels"])
+        valid_mask = shift_labels != -100
+        ce_losses, _ = fast_cross_entropy_loss_per_token(logits, shift_labels)
+        ce_losses = ce_losses.view(shift_labels.shape)
+        dft_weights = _compute_dft_weights(
+            logits,
+            shift_labels,
+            ce_losses = ce_losses,
+            valid_mask = valid_mask,
+        ).view(shift_labels.shape)
+        token_loss = ce_losses * dft_weights
+        expected = token_loss[valid_mask].sum() / dft_weights[valid_mask].sum().clamp_min(1e-8)
+
+        loss = compute_asft_loss(
+            simple_model,
+            inputs,
+            asft_mode = "dft",
+            kl_weight = 0.0,
+            normalize_by = "weights",
+        )
+
+        assert torch.allclose(loss, expected, atol = 1e-5)
 
     def test_sft_kl_mode(self, simple_model):
         """Test SFT+KL mode."""
@@ -592,6 +639,7 @@ class TestStreamingModeMapping:
             logit_softcapping = 0,
             logit_scaling = 0,
             force_fp32 = True,
+            kl_direction = "forward",
         ):
             batch, seq_len = shift_labels.shape
             return torch.zeros(batch, seq_len, device = shift_labels.device)
@@ -726,6 +774,7 @@ class TestStreamingModeMapping:
             logit_softcapping = 0,
             logit_scaling = 0,
             force_fp32 = True,
+            kl_direction = "forward",
         ):
             batch, seq_len = ref_logits.shape[:2]
             return torch.zeros(batch * seq_len, device = ref_logits.device)
@@ -1144,8 +1193,10 @@ class TestASFTTrainerComputeLoss:
         trainer.asft_enabled = True
         trainer.asft_mode = "sft"
         trainer.kl_weight = 0.0
+        trainer.kl_direction = "forward"
         trainer.reference_policy = "disable_adapter"
         trainer.asft_streaming = ASFTStreamingConfig()
+        trainer.normalize_by = "tokens"
         trainer._asft_original_model = None
 
         model = nn.Module()
@@ -1168,8 +1219,10 @@ class TestASFTTrainerComputeLoss:
         assert loss_mock.call_args.kwargs["model"] is model
         assert loss_mock.call_args.kwargs["asft_mode"] == "sft"
         assert loss_mock.call_args.kwargs["kl_weight"] == 0.0
+        assert loss_mock.call_args.kwargs["kl_direction"] == "forward"
         assert loss_mock.call_args.kwargs["reference_policy"] == "disable_adapter"
         assert loss_mock.call_args.kwargs["streaming_config"] is trainer.asft_streaming
+        assert loss_mock.call_args.kwargs["normalize_by"] == "tokens"
 
     def test_compute_loss_creates_frozen_copy_once(self):
         """Test frozen copy is created once when needed."""
@@ -1179,8 +1232,10 @@ class TestASFTTrainerComputeLoss:
         trainer.asft_enabled = True
         trainer.asft_mode = "asft"
         trainer.kl_weight = 0.1
+        trainer.kl_direction = "forward"
         trainer.reference_policy = "frozen_copy"
         trainer.asft_streaming = ASFTStreamingConfig()
+        trainer.normalize_by = "tokens"
         trainer._asft_original_model = None
 
         model = nn.Module()
@@ -1190,7 +1245,7 @@ class TestASFTTrainerComputeLoss:
             "labels": torch.tensor([[1, 2, 3, 4]]),
         }
 
-        with patch(
+        with pytest.warns(UserWarning), patch(
             "unsloth.trainer.deepcopy", return_value = model_copy
         ) as deepcopy_mock, patch(
             "unsloth.trainer.compute_asft_loss",
@@ -1212,8 +1267,10 @@ class TestASFTTrainerComputeLoss:
         trainer.asft_enabled = True
         trainer.asft_mode = "asft"
         trainer.kl_weight = 0.1
+        trainer.kl_direction = "forward"
         trainer.reference_policy = "disable_adapter"
         trainer.asft_streaming = ASFTStreamingConfig()
+        trainer.normalize_by = "tokens"
         trainer._asft_original_model = None
 
         model = MagicMock()
