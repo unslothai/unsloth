@@ -1472,21 +1472,5 @@ class TestASFTTrainerComputeLoss:
         assert loss_mock.call_args.kwargs["original_model"] is None
 
 
-class TestUnslothTrainingArguments:
-    """Tests for UnslothTrainingArguments."""
-
-    def test_embedding_learning_rate_is_set(self):
-        """Test embedding_learning_rate is stored on the args object."""
-        from unsloth import trainer as trainer_module
-
-        with patch.object(
-            trainer_module.TrainingArguments, "__init__", return_value = None
-        ) as base_init:
-            args = trainer_module.UnslothTrainingArguments(embedding_learning_rate = 0.01)
-
-        assert args.embedding_learning_rate == 0.01
-        assert base_init.called
-
-
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -190,13 +190,8 @@ def run(args):
     if args.save_model:
         # if args.quantization_method is a list, we will save the model for each quantization method
         if args.save_gguf:
-            quantization_methods = (
-                args.quantization
-                if isinstance(args.quantization, list)
-                else [args.quantization]
-            )
-            if len(quantization_methods) > 1:
-                for quantization_method in quantization_methods:
+            if isinstance(args.quantization, list):
+                for quantization_method in args.quantization:
                     print(
                         f"Saving model with quantization method: {quantization_method}"
                     )
@@ -212,18 +207,17 @@ def run(args):
                             quantization_method = quantization_method,
                         )
             else:
-                quantization_method = quantization_methods[0]
-                print(f"Saving model with quantization method: {quantization_method}")
+                print(f"Saving model with quantization method: {args.quantization}")
                 model.save_pretrained_gguf(
                     args.save_path,
                     tokenizer,
-                    quantization_method = quantization_method,
+                    quantization_method = args.quantization,
                 )
                 if args.push_model:
                     model.push_to_hub_gguf(
                         hub_path = args.hub_path,
                         hub_token = args.hub_token,
-                        quantization_method = quantization_method,
+                        quantization_method = args.quantization,
                     )
         else:
             model.save_pretrained_merged(args.save_path, tokenizer, args.save_method)
@@ -438,7 +432,7 @@ def build_parser():
         "--save_method",
         type = str,
         default = "merged_16bit",
-        choices = ["merged_16bit", "merged_4bit", "forced_merged_4bit", "lora"],
+        choices = ["merged_16bit", "merged_4bit", "lora"],
         help = "Save method for the model, default is 'merged_16bit'",
     )
     save_group.add_argument(
