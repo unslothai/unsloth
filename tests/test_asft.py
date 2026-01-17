@@ -136,6 +136,38 @@ class TestEffectiveLogits:
         expected = 30.0 * torch.tanh(x / 30.0)
         assert torch.allclose(result, expected, atol = 1e-6)
 
+    def test_reads_granite_logit_scaling(self):
+        """Test Granite logit scaling override."""
+        model = SimpleNamespace(
+            config = SimpleNamespace(
+                model_type = "granite",
+                final_logit_softcapping = 0,
+                logit_scale = 2.0,
+                logit_scaling = 0,
+                logits_scaling = 16.0,
+            )
+        )
+        logits = torch.randn(2, 4, 8)
+        result = effective_logits(logits, model)
+        expected = (1.0 / 16.0) * logits.float()
+        assert torch.allclose(result, expected, atol = 1e-6)
+
+    def test_reads_falcon_h1_logit_scaling(self):
+        """Test Falcon H1 logit scaling override."""
+        model = SimpleNamespace(
+            config = SimpleNamespace(
+                model_type = "falcon_h1",
+                final_logit_softcapping = 0,
+                logit_scale = 2.0,
+                logit_scaling = 0,
+                lm_head_multiplier = 3.0,
+            )
+        )
+        logits = torch.randn(2, 4, 8)
+        result = effective_logits(logits, model)
+        expected = 3.0 * logits.float()
+        assert torch.allclose(result, expected, atol = 1e-6)
+
 
 # -----------------------------------------------------------------------------
 # A2) Test fast_cross_entropy_loss_per_token
@@ -442,6 +474,94 @@ class TestComputeASFTLoss:
         # Should return a scalar loss
         assert loss.dim() == 0
         assert loss.requires_grad
+
+    def test_sft_mode_granite_logit_scaling(self):
+        """Test Granite logit scaling in ASFT CE path."""
+
+        class GraniteModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.config = SimpleNamespace(
+                    model_type = "granite",
+                    final_logit_softcapping = 0,
+                    logit_scale = 2.0,
+                    logit_scaling = 0,
+                    logits_scaling = 8.0,
+                )
+                self.embedding = nn.Embedding(16, 8)
+                self.linear = nn.Linear(8, 8)
+
+            def forward(self, input_ids = None, **kwargs):
+                embeddings = self.embedding(input_ids)
+                logits = self.linear(embeddings)
+                return SimpleNamespace(logits = logits)
+
+        model = GraniteModel()
+        inputs = {
+            "input_ids": torch.tensor([[1, 2, 3, 4]]),
+            "labels": torch.tensor([[1, 2, 3, 4]]),
+        }
+        captured = {}
+
+        def fake_ce(logits, labels, logit_softcapping = 0, logit_scaling = 0, ignore_index = -100):
+            captured["logit_scaling"] = logit_scaling
+            batch, seq_len, _ = logits.shape
+            losses = torch.zeros(batch * seq_len, device = logits.device)
+            valid_mask = labels.view(-1) != ignore_index
+            return losses, valid_mask
+
+        with patch(
+            "unsloth.losses.asft.fast_cross_entropy_loss_per_token",
+            side_effect = fake_ce,
+        ):
+            loss = compute_asft_loss(model, inputs, asft_mode = "sft", kl_weight = 0.0)
+
+        assert captured["logit_scaling"] == pytest.approx(1.0 / 8.0)
+        assert loss.dim() == 0
+
+    def test_sft_mode_falcon_h1_logit_scaling(self):
+        """Test Falcon H1 logit scaling in ASFT CE path."""
+
+        class FalconH1Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.config = SimpleNamespace(
+                    model_type = "falcon_h1",
+                    final_logit_softcapping = 0,
+                    logit_scale = 0,
+                    logit_scaling = 0,
+                    lm_head_multiplier = 3.0,
+                )
+                self.embedding = nn.Embedding(16, 8)
+                self.linear = nn.Linear(8, 8)
+
+            def forward(self, input_ids = None, **kwargs):
+                embeddings = self.embedding(input_ids)
+                logits = self.linear(embeddings)
+                return SimpleNamespace(logits = logits)
+
+        model = FalconH1Model()
+        inputs = {
+            "input_ids": torch.tensor([[1, 2, 3, 4]]),
+            "labels": torch.tensor([[1, 2, 3, 4]]),
+        }
+        captured = {}
+
+        def fake_ce(logits, labels, logit_softcapping = 0, logit_scaling = 0, ignore_index = -100):
+            captured["logit_scaling"] = logit_scaling
+            batch, seq_len, _ = logits.shape
+            losses = torch.zeros(batch * seq_len, device = logits.device)
+            valid_mask = labels.view(-1) != ignore_index
+            return losses, valid_mask
+
+        with patch(
+            "unsloth.losses.asft.fast_cross_entropy_loss_per_token",
+            side_effect = fake_ce,
+        ):
+            loss = compute_asft_loss(model, inputs, asft_mode = "sft", kl_weight = 0.0)
+
+        assert captured["logit_scaling"] == pytest.approx(3.0)
+        assert loss.dim() == 0
 
     def test_dft_mode(self, simple_model):
         """Test DFT mode."""
