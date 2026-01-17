@@ -965,6 +965,66 @@ class TestSeqKVCacheStreaming:
 
         assert kl.shape == (batch_size, seq_len)
 
+    def test_seq_kv_cache_falls_back_with_packed_sequences(self):
+        """Test that packed sequences bypass seq_kv_cache chunking."""
+        batch_size, seq_len, vocab_size = 2, 4, 3
+        cur_logits = torch.randn(batch_size, seq_len, vocab_size)
+        shift_labels = torch.zeros(batch_size, seq_len, dtype = torch.long)
+        valid_mask = shift_labels != -100
+        input_ids = torch.arange(seq_len).repeat(batch_size, 1)
+        packed_seq_lengths = torch.tensor([2, 2], dtype = torch.int32)
+
+        class DummyModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.config = SimpleNamespace(
+                    use_cache = True,
+                    final_logit_softcapping = 0,
+                    logit_scale = 0,
+                )
+
+        model = DummyModel()
+        ref_forward = MagicMock()
+        forward_inputs = {
+            "input_ids": input_ids,
+            "packed_seq_lengths": packed_seq_lengths,
+        }
+
+        def batch_side_effect(
+            model,
+            cur_logits,
+            shift_labels,
+            valid_mask,
+            ref_forward,
+            forward_inputs,
+            microbatch_size,
+            logit_softcapping = 0,
+            logit_scaling = 0,
+            force_fp32 = True,
+            kl_direction = "forward",
+        ):
+            batch, seq_len = shift_labels.shape
+            return torch.zeros(batch, seq_len, device = shift_labels.device)
+
+        with patch(
+            "unsloth.losses.asft._compute_kl_batch_micro",
+            side_effect = batch_side_effect,
+        ) as batch_mock:
+            kl = _compute_kl_seq_kv_cache(
+                model,
+                cur_logits,
+                shift_labels,
+                valid_mask,
+                ref_forward,
+                forward_inputs,
+                seq_chunk_size = 2,
+            )
+
+        assert batch_mock.called
+        assert batch_mock.call_args[0][6] == 1
+        assert not ref_forward.called
+        assert kl.shape == (batch_size, seq_len)
+
     def test_config_immutability_when_none_values(self, simple_model):
         """Test that streaming_config is not mutated when values are None."""
         config = ASFTStreamingConfig(
