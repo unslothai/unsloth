@@ -603,6 +603,47 @@ def _compute_kl_seq_kv_cache(
     batch_size, seq_len, vocab_size = cur_logits.shape
     device = cur_logits.device
 
+    packed_seq_lengths = forward_inputs.get("packed_seq_lengths", None)
+    if packed_seq_lengths is not None:
+        # Avoid seq_kv_cache with packed sequences; fall back to batch/full reference.
+        fallback_microbatch = None
+        if microbatch_size is not None and microbatch_size < batch_size:
+            fallback_microbatch = microbatch_size
+        elif allow_auto_microbatch_fallback:
+            fallback_microbatch = max(
+                1, batch_size // _DEFAULT_REF_MICROBATCH_DIVISOR
+            )
+            if fallback_microbatch >= batch_size:
+                fallback_microbatch = None
+        if fallback_microbatch is not None:
+            return _compute_kl_batch_micro(
+                model,
+                cur_logits,
+                shift_labels,
+                valid_mask,
+                ref_forward,
+                forward_inputs,
+                fallback_microbatch,
+                logit_softcapping,
+                logit_scaling,
+                force_fp32,
+                kl_direction,
+            )
+        ref_outputs = ref_forward(**forward_inputs)
+        ref_logits, _ = _unwrap_reference_outputs(ref_outputs)
+        kl_full = _compute_kl_divergence(
+            cur_logits,
+            ref_logits,
+            model,
+            logit_softcapping,
+            logit_scaling,
+            force_fp32,
+            kl_direction,
+        )
+        if kl_full.dim() == 1:
+            kl_full = kl_full.view(batch_size, seq_len)
+        return kl_full
+
     if microbatch_size is not None:
         microbatch_size = max(1, microbatch_size)
     if microbatch_size is not None and microbatch_size < batch_size:
