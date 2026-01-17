@@ -141,7 +141,7 @@ except:
 
 class UnslothTrainingArguments(TrainingArguments):
     def __init__(self, embedding_learning_rate: float = None, *args, **kwargs):
-        self.embedding_learning_rate = embedding_learning_rate
+        embedding_learning_rate = embedding_learning_rate
         super().__init__(*args, **kwargs)
 
 
