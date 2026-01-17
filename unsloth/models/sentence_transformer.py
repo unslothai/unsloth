@@ -1022,14 +1022,9 @@ class FastSentenceTransformer(FastModel):
                 print("Disabling torch.compile to enable gradient checkpointing.")
                 compile_mode = None  # Disable compilation
 
-                is_distilbert = "distilbert" == model_type.lower()
                 is_mpnet = "mpnet" == model_type.lower()
 
-                if is_distilbert and transformers4:
-                    FastSentenceTransformer._patch_distilbert_v4()
-                elif is_distilbert:
-                    FastSentenceTransformer._patch_distilbert_v5()
-                elif is_mpnet and transformers4:
+                if is_mpnet and transformers4:
                     FastSentenceTransformer._patch_mpnet_v4()
                 elif is_mpnet:
                     FastSentenceTransformer._patch_mpnet_v5()
@@ -1373,11 +1368,7 @@ class FastSentenceTransformer(FastModel):
                     transformers4 = Version(transformers.__version__).major < 5
                     model_type = getattr(inner_model.config, "model_type", "").lower()
 
-                    if model_type == "distilbert" and transformers4:
-                        FastSentenceTransformer._patch_distilbert_v4()
-                    elif model_type == "distilbert":
-                        FastSentenceTransformer._patch_distilbert_v5()
-                    elif model_type == "mpnet" and transformers4:
+                    if model_type == "mpnet" and transformers4:
                         FastSentenceTransformer._patch_mpnet_v4()
                     elif model_type == "mpnet":
                         FastSentenceTransformer._patch_mpnet_v5()
