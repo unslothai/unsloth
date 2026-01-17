@@ -68,17 +68,24 @@ class ASFTStreamingConfig:
     """Configuration for ASFT streaming strategies to reduce VRAM peak.
 
     Attributes:
+        mode: High-level streaming mode.
+            - "off": Disable streaming.
+            - "auto": Try seq_kv_cache with automatic batch-micro fallback.
+            - "batch": Use batch microbatching only.
+            - "seq": Use seq_kv_cache (with fallback).
+            - "hybrid": Combine batch micro + seq_kv_cache.
         enabled: Whether streaming is enabled.
         ref_strategy: Strategy for reference model forward pass.
             - "none": Full reference forward (no streaming).
             - "batch_micro": Microbatch reference forward by batch dimension.
             - "seq_kv_cache": Sequence chunking via KV cache.
-        ref_microbatch_size: Microbatch size for batch_micro strategy.
+        ref_microbatch_size: Microbatch size for batch_micro or seq_kv_cache.
         seq_chunk_size: Chunk size for seq_kv_cache strategy (e.g., 128-512).
         kl_token_chunk_size: Optional extra chunking of valid tokens for KL.
         force_fp32_kl: Whether to force FP32 for KL computation.
     """
 
+    mode: Optional[Literal["off", "auto", "batch", "seq", "hybrid"]] = None
     enabled: bool = False
     ref_strategy: Literal["none", "batch_micro", "seq_kv_cache"] = "none"
     ref_microbatch_size: Optional[int] = None
@@ -184,11 +191,16 @@ def fast_cross_entropy_loss_per_token(
     # Create valid mask before computing loss
     valid_mask = labels != ignore_index
 
+    labels_for_kernel = labels
+    if ignore_index != -100:
+        labels_for_kernel = labels.clone()
+        labels_for_kernel[labels_for_kernel == ignore_index] = -100
+
     # Compute per-token CE using Unsloth's Triton kernel
     # The kernel already handles ignore_index (-100) internally and returns 0 for those
     losses = Fast_CrossEntropyLoss.apply(
         logits,
-        labels,
+        labels_for_kernel,
         logit_softcapping,
         logit_scaling,
     )
@@ -379,10 +391,14 @@ def _compute_dft_weights(
     logit_softcapping: float = 0,
     logit_scaling: float = 0,
     ignore_index: int = -100,
+    ce_losses: Optional[torch.Tensor] = None,
+    valid_mask: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Compute DFT weights: probability of target token under current model.
 
     w = p(label) where p = softmax(effective_logits), detached.
+    If ce_losses is provided, compute weights via exp(-ce_losses) to avoid
+    a full softmax over the vocab.
 
     Args:
         logits: Model logits (B*T, V) or (B, T, V).
@@ -391,10 +407,18 @@ def _compute_dft_weights(
         logit_softcapping: Softcapping value.
         logit_scaling: Scaling value.
         ignore_index: Index to ignore.
+        ce_losses: Optional per-token CE losses aligned with labels.
+        valid_mask: Optional mask of valid tokens (same shape as labels).
 
     Returns:
         DFT weights of same shape as labels, detached.
     """
+    if ce_losses is not None:
+        weights = torch.exp(-ce_losses.detach())
+        if valid_mask is not None:
+            weights = weights * valid_mask
+        return weights
+
     # Flatten if 3D
     if logits.dim() == 3:
         batch, seq_len, vocab_size = logits.shape
@@ -436,6 +460,22 @@ def _unwrap_reference_outputs(
     return ref_outputs, None
 
 
+def _slice_batch_inputs(
+    forward_inputs: Dict[str, Any],
+    batch_size: int,
+    b_start: int,
+    b_end: int,
+) -> Dict[str, Any]:
+    """Slice batch-first tensors for microbatch processing."""
+    mb_inputs = {}
+    for key, value in forward_inputs.items():
+        if torch.is_tensor(value) and value.shape[0] == batch_size:
+            mb_inputs[key] = value[b_start:b_end]
+        else:
+            mb_inputs[key] = value
+    return mb_inputs
+
+
 def _compute_kl_batch_micro(
     model: nn.Module,
     cur_logits: torch.Tensor,
@@ -475,12 +515,7 @@ def _compute_kl_batch_micro(
         b_end = min(b_start + microbatch_size, batch_size)
 
         # Slice inputs for microbatch
-        mb_inputs = {}
-        for key, value in forward_inputs.items():
-            if torch.is_tensor(value) and value.shape[0] == batch_size:
-                mb_inputs[key] = value[b_start:b_end]
-            else:
-                mb_inputs[key] = value
+        mb_inputs = _slice_batch_inputs(forward_inputs, batch_size, b_start, b_end)
 
         # Get reference logits for microbatch
         ref_outputs_mb = ref_forward(**mb_inputs)
@@ -518,6 +553,8 @@ def _compute_kl_seq_kv_cache(
     ref_forward: Callable,
     forward_inputs: Dict[str, Any],
     seq_chunk_size: int,
+    microbatch_size: Optional[int] = None,
+    allow_auto_microbatch_fallback: bool = True,
     logit_softcapping: float = 0,
     logit_scaling: float = 0,
     force_fp32: bool = True,
@@ -535,6 +572,8 @@ def _compute_kl_seq_kv_cache(
         ref_forward: Reference forward callable.
         forward_inputs: Forward inputs (without labels).
         seq_chunk_size: Size of each sequence chunk.
+        microbatch_size: Optional microbatch size for batch dimension.
+        allow_auto_microbatch_fallback: Allow automatic microbatch fallback on errors.
         logit_softcapping: Softcapping value.
         logit_scaling: Scaling value.
         force_fp32: Whether to use FP32 for KL.
@@ -544,38 +583,37 @@ def _compute_kl_seq_kv_cache(
     """
     batch_size, seq_len, vocab_size = cur_logits.shape
     device = cur_logits.device
+
+    if microbatch_size is not None:
+        microbatch_size = max(1, microbatch_size)
+    if microbatch_size is not None and microbatch_size < batch_size:
+        kl = torch.zeros(batch_size, seq_len, dtype = torch.float32, device = device)
+        for b_start in range(0, batch_size, microbatch_size):
+            b_end = min(b_start + microbatch_size, batch_size)
+            mb_inputs = _slice_batch_inputs(
+                forward_inputs, batch_size, b_start, b_end
+            )
+            kl_mb = _compute_kl_seq_kv_cache(
+                model,
+                cur_logits[b_start:b_end],
+                shift_labels[b_start:b_end],
+                valid_mask[b_start:b_end],
+                ref_forward,
+                mb_inputs,
+                seq_chunk_size,
+                microbatch_size = None,
+                allow_auto_microbatch_fallback = False,
+                logit_softcapping = logit_softcapping,
+                logit_scaling = logit_scaling,
+                force_fp32 = force_fp32,
+            )
+            if kl_mb.dim() == 1:
+                mb_batch = b_end - b_start
+                kl_mb = kl_mb.view(mb_batch, -1)
+            kl[b_start:b_end] = kl_mb
+        return kl
+
     kl = torch.zeros(batch_size, seq_len, dtype = torch.float32, device = device)
-
-    # Try to get the underlying model for KV cache support
-    underlying_model = model
-    if hasattr(model, "model"):
-        underlying_model = model.model
-    elif hasattr(model, "base_model"):
-        if hasattr(model.base_model, "model"):
-            underlying_model = model.base_model.model
-        else:
-            underlying_model = model.base_model
-
-    # Check if model supports KV cache
-    supports_cache = hasattr(underlying_model, "config") and getattr(
-        underlying_model.config, "use_cache", True
-    )
-
-    if not supports_cache:
-        # Fallback to full forward
-        ref_outputs = ref_forward(**forward_inputs)
-        ref_logits, _ = _unwrap_reference_outputs(ref_outputs)
-        kl_full = _compute_kl_divergence(
-            cur_logits,
-            ref_logits,
-            model,
-            logit_softcapping,
-            logit_scaling,
-            force_fp32,
-        )
-        if kl_full.dim() == 1:
-            kl_full = kl_full.view(batch_size, seq_len)
-        return kl_full
 
     # Process in chunks with KV cache
     past_key_values = None
@@ -616,7 +654,30 @@ def _compute_kl_seq_kv_cache(
                 ref_outputs
             )
             if ref_past_key_values is None and s_end < seq_len:
-                # Can't continue without cache; fall back to full forward
+                # Can't continue without cache; fall back to batch micro if allowed
+                fallback_microbatch = None
+                if allow_auto_microbatch_fallback:
+                    fallback_microbatch = (
+                        microbatch_size
+                        if microbatch_size is not None
+                        else max(1, batch_size // _DEFAULT_REF_MICROBATCH_DIVISOR)
+                    )
+                if (
+                    fallback_microbatch is not None
+                    and fallback_microbatch < batch_size
+                ):
+                    return _compute_kl_batch_micro(
+                        model,
+                        cur_logits,
+                        shift_labels,
+                        valid_mask,
+                        ref_forward,
+                        forward_inputs,
+                        fallback_microbatch,
+                        logit_softcapping,
+                        logit_scaling,
+                        force_fp32,
+                    )
                 ref_outputs = ref_forward(**forward_inputs)
                 ref_logits, _ = _unwrap_reference_outputs(ref_outputs)
                 kl_full = _compute_kl_divergence(
@@ -653,9 +714,32 @@ def _compute_kl_seq_kv_cache(
             del ref_logits_chunk
 
         except (RuntimeError, ValueError, KeyError, TypeError) as e:
-            # Fallback to full forward on KV cache errors
+            # Fallback to batch micro or full forward on KV cache errors
             # These exceptions typically indicate the model doesn't support
             # the chunked KV cache approach (e.g., missing past_key_values support)
+            fallback_microbatch = None
+            if allow_auto_microbatch_fallback:
+                fallback_microbatch = (
+                    microbatch_size
+                    if microbatch_size is not None
+                    else max(1, batch_size // _DEFAULT_REF_MICROBATCH_DIVISOR)
+                )
+            if (
+                fallback_microbatch is not None
+                and fallback_microbatch < batch_size
+            ):
+                return _compute_kl_batch_micro(
+                    model,
+                    cur_logits,
+                    shift_labels,
+                    valid_mask,
+                    ref_forward,
+                    forward_inputs,
+                    fallback_microbatch,
+                    logit_softcapping,
+                    logit_scaling,
+                    force_fp32,
+                )
             ref_outputs = ref_forward(**forward_inputs)
             ref_logits, _ = _unwrap_reference_outputs(ref_outputs)
             kl_full = _compute_kl_divergence(
@@ -713,6 +797,24 @@ def compute_asft_loss(
     if streaming_config is None:
         streaming_config = ASFTStreamingConfig()
 
+    # Resolve streaming mode (new API) vs legacy enabled/ref_strategy
+    mode = streaming_config.mode
+    if mode is None:
+        streaming_enabled = streaming_config.enabled
+        ref_strategy = streaming_config.ref_strategy
+    else:
+        if mode == "off":
+            streaming_enabled = False
+            ref_strategy = "none"
+        elif mode == "batch":
+            streaming_enabled = True
+            ref_strategy = "batch_micro"
+        elif mode in ("seq", "auto", "hybrid"):
+            streaming_enabled = True
+            ref_strategy = "seq_kv_cache"
+        else:
+            raise ValueError(f"Unknown streaming mode: {mode}")
+
     # Get model config for softcapping/scaling
     config = getattr(model, "config", None)
     logit_softcapping = 0
@@ -767,7 +869,13 @@ def compute_asft_loss(
     elif asft_mode == "dft":
         # DFT: CE weighted by model confidence
         dft_weights = _compute_dft_weights(
-            logits, shift_labels, model, logit_softcapping, logit_scaling
+            logits,
+            shift_labels,
+            model,
+            logit_softcapping,
+            logit_scaling,
+            ce_losses = ce_losses,
+            valid_mask = valid_mask,
         )
         dft_weights = dft_weights.view(batch_size, seq_len)
         token_loss = ce_losses * dft_weights
@@ -775,7 +883,7 @@ def compute_asft_loss(
     elif asft_mode in ("sft+kl", "asft"):
         # Need KL divergence
         needs_outputs = (
-            streaming_config.enabled and streaming_config.ref_strategy == "seq_kv_cache"
+            streaming_enabled and ref_strategy == "seq_kv_cache"
         )
         ref_forward = get_reference_forward_callable(
             model,
@@ -786,7 +894,7 @@ def compute_asft_loss(
 
         # Compute KL based on streaming strategy
         # Use local variables to avoid mutating the input config
-        if streaming_config.enabled and streaming_config.ref_strategy == "batch_micro":
+        if streaming_enabled and ref_strategy == "batch_micro":
             ref_microbatch_size = streaming_config.ref_microbatch_size
             if ref_microbatch_size is None:
                 ref_microbatch_size = max(
@@ -804,12 +912,16 @@ def compute_asft_loss(
                 logit_scaling,
                 streaming_config.force_fp32_kl,
             )
-        elif (
-            streaming_config.enabled and streaming_config.ref_strategy == "seq_kv_cache"
-        ):
+        elif streaming_enabled and ref_strategy == "seq_kv_cache":
             seq_chunk_size = streaming_config.seq_chunk_size
             if seq_chunk_size is None:
                 seq_chunk_size = _DEFAULT_SEQ_CHUNK_SIZE
+            ref_microbatch_size = streaming_config.ref_microbatch_size
+            if mode == "hybrid" and ref_microbatch_size is None:
+                ref_microbatch_size = max(
+                    1, batch_size // _DEFAULT_REF_MICROBATCH_DIVISOR
+                )
+            allow_auto_microbatch_fallback = True
             kl = _compute_kl_seq_kv_cache(
                 model,
                 logits,
@@ -818,9 +930,11 @@ def compute_asft_loss(
                 ref_forward,
                 forward_inputs,
                 seq_chunk_size,
-                logit_softcapping,
-                logit_scaling,
-                streaming_config.force_fp32_kl,
+                microbatch_size = ref_microbatch_size,
+                allow_auto_microbatch_fallback = allow_auto_microbatch_fallback,
+                logit_softcapping = logit_softcapping,
+                logit_scaling = logit_scaling,
+                force_fp32 = streaming_config.force_fp32_kl,
             )
         else:
             # Full reference forward
@@ -843,7 +957,13 @@ def compute_asft_loss(
         else:
             # Full ASFT: DFT + KL
             dft_weights = _compute_dft_weights(
-                logits, shift_labels, model, logit_softcapping, logit_scaling
+                logits,
+                shift_labels,
+                model,
+                logit_softcapping,
+                logit_scaling,
+                ce_losses = ce_losses,
+                valid_mask = valid_mask,
             )
             dft_weights = dft_weights.view(batch_size, seq_len)
             dft_loss = ce_losses * dft_weights

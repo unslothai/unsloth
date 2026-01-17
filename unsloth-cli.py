@@ -161,8 +161,7 @@ def run(args):
     if asft_enabled:
         # Build ASFT streaming config
         asft_streaming = ASFTStreamingConfig(
-            enabled = getattr(args, "asft_streaming", False),
-            ref_strategy = getattr(args, "ref_strategy", "none"),
+            mode = getattr(args, "asft_streaming", None),
             ref_microbatch_size = getattr(args, "ref_microbatch_size", None),
             seq_chunk_size = getattr(args, "seq_chunk_size", None),
         )
@@ -234,7 +233,7 @@ def run(args):
         print("Warning: The model is not saved!")
 
 
-if __name__ == "__main__":
+def build_parser():
     parser = argparse.ArgumentParser(
         description = "🦥 Fine-tune your llm faster using unsloth!"
     )
@@ -535,25 +534,23 @@ if __name__ == "__main__":
     )
     asft_group.add_argument(
         "--asft_streaming",
-        action = "store_true",
-        help = "Enable streaming for reference model to reduce VRAM usage",
-    )
-    asft_group.add_argument(
-        "--ref_strategy",
-        type = str,
-        default = "none",
-        choices = ["none", "batch_micro", "seq_kv_cache"],
+        nargs = "?",
+        const = "auto",
+        default = "off",
+        choices = ["off", "auto", "batch", "seq", "hybrid"],
         help = (
-            "Streaming strategy for reference forward: 'none' (full forward), "
-            "'batch_micro' (microbatch by batch), 'seq_kv_cache' (sequence chunking with KV cache). "
-            "Default: 'none'"
+            "Streaming mode for reference forward: 'off' (full forward), "
+            "'auto' (seq_kv_cache with batch-micro fallback), "
+            "'batch' (microbatch by batch), 'seq' (sequence chunking with KV cache), "
+            "'hybrid' (batch micro + seq_kv_cache). "
+            "Use flag without value for 'auto'."
         ),
     )
     asft_group.add_argument(
         "--ref_microbatch_size",
         type = int,
         default = None,
-        help = "Microbatch size for batch_micro strategy",
+        help = "Microbatch size for batch_micro or seq_kv_cache strategy",
     )
     asft_group.add_argument(
         "--seq_chunk_size",
@@ -562,5 +559,10 @@ if __name__ == "__main__":
         help = "Sequence chunk size for seq_kv_cache strategy",
     )
 
+    return parser
+
+
+if __name__ == "__main__":
+    parser = build_parser()
     args = parser.parse_args()
     run(args)

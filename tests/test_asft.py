@@ -35,6 +35,7 @@ from unsloth.losses.asft import (
     compute_asft_loss,
     _compute_kl_divergence,
     _compute_dft_weights,
+    _compute_kl_seq_kv_cache,
 )
 
 
@@ -194,6 +195,20 @@ class TestFastCrossEntropyLossPerToken:
         # Should be close
         assert torch.allclose(losses, pytorch_losses, atol = 1e-4)
 
+    def test_respects_custom_ignore_index(self):
+        """Test that custom ignore_index is honored by the kernel wrapper."""
+        torch.manual_seed(0)
+        logits = torch.randn(1, 4, 8)
+        labels = torch.tensor([[1, 2, 1, 3]], dtype = torch.long)
+
+        losses, valid_mask = fast_cross_entropy_loss_per_token(
+            logits, labels, ignore_index = 1
+        )
+
+        assert losses.shape == (4,)
+        assert torch.equal(valid_mask, torch.tensor([False, True, False, True]))
+        assert torch.all(losses[~valid_mask] == 0)
+
 
 # -----------------------------------------------------------------------------
 # A3) Test build_shift_labels
@@ -293,6 +308,17 @@ class TestGetReferenceForwardCallable:
         # Should still work (uses frozen copy fallback)
         assert result is not None
 
+    def test_return_outputs_true(self, simple_model):
+        """Test returning full outputs when requested."""
+        ref_forward = get_reference_forward_callable(
+            simple_model, reference_policy = "frozen_copy", return_outputs = True
+        )
+
+        input_ids = torch.tensor([[1, 2, 3, 4]])
+        result = ref_forward(input_ids = input_ids)
+
+        assert hasattr(result, "logits")
+
 
 # -----------------------------------------------------------------------------
 # Test KL divergence computation
@@ -360,6 +386,24 @@ class TestDFTWeights:
         )
 
         assert not weights.requires_grad
+
+    def test_dft_weights_match_exp_neg_ce(self):
+        """Test exp(-CE) matches softmax-gather for DFT weights."""
+        torch.manual_seed(123)
+        logits = torch.randn(2, 3, 7)
+        labels = torch.tensor([[1, 2, 3], [4, 5, 6]], dtype = torch.long)
+
+        ce_losses, valid_mask = fast_cross_entropy_loss_per_token(logits, labels)
+
+        weights_from_ce = _compute_dft_weights(
+            logits,
+            labels,
+            ce_losses = ce_losses,
+            valid_mask = valid_mask,
+        )
+        weights_from_softmax = _compute_dft_weights(logits, labels)
+
+        assert torch.allclose(weights_from_ce, weights_from_softmax, atol = 1e-4)
 
 
 # -----------------------------------------------------------------------------
@@ -496,6 +540,7 @@ class TestASFTStreamingConfig:
         """Test default configuration values."""
         config = ASFTStreamingConfig()
 
+        assert config.mode is None
         assert config.enabled is False
         assert config.ref_strategy == "none"
         assert config.ref_microbatch_size is None
@@ -506,16 +551,370 @@ class TestASFTStreamingConfig:
     def test_custom_values(self):
         """Test custom configuration values."""
         config = ASFTStreamingConfig(
+            mode = "batch",
             enabled = True,
             ref_strategy = "batch_micro",
             ref_microbatch_size = 4,
             seq_chunk_size = 256,
         )
 
+        assert config.mode == "batch"
         assert config.enabled is True
         assert config.ref_strategy == "batch_micro"
         assert config.ref_microbatch_size == 4
         assert config.seq_chunk_size == 256
+
+
+class TestStreamingModeMapping:
+    """Tests for streaming mode routing in compute_asft_loss."""
+
+    def test_mode_batch_uses_batch_micro(self, simple_model):
+        """Test that mode=batch routes to batch micro."""
+        inputs = {
+            "input_ids": torch.tensor([[1, 2, 3, 4], [2, 3, 4, 5]]),
+            "labels": torch.tensor([[1, 2, 3, 4], [2, 3, 4, 5]]),
+        }
+        config = ASFTStreamingConfig(
+            mode = "batch",
+            ref_microbatch_size = 1,
+            enabled = False,
+            ref_strategy = "seq_kv_cache",
+        )
+
+        def batch_side_effect(
+            model,
+            cur_logits,
+            shift_labels,
+            valid_mask,
+            ref_forward,
+            forward_inputs,
+            microbatch_size,
+            logit_softcapping = 0,
+            logit_scaling = 0,
+            force_fp32 = True,
+        ):
+            batch, seq_len = shift_labels.shape
+            return torch.zeros(batch, seq_len, device = shift_labels.device)
+
+        with patch(
+            "unsloth.losses.asft._compute_kl_batch_micro",
+            side_effect = batch_side_effect,
+        ) as batch_mock, patch(
+            "unsloth.losses.asft._compute_kl_seq_kv_cache",
+            side_effect = AssertionError("seq_kv_cache should not be used"),
+        ):
+            loss = compute_asft_loss(
+                simple_model,
+                inputs,
+                asft_mode = "sft+kl",
+                kl_weight = 0.1,
+                reference_policy = "frozen_copy",
+                streaming_config = config,
+            )
+
+        assert batch_mock.called
+        assert batch_mock.call_args[0][6] == 1
+        assert loss.dim() == 0
+
+    @pytest.mark.parametrize("mode", ["seq", "auto"])
+    def test_mode_seq_and_auto_use_seq_kv_cache(self, mode, simple_model):
+        """Test that mode=seq/auto routes to seq_kv_cache."""
+        inputs = {
+            "input_ids": torch.tensor([[1, 2, 3, 4]]),
+            "labels": torch.tensor([[1, 2, 3, 4]]),
+        }
+        config = ASFTStreamingConfig(
+            mode = mode,
+            seq_chunk_size = 2,
+            enabled = False,
+            ref_strategy = "batch_micro",
+        )
+
+        def seq_side_effect(
+            model,
+            cur_logits,
+            shift_labels,
+            valid_mask,
+            ref_forward,
+            forward_inputs,
+            seq_chunk_size,
+            **kwargs,
+        ):
+            batch, seq_len = shift_labels.shape
+            return torch.zeros(batch, seq_len, device = shift_labels.device)
+
+        with patch(
+            "unsloth.losses.asft._compute_kl_seq_kv_cache",
+            side_effect = seq_side_effect,
+        ) as seq_mock, patch(
+            "unsloth.losses.asft._compute_kl_batch_micro",
+            side_effect = AssertionError("batch_micro should not be used"),
+        ):
+            loss = compute_asft_loss(
+                simple_model,
+                inputs,
+                asft_mode = "sft+kl",
+                kl_weight = 0.1,
+                reference_policy = "frozen_copy",
+                streaming_config = config,
+            )
+
+        assert seq_mock.called
+        assert seq_mock.call_args[0][6] == 2
+        assert seq_mock.call_args.kwargs["microbatch_size"] is None
+        assert loss.dim() == 0
+
+    def test_mode_hybrid_defaults_microbatch(self, simple_model):
+        """Test that hybrid mode sets a default microbatch size."""
+        inputs = {
+            "input_ids": torch.tensor([[1, 2, 3, 4], [2, 3, 4, 5]]),
+            "labels": torch.tensor([[1, 2, 3, 4], [2, 3, 4, 5]]),
+        }
+        config = ASFTStreamingConfig(
+            mode = "hybrid",
+            seq_chunk_size = 2,
+            ref_microbatch_size = None,
+        )
+
+        def seq_side_effect(
+            model,
+            cur_logits,
+            shift_labels,
+            valid_mask,
+            ref_forward,
+            forward_inputs,
+            seq_chunk_size,
+            **kwargs,
+        ):
+            batch, seq_len = shift_labels.shape
+            return torch.zeros(batch, seq_len, device = shift_labels.device)
+
+        with patch(
+            "unsloth.losses.asft._compute_kl_seq_kv_cache",
+            side_effect = seq_side_effect,
+        ) as seq_mock:
+            loss = compute_asft_loss(
+                simple_model,
+                inputs,
+                asft_mode = "sft+kl",
+                kl_weight = 0.1,
+                reference_policy = "frozen_copy",
+                streaming_config = config,
+            )
+
+        assert seq_mock.called
+        assert seq_mock.call_args.kwargs["microbatch_size"] == 1
+        assert config.ref_microbatch_size is None
+        assert loss.dim() == 0
+
+    def test_mode_off_uses_full_forward(self, simple_model):
+        """Test that mode=off bypasses streaming helpers."""
+        inputs = {
+            "input_ids": torch.tensor([[1, 2, 3, 4]]),
+            "labels": torch.tensor([[1, 2, 3, 4]]),
+        }
+        config = ASFTStreamingConfig(
+            mode = "off",
+            enabled = True,
+            ref_strategy = "seq_kv_cache",
+        )
+
+        def kl_side_effect(
+            cur_logits,
+            ref_logits,
+            model = None,
+            logit_softcapping = 0,
+            logit_scaling = 0,
+            force_fp32 = True,
+        ):
+            batch, seq_len = ref_logits.shape[:2]
+            return torch.zeros(batch * seq_len, device = ref_logits.device)
+
+        with patch(
+            "unsloth.losses.asft._compute_kl_divergence",
+            side_effect = kl_side_effect,
+        ) as kl_mock, patch(
+            "unsloth.losses.asft._compute_kl_seq_kv_cache",
+            side_effect = AssertionError("seq_kv_cache should not be used"),
+        ), patch(
+            "unsloth.losses.asft._compute_kl_batch_micro",
+            side_effect = AssertionError("batch_micro should not be used"),
+        ):
+            loss = compute_asft_loss(
+                simple_model,
+                inputs,
+                asft_mode = "sft+kl",
+                kl_weight = 0.1,
+                reference_policy = "frozen_copy",
+                streaming_config = config,
+            )
+
+        assert kl_mock.called
+        assert loss.dim() == 0
+
+    def test_invalid_mode_raises(self, simple_model):
+        """Test that invalid streaming mode raises a ValueError."""
+        inputs = {
+            "input_ids": torch.tensor([[1, 2, 3, 4]]),
+            "labels": torch.tensor([[1, 2, 3, 4]]),
+        }
+        config = ASFTStreamingConfig(mode = "invalid")
+
+        with pytest.raises(ValueError):
+            compute_asft_loss(
+                simple_model,
+                inputs,
+                asft_mode = "sft+kl",
+                kl_weight = 0.1,
+                reference_policy = "frozen_copy",
+                streaming_config = config,
+            )
+
+
+class TestSeqKVCacheStreaming:
+    """Tests for seq_kv_cache streaming behavior."""
+
+    def test_seq_kv_cache_runs_when_use_cache_false(self):
+        """Test that seq_kv_cache attempts chunking even if config.use_cache=False."""
+        batch_size, seq_len, vocab_size = 1, 6, 5
+        cur_logits = torch.randn(batch_size, seq_len, vocab_size)
+        shift_labels = torch.zeros(batch_size, seq_len, dtype = torch.long)
+        valid_mask = shift_labels != -100
+        input_ids = torch.arange(seq_len).view(1, -1)
+
+        class DummyModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.config = SimpleNamespace(
+                    use_cache = False,
+                    final_logit_softcapping = 0,
+                    logit_scale = 0,
+                )
+
+        model = DummyModel()
+        call_state = {"saw_past": False}
+
+        def ref_forward(**kwargs):
+            input_ids_local = kwargs["input_ids"]
+            if input_ids_local.shape[1] == seq_len:
+                raise AssertionError("full forward not expected")
+            if "past_key_values" in kwargs:
+                call_state["saw_past"] = True
+            batch, chunk_len = input_ids_local.shape
+            logits = torch.zeros(
+                batch, chunk_len, vocab_size, device = input_ids_local.device
+            )
+            return (logits, ("cache",))
+
+        forward_inputs = {"input_ids": input_ids}
+
+        kl = _compute_kl_seq_kv_cache(
+            model,
+            cur_logits,
+            shift_labels,
+            valid_mask,
+            ref_forward,
+            forward_inputs,
+            seq_chunk_size = 4,
+        )
+
+        assert kl.shape == (batch_size, seq_len)
+        assert call_state["saw_past"] is True
+
+    def test_seq_kv_cache_supports_microbatching(self):
+        """Test that seq_kv_cache can be microbatched by batch dimension."""
+        batch_size, seq_len, vocab_size = 2, 4, 3
+        cur_logits = torch.randn(batch_size, seq_len, vocab_size)
+        shift_labels = torch.zeros(batch_size, seq_len, dtype = torch.long)
+        valid_mask = shift_labels != -100
+        input_ids = torch.arange(seq_len).repeat(batch_size, 1)
+
+        class DummyModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.config = SimpleNamespace(
+                    use_cache = True,
+                    final_logit_softcapping = 0,
+                    logit_scale = 0,
+                )
+
+        model = DummyModel()
+        call_state = {"max_batch": 0}
+
+        def ref_forward(**kwargs):
+            input_ids_local = kwargs["input_ids"]
+            call_state["max_batch"] = max(
+                call_state["max_batch"], input_ids_local.shape[0]
+            )
+            if input_ids_local.shape[0] > 1:
+                raise AssertionError("expected microbatching")
+            batch, chunk_len = input_ids_local.shape
+            logits = torch.zeros(
+                batch, chunk_len, vocab_size, device = input_ids_local.device
+            )
+            return (logits, ("cache",))
+
+        forward_inputs = {"input_ids": input_ids}
+
+        kl = _compute_kl_seq_kv_cache(
+            model,
+            cur_logits,
+            shift_labels,
+            valid_mask,
+            ref_forward,
+            forward_inputs,
+            seq_chunk_size = 2,
+            microbatch_size = 1,
+        )
+
+        assert kl.shape == (batch_size, seq_len)
+        assert call_state["max_batch"] == 1
+
+    def test_seq_kv_cache_falls_back_to_batch_micro(self):
+        """Test that seq_kv_cache falls back to batch micro on cache failure."""
+        batch_size, seq_len, vocab_size = 2, 6, 5
+        cur_logits = torch.randn(batch_size, seq_len, vocab_size)
+        shift_labels = torch.zeros(batch_size, seq_len, dtype = torch.long)
+        valid_mask = shift_labels != -100
+        input_ids = torch.arange(seq_len).repeat(batch_size, 1)
+
+        class DummyModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.config = SimpleNamespace(
+                    use_cache = True,
+                    final_logit_softcapping = 0,
+                    logit_scale = 0,
+                )
+
+        model = DummyModel()
+
+        def ref_forward(**kwargs):
+            input_ids_local = kwargs["input_ids"]
+            if (
+                input_ids_local.shape[0] == batch_size
+                and input_ids_local.shape[1] == seq_len
+            ):
+                raise AssertionError("full forward not expected on fallback")
+            batch, chunk_len = input_ids_local.shape
+            logits = torch.zeros(
+                batch, chunk_len, vocab_size, device = input_ids_local.device
+            )
+            return (logits, None)
+
+        forward_inputs = {"input_ids": input_ids}
+
+        kl = _compute_kl_seq_kv_cache(
+            model,
+            cur_logits,
+            shift_labels,
+            valid_mask,
+            ref_forward,
+            forward_inputs,
+            seq_chunk_size = 2,
+        )
+
+        assert kl.shape == (batch_size, seq_len)
 
     def test_config_immutability_when_none_values(self, simple_model):
         """Test that streaming_config is not mutated when values are None."""
@@ -604,6 +1003,113 @@ class TestBackwardCompatibility:
         # Should be very close
         assert torch.allclose(full_loss, streaming_loss, atol = 1e-4)
 
+    def test_seq_kv_cache_equivalence(self):
+        """Test that seq_kv_cache matches full forward for KL loss."""
+        torch.manual_seed(123)
+
+        class CacheModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.config = SimpleNamespace(
+                    use_cache = True,
+                    final_logit_softcapping = 0,
+                    logit_scale = 0,
+                )
+                self.embedding = nn.Embedding(32, 8)
+                self.linear = nn.Linear(8, 32)
+
+            def forward(
+                self, input_ids = None, past_key_values = None, use_cache = None, **kwargs
+            ):
+                embeddings = self.embedding(input_ids)
+                logits = self.linear(embeddings)
+                past = ("cache",) if (use_cache or past_key_values is not None) else None
+                return SimpleNamespace(logits = logits, past_key_values = past)
+
+        model = CacheModel()
+        inputs = {
+            "input_ids": torch.tensor([[1, 2, 3, 4, 5, 6], [6, 5, 4, 3, 2, 1]]),
+            "labels": torch.tensor([[1, 2, 3, 4, 5, 6], [6, 5, 4, 3, 2, 1]]),
+        }
+
+        full_loss = compute_asft_loss(
+            model,
+            inputs,
+            asft_mode = "sft+kl",
+            kl_weight = 0.1,
+            reference_policy = "frozen_copy",
+            streaming_config = ASFTStreamingConfig(enabled = False),
+        )
+
+        seq_loss = compute_asft_loss(
+            model,
+            inputs,
+            asft_mode = "sft+kl",
+            kl_weight = 0.1,
+            reference_policy = "frozen_copy",
+            streaming_config = ASFTStreamingConfig(
+                enabled = True,
+                ref_strategy = "seq_kv_cache",
+                seq_chunk_size = 2,
+            ),
+        )
+
+        assert torch.allclose(full_loss, seq_loss, atol = 1e-4)
+
+    def test_seq_kv_cache_microbatch_equivalence(self):
+        """Test that seq_kv_cache + microbatching matches full forward."""
+        torch.manual_seed(456)
+
+        class CacheModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.config = SimpleNamespace(
+                    use_cache = True,
+                    final_logit_softcapping = 0,
+                    logit_scale = 0,
+                )
+                self.embedding = nn.Embedding(32, 8)
+                self.linear = nn.Linear(8, 32)
+
+            def forward(
+                self, input_ids = None, past_key_values = None, use_cache = None, **kwargs
+            ):
+                embeddings = self.embedding(input_ids)
+                logits = self.linear(embeddings)
+                past = ("cache",) if (use_cache or past_key_values is not None) else None
+                return SimpleNamespace(logits = logits, past_key_values = past)
+
+        model = CacheModel()
+        inputs = {
+            "input_ids": torch.tensor([[1, 2, 3, 4, 5, 6], [6, 5, 4, 3, 2, 1]]),
+            "labels": torch.tensor([[1, 2, 3, 4, 5, 6], [6, 5, 4, 3, 2, 1]]),
+        }
+
+        full_loss = compute_asft_loss(
+            model,
+            inputs,
+            asft_mode = "sft+kl",
+            kl_weight = 0.1,
+            reference_policy = "frozen_copy",
+            streaming_config = ASFTStreamingConfig(enabled = False),
+        )
+
+        combined_loss = compute_asft_loss(
+            model,
+            inputs,
+            asft_mode = "sft+kl",
+            kl_weight = 0.1,
+            reference_policy = "frozen_copy",
+            streaming_config = ASFTStreamingConfig(
+                enabled = True,
+                ref_strategy = "seq_kv_cache",
+                seq_chunk_size = 2,
+                ref_microbatch_size = 1,
+            ),
+        )
+
+        assert torch.allclose(full_loss, combined_loss, atol = 1e-4)
+
 
 # -----------------------------------------------------------------------------
 # Integration Tests
@@ -625,6 +1131,124 @@ class TestASFTTrainerIntegration:
         from unsloth.trainer import ASFTTrainer, UnslothTrainer
 
         assert issubclass(ASFTTrainer, UnslothTrainer)
+
+
+class TestASFTTrainerComputeLoss:
+    """Tests for ASFTTrainer.compute_loss behavior."""
+
+    def test_compute_loss_calls_asft_loss(self):
+        """Test ASFTTrainer compute_loss calls compute_asft_loss."""
+        from unsloth.trainer import ASFTTrainer, ASFTStreamingConfig
+
+        trainer = ASFTTrainer.__new__(ASFTTrainer)
+        trainer.asft_enabled = True
+        trainer.asft_mode = "sft"
+        trainer.kl_weight = 0.0
+        trainer.reference_policy = "disable_adapter"
+        trainer.asft_streaming = ASFTStreamingConfig()
+        trainer._asft_original_model = None
+
+        model = nn.Module()
+        inputs = {
+            "input_ids": torch.tensor([[1, 2, 3, 4]]),
+            "labels": torch.tensor([[1, 2, 3, 4]]),
+        }
+        expected = torch.tensor(1.0, device = inputs["input_ids"].device)
+
+        with patch(
+            "unsloth.trainer.compute_asft_loss", return_value = expected
+        ) as loss_mock:
+            result = ASFTTrainer.compute_loss(
+                trainer, model, inputs, return_outputs = False, num_items_in_batch = 7
+            )
+
+        assert result is expected
+        assert inputs["num_items_in_batch"] == 7
+        assert loss_mock.called
+        assert loss_mock.call_args.kwargs["model"] is model
+        assert loss_mock.call_args.kwargs["asft_mode"] == "sft"
+        assert loss_mock.call_args.kwargs["kl_weight"] == 0.0
+        assert loss_mock.call_args.kwargs["reference_policy"] == "disable_adapter"
+        assert loss_mock.call_args.kwargs["streaming_config"] is trainer.asft_streaming
+
+    def test_compute_loss_creates_frozen_copy_once(self):
+        """Test frozen copy is created once when needed."""
+        from unsloth.trainer import ASFTTrainer, ASFTStreamingConfig
+
+        trainer = ASFTTrainer.__new__(ASFTTrainer)
+        trainer.asft_enabled = True
+        trainer.asft_mode = "asft"
+        trainer.kl_weight = 0.1
+        trainer.reference_policy = "frozen_copy"
+        trainer.asft_streaming = ASFTStreamingConfig()
+        trainer._asft_original_model = None
+
+        model = nn.Module()
+        model_copy = MagicMock()
+        inputs = {
+            "input_ids": torch.tensor([[1, 2, 3, 4]]),
+            "labels": torch.tensor([[1, 2, 3, 4]]),
+        }
+
+        with patch(
+            "unsloth.trainer.deepcopy", return_value = model_copy
+        ) as deepcopy_mock, patch(
+            "unsloth.trainer.compute_asft_loss",
+            return_value = torch.tensor(0.5, device = inputs["input_ids"].device),
+        ):
+            ASFTTrainer.compute_loss(trainer, model, inputs)
+            ASFTTrainer.compute_loss(trainer, model, inputs)
+
+        assert deepcopy_mock.call_count == 1
+        assert trainer._asft_original_model is model_copy
+        assert model_copy.eval.called
+        assert model_copy.requires_grad_.called
+
+    def test_compute_loss_skips_copy_with_disable_adapter(self):
+        """Test disable_adapter policy skips frozen copy."""
+        from unsloth.trainer import ASFTTrainer, ASFTStreamingConfig
+
+        trainer = ASFTTrainer.__new__(ASFTTrainer)
+        trainer.asft_enabled = True
+        trainer.asft_mode = "asft"
+        trainer.kl_weight = 0.1
+        trainer.reference_policy = "disable_adapter"
+        trainer.asft_streaming = ASFTStreamingConfig()
+        trainer._asft_original_model = None
+
+        model = MagicMock()
+        model.disable_adapter = MagicMock()
+        inputs = {
+            "input_ids": torch.tensor([[1, 2, 3, 4]]),
+            "labels": torch.tensor([[1, 2, 3, 4]]),
+        }
+
+        with patch(
+            "unsloth.trainer.deepcopy"
+        ) as deepcopy_mock, patch(
+            "unsloth.trainer.compute_asft_loss",
+            return_value = torch.tensor(0.5, device = inputs["input_ids"].device),
+        ) as loss_mock:
+            ASFTTrainer.compute_loss(trainer, model, inputs)
+
+        assert not deepcopy_mock.called
+        assert loss_mock.call_args.kwargs["original_model"] is None
+
+
+class TestUnslothTrainingArguments:
+    """Tests for UnslothTrainingArguments."""
+
+    def test_embedding_learning_rate_is_set(self):
+        """Test embedding_learning_rate is stored on the args object."""
+        from unsloth import trainer as trainer_module
+
+        with patch.object(
+            trainer_module.TrainingArguments, "__init__", return_value = None
+        ) as base_init:
+            args = trainer_module.UnslothTrainingArguments(embedding_learning_rate = 0.01)
+
+        assert args.embedding_learning_rate == 0.01
+        assert base_init.called
 
 
 if __name__ == "__main__":
