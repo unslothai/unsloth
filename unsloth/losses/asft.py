@@ -99,6 +99,45 @@ class ASFTStreamingConfig:
 # -----------------------------------------------------------------------------
 
 
+def _resolve_logit_params(
+    model: Optional[nn.Module],
+    logit_softcapping: Optional[float],
+    logit_scaling: Optional[float],
+) -> Tuple[float, float]:
+    if model is not None:
+        config = getattr(model, "config", None)
+        if config is not None:
+            if logit_softcapping is None:
+                logit_softcapping = getattr(config, "final_logit_softcapping", 0)
+                if logit_softcapping is None:
+                    logit_softcapping = 0
+            if logit_scaling is None:
+                logit_scaling = getattr(config, "logit_scale", 0)
+                if logit_scaling is None:
+                    logit_scaling = 0
+                if logit_scaling == 0:
+                    logit_scaling = getattr(config, "logit_scaling", 0)
+                    if logit_scaling is None:
+                        logit_scaling = 0
+                model_type = getattr(config, "model_type", None)
+                if model_type == "granite":
+                    logits_scaling = getattr(config, "logits_scaling", 1)
+                    if logits_scaling is None:
+                        logits_scaling = 1
+                    logit_scaling = 1 / logits_scaling
+                elif model_type == "falcon_h1":
+                    logit_scaling = getattr(config, "lm_head_multiplier", 0)
+                    if logit_scaling is None:
+                        logit_scaling = 0
+
+    if logit_softcapping is None:
+        logit_softcapping = 0
+    if logit_scaling is None:
+        logit_scaling = 0
+
+    return logit_softcapping, logit_scaling
+
+
 def effective_logits(
     logits: torch.Tensor,
     model: Optional[nn.Module] = None,
@@ -118,22 +157,11 @@ def effective_logits(
     Returns:
         Transformed logits with scaling and softcapping applied.
     """
-    # Read from model config if not provided
-    if model is not None:
-        config = getattr(model, "config", None)
-        if config is not None:
-            if logit_softcapping is None:
-                logit_softcapping = getattr(config, "final_logit_softcapping", 0)
-            if logit_scaling is None:
-                logit_scaling = getattr(config, "logit_scale", 0)
-                if logit_scaling == 0:
-                    logit_scaling = getattr(config, "logit_scaling", 0)
-
-    # Default to no transformation
-    if logit_softcapping is None:
-        logit_softcapping = 0
-    if logit_scaling is None:
-        logit_scaling = 0
+    logit_softcapping, logit_scaling = _resolve_logit_params(
+        model,
+        logit_softcapping,
+        logit_scaling,
+    )
 
     # Convert to float32 for stability
     x = logits.float()
@@ -886,14 +914,11 @@ def compute_asft_loss(
             raise ValueError(f"Unknown streaming mode: {mode}")
 
     # Get model config for softcapping/scaling
-    config = getattr(model, "config", None)
-    logit_softcapping = 0
-    logit_scaling = 0
-    if config is not None:
-        logit_softcapping = getattr(config, "final_logit_softcapping", 0)
-        logit_scaling = getattr(config, "logit_scale", 0)
-        if logit_scaling == 0:
-            logit_scaling = getattr(config, "logit_scaling", 0)
+    logit_softcapping, logit_scaling = _resolve_logit_params(
+        model,
+        None,
+        None,
+    )
 
     # Build forward inputs (without labels/num_items to force logits materialization)
     forward_inputs = {
