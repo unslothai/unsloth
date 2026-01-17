@@ -503,7 +503,9 @@ class TestComputeASFTLoss:
         }
         captured = {}
 
-        def fake_ce(logits, labels, logit_softcapping = 0, logit_scaling = 0, ignore_index = -100):
+        def fake_ce(
+            logits, labels, logit_softcapping = 0, logit_scaling = 0, ignore_index = -100
+        ):
             captured["logit_scaling"] = logit_scaling
             batch, seq_len, _ = logits.shape
             losses = torch.zeros(batch * seq_len, device = logits.device)
@@ -547,7 +549,9 @@ class TestComputeASFTLoss:
         }
         captured = {}
 
-        def fake_ce(logits, labels, logit_softcapping = 0, logit_scaling = 0, ignore_index = -100):
+        def fake_ce(
+            logits, labels, logit_softcapping = 0, logit_scaling = 0, ignore_index = -100
+        ):
             captured["logit_scaling"] = logit_scaling
             batch, seq_len, _ = logits.shape
             losses = torch.zeros(batch * seq_len, device = logits.device)
@@ -594,7 +598,9 @@ class TestComputeASFTLoss:
             valid_mask = valid_mask,
         ).view(shift_labels.shape)
         token_loss = ce_losses * dft_weights
-        expected = token_loss[valid_mask].sum() / dft_weights[valid_mask].sum().clamp_min(1e-8)
+        expected = token_loss[valid_mask].sum() / dft_weights[
+            valid_mask
+        ].sum().clamp_min(1e-8)
 
         loss = compute_asft_loss(
             simple_model,
@@ -764,12 +770,15 @@ class TestStreamingModeMapping:
             batch, seq_len = shift_labels.shape
             return torch.zeros(batch, seq_len, device = shift_labels.device)
 
-        with patch(
-            "unsloth.losses.asft._compute_kl_batch_micro",
-            side_effect = batch_side_effect,
-        ) as batch_mock, patch(
-            "unsloth.losses.asft._compute_kl_seq_kv_cache",
-            side_effect = AssertionError("seq_kv_cache should not be used"),
+        with (
+            patch(
+                "unsloth.losses.asft._compute_kl_batch_micro",
+                side_effect = batch_side_effect,
+            ) as batch_mock,
+            patch(
+                "unsloth.losses.asft._compute_kl_seq_kv_cache",
+                side_effect = AssertionError("seq_kv_cache should not be used"),
+            ),
         ):
             loss = compute_asft_loss(
                 simple_model,
@@ -811,12 +820,15 @@ class TestStreamingModeMapping:
             batch, seq_len = shift_labels.shape
             return torch.zeros(batch, seq_len, device = shift_labels.device)
 
-        with patch(
-            "unsloth.losses.asft._compute_kl_seq_kv_cache",
-            side_effect = seq_side_effect,
-        ) as seq_mock, patch(
-            "unsloth.losses.asft._compute_kl_batch_micro",
-            side_effect = AssertionError("batch_micro should not be used"),
+        with (
+            patch(
+                "unsloth.losses.asft._compute_kl_seq_kv_cache",
+                side_effect = seq_side_effect,
+            ) as seq_mock,
+            patch(
+                "unsloth.losses.asft._compute_kl_batch_micro",
+                side_effect = AssertionError("batch_micro should not be used"),
+            ),
         ):
             loss = compute_asft_loss(
                 simple_model,
@@ -899,15 +911,19 @@ class TestStreamingModeMapping:
             batch, seq_len = ref_logits.shape[:2]
             return torch.zeros(batch * seq_len, device = ref_logits.device)
 
-        with patch(
-            "unsloth.losses.asft._compute_kl_divergence",
-            side_effect = kl_side_effect,
-        ) as kl_mock, patch(
-            "unsloth.losses.asft._compute_kl_seq_kv_cache",
-            side_effect = AssertionError("seq_kv_cache should not be used"),
-        ), patch(
-            "unsloth.losses.asft._compute_kl_batch_micro",
-            side_effect = AssertionError("batch_micro should not be used"),
+        with (
+            patch(
+                "unsloth.losses.asft._compute_kl_divergence",
+                side_effect = kl_side_effect,
+            ) as kl_mock,
+            patch(
+                "unsloth.losses.asft._compute_kl_seq_kv_cache",
+                side_effect = AssertionError("seq_kv_cache should not be used"),
+            ),
+            patch(
+                "unsloth.losses.asft._compute_kl_batch_micro",
+                side_effect = AssertionError("batch_micro should not be used"),
+            ),
         ):
             loss = compute_asft_loss(
                 simple_model,
@@ -1252,7 +1268,9 @@ class TestBackwardCompatibility:
             ):
                 embeddings = self.embedding(input_ids)
                 logits = self.linear(embeddings)
-                past = ("cache",) if (use_cache or past_key_values is not None) else None
+                past = (
+                    ("cache",) if (use_cache or past_key_values is not None) else None
+                )
                 return SimpleNamespace(logits = logits, past_key_values = past)
 
         model = CacheModel()
@@ -1305,7 +1323,9 @@ class TestBackwardCompatibility:
             ):
                 embeddings = self.embedding(input_ids)
                 logits = self.linear(embeddings)
-                past = ("cache",) if (use_cache or past_key_values is not None) else None
+                past = (
+                    ("cache",) if (use_cache or past_key_values is not None) else None
+                )
                 return SimpleNamespace(logits = logits, past_key_values = past)
 
         model = CacheModel()
@@ -1425,11 +1445,13 @@ class TestASFTTrainerComputeLoss:
             "labels": torch.tensor([[1, 2, 3, 4]]),
         }
 
-        with pytest.warns(UserWarning), patch(
-            "unsloth.trainer.deepcopy", return_value = model_copy
-        ) as deepcopy_mock, patch(
-            "unsloth.trainer.compute_asft_loss",
-            return_value = torch.tensor(0.5, device = inputs["input_ids"].device),
+        with (
+            pytest.warns(UserWarning),
+            patch("unsloth.trainer.deepcopy", return_value = model_copy) as deepcopy_mock,
+            patch(
+                "unsloth.trainer.compute_asft_loss",
+                return_value = torch.tensor(0.5, device = inputs["input_ids"].device),
+            ),
         ):
             ASFTTrainer.compute_loss(trainer, model, inputs)
             ASFTTrainer.compute_loss(trainer, model, inputs)
@@ -1460,12 +1482,13 @@ class TestASFTTrainerComputeLoss:
             "labels": torch.tensor([[1, 2, 3, 4]]),
         }
 
-        with patch(
-            "unsloth.trainer.deepcopy"
-        ) as deepcopy_mock, patch(
-            "unsloth.trainer.compute_asft_loss",
-            return_value = torch.tensor(0.5, device = inputs["input_ids"].device),
-        ) as loss_mock:
+        with (
+            patch("unsloth.trainer.deepcopy") as deepcopy_mock,
+            patch(
+                "unsloth.trainer.compute_asft_loss",
+                return_value = torch.tensor(0.5, device = inputs["input_ids"].device),
+            ) as loss_mock,
+        ):
             ASFTTrainer.compute_loss(trainer, model, inputs)
 
         assert not deepcopy_mock.called

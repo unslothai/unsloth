@@ -638,9 +638,7 @@ def _compute_kl_seq_kv_cache(
         if microbatch_size is not None and microbatch_size < batch_size:
             fallback_microbatch = microbatch_size
         elif allow_auto_microbatch_fallback:
-            fallback_microbatch = max(
-                1, batch_size // _DEFAULT_REF_MICROBATCH_DIVISOR
-            )
+            fallback_microbatch = max(1, batch_size // _DEFAULT_REF_MICROBATCH_DIVISOR)
             if fallback_microbatch >= batch_size:
                 fallback_microbatch = None
         if fallback_microbatch is not None:
@@ -678,9 +676,7 @@ def _compute_kl_seq_kv_cache(
         kl = torch.zeros(batch_size, seq_len, dtype = torch.float32, device = device)
         for b_start in range(0, batch_size, microbatch_size):
             b_end = min(b_start + microbatch_size, batch_size)
-            mb_inputs = _slice_batch_inputs(
-                forward_inputs, batch_size, b_start, b_end
-            )
+            mb_inputs = _slice_batch_inputs(forward_inputs, batch_size, b_start, b_end)
             kl_mb = _compute_kl_seq_kv_cache(
                 model,
                 cur_logits[b_start:b_end],
@@ -751,10 +747,7 @@ def _compute_kl_seq_kv_cache(
                         if microbatch_size is not None
                         else max(1, batch_size // _DEFAULT_REF_MICROBATCH_DIVISOR)
                     )
-                if (
-                    fallback_microbatch is not None
-                    and fallback_microbatch < batch_size
-                ):
+                if fallback_microbatch is not None and fallback_microbatch < batch_size:
                     return _compute_kl_batch_micro(
                         model,
                         cur_logits,
@@ -816,10 +809,7 @@ def _compute_kl_seq_kv_cache(
                     if microbatch_size is not None
                     else max(1, batch_size // _DEFAULT_REF_MICROBATCH_DIVISOR)
                 )
-            if (
-                fallback_microbatch is not None
-                and fallback_microbatch < batch_size
-            ):
+            if fallback_microbatch is not None and fallback_microbatch < batch_size:
                 return _compute_kl_batch_micro(
                     model,
                     cur_logits,
@@ -978,9 +968,7 @@ def compute_asft_loss(
 
     elif asft_mode in ("sft+kl", "asft"):
         # Need KL divergence
-        needs_outputs = (
-            streaming_enabled and ref_strategy == "seq_kv_cache"
-        )
+        needs_outputs = streaming_enabled and ref_strategy == "seq_kv_cache"
         ref_forward = get_reference_forward_callable(
             model,
             reference_policy,
