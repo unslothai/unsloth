@@ -2384,6 +2384,10 @@ def is_moe_model(model) -> bool:
     """
     config = getattr(model, "config", model)
     num_experts = getattr(config, "num_experts", None)
+    # Check text_config for VL models
+    if num_experts is None and hasattr(config, "text_config"):
+        num_experts = getattr(config.text_config, "num_experts", None)
+
     return num_experts is not None and num_experts > 0
 
 
@@ -2410,7 +2414,9 @@ def get_moe_target_parameters(model, target_modules=None) -> Optional[List[str]]
         return None
 
     config = getattr(model, "config", model)
-    num_experts = getattr(config, "num_experts", 0)
+    num_experts = getattr(config, "num_experts", None)
+    if num_experts is None and hasattr(config, "text_config"):
+        num_experts = getattr(config.text_config, "num_experts", 0)
 
     # Determine which MoE parameters to include based on target_modules
     moe_params = []
@@ -2418,14 +2424,18 @@ def get_moe_target_parameters(model, target_modules=None) -> Optional[List[str]]
     # Normalize target_modules to a set for efficient lookup
     if target_modules is None:
         # If no target_modules specified, include all MoE params
-        target_set = {"gate_proj", "up_proj", "down_proj"}
+        target_set = {"gate_proj", "up_proj", "down_proj", "gate_up_proj"}
     elif isinstance(target_modules, str):
         target_set = {target_modules}
+        # Heuristic for regex matching MLPs
+        if "proj" in target_modules and ("mlp" in target_modules or "ffn" in target_modules):
+            target_set.update({"gate_proj", "up_proj", "down_proj", "gate_up_proj"})
     else:
         target_set = set(target_modules) if target_modules else set()
 
     # gate_up_proj combines both gate_proj and up_proj in MoE
-    if "gate_proj" in target_set or "up_proj" in target_set:
+    # Also match "gate_up_proj" directly since users may specify the fused name
+    if "gate_proj" in target_set or "up_proj" in target_set or "gate_up_proj" in target_set:
         moe_params.append("mlp.experts.gate_up_proj")
 
     if "down_proj" in target_set:
