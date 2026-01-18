@@ -676,6 +676,7 @@ class FastModel(FastBaseModel):
         qat_scheme = None,
         load_in_fp8 = False,  # fp8 LoRA (True, False, 'block')
         unsloth_tiled_mlp = False,
+        target_parameters = None,  # For MoE expert parameters
         *args,
         **kwargs,
     ):
