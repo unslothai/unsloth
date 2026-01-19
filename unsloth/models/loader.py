@@ -841,11 +841,11 @@ class FastModel(FastBaseModel):
                         break
 
         # [TODO] For now fast_inference only works with fast_inference ie vLLM
-        if load_in_fp8 != False:
-            if not fast_inference:
-                raise NotImplementedError(
-                    "Unsloth: set `fast_inference = True` when doing `load_in_fp8`."
-                )
+        # if load_in_fp8 != False:
+        #     if not fast_inference:
+        #         raise NotImplementedError(
+        #             "Unsloth: set `fast_inference = True` when doing `load_in_fp8`."
+        #         )
 
         # Find FP8, BnB 4bit, other mapped names
         old_model_name = model_name

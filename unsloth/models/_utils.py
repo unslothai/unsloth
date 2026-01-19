@@ -2332,6 +2332,14 @@ def patch_hf_quantizer():
     except Exception as e:
         logger.warning(f"Failed to patch FbgemmFp8HfQuantizer. Error {e}")
 
+    try:
+        from transformers.quantizers.quantizer_torchao import TorchAoHfQuantizer
+
+        TorchAoHfQuantizer.is_trainable = property(make_trainable)
+        TorchAoHfQuantizer.is_qat_trainable = property(make_trainable)
+    except Exception as e:
+        logger.warning(f"Failed to patch TorchAoHfQuantizer. Error {e}")
+
 
 patch_hf_quantizer()
 

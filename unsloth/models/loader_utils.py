@@ -361,10 +361,10 @@ def _get_fp8_mode_and_check_settings(
         raise ValueError(
             f"Unsloth: `load_in_fp8` can only be 'row' or 'block', got '{fp8_mode}'"
         )
-    if not fast_inference:
-        raise ValueError(
-            "Unsloth: `load_in_fp8` is only supported for `fast_inference` for now"
-        )
+    # if not fast_inference:
+    #     raise ValueError(
+    #         "Unsloth: `load_in_fp8` is only supported for `fast_inference` for now"
+    #     )
     if full_finetuning:
         raise ValueError(
             "Unsloth: `load_in_fp8` is not compatible with full finetuning"
