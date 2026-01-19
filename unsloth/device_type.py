@@ -134,7 +134,11 @@ if DEVICE_TYPE == "hip":
 class DeviceContext:
     """Encapsulates device-specific operations for XPU/HIP/CUDA."""
 
-    DEVICE_MODULE_MAP = {"xpu": torch.xpu, "cuda": torch.cuda, "hip": torch.cuda}
+    DEVICE_MODULE_MAP = {
+        "cuda": torch.cuda,
+        "hip": torch.cuda,
+        **({"xpu": torch.xpu} if hasattr(torch, "xpu") else {}),
+    }
     DEVICE_NAME_MAP = {"xpu": "Intel XPU", "cuda": "NVIDIA GPU", "hip": "AMD GPU"}
 
     def __init__(self, device_type: str = DEVICE_TYPE) -> None:
