@@ -922,6 +922,29 @@ class FastSentenceTransformer(FastModel):
             st_model = SentenceTransformer(model_name, **st_kwargs)
             return st_model
 
+        # sanity check, thanks Etherl:
+        if full_finetuning and (load_in_4bit or load_in_8bit):
+            print(
+                "Unsloth: You selected full finetuning support, but 4bit / 8bit is enabled - disabling LoRA / QLoRA."
+            )
+            load_in_4bit = False
+            load_in_8bit = False
+            load_in_fp8 = False
+            load_in_16bit = False
+
+        if (
+            int(load_in_4bit)
+            + int(load_in_8bit)
+            + int(load_in_16bit)
+            >= 2
+        ):
+            raise RuntimeError(
+                "Unsloth: Can only load in 4bit or 8bit or 16bit, not a combination!\n"
+                "Also, we by default set `load_in_16bit = True`.\n"
+                "If you want 4bit LoRA finetuning, set `load_in_16bit = False` and `load_in_4bit = True`\n"
+                "If you want 8bit finetuning, set both `load_in_16bit = False` and `load_in_8bit = True`"
+            )
+
         if "auto_model" not in kwargs:
             kwargs["auto_model"] = AutoModel
 
