@@ -135,6 +135,7 @@ def _save_pretrained_torchao(
     except:
         pass
 
+
 # Thanks Etherl:
 def _save_pretrained_gguf(
     self,
@@ -204,7 +205,7 @@ def _save_pretrained_gguf(
             tokenizer = tokenizer,
             quantization_method = quantization_method,
             first_conversion = first_conversion,
-            push_to_hub = False, # Force local first to move files
+            push_to_hub = False,  # Force local first to move files
             token = token,
             max_shard_size = max_shard_size,
             temporary_location = temporary_location,
@@ -213,20 +214,23 @@ def _save_pretrained_gguf(
 
     # 6. Move GGUF files from the subdirectory (0_Transformer) to the root save_directory
     gguf_files = result.get("gguf_files", [])
-    
+
     new_gguf_locations = []
-    
+
     for gguf_file in gguf_files:
         if os.path.exists(gguf_file):
             filename = os.path.basename(gguf_file)
             dest_path = os.path.join(save_directory, filename)
-            
+
             # Convert to absolute path to avoid mixing relative/absolute in commonpath
             abs_gguf_file = os.path.abspath(gguf_file)
-            
+
             # Check if file is inside transformer_dir (subpath)
             try:
-                is_subpath = os.path.commonpath([abs_gguf_file, transformer_dir]) == transformer_dir
+                is_subpath = (
+                    os.path.commonpath([abs_gguf_file, transformer_dir])
+                    == transformer_dir
+                )
             except ValueError:
                 # Can happen on Windows with different drives, or mix of absolute/relative (handled by abspath above)
                 is_subpath = False
@@ -247,31 +251,35 @@ def _save_pretrained_gguf(
     # 7. Add branding
     try:
         FastSentenceTransformer._add_unsloth_branding(save_directory)
-        
+
         # Add GGUF details to README
         readme_path = os.path.join(save_directory, "README.md")
         if os.path.exists(readme_path):
-            with open(readme_path, "a", encoding="utf-8") as f:
+            with open(readme_path, "a", encoding = "utf-8") as f:
                 f.write("\n## GGUF Quantization\n")
-                f.write(f"This model contains GGUF quantized versions in: {', '.join([os.path.basename(f) for f in new_gguf_locations])}\n")
+                f.write(
+                    f"This model contains GGUF quantized versions in: {', '.join([os.path.basename(f) for f in new_gguf_locations])}\n"
+                )
     except:
         pass
 
     # 8. Handle Push to Hub if requested
     if push_to_hub:
-        if token is None: 
+        if token is None:
             token = get_token()
-        
+
         api = HfApi(token = token)
-        repo_id = save_directory # Assuming save_directory is the repo name if pushing
-        
+        repo_id = save_directory  # Assuming save_directory is the repo name if pushing
+
         print(f"Unsloth: Uploading to {repo_id}...")
         try:
-            api.create_repo(repo_id=repo_id, exist_ok=True, private=kwargs.get("private", False))
+            api.create_repo(
+                repo_id = repo_id, exist_ok = True, private = kwargs.get("private", False)
+            )
             api.upload_folder(
-                folder_path=save_directory,
-                repo_id=repo_id,
-                commit_message="Upload GGUF and SentenceTransformer model",
+                folder_path = save_directory,
+                repo_id = repo_id,
+                commit_message = "Upload GGUF and SentenceTransformer model",
             )
             print(f"Unsloth: Uploaded to https://huggingface.co/{repo_id}")
         except Exception as e:
