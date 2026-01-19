@@ -231,11 +231,13 @@ def PatchRL(FastLanguageModel):
     Trainer.prediction_step = unsloth_prediction_step
 
 
+grpo_selective_log_softmax = RL_REPLACEMENTS["grpo_selective_log_softmax"]
 selective_log_softmax = RL_REPLACEMENTS["selective_log_softmax"]
 calculate_pad_tokens_in_prompt = RL_REPLACEMENTS["calculate_pad_tokens_in_prompt"]
 create_completion_attention_mask = RL_REPLACEMENTS["create_completion_attention_mask"]
 left_pack_padding = RL_REPLACEMENTS["left_pack_padding"]
 align_logprobs_with_mask = RL_REPLACEMENTS["align_logprobs_with_mask"]
+autotune_batch_and_chunks = RL_REPLACEMENTS["grpo_autotune_batch_and_chunks"]
 
 RLTrainer_replacement = '''
 import os
@@ -247,7 +249,6 @@ import numpy as np
 from contextlib import nullcontext
 from torch.nn import functional as F
 import inspect
-import psutil
 from transformers import DataCollatorForSeq2Seq, DataCollatorForLanguageModeling as TransformersDataCollatorForLanguageModeling
 from transformers.training_args import ParallelMode
 
@@ -264,17 +265,19 @@ def prepare_for_training_mode(f):
     def wrapper(self, *args, **kwargs):
         # Enable training mode
         _was_training = None
+        # Get gradient checkpointing setting from training arguments
+        use_gc = getattr(self.args, 'gradient_checkpointing', True)
         if hasattr(self, 'model') and hasattr(self.model, "training"):
             _was_training = self.model.training
         if hasattr(self, 'model') and hasattr(self.model, "for_training"):
-            self.model.for_training()
+            self.model.for_training(use_gradient_checkpointing=use_gc)
         output = f(self, *args, **kwargs)
         # Restore previous mode when possible
         if hasattr(self, 'model') and hasattr(self.model, "for_inference"):
             if _was_training is False:
                 self.model.for_inference()
             elif _was_training is True and hasattr(self.model, "for_training"):
-                self.model.for_training()
+                self.model.for_training(use_gradient_checkpointing=use_gc)
         # Reset gradient checkpointing buffers to free memory while staying ready for next run
         try:
             reset_unsloth_gradient_checkpointing_buffers()
@@ -298,11 +301,13 @@ torch_compile_options = {{
     "triton.cudagraphs" : False,
 }}
 
+{grpo_selective_log_softmax_code}
 {selective_log_softmax_code}
 {calculate_pad_tokens_in_prompt_code}
 {create_completion_attention_mask_code}
 {left_pack_padding_code}
 {align_logprobs_with_mask_code}
+{autotune_batch_and_chunks_code}
 
 {RL_pre}
 
@@ -319,10 +324,20 @@ class Unsloth{RLConfig_name}({RLConfig_name}):
         default = -1,
         metadata = {{'help': 'Chunk size to reduce memory usage. -1 is most efficient.'}},
     )
+    unsloth_logit_chunk_multiplier : Optional[int] = field(
+            default = None,
+            metadata = {{'help': 'Multiplier for chunked logit computations.'}},
+        )
+    unsloth_grpo_mini_batch : Optional[int] = field(
+        default = None,
+        metadata = {{'help': 'Mini batch size for GRPO hidden state accumulation. Default is None unless user defines it.'}},
+    )
     {max_seq_length_pre}
     def __init__({RLConfig_arguments},
         vllm_sampling_params = None,
         unsloth_num_chunks = -1,
+        unsloth_logit_chunk_multiplier = None, 
+        unsloth_grpo_mini_batch = None, 
         {max_seq_length_call}
         **kwargs,
     ):
@@ -330,6 +345,15 @@ class Unsloth{RLConfig_name}({RLConfig_name}):
         super().__init__({RLConfig_call_args}{RLConfig_kwargs})
         self.vllm_sampling_params = vllm_sampling_params
         self.unsloth_num_chunks = unsloth_num_chunks
+        if unsloth_grpo_mini_batch is not None:
+            if self.generation_batch_size >= unsloth_grpo_mini_batch:
+                self.unsloth_grpo_mini_batch = unsloth_grpo_mini_batch
+            else:
+                raise ValueError(
+                    f"Unsloth GRPO mini batch size needs to be less than or equal to the effective generation batch size, "
+                    f"which is self.per_device_train_batch_size * gradient_accumulation_steps."
+                )
+        self.unsloth_logit_chunk_multiplier = unsloth_logit_chunk_multiplier
         {max_seq_length_post}
 pass
 
@@ -1027,6 +1051,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
 
     # Selective log softmax and other functions
     selective_log_softmax_code = inspect.getsource(selective_log_softmax)
+    grpo_selective_log_softmax_code = inspect.getsource(grpo_selective_log_softmax)
     calculate_pad_tokens_in_prompt_code = inspect.getsource(
         calculate_pad_tokens_in_prompt
     )
@@ -1035,6 +1060,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     )
     left_pack_padding_code = inspect.getsource(left_pack_padding)
     align_logprobs_with_mask_code = inspect.getsource(align_logprobs_with_mask)
+    autotune_batch_and_chunks_code = inspect.getsource(autotune_batch_and_chunks)
     # Get final source code
     RLTrainer_source = RLTrainer_replacement.format(
         RLTrainer_name = RLTrainer_name,
@@ -1056,8 +1082,10 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         max_seq_length_call = max_seq_length_call,
         max_seq_length_post = max_seq_length_post,
         selective_log_softmax_code = selective_log_softmax_code,
+        grpo_selective_log_softmax_code = grpo_selective_log_softmax_code,
         calculate_pad_tokens_in_prompt_code = calculate_pad_tokens_in_prompt_code,
         create_completion_attention_mask_code = create_completion_attention_mask_code,
+        autotune_batch_and_chunks_code = autotune_batch_and_chunks_code,
         left_pack_padding_code = left_pack_padding_code,
         align_logprobs_with_mask_code = align_logprobs_with_mask_code,
     )
@@ -1165,6 +1193,41 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
     init = init.replace(
         "model = self._prepare_peft_model(model, peft_config, args)\n", "pass\n"
     )
+
+    # Skip add_adapter("ref") for reference model computation
+    # Unsloth: We comment out the "ref" adapter creation because:
+    # 1. We want to use the original BASE MODEL as the reference model, not the SFT/LoRA model
+    # 2. PEFT doesn't allow multiple adapters when target_parameters is used (MoE models)
+    # When "ref" is not in peft_config, GRPO/RLOO fallback uses disable_adapter()
+    # which gives the base model logits - exactly what we want
+    add_adapter_block_pattern = (
+        r"([ \t]*)"  # Capture leading indentation
+        r"if\s+is_peft_available\(\)\s+and\s+is_peft_model\(model\)\s+and\s+args\.beta\s*!=\s*0\.0\s*:"
+        r"(.*?)"  # Match the entire block until ref_param.data.copy_
+        r"ref_param\.data\.copy_\(param\.data\)"
+    )
+
+    def comment_out_block(match):
+        """Comment out each line in the matched block, preserving indentation."""
+        full_match = match.group(0)
+        indent = match.group(1)
+        lines = full_match.split("\n")
+        commented_lines = []
+        # Add explanation comment first
+        commented_lines.append(
+            f"{indent}# Unsloth: Commented out - use base model as reference, not SFT/LoRA model"
+        )
+        # Comment out each line - insert # after leading whitespace to preserve indentation
+        for line in lines:
+            if line.strip():
+                stripped = line.lstrip()
+                leading_ws = line[: len(line) - len(stripped)]
+                commented_lines.append(f"{leading_ws}# {stripped}")
+            else:
+                commented_lines.append(line)
+        return "\n".join(commented_lines)
+
+    init = re.sub(add_adapter_block_pattern, comment_out_block, init, flags = re.DOTALL)
 
     # Set use_vllm if not set
     if "args.use_vllm" in init and "model" in init and "args" in init:
