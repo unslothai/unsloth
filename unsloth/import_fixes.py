@@ -257,7 +257,9 @@ def patch_vllm_for_notebooks():
     if not needs_patch:
         return
 
-    print("Notebook detected: Patching sys.stdout.fileno for vLLM compatibility...")
+    logger.info(
+        "Notebook detected: Patching sys.stdout.fileno for vLLM compatibility..."
+    )
     sys.stdout.fileno = lambda: 1
 
 
