@@ -207,22 +207,58 @@ def fix_xformers_performance_issue():
 def patch_vllm_for_notebooks():
     import sys
 
-    if "get_ipython" in globals():
-        try:
-            shell = get_ipython().__class__.__name__
-            is_notebook = shell == "ZMQInteractiveShell" or "google.colab" in str(
-                type(get_ipython())
-            )
-        except NameError:
-            is_notebook = False
-    else:
-        is_notebook = False
+    ipython = None
+    try:
+        from IPython import get_ipython as _get_ipython
+    except Exception:
+        _get_ipython = None
 
-    if is_notebook:
-        print("Notebook detected: Patching sys.stdout.fileno for vLLM compatibility...")
-        if hasattr(sys.stdout, "fileno"):
-            # Force fileno to return 1 (standard output) to prevent vLLM crashes
-            sys.stdout.fileno = lambda: 1
+    if _get_ipython is not None:
+        try:
+            ipython = _get_ipython()
+        except Exception:
+            ipython = None
+
+    if ipython is None:
+        try:
+            import builtins
+
+            _get_ipython = getattr(builtins, "get_ipython", None)
+            if callable(_get_ipython):
+                ipython = _get_ipython()
+        except Exception:
+            ipython = None
+
+    if ipython is None:
+        return
+
+    try:
+        shell = ipython.__class__.__name__
+        is_notebook = shell == "ZMQInteractiveShell" or "google.colab" in str(
+            type(ipython)
+        )
+    except Exception:
+        return
+
+    if not is_notebook:
+        return
+
+    if not hasattr(sys.stdout, "fileno"):
+        return
+
+    needs_patch = False
+    try:
+        fd = sys.stdout.fileno()
+        if not isinstance(fd, int) or fd < 0:
+            needs_patch = True
+    except Exception:
+        needs_patch = True
+
+    if not needs_patch:
+        return
+
+    print("Notebook detected: Patching sys.stdout.fileno for vLLM compatibility...")
+    sys.stdout.fileno = lambda: 1
 
 
 # ValueError: 'aimv2' is already used by a Transformers config, pick another name.
