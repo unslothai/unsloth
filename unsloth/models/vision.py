@@ -117,8 +117,6 @@ except:
 
 HAS_TORCH_DTYPE = "torch_dtype" in PretrainedConfig.__doc__
 
-from transformers import GenerationConfig, CompileConfig
-
 _compile_config = CompileConfig(
     fullgraph = False,
     dynamic = None,
