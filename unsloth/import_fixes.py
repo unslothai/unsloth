@@ -258,7 +258,7 @@ def patch_vllm_for_notebooks():
         return
 
     logger.info(
-        "Notebook detected: Patching sys.stdout.fileno for vLLM compatibility..."
+        "Unsloth: Notebook detected - Patching sys.stdout.fileno for newer `vllm>=0.12.0` versions"
     )
     sys.stdout.fileno = lambda: 1
 
