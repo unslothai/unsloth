@@ -203,23 +203,28 @@ def fix_xformers_performance_issue():
         except Exception as e:
             logger.info(f"Unsloth: Failed patching Xformers with error = {str(e)}")
 
-def patch_vllm_for_notebooks():
-  import sys
-  if "get_ipython" in globals():
-          try:
-              shell = get_ipython().__class__.__name__
-              is_notebook = (shell == 'ZMQInteractiveShell' or 'google.colab' in str(type(get_ipython())))
-          except NameError:
-              is_notebook = False
-  else:
-      is_notebook = False
 
-  if is_notebook:
-      print("Notebook detected: Patching sys.stdout.fileno for vLLM compatibility...")
-      if hasattr(sys.stdout, 'fileno'):
-          # Force fileno to return 1 (standard output) to prevent vLLM crashes
-          sys.stdout.fileno = lambda: 1
-        
+def patch_vllm_for_notebooks():
+    import sys
+
+    if "get_ipython" in globals():
+        try:
+            shell = get_ipython().__class__.__name__
+            is_notebook = shell == "ZMQInteractiveShell" or "google.colab" in str(
+                type(get_ipython())
+            )
+        except NameError:
+            is_notebook = False
+    else:
+        is_notebook = False
+
+    if is_notebook:
+        print("Notebook detected: Patching sys.stdout.fileno for vLLM compatibility...")
+        if hasattr(sys.stdout, "fileno"):
+            # Force fileno to return 1 (standard output) to prevent vLLM crashes
+            sys.stdout.fileno = lambda: 1
+
+
 # ValueError: 'aimv2' is already used by a Transformers config, pick another name.
 def fix_vllm_aimv2_issue():
     spec = importlib.util.find_spec("vllm")
