@@ -4,6 +4,7 @@ from cli.commands.train import train
 from cli.commands.inference import inference
 from cli.commands.export import export, list_checkpoints
 from cli.commands.ui import ui
+from cli.commands.studio import studio
 
 app = typer.Typer(
     help="Command-line interface for Unsloth training, inference, and export.",
@@ -15,3 +16,4 @@ app.command()(inference)
 app.command()(export)
 app.command("list-checkpoints")(list_checkpoints)
 app.command()(ui)
+app.command()(studio)
