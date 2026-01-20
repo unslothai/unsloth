@@ -219,6 +219,7 @@ def patch_vllm_for_notebooks():
       if hasattr(sys.stdout, 'fileno'):
           # Force fileno to return 1 (standard output) to prevent vLLM crashes
           sys.stdout.fileno = lambda: 1
+        
 # ValueError: 'aimv2' is already used by a Transformers config, pick another name.
 def fix_vllm_aimv2_issue():
     spec = importlib.util.find_spec("vllm")
