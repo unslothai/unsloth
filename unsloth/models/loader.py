@@ -239,7 +239,7 @@ class FastLanguageModel(FastLlamaModel):
             # Only override default string-based device maps
             if isinstance(device_map, str):
                 device_map = {"": current_device}
-
+            current_device = getattr(torch, DEVICE_TYPE_TORCH).current_device()
                 print(
                     "[Unsloth] Detected multi-GPU + quantized training. "
                     "Loading model on per-rank device to avoid device conflicts."
