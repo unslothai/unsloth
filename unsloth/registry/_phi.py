@@ -15,26 +15,26 @@ class PhiModelInfo(ModelInfo):
 
 # Phi Model Meta
 PhiMeta4 = ModelMeta(
-    org = "microsoft",
-    base_name = "phi",
-    instruct_tags = [None],
-    model_version = "4",
-    model_sizes = ["1"],  # Assuming only one size
-    model_info_cls = PhiModelInfo,
-    is_multimodal = False,
-    quant_types = [QuantType.NONE, QuantType.BNB, QuantType.UNSLOTH],
+    org="microsoft",
+    base_name="phi",
+    instruct_tags=[None],
+    model_version="4",
+    model_sizes=["1"],  # Assuming only one size
+    model_info_cls=PhiModelInfo,
+    is_multimodal=False,
+    quant_types=[QuantType.NONE, QuantType.BNB, QuantType.UNSLOTH],
 )
 
 # Phi Instruct Model Meta
 PhiInstructMeta4 = ModelMeta(
-    org = "microsoft",
-    base_name = "phi",
-    instruct_tags = ["mini-instruct"],
-    model_version = "4",
-    model_sizes = ["1"],  # Assuming only one size
-    model_info_cls = PhiModelInfo,
-    is_multimodal = False,
-    quant_types = [QuantType.NONE, QuantType.BNB, QuantType.UNSLOTH, QuantType.GGUF],
+    org="microsoft",
+    base_name="phi",
+    instruct_tags=["mini-instruct"],
+    model_version="4",
+    model_sizes=["1"],  # Assuming only one size
+    model_info_cls=PhiModelInfo,
+    is_multimodal=False,
+    quant_types=[QuantType.NONE, QuantType.BNB, QuantType.UNSLOTH, QuantType.GGUF],
 )
 
 
@@ -42,7 +42,7 @@ def register_phi_4_models(include_original_model: bool = False):
     global _IS_PHI_4_REGISTERED
     if _IS_PHI_4_REGISTERED:
         return
-    _register_models(PhiMeta4, include_original_model = include_original_model)
+    _register_models(PhiMeta4, include_original_model=include_original_model)
     _IS_PHI_4_REGISTERED = True
 
 
@@ -50,13 +50,13 @@ def register_phi_4_instruct_models(include_original_model: bool = False):
     global _IS_PHI_4_INSTRUCT_REGISTERED
     if _IS_PHI_4_INSTRUCT_REGISTERED:
         return
-    _register_models(PhiInstructMeta4, include_original_model = include_original_model)
+    _register_models(PhiInstructMeta4, include_original_model=include_original_model)
     _IS_PHI_4_INSTRUCT_REGISTERED = True
 
 
 def register_phi_models(include_original_model: bool = False):
-    register_phi_4_models(include_original_model = include_original_model)
-    register_phi_4_instruct_models(include_original_model = include_original_model)
+    register_phi_4_models(include_original_model=include_original_model)
+    register_phi_4_instruct_models(include_original_model=include_original_model)
 
 
 if __name__ == "__main__":
@@ -64,7 +64,7 @@ if __name__ == "__main__":
 
     MODEL_REGISTRY.clear()
 
-    register_phi_models(include_original_model = True)
+    register_phi_models(include_original_model=True)
 
     for model_id, model_info in MODEL_REGISTRY.items():
         model_info = _check_model_info(model_id)

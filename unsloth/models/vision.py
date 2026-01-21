@@ -120,9 +120,9 @@ HAS_TORCH_DTYPE = "torch_dtype" in PretrainedConfig.__doc__
 from transformers import GenerationConfig, CompileConfig
 
 _compile_config = CompileConfig(
-    fullgraph = False,
-    dynamic = None,
-    mode = "reduce-overhead",
+    fullgraph=False,
+    dynamic=None,
+    mode="reduce-overhead",
 )
 _compile_config.disable = True  # Must set manually
 
@@ -224,10 +224,10 @@ def unsloth_base_fast_generate(
 
     # Mixed precision autocast
     if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
-        autocaster = torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = torch.float16)
+        autocaster = torch.autocast(device_type=DEVICE_TYPE_TORCH, dtype=torch.float16)
         dtype = torch.float16
     else:
-        autocaster = torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = dtype)
+        autocaster = torch.autocast(device_type=DEVICE_TYPE_TORCH, dtype=dtype)
     # Prepare LoRA
     # state_dict = convert_lora_modules(self, dtype = dtype)
 
@@ -321,34 +321,34 @@ def unsloth_base_fast_generate(
 class FastBaseModel:
     @staticmethod
     def from_pretrained(
-        model_name = "unsloth/Llama-3.2-1B-Instruct",
-        max_seq_length = 2048,
-        dtype = None,
-        load_in_4bit = True,
-        load_in_8bit = False,
-        load_in_16bit = False,
-        full_finetuning = False,
-        token = None,
-        device_map = "sequential",
-        trust_remote_code = False,
-        model_types = None,
-        tokenizer_name = None,
-        auto_model = AutoModelForVision2Seq,
-        use_gradient_checkpointing = "unsloth",
-        supports_sdpa = True,
-        whisper_language = None,
-        whisper_task = None,
-        auto_config = None,
-        offload_embedding = False,
-        float32_mixed_precision = None,  # Forces float32 mixed precision
+        model_name="unsloth/Llama-3.2-1B-Instruct",
+        max_seq_length=2048,
+        dtype=None,
+        load_in_4bit=True,
+        load_in_8bit=False,
+        load_in_16bit=False,
+        full_finetuning=False,
+        token=None,
+        device_map="sequential",
+        trust_remote_code=False,
+        model_types=None,
+        tokenizer_name=None,
+        auto_model=AutoModelForVision2Seq,
+        use_gradient_checkpointing="unsloth",
+        supports_sdpa=True,
+        whisper_language=None,
+        whisper_task=None,
+        auto_config=None,
+        offload_embedding=False,
+        float32_mixed_precision=None,  # Forces float32 mixed precision
         # vLLM parameters
-        fast_inference = False,
-        gpu_memory_utilization = 0.5,
-        float8_kv_cache = False,
-        random_state = 3407,
-        max_lora_rank = 64,
-        disable_log_stats = False,
-        unsloth_vllm_standby = False,
+        fast_inference=False,
+        gpu_memory_utilization=0.5,
+        float8_kv_cache=False,
+        random_state=3407,
+        max_lora_rank=64,
+        disable_log_stats=False,
+        unsloth_vllm_standby=False,
         **kwargs,
     ):
         if unsloth_vllm_standby and os.environ.get("UNSLOTH_VLLM_STANDBY", "0") != "1":
@@ -544,16 +544,16 @@ class FastBaseModel:
             )
         if load_in_4bit:
             bnb_config = BitsAndBytesConfig(
-                load_in_4bit = True,
-                bnb_4bit_use_double_quant = True,
-                bnb_4bit_quant_type = "nf4",
-                bnb_4bit_compute_dtype = bnb_compute_dtype,
-                llm_int8_skip_modules = SKIP_QUANTIZATION_MODULES.copy(),
+                load_in_4bit=True,
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=bnb_compute_dtype,
+                llm_int8_skip_modules=SKIP_QUANTIZATION_MODULES.copy(),
             )
         elif load_in_8bit:
             bnb_config = BitsAndBytesConfig(
-                load_in_8bit = True,
-                llm_int8_skip_modules = SKIP_QUANTIZATION_MODULES.copy(),
+                load_in_8bit=True,
+                llm_int8_skip_modules=SKIP_QUANTIZATION_MODULES.copy(),
             )
         elif load_in_16bit:
             bnb_config = None
@@ -603,8 +603,8 @@ class FastBaseModel:
             if auto_config is None:
                 auto_config = AutoConfig.from_pretrained(
                     model_name,
-                    token = token,
-                    trust_remote_code = trust_remote_code,
+                    token=token,
+                    trust_remote_code=trust_remote_code,
                 )
             if hasattr(auto_config, "quantization_config"):
                 from transformers.quantizers.auto import (
@@ -655,9 +655,9 @@ class FastBaseModel:
 
         model_config = AutoConfig.from_pretrained(
             model_name,
-            token = token,
-            attn_implementation = "sdpa" if supports_sdpa else "eager",
-            trust_remote_code = trust_remote_code,
+            token=token,
+            attn_implementation="sdpa" if supports_sdpa else "eager",
+            trust_remote_code=trust_remote_code,
         )
         verify_fp8_support_if_applicable(model_config)
 
@@ -667,11 +667,11 @@ class FastBaseModel:
             load_in_fp8 = kwargs.pop("load_in_fp8", None)
             model = auto_model.from_pretrained(
                 model_name,
-                device_map = device_map,
+                device_map=device_map,
                 # torch_dtype           = torch_dtype, # Transformers removed torch_dtype
                 # quantization_config   = bnb_config,
-                token = token,
-                trust_remote_code = trust_remote_code,
+                token=token,
+                trust_remote_code=trust_remote_code,
                 # attn_implementation   = attn_implementation,
                 **kwargs,
             )
@@ -735,18 +735,18 @@ class FastBaseModel:
 
             allowed_args = inspect.getfullargspec(load_vllm).args
             load_vllm_kwargs = dict(
-                model_name = model_name,
-                config = model_config,
-                gpu_memory_utilization = gpu_memory_utilization,
-                max_seq_length = max_seq_length,
-                dtype = dtype,
-                float8_kv_cache = float8_kv_cache,
-                enable_lora = vllm_enable_lora,
-                max_lora_rank = max_lora_rank,
-                disable_log_stats = disable_log_stats,
-                use_bitsandbytes = load_in_4bit,
-                unsloth_vllm_standby = unsloth_vllm_standby,
-                is_vision_model = is_vlm,
+                model_name=model_name,
+                config=model_config,
+                gpu_memory_utilization=gpu_memory_utilization,
+                max_seq_length=max_seq_length,
+                dtype=dtype,
+                float8_kv_cache=float8_kv_cache,
+                enable_lora=vllm_enable_lora,
+                max_lora_rank=max_lora_rank,
+                disable_log_stats=disable_log_stats,
+                use_bitsandbytes=load_in_4bit,
+                unsloth_vllm_standby=unsloth_vllm_standby,
+                is_vision_model=is_vlm,
             )
             for allowed_arg in allowed_args:
                 if allowed_arg not in load_vllm_kwargs and allowed_arg in kwargs:
@@ -758,15 +758,15 @@ class FastBaseModel:
             # Convert to HF format
             _, quant_state_dict = get_vllm_state_dict(
                 llm,
-                config = model_config,
-                is_vision_model = is_vlm,
+                config=model_config,
+                is_vision_model=is_vlm,
             )
             model = convert_vllm_to_huggingface(
                 quant_state_dict,
                 model_config,
                 dtype,
                 bnb_config,
-                is_vision_model = is_vlm,
+                is_vision_model=is_vlm,
             )
             model.vllm_engine = llm
             model.fast_generate = model.vllm_engine.generate
@@ -808,26 +808,26 @@ class FastBaseModel:
         ):
             tokenizer = auto_processor.from_pretrained(
                 tokenizer_name,
-                padding_side = "left",
-                token = token,
-                language = whisper_language,
-                task = whisper_task,
-                trust_remote_code = trust_remote_code,
+                padding_side="left",
+                token=token,
+                language=whisper_language,
+                task=whisper_task,
+                trust_remote_code=trust_remote_code,
             )
         else:
             try:
                 tokenizer = auto_processor.from_pretrained(
                     tokenizer_name,
-                    padding_side = "left",
-                    token = token,
-                    trust_remote_code = trust_remote_code,
+                    padding_side="left",
+                    token=token,
+                    trust_remote_code=trust_remote_code,
                 )
             except:
                 tokenizer = get_auto_processor(
                     tokenizer_name,
-                    padding_side = "left",
-                    token = token,
-                    trust_remote_code = trust_remote_code,
+                    padding_side="left",
+                    token=token,
+                    trust_remote_code=trust_remote_code,
                 )
         if hasattr(tokenizer, "tokenizer"):
             __tokenizer = tokenizer.tokenizer
@@ -847,10 +847,10 @@ class FastBaseModel:
         model, tokenizer = patch_model_and_tokenizer(
             model,
             tokenizer,
-            downcast_rope = False,
-            fix_embeddings = False,
-            do_forced_float32 = do_forced_float32,
-            correct_dtype = correct_dtype,
+            downcast_rope=False,
+            fix_embeddings=False,
+            do_forced_float32=do_forced_float32,
+            correct_dtype=correct_dtype,
         )
         model, tokenizer = patch_tokenizer(model, tokenizer)
         model = post_patch_loss_function(model)
@@ -858,13 +858,13 @@ class FastBaseModel:
         # Log Unsloth version for future fastpaths for inference
         if hasattr(model, "config"):
             model.config.update({"unsloth_version": __version__})
-        patch_saving_functions(model, vision = True)
+        patch_saving_functions(model, vision=True)
         if tokenizer is None:
             del model
             raise RuntimeError(
                 "Unsloth: The tokenizer is weirdly not loaded? Please check if there is one."
             )
-        patch_saving_functions(tokenizer, vision = True)
+        patch_saving_functions(tokenizer, vision=True)
 
         # Fix gradient accumulation
         from transformers.trainer import Trainer
@@ -902,11 +902,11 @@ class FastBaseModel:
         # Post patches
         model = FastBaseModel.post_patch_model(
             model,
-            use_gradient_checkpointing = use_gradient_checkpointing,
-            trust_remote_code = trust_remote_code,
-            model_type = model_type_arch,
-            tokenizer = tokenizer,
-            float32_mixed_precision = float32_mixed_precision,
+            use_gradient_checkpointing=use_gradient_checkpointing,
+            trust_remote_code=trust_remote_code,
+            model_type=model_type_arch,
+            tokenizer=tokenizer,
+            float32_mixed_precision=float32_mixed_precision,
         )
         # Clear deleted GPU items
         for _ in range(3):
@@ -920,28 +920,28 @@ class FastBaseModel:
     @staticmethod
     def get_peft_model(
         model,
-        r = 16,
-        target_modules = None,
-        lora_alpha = 16,
-        lora_dropout = 0.0,
-        bias = "none",
-        finetune_vision_layers = True,
-        finetune_language_layers = True,
-        finetune_attention_modules = True,
-        finetune_mlp_modules = True,
-        layers_to_transform = None,
-        layers_pattern = None,
-        use_gradient_checkpointing = "unsloth",
-        random_state = 3407,
-        max_seq_length = 2048,  # not used anymore
-        use_rslora = False,
-        modules_to_save = None,
-        init_lora_weights = True,
-        loftq_config = {},
-        task_type = TaskType.CAUSAL_LM,
-        temporary_location = "_unsloth_temporary_saved_buffers",
-        qat_scheme = None,
-        ensure_weight_tying = False,  # [TODO] Add `ensure_weight_tying` for `modules_to_save` for vision models
+        r=16,
+        target_modules=None,
+        lora_alpha=16,
+        lora_dropout=0.0,
+        bias="none",
+        finetune_vision_layers=True,
+        finetune_language_layers=True,
+        finetune_attention_modules=True,
+        finetune_mlp_modules=True,
+        layers_to_transform=None,
+        layers_pattern=None,
+        use_gradient_checkpointing="unsloth",
+        random_state=3407,
+        max_seq_length=2048,  # not used anymore
+        use_rslora=False,
+        modules_to_save=None,
+        init_lora_weights=True,
+        loftq_config={},
+        task_type=TaskType.CAUSAL_LM,
+        temporary_location="_unsloth_temporary_saved_buffers",
+        qat_scheme=None,
+        ensure_weight_tying=False,  # [TODO] Add `ensure_weight_tying` for `modules_to_save` for vision models
         **kwargs,
     ):
         if os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1":
@@ -969,10 +969,10 @@ class FastBaseModel:
         if target_modules is None or target_modules == "all-linear":
             target_modules = get_peft_regex(
                 model,
-                finetune_vision_layers = finetune_vision_layers,
-                finetune_language_layers = finetune_language_layers,
-                finetune_attention_modules = finetune_attention_modules,
-                finetune_mlp_modules = finetune_mlp_modules,
+                finetune_vision_layers=finetune_vision_layers,
+                finetune_language_layers=finetune_language_layers,
+                finetune_attention_modules=finetune_attention_modules,
+                finetune_mlp_modules=finetune_mlp_modules,
             )
         else:
             assert type(target_modules) in (
@@ -1034,7 +1034,7 @@ class FastBaseModel:
         )
         model = prepare_model_for_kbit_training(
             model,
-            use_gradient_checkpointing = use_gradient_checkpointing,
+            use_gradient_checkpointing=use_gradient_checkpointing,
         )
         model = _get_peft_model(model, lora_config)
         # Apply QAT + LoRA if specified
@@ -1048,8 +1048,8 @@ class FastBaseModel:
         trust_remote_code = getattr(model, "_unsloth_trust_remote_code", False)
         model = FastBaseModel.post_patch_model(
             model,
-            use_gradient_checkpointing = use_gradient_checkpointing,
-            trust_remote_code = trust_remote_code,
+            use_gradient_checkpointing=use_gradient_checkpointing,
+            trust_remote_code=trust_remote_code,
         )
         model.max_seq_length = max_seq_length
         # Save to modules as well
@@ -1062,7 +1062,7 @@ class FastBaseModel:
                 torch.cuda.empty_cache()
             elif DEVICE_TYPE == "xpu":
                 torch.xpu.empty_cache()
-        patch_saving_functions(model, vision = True)
+        patch_saving_functions(model, vision=True)
         patch_peft_fast_inference(model)
 
         # Add for_inference and for_training
@@ -1078,11 +1078,11 @@ class FastBaseModel:
     @staticmethod
     def post_patch_model(
         model,
-        use_gradient_checkpointing = True,
-        trust_remote_code = False,
-        model_type = None,
-        tokenizer = None,
-        float32_mixed_precision = None,
+        use_gradient_checkpointing=True,
+        trust_remote_code=False,
+        model_type=None,
+        tokenizer=None,
+        float32_mixed_precision=None,
     ):
         full_finetuning = os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1"
 
@@ -1117,14 +1117,14 @@ class FastBaseModel:
 
         model = prepare_model_for_training(
             model,
-            use_gradient_checkpointing = use_gradient_checkpointing,
-            use_reentrant = use_reentrant,
-            full_finetuning = full_finetuning,
-            train_layernorms = full_finetuning,
-            train_embedding = full_finetuning,
-            train_lm_head = full_finetuning,
-            float32_mixed_precision = float32_mixed_precision,
-            patch_modules_to_save = True,
+            use_gradient_checkpointing=use_gradient_checkpointing,
+            use_reentrant=use_reentrant,
+            full_finetuning=full_finetuning,
+            train_layernorms=full_finetuning,
+            train_embedding=full_finetuning,
+            train_lm_head=full_finetuning,
+            float32_mixed_precision=float32_mixed_precision,
+            patch_modules_to_save=True,
         )
 
         from transformers.trainer import Trainer
@@ -1134,7 +1134,7 @@ class FastBaseModel:
             and trust_remote_code == False
         ):
             raise RuntimeError("Unsloth: Unsuccessfully patched inner_training_loop")
-        patch_saving_functions(model, vision = True)
+        patch_saving_functions(model, vision=True)
 
         # Patch tokenizer to pad to the left
         m = model
@@ -1232,11 +1232,11 @@ class FastBaseModel:
         os.environ["UNSLOTH_RETURN_LOGITS"] = "1"
         # Turn off skip guards and set stance to default
         if torch_compiler_set_stance is not None:
-            torch_compiler_set_stance(stance = "default", skip_guard_eval_unsafe = False)
+            torch_compiler_set_stance(stance="default", skip_guard_eval_unsafe=False)
         return model
 
     @staticmethod
-    def for_training(model, use_gradient_checkpointing = True):
+    def for_training(model, use_gradient_checkpointing=True):
         if not hasattr(model, "parameters"):
             raise TypeError(
                 "Unsloth: I think you're passing a tokenizer, not the model to for_training!"
@@ -1288,5 +1288,5 @@ class FastBaseModel:
         os.environ["UNSLOTH_RETURN_LOGITS"] = "0"
         # Turn off skip guards and set stance to default
         if torch_compiler_set_stance is not None:
-            torch_compiler_set_stance(stance = "default", skip_guard_eval_unsafe = False)
+            torch_compiler_set_stance(stance="default", skip_guard_eval_unsafe=False)
         return model

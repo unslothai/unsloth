@@ -120,8 +120,8 @@ def GraniteAttention_fast_forward(
         Q, K = fast_rope_embedding(Q, K, cos, sin)
 
     if past_key_value is not None:
-        K = torch.cat([past_key_value[0], K], dim = 2)
-        V = torch.cat([past_key_value[1], V], dim = 2)
+        K = torch.cat([past_key_value[0], K], dim=2)
+        V = torch.cat([past_key_value[1], V], dim=2)
     past_key_value = (K, V) if use_cache else None
 
     # Attention module
@@ -136,21 +136,21 @@ def GraniteAttention_fast_forward(
     window = (kv_seq_len, kv_seq_len)
     softmax_scale = getattr(self, "scaling", None)
     attention_config = AttentionConfig(
-        backend = backend,
-        n_kv_heads = n_kv_heads,
-        n_groups = n_groups,
-        flash_dense_kwargs = {
+        backend=backend,
+        n_kv_heads=n_kv_heads,
+        n_groups=n_groups,
+        flash_dense_kwargs={
             "causal": True,
             "softmax_scale": softmax_scale,
             "dropout_p": dropout_p,
             "window_size": window,
         },
-        flash_varlen_kwargs = {
+        flash_varlen_kwargs={
             "dropout_p": 0.0,
             "softmax_scale": softmax_scale,
             "causal": True,
         },
-        sdpa_kwargs = {
+        sdpa_kwargs={
             k: v
             for k, v in {
                 "attn_mask": attention_mask,
@@ -159,25 +159,25 @@ def GraniteAttention_fast_forward(
             }.items()
             if v is not None
         },
-        xformers_kwargs = {
+        xformers_kwargs={
             "scale": softmax_scale,
             "p": dropout_p,
         },
     )
 
     context = AttentionContext(
-        bsz = bsz,
-        q_len = q_len,
-        kv_seq_len = kv_seq_len,
-        n_heads = n_heads,
-        head_dim = head_dim,
-        requires_grad = hidden_states.requires_grad,
-        seq_info = seq_info,
-        attention_mask = attention_mask,
-        causal_mask = causal_mask,
+        bsz=bsz,
+        q_len=q_len,
+        kv_seq_len=kv_seq_len,
+        n_heads=n_heads,
+        head_dim=head_dim,
+        requires_grad=hidden_states.requires_grad,
+        seq_info=seq_info,
+        attention_mask=attention_mask,
+        causal_mask=causal_mask,
     )
 
-    A = run_attention(config = attention_config, context = context, Q = Q, K = K, V = V)
+    A = run_attention(config=attention_config, context=context, Q=Q, K=K, V=V)
 
     attn_output = A.reshape(bsz, q_len, n_heads * head_dim)
     attn_output = self.apply_o(self, attn_output)
@@ -213,19 +213,19 @@ def GraniteDecoderLayer_fast_forward(
             self.input_layernorm, hidden_states
         )
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
-            hidden_states = hidden_states,
-            causal_mask = causal_mask,
-            attention_mask = attention_mask,
-            position_ids = position_ids,
-            past_key_value = past_key_value,
-            output_attentions = output_attentions,
-            use_cache = use_cache,
-            padding_mask = padding_mask,
-            position_embeddings = position_embeddings,
-            _flag_for_generation = self._flag_for_generation,
+            hidden_states=hidden_states,
+            causal_mask=causal_mask,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_value=past_key_value,
+            output_attentions=output_attentions,
+            use_cache=use_cache,
+            padding_mask=padding_mask,
+            position_embeddings=position_embeddings,
+            _flag_for_generation=self._flag_for_generation,
             **kwargs,
         )
-        hidden_states = torch.add(residual, hidden_states, alpha = residual_multiplier)
+        hidden_states = torch.add(residual, hidden_states, alpha=residual_multiplier)
 
         # Fully Connected
         residual = hidden_states
@@ -233,29 +233,29 @@ def GraniteDecoderLayer_fast_forward(
             self.post_attention_layernorm, hidden_states
         )
         hidden_states = fast_swiglu_inference(self.mlp, hidden_states)
-        hidden_states = torch.add(residual, hidden_states, alpha = residual_multiplier)
+        hidden_states = torch.add(residual, hidden_states, alpha=residual_multiplier)
     else:
         residual = hidden_states
         hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
-            hidden_states = hidden_states,
-            causal_mask = causal_mask,
-            attention_mask = attention_mask,
-            position_ids = position_ids,
-            past_key_value = past_key_value,
-            output_attentions = output_attentions,
-            use_cache = use_cache,
-            padding_mask = padding_mask,
-            position_embeddings = position_embeddings,
+            hidden_states=hidden_states,
+            causal_mask=causal_mask,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_value=past_key_value,
+            output_attentions=output_attentions,
+            use_cache=use_cache,
+            padding_mask=padding_mask,
+            position_embeddings=position_embeddings,
             **kwargs,
         )
-        hidden_states = torch.add(residual, hidden_states, alpha = residual_multiplier)
+        hidden_states = torch.add(residual, hidden_states, alpha=residual_multiplier)
 
         # Fully Connected
         residual = hidden_states
         hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states)
         hidden_states = self.mlp(hidden_states)
-        hidden_states = torch.add(residual, hidden_states, alpha = residual_multiplier)
+        hidden_states = torch.add(residual, hidden_states, alpha=residual_multiplier)
 
     outputs = (hidden_states,)
     if output_attentions:
@@ -278,9 +278,9 @@ def GraniteAttention_fast_forward_inference(
     hidden_states: torch.Tensor,
     past_key_value: Optional[Tuple[torch.Tensor]],
     position_ids,
-    do_prefill = False,
-    attention_mask = None,
-    use_sliding_window = False,
+    do_prefill=False,
+    attention_mask=None,
+    use_sliding_window=False,
     position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
 ):
     assert (
@@ -309,24 +309,24 @@ def GraniteAttention_fast_forward_inference(
     if do_prefill:
         self.paged_attention = torch.empty(
             (KV_CACHE_INCREMENT + seq_len + 1, 2, bsz, n_kv_heads, head_dim),
-            dtype = dtype,
-            device = device,
+            dtype=dtype,
+            device=device,
         )
         self.paged_attention_K = self.paged_attention[:, 0]
         self.paged_attention_V = self.paged_attention[:, 1]
         self.paged_attention_K[:seq_len] = K1.permute(2, 0, 1, 3)
         self.paged_attention_V[:seq_len] = V1.permute(2, 0, 1, 3)
         self.temp_QA = torch.empty(
-            (2, bsz, 1, attention_size), dtype = dtype, device = device
+            (2, bsz, 1, attention_size), dtype=dtype, device=device
         )
         self.temp_KV = torch.empty(
-            (2, bsz, 1, n_kv_heads * head_dim), dtype = dtype, device = device
+            (2, bsz, 1, n_kv_heads * head_dim), dtype=dtype, device=device
         )
-        self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = device)
+        self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype=dtype, device=device)
         # Only for Gemma2
-        self.temp_O = torch.empty((1, bsz, hidden_size), dtype = dtype, device = device)
+        self.temp_O = torch.empty((1, bsz, hidden_size), dtype=dtype, device=device)
         self.attention = torch.empty(
-            (bsz, n_heads, 1, KV_CACHE_INCREMENT + seq_len), dtype = dtype, device = device
+            (bsz, n_heads, 1, KV_CACHE_INCREMENT + seq_len), dtype=dtype, device=device
         )
 
         self.half_head_dim = head_dim // 2
@@ -346,9 +346,9 @@ def GraniteAttention_fast_forward_inference(
             (bsz, n_heads, 1, self.attention.shape[-1] + KV_CACHE_INCREMENT)
         )
 
-    Qn = fast_linear_forward(self.q_proj, Xn, out = self.temp_QA[0])
-    Kn = fast_linear_forward(self.k_proj, Xn, out = self.temp_KV[0])
-    Vn = fast_linear_forward(self.v_proj, Xn, out = self.temp_KV[1])
+    Qn = fast_linear_forward(self.q_proj, Xn, out=self.temp_QA[0])
+    Kn = fast_linear_forward(self.k_proj, Xn, out=self.temp_KV[0])
+    Vn = fast_linear_forward(self.v_proj, Xn, out=self.temp_KV[1])
     Qn = Qn.view(bsz, 1, n_heads, head_dim).transpose(1, 2)
     Kn = Kn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
     Vn = Vn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
@@ -362,7 +362,7 @@ def GraniteAttention_fast_forward_inference(
     RH_Q = self.RH_Q
     RH_Q[:, :, :, :h] = Qn[:, :, :, h:]
     RH_Q[:, :, :, h:] = Qn[:, :, :, :h]
-    torch.neg(RH_Q[:, :, :, :h], out = RH_Q[:, :, :, :h])
+    torch.neg(RH_Q[:, :, :, :h], out=RH_Q[:, :, :, :h])
     Qn *= cos
     Qn.addcmul_(RH_Q, sin)
 
@@ -371,7 +371,7 @@ def GraniteAttention_fast_forward_inference(
     ]  # torch.empty((n_kv_heads, 1, head_dim), dtype = dtype, device = "cuda:0")
     RH_K[:, :, :, :h] = Kn[:, :, :, h:]
     RH_K[:, :, :, h:] = Kn[:, :, :, :h]
-    torch.neg(RH_K[:, :, :, :h], out = RH_K[:, :, :, :h])
+    torch.neg(RH_K[:, :, :, :h], out=RH_K[:, :, :, :h])
     Kn *= cos
     Kn.addcmul_(RH_K, sin)
 
@@ -399,18 +399,18 @@ def GraniteAttention_fast_forward_inference(
     # pass
 
     Qn *= self.scaling
-    A = torch_matmul(Qn, Kn.transpose(2, 3), out = self.attention[:, :, :, :cached_len])
+    A = torch_matmul(Qn, Kn.transpose(2, 3), out=self.attention[:, :, :, :cached_len])
 
     # if attention_mask is not None: A += attention_mask # Must add attention_mask for batched
 
-    A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)  # .to(A.dtype)
-    A = torch_matmul(A, Vn, out = Qn)
+    A[:] = torch_nn_functional_softmax(A, dim=-1, dtype=torch.float32)  # .to(A.dtype)
+    A = torch_matmul(A, Vn, out=Qn)
     # else:
     #     A = scaled_dot_product_attention(Qn, Kn, Vn, attn_mask = attention_mask, is_causal = False)
     # pass
     A = A.transpose(1, 2)
     A = A.reshape(bsz, 1, attention_size)
-    A = fast_linear_forward(self.o_proj, A, out = self.temp_O)
+    A = fast_linear_forward(self.o_proj, A, out=self.temp_O)
     return A, (Kn, Vn)
 
 
@@ -421,7 +421,7 @@ def GraniteModel_fast_forward_inference(
     input_ids,
     past_key_values,
     position_ids,
-    attention_mask = None,
+    attention_mask=None,
 ):
     input_ids = input_ids[:, : self.max_seq_length]
     hidden_states = self.model.embed_tokens(input_ids)
@@ -462,37 +462,37 @@ def GraniteModel_fast_forward_inference(
         )
         hidden_states, present_key_value = GraniteAttention_fast_forward_inference(
             decoder_layer.self_attn,
-            hidden_states = hidden_states,
-            past_key_value = past_key_values[idx],
-            position_ids = position_ids,
-            attention_mask = attention_mask,
-            do_prefill = not hasattr(decoder_layer.self_attn, "paged_attention"),
-            position_embeddings = position_embeddings,
+            hidden_states=hidden_states,
+            past_key_value=past_key_values[idx],
+            position_ids=position_ids,
+            attention_mask=attention_mask,
+            do_prefill=not hasattr(decoder_layer.self_attn, "paged_attention"),
+            position_embeddings=position_embeddings,
         )
 
-        hidden_states = torch.add(residual, hidden_states, alpha = residual_multiplier)
+        hidden_states = torch.add(residual, hidden_states, alpha=residual_multiplier)
 
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(
             decoder_layer.post_attention_layernorm, hidden_states
         )
         hidden_states = fast_swiglu_inference(decoder_layer.mlp, hidden_states)
-        hidden_states = torch.add(residual, hidden_states, alpha = residual_multiplier)
+        hidden_states = torch.add(residual, hidden_states, alpha=residual_multiplier)
 
         next_decoder_cache.append(present_key_value)
     hidden_states = fast_rms_layernorm_inference(self.model.norm, hidden_states)
 
     return BaseModelOutputWithPast(
-        last_hidden_state = hidden_states,
-        past_key_values = next_decoder_cache,
-        hidden_states = [],
-        attentions = [],
+        last_hidden_state=hidden_states,
+        past_key_values=next_decoder_cache,
+        hidden_states=[],
+        attentions=[],
     )
 
 
 class GraniteRotaryEmbedding(LlamaRotaryEmbedding):
     def __init__(self, config):
-        super().__init__(config = config)
+        super().__init__(config=config)
 
 
 def patched_init(original_init):
@@ -513,10 +513,10 @@ class FastGraniteModel(FastLlamaModel):
     @staticmethod
     def pre_patch():
         init_name, function = patch_linear_scaling(
-            model_name = "granite",
-            rope_module = GraniteRotaryEmbedding,
-            scaled_rope_module = LlamaLinearScalingRotaryEmbedding,
-            attention_module = GraniteAttention,
+            model_name="granite",
+            rope_module=GraniteRotaryEmbedding,
+            scaled_rope_module=LlamaLinearScalingRotaryEmbedding,
+            attention_module=GraniteAttention,
         )
         if init_name is not None:
             exec(function, globals())
@@ -551,7 +551,7 @@ class FastGraniteModel(FastLlamaModel):
         model.config.update({"unsloth_version": __version__})
 
         # We also do this for the lm_head
-        lm_head = torch.nn.Linear(1, 1, bias = None)
+        lm_head = torch.nn.Linear(1, 1, bias=None)
         del lm_head.weight
         lm_head.weight = model.lm_head.weight
         lm_head.in_features = lm_head.weight.shape[1]
@@ -563,7 +563,7 @@ class FastGraniteModel(FastLlamaModel):
             model.model.embed_tokens.weight.data_ptr()
             != model.lm_head.weight.data_ptr()
         ):
-            lm_head = torch.nn.Linear(1, 1, bias = None)
+            lm_head = torch.nn.Linear(1, 1, bias=None)
             del lm_head.weight
             lm_head.weight = model.model.embed_tokens.weight
             lm_head.in_features = lm_head.weight.shape[1]
