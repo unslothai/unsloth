@@ -225,17 +225,12 @@ class FastLanguageModel(FastLlamaModel):
         # ---------------------------------------------------------
         # Distributed-safe device placement for quantized models
         # ---------------------------------------------------------
-         
+
         is_distributed = (
-            torch.distributed.is_available()
-            and torch.distributed.is_initialized()
+            torch.distributed.is_available() and torch.distributed.is_initialized()
         )
 
-        is_quantized = (
-            load_in_4bit
-            or load_in_8bit
-            or load_in_fp8
-        )
+        is_quantized = load_in_4bit or load_in_8bit or load_in_fp8
 
         # Quantized models must be loaded on the correct per-rank device
         # to avoid Accelerate device relocation errors.
