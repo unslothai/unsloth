@@ -224,17 +224,12 @@ class FastLanguageModel(FastLlamaModel):
         # ---------------------------------------------------------
         # Distributed-safe device placement for quantized models
         # ---------------------------------------------------------
- 
+
         is_distributed = (
-            torch.distributed.is_available()
-            and torch.distributed.is_initialized()
+            torch.distributed.is_available() and torch.distributed.is_initialized()
         )
 
-        is_quantized = (
-            load_in_4bit
-            or load_in_8bit
-            or load_in_fp8
-        )
+        is_quantized = load_in_4bit or load_in_8bit or load_in_fp8
 
         # Quantized models must be loaded on the correct per-rank device
         # to avoid Accelerate device relocation errors.
@@ -249,7 +244,6 @@ class FastLanguageModel(FastLlamaModel):
                     "[Unsloth] Detected multi-GPU + quantized training. "
                     "Loading model on per-rank device to avoid device conflicts."
                 )
-
 
         if isinstance(dtype, str) and dtype in ["float16", "bfloat16"]:
             dtype = getattr(torch, dtype)
