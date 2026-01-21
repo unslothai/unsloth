@@ -2398,8 +2398,10 @@ def hf_login(token: Optional[str] = None) -> Optional[str]:
         logger.info(f"Failed to login to huggingface using token with error: {e}")
     return token
 
+
 # =============================================
 # MoE (Mixture of Experts) Detection and LoRA Utilities
+
 
 def is_moe_model(model) -> bool:
     """
@@ -2420,7 +2422,7 @@ def is_moe_model(model) -> bool:
     return num_experts is not None and num_experts > 0
 
 
-def get_moe_target_parameters(model, target_modules=None) -> Optional[List[str]]:
+def get_moe_target_parameters(model, target_modules = None) -> Optional[List[str]]:
     """
     Get the target_parameters for MoE expert layers if applicable.
 
@@ -2457,21 +2459,29 @@ def get_moe_target_parameters(model, target_modules=None) -> Optional[List[str]]
     elif isinstance(target_modules, str):
         target_set = {target_modules}
         # Heuristic for regex matching MLPs
-        if "proj" in target_modules and ("mlp" in target_modules or "ffn" in target_modules):
+        if "proj" in target_modules and (
+            "mlp" in target_modules or "ffn" in target_modules
+        ):
             target_set.update({"gate_proj", "up_proj", "down_proj", "gate_up_proj"})
     else:
         target_set = set(target_modules) if target_modules else set()
 
     # gate_up_proj combines both gate_proj and up_proj in MoE
     # Also match "gate_up_proj" directly since users may specify the fused name
-    if "gate_proj" in target_set or "up_proj" in target_set or "gate_up_proj" in target_set:
+    if (
+        "gate_proj" in target_set
+        or "up_proj" in target_set
+        or "gate_up_proj" in target_set
+    ):
         moe_params.append("mlp.experts.gate_up_proj")
 
     if "down_proj" in target_set:
         moe_params.append("mlp.experts.down_proj")
 
     if moe_params:
-        print(f"Unsloth: Detected MoE model with {num_experts} experts - enabling LoRA on: {moe_params}")
+        print(
+            f"Unsloth: Detected MoE model with {num_experts} experts - enabling LoRA on: {moe_params}"
+        )
         return moe_params
 
     return None
