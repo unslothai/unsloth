@@ -22,7 +22,6 @@ from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 import inspect
 import os
 import re
-import torch
 from unsloth_zoo.compiler import create_new_function
 from unsloth_zoo.log import logger
 from unsloth_zoo.logging_utils import PatchRLStatistics
@@ -44,10 +43,31 @@ torch_compile_options = {
     "triton.cudagraphs": False,
 }
 
-from trl import __version__ as trl_version
+# vLLM compatibility shim (TRL expects GuidedDecodingParams even if vLLM doesn't provide it)
+try:
+    import vllm.sampling_params as _unsloth_vllm_sp
+
+    if not hasattr(_unsloth_vllm_sp, "GuidedDecodingParams"):
+
+        class GuidedDecodingParams:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+        _unsloth_vllm_sp.GuidedDecodingParams = GuidedDecodingParams
+except Exception:
+    pass
+
+from trl import __version__ as trl_version_raw
+from importlib.metadata import version as importlib_version
 from unsloth_zoo.utils import Version
 
-trl_version = Version(trl_version)
+try:
+    trl_version = Version(trl_version_raw)
+except Exception:
+    try:
+        trl_version = Version(importlib_version("trl"))
+    except Exception:
+        trl_version = Version("0.0.0")
 
 
 def vLLMSamplingParams(**kwargs):
@@ -200,22 +220,24 @@ def PatchRL(FastLanguageModel):
     unwrap = "unwrap_model_for_generation"
     for trainer in trainers:
         try:
-            current_trainer = eval(f"trl.trainer.{trainer}")
+            current_trainer = getattr(trl.trainer, trainer)
         except:
             continue
         if hasattr(current_trainer, unwrap):
             try:
-                exec(f"trl.trainer.{trainer}.{unwrap} = unsloth_{unwrap}")
+                setattr(current_trainer, unwrap, unsloth_unwrap_model_for_generation)
             except:
                 continue
-    exec(f"Trainer.prediction_step=unsloth_prediction_step")
+    Trainer.prediction_step = unsloth_prediction_step
 
 
+grpo_selective_log_softmax = RL_REPLACEMENTS["grpo_selective_log_softmax"]
 selective_log_softmax = RL_REPLACEMENTS["selective_log_softmax"]
 calculate_pad_tokens_in_prompt = RL_REPLACEMENTS["calculate_pad_tokens_in_prompt"]
 create_completion_attention_mask = RL_REPLACEMENTS["create_completion_attention_mask"]
 left_pack_padding = RL_REPLACEMENTS["left_pack_padding"]
 align_logprobs_with_mask = RL_REPLACEMENTS["align_logprobs_with_mask"]
+autotune_batch_and_chunks = RL_REPLACEMENTS["grpo_autotune_batch_and_chunks"]
 
 RLTrainer_replacement = '''
 import os
@@ -234,16 +256,33 @@ from transformers.training_args import ParallelMode
 # Also patches W&B since multiple runs must use wandb.finish()
 import functools
 from types import MethodType
+try:
+    from unsloth_zoo.gradient_checkpointing import reset_unsloth_gradient_checkpointing_buffers
+except:
+    def reset_unsloth_gradient_checkpointing_buffers(): pass
 def prepare_for_training_mode(f):
     @functools.wraps(f)
     def wrapper(self, *args, **kwargs):
         # Enable training mode
+        _was_training = None
+        # Get gradient checkpointing setting from training arguments
+        use_gc = getattr(self.args, 'gradient_checkpointing', True)
+        if hasattr(self, 'model') and hasattr(self.model, "training"):
+            _was_training = self.model.training
         if hasattr(self, 'model') and hasattr(self.model, "for_training"):
-            self.model.for_training()
+            self.model.for_training(use_gradient_checkpointing=use_gc)
         output = f(self, *args, **kwargs)
-        # Return inference mode
+        # Restore previous mode when possible
         if hasattr(self, 'model') and hasattr(self.model, "for_inference"):
-            self.model.for_inference()
+            if _was_training is False:
+                self.model.for_inference()
+            elif _was_training is True and hasattr(self.model, "for_training"):
+                self.model.for_training(use_gradient_checkpointing=use_gc)
+        # Reset gradient checkpointing buffers to free memory while staying ready for next run
+        try:
+            reset_unsloth_gradient_checkpointing_buffers()
+        except:
+            pass
         # Patch W&B to enable logging on future runs, otherwise it'll overwrite the first run
         try:
             import wandb
@@ -262,11 +301,13 @@ torch_compile_options = {{
     "triton.cudagraphs" : False,
 }}
 
+{grpo_selective_log_softmax_code}
 {selective_log_softmax_code}
 {calculate_pad_tokens_in_prompt_code}
 {create_completion_attention_mask_code}
 {left_pack_padding_code}
 {align_logprobs_with_mask_code}
+{autotune_batch_and_chunks_code}
 
 {RL_pre}
 
@@ -283,10 +324,20 @@ class Unsloth{RLConfig_name}({RLConfig_name}):
         default = -1,
         metadata = {{'help': 'Chunk size to reduce memory usage. -1 is most efficient.'}},
     )
+    unsloth_logit_chunk_multiplier : Optional[int] = field(
+            default = None,
+            metadata = {{'help': 'Multiplier for chunked logit computations.'}},
+        )
+    unsloth_grpo_mini_batch : Optional[int] = field(
+        default = None,
+        metadata = {{'help': 'Mini batch size for GRPO hidden state accumulation. Default is None unless user defines it.'}},
+    )
     {max_seq_length_pre}
     def __init__({RLConfig_arguments},
         vllm_sampling_params = None,
         unsloth_num_chunks = -1,
+        unsloth_logit_chunk_multiplier = None, 
+        unsloth_grpo_mini_batch = None, 
         {max_seq_length_call}
         **kwargs,
     ):
@@ -294,6 +345,15 @@ class Unsloth{RLConfig_name}({RLConfig_name}):
         super().__init__({RLConfig_call_args}{RLConfig_kwargs})
         self.vllm_sampling_params = vllm_sampling_params
         self.unsloth_num_chunks = unsloth_num_chunks
+        if unsloth_grpo_mini_batch is not None:
+            if self.generation_batch_size >= unsloth_grpo_mini_batch:
+                self.unsloth_grpo_mini_batch = unsloth_grpo_mini_batch
+            else:
+                raise ValueError(
+                    f"Unsloth GRPO mini batch size needs to be less than or equal to the effective generation batch size, "
+                    f"which is self.per_device_train_batch_size * gradient_accumulation_steps."
+                )
+        self.unsloth_logit_chunk_multiplier = unsloth_logit_chunk_multiplier
         {max_seq_length_post}
 pass
 
@@ -321,6 +381,32 @@ class Unsloth{RLTrainer_name}(_Unsloth{RLTrainer_name}):
 {RLTrainer_post}
 pass
 '''
+
+
+def _wrap_grpo_generate_and_score(trainer_cls):
+    if not hasattr(trainer_cls, "_generate_and_score_completions"):
+        return
+    original = trainer_cls._generate_and_score_completions
+    if getattr(original, "_unsloth_restore_training_wrapped", False):
+        return
+
+    def wrapped(self, *args, **kwargs):
+        was_training = getattr(getattr(self, "model", None), "training", None)
+        try:
+            return original(self, *args, **kwargs)
+        finally:
+            if (
+                was_training is False
+                and hasattr(self, "model")
+                and hasattr(self.model, "for_inference")
+            ):
+                try:
+                    self.model.for_inference()
+                except Exception:
+                    pass
+
+    wrapped._unsloth_restore_training_wrapped = True
+    trainer_cls._generate_and_score_completions = wrapped
 
 
 def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
@@ -559,8 +645,12 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             "    if args_max_seq_length is None and model_max_seq_length is not None:\n"
             "        max_seq_length = model.max_seq_length\n"
             "        if hasattr(args, 'max_seq_length'): args.max_seq_length = max_seq_length\n"
+            "    elif args_max_seq_length is not None and model_max_seq_length is not None:\n"
+            "        if args_max_seq_length > model_max_seq_length:\n"
+            "            print('Unsloth: You set `max_seq_length` as ' + str(args_max_seq_length) + ' but '\n"
+            "                   'the maximum the model supports is ' + str(model_max_seq_length) + '. We shall reduce it.')\n"
+            "            args.max_seq_length = model_max_seq_length\n"
         )
-        "    elif args_max_seq_length is not None and model_max_seq_length is not None:\n" "        if args_max_seq_length > model_max_seq_length:\n" "            print('Unsloth: You set `max_seq_length` as ' + str(args_max_seq_length) + ' but \n" "                   the maximum the model supports is ' + str(model_max_seq_length) + '. We shall reduce it.')\n" "            args.max_seq_length = model_max_seq_length\n"
         extra_args += length_check
 
         # At this point max_seq_length might be set, but trl is moving to max_length
@@ -680,6 +770,19 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             "pass\n"
         )
         RLTrainer_post += training_check
+
+    # Sync chat_template from processing_class to vLLM's tokenizer
+    # This fixes base models that have custom chat templates applied after loading
+    if "model" in call_args:
+        vllm_chat_template_sync = (
+            "if hasattr(self, 'llm') and self.llm is not None and hasattr(self.llm, 'get_tokenizer'):\n"
+            "    _vllm_tok = self.llm.get_tokenizer()\n"
+            "    _pc = getattr(self, 'processing_class', None) or getattr(self, 'tokenizer', None)\n"
+            "    if _vllm_tok is not None and _pc is not None and getattr(_pc, 'chat_template', None) is not None and getattr(_vllm_tok, 'chat_template', None) is None:\n"
+            "        _vllm_tok.chat_template = _pc.chat_template\n"
+            "pass\n"
+        )
+        RLTrainer_post += vllm_chat_template_sync
 
     # Edit optional metrics
     other_metrics_processor = ""
@@ -813,7 +916,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         num_proc_check = (
             "if dataset_num_proc is None:\n"
             "    import psutil\n"
-            "    dataset_num_proc = min(max(psutil.cpu_count()+4, 2), 64)\n"
+            "    dataset_num_proc = min(max((psutil.cpu_count() or 1)+4, 2), 64)\n"
             "    memory_gb_left = psutil.virtual_memory().available / (1024**3)\n"
             "    if   memory_gb_left <=  4: dataset_num_proc = 1 # Too risky, so set to 1\n"
             "    elif memory_gb_left <=  6: dataset_num_proc = min(2, dataset_num_proc)\n"
@@ -900,9 +1003,9 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     if "temperature" in call_args:
         check_temperature = (
             "if temperature <= 0:\n"
-            "    raise MathError('Unsloth: Please set a positive non-zero temperature since your results will be wrong.')\n"
+            "    raise ValueError('Unsloth: Please set a positive non-zero temperature since your results will be wrong.')\n"
             "elif temperature >= 10:\n"
-            "    raise MathError('Unsloth: Please set a positive non-zero temperature less than 10, since sampling will be quite erratic.')\n"
+            "    raise ValueError('Unsloth: Please set a positive non-zero temperature less than 10, since sampling will be quite erratic.')\n"
             "\n"
         )
         extra_args += check_temperature
@@ -948,6 +1051,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
 
     # Selective log softmax and other functions
     selective_log_softmax_code = inspect.getsource(selective_log_softmax)
+    grpo_selective_log_softmax_code = inspect.getsource(grpo_selective_log_softmax)
     calculate_pad_tokens_in_prompt_code = inspect.getsource(
         calculate_pad_tokens_in_prompt
     )
@@ -956,6 +1060,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     )
     left_pack_padding_code = inspect.getsource(left_pack_padding)
     align_logprobs_with_mask_code = inspect.getsource(align_logprobs_with_mask)
+    autotune_batch_and_chunks_code = inspect.getsource(autotune_batch_and_chunks)
     # Get final source code
     RLTrainer_source = RLTrainer_replacement.format(
         RLTrainer_name = RLTrainer_name,
@@ -977,8 +1082,10 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         max_seq_length_call = max_seq_length_call,
         max_seq_length_post = max_seq_length_post,
         selective_log_softmax_code = selective_log_softmax_code,
+        grpo_selective_log_softmax_code = grpo_selective_log_softmax_code,
         calculate_pad_tokens_in_prompt_code = calculate_pad_tokens_in_prompt_code,
         create_completion_attention_mask_code = create_completion_attention_mask_code,
+        autotune_batch_and_chunks_code = autotune_batch_and_chunks_code,
         left_pack_padding_code = left_pack_padding_code,
         align_logprobs_with_mask_code = align_logprobs_with_mask_code,
     )
@@ -990,10 +1097,10 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
 
         # Temporary patch _is_vlm to False
         # as of 0.22 it only exists in sfttrainer
-        oriignal_is_vlm_text = "self._is_vlm = True"
+        original_is_vlm_text = "self._is_vlm = True"
         new_is_vlm_text = "self._is_vlm = False"
         RLTrainer_source = RLTrainer_source.replace(
-            oriignal_is_vlm_text, new_is_vlm_text
+            original_is_vlm_text, new_is_vlm_text
         )
 
     # Remove multiple doc strings
@@ -1046,6 +1153,16 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         globals(),
     )
 
+    if trainer_file == "grpo_trainer":
+        try:
+            _wrap_grpo_generate_and_score(
+                getattr(created_module, f"Unsloth{RLTrainer_name}")
+            )
+        except Exception as e:
+            logger.info(
+                f"Unsloth: Could not wrap _generate_and_score_completions for {RLTrainer_name}: {e}"
+            )
+
 
 def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, imports):
     init = inspect.getsource(RLTrainer.__init__)
@@ -1076,6 +1193,41 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
     init = init.replace(
         "model = self._prepare_peft_model(model, peft_config, args)\n", "pass\n"
     )
+
+    # Skip add_adapter("ref") for reference model computation
+    # Unsloth: We comment out the "ref" adapter creation because:
+    # 1. We want to use the original BASE MODEL as the reference model, not the SFT/LoRA model
+    # 2. PEFT doesn't allow multiple adapters when target_parameters is used (MoE models)
+    # When "ref" is not in peft_config, GRPO/RLOO fallback uses disable_adapter()
+    # which gives the base model logits - exactly what we want
+    add_adapter_block_pattern = (
+        r"([ \t]*)"  # Capture leading indentation
+        r"if\s+is_peft_available\(\)\s+and\s+is_peft_model\(model\)\s+and\s+args\.beta\s*!=\s*0\.0\s*:"
+        r"(.*?)"  # Match the entire block until ref_param.data.copy_
+        r"ref_param\.data\.copy_\(param\.data\)"
+    )
+
+    def comment_out_block(match):
+        """Comment out each line in the matched block, preserving indentation."""
+        full_match = match.group(0)
+        indent = match.group(1)
+        lines = full_match.split("\n")
+        commented_lines = []
+        # Add explanation comment first
+        commented_lines.append(
+            f"{indent}# Unsloth: Commented out - use base model as reference, not SFT/LoRA model"
+        )
+        # Comment out each line - insert # after leading whitespace to preserve indentation
+        for line in lines:
+            if line.strip():
+                stripped = line.lstrip()
+                leading_ws = line[: len(line) - len(stripped)]
+                commented_lines.append(f"{leading_ws}# {stripped}")
+            else:
+                commented_lines.append(line)
+        return "\n".join(commented_lines)
+
+    init = re.sub(add_adapter_block_pattern, comment_out_block, init, flags = re.DOTALL)
 
     # Set use_vllm if not set
     if "args.use_vllm" in init and "model" in init and "args" in init:
