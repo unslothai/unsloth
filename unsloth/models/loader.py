@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+import torch
 from ._utils import (
     _prepare_model_for_qat,
     is_bfloat16_supported,
@@ -221,6 +221,35 @@ class FastLanguageModel(FastLlamaModel):
                 *args,
                 **kwargs,
             )
+        # ---------------------------------------------------------
+        # Distributed-safe device placement for quantized models
+        # ---------------------------------------------------------
+ 
+        is_distributed = (
+            torch.distributed.is_available()
+            and torch.distributed.is_initialized()
+        )
+
+        is_quantized = (
+            load_in_4bit
+            or load_in_8bit
+            or load_in_fp8
+        )
+
+        # Quantized models must be loaded on the correct per-rank device
+        # to avoid Accelerate device relocation errors.
+        if is_distributed and is_quantized:
+            current_device = torch.cuda.current_device()
+
+            # Only override default string-based device maps
+            if isinstance(device_map, str):
+                device_map = {"": current_device}
+
+                print(
+                    "[Unsloth] Detected multi-GPU + quantized training. "
+                    "Loading model on per-rank device to avoid device conflicts."
+                )
+
 
         if isinstance(dtype, str) and dtype in ["float16", "bfloat16"]:
             dtype = getattr(torch, dtype)
