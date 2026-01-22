@@ -666,6 +666,39 @@ def fix_huggingface_hub():
         )
 
 
+def fix_rocm_triton_key_error():
+    """
+    ROCm + torch.compile can fail if Triton lacks `triton_key`.
+    Disable Inductor/compile only on ROCm when that symbol is missing.
+    """
+    try:
+        import torch
+    except (ImportError, ModuleNotFoundError):
+        return
+
+    if not getattr(torch.version, "hip", None):
+        return
+
+    try:
+        import triton
+    except (ImportError, ModuleNotFoundError):
+        return
+
+    try:
+        from triton.runtime import triton_key  # noqa: F401
+
+        return
+    except ImportError:
+        pass
+
+    os.environ.setdefault("TORCHINDUCTOR_DISABLE", "1")
+    os.environ.setdefault("TORCH_COMPILE_DISABLE", "1")
+    logger.info(
+        "Unsloth: ROCm detected and Triton lacks triton_key; "
+        "disabling torch.compile/Inductor to avoid backend crash."
+    )
+
+
 def fix_vllm_pdl_blackwell():
     """
     Fix vLLM PDL (Programmatic Dependent Launch) bug on Blackwell GPUs (SM100).
