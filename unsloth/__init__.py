@@ -127,6 +127,7 @@ from .import_fixes import (
     fix_vllm_aimv2_issue,
     fix_vllm_guided_decoding_params,
     fix_vllm_pdl_blackwell,
+    fix_rocm_triton_key_error,
     ignore_logger_messages,
     patch_ipykernel_hf_xet,
     patch_trackio,
@@ -141,6 +142,7 @@ fix_xformers_performance_issue()
 fix_vllm_aimv2_issue()
 fix_vllm_guided_decoding_params()
 fix_vllm_pdl_blackwell()
+fix_rocm_triton_key_error()
 ignore_logger_messages()
 patch_ipykernel_hf_xet()
 patch_trackio()
@@ -154,6 +156,7 @@ del fix_xformers_performance_issue
 del fix_vllm_aimv2_issue
 del fix_vllm_guided_decoding_params
 del fix_vllm_pdl_blackwell
+del fix_rocm_triton_key_error
 del ignore_logger_messages
 del patch_ipykernel_hf_xet
 del patch_trackio
