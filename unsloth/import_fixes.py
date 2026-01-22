@@ -585,11 +585,9 @@ def fix_rocm_triton_key_error():
     ROCm + torch.compile can fail if Triton lacks `triton_key`.
     Disable Inductor/compile only on ROCm when that symbol is missing.
     """
-    if importlib.util.find_spec("torch") is None:
-        return
     try:
         import torch
-    except Exception:
+    except (ImportError, ModuleNotFoundError):
         return
 
     if not getattr(torch.version, "hip", None):
@@ -597,14 +595,14 @@ def fix_rocm_triton_key_error():
 
     try:
         import triton
-    except Exception:
+    except (ImportError, ModuleNotFoundError):
         return
 
     try:
         from triton.runtime import triton_key  # noqa: F401
-
         return
-    except Exception:
+    except ImportError:
+        pass
         pass
 
     os.environ.setdefault("TORCHINDUCTOR_DISABLE", "1")
