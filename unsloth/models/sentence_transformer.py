@@ -1004,7 +1004,11 @@ class FastSentenceTransformer(FastModel):
         # This uses only pre-run information (batch size, grad accum, seq length).
         generic_scale = 1.0
         fast_scale = 1.0
-        if batch_size is not None or grad_accum is not None or max_seq_length is not None:
+        if (
+            batch_size is not None
+            or grad_accum is not None
+            or max_seq_length is not None
+        ):
             try:
                 bs = int(batch_size) if batch_size is not None else 2
                 ga = int(grad_accum) if grad_accum is not None else 4
@@ -1812,7 +1816,11 @@ def _patch_sentence_transformer_trainer():
                     max_seq_length = None
             if max_seq_length is None:
                 tokenizer = getattr(model, "tokenizer", None)
-                max_seq_length = getattr(tokenizer, "model_max_length", None) if tokenizer is not None else None
+                max_seq_length = (
+                    getattr(tokenizer, "model_max_length", None)
+                    if tokenizer is not None
+                    else None
+                )
 
             threshold = FastSentenceTransformer._estimate_compile_threshold(
                 model,
