@@ -689,6 +689,7 @@ def fix_rocm_triton_key_error():
 
         return
     except ImportError:
+        pass
 
     os.environ.setdefault("TORCHINDUCTOR_DISABLE", "1")
     os.environ.setdefault("TORCH_COMPILE_DISABLE", "1")
