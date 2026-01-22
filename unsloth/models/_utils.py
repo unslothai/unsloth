@@ -153,24 +153,24 @@ for temporary_patch in TEMPORARY_PATCHES:
 
 # =============================================
 # Disable some warnings which can get annoying
-warnings.filterwarnings(action="ignore", category=UserWarning, module="torch")
-warnings.filterwarnings(action="ignore", category=FutureWarning, module="torch")
-warnings.filterwarnings(action="ignore", category=UserWarning, module="huggingface_hub")
+warnings.filterwarnings(action = "ignore", category = UserWarning, module = "torch")
+warnings.filterwarnings(action = "ignore", category = FutureWarning, module = "torch")
+warnings.filterwarnings(action = "ignore", category = UserWarning, module = "huggingface_hub")
 warnings.filterwarnings(
-    action="ignore", category=FutureWarning, module="huggingface_hub"
+    action = "ignore", category = FutureWarning, module = "huggingface_hub"
 )
-warnings.filterwarnings(action="ignore", category=UserWarning, module="trl")
-warnings.filterwarnings(action="ignore", category=FutureWarning, module="trl")
-warnings.filterwarnings(action="ignore", category=FutureWarning, module="xformers")
-warnings.filterwarnings(action="ignore", category=RuntimeWarning, module="subprocess")
-warnings.filterwarnings(action="ignore", category=UserWarning, module="transformers")
-warnings.filterwarnings(action="ignore", category=FutureWarning, module="accelerate")
+warnings.filterwarnings(action = "ignore", category = UserWarning, module = "trl")
+warnings.filterwarnings(action = "ignore", category = FutureWarning, module = "trl")
+warnings.filterwarnings(action = "ignore", category = FutureWarning, module = "xformers")
+warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "subprocess")
+warnings.filterwarnings(action = "ignore", category = UserWarning, module = "transformers")
+warnings.filterwarnings(action = "ignore", category = FutureWarning, module = "accelerate")
 warnings.filterwarnings(
-    action="ignore", category=RuntimeWarning, module="multiprocessing"
+    action = "ignore", category = RuntimeWarning, module = "multiprocessing"
 )
-warnings.filterwarnings(action="ignore", category=RuntimeWarning, module="multiprocess")
-warnings.filterwarnings(action="ignore", category=UserWarning, module="triton")
-warnings.filterwarnings(action="ignore", category=UserWarning, module="bitsandbytes")
+warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "multiprocess")
+warnings.filterwarnings(action = "ignore", category = UserWarning, module = "triton")
+warnings.filterwarnings(action = "ignore", category = UserWarning, module = "bitsandbytes")
 
 # Stop "Special tokens have been added in the vocabulary, ..."
 logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.CRITICAL + 1)
@@ -350,10 +350,10 @@ except:
 # You passed `quantization_config` or equivalent parameters
 try:
     warnings.filterwarnings(
-        action="ignore",
-        message=r".*quantization_config.*",
-        category=UserWarning,
-        append=True,
+        action = "ignore",
+        message = r".*quantization_config.*",
+        category = UserWarning,
+        append = True,
     )
 except:
     pass
@@ -362,10 +362,10 @@ except:
 # Will be fixed in torch 2.8.1 https://github.com/pytorch/pytorch/issues/158463
 try:
     warnings.filterwarnings(
-        action="ignore",
-        message=r".*Logical operators 'and' and 'or'.*",
-        category=UserWarning,
-        append=True,
+        action = "ignore",
+        message = r".*Logical operators 'and' and 'or'.*",
+        category = UserWarning,
+        append = True,
     )
 except:
     pass
@@ -470,7 +470,7 @@ def extract_quant_model_param_count(model):
     return count
 
 
-def get_model_param_count(model, trainable_only=False):
+def get_model_param_count(model, trainable_only = False):
     """
     Calculate model's total param count. If trainable_only is True then count only those requiring grads
     """
@@ -601,14 +601,14 @@ if DEVICE_TYPE in ("cuda", "hip"):
         torch_amp_custom_fwd = torch.cuda.amp.custom_fwd
         torch_amp_custom_bwd = torch.cuda.amp.custom_bwd
     else:
-        torch_amp_custom_fwd = torch.amp.custom_fwd(device_type="cuda")
-        torch_amp_custom_bwd = torch.amp.custom_bwd(device_type="cuda")
+        torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "cuda")
+        torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "cuda")
 elif DEVICE_TYPE == "xpu":
     if Version(torch_version) < Version("2.6.0"):
         raise RuntimeError("torch.xpu currently only supports torch.version >= 2.6.0")
     else:
-        torch_amp_custom_fwd = torch.amp.custom_fwd(device_type="xpu")
-        torch_amp_custom_bwd = torch.amp.custom_bwd(device_type="xpu")
+        torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "xpu")
+        torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "xpu")
 # =============================================
 
 # =============================================
@@ -947,9 +947,9 @@ import torch._inductor.utils
 
 torch._inductor.utils.is_big_gpu = is_big_gpu
 patch_torch_compile(
-    debug=UNSLOTH_COMPILE_DEBUG,
-    O3=UNSLOTH_COMPILE_MAXIMUM,
-    ignore_errors=UNSLOTH_COMPILE_IGNORE_ERRORS,
+    debug = UNSLOTH_COMPILE_DEBUG,
+    O3 = UNSLOTH_COMPILE_MAXIMUM,
+    ignore_errors = UNSLOTH_COMPILE_IGNORE_ERRORS,
 )
 
 torch_compile_options = {
@@ -996,9 +996,9 @@ def patch_regional_compilation():
                     [
                         torch.compile(
                             x,
-                            dynamic=True,
-                            options=torch_compile_options,
-                            fullgraph=False,
+                            dynamic = True,
+                            options = torch_compile_options,
+                            fullgraph = False,
                         )
                         for x in args[0]
                     ]
@@ -1021,14 +1021,14 @@ def prepare_model_for_kbit_training(
     use_reentrant: Optional[bool] = True,
 ) -> Any:
     return prepare_model_for_training(
-        model=model,
-        use_gradient_checkpointing=use_gradient_checkpointing,
-        use_reentrant=use_reentrant,
-        full_finetuning=False,
-        train_layernorms=False,
-        train_embedding=False,
-        train_lm_head=False,
-        float32_mixed_precision=True,
+        model = model,
+        use_gradient_checkpointing = use_gradient_checkpointing,
+        use_reentrant = use_reentrant,
+        full_finetuning = False,
+        train_layernorms = False,
+        train_embedding = False,
+        train_lm_head = False,
+        float32_mixed_precision = True,
     )
 
 
@@ -1046,7 +1046,7 @@ if Version(peft_version) < Version("0.12.0"):
         text = "if weight is not None:\n"
         start = source.find(text) + len(text)
         end = source.find("self.to(weight.device)", start)
-        spaces = re.findall(r"^([ ]{1,})break", source, flags=re.MULTILINE)[0]
+        spaces = re.findall(r"^([ ]{1,})break", source, flags = re.MULTILINE)[0]
         source = source.replace(source[start:end], spaces)
         spaces = len(re.match(r"[\s]{1,}", source).group(0))
         lines = source.split("\n")
@@ -1083,7 +1083,7 @@ import socket
 
 
 @functools.lru_cache(1)
-def has_internet(host="8.8.8.8", port=53, timeout=3):
+def has_internet(host = "8.8.8.8", port = 53, timeout = 3):
     if os.environ.get("TRANSFORMERS_OFFLINE", "0") == "1":
         return False
     try:
@@ -1097,12 +1097,12 @@ def has_internet(host="8.8.8.8", port=53, timeout=3):
 import psutil
 
 
-def _get_statistics(statistics=None, force_download=True):
+def _get_statistics(statistics = None, force_download = True):
     # We log some basic stats about which environment is being used.
     # We simply download a README.md file from HF - all data is made public.
     # This is simply so we can check if some envs are broken or not.
     # You can disable this by commenting the below out
-    n_cpus = psutil.cpu_count(logical=False)
+    n_cpus = psutil.cpu_count(logical = False)
     keynames = "\n" + "\n".join(os.environ.keys())
     # Check modelscope for down detection
     global USE_MODELSCOPE
@@ -1176,12 +1176,12 @@ def _get_statistics(statistics=None, force_download=True):
         if has_internet():
 
             def stats_check():
-                with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as f:
+                with tempfile.TemporaryDirectory(ignore_cleanup_errors = True) as f:
                     snapshot_download(
                         f"unslothai/{statistics}",
-                        force_download=True,
-                        cache_dir=f,
-                        local_dir=f,
+                        force_download = True,
+                        cache_dir = f,
+                        local_dir = f,
                     )
 
             time_limited_stats_check = execute_with_time_limit(120)(stats_check)
@@ -1204,7 +1204,7 @@ def _get_statistics(statistics=None, force_download=True):
                 stats_check()
 
 
-def get_statistics(local_files_only=False):
+def get_statistics(local_files_only = False):
     # We log some basic stats about which environment is being used.
     # This is also to check if HuggingFace is down or not!
     # We simply download a README.md file from HF - all data is made public.
@@ -1230,7 +1230,7 @@ def get_statistics(local_files_only=False):
         disable_progress_bars()
         disabled = True
     _get_statistics(None)
-    _get_statistics("repeat", force_download=False)
+    _get_statistics("repeat", force_download = False)
     total_memory = (
         torch.xpu.get_device_properties(0).total_memory
         if DEVICE_TYPE == "xpu"
@@ -1271,7 +1271,7 @@ BitsAndBytesConfig__init__ = re.sub(
     r"if[\s]{1,}kwargs\:[\s]{1,}.+?\n",
     "",
     BitsAndBytesConfig__init__,
-    flags=re.MULTILINE,
+    flags = re.MULTILINE,
 )
 BitsAndBytesConfig__init__ = BitsAndBytesConfig__init__.split("\n")
 length_spaces = len(re.match(r"[\s]{1,}", BitsAndBytesConfig__init__[0]).group(0))
@@ -1351,12 +1351,12 @@ def offload_to_disk(
     torch.save(
         W,
         filename,
-        pickle_module=pickle,
-        pickle_protocol=pickle.HIGHEST_PROTOCOL,
+        pickle_module = pickle,
+        pickle_protocol = pickle.HIGHEST_PROTOCOL,
     )
     # We must use weights_only = False due to pickling
     offloaded_W = torch.load(
-        filename, map_location="cpu", mmap=True, weights_only=False
+        filename, map_location = "cpu", mmap = True, weights_only = False
     )
     offloaded_W._offloaded_file_location = filename
     return offloaded_W
@@ -1381,7 +1381,7 @@ def offload_output_embeddings(
         model.get_output_embeddings(), model, "output_embeddings", temporary_location
     )
 
-    new_output_embeddings = torch.nn.Linear(1, 1, bias=None)
+    new_output_embeddings = torch.nn.Linear(1, 1, bias = None)
     del new_output_embeddings.weight
     new_output_embeddings.weight = offloaded_W
     new_output_embeddings.in_features = offloaded_W.shape[1]
@@ -1405,10 +1405,10 @@ def is_vLLM_available():
 
 # Patches models to add RoPE Scaling
 def patch_linear_scaling(
-    model_name="gemma2",
-    rope_module=None,
-    scaled_rope_module=None,
-    attention_module=None,
+    model_name = "gemma2",
+    rope_module = None,
+    scaled_rope_module = None,
+    attention_module = None,
 ):
     assert rope_module is not None and scaled_rope_module is not None
     assert attention_module is not None
@@ -1459,13 +1459,13 @@ def patch_linear_scaling(
     pass
     """
     fix_rope_function = fix_rope_function.format(
-        rope_function=rope_module.__name__,
-        scaled_rope_function=scaled_rope_module.__name__,
+        rope_function = rope_module.__name__,
+        scaled_rope_function = scaled_rope_module.__name__,
     )
     rotary_emb = re.findall(
         r"self\.rotary\_emb \= .+?\)",
         function,
-        flags=re.DOTALL | re.MULTILINE,
+        flags = re.DOTALL | re.MULTILINE,
     )
     if len(rotary_emb) == 0:
         return None, exec_code + "\n\n" + function
@@ -1478,12 +1478,12 @@ def patch_linear_scaling(
 
 # Patches for Llama-3 LlamaExtendedRotaryEmbedding
 def patch_llama_rope_scaling(
-    model_name="llama",
-    rope_module=None,
-    scaled_rope_module=None,
-    extended_rope_module=None,
-    attention_module=None,
-    longrope_module=None,
+    model_name = "llama",
+    rope_module = None,
+    scaled_rope_module = None,
+    extended_rope_module = None,
+    attention_module = None,
+    longrope_module = None,
 ):
     assert (
         rope_module is not None
@@ -1557,17 +1557,17 @@ def patch_llama_rope_scaling(
     """
 
     fix_rope_function = fix_rope_function.format(
-        rope_function=rope_module.__name__,
-        scaled_rope_function=scaled_rope_module.__name__,
-        extended_rope_function=extended_rope_module.__name__,
-        longrope_rope_function=(
+        rope_function = rope_module.__name__,
+        scaled_rope_function = scaled_rope_module.__name__,
+        extended_rope_function = extended_rope_module.__name__,
+        longrope_rope_function = (
             longrope_module if longrope_module is not None else rope_module
         ).__name__,
     )
     rotary_emb = re.findall(
         r"self\.rotary\_emb \= .+?\)",
         function,
-        flags=re.DOTALL | re.MULTILINE,
+        flags = re.DOTALL | re.MULTILINE,
     )
     if len(rotary_emb) == 0:
         return None, function
@@ -1577,15 +1577,15 @@ def patch_llama_rope_scaling(
     return init_name, function
 
 
-def create_boolean_mask(n=4096, sliding_window=2048):
+def create_boolean_mask(n = 4096, sliding_window = 2048):
     # Creates a boolean mask for attention
-    mask = torch.ones(n, n, dtype=torch.bool)
+    mask = torch.ones(n, n, dtype = torch.bool)
     if sliding_window == 0:
-        return torch.triu(mask, diagonal=1, out=mask)
-    torch.triu(mask, diagonal=0, out=mask)
-    torch.triu(mask.T, diagonal=-sliding_window, out=mask.T)
+        return torch.triu(mask, diagonal = 1, out = mask)
+    torch.triu(mask, diagonal = 0, out = mask)
+    torch.triu(mask.T, diagonal = -sliding_window, out = mask.T)
     mask = mask.T
-    torch.logical_not(mask, out=mask)
+    torch.logical_not(mask, out = mask)
     return mask
 
 
@@ -1596,37 +1596,37 @@ def test_mask_creation():
         for s in range(1, 23):
             correct_mask = (
                 AttentionMaskConverter(
-                    is_causal=True,
-                    sliding_window=s,
+                    is_causal = True,
+                    sliding_window = s,
                 )
                 .to_causal_4d(
                     1,
                     n,
                     n,
-                    dtype=torch.float16,
+                    dtype = torch.float16,
                 )
                 .squeeze(0)
                 .squeeze(0)
             )
             correct_mask = correct_mask == correct_mask.min()
-            our_mask = create_boolean_mask(n=n, sliding_window=s)
+            our_mask = create_boolean_mask(n = n, sliding_window = s)
             assert torch.all(correct_mask == our_mask)
         correct_mask = (
             AttentionMaskConverter(
-                is_causal=True,
-                sliding_window=None,
+                is_causal = True,
+                sliding_window = None,
             )
             .to_causal_4d(
                 1,
                 n,
                 n,
-                dtype=torch.float16,
+                dtype = torch.float16,
             )
             .squeeze(0)
             .squeeze(0)
         )
         correct_mask = correct_mask == correct_mask.min()
-        our_mask = create_boolean_mask(n=n, sliding_window=0)
+        our_mask = create_boolean_mask(n = n, sliding_window = 0)
         assert torch.all(correct_mask == our_mask)
 
 
@@ -1841,34 +1841,34 @@ def unsloth_compile_transformers(
     dtype,
     model_name,
     model_types,
-    token=None,
-    revision=None,
-    trust_remote_code=False,
-    sdpa_dynamic_mask=True,
-    sdpa_bool_masks=True,
-    sdpa_gqa_replace=True,
-    sdpa_dynamic_compile=True,
-    compile_attention=True,
-    disable_causal_masks=True,
-    compile_torch_modules=True,
-    compile_custom_modules=True,
-    compile_function_calls=True,
-    fuse_lm_head=True,
-    gradient_checkpointing=True,
-    manual_replacements=True,
-    fast_lora_forwards=True,
-    fast_residual_stream=True,
-    accurate_accumulation=True,
-    epilogue_fusion=True,
-    max_autotune=False,
-    shape_padding=True,
-    cudagraphs=False,
-    debug=False,
-    fullgraph=True,
-    import_from_cache=False,
-    disable=False,
-    return_logits=False,
-    unsloth_force_compile=False,
+    token = None,
+    revision = None,
+    trust_remote_code = False,
+    sdpa_dynamic_mask = True,
+    sdpa_bool_masks = True,
+    sdpa_gqa_replace = True,
+    sdpa_dynamic_compile = True,
+    compile_attention = True,
+    disable_causal_masks = True,
+    compile_torch_modules = True,
+    compile_custom_modules = True,
+    compile_function_calls = True,
+    fuse_lm_head = True,
+    gradient_checkpointing = True,
+    manual_replacements = True,
+    fast_lora_forwards = True,
+    fast_residual_stream = True,
+    accurate_accumulation = True,
+    epilogue_fusion = True,
+    max_autotune = False,
+    shape_padding = True,
+    cudagraphs = False,
+    debug = False,
+    fullgraph = True,
+    import_from_cache = False,
+    disable = False,
+    return_logits = False,
+    unsloth_force_compile = False,
 ):
     if Version(torch_version) < Version("2.4.0"):
         print(
@@ -1893,31 +1893,31 @@ def unsloth_compile_transformers(
     for model_type in model_types:
         _unsloth_compile_transformers(
             model_type,
-            sdpa_dynamic_mask=sdpa_dynamic_mask,
-            sdpa_bool_masks=sdpa_bool_masks,
-            sdpa_gqa_replace=sdpa_gqa_replace,
-            sdpa_dynamic_compile=sdpa_dynamic_compile,
-            compile_attention=compile_attention,
-            disable_causal_masks=disable_causal_masks,
-            compile_torch_modules=compile_torch_modules,
-            compile_custom_modules=compile_custom_modules,
-            compile_function_calls=compile_function_calls,
-            fuse_lm_head=fuse_lm_head,
-            gradient_checkpointing=gradient_checkpointing,
-            manual_replacements=manual_replacements,
-            fast_lora_forwards=fast_lora_forwards,
-            fast_residual_stream=fast_residual_stream,
-            accurate_accumulation=accurate_accumulation,
-            epilogue_fusion=epilogue_fusion,
-            max_autotune=max_autotune,
-            shape_padding=shape_padding,
-            cudagraphs=cudagraphs,
-            debug=debug,
-            fullgraph=fullgraph,
-            import_from_cache=import_from_cache,
-            disable=disable,
-            return_logits=return_logits,
-            supports_sdpa=supports_sdpa,
+            sdpa_dynamic_mask = sdpa_dynamic_mask,
+            sdpa_bool_masks = sdpa_bool_masks,
+            sdpa_gqa_replace = sdpa_gqa_replace,
+            sdpa_dynamic_compile = sdpa_dynamic_compile,
+            compile_attention = compile_attention,
+            disable_causal_masks = disable_causal_masks,
+            compile_torch_modules = compile_torch_modules,
+            compile_custom_modules = compile_custom_modules,
+            compile_function_calls = compile_function_calls,
+            fuse_lm_head = fuse_lm_head,
+            gradient_checkpointing = gradient_checkpointing,
+            manual_replacements = manual_replacements,
+            fast_lora_forwards = fast_lora_forwards,
+            fast_residual_stream = fast_residual_stream,
+            accurate_accumulation = accurate_accumulation,
+            epilogue_fusion = epilogue_fusion,
+            max_autotune = max_autotune,
+            shape_padding = shape_padding,
+            cudagraphs = cudagraphs,
+            debug = debug,
+            fullgraph = fullgraph,
+            import_from_cache = import_from_cache,
+            disable = disable,
+            return_logits = return_logits,
+            supports_sdpa = supports_sdpa,
         )
     # Redo patches which override compiler
     for temporary_patch in TEMPORARY_PATCHES:
@@ -2023,7 +2023,7 @@ def validate_loftq_config(loftq_config, lora_dropout, bias, init_lora_weights, m
                 "Unsloth: init_lora_weights = `loftq` is set, but `loftq_config` is None.\n"
                 "We shall use `loftq_config = LoftQConfig(loftq_bits = 4, loftq_iter = 1)`."
             )
-            loftq_config = LoftQConfig(loftq_bits=4, loftq_iter=1)
+            loftq_config = LoftQConfig(loftq_bits = 4, loftq_iter = 1)
 
         if hasattr(model.config, "quantization_config"):
             raise ValueError(
@@ -2099,9 +2099,9 @@ class TorchAOConfig:
     base_config_and_filter_fns: List[
         Tuple["AOBaseConfig", Optional[Callable[[torch.nn.Module, str], bool]]]
     ] = field(
-        default_factory=lambda: [
+        default_factory = lambda: [
             (
-                Int4WeightOnlyConfig(group_size=128),
+                Int4WeightOnlyConfig(group_size = 128),
                 lambda m, _: isinstance(m, torch.nn.Linear)
                 and getattr(m, "in_features", 0) >= 128,
             ),
@@ -2173,7 +2173,7 @@ def _convert_torchao_model(model):
 
     module_to_fqn_dict = {}
     for base_config, filter_fn in model._torchao_config.base_config_and_filter_fns:
-        quantize_(model, QATConfig(base_config, step="convert"), filter_fn=filter_fn)
+        quantize_(model, QATConfig(base_config, step = "convert"), filter_fn = filter_fn)
 
         # Default filter function used for quantize_
         if filter_fn is None:
@@ -2196,7 +2196,7 @@ def _convert_torchao_model(model):
         kwargs["modules_to_not_convert"] = []
 
     quant_config = ModuleFqnToConfig(module_to_fqn_dict)
-    quantization_config = TorchAoConfig(quant_type=quant_config, **kwargs)
+    quantization_config = TorchAoConfig(quant_type = quant_config, **kwargs)
     model.config.quantization_config = quantization_config
 
 
@@ -2246,8 +2246,8 @@ def _prepare_model_for_qat(
                 and m.in_features >= group_size
             )
             torchao_config = TorchAOConfig(
-                qat_scheme=qat_scheme,
-                base_config_and_filter_fns=[(base_config, filter_fn)],
+                qat_scheme = qat_scheme,
+                base_config_and_filter_fns = [(base_config, filter_fn)],
             )
         elif qat_scheme == "fp8-fp8":
             try:
@@ -2257,10 +2257,10 @@ def _prepare_model_for_qat(
             except ImportError:
                 raise ImportError(TORCHAO_MSG)
             base_config = Float8DynamicActivationFloat8WeightConfig(
-                granularity=PerRow()
+                granularity = PerRow()
             )
             torchao_config = TorchAOConfig(
-                qat_scheme=qat_scheme, base_config_and_filter_fns=[(base_config, None)]
+                qat_scheme = qat_scheme, base_config_and_filter_fns = [(base_config, None)]
             )
         elif qat_scheme == "int8-int4":
             try:
@@ -2271,22 +2271,22 @@ def _prepare_model_for_qat(
             except ImportError:
                 raise ImportError(TORCHAO_MSG)
             torchao_config = TorchAOConfig(
-                qat_scheme=qat_scheme,
-                base_config_and_filter_fns=[
+                qat_scheme = qat_scheme,
+                base_config_and_filter_fns = [
                     (
                         IntxWeightOnlyConfig(
-                            weight_dtype=torch.int8, granularity=PerAxis(0)
+                            weight_dtype = torch.int8, granularity = PerAxis(0)
                         ),
                         lambda m, fqn: isinstance(m, torch.nn.Embedding),
                     ),
                     (
                         Int8DynamicActivationIntxWeightConfig(
-                            weight_dtype=torch.int4, weight_granularity=PerGroup(32)
+                            weight_dtype = torch.int4, weight_granularity = PerGroup(32)
                         ),
                         None,
                     ),
                 ],
-                prequantization_transform=_untie_input_output_embeddings,
+                prequantization_transform = _untie_input_output_embeddings,
             )
         elif qat_scheme == "int4":
             try:
@@ -2294,14 +2294,14 @@ def _prepare_model_for_qat(
             except ImportError:
                 raise ImportError(TORCHAO_MSG)
             group_size = 128
-            base_config = Int4WeightOnlyConfig(group_size=group_size)
+            base_config = Int4WeightOnlyConfig(group_size = group_size)
             filter_fn = (
                 lambda m, _: isinstance(m, torch.nn.Linear)
                 and m.in_features >= group_size
             )
             torchao_config = TorchAOConfig(
-                qat_scheme=qat_scheme,
-                base_config_and_filter_fns=[(base_config, filter_fn)],
+                qat_scheme = qat_scheme,
+                base_config_and_filter_fns = [(base_config, filter_fn)],
             )
         elif qat_scheme == "int8":
             try:
@@ -2311,13 +2311,13 @@ def _prepare_model_for_qat(
                 raise ImportError(TORCHAO_MSG)
 
             base_config = IntxWeightOnlyConfig(
-                weight_dtype=torch.int8,
-                granularity=PerAxis(0),
+                weight_dtype = torch.int8,
+                granularity = PerAxis(0),
             )
             filter_fn = lambda m, _: isinstance(m, torch.nn.Linear)
             torchao_config = TorchAOConfig(
-                qat_scheme=qat_scheme,
-                base_config_and_filter_fns=[(base_config, filter_fn)],
+                qat_scheme = qat_scheme,
+                base_config_and_filter_fns = [(base_config, filter_fn)],
             )
         else:
             raise ValueError(f"Unexpected QAT scheme {qat_scheme}")
@@ -2335,7 +2335,7 @@ def _prepare_model_for_qat(
     if torchao_config.prequantization_transform is not None:
         torchao_config.prequantization_transform(model)
     for base_config, filter_fn in torchao_config.base_config_and_filter_fns:
-        quantize_(model, QATConfig(base_config, step="prepare"), filter_fn=filter_fn)
+        quantize_(model, QATConfig(base_config, step = "prepare"), filter_fn = filter_fn)
 
     return model
 
@@ -2421,7 +2421,7 @@ def hf_login(token: Optional[str] = None) -> Optional[str]:
     try:
         from huggingface_hub import login
 
-        login(token=token)
+        login(token = token)
         return token
     except Exception as e:
         logger.info(f"Failed to login to huggingface using token with error: {e}")

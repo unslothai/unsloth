@@ -174,7 +174,7 @@ def PatchRL(FastLanguageModel):
             if has_labels or loss_without_labels:
                 with self.compute_loss_context_manager():
                     loss, outputs = self.compute_loss(
-                        model, inputs, return_outputs=True
+                        model, inputs, return_outputs = True
                     )
                 loss = loss.mean().detach()
 
@@ -189,9 +189,9 @@ def PatchRL(FastLanguageModel):
                 with self.compute_loss_context_manager():
                     tokenized_output = self.processing_class(
                         inputs["prompt"],
-                        padding=True,
-                        truncation=True,
-                        return_tensors="pt",
+                        padding = True,
+                        truncation = True,
+                        return_tensors = "pt",
                     ).to(model.device)
                     outputs = model(**tokenized_output)
                 if isinstance(outputs, dict):
@@ -409,7 +409,7 @@ def _wrap_grpo_generate_and_score(trainer_cls):
     trainer_cls._generate_and_score_completions = wrapped
 
 
-def _patch_trl_rl_trainers(trainer_file="grpo_trainer"):
+def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     # Patch for vLLM and Unsloth PEFT
     import trl
     import trl.trainer
@@ -1063,31 +1063,31 @@ def _patch_trl_rl_trainers(trainer_file="grpo_trainer"):
     autotune_batch_and_chunks_code = inspect.getsource(autotune_batch_and_chunks)
     # Get final source code
     RLTrainer_source = RLTrainer_replacement.format(
-        RLTrainer_name=RLTrainer_name,
-        __RLTrainer_doc__=__RLTrainer_doc__,
-        RLTrainer_arguments=RLTrainer_arguments,
-        RLTrainer_extra_args=RLTrainer_extra_args,
-        RLTrainer_call_args=RLTrainer_call_args,
-        RLTrainer_kwargs=",**kwargs"[1 if RLTrainer_call_args.endswith(",") else 0 :],
-        RLConfig_name=RLConfig_name,
-        __RLConfig_doc__=__RLConfig_doc__,
-        RLConfig_arguments=RLConfig_arguments,
-        RLConfig_extra_args=RLConfig_extra_args,
-        RLConfig_call_args=RLConfig_call_args,
-        RLConfig_kwargs=",**kwargs"[1 if RLConfig_call_args.endswith(",") else 0 :],
-        RLTrainer_extras=RLTrainer_extras,
-        RLTrainer_post=RLTrainer_post,
-        RL_pre=RL_pre,
-        max_seq_length_pre=max_seq_length_pre,
-        max_seq_length_call=max_seq_length_call,
-        max_seq_length_post=max_seq_length_post,
-        selective_log_softmax_code=selective_log_softmax_code,
-        grpo_selective_log_softmax_code=grpo_selective_log_softmax_code,
-        calculate_pad_tokens_in_prompt_code=calculate_pad_tokens_in_prompt_code,
-        create_completion_attention_mask_code=create_completion_attention_mask_code,
-        autotune_batch_and_chunks_code=autotune_batch_and_chunks_code,
-        left_pack_padding_code=left_pack_padding_code,
-        align_logprobs_with_mask_code=align_logprobs_with_mask_code,
+        RLTrainer_name = RLTrainer_name,
+        __RLTrainer_doc__ = __RLTrainer_doc__,
+        RLTrainer_arguments = RLTrainer_arguments,
+        RLTrainer_extra_args = RLTrainer_extra_args,
+        RLTrainer_call_args = RLTrainer_call_args,
+        RLTrainer_kwargs = ",**kwargs"[1 if RLTrainer_call_args.endswith(",") else 0 :],
+        RLConfig_name = RLConfig_name,
+        __RLConfig_doc__ = __RLConfig_doc__,
+        RLConfig_arguments = RLConfig_arguments,
+        RLConfig_extra_args = RLConfig_extra_args,
+        RLConfig_call_args = RLConfig_call_args,
+        RLConfig_kwargs = ",**kwargs"[1 if RLConfig_call_args.endswith(",") else 0 :],
+        RLTrainer_extras = RLTrainer_extras,
+        RLTrainer_post = RLTrainer_post,
+        RL_pre = RL_pre,
+        max_seq_length_pre = max_seq_length_pre,
+        max_seq_length_call = max_seq_length_call,
+        max_seq_length_post = max_seq_length_post,
+        selective_log_softmax_code = selective_log_softmax_code,
+        grpo_selective_log_softmax_code = grpo_selective_log_softmax_code,
+        calculate_pad_tokens_in_prompt_code = calculate_pad_tokens_in_prompt_code,
+        create_completion_attention_mask_code = create_completion_attention_mask_code,
+        autotune_batch_and_chunks_code = autotune_batch_and_chunks_code,
+        left_pack_padding_code = left_pack_padding_code,
+        align_logprobs_with_mask_code = align_logprobs_with_mask_code,
     )
 
     if RLTrainer_name == "SFTTrainer":
@@ -1116,7 +1116,7 @@ def _patch_trl_rl_trainers(trainer_file="grpo_trainer"):
         RLTrainer_source,
         f"trl.trainer.{trainer_file}",
         imports,
-        overwrite=False,
+        overwrite = False,
     )
 
     # Patch Trainer
@@ -1227,7 +1227,7 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                 commented_lines.append(line)
         return "\n".join(commented_lines)
 
-    init = re.sub(add_adapter_block_pattern, comment_out_block, init, flags=re.DOTALL)
+    init = re.sub(add_adapter_block_pattern, comment_out_block, init, flags = re.DOTALL)
 
     # Set use_vllm if not set
     if "args.use_vllm" in init and "model" in init and "args" in init:
@@ -1235,7 +1235,7 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
         replacer = re.findall(
             r"def __init__\(.*?\).*?\:\n",
             init,
-            flags=re.MULTILINE | re.DOTALL,
+            flags = re.MULTILINE | re.DOTALL,
         )
         if len(replacer) != 0:
             replacer = replacer[0]
@@ -1270,24 +1270,24 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
     vllm_part = re.findall(
         r"(\n[\s]{8}" r"if (self|args)\.use_vllm\:.*?" r"\n[\s]{8}" "else:\n)",
         init,
-        flags=re.MULTILINE | re.DOTALL,
+        flags = re.MULTILINE | re.DOTALL,
     )
 
     if len(vllm_part) == 1:
         vllm_part, args = vllm_part[0][0], vllm_part[0][1]
         # Strip all comments
         new_vllm_part = re.sub(
-            r"^\s*\#[^\n]*\n?", "", vllm_part, flags=re.MULTILINE
+            r"^\s*\#[^\n]*\n?", "", vllm_part, flags = re.MULTILINE
         )  # to also remove whole comment line instead of just starting at #
         new_vllm_part = re.sub(
-            r"\s*\#.*$", "", new_vllm_part, flags=re.MULTILINE
+            r"\s*\#.*$", "", new_vllm_part, flags = re.MULTILINE
         )  # remove comments that occur after code
 
         # Get SamplingParams
         sampling_params = re.findall(
             r"\n[\s]{4,}(self\.[^\s]{1,}[\s]{0,}\=[\s]{0,}" r"SamplingParams\(.+?\))",
             new_vllm_part,
-            flags=re.MULTILINE | re.DOTALL,
+            flags = re.MULTILINE | re.DOTALL,
         )
 
         if len(sampling_params) == 1:
@@ -1344,7 +1344,7 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                 vllm_llm_init_pattern,
                 vllm_llm_replacement,
                 new_vllm_part,
-                flags=re.DOTALL,  # Ensure . matches newlines [[5]]
+                flags = re.DOTALL,  # Ensure . matches newlines [[5]]
             )
 
         init = init.replace(vllm_part, new_vllm_part)
@@ -1497,7 +1497,7 @@ def patch_trl_openenv():
     return
 
 
-def PatchFastRL(algorithm=None, FastLanguageModel=None):
+def PatchFastRL(algorithm = None, FastLanguageModel = None):
     if FastLanguageModel is not None:
         PatchRL(FastLanguageModel)
     patch_trl_rl_trainers()

@@ -28,12 +28,12 @@ print(f"{'='*80}")
 
 
 model, tokenizer = FastModel.from_pretrained(
-    model_name="unsloth/whisper-large-v3",
-    dtype=None,  # Leave as None for auto detection
-    load_in_4bit=False,  # Set to True to do 4bit quantization which reduces memory
-    auto_model=WhisperForConditionalGeneration,
-    whisper_language="English",
-    whisper_task="transcribe",
+    model_name = "unsloth/whisper-large-v3",
+    dtype = None,  # Leave as None for auto detection
+    load_in_4bit = False,  # Set to True to do 4bit quantization which reduces memory
+    auto_model = WhisperForConditionalGeneration,
+    whisper_language = "English",
+    whisper_task = "transcribe",
     # token = "hf_...", # use one if using gated models like meta-llama/Llama-2-7b-hf
 )
 
@@ -46,17 +46,17 @@ model.generation_config.forced_decoder_ids = None
 
 model = FastModel.get_peft_model(
     model,
-    r=64,  # Choose any number > 0 ! Suggested 8, 16, 32, 64, 128
-    target_modules=["q_proj", "v_proj"],
-    lora_alpha=64,
-    lora_dropout=0,  # Supports any, but = 0 is optimized
-    bias="none",  # Supports any, but = "none" is optimized
+    r = 64,  # Choose any number > 0 ! Suggested 8, 16, 32, 64, 128
+    target_modules = ["q_proj", "v_proj"],
+    lora_alpha = 64,
+    lora_dropout = 0,  # Supports any, but = 0 is optimized
+    bias = "none",  # Supports any, but = "none" is optimized
     # [NEW] "unsloth" uses 30% less VRAM, fits 2x larger batch sizes!
-    use_gradient_checkpointing="unsloth",  # True or "unsloth" for very long context
-    random_state=3407,
-    use_rslora=False,  # We support rank stabilized LoRA
-    loftq_config=None,  # And LoftQ
-    task_type=None,  # ** MUST set this for Whisper **
+    use_gradient_checkpointing = "unsloth",  # True or "unsloth" for very long context
+    random_state = 3407,
+    use_rslora = False,  # We support rank stabilized LoRA
+    loftq_config = None,  # And LoftQ
+    task_type = None,  # ** MUST set this for Whisper **
 )
 
 print("✅ Model and LoRA adapters loaded successfully!")
@@ -110,12 +110,12 @@ print(f"{'='*80}")
 
 
 model, tokenizer = FastModel.from_pretrained(
-    model_name="./whisper",
-    dtype=None,  # Leave as None for auto detection
-    load_in_4bit=False,  # Set to True to do 4bit quantization which reduces memory
-    auto_model=WhisperForConditionalGeneration,
-    whisper_language="English",
-    whisper_task="transcribe",
+    model_name = "./whisper",
+    dtype = None,  # Leave as None for auto detection
+    load_in_4bit = False,  # Set to True to do 4bit quantization which reduces memory
+    auto_model = WhisperForConditionalGeneration,
+    whisper_language = "English",
+    whisper_task = "transcribe",
     # token = "hf_...", # use one if using gated models like meta-llama/Llama-2-7b-hf
 )
 
@@ -135,7 +135,7 @@ try:
     headers = {
         "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
     }
-    response = requests.get(audio_url, headers=headers)
+    response = requests.get(audio_url, headers = headers)
     response.raise_for_status()
     with open(audio_file, "wb") as f:
         f.write(response.content)
@@ -156,12 +156,12 @@ model.eval()
 # Create pipeline without specifying the device
 whisper = pipeline(
     "automatic-speech-recognition",
-    model=model,
-    tokenizer=tokenizer.tokenizer,
-    feature_extractor=tokenizer.feature_extractor,
-    processor=tokenizer,
-    return_language=True,
-    torch_dtype=torch.float16,  # Remove the device parameter
+    model = model,
+    tokenizer = tokenizer.tokenizer,
+    feature_extractor = tokenizer.feature_extractor,
+    processor = tokenizer,
+    return_language = True,
+    torch_dtype = torch.float16,  # Remove the device parameter
 )
 # Example usage
 audio_file = "Speech_12dB_s16.flac"
