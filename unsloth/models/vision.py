@@ -106,7 +106,7 @@ PRE_COMPILE_INFERENCE = [
     "gpt_oss",
 ]
 
-from transformers import GenerationConfig, CompileConfig, HybridCache, AutoConfig
+from transformers import GenerationConfig, CompileConfig, AutoConfig
 
 try:
     from transformers import PreTrainedConfig
@@ -116,8 +116,6 @@ except:
     from transformers import PretrainedConfig
 
 HAS_TORCH_DTYPE = "torch_dtype" in PretrainedConfig.__doc__
-
-from transformers import GenerationConfig, CompileConfig, HybridCache
 
 _compile_config = CompileConfig(
     fullgraph = False,
@@ -1273,7 +1271,7 @@ class FastBaseModel:
         # Since transformers 4.53, must turn on explicitly
         for module in model.modules():
             if hasattr(module, "gradient_checkpointing"):
-                module.gradient_checkpointing = True
+                module.gradient_checkpointing = use_gradient_checkpointing
 
         # Also re-enable training for embeddings for NEFTune
         if hasattr(model, "get_input_embeddings"):
