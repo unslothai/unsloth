@@ -1052,10 +1052,6 @@ class FastModel(FastBaseModel):
                 ";"
                 "os.environ['TRITON_F32_DEFAULT'] = 'ieee'"
             )
-        elif "qwen3_moe" in model_types_all:
-            # Qwen3 MoE uses Triton grouped GEMM kernels which don't work well
-            # with torch.compile due to autograd.Function backward pass issues
-            os.environ["UNSLOTH_COMPILE_DISABLE"] = "partial"
         elif "gpt_oss" in model_types_all:
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
             if not load_in_4bit:
