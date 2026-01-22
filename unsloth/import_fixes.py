@@ -602,6 +602,7 @@ def fix_rocm_triton_key_error():
 
     try:
         from triton.runtime import triton_key  # noqa: F401
+
         return
     except Exception:
         pass
