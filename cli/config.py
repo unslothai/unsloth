@@ -77,9 +77,11 @@ class Config(BaseModel):
         """Return kwargs for trainer.prepare_model_for_training()."""
         # Determine target modules based on model type
         if use_lora and is_vision:
-            target_modules = "all-linear" if self.lora.vision_all_linear else []
+            # Vision models expect a string (e.g., "all-linear"); fall back to None to use trainer defaults
+            target_modules = "all-linear" if self.lora.vision_all_linear else None
         else:
-            target_modules = [m.strip() for m in self.lora.target_modules.split(",") if m.strip()]
+            parsed = [m.strip() for m in str(self.lora.target_modules).split(",") if m and m.strip()]
+            target_modules = parsed or None
 
         return {
             "use_lora": use_lora,
