@@ -1096,6 +1096,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             "max_autotune"      : False,
             "shape_padding"     : True,
             "trace.enabled"     : False,
+            "triton.enable_persistent_tma_matmul: torch.cuda.get_device_capability()[0] >= 9,"
             "cuda.cutlass_epilogue_fusion_enabled": torch.cuda.get_device_capability()[0] >= 9, 
             "cuda.cutlass_tma_only": torch.cuda.get_device_capability()[0] >= 9, 
             "cuda.compile_opt_level"              : "-O2",
