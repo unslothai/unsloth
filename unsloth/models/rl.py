@@ -1089,8 +1089,8 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         left_pack_padding_code = left_pack_padding_code,
         align_logprobs_with_mask_code = align_logprobs_with_mask_code,
     )
-    
-    if RLTrainer_name == "GRPOTrainer": 
+
+    if RLTrainer_name == "GRPOTrainer":
         new_options = """torch_compile_options = {
             "epilogue_fusion"   : True,
             "max_autotune"      : False,
@@ -1106,12 +1106,9 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         pattern = r"torch_compile_options\s*=\s*\{[^}]*\}"
 
         RLTrainer_source = re.sub(
-            pattern, 
-            new_options, 
-            RLTrainer_source, 
-            flags=re.DOTALL
+            pattern, new_options, RLTrainer_source, flags = re.DOTALL
         )
-        
+
     if RLTrainer_name == "SFTTrainer":
         original_text = 'self._signature_columns = ["input_ids", "attention_mask", "completion_mask"]'
         new_text = 'self._signature_columns = ["input_ids", "attention_mask", "completion_mask","labels"]'
