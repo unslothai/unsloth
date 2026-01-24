@@ -1,137 +1,277 @@
 "use client";
 
-import { motion } from "framer-motion";
+/**
+ * Orb Component - ElevenLabs UI Style
+ * 3D animated sphere using Three.js and React Three Fiber
+ * Based on https://github.com/elevenlabs/ui
+ */
+
+import { useRef, useMemo, useEffect, useState } from "react";
+import { Canvas, useFrame } from "@react-three/fiber";
+import * as THREE from "three";
 import { cn } from "@/lib/utils";
 
+// Agent states matching ElevenLabs API
+type AgentState = "idle" | "listening" | "thinking" | "speaking";
+
 interface OrbProps {
-  isActive: boolean;
-  isListening: boolean;
-  isSpeaking: boolean;
-  size?: "sm" | "md" | "lg";
+  state?: AgentState;
+  colors?: [string, string];
+  volume?: number;
+  size?: number;
   className?: string;
 }
 
-export function Orb({
-  isActive,
-  isListening,
-  isSpeaking,
-  size = "lg",
-  className,
-}: OrbProps) {
-  const sizeClasses = {
-    sm: "w-24 h-24",
-    md: "w-32 h-32",
-    lg: "w-48 h-48",
-  };
+// Vertex shader for the orb effect
+const vertexShader = `
+  varying vec2 vUv;
+  void main() {
+    vUv = uv;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
 
-  const getGradient = () => {
-    if (isSpeaking) {
-      return "from-green-400 via-emerald-500 to-teal-500";
+// Fragment shader with animated gradient and noise
+const fragmentShader = `
+  uniform float uTime;
+  uniform float uVolume;
+  uniform vec3 uColor1;
+  uniform vec3 uColor2;
+  uniform float uState; // 0: idle, 1: listening, 2: thinking, 3: speaking
+  varying vec2 vUv;
+
+  // Simplex noise function
+  vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+  vec2 mod289(vec2 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+  vec3 permute(vec3 x) { return mod289(((x*34.0)+1.0)*x); }
+
+  float snoise(vec2 v) {
+    const vec4 C = vec4(0.211324865405187, 0.366025403784439,
+                        -0.577350269189626, 0.024390243902439);
+    vec2 i  = floor(v + dot(v, C.yy));
+    vec2 x0 = v -   i + dot(i, C.xx);
+    vec2 i1;
+    i1 = (x0.x > x0.y) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
+    vec4 x12 = x0.xyxy + C.xxzz;
+    x12.xy -= i1;
+    i = mod289(i);
+    vec3 p = permute(permute(i.y + vec3(0.0, i1.y, 1.0))
+                            + i.x + vec3(0.0, i1.x, 1.0));
+    vec3 m = max(0.5 - vec3(dot(x0, x0), dot(x12.xy, x12.xy),
+                            dot(x12.zw, x12.zw)), 0.0);
+    m = m*m;
+    m = m*m;
+    vec3 x = 2.0 * fract(p * C.www) - 1.0;
+    vec3 h = abs(x) - 0.5;
+    vec3 ox = floor(x + 0.5);
+    vec3 a0 = x - ox;
+    m *= 1.79284291400159 - 0.85373472095314 * (a0*a0 + h*h);
+    vec3 g;
+    g.x  = a0.x  * x0.x  + h.x  * x0.y;
+    g.yz = a0.yz * x12.xz + h.yz * x12.yw;
+    return 130.0 * dot(m, g);
+  }
+
+  void main() {
+    vec2 center = vUv - 0.5;
+    float dist = length(center);
+
+    // Create circular gradient
+    float circle = 1.0 - smoothstep(0.0, 0.5, dist);
+
+    // Add noise for organic feel
+    float noise = snoise(vUv * 3.0 + uTime * 0.5) * 0.5 + 0.5;
+
+    // Volume-based pulsing
+    float pulse = 1.0 + uVolume * 0.3;
+
+    // State-based animation speed
+    float speed = uState == 3.0 ? 2.0 : (uState == 2.0 ? 1.5 : 1.0);
+    float breathe = sin(uTime * speed) * 0.1 + 1.0;
+
+    // Mix colors based on noise and position
+    vec3 color = mix(uColor1, uColor2, noise * circle);
+
+    // Add glow
+    float glow = pow(circle, 2.0) * pulse * breathe;
+    color += glow * 0.3;
+
+    // Edge fade
+    float alpha = circle * circle;
+
+    // Add rings for listening/speaking states
+    if (uState >= 1.0) {
+      float ring = sin(dist * 20.0 - uTime * 3.0) * 0.5 + 0.5;
+      ring *= smoothstep(0.5, 0.3, dist) * smoothstep(0.0, 0.2, dist);
+      color += ring * uVolume * 0.5;
     }
-    if (isListening) {
-      return "from-blue-400 via-primary to-indigo-500";
+
+    gl_FragColor = vec4(color, alpha);
+  }
+`;
+
+// Inner 3D sphere scene
+function OrbScene({
+  state,
+  colors,
+  volume,
+}: {
+  state: AgentState;
+  colors: [string, string];
+  volume: number;
+}) {
+  const meshRef = useRef<THREE.Mesh>(null);
+  const materialRef = useRef<THREE.ShaderMaterial>(null);
+
+  // Convert state to number for shader
+  const stateValue = useMemo(() => {
+    switch (state) {
+      case "listening": return 1;
+      case "thinking": return 2;
+      case "speaking": return 3;
+      default: return 0;
     }
-    if (isActive) {
-      return "from-blue-500 via-primary to-blue-400";
+  }, [state]);
+
+  // Convert hex colors to THREE.Color
+  const color1 = useMemo(() => new THREE.Color(colors[0]), [colors[0]]);
+  const color2 = useMemo(() => new THREE.Color(colors[1]), [colors[1]]);
+
+  // Shader uniforms
+  const uniforms = useMemo(
+    () => ({
+      uTime: { value: 0 },
+      uVolume: { value: 0 },
+      uColor1: { value: color1 },
+      uColor2: { value: color2 },
+      uState: { value: stateValue },
+    }),
+    []
+  );
+
+  // Update uniforms each frame
+  useFrame((_, delta) => {
+    if (materialRef.current) {
+      materialRef.current.uniforms.uTime.value += delta;
+
+      // Smooth volume transition
+      const targetVolume = volume;
+      const currentVolume = materialRef.current.uniforms.uVolume.value;
+      materialRef.current.uniforms.uVolume.value +=
+        (targetVolume - currentVolume) * 0.1;
+
+      // Update state
+      materialRef.current.uniforms.uState.value = stateValue;
+
+      // Update colors
+      materialRef.current.uniforms.uColor1.value = color1;
+      materialRef.current.uniforms.uColor2.value = color2;
     }
-    return "from-gray-600 via-gray-500 to-gray-600";
-  };
+
+    // Rotate mesh slightly based on state
+    if (meshRef.current) {
+      const rotationSpeed = state === "thinking" ? 0.5 : 0.1;
+      meshRef.current.rotation.z += delta * rotationSpeed;
+    }
+  });
 
   return (
-    <div className={cn("relative", sizeClasses[size], className)}>
-      {/* Pulse rings */}
-      {isActive && (
-        <>
-          <motion.div
-            className={cn(
-              "absolute inset-0 rounded-full bg-gradient-to-r opacity-30",
-              getGradient()
-            )}
-            animate={{
-              scale: [1, 1.4],
-              opacity: [0.3, 0],
-            }}
-            transition={{
-              duration: 2,
-              repeat: Infinity,
-              ease: "easeOut",
-            }}
-          />
-          <motion.div
-            className={cn(
-              "absolute inset-0 rounded-full bg-gradient-to-r opacity-30",
-              getGradient()
-            )}
-            animate={{
-              scale: [1, 1.4],
-              opacity: [0.3, 0],
-            }}
-            transition={{
-              duration: 2,
-              repeat: Infinity,
-              ease: "easeOut",
-              delay: 0.5,
-            }}
-          />
-        </>
-      )}
+    <mesh ref={meshRef}>
+      <circleGeometry args={[1, 64]} />
+      <shaderMaterial
+        ref={materialRef}
+        vertexShader={vertexShader}
+        fragmentShader={fragmentShader}
+        uniforms={uniforms}
+        transparent
+      />
+    </mesh>
+  );
+}
 
-      {/* Main orb */}
-      <motion.div
+// Pulse rings around the orb
+function PulseRings({ active, color }: { active: boolean; color: string }) {
+  const ringsRef = useRef<THREE.Group>(null);
+  const [rings] = useState(() => [0, 1, 2].map(() => ({ scale: 1, opacity: 0 })));
+
+  useFrame((_, delta) => {
+    if (!ringsRef.current || !active) return;
+
+    rings.forEach((ring, i) => {
+      ring.scale += delta * (1 + i * 0.3);
+      ring.opacity = Math.max(0, 1 - (ring.scale - 1) / 0.5);
+
+      if (ring.scale > 1.5) {
+        ring.scale = 1;
+        ring.opacity = 1;
+      }
+    });
+  });
+
+  if (!active) return null;
+
+  return (
+    <group ref={ringsRef}>
+      {rings.map((ring, i) => (
+        <mesh key={i} scale={ring.scale}>
+          <ringGeometry args={[0.95, 1, 64]} />
+          <meshBasicMaterial
+            color={color}
+            transparent
+            opacity={ring.opacity * 0.3}
+          />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+// Main Orb component
+export function Orb({
+  state = "idle",
+  colors = ["#3b82f6", "#8b5cf6"],
+  volume = 0,
+  size = 200,
+  className,
+}: OrbProps) {
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  if (!mounted) {
+    // SSR placeholder
+    return (
+      <div
         className={cn(
-          "absolute inset-0 rounded-full bg-gradient-to-br shadow-2xl",
-          getGradient()
+          "rounded-full bg-gradient-to-br from-primary to-primary/50",
+          className
         )}
-        animate={
-          isActive
-            ? {
-                scale: isSpeaking ? [1, 1.05, 1] : isListening ? [1, 1.02, 1] : 1,
-              }
-            : { scale: 1 }
-        }
-        transition={{
-          duration: isSpeaking ? 0.3 : 1.5,
-          repeat: isActive ? Infinity : 0,
-          ease: "easeInOut",
-        }}
+        style={{ width: size, height: size }}
+      />
+    );
+  }
+
+  return (
+    <div
+      className={cn("relative", className)}
+      style={{ width: size, height: size }}
+    >
+      <Canvas
+        camera={{ position: [0, 0, 2], fov: 50 }}
+        gl={{ alpha: true, antialias: true }}
+        style={{ background: "transparent" }}
       >
-        {/* Inner glow */}
-        <div className="absolute inset-4 rounded-full bg-gradient-to-br from-white/20 to-transparent" />
-
-        {/* Shine effect */}
-        <div className="absolute top-6 left-6 w-12 h-12 rounded-full bg-white/30 blur-xl" />
-      </motion.div>
-
-      {/* Activity indicator */}
-      {isActive && (
-        <motion.div
-          className="absolute inset-0 flex items-center justify-center"
-          animate={{ opacity: [0.5, 1, 0.5] }}
-          transition={{ duration: 2, repeat: Infinity }}
-        >
-          <div className="flex gap-1">
-            {[...Array(3)].map((_, i) => (
-              <motion.div
-                key={i}
-                className="w-2 h-2 rounded-full bg-white"
-                animate={
-                  isListening || isSpeaking
-                    ? {
-                        y: [0, -8, 0],
-                        opacity: [0.5, 1, 0.5],
-                      }
-                    : { y: 0, opacity: 0.5 }
-                }
-                transition={{
-                  duration: 0.6,
-                  repeat: Infinity,
-                  delay: i * 0.15,
-                }}
-              />
-            ))}
-          </div>
-        </motion.div>
-      )}
+        <OrbScene state={state} colors={colors} volume={volume} />
+        <PulseRings
+          active={state === "listening" || state === "speaking"}
+          color={colors[0]}
+        />
+      </Canvas>
     </div>
   );
 }
+
+// Export state type for consumers
+export type { AgentState };

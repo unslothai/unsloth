@@ -11,7 +11,7 @@ Un asistente de voz con IA para agendar citas médicas, optimizado para Mac Mini
 - **Interfaz de voz natural** - Conversación fluida en español mexicano
 - **Agendamiento inteligente** - Integración con Google Calendar
 - **100% Local** - Tu privacidad está protegida, todo corre en tu Mac
-- **UI moderna** - Inspirada en ElevenLabs con Orb y Waveform animados
+- **UI con ElevenLabs UI** - Componentes 3D (Orb, Waveform) basados en [github.com/elevenlabs/ui](https://github.com/elevenlabs/ui)
 - **Bajo consumo** - Diseñado para no afectar tu trabajo diario
 
 ## Arquitectura
@@ -152,6 +152,35 @@ doctor-calendar-assistant/
 | Uso de RAM en reposo | ~5 GB |
 | Impacto en trabajo diario | Mínimo |
 
+## ElevenLabs UI Components
+
+Este proyecto incluye componentes inspirados en [ElevenLabs UI](https://github.com/elevenlabs/ui) con Three.js para visualizaciones 3D.
+
+### Usar los componentes oficiales de ElevenLabs
+
+Para usar los componentes oficiales en lugar de los incluidos:
+
+```bash
+cd frontend
+
+# Instalar componentes oficiales de ElevenLabs UI
+npx shadcn@latest add https://ui.elevenlabs.io/r/orb.json
+npx shadcn@latest add https://ui.elevenlabs.io/r/waveform.json
+npx shadcn@latest add https://ui.elevenlabs.io/r/live-waveform.json
+npx shadcn@latest add https://ui.elevenlabs.io/r/conversation.json
+
+# O instalar todos los componentes
+npx shadcn@latest add https://ui.elevenlabs.io/r/all.json
+```
+
+### Componentes incluidos
+
+| Componente | Descripción |
+|------------|-------------|
+| `Orb` | Esfera 3D animada con shaders GLSL, responde al estado del agente |
+| `Waveform` | Visualización de audio con Canvas API |
+| `VoiceAgent` | Panel completo de llamada con controles |
+
 ## Personalización
 
 ### Cambiar el nombre del asistente
@@ -211,7 +240,8 @@ El modelo puede tardar más la primera vez. Considera:
 - **TTS**: Piper con voz mexicana
 - **Backend**: Python FastAPI + WebSockets
 - **Frontend**: Next.js 14 + React + Tailwind
-- **UI Components**: Inspirados en ElevenLabs UI
+- **3D/Visualización**: Three.js + React Three Fiber
+- **UI Components**: Basados en [ElevenLabs UI](https://github.com/elevenlabs/ui)
 
 ## Licencia
 

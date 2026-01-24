@@ -1,9 +1,9 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Phone, PhoneOff, Mic, MicOff } from "lucide-react";
-import { Orb } from "./ui/orb";
+import { Orb, type AgentState } from "./ui/orb";
 import { Waveform } from "./ui/waveform";
 import { VoiceWebSocket, WebSocketMessage } from "@/lib/websocket";
 import { AudioRecorder, AudioPlayer, base64ToArrayBuffer, arrayBufferToBase64 } from "@/lib/audio";
@@ -214,6 +214,15 @@ export function VoiceAgent({ onCallStateChange }: VoiceAgentProps) {
     return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
   };
 
+  // Determine agent state for the Orb component (ElevenLabs UI style)
+  const agentState: AgentState = useMemo(() => {
+    if (!isCallActive) return "idle";
+    if (isSpeaking) return "speaking";
+    if (isListening) return "listening";
+    if (status === "Pensando..." || status === "Procesando...") return "thinking";
+    return "idle";
+  }, [isCallActive, isSpeaking, isListening, status]);
+
   return (
     <div className="flex flex-col items-center w-full max-w-md">
       {/* Call panel */}
@@ -226,13 +235,13 @@ export function VoiceAgent({ onCallStateChange }: VoiceAgentProps) {
         )}
         layout
       >
-        {/* Orb */}
+        {/* Orb - ElevenLabs UI style with Three.js */}
         <div className="flex justify-center mb-6">
           <Orb
-            isActive={isCallActive}
-            isListening={isListening}
-            isSpeaking={isSpeaking}
-            size={isCallActive ? "lg" : "md"}
+            state={agentState}
+            colors={["#3b82f6", "#8b5cf6"]}
+            size={isCallActive ? 200 : 150}
+            volume={isListening || isSpeaking ? 0.5 : 0}
           />
         </div>
 

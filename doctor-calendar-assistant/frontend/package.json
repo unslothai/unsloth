@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "add-elevenlabs": "npx shadcn@latest add https://ui.elevenlabs.io/r/orb.json https://ui.elevenlabs.io/r/waveform.json https://ui.elevenlabs.io/r/conversation.json"
   },
   "dependencies": {
     "next": "14.1.0",
@@ -15,8 +16,13 @@
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.0",
     "tailwind-merge": "^2.2.0",
+    "tailwindcss-animate": "^1.0.7",
     "lucide-react": "^0.312.0",
-    "framer-motion": "^10.18.0"
+    "framer-motion": "^10.18.0",
+    "@radix-ui/react-slot": "^1.0.2",
+    "three": "^0.160.0",
+    "@react-three/fiber": "^8.15.0",
+    "@react-three/drei": "^9.92.0"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
