@@ -146,6 +146,59 @@ torch_nn_functional_softmax = torch.nn.functional.softmax
 # SDPA has GQA internally
 SDPA_HAS_GQA = "enable_gqa" in scaled_dot_product_attention.__doc__
 
+from peft.utils.other import ModulesToSaveWrapper
+
+
+def _offload_frozen_module_for_training(
+    module: ModulesToSaveWrapper,
+    device_type: str,
+    offload_device: str = "cpu",
+) -> None:
+    """
+    Offload frozen module to CPU and configure trainable copy for mixed precision training.
+
+    This function optimizes memory usage by:
+    1. Moving the trainable copy to the target device with appropriate precision
+    2. Offloading the original frozen module to CPU/disk to free VRAM
+    3. Converting float16 to float32 for compatibility with certain GPUs (e.g., Tesla T4)
+
+    Args:
+        module: The module to configure. Must be a ModulesToSaveWrapper with a
+            `modules_to_save` attribute containing trainable and original modules.
+        device_type: Target device string for training (e.g., "cuda:0", "xpu:0")
+        offload_device: Device to offload frozen parameters (default: "cpu")
+            Note: Currently only "cpu" is supported; disk offloading is planned.
+
+    Returns:
+        None (modifies module in-place)
+
+    Note:
+        - Float16 weights are automatically promoted to float32 for GPU compatibility
+        - Original frozen parameters are moved to CPU to reduce active VRAM usage
+        - Future versions will support disk-based offloading for even larger models
+
+    See Also:
+        - https://github.com/unslothai/unsloth/pull/1200 (Tesla T4 float32 requirement)
+    """
+    # Early return with explicit None if module doesn't support mixed precision training
+    if not hasattr(module, "modules_to_save"):
+        return None
+
+    new_dtype = module.modules_to_save.default.weight.dtype
+    if new_dtype == torch.float16:
+        # See https://github.com/unslothai/unsloth/pull/1200
+        # Tesla T4 must use float32 and not float16
+        new_dtype = torch.float32
+
+    module.modules_to_save.default.to(
+        device = device_type, dtype = new_dtype, non_blocking = True
+    )
+    module.modules_to_save.default.requires_grad_(True)
+
+    # [TODO] Move old module to CPU - should be disk!
+    module.original_module.to(device = offload_device, non_blocking = True)
+    module.original_module.requires_grad_(False)
+
 
 # Fix new HF's inference code
 def _fast_prepare_inputs_for_generation(
@@ -2326,7 +2379,7 @@ class FastLlamaModel:
                 attn_implementation = "eager",
                 **kwargs,
             )
-            model.fast_generate = model.generate
+            model.fast_generate = make_fast_generate_wrapper(model.generate)
             model.fast_generate_batches = None
         else:
             from unsloth_zoo.vllm_utils import (
@@ -2600,6 +2653,7 @@ class FastLlamaModel:
         loftq_config = {},
         temporary_location = "_unsloth_temporary_saved_buffers",
         qat_scheme = None,
+        ensure_weight_tying = False,
         **kwargs,
     ):
         if os.environ.get("UNSLOTH_USE_NEW_MODEL", "0") == "1":
@@ -2629,6 +2683,7 @@ class FastLlamaModel:
                 init_lora_weights = init_lora_weights,
                 loftq_config = loftq_config,
                 temporary_location = temporary_location,
+                ensure_weight_tying = ensure_weight_tying,
                 **kwargs,
             )
         if os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1":
@@ -2709,46 +2764,16 @@ class FastLlamaModel:
                         "Unsloth: Training embed_tokens in mixed precision to save VRAM"
                     )
 
-                    new_dtype = model.get_input_embeddings().modules_to_save.default.weight.dtype
-                    if new_dtype == torch.float16:
-                        # See https://github.com/unslothai/unsloth/pull/1200
-                        # Tesla T4 must use float32 and not float16
-                        new_dtype = torch.float32
-
-                    model.get_input_embeddings().modules_to_save.default.to(
-                        device = DEVICE_TYPE_TORCH, dtype = new_dtype, non_blocking = True
+                    _offload_frozen_module_for_training(
+                        model.get_input_embeddings(), DEVICE_TYPE_TORCH
                     )
-                    model.get_input_embeddings().modules_to_save.default.requires_grad_(
-                        True
-                    )
-
-                    # [TODO] Move old embed_tokens to CPU - should be disk!
-                    model.get_input_embeddings().original_module.to(
-                        device = "cpu", non_blocking = True
-                    )
-                    model.get_input_embeddings().original_module.requires_grad_(False)
 
                 if "lm_head" in new_target_modules:
                     print("Unsloth: Training lm_head in mixed precision to save VRAM")
 
-                    new_dtype = model.get_output_embeddings().modules_to_save.default.weight.dtype
-                    if new_dtype == torch.float16:
-                        # See https://github.com/unslothai/unsloth/pull/1200
-                        # Tesla T4 must use float32 and not float16
-                        new_dtype = torch.float32
-
-                    model.get_output_embeddings().modules_to_save.default.to(
-                        device = DEVICE_TYPE_TORCH, dtype = new_dtype, non_blocking = True
+                    _offload_frozen_module_for_training(
+                        model.get_output_embeddings(), DEVICE_TYPE_TORCH
                     )
-                    model.get_output_embeddings().modules_to_save.default.requires_grad_(
-                        True
-                    )
-
-                    # [TODO] Move old lm_head to CPU - should be disk!
-                    model.get_output_embeddings().original_module.to(
-                        device = "cpu", non_blocking = True
-                    )
-                    model.get_output_embeddings().original_module.requires_grad_(False)
 
                 return model
             else:
@@ -2779,9 +2804,10 @@ class FastLlamaModel:
             type(init_lora_weights) is bool
             or init_lora_weights == "gaussian"
             or init_lora_weights == "loftq"
+            or init_lora_weights == "corda"
         ):
             raise ValueError(
-                'Unsloth: `init_lora_weights` must be either [True, False, "gaussian", "loftq"].'
+                'Unsloth: `init_lora_weights` must be either [True, False, "gaussian", "loftq", "corda"].'
             )
 
         if init_lora_weights == "loftq":
@@ -2952,6 +2978,7 @@ class FastLlamaModel:
             loftq_config = loftq_config,
             use_rslora = use_rslora,
             modules_to_save = modules_to_save,
+            ensure_weight_tying = ensure_weight_tying,
             **kwargs,
         )
         if not SUPPORTS_LOFTQ:
@@ -3000,6 +3027,55 @@ class FastLlamaModel:
         model._saved_temp_tokenizer = _saved_temp_tokenizer
 
         model = FastLlamaModel.patch_peft_model(model, use_gradient_checkpointing)
+
+        if ensure_weight_tying:
+            try:
+                input_embeddings = model.get_input_embeddings()
+                output_embeddings = model.get_output_embeddings()
+
+                if input_embeddings is not None and output_embeddings is not None:
+
+                    def _retie_parameter(target_module, source_module):
+                        if not hasattr(source_module, "weight"):
+                            return
+                        weight = source_module.weight
+                        # Remove existing registration to avoid "attribute already exists"
+                        if "weight" in getattr(target_module, "_parameters", {}):
+                            target_module._parameters.pop("weight")
+                        if hasattr(target_module, "weight"):
+                            try:
+                                delattr(target_module, "weight")
+                            except Exception as exc:
+                                logger.warning_once(
+                                    f"Unsloth: Could not delete existing weight attr during retie on "
+                                    f"{type(target_module).__name__}: {exc}"
+                                )
+                        target_module.register_parameter("weight", weight)
+
+                    # Tie trainable copies created by ModulesToSaveWrapper first (these are used in forward)
+                    if hasattr(input_embeddings, "modules_to_save") and hasattr(
+                        output_embeddings, "modules_to_save"
+                    ):
+                        if hasattr(
+                            input_embeddings.modules_to_save, "default"
+                        ) and hasattr(output_embeddings.modules_to_save, "default"):
+                            _retie_parameter(
+                                output_embeddings.modules_to_save.default,
+                                input_embeddings.modules_to_save.default,
+                            )
+
+                    # Tie original_module references as well if present
+                    if hasattr(input_embeddings, "original_module") and hasattr(
+                        output_embeddings, "original_module"
+                    ):
+                        _retie_parameter(
+                            output_embeddings.original_module,
+                            input_embeddings.original_module,
+                        )
+            except Exception as e:
+                logger.warning_once(
+                    f"Unsloth: Failed to ensure weight tying between embeddings and lm_head: {e}"
+                )
 
         if train_embed_tokens:
             print("Unsloth: Training embed_tokens in mixed precision to save VRAM")
