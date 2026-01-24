@@ -17,7 +17,9 @@ from .tools import CalendarTools
 class PersonaPlexBrain:
     """PersonaPlex-7B brain for the assistant via Ollama"""
 
-    def __init__(self, llm_config: dict, assistant_config: dict, calendar_tools: CalendarTools):
+    def __init__(
+        self, llm_config: dict, assistant_config: dict, calendar_tools: CalendarTools
+    ):
         self.base_url = llm_config.get("base_url", "http://localhost:11434")
         self.model = llm_config.get("model", "personaplex")
         self.temperature = llm_config.get("temperature", 0.7)
@@ -30,7 +32,7 @@ class PersonaPlexBrain:
         self.system_prompt = get_full_system_prompt()
 
         # HTTP client for Ollama API
-        self.client = httpx.AsyncClient(timeout=60.0)
+        self.client = httpx.AsyncClient(timeout = 60.0)
 
     async def process(self, user_input: str, conversation_history: list) -> str:
         """
@@ -55,7 +57,12 @@ class PersonaPlexBrain:
         if tool_result:
             # Add tool result to context and get final response
             messages.append({"role": "assistant", "content": response})
-            messages.append({"role": "system", "content": f"Resultado de la herramienta: {tool_result}"})
+            messages.append(
+                {
+                    "role": "system",
+                    "content": f"Resultado de la herramienta: {tool_result}",
+                }
+            )
             response = await self._call_ollama(messages)
 
         # Clean up response
@@ -65,16 +72,11 @@ class PersonaPlexBrain:
 
     def _build_messages(self, user_input: str, conversation_history: list) -> list:
         """Build message list for Ollama API"""
-        messages = [
-            {"role": "system", "content": self.system_prompt}
-        ]
+        messages = [{"role": "system", "content": self.system_prompt}]
 
         # Add conversation history (last 10 messages for context)
         for msg in conversation_history[-10:]:
-            messages.append({
-                "role": msg["role"],
-                "content": msg["content"]
-            })
+            messages.append({"role": msg["role"], "content": msg["content"]})
 
         # Add current user input
         messages.append({"role": "user", "content": user_input})
@@ -86,15 +88,15 @@ class PersonaPlexBrain:
         try:
             response = await self.client.post(
                 f"{self.base_url}/api/chat",
-                json={
+                json = {
                     "model": self.model,
                     "messages": messages,
                     "stream": False,
                     "options": {
                         "temperature": self.temperature,
                         "num_predict": self.max_tokens,
-                    }
-                }
+                    },
+                },
             )
 
             if response.status_code == 200:
@@ -105,7 +107,9 @@ class PersonaPlexBrain:
                 return "Disculpa, tuve un problema técnico. ¿Podrías repetir lo que dijiste?"
 
         except httpx.TimeoutException:
-            return "Disculpa, me tardé mucho en responder. ¿Podrías repetir tu pregunta?"
+            return (
+                "Disculpa, me tardé mucho en responder. ¿Podrías repetir tu pregunta?"
+            )
         except Exception as e:
             print(f"LLM error: {e}")
             return "Disculpa, hubo un error. ¿Me puedes repetir lo que necesitas?"
@@ -113,7 +117,7 @@ class PersonaPlexBrain:
     async def _handle_tool_calls(self, response: str) -> Optional[str]:
         """Extract and execute tool calls from response"""
         # Look for tool call pattern
-        tool_pattern = r'<tool_call>\s*({.*?})\s*</tool_call>'
+        tool_pattern = r"<tool_call>\s*({.*?})\s*</tool_call>"
         match = re.search(tool_pattern, response, re.DOTALL)
 
         if not match:
@@ -138,18 +142,18 @@ class PersonaPlexBrain:
     def _clean_response(self, response: str) -> str:
         """Clean up response text for speech"""
         # Remove tool calls from response
-        response = re.sub(r'<tool_call>.*?</tool_call>', '', response, flags=re.DOTALL)
+        response = re.sub(r"<tool_call>.*?</tool_call>", "", response, flags = re.DOTALL)
 
         # Remove any remaining XML-like tags
-        response = re.sub(r'<[^>]+>', '', response)
+        response = re.sub(r"<[^>]+>", "", response)
 
         # Remove markdown formatting
-        response = re.sub(r'\*\*([^*]+)\*\*', r'\1', response)  # bold
-        response = re.sub(r'\*([^*]+)\*', r'\1', response)      # italic
-        response = re.sub(r'`([^`]+)`', r'\1', response)        # code
+        response = re.sub(r"\*\*([^*]+)\*\*", r"\1", response)  # bold
+        response = re.sub(r"\*([^*]+)\*", r"\1", response)  # italic
+        response = re.sub(r"`([^`]+)`", r"\1", response)  # code
 
         # Clean up extra whitespace
-        response = ' '.join(response.split())
+        response = " ".join(response.split())
 
         return response.strip()
 

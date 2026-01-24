@@ -38,9 +38,7 @@ class SpeechToText:
 
             print(f"    Loading Whisper {self.model_name} on {device}...")
             self.model = WhisperModel(
-                self.model_name,
-                device=device,
-                compute_type=compute_type
+                self.model_name, device = device, compute_type = compute_type
             )
             print(f"    ✓ Whisper loaded successfully")
 
@@ -48,6 +46,7 @@ class SpeechToText:
             # Fallback to standard whisper
             print("    faster-whisper not available, using standard whisper...")
             import whisper
+
             self.model = whisper.load_model(self.model_name)
             self._use_faster_whisper = False
         else:
@@ -70,10 +69,12 @@ class SpeechToText:
     def _transcribe_sync(self, audio_data: bytes) -> str:
         """Synchronous transcription"""
         # Convert bytes to numpy array
-        audio_array = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32) / 32768.0
+        audio_array = (
+            np.frombuffer(audio_data, dtype = np.int16).astype(np.float32) / 32768.0
+        )
 
         # Save to temp file (whisper expects file path)
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix = ".wav", delete = False) as f:
             temp_path = f.name
             sf.write(temp_path, audio_array, 16000)
 
@@ -81,22 +82,17 @@ class SpeechToText:
             if self._use_faster_whisper:
                 segments, info = self.model.transcribe(
                     temp_path,
-                    language=self.language,
-                    beam_size=5,
-                    vad_filter=True,  # Filter out silence
-                    vad_parameters=dict(
-                        min_silence_duration_ms=500,
-                        speech_pad_ms=200
-                    )
+                    language = self.language,
+                    beam_size = 5,
+                    vad_filter = True,  # Filter out silence
+                    vad_parameters = dict(min_silence_duration_ms = 500, speech_pad_ms = 200),
                 )
                 # Combine all segments
                 text = " ".join([segment.text for segment in segments])
             else:
                 # Standard whisper
                 result = self.model.transcribe(
-                    temp_path,
-                    language=self.language,
-                    fp16=False
+                    temp_path, language = self.language, fp16 = False
                 )
                 text = result["text"]
 

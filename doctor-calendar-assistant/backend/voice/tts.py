@@ -41,7 +41,7 @@ class TextToSpeech:
 
         # Try to find in PATH
         try:
-            result = subprocess.run(["which", "piper"], capture_output=True, text=True)
+            result = subprocess.run(["which", "piper"], capture_output = True, text = True)
             if result.returncode == 0:
                 return Path(result.stdout.strip())
         except:
@@ -97,25 +97,27 @@ class TextToSpeech:
 
     def _synthesize_piper(self, text: str) -> bytes:
         """Use Piper for TTS"""
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix = ".wav", delete = False) as f:
             output_path = f.name
 
         try:
             # Run Piper
             cmd = [
                 str(self.piper_path),
-                "--model", str(self.model_path),
-                "--output_file", output_path
+                "--model",
+                str(self.model_path),
+                "--output_file",
+                output_path,
             ]
 
             process = subprocess.Popen(
                 cmd,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
+                stdin = subprocess.PIPE,
+                stdout = subprocess.PIPE,
+                stderr = subprocess.PIPE,
             )
 
-            stdout, stderr = process.communicate(input=text.encode("utf-8"))
+            stdout, stderr = process.communicate(input = text.encode("utf-8"))
 
             if process.returncode != 0:
                 print(f"Piper error: {stderr.decode()}")
@@ -137,27 +139,31 @@ class TextToSpeech:
         """
         try:
             # Try macOS say command with Spanish voice
-            with tempfile.NamedTemporaryFile(suffix=".aiff", delete=False) as f:
+            with tempfile.NamedTemporaryFile(suffix = ".aiff", delete = False) as f:
                 aiff_path = f.name
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            with tempfile.NamedTemporaryFile(suffix = ".wav", delete = False) as f:
                 wav_path = f.name
 
             # Use macOS say command
-            subprocess.run([
-                "say",
-                "-v", "Paulina",  # Mexican Spanish voice on macOS
-                "-o", aiff_path,
-                text
-            ], check=True, capture_output=True)
+            subprocess.run(
+                [
+                    "say",
+                    "-v",
+                    "Paulina",  # Mexican Spanish voice on macOS
+                    "-o",
+                    aiff_path,
+                    text,
+                ],
+                check = True,
+                capture_output = True,
+            )
 
             # Convert AIFF to WAV using afconvert (macOS)
-            subprocess.run([
-                "afconvert",
-                "-f", "WAVE",
-                "-d", "LEI16@22050",
-                aiff_path,
-                wav_path
-            ], check=True, capture_output=True)
+            subprocess.run(
+                ["afconvert", "-f", "WAVE", "-d", "LEI16@22050", aiff_path, wav_path],
+                check = True,
+                capture_output = True,
+            )
 
             with open(wav_path, "rb") as f:
                 audio_data = f.read()
@@ -175,29 +181,29 @@ class TextToSpeech:
     def _generate_silence(self, duration: float) -> bytes:
         """Generate silent WAV audio"""
         num_samples = int(self.sample_rate * duration)
-        samples = np.zeros(num_samples, dtype=np.int16)
+        samples = np.zeros(num_samples, dtype = np.int16)
 
         # Create WAV header
         wav_data = bytearray()
 
         # RIFF header
-        wav_data.extend(b'RIFF')
-        wav_data.extend(struct.pack('<I', 36 + len(samples) * 2))
-        wav_data.extend(b'WAVE')
+        wav_data.extend(b"RIFF")
+        wav_data.extend(struct.pack("<I", 36 + len(samples) * 2))
+        wav_data.extend(b"WAVE")
 
         # fmt chunk
-        wav_data.extend(b'fmt ')
-        wav_data.extend(struct.pack('<I', 16))  # chunk size
-        wav_data.extend(struct.pack('<H', 1))   # PCM format
-        wav_data.extend(struct.pack('<H', 1))   # mono
-        wav_data.extend(struct.pack('<I', self.sample_rate))
-        wav_data.extend(struct.pack('<I', self.sample_rate * 2))  # byte rate
-        wav_data.extend(struct.pack('<H', 2))   # block align
-        wav_data.extend(struct.pack('<H', 16))  # bits per sample
+        wav_data.extend(b"fmt ")
+        wav_data.extend(struct.pack("<I", 16))  # chunk size
+        wav_data.extend(struct.pack("<H", 1))  # PCM format
+        wav_data.extend(struct.pack("<H", 1))  # mono
+        wav_data.extend(struct.pack("<I", self.sample_rate))
+        wav_data.extend(struct.pack("<I", self.sample_rate * 2))  # byte rate
+        wav_data.extend(struct.pack("<H", 2))  # block align
+        wav_data.extend(struct.pack("<H", 16))  # bits per sample
 
         # data chunk
-        wav_data.extend(b'data')
-        wav_data.extend(struct.pack('<I', len(samples) * 2))
+        wav_data.extend(b"data")
+        wav_data.extend(struct.pack("<I", len(samples) * 2))
         wav_data.extend(samples.tobytes())
 
         return bytes(wav_data)
@@ -216,7 +222,8 @@ class TextToSpeech:
         """
         # Split into sentences
         import re
-        sentences = re.split(r'(?<=[.!?])\s+', text)
+
+        sentences = re.split(r"(?<=[.!?])\s+", text)
 
         for sentence in sentences:
             if sentence.strip():

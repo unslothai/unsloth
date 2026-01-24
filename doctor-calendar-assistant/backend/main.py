@@ -58,7 +58,9 @@ async def lifespan(app: FastAPI):
     brain = PersonaPlexBrain(config["llm"], config["assistant"], calendar_tools)
 
     print("✅ All systems ready!")
-    print(f"🌐 Server running at http://{config['server']['host']}:{config['server']['port']}")
+    print(
+        f"🌐 Server running at http://{config['server']['host']}:{config['server']['port']}"
+    )
 
     yield
 
@@ -67,19 +69,19 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Doctor Calendar Assistant",
-    description="AI-powered voice assistant for scheduling medical appointments",
-    version="1.0.0",
-    lifespan=lifespan
+    title = "Doctor Calendar Assistant",
+    description = "AI-powered voice assistant for scheduling medical appointments",
+    version = "1.0.0",
+    lifespan = lifespan,
 )
 
 # CORS for frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[config["server"]["frontend_url"], "http://localhost:3000"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins = [config["server"]["frontend_url"], "http://localhost:3000"],
+    allow_credentials = True,
+    allow_methods = ["*"],
+    allow_headers = ["*"],
 )
 
 
@@ -117,13 +119,10 @@ async def health_check():
 async def get_appointments():
     """Get upcoming appointments"""
     try:
-        appointments = await calendar_client.get_upcoming_appointments(max_results=10)
+        appointments = await calendar_client.get_upcoming_appointments(max_results = 10)
         return {"appointments": appointments}
     except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content={"error": str(e)}
-        )
+        return JSONResponse(status_code = 500, content = {"error": str(e)})
 
 
 @app.websocket("/ws/{client_id}")
@@ -151,11 +150,10 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
 
     try:
         # Send initial greeting
-        await manager.send_message(client_id, {
-            "type": "status",
-            "status": "connected",
-            "message": "Conectado con Ana"
-        })
+        await manager.send_message(
+            client_id,
+            {"type": "status", "status": "connected", "message": "Conectado con Ana"},
+        )
 
         while True:
             data = await websocket.receive_json()
@@ -167,46 +165,48 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                 audio_buffer = bytearray()
 
                 # Send greeting
-                greeting = "Hola, soy Ana, tu asistente médica. ¿En qué te puedo ayudar hoy?"
+                greeting = (
+                    "Hola, soy Ana, tu asistente médica. ¿En qué te puedo ayudar hoy?"
+                )
 
-                await manager.send_message(client_id, {
-                    "type": "response",
-                    "text": greeting,
-                    "role": "assistant"
-                })
+                await manager.send_message(
+                    client_id,
+                    {"type": "response", "text": greeting, "role": "assistant"},
+                )
 
                 # Generate and send audio greeting
                 audio_data = await tts.synthesize(greeting)
-                await manager.send_message(client_id, {
-                    "type": "audio",
-                    "data": base64.b64encode(audio_data).decode("utf-8")
-                })
+                await manager.send_message(
+                    client_id,
+                    {
+                        "type": "audio",
+                        "data": base64.b64encode(audio_data).decode("utf-8"),
+                    },
+                )
 
-                conversation_history.append({
-                    "role": "assistant",
-                    "content": greeting
-                })
+                conversation_history.append({"role": "assistant", "content": greeting})
 
             elif message_type == "end_call":
                 is_call_active = False
                 farewell = "Gracias por llamar. ¡Que te mejores!"
 
-                await manager.send_message(client_id, {
-                    "type": "response",
-                    "text": farewell,
-                    "role": "assistant"
-                })
+                await manager.send_message(
+                    client_id,
+                    {"type": "response", "text": farewell, "role": "assistant"},
+                )
 
                 audio_data = await tts.synthesize(farewell)
-                await manager.send_message(client_id, {
-                    "type": "audio",
-                    "data": base64.b64encode(audio_data).decode("utf-8")
-                })
+                await manager.send_message(
+                    client_id,
+                    {
+                        "type": "audio",
+                        "data": base64.b64encode(audio_data).decode("utf-8"),
+                    },
+                )
 
-                await manager.send_message(client_id, {
-                    "type": "status",
-                    "status": "call_ended"
-                })
+                await manager.send_message(
+                    client_id, {"type": "status", "status": "call_ended"}
+                )
 
             elif message_type == "audio_chunk" and is_call_active:
                 # Decode and accumulate audio
@@ -216,83 +216,92 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
             elif message_type == "audio_complete" and is_call_active:
                 # Process complete audio
                 if len(audio_buffer) > 0:
-                    await manager.send_message(client_id, {
-                        "type": "status",
-                        "status": "processing",
-                        "message": "Procesando..."
-                    })
+                    await manager.send_message(
+                        client_id,
+                        {
+                            "type": "status",
+                            "status": "processing",
+                            "message": "Procesando...",
+                        },
+                    )
 
                     # Transcribe audio
                     transcript = await stt.transcribe(bytes(audio_buffer))
                     audio_buffer = bytearray()
 
                     if transcript.strip():
-                        await manager.send_message(client_id, {
-                            "type": "transcript",
-                            "text": transcript,
-                            "role": "user"
-                        })
+                        await manager.send_message(
+                            client_id,
+                            {"type": "transcript", "text": transcript, "role": "user"},
+                        )
 
-                        conversation_history.append({
-                            "role": "user",
-                            "content": transcript
-                        })
+                        conversation_history.append(
+                            {"role": "user", "content": transcript}
+                        )
 
                         # Get LLM response
-                        await manager.send_message(client_id, {
-                            "type": "status",
-                            "status": "thinking",
-                            "message": "Pensando..."
-                        })
+                        await manager.send_message(
+                            client_id,
+                            {
+                                "type": "status",
+                                "status": "thinking",
+                                "message": "Pensando...",
+                            },
+                        )
 
                         response = await brain.process(transcript, conversation_history)
 
-                        await manager.send_message(client_id, {
-                            "type": "response",
-                            "text": response,
-                            "role": "assistant"
-                        })
+                        await manager.send_message(
+                            client_id,
+                            {"type": "response", "text": response, "role": "assistant"},
+                        )
 
-                        conversation_history.append({
-                            "role": "assistant",
-                            "content": response
-                        })
+                        conversation_history.append(
+                            {"role": "assistant", "content": response}
+                        )
 
                         # Generate and send audio
-                        await manager.send_message(client_id, {
-                            "type": "status",
-                            "status": "speaking",
-                            "message": "Hablando..."
-                        })
+                        await manager.send_message(
+                            client_id,
+                            {
+                                "type": "status",
+                                "status": "speaking",
+                                "message": "Hablando...",
+                            },
+                        )
 
                         audio_data = await tts.synthesize(response)
-                        await manager.send_message(client_id, {
-                            "type": "audio",
-                            "data": base64.b64encode(audio_data).decode("utf-8")
-                        })
+                        await manager.send_message(
+                            client_id,
+                            {
+                                "type": "audio",
+                                "data": base64.b64encode(audio_data).decode("utf-8"),
+                            },
+                        )
 
-                    await manager.send_message(client_id, {
-                        "type": "status",
-                        "status": "listening",
-                        "message": "Escuchando..."
-                    })
+                    await manager.send_message(
+                        client_id,
+                        {
+                            "type": "status",
+                            "status": "listening",
+                            "message": "Escuchando...",
+                        },
+                    )
 
     except WebSocketDisconnect:
         manager.disconnect(client_id)
     except Exception as e:
         print(f"Error in WebSocket: {e}")
-        await manager.send_message(client_id, {
-            "type": "error",
-            "message": str(e)
-        })
+        await manager.send_message(client_id, {"type": "error", "message": str(e)})
         manager.disconnect(client_id)
 
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(
         "main:app",
-        host=config["server"]["host"],
-        port=config["server"]["port"],
-        reload=True
+        host = config["server"]["host"],
+        port = config["server"]["port"],
+        reload = True,
     )

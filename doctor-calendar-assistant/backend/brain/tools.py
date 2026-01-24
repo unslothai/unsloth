@@ -61,8 +61,14 @@ class CalendarTools:
 
             # Define available hours (9 AM to 5 PM)
             available_hours = [
-                "09:00", "10:00", "11:00", "12:00",
-                "14:00", "15:00", "16:00", "17:00"
+                "09:00",
+                "10:00",
+                "11:00",
+                "12:00",
+                "14:00",
+                "15:00",
+                "16:00",
+                "17:00",
             ]
 
             # Filter out busy times
@@ -89,11 +95,7 @@ class CalendarTools:
             return "Error: Formato de fecha inválido. Usa YYYY-MM-DD"
 
     async def book_appointment(
-        self,
-        date: str,
-        time: str,
-        patient_name: str,
-        reason: str = "Consulta general"
+        self, date: str, time: str, patient_name: str, reason: str = "Consulta general"
     ) -> str:
         """
         Book an appointment
@@ -110,10 +112,10 @@ class CalendarTools:
         try:
             # Create appointment
             result = await self.calendar.create_appointment(
-                date=date,
-                time=time,
-                title=f"Cita: {patient_name}",
-                description=f"Paciente: {patient_name}\nMotivo: {reason}"
+                date = date,
+                time = time,
+                title = f"Cita: {patient_name}",
+                description = f"Paciente: {patient_name}\nMotivo: {reason}",
             )
 
             if result.get("success"):
@@ -171,8 +173,7 @@ class CalendarTools:
         """
         try:
             appointments = await self.calendar.get_upcoming_appointments(
-                max_results=5,
-                search_query=patient_name
+                max_results = 5, search_query = patient_name
             )
 
             if not appointments:
@@ -197,12 +198,27 @@ class CalendarTools:
     def _format_date(self, date: datetime) -> str:
         """Format date in friendly Spanish"""
         days = [
-            "lunes", "martes", "miércoles", "jueves",
-            "viernes", "sábado", "domingo"
+            "lunes",
+            "martes",
+            "miércoles",
+            "jueves",
+            "viernes",
+            "sábado",
+            "domingo",
         ]
         months = [
-            "enero", "febrero", "marzo", "abril", "mayo", "junio",
-            "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"
+            "enero",
+            "febrero",
+            "marzo",
+            "abril",
+            "mayo",
+            "junio",
+            "julio",
+            "agosto",
+            "septiembre",
+            "octubre",
+            "noviembre",
+            "diciembre",
         ]
 
         day_name = days[date.weekday()]
