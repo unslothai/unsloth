@@ -1,0 +1,34 @@
+# FastAPI and server
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+websockets==12.0
+python-multipart==0.0.6
+
+# LLM
+ollama==0.1.6
+httpx==0.26.0
+
+# Speech-to-Text
+openai-whisper==20231117
+faster-whisper==0.10.0
+
+# Text-to-Speech
+piper-tts==1.2.0
+
+# Google Calendar
+google-api-python-client==2.111.0
+google-auth-httplib2==0.2.0
+google-auth-oauthlib==1.2.0
+
+# Audio processing
+numpy==1.26.3
+soundfile==0.12.1
+webrtcvad==2.0.10
+
+# Configuration
+pyyaml==6.0.1
+python-dotenv==1.0.0
+
+# Utilities
+pydantic==2.5.3
+pydantic-settings==2.1.0
