@@ -9,14 +9,18 @@ description = "2-5X faster training, reinforcement learning & finetuning"
 readme = "README.md"
 requires-python = ">=3.9,<3.14"
 license = "Apache-2.0"
-keywords = ["ai", "llm", "reinforcement learning", "machine learning", "artificial intelligence", "pytorch"]
-authors = [
-    {email = "info@unsloth.ai"},
-    {name = "Unsloth AI team"},
+keywords = [
+    "ai",
+    "llm",
+    "reinforcement learning",
+    "machine learning",
+    "artificial intelligence",
+    "pytorch",
 ]
+authors = [{ email = "info@unsloth.ai" }, { name = "Unsloth AI team" }]
 maintainers = [
-    {name = "Daniel Han", email = "danielhanchen@gmail.com"},
-    {name = "Michael Han", email = "info@unsloth.ai"},
+    { name = "Daniel Han", email = "danielhanchen@gmail.com" },
+    { name = "Michael Han", email = "info@unsloth.ai" },
 ]
 classifiers = [
     "Programming Language :: Python",
@@ -26,7 +30,7 @@ classifiers = [
 ]
 
 [tool.setuptools.dynamic]
-version = {attr = "unsloth.models._utils.__version__"}
+version = { attr = "unsloth.models._utils.__version__" }
 
 [tool.setuptools]
 include-package-data = false
@@ -69,9 +73,7 @@ windows = [
     "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0 ; (sys_platform == 'win32')",
     "xformers>=0.0.22.post7 ; (sys_platform == 'win32')",
 ]
-base = [
-    "unsloth[huggingface]",
-]
+base = ["unsloth[huggingface]"]
 cu118only = [
     "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.22.post7%2Bcu118-cp39-cp39-manylinux2014_x86_64.whl ; python_version=='3.9' and ('linux' in sys_platform)",
     "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.22.post7%2Bcu118-cp310-cp310-manylinux2014_x86_64.whl ; python_version=='3.10' and ('linux' in sys_platform)",
@@ -270,8 +272,7 @@ cu128onlytorch280 = [
     "xformers @ https://download.pytorch.org/whl/cu129/xformers-0.0.32.post2-cp39-abi3-manylinux_2_28_x86_64.whl ; ('linux' in sys_platform)",
     "xformers @ https://download.pytorch.org/whl/cu129/xformers-0.0.32.post2-cp39-abi3-win_amd64.whl ; (sys_platform == 'win32')",
 ]
-cu130onlytorch280 = [
-]
+cu130onlytorch280 = []
 cu126onlytorch290 = [
     "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.33.post1-cp39-abi3-manylinux_2_28_x86_64.whl ; ('linux' in sys_platform)",
     "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.33.post1-cp39-abi3-win_amd64.whl ; (sys_platform == 'win32')",
@@ -486,16 +487,9 @@ cu130-torch291 = [
     "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
     "unsloth[cu130onlytorch291]",
 ]
-kaggle = [
-    "unsloth[huggingface]",
-]
-kaggle-new = [
-    "unsloth[huggingface]",
-    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
-]
-conda = [
-    "unsloth[huggingface]",
-]
+kaggle = ["unsloth[huggingface]"]
+kaggle-new = ["unsloth[huggingface]", "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0"]
+conda = ["unsloth[huggingface]"]
 colab-torch211 = [
     "unsloth[huggingface]",
     "bitsandbytes==0.45.5",
@@ -547,18 +541,13 @@ colab-no-deps = [
     "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
     "protobuf",
 ]
-colab = [
-    "unsloth[cu121]",
-]
+colab = ["unsloth[cu121]"]
 flashattention = [
     "packaging ; ('linux' in sys_platform)",
     "ninja ; ('linux' in sys_platform)",
     "flash-attn>=2.6.3 ; ('linux' in sys_platform)",
 ]
-colab-ampere = [
-    "unsloth[colab-ampere-torch220]",
-    "unsloth[flashattention]",
-]
+colab-ampere = ["unsloth[colab-ampere-torch220]", "unsloth[flashattention]"]
 cu118-ampere = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
@@ -830,9 +819,7 @@ intelgputorch260 = [
     "torch @ https://download.pytorch.org/whl/xpu/torch-2.6.0%2Bxpu-cp312-cp312-linux_x86_64.whl#sha256=c4c5c67625cdacf35765c2b94e61fe166e3c3f4a14521b1212a59ad1b3eb0f2e ; ('linux' in sys_platform) and python_version == '3.12' and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
     "torch @ https://download.pytorch.org/whl/xpu/torch-2.6.0%2Bxpu-cp313-cp313-linux_x86_64.whl#sha256=e6864f7a60a5ecc43d5d38f59a16e5dd132384f73dfd3a697f74944026038f7b ; ('linux' in sys_platform) and python_version == '3.13' and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 ]
-intel-gpu-torch260 = [
-    "unsloth[intelgputorch260]"
-]
+intel-gpu-torch260 = ["unsloth[intelgputorch260]"]
 intelgputorch270 = [
     "unsloth_zoo[intelgpu]",
     "unsloth[huggingfacenotorch]",
@@ -863,9 +850,7 @@ intelgputorch270 = [
     "torch @ https://download.pytorch.org/whl/xpu/torch-2.7.0%2Bxpu-cp313-cp313-win_amd64.whl#sha256=31df3cb674918e89bc8c532baa331dc84f4430e1f9c0ec379232db44cba78355 ; sys_platform == 'win32' and python_version == '3.13' and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 
 ]
-intel-gpu-torch270 = [
-    "unsloth[intelgputorch270]"
-]
+intel-gpu-torch270 = ["unsloth[intelgputorch270]"]
 intelgputorch280 = [
     "unsloth_zoo[intelgpu]",
     "unsloth[huggingfacenotorch]",
@@ -907,9 +892,7 @@ intelgputorch280 = [
     "torchvision @ https://download.pytorch.org/whl/xpu/torchvision-0.23.0%2Bxpu-cp313-cp313-win_amd64.whl#sha256=71dc4a6421742ed1e7f585b04a100ad53615c341fbccfbc255aefb38ea9091da ; sys_platform == 'win32' and python_version == '3.13' and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 
 ]
-intel-gpu-torch280 = [
-    "unsloth[intelgputorch280]"
-]
+intel-gpu-torch280 = ["unsloth[intelgputorch280]"]
 intelgputorch290 = [
     "unsloth_zoo[intelgpu]",
     "unsloth[huggingfacenotorch]",
@@ -944,19 +927,40 @@ intelgputorch290 = [
     "torchvision @ https://download.pytorch.org/whl/xpu/torchvision-0.24.0%2Bxpu-cp312-cp312-win_amd64.whl#sha256=6a5194bc736089606342d48a3f6822829b167617e9495d91d753dd1bd46fda18 ; sys_platform == 'win32' and python_version == '3.12' and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
     "torchvision @ https://download.pytorch.org/whl/xpu/torchvision-0.24.0%2Bxpu-cp313-cp313-win_amd64.whl#sha256=da47a3ce2bb7f0301a31124668b5908f9b9e92d6241443de15a310ef9632fd83 ; sys_platform == 'win32' and python_version == '3.13' and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 
-    
+
 ]
-intel-gpu-torch290 = [
-    "unsloth[intelgputorch290]"
-]
-intel = [
-    "unsloth[intelgputorch280]",
-]
+intel-gpu-torch290 = ["unsloth[intelgputorch290]"]
+intel = ["unsloth[intelgputorch280]"]
 amd = [
     "unsloth[huggingfacenotorch]",
     "bitsandbytes @ https://github.com/bitsandbytes-foundation/bitsandbytes/releases/download/continuous-release_main/bitsandbytes-1.33.7.preview-py3-none-manylinux_2_24_x86_64.whl ; ('linux' in sys_platform) and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
     "bitsandbytes @ https://github.com/bitsandbytes-foundation/bitsandbytes/releases/download/continuous-release_main/bitsandbytes-1.33.7.preview-py3-none-win_amd64.whl ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
     "bitsandbytes @ https://github.com/bitsandbytes-foundation/bitsandbytes/releases/download/continuous-release_main/bitsandbytes-1.33.7.preview-py3-none-manylinux_2_24_aarch64.whl ; ('linux' in sys_platform) and (platform_machine == 'aarch64')",
+]
+rocm64-torch291 = [
+    "packaging",
+    "pytorch-triton-rocm",
+    "ninja",
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.49.0",
+
+    "pytorch_triton_rocm @ https://download.pytorch.org/whl/pytorch_triton_rocm-3.5.1-cp310-cp310-linux_x86_64.whl ; platform_system == 'Linux' and python_version == '3.10' and platform_machine == 'x86_64'",
+    "pytorch_triton_rocm @ https://download.pytorch.org/whl/pytorch_triton_rocm-3.5.1-cp311-cp311-linux_x86_64.whl ; platform_system == 'Linux' and python_version == '3.11' and platform_machine == 'x86_64'",
+    "pytorch_triton_rocm @ https://download.pytorch.org/whl/pytorch_triton_rocm-3.5.1-cp312-cp312-linux_x86_64.whl ; platform_system == 'Linux' and python_version == '3.12' and platform_machine == 'x86_64'",
+    "pytorch_triton_rocm @ https://download.pytorch.org/whl/pytorch_triton_rocm-3.5.1-cp313-cp313-linux_x86_64.whl ; platform_system == 'Linux' and python_version == '3.13' and platform_machine == 'x86_64'",
+    "pytorch_triton_rocm @ https://download.pytorch.org/whl/pytorch_triton_rocm-3.5.1-cp314-cp314-linux_x86_64.whl ; platform_system == 'Linux' and python_version == '3.14' and platform_machine == 'x86_64'",
+
+    "torch @ https://download.pytorch.org/whl/rocm6.4/torch-2.9.1%2Brocm6.4-cp310-cp310-manylinux_2_28_x86_64.whl ; platform_system == 'Linux' and python_version == '3.10' and platform_machine == 'x86_64'",
+    "torch @ https://download.pytorch.org/whl/rocm6.4/torch-2.9.1%2Brocm6.4-cp311-cp311-manylinux_2_28_x86_64.whl ; platform_system == 'Linux' and python_version == '3.11' and platform_machine == 'x86_64'",
+    "torch @ https://download.pytorch.org/whl/rocm6.4/torch-2.9.1%2Brocm6.4-cp312-cp312-manylinux_2_28_x86_64.whl ; platform_system == 'Linux' and python_version == '3.12' and platform_machine == 'x86_64'",
+    "torch @ https://download.pytorch.org/whl/rocm6.4/torch-2.9.1%2Brocm6.4-cp313-cp313-manylinux_2_28_x86_64.whl ; platform_system == 'Linux' and python_version == '3.13' and platform_machine == 'x86_64'",
+    "torch @ https://download.pytorch.org/whl/rocm6.4/torch-2.9.1%2Brocm6.4-cp314-cp314-manylinux_2_28_x86_64.whl ; platform_system == 'Linux' and python_version == '3.14' and platform_machine == 'x86_64'",
+
+    "torchvision @ https://download.pytorch.org/whl/rocm6.4/torchvision-0.24.1%2Brocm6.4-cp310-cp310-manylinux_2_28_x86_64.whl ; platform_system == 'Linux' and python_version == '3.10' and platform_machine == 'x86_64'",
+    "torchvision @ https://download.pytorch.org/whl/rocm6.4/torchvision-0.24.1%2Brocm6.4-cp311-cp311-manylinux_2_28_x86_64.whl ; platform_system == 'Linux' and python_version == '3.11' and platform_machine == 'x86_64'",
+    "torchvision @ https://download.pytorch.org/whl/rocm6.4/torchvision-0.24.1%2Brocm6.4-cp312-cp312-manylinux_2_28_x86_64.whl ; platform_system == 'Linux' and python_version == '3.12' and platform_machine == 'x86_64'",
+    "torchvision @ https://download.pytorch.org/whl/rocm6.4/torchvision-0.24.1%2Brocm6.4-cp313-cp313-manylinux_2_28_x86_64.whl ; platform_system == 'Linux' and python_version == '3.13' and platform_machine == 'x86_64'",
+    "torchvision @ https://download.pytorch.org/whl/rocm6.4/torchvision-0.24.1%2Brocm6.4-cp314-cp314-manylinux_2_28_x86_64.whl ; platform_system == 'Linux' and python_version == '3.14' and platform_machine == 'x86_64'",
 ]
 
 [project.urls]
