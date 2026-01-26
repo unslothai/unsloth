@@ -2036,15 +2036,11 @@ def unsloth_save_pretrained_gguf(
         print(
             f'Unsloth: example usage for text only LLMs: llama-cli --model {all_file_locations[0]} -p "why is the sky blue?"'
         )
-    if ollama_success and is_vlm_update:
+
+    if ollama_success:
         print(f"Unsloth: Saved Ollama Modelfile to {modelfile_location}")
         print(
             "Unsloth: convert model to ollama format by running - ollama create model_name -f ./Modelfile - inside save directory."
-        )
-    if ollama_success and not is_vlm_update:
-        print("Unsloth: Saved Ollama Modelfile to current directory")
-        print(
-            "Unsloth: convert model to ollama format by running - ollama create model_name -f ./Modelfile - inside current directory."
         )
 
     # Return a dict with all needed info for push_to_hub
