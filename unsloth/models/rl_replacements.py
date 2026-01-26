@@ -27,6 +27,7 @@ import inspect
 from collections import defaultdict
 from unsloth_zoo.rl_replacements import RL_REPLACEMENTS, left_pack_padding
 from unsloth_zoo.utils import Version
+from trl import __version__ as trl_version_raw
 from importlib.metadata import version as importlib_version
 from unsloth_zoo.log import logger
 import importlib.util
@@ -56,6 +57,13 @@ torch_compile_options = {
     "triton.cudagraphs": False,
 }
 
+try:
+    trl_version = Version(trl_version_raw)
+except Exception:
+    try:
+        trl_version = Version(importlib_version("trl"))
+    except Exception:
+        trl_version = Version("0.0.0")
 
 # Check untrained tokens
 def sft_trainer_fix_untrained_tokens(call_args, extra_args):
@@ -220,6 +228,41 @@ def grpo_trainer__prepare_inputs(function_name, function):
 
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__prepare_inputs)
 
+if trl_version >= Version("0.27.0"):
+    def grpo_trainer__calculate_rewards(function_name, function):
+        if function_name != "_calculate_rewards":
+            return function
+        # For TRL 0.27.0 where the function has weird chat template logic
+        target_line = '        reward_kwargs["trainer_state"] = self.state'
+
+        replacement_block = """        reward_kwargs["trainer_state"] = self.state
+
+            # --- Monkey Patch: Batch Decode for Rewards ---
+            try:
+                reward_kwargs["completions_text"] = [
+                    self.processing_class.apply_chat_template(
+                        completion,
+                        tokenize=False,
+                    )
+                    for completion in completions
+                ]
+
+                reward_kwargs["prompts_text"] = [
+                    self.processing_class.apply_chat_template(
+                        prompt,
+                        tokenize=False,
+                    )
+                    for prompt in prompts
+                ]
+            except Exception as e:
+                # Fallback or logging if chat template application fails (e.g. non-conversational format)
+                pass
+            """
+        function = function.replace(target_line, replacement_block)
+        return function
+
+
+    RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__calculate_rewards)
 
 # Remove collective RPC of reload weights from generate
 # trl added reload weights (potentially for quantized models), we don't need it for our use case (LoRA primarily)
@@ -389,6 +432,13 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             output["sampling_per_token_logps"] = None"""
 
     function = function.replace(string_to_find, replacement_string)
+
+    if trl_version >= Version("0.27.0"):
+        # We replace the call using 'completions' with one using 'completions_text'
+        string_to_find = "        rewards_per_func = self._calculate_rewards(inputs, prompts, completions, completion_ids_list)"
+        replacement_string = "        rewards_per_func = self._calculate_rewards(inputs, prompts, completions_text, completion_ids_list)"
+        
+        function = function.replace(string_to_find, replacement_string)
 
     if "wake_up()" not in function:
         # Sleep functionality has been added to trl in v0.23.0. We do not want to redo this.
@@ -911,7 +961,7 @@ def grpo_trainer_compute_loss(function_name, function):
         logit_scale_divide = getattr(model.config, "logits_scaling", 0)  # Granite
         if logit_scale_divide is None:
             logit_scale_divide = 0
-
+        
         max_left_pad = inputs.get("max_left_pad", 0)
         if per_token_logps is not None:
             loss, completion_length, mean_kl, delta, flat_is_ratio, coef_1 = (
@@ -1058,7 +1108,7 @@ def grpo_trainer_compute_loss(function_name, function):
                 return x.mean()
             else:
                 return (x * completion_mask).sum() / completion_token_count
-        #breakpoint()
+
         if advantages.dim() == 1:
             advantages = advantages.unsqueeze(1)
 
