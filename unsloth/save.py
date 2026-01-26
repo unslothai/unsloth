@@ -2005,7 +2005,7 @@ def unsloth_save_pretrained_gguf(
                 modelfile = create_ollama_modelfile(tokenizer, base_model_name, ".")
             else:
                 modelfile = create_ollama_modelfile(
-                    tokenizer, base_model_name, all_file_locations[0]
+                    tokenizer, base_model_name, os.path.basename(all_file_locations[0]),
                 )
             if modelfile is not None:
                 if is_vlm_update:
