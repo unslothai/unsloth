@@ -30,16 +30,19 @@ from .import_fixes import (
     check_fbgemm_gpu_version,
     torchvision_compatibility_check,
     fix_diffusers_warnings,
+    fix_huggingface_hub,
 )
 
 fix_message_factory_issue()
 check_fbgemm_gpu_version()
 torchvision_compatibility_check()
 fix_diffusers_warnings()
+fix_huggingface_hub()
 del fix_message_factory_issue
 del check_fbgemm_gpu_version
 del torchvision_compatibility_check
 del fix_diffusers_warnings
+del fix_huggingface_hub
 
 # This check is critical because Unsloth optimizes these libraries by modifying
 # their code at import time. If they're imported first, the original (slower,
@@ -76,7 +79,7 @@ from importlib.metadata import PackageNotFoundError
 # Check for unsloth_zoo
 try:
     unsloth_zoo_version = importlib_version("unsloth_zoo")
-    if Version(unsloth_zoo_version) < Version("2025.12.4"):
+    if Version(unsloth_zoo_version) < Version("2026.1.2"):
         print(
             "Unsloth: Please update Unsloth and Unsloth-Zoo to the latest version!\n"
             "Do this via `pip install --upgrade --force-reinstall --no-cache-dir --no-deps unsloth unsloth_zoo`"
@@ -123,6 +126,7 @@ from .import_fixes import (
     fix_xformers_performance_issue,
     fix_vllm_aimv2_issue,
     fix_vllm_guided_decoding_params,
+    fix_vllm_pdl_blackwell,
     ignore_logger_messages,
     patch_ipykernel_hf_xet,
     patch_trackio,
@@ -130,11 +134,13 @@ from .import_fixes import (
     patch_enable_input_require_grads,
     fix_openenv_no_vllm,
     fix_executorch,
+    patch_vllm_for_notebooks,
 )
 
 fix_xformers_performance_issue()
 fix_vllm_aimv2_issue()
 fix_vllm_guided_decoding_params()
+fix_vllm_pdl_blackwell()
 ignore_logger_messages()
 patch_ipykernel_hf_xet()
 patch_trackio()
@@ -142,10 +148,12 @@ patch_datasets()
 patch_enable_input_require_grads()
 fix_openenv_no_vllm()
 fix_executorch()
+patch_vllm_for_notebooks()
 
 del fix_xformers_performance_issue
 del fix_vllm_aimv2_issue
 del fix_vllm_guided_decoding_params
+del fix_vllm_pdl_blackwell
 del ignore_logger_messages
 del patch_ipykernel_hf_xet
 del patch_trackio
@@ -153,6 +161,7 @@ del patch_datasets
 del patch_enable_input_require_grads
 del fix_openenv_no_vllm
 del fix_executorch
+del patch_vllm_for_notebooks
 
 # Torch 2.4 has including_emulation
 if DEVICE_TYPE == "cuda":
@@ -273,6 +282,9 @@ from .save import *
 from .chat_templates import *
 from .tokenizer_utils import *
 from .trainer import *
+
+# Export dataprep utilities for CLI and downstream users
+from .dataprep.raw_text import RawTextDataLoader, TextPreprocessor
 from unsloth_zoo.rl_environments import (
     check_python_modules,
     create_locked_down_function,

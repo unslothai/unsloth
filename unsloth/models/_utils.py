@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.12.9"
+__version__ = "2026.1.4"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -73,6 +73,7 @@ __all__ = [
     "verify_fp8_support_if_applicable",
     "_get_inference_mode_context_manager",
     "hf_login",
+    "make_fast_generate_wrapper",
 ]
 
 import torch
@@ -173,6 +174,8 @@ warnings.filterwarnings(action = "ignore", category = UserWarning, module = "bit
 
 # Stop "Special tokens have been added in the vocabulary, ..."
 logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.CRITICAL + 1)
+
+TORCHAO_MSG = "Error: torchao not found, please install with `pip install torchao`"
 
 
 # Ignore logging messages
@@ -1105,53 +1108,66 @@ def _get_statistics(statistics = None, force_download = True):
     global USE_MODELSCOPE
     USE_MODELSCOPE = os.environ.get("UNSLOTH_USE_MODELSCOPE", "0") == "1"
 
-    if statistics is not None:
-        pass
-    elif "\nCOLAB_" in keynames and n_cpus == 1:
-        statistics = "colab"
-    elif "\nCOLAB_" in keynames:
-        statistics = "colabpro"
-    elif "\nKAGGLE_" in keynames:
-        statistics = "kaggle"
-    elif "\nRUNPOD_" in keynames:
-        statistics = "runpod"
-    elif "\nAWS_" in keynames:
-        statistics = "aws"
-    elif "\nAZURE_" in keynames:
-        statistics = "azure"
-    # elif "\nK_" in keynames or "\nFUNCTION_" in keynames: statistics = "gcp"
-    elif "\nINVOCATION_ID" in keynames:
-        statistics = "lambda"
-    # else: statistics = "other"
-    else:
-
-        def try_vllm_check():
-            vendor_files = (
-                "/sys/class/dmi/id/product_version",
-                "/sys/class/dmi/id/bios_vendor",
-                "/sys/class/dmi/id/product_name",
-                "/sys/class/dmi/id/chassis_asset_tag",
-                "/sys/class/dmi/id/sys_vendor",
-            )
+    if statistics is None:
+        # Prefer filesystem markers (harder to misidentify) before env-key matching
+        try:
             from pathlib import Path
 
-            for vendor_file in vendor_files:
-                path = Path(vendor_file)
-                if path.is_file():
-                    file_content = path.read_text().lower()
-                    if "amazon" in file_content:
-                        return "aws"
-                    elif "microsoft corporation" in file_content:
-                        return "azure"
-                    elif "google" in file_content:
-                        return "gcp"
-            return "other"
+            if Path("/kaggle/working").exists():
+                statistics = "kaggle"
+            elif Path("/content").exists() and Path("/opt/colab").exists():
+                statistics = "colab" if n_cpus == 1 else "colabpro"
+            elif Path("/runpod-volume").exists():
+                statistics = "runpod"
+        except Exception:
+            pass
 
-        pass
-        try:
-            statistics = try_vllm_check()
-        except:
-            statistics = "other"
+        # Fallback to env-key detection
+        if statistics is None:
+            if "\nKAGGLE_" in keynames:
+                statistics = "kaggle"
+            elif "\nCOLAB_" in keynames and n_cpus == 1:
+                statistics = "colab"
+            elif "\nCOLAB_" in keynames:
+                statistics = "colabpro"
+            elif "\nRUNPOD_" in keynames:
+                statistics = "runpod"
+            elif "\nAWS_" in keynames:
+                statistics = "aws"
+            elif "\nAZURE_" in keynames:
+                statistics = "azure"
+            # elif "\nK_" in keynames or "\nFUNCTION_" in keynames: statistics = "gcp"
+            elif "\nINVOCATION_ID" in keynames:
+                statistics = "lambda"
+            # else: statistics = "other"
+            else:
+
+                def try_vllm_check():
+                    vendor_files = (
+                        "/sys/class/dmi/id/product_version",
+                        "/sys/class/dmi/id/bios_vendor",
+                        "/sys/class/dmi/id/product_name",
+                        "/sys/class/dmi/id/chassis_asset_tag",
+                        "/sys/class/dmi/id/sys_vendor",
+                    )
+
+                    for vendor_file in vendor_files:
+                        path = Path(vendor_file)
+                        if path.is_file():
+                            file_content = path.read_text().lower()
+                            if "amazon" in file_content:
+                                return "aws"
+                            elif "microsoft corporation" in file_content:
+                                return "azure"
+                            elif "google" in file_content:
+                                return "gcp"
+                    return "other"
+
+                try:
+                    statistics = try_vllm_check()
+                except Exception:
+                    statistics = "other"
+
     if statistics is not None:
         import tempfile
         from huggingface_hub import snapshot_download
@@ -1183,7 +1199,7 @@ def _get_statistics(statistics = None, force_download = True):
                     "model = FastLanguageModel.from_pretrained('unsloth/gpt-oss-20b')\n"
                     "```"
                 )
-            except:
+            except Exception:
                 # Try no time limit check
                 stats_check()
 
@@ -1196,7 +1212,10 @@ def get_statistics(local_files_only = False):
     # You can disable this by setting UNSLOTH_DISABLE_STATISTICS
     import os
 
-    if "UNSLOTH_DISABLE_STATISTICS" in os.environ:
+    if (
+        "UNSLOTH_DISABLE_STATISTICS" in os.environ
+        or os.environ.get("UNSLOTH_USE_MODELSCOPE", "0") == "1"
+    ):
         return
     if local_files_only:
         return
@@ -1981,9 +2000,10 @@ def validate_loftq_config(loftq_config, lora_dropout, bias, init_lora_weights, m
         type(init_lora_weights) is bool
         or init_lora_weights == "gaussian"
         or init_lora_weights == "loftq"
+        or init_lora_weights == "corda"
     ):
         raise ValueError(
-            'Unsloth: `init_lora_weights` must be either [True, False, "gaussian", "loftq"].'
+            'Unsloth: `init_lora_weights` must be either [True, False, "gaussian", "loftq", "corda"].'
         )
 
     if init_lora_weights == "loftq":
@@ -2193,15 +2213,32 @@ def _prepare_model_for_qat(
     QAT can be optionally combined with LoRA fine-tuning to for additional throughput improvement.
     For more details: https://dev-discuss.pytorch.org/t/speeding-up-qat-by-1-89x-with-lora/2700
     """
-    from torchao.quantization import PerRow, quantize_
-    from torchao.quantization.granularity import PerGroup, PerAxis
-    from torchao.quantization.qat import QATConfig
+    try:
+        from torchao.quantization import PerRow, quantize_
+        from torchao.quantization.granularity import PerGroup, PerAxis
+        from torchao.quantization.qat import QATConfig
+    except ImportError:
+        raise ImportError(TORCHAO_MSG)
+
+    # Gemma3 models have issues with int8 embedding quantization due to their
+    # large vocabulary size (262144). Auto-switch to int4 weight-only instead.
+    if qat_scheme == "int8-int4":
+        model_types = get_transformers_model_type(model.config)
+        is_gemma3 = any("gemma3" in mt or "gemma_3" in mt for mt in model_types)
+        if is_gemma3:
+            print(
+                "Unsloth: Gemma3 has a large vocabulary causing int8 embedding issues. "
+                "Switching to int4 weight-only QAT for training stability."
+            )
+            qat_scheme = "int4"
 
     if not isinstance(qat_scheme, TorchAOConfig):
         torchao_config: Optional[TorchAOConfig] = None
         if qat_scheme == "fp8-int4":
-            from torchao.quantization import Float8DynamicActivationInt4WeightConfig
-
+            try:
+                from torchao.quantization import Float8DynamicActivationInt4WeightConfig
+            except ImportError:
+                raise ImportError(TORCHAO_MSG)
             group_size = 128
             base_config = Float8DynamicActivationInt4WeightConfig()
             filter_fn = (
@@ -2213,8 +2250,12 @@ def _prepare_model_for_qat(
                 base_config_and_filter_fns = [(base_config, filter_fn)],
             )
         elif qat_scheme == "fp8-fp8":
-            from torchao.quantization import Float8DynamicActivationFloat8WeightConfig
-
+            try:
+                from torchao.quantization import (
+                    Float8DynamicActivationFloat8WeightConfig,
+                )
+            except ImportError:
+                raise ImportError(TORCHAO_MSG)
             base_config = Float8DynamicActivationFloat8WeightConfig(
                 granularity = PerRow()
             )
@@ -2222,11 +2263,13 @@ def _prepare_model_for_qat(
                 qat_scheme = qat_scheme, base_config_and_filter_fns = [(base_config, None)]
             )
         elif qat_scheme == "int8-int4":
-            from torchao.quantization import (
-                Int8DynamicActivationIntxWeightConfig,
-                IntxWeightOnlyConfig,
-            )
-
+            try:
+                from torchao.quantization import (
+                    Int8DynamicActivationIntxWeightConfig,
+                    IntxWeightOnlyConfig,
+                )
+            except ImportError:
+                raise ImportError(TORCHAO_MSG)
             torchao_config = TorchAOConfig(
                 qat_scheme = qat_scheme,
                 base_config_and_filter_fns = [
@@ -2246,14 +2289,32 @@ def _prepare_model_for_qat(
                 prequantization_transform = _untie_input_output_embeddings,
             )
         elif qat_scheme == "int4":
-            from torchao.quantization import Int4WeightOnlyConfig
-
+            try:
+                from torchao.quantization import Int4WeightOnlyConfig
+            except ImportError:
+                raise ImportError(TORCHAO_MSG)
             group_size = 128
             base_config = Int4WeightOnlyConfig(group_size = group_size)
             filter_fn = (
                 lambda m, _: isinstance(m, torch.nn.Linear)
                 and m.in_features >= group_size
             )
+            torchao_config = TorchAOConfig(
+                qat_scheme = qat_scheme,
+                base_config_and_filter_fns = [(base_config, filter_fn)],
+            )
+        elif qat_scheme == "int8":
+            try:
+                from torchao.quantization import IntxWeightOnlyConfig
+                from torchao.quantization.granularity import PerAxis
+            except ImportError:
+                raise ImportError(TORCHAO_MSG)
+
+            base_config = IntxWeightOnlyConfig(
+                weight_dtype = torch.int8,
+                granularity = PerAxis(0),
+            )
+            filter_fn = lambda m, _: isinstance(m, torch.nn.Linear)
             torchao_config = TorchAOConfig(
                 qat_scheme = qat_scheme,
                 base_config_and_filter_fns = [(base_config, filter_fn)],
@@ -2365,3 +2426,59 @@ def hf_login(token: Optional[str] = None) -> Optional[str]:
     except Exception as e:
         logger.info(f"Failed to login to huggingface using token with error: {e}")
     return token
+
+
+def make_fast_generate_wrapper(original_generate):
+    """
+    Creates a wrapper around model.generate that checks for incorrect
+    vLLM-style usage when fast_inference=False.
+    """
+
+    @functools.wraps(original_generate)
+    def _fast_generate_wrapper(*args, **kwargs):
+        # Check for vLLM-specific arguments
+        if "sampling_params" in kwargs:
+            raise ValueError(
+                "Unsloth: `sampling_params` is only supported when `fast_inference=True` (vLLM). "
+                "Since `fast_inference=False`, use HuggingFace generate arguments instead:\n"
+                "  model.fast_generate(**tokens.to('cuda'), max_new_tokens=64, temperature=1.0, top_p=0.95)"
+            )
+
+        if "lora_request" in kwargs:
+            raise ValueError(
+                "Unsloth: `lora_request` is only supported when `fast_inference=True` (vLLM). "
+                "Since `fast_inference=False`, LoRA weights are already merged into the model."
+            )
+
+        # Check if first positional argument is a string or list of strings
+        if len(args) > 0:
+            first_arg = args[0]
+            is_string_input = False
+
+            if isinstance(first_arg, str):
+                is_string_input = True
+            elif isinstance(first_arg, (list, tuple)) and len(first_arg) > 0:
+                if isinstance(first_arg[0], str):
+                    is_string_input = True
+
+            if is_string_input:
+                raise ValueError(
+                    "Unsloth: Passing text strings to `fast_generate` is only supported "
+                    "when `fast_inference=True` (vLLM). Since `fast_inference=False`, you must "
+                    "tokenize the input first:\n\n"
+                    "  messages = tokenizer.apply_chat_template(\n"
+                    '      [{"role": "user", "content": "Your prompt here"}],\n'
+                    "      tokenize=True, add_generation_prompt=True,\n"
+                    '      return_tensors="pt", return_dict=True\n'
+                    "  )\n"
+                    "  output = model.fast_generate(\n"
+                    "      **messages.to('cuda'),\n"
+                    "      max_new_tokens=64,\n"
+                    "      temperature=1.0,\n"
+                    "  )"
+                )
+
+        # Call original generate
+        return original_generate(*args, **kwargs)
+
+    return _fast_generate_wrapper

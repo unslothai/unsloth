@@ -20,6 +20,7 @@ from packaging.version import Version as TrueVersion
 import re
 import logging
 import textwrap
+import warnings
 
 # We cannot do from unsloth_zoo.log import logger since FBGEMM might cause seg faults.
 UNSLOTH_ENABLE_LOGGING = os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") in (
@@ -93,10 +94,34 @@ class HidePrintMessage:
 if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") != "1":
     import sys
 
-    # Apply to stderr for FBGEMM
+    # Apply to stderr for FBGEMM and CUTLASS errors
     sys.stderr = HidePrintMessage(sys.stderr)
     # https://github.com/pytorch/FBGEMM/blob/d99cd96490ec4aabac2ee95b1e76ea4dcfcfa628/fbgemm_gpu/experimental/gemm/triton_gemm/utils.py#L43-L52
     sys.stderr.add_filter("TMA benchmarks will be running")
+    # CUTLASS/FBGEMM MMA instruction error on SM90 vs SM100 (Blackwell) GPUs
+    # https://github.com/NVIDIA/cutlass/blob/main/include/cutlass/gemm/kernel/sm90_gemm_tma_warpspecialized.hpp
+    sys.stderr.add_filter("Arch conditional MMA instruction used without targeting")
+    # CUTLASS arch conditional errors for various architectures
+    sys.stderr.add_filter("CUTE_INVALID_CONTROL_PATH")
+    # CUTLASS TMA-related errors when not targeting correct architecture
+    sys.stderr.add_filter("Trying to use tma without CUTE_ARCH_TMA")
+    # Skipping import of cpp extensions due to incompatible torch version 2.9.0+cu128 for torchao version 0.15.0
+    logging.getLogger("torchao").setLevel(logging.ERROR)
+    # Also filter torchao print to stderr about cpp extensions
+    sys.stderr.add_filter("Skipping import of cpp extensions")
+    # SyntaxWarning: invalid escape sequence '\.'
+    warnings.filterwarnings(
+        "ignore", message = "invalid escape sequence", category = SyntaxWarning
+    )
+    # PYTORCH_CUDA_ALLOC_CONF is deprecated warning from torch
+    warnings.filterwarnings("ignore", message = "PYTORCH_CUDA_ALLOC_CONF is deprecated")
+    # TF32 precision deprecation warning from torch
+    warnings.filterwarnings(
+        "ignore", message = "Please use the new API settings to control TF32"
+    )
+    # Deprecation warnings from torchao
+    warnings.filterwarnings("ignore", message = "`int4_weight_only` is deprecated")
+    warnings.filterwarnings("ignore", message = "`int8_weight_only` is deprecated")
 
 
 # Fix up AttributeError: 'MessageFactory' object has no attribute 'GetPrototype'
@@ -179,6 +204,65 @@ def fix_xformers_performance_issue():
             logger.info(f"Unsloth: Failed patching Xformers with error = {str(e)}")
 
 
+def patch_vllm_for_notebooks():
+    import sys
+
+    ipython = None
+    try:
+        from IPython import get_ipython as _get_ipython
+    except Exception:
+        _get_ipython = None
+
+    if _get_ipython is not None:
+        try:
+            ipython = _get_ipython()
+        except Exception:
+            ipython = None
+
+    if ipython is None:
+        try:
+            import builtins
+
+            _get_ipython = getattr(builtins, "get_ipython", None)
+            if callable(_get_ipython):
+                ipython = _get_ipython()
+        except Exception:
+            ipython = None
+
+    if ipython is None:
+        return
+
+    try:
+        shell = ipython.__class__.__name__
+        is_notebook = shell == "ZMQInteractiveShell" or "google.colab" in str(
+            type(ipython)
+        )
+    except Exception:
+        return
+
+    if not is_notebook:
+        return
+
+    if not hasattr(sys.stdout, "fileno"):
+        return
+
+    needs_patch = False
+    try:
+        fd = sys.stdout.fileno()
+        if not isinstance(fd, int) or fd < 0:
+            needs_patch = True
+    except Exception:
+        needs_patch = True
+
+    if not needs_patch:
+        return
+
+    logger.info(
+        "Unsloth: Notebook detected - Patching sys.stdout.fileno for newer `vllm>=0.12.0` versions"
+    )
+    sys.stdout.fileno = lambda: 1
+
+
 # ValueError: 'aimv2' is already used by a Transformers config, pick another name.
 def fix_vllm_aimv2_issue():
     spec = importlib.util.find_spec("vllm")
@@ -223,16 +307,43 @@ def fix_vllm_aimv2_issue():
 
 
 def fix_vllm_guided_decoding_params():
+    def _maybe_raise_vllm_transformers_mismatch(error):
+        error_text = str(error)
+        if (
+            "ALLOWED_LAYER_TYPES" in error_text
+            or "transformers.configuration_utils" in error_text
+        ):
+            try:
+                vllm_version = importlib_version("vllm")
+            except Exception:
+                vllm_version = "unknown"
+            raise RuntimeError(
+                "Unsloth: vLLM with version "
+                f"{vllm_version} does not yet support transformers>=5.0.0. "
+                "Please downgrade to transformers==4.57.3 via "
+                'pip install --force-reinstall "transformers==4.57.3". '
+                f"Original error: {error}"
+            ) from error
+
     if importlib.util.find_spec("vllm") is None:
         return
     # GuidedDecodingParmas is renamed to StructuredOutputsParams in vLLM
     # https://github.com/vllm-project/vllm/pull/22772/files
     # trl still wants to use GuidedDecodingParams. This is a temporary patch till trl updates
-    import vllm
+    try:
+        import vllm
+    except ImportError as e:
+        _maybe_raise_vllm_transformers_mismatch(e)
+        raise
 
     try:
         from vllm.sampling_params import GuidedDecodingParams
-    except ImportError:
+    except ImportError as e:
+        _maybe_raise_vllm_transformers_mismatch(e)
+        if not hasattr(vllm, "sampling_params") or not hasattr(
+            vllm.sampling_params, "StructuredOutputsParams"
+        ):
+            raise
         vllm.sampling_params.GuidedDecodingParams = (
             vllm.sampling_params.StructuredOutputsParams
         )
@@ -316,10 +427,14 @@ def check_fbgemm_gpu_version():
     except:
         return
     # We noticed some SegFault or bad alloc errors on lower versions of fbgemm_gpu.
+    # Instead of raising an error, disable FBGEMM and fall back to Triton kernels.
     if Version(fbgemm_gpu_version) < Version("1.4.0"):
-        raise ImportError(
-            f"Unsloth: fbgemm_gpu_genai=={fbgemm_gpu_version} detected. It might cause unexpected issues like segmentation faults. Please uninstall the current one by doing `pip uninstall fbgemm-gpu` && `pip install fbgemm-gpu` to install fbgemm-gpu 1.4.0 or newer!"
+        os.environ["UNSLOTH_HAS_FBGEMM"] = "0"
+        logger.info(
+            f"Unsloth: fbgemm_gpu_genai=={fbgemm_gpu_version} is old and may cause issues. "
+            f"Disabling FBGEMM - using Triton kernels instead."
         )
+        return
 
     logger.info(f"Unsloth: fbgemm_gpu_genai=={fbgemm_gpu_version} detected.")
 
@@ -539,3 +654,128 @@ def fix_executorch():
 def fix_diffusers_warnings():
     # Silence Flax classes are deprecated and will be removed in Diffusers v1.0.0.
     os.environ["DIFFUSERS_VERBOSITY"] = "error"
+
+
+def fix_huggingface_hub():
+    # huggingface_hub.is_offline_mode got removed, so add it back
+    import huggingface_hub
+
+    if not hasattr(huggingface_hub, "is_offline_mode"):
+        huggingface_hub.is_offline_mode = (
+            lambda: huggingface_hub.constants.HF_HUB_OFFLINE
+        )
+
+
+def fix_vllm_pdl_blackwell():
+    """
+    Fix vLLM PDL (Programmatic Dependent Launch) bug on Blackwell GPUs (SM100).
+
+    The issue: vLLM's LoRA Triton kernels use tl.extra.cuda.gdc_wait() for PDL
+    optimization on SM90+ GPUs. This fails on SM100 (B200/B100) during CUDA graph
+    capture because Triton's pipeliner can't handle gdc_wait in complex kernels.
+
+    See: https://github.com/vllm-project/vllm/issues/30872
+    """
+    if importlib.util.find_spec("vllm") is None:
+        return
+
+    # Check if any CUDA GPU is SM100 (Blackwell)
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return
+
+        # Scan all GPUs for SM100 - fix applies globally via env var and monkey-patch
+        has_sm100 = False
+        sm100_gpu_name = None
+        for i in range(torch.cuda.device_count()):
+            major, minor = torch.cuda.get_device_capability(i)
+            if major == 10:
+                has_sm100 = True
+                sm100_gpu_name = torch.cuda.get_device_name(i)
+                break
+
+        if not has_sm100:
+            return
+    except Exception:
+        return
+
+    # Helper to check if module spec exists
+    def _spec_exists(name):
+        try:
+            return importlib.util.find_spec(name) is not None
+        except (ModuleNotFoundError, ValueError):
+            return False
+
+    # Check if vLLM has the PDL-related modules before doing internet check
+    has_utils = _spec_exists("vllm.lora.ops.triton_ops.utils")
+    has_expand_op = _spec_exists("vllm.lora.ops.triton_ops.lora_expand_op")
+    has_shrink_op = _spec_exists("vllm.lora.ops.triton_ops.lora_shrink_op")
+
+    if not has_utils and not has_expand_op and not has_shrink_op:
+        # Old vLLM version without PDL support - nothing to patch
+        return
+
+    # Check if vLLM version includes the fix
+    VLLM_PDL_FIX_VERSION = "0.13.2"
+    try:
+        vllm_version = Version(importlib_version("vllm"))
+        if vllm_version > Version(VLLM_PDL_FIX_VERSION):
+            logger.info(
+                f"Unsloth: SM100 ({sm100_gpu_name}) detected but vLLM {vllm_version} "
+                f"should include PDL fix - skipping workaround"
+            )
+            return
+    except Exception as e:
+        logger.debug(
+            f"Unsloth: vLLM version check failed ({e}), applying PDL workaround."
+        )
+
+    # Apply the PDL fix
+    os.environ["TRITON_DISABLE_PDL"] = "1"
+
+    def fake_supports_pdl(*args, **kwargs):
+        return False
+
+    patched = []
+
+    # First, patch the source module (utils.py) where supports_pdl is defined.
+    # This is critical because supports_pdl uses @lru_cache - we must clear the
+    # cache to prevent stale cached results from the original function.
+    try:
+        utils_module = importlib.import_module("vllm.lora.ops.triton_ops.utils")
+        if hasattr(utils_module, "supports_pdl"):
+            original_fn = utils_module.supports_pdl
+            if hasattr(original_fn, "cache_clear"):
+                original_fn.cache_clear()
+            utils_module.supports_pdl = fake_supports_pdl
+            patched.append("utils")
+    except (ImportError, ModuleNotFoundError, AttributeError):
+        pass
+
+    # Also patch the consumer modules that import supports_pdl from utils.
+    # This ensures the patched function is used even if the module was already
+    # imported before this fix runs.
+    consumer_modules = {
+        "lora_expand_op": "vllm.lora.ops.triton_ops.lora_expand_op",
+        "lora_shrink_op": "vllm.lora.ops.triton_ops.lora_shrink_op",
+        "fused_moe_lora_op": "vllm.lora.ops.triton_ops.fused_moe_lora_op",
+    }
+    for name, path in consumer_modules.items():
+        try:
+            module = importlib.import_module(path)
+            if hasattr(module, "supports_pdl"):
+                module.supports_pdl = fake_supports_pdl
+                patched.append(name)
+        except (ImportError, ModuleNotFoundError, AttributeError):
+            pass
+
+    if patched:
+        logger.info(
+            f"Unsloth: Applied PDL fix for SM100 ({sm100_gpu_name}) - "
+            f"patched: {', '.join(patched)}"
+        )
+    else:
+        # Just set the env var - vLLM might be an older version without supports_pdl
+        logger.info(f"Unsloth: Set TRITON_DISABLE_PDL=1 for SM100 ({sm100_gpu_name})")

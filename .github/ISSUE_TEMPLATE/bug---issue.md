@@ -18,4 +18,4 @@ assignees: ''
 Put Minimal code to reproduce error here ###Remove Hugging Face token###
 ```
 
-🦥 You can also ask via our Reddit page: https://www.reddit.com/r/unsloth/
+🦥 You can also ask via our Reddit page: https://reddit.com/r/unsloth/
