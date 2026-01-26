@@ -2366,52 +2366,68 @@ class FastLlamaModel:
             model.vllm_engine = llm
 
             def _get_lora_request(self):
-                if not hasattr(self, "peft_config"): return None
+                if not hasattr(self, "peft_config"):
+                    return None
                 try:
                     # Check modification version of trainable parameters to detect updates
-                    current_version = sum(p._version for p in self.parameters() if p.requires_grad)
+                    current_version = sum(
+                        p._version for p in self.parameters() if p.requires_grad
+                    )
 
                     if not hasattr(self, "_unsloth_lora_id"):
                         self._unsloth_lora_id = 0
                         self._unsloth_lora_version = -1
                         self._unsloth_cached_lora_request = None
                         import tempfile
+
                         self._unsloth_lora_temp_dir = tempfile.TemporaryDirectory()
 
                     # Update if changed
-                    if current_version != self._unsloth_lora_version or self._unsloth_cached_lora_request is None:
+                    if (
+                        current_version != self._unsloth_lora_version
+                        or self._unsloth_cached_lora_request is None
+                    ):
                         self._unsloth_lora_id += 1
                         self._unsloth_lora_version = current_version
 
                         from unsloth_zoo.vllm_utils import load_lora
+
                         self._unsloth_cached_lora_request = load_lora(
                             self,
                             self._unsloth_lora_temp_dir.name,
-                            load_tensors=True,
-                            lora_request_id=self._unsloth_lora_id
+                            load_tensors = True,
+                            lora_request_id = self._unsloth_lora_id,
                         )
                     return self._unsloth_cached_lora_request
                 except Exception as e:
                     return None
+
             pass
 
             def _fast_generate_patched(self, *args, **kwargs):
                 if "lora_request" not in kwargs:
                     req = _get_lora_request(self)
-                    if req is not None: kwargs["lora_request"] = req
+                    if req is not None:
+                        kwargs["lora_request"] = req
                 return self.vllm_engine.generate(*args, **kwargs)
+
             pass
 
             def _fast_generate_batches_patched(self, *args, **kwargs):
                 if "lora_request" not in kwargs:
                     req = _get_lora_request(self)
-                    if req is not None: kwargs["lora_request"] = req
+                    if req is not None:
+                        kwargs["lora_request"] = req
                 return generate_batches(self.vllm_engine, *args, **kwargs)
+
             pass
 
             import types
+
             model.fast_generate = types.MethodType(_fast_generate_patched, model)
-            model.fast_generate_batches = types.MethodType(_fast_generate_batches_patched, model)
+            model.fast_generate_batches = types.MethodType(
+                _fast_generate_batches_patched, model
+            )
         raise_handler.remove()
         # Return old flag
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
