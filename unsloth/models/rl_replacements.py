@@ -74,6 +74,16 @@ def sft_trainer_fix_untrained_tokens(call_args, extra_args):
 
 RL_EXTRA_ARGS["sft_trainer"].append(sft_trainer_fix_untrained_tokens)
 
+# Fix top_k for GRPO vLLM.
+# https://github.com/huggingface/trl/pull/4695 with this change trl added top_k in GRPOConfig and defaults to 0
+# We don't want that since vllm's all include top_k is -1 and 0 returns an error on SamplingParams creation.
+def grpo_config_fix_vllm_top_k(old_RLTrainer_source, old_RLConfig_source):
+    return (
+        "if use_vllm and (top_k is None or top_k == 0): top_k = -1\n"
+    )
+
+RL_CONFIG_CHANGES["grpo_trainer"].append(grpo_config_fix_vllm_top_k)
+
 
 # Remove DPO columns which might randomnly be tokenized
 def dpo_trainer_fix_columns(call_args, extra_args):
@@ -283,7 +293,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         re.MULTILINE,
     )
 
-    replacement_text = """        
+    replacement_text = """
             if self.args.gradient_accumulation_steps % generate_every != 0 or (
                 self.use_vllm
             ):"""
@@ -365,7 +375,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
     replacement_string = """        if "image_sizes" in prompt_inputs:
             output["image_sizes"] = prompt_inputs["image_sizes"]
         if max_left_pad is not None:
-            output["max_left_pad"] = torch.tensor(prompt_ids.shape[0] * [max_left_pad]).unsqueeze(-1)        
+            output["max_left_pad"] = torch.tensor(prompt_ids.shape[0] * [max_left_pad]).unsqueeze(-1)
         try:
             if self.use_vllm and getattr(self, "vllm_importance_sampling_correction", False):
                 output["sampling_per_token_logps"] = sampling_per_token_logps
@@ -381,7 +391,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
     replacement_string = """        if images is not None:
             output["num_images"] = num_images
         if max_left_pad is not None:
-            output["max_left_pad"] = torch.tensor(prompt_ids.shape[0] * [max_left_pad]).unsqueeze(-1)        
+            output["max_left_pad"] = torch.tensor(prompt_ids.shape[0] * [max_left_pad]).unsqueeze(-1)
         try:
             if self.use_vllm and getattr(self, "vllm_importance_sampling_correction", False):
                 output["sampling_per_token_logps"] = sampling_per_token_logps
