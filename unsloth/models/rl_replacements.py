@@ -914,7 +914,7 @@ def grpo_trainer_compute_loss(function_name, function):
 
         max_left_pad = inputs.get("max_left_pad", 0)
         if per_token_logps is not None:
-            loss, completion_length, mean_kl, delta, flat_is_ratio = (
+            loss, completion_length, mean_kl, delta, flat_is_ratio, coef_1 = (
                 grpo_compute_loss_slow(
                     ref_logps,
                     per_token_logps,
@@ -944,7 +944,7 @@ def grpo_trainer_compute_loss(function_name, function):
             )
         else:
             if hasattr(self.args, "loss_type"):
-                loss, completion_length, mean_kl, delta, flat_is_ratio = (
+                loss, completion_length, mean_kl, delta, flat_is_ratio, coef_1 = (
                     grpo_accumulated_loss(
                         trainer = self,
                         input_ids = _input_ids,
@@ -976,7 +976,7 @@ def grpo_trainer_compute_loss(function_name, function):
                 )
             else:
                 # to ensure backwards compatibility with trl 0.15.2 and maybe even 0.17
-                loss, completion_length, mean_kl = grpo_accumulated_loss(
+                loss, completion_length, mean_kl, coef_1 = grpo_accumulated_loss(
                     trainer = self,
                     input_ids = _input_ids,
                     logits_to_keep = logits_to_keep,
@@ -991,7 +991,6 @@ def grpo_trainer_compute_loss(function_name, function):
                     logit_scale_divide = logit_scale_divide,
                     attention_mask = attention_mask,
                 )
-
         if "train" in self._metrics:
             mode = "eval" if self.control.should_evaluate else "train"
             self._metrics[mode]["completion_length"].append(completion_length.item())
@@ -1053,7 +1052,42 @@ def grpo_trainer_compute_loss(function_name, function):
                 .item()
             )
 
+        completion_token_count = completion_mask.sum().clamp(min=1.0)
+        def masked_batch_mean(x):
+            if x.shape[1] == 1:  # when importance_sampling_level == "sequence"
+                return x.mean()
+            else:
+                return (x * completion_mask).sum() / completion_token_count
+        #breakpoint()
+        if advantages.dim() == 1:
+            advantages = advantages.unsqueeze(1)
+
+        if self.loss_type in ["grpo", "bnpo", "dr_grpo", "dapo"]:
+            # Compute the clipped probability ratios
+            is_low_clipped = (coef_1 < 1 - self.epsilon_low) & (advantages < 0)
+            is_high_clipped = (coef_1 > 1 + self.epsilon_high) & (advantages > 0)
+            is_region_clipped = is_low_clipped | is_high_clipped
+
+            low_clip = masked_batch_mean(is_low_clipped.float())
+            high_clip = masked_batch_mean(is_high_clipped.float())
+            clip_ratio = masked_batch_mean(is_region_clipped.float())
+
+            gathered_low_clip = self.accelerator.gather(low_clip)
+            self._metrics[mode]["clip_ratio/low_mean"].append(gathered_low_clip.nanmean().item())
+            self._metrics[mode]["clip_ratio/low_min"].append(nanmin(gathered_low_clip).item())
+            gathered_high_clip = self.accelerator.gather(high_clip)
+            self._metrics[mode]["clip_ratio/high_mean"].append(gathered_high_clip.nanmean().item())
+            self._metrics[mode]["clip_ratio/high_max"].append(nanmax(gathered_high_clip).item())
+            gathered_clip_ratio = self.accelerator.gather(clip_ratio)
+            self._metrics[mode]["clip_ratio/region_mean"].append(gathered_clip_ratio.nanmean().item())
+        elif self.loss_type == "cispo":
+            is_cispo_clipped = (coef_1 > self.epsilon_high) & (advantages > 0)
+            cispo_clip_ratio = masked_batch_mean(is_cispo_clipped.float())
+            gathered_cispo_clip_ratio = self.accelerator.gather(cispo_clip_ratio)
+            self._metrics[mode]["cispo_clip_ratio"].append(gathered_cispo_clip_ratio.nanmean().item())
+
         return loss
+
 
     function = inspect.getsource(compute_loss)
     return function
