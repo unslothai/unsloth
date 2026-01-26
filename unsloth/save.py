@@ -1276,8 +1276,9 @@ def save_to_gguf(
                 print(
                     f"Unsloth: [2] Converting GGUF {first_conversion_dtype} into {quant_method}. This might take 10 minutes..."
                 )
-                output_location = f"{model_name}.{quant_method.upper()}.gguf"
-
+                gguf_directory = f"{model_directory}_gguf"
+                os.makedirs(gguf_directory, exist_ok=True)
+                output_location = os.path.join(gguf_directory, f"{model_name}.{quant_method.upper()}.gguf")
                 try:
                     # Use the quantize_gguf function we created
                     quantized_file = quantize_gguf(
@@ -2010,7 +2011,7 @@ def unsloth_save_pretrained_gguf(
                 if is_vlm_update:
                     modelfile_location = os.path.join(save_directory, "Modelfile")
                 else:
-                    modelfile_location = os.path.join(os.getcwd(), "Modelfile")
+                    modelfile_location = os.path.join(f"{save_directory}_gguf", "Modelfile")
                 with open(modelfile_location, "w", encoding = "utf-8") as file:
                     file.write(modelfile)
                 ollama_success = True
