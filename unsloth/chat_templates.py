@@ -2600,7 +2600,7 @@ extra_eos_tokens = None,
     You must use {INPUT}, {OUTPUT} twice, and {SYSTEM} is optional.
     """
     # Strip only the left
-    chat_template = chat_template.lstrip()
+    chat_template = chat_template.strip()
 
     assert(tokenizer is not None)
 
