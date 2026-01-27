@@ -74,13 +74,13 @@ def sft_trainer_fix_untrained_tokens(call_args, extra_args):
 
 RL_EXTRA_ARGS["sft_trainer"].append(sft_trainer_fix_untrained_tokens)
 
+
 # Fix top_k for GRPO vLLM.
 # https://github.com/huggingface/trl/pull/4695 with this change trl added top_k in GRPOConfig and defaults to 0
 # We don't want that since vllm's all include top_k is -1 and 0 returns an error on SamplingParams creation.
 def grpo_config_fix_vllm_top_k(old_RLTrainer_source, old_RLConfig_source):
-    return (
-        "if use_vllm and (top_k is None or top_k == 0): top_k = -1\n"
-    )
+    return "if use_vllm and (top_k is None or top_k == 0): top_k = -1\n"
+
 
 RL_CONFIG_CHANGES["grpo_trainer"].append(grpo_config_fix_vllm_top_k)
 
