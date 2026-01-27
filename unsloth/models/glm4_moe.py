@@ -48,10 +48,10 @@ HAS_GROUPED_GEMM = False
 try:
     import sys
     import os
+
     # Add the moe directory (parent of grouped_gemm) to sys.path
     _moe_path = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "kernels", "moe"
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "kernels", "moe"
     )
     if _moe_path not in sys.path:
         sys.path.insert(0, _moe_path)
@@ -66,10 +66,14 @@ try:
         permute,
         unpermute,
     )
+
     HAS_GROUPED_GEMM = True
 except ImportError as e:
     import warnings
-    warnings.warn(f"Grouped GEMM not available: {e}. MoE will use fallback implementation.")
+
+    warnings.warn(
+        f"Grouped GEMM not available: {e}. MoE will use fallback implementation."
+    )
 
 
 # Import transformers GLM4 MoE Lite classes
@@ -85,24 +89,33 @@ try:
         Glm4MoeLiteForCausalLM,
         Glm4MoeLiteRMSNorm,
     )
+
     HAS_GLM4_MOE = True
 except ImportError:
     HAS_GLM4_MOE = False
+
     # Create dummy classes for type checking
     class Glm4MoeLiteAttention:
         pass
+
     class Glm4MoeLiteMoE:
         pass
+
     class Glm4MoeLiteMLP:
         pass
+
     class Glm4MoeLiteNaiveMoe:
         pass
+
     class Glm4MoeLiteTopkRouter:
         pass
+
     class Glm4MoeLiteDecoderLayer:
         pass
+
     class Glm4MoeLiteModel:
         pass
+
     class Glm4MoeLiteForCausalLM:
         pass
 
@@ -150,40 +163,40 @@ def Glm4MoeLiteMoE_fast_forward(self, hidden_states):
         # First grouped GEMM: gate_up_proj with permute_x
         # Input: [num_tokens, hidden_dim] -> Output: [total_tokens, 2*intermediate_dim]
         intermediate = grouped_gemm(
-            X=hidden_states,
-            W=self.experts.gate_up_proj,
-            m_sizes=token_counts_by_expert.int(),
-            topk=self.top_k,
-            gather_indices=gather_indices,
-            permute_x=True,
-            permute_y=False,
-            autotune=True,
-            is_first_gemm=True,
+            X = hidden_states,
+            W = self.experts.gate_up_proj,
+            m_sizes = token_counts_by_expert.int(),
+            topk = self.top_k,
+            gather_indices = gather_indices,
+            permute_x = True,
+            permute_y = False,
+            autotune = True,
+            is_first_gemm = True,
         )
 
         # Activation: SiLU(gate) * up
-        gate, up = intermediate.chunk(2, dim=-1)
+        gate, up = intermediate.chunk(2, dim = -1)
         intermediate = torch_nn_functional_silu(gate) * up
 
         # Second grouped GEMM: down_proj with permute_y
         # Input: [total_tokens, intermediate_dim] -> Output: [total_tokens, hidden_dim]
         expert_output = grouped_gemm(
-            X=intermediate,
-            W=self.experts.down_proj,
-            m_sizes=token_counts_by_expert.int(),
-            topk=self.top_k,
-            gather_indices=gather_indices,
-            permute_x=False,
-            permute_y=True,
-            autotune=True,
-            is_first_gemm=False,
+            X = intermediate,
+            W = self.experts.down_proj,
+            m_sizes = token_counts_by_expert.int(),
+            topk = self.top_k,
+            gather_indices = gather_indices,
+            permute_x = False,
+            permute_y = True,
+            autotune = True,
+            is_first_gemm = False,
         )
 
         # Merge topk weights: [num_tokens, top_k, hidden_dim] -> [num_tokens, hidden_dim]
         hidden_states = (
             expert_output.view(num_tokens, self.top_k, hidden_dim)
             * topk_weights.unsqueeze(-1)
-        ).sum(dim=1)
+        ).sum(dim = 1)
     else:
         # Fallback to naive implementation
         hidden_states = self.experts(hidden_states, topk_indices, topk_weights)
@@ -220,9 +233,11 @@ def Glm4MoeLiteNaiveMoe_fast_forward(
         # Fallback to original naive implementation
         final_hidden_states = torch.zeros_like(hidden_states)
         with torch.no_grad():
-            expert_mask = torch.nn.functional.one_hot(top_k_index, num_classes=self.num_experts)
+            expert_mask = torch.nn.functional.one_hot(
+                top_k_index, num_classes = self.num_experts
+            )
             expert_mask = expert_mask.permute(2, 1, 0)
-            expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
+            expert_hit = torch.greater(expert_mask.sum(dim = (-1, -2)), 0).nonzero()
 
         for expert_idx in expert_hit:
             expert_idx = expert_idx[0]
@@ -230,11 +245,19 @@ def Glm4MoeLiteNaiveMoe_fast_forward(
                 continue
             top_k_pos, token_idx = torch.where(expert_mask[expert_idx])
             current_state = hidden_states[token_idx]
-            gate, up = torch.nn.functional.linear(current_state, self.gate_up_proj[expert_idx]).chunk(2, dim=-1)
+            gate, up = torch.nn.functional.linear(
+                current_state, self.gate_up_proj[expert_idx]
+            ).chunk(2, dim = -1)
             current_hidden_states = self.act_fn(gate) * up
-            current_hidden_states = torch.nn.functional.linear(current_hidden_states, self.down_proj[expert_idx])
-            current_hidden_states = current_hidden_states * top_k_weights[token_idx, top_k_pos, None]
-            final_hidden_states.index_add_(0, token_idx, current_hidden_states.to(final_hidden_states.dtype))
+            current_hidden_states = torch.nn.functional.linear(
+                current_hidden_states, self.down_proj[expert_idx]
+            )
+            current_hidden_states = (
+                current_hidden_states * top_k_weights[token_idx, top_k_pos, None]
+            )
+            final_hidden_states.index_add_(
+                0, token_idx, current_hidden_states.to(final_hidden_states.dtype)
+            )
 
         return final_hidden_states
 
@@ -250,39 +273,38 @@ def Glm4MoeLiteNaiveMoe_fast_forward(
 
     # First grouped GEMM: gate_up_proj
     intermediate = grouped_gemm(
-        X=hidden_states,
-        W=self.gate_up_proj,
-        m_sizes=token_counts_by_expert.int(),
-        topk=top_k,
-        gather_indices=gather_indices,
-        permute_x=True,
-        permute_y=False,
-        autotune=True,
-        is_first_gemm=True,
+        X = hidden_states,
+        W = self.gate_up_proj,
+        m_sizes = token_counts_by_expert.int(),
+        topk = top_k,
+        gather_indices = gather_indices,
+        permute_x = True,
+        permute_y = False,
+        autotune = True,
+        is_first_gemm = True,
     )
 
     # Activation: SiLU(gate) * up
-    gate, up = intermediate.chunk(2, dim=-1)
+    gate, up = intermediate.chunk(2, dim = -1)
     intermediate = self.act_fn(gate) * up
 
     # Second grouped GEMM: down_proj
     expert_output = grouped_gemm(
-        X=intermediate,
-        W=self.down_proj,
-        m_sizes=token_counts_by_expert.int(),
-        topk=top_k,
-        gather_indices=gather_indices,
-        permute_x=False,
-        permute_y=True,
-        autotune=True,
-        is_first_gemm=False,
+        X = intermediate,
+        W = self.down_proj,
+        m_sizes = token_counts_by_expert.int(),
+        topk = top_k,
+        gather_indices = gather_indices,
+        permute_x = False,
+        permute_y = True,
+        autotune = True,
+        is_first_gemm = False,
     )
 
     # Merge topk weights
     final_hidden_states = (
-        expert_output.view(num_tokens, top_k, hidden_dim)
-        * top_k_weights.unsqueeze(-1)
-    ).sum(dim=1)
+        expert_output.view(num_tokens, top_k, hidden_dim) * top_k_weights.unsqueeze(-1)
+    ).sum(dim = 1)
 
     return final_hidden_states
 
@@ -311,13 +333,13 @@ def Glm4MoeLiteDecoderLayer_fast_forward(
             self.input_layernorm, hidden_states
         )
         hidden_states, _ = self.self_attn(
-            hidden_states=hidden_states,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_values=past_key_values,
-            use_cache=use_cache,
-            cache_position=cache_position,
-            position_embeddings=position_embeddings,
+            hidden_states = hidden_states,
+            attention_mask = attention_mask,
+            position_ids = position_ids,
+            past_key_values = past_key_values,
+            use_cache = use_cache,
+            cache_position = cache_position,
+            position_embeddings = position_embeddings,
             **kwargs,
         )
         hidden_states = residual + hidden_states
@@ -334,13 +356,13 @@ def Glm4MoeLiteDecoderLayer_fast_forward(
         residual = hidden_states
         hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
         hidden_states, _ = self.self_attn(
-            hidden_states=hidden_states,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_values=past_key_values,
-            use_cache=use_cache,
-            cache_position=cache_position,
-            position_embeddings=position_embeddings,
+            hidden_states = hidden_states,
+            attention_mask = attention_mask,
+            position_ids = position_ids,
+            past_key_values = past_key_values,
+            use_cache = use_cache,
+            cache_position = cache_position,
+            position_embeddings = position_embeddings,
             **kwargs,
         )
         hidden_states = residual + hidden_states
@@ -396,33 +418,33 @@ class FastGLM47Model(FastLlamaModel):
 
     @staticmethod
     def from_pretrained(
-        model_name="unsloth/GLM-4.7-Flash",
-        max_seq_length=4096,
-        dtype=None,
-        load_in_4bit=True,
-        token=None,
-        device_map="sequential",
-        rope_scaling=None,
-        fix_tokenizer=True,
-        model_patcher=None,
-        tokenizer_name=None,
-        trust_remote_code=False,
+        model_name = "unsloth/GLM-4.7-Flash",
+        max_seq_length = 4096,
+        dtype = None,
+        load_in_4bit = True,
+        token = None,
+        device_map = "sequential",
+        rope_scaling = None,
+        fix_tokenizer = True,
+        model_patcher = None,
+        tokenizer_name = None,
+        trust_remote_code = False,
         **kwargs,
     ):
         # Pop kwargs that are used by loader but not passed to model
         kwargs.pop("unsloth_force_compile", None)
 
         return FastLlamaModel.from_pretrained(
-            model_name=model_name,
-            max_seq_length=max_seq_length,
-            dtype=dtype,
-            load_in_4bit=load_in_4bit,
-            token=token,
-            device_map=device_map,
-            rope_scaling=rope_scaling,
-            fix_tokenizer=fix_tokenizer,
-            model_patcher=FastGLM47Model,
-            tokenizer_name=tokenizer_name,
-            trust_remote_code=trust_remote_code,
+            model_name = model_name,
+            max_seq_length = max_seq_length,
+            dtype = dtype,
+            load_in_4bit = load_in_4bit,
+            token = token,
+            device_map = device_map,
+            rope_scaling = rope_scaling,
+            fix_tokenizer = fix_tokenizer,
+            model_patcher = FastGLM47Model,
+            tokenizer_name = tokenizer_name,
+            trust_remote_code = trust_remote_code,
             **kwargs,
         )
