@@ -2414,10 +2414,23 @@ def is_moe_model(model) -> bool:
         True if the model is an MoE model, False otherwise
     """
     config = getattr(model, "config", model)
-    num_experts = getattr(config, "num_experts", None)
+
+    # Different MoE models use different config attribute names:
+    # - Qwen3-MoE: num_experts
+    # - GLM4-MoE: n_routed_experts, num_local_experts
+    # - Mixtral: num_local_experts
+    num_experts = None
+    for attr in ("num_experts", "n_routed_experts", "num_local_experts"):
+        num_experts = getattr(config, attr, None)
+        if num_experts is not None:
+            break
+
     # Check text_config for VL models
     if num_experts is None and hasattr(config, "text_config"):
-        num_experts = getattr(config.text_config, "num_experts", None)
+        for attr in ("num_experts", "n_routed_experts", "num_local_experts"):
+            num_experts = getattr(config.text_config, attr, None)
+            if num_experts is not None:
+                break
 
     return num_experts is not None and num_experts > 0
 
@@ -2445,9 +2458,19 @@ def get_moe_target_parameters(model, target_modules = None) -> Optional[List[str
         return None
 
     config = getattr(model, "config", model)
-    num_experts = getattr(config, "num_experts", None)
+    # Get num_experts from various possible config attributes
+    num_experts = None
+    for attr in ("num_experts", "n_routed_experts", "num_local_experts"):
+        num_experts = getattr(config, attr, None)
+        if num_experts is not None:
+            break
     if num_experts is None and hasattr(config, "text_config"):
-        num_experts = getattr(config.text_config, "num_experts", 0)
+        for attr in ("num_experts", "n_routed_experts", "num_local_experts"):
+            num_experts = getattr(config.text_config, attr, None)
+            if num_experts is not None:
+                break
+    if num_experts is None:
+        num_experts = 0
 
     # Determine which MoE parameters to include based on target_modules
     moe_params = []
