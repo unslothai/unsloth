@@ -191,10 +191,30 @@ elif DEVICE_TYPE == "xpu":
     # torch.xpu.is_bf16_supported() does not have including_emulation
     # set SUPPORTS_BFLOAT16 as torch.xpu.is_bf16_supported()
     SUPPORTS_BFLOAT16 = torch.xpu.is_bf16_supported()
+elif DEVICE_TYPE == "mps":
+    # MPS bfloat16 support depends on PyTorch version and chip
+    try:
+        test_tensor = torch.tensor([1.0], dtype=torch.bfloat16, device="mps")
+        _ = test_tensor + test_tensor  # Test an operation
+        SUPPORTS_BFLOAT16 = True
+        del test_tensor
+    except Exception:
+        SUPPORTS_BFLOAT16 = False
+    
+    print(
+        f"Unsloth: Running on Apple Silicon (MPS)\n"
+        f"bfloat16 support: {SUPPORTS_BFLOAT16}\n"
+        f"Note: 16-bit LoRA and full finetuning are supported."
+    )
 
 # For Gradio HF Spaces?
 # if "SPACE_AUTHOR_NAME" not in os.environ and "SPACE_REPO_NAME" not in os.environ:
-import triton
+
+# Triton does not support MPS/Metal - skip import for Apple Silicon
+if DEVICE_TYPE != "mps":
+    import triton
+else:
+    triton = None
 
 if DEVICE_TYPE == "cuda":
     libcuda_dirs = lambda: None
@@ -278,6 +298,10 @@ elif DEVICE_TYPE == "xpu":
 
     # TODO: check triton for intel installed properly.
     pass
+elif DEVICE_TYPE == "mps":
+    # MPS/Apple Silicon - bitsandbytes not supported, Triton not available
+    # 16-bit LoRA and full finetuning work via PyTorch's native MPS backend
+    bnb = None
 
 from .models import *
 from .models import __version__
