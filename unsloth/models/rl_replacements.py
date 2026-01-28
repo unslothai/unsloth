@@ -30,6 +30,7 @@ from unsloth_zoo.utils import Version
 from importlib.metadata import version as importlib_version
 from unsloth_zoo.log import logger
 import importlib.util
+from ..dataprep.streaming_sft import sft_prepare_dataset
 from ..device_type import (
     is_hip,
     get_device_type,
@@ -47,6 +48,9 @@ RL_PRE_ITEMS = defaultdict(list)
 RL_CONFIG_CHANGES = defaultdict(list)
 RL_METRICS_CHANGES = defaultdict(list)
 RL_ADDITIONAL_FUNCTIONS = defaultdict(list)
+
+# Force streaming tokenization for SFTTrainer dataset preparation.
+RL_REPLACEMENTS["sft_prepare_dataset"] = sft_prepare_dataset
 
 torch_compile_options = {
     "epilogue_fusion": True,
