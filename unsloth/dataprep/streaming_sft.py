@@ -341,7 +341,9 @@ def _coerce_formatting_result(result: Any, batch_size: int) -> Optional[list[str
     return None
 
 
-def _format_batch(formatting_func: Callable[[Any], list[str]], batch: dict[str, list[Any]]) -> list[str]:
+def _format_batch(
+    formatting_func: Callable[[Any], list[str]], batch: dict[str, list[Any]]
+) -> list[str]:
     batch_size = _batch_length(batch)
     result = None
     try:
@@ -364,7 +366,9 @@ def _format_batch(formatting_func: Callable[[Any], list[str]], batch: dict[str, 
         elif isinstance(out, str):
             text = out
         else:
-            raise ValueError("Unsloth: The `formatting_func` should return a list of processed strings.")
+            raise ValueError(
+                "Unsloth: The `formatting_func` should return a list of processed strings."
+            )
         texts.append(text)
     return texts
 
