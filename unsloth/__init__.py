@@ -203,8 +203,8 @@ elif DEVICE_TYPE == "mps":
     
     print(
         f"Unsloth: Running on Apple Silicon (MPS)\n"
-        f"bfloat16 support: {SUPPORTS_BFLOAT16}\n"
-        f"Note: 16-bit LoRA and full finetuning are supported."
+        f"   bfloat16 support: {SUPPORTS_BFLOAT16}\n"
+        f"   Note: 16-bit LoRA and full finetuning work."
     )
 
 # For Gradio HF Spaces?

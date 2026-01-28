@@ -103,6 +103,8 @@ else:
 
 @functools.lru_cache(1)
 def is_cdna():
+    if DEVICE_TYPE == "mps" or triton is None:
+        return False
     return is_hip() and triton.runtime.driver.active.get_current_target().arch in (
         "gfx940",
         "gfx941",
