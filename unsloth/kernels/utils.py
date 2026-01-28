@@ -13,22 +13,35 @@
 # limitations under the License.
 
 import importlib
-import triton
 import ctypes
-
-MAX_FUSED_SIZE: int = 65536
-next_power_of_2 = triton.next_power_of_2
 import functools
 from typing import Optional
 
 from ..device_type import (
     is_hip,
+    is_mps,
     get_device_type,
     DEVICE_TYPE,
     DEVICE_TYPE_TORCH,
     DEVICE_COUNT,
     ALLOW_PREQUANTIZED_MODELS,
 )
+
+# Triton does not support MPS/Metal - conditionally import
+if DEVICE_TYPE != "mps":
+    import triton
+    MAX_FUSED_SIZE: int = 65536
+    next_power_of_2 = triton.next_power_of_2
+else:
+    triton = None
+    MAX_FUSED_SIZE: int = 65536
+    # Pure Python fallback for next_power_of_2
+    def next_power_of_2(n: int) -> int:
+        """Return the smallest power of 2 >= n."""
+        if n <= 0:
+            return 1
+        return 1 << (n - 1).bit_length()
+
 from .fp8 import weight_dequant, fp8_linear
 import functools
 
@@ -53,27 +66,39 @@ else:
 if DEVICE_TYPE == "xpu":
     torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "xpu")
     torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "xpu")
+elif DEVICE_TYPE == "mps":
+    # MPS does not have native AMP support yet - use identity decorators
+    def _identity_decorator(fn):
+        return fn
+    torch_amp_custom_fwd = _identity_decorator
+    torch_amp_custom_bwd = _identity_decorator
 
 
 # tl.math.tanh now is libdevice.tanh
-import triton
-import triton.language as tl
+# Triton-related code - skip for MPS
+if DEVICE_TYPE != "mps":
+    import triton
+    import triton.language as tl
 
-if Version(triton.__version__) >= Version("3.0.0"):
-    if DEVICE_TYPE == "xpu":
-        triton_tanh = tl.extra.intel.libdevice.tanh
+    if Version(triton.__version__) >= Version("3.0.0"):
+        if DEVICE_TYPE == "xpu":
+            triton_tanh = tl.extra.intel.libdevice.tanh
+        else:
+            from triton.language.extra import libdevice
+
+            triton_tanh = libdevice.tanh
+        triton_cast = tl.cast
     else:
-        from triton.language.extra import libdevice
+        triton_tanh = tl.math.tanh
 
-        triton_tanh = libdevice.tanh
-    triton_cast = tl.cast
+        # No casting in old Triton versions
+        @triton.jit
+        def triton_cast(x, dtype):
+            return x.to(dtype)
 else:
-    triton_tanh = tl.math.tanh
-
-    # No casting in old Triton versions
-    @triton.jit
-    def triton_cast(x, dtype):
-        return x.to(dtype)
+    # MPS placeholders - Triton kernels will be replaced with PyTorch ops
+    triton_tanh = None
+    triton_cast = None
 
 
 @functools.lru_cache(1)
@@ -108,11 +133,17 @@ def calculate_settings(
 
 
 HAS_CUDA_STREAM = False
-import bitsandbytes as bnb
+HAS_MPS_DEVICE = DEVICE_TYPE == "mps"
 
-# https://github.com/bitsandbytes-foundation/bitsandbytes/pull/1330/files
-HAS_CUDA_STREAM = Version(bnb.__version__) > Version("0.43.3")
-get_ptr = bnb.functional.get_ptr
+# bitsandbytes does not support MPS - conditionally import
+if DEVICE_TYPE != "mps":
+    import bitsandbytes as bnb
+    # https://github.com/bitsandbytes-foundation/bitsandbytes/pull/1330/files
+    HAS_CUDA_STREAM = Version(bnb.__version__) > Version("0.43.3")
+    get_ptr = bnb.functional.get_ptr
+else:
+    bnb = None
+    get_ptr = lambda x: None  # MPS placeholder
 
 if DEVICE_TYPE == "xpu":
     HAS_XPU_STREAM = True
@@ -122,6 +153,11 @@ if DEVICE_COUNT > 1:
         torch_gpu_device = torch.cuda.device
     elif DEVICE_TYPE == "xpu":
         torch_gpu_device = torch.xpu.device
+    elif DEVICE_TYPE == "mps":
+        # MPS is single device, use nullcontext
+        from contextlib import nullcontext
+        def torch_gpu_device(device):
+            return nullcontext()
 else:
     from contextlib import nullcontext
 
@@ -132,6 +168,11 @@ else:
 # INTEL GPU Specific Logic
 if DEVICE_TYPE == "xpu":
     _gpu_getCurrentRawStream = torch._C._xpu_getCurrentRawStream
+elif DEVICE_TYPE == "mps":
+    # MPS uses Metal command queues, not CUDA streams
+    # Return None as MPS synchronizes differently
+    def _gpu_getCurrentRawStream(device_index):
+        return None
 # NVIDIA GPU Default Logic
 else:
     _gpu_getCurrentRawStream = torch._C._cuda_getCurrentRawStream
@@ -140,12 +181,15 @@ c_void_p = ctypes.c_void_p
 
 
 def _get_tensor_stream(tensor: torch_Tensor) -> c_void_p:
+    if DEVICE_TYPE == "mps":
+        return None  # MPS doesn't use CUDA-style streams
     return c_void_p(_gpu_getCurrentRawStream(tensor.device.index))
 
 
 # Get array of CUDA streams and other buffers
 global CUDA_STREAMS
 global XPU_STREAMS
+global MPS_STREAMS
 global WEIGHT_BUFFERS
 global ABSMAX_BUFFERS
 
@@ -164,6 +208,11 @@ if DEVICE_TYPE == "xpu":
         XPU_STREAMS[k] = v
     XPU_STREAMS = tuple(XPU_STREAMS)
     del _XPU_STREAMS
+elif DEVICE_TYPE == "mps":
+    # MPS uses Metal command queue synchronization, not CUDA streams
+    MPS_STREAMS = None  # Placeholder for future Metal command queue support
+    WEIGHT_BUFFERS = [None]
+    ABSMAX_BUFFERS = [None]
 else:
     # NVIDIA GPU Default Logic
     _CUDA_STREAMS = {
@@ -180,26 +229,36 @@ else:
     CUDA_STREAMS = tuple(CUDA_STREAMS)
     del _CUDA_STREAMS
 
-# Bitsandbytes operations
+# Bitsandbytes operations - only available on non-MPS devices
 ctypes_c_int = ctypes.c_int
 ctypes_c_int32 = ctypes.c_int32
-cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
-cdequantize_blockwise_fp16_nf4 = bnb.functional.lib.cdequantize_blockwise_fp16_nf4
-cdequantize_blockwise_bf16_nf4 = bnb.functional.lib.cdequantize_blockwise_bf16_nf4
+if DEVICE_TYPE != "mps":
+    cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
+    cdequantize_blockwise_fp16_nf4 = bnb.functional.lib.cdequantize_blockwise_fp16_nf4
+    cdequantize_blockwise_bf16_nf4 = bnb.functional.lib.cdequantize_blockwise_bf16_nf4
+else:
+    # MPS placeholders - quantization not supported
+    cdequantize_blockwise_fp32 = None
+    cdequantize_blockwise_fp16_nf4 = None
+    cdequantize_blockwise_bf16_nf4 = None
 
 if DEVICE_TYPE == "xpu":
     # https://github.com/bitsandbytes-foundation/bitsandbytes/blob/c3b8de268fdb55a88f92feada23fc811a1e6877a/bitsandbytes/backends/xpu/ops.py#L115
     # for xpu, inference gemv using above link
     cgemm_4bit_inference_naive_fp16 = bnb.functional.lib.cgemv_4bit_inference_fp16
     cgemm_4bit_inference_naive_bf16 = bnb.functional.lib.cgemv_4bit_inference_bf16
+elif DEVICE_TYPE == "mps":
+    # MPS placeholders - quantized inference not supported
+    cgemm_4bit_inference_naive_fp16 = None
+    cgemm_4bit_inference_naive_bf16 = None
 else:
     cgemm_4bit_inference_naive_fp16 = bnb.functional.lib.cgemm_4bit_inference_naive_fp16
     cgemm_4bit_inference_naive_bf16 = bnb.functional.lib.cgemm_4bit_inference_naive_bf16
 
-
 torch_device_stream = (
-    torch.xpu.current_stream if DEVICE_TYPE == "xpu" else torch.cuda.current_stream
-)
+    torch.xpu.current_stream if DEVICE_TYPE == "xpu" 
+    else (lambda: None if DEVICE_TYPE == "mps" else torch.cuda.current_stream())
+) if DEVICE_TYPE != "mps" else lambda: None
 
 torch_mm = torch.mm
 torch_mv = torch.mv
