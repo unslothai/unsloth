@@ -14,6 +14,7 @@
 
 __all__ = [
     "is_hip",
+    "is_mps",
     "get_device_type",
     "DEVICE_TYPE",
     "DEVICE_TYPE_TORCH",
@@ -34,6 +35,12 @@ def is_hip():
 
 
 @functools.cache
+def is_mps():
+    """Check if Apple Metal Performance Shaders (MPS) backend is available."""
+    return hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
+
+
+@functools.cache
 def get_device_type():
     if hasattr(torch, "cuda") and torch.cuda.is_available():
         if is_hip():
@@ -41,6 +48,8 @@ def get_device_type():
         return "cuda"
     elif hasattr(torch, "xpu") and torch.xpu.is_available():
         return "xpu"
+    elif is_mps():
+        return "mps"
     # Check torch.accelerator
     if hasattr(torch, "accelerator"):
         if not torch.accelerator.is_available():
@@ -55,7 +64,7 @@ def get_device_type():
                 f"Please reinstall torch - it's most likely broken :("
             )
     raise NotImplementedError(
-        "Unsloth currently only works on NVIDIA, AMD and Intel GPUs."
+        "Unsloth currently only works on NVIDIA, AMD, Intel GPUs, and Apple Silicon (MPS)."
     )
 
 
