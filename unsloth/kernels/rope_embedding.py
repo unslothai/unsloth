@@ -286,6 +286,12 @@ def fast_rope_embedding(
     sin,
     rope_embedding_indices = None,
 ):
+    from ..device_type import DEVICE_TYPE
+    from .mps import USE_MPS_FALLBACK
+    if DEVICE_TYPE == "mps" and USE_MPS_FALLBACK:
+        from .mps.rope_embedding import mps_rope_embedding_qk
+        return mps_rope_embedding_qk(Q.transpose(1, 2).contiguous(), K.transpose(1, 2).contiguous(), cos, sin)
+
     if rope_embedding_indices is not None:
         Q_out, K_out = Fast_RoPE_Embedding_QK.apply(
             Q, K, cos, sin, rope_embedding_indices

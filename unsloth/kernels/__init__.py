@@ -61,6 +61,22 @@ from .flex_attention import (
     create_flex_attention_sliding_window_mask,
 )
 
+from .mps import (
+    USE_MPS_FALLBACK,
+)
+from .mps.dispatch import (
+    dispatch_rms_layernorm,
+    dispatch_layernorm,
+    dispatch_rope_embedding,
+    dispatch_cross_entropy_loss,
+    dispatch_swiglu_fg,
+    dispatch_swiglu_backward,
+    dispatch_geglu_exact_forward,
+    dispatch_geglu_exact_backward,
+    dispatch_geglu_approx_forward,
+    dispatch_geglu_approx_backward,
+)
+
 import os
 
 if "UNSLOTH_ZOO_IS_PRESENT" not in os.environ:

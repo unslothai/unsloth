@@ -30,7 +30,20 @@ __all__ = [
     "get_mps_device_info",
     "get_mps_memory_info",
     "get_mps_capabilities",
+    "USE_MPS_FALLBACK",
+    # LoRA & Linear fallbacks
+    "mps_gemv",
+    "mps_linear_forward",
+    "mps_matmul_lora",
+    "mps_apply_lora_mlp_swiglu",
+    "mps_apply_lora_qkv",
+    "mps_apply_lora_o",
 ]
+
+
+# Global flag to control MPS fallback usage
+# Can be disabled for benchmarking or when Metal kernels are available
+USE_MPS_FALLBACK = True
 
 
 @functools.cache
@@ -186,3 +199,15 @@ def print_mps_info():
     print(f"  Quantization: ✗ (bitsandbytes not supported)")
     print(f"  Recommended dtype: {capabilities.get('recommended_dtype', 'float16')}")
     print("=" * 50)
+
+
+from .linear import (
+    mps_gemv,
+    mps_linear_forward,
+)
+from .fast_lora import (
+    mps_matmul_lora,
+    mps_apply_lora_mlp_swiglu,
+    mps_apply_lora_qkv,
+    mps_apply_lora_o,
+)
