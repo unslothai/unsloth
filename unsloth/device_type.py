@@ -137,3 +137,13 @@ if DEVICE_TYPE == "hip":
                 Params4bit
             ):
                 ALLOW_PREQUANTIZED_MODELS = False
+
+elif DEVICE_TYPE == "mps":
+    # bitsandbytes does not support MPS/Apple Silicon yet
+    # See https://github.com/bitsandbytes-foundation/bitsandbytes/issues/1292
+    print(
+        "Unsloth: bitsandbytes does not support Apple Silicon (MPS) yet. "
+        "4-bit/8-bit quantization is disabled, but 16-bit LoRA and full finetuning are supported."
+    )
+    ALLOW_PREQUANTIZED_MODELS = False
+    ALLOW_BITSANDBYTES = False
