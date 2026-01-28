@@ -10,6 +10,7 @@ from datasets import Dataset, IterableDataset
 
 
 _STOP = object()
+_ERROR = object()
 
 
 def _resolve_worker_count(args) -> int:
@@ -141,11 +142,11 @@ class _WindowedBFDPacker:
     def add_sequence(self, seq: dict[str, list[int]]) -> Iterable[dict[str, list[int]]]:
         self._buffer.append(seq)
         if len(self._buffer) >= self.window_size:
-            return self._pack_window(flush = False)
+            return self._pack_window(flush=False)
         return []
 
     def flush(self) -> Iterable[dict[str, list[int]]]:
-        return self._pack_window(flush = True)
+        return self._pack_window(flush=True)
 
     def _pack_window(self, *, flush: bool) -> Iterable[dict[str, list[int]]]:
         if not self._buffer:
@@ -153,7 +154,7 @@ class _WindowedBFDPacker:
         sequences = self._buffer
         self._buffer = []
         lengths = _build_seq_lengths(sequences, self.fields[0])
-        indices = sorted(range(len(sequences)), key = lambda i: lengths[i], reverse = True)
+        indices = sorted(range(len(sequences)), key=lambda i: lengths[i], reverse=True)
 
         bins: list[list[int]] = []
         remaining_spaces: list[int] = []
@@ -202,16 +203,14 @@ class _WindowedBFDPacker:
 
 def _make_packer(strategy: str, max_length: int, fields: tuple[str, ...], args) -> Any:
     if strategy == "wrapped":
-        return _WrappedPacker(max_length = max_length, fields = fields)
+        return _WrappedPacker(max_length=max_length, fields=fields)
     dataset_kwargs = getattr(args, "dataset_kwargs", None)
     window_size = None
     if isinstance(dataset_kwargs, dict):
         window_size = dataset_kwargs.get("pack_window_size")
     if window_size is None:
         window_size = max(256, min(4096, max_length * 4))
-    return _WindowedBFDPacker(
-        max_length = max_length, fields = fields, window_size = int(window_size)
-    )
+    return _WindowedBFDPacker(max_length=max_length, fields=fields, window_size=int(window_size))
 
 
 def _prepare_streaming_pipeline(
@@ -220,13 +219,11 @@ def _prepare_streaming_pipeline(
     batch_size: int,
     worker_count: int,
     queue_size: int,
-    tokenize_fn: Optional[
-        Callable[[dict[str, list[Any]]], dict[str, list[Any]]]
-    ] = None,
+    tokenize_fn: Optional[Callable[[dict[str, list[Any]]], dict[str, list[Any]]]] = None,
     keep_columns: Optional[set[str]] = None,
 ) -> Iterator[dict[str, list[Any]]]:
-    input_queue: queue.Queue[Any] = queue.Queue(maxsize = queue_size)
-    output_queue: queue.Queue[Any] = queue.Queue(maxsize = queue_size)
+    input_queue: queue.Queue[Any] = queue.Queue(maxsize=queue_size)
+    output_queue: queue.Queue[Any] = queue.Queue(maxsize=queue_size)
 
     def producer() -> None:
         if isinstance(dataset, IterableDataset):
@@ -241,32 +238,34 @@ def _prepare_streaming_pipeline(
             input_queue.put(_STOP)
 
     def worker() -> None:
-        while True:
-            item = input_queue.get()
-            if item is _STOP:
-                output_queue.put(_STOP)
-                break
-            batch = item
-            if isinstance(batch, tuple):
-                mode = batch[0]
-                if mode == "slice":
-                    _, start, end = batch
-                    batch = dataset[start:end]
-                else:
-                    _, batch = batch
-            if tokenize_fn is not None:
-                batch = tokenize_fn(batch)
-            if keep_columns is not None and batch:
-                batch = {
-                    key: value for key, value in batch.items() if key in keep_columns
-                }
-            output_queue.put(batch)
+        try:
+            while True:
+                item = input_queue.get()
+                if item is _STOP:
+                    break
+                batch = item
+                if isinstance(batch, tuple):
+                    mode = batch[0]
+                    if mode == "slice":
+                        _, start, end = batch
+                        batch = dataset[start:end]
+                    else:
+                        _, batch = batch
+                if tokenize_fn is not None:
+                    batch = tokenize_fn(batch)
+                if keep_columns is not None and batch:
+                    batch = {key: value for key, value in batch.items() if key in keep_columns}
+                output_queue.put(batch)
+        except Exception as exc:
+            output_queue.put((_ERROR, exc))
+        finally:
+            output_queue.put(_STOP)
 
     threads: list[threading.Thread] = []
-    producer_thread = threading.Thread(target = producer, daemon = True)
+    producer_thread = threading.Thread(target=producer, daemon=True)
     producer_thread.start()
     for _ in range(worker_count):
-        thread = threading.Thread(target = worker, daemon = True)
+        thread = threading.Thread(target=worker, daemon=True)
         thread.start()
         threads.append(thread)
 
@@ -276,6 +275,8 @@ def _prepare_streaming_pipeline(
         if batch is _STOP:
             finished += 1
             continue
+        if isinstance(batch, tuple) and len(batch) == 2 and batch[0] is _ERROR:
+            raise RuntimeError("Unsloth: streaming tokenization worker failed.") from batch[1]
         if batch:
             yield batch
 
@@ -331,9 +332,7 @@ def sft_prepare_dataset(
     if max_seq_length == 0:
         raise RuntimeError("Unsloth: max_seq_length is 0! Please specify one!")
 
-    dataset_text_field = (
-        getattr(args, "dataset_text_field", "text") if args is not None else "text"
-    )
+    dataset_text_field = getattr(args, "dataset_text_field", "text") if args is not None else "text"
 
     do_truncation = max_seq_length != 0
     do_formatting_func = False
@@ -352,18 +351,14 @@ def sft_prepare_dataset(
 
     if "labels" in column_names:
         if is_vlm and not hasattr(tokenizer, "pad"):
-            raise RuntimeError(
-                f"Unsloth: {processing_class.__class__} does not have .pad!"
-            )
+            raise RuntimeError(f"Unsloth: {processing_class.__class__} does not have .pad!")
         self.data_collator = DataCollatorForSeq2Seq(tokenizer)
         used_column_names.append("labels")
         do_tokenize = False
     elif "input_ids" in column_names:
         if is_vlm and not hasattr(tokenizer, "pad"):
-            raise RuntimeError(
-                f"Unsloth: {processing_class.__class__} does not have .pad!"
-            )
-        self.data_collator = DataCollatorForLanguageModeling(tokenizer, mlm = False)
+            raise RuntimeError(f"Unsloth: {processing_class.__class__} does not have .pad!")
+        self.data_collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)
         do_tokenize = False
     elif dataset_text_field not in column_names:
         do_formatting_func = True
@@ -378,40 +373,34 @@ def sft_prepare_dataset(
         if do_formatting_func:
             test_text = formatting_func(next(iter(dataset)))
             if not isinstance(test_text, list):
-                raise ValueError(
-                    "Unsloth: The `formatting_func` should return a list of processed strings."
-                )
+                raise ValueError("Unsloth: The `formatting_func` should return a list of processed strings.")
             test_text = test_text[0]
         else:
-            test_text = next(iter(dataset))[dataset_text_field][0]
+            sample_text = next(iter(dataset))[dataset_text_field]
+            if isinstance(sample_text, list):
+                test_text = sample_text[0] if sample_text else ""
+            else:
+                test_text = sample_text
 
         chat_template = _extract_chat_template(processing_class, tokenizer)
-        bos_token = getattr(processing_class, "bos_token", None) or getattr(
-            tokenizer, "bos_token", None
-        )
+        bos_token = getattr(processing_class, "bos_token", None) or getattr(tokenizer, "bos_token", None)
         if bos_token is not None:
             if test_text.startswith(bos_token) or bos_token in chat_template:
                 add_special_tokens = False
-                print(
-                    "Unsloth: We found double BOS tokens - we shall remove one automatically."
-                )
+                print("Unsloth: We found double BOS tokens - we shall remove one automatically.")
 
     batch_size = _resolve_batch_size(args, dataset)
     worker_count = _resolve_worker_count(args)
     queue_size = _resolve_queue_size(args, worker_count)
 
     def tokenize_fn(batch: dict[str, list[Any]]) -> dict[str, list[Any]]:
-        texts = (
-            batch[dataset_text_field]
-            if not do_formatting_func
-            else formatting_func(batch)
-        )
+        texts = batch[dataset_text_field] if not do_formatting_func else formatting_func(batch)
         tokenized = tokenizer(
             texts,
-            truncation = do_truncation,
-            max_length = max_seq_length,
-            return_token_type_ids = False,
-            add_special_tokens = add_special_tokens,
+            truncation=do_truncation,
+            max_length=max_seq_length,
+            return_token_type_ids=False,
+            add_special_tokens=add_special_tokens,
         )
         if not packing:
             for key, value in batch.items():
@@ -428,19 +417,14 @@ def sft_prepare_dataset(
     def example_generator() -> Iterator[dict[str, Any]]:
         stream = _prepare_streaming_pipeline(
             dataset,
-            batch_size = batch_size,
-            worker_count = worker_count,
-            queue_size = queue_size,
-            tokenize_fn = tokenize_fn if do_tokenize else None,
-            keep_columns = keep_columns,
+            batch_size=batch_size,
+            worker_count=worker_count,
+            queue_size=queue_size,
+            tokenize_fn=tokenize_fn if do_tokenize else None,
+            keep_columns=keep_columns,
         )
         packer = (
-            _make_packer(
-                getattr(args, "packing_strategy", "bfd"),
-                max_seq_length,
-                pack_fields,
-                args,
-            )
+            _make_packer(getattr(args, "packing_strategy", "bfd"), max_seq_length, pack_fields, args)
             if packing
             else None
         )
@@ -461,7 +445,7 @@ def sft_prepare_dataset(
                 yield output
 
     if do_tokenize and is_vlm and not hasattr(processing_class, "pad"):
-        data_collator = DataCollatorForLanguageModeling(tokenizer, mlm = False)
+        data_collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)
         self.data_collator = data_collator
 
     dataset_kwargs = getattr(args, "dataset_kwargs", None) if args is not None else None
@@ -472,6 +456,6 @@ def sft_prepare_dataset(
         cache_dir = dataset_kwargs.get("cache_dir")
     return Dataset.from_generator(
         example_generator,
-        keep_in_memory = keep_in_memory if keep_in_memory is not None else False,
-        cache_dir = cache_dir,
+        keep_in_memory=keep_in_memory if keep_in_memory is not None else False,
+        cache_dir=cache_dir,
     )
