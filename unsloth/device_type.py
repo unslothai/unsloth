@@ -81,6 +81,9 @@ def get_device_count():
         return torch.cuda.device_count()
     elif DEVICE_TYPE == "xpu":
         return torch.xpu.device_count()
+    elif DEVICE_TYPE == "mps":
+        # MPS follows a single-GPU paradigm on Apple Silicon
+        return 1
     else:
         return 1
 
