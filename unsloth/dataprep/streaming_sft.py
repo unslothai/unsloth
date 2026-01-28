@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import bisect
 import queue
 import threading
 from dataclasses import dataclass
@@ -165,8 +166,6 @@ class _WindowedBFDPacker:
                 return
             pos = 0
             if remaining_spaces:
-                import bisect
-
                 pos = bisect.bisect_left(remaining_spaces, space)
             remaining_spaces.insert(pos, space)
             remaining_bins.insert(pos, bin_idx)
@@ -175,8 +174,6 @@ class _WindowedBFDPacker:
             length = lengths[idx]
             pos = 0
             if remaining_spaces:
-                import bisect
-
                 pos = bisect.bisect_left(remaining_spaces, length)
             if pos < len(remaining_spaces):
                 bin_idx = remaining_bins.pop(pos)
