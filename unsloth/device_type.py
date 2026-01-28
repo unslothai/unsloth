@@ -64,7 +64,10 @@ def get_device_type():
                 f"Please reinstall torch - it's most likely broken :("
             )
     raise NotImplementedError(
-        "Unsloth currently only works on NVIDIA, AMD, Intel GPUs, and Apple Silicon (MPS)."
+        "Unsloth currently only works on NVIDIA, AMD, Intel GPUs, and Apple Silicon (MPS).\n"
+        "If you're on a Mac with Apple Silicon, ensure you have:\n"
+        "  1. PyTorch 2.1+ installed: pip install torch>=2.1.0\n"
+        "  2. MPS backend available: python -c \"import torch; print(torch.backends.mps.is_available())\""
     )
 
 
