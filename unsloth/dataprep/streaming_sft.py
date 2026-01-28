@@ -313,14 +313,18 @@ def _sample_example(dataset: Any) -> Optional[dict[str, Any]]:
         return None
 
 
-def _format_sample(formatting_func: Callable[[Any], list[str]], sample: dict[str, Any]) -> str:
+def _format_sample(
+    formatting_func: Callable[[Any], list[str]], sample: dict[str, Any]
+) -> str:
     batch = {key: [value] for key, value in sample.items()}
     try:
         result = formatting_func(batch)
     except Exception:
         result = formatting_func([sample])
     if not isinstance(result, list):
-        raise ValueError("Unsloth: The `formatting_func` should return a list of processed strings.")
+        raise ValueError(
+            "Unsloth: The `formatting_func` should return a list of processed strings."
+        )
     return result[0] if result else ""
 
 
@@ -408,7 +412,9 @@ def sft_prepare_dataset(
     if do_tokenize:
         sample = _sample_example(dataset)
         if do_formatting_func:
-            test_text = "" if sample is None else _format_sample(formatting_func, sample)
+            test_text = (
+                "" if sample is None else _format_sample(formatting_func, sample)
+            )
         else:
             if sample is None:
                 test_text = ""
