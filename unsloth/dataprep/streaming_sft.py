@@ -301,6 +301,29 @@ def _extract_chat_template(processing_class, tokenizer) -> str:
     return chat_template
 
 
+def _sample_example(dataset: Any) -> Optional[dict[str, Any]]:
+    if isinstance(dataset, Dataset):
+        return dataset[0]
+    if isinstance(dataset, IterableDataset):
+        # Avoid consuming non-resettable iterables.
+        return None
+    try:
+        return next(iter(dataset))
+    except Exception:
+        return None
+
+
+def _format_sample(formatting_func: Callable[[Any], list[str]], sample: dict[str, Any]) -> str:
+    batch = {key: [value] for key, value in sample.items()}
+    try:
+        result = formatting_func(batch)
+    except Exception:
+        result = formatting_func([sample])
+    if not isinstance(result, list):
+        raise ValueError("Unsloth: The `formatting_func` should return a list of processed strings.")
+    return result[0] if result else ""
+
+
 def sft_prepare_dataset(
     self,
     dataset: Dataset | IterableDataset,
@@ -383,19 +406,18 @@ def sft_prepare_dataset(
 
     add_special_tokens = True
     if do_tokenize:
+        sample = _sample_example(dataset)
         if do_formatting_func:
-            test_text = formatting_func(next(iter(dataset)))
-            if not isinstance(test_text, list):
-                raise ValueError(
-                    "Unsloth: The `formatting_func` should return a list of processed strings."
-                )
-            test_text = test_text[0]
+            test_text = "" if sample is None else _format_sample(formatting_func, sample)
         else:
-            sample_text = next(iter(dataset))[dataset_text_field]
-            if isinstance(sample_text, list):
-                test_text = sample_text[0] if sample_text else ""
+            if sample is None:
+                test_text = ""
             else:
-                test_text = sample_text
+                sample_text = sample[dataset_text_field]
+                if isinstance(sample_text, list):
+                    test_text = sample_text[0] if sample_text else ""
+                else:
+                    test_text = sample_text
 
         chat_template = _extract_chat_template(processing_class, tokenizer)
         bos_token = getattr(processing_class, "bos_token", None) or getattr(
