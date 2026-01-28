@@ -328,6 +328,47 @@ def _format_sample(
     return result[0] if result else ""
 
 
+def _coerce_formatting_result(result: Any, batch_size: int) -> Optional[list[str]]:
+    if isinstance(result, str):
+        return [result] if batch_size == 1 else None
+    if isinstance(result, list):
+        if batch_size == 0:
+            return []
+        if len(result) == batch_size:
+            return result
+        if len(result) == 1 and batch_size == 1:
+            return result
+    return None
+
+
+def _format_batch(formatting_func: Callable[[Any], list[str]], batch: dict[str, list[Any]]) -> list[str]:
+    batch_size = _batch_length(batch)
+    result = None
+    try:
+        result = formatting_func(batch)
+    except Exception:
+        result = None
+    texts = _coerce_formatting_result(result, batch_size)
+    if texts is not None:
+        return texts
+
+    texts = []
+    for idx in range(batch_size):
+        example = {key: value[idx] for key, value in batch.items()}
+        try:
+            out = formatting_func(example)
+        except Exception:
+            out = formatting_func([example])
+        if isinstance(out, list):
+            text = out[0] if out else ""
+        elif isinstance(out, str):
+            text = out
+        else:
+            raise ValueError("Unsloth: The `formatting_func` should return a list of processed strings.")
+        texts.append(text)
+    return texts
+
+
 def sft_prepare_dataset(
     self,
     dataset: Dataset | IterableDataset,
@@ -444,7 +485,7 @@ def sft_prepare_dataset(
         texts = (
             batch[dataset_text_field]
             if not do_formatting_func
-            else formatting_func(batch)
+            else _format_batch(formatting_func, batch)
         )
         tokenized = tokenizer(
             texts,
