@@ -628,6 +628,49 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
         return out.t() if is_transposed else out
 
     pass
+elif DEVICE_TYPE == "mps":
+    # MPS/Apple Silicon - bitsandbytes not supported
+    # Quantized models should not be loaded on MPS, but we handle gracefully if they are
+
+    import warnings
+    _MPS_DEQUANT_WARNING_SHOWN = False
+
+    @torch.inference_mode
+    def fast_dequantize(W, quant_state = None, out = None, use_global_buffer = False):
+        """
+        MPS dequantization fallback.
+        Since bitsandbytes doesn't support MPS, quantized weights should not reach here.
+        If they do, we warn the user and return the weight as-is.
+        """
+        global _MPS_DEQUANT_WARNING_SHOWN
+
+        # Handle Float8Tensor if present
+        if isinstance(W, Float8Tensor):
+            return W.dequantize()
+
+        # No quant_state means already dequantized
+        if quant_state is None:
+            return W
+
+        # Handle FP8
+        if W.dtype == torch.float8_e4m3fn:
+            return weight_dequant(W, quant_state)
+
+        # If we reach here with quant_state, the user loaded a quantized model on MPS
+        # This shouldn't happen if they followed the guidance, but handle gracefully
+        if not _MPS_DEQUANT_WARNING_SHOWN:
+            warnings.warn(
+                "Unsloth: Quantized weights detected on MPS device. "
+                "bitsandbytes does not support Apple Silicon - dequantization will fail. "
+                "Please use 16-bit models for MPS. Returning weight as-is.",
+                UserWarning,
+                stacklevel=2
+            )
+            _MPS_DEQUANT_WARNING_SHOWN = True
+
+        # Return weight as-is - this will likely cause issues, but prevents crash
+        return W
+
 else:
 
     @torch.inference_mode
@@ -915,6 +958,29 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
         return out
 
     pass
+elif DEVICE_TYPE == "mps":
+    # MPS/Apple Silicon - bitsandbytes not supported, use torch.matmul fallback
+
+    def fast_gemv(X, W, quant_state, out = None):
+        """
+        MPS fast_gemv fallback.
+        Since bitsandbytes doesn't support MPS, we use standard torch.matmul.
+        Quantized weights should not reach here if user follows MPS guidance.
+        """
+        if quant_state is None:
+            return torch_matmul(X, W, out = out)
+
+        # If quant_state exists, user loaded quantized model - warn and use matmul
+        # The weight W will likely be in wrong format, but we try anyway
+        import warnings
+        warnings.warn(
+            "Unsloth: Quantized GEMV on MPS not supported. Using torch.matmul fallback. "
+            "For best performance, use 16-bit models on Apple Silicon.",
+            UserWarning,
+            stacklevel=2
+        )
+        return torch_matmul(X, W, out = out)
+
 else:
 
     def fast_gemv(X, W, quant_state, out = None):
