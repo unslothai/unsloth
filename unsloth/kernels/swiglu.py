@@ -57,6 +57,12 @@ def _fg_kernel(
 
 
 def swiglu_fg_kernel(e, g):
+    from ..device_type import DEVICE_TYPE
+    from .mps import USE_MPS_FALLBACK
+    if DEVICE_TYPE == "mps" and USE_MPS_FALLBACK:
+        from .mps.swiglu import mps_swiglu_forward
+        return mps_swiglu_forward(e, g)
+
     batch, seq_len, hd = e.shape
     n_elements = e.numel()
     h = torch.empty((batch, seq_len, hd), dtype = e.dtype, device = e.device)
@@ -128,6 +134,12 @@ def _DWf_DW_dfg_kernel(
 
 
 def swiglu_DWf_DW_dfg_kernel(DW, e, g):
+    from ..device_type import DEVICE_TYPE
+    from .mps import USE_MPS_FALLBACK
+    if DEVICE_TYPE == "mps" and USE_MPS_FALLBACK:
+        from .mps.swiglu import mps_swiglu_backward
+        return mps_swiglu_backward(DW, e, g)
+
     batch_seq_len, hd = e.shape  # Flattened to 2D, so 1st dim is bsz * seq_len
     n_elements = e.numel()
     grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
