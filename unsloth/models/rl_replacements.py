@@ -829,7 +829,7 @@ def grpo_trainer_compute_loss(function_name, function):
     def compute_loss(
         self, model, inputs, return_outputs = False, num_items_in_batch = None
     ):
-        if torch.distributed.is_initialized():
+        if torch.distributed.is_initialized() and hasattr(model, "module"):
             model = model.module
 
         if return_outputs:
