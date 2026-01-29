@@ -36,6 +36,8 @@ __all__ = [
     "mps_linear_forward",
     "mps_matmul_lora",
     "mps_apply_lora_mlp_swiglu",
+    "mps_apply_lora_mlp_geglu_exact",
+    "mps_apply_lora_mlp_geglu_approx",
     "mps_apply_lora_qkv",
     "mps_apply_lora_o",
 ]
