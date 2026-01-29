@@ -535,6 +535,12 @@ try:
     from transformers.configuration_utils import layer_type_validation
 except:
     pass
+
+try:
+    # Transformers 5.0+ uses RotaryEmbeddingConfigMixin as a base class for configs
+    from transformers.modeling_rope_utils import RotaryEmbeddingConfigMixin
+except:
+    pass
 from transformers import __version__ as transformers_version
 
 try:
