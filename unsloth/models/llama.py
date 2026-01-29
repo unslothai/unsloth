@@ -2653,6 +2653,7 @@ class FastLlamaModel:
         loftq_config = {},
         temporary_location = "_unsloth_temporary_saved_buffers",
         qat_scheme = None,
+        target_parameters = None,  # For MoE expert layers (nn.Parameter)
         ensure_weight_tying = False,
         **kwargs,
     ):
@@ -2683,6 +2684,7 @@ class FastLlamaModel:
                 init_lora_weights = init_lora_weights,
                 loftq_config = loftq_config,
                 temporary_location = temporary_location,
+                target_parameters = target_parameters,
                 ensure_weight_tying = ensure_weight_tying,
                 **kwargs,
             )
@@ -2966,6 +2968,10 @@ class FastLlamaModel:
         # Does not get lora yet, so get name from model, not base model
         is_classification = "Classification" in str(type(model))
 
+        # Auto-detect MoE models and populate target_parameters for expert layers
+        if target_parameters is None:
+            target_parameters = get_moe_target_parameters(model, target_modules)
+
         arguments = dict(
             r = r,
             lora_alpha = lora_alpha,
@@ -2978,6 +2984,7 @@ class FastLlamaModel:
             loftq_config = loftq_config,
             use_rslora = use_rslora,
             modules_to_save = modules_to_save,
+            target_parameters = target_parameters,
             ensure_weight_tying = ensure_weight_tying,
             **kwargs,
         )
