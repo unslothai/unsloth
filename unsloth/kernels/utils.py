@@ -30,17 +30,20 @@ from ..device_type import (
 # Triton does not support MPS/Metal - conditionally import
 if DEVICE_TYPE != "mps":
     import triton
+
     MAX_FUSED_SIZE: int = 65536
     next_power_of_2 = triton.next_power_of_2
 else:
     triton = None
     MAX_FUSED_SIZE: int = 65536
+
     # Pure Python fallback for next_power_of_2
     def next_power_of_2(n: int) -> int:
         """Return the smallest power of 2 >= n."""
         if n <= 0:
             return 1
         return 1 << (n - 1).bit_length()
+
 
 from .fp8 import weight_dequant, fp8_linear
 import functools
@@ -70,6 +73,7 @@ elif DEVICE_TYPE == "mps":
     # MPS does not have native AMP support yet - use identity decorators
     def _identity_decorator(fn):
         return fn
+
     torch_amp_custom_fwd = _identity_decorator
     torch_amp_custom_bwd = _identity_decorator
 
@@ -140,6 +144,7 @@ HAS_MPS_DEVICE = DEVICE_TYPE == "mps"
 # bitsandbytes does not support MPS - conditionally import
 if DEVICE_TYPE != "mps":
     import bitsandbytes as bnb
+
     # https://github.com/bitsandbytes-foundation/bitsandbytes/pull/1330/files
     HAS_CUDA_STREAM = Version(bnb.__version__) > Version("0.43.3")
     get_ptr = bnb.functional.get_ptr
@@ -158,6 +163,7 @@ if DEVICE_COUNT > 1:
     elif DEVICE_TYPE == "mps":
         # MPS is single device, use nullcontext
         from contextlib import nullcontext
+
         def torch_gpu_device(device):
             return nullcontext()
 else:
@@ -258,9 +264,14 @@ else:
     cgemm_4bit_inference_naive_bf16 = bnb.functional.lib.cgemm_4bit_inference_naive_bf16
 
 torch_device_stream = (
-    torch.xpu.current_stream if DEVICE_TYPE == "xpu" 
-    else (lambda: None if DEVICE_TYPE == "mps" else torch.cuda.current_stream())
-) if DEVICE_TYPE != "mps" else lambda: None
+    (
+        torch.xpu.current_stream
+        if DEVICE_TYPE == "xpu"
+        else (lambda: None if DEVICE_TYPE == "mps" else torch.cuda.current_stream())
+    )
+    if DEVICE_TYPE != "mps"
+    else lambda: None
+)
 
 torch_mm = torch.mm
 torch_mv = torch.mv
@@ -633,6 +644,7 @@ elif DEVICE_TYPE == "mps":
     # Quantized models should not be loaded on MPS, but we handle gracefully if they are
 
     import warnings
+
     _MPS_DEQUANT_WARNING_SHOWN = False
 
     @torch.inference_mode
@@ -664,7 +676,7 @@ elif DEVICE_TYPE == "mps":
                 "bitsandbytes does not support Apple Silicon - dequantization will fail. "
                 "Please use 16-bit models for MPS. Returning weight as-is.",
                 UserWarning,
-                stacklevel=2
+                stacklevel = 2,
             )
             _MPS_DEQUANT_WARNING_SHOWN = True
 
@@ -973,11 +985,12 @@ elif DEVICE_TYPE == "mps":
         # If quant_state exists, user loaded quantized model - warn and use matmul
         # The weight W will likely be in wrong format, but we try anyway
         import warnings
+
         warnings.warn(
             "Unsloth: Quantized GEMV on MPS not supported. Using torch.matmul fallback. "
             "For best performance, use 16-bit models on Apple Silicon.",
             UserWarning,
-            stacklevel=2
+            stacklevel = 2,
         )
         return torch_matmul(X, W, out = out)
 

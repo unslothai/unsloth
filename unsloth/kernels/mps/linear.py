@@ -14,26 +14,32 @@
 
 import torch
 
-def mps_gemv(X: torch.Tensor, W: torch.Tensor, out: torch.Tensor = None) -> torch.Tensor:
+
+def mps_gemv(
+    X: torch.Tensor, W: torch.Tensor, out: torch.Tensor = None
+) -> torch.Tensor:
     """
     Optimized GEMV for MPS.
     Uses torch.mv or torch.matmul depending on input shape.
     """
     # X shape: (bsz, seq_len, in_dim) or (seq_len, in_dim)
     # W shape: (out_dim, in_dim)
-    
+
     if X.dim() == 3:
         # Flatten batch and seq if they are both 1
         if X.shape[0] == 1 and X.shape[1] == 1:
             return torch.matmul(X.view(-1), W.t()).view(1, 1, -1)
-        return torch.matmul(X, W.t(), out=out)
-    
+        return torch.matmul(X, W.t(), out = out)
+
     if X.dim() == 2 and X.shape[0] == 1:
         return torch.matmul(X.view(-1), W.t()).view(1, -1)
-        
-    return torch.matmul(X, W.t(), out=out)
 
-def mps_linear_forward(X: torch.Tensor, W: torch.Tensor, bias: torch.Tensor = None) -> torch.Tensor:
+    return torch.matmul(X, W.t(), out = out)
+
+
+def mps_linear_forward(
+    X: torch.Tensor, W: torch.Tensor, bias: torch.Tensor = None
+) -> torch.Tensor:
     """
     Basic linear forward for MPS.
     """

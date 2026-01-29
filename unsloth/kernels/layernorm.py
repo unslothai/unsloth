@@ -111,8 +111,10 @@ class Fast_Layernorm(torch.autograd.Function):
     def forward(ctx, X, W, b, eps):
         from ..device_type import DEVICE_TYPE
         from .mps import USE_MPS_FALLBACK
+
         if DEVICE_TYPE == "mps" and USE_MPS_FALLBACK:
             from .mps.layernorm import mps_layernorm
+
             return mps_layernorm(X, W, b, eps)
 
         shape = X.shape
