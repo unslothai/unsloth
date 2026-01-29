@@ -159,10 +159,18 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
     @staticmethod
     def forward(ctx, X: torch.Tensor, W: torch.Tensor, eps: float, gemma: bool = False):
         from ..device_type import DEVICE_TYPE
-        from .mps import USE_MPS_FALLBACK
-        if DEVICE_TYPE == "mps" and USE_MPS_FALLBACK:
-            from .mps.rms_layernorm import mps_rms_layernorm
-            return mps_rms_layernorm(X, W, eps, gemma)
+        
+        # Priority: Metal kernel > MPS fallback > Triton
+        if DEVICE_TYPE == "mps":
+            from .metal import USE_METAL_KERNEL
+            if USE_METAL_KERNEL:
+                from .metal import metal_rms_layernorm
+                return metal_rms_layernorm(X, W, eps, gemma)
+            
+            from .mps import USE_MPS_FALLBACK
+            if USE_MPS_FALLBACK:
+                from .mps.rms_layernorm import mps_rms_layernorm
+                return mps_rms_layernorm(X, W, eps, gemma)
 
         shape = X.shape
         dim: int = shape[-1]

@@ -110,10 +110,18 @@ class Fast_Layernorm(torch.autograd.Function):
     @staticmethod
     def forward(ctx, X, W, b, eps):
         from ..device_type import DEVICE_TYPE
-        from .mps import USE_MPS_FALLBACK
-        if DEVICE_TYPE == "mps" and USE_MPS_FALLBACK:
-            from .mps.layernorm import mps_layernorm
-            return mps_layernorm(X, W, b, eps)
+        
+        # Priority: MLX fast > MPS fallback > Triton
+        if DEVICE_TYPE == "mps":
+            from .mlx import USE_MLX_FAST
+            if USE_MLX_FAST:
+                from .mlx import mlx_layer_norm
+                return mlx_layer_norm(X, W, b, eps)
+            
+            from .mps import USE_MPS_FALLBACK
+            if USE_MPS_FALLBACK:
+                from .mps.layernorm import mps_layernorm
+                return mps_layernorm(X, W, b, eps)
 
         shape = X.shape
         dim = shape[-1]

@@ -287,10 +287,18 @@ def fast_rope_embedding(
     rope_embedding_indices = None,
 ):
     from ..device_type import DEVICE_TYPE
-    from .mps import USE_MPS_FALLBACK
-    if DEVICE_TYPE == "mps" and USE_MPS_FALLBACK:
-        from .mps.rope_embedding import mps_rope_embedding_qk
-        return mps_rope_embedding_qk(Q.transpose(1, 2).contiguous(), K.transpose(1, 2).contiguous(), cos, sin)
+    
+    # Priority: MLX fast > MPS fallback > Triton
+    if DEVICE_TYPE == "mps":
+        from .mlx import USE_MLX_FAST
+        if USE_MLX_FAST and rope_embedding_indices is None:
+            from .mlx import mlx_rope_qk
+            return mlx_rope_qk(Q, K, cos, sin)
+        
+        from .mps import USE_MPS_FALLBACK
+        if USE_MPS_FALLBACK:
+            from .mps.rope_embedding import mps_rope_embedding_qk
+            return mps_rope_embedding_qk(Q.transpose(1, 2).contiguous(), K.transpose(1, 2).contiguous(), cos, sin)
 
     if rope_embedding_indices is not None:
         Q_out, K_out = Fast_RoPE_Embedding_QK.apply(
