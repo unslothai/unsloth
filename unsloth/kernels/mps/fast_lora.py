@@ -36,6 +36,7 @@ def mps_matmul_lora(X, W, W_quant, A, B, s):
 
     return out
 
+
 class MPSLoRA_MLP(torch.autograd.Function):
     @staticmethod
     def forward(
@@ -131,23 +132,53 @@ def mps_apply_lora_o(X, OW, OW_quant, OA, OB, OS):
     return mps_matmul_lora(X, OW, OW_quant, OA, OB, OS)
 
 
-def mps_apply_lora_mlp_geglu_exact(X, gateW, gateW_quant, gateA, gateB, gateS,
-                                   upW, upW_quant, upA, upB, upS,
-                                   downW, downW_quant, downA, downB, downS):
+def mps_apply_lora_mlp_geglu_exact(
+    X,
+    gateW,
+    gateW_quant,
+    gateA,
+    gateB,
+    gateS,
+    upW,
+    upW_quant,
+    upA,
+    upB,
+    upS,
+    downW,
+    downW_quant,
+    downA,
+    downB,
+    downS,
+):
     """MPS GEGLU (Exact) MLP fallback using PyTorch operations."""
     e = mps_matmul_lora(X, gateW, gateW_quant, gateA, gateB, gateS)
     g = mps_matmul_lora(X, upW, upW_quant, upA, upB, upS)
     # GEGLU: GELU(e) * g
-    h = F.gelu(e, approximate='none') * g
+    h = F.gelu(e, approximate = "none") * g
     return mps_matmul_lora(h, downW, downW_quant, downA, downB, downS)
 
 
-def mps_apply_lora_mlp_geglu_approx(X, gateW, gateW_quant, gateA, gateB, gateS,
-                                    upW, upW_quant, upA, upB, upS,
-                                    downW, downW_quant, downA, downB, downS):
+def mps_apply_lora_mlp_geglu_approx(
+    X,
+    gateW,
+    gateW_quant,
+    gateA,
+    gateB,
+    gateS,
+    upW,
+    upW_quant,
+    upA,
+    upB,
+    upS,
+    downW,
+    downW_quant,
+    downA,
+    downB,
+    downS,
+):
     """MPS GEGLU (Approximate) MLP fallback using PyTorch operations."""
     e = mps_matmul_lora(X, gateW, gateW_quant, gateA, gateB, gateS)
     g = mps_matmul_lora(X, upW, upW_quant, upA, upB, upS)
     # GEGLU approximate: GELU(e, approximate='tanh') * g
-    h = F.gelu(e, approximate='tanh') * g
+    h = F.gelu(e, approximate = "tanh") * g
     return mps_matmul_lora(h, downW, downW_quant, downA, downB, downS)

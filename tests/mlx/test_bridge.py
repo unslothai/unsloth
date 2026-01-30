@@ -31,7 +31,7 @@ class TestBridgeImports:
             synchronize_mps,
             synchronize_mlx,
         )
-        
+
         assert callable(torch_to_mlx)
         assert callable(mlx_to_torch)
         assert callable(synchronize_mps)
@@ -40,14 +40,14 @@ class TestBridgeImports:
     def test_synchronize_mps_safe_on_non_mac(self):
         """synchronize_mps should not crash on non-Mac platforms."""
         from unsloth.kernels.mlx.bridge import synchronize_mps
-        
+
         # Should run without error on any platform
         synchronize_mps()
 
     def test_synchronize_mlx_safe_when_unavailable(self):
         """synchronize_mlx should not crash when MLX unavailable."""
         from unsloth.kernels.mlx.bridge import synchronize_mlx
-        
+
         # Should run without error even if MLX not installed
         synchronize_mlx()
 
@@ -61,10 +61,10 @@ class TestBridgeConversion:
         import torch
         import mlx.core as mx
         from unsloth.kernels.mlx import torch_to_mlx
-        
+
         tensor = torch.randn(4, 4)
         arr = torch_to_mlx(tensor)
-        
+
         assert isinstance(arr, mx.array)
         assert arr.shape == (4, 4)
 
@@ -73,10 +73,10 @@ class TestBridgeConversion:
         import torch
         import mlx.core as mx
         from unsloth.kernels.mlx import mlx_to_torch
-        
+
         arr = mx.ones((4, 4))
-        tensor = mlx_to_torch(arr, device="cpu")
-        
+        tensor = mlx_to_torch(arr, device = "cpu")
+
         assert isinstance(tensor, torch.Tensor)
         assert tensor.shape == (4, 4)
 
@@ -85,40 +85,40 @@ class TestBridgeConversion:
         import torch
         import mlx.core as mx
         from unsloth.kernels.mlx import torch_to_mlx, mlx_to_torch
-        
+
         original = torch.randn(8, 8)
         arr = torch_to_mlx(original)
-        recovered = mlx_to_torch(arr, device="cpu")
-        
-        assert torch.allclose(original, recovered, atol=1e-5)
+        recovered = mlx_to_torch(arr, device = "cpu")
+
+        assert torch.allclose(original, recovered, atol = 1e-5)
 
     def test_mlx_context_manager(self):
         """mlx_context should work as context manager."""
         import torch
         from unsloth.kernels.mlx import mlx_context, torch_to_mlx, mlx_to_torch
-        
+
         tensor = torch.randn(4, 4)
-        
+
         with mlx_context():
             arr = torch_to_mlx(tensor)
-            result = mlx_to_torch(arr, device="cpu")
-        
-        assert torch.allclose(tensor, result, atol=1e-5)
+            result = mlx_to_torch(arr, device = "cpu")
+
+        assert torch.allclose(tensor, result, atol = 1e-5)
 
     def test_with_mlx_context_decorator(self):
         """with_mlx_context decorator should work."""
         import torch
         from unsloth.kernels.mlx import with_mlx_context, torch_to_mlx, mlx_to_torch
-        
+
         @with_mlx_context
         def process(t):
             arr = torch_to_mlx(t)
-            return mlx_to_torch(arr, device="cpu")
-        
+            return mlx_to_torch(arr, device = "cpu")
+
         tensor = torch.randn(4, 4)
         result = process(tensor)
-        
-        assert torch.allclose(tensor, result, atol=1e-5)
+
+        assert torch.allclose(tensor, result, atol = 1e-5)
 
 
 class TestBridgeErrorHandling:
@@ -128,11 +128,12 @@ class TestBridgeErrorHandling:
         """torch_to_mlx should raise UnslothMLXError when MLX unavailable."""
         from unsloth.kernels.mlx import is_mlx_available, UnslothMLXError
         from unsloth.kernels.mlx.bridge import torch_to_mlx
-        
+
         if not is_mlx_available():
             import torch
+
             tensor = torch.randn(4, 4)
-            
+
             with pytest.raises(UnslothMLXError):
                 torch_to_mlx(tensor)
 
@@ -140,7 +141,7 @@ class TestBridgeErrorHandling:
         """mlx_context should raise UnslothMLXError when MLX unavailable."""
         from unsloth.kernels.mlx import is_mlx_available, UnslothMLXError
         from unsloth.kernels.mlx.bridge import mlx_context
-        
+
         if not is_mlx_available():
             with pytest.raises(UnslothMLXError):
                 with mlx_context():

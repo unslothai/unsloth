@@ -37,11 +37,14 @@ def check_environment() -> bool:
     if sys.platform != "darwin":
         print("[X] MLX benchmarks require macOS (Apple Silicon)")
         return False
-    
+
     try:
         import mlx.core as mx
         import torch
-        print(f"[OK] MLX version: {mx.__version__ if hasattr(mx, '__version__') else 'unknown'}")
+
+        print(
+            f"[OK] MLX version: {mx.__version__ if hasattr(mx, '__version__') else 'unknown'}"
+        )
         print(f"[OK] PyTorch version: {torch.__version__}")
         print(f"[OK] MPS available: {torch.backends.mps.is_available()}")
         return True
@@ -54,31 +57,31 @@ def benchmark_torch_to_mlx(sizes: List[Tuple[int, ...]], n_iterations: int = 100
     """Benchmark PyTorch -> MLX conversion."""
     import torch
     from unsloth.kernels.mlx import torch_to_mlx, synchronize_mps
-    
+
     print("\n" + "=" * 60)
     print("PyTorch -> MLX Conversion")
     print("=" * 60)
     print(f"{'Shape':<20} {'Total (ms)':<15} {'Per-iter (us)':<15}")
     print("-" * 60)
-    
+
     for shape in sizes:
         # Create tensor on MPS
-        tensor = torch.randn(shape, device="mps", dtype=torch.float32)
+        tensor = torch.randn(shape, device = "mps", dtype = torch.float32)
         synchronize_mps()
-        
+
         # Warmup
         for _ in range(5):
             _ = torch_to_mlx(tensor)
-        
+
         # Benchmark
         start = time.perf_counter()
         for _ in range(n_iterations):
             _ = torch_to_mlx(tensor)
         elapsed = time.perf_counter() - start
-        
+
         total_ms = elapsed * 1000
         per_iter_us = (elapsed / n_iterations) * 1_000_000
-        
+
         print(f"{str(shape):<20} {total_ms:<15.2f} {per_iter_us:<15.2f}")
 
 
@@ -86,31 +89,31 @@ def benchmark_mlx_to_torch(sizes: List[Tuple[int, ...]], n_iterations: int = 100
     """Benchmark MLX -> PyTorch conversion."""
     import mlx.core as mx
     from unsloth.kernels.mlx import mlx_to_torch
-    
+
     print("\n" + "=" * 60)
     print("MLX -> PyTorch Conversion")
     print("=" * 60)
     print(f"{'Shape':<20} {'Total (ms)':<15} {'Per-iter (us)':<15}")
     print("-" * 60)
-    
+
     for shape in sizes:
         # Create MLX array
-        arr = mx.random.normal(shape=shape)
+        arr = mx.random.normal(shape = shape)
         mx.eval(arr)
-        
+
         # Warmup
         for _ in range(5):
-            _ = mlx_to_torch(arr, device="mps")
-        
+            _ = mlx_to_torch(arr, device = "mps")
+
         # Benchmark
         start = time.perf_counter()
         for _ in range(n_iterations):
-            _ = mlx_to_torch(arr, device="mps")
+            _ = mlx_to_torch(arr, device = "mps")
         elapsed = time.perf_counter() - start
-        
+
         total_ms = elapsed * 1000
         per_iter_us = (elapsed / n_iterations) * 1_000_000
-        
+
         print(f"{str(shape):<20} {total_ms:<15.2f} {per_iter_us:<15.2f}")
 
 
@@ -119,33 +122,33 @@ def benchmark_roundtrip(sizes: List[Tuple[int, ...]], n_iterations: int = 100):
     import torch
     import mlx.core as mx
     from unsloth.kernels.mlx import torch_to_mlx, mlx_to_torch, synchronize_mps
-    
+
     print("\n" + "=" * 60)
     print("Roundtrip: PyTorch -> MLX -> PyTorch")
     print("=" * 60)
     print(f"{'Shape':<20} {'Total (ms)':<15} {'Per-iter (us)':<15}")
     print("-" * 60)
-    
+
     for shape in sizes:
         # Create tensor on MPS
-        tensor = torch.randn(shape, device="mps", dtype=torch.float32)
+        tensor = torch.randn(shape, device = "mps", dtype = torch.float32)
         synchronize_mps()
-        
+
         # Warmup
         for _ in range(5):
             arr = torch_to_mlx(tensor)
-            _ = mlx_to_torch(arr, device="mps")
-        
+            _ = mlx_to_torch(arr, device = "mps")
+
         # Benchmark
         start = time.perf_counter()
         for _ in range(n_iterations):
             arr = torch_to_mlx(tensor)
-            _ = mlx_to_torch(arr, device="mps")
+            _ = mlx_to_torch(arr, device = "mps")
         elapsed = time.perf_counter() - start
-        
+
         total_ms = elapsed * 1000
         per_iter_us = (elapsed / n_iterations) * 1_000_000
-        
+
         print(f"{str(shape):<20} {total_ms:<15.2f} {per_iter_us:<15.2f}")
 
 
@@ -154,30 +157,30 @@ def main():
     print("=" * 60)
     print("MLX <-> PyTorch Bridge Benchmark")
     print("=" * 60)
-    
+
     if not check_environment():
         sys.exit(1)
-    
+
     # Test various tensor sizes
     sizes = [
-        (64,),              # Small 1D
-        (512,),             # Medium 1D
-        (4096,),            # Large 1D
-        (64, 64),           # Small 2D
-        (256, 256),         # Medium 2D
-        (1024, 1024),       # Large 2D
-        (32, 128, 128),     # 3D (batch, seq, hidden)
-        (8, 32, 4096),      # LLM-like shapes
+        (64,),  # Small 1D
+        (512,),  # Medium 1D
+        (4096,),  # Large 1D
+        (64, 64),  # Small 2D
+        (256, 256),  # Medium 2D
+        (1024, 1024),  # Large 2D
+        (32, 128, 128),  # 3D (batch, seq, hidden)
+        (8, 32, 4096),  # LLM-like shapes
     ]
-    
+
     n_iterations = 100
-    
+
     print(f"\nRunning {n_iterations} iterations per size...")
-    
+
     benchmark_torch_to_mlx(sizes, n_iterations)
     benchmark_mlx_to_torch(sizes, n_iterations)
     benchmark_roundtrip(sizes, n_iterations)
-    
+
     print("\n" + "=" * 60)
     print("Benchmark Complete")
     print("=" * 60)

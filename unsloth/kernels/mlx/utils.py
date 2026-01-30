@@ -35,17 +35,17 @@ __all__ = [
 ]
 
 # Type variable for decorator
-F = TypeVar("F", bound=Callable)
+F = TypeVar("F", bound = Callable)
 
 
 class UnslothMLXError(RuntimeError):
     """
     Exception raised when MLX operations are attempted without MLX installed.
-    
+
     This provides a clear error message guiding users to install MLX
     when they attempt to use MLX-accelerated features.
     """
-    
+
     def __init__(self, message: str = None):
         if message is None:
             message = (
@@ -61,14 +61,14 @@ class UnslothMLXError(RuntimeError):
 def is_mlx_available() -> bool:
     """
     Check if MLX framework is available.
-    
+
     This checks:
     1. Running on macOS (Darwin)
     2. MLX package can be imported
-    
+
     Returns:
         bool: True if MLX is available for use, False otherwise.
-    
+
     Note:
         Result is cached for performance. The first call performs the
         actual check; subsequent calls return the cached result.
@@ -76,10 +76,11 @@ def is_mlx_available() -> bool:
     # Must be on macOS
     if sys.platform != "darwin":
         return False
-    
+
     # Try to import MLX
     try:
         import mlx.core  # noqa: F401
+
         return True
     except ImportError:
         return False
@@ -88,15 +89,16 @@ def is_mlx_available() -> bool:
 def get_mlx_version() -> str | None:
     """
     Get the installed MLX version.
-    
+
     Returns:
         str | None: Version string if MLX is installed, None otherwise.
     """
     if not is_mlx_available():
         return None
-    
+
     try:
         import mlx
+
         return getattr(mlx, "__version__", "unknown")
     except Exception:
         return None
@@ -105,16 +107,17 @@ def get_mlx_version() -> str | None:
 def require_mlx(func: F) -> F:
     """
     Decorator that ensures MLX is available before executing a function.
-    
+
     Raises:
         UnslothMLXError: If MLX is not available.
-    
+
     Example:
         @require_mlx
         def mlx_accelerated_operation(tensor):
             import mlx.core as mx
             # ... MLX operations
     """
+
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
         if not is_mlx_available():
@@ -123,5 +126,5 @@ def require_mlx(func: F) -> F:
                 "Install with: pip install 'unsloth[apple]'"
             )
         return func(*args, **kwargs)
-    
+
     return wrapper  # type: ignore
