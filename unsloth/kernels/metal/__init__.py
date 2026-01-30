@@ -60,6 +60,15 @@ def _load_gemma_shader() -> str:
     return path.read_text(encoding="utf-8")
 
 
+@lru_cache(maxsize=1)
+def _load_swiglu_shader() -> str:
+    """Load SwiGLU Metal shader."""
+    path = Path(__file__).parent / "swiglu.metal"
+    if not path.exists():
+        raise FileNotFoundError(f"Shader not found: {path}")
+    return path.read_text(encoding="utf-8")
+
+
 def metal_rms_layernorm(
     X: "torch.Tensor",
     W: "torch.Tensor",
@@ -126,4 +135,19 @@ def metal_rms_layernorm(
     return Y.view(*shape)
 
 
-__all__ = ["is_metal_available", "USE_METAL_KERNEL", "metal_rms_layernorm"]
+__all__ = [
+    "is_metal_available",
+    "USE_METAL_KERNEL",
+    "metal_rms_layernorm",
+    # SwiGLU exports
+    "metal_swiglu_forward",
+    "metal_swiglu_backward",
+    "is_metal_swiglu_available",
+]
+
+# Import SwiGLU functions
+from .swiglu import (
+    metal_swiglu_forward,
+    metal_swiglu_backward,
+    is_metal_swiglu_available,
+)
