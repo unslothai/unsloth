@@ -49,14 +49,26 @@ except ImportError:
     HAS_MLX = False
     sys.exit(1)
 
-# Check custom kernel
+# Check custom kernel - bypass unsloth/__init__.py which imports unsloth_zoo
 try:
-    from unsloth.kernels.metal.swiglu import metal_swiglu_forward, is_metal_swiglu_available
+    import importlib.util
+    import os
+    
+    # Direct load to avoid unsloth_zoo device check
+    kernel_path = os.path.join(os.path.dirname(__file__), "..", "unsloth", "kernels", "metal", "swiglu.py")
+    kernel_path = os.path.abspath(kernel_path)
+    
+    spec = importlib.util.spec_from_file_location("metal_swiglu", kernel_path)
+    metal_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(metal_module)
+    
+    metal_swiglu_forward = metal_module.metal_swiglu_forward
+    is_metal_swiglu_available = metal_module.is_metal_swiglu_available
     HAS_CUSTOM_KERNEL = is_metal_swiglu_available()
     print(f"Custom Metal Kernel: {'✅ Available' if HAS_CUSTOM_KERNEL else '❌ Not Available'}")
-except ImportError:
+except Exception as e:
     HAS_CUSTOM_KERNEL = False
-    print("Custom Metal Kernel: ❌ Import failed")
+    print(f"Custom Metal Kernel: ❌ Import failed: {e}")
 
 print()
 

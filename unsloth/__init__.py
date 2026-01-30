@@ -76,6 +76,15 @@ os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 from importlib.metadata import version as importlib_version
 from importlib.metadata import PackageNotFoundError
 
+# ==============================================================================
+# Apple Silicon MPS Patch - MUST be applied before unsloth_zoo import
+# ==============================================================================
+# unsloth_zoo.device_type raises NotImplementedError on Apple Silicon.
+# This patch injects a mock device_type module that returns "mps".
+from .patches import patch_unsloth_zoo_for_mps
+_mps_patched = patch_unsloth_zoo_for_mps()
+del patch_unsloth_zoo_for_mps
+
 # Check for unsloth_zoo
 try:
     unsloth_zoo_version = importlib_version("unsloth_zoo")
