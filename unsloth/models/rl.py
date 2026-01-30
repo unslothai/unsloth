@@ -26,6 +26,7 @@ from unsloth_zoo.compiler import create_new_function
 from unsloth_zoo.log import logger
 from unsloth_zoo.logging_utils import PatchRLStatistics
 from unsloth_zoo.rl_replacements import RL_REPLACEMENTS
+from ..device_type import DEVICE_TYPE
 from .rl_replacements import (
     RL_EXTRA_ARGS,
     RL_FUNCTIONS,
@@ -251,6 +252,7 @@ from torch.nn import functional as F
 import inspect
 from transformers import DataCollatorForSeq2Seq, DataCollatorForLanguageModeling as TransformersDataCollatorForLanguageModeling
 from transformers.training_args import ParallelMode
+from unsloth_zoo.device_type import DEVICE_TYPE, device_synchronize
 
 # Wrap trainer with padding to right and enable training mode
 # Also patches W&B since multiple runs must use wandb.finish()
@@ -1091,7 +1093,9 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     )
 
     if RLTrainer_name == "GRPOTrainer":
-        new_options = """torch_compile_options = {
+        # Generate torch_compile_options based on device type
+        if DEVICE_TYPE == "cuda":
+            new_options = """torch_compile_options = {
             "epilogue_fusion"   : True,
             "max_autotune"      : False,
             "shape_padding"     : True,
@@ -1102,6 +1106,22 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             "cuda.cutlass_tma_only": torch.cuda.get_device_capability()[0] >= 9, 
             "cuda.compile_opt_level"              : "-O2",
             "cuda.enable_cuda_lto"                : True,
+        }"""
+        elif DEVICE_TYPE == "xpu":
+            # XPU-specific torch_compile_options (disable CUDA-specific options)
+            new_options = """torch_compile_options = {
+            "epilogue_fusion"   : True,
+            "max_autotune"      : False,
+            "shape_padding"     : True,
+            "trace.enabled"     : False,
+        }"""
+        else:
+            # Default options for other device types (hip, etc.)
+            new_options = """torch_compile_options = {
+            "epilogue_fusion"   : True,
+            "max_autotune"      : False,
+            "shape_padding"     : True,
+            "trace.enabled"     : False,
         }"""
 
         pattern = r"torch_compile_options\s*=\s*\{[^}]*\}"
