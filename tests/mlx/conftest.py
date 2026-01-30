@@ -28,7 +28,7 @@ def pytest_configure(config):
 def pytest_collection_modifyitems(config, items):
     """Skip MLX-only tests on non-Mac platforms."""
     if sys.platform != "darwin":
-        skip_mlx = pytest.mark.skip(reason="MLX only available on macOS")
+        skip_mlx = pytest.mark.skip(reason = "MLX only available on macOS")
         for item in items:
             if "mlx_only" in item.keywords:
                 item.add_marker(skip_mlx)

@@ -31,11 +31,13 @@ def is_metal_swiglu_available() -> bool:
 
     try:
         import platform
+
         if platform.system() != "Darwin":
             _METAL_SWIGLU_AVAILABLE = False
             return False
 
         from ..mlx.utils import is_mlx_available
+
         if not is_mlx_available():
             _METAL_SWIGLU_AVAILABLE = False
             return False
@@ -53,13 +55,13 @@ def is_metal_swiglu_available() -> bool:
         return False
 
 
-@lru_cache(maxsize=1)
+@lru_cache(maxsize = 1)
 def _load_swiglu_shader() -> str:
     """Load SwiGLU Metal shader source."""
     path = Path(__file__).parent / "swiglu.metal"
     if not path.exists():
         raise FileNotFoundError(f"Shader not found: {path}")
-    return path.read_text(encoding="utf-8")
+    return path.read_text(encoding = "utf-8")
 
 
 def metal_swiglu_forward(e: "torch.Tensor", g: "torch.Tensor") -> "torch.Tensor":
@@ -119,48 +121,51 @@ def metal_swiglu_forward(e: "torch.Tensor", g: "torch.Tensor") -> "torch.Tensor"
             grid_size = n_vec
 
             outputs = mx.metal_kernel(
-                name=kernel_name,
-                source=_load_swiglu_shader(),
-                input_names=["e", "g"],
-                output_names=["h"],
-                inputs=[e_vec, g_vec],
-                outputs=[h_vec],
-                constants={"n_vec": n_vec},
-                grid=(grid_size, 1, 1),
-                threadgroup=(threadgroup_size, 1, 1),
+                name = kernel_name,
+                source = _load_swiglu_shader(),
+                input_names = ["e", "g"],
+                output_names = ["h"],
+                inputs = [e_vec, g_vec],
+                outputs = [h_vec],
+                constants = {"n_vec": n_vec},
+                grid = (grid_size, 1, 1),
+                threadgroup = (threadgroup_size, 1, 1),
             )
             mx.eval(outputs[0])
 
             # Copy vectorized results back
             h_mlx = h_mlx.reshape(-1, 4)
-            h_mlx = mx.concatenate([outputs[0], h_mlx[n_vec:]], axis=0).reshape(-1)
+            h_mlx = mx.concatenate([outputs[0], h_mlx[n_vec:]], axis = 0).reshape(-1)
 
         # Handle remainder with scalar kernel
         if n_remainder > 0:
-            scalar_kernel = "swiglu_forward_f16_scalar" if is_half else "swiglu_forward_f32_scalar"
+            scalar_kernel = (
+                "swiglu_forward_f16_scalar" if is_half else "swiglu_forward_f32_scalar"
+            )
             offset = n_vec * 4
 
             outputs = mx.metal_kernel(
-                name=scalar_kernel,
-                source=_load_swiglu_shader(),
-                input_names=["e", "g"],
-                output_names=["h"],
-                inputs=[e_mlx, g_mlx],
-                outputs=[h_mlx],
-                constants={"offset": offset, "n_elements": n_elements},
-                grid=(n_remainder, 1, 1),
-                threadgroup=(n_remainder, 1, 1),
+                name = scalar_kernel,
+                source = _load_swiglu_shader(),
+                input_names = ["e", "g"],
+                output_names = ["h"],
+                inputs = [e_mlx, g_mlx],
+                outputs = [h_mlx],
+                constants = {"offset": offset, "n_elements": n_elements},
+                grid = (n_remainder, 1, 1),
+                threadgroup = (n_remainder, 1, 1),
             )
             mx.eval(outputs[0])
             h_mlx = outputs[0]
 
         # Convert back to torch
-        h = mlx_to_torch(h_mlx, device=e.device, dtype=e.dtype)
+        h = mlx_to_torch(h_mlx, device = e.device, dtype = e.dtype)
         return h.view(*shape)
 
     except Exception as ex:
         # Fallback to MPS implementation
         from ..mps.swiglu import mps_swiglu_forward
+
         return mps_swiglu_forward(e, g)
 
 
@@ -224,22 +229,22 @@ def metal_swiglu_backward(
             grid_size = n_vec
 
             outputs = mx.metal_kernel(
-                name=kernel_name,
-                source=_load_swiglu_shader(),
-                input_names=["DW", "e", "g"],
-                output_names=["DW", "e", "g"],
-                inputs=[dw_vec, e_vec, g_vec],
-                outputs=[dw_vec, e_vec, g_vec],
-                constants={"n_vec": n_vec},
-                grid=(grid_size, 1, 1),
-                threadgroup=(threadgroup_size, 1, 1),
+                name = kernel_name,
+                source = _load_swiglu_shader(),
+                input_names = ["DW", "e", "g"],
+                output_names = ["DW", "e", "g"],
+                inputs = [dw_vec, e_vec, g_vec],
+                outputs = [dw_vec, e_vec, g_vec],
+                constants = {"n_vec": n_vec},
+                grid = (grid_size, 1, 1),
+                threadgroup = (threadgroup_size, 1, 1),
             )
             mx.eval(outputs)
 
             # Reassemble from vectorized outputs
-            h_mlx = mx.concatenate([outputs[0].reshape(-1), dw_mlx[n_vec * 4:]])
-            df_mlx = mx.concatenate([outputs[1].reshape(-1), e_mlx[n_vec * 4:]])
-            de_mlx = mx.concatenate([outputs[2].reshape(-1), g_mlx[n_vec * 4:]])
+            h_mlx = mx.concatenate([outputs[0].reshape(-1), dw_mlx[n_vec * 4 :]])
+            df_mlx = mx.concatenate([outputs[1].reshape(-1), e_mlx[n_vec * 4 :]])
+            de_mlx = mx.concatenate([outputs[2].reshape(-1), g_mlx[n_vec * 4 :]])
         else:
             h_mlx = dw_mlx
             df_mlx = e_mlx
@@ -247,31 +252,36 @@ def metal_swiglu_backward(
 
         # Handle remainder
         if n_remainder > 0:
-            scalar_kernel = "swiglu_backward_f16_scalar" if is_half else "swiglu_backward_f32_scalar"
+            scalar_kernel = (
+                "swiglu_backward_f16_scalar"
+                if is_half
+                else "swiglu_backward_f32_scalar"
+            )
             offset = n_vec * 4
 
             outputs = mx.metal_kernel(
-                name=scalar_kernel,
-                source=_load_swiglu_shader(),
-                input_names=["DW", "e", "g"],
-                output_names=["DW", "e", "g"],
-                inputs=[h_mlx, df_mlx, de_mlx],
-                outputs=[h_mlx, df_mlx, de_mlx],
-                constants={"offset": offset, "n_elements": n_elements},
-                grid=(n_remainder, 1, 1),
-                threadgroup=(n_remainder, 1, 1),
+                name = scalar_kernel,
+                source = _load_swiglu_shader(),
+                input_names = ["DW", "e", "g"],
+                output_names = ["DW", "e", "g"],
+                inputs = [h_mlx, df_mlx, de_mlx],
+                outputs = [h_mlx, df_mlx, de_mlx],
+                constants = {"offset": offset, "n_elements": n_elements},
+                grid = (n_remainder, 1, 1),
+                threadgroup = (n_remainder, 1, 1),
             )
             mx.eval(outputs)
             h_mlx, df_mlx, de_mlx = outputs[0], outputs[1], outputs[2]
 
         # Convert back to torch
-        h = mlx_to_torch(h_mlx, device=dw.device, dtype=dw.dtype).view(*shape)
-        df = mlx_to_torch(df_mlx, device=e.device, dtype=e.dtype).view(*shape)
-        de = mlx_to_torch(de_mlx, device=g.device, dtype=g.dtype).view(*shape)
+        h = mlx_to_torch(h_mlx, device = dw.device, dtype = dw.dtype).view(*shape)
+        df = mlx_to_torch(df_mlx, device = e.device, dtype = e.dtype).view(*shape)
+        de = mlx_to_torch(de_mlx, device = g.device, dtype = g.dtype).view(*shape)
 
         return h, df, de
 
     except Exception as ex:
         # Fallback to MPS implementation
         from ..mps.swiglu import mps_swiglu_backward
+
         return mps_swiglu_backward(dw, e, g)

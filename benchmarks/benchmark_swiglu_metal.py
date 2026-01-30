@@ -73,8 +73,11 @@ def run_benchmarks():
     metal_available = False
     try:
         from unsloth.kernels.metal import is_metal_swiglu_available
+
         metal_available = is_metal_swiglu_available()
-        print(f"Metal SwiGLU Available: {'✅ Yes' if metal_available else '❌ No (using MPS fallback)'}")
+        print(
+            f"Metal SwiGLU Available: {'✅ Yes' if metal_available else '❌ No (using MPS fallback)'}"
+        )
     except ImportError:
         print("Metal SwiGLU Available: ❌ No (module not found)")
 
@@ -103,8 +106,8 @@ def run_benchmarks():
         print("-" * 70)
 
         # Create test tensors
-        e = torch.randn(batch, seq, dim, device="mps", dtype=dtype)
-        g = torch.randn(batch, seq, dim, device="mps", dtype=dtype)
+        e = torch.randn(batch, seq, dim, device = "mps", dtype = dtype)
+        g = torch.randn(batch, seq, dim, device = "mps", dtype = dtype)
 
         # 1. PyTorch Native Reference
         t_native = benchmark_fn(lambda: torch.nn.functional.silu(e) * g)
@@ -114,6 +117,7 @@ def run_benchmarks():
         # 2. MPS Fallback (explicit import)
         try:
             from unsloth.kernels.mps.swiglu import mps_swiglu_forward
+
             t_mps = benchmark_fn(lambda: mps_swiglu_forward(e, g))
             throughput_mps = calculate_throughput(elements, t_mps, dtype)
             print(f"  MPS Fallback:    {t_mps:7.3f} ms | {throughput_mps:7.2f} GB/s")
@@ -125,18 +129,25 @@ def run_benchmarks():
         if metal_available:
             try:
                 from unsloth.kernels.metal.swiglu import metal_swiglu_forward
+
                 t_metal = benchmark_fn(lambda: metal_swiglu_forward(e, g))
                 throughput_metal = calculate_throughput(elements, t_metal, dtype)
-                speedup = throughput_metal / throughput_native if throughput_native > 0 else 0
-                print(f"  Metal Kernel:    {t_metal:7.3f} ms | {throughput_metal:7.2f} GB/s | {speedup:.2f}x speedup")
+                speedup = (
+                    throughput_metal / throughput_native if throughput_native > 0 else 0
+                )
+                print(
+                    f"  Metal Kernel:    {t_metal:7.3f} ms | {throughput_metal:7.2f} GB/s | {speedup:.2f}x speedup"
+                )
 
-                results.append({
-                    "config": description,
-                    "elements": elements,
-                    "native": throughput_native,
-                    "metal": throughput_metal,
-                    "speedup": speedup,
-                })
+                results.append(
+                    {
+                        "config": description,
+                        "elements": elements,
+                        "native": throughput_native,
+                        "metal": throughput_metal,
+                        "speedup": speedup,
+                    }
+                )
             except Exception as ex:
                 print(f"  Metal Kernel:    ❌ Error: {ex}")
         else:
@@ -185,6 +196,7 @@ def run_backward_benchmark():
     metal_available = False
     try:
         from unsloth.kernels.metal import is_metal_swiglu_available
+
         metal_available = is_metal_swiglu_available()
     except ImportError:
         pass
@@ -197,9 +209,9 @@ def run_backward_benchmark():
     print()
 
     # Flatten for backward (as per Triton kernel)
-    dw = torch.randn(batch * seq, dim, device="mps", dtype=dtype)
-    e = torch.randn(batch * seq, dim, device="mps", dtype=dtype)
-    g = torch.randn(batch * seq, dim, device="mps", dtype=dtype)
+    dw = torch.randn(batch * seq, dim, device = "mps", dtype = dtype)
+    e = torch.randn(batch * seq, dim, device = "mps", dtype = dtype)
+    g = torch.randn(batch * seq, dim, device = "mps", dtype = dtype)
 
     # MPS Fallback
     try:

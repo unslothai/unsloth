@@ -21,7 +21,7 @@ by leveraging Apple's unified memory architecture more efficiently.
 
 Usage:
     from unsloth.kernels.mlx import is_mlx_available, UnslothMLXError
-    
+
     if is_mlx_available():
         # Use MLX-accelerated operations
         pass
