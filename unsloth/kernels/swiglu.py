@@ -58,13 +58,13 @@ def _fg_kernel(
 
 def swiglu_fg_kernel(e, g):
     from ..device_type import DEVICE_TYPE
-    
     if DEVICE_TYPE == "mps":
         # Try Metal kernel first for maximum performance
         from .metal import is_metal_swiglu_available
         if is_metal_swiglu_available():
             from .metal.swiglu import metal_swiglu_forward
             return metal_swiglu_forward(e, g)
+        
         # Fall back to MPS PyTorch implementation
         from .mps import USE_MPS_FALLBACK
         if USE_MPS_FALLBACK:
@@ -143,13 +143,13 @@ def _DWf_DW_dfg_kernel(
 
 def swiglu_DWf_DW_dfg_kernel(DW, e, g):
     from ..device_type import DEVICE_TYPE
-    
     if DEVICE_TYPE == "mps":
         # Try Metal kernel first for maximum performance
         from .metal import is_metal_swiglu_available
         if is_metal_swiglu_available():
             from .metal.swiglu import metal_swiglu_backward
             return metal_swiglu_backward(DW, e, g)
+        
         # Fall back to MPS PyTorch implementation
         from .mps import USE_MPS_FALLBACK
         if USE_MPS_FALLBACK:

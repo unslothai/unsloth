@@ -107,6 +107,7 @@ def mps_apply_lora_mlp_swiglu(
     downB,
     downS,
 ):
+    """MPS SwiGLU MLP fallback using PyTorch operations."""
     # Dispatching to torch-native implementation
     # For now, we use the device-agnostic logic but with MPS-friendly matmul
     e = mps_matmul_lora(X, gateW, gateW_quant, gateA, gateB, gateS)
@@ -118,6 +119,7 @@ def mps_apply_lora_mlp_swiglu(
 def mps_apply_lora_qkv(
     X, QW, QW_quant, QA, QB, QS, KW, KW_quant, KA, KB, KS, VW, VW_quant, VA, VB, VS
 ):
+    """MPS QKV projection fallback using PyTorch operations."""
     Q = mps_matmul_lora(X, QW, QW_quant, QA, QB, QS)
     K = mps_matmul_lora(X, KW, KW_quant, KA, KB, KS)
     V = mps_matmul_lora(X, VW, VW_quant, VA, VB, VS)
