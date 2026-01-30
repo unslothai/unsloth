@@ -32,11 +32,13 @@ def is_metal_swiglu_available() -> bool:
 
     try:
         import platform
+
         if platform.system() != "Darwin":
             _METAL_SWIGLU_AVAILABLE = False
             return False
 
         import mlx.core as mx
+
         if not hasattr(mx, "fast") or not hasattr(mx.fast, "metal_kernel"):
             _METAL_SWIGLU_AVAILABLE = False
             return False
@@ -128,6 +130,7 @@ SWIGLU_BACKWARD_BODY = """
 @lru_cache(maxsize = 1)
 def _get_forward_kernel():
     import mlx.core as mx
+
     return mx.fast.metal_kernel(
         name = "swiglu_forward_v8",
         input_names = ["e", "g", "n_ptr"],
@@ -139,6 +142,7 @@ def _get_forward_kernel():
 @lru_cache(maxsize = 1)
 def _get_backward_kernel():
     import mlx.core as mx
+
     return mx.fast.metal_kernel(
         name = "swiglu_backward_v8",
         input_names = ["dw_in", "e_in", "g_in", "n_ptr"],
@@ -150,6 +154,7 @@ def _get_backward_kernel():
 def metal_swiglu_forward(e: "torch.Tensor", g: "torch.Tensor") -> "torch.Tensor":
     """Fused SwiGLU forward (Ultra Optimized half8)"""
     import mlx.core as mx
+
     shape = e.shape
     n = e.numel()
     with mlx_context():
@@ -173,6 +178,7 @@ def metal_swiglu_backward(
 ) -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
     """Fused SwiGLU backward (Ultra Optimized half8)"""
     import mlx.core as mx
+
     shape = e.shape
     n = e.numel()
     with mlx_context():
@@ -193,5 +199,3 @@ def metal_swiglu_backward(
         df = mlx_to_torch(outputs[1]).view(*shape)
         de = mlx_to_torch(outputs[2]).view(*shape)
         return h, df, de
-
-

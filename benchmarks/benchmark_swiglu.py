@@ -54,27 +54,30 @@ def print_header():
 # Utility Functions
 # ==============================================================================
 
+
 def benchmark_fn(fn: Callable, warmup: int = 10, iterations: int = 50) -> float:
     """Benchmark a function and return average latency in ms."""
     for _ in range(warmup):
         result = fn()
-    
+
     # Sync depending on result type
     if isinstance(result, mx.array):
         mx.eval(result)
     torch.mps.synchronize()
-    
+
     start = time.perf_counter()
     for _ in range(iterations):
         result = fn()
         if isinstance(result, mx.array):
             mx.eval(result)
-    
+
     torch.mps.synchronize()
     return (time.perf_counter() - start) / iterations * 1000
 
 
-def calculate_throughput(elements: int, latency_ms: float, dtype_size: int = 2) -> float:
+def calculate_throughput(
+    elements: int, latency_ms: float, dtype_size: int = 2
+) -> float:
     """Calculate memory throughput in GB/s. SwiGLU: 3 tensors (read e, g; write h)."""
     bytes_total = 3 * elements * dtype_size
     return (bytes_total / 1e9) / (latency_ms / 1000.0)
@@ -106,10 +109,10 @@ def get_fused_kernel():
         h[gid] = half(silu_e * g_val);
     """
     return mx.fast.metal_kernel(
-        name="swiglu_fused",
-        input_names=["e", "g", "n_ptr"],
-        output_names=["h"],
-        source=kernel_source,
+        name = "swiglu_fused",
+        input_names = ["e", "g", "n_ptr"],
+        output_names = ["h"],
+        source = kernel_source,
     )
 
 
@@ -117,83 +120,88 @@ def get_fused_kernel():
 # Performance Benchmark
 # ==============================================================================
 
+
 def run_performance_benchmark():
     """Run performance benchmarks comparing implementations."""
     print("=" * 75)
     print("PERFORMANCE BENCHMARK")
     print("=" * 75)
     print()
-    
+
     configs = [
         (1, 2048, 8192, "Llama-3 8B (inference)"),
         (4, 512, 14336, "Llama-3 8B (training)"),
         (1, 8192, 8192, "Long context 8K"),
         (8, 2048, 4096, "Smaller model batch"),
     ]
-    
+
     fused_kernel = get_fused_kernel()
     results = []
-    
+
     for batch, seq, dim, desc in configs:
         elements = batch * seq * dim
         print(f"📊 {desc}")
         print(f"   Shape: ({batch}, {seq}, {dim}) = {elements / 1e6:.2f}M elements")
         print("-" * 70)
-        
+
         # MLX Composed
         e_mlx = mx.random.normal((batch, seq, dim)).astype(mx.float16)
         g_mlx = mx.random.normal((batch, seq, dim)).astype(mx.float16)
         mx.eval(e_mlx)
         mx.eval(g_mlx)
-        
+
         t_mlx = benchmark_fn(lambda: mlx_swiglu_composed(e_mlx, g_mlx))
         tp_mlx = calculate_throughput(elements, t_mlx)
         print(f"   MLX Composed:       {t_mlx:7.3f} ms | {tp_mlx:7.2f} GB/s")
-        
+
         # Fused Metal Kernel
         e_flat = e_mlx.flatten()
         g_flat = g_mlx.flatten()
-        n_arr = mx.array([elements], dtype=mx.uint32)
-        
+        n_arr = mx.array([elements], dtype = mx.uint32)
+
         def run_fused():
             out = fused_kernel(
-                inputs=[e_flat, g_flat, n_arr],
-                output_shapes=[(elements,)],
-                output_dtypes=[mx.float16],
-                grid=(elements, 1, 1),
-                threadgroup=(min(256, elements), 1, 1),
+                inputs = [e_flat, g_flat, n_arr],
+                output_shapes = [(elements,)],
+                output_dtypes = [mx.float16],
+                grid = (elements, 1, 1),
+                threadgroup = (min(256, elements), 1, 1),
             )
             mx.eval(out[0])
             return out[0]
-        
+
         t_fused = benchmark_fn(run_fused)
         tp_fused = calculate_throughput(elements, t_fused)
         speedup = tp_fused / tp_mlx if tp_mlx > 0 else 0
-        print(f"   Fused Metal:        {t_fused:7.3f} ms | {tp_fused:7.2f} GB/s | {speedup:.2f}x")
-        
+        print(
+            f"   Fused Metal:        {t_fused:7.3f} ms | {tp_fused:7.2f} GB/s | {speedup:.2f}x"
+        )
+
         # PyTorch MPS
-        e_torch = torch.randn(batch, seq, dim, device="mps", dtype=torch.float16)
-        g_torch = torch.randn(batch, seq, dim, device="mps", dtype=torch.float16)
+        e_torch = torch.randn(batch, seq, dim, device = "mps", dtype = torch.float16)
+        g_torch = torch.randn(batch, seq, dim, device = "mps", dtype = torch.float16)
         torch.mps.synchronize()
-        
+
         t_torch = benchmark_fn(lambda: pytorch_swiglu_reference(e_torch, g_torch))
         tp_torch = calculate_throughput(elements, t_torch)
         print(f"   PyTorch MPS:        {t_torch:7.3f} ms | {tp_torch:7.2f} GB/s")
-        
-        results.append({
-            "config": desc,
-            "mlx": tp_mlx,
-            "fused": tp_fused,
-            "torch": tp_torch,
-            "speedup": speedup,
-        })
+
+        results.append(
+            {
+                "config": desc,
+                "mlx": tp_mlx,
+                "fused": tp_fused,
+                "torch": tp_torch,
+                "speedup": speedup,
+            }
+        )
         print()
-    
+
     # Summary
     if results:
         avg_speedup = sum(r["speedup"] for r in results) / len(results)
         avg_fused = sum(r["fused"] for r in results) / len(results)
-        
+
         print("=" * 75)
         print(f"Average Fused Throughput: {avg_fused:.2f} GB/s")
         print(f"Average Speedup vs MLX:   {avg_speedup:.2f}x")
@@ -206,6 +214,7 @@ def run_performance_benchmark():
 # Correctness Verification
 # ==============================================================================
 
+
 def run_correctness_tests():
     """Verify numerical correctness against PyTorch reference."""
     print()
@@ -213,69 +222,75 @@ def run_correctness_tests():
     print("CORRECTNESS VERIFICATION")
     print("=" * 75)
     print()
-    
+
     test_shapes = [
         (1, 128, 256, "Small"),
         (2, 512, 1024, "Medium"),
         (4, 2048, 4096, "Large (LLM-sized)"),
     ]
-    
+
     fused_kernel = get_fused_kernel()
     all_passed = True
-    
+
     for batch, seq, dim, name in test_shapes:
         print(f"Testing: {name} - shape ({batch}, {seq}, {dim})")
         print("-" * 50)
-        
+
         torch.manual_seed(42)
-        e_torch = torch.randn(batch, seq, dim, dtype=torch.float32)
-        g_torch = torch.randn(batch, seq, dim, dtype=torch.float32)
-        
+        e_torch = torch.randn(batch, seq, dim, dtype = torch.float32)
+        g_torch = torch.randn(batch, seq, dim, dtype = torch.float32)
+
         # PyTorch Reference
         ref_output = pytorch_swiglu_reference(e_torch, g_torch)
-        
+
         # MLX Composed
         e_mlx = mx.array(e_torch.numpy())
         g_mlx = mx.array(g_torch.numpy())
         mlx_output = mlx_swiglu_composed(e_mlx, g_mlx)
         mx.eval(mlx_output)
-        
+
         mlx_diff = np.abs(np.array(mlx_output) - ref_output.numpy())
         mlx_pass = mlx_diff.max() < 1e-5
-        print(f"  MLX Composed:  max={mlx_diff.max():.2e} mean={mlx_diff.mean():.2e} {'✅' if mlx_pass else '❌'}")
-        
+        print(
+            f"  MLX Composed:  max={mlx_diff.max():.2e} mean={mlx_diff.mean():.2e} {'✅' if mlx_pass else '❌'}"
+        )
+
         # Fused Metal (FP16)
         e_mlx_f16 = e_mlx.astype(mx.float16).flatten()
         g_mlx_f16 = g_mlx.astype(mx.float16).flatten()
         n_elements = batch * seq * dim
-        n_arr = mx.array([n_elements], dtype=mx.uint32)
-        
+        n_arr = mx.array([n_elements], dtype = mx.uint32)
+
         fused_output = fused_kernel(
-            inputs=[e_mlx_f16, g_mlx_f16, n_arr],
-            output_shapes=[(n_elements,)],
-            output_dtypes=[mx.float16],
-            grid=(n_elements, 1, 1),
-            threadgroup=(min(256, n_elements), 1, 1),
+            inputs = [e_mlx_f16, g_mlx_f16, n_arr],
+            output_shapes = [(n_elements,)],
+            output_dtypes = [mx.float16],
+            grid = (n_elements, 1, 1),
+            threadgroup = (min(256, n_elements), 1, 1),
         )
         mx.eval(fused_output[0])
         fused_np = np.array(fused_output[0]).reshape(batch, seq, dim)
-        
-        ref_f16 = pytorch_swiglu_reference(e_torch.half(), g_torch.half()).float().numpy()
+
+        ref_f16 = (
+            pytorch_swiglu_reference(e_torch.half(), g_torch.half()).float().numpy()
+        )
         fused_diff = np.abs(fused_np.astype(np.float32) - ref_f16)
         fused_pass = fused_diff.max() < 1e-2  # 1% tolerance for FP16
-        print(f"  Fused (fp16):  max={fused_diff.max():.2e} mean={fused_diff.mean():.2e} {'✅' if fused_pass else '❌'}")
-        
+        print(
+            f"  Fused (fp16):  max={fused_diff.max():.2e} mean={fused_diff.mean():.2e} {'✅' if fused_pass else '❌'}"
+        )
+
         if not (mlx_pass and fused_pass):
             all_passed = False
         print()
-    
+
     print("=" * 75)
     if all_passed:
         print("✅ ALL CORRECTNESS TESTS PASSED")
     else:
         print("❌ SOME TESTS FAILED")
     print("=" * 75)
-    
+
     return all_passed
 
 
@@ -283,23 +298,28 @@ def run_correctness_tests():
 # Main
 # ==============================================================================
 
+
 def main():
-    parser = argparse.ArgumentParser(description="SwiGLU Kernel Benchmark Suite")
-    parser.add_argument("--perf", action="store_true", help="Run performance benchmarks only")
-    parser.add_argument("--correctness", action="store_true", help="Run correctness tests only")
+    parser = argparse.ArgumentParser(description = "SwiGLU Kernel Benchmark Suite")
+    parser.add_argument(
+        "--perf", action = "store_true", help = "Run performance benchmarks only"
+    )
+    parser.add_argument(
+        "--correctness", action = "store_true", help = "Run correctness tests only"
+    )
     args = parser.parse_args()
-    
+
     print_header()
-    
+
     run_perf = not args.correctness or args.perf
     run_correct = not args.perf or args.correctness
-    
+
     if run_perf:
         run_performance_benchmark()
-    
+
     if run_correct:
         run_correctness_tests()
-    
+
     print("\nDone.")
 
 
