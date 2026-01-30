@@ -175,30 +175,13 @@ def Qwen3MoeSparseMoeBlock_triton_forward(
             down_weights
         )  # [num_experts, hidden_dim, intermediate_dim]
 
-        # Compute token counts and gather indices without array operations
-        expert_mask = torch.nn.functional.one_hot(
-            selected_experts, num_classes = num_experts
-        ).permute(2, 1, 0)
-
-        token_counts_by_expert = expert_mask.sum(dim = 1).int()
-
-        # Create gather indices for routing - avoid complex array operations
-        total_tokens = num_tokens * top_k
-        gather_indices = torch.zeros(
-            total_tokens, dtype = torch.long, device = hidden_states.device
-        )
-
-        # Simple sequential assignment for gather indices
-        current_idx = 0
-        for expert_idx in range(num_experts):
-            expert_tokens = expert_mask[expert_idx].sum(dim = 0).bool()
-            num_expert_tokens = expert_tokens.sum().item()
-            if num_expert_tokens > 0:
-                expert_indices = torch.where(expert_tokens)[0]
-                gather_indices[current_idx : current_idx + num_expert_tokens] = (
-                    expert_indices
-                )
-                current_idx += num_expert_tokens
+        # Compute token counts + gather indices in flattened top-k space.
+        # grouped_gemm expects gather_indices over selected_experts.view(-1).
+        flat_experts = selected_experts.view(-1)
+        token_counts_by_expert = torch.bincount(
+            flat_experts, minlength = num_experts
+        ).to(torch.int32)
+        gather_indices = flat_experts.argsort(stable = True)
 
         # First grouped GEMM: gate_up projection
         intermediate_states = grouped_gemm(
