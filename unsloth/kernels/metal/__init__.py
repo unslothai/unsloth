@@ -52,6 +52,16 @@ from .swiglu import (
     is_metal_swiglu_available,
 )
 
+# Import GEGLU functions
+from .geglu import (
+    metal_geglu_exact_forward,
+    metal_geglu_exact_backward,
+    metal_geglu_approx_forward,
+    metal_geglu_approx_backward,
+    is_metal_geglu_available,
+)
+# Import RMSNorm functions
+from .rms_layernorm import metal_rms_layernorm
 
 __all__ = [
     "is_metal_available",
@@ -59,4 +69,11 @@ __all__ = [
     "metal_swiglu_forward",
     "metal_swiglu_backward",
     "is_metal_swiglu_available",
+    "metal_geglu_exact_forward",
+    "metal_geglu_exact_backward",
+    "metal_geglu_approx_forward",
+    "metal_geglu_approx_backward",
+    "is_metal_geglu_available",
+    "metal_rms_layernorm",
 ]
+
