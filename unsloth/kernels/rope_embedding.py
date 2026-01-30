@@ -287,9 +287,8 @@ def fast_rope_embedding(
     rope_embedding_indices = None,
 ):
     from ..device_type import DEVICE_TYPE
-    
-    # Priority: MLX fast > MPS fallback > Triton
     if DEVICE_TYPE == "mps":
+        # Priority: MLX fast > MPS fallback > Triton
         from .mlx import USE_MLX_FAST
         if USE_MLX_FAST and rope_embedding_indices is None:
             from .mlx import mlx_rope_qk

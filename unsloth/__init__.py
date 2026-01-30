@@ -194,13 +194,13 @@ elif DEVICE_TYPE == "xpu":
 elif DEVICE_TYPE == "mps":
     # MPS bfloat16 support depends on PyTorch version and chip
     try:
-        test_tensor = torch.tensor([1.0], dtype=torch.bfloat16, device="mps")
+        test_tensor = torch.tensor([1.0], dtype = torch.bfloat16, device = "mps")
         _ = test_tensor + test_tensor  # Test an operation
         SUPPORTS_BFLOAT16 = True
         del test_tensor
     except Exception:
         SUPPORTS_BFLOAT16 = False
-    
+
     print(
         f"Unsloth: Running on Apple Silicon (MPS)\n"
         f"   bfloat16 support: {SUPPORTS_BFLOAT16}\n"

@@ -52,41 +52,41 @@ USE_MPS_FALLBACK = True
 def is_mps_available() -> bool:
     """
     Check if MPS backend is available and built.
-    
+
     Returns:
         bool: True if MPS is available for use, False otherwise.
     """
     return (
-        hasattr(torch.backends, "mps") and
-        torch.backends.mps.is_available() and
-        torch.backends.mps.is_built()
+        hasattr(torch.backends, "mps")
+        and torch.backends.mps.is_available()
+        and torch.backends.mps.is_built()
     )
 
 
 def get_mps_device_info() -> dict:
     """
     Get Apple Silicon device information.
-    
+
     Returns:
         dict: Device information including chip, macOS version, and PyTorch version.
     """
     if not is_mps_available():
         return {"available": False}
-    
+
     # Get chip info from sysctl
     chip = "Unknown"
     try:
         result = subprocess.run(
             ["sysctl", "-n", "machdep.cpu.brand_string"],
-            capture_output=True,
-            text=True,
-            timeout=5
+            capture_output = True,
+            text = True,
+            timeout = 5,
         )
         if result.returncode == 0:
             chip = result.stdout.strip()
     except Exception:
         chip = platform.processor() or "Apple Silicon"
-    
+
     return {
         "available": True,
         "chip": chip,
@@ -100,30 +100,27 @@ def get_mps_device_info() -> dict:
 def get_mps_memory_info() -> dict:
     """
     Get MPS memory information.
-    
+
     Note: Apple Silicon uses unified memory - the GPU shares RAM with the CPU.
     This is different from discrete GPUs with dedicated VRAM.
-    
+
     Returns:
         dict: Memory information including total system memory.
     """
     if not is_mps_available():
         return {"available": False}
-    
+
     total_memory_gb = None
     try:
         result = subprocess.run(
-            ["sysctl", "-n", "hw.memsize"],
-            capture_output=True,
-            text=True,
-            timeout=5
+            ["sysctl", "-n", "hw.memsize"], capture_output = True, text = True, timeout = 5
         )
         if result.returncode == 0:
             total_memory = int(result.stdout.strip())
             total_memory_gb = round(total_memory / (1024**3), 1)
     except Exception:
         pass
-    
+
     return {
         "available": True,
         "total_system_memory_gb": total_memory_gb,
@@ -135,33 +132,33 @@ def get_mps_memory_info() -> dict:
 def get_mps_capabilities() -> dict:
     """
     Get MPS backend capabilities for Unsloth.
-    
+
     Returns:
         dict: Capabilities including supported dtypes and features.
     """
     if not is_mps_available():
         return {"available": False}
-    
+
     # Test bfloat16 support
     supports_bfloat16 = False
     try:
-        test_tensor = torch.tensor([1.0], dtype=torch.bfloat16, device="mps")
+        test_tensor = torch.tensor([1.0], dtype = torch.bfloat16, device = "mps")
         _ = test_tensor + test_tensor
         supports_bfloat16 = True
         del test_tensor
     except Exception:
         pass
-    
+
     # Test float16 support (should always work on MPS)
     supports_float16 = False
     try:
-        test_tensor = torch.tensor([1.0], dtype=torch.float16, device="mps")
+        test_tensor = torch.tensor([1.0], dtype = torch.float16, device = "mps")
         _ = test_tensor + test_tensor
         supports_float16 = True
         del test_tensor
     except Exception:
         pass
-    
+
     return {
         "available": True,
         "supports_bfloat16": supports_bfloat16,
@@ -182,18 +179,20 @@ def print_mps_info():
     if not is_mps_available():
         print("MPS is not available on this system.")
         return
-    
+
     device_info = get_mps_device_info()
     memory_info = get_mps_memory_info()
     capabilities = get_mps_capabilities()
-    
+
     print("=" * 50)
     print("Unsloth MPS Device Information")
     print("=" * 50)
     print(f"Chip: {device_info.get('chip', 'Unknown')}")
     print(f"macOS: {device_info.get('mac_version', 'Unknown')}")
     print(f"PyTorch: {device_info.get('pytorch_version', 'Unknown')}")
-    print(f"Memory: {memory_info.get('total_system_memory_gb', 'Unknown')} GB (unified)")
+    print(
+        f"Memory: {memory_info.get('total_system_memory_gb', 'Unknown')} GB (unified)"
+    )
     print("-" * 50)
     print("Capabilities:")
     print(f"  bfloat16: {'✓' if capabilities.get('supports_bfloat16') else '✗'}")

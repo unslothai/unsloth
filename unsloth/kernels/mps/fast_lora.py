@@ -15,39 +15,109 @@
 import torch
 import torch.nn.functional as F
 
+
 def mps_matmul_lora(X, W, W_quant, A, B, s):
     """
     MPS matmul_lora fallback.
     Assumes W is already in a usable format for MPS (16-bit).
     """
     dtype = X.dtype
-    
+
     # Base projection: X @ W.t()
     out = torch.matmul(X, W.t())
-    
+
     # LoRA contribution: (X @ A.t()) @ (B.t() * s)
     if A is not None:
         # X: (..., in_dim), A: (rank, in_dim), B: (out_dim, rank)
         XA = torch.matmul(X, A.t().to(dtype))
-        out.view(-1, out.shape[-1]).addmm_(XA.view(-1, XA.shape[-1]), B.t().to(dtype), alpha=s)
-        
+        out.view(-1, out.shape[-1]).addmm_(
+            XA.view(-1, XA.shape[-1]), B.t().to(dtype), alpha = s
+        )
+
     return out
 
+class MPSLoRA_MLP(torch.autograd.Function):
+    @staticmethod
+    def forward(
+        ctx,
+        X,
+        gateW,
+        gateW_quant,
+        gateA,
+        gateB,
+        gateS,
+        upW,
+        upW_quant,
+        upA,
+        upB,
+        upS,
+        downW,
+        downW_quant,
+        downA,
+        downB,
+        downS,
+        _forward_function,
+    ):
+        # Forward pass using MPS-compatible operations
+        e = mps_matmul_lora(X, gateW, gateW_quant, gateA, gateB, gateS)
+        g = mps_matmul_lora(X, upW, upW_quant, upA, upB, upS)
+        h = _forward_function(e, g)
+        i = mps_matmul_lora(h, downW, downW_quant, downA, downB, downS)
 
-def mps_apply_lora_mlp_swiglu(X, gateW, gateW_quant, gateA, gateB, gateS,
-                             upW, upW_quant, upA, upB, upS,
-                             downW, downW_quant, downA, downB, downS):
-    """MPS SwiGLU MLP fallback using PyTorch operations."""
+        ctx.save_for_backward(
+            X, gateW, gateA, gateB, upW, upA, upB, downW, downA, downB, e, g, h
+        )
+        ctx.gateS, ctx.upS, ctx.downS = gateS, upS, downS
+        return i
+
+    @staticmethod
+    def backward(ctx, dY):
+        X, gateW, gateA, gateB, upW, upA, upB, downW, downA, downB, e, g, h = (
+            ctx.saved_tensors
+        )
+        gateS, upS, downS = ctx.gateS, ctx.upS, ctx.downS
+
+        # simplified backward for now - focus on correctness
+        # In a real implementation we would match LoRA_MLP.backward exactly
+        # but for MPS fallback we can rely on autograd for these complex fused ops
+        # unless performance is critical.
+        # Actually, for Unsloth we should probably provide the manual backward to save memory.
+
+        # TODO: Implement full manual backward for LoRA_MLP on MPS
+        raise NotImplementedError(
+            "Manual backward for MPSLoRA_MLP not yet implemented. Use autograd for now."
+        )
+
+
+def mps_apply_lora_mlp_swiglu(
+    X,
+    gateW,
+    gateW_quant,
+    gateA,
+    gateB,
+    gateS,
+    upW,
+    upW_quant,
+    upA,
+    upB,
+    upS,
+    downW,
+    downW_quant,
+    downA,
+    downB,
+    downS,
+):
+    # Dispatching to torch-native implementation
+    # For now, we use the device-agnostic logic but with MPS-friendly matmul
     e = mps_matmul_lora(X, gateW, gateW_quant, gateA, gateB, gateS)
     g = mps_matmul_lora(X, upW, upW_quant, upA, upB, upS)
     h = F.silu(e) * g
     return mps_matmul_lora(h, downW, downW_quant, downA, downB, downS)
 
 
-def mps_apply_lora_qkv(X, QW, QW_quant, QA, QB, QS,
-                      KW, KW_quant, KA, KB, KS,
-                      VW, VW_quant, VA, VB, VS):
-    """MPS QKV projection fallback using PyTorch operations."""
+def mps_apply_lora_qkv(
+    X, QW, QW_quant, QA, QB, QS, KW, KW_quant, KA, KB, KS, VW, VW_quant, VA, VB, VS
+):
     Q = mps_matmul_lora(X, QW, QW_quant, QA, QB, QS)
     K = mps_matmul_lora(X, KW, KW_quant, KA, KB, KS)
     V = mps_matmul_lora(X, VW, VW_quant, VA, VB, VS)

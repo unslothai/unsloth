@@ -26,9 +26,9 @@ import torch
 def is_mps_system():
     """Check if running on an MPS-capable system."""
     return (
-        hasattr(torch.backends, "mps") and
-        torch.backends.mps.is_available() and
-        torch.backends.mps.is_built()
+        hasattr(torch.backends, "mps")
+        and torch.backends.mps.is_available()
+        and torch.backends.mps.is_built()
     )
 
 
@@ -47,6 +47,7 @@ class TestUnslothImport:
             ALLOW_PREQUANTIZED_MODELS,
             ALLOW_BITSANDBYTES,
         )
+
         # All exports should be available
         assert is_hip is not None
         assert is_mps is not None
@@ -65,6 +66,7 @@ class TestUnslothImport:
             get_mps_memory_info,
             get_mps_capabilities,
         )
+
         # All exports should be available
         assert is_mps_available is not None
         assert get_mps_device_info is not None
@@ -85,6 +87,7 @@ class TestKernelUtilsImport:
             torch_amp_custom_bwd,
             calculate_settings,
         )
+
         assert MAX_FUSED_SIZE == 65536
         assert callable(next_power_of_2)
         assert torch_amp_custom_fwd is not None
@@ -94,6 +97,7 @@ class TestKernelUtilsImport:
     def test_next_power_of_2(self):
         """next_power_of_2 should work correctly."""
         from unsloth.kernels.utils import next_power_of_2
+
         assert next_power_of_2(1) == 1
         assert next_power_of_2(2) == 2
         assert next_power_of_2(3) == 4
@@ -104,25 +108,26 @@ class TestKernelUtilsImport:
     def test_calculate_settings(self):
         """calculate_settings should return valid block size and warps."""
         from unsloth.kernels.utils import calculate_settings
+
         block_size, num_warps = calculate_settings(128)
         assert block_size >= 128
         assert block_size & (block_size - 1) == 0  # Power of 2
         assert num_warps >= 4
 
 
-@pytest.mark.skipif(not is_mps_system(), reason="MPS not available")
+@pytest.mark.skipif(not is_mps_system(), reason = "MPS not available")
 class TestMPSIntegration:
     """Integration tests that only run on MPS systems."""
 
     def test_mps_tensor_creation(self):
         """Should be able to create tensors on MPS device."""
-        tensor = torch.tensor([1.0, 2.0, 3.0], device="mps")
+        tensor = torch.tensor([1.0, 2.0, 3.0], device = "mps")
         assert tensor.device.type == "mps"
         del tensor
 
     def test_mps_float16_support(self):
         """MPS should support float16."""
-        tensor = torch.tensor([1.0], dtype=torch.float16, device="mps")
+        tensor = torch.tensor([1.0], dtype = torch.float16, device = "mps")
         result = tensor + tensor
         assert result.dtype == torch.float16
         del tensor, result
@@ -130,6 +135,7 @@ class TestMPSIntegration:
     def test_mps_device_info_on_mps(self):
         """get_mps_device_info should return full info on MPS."""
         from unsloth.kernels.mps import get_mps_device_info
+
         info = get_mps_device_info()
         assert info["available"] is True
         assert "chip" in info
@@ -139,6 +145,7 @@ class TestMPSIntegration:
     def test_mps_memory_info_on_mps(self):
         """get_mps_memory_info should return memory info on MPS."""
         from unsloth.kernels.mps import get_mps_memory_info
+
         info = get_mps_memory_info()
         assert info["available"] is True
         assert info["memory_type"] == "unified"
@@ -147,6 +154,7 @@ class TestMPSIntegration:
     def test_mps_capabilities_on_mps(self):
         """get_mps_capabilities should return full capabilities on MPS."""
         from unsloth.kernels.mps import get_mps_capabilities
+
         caps = get_mps_capabilities()
         assert caps["available"] is True
         assert "supports_float16" in caps
@@ -157,15 +165,17 @@ class TestMPSIntegration:
     def test_unsloth_device_type_is_mps(self):
         """On MPS, DEVICE_TYPE should be 'mps'."""
         from unsloth.device_type import DEVICE_TYPE
+
         assert DEVICE_TYPE == "mps"
 
     def test_triton_is_none_on_mps(self):
         """On MPS, triton should be None in kernels/utils."""
         from unsloth.kernels.utils import triton
+
         assert triton is None
 
 
-@pytest.mark.skipif(is_mps_system(), reason="Only run on non-MPS systems")
+@pytest.mark.skipif(is_mps_system(), reason = "Only run on non-MPS systems")
 class TestNonMPSSystems:
     """Tests that verify behavior on non-MPS systems."""
 
@@ -177,6 +187,7 @@ class TestNonMPSSystems:
             get_mps_memory_info,
             get_mps_capabilities,
         )
+
         assert is_mps_available() is False
         assert get_mps_device_info()["available"] is False
         assert get_mps_memory_info()["available"] is False

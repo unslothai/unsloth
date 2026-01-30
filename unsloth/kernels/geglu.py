@@ -63,8 +63,10 @@ def _exact_forward_kernel(
 def geglu_exact_forward_kernel(gate, up):
     from ..device_type import DEVICE_TYPE
     from .mps import USE_MPS_FALLBACK
+
     if DEVICE_TYPE == "mps" and USE_MPS_FALLBACK:
         from .mps.geglu import mps_geglu_exact_forward
+
         return mps_geglu_exact_forward(gate, up)
 
     batch, seq_len, hd = gate.shape
@@ -146,8 +148,10 @@ def _exact_backward_kernel(
 def geglu_exact_backward_kernel(DW, e, g):
     from ..device_type import DEVICE_TYPE
     from .mps import USE_MPS_FALLBACK
+
     if DEVICE_TYPE == "mps" and USE_MPS_FALLBACK:
         from .mps.geglu import mps_geglu_exact_backward
+
         return mps_geglu_exact_backward(DW, e, g)
 
     batch_seq_len, hd = e.shape
@@ -205,8 +209,10 @@ def _approx_forward_kernel(
 def geglu_approx_forward_kernel(gate, up):
     from ..device_type import DEVICE_TYPE
     from .mps import USE_MPS_FALLBACK
+
     if DEVICE_TYPE == "mps" and USE_MPS_FALLBACK:
         from .mps.geglu import mps_geglu_approx_forward
+
         return mps_geglu_approx_forward(gate, up)
 
     batch, seq_len, hd = gate.shape
@@ -295,8 +301,10 @@ def _approx_backward_kernel(
 def geglu_approx_backward_kernel(DW, e, g):
     from ..device_type import DEVICE_TYPE
     from .mps import USE_MPS_FALLBACK
+
     if DEVICE_TYPE == "mps" and USE_MPS_FALLBACK:
         from .mps.geglu import mps_geglu_approx_backward
+
         return mps_geglu_approx_backward(DW, e, g)
 
     batch_seq_len, hd = e.shape

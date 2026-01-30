@@ -110,9 +110,8 @@ class Fast_Layernorm(torch.autograd.Function):
     @staticmethod
     def forward(ctx, X, W, b, eps):
         from ..device_type import DEVICE_TYPE
-        
-        # Priority: MLX fast > MPS fallback > Triton
         if DEVICE_TYPE == "mps":
+            # Priority: MLX fast > MPS fallback > Triton
             from .mlx import USE_MLX_FAST
             if USE_MLX_FAST:
                 from .mlx import mlx_layer_norm
