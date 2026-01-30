@@ -82,6 +82,7 @@ from importlib.metadata import PackageNotFoundError
 # unsloth_zoo.device_type raises NotImplementedError on Apple Silicon.
 # This patch injects a mock device_type module that returns "mps".
 from .patches import patch_unsloth_zoo_for_mps
+
 _mps_patched = patch_unsloth_zoo_for_mps()
 del patch_unsloth_zoo_for_mps
 
