@@ -25,13 +25,17 @@ sys.modules["bitsandbytes.functional"] = sys.modules["bitsandbytes"].functional
 
 # 2. Mock unsloth_zoo and its device_type
 unsloth_zoo = perfect_mock("unsloth_zoo")
+unsloth_zoo.utils = perfect_mock("unsloth_zoo.utils")
+unsloth_zoo.utils.Version = lambda x: x
 unsloth_zoo.device_type = perfect_mock("unsloth_zoo.device_type")
 unsloth_zoo.device_type.DEVICE_TYPE = "mps"
+unsloth_zoo.device_type.DEVICE_TYPE_TORCH = "mps"
 unsloth_zoo.device_type.is_hip = lambda: False
 unsloth_zoo.device_type.get_device_type = lambda: "mps"
 unsloth_zoo.device_type.DEVICE_COUNT = 1
 unsloth_zoo.device_type.ALLOW_PREQUANTIZED_MODELS = False
 sys.modules["unsloth_zoo"] = unsloth_zoo
+sys.modules["unsloth_zoo.utils"] = unsloth_zoo.utils
 sys.modules["unsloth_zoo.device_type"] = unsloth_zoo.device_type
 
 import torch
