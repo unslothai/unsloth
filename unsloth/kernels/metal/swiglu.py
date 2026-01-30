@@ -30,11 +30,13 @@ def is_metal_swiglu_available() -> bool:
 
     try:
         import platform
+
         if platform.system() != "Darwin":
             _METAL_SWIGLU_AVAILABLE = False
             return False
 
         import mlx.core as mx
+
         if not hasattr(mx, "fast") or not hasattr(mx.fast, "metal_kernel"):
             _METAL_SWIGLU_AVAILABLE = False
             return False
@@ -50,7 +52,7 @@ def is_metal_swiglu_available() -> bool:
 # Inline Metal shader bodies (MLX injects these into its kernel wrapper)
 # -----------------------------------------------------------------------------
 
-SWIGLU_FORWARD_BODY = '''
+SWIGLU_FORWARD_BODY = """
     uint gid = thread_position_in_grid.x;
     uint n = n_ptr[0];
     if (gid >= n) return;
@@ -63,9 +65,9 @@ SWIGLU_FORWARD_BODY = '''
     float silu_e = e_val * sigmoid_e;
     
     h[gid] = half(silu_e * g_val);
-'''
+"""
 
-SWIGLU_BACKWARD_BODY = '''
+SWIGLU_BACKWARD_BODY = """
     uint gid = thread_position_in_grid.x;
     uint n = n_ptr[0];
     if (gid >= n) return;
@@ -90,65 +92,67 @@ SWIGLU_BACKWARD_BODY = '''
     h_out[gid] = half(h_val);
     df_out[gid] = half(df_val);
     de_out[gid] = half(de_val);
-'''
+"""
 
 
-@lru_cache(maxsize=1)
+@lru_cache(maxsize = 1)
 def _get_forward_kernel():
     """Compile and cache the forward kernel."""
     import mlx.core as mx
+
     return mx.fast.metal_kernel(
-        name="swiglu_forward",
-        input_names=["e", "g", "n_ptr"],
-        output_names=["h"],
-        source=SWIGLU_FORWARD_BODY,
+        name = "swiglu_forward",
+        input_names = ["e", "g", "n_ptr"],
+        output_names = ["h"],
+        source = SWIGLU_FORWARD_BODY,
     )
 
 
-@lru_cache(maxsize=1)
+@lru_cache(maxsize = 1)
 def _get_backward_kernel():
     """Compile and cache the backward kernel."""
     import mlx.core as mx
+
     return mx.fast.metal_kernel(
-        name="swiglu_backward",
-        input_names=["dw_in", "e_in", "g_in", "n_ptr"],
-        output_names=["h_out", "df_out", "de_out"],
-        source=SWIGLU_BACKWARD_BODY,
+        name = "swiglu_backward",
+        input_names = ["dw_in", "e_in", "g_in", "n_ptr"],
+        output_names = ["h_out", "df_out", "de_out"],
+        source = SWIGLU_BACKWARD_BODY,
     )
 
 
 def metal_swiglu_forward(e: "torch.Tensor", g: "torch.Tensor") -> "torch.Tensor":
     """
     Fused SwiGLU forward: h = silu(e) * g
-    
+
     Achieves ~97 GB/s on M4 (1.6x faster than PyTorch MPS).
     """
     import torch
     import mlx.core as mx
     import numpy as np
-    
+
     shape = e.shape
     n_elements = e.numel()
-    
+
     # Sync MPS and convert to MLX
     torch.mps.synchronize()
     e_mlx = mx.array(e.cpu().numpy().flatten())
     g_mlx = mx.array(g.cpu().numpy().flatten())
-    n_arr = mx.array([n_elements], dtype=mx.uint32)
-    
+    n_arr = mx.array([n_elements], dtype = mx.uint32)
+
     # Execute kernel
     kernel = _get_forward_kernel()
     outputs = kernel(
-        inputs=[e_mlx, g_mlx, n_arr],
-        output_shapes=[(n_elements,)],
-        output_dtypes=[mx.float16],
-        grid=(n_elements, 1, 1),
-        threadgroup=(min(256, n_elements), 1, 1),
+        inputs = [e_mlx, g_mlx, n_arr],
+        output_shapes = [(n_elements,)],
+        output_dtypes = [mx.float16],
+        grid = (n_elements, 1, 1),
+        threadgroup = (min(256, n_elements), 1, 1),
     )
     mx.eval(outputs[0])
-    
+
     # Convert back to PyTorch
-    h = torch.from_numpy(np.array(outputs[0])).to(device=e.device, dtype=e.dtype)
+    h = torch.from_numpy(np.array(outputs[0])).to(device = e.device, dtype = e.dtype)
     return h.view(*shape)
 
 
@@ -157,34 +161,46 @@ def metal_swiglu_backward(
 ) -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
     """
     Fused SwiGLU backward pass.
-    
+
     Returns (h, df, de) matching Triton kernel semantics.
     """
     import torch
     import mlx.core as mx
     import numpy as np
-    
+
     shape = e.shape
     n_elements = e.numel()
-    
+
     torch.mps.synchronize()
     dw_mlx = mx.array(dw.cpu().numpy().flatten())
     e_mlx = mx.array(e.cpu().numpy().flatten())
     g_mlx = mx.array(g.cpu().numpy().flatten())
-    n_arr = mx.array([n_elements], dtype=mx.uint32)
-    
+    n_arr = mx.array([n_elements], dtype = mx.uint32)
+
     kernel = _get_backward_kernel()
     outputs = kernel(
-        inputs=[dw_mlx, e_mlx, g_mlx, n_arr],
-        output_shapes=[(n_elements,), (n_elements,), (n_elements,)],
-        output_dtypes=[mx.float16, mx.float16, mx.float16],
-        grid=(n_elements, 1, 1),
-        threadgroup=(min(256, n_elements), 1, 1),
+        inputs = [dw_mlx, e_mlx, g_mlx, n_arr],
+        output_shapes = [(n_elements,), (n_elements,), (n_elements,)],
+        output_dtypes = [mx.float16, mx.float16, mx.float16],
+        grid = (n_elements, 1, 1),
+        threadgroup = (min(256, n_elements), 1, 1),
     )
     mx.eval(outputs)
-    
-    h = torch.from_numpy(np.array(outputs[0])).to(device=dw.device, dtype=dw.dtype).view(*shape)
-    df = torch.from_numpy(np.array(outputs[1])).to(device=e.device, dtype=e.dtype).view(*shape)
-    de = torch.from_numpy(np.array(outputs[2])).to(device=g.device, dtype=g.dtype).view(*shape)
-    
+
+    h = (
+        torch.from_numpy(np.array(outputs[0]))
+        .to(device = dw.device, dtype = dw.dtype)
+        .view(*shape)
+    )
+    df = (
+        torch.from_numpy(np.array(outputs[1]))
+        .to(device = e.device, dtype = e.dtype)
+        .view(*shape)
+    )
+    de = (
+        torch.from_numpy(np.array(outputs[2]))
+        .to(device = g.device, dtype = g.dtype)
+        .view(*shape)
+    )
+
     return h, df, de

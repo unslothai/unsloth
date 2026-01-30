@@ -21,18 +21,20 @@ def is_metal_available() -> bool:
     global _METAL_AVAILABLE
     if _METAL_AVAILABLE is not None:
         return _METAL_AVAILABLE
-    
+
     try:
         import platform
+
         if platform.system() != "Darwin":
             _METAL_AVAILABLE = False
             return False
-        
+
         import mlx.core as mx
+
         if not hasattr(mx, "fast") or not hasattr(mx.fast, "metal_kernel"):
             _METAL_AVAILABLE = False
             return False
-        
+
         _METAL_AVAILABLE = True
         return True
     except Exception:
