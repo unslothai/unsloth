@@ -97,12 +97,12 @@ class MPSRoPEEmbeddingQK(torch.autograd.Function):
             sin_final = sin[position_ids].unsqueeze(2)  # [B, S, 1, Dim]
 
             # Check if Q is [B, S, H, D] or [B, H, S, D]
-            if Q.shape[1] == cos_final.shape[1]: # [B, S, H, D]
+            if Q.shape[1] == cos_final.shape[1]:  # [B, S, H, D]
                 # Align cos_final: [B, S, 1, Dim]
                 pass
-            else: # Assume [B, H, S, D]
-                cos_final = cos_final.transpose(1, 2) # [B, 1, S, Dim]
-                sin_final = sin_final.transpose(1, 2) # [B, 1, S, Dim]
+            else:  # Assume [B, H, S, D]
+                cos_final = cos_final.transpose(1, 2)  # [B, 1, S, Dim]
+                sin_final = sin_final.transpose(1, 2)  # [B, 1, S, Dim]
 
         else:
             # Fallback to previous broadcasting logic if no position_ids
