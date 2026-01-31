@@ -104,9 +104,8 @@ def torch_to_mlx(
         >>> t = torch.randn(4, 4, device="mps")
         >>> arr = torch_to_mlx(t)
     """
-    import torch
+    import torch.utils.dlpack
     import mlx.core as mx
-    import numpy as np
 
     # Ensure MPS writes are complete before accessing memory
     if tensor.device.type == "mps":
@@ -116,8 +115,11 @@ def torch_to_mlx(
     if not tensor.is_contiguous():
         tensor = tensor.contiguous()
 
-    # Move to CPU and convert via numpy
-    # On unified memory this is efficient (no actual copy between RAM pools)
+    # Use DLPack for zero-copy sharing on same device (MPS -> MLX)
+    if tensor.device.type == "mps":
+        return mx.from_dlpack(torch.utils.dlpack.to_dlpack(tensor))
+
+    # Fallback to CPU/Numpy for other devices
     if tensor.device.type != "cpu":
         tensor = tensor.cpu()
 
@@ -155,37 +157,40 @@ def mlx_to_torch(
         >>> arr = mx.ones((4, 4))
         >>> t = mlx_to_torch(arr, device="mps")
     """
-    import torch
+    import torch.utils.dlpack
     import mlx.core as mx
-    import numpy as np
 
     # Force evaluation of lazy ops - critical before memory access
     mx.eval(array)
 
-    # Handle bfloat16 specially (numpy doesn't support it)
-    if array.dtype == mx.bfloat16:
-        # Convert to float32 in MLX first
-        array = array.astype(mx.float32)
-        mx.eval(array)
-
-    # Strategy 1: Try memoryview (zero-copy via buffer protocol)
-    # MLX arrays support the buffer protocol for direct memory access
+    # Use DLPack for zero-copy sharing (MLX -> MPS/CPU)
+    # MLX arrays support the DLPack protocol
     try:
-        tensor = torch.tensor(memoryview(array))
-    except (TypeError, ValueError):
-        # Strategy 2: Go through numpy
+        tensor = torch.utils.dlpack.from_dlpack(array)
+        if tensor.device.type != device:
+            tensor = tensor.to(device = device)
+    except Exception:
+        # Fallback Strategy: memoryview/numpy
+        import numpy as np
+        if array.dtype == mx.bfloat16:
+            array = array.astype(mx.float32)
+            mx.eval(array)
+        
         try:
-            tensor = torch.from_numpy(np.array(array, copy = False))
-        except (TypeError, RuntimeError):
-            # Strategy 3: Force copy as last resort
-            tensor = torch.from_numpy(np.array(array))
+            tensor = torch.tensor(memoryview(array))
+        except (TypeError, ValueError):
+            try:
+                tensor = torch.from_numpy(np.array(array, copy = False))
+            except:
+                tensor = torch.from_numpy(np.array(array))
+        
+        tensor = tensor.to(device = device)
 
     # Apply dtype if specified
     if dtype is not None:
         tensor = tensor.to(dtype = dtype)
 
-    # Move to target device (fast on unified memory)
-    return tensor.to(device = device)
+    return tensor
 
 
 @contextmanager

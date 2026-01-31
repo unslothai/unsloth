@@ -92,24 +92,21 @@ def run_performance_benchmark():
         print(f"   Shape: ({batch}, {seq}, {dim}) = {elements/1e6:.2f}M elements")
         print("-" * 70)
 
-        # PyTorch MPS Reference
+        # PyTorch MPS Reference (Native Implementation)
         X_torch = torch.randn(batch, seq, dim, device = "mps", dtype = torch.float16)
         W_torch = torch.randn(dim, device = "mps", dtype = torch.float16)
 
-        # We use a mock LayerNorm object for fast_rms_layernorm
-        class MockLN:
-            def __init__(self, weight, eps):
-                self.weight = weight
-                self.eps = eps
+        def pytorch_native_mps():
+            # Manual PyTorch implementation (matches Llama style)
+            # This is what we want to beat.
+            x = X_torch.to(torch.float32)
+            var = x.pow(2).mean(-1, keepdim = True)
+            inv = torch.rsqrt(var + eps)
+            return (W_torch * (x * inv).to(torch.float16))
 
-        ln = MockLN(W_torch, eps)
-
-        def pytorch_mps():
-            return fast_rms_layernorm(ln, X_torch, gemma = False)
-
-        t_torch = benchmark_fn(pytorch_mps)
+        t_torch = benchmark_fn(pytorch_native_mps)
         tp_torch = calculate_throughput(elements, t_torch)
-        print(f"   PyTorch MPS Dispatch: {t_torch:7.3f} ms | {tp_torch:7.2f} GB/s")
+        print(f"   PyTorch MPS Native:   {t_torch:7.3f} ms | {tp_torch:7.2f} GB/s")
 
         # MLX Composed (mx.fast.rms_norm)
         X_mlx = torch_to_mlx(X_torch)
@@ -199,7 +196,8 @@ def run_correctness_tests():
         dX_norm = dY_f32 * W_f32
         rowsum = (dX_norm * X_norm).sum(-1, keepdim = True)
         ref_dX = rms_inv * (dX_norm - (X_norm / dim) * rowsum)
-        ref_dW = (dY_f32 * X_norm).sum(0)
+        # Fix dW summation: sum over batch and seq (dims 0 and 1)
+        ref_dW = (dY_f32 * X_norm).sum(dim = (0, 1))
 
         diff_dX = np.abs(dX_metal.cpu().float().numpy() - ref_dX.numpy())
         diff_dW = np.abs(dW_metal.cpu().float().numpy() - ref_dW.numpy())
