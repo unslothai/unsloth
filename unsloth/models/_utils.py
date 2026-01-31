@@ -124,9 +124,10 @@ if DEVICE_TYPE == "mps":
         m = types.ModuleType("bitsandbytes")
         sys.modules["bitsandbytes"] = m
     
-    # Ensure bitsandbytes.nn.Linear4bit exists
+    # Ensure bitsandbytes.nn behaves like a package
     if "bitsandbytes.nn" not in sys.modules:
         m_nn = types.ModuleType("bitsandbytes.nn")
+        m_nn.__path__ = [] # Mark as package
         sys.modules["bitsandbytes.nn"] = m_nn
         # Link it to parent
         if "bitsandbytes" in sys.modules:
@@ -134,6 +135,13 @@ if DEVICE_TYPE == "mps":
         
         class BnbLinear4bit(torch.nn.Module): pass
         m_nn.Linear4bit = BnbLinear4bit
+
+    # Mock bitsandbytes.nn.modules
+    if "bitsandbytes.nn.modules" not in sys.modules:
+        m_mod = types.ModuleType("bitsandbytes.nn.modules")
+        sys.modules["bitsandbytes.nn.modules"] = m_mod
+        if "bitsandbytes.nn" in sys.modules:
+             sys.modules["bitsandbytes.nn"].modules = m_mod
 
     # 2. peft: Should be present, but might need Linear4bit if we want to satisfy unsloth checks
     try:
