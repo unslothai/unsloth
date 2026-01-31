@@ -156,17 +156,20 @@ def run_benchmark():
 
         # 5. Unsloth Compiled
         # Compile the merged function
+        # Note: mx.compile returns a function that returns an mx.array (lazy).
+        # We must force eval outside to measure time.
         compiled_fn = mx.compile(unsloth_merged_mlp)
-
+        
+        def run_compiled():
+            out = compiled_fn()
+            mx.eval(out)
+        
         # Warmup compiled
-        for _ in range(5):
-            compiled_fn()
-
-        t_compiled = benchmark_fn(compiled_fn)
+        for _ in range(5): run_compiled()
+        
+        t_compiled = benchmark_fn(run_compiled)
         speedup_compiled = t_torch / t_compiled
-        print(
-            f"   Unsloth Compiled: {t_compiled:7.3f} ms | {speedup_compiled:.2f}x Speedup (mx.compile)"
-        )
+        print(f"   Unsloth Compiled: {t_compiled:7.3f} ms | {speedup_compiled:.2f}x Speedup (mx.compile)")
 
         # 3. Unsloth Fused MLP (4-bit Quantized)
         # Quantize weights on the fly
