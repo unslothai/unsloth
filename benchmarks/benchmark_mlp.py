@@ -141,42 +141,54 @@ def run_benchmark():
         speedup_4bit = t_torch / t_unsloth_4bit
         print(f"   Unsloth 4-bit:    {t_unsloth_4bit:7.3f} ms | {speedup_4bit:.2f}x Speedup (vs FP16 Torch)")
 
-
     print("\n" + "=" * 60)
     print("Correctness Verification")
     print("=" * 60)
-    
+
     # Test on small batch
     b, s, h, i = 2, 128, 1024, 4096
-    X_small = torch.randn(b, s, h, device="mps", dtype=torch.float16)
-    upW_small = torch.randn(i, h, device="mps", dtype=torch.float16)
-    gateW_small = torch.randn(i, h, device="mps", dtype=torch.float16)
-    downW_small = torch.randn(h, i, device="mps", dtype=torch.float16)
-    
+    X_small = torch.randn(b, s, h, device = "mps", dtype = torch.float16)
+    upW_small = torch.randn(i, h, device = "mps", dtype = torch.float16)
+    gateW_small = torch.randn(i, h, device = "mps", dtype = torch.float16)
+    downW_small = torch.randn(h, i, device = "mps", dtype = torch.float16)
+
     # Torch Reference
     up = F.linear(X_small, upW_small)
     gate = F.linear(X_small, gateW_small)
     act = F.silu(gate) * up
     ref = F.linear(act, downW_small)
-    
+
     # Unsloth Fused
     X_chained = X_small.clone()
     with mlx_context():
         X_chained._mlx_cache = torch_to_mlx(X_small)
-        
+
     out_unsloth = mps_apply_lora_mlp_swiglu(
         X_chained,
-        gateW_small, None, None, None, 1.0,
-        upW_small, None, None, None, 1.0,
-        downW_small, None, None, None, 1.0,
+        gateW_small,
+        None,
+        None,
+        None,
+        1.0,
+        upW_small,
+        None,
+        None,
+        None,
+        1.0,
+        downW_small,
+        None,
+        None,
+        None,
+        1.0,
     )
-    
+
     diff = (out_unsloth - ref).abs().max()
     print(f"MLP Block Output Diff: {diff:.2e}")
     if diff < 1e-2:
         print("✅ Correctness Passed")
     else:
         print("❌ Correctness Failed")
+
 
 if __name__ == "__main__":
     run_benchmark()
