@@ -34,7 +34,9 @@ def print_header():
 def benchmark_fn(fn, warmup = 10, iterations = 50):
     # Warmup
     for _ in range(warmup):
-        fn()
+        res = fn()
+        if isinstance(res, (mx.array, list, tuple)):
+            mx.eval(res)
 
     if platform.system() == "Darwin":
         torch.mps.synchronize()
@@ -42,7 +44,9 @@ def benchmark_fn(fn, warmup = 10, iterations = 50):
 
     start = time.perf_counter()
     for _ in range(iterations):
-        fn()
+        res = fn()
+        if isinstance(res, (mx.array, list, tuple)):
+            mx.eval(res)
 
     if platform.system() == "Darwin":
         torch.mps.synchronize()
