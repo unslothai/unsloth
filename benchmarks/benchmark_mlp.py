@@ -141,6 +141,7 @@ def run_benchmark():
                 # Down proj
                 W_down_mlx = _get_mlx_cached(downW)
                 out_mlx = h_mlx @ W_down_mlx.T
+                mx.eval(out_mlx)
                 return out_mlx
 
         # Warmup for merged
