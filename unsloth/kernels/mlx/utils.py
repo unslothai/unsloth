@@ -28,7 +28,6 @@ class UnslothMLXError(ImportError):
     """Exception raised when MLX is required but not installed/functional."""
 
 
-
 def is_mlx_available(min_version: str = "0.0.0") -> bool:
     """Checks if MLX is available and meets the minimum version requirement."""
     if not _MLX_AVAILABLE:
