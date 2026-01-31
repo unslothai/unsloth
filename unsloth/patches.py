@@ -134,6 +134,17 @@ def patch_unsloth_zoo_for_mps() -> bool:
         mock_triton_lang = ModuleType("triton.language")
         mock_triton.language = mock_triton_lang
         
+        # Satisfy torch._dynamo.utils.common_constant_types.add(triton.language.dtype)
+        class MockTritonMeta:
+            def __repr__(self): return "MockTritonMeta"
+        
+        mock_triton_lang.dtype = MockTritonMeta
+        mock_triton_lang.float32 = MockTritonMeta()
+        mock_triton_lang.float16 = MockTritonMeta()
+        mock_triton_lang.bfloat16 = MockTritonMeta()
+        mock_triton_lang.int32 = MockTritonMeta()
+        mock_triton_lang.uint32 = MockTritonMeta()
+        
         sys.modules["triton"] = mock_triton
         sys.modules["triton.language"] = mock_triton_lang
 
