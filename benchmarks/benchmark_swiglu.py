@@ -170,7 +170,9 @@ def run_performance_benchmark():
         t_fused = benchmark_fn(mlx_fused)
         tp_fused = calculate_throughput(elements, t_fused)
         speedup = t_mlx / t_fused
-        print(f"   Fused Metal:        {t_fused:7.3f} ms | {tp_fused:7.2f} GB/s  ({speedup:.2f}x)")
+        print(
+            f"   Fused Metal:        {t_fused:7.3f} ms | {tp_fused:7.2f} GB/s  ({speedup:.2f}x)"
+        )
 
         # PyTorch MPS Reference
         e_torch = torch.randn(batch, seq, dim, device = "mps", dtype = torch.float16)
@@ -191,8 +193,6 @@ def run_performance_benchmark():
             }
         )
         print()
-
-
 
     # Summary
     if results:
