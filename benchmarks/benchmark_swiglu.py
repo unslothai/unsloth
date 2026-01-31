@@ -19,9 +19,9 @@ import time
 import platform
 from typing import Callable
 
-# ==============================================================================
-# Environment Setup
-# ==============================================================================
+# Add parent directory to sys.path to allow absolute imports of unsloth
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
 IS_DARWIN = platform.system() == "Darwin"
 if not IS_DARWIN:
@@ -131,7 +131,12 @@ def run_performance_benchmark():
         (8, 2048, 4096, "Smaller model batch"),
     ]
     
-    fused_kernel = get_fused_kernel()
+    import importlib.util
+    kernel_path = os.path.join(os.path.dirname(__file__), "..", "unsloth", "kernels", "metal", "swiglu.py")
+    spec = importlib.util.spec_from_file_location("metal_swiglu", kernel_path)
+    metal_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(metal_module)
+    
     results = []
     
     for batch, seq, dim, desc in configs:
@@ -151,22 +156,7 @@ def run_performance_benchmark():
         print(f"   MLX Composed:       {t_mlx:7.3f} ms | {tp_mlx:7.2f} GB/s")
         
         # Fused Metal Kernel
-        e_flat = e_mlx.flatten()
-        g_flat = g_mlx.flatten()
-        n_arr = mx.array([elements], dtype=mx.uint32)
-        
-        def run_fused():
-            out = fused_kernel(
-                inputs=[e_flat, g_flat, n_arr],
-                output_shapes=[(elements,)],
-                output_dtypes=[mx.float16],
-                grid=(elements, 1, 1),
-                threadgroup=(min(256, elements), 1, 1),
-            )
-            mx.eval(out[0])
-            return out[0]
-        
-        t_fused = benchmark_fn(run_fused)
+        t_fused = benchmark_fn(lambda: metal_module.metal_swiglu_forward(e_torch, g_torch))
         tp_fused = calculate_throughput(elements, t_fused)
         speedup = tp_fused / tp_mlx if tp_mlx > 0 else 0
         print(f"   Fused Metal:        {t_fused:7.3f} ms | {tp_fused:7.2f} GB/s | {speedup:.2f}x")
@@ -244,24 +234,18 @@ def run_correctness_tests():
         mlx_pass = mlx_diff.max() < 1e-5
         print(f"  MLX Composed:  max={mlx_diff.max():.2e} mean={mlx_diff.mean():.2e} {'✅' if mlx_pass else '❌'}")
         
-        # Fused Metal (FP16)
-        e_mlx_f16 = e_mlx.astype(mx.float16).flatten()
-        g_mlx_f16 = g_mlx.astype(mx.float16).flatten()
-        n_elements = batch * seq * dim
-        n_arr = mx.array([n_elements], dtype=mx.uint32)
-        
-        fused_output = fused_kernel(
-            inputs=[e_mlx_f16, g_mlx_f16, n_arr],
-            output_shapes=[(n_elements,)],
-            output_dtypes=[mx.float16],
-            grid=(n_elements, 1, 1),
-            threadgroup=(min(256, n_elements), 1, 1),
-        )
-        mx.eval(fused_output[0])
-        fused_np = np.array(fused_output[0]).reshape(batch, seq, dim)
+        # Fused Metal (Production)
+        import importlib.util
+        kernel_path = os.path.join(os.path.dirname(__file__), "..", "unsloth", "kernels", "metal", "swiglu.py")
+        spec = importlib.util.spec_from_file_location("metal_swiglu", kernel_path)
+        metal_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(metal_module)
+
+        fused_output = metal_module.metal_swiglu_forward(e_torch.to("mps", torch.float16), g_torch.to("mps", torch.float16))
+        fused_np = fused_output.cpu().float().numpy()
         
         ref_f16 = pytorch_swiglu_reference(e_torch.half(), g_torch.half()).float().numpy()
-        fused_diff = np.abs(fused_np.astype(np.float32) - ref_f16)
+        fused_diff = np.abs(fused_np - ref_f16)
         fused_pass = fused_diff.max() < 1e-2  # 1% tolerance for FP16
         print(f"  Fused (fp16):  max={fused_diff.max():.2e} mean={fused_diff.mean():.2e} {'✅' if fused_pass else '❌'}")
         

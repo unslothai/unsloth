@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 __all__ = ["metal_swiglu_forward", "metal_swiglu_backward", "is_metal_swiglu_available"]
 
 
-from ..mlx.bridge import torch_to_mlx, mlx_to_torch, mlx_context
+from unsloth.kernels.mlx.bridge import torch_to_mlx, mlx_to_torch, mlx_context
 
 _METAL_SWIGLU_AVAILABLE: Optional[bool] = None
 

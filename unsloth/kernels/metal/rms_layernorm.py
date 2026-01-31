@@ -3,7 +3,7 @@
 
 import torch
 import mlx.core as mx
-from .mlx.bridge import torch_to_mlx, mlx_to_torch, mlx_context
+from unsloth.kernels.mlx.bridge import torch_to_mlx, mlx_to_torch, mlx_context
 from functools import lru_cache
 import os
 
