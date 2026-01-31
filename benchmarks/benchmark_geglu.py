@@ -157,13 +157,16 @@ def run_correctness_tests():
     e = torch.randn(batch, seq, dim, dtype = torch.float32)
     g = torch.randn(batch, seq, dim, dtype = torch.float32)
 
+    # Convert to MLX
+    e_mlx = mx.array(e.numpy()).astype(mx.float16)
+    g_mlx = mx.array(g.numpy()).astype(mx.float16)
+
     # Exact
     print("Testing GEGLU Exact...")
     ref = torch.nn.functional.gelu(e, approximate = "none") * g
-    out = metal_module.metal_geglu_exact_forward(
-        e.to("mps", torch.float16), g.to("mps", torch.float16)
-    )
-    diff = np.abs(out.cpu().float().numpy() - ref.numpy())
+    out = metal_module.mlx_geglu_exact_forward(e_mlx, g_mlx)
+    mx.eval(out)
+    diff = np.abs(np.array(out).astype(np.float32) - ref.numpy())
     print(
         f"  Exact Grad parity: max_diff={diff.max():.2e} {'✅' if diff.max() < 1e-2 else '❌'}"
     )
@@ -171,14 +174,14 @@ def run_correctness_tests():
     # Approx
     print("Testing GEGLU Approx...")
     ref = torch.nn.functional.gelu(e, approximate = "tanh") * g
-    out = metal_module.metal_geglu_approx_forward(
-        e.to("mps", torch.float16), g.to("mps", torch.float16)
-    )
-    diff = np.abs(out.cpu().float().numpy() - ref.numpy())
+    out = metal_module.mlx_geglu_approx_forward(e_mlx, g_mlx)
+    mx.eval(out)
+    diff = np.abs(np.array(out).astype(np.float32) - ref.numpy())
     print(
         f"  Approx Grad parity: max_diff={diff.max():.2e} {'✅' if diff.max() < 1e-2 else '❌'}"
     )
     print()
+
 
 
 def main():

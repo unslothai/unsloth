@@ -262,10 +262,12 @@ def run_correctness_tests():
         metal_module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(metal_module)
 
-        fused_output = metal_module.metal_swiglu_forward(
-            e_torch.to("mps", torch.float16), g_torch.to("mps", torch.float16)
-        )
-        fused_np = fused_output.cpu().float().numpy()
+        # Use MLX inputs for fused kernel
+        e_mlx_f16 = e_mlx.astype(mx.float16)
+        g_mlx_f16 = g_mlx.astype(mx.float16)
+        fused_output = metal_module.mlx_swiglu_forward(e_mlx_f16, g_mlx_f16)
+        mx.eval(fused_output)
+        fused_np = np.array(fused_output).astype(np.float32)
 
         ref_f16 = (
             pytorch_swiglu_reference(e_torch.half(), g_torch.half()).float().numpy()
@@ -275,6 +277,7 @@ def run_correctness_tests():
         print(
             f"  Fused (fp16):  max={fused_diff.max():.2e} mean={fused_diff.mean():.2e} {'✅' if fused_pass else '❌'}"
         )
+
 
         if not (mlx_pass and fused_pass):
             all_passed = False
