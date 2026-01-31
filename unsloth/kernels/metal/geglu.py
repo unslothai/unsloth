@@ -241,6 +241,7 @@ def _metal_geglu_backward(dw, e, g, kernel_fn):
         de = mlx_to_torch(outs[2]).view(*shape)
         return h, df, de
 
+
 def metal_geglu_exact_forward(e, g):
     return _metal_geglu_forward(e, g, _get_exact_forward())
 
@@ -261,10 +262,11 @@ def metal_geglu_approx_backward(dw, e, g):
 # Pure MLX wrappers (no PyTorch conversion overhead)
 # =============================================================================
 
+
 def _mlx_geglu_forward_pure(e_mlx, g_mlx, kernel_fn):
     """Pure MLX forward - no PyTorch conversion."""
     import mlx.core as mx
-    
+
     shape = e_mlx.shape
     n = e_mlx.size
     e_flat = e_mlx.flatten()
