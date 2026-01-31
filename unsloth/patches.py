@@ -92,16 +92,20 @@ def patch_unsloth_zoo_for_mps() -> bool:
     # --- EXTENDED MOCKING FOR TORCH.CUDA ---
     # Many parts of unsloth_zoo/trl assume CUDA exists and call memory functions.
     import torch
-    
+
     if not torch.cuda.is_available():
         # Mock torch.cuda.memory.mem_get_info
         if not hasattr(torch.cuda, "memory"):
-            class MockMemory: pass
+
+            class MockMemory:
+                pass
+
             torch.cuda.memory = MockMemory
-        
+
         # We MUST override even if it exists, because the original raises AssertionError
-        def mock_mem_get_info(device=None):
+        def mock_mem_get_info(device = None):
             return (16 * 1024**3, 24 * 1024**3)
+
         torch.cuda.memory.mem_get_info = mock_mem_get_info
 
         # Mock torch.cuda.get_device_properties
@@ -111,14 +115,14 @@ def patch_unsloth_zoo_for_mps() -> bool:
             multi_processor_count = 1
             total_global_mem = 24 * 1024**3
             name = "Apple Silicon (MPS Mock)"
-        
-        torch.cuda.get_device_properties = lambda device=None: MockProps()
-        torch.cuda.synchronize = lambda device=None: None
+
+        torch.cuda.get_device_properties = lambda device = None: MockProps()
+        torch.cuda.synchronize = lambda device = None: None
         torch.cuda.empty_cache = lambda: None
         torch.cuda.set_device = lambda device: None
         torch.cuda.current_device = lambda: 0
-        torch.cuda.get_device_capability = lambda device=None: (8, 0)
-        torch.cuda.is_bf16_supported = lambda: True # Most modern Macs support it
+        torch.cuda.get_device_capability = lambda device = None: (8, 0)
+        torch.cuda.is_bf16_supported = lambda: True  # Most modern Macs support it
 
     # --- MOCK TRITON ---
     # Triton is not available on macOS, but unsloth_zoo (and others) import it.
