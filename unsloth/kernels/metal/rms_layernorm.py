@@ -109,9 +109,11 @@ RMS_BACKWARD_BODY = """
     }
 """
 
+
 @lru_cache(maxsize = 1)
 def _get_backward_kernel():
     import mlx.core as mx
+
     return mx.fast.metal_kernel(
         name = "rms_backward_v2",
         input_names = ["dY", "X", "W", "r", "n_rows", "n_cols", "gemma"],
@@ -119,42 +121,46 @@ def _get_backward_kernel():
         source = RMS_BACKWARD_BODY,
     )
 
+
 def mlx_rms_layernorm_forward(X_mlx, W_mlx, eps, gemma = False):
     """
     Optimized Forward using MLX Native RMSNorm where possible.
     Includes explicit r computation for backward pass.
     """
     import mlx.core as mx
+
     # Important: Cast to float32 for stable rsqrt computation
     X_f32 = X_mlx.astype(mx.float32)
     r = mx.rsqrt(mx.mean(mx.square(X_f32), axis = -1) + eps)
-    
+
     if not gemma:
         Y = mx.fast.rms_norm(X_mlx, W_mlx, eps)
     else:
         # Gemma uses (1 + W)
         Y = mx.fast.rms_norm(X_mlx, W_mlx + 1.0, eps)
-        
+
     return Y, r
+
 
 def mlx_rms_layernorm_backward(dY_mlx, X_mlx, W_mlx, r_mlx, gemma = False):
     """Custom Metal kernel for the backward pass with dW reduction."""
     import mlx.core as mx
+
     shape = X_mlx.shape
     dim = shape[-1]
     dY_flat = dY_mlx.reshape(-1, dim)
     X_flat = X_mlx.reshape(-1, dim)
     n_rows, n_cols = X_flat.shape
-    
+
     kernel = _get_backward_kernel()
-    
+
     n_rows_mx = mx.array([n_rows], dtype = mx.uint32)
     n_cols_mx = mx.array([n_cols], dtype = mx.uint32)
     gemma_mx = mx.array([1 if gemma else 0], dtype = mx.uint32)
-    
+
     # Use efficient threadgroup size (multiple of 32)
     tpg = min(256, ((n_cols + 3) // 4 + 31) // 32 * 32)
-    
+
     outputs = kernel(
         inputs = [dY_flat, X_flat, W_mlx, r_mlx, n_rows_mx, n_cols_mx, gemma_mx],
         output_shapes = [X_flat.shape, X_flat.shape],
@@ -162,10 +168,11 @@ def mlx_rms_layernorm_backward(dY_mlx, X_mlx, W_mlx, r_mlx, gemma = False):
         grid = (n_rows, 1, 1),
         threadgroup = (tpg, 1, 1),
     )
-    
+
     # Final reduction for dW across rows
     dW = mx.sum(outputs[1], axis = 0).astype(W_mlx.dtype)
     return outputs[0].reshape(shape), dW
+
 
 def metal_rms_layernorm(X, W, eps, gemma = False):
     """Fused Metal RMS LayerNorm (PyTorch interface)."""
@@ -174,6 +181,7 @@ def metal_rms_layernorm(X, W, eps, gemma = False):
         W_mlx = torch_to_mlx(W)
         Y_mlx, r_mlx = mlx_rms_layernorm_forward(X_mlx, W_mlx, eps, gemma)
         return mlx_to_torch(Y_mlx), mlx_to_torch(r_mlx)
+
 
 def metal_rms_layernorm_backward(dY, X, W, r, eps, gemma = False):
     """Fused Metal RMS LayerNorm Backward (PyTorch interface)."""

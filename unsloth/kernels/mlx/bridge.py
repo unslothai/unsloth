@@ -183,15 +183,16 @@ def mlx_to_torch(
     except Exception:
         # Fallback Strategy: memoryview/numpy
         import numpy as np
+
         # Evaluate before access
         mx.eval(array)
-        
+
         if array.dtype == mx.bfloat16:
             # Numpy doesn't like bfloat16, convert to float32
             array_f32 = array.astype(mx.float32)
             mx.eval(array_f32)
             array = array_f32
-        
+
         try:
             # Direct buffer protocol access (zero-copy if already on CPU)
             tensor = torch.tensor(memoryview(array))
@@ -201,7 +202,7 @@ def mlx_to_torch(
                 tensor = torch.from_numpy(np.array(array, copy = False))
             except:
                 tensor = torch.from_numpy(np.array(array))
-        
+
         if tensor.device.type != device:
             tensor = tensor.to(device = device)
 
