@@ -104,11 +104,42 @@ def run_benchmark():
         print(f"   Unsloth Fused:    {t_unsloth:7.3f} ms | {speedup:.2f}x Speedup")
 
         if speedup > 3.0:
-            print("   🚀 Massive Speedup Detected!")
+             print("   🚀 Massive Speedup Detected!")
         elif speedup > 1.5:
-            print("   ✅ Significant Improvement")
+             print("   ✅ Significant Improvement")
         elif speedup < 1.0:
-            print("   ⚠️ Slower (Check overhead)")
+             print("   ⚠️ Slower (Check overhead)")
+
+        # 3. Unsloth Fused MLP (4-bit Quantized)
+        # Quantize weights on the fly
+        from unsloth.kernels.mlx.quantization import quantize_4bit
+        
+        # We need to manually inject quantized weights into the cache
+        # The benchmark function mps_apply_lora_mlp_swiglu takes raw tensors
+        # and calls _mlx_matmul, which calls _get_mlx_cached.
+        # We need to pre-populate _mlx_cache on the weight tensors with MLXQuantizedWeight objects.
+        
+        # Clone for isolation
+        upW_q = upW.clone()
+        gateW_q = gateW.clone()
+        downW_q = downW.clone()
+        
+        with mlx_context():
+            upW_q._mlx_cache = quantize_4bit(upW)
+            gateW_q._mlx_cache = quantize_4bit(gateW)
+            downW_q._mlx_cache = quantize_4bit(downW)
+            
+        def unsloth_mlp_4bit():
+            return mps_apply_lora_mlp_swiglu(
+                X_chained,
+                gateW_q, None, None, None, 1.0,
+                upW_q, None, None, None, 1.0,
+                downW_q, None, None, None, 1.0,
+            )
+
+        t_unsloth_4bit = benchmark_fn(unsloth_mlp_4bit)
+        speedup_4bit = t_torch / t_unsloth_4bit
+        print(f"   Unsloth 4-bit:    {t_unsloth_4bit:7.3f} ms | {speedup_4bit:.2f}x Speedup (vs FP16 Torch)")
 
 
     print("\n" + "=" * 60)

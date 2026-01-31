@@ -17,6 +17,7 @@ import torch.nn.functional as F
 
 
 from unsloth.kernels.mlx.bridge import torch_to_mlx, mlx_to_torch, mlx_context
+from unsloth.kernels.mlx.quantization import MLXQuantizedWeight, quantize_4bit
 
 
 def _get_mlx_cached(tensor):
@@ -38,13 +39,27 @@ def _mlx_matmul(X_mlx, W, A, B, s):
     """
     import mlx.core as mx
 
-    W_mlx = _get_mlx_cached(W)
-
-    # Base projection: X @ W.T
-    # MLX uses W.T implicitly for linear layers usually? No, explicit matmul.
-    # torch.linear uses X @ W.T
-    out = X_mlx @ W_mlx.T
-
+    W_mlx: Any = _get_mlx_cached(W)
+    
+    # Base projection
+    if isinstance(W_mlx, MLXQuantizedWeight):
+        # Quantized MatMul: (x, w, scales, biases, transpose=True/False)
+        # MLX quantized_matmul(x, w, scales, biases, transpose=True, group_size=64)
+        # Our W_mlx.weight is (Out, In_packed). X is (..., In).
+        # We need X @ W.T
+        # mx.quantized_matmul supports transpose.
+        out = mx.quantized_matmul(
+            X_mlx, 
+            W_mlx.weight, 
+            scales=W_mlx.scales, 
+            biases=W_mlx.biases, 
+            transpose=True, 
+            group_size=W_mlx.group_size
+        )
+    else:
+        # Standard Linear: X @ W.T
+        out = X_mlx @ W_mlx.T
+    
     if A is not None:
         A_mlx = _get_mlx_cached(A)
         B_mlx = _get_mlx_cached(B)
