@@ -268,7 +268,10 @@ def mlx_geglu_approx_forward(e_mlx, g_mlx):
 # PyTorch wrappers (for integration with main Unsloth dispatch)
 # =============================================================================
 
-def _metal_geglu_forward(e: "torch.Tensor", g: "torch.Tensor", mlx_fn) -> "torch.Tensor":
+
+def _metal_geglu_forward(
+    e: "torch.Tensor", g: "torch.Tensor", mlx_fn
+) -> "torch.Tensor":
     shape = e.shape
     with mlx_context():
         e_mlx = torch_to_mlx(e)
@@ -277,14 +280,16 @@ def _metal_geglu_forward(e: "torch.Tensor", g: "torch.Tensor", mlx_fn) -> "torch
         return mlx_to_torch(out_mlx).view(*shape)
 
 
-def _metal_geglu_backward(dw: "torch.Tensor", e: "torch.Tensor", g: "torch.Tensor", mlx_fn):
+def _metal_geglu_backward(
+    dw: "torch.Tensor", e: "torch.Tensor", g: "torch.Tensor", mlx_fn
+):
     shape = e.shape
     with mlx_context():
         dw_mlx = torch_to_mlx(dw)
         e_mlx = torch_to_mlx(e)
         g_mlx = torch_to_mlx(g)
         h_mlx, df_mlx, de_mlx = mlx_fn(dw_mlx, e_mlx, g_mlx)
-        
+
         h = mlx_to_torch(h_mlx).view(*shape)
         df = mlx_to_torch(df_mlx).view(*shape)
         de = mlx_to_torch(de_mlx).view(*shape)

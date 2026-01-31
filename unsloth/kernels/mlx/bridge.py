@@ -124,7 +124,6 @@ def torch_to_mlx(
     return mx.array(tensor.numpy())
 
 
-
 @require_mlx
 def mlx_to_torch(
     array: "mx.array",

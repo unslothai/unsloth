@@ -115,8 +115,10 @@ def mps_apply_lora_mlp_swiglu(
     g = mps_matmul_lora(X, upW, upW_quant, upA, upB, upS)
     # Try Metal kernel first, then fallback to slow F.silu
     from ..metal import is_metal_swiglu_available
+
     if is_metal_swiglu_available():
         from ..metal.swiglu import metal_swiglu_forward
+
         h = metal_swiglu_forward(e, g)
     else:
         h = F.silu(e) * g
@@ -162,8 +164,10 @@ def mps_apply_lora_mlp_geglu_exact(
     # GEGLU: GELU(e) * g
     # Try Metal kernel first, then fallback to slow F.gelu
     from ..metal import is_metal_geglu_available
+
     if is_metal_geglu_available():
         from ..metal.geglu import metal_geglu_exact_forward
+
         h = metal_geglu_exact_forward(e, g)
     else:
         h = F.gelu(e, approximate = "none") * g
@@ -194,8 +198,10 @@ def mps_apply_lora_mlp_geglu_approx(
     # GEGLU approximate: GELU(e, approximate='tanh') * g
     # Try Metal kernel first, then fallback to slow F.gelu
     from ..metal import is_metal_geglu_available
+
     if is_metal_geglu_available():
         from ..metal.geglu import metal_geglu_approx_forward
+
         h = metal_geglu_approx_forward(e, g)
     else:
         h = F.gelu(e, approximate = "tanh") * g

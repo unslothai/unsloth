@@ -67,13 +67,17 @@ def geglu_exact_forward_kernel(gate, up):
     if DEVICE_TYPE == "mps":
         # Try Metal kernel first for maximum performance
         from .metal import is_metal_geglu_available
+
         if is_metal_geglu_available():
             from .metal.geglu import metal_geglu_exact_forward
+
             return metal_geglu_exact_forward(gate, up)
 
         from .mps import USE_MPS_FALLBACK
+
         if USE_MPS_FALLBACK:
             from .mps.geglu import mps_geglu_exact_forward
+
             return mps_geglu_exact_forward(gate, up)
 
     batch, seq_len, hd = gate.shape
@@ -159,13 +163,17 @@ def geglu_exact_backward_kernel(DW, e, g):
     if DEVICE_TYPE == "mps":
         # Try Metal kernel first for maximum performance
         from .metal import is_metal_geglu_available
+
         if is_metal_geglu_available():
             from .metal.geglu import metal_geglu_exact_backward
+
             return metal_geglu_exact_backward(DW, e, g)
 
         from .mps import USE_MPS_FALLBACK
+
         if USE_MPS_FALLBACK:
             from .mps.geglu import mps_geglu_exact_backward
+
             return mps_geglu_exact_backward(DW, e, g)
 
     batch_seq_len, hd = e.shape
@@ -227,13 +235,17 @@ def geglu_approx_forward_kernel(gate, up):
     if DEVICE_TYPE == "mps":
         # Try Metal kernel first for maximum performance
         from .metal import is_metal_geglu_available
+
         if is_metal_geglu_available():
             from .metal.geglu import metal_geglu_approx_forward
+
             return metal_geglu_approx_forward(gate, up)
 
         from .mps import USE_MPS_FALLBACK
+
         if USE_MPS_FALLBACK:
             from .mps.geglu import mps_geglu_approx_forward
+
             return mps_geglu_approx_forward(gate, up)
 
     batch, seq_len, hd = gate.shape
@@ -326,13 +338,17 @@ def geglu_approx_backward_kernel(DW, e, g):
     if DEVICE_TYPE == "mps":
         # Try Metal kernel first for maximum performance
         from .metal import is_metal_geglu_available
+
         if is_metal_geglu_available():
             from .metal.geglu import metal_geglu_approx_backward
+
             return metal_geglu_approx_backward(DW, e, g)
 
         from .mps import USE_MPS_FALLBACK
+
         if USE_MPS_FALLBACK:
             from .mps.geglu import mps_geglu_approx_backward
+
             return mps_geglu_approx_backward(DW, e, g)
 
     batch_seq_len, hd = e.shape

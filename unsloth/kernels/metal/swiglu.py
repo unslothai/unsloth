@@ -171,13 +171,17 @@ def mlx_swiglu_backward(dw_mlx, e_mlx, g_mlx):
     h = outputs[0].reshape(shape)
     df = outputs[1].reshape(shape)
     de = outputs[2].reshape(shape)
+
+
 # =============================================================================
 # PyTorch wrappers (for integration with main Unsloth dispatch)
 # =============================================================================
 
+
 def metal_swiglu_forward(e: "torch.Tensor", g: "torch.Tensor") -> "torch.Tensor":
     """Fused SwiGLU forward using Metal kernel (PyTorch interface)."""
     import mlx.core as mx
+
     shape = e.shape
     with mlx_context():
         e_mlx = torch_to_mlx(e)
@@ -191,13 +195,14 @@ def metal_swiglu_backward(
 ) -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
     """Fused SwiGLU backward using Metal kernel (PyTorch interface)."""
     import mlx.core as mx
+
     shape = e.shape
     with mlx_context():
         dw_mlx = torch_to_mlx(dw)
         e_mlx = torch_to_mlx(e)
         g_mlx = torch_to_mlx(g)
         h_mlx, df_mlx, de_mlx = mlx_swiglu_backward(dw_mlx, e_mlx, g_mlx)
-        
+
         h = mlx_to_torch(h_mlx).view(*shape)
         df = mlx_to_torch(df_mlx).view(*shape)
         de = mlx_to_torch(de_mlx).view(*shape)
