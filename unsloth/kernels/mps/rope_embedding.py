@@ -169,6 +169,10 @@ def mps_rope_embedding(Q: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor):
 
 
 def mps_rope_embedding_qk(
-    Q: torch.Tensor, K: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, position_ids: torch.Tensor = None
+    Q: torch.Tensor,
+    K: torch.Tensor,
+    cos: torch.Tensor,
+    sin: torch.Tensor,
+    position_ids: torch.Tensor = None,
 ):
     return MPSRoPEEmbeddingQK.apply(Q, K, cos, sin, position_ids)
