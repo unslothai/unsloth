@@ -17,18 +17,14 @@ if TYPE_CHECKING:
     import torch
 
 __all__ = [
-    "metal_geglu_exact_forward",
-    "metal_geglu_exact_backward",
-    "metal_geglu_approx_forward",
-    "metal_geglu_approx_backward",
     "mlx_geglu_exact_forward",
+    "mlx_geglu_exact_backward",
     "mlx_geglu_approx_forward",
+    "mlx_geglu_approx_backward",
     "is_metal_geglu_available",
 ]
 
 
-
-from unsloth.kernels.mlx.bridge import torch_to_mlx, mlx_to_torch, mlx_context
 
 _METAL_GEGLU_AVAILABLE: Optional[bool] = None
 
@@ -198,73 +194,13 @@ def _get_approx_backward():
     )
 
 
-def _metal_geglu_forward(e, g, kernel_fn):
-    import mlx.core as mx
-
-    shape = e.shape
-    n = e.numel()
-    with mlx_context():
-        e_mlx = torch_to_mlx(e).flatten()
-        g_mlx = torch_to_mlx(g).flatten()
-        n_arr = mx.array([n], dtype = mx.uint32)
-        grid_size = n  # Scalar ops: one thread per element
-        out = kernel_fn(
-            inputs = [e_mlx, g_mlx, n_arr],
-            output_shapes = [(n,)],
-            output_dtypes = [mx.float16],
-            grid = (grid_size, 1, 1),
-            threadgroup = (min(256, grid_size), 1, 1),
-        )
-        return mlx_to_torch(out[0]).view(*shape)
-
-
-def _metal_geglu_backward(dw, e, g, kernel_fn):
-    import mlx.core as mx
-
-    shape = e.shape
-    n = e.numel()
-    with mlx_context():
-        dw_mlx = torch_to_mlx(dw).flatten()
-        e_mlx = torch_to_mlx(e).flatten()
-        g_mlx = torch_to_mlx(g).flatten()
-        n_arr = mx.array([n], dtype = mx.uint32)
-        grid_size = n  # Scalar ops: one thread per element
-        outs = kernel_fn(
-            inputs = [dw_mlx, e_mlx, g_mlx, n_arr],
-            output_shapes = [(n,), (n,), (n,)],
-            output_dtypes = [mx.float16, mx.float16, mx.float16],
-            grid = (grid_size, 1, 1),
-            threadgroup = (min(256, grid_size), 1, 1),
-        )
-        h = mlx_to_torch(outs[0]).view(*shape)
-        df = mlx_to_torch(outs[1]).view(*shape)
-        de = mlx_to_torch(outs[2]).view(*shape)
-        return h, df, de
-
-
-def metal_geglu_exact_forward(e, g):
-    return _metal_geglu_forward(e, g, _get_exact_forward())
-
-
-def metal_geglu_exact_backward(dw, e, g):
-    return _metal_geglu_backward(dw, e, g, _get_exact_backward())
-
-
-def metal_geglu_approx_forward(e, g):
-    return _metal_geglu_forward(e, g, _get_approx_forward())
-
-
-def metal_geglu_approx_backward(dw, e, g):
-    return _metal_geglu_backward(dw, e, g, _get_approx_backward())
-
-
 # =============================================================================
-# Pure MLX wrappers (no PyTorch conversion overhead)
+# Pure MLX wrappers (recommended for performance)
 # =============================================================================
 
 
-def _mlx_geglu_forward_pure(e_mlx, g_mlx, kernel_fn):
-    """Pure MLX forward - no PyTorch conversion."""
+def _mlx_geglu_forward(e_mlx, g_mlx, kernel_fn):
+    """Pure MLX GEGLU forward."""
     import mlx.core as mx
 
     shape = e_mlx.shape
@@ -283,11 +219,45 @@ def _mlx_geglu_forward_pure(e_mlx, g_mlx, kernel_fn):
     return out[0].reshape(shape)
 
 
+def _mlx_geglu_backward(dw_mlx, e_mlx, g_mlx, kernel_fn):
+    """Pure MLX GEGLU backward."""
+    import mlx.core as mx
+
+    shape = e_mlx.shape
+    n = e_mlx.size
+    dw_flat = dw_mlx.flatten()
+    e_flat = e_mlx.flatten()
+    g_flat = g_mlx.flatten()
+    n_arr = mx.array([n], dtype = mx.uint32)
+    grid_size = n
+    outs = kernel_fn(
+        inputs = [dw_flat, e_flat, g_flat, n_arr],
+        output_shapes = [(n,), (n,), (n,)],
+        output_dtypes = [mx.float16, mx.float16, mx.float16],
+        grid = (grid_size, 1, 1),
+        threadgroup = (min(256, grid_size), 1, 1),
+    )
+    h = outs[0].reshape(shape)
+    df = outs[1].reshape(shape)
+    de = outs[2].reshape(shape)
+    return h, df, de
+
+
 def mlx_geglu_exact_forward(e_mlx, g_mlx):
-    """Pure MLX GEGLU exact forward (no PyTorch conversion)."""
-    return _mlx_geglu_forward_pure(e_mlx, g_mlx, _get_exact_forward())
+    """Fused GEGLU exact forward: GELU(e) * g using Metal kernel."""
+    return _mlx_geglu_forward(e_mlx, g_mlx, _get_exact_forward())
+
+
+def mlx_geglu_exact_backward(dw_mlx, e_mlx, g_mlx):
+    """Fused GEGLU exact backward using Metal kernel."""
+    return _mlx_geglu_backward(dw_mlx, e_mlx, g_mlx, _get_exact_backward())
 
 
 def mlx_geglu_approx_forward(e_mlx, g_mlx):
-    """Pure MLX GEGLU approx forward (no PyTorch conversion)."""
-    return _mlx_geglu_forward_pure(e_mlx, g_mlx, _get_approx_forward())
+    """Fused GEGLU approx forward: tanh-GELU(e) * g using Metal kernel."""
+    return _mlx_geglu_forward(e_mlx, g_mlx, _get_approx_forward())
+
+
+def mlx_geglu_approx_backward(dw_mlx, e_mlx, g_mlx):
+    """Fused GEGLU approx backward using Metal kernel."""
+    return _mlx_geglu_backward(dw_mlx, e_mlx, g_mlx, _get_approx_backward())

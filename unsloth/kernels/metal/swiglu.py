@@ -16,11 +16,9 @@ from typing import TYPE_CHECKING, Tuple, Optional
 if TYPE_CHECKING:
     import torch
 
-__all__ = ["metal_swiglu_forward", "metal_swiglu_backward", "mlx_swiglu_forward", "is_metal_swiglu_available"]
+__all__ = ["mlx_swiglu_forward", "mlx_swiglu_backward", "is_metal_swiglu_available"]
 
 
-
-from unsloth.kernels.mlx.bridge import torch_to_mlx, mlx_to_torch, mlx_context
 
 _METAL_SWIGLU_AVAILABLE: Optional[bool] = None
 
@@ -118,64 +116,15 @@ def _get_backward_kernel():
     )
 
 
-def metal_swiglu_forward(e: "torch.Tensor", g: "torch.Tensor") -> "torch.Tensor":
-    """Fused SwiGLU forward (PyTorch interface - includes conversion overhead)"""
-    import mlx.core as mx
-
-    shape = e.shape
-    n = e.numel()
-    with mlx_context():
-        e_mlx = torch_to_mlx(e).flatten()
-        g_mlx = torch_to_mlx(g).flatten()
-        n_arr = mx.array([n], dtype = mx.uint32)
-        grid_size = n  # Scalar ops: one thread per element
-        kernel = _get_forward_kernel()
-        outputs = kernel(
-            inputs = [e_mlx, g_mlx, n_arr],
-            output_shapes = [(n,)],
-            output_dtypes = [mx.float16],
-            grid = (grid_size, 1, 1),
-            threadgroup = (min(256, grid_size), 1, 1),
-        )
-        return mlx_to_torch(outputs[0]).view(*shape)
-
-
-def metal_swiglu_backward(
-    dw: "torch.Tensor", e: "torch.Tensor", g: "torch.Tensor"
-) -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
-    """Fused SwiGLU backward (PyTorch interface - includes conversion overhead)"""
-    import mlx.core as mx
-
-    shape = e.shape
-    n = e.numel()
-    with mlx_context():
-        dw_mlx = torch_to_mlx(dw).flatten()
-        e_mlx = torch_to_mlx(e).flatten()
-        g_mlx = torch_to_mlx(g).flatten()
-        n_arr = mx.array([n], dtype = mx.uint32)
-        grid_size = n  # Scalar ops: one thread per element
-        kernel = _get_backward_kernel()
-        outputs = kernel(
-            inputs = [dw_mlx, e_mlx, g_mlx, n_arr],
-            output_shapes = [(n,), (n,), (n,)],
-            output_dtypes = [mx.float16, mx.float16, mx.float16],
-            grid = (grid_size, 1, 1),
-            threadgroup = (min(256, grid_size), 1, 1),
-        )
-        h = mlx_to_torch(outputs[0]).view(*shape)
-        df = mlx_to_torch(outputs[1]).view(*shape)
-        de = mlx_to_torch(outputs[2]).view(*shape)
-        return h, df, de
-
-
 # =============================================================================
-# Pure MLX wrappers (no PyTorch conversion overhead)
+# Pure MLX wrappers (recommended for performance)
 # =============================================================================
 
-def _mlx_swiglu_forward_pure(e_mlx, g_mlx):
-    """Pure MLX SwiGLU forward - no PyTorch conversion."""
+
+def mlx_swiglu_forward(e_mlx, g_mlx):
+    """Fused SwiGLU forward: silu(e) * g using Metal kernel."""
     import mlx.core as mx
-    
+
     shape = e_mlx.shape
     n = e_mlx.size
     e_flat = e_mlx.flatten()
@@ -193,6 +142,26 @@ def _mlx_swiglu_forward_pure(e_mlx, g_mlx):
     return out[0].reshape(shape)
 
 
-def mlx_swiglu_forward(e_mlx, g_mlx):
-    """Pure MLX SwiGLU forward (no PyTorch conversion)."""
-    return _mlx_swiglu_forward_pure(e_mlx, g_mlx)
+def mlx_swiglu_backward(dw_mlx, e_mlx, g_mlx):
+    """Fused SwiGLU backward using Metal kernel."""
+    import mlx.core as mx
+
+    shape = e_mlx.shape
+    n = e_mlx.size
+    dw_flat = dw_mlx.flatten()
+    e_flat = e_mlx.flatten()
+    g_flat = g_mlx.flatten()
+    n_arr = mx.array([n], dtype = mx.uint32)
+    grid_size = n
+    kernel = _get_backward_kernel()
+    outputs = kernel(
+        inputs = [dw_flat, e_flat, g_flat, n_arr],
+        output_shapes = [(n,), (n,), (n,)],
+        output_dtypes = [mx.float16, mx.float16, mx.float16],
+        grid = (grid_size, 1, 1),
+        threadgroup = (min(256, grid_size), 1, 1),
+    )
+    h = outputs[0].reshape(shape)
+    df = outputs[1].reshape(shape)
+    de = outputs[2].reshape(shape)
+    return h, df, de
