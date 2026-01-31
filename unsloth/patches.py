@@ -132,10 +132,13 @@ def patch_unsloth_zoo_for_mps() -> bool:
         from importlib.abc import MetaPathFinder, Loader
         
         class FakeTriton(ModuleType):
-            def __init__(self, name):
-                super().__init__(name)
+            def __init__(self, name, *args, **kwargs):
+                # args might be (bases, dict) if used as a metaclass
+                super().__init__(str(name))
                 self.__path__ = []
                 self.__version__ = "3.0.0"
+                # Satisfy importlib.util.find_spec
+                self.__spec__ = ModuleSpec(name=str(name), loader=TritonMockLoader(), origin="mocked")
 
             def __getattr__(self, name):
                 if name.startswith("__"): return super().__getattribute__(name)
@@ -150,8 +153,15 @@ def patch_unsloth_zoo_for_mps() -> bool:
             def __call__(self, *args, **kwargs):
                 return self # Act as dummy decorator/constructor
             
+            def __getitem__(self, key):
+                return self # Support tl.constexpr[int] or similar if needed
+
             def __repr__(self):
                 return f"<FakeTriton {self.__name__}>"
+            
+            # To act as a base class, we need to handle being used in a class definition
+            def __class_getitem__(cls, key):
+                return cls
 
         class TritonMockLoader(Loader):
             def create_module(self, spec):
