@@ -46,9 +46,11 @@ __all__ = [
 # Thread-local storage for context state could be used, but simple global works for now
 _IN_MLX_CONTEXT = False
 
+
 def is_in_mlx_context() -> bool:
     """Check if we are currently inside an mlx_context."""
     return _IN_MLX_CONTEXT
+
 
 F = TypeVar("F", bound = Callable)
 
@@ -237,7 +239,7 @@ def mlx_context():
     import mlx.core as mx
 
     global _IN_MLX_CONTEXT
-    
+
     # Sync PyTorch MPS before entering MLX context
     synchronize_mps()
     prev_state = _IN_MLX_CONTEXT
