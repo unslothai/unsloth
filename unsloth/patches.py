@@ -187,13 +187,19 @@ def patch_unsloth_zoo_for_mps() -> bool:
             def find_spec(self, fullname, path, target=None):
                 if fullname == "triton" or fullname.startswith("triton."):
                     return ModuleSpec(fullname, TritonMockLoader())
+                if fullname == "bitsandbytes" or fullname.startswith("bitsandbytes."):
+                    return ModuleSpec(fullname, TritonMockLoader())
                 return None
 
         # Inject the finder at the start of meta_path
         sys.meta_path.insert(0, TritonMockFinder())
         
-        # Trigger root import to populate sys.modules
+        # Trigger root imports to populate sys.modules
         import triton
+        try:
+            import bitsandbytes
+        except ImportError:
+            pass
 
     _PATCH_APPLIED = True
     return True
