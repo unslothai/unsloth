@@ -141,8 +141,12 @@ from unsloth_zoo.patching_utils import (
     patch_compiled_autograd,
 )
 
-print(f"DEBUG: patch_model_and_tokenizer globals Bnb_Linear4bit: {patch_model_and_tokenizer.__globals__.get('Bnb_Linear4bit')}")
-print(f"DEBUG: patch_model_and_tokenizer globals Peft_Linear4bit: {patch_model_and_tokenizer.__globals__.get('Peft_Linear4bit')}")
+print(
+    f"DEBUG: patch_model_and_tokenizer globals Bnb_Linear4bit: {patch_model_and_tokenizer.__globals__.get('Bnb_Linear4bit')}"
+)
+print(
+    f"DEBUG: patch_model_and_tokenizer globals Peft_Linear4bit: {patch_model_and_tokenizer.__globals__.get('Peft_Linear4bit')}"
+)
 from unsloth_zoo.gradient_checkpointing import (
     Unsloth_Offloaded_Gradient_Checkpointer,
     unsloth_offloaded_gradient_checkpoint,
