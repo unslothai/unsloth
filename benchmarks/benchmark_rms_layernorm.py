@@ -102,7 +102,7 @@ def run_performance_benchmark():
             x = X_torch.to(torch.float32)
             var = x.pow(2).mean(-1, keepdim = True)
             inv = torch.rsqrt(var + eps)
-            return (W_torch * (x * inv).to(torch.float16))
+            return W_torch * (x * inv).to(torch.float16)
 
         t_torch = benchmark_fn(pytorch_native_mps)
         tp_torch = calculate_throughput(elements, t_torch)
