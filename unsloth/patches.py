@@ -183,10 +183,12 @@ def patch_unsloth_zoo_for_mps() -> bool:
 
         # 3. Config and common decorators
         class Config:
-            def __init__(self, *args, **kwargs): pass
+            def __init__(self, *args, **kwargs):
+                pass
+
         def dummy_decorator(*args, **kwargs):
             return lambda x: x
-        
+
         mock_triton.Config = Config
         mock_triton.jit = dummy_decorator
         mock_triton.autotune = dummy_decorator
