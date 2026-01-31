@@ -129,11 +129,11 @@ def patch_unsloth_zoo_for_mps() -> bool:
     if "triton" not in sys.modules:
         mock_triton = ModuleType("triton")
         mock_triton.__version__ = "3.0.0"
-        
+
         # Add triton.language
         mock_triton_lang = ModuleType("triton.language")
         mock_triton.language = mock_triton_lang
-        
+
         sys.modules["triton"] = mock_triton
         sys.modules["triton.language"] = mock_triton_lang
 
