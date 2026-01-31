@@ -165,15 +165,17 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
             from .metal import USE_METAL_KERNEL
 
             if USE_METAL_KERNEL:
-                from .metal import metal_rms_layernorm
-
-                return metal_rms_layernorm(X, W, eps, gemma)
+                from .metal.rms_layernorm import metal_rms_layernorm
+                Y, r = metal_rms_layernorm(X, W, eps, gemma)
+                ctx.eps = eps
+                ctx.GEMMA = gemma
+                ctx.save_for_backward(X, W, r)
+                return Y
 
             from .mps import USE_MPS_FALLBACK
 
             if USE_MPS_FALLBACK:
                 from .mps.rms_layernorm import mps_rms_layernorm
-
                 return mps_rms_layernorm(X, W, eps, gemma)
 
         shape = X.shape
@@ -215,10 +217,19 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, dY: torch.Tensor):
+        from ..device_type import DEVICE_TYPE
+        X, W, r = ctx.saved_tensors
+
+        if DEVICE_TYPE == "mps":
+            from .metal import USE_METAL_KERNEL
+            if USE_METAL_KERNEL:
+                from .metal.rms_layernorm import metal_rms_layernorm_backward
+                dX, dW = metal_rms_layernorm_backward(dY, X, W, r, ctx.eps, ctx.GEMMA)
+                return dX, dW, None, None
+
         shape = dY.shape
         dim: int = shape[-1]
         dY = dY.reshape(-1, dim)
-        X, W, r = ctx.saved_tensors
         n_rows: int
         n_cols: int
         n_rows, n_cols = dY.shape
@@ -245,6 +256,8 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
                 num_warps = ctx.num_warps,
             )
         dX = dX.view(*shape)
+        # Note: Triton backward in this file doesn't return dW yet, it's [TODO]
+        # But we return dX, None, ... to match the Triton logic for now.
         return dX, None, None, None
 
 
