@@ -107,6 +107,55 @@ def run_benchmark():
              print("   🚀 Massive Speedup Detected!")
         elif speedup > 1.5:
              print("   ✅ Significant Improvement")
+             
+        # 4. Unsloth Fused (Merged Gate/Up)
+        # Idea: X @ [Gate, Up] is faster than X@Gate + X@Up
+        with mlx_context():
+            W_merged = mx.concatenate([torch_to_mlx(gateW), torch_to_mlx(upW)], axis=0) # [2*I, H]
+        
+        # We need a custom merged MLP function for the benchmark
+        from unsloth.kernels.metal.swiglu import mlx_swiglu_forward
+        
+        def unsloth_merged_mlp():
+            with mlx_context():
+                X_mlx = _get_mlx_cached(X_chained)
+                # Merged Projection
+                # W_merged is (2*mid, hidden). X is (..., hidden).
+                # X @ W.T -> (..., 2*mid)
+                eg_mixed = X_mlx @ W_merged.T
+                
+                # Split (MLX split is cheap? Or strided view?)
+                # mid is dim/2 of the last axis
+                # Actually eg_mixed shape last dim is 2*intermediate.
+                # We need to split into e and g.
+                split_idx = eg_mixed.shape[-1] // 2
+                e_mlx = eg_mixed[..., :split_idx]
+                g_mlx = eg_mixed[..., split_idx:]
+                
+                h_mlx = mlx_swiglu_forward(e_mlx, g_mlx)
+                
+                # Down proj
+                W_down_mlx = _get_mlx_cached(downW)
+                out_mlx = h_mlx @ W_down_mlx.T
+                return out_mlx
+                
+        # Warmup for merged
+        for _ in range(3): unsloth_merged_mlp()
+        
+        t_merged = benchmark_fn(unsloth_merged_mlp)
+        speedup_merged = t_torch / t_merged
+        print(f"   Unsloth Merged:   {t_merged:7.3f} ms | {speedup_merged:.2f}x Speedup (Merged Gate/Up)")
+
+        # 5. Unsloth Compiled
+        # Compile the merged function
+        compiled_fn = mx.compile(unsloth_merged_mlp)
+        
+        # Warmup compiled
+        for _ in range(5): compiled_fn()
+        
+        t_compiled = benchmark_fn(compiled_fn)
+        speedup_compiled = t_torch / t_compiled
+        print(f"   Unsloth Compiled: {t_compiled:7.3f} ms | {speedup_compiled:.2f}x Speedup (mx.compile)")
         elif speedup < 1.0:
              print("   ⚠️ Slower (Check overhead)")
 
