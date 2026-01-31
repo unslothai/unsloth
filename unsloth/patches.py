@@ -129,13 +129,14 @@ def patch_unsloth_zoo_for_mps() -> bool:
     if "triton" not in sys.modules:
         mock_triton = ModuleType("triton")
         mock_triton.__version__ = "3.0.0"
-        mock_triton.__path__ = [] # Make it a package
+        mock_triton.__path__ = []  # Make it a package
         sys.modules["triton"] = mock_triton
 
         # Helper to create and nest submodules properly
         from importlib.machinery import ModuleSpec
         def mock_sub(full_name):
-            if full_name in sys.modules: return sys.modules[full_name]
+            if full_name in sys.modules:
+                return sys.modules[full_name]
             m = ModuleType(full_name)
             m.__path__ = []
             # Satisfy importlib.util.find_spec
@@ -160,13 +161,16 @@ def patch_unsloth_zoo_for_mps() -> bool:
         # Satisfy specific deep checks
         # 1. AttrsDescriptor in triton.backends.compiler
         class AttrsDescriptor:
-            def __init__(self, *args, **kwargs): pass
+            def __init__(self, *args, **kwargs):
+                pass
+
         mock_backends_comp.AttrsDescriptor = AttrsDescriptor
 
         # 2. dtypes in triton.language
         class MockTritonMeta:
-            def __repr__(self): return "MockTritonMeta"
-        
+            def __repr__(self):
+                return "MockTritonMeta"
+
         mock_lang.dtype = MockTritonMeta
         mock_lang.float32 = MockTritonMeta()
         mock_lang.float16 = MockTritonMeta()
