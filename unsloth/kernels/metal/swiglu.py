@@ -188,13 +188,13 @@ def metal_swiglu_forward(e: "torch.Tensor", g: "torch.Tensor") -> "torch.Tensor"
         e_mlx = getattr(e, "_mlx_cache", None)
         if e_mlx is None:
             e_mlx = torch_to_mlx(e)
-            
+
         g_mlx = getattr(g, "_mlx_cache", None)
         if g_mlx is None:
             g_mlx = torch_to_mlx(g)
 
         out_mlx = mlx_swiglu_forward(e_mlx, g_mlx)
-        
+
         # CHAINING: Attach MLX output to PyTorch tensor for next layer
         out_torch = mlx_to_torch(out_mlx).view(*shape)
         out_torch._mlx_cache = out_mlx

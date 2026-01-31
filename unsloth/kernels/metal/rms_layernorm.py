@@ -143,30 +143,29 @@ def mlx_rms_layernorm_backward(dY_mlx, X_mlx, W_mlx, r_mlx, gemma = False):
     return dX.astype(X_mlx.dtype), dW.astype(W_mlx.dtype)
 
 
-
 def metal_rms_layernorm(X, W, eps, gemma = False):
     """Fused Metal RMS LayerNorm (PyTorch interface)."""
     with mlx_context():
         X_mlx = torch_to_mlx(X)
-        
+
         # Check for cached MLX weight
         W_mlx = getattr(W, "_mlx_cache", None)
         if W_mlx is None:
             W_mlx = torch_to_mlx(W)
             W._mlx_cache = W_mlx
-            
+
         Y_mlx, r_mlx = mlx_rms_layernorm_forward(X_mlx, W_mlx, eps, gemma)
-        
+
         Y_torch = mlx_to_torch(Y_mlx)
         r_torch = mlx_to_torch(r_mlx)
-        
+
         # Fast path - Cache the MLX version of r to avoid re-converting in backward
         r_torch._mlx_tensor = r_mlx
-        
+
         # CHAINING: Attach MLX output to PyTorch tensor so next layer (SwiGLU)
         # can use it directly without converting back from PyTorch
         Y_torch._mlx_cache = Y_mlx
-        
+
         return Y_torch, r_torch
 
 
@@ -175,18 +174,18 @@ def metal_rms_layernorm_backward(dY, X, W, r, eps, gemma = False):
     with mlx_context():
         dY_mlx = torch_to_mlx(dY)
         X_mlx = torch_to_mlx(X)
-        
+
         # Check for cached MLX weight
         W_mlx = getattr(W, "_mlx_cache", None)
         if W_mlx is None:
             W_mlx = torch_to_mlx(W)
             # We can cache it here too if it wasn't already (though forward usually catches it)
             W._mlx_cache = W_mlx
-        
+
         # Fast path - Retrieve cached MLX version of r if available
         r_mlx = getattr(r, "_mlx_tensor", None)
         if r_mlx is None:
             r_mlx = torch_to_mlx(r)
-            
+
         dX_mlx, dW_mlx = mlx_rms_layernorm_backward(dY_mlx, X_mlx, W_mlx, r_mlx, gemma)
         return mlx_to_torch(dX_mlx), mlx_to_torch(dW_mlx)
