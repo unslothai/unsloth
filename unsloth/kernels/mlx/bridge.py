@@ -117,7 +117,17 @@ def torch_to_mlx(
 
     # Use DLPack for zero-copy sharing on same device (MPS -> MLX)
     if tensor.device.type == "mps":
-        return mx.from_dlpack(torch.utils.dlpack.to_dlpack(tensor))
+        try:
+            capsule = torch.utils.dlpack.to_dlpack(tensor)
+            if hasattr(mx, "from_dlpack"):
+                return mx.from_dlpack(capsule)
+            else:
+                # Some versions of MLX consume the capsule in mx.array constructor
+                # Or use mx.array(object_with_dlpack_interface)
+                return mx.array(capsule)
+        except Exception:
+            # Fallback to CPU if DLPack fails
+            pass
 
     # Fallback to CPU/Numpy for other devices
     if tensor.device.type != "cpu":
@@ -164,27 +174,36 @@ def mlx_to_torch(
     mx.eval(array)
 
     # Use DLPack for zero-copy sharing (MLX -> MPS/CPU)
-    # MLX arrays support the DLPack protocol
     try:
+        # Check if MLX array has DLPack interface
+        # Recent MLX arrays support __dlpack__ directly
         tensor = torch.utils.dlpack.from_dlpack(array)
         if tensor.device.type != device:
             tensor = tensor.to(device = device)
     except Exception:
         # Fallback Strategy: memoryview/numpy
         import numpy as np
+        # Evaluate before access
+        mx.eval(array)
+        
         if array.dtype == mx.bfloat16:
-            array = array.astype(mx.float32)
-            mx.eval(array)
+            # Numpy doesn't like bfloat16, convert to float32
+            array_f32 = array.astype(mx.float32)
+            mx.eval(array_f32)
+            array = array_f32
         
         try:
+            # Direct buffer protocol access (zero-copy if already on CPU)
             tensor = torch.tensor(memoryview(array))
         except (TypeError, ValueError):
             try:
+                # Fallback to copy via numpy
                 tensor = torch.from_numpy(np.array(array, copy = False))
             except:
                 tensor = torch.from_numpy(np.array(array))
         
-        tensor = tensor.to(device = device)
+        if tensor.device.type != device:
+            tensor = tensor.to(device = device)
 
     # Apply dtype if specified
     if dtype is not None:
