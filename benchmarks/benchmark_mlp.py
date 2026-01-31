@@ -156,7 +156,7 @@ def run_benchmark():
 
         # 5. Unsloth Compiled
         # To test properly, the function must take inputs so MLX builds a graph.
-        
+
         def simple_mlp_fn(x, wm, wd):
             # x: X_mlx, wm: W_merged, wd: W_down
             # W_merged -> (2*I, H). X -> (..., H).
@@ -166,26 +166,29 @@ def run_benchmark():
             g = eg[..., split:]
             h = mlx_swiglu_forward(e, g)
             return h @ wd.T
-            
+
         compiled_simple_mlp = mx.compile(simple_mlp_fn)
-        
+
         # Prepare Inputs in MLX
         with mlx_context():
-             X_in = torch_to_mlx(X)
-             Wm_in = mx.concatenate([torch_to_mlx(gateW), torch_to_mlx(upW)], axis=0)
-             Wd_in = torch_to_mlx(downW)
-        
+            X_in = torch_to_mlx(X)
+            Wm_in = mx.concatenate([torch_to_mlx(gateW), torch_to_mlx(upW)], axis = 0)
+            Wd_in = torch_to_mlx(downW)
+
         def run_compiled_args():
             # Pass inputs explicitly
             out = compiled_simple_mlp(X_in, Wm_in, Wd_in)
             mx.eval(out)
-        
+
         # Warmup
-        for _ in range(5): run_compiled_args()
-        
+        for _ in range(5):
+            run_compiled_args()
+
         t_compiled = benchmark_fn(run_compiled_args)
         speedup_compiled = t_torch / t_compiled
-        print(f"   Unsloth Compiled: {t_compiled:7.3f} ms | {speedup_compiled:.2f}x Speedup (mx.compile)")
+        print(
+            f"   Unsloth Compiled: {t_compiled:7.3f} ms | {speedup_compiled:.2f}x Speedup (mx.compile)"
+        )
 
         # 3. Unsloth Fused MLP (4-bit Quantized)
         # Quantize weights on the fly
