@@ -142,6 +142,7 @@ if DEVICE_TYPE == "mps":
         sys.modules["bitsandbytes.nn.modules"] = m_mod
         if "bitsandbytes.nn" in sys.modules:
              sys.modules["bitsandbytes.nn"].modules = m_mod
+        m_mod.Linear4bit = BnbLinear4bit
 
     # 2. peft: Should be present, but might need Linear4bit if we want to satisfy unsloth checks
     try:
