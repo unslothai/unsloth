@@ -111,39 +111,62 @@ from unsloth_zoo.rl_environments import (
 )
 
 # Fix for MPS/Systems without bitsandbytes - patch unsloth_zoo
+# Fix for MPS/Systems without bitsandbytes - patch unsloth_zoo
 # We must mock bitsandbytes and peft modules because patch_model_and_tokenizer
-# imports them locally, ignoring module-level monkeypatches.
+# imports them locally.
 import sys
 import types
 if DEVICE_TYPE == "mps":
-    # Mock bitsandbytes.nn.Linear4bit
-    if "bitsandbytes" not in sys.modules:
+    # 1. bitsandbytes: Likely missing on MPS, so we mock it.
+    try:
+        import bitsandbytes
+    except ImportError:
         m = types.ModuleType("bitsandbytes")
         sys.modules["bitsandbytes"] = m
+    
+    # Ensure bitsandbytes.nn.Linear4bit exists
     if "bitsandbytes.nn" not in sys.modules:
-        m = types.ModuleType("bitsandbytes.nn")
-        sys.modules["bitsandbytes.nn"] = m
-        class Linear4bit(torch.nn.Module): pass
-        m.Linear4bit = Linear4bit
+        m_nn = types.ModuleType("bitsandbytes.nn")
+        sys.modules["bitsandbytes.nn"] = m_nn
+        # Link it to parent
+        if "bitsandbytes" in sys.modules:
+            sys.modules["bitsandbytes"].nn = m_nn
+        
+        class BnbLinear4bit(torch.nn.Module): pass
+        m_nn.Linear4bit = BnbLinear4bit
 
-    # Mock peft.tuners.lora.Linear4bit
-    if "peft" not in sys.modules:
-        m = types.ModuleType("peft")
-        sys.modules["peft"] = m
-    if "peft.tuners" not in sys.modules:
-        m = types.ModuleType("peft.tuners")
-        sys.modules["peft.tuners"] = m
+    # 2. peft: Should be present, but might need Linear4bit if we want to satisfy unsloth checks
+    try:
+        import peft
+        # Try to ensure peft.tuners.lora is loaded
+        try: import peft.tuners.lora
+        except: pass
+    except ImportError:
+        # If PEFT is totally missing, we can't really do much, but let's mock for unsloth checks
+        # causing later crash? Transformers needs it.
+        # We assume peft IS installed.
+        pass
+
+    # Ensure peft.tuners.lora.Linear4bit exists
+    # We used import above to load it if possible.
     if "peft.tuners.lora" not in sys.modules:
-        m = types.ModuleType("peft.tuners.lora")
-        sys.modules["peft.tuners.lora"] = m
-        class Linear4bit(torch.nn.Module): pass
-        m.Linear4bit = Linear4bit
+        # If it still doesn't exist (ImportError above), force mock it?
+        # This might overlap with real peft structure if partial load.
+        # But if import failed, we are safe to mock.
+        m_idx = types.ModuleType("peft.tuners")
+        sys.modules["peft.tuners"] = m_idx
+        
+        m_lora = types.ModuleType("peft.tuners.lora")
+        sys.modules["peft.tuners.lora"] = m_lora
+        
+        class PeftLinear4bit(torch.nn.Module): pass
+        m_lora.Linear4bit = PeftLinear4bit
     else:
-        # If it exists but might be missing Linear4bit
-        m = sys.modules["peft.tuners.lora"]
-        if not hasattr(m, "Linear4bit"):
-             class Linear4bit(torch.nn.Module): pass
-             m.Linear4bit = Linear4bit
+        # Module exists, check for Linear4bit
+        m_lora = sys.modules["peft.tuners.lora"]
+        if not hasattr(m_lora, "Linear4bit"):
+             class PeftLinear4bit(torch.nn.Module): pass
+             m_lora.Linear4bit = PeftLinear4bit
 
 
 from unsloth_zoo.patching_utils import (
