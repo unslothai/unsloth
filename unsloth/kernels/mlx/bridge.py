@@ -88,6 +88,7 @@ _torch_to_dlpack = None
 _mx_from_dlpack = None
 _mx_array = None
 
+
 @require_mlx
 def torch_to_mlx(
     tensor: "torch.Tensor",
@@ -101,6 +102,7 @@ def torch_to_mlx(
     if _mx_array is None:
         import torch.utils.dlpack
         import mlx.core as mx
+
         _torch_to_dlpack = torch.utils.dlpack.to_dlpack
         _mx_from_dlpack = getattr(mx, "from_dlpack", None)
         _mx_array = mx.array
@@ -109,7 +111,7 @@ def torch_to_mlx(
     if tensor.device.type == "mps":
         if not _IN_MLX_CONTEXT:
             synchronize_mps()
-        
+
         try:
             capsule = _torch_to_dlpack(tensor)
             if _mx_from_dlpack is not None:
@@ -132,6 +134,7 @@ def torch_to_mlx(
 # Caches for lookups
 _torch_from_dlpack = None
 
+
 @require_mlx
 def mlx_to_torch(
     array: "mx.array",
@@ -145,6 +148,7 @@ def mlx_to_torch(
     global _torch_from_dlpack
     if _torch_from_dlpack is None:
         import torch.utils.dlpack
+
         _torch_from_dlpack = torch.utils.dlpack.from_dlpack
 
     # Fast-path: Try zero-copy immediately
@@ -154,6 +158,7 @@ def mlx_to_torch(
             tensor = tensor.to(device = device)
     except Exception:
         import mlx.core as mx
+
         mx.eval(array)
         try:
             tensor = _torch_from_dlpack(array)
@@ -161,6 +166,7 @@ def mlx_to_torch(
                 tensor = tensor.to(device = device)
         except Exception:
             import numpy as np
+
             if array.dtype == mx.bfloat16:
                 array = array.astype(mx.float32)
                 mx.eval(array)
