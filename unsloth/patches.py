@@ -127,13 +127,14 @@ def patch_unsloth_zoo_for_mps() -> bool:
     # --- MOCK TRITON ---
     # Triton is not available on macOS, but unsloth_zoo (and others) import it.
     if "triton" not in sys.modules:
+        from importlib.machinery import ModuleSpec
         mock_triton = ModuleType("triton")
         mock_triton.__version__ = "3.0.0"
         mock_triton.__path__ = []  # Make it a package
+        mock_triton.__spec__ = ModuleSpec(name="triton", loader=None, origin="mocked")
         sys.modules["triton"] = mock_triton
 
         # Helper to create and nest submodules properly
-        from importlib.machinery import ModuleSpec
         def mock_sub(full_name):
             if full_name in sys.modules:
                 return sys.modules[full_name]
