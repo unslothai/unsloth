@@ -1,0 +1,2 @@
+// Shared types
+export type {};
