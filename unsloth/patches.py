@@ -130,7 +130,7 @@ def patch_unsloth_zoo_for_mps() -> bool:
     if "triton" not in sys.modules:
         from importlib.machinery import ModuleSpec
         from importlib.abc import MetaPathFinder, Loader
-        
+
         class FakeTriton(ModuleType):
             def __init__(self, name):
                 super().__init__(name)
@@ -138,18 +138,21 @@ def patch_unsloth_zoo_for_mps() -> bool:
                 self.__version__ = "3.0.0"
 
             def __getattr__(self, name):
-                if name.startswith("__"): return super().__getattribute__(name)
+                if name.startswith("__"):
+                    return super().__getattribute__(name)
                 # Return a sub-fake on the fly for any attribute
                 full_name = f"{self.__name__}.{name}"
                 if full_name not in sys.modules:
                     m = FakeTriton(full_name)
-                    m.__spec__ = ModuleSpec(name=full_name, loader=TritonMockLoader(), origin="mocked")
+                    m.__spec__ = ModuleSpec(
+                        name = full_name, loader = TritonMockLoader(), origin = "mocked"
+                    )
                     sys.modules[full_name] = m
                 return sys.modules[full_name]
-            
+
             def __call__(self, *args, **kwargs):
-                return self # Act as dummy decorator/constructor
-            
+                return self  # Act as dummy decorator/constructor
+
             def __repr__(self):
                 return f"<FakeTriton {self.__name__}>"
 
@@ -160,28 +163,35 @@ def patch_unsloth_zoo_for_mps() -> bool:
                     m.__spec__ = spec
                     sys.modules[spec.name] = m
                 return sys.modules[spec.name]
+
             def exec_module(self, module):
                 # Specific overrides for logic checks
                 if module.__name__ == "triton.backends":
                     module.backends = {}
                 elif module.__name__ == "triton.backends.compiler":
+
                     class AttrsDescriptor:
-                        def __init__(self, *args, **kwargs): pass
+                        def __init__(self, *args, **kwargs):
+                            pass
+
                     module.AttrsDescriptor = AttrsDescriptor
                 elif module.__name__ == "triton.language":
+
                     class MockTritonMeta:
-                        def __repr__(self): return "MockTritonMeta"
+                        def __repr__(self):
+                            return "MockTritonMeta"
+
                     module.dtype = MockTritonMeta
 
         class TritonMockFinder(MetaPathFinder):
-            def find_spec(self, fullname, path, target=None):
+            def find_spec(self, fullname, path, target = None):
                 if fullname == "triton" or fullname.startswith("triton."):
                     return ModuleSpec(fullname, TritonMockLoader())
                 return None
 
         # Inject the finder at the start of meta_path
         sys.meta_path.insert(0, TritonMockFinder())
-        
+
         # Trigger root import to populate sys.modules
         import triton
 
