@@ -1,17 +1,12 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 # Licensed under the Apache License, Version 2.0.
 
-import torch
 from unsloth.kernels.mlx.bridge import torch_to_mlx, mlx_to_torch, mlx_context
 from functools import lru_cache
 from typing import Tuple, TYPE_CHECKING, Optional, Dict
-import weakref
 
 if TYPE_CHECKING:
     import torch
-
-# Global cache for converted MLX weights (static parameters)
-_MLX_WEIGHT_CACHE = weakref.WeakKeyDictionary()
 
 # Metal Shader for RMSNorm Backward
 # -----------------------------------------------------------------------------
@@ -148,20 +143,18 @@ def mlx_rms_layernorm_backward(dY_mlx, X_mlx, W_mlx, r_mlx, gemma = False):
     return dX.astype(X_mlx.dtype), dW.astype(W_mlx.dtype)
 
 
-def _get_cached_weight(W_torch):
-    """Retrieve or convert MLX weight with caching."""
-    if W_torch in _MLX_WEIGHT_CACHE:
-        return _MLX_WEIGHT_CACHE[W_torch]
-    
-    W_mlx = torch_to_mlx(W_torch)
-    _MLX_WEIGHT_CACHE[W_torch] = W_mlx
-    return W_mlx
 
 def metal_rms_layernorm(X, W, eps, gemma = False):
     """Fused Metal RMS LayerNorm (PyTorch interface)."""
     with mlx_context():
         X_mlx = torch_to_mlx(X)
-        W_mlx = _get_cached_weight(W)
+        
+        # Check for cached MLX weight
+        W_mlx = getattr(W, "_mlx_cache", None)
+        if W_mlx is None:
+            W_mlx = torch_to_mlx(W)
+            W._mlx_cache = W_mlx
+            
         Y_mlx, r_mlx = mlx_rms_layernorm_forward(X_mlx, W_mlx, eps, gemma)
         
         Y_torch = mlx_to_torch(Y_mlx)
@@ -178,7 +171,13 @@ def metal_rms_layernorm_backward(dY, X, W, r, eps, gemma = False):
     with mlx_context():
         dY_mlx = torch_to_mlx(dY)
         X_mlx = torch_to_mlx(X)
-        W_mlx = _get_cached_weight(W)
+        
+        # Check for cached MLX weight
+        W_mlx = getattr(W, "_mlx_cache", None)
+        if W_mlx is None:
+            W_mlx = torch_to_mlx(W)
+            # We can cache it here too if it wasn't already (though forward usually catches it)
+            W._mlx_cache = W_mlx
         
         # Fast path - Retrieve cached MLX version of r if available
         r_mlx = getattr(r, "_mlx_tensor", None)
