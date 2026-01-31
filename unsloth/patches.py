@@ -129,17 +129,17 @@ def patch_unsloth_zoo_for_mps() -> bool:
     if "triton" not in sys.modules:
         mock_triton = ModuleType("triton")
         mock_triton.__version__ = "3.0.0"
-        mock_triton.__path__ = [] # Make it a package
-        
+        mock_triton.__path__ = []  # Make it a package
+
         # Add triton.language
         mock_triton_lang = ModuleType("triton.language")
         mock_triton.language = mock_triton_lang
-        
+
         # Add triton.backends and triton.backends.compiler
         mock_triton_backends = ModuleType("triton.backends")
         mock_triton_backends.__path__ = []
         mock_triton_compiler = ModuleType("triton.backends.compiler")
-        
+
         sys.modules["triton"] = mock_triton
         sys.modules["triton.language"] = mock_triton_lang
         sys.modules["triton.backends"] = mock_triton_backends
@@ -147,15 +147,16 @@ def patch_unsloth_zoo_for_mps() -> bool:
 
         # Satisfy torch._dynamo.utils.common_constant_types.add(triton.language.dtype)
         class MockTritonMeta:
-            def __repr__(self): return "MockTritonMeta"
-        
+            def __repr__(self):
+                return "MockTritonMeta"
+
         mock_triton_lang.dtype = MockTritonMeta
         mock_triton_lang.float32 = MockTritonMeta()
         mock_triton_lang.float16 = MockTritonMeta()
         mock_triton_lang.bfloat16 = MockTritonMeta()
         mock_triton_lang.int32 = MockTritonMeta()
         mock_triton_lang.uint32 = MockTritonMeta()
-        
+
         sys.modules["triton"] = mock_triton
         sys.modules["triton.language"] = mock_triton_lang
 
