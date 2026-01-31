@@ -153,7 +153,7 @@ def run_performance_benchmark():
         print(f"   Shape: ({batch}, {seq}, {dim}) = {elements / 1e6:.2f}M elements")
         print("-" * 70)
 
-        # MLX Composed
+        # MLX Composed (baseline)
         e_mlx = mx.random.normal((batch, seq, dim)).astype(mx.float16)
         g_mlx = mx.random.normal((batch, seq, dim)).astype(mx.float16)
         mx.eval(e_mlx)
@@ -163,21 +163,28 @@ def run_performance_benchmark():
         tp_mlx = calculate_throughput(elements, t_mlx)
         print(f"   MLX Composed:       {t_mlx:7.3f} ms | {tp_mlx:7.2f} GB/s")
 
-        # Fused Metal Kernel
-        t_fused = benchmark_fn(
-            lambda: metal_module.metal_swiglu_forward(e_torch, g_torch)
-        )
-        tp_fused = calculate_throughput(elements, t_fused)
-        speedup = tp_fused / tp_mlx if tp_mlx > 0 else 0
-        print(
-            f"   Fused Metal:        {t_fused:7.3f} ms | {tp_fused:7.2f} GB/s | {speedup:.2f}x"
-        )
+        # Fused Metal Kernel (pure MLX - fair comparison)
+        def mlx_fused():
+            return metal_module.mlx_swiglu_forward(e_mlx, g_mlx)
 
-        # PyTorch MPS
+        t_fused = benchmark_fn(mlx_fused)
+        tp_fused = calculate_throughput(elements, t_fused)
+        speedup = t_mlx / t_fused
+        print(f"   Fused Metal (MLX):  {t_fused:7.3f} ms | {tp_fused:7.2f} GB/s  ({speedup:.2f}x)")
+
+        # PyTorch Tensors
         e_torch = torch.randn(batch, seq, dim, device = "mps", dtype = torch.float16)
         g_torch = torch.randn(batch, seq, dim, device = "mps", dtype = torch.float16)
         torch.mps.synchronize()
 
+        # Fused Metal (PyTorch path - includes conversion overhead)
+        t_metal = benchmark_fn(
+            lambda: metal_module.metal_swiglu_forward(e_torch, g_torch)
+        )
+        tp_metal = calculate_throughput(elements, t_metal)
+        print(f"   Fused Metal (PyTorch): {t_metal:7.3f} ms | {tp_metal:7.2f} GB/s  (includes conversion)")
+
+        # PyTorch MPS Reference
         t_torch = benchmark_fn(lambda: pytorch_swiglu_reference(e_torch, g_torch))
         tp_torch = calculate_throughput(elements, t_torch)
         print(f"   PyTorch MPS:        {t_torch:7.3f} ms | {tp_torch:7.2f} GB/s")
@@ -192,6 +199,7 @@ def run_performance_benchmark():
             }
         )
         print()
+
 
     # Summary
     if results:

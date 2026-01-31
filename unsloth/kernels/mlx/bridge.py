@@ -116,17 +116,21 @@ def torch_to_mlx(
     if not tensor.is_contiguous():
         tensor = tensor.contiguous()
 
-    # Try direct DLPack path (zero-copy unified memory)
+    # Strategy 1: Try CPU tensor with numpy (fastest for small-medium tensors)
+    # Moving to CPU on unified memory is essentially free
+    if tensor.device.type != "cpu":
+        cpu_tensor = tensor.cpu()
+    else:
+        cpu_tensor = tensor
+
+    # Strategy 2: Try memoryview (zero-copy if supported)
     try:
-        # For MPS tensors on unified memory, this should be zero-copy
-        # MLX and MPS share the same Metal unified memory
-        return mx.array(np.from_dlpack(tensor.detach()), copy = False)
-    except (TypeError, RuntimeError):
-        # Fallback: go through numpy (still fast on unified memory)
-        # Note: mx.array() doesn't support copy=False for numpy arrays
-        if tensor.device.type != "cpu":
-            tensor = tensor.cpu()
-        return mx.array(tensor.numpy())
+        return mx.array(memoryview(cpu_tensor.numpy()), copy = False)
+    except (TypeError, ValueError):
+        pass
+
+    # Strategy 3: Standard numpy path
+    return mx.array(cpu_tensor.numpy())
 
 
 @require_mlx
@@ -141,7 +145,7 @@ def mlx_to_torch(
 
     Both MLX and MPS use Apple's unified memory, so this should be
     efficient. We evaluate any lazy MLX operations first, then use
-    DLPack for zero-copy transfer when possible.
+    the buffer protocol for zero-copy transfer when possible.
 
     Args:
         array: MLX array to convert.
@@ -173,12 +177,17 @@ def mlx_to_torch(
         array = array.astype(mx.float32)
         mx.eval(array)
 
-    # Try direct DLPack path (zero-copy unified memory)
+    # Strategy 1: Try memoryview (zero-copy via buffer protocol)
+    # MLX arrays support the buffer protocol for direct memory access
     try:
-        tensor = torch.from_numpy(np.array(array, copy = False))
-    except (TypeError, RuntimeError):
-        # Fallback for edge cases
-        tensor = torch.from_numpy(np.array(array))
+        tensor = torch.tensor(memoryview(array))
+    except (TypeError, ValueError):
+        # Strategy 2: Go through numpy
+        try:
+            tensor = torch.from_numpy(np.array(array, copy = False))
+        except (TypeError, RuntimeError):
+            # Strategy 3: Force copy as last resort
+            tensor = torch.from_numpy(np.array(array))
 
     # Apply dtype if specified
     if dtype is not None:

@@ -16,7 +16,8 @@ from typing import TYPE_CHECKING, Tuple, Optional
 if TYPE_CHECKING:
     import torch
 
-__all__ = ["metal_swiglu_forward", "metal_swiglu_backward", "is_metal_swiglu_available"]
+__all__ = ["metal_swiglu_forward", "metal_swiglu_backward", "mlx_swiglu_forward", "is_metal_swiglu_available"]
+
 
 
 from unsloth.kernels.mlx.bridge import torch_to_mlx, mlx_to_torch, mlx_context
@@ -50,81 +51,47 @@ def is_metal_swiglu_available() -> bool:
         return False
 
 
-# Optimized Metal Shaders (Vectorized half8)
+# Optimized Metal Shaders (Scalar operations - valid Metal code)
 # -----------------------------------------------------------------------------
 
-# Process 8 elements per thread for peak 128-bit bandwidth efficiency
+# Note: Metal does NOT support half8/float8, only up to half4/float4.
+# We use scalar processing for correctness and simplicity.
+
 SWIGLU_FORWARD_BODY = """
     uint gid = thread_position_in_grid.x;
     uint n = n_ptr[0];
-    uint start = gid * 8;
+    if (gid >= n) return;
     
-    if (start >= n) return;
+    // Read inputs
+    float ev = float(e[gid]);
+    float gv = float(g[gid]);
     
-    if (start + 7 < n) {
-        device const half8* e_vec = (device const half8*)e;
-        device const half8* g_vec = (device const half8*)g;
-        device half8* h_vec = (device half8*)h;
-        
-        float8 ev = float8(e_vec[gid]);
-        float8 gv = float8(g_vec[gid]);
-        
-        // silu(x) = x / (1 + exp(-x))
-        float8 sigmoid_v = 1.0f / (1.0f + exp(-ev));
-        h_vec[gid] = half8(ev * sigmoid_v * gv);
-    } else {
-        for (uint i = start; i < n; i++) {
-            float ev = float(e[i]);
-            float gv = float(g[i]);
-            float sv = 1.0f / (1.0f + exp(-ev));
-            h[i] = half(ev * sv * gv);
-        }
-    }
+    // silu(x) = x * sigmoid(x) = x / (1 + exp(-x))
+    float sigmoid_v = 1.0f / (1.0f + exp(-ev));
+    h[gid] = half(ev * sigmoid_v * gv);
 """
 
 SWIGLU_BACKWARD_BODY = """
     uint gid = thread_position_in_grid.x;
     uint n = n_ptr[0];
-    uint start = gid * 8;
+    if (gid >= n) return;
     
-    if (start >= n) return;
+    float dwv = float(dw_in[gid]);
+    float ev = float(e_in[gid]);
+    float gv = float(g_in[gid]);
     
-    if (start + 7 < n) {
-        device const half8* dw_vec = (device const half8*)dw_in;
-        device const half8* e_vec = (device const half8*)e_in;
-        device const half8* g_vec = (device const half8*)g_in;
-        device half8* h_vec = (device half8*)h_out;
-        device half4* df_vec_ptr = (device half4*)df_out; // half8 isn't always available as store, using half4 x 2
-        device half4* de_vec_ptr = (device half4*)de_out;
-        
-        float8 dwv = float8(dw_vec[gid]);
-        float8 ev = float8(e_vec[gid]);
-        float8 gv = float8(g_vec[gid]);
-        
-        float8 se = 1.0f / (1.0f + exp(-ev));
-        float8 f = ev * se;
-        
-        // h = silu(e) * g
-        ((device half8*)h_out)[gid] = half8(f * gv);
-        // df = dw * f
-        ((device half8*)df_out)[gid] = half8(dwv * f);
-        // dg = dw * g
-        float8 dgv = dwv * gv;
-        // de = dg * se * (1 + e * (1 - se))
-        ((device half8*)de_out)[gid] = half8(dgv * se * fma(ev, (1.0f - se), 1.0f));
-    } else {
-        for (uint i = start; i < n; i++) {
-            float dwv = float(dw_in[i]);
-            float ev = float(e_in[i]);
-            float gv = float(g[i]);
-            float se = 1.0f / (1.0f + exp(-ev));
-            float f = ev * se;
-            h_out[i] = half(f * gv);
-            df_out[i] = half(dwv * f);
-            de_out[i] = half(dwv * gv * se * fma(ev, (1.0f - se), 1.0f));
-        }
-    }
+    float se = 1.0f / (1.0f + exp(-ev));
+    float f = ev * se;
+    
+    // h = silu(e) * g
+    h_out[gid] = half(f * gv);
+    // df = dw * f
+    df_out[gid] = half(dwv * f);
+    // de = dw * g * se * (1 + e * (1 - se))
+    float dgv = dwv * gv;
+    de_out[gid] = half(dgv * se * fma(ev, (1.0f - se), 1.0f));
 """
+
 
 
 @lru_cache(maxsize = 1)
@@ -152,7 +119,7 @@ def _get_backward_kernel():
 
 
 def metal_swiglu_forward(e: "torch.Tensor", g: "torch.Tensor") -> "torch.Tensor":
-    """Fused SwiGLU forward (Ultra Optimized half8)"""
+    """Fused SwiGLU forward (PyTorch interface - includes conversion overhead)"""
     import mlx.core as mx
 
     shape = e.shape
@@ -161,7 +128,7 @@ def metal_swiglu_forward(e: "torch.Tensor", g: "torch.Tensor") -> "torch.Tensor"
         e_mlx = torch_to_mlx(e).flatten()
         g_mlx = torch_to_mlx(g).flatten()
         n_arr = mx.array([n], dtype = mx.uint32)
-        grid_size = (n + 7) // 8
+        grid_size = n  # Scalar ops: one thread per element
         kernel = _get_forward_kernel()
         outputs = kernel(
             inputs = [e_mlx, g_mlx, n_arr],
@@ -176,7 +143,7 @@ def metal_swiglu_forward(e: "torch.Tensor", g: "torch.Tensor") -> "torch.Tensor"
 def metal_swiglu_backward(
     dw: "torch.Tensor", e: "torch.Tensor", g: "torch.Tensor"
 ) -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
-    """Fused SwiGLU backward (Ultra Optimized half8)"""
+    """Fused SwiGLU backward (PyTorch interface - includes conversion overhead)"""
     import mlx.core as mx
 
     shape = e.shape
@@ -186,7 +153,7 @@ def metal_swiglu_backward(
         e_mlx = torch_to_mlx(e).flatten()
         g_mlx = torch_to_mlx(g).flatten()
         n_arr = mx.array([n], dtype = mx.uint32)
-        grid_size = (n + 7) // 8
+        grid_size = n  # Scalar ops: one thread per element
         kernel = _get_backward_kernel()
         outputs = kernel(
             inputs = [dw_mlx, e_mlx, g_mlx, n_arr],
@@ -199,3 +166,33 @@ def metal_swiglu_backward(
         df = mlx_to_torch(outputs[1]).view(*shape)
         de = mlx_to_torch(outputs[2]).view(*shape)
         return h, df, de
+
+
+# =============================================================================
+# Pure MLX wrappers (no PyTorch conversion overhead)
+# =============================================================================
+
+def _mlx_swiglu_forward_pure(e_mlx, g_mlx):
+    """Pure MLX SwiGLU forward - no PyTorch conversion."""
+    import mlx.core as mx
+    
+    shape = e_mlx.shape
+    n = e_mlx.size
+    e_flat = e_mlx.flatten()
+    g_flat = g_mlx.flatten()
+    n_arr = mx.array([n], dtype = mx.uint32)
+    grid_size = n
+    kernel = _get_forward_kernel()
+    out = kernel(
+        inputs = [e_flat, g_flat, n_arr],
+        output_shapes = [(n,)],
+        output_dtypes = [mx.float16],
+        grid = (grid_size, 1, 1),
+        threadgroup = (min(256, grid_size), 1, 1),
+    )
+    return out[0].reshape(shape)
+
+
+def mlx_swiglu_forward(e_mlx, g_mlx):
+    """Pure MLX SwiGLU forward (no PyTorch conversion)."""
+    return _mlx_swiglu_forward_pure(e_mlx, g_mlx)

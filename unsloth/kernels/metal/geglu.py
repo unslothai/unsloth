@@ -21,8 +21,11 @@ __all__ = [
     "metal_geglu_exact_backward",
     "metal_geglu_approx_forward",
     "metal_geglu_approx_backward",
+    "mlx_geglu_exact_forward",
+    "mlx_geglu_approx_forward",
     "is_metal_geglu_available",
 ]
+
 
 
 from unsloth.kernels.mlx.bridge import torch_to_mlx, mlx_to_torch, mlx_context
