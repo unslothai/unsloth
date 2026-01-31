@@ -128,69 +128,50 @@ def patch_unsloth_zoo_for_mps() -> bool:
     # Triton is not available on macOS, but unsloth_zoo (and others) import it.
     if "triton" not in sys.modules:
         from importlib.machinery import ModuleSpec
-
-        mock_triton = ModuleType("triton")
-        mock_triton.__version__ = "3.0.0"
-        mock_triton.__path__ = []  # Make it a package
-        mock_triton.__spec__ = ModuleSpec(name = "triton", loader = None, origin = "mocked")
-        sys.modules["triton"] = mock_triton
-
-        # Helper to create and nest submodules properly
-        def mock_sub(full_name):
-            if full_name in sys.modules:
-                return sys.modules[full_name]
-            m = ModuleType(full_name)
-            m.__path__ = []
-            # Satisfy importlib.util.find_spec
-            m.__spec__ = ModuleSpec(name = full_name, loader = None, origin = "mocked")
-            sys.modules[full_name] = m
-            # Nest into parent
-            parent_name = ".".join(full_name.split(".")[:-1])
-            if parent_name:
-                parent = mock_sub(parent_name)
-                setattr(parent, full_name.split(".")[-1], m)
-            return m
-
-        # Create all required submodules
-        mock_lang = mock_sub("triton.language")
-        mock_comp = mock_sub("triton.compiler")
-        mock_comp_inner = mock_sub("triton.compiler.compiler")
-        mock_backends = mock_sub("triton.backends")
-        mock_backends.backends = {}  # Satisfy "if 'cpu' in triton.backends.backends"
-        mock_backends_comp = mock_sub("triton.backends.compiler")
-        mock_runtime = mock_sub("triton.runtime")
-        mock_jit = mock_sub("triton.runtime.jit")
-
-        # Satisfy specific deep checks
-        # 1. AttrsDescriptor in triton.backends.compiler
-        class AttrsDescriptor:
-            def __init__(self, *args, **kwargs):
-                pass
-
-        mock_backends_comp.AttrsDescriptor = AttrsDescriptor
-
-        # 2. dtypes in triton.language
-        class MockTritonMeta:
-            def __repr__(self):
-                return "MockTritonMeta"
-
-        mock_lang.dtype = MockTritonMeta
-        mock_lang.float32 = MockTritonMeta()
-        mock_lang.float16 = MockTritonMeta()
-        mock_lang.bfloat16 = MockTritonMeta()
-        mock_lang.int32 = MockTritonMeta()
-        mock_lang.uint32 = MockTritonMeta()
-
-        # 3. Config and common decorators
-        class Config:
-            def __init__(self, *args, **kwargs): pass
-        def dummy_decorator(*args, **kwargs):
-            return lambda x: x
         
-        mock_triton.Config = Config
-        mock_triton.jit = dummy_decorator
-        mock_triton.autotune = dummy_decorator
-        mock_triton.heuristics = dummy_decorator
+        class FakeTriton(ModuleType):
+            def __init__(self, name):
+                super().__init__(name)
+                self.__path__ = []
+                self.__spec__ = ModuleSpec(name=name, loader=None, origin="mocked")
+                self.__version__ = "3.0.0"
+
+            def __getattr__(self, name):
+                if name.startswith("__"): return super().__getattribute__(name)
+                # Create and cache a sub-fake
+                full_name = f"{self.__name__}.{name}"
+                m = FakeTriton(full_name)
+                setattr(self, name, m)
+                sys.modules[full_name] = m
+                return m
+            
+            def __call__(self, *args, **kwargs):
+                return self # Act as dummy decorator/constructor
+            
+            def __repr__(self):
+                return f"<FakeTriton {self.__name__}>"
+
+        # Initialize root
+        mock_triton = FakeTriton("triton")
+        sys.modules["triton"] = mock_triton
+        
+        # Pre-initialize common submodules to ensure they are in sys.modules
+        # exactly as expected by various import styles.
+        for sub in ["language", "compiler", "runtime", "backends", "backends.compiler"]:
+            getattr(mock_triton, sub)
+            
+        # Specific overrides for logic checks
+        mock_triton.backends.backends = {}
+        
+        # Satisfy specific deep check for AttrsDescriptor
+        class AttrsDescriptor:
+            def __init__(self, *args, **kwargs): pass
+        mock_triton.backends.compiler.AttrsDescriptor = AttrsDescriptor
+
+        # Satisfy torch._dynamo.utils.common_constant_types.add(triton.language.dtype)
+        class MockTritonMeta:
+            def __repr__(self): return "MockTritonMeta"
+        mock_triton.language.dtype = MockTritonMeta
 
     _PATCH_APPLIED = True
     return True
