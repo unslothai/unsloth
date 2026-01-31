@@ -108,12 +108,9 @@ def torch_to_mlx(
     import mlx.core as mx
 
     # Ensure MPS writes are complete before accessing memory
+    # CRITICAL: This prevents data corruption when sharing memory
     if tensor.device.type == "mps":
         synchronize_mps()
-
-    # Ensure contiguous memory layout
-    if not tensor.is_contiguous():
-        tensor = tensor.contiguous()
 
     # Use DLPack for zero-copy sharing on same device (MPS -> MLX)
     if tensor.device.type == "mps":
@@ -122,14 +119,15 @@ def torch_to_mlx(
             if hasattr(mx, "from_dlpack"):
                 return mx.from_dlpack(capsule)
             else:
-                # Some versions of MLX consume the capsule in mx.array constructor
-                # Or use mx.array(object_with_dlpack_interface)
                 return mx.array(capsule)
         except Exception:
-            # Fallback to CPU if DLPack fails
             pass
 
-    # Fallback to CPU/Numpy for other devices
+    # Ensure contiguous memory layout for fallback
+    if not tensor.is_contiguous():
+        tensor = tensor.contiguous()
+
+    # Move to CPU and convert via numpy
     if tensor.device.type != "cpu":
         tensor = tensor.cpu()
 
