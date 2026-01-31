@@ -128,7 +128,7 @@ def torch_to_mlx(
         tensor = tensor.contiguous()
     if tensor.device.type != "cpu":
         tensor = tensor.cpu()
-    return _mx_array(tensor.numpy())
+    return _mx_array(tensor.detach().numpy())
 
 
 # Caches for lookups
