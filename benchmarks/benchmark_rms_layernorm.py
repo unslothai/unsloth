@@ -206,13 +206,17 @@ def run_correctness_tests():
             f"  Backward dX Parity:    max_diff={diff_dX.max():.2e} {'✅' if diff_dX.max() < 5e-2 else '❌'}"
         )
         if diff_dX.max() >= 5e-2:
-            print(f"    DEBUG dX: metal_head={dX_metal.cpu().flatten()[:5]} ref_head={ref_dX.flatten()[:5]}")
-        
+            print(
+                f"    DEBUG dX: metal_head={dX_metal.cpu().flatten()[:5]} ref_head={ref_dX.flatten()[:5]}"
+            )
+
         print(
             f"  Backward dW Parity:    max_diff={diff_dW.max():.2e} {'✅' if diff_dW.max() < 1e-1 else '❌'}"
         )
         if diff_dW.max() >= 1e-1:
-            print(f"    DEBUG dW: metal_head={dW_metal.cpu().flatten()[:5]} ref_head={ref_dW.flatten()[:5]}")
+            print(
+                f"    DEBUG dW: metal_head={dW_metal.cpu().flatten()[:5]} ref_head={ref_dW.flatten()[:5]}"
+            )
 
         # Gemma mode
         ref_gemma = (X * rms_inv) * (W + 1.0)
@@ -222,7 +226,9 @@ def run_correctness_tests():
             f"  Unsloth Gemma Forward:  max_diff={diff_gemma.max():.2e} {'✅' if diff_gemma.max() < 5e-2 else '❌'}"
         )
         if diff_gemma.max() >= 5e-2:
-             print(f"    DEBUG Gemma: metal_head={out_gemma.cpu().flatten()[:5]} ref_head={ref_gemma.flatten()[:5]}")
+            print(
+                f"    DEBUG Gemma: metal_head={out_gemma.cpu().flatten()[:5]} ref_head={ref_gemma.flatten()[:5]}"
+            )
     else:
         print("Correctness tests for Metal kernels skipped (not on macOS).")
 
