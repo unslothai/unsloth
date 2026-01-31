@@ -109,6 +109,15 @@ from unsloth_zoo.rl_environments import (
     execute_with_time_limit,
     Benchmarker,
 )
+# Fix for MPS/Systems without bitsandbytes - patch unsloth_zoo
+import unsloth_zoo.patching_utils
+if getattr(unsloth_zoo.patching_utils, "Bnb_Linear4bit", None) is None:
+    class Bnb_Linear4bit: pass
+    unsloth_zoo.patching_utils.Bnb_Linear4bit = Bnb_Linear4bit
+if getattr(unsloth_zoo.patching_utils, "Peft_Linear4bit", None) is None:
+    class Peft_Linear4bit: pass
+    unsloth_zoo.patching_utils.Peft_Linear4bit = Peft_Linear4bit
+
 from unsloth_zoo.patching_utils import (
     patch_compiling_bitsandbytes,
     patch_layernorm,
