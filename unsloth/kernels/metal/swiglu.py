@@ -227,10 +227,10 @@ def metal_swiglu_backward(
         h = mlx_to_torch(h_mlx).view(*shape)
         df = mlx_to_torch(df_mlx).view(*shape)
         de = mlx_to_torch(de_mlx).view(*shape)
-        
+
         # CHAINING: Attach outputs for next backward step
         h._mlx_cache = h_mlx
         df._mlx_cache = df_mlx
         de._mlx_cache = de_mlx
-        
+
         return h, df, de

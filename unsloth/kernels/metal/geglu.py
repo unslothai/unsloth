@@ -284,7 +284,7 @@ def _metal_geglu_forward(
             g_mlx = torch_to_mlx(g)
 
         out_mlx = mlx_fn(e_mlx, g_mlx)
-        
+
         # CHAINING: Attach MLX output
         out_torch = mlx_to_torch(out_mlx).view(*shape)
         out_torch._mlx_cache = out_mlx
@@ -319,7 +319,7 @@ def _metal_geglu_backward(
         h._mlx_cache = h_mlx
         df._mlx_cache = df_mlx
         de._mlx_cache = de_mlx
-        
+
         return h, df, de
 
 
