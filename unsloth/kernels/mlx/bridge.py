@@ -45,6 +45,7 @@ __all__ = [
 
 # Thread-local storage for context state could be used, but simple global works for now
 _IN_MLX_CONTEXT = False
+_MLX_HAS_FROM_DLPACK = None
 
 
 def is_in_mlx_context() -> bool:
@@ -82,6 +83,11 @@ def synchronize_mlx() -> None:
     mx.eval([])  # Evaluate empty list acts as a barrier
 
 
+# Caches for lookups to save microseconds
+_torch_to_dlpack = None
+_mx_from_dlpack = None
+_mx_array = None
+
 @require_mlx
 def torch_to_mlx(
     tensor: "torch.Tensor",
@@ -89,57 +95,42 @@ def torch_to_mlx(
     stream: "mx.Stream | None" = None,
 ) -> "mx.array":
     """
-    Convert a PyTorch tensor to an MLX array.
-
-    Both MPS and MLX use Apple's unified memory architecture, so data
-    lives in the same physical memory. We use DLPack for zero-copy
-    sharing when possible.
-
-    Args:
-        tensor: PyTorch tensor to convert.
-        stream: Optional MLX stream for the operation.
-
-    Returns:
-        MLX array with the same data.
-
-    Raises:
-        UnslothMLXError: If MLX is not available.
-
-    Example:
-        >>> import torch
-        >>> from unsloth.kernels.mlx import torch_to_mlx
-        >>> t = torch.randn(4, 4, device="mps")
-        >>> arr = torch_to_mlx(t)
+    Optimized Tensor conversion. Minimizes Python overhead.
     """
-    import torch.utils.dlpack
-    import mlx.core as mx
+    global _torch_to_dlpack, _mx_from_dlpack, _mx_array
+    if _mx_array is None:
+        import torch.utils.dlpack
+        import mlx.core as mx
+        _torch_to_dlpack = torch.utils.dlpack.to_dlpack
+        _mx_from_dlpack = getattr(mx, "from_dlpack", None)
+        _mx_array = mx.array
 
-    # Ensure MPS writes are complete before accessing memory
-    # CRITICAL: This prevents data corruption when sharing memory
+    # 1. MPS Fast Path (Zero-copy)
     if tensor.device.type == "mps":
-        synchronize_mps()
-
-    # Use DLPack for zero-copy sharing on same device (MPS -> MLX)
-    if tensor.device.type == "mps":
+        if not _IN_MLX_CONTEXT:
+            synchronize_mps()
+        
         try:
-            capsule = torch.utils.dlpack.to_dlpack(tensor)
-            if hasattr(mx, "from_dlpack"):
-                return mx.from_dlpack(capsule)
-            else:
-                return mx.array(capsule)
+            capsule = _torch_to_dlpack(tensor)
+            if _mx_from_dlpack is not None:
+                return _mx_from_dlpack(capsule)
+            # Fallback to mx.array(capsule) if from_dlpack is missing
+            return _mx_array(capsule)
         except Exception:
+            # If DLPack fails on MPS, something is very wrong.
+            # We fallback to CPU but it will be slow.
             pass
 
-    # Ensure contiguous memory layout for fallback
+    # 2. CPU Fallback
     if not tensor.is_contiguous():
         tensor = tensor.contiguous()
-
-    # Move to CPU and convert via numpy
     if tensor.device.type != "cpu":
         tensor = tensor.cpu()
+    return _mx_array(tensor.numpy())
 
-    return mx.array(tensor.numpy())
 
+# Caches for lookups
+_torch_from_dlpack = None
 
 @require_mlx
 def mlx_to_torch(
@@ -149,72 +140,37 @@ def mlx_to_torch(
     dtype: "torch.dtype | None" = None,
 ) -> "torch.Tensor":
     """
-    Convert an MLX array to a PyTorch tensor.
-
-    Both MLX and MPS use Apple's unified memory, so this should be
-    efficient. We evaluate any lazy MLX operations first, then use
-    the buffer protocol for zero-copy transfer when possible.
-
-    Args:
-        array: MLX array to convert.
-        device: Target PyTorch device ("mps", "cpu", etc.).
-        dtype: Optional dtype override for the PyTorch tensor.
-
-    Returns:
-        PyTorch tensor with the same data.
-
-    Raises:
-        UnslothMLXError: If MLX is not available.
-
-    Example:
-        >>> import mlx.core as mx
-        >>> from unsloth.kernels.mlx import mlx_to_torch
-        >>> arr = mx.ones((4, 4))
-        >>> t = mlx_to_torch(arr, device="mps")
+    Optimized MLX to Torch conversion.
     """
-    import torch.utils.dlpack
-    import mlx.core as mx
+    global _torch_from_dlpack
+    if _torch_from_dlpack is None:
+        import torch.utils.dlpack
+        _torch_from_dlpack = torch.utils.dlpack.from_dlpack
 
-    # Force evaluation of lazy ops - critical before memory access
-    mx.eval(array)
-
-    # Use DLPack for zero-copy sharing (MLX -> MPS/CPU)
+    # Fast-path: Try zero-copy immediately
     try:
-        # Check if MLX array has DLPack interface
-        # Recent MLX arrays support __dlpack__ directly
-        tensor = torch.utils.dlpack.from_dlpack(array)
+        tensor = _torch_from_dlpack(array)
         if tensor.device.type != device:
             tensor = tensor.to(device = device)
     except Exception:
-        # Fallback Strategy: memoryview/numpy
-        import numpy as np
-
-        # Evaluate before access
+        import mlx.core as mx
         mx.eval(array)
-
-        if array.dtype == mx.bfloat16:
-            # Numpy doesn't like bfloat16, convert to float32
-            array_f32 = array.astype(mx.float32)
-            mx.eval(array_f32)
-            array = array_f32
-
         try:
-            # Direct buffer protocol access (zero-copy if already on CPU)
-            tensor = torch.tensor(memoryview(array))
-        except (TypeError, ValueError):
+            tensor = _torch_from_dlpack(array)
+            if tensor.device.type != device:
+                tensor = tensor.to(device = device)
+        except Exception:
+            import numpy as np
+            if array.dtype == mx.bfloat16:
+                array = array.astype(mx.float32)
+                mx.eval(array)
             try:
-                # Fallback to copy via numpy
-                tensor = torch.from_numpy(np.array(array, copy = False))
+                tensor = torch.as_tensor(np.array(array, copy = False), device = device)
             except:
-                tensor = torch.from_numpy(np.array(array))
+                tensor = torch.tensor(np.array(array), device = device)
 
-        if tensor.device.type != device:
-            tensor = tensor.to(device = device)
-
-    # Apply dtype if specified
-    if dtype is not None:
+    if dtype is not None and tensor.dtype != dtype:
         tensor = tensor.to(dtype = dtype)
-
     return tensor
 
 
@@ -241,7 +197,8 @@ def mlx_context():
     global _IN_MLX_CONTEXT
 
     # Sync PyTorch MPS before entering MLX context
-    synchronize_mps()
+    if not _IN_MLX_CONTEXT:
+        synchronize_mps()
     prev_state = _IN_MLX_CONTEXT
     _IN_MLX_CONTEXT = True
 
@@ -249,8 +206,9 @@ def mlx_context():
         yield
     finally:
         # Sync MLX before returning to PyTorch
-        mx.eval([])
-        synchronize_mps()
+        if not prev_state:
+            mx.eval([])
+            synchronize_mps()
         _IN_MLX_CONTEXT = prev_state
 
 
