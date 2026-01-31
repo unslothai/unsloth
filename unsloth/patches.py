@@ -130,44 +130,46 @@ def patch_unsloth_zoo_for_mps() -> bool:
         mock_triton = ModuleType("triton")
         mock_triton.__version__ = "3.0.0"
         mock_triton.__path__ = [] # Make it a package
-        
-        # Define all submodules to mock
-        submodules = [
-            "triton.language",
-            "triton.compiler",
-            "triton.compiler.compiler",
-            "triton.backends",
-            "triton.backends.compiler",
-            "triton.runtime",
-            "triton.runtime.jit",
-        ]
-        
-        for name in submodules:
-            mock_sub = ModuleType(name)
-            if "." not in name.split(".")[-1]: # If it's a package level
-                 mock_sub.__path__ = []
-            sys.modules[name] = mock_sub
-            # Also attach to parent if possible (simplified)
-            parts = name.split(".")
-            if len(parts) == 2:
-                setattr(mock_triton, parts[1], mock_sub)
-
         sys.modules["triton"] = mock_triton
 
-        # Satisfy torch._dynamo.utils.common_constant_types.add(triton.language.dtype)
-        mock_triton_lang = sys.modules["triton.language"]
+        # Helper to create and nest submodules properly
+        def mock_sub(full_name):
+            if full_name in sys.modules: return sys.modules[full_name]
+            m = ModuleType(full_name)
+            m.__path__ = []
+            sys.modules[full_name] = m
+            # Nest into parent
+            parent_name = ".".join(full_name.split(".")[:-1])
+            if parent_name:
+                parent = mock_sub(parent_name)
+                setattr(parent, full_name.split(".")[-1], m)
+            return m
+
+        # Create all required submodules
+        mock_lang = mock_sub("triton.language")
+        mock_comp = mock_sub("triton.compiler")
+        mock_comp_inner = mock_sub("triton.compiler.compiler")
+        mock_backends = mock_sub("triton.backends")
+        mock_backends_comp = mock_sub("triton.backends.compiler")
+        mock_runtime = mock_sub("triton.runtime")
+        mock_jit = mock_sub("triton.runtime.jit")
+
+        # Satisfy specific deep checks
+        # 1. AttrsDescriptor in triton.backends.compiler
+        class AttrsDescriptor:
+            def __init__(self, *args, **kwargs): pass
+        mock_backends_comp.AttrsDescriptor = AttrsDescriptor
+
+        # 2. dtypes in triton.language
         class MockTritonMeta:
             def __repr__(self): return "MockTritonMeta"
         
-        mock_triton_lang.dtype = MockTritonMeta
-        mock_triton_lang.float32 = MockTritonMeta()
-        mock_triton_lang.float16 = MockTritonMeta()
-        mock_triton_lang.bfloat16 = MockTritonMeta()
-        mock_triton_lang.int32 = MockTritonMeta()
-        mock_triton_lang.uint32 = MockTritonMeta()
-        
-        sys.modules["triton"] = mock_triton
-        sys.modules["triton.language"] = mock_triton_lang
+        mock_lang.dtype = MockTritonMeta
+        mock_lang.float32 = MockTritonMeta()
+        mock_lang.float16 = MockTritonMeta()
+        mock_lang.bfloat16 = MockTritonMeta()
+        mock_lang.int32 = MockTritonMeta()
+        mock_lang.uint32 = MockTritonMeta()
 
     _PATCH_APPLIED = True
     return True
