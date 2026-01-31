@@ -80,6 +80,7 @@ RMS_BACKWARD_BODY = """
 @lru_cache(maxsize = 1)
 def _get_backward_kernel():
     import mlx.core as mx
+
     return mx.fast.metal_kernel(
         name = "rms_backward_v3",
         input_names = ["dY", "X", "W", "r", "n_rows", "n_cols", "gemma"],
@@ -115,27 +116,28 @@ def mlx_rms_layernorm_forward(X_mlx, W_mlx, eps, gemma = False):
 def mlx_rms_layernorm_backward(dY_mlx, X_mlx, W_mlx, r_mlx, gemma = False):
     """Custom Metal kernel for the backward pass with dW reduction."""
     import mlx.core as mx
+
     shape = X_mlx.shape
     dim = shape[-1]
-    
+
     # Ensure all inputs are float32/float16 as expected by shader
     dY_flat = dY_mlx.reshape(-1, dim)
     X_flat = X_mlx.reshape(-1, dim)
     # Shader expects float* for r
     r_f32 = r_mlx.astype(mx.float32).flatten()
     W_f16 = W_mlx.astype(mx.float16)
-    
+
     n_rows, n_cols = X_flat.shape
-    
+
     kernel = _get_backward_kernel()
-    
+
     n_rows_mx = mx.array([n_rows], dtype = mx.uint32)
     n_cols_mx = mx.array([n_cols], dtype = mx.uint32)
     gemma_mx = mx.array([1 if gemma else 0], dtype = mx.uint32)
-    
+
     # Simple threadgroup size (multiple of 32)
     tpg = min(256, ((n_cols + 31) // 32) * 32)
-    
+
     outputs = kernel(
         inputs = [dY_flat, X_flat, W_f16, r_f32, n_rows_mx, n_cols_mx, gemma_mx],
         output_shapes = [(n_rows, n_cols), (n_rows, n_cols)],
@@ -143,10 +145,10 @@ def mlx_rms_layernorm_backward(dY_mlx, X_mlx, W_mlx, r_mlx, gemma = False):
         grid = (n_rows, 1, 1),
         threadgroup = (tpg, 1, 1),
     )
-    
+
     # Synchronize to ensure outputs are ready
     mx.eval(outputs)
-    
+
     dX = outputs[0].reshape(shape)
     dW = mx.sum(outputs[1], axis = 0).astype(W_mlx.dtype)
     return dX, dW
