@@ -157,7 +157,6 @@ def mlx_to_torch(
         if tensor.device.type != device:
             tensor = tensor.to(device = device)
     except Exception:
-        print("! fallback !")
         import mlx.core as mx
 
         mx.eval(array)

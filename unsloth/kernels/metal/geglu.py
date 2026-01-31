@@ -274,10 +274,21 @@ def _metal_geglu_forward(
 ) -> "torch.Tensor":
     shape = e.shape
     with mlx_context():
-        e_mlx = torch_to_mlx(e)
-        g_mlx = torch_to_mlx(g)
+        # CHAINING: Check inputs for cached MLX tensors
+        e_mlx = getattr(e, "_mlx_cache", None)
+        if e_mlx is None:
+            e_mlx = torch_to_mlx(e)
+
+        g_mlx = getattr(g, "_mlx_cache", None)
+        if g_mlx is None:
+            g_mlx = torch_to_mlx(g)
+
         out_mlx = mlx_fn(e_mlx, g_mlx)
-        return mlx_to_torch(out_mlx).view(*shape)
+        
+        # CHAINING: Attach MLX output
+        out_torch = mlx_to_torch(out_mlx).view(*shape)
+        out_torch._mlx_cache = out_mlx
+        return out_torch
 
 
 def _metal_geglu_backward(
@@ -285,14 +296,30 @@ def _metal_geglu_backward(
 ):
     shape = e.shape
     with mlx_context():
-        dw_mlx = torch_to_mlx(dw)
-        e_mlx = torch_to_mlx(e)
-        g_mlx = torch_to_mlx(g)
+        # CHAINING: Check inputs for cached MLX tensors
+        dw_mlx = getattr(dw, "_mlx_cache", None)
+        if dw_mlx is None:
+            dw_mlx = torch_to_mlx(dw)
+
+        e_mlx = getattr(e, "_mlx_cache", None)
+        if e_mlx is None:
+            e_mlx = torch_to_mlx(e)
+
+        g_mlx = getattr(g, "_mlx_cache", None)
+        if g_mlx is None:
+            g_mlx = torch_to_mlx(g)
+
         h_mlx, df_mlx, de_mlx = mlx_fn(dw_mlx, e_mlx, g_mlx)
 
         h = mlx_to_torch(h_mlx).view(*shape)
         df = mlx_to_torch(df_mlx).view(*shape)
         de = mlx_to_torch(de_mlx).view(*shape)
+
+        # CHAINING: Attach outputs
+        h._mlx_cache = h_mlx
+        df._mlx_cache = df_mlx
+        de._mlx_cache = de_mlx
+        
         return h, df, de
 
 

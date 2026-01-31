@@ -209,12 +209,28 @@ def metal_swiglu_backward(
 
     shape = e.shape
     with mlx_context():
-        dw_mlx = torch_to_mlx(dw)
-        e_mlx = torch_to_mlx(e)
-        g_mlx = torch_to_mlx(g)
+        # CHAINING: Check inputs for cached MLX tensors
+        dw_mlx = getattr(dw, "_mlx_cache", None)
+        if dw_mlx is None:
+            dw_mlx = torch_to_mlx(dw)
+
+        e_mlx = getattr(e, "_mlx_cache", None)
+        if e_mlx is None:
+            e_mlx = torch_to_mlx(e)
+
+        g_mlx = getattr(g, "_mlx_cache", None)
+        if g_mlx is None:
+            g_mlx = torch_to_mlx(g)
+
         h_mlx, df_mlx, de_mlx = mlx_swiglu_backward(dw_mlx, e_mlx, g_mlx)
 
         h = mlx_to_torch(h_mlx).view(*shape)
         df = mlx_to_torch(df_mlx).view(*shape)
         de = mlx_to_torch(de_mlx).view(*shape)
+        
+        # CHAINING: Attach outputs for next backward step
+        h._mlx_cache = h_mlx
+        df._mlx_cache = df_mlx
+        de._mlx_cache = de_mlx
+        
         return h, df, de

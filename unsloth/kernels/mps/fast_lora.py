@@ -16,6 +16,48 @@ import torch
 import torch.nn.functional as F
 
 
+from unsloth.kernels.mlx.bridge import torch_to_mlx, mlx_to_torch, mlx_context
+
+def _get_mlx_cached(tensor):
+    """Refactored helper to get or create cached MLX tensor"""
+    res = getattr(tensor, "_mlx_cache", None)
+    if res is None:
+        res = torch_to_mlx(tensor)
+        tensor._mlx_cache = res
+    return res
+
+def _mlx_matmul(X_mlx, W, A, B, s):
+    """
+    MLX Matmul with LoRA support.
+    X_mlx: MLX array
+    W: PyTorch tensor (will be cached)
+    A, B: PyTorch tensors (LoRA adapters, cached)
+    s: scaling factor
+    """
+    import mlx.core as mx
+    
+    W_mlx = _get_mlx_cached(W)
+    
+    # Base projection: X @ W.T
+    # MLX uses W.T implicitly for linear layers usually? No, explicit matmul.
+    # torch.linear uses X @ W.T
+    out = X_mlx @ W_mlx.T
+    
+    if A is not None:
+        A_mlx = _get_mlx_cached(A)
+        B_mlx = _get_mlx_cached(B)
+        
+        # LoRA: (X @ A.T) @ B.T * s
+        # X: [..., D], A: [R, D], B: [O, R]
+        # X @ A.T -> [..., R]
+        # result @ B.T -> [..., O]
+        XA = X_mlx @ A_mlx.T
+        lora_out = (XA @ B_mlx.T) * s
+        out = out + lora_out
+        
+    return out
+
+
 def mps_matmul_lora(X, W, W_quant, A, B, s):
     """
     MPS matmul_lora fallback.
@@ -109,6 +151,48 @@ def mps_apply_lora_mlp_swiglu(
     downS,
 ):
     """MPS SwiGLU MLP fallback using PyTorch operations."""
+    
+    # CHAINING: If input has MLX cache, runs entirely in MLX (sandwich)
+    if getattr(X, "_mlx_cache", None) is not None:
+        with mlx_context():
+            X_mlx = _get_mlx_cached(X)
+            
+            # 1. Up/Gate Projections (Fused in MLX)
+            e_mlx = _mlx_matmul(X_mlx, gateW, gateA, gateB, gateS)
+            g_mlx = _mlx_matmul(X_mlx, upW, upA, upB, upS)
+            
+            # 2. SwiGLU Activation (Fused in MLX)
+            # e and g are already MLX arrays here
+            import mlx.core as mx
+            # Ensure we use the fast metal kernel wrapper from metal/swiglu.py
+            from ..metal.swiglu import mlx_swiglu_forward
+            h_mlx = mlx_swiglu_forward(e_mlx, g_mlx)
+            
+            # 3. Down Projection (Fused in MLX)
+            out_mlx = _mlx_matmul(h_mlx, downW, downA, downB, downS)
+            
+            # Return PyTorch tensor with cache for next layer
+            out = mlx_to_torch(out_mlx).view_as(X) # Assuming shape preservation? No, dim might change
+            # Correct shape handling:
+            # MLP usually preserves B, S, but changes hidden size. 
+            # But Up/Down should return to original dim usually? Or intermediate?
+            # Llama MLP: Hidden -> Inter -> Hidden. So output shape ~ input shape (usually).
+            # Let's rely on mlx_to_torch handling flat buffer and reshape if needed.
+            # But safe bet is constructing correct view.
+            # X shape: [B, S, H]. downW shape: [H, I]. Out: [B, S, H].
+            # Getting explicit shape from MLX output is safer.
+            out = mlx_to_torch(out_mlx)
+            
+            # Reshape based on X batch/seq dims and downW output dim
+            out_dim = downW.shape[0]
+            if X.dim() == 2:
+                out = out.view(X.shape[0], out_dim)
+            else:
+                 out = out.view(X.shape[0], X.shape[1], out_dim)
+
+            out._mlx_cache = out_mlx
+            return out
+
     # Dispatching to torch-native implementation
     # For now, we use the device-agnostic logic but with MPS-friendly matmul
     e = mps_matmul_lora(X, gateW, gateW_quant, gateA, gateB, gateS)
@@ -159,6 +243,29 @@ def mps_apply_lora_mlp_geglu_exact(
     downS,
 ):
     """MPS GEGLU (Exact) MLP fallback using PyTorch operations."""
+    
+    # CHAINING: MLX Fast Path
+    if getattr(X, "_mlx_cache", None) is not None:
+        with mlx_context():
+            X_mlx = _get_mlx_cached(X)
+            e_mlx = _mlx_matmul(X_mlx, gateW, gateA, gateB, gateS)
+            g_mlx = _mlx_matmul(X_mlx, upW, upA, upB, upS)
+            
+            from ..metal.geglu import mlx_geglu_exact_forward
+            h_mlx = mlx_geglu_exact_forward(e_mlx, g_mlx)
+            
+            out_mlx = _mlx_matmul(h_mlx, downW, downA, downB, downS)
+            
+            out = mlx_to_torch(out_mlx)
+            out_dim = downW.shape[0]
+            if X.dim() == 2:
+                out = out.view(X.shape[0], out_dim)
+            else:
+                 out = out.view(X.shape[0], X.shape[1], out_dim)
+                 
+            out._mlx_cache = out_mlx
+            return out
+
     e = mps_matmul_lora(X, gateW, gateW_quant, gateA, gateB, gateS)
     g = mps_matmul_lora(X, upW, upW_quant, upA, upB, upS)
     # GEGLU: GELU(e) * g
@@ -193,6 +300,29 @@ def mps_apply_lora_mlp_geglu_approx(
     downS,
 ):
     """MPS GEGLU (Approximate) MLP fallback using PyTorch operations."""
+    
+    # CHAINING: MLX Fast Path
+    if getattr(X, "_mlx_cache", None) is not None:
+        with mlx_context():
+            X_mlx = _get_mlx_cached(X)
+            e_mlx = _mlx_matmul(X_mlx, gateW, gateA, gateB, gateS)
+            g_mlx = _mlx_matmul(X_mlx, upW, upA, upB, upS)
+            
+            from ..metal.geglu import mlx_geglu_approx_forward
+            h_mlx = mlx_geglu_approx_forward(e_mlx, g_mlx)
+            
+            out_mlx = _mlx_matmul(h_mlx, downW, downA, downB, downS)
+            
+            out = mlx_to_torch(out_mlx)
+            out_dim = downW.shape[0]
+            if X.dim() == 2:
+                out = out.view(X.shape[0], out_dim)
+            else:
+                 out = out.view(X.shape[0], X.shape[1], out_dim)
+                 
+            out._mlx_cache = out_mlx
+            return out
+
     e = mps_matmul_lora(X, gateW, gateW_quant, gateA, gateB, gateS)
     g = mps_matmul_lora(X, upW, upW_quant, upA, upB, upS)
     # GEGLU approximate: GELU(e, approximate='tanh') * g
