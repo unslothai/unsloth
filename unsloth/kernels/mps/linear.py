@@ -29,12 +29,12 @@ def mps_gemv(
         # Flatten batch and seq if they are both 1
         if X.shape[0] == 1 and X.shape[1] == 1:
             return torch.matmul(X.view(-1), W.t()).view(1, 1, -1)
-        return torch.matmul(X, W.t(), out=out)
+        return torch.matmul(X, W.t(), out = out)
 
     if X.dim() == 2 and X.shape[0] == 1:
         return torch.matmul(X.view(-1), W.t()).view(1, -1)
 
-    return torch.matmul(X, W.t(), out=out)
+    return torch.matmul(X, W.t(), out = out)
 
 
 def mps_linear_forward(

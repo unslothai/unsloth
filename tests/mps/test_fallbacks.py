@@ -62,20 +62,20 @@ from unsloth.kernels.mps.geglu import (
 
 def test_rms_layernorm_parity():
     print("Testing RMS LayerNorm Parity...")
-    X = torch.randn(2, 16, 32, requires_grad=True)
-    W = torch.randn(32, requires_grad=True)
+    X = torch.randn(2, 16, 32, requires_grad = True)
+    W = torch.randn(32, requires_grad = True)
     eps = 1e-5
 
     # Reference (Manual implementation for RMSNorm)
     X_f32 = X.to(torch.float32)
-    variance = X_f32.pow(2).mean(-1, keepdim=True)
+    variance = X_f32.pow(2).mean(-1, keepdim = True)
     rms_inv = torch.rsqrt(variance + eps)
     Y_ref = (X_f32 * rms_inv).to(X.dtype) * W
 
     # Fallback
     Y_mps = mps_rms_layernorm(X, W, eps)
 
-    assert torch.allclose(Y_ref, Y_mps, atol=1e-5)
+    assert torch.allclose(Y_ref, Y_mps, atol = 1e-5)
 
     # Gradient check
     Y_ref.sum().backward()
@@ -86,16 +86,16 @@ def test_rms_layernorm_parity():
     X.grad.zero_()
 
     Y_mps.sum().backward()
-    assert torch.allclose(grad_W_ref, W.grad, atol=1e-5)
-    assert torch.allclose(grad_X_ref, X.grad, atol=1e-5)
+    assert torch.allclose(grad_W_ref, W.grad, atol = 1e-5)
+    assert torch.allclose(grad_X_ref, X.grad, atol = 1e-5)
     print("✅ RMS LayerNorm Parity Passed")
 
 
 def test_layernorm_parity():
     print("Testing LayerNorm Parity...")
-    X = torch.randn(2, 16, 32, requires_grad=True)
-    W = torch.randn(32, requires_grad=True)
-    b = torch.randn(32, requires_grad=True)
+    X = torch.randn(2, 16, 32, requires_grad = True)
+    W = torch.randn(32, requires_grad = True)
+    b = torch.randn(32, requires_grad = True)
     eps = 1e-5
 
     # Reference
@@ -104,7 +104,7 @@ def test_layernorm_parity():
     # Fallback
     Y_mps = mps_layernorm(X, W, b, eps)
 
-    assert torch.allclose(Y_ref, Y_mps, atol=1e-5)
+    assert torch.allclose(Y_ref, Y_mps, atol = 1e-5)
 
     # Gradient check
     Y_ref.sum().backward()
@@ -117,22 +117,22 @@ def test_layernorm_parity():
     X.grad.zero_()
 
     Y_mps.sum().backward()
-    assert torch.allclose(grad_W_ref, W.grad, atol=1e-5)
-    assert torch.allclose(grad_b_ref, b.grad, atol=1e-5)
-    assert torch.allclose(grad_X_ref, X.grad, atol=1e-5)
+    assert torch.allclose(grad_W_ref, W.grad, atol = 1e-5)
+    assert torch.allclose(grad_b_ref, b.grad, atol = 1e-5)
+    assert torch.allclose(grad_X_ref, X.grad, atol = 1e-5)
     print("✅ LayerNorm Parity Passed")
 
 
 def test_swiglu_parity():
     print("Testing SwiGLU Parity...")
     # SwiGLU forward: silu(e) * g
-    e = torch.randn(2, 16, 32, requires_grad=True)
-    g = torch.randn(2, 16, 32, requires_grad=True)
+    e = torch.randn(2, 16, 32, requires_grad = True)
+    g = torch.randn(2, 16, 32, requires_grad = True)
 
     # Forward
     Y_ref = F.silu(e) * g
     Y_mps = mps_swiglu_forward(e, g)
-    assert torch.allclose(Y_ref, Y_mps, atol=1e-5)
+    assert torch.allclose(Y_ref, Y_mps, atol = 1e-5)
 
     # Backward
     dw = torch.randn_like(Y_ref)
@@ -146,26 +146,26 @@ def test_swiglu_parity():
     # Fallback backward
     h_mps, de_mps, dg_mps = mps_swiglu_backward(dw, e, g)
 
-    assert torch.allclose(ge_ref, de_mps, atol=1e-5)
-    assert torch.allclose(gg_ref, dg_mps, atol=1e-5)
+    assert torch.allclose(ge_ref, de_mps, atol = 1e-5)
+    assert torch.allclose(gg_ref, dg_mps, atol = 1e-5)
     print("✅ SwiGLU Parity Passed")
 
 
 def test_cross_entropy_parity():
     print("Testing Cross-Entropy Parity...")
-    logits = torch.randn(4, 32, 128, requires_grad=True)
+    logits = torch.randn(4, 32, 128, requires_grad = True)
     labels = torch.randint(0, 128, (4, 32))
     labels[0, 5] = -100  # ignore index
 
     # Reference
     loss_ref = F.cross_entropy(
-        logits.view(-1, 128), labels.view(-1), ignore_index=-100, reduction="mean"
+        logits.view(-1, 128), labels.view(-1), ignore_index = -100, reduction = "mean"
     )
 
     # Fallback
     loss_mps = mps_cross_entropy_loss(logits, labels)
 
-    assert torch.allclose(loss_ref, loss_mps, atol=1e-5)
+    assert torch.allclose(loss_ref, loss_mps, atol = 1e-5)
 
     # Gradient check
     loss_ref.backward()
@@ -173,7 +173,7 @@ def test_cross_entropy_parity():
 
     logits.grad.zero_()
     loss_mps.backward()
-    assert torch.allclose(grad_logits_ref, logits.grad, atol=1e-5)
+    assert torch.allclose(grad_logits_ref, logits.grad, atol = 1e-5)
     print("✅ Cross-Entropy Parity Passed")
 
 

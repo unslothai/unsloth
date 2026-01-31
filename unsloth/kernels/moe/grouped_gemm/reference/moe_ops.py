@@ -56,7 +56,7 @@ def calculate_topk(
                 gating_output.dtype
             )
         else:
-            scores = F.softmax(gating_output.to(torch.float32), dim=1).to(
+            scores = F.softmax(gating_output.to(torch.float32), dim = 1).to(
                 gating_output.dtype
             )
 
@@ -67,13 +67,13 @@ def calculate_topk(
     else:
         scores = gating_output
 
-    topk_weights, topk_ids = torch.topk(scores, k=top_k, dim=1)
+    topk_weights, topk_ids = torch.topk(scores, k = top_k, dim = 1)
 
     if post_act:
         topk_weights = _activation(topk_weights)
 
     if renormalize:
-        topk_weights /= torch.sum(topk_weights, dim=-1, keepdim=True).to(
+        topk_weights /= torch.sum(topk_weights, dim = -1, keepdim = True).to(
             gating_output.dtype
         )
 
@@ -94,12 +94,12 @@ def get_routing_indices(
     # group tokens together by expert indices from 0 to num_experts and pass that to experts forward
     token_counts_by_expert = torch.histc(
         selected_experts.view(-1),
-        bins=num_experts,
-        min=0,
-        max=num_experts,
+        bins = num_experts,
+        min = 0,
+        max = num_experts,
     )
     # token_indices_experts_sorted shape (bs*slen*top_k,)
-    gather_indices = torch.argsort(selected_experts.view(-1), stable=True)
+    gather_indices = torch.argsort(selected_experts.view(-1), stable = True)
     if return_scatter_indices:
         scatter_indices = gather_indices.argsort()
         return token_counts_by_expert, gather_indices, scatter_indices
@@ -107,7 +107,7 @@ def get_routing_indices(
         return token_counts_by_expert, gather_indices
 
 
-def torch_grouped_gemm(X, W, m_sizes, transpose=True):
+def torch_grouped_gemm(X, W, m_sizes, transpose = True):
     """
     X: [M, K] if forward, else [M, N]
     W: [E, N, K]
@@ -127,7 +127,7 @@ def torch_grouped_gemm(X, W, m_sizes, transpose=True):
 
     N = W.shape[1]
 
-    result = torch.zeros((M, N), dtype=X.dtype, device=X.device)
+    result = torch.zeros((M, N), dtype = X.dtype, device = X.device)
 
     m_start = 0
     for g in range(E):

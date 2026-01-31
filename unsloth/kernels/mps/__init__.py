@@ -78,9 +78,9 @@ def get_mps_device_info() -> dict:
     try:
         result = subprocess.run(
             ["sysctl", "-n", "machdep.cpu.brand_string"],
-            capture_output=True,
-            text=True,
-            timeout=5,
+            capture_output = True,
+            text = True,
+            timeout = 5,
         )
         if result.returncode == 0:
             chip = result.stdout.strip()
@@ -113,7 +113,7 @@ def get_mps_memory_info() -> dict:
     total_memory_gb = None
     try:
         result = subprocess.run(
-            ["sysctl", "-n", "hw.memsize"], capture_output=True, text=True, timeout=5
+            ["sysctl", "-n", "hw.memsize"], capture_output = True, text = True, timeout = 5
         )
         if result.returncode == 0:
             total_memory = int(result.stdout.strip())
@@ -142,7 +142,7 @@ def get_mps_capabilities() -> dict:
     # Test bfloat16 support
     supports_bfloat16 = False
     try:
-        test_tensor = torch.tensor([1.0], dtype=torch.bfloat16, device="mps")
+        test_tensor = torch.tensor([1.0], dtype = torch.bfloat16, device = "mps")
         _ = test_tensor + test_tensor
         supports_bfloat16 = True
         del test_tensor
@@ -152,7 +152,7 @@ def get_mps_capabilities() -> dict:
     # Test float16 support (should always work on MPS)
     supports_float16 = False
     try:
-        test_tensor = torch.tensor([1.0], dtype=torch.float16, device="mps")
+        test_tensor = torch.tensor([1.0], dtype = torch.float16, device = "mps")
         _ = test_tensor + test_tensor
         supports_float16 = True
         del test_tensor
