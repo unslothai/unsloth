@@ -134,13 +134,14 @@ def patch_unsloth_zoo_for_mps() -> bool:
 
         # Helper to create and nest submodules properly
         from importlib.machinery import ModuleSpec
+
         def mock_sub(full_name):
             if full_name in sys.modules:
                 return sys.modules[full_name]
             m = ModuleType(full_name)
             m.__path__ = []
             # Satisfy importlib.util.find_spec
-            m.__spec__ = ModuleSpec(name=full_name, loader=None, origin="mocked")
+            m.__spec__ = ModuleSpec(name = full_name, loader = None, origin = "mocked")
             sys.modules[full_name] = m
             # Nest into parent
             parent_name = ".".join(full_name.split(".")[:-1])
