@@ -89,7 +89,7 @@ _mx_from_dlpack = None
 _mx_array = None
 
 
-@require_mlx
+@require_mlx()
 def torch_to_mlx(
     tensor: "torch.Tensor",
     *,
@@ -135,7 +135,7 @@ def torch_to_mlx(
 _torch_from_dlpack = None
 
 
-@require_mlx
+@require_mlx()
 def mlx_to_torch(
     array: "mx.array",
     *,
