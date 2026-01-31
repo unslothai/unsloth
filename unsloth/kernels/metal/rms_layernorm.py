@@ -10,7 +10,7 @@ from typing import Tuple, TYPE_CHECKING
 if TYPE_CHECKING:
     import torch
 
-# Optimized Metal Shaders for RMSNorm (Robust SIMD-based bodies)
+# Optimized Metal Shaders for RMSNorm (Vectorized bodies)
 # -----------------------------------------------------------------------------
 
 RMS_FORWARD_BODY = """
@@ -25,34 +25,58 @@ RMS_FORWARD_BODY = """
     
     if (row >= R) return;
     
-    device const half* X_row = X + row * C;
-    device half* Y_row = Y + row * C;
+    device const half4* X_vec = (device const half4*)(X + row * C);
+    device half4* Y_vec = (device half4*)(Y + row * C);
+    device const half4* W_vec = (device const half4*)W;
     
+    uint C_vec = C >> 2;
     float acc = 0.0f;
-    for (uint i = lid; i < C; i += tpg) {
-        float v = float(X_row[i]);
-        acc = fma(v, v, acc);
+    for (uint i = lid; i < C_vec; i += tpg) {
+        float4 v = float4(X_vec[i]);
+        acc = fma(v.x, v.x, acc);
+        acc = fma(v.y, v.y, acc);
+        acc = fma(v.z, v.z, acc);
+        acc = fma(v.w, v.w, acc);
     }
     
-    // SIMD-aware reduction
+    // Tail handling for C not multiple of 4
+    if (lid == 0) {
+        for (uint i = C_vec << 2; i < C; ++i) {
+            float v = float(X[row * C + i]);
+            acc = fma(v, v, acc);
+        }
+    }
+    
+    // Reduce acc across threadgroup
     float grp_sum = simd_sum(acc);
-    threadgroup float tg_sums[8]; // Max 256 threads / 32 = 8 SIMDs
-    if ((lid & 31) == 0) {
-        tg_sums[lid >> 5] = grp_sum;
+    threadgroup float tg_sums[8];
+    if ((lid & 31) == 0) tg_sums[lid >> 5] = grp_sum;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    
+    threadgroup float shared_inv_var;
+    if (lid == 0) {
+        float total_sum = 0.0f;
+        for (uint i = 0; i < (tpg + 31) / 32; ++i) total_sum += tg_sums[i];
+        shared_inv_var = precise::rsqrt(total_sum / float(C) + EPS);
+        r[row] = shared_inv_var;
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
     
-    float total_sum = (lid < (tpg + 31) / 32) ? tg_sums[lid] : 0.0f;
-    total_sum = simd_sum(total_sum);
+    float inv_var = shared_inv_var;
+    for (uint i = lid; i < C_vec; i += tpg) {
+        float4 x = float4(X_vec[i]);
+        float4 w = float4(W_vec[i]);
+        float4 weight = GEMMA ? (w + 1.0f) : w;
+        Y_vec[i] = half4(x * inv_var * weight);
+    }
     
-    float inv_var = precise::rsqrt(total_sum / float(C) + EPS);
-    if (lid == 0) r[row] = inv_var;
-    
-    for (uint i = lid; i < C; i += tpg) {
-        float x = float(X_row[i]);
-        float w = float(W[i]);
-        float weight = GEMMA ? (w + 1.0f) : w;
-        Y_row[i] = half(x * inv_var * weight);
+    if (lid == 0) {
+        for (uint i = C_vec << 2; i < C; ++i) {
+            float x = float(X[row * C + i]);
+            float w = float(W[i]);
+            float weight = GEMMA ? (w + 1.0f) : w;
+            Y[row * C + i] = half(x * inv_var * weight);
+        }
     }
 """
 
@@ -67,53 +91,84 @@ RMS_BACKWARD_BODY = """
     
     if (row >= R) return;
     
-    device const half* dY_row = dY + row * C;
-    device const half* X_row = X + row * C;
-    device half* dX_row = dX + row * C;
-    device float* dW_row = dW_rows + row * C;
+    device const half4* dY_vec = (device const half4*)(dY + row * C);
+    device const half4* X_vec = (device const half4*)(X + row * C);
+    device half4* dX_vec = (device half4*)(dX + row * C);
+    device float4* dW_row_vec = (device float4*)(dW_rows + row * C);
+    device const half4* W_vec = (device const half4*)W;
     
     float inv_var = r[row];
+    uint C_vec = C >> 2;
     float dot = 0.0f;
     
-    for (uint i = lid; i < C; i += tpg) {
-        float dy = float(dY_row[i]);
-        float x = float(X_row[i]);
-        float w = float(W[i]);
-        float w_eff = GEMMA ? (w + 1.0f) : w;
+    for (uint i = lid; i < C_vec; i += tpg) {
+        float4 dy = float4(dY_vec[i]);
+        float4 x = float4(X_vec[i]);
+        float4 w = float4(W_vec[i]);
+        float4 w_eff = GEMMA ? (w + 1.0f) : w;
         
-        float normed = x * inv_var;
-        float dy_w = dy * w_eff;
+        float4 normed = x * inv_var;
+        float4 dy_w = dy * w_eff;
         
-        // Accumulate row-wise dW components
-        dW_row[i] = dy * normed;
+        // Save row-wise dW components
+        dW_row_vec[i] = dy * normed;
         
-        dot = fma(dy_w, normed, dot);
+        dot = fma(dy_w.x, normed.x, dot);
+        dot = fma(dy_w.y, normed.y, dot);
+        dot = fma(dy_w.z, normed.z, dot);
+        dot = fma(dy_w.w, normed.w, dot);
     }
     
-    // SIMD-aware reduction for dot product
+    if (lid == 0) {
+        for (uint i = C_vec << 2; i < C; ++i) {
+            float dy = float(dY[row * C + i]);
+            float x = float(X[row * C + i]);
+            float w = float(W[i]);
+            float w_eff = GEMMA ? (w + 1.0f) : w;
+            float normed = x * inv_var;
+            dW_rows[row * C + i] = dy * normed;
+            dot = fma(dy * w_eff, normed, dot);
+        }
+    }
+    
+    // Reduce dot across threadgroup
     float grp_dot = simd_sum(dot);
     threadgroup float tg_dots[8];
-    if ((lid & 31) == 0) {
-        tg_dots[lid >> 5] = grp_dot;
+    if ((lid & 31) == 0) tg_dots[lid >> 5] = grp_dot;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    
+    threadgroup float shared_total_dot;
+    if (lid == 0) {
+        float total_dot = 0.0f;
+        for (uint i = 0; i < (tpg + 31) / 32; ++i) total_dot += tg_dots[i];
+        shared_total_dot = total_dot;
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
     
-    float total_dot = (lid < (tpg + 31) / 32) ? tg_dots[lid] : 0.0f;
-    total_dot = simd_sum(total_dot);
-    
+    float total_dot = shared_total_dot;
     float N_inv = 1.0f / float(C);
     
-    for (uint i = lid; i < C; i += tpg) {
-        float dy = float(dY_row[i]);
-        float x = float(X_row[i]);
-        float w = float(W[i]);
-        float w_eff = GEMMA ? (w + 1.0f) : w;
+    for (uint i = lid; i < C_vec; i += tpg) {
+        float4 dy = float4(dY_vec[i]);
+        float4 x = float4(X_vec[i]);
+        float4 w = float4(W_vec[i]);
+        float4 w_eff = GEMMA ? (w + 1.0f) : w;
         
-        float normed = x * inv_var;
-        float dy_w = dy * w_eff;
+        float4 normed = x * inv_var;
+        float4 dy_w = dy * w_eff;
         
-        // dX = inv_var * (dy_w - normed * total_dot / N)
-        dX_row[i] = half(inv_var * (dy_w - normed * total_dot * N_inv));
+        dX_vec[i] = half4(inv_var * (dy_w - normed * total_dot * N_inv));
+    }
+    
+    if (lid == 0) {
+        for (uint i = C_vec << 2; i < C; ++i) {
+            float dy = float(dY[row * C + i]);
+            float x = float(X[row * C + i]);
+            float w = float(W[i]);
+            float w_eff = GEMMA ? (w + 1.0f) : w;
+            float normed = x * inv_var;
+            dX[row * C + i] = half(inv_var * (dy * w_eff - normed * total_dot * N_inv));
+        }
     }
 """
 
