@@ -115,7 +115,7 @@ class MPSRoPEEmbeddingQK(torch.autograd.Function):
              cos_final = cos
              sin_final = sin
 
-        if cos_final.shape[-1] * 2 == D:
+        if cos_final.shape[-1] * 2 == Q.shape[-1]:
             cos_final = torch.cat((cos_final, cos_final), dim = -1)
             sin_final = torch.cat((sin_final, sin_final), dim = -1)
 
