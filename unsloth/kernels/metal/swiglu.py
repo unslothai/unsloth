@@ -16,7 +16,16 @@ from typing import TYPE_CHECKING, Tuple, Optional
 if TYPE_CHECKING:
     import torch
 
-__all__ = ["mlx_swiglu_forward", "mlx_swiglu_backward", "is_metal_swiglu_available"]
+__all__ = [
+    "metal_swiglu_forward",
+    "metal_swiglu_backward",
+    "mlx_swiglu_forward",
+    "mlx_swiglu_backward",
+    "is_metal_swiglu_available",
+]
+
+
+from unsloth.kernels.mlx.bridge import torch_to_mlx, mlx_to_torch, mlx_context
 
 
 _METAL_SWIGLU_AVAILABLE: Optional[bool] = None
@@ -162,4 +171,34 @@ def mlx_swiglu_backward(dw_mlx, e_mlx, g_mlx):
     h = outputs[0].reshape(shape)
     df = outputs[1].reshape(shape)
     de = outputs[2].reshape(shape)
-    return h, df, de
+# =============================================================================
+# PyTorch wrappers (for integration with main Unsloth dispatch)
+# =============================================================================
+
+def metal_swiglu_forward(e: "torch.Tensor", g: "torch.Tensor") -> "torch.Tensor":
+    """Fused SwiGLU forward using Metal kernel (PyTorch interface)."""
+    import mlx.core as mx
+    shape = e.shape
+    with mlx_context():
+        e_mlx = torch_to_mlx(e)
+        g_mlx = torch_to_mlx(g)
+        out_mlx = mlx_swiglu_forward(e_mlx, g_mlx)
+        return mlx_to_torch(out_mlx).view(*shape)
+
+
+def metal_swiglu_backward(
+    dw: "torch.Tensor", e: "torch.Tensor", g: "torch.Tensor"
+) -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
+    """Fused SwiGLU backward using Metal kernel (PyTorch interface)."""
+    import mlx.core as mx
+    shape = e.shape
+    with mlx_context():
+        dw_mlx = torch_to_mlx(dw)
+        e_mlx = torch_to_mlx(e)
+        g_mlx = torch_to_mlx(g)
+        h_mlx, df_mlx, de_mlx = mlx_swiglu_backward(dw_mlx, e_mlx, g_mlx)
+        
+        h = mlx_to_torch(h_mlx).view(*shape)
+        df = mlx_to_torch(df_mlx).view(*shape)
+        de = mlx_to_torch(de_mlx).view(*shape)
+        return h, df, de

@@ -116,21 +116,13 @@ def torch_to_mlx(
     if not tensor.is_contiguous():
         tensor = tensor.contiguous()
 
-    # Strategy 1: Try CPU tensor with numpy (fastest for small-medium tensors)
-    # Moving to CPU on unified memory is essentially free
+    # Move to CPU and convert via numpy
+    # On unified memory this is efficient (no actual copy between RAM pools)
     if tensor.device.type != "cpu":
-        cpu_tensor = tensor.cpu()
-    else:
-        cpu_tensor = tensor
+        tensor = tensor.cpu()
 
-    # Strategy 2: Try memoryview (zero-copy if supported)
-    try:
-        return mx.array(memoryview(cpu_tensor.numpy()), copy = False)
-    except (TypeError, ValueError):
-        pass
+    return mx.array(tensor.numpy())
 
-    # Strategy 3: Standard numpy path
-    return mx.array(cpu_tensor.numpy())
 
 
 @require_mlx

@@ -113,7 +113,13 @@ def mps_apply_lora_mlp_swiglu(
     # For now, we use the device-agnostic logic but with MPS-friendly matmul
     e = mps_matmul_lora(X, gateW, gateW_quant, gateA, gateB, gateS)
     g = mps_matmul_lora(X, upW, upW_quant, upA, upB, upS)
-    h = F.silu(e) * g
+    # Try Metal kernel first, then fallback to slow F.silu
+    from ..metal import is_metal_swiglu_available
+    if is_metal_swiglu_available():
+        from ..metal.swiglu import metal_swiglu_forward
+        h = metal_swiglu_forward(e, g)
+    else:
+        h = F.silu(e) * g
     return mps_matmul_lora(h, downW, downW_quant, downA, downB, downS)
 
 
@@ -154,7 +160,13 @@ def mps_apply_lora_mlp_geglu_exact(
     e = mps_matmul_lora(X, gateW, gateW_quant, gateA, gateB, gateS)
     g = mps_matmul_lora(X, upW, upW_quant, upA, upB, upS)
     # GEGLU: GELU(e) * g
-    h = F.gelu(e, approximate = "none") * g
+    # Try Metal kernel first, then fallback to slow F.gelu
+    from ..metal import is_metal_geglu_available
+    if is_metal_geglu_available():
+        from ..metal.geglu import metal_geglu_exact_forward
+        h = metal_geglu_exact_forward(e, g)
+    else:
+        h = F.gelu(e, approximate = "none") * g
     return mps_matmul_lora(h, downW, downW_quant, downA, downB, downS)
 
 
@@ -180,5 +192,11 @@ def mps_apply_lora_mlp_geglu_approx(
     e = mps_matmul_lora(X, gateW, gateW_quant, gateA, gateB, gateS)
     g = mps_matmul_lora(X, upW, upW_quant, upA, upB, upS)
     # GEGLU approximate: GELU(e, approximate='tanh') * g
-    h = F.gelu(e, approximate = "tanh") * g
+    # Try Metal kernel first, then fallback to slow F.gelu
+    from ..metal import is_metal_geglu_available
+    if is_metal_geglu_available():
+        from ..metal.geglu import metal_geglu_approx_forward
+        h = metal_geglu_approx_forward(e, g)
+    else:
+        h = F.gelu(e, approximate = "tanh") * g
     return mps_matmul_lora(h, downW, downW_quant, downA, downB, downS)

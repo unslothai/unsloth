@@ -17,12 +17,19 @@ if TYPE_CHECKING:
     import torch
 
 __all__ = [
+    "metal_geglu_exact_forward",
+    "metal_geglu_exact_backward",
+    "metal_geglu_approx_forward",
+    "metal_geglu_approx_backward",
     "mlx_geglu_exact_forward",
     "mlx_geglu_exact_backward",
     "mlx_geglu_approx_forward",
     "mlx_geglu_approx_backward",
     "is_metal_geglu_available",
 ]
+
+
+from unsloth.kernels.mlx.bridge import torch_to_mlx, mlx_to_torch, mlx_context
 
 
 _METAL_GEGLU_AVAILABLE: Optional[bool] = None
@@ -257,6 +264,44 @@ def mlx_geglu_approx_forward(e_mlx, g_mlx):
     return _mlx_geglu_forward(e_mlx, g_mlx, _get_approx_forward())
 
 
-def mlx_geglu_approx_backward(dw_mlx, e_mlx, g_mlx):
-    """Fused GEGLU approx backward using Metal kernel."""
-    return _mlx_geglu_backward(dw_mlx, e_mlx, g_mlx, _get_approx_backward())
+# =============================================================================
+# PyTorch wrappers (for integration with main Unsloth dispatch)
+# =============================================================================
+
+def _metal_geglu_forward(e: "torch.Tensor", g: "torch.Tensor", mlx_fn) -> "torch.Tensor":
+    shape = e.shape
+    with mlx_context():
+        e_mlx = torch_to_mlx(e)
+        g_mlx = torch_to_mlx(g)
+        out_mlx = mlx_fn(e_mlx, g_mlx)
+        return mlx_to_torch(out_mlx).view(*shape)
+
+
+def _metal_geglu_backward(dw: "torch.Tensor", e: "torch.Tensor", g: "torch.Tensor", mlx_fn):
+    shape = e.shape
+    with mlx_context():
+        dw_mlx = torch_to_mlx(dw)
+        e_mlx = torch_to_mlx(e)
+        g_mlx = torch_to_mlx(g)
+        h_mlx, df_mlx, de_mlx = mlx_fn(dw_mlx, e_mlx, g_mlx)
+        
+        h = mlx_to_torch(h_mlx).view(*shape)
+        df = mlx_to_torch(df_mlx).view(*shape)
+        de = mlx_to_torch(de_mlx).view(*shape)
+        return h, df, de
+
+
+def metal_geglu_exact_forward(e, g):
+    return _metal_geglu_forward(e, g, mlx_geglu_exact_forward)
+
+
+def metal_geglu_exact_backward(dw, e, g):
+    return _metal_geglu_backward(dw, e, g, mlx_geglu_exact_backward)
+
+
+def metal_geglu_approx_forward(e, g):
+    return _metal_geglu_forward(e, g, mlx_geglu_approx_forward)
+
+
+def metal_geglu_approx_backward(dw, e, g):
+    return _metal_geglu_backward(dw, e, g, mlx_geglu_approx_backward)
