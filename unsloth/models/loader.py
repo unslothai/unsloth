@@ -255,7 +255,7 @@ class FastLanguageModel(FastLlamaModel):
                     "Unsloth: set `fast_inference = True` when doing `load_in_fp8`."
                 )
         # Check if 4bit is allowed specifically for AMD
-        if not ALLOW_BITSANDBYTES and not use_exact_model_name:
+        if not ALLOW_BITSANDBYTES and not use_exact_model_name and DEVICE_TYPE != "mps":
             if load_in_4bit or load_in_8bit or model_name.lower().endswith("-bnb-4bit"):
                 print(
                     "Unsloth: AMD currently is not stable with 4bit bitsandbytes. Disabling for now."
@@ -581,6 +581,11 @@ class FastLanguageModel(FastLlamaModel):
             load_in_4bit_kwargs = False
             load_in_8bit_kwargs = False
 
+        if DEVICE_TYPE == "mps" and load_in_4bit:
+            # MPS does not support bitsandbytes. We load in FP16 then quantize to MLX 4-bit.
+            load_in_4bit_kwargs = False
+            load_in_8bit_kwargs = False
+
         model, tokenizer = dispatch_model.from_pretrained(
             model_name = model_name,
             max_seq_length = max_seq_length,
@@ -603,6 +608,10 @@ class FastLanguageModel(FastLlamaModel):
             *args,
             **kwargs,
         )
+
+        if DEVICE_TYPE == "mps" and load_in_4bit:
+             from unsloth.kernels.mlx.utils import fast_quantize
+             fast_quantize(model)
 
         if resize_model_vocab is not None:
             model.resize_token_embeddings(resize_model_vocab)

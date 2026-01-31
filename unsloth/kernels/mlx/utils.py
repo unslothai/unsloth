@@ -1,130 +1,49 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# Licensed under the Apache License, Version 2.0.
 
-"""
-MLX utilities for Unsloth.
+import torch
+from .quantization import quantize_4bit
+from tqdm import tqdm
 
-This module provides utilities for integrating Apple's MLX framework
-on Apple Silicon Macs. MLX provides optimized operations that can
-outperform PyTorch MPS for certain workloads.
-
-Note: MLX is optional. If not installed, is_mlx_available() returns False
-and UnslothMLXError is raised if MLX functions are called.
-"""
-
-import sys
-import functools
-from typing import Callable, TypeVar
-
-__all__ = [
-    "is_mlx_available",
-    "get_mlx_version",
-    "UnslothMLXError",
-    "require_mlx",
-]
-
-# Type variable for decorator
-F = TypeVar("F", bound = Callable)
-
-
-class UnslothMLXError(RuntimeError):
+def fast_quantize(model):
     """
-    Exception raised when MLX operations are attempted without MLX installed.
-
-    This provides a clear error message guiding users to install MLX
-    when they attempt to use MLX-accelerated features.
+    Iterates over the model and pre-quantizes Linear layers to 4-bit MLX format.
+    The quantized weights are stored in the `_mlx_cache` attribute of the PyTorch weight.
+    
+    This allows the Unsloth/MLX bridge to transparently use the optimized 4-bit kernel
+    without any changes to the model structure itself.
     """
-
-    def __init__(self, message: str = None):
-        if message is None:
-            message = (
-                "MLX is not available. To use MLX-accelerated features, "
-                "install MLX with: pip install 'unsloth[apple]' "
-                "or pip install mlx>=0.6.0. "
-                "Note: MLX only works on Apple Silicon Macs."
-            )
-        super().__init__(message)
-
-
-@functools.cache
-def is_mlx_available() -> bool:
-    """
-    Check if MLX framework is available.
-
-    This checks:
-    1. Running on macOS (Darwin)
-    2. MLX package can be imported
-
-    Returns:
-        bool: True if MLX is available for use, False otherwise.
-
-    Note:
-        Result is cached for performance. The first call performs the
-        actual check; subsequent calls return the cached result.
-    """
-    # Must be on macOS
-    if sys.platform != "darwin":
-        return False
-
-    # Try to import MLX
-    try:
-        import mlx.core  # noqa: F401
-
-        return True
-    except ImportError:
-        return False
-
-
-def get_mlx_version() -> str | None:
-    """
-    Get the installed MLX version.
-
-    Returns:
-        str | None: Version string if MLX is installed, None otherwise.
-    """
-    if not is_mlx_available():
-        return None
-
-    try:
-        import mlx
-
-        return getattr(mlx, "__version__", "unknown")
-    except Exception:
-        return None
-
-
-def require_mlx(func: F) -> F:
-    """
-    Decorator that ensures MLX is available before executing a function.
-
-    Raises:
-        UnslothMLXError: If MLX is not available.
-
-    Example:
-        @require_mlx
-        def mlx_accelerated_operation(tensor):
-            import mlx.core as mx
-            # ... MLX operations
-    """
-
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        if not is_mlx_available():
-            raise UnslothMLXError(
-                f"Cannot use '{func.__name__}' - MLX is not available. "
-                "Install with: pip install 'unsloth[apple]'"
-            )
-        return func(*args, **kwargs)
-
-    return wrapper  # type: ignore
+    print("Unsloth: Fast 4-bit quantization for Apple Silicon...")
+    
+    # Identify layers to quantize.
+    # We focus on the heavy lifters: MLP and Attention projections.
+    # usually: layers.N.mlp.gate_proj, up_proj, down_proj
+    #          layers.N.self_attn.q_proj, k_proj, v_proj, o_proj
+    
+    count = 0
+    total_layers = 0
+    
+    # First pass to count for progress bar
+    for name, module in model.named_modules():
+        if isinstance(module, torch.nn.Linear):
+            # rudimentary filter to avoid quantizing classifier head or embeddings if they appear as linear
+            if "head" in name or "embed" in name:
+                continue
+            total_layers += 1
+            
+    pbar = tqdm(total=total_layers, desc="Quantizing layers", unit="layer")
+    
+    for name, module in model.named_modules():
+        if isinstance(module, torch.nn.Linear):
+            if "head" in name or "embed" in name:
+                continue
+            
+            # Apply quantization
+            # We store it directly on the weight tensor
+            # The 'fast_lora' kernels check hasattr(weight, '_mlx_cache')
+            module.weight._mlx_cache = quantize_4bit(module.weight)
+            count += 1
+            pbar.update(1)
+            
+    pbar.close()
+    print(f"Unsloth: Quantized {count} layers to 4-bit MLX.")
