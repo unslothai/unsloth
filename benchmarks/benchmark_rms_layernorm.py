@@ -182,7 +182,10 @@ def run_correctness_tests():
         )
 
         # 2. Backward Correctness
-        dY_mps = torch.randn_like(out_metal)
+        dY_mps = torch.randn_like(out_metal).clone() # Force new memory
+        # Clear any potential stale memory
+        torch.mps.empty_cache()
+        
         dX_metal, dW_metal = metal_module.metal_rms_layernorm_backward(
             dY_mps, X_mps, W_mps, r_metal, eps, gemma = False
         )

@@ -113,8 +113,8 @@ def torch_to_mlx(
     import mlx.core as mx
 
     # Ensure MPS writes are complete before accessing memory
-    # We only sync if we are NOT already inside an mlx_context (which synced on entry)
-    if tensor.device.type == "mps" and not _IN_MLX_CONTEXT:
+    # CRITICAL: This prevents data corruption when sharing memory
+    if tensor.device.type == "mps":
         synchronize_mps()
 
     # Use DLPack for zero-copy sharing on same device (MPS -> MLX)

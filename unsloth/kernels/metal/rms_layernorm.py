@@ -49,18 +49,20 @@ RMS_BACKWARD_BODY = """
         dot += dy_w * normed;
     }
     
-    // 2. Parallel reduction for dot product in threadgroup (shared memory)
+    // 2. Parallel reduction for dot product in threadgroup
+    // We use a robust reduction that handles non-power-of-2 tpg (though tpg is usually 256 here)
     threadgroup float shared_dots[256];
     shared_dots[lid] = dot;
     threadgroup_barrier(mem_flags::mem_threadgroup);
     
-    for (uint s = tpg / 2; s > 0; s >>= 1) {
-        if (lid < s) {
+    for (uint s = 128; s > 0; s >>= 1) {
+        if (lid < s && lid + s < tpg) {
             shared_dots[lid] += shared_dots[lid + s];
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
     
+    // The result is in shared_dots[0]
     float total_dot_n = shared_dots[0] * N_inv;
     threadgroup_barrier(mem_flags::mem_threadgroup);
     
@@ -135,14 +137,14 @@ def mlx_rms_layernorm_backward(dY_mlx, X_mlx, W_mlx, r_mlx, gemma = False):
     
     outputs = kernel(
         inputs = [dY_flat, X_flat, W_contig, r_flat, n_rows_mx, n_cols_mx, gemma_mx],
-        output_shapes = [(n_rows * n_cols,), (n_rows * n_cols,)],
+        output_shapes = [(n_rows, n_cols), (n_rows, n_cols)],
         output_dtypes = [X_mlx.dtype, mx.float32],
         grid = (n_rows, 1, 1),
         threadgroup = (tpg, 1, 1),
     )
     
     dX = outputs[0].reshape(shape)
-    dW = mx.sum(outputs[1].reshape(n_rows, n_cols), axis = 0).astype(W_mlx.dtype)
+    dW = mx.sum(outputs[1], axis = 0).astype(W_mlx.dtype)
     return dX, dW
 
 
