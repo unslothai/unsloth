@@ -27,31 +27,57 @@ def rotate_half(x: torch.Tensor) -> torch.Tensor:
 
 class MPSRoPEEmbedding(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, Q: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor):
-        # Q: [batch, seq_len, n_heads, head_dim] or [batch, n_heads, seq_len, head_dim]
-        # cos, sin: [seq_len, head_dim]
+    def forward(ctx, Q: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, position_ids: torch.Tensor = None):
+        # Q: [batch, n_heads, seq_len, head_dim] or [batch, seq_len, n_heads, head_dim]
+        # cos, sin: [seq_len, head_dim] or [batch, seq_len, head_dim]
 
-        # Reshape cos/sin to broadcast over Q
-        # RoPE usually applies to the last dimension (head_dim)
-        # We assume cos/sin are [seq_len, head_dim/2] or [seq_len, head_dim]
-        # Standard Unsloth RoPE kernels expect cos/sin [seq_len, head_dim/2]
-
-        # In Unsloth, cos/sin are usually pre-expanded or have shape [seq_len, head_dim//2]
-        # Let's handle the broadcast carefully.
-
-        # If Q is [B, S, H, D]
-        if Q.dim() == 4:
-            # Check if S is the 1st or 2nd dim
-            if Q.shape[1] == cos.shape[0]:  # [B, S, H, D]
-                cos_final = cos.view(1, cos.shape[0], 1, cos.shape[1])
-                sin_final = sin.view(1, sin.shape[0], 1, sin.shape[1])
-            else:  # [B, H, S, D]
-                cos_final = cos.view(1, 1, cos.shape[0], cos.shape[1])
-                sin_final = sin.view(1, 1, sin.shape[0], sin.shape[1])
+        if position_ids is not None:
+            # Handle sliced RoPE (Generation / Prefill with specific positions)
+            # cos/sin are likely [MaxSeq, HalfDim]
+            # position_ids is [Batch, Seq] or [Seq]
+            c = cos[position_ids] # [B, S, D/2] or [S, D/2]
+            s = sin[position_ids] # [B, S, D/2] or [S, D/2]
+            
+            if c.dim() == 2: c = c.unsqueeze(0) # [1, S, D/2]
+            if s.dim() == 2: s = s.unsqueeze(0) # [1, S, D/2]
+            
+            # Align with Q: typically Q is [B, H, S, D] on MPS
+            if Q.dim() == 4:
+                S = c.shape[1]
+                if Q.shape[2] == S: # [B, H, S, D]
+                    cos_final = c.unsqueeze(1) # [B, 1, S, D/2]
+                    sin_final = s.unsqueeze(1) # [B, 1, S, D/2]
+                elif Q.shape[1] == S: # [B, S, H, D]
+                    cos_final = c.unsqueeze(2) # [B, S, 1, D/2]
+                    sin_final = s.unsqueeze(2) # [B, S, 1, D/2]
+                else:
+                    # Fallback
+                    cos_final = c.unsqueeze(1)
+                    sin_final = s.unsqueeze(1)
+            else:
+                cos_final = c
+                sin_final = s
         else:
-            # Fallback for other dims
-            cos_final = cos
-            sin_final = sin
+            # Full sequence RoPE
+            if Q.dim() == 4:
+                seq_len = cos.shape[0]
+                if Q.shape[2] == seq_len: # [B, H, S, D]
+                    cos_final = cos.view(1, 1, seq_len, -1)
+                    sin_final = sin.view(1, 1, seq_len, -1)
+                elif Q.shape[1] == seq_len: # [B, S, H, D]
+                    cos_final = cos.view(1, seq_len, 1, -1)
+                    sin_final = sin.view(1, seq_len, 1, -1)
+                else:
+                    # Fallback matching the first dimension of cos
+                    if Q.shape[1] == cos.shape[0]:
+                        cos_final = cos.view(1, cos.shape[0], 1, -1)
+                        sin_final = sin.view(1, sin.shape[0], 1, -1)
+                    else:
+                        cos_final = cos.view(1, 1, cos.shape[0], -1)
+                        sin_final = sin.view(1, 1, sin.shape[0], -1)
+            else:
+                cos_final = cos
+                sin_final = sin
 
         # If head_dim in cos/sin is half of Q's head_dim, we repeat it
         if cos_final.shape[-1] * 2 == Q.shape[-1]:
@@ -67,12 +93,9 @@ class MPSRoPEEmbedding(torch.autograd.Function):
     @staticmethod
     def backward(ctx, dY: torch.Tensor):
         cos, sin = ctx.saved_tensors
-
-        # dQ = dY * cos - rotate_half(dY) * sin
         dY_rotated = rotate_half(dY)
         dQ = (dY * cos) - (dY_rotated * sin)
-
-        return dQ, None, None
+        return dQ, None, None, None
 
 
 class MPSRoPEEmbeddingQK(torch.autograd.Function):
@@ -85,49 +108,38 @@ class MPSRoPEEmbeddingQK(torch.autograd.Function):
         sin: torch.Tensor,
         position_ids: torch.Tensor = None,
     ):
-        # Similar logic to MPSRoPEEmbedding but for both Q and K
-        # Typically Q is [B, H_q, S, D] and K is [B, H_k, S, D]
-
         if position_ids is not None:
-            # cos/sin: [MaxSeq, Dim]
-            # position_ids: [B, S] or [1, S]
-
-            # Use advanced indexing to get [B, S, Dim]
-            cos_final = cos[position_ids].unsqueeze(2)  # [B, S, 1, Dim]
-            sin_final = sin[position_ids].unsqueeze(2)  # [B, S, 1, Dim]
-
-            # Check if Q is [B, S, H, D] or [B, H, S, D]
-            if Q.shape[1] == cos_final.shape[1]: # [B, S, H, D]
-                # Align cos_final: [B, S, 1, Dim]
-                pass
-            else: # Assume [B, H, S, D]
-                cos_final = cos_final.transpose(1, 2) # [B, 1, S, Dim]
-                sin_final = sin_final.transpose(1, 2) # [B, 1, S, Dim]
-
-        else:
-            # Fallback to previous broadcasting logic if no position_ids
-            # Batch, Heads, Seq, Dim
-            # Typical Q shapes:
-            # [Batch, Heads, Seq, Dim] -> Unsloth usually uses this (transposed)
-            # [Batch, Seq, Heads, Dim] -> HF mostly uses this
-
-            # Check input dims
+            # Handle sliced RoPE
+            c = cos[position_ids] # [B, S, D/2] or [S, D/2]
+            s = sin[position_ids] # [B, S, D/2] or [S, D/2]
+            
+            if c.dim() == 2: c = c.unsqueeze(0) # [1, S, D/2]
+            if s.dim() == 2: s = s.unsqueeze(0) # [1, S, D/2]
+            
             if Q.dim() == 4:
-                # Check if S is dim 1 or dim 2
-                # cos shape is [Seq, Dim] usually
+                S = c.shape[1]
+                if Q.shape[2] == S: # [B, H, S, D]
+                    cos_final = c.unsqueeze(1) # [B, 1, S, D/2]
+                    sin_final = s.unsqueeze(1) # [B, 1, S, D/2]
+                elif Q.shape[1] == S: # [B, S, H, D]
+                    cos_final = c.unsqueeze(2) # [B, S, 1, D/2]
+                    sin_final = s.unsqueeze(2) # [B, S, 1, D/2]
+                else:
+                    cos_final = c.unsqueeze(1)
+                    sin_final = s.unsqueeze(1)
+            else:
+                cos_final = c
+                sin_final = s
+        else:
+            if Q.dim() == 4:
                 seq_len = cos.shape[0]
-
-                if Q.shape[1] == seq_len:  # [B, S, H, D]
-                    cos_final = cos.view(1, seq_len, 1, -1)
-                    sin_final = sin.view(1, seq_len, 1, -1)
-                elif Q.shape[2] == seq_len:  # [B, H, S, D]
+                if Q.shape[2] == seq_len: # [B, H, S, D]
                     cos_final = cos.view(1, 1, seq_len, -1)
                     sin_final = sin.view(1, 1, seq_len, -1)
+                elif Q.shape[1] == seq_len: # [B, S, H, D]
+                    cos_final = cos.view(1, seq_len, 1, -1)
+                    sin_final = sin.view(1, seq_len, 1, -1)
                 else:
-                    # Fallback or weird shape?
-                    # Maybe seq_len is different due to padding?
-                    # For now assume broadcasting works if we just view 1s
-                    # Try to align with the dimension that matches cos.shape[0]
                     if Q.shape[1] == cos.shape[0]:
                         cos_final = cos.view(1, cos.shape[0], 1, -1)
                         sin_final = sin.view(1, sin.shape[0], 1, -1)
@@ -154,25 +166,18 @@ class MPSRoPEEmbeddingQK(torch.autograd.Function):
     @staticmethod
     def backward(ctx, dQ: torch.Tensor, dK: torch.Tensor):
         cos, sin = ctx.saved_tensors
-
         dQ_rotated = rotate_half(dQ)
         dQ_out = (dQ * cos) - (dQ_rotated * sin)
-
         dK_rotated = rotate_half(dK)
         dK_out = (dK * cos) - (dK_rotated * sin)
-
         return dQ_out, dK_out, None, None, None
 
 
-def mps_rope_embedding(Q: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor):
-    return MPSRoPEEmbedding.apply(Q, cos, sin)
+def mps_rope_embedding(Q: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, position_ids: torch.Tensor = None):
+    return MPSRoPEEmbedding.apply(Q, cos, sin, position_ids)
 
 
 def mps_rope_embedding_qk(
-    Q: torch.Tensor,
-    K: torch.Tensor,
-    cos: torch.Tensor,
-    sin: torch.Tensor,
-    position_ids: torch.Tensor = None,
+    Q: torch.Tensor, K: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, position_ids: torch.Tensor = None
 ):
     return MPSRoPEEmbeddingQK.apply(Q, K, cos, sin, position_ids)
