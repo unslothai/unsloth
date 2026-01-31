@@ -1,0 +1,730 @@
+import { SectionCard } from "@/components/section-card";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Slider } from "@/components/ui/slider";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { CONTEXT_LENGTHS, TARGET_MODULES } from "@/config/training";
+import { useWizardStore } from "@/stores/training";
+import type { GradientCheckpointing } from "@/types/training";
+import {
+  ArrowDown01Icon,
+  InformationCircleIcon,
+  Settings04Icon,
+} from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { type ReactElement, type ReactNode, useState } from "react";
+
+function Row({
+  label,
+  tooltip,
+  children,
+}: { label: string; tooltip?: ReactNode; children: ReactNode }): ReactElement {
+  return (
+    <div className="flex items-center justify-between">
+      <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+        {label}
+        {tooltip && (
+          <Tooltip>
+            <TooltipTrigger asChild={true}>
+              <button
+                type="button"
+                className="text-foreground/70 hover:text-foreground"
+              >
+                <HugeiconsIcon
+                  icon={InformationCircleIcon}
+                  className="size-3"
+                />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>{tooltip}</TooltipContent>
+          </Tooltip>
+        )}
+      </span>
+      {children}
+    </div>
+  );
+}
+
+function SliderRow({
+  label,
+  tooltip,
+  value,
+  onChange,
+  min,
+  max,
+  step,
+  format,
+}: {
+  label: string;
+  tooltip?: ReactNode;
+  value: number;
+  onChange: (v: number) => void;
+  min: number;
+  max: number;
+  step: number;
+  format?: (v: number) => string;
+}): ReactElement {
+  return (
+    <Row label={label} tooltip={tooltip}>
+      <div className="flex items-center gap-3">
+        <Slider
+          value={[value]}
+          onValueChange={([v]) => onChange(v)}
+          min={min}
+          max={max}
+          step={step}
+          className="w-32"
+        />
+        <input
+          type="number"
+          value={format ? format(value) : value}
+          onChange={(e) => onChange(Number(e.target.value))}
+          min={min}
+          max={max}
+          step={step}
+          className="w-12 text-right font-mono text-xs font-medium bg-muted/50 border border-border rounded-lg px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-primary/30 [&::-webkit-inner-spin-button]:appearance-none"
+        />
+      </div>
+    </Row>
+  );
+}
+
+export function ParamsSection(): ReactElement {
+  const store = useWizardStore();
+  const isLora = store.trainingMethod !== "full";
+  const isVision = store.modelType === "vision";
+  const [loraOpen, setLoraOpen] = useState(false);
+  const [hyperOpen, setHyperOpen] = useState(false);
+
+  return (
+    <SectionCard
+      icon={<HugeiconsIcon icon={Settings04Icon} className="size-5" />}
+      title="Parameters"
+      description="Configure training hyperparameters"
+      accent="orange"
+      className="lg:col-span-4 min-h-[450px]"
+    >
+      <div className="flex flex-col gap-4">
+        {/* Epochs */}
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center justify-between">
+            <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+              Epochs
+              <Tooltip>
+                <TooltipTrigger asChild={true}>
+                  <button
+                    type="button"
+                    className="text-foreground/70 hover:text-foreground"
+                  >
+                    <HugeiconsIcon
+                      icon={InformationCircleIcon}
+                      className="size-3"
+                    />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  How many times the model sees the entire dataset during
+                  training.{" "}
+                  <a
+                    href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-primary underline"
+                  >
+                    Read more
+                  </a>
+                </TooltipContent>
+              </Tooltip>
+            </span>
+            <input
+              type="number"
+              value={store.epochs}
+              onChange={(e) => store.setEpochs(Number(e.target.value))}
+              min={1}
+              max={20}
+              step={1}
+              className="w-12 text-right font-mono text-xs font-medium bg-muted/50 border border-border rounded-lg px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-primary/30 [&::-webkit-inner-spin-button]:appearance-none"
+            />
+          </div>
+          <Slider
+            value={[store.epochs]}
+            onValueChange={([v]) => store.setEpochs(v)}
+            min={1}
+            max={20}
+            step={1}
+          />
+          <p className="text-[10px] text-muted-foreground">
+            Number of full passes over the training dataset
+          </p>
+        </div>
+
+        {/* Context length */}
+        <div className="flex flex-col gap-2">
+          <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+            Context Length
+            <Tooltip>
+              <TooltipTrigger asChild={true}>
+                <button
+                  type="button"
+                  className="text-foreground/70 hover:text-foreground"
+                >
+                  <HugeiconsIcon
+                    icon={InformationCircleIcon}
+                    className="size-3"
+                  />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>
+                Maximum number of tokens per training sample.{" "}
+                <a
+                  href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-primary underline"
+                >
+                  Read more
+                </a>
+              </TooltipContent>
+            </Tooltip>
+          </span>
+          <Select
+            value={String(store.contextLength)}
+            onValueChange={(v) => store.setContextLength(Number(v))}
+          >
+            <SelectTrigger className="w-full font-mono">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {CONTEXT_LENGTHS.map((len) => (
+                <SelectItem key={len} value={String(len)} className="font-mono">
+                  {len.toLocaleString()}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="text-[10px] text-muted-foreground">
+            Max sequence length for training samples
+          </p>
+        </div>
+
+        {/* Learning Rate */}
+        <div className="flex flex-col gap-2">
+          <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+            Learning Rate
+            <Tooltip>
+              <TooltipTrigger asChild={true}>
+                <button
+                  type="button"
+                  className="text-foreground/70 hover:text-foreground"
+                >
+                  <HugeiconsIcon
+                    icon={InformationCircleIcon}
+                    className="size-3"
+                  />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>
+                Step size for weight updates. Lower values train slower but more
+                stably.{" "}
+                <a
+                  href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-primary underline"
+                >
+                  Read more
+                </a>
+              </TooltipContent>
+            </Tooltip>
+          </span>
+          <Input
+            type="number"
+            step="0.00001"
+            value={store.learningRate}
+            onChange={(e) => store.setLearningRate(Number(e.target.value))}
+            className="w-full font-mono"
+          />
+          <p className="text-[10px] text-muted-foreground">
+            Recommended: 2e-4 for LoRA, 2e-5 for full fine-tune
+          </p>
+        </div>
+
+        {/* LoRA Settings */}
+        {isLora && (
+          <div>
+            <button
+              type="button"
+              onClick={() => setLoraOpen(!loraOpen)}
+              className="flex w-full cursor-pointer items-center gap-1.5 text-xs text-muted-foreground"
+            >
+              <HugeiconsIcon
+                icon={ArrowDown01Icon}
+                className={`size-3.5 transition-transform ${loraOpen ? "rotate-180" : ""}`}
+              />
+              LoRA Settings
+            </button>
+            <div
+              className={`${loraOpen ? "" : "hidden"} pt-1.5 mt-4 flex flex-col gap-4`}
+            >
+              <SliderRow
+                label="Rank"
+                tooltip={
+                  <>
+                    Dimension of the low-rank matrices. Higher = more capacity.{" "}
+                    <a
+                      href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-primary underline"
+                    >
+                      Read more
+                    </a>
+                  </>
+                }
+                value={store.loraRank}
+                onChange={store.setLoraRank}
+                min={4}
+                max={128}
+                step={4}
+              />
+              <SliderRow
+                label="Alpha"
+                tooltip={
+                  <>
+                    Scaling factor for LoRA updates. Usually 2x rank.{" "}
+                    <a
+                      href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-primary underline"
+                    >
+                      Read more
+                    </a>
+                  </>
+                }
+                value={store.loraAlpha}
+                onChange={store.setLoraAlpha}
+                min={4}
+                max={256}
+                step={4}
+              />
+              <SliderRow
+                label="Dropout"
+                tooltip={
+                  <>
+                    Dropout probability for LoRA layers to reduce overfitting.{" "}
+                    <a
+                      href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-primary underline"
+                    >
+                      Read more
+                    </a>
+                  </>
+                }
+                value={store.loraDropout}
+                onChange={store.setLoraDropout}
+                min={0}
+                max={0.5}
+                step={0.01}
+                format={(v) => v.toFixed(2)}
+              />
+
+              {/* Vision checkboxes */}
+              {isVision && (
+                <div className="flex flex-col gap-2 pt-1">
+                  {(
+                    [
+                      [
+                        "finetuneVisionLayers",
+                        "Vision layers",
+                        store.finetuneVisionLayers,
+                        store.setFinetuneVisionLayers,
+                      ],
+                      [
+                        "finetuneLanguageLayers",
+                        "Language layers",
+                        store.finetuneLanguageLayers,
+                        store.setFinetuneLanguageLayers,
+                      ],
+                      [
+                        "finetuneAttentionModules",
+                        "Attention modules",
+                        store.finetuneAttentionModules,
+                        store.setFinetuneAttentionModules,
+                      ],
+                      [
+                        "finetuneMLPModules",
+                        "MLP modules",
+                        store.finetuneMLPModules,
+                        store.setFinetuneMLPModules,
+                      ],
+                    ] as const
+                  ).map(([key, label, value, setter]) => (
+                    <div key={key} className="flex items-center gap-2">
+                      <Checkbox
+                        id={key}
+                        checked={value as boolean}
+                        onCheckedChange={(v) =>
+                          (setter as (v: boolean) => void)(!!v)
+                        }
+                      />
+                      <label
+                        htmlFor={key}
+                        className="text-xs cursor-pointer text-muted-foreground"
+                      >
+                        {label}
+                      </label>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Text target modules */}
+              {!isVision && (
+                <div className="flex flex-col gap-2 pt-1">
+                  <span className="text-xs font-medium text-muted-foreground">
+                    Target Modules
+                  </span>
+                  <div className="flex flex-wrap gap-1.5">
+                    {TARGET_MODULES.map((mod) => {
+                      const active = store.targetModules.includes(mod);
+                      return (
+                        <button
+                          key={mod}
+                          type="button"
+                          onClick={() => {
+                            store.setTargetModules(
+                              active
+                                ? store.targetModules.filter((m) => m !== mod)
+                                : [...store.targetModules, mod],
+                            );
+                          }}
+                          className={`cursor-pointer rounded-full border px-2.5 py-0.5 text-[11px] font-mono transition-colors ${
+                            active
+                              ? "border-orange-300 bg-orange-50 text-orange-700 dark:border-orange-700 dark:bg-orange-950 dark:text-orange-300"
+                              : "text-muted-foreground hover:bg-muted/50"
+                          }`}
+                        >
+                          {mod}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* LoRA variant */}
+              <div className="flex gap-2">
+                {(
+                  [
+                    {
+                      value: "lora",
+                      label: "Enable LoRA",
+                      desc: "Train with LoRA",
+                    },
+                    { value: "rslora", label: "RS-LoRA", desc: "Stable Rank" },
+                    {
+                      value: "loftq",
+                      label: "LoftQ",
+                      desc: "Memory Efficient",
+                    },
+                  ] as const
+                ).map((opt) => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => store.setLoraVariant(opt.value)}
+                    className={`flex-1 corner-squircle rounded-xl border px-3 py-2 text-left transition-colors cursor-pointer ${
+                      store.loraVariant === opt.value
+                        ? "border-primary/50 bg-primary/5 ring-1 ring-primary/20"
+                        : "border-border hover:border-foreground/20"
+                    }`}
+                  >
+                    <p className="text-xs font-medium">{opt.label}</p>
+                    <p className="text-[10px] text-muted-foreground">
+                      {opt.desc}
+                    </p>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Training Hyperparams */}
+        <Collapsible open={hyperOpen} onOpenChange={setHyperOpen}>
+          <CollapsibleTrigger className="flex w-full cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
+            <HugeiconsIcon
+              icon={ArrowDown01Icon}
+              className={`size-3.5 transition-transform ${hyperOpen ? "rotate-180" : ""}`}
+            />
+            Training Hyperparams
+          </CollapsibleTrigger>
+          <CollapsibleContent className="mt-3">
+            <Tabs defaultValue="optimization" className="w-full">
+              <TabsList className="w-full">
+                <TabsTrigger
+                  value="optimization"
+                  className="flex-1 !corner-squircle text-xs cursor-pointer"
+                >
+                  Optimization
+                </TabsTrigger>
+                <TabsTrigger
+                  value="schedule"
+                  className="flex-1 text-xs cursor-pointer"
+                >
+                  Schedule
+                </TabsTrigger>
+                <TabsTrigger
+                  value="memory"
+                  className="flex-1 text-xs cursor-pointer"
+                >
+                  Memory
+                </TabsTrigger>
+              </TabsList>
+
+              <TabsContent
+                value="optimization"
+                className="mt-3 flex flex-col gap-3"
+              >
+                <SliderRow
+                  label="Batch Size"
+                  tooltip={
+                    <>
+                      Samples processed per step. Higher uses more VRAM.{" "}
+                      <a
+                        href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-primary underline"
+                      >
+                        Read more
+                      </a>
+                    </>
+                  }
+                  value={store.batchSize}
+                  onChange={store.setBatchSize}
+                  min={1}
+                  max={32}
+                  step={1}
+                />
+                <SliderRow
+                  label="Grad Accum"
+                  tooltip={
+                    <>
+                      Simulates larger batch sizes without extra VRAM.{" "}
+                      <a
+                        href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-primary underline"
+                      >
+                        Read more
+                      </a>
+                    </>
+                  }
+                  value={store.gradientAccumulation}
+                  onChange={store.setGradientAccumulation}
+                  min={1}
+                  max={64}
+                  step={1}
+                />
+                <Row
+                  label="Weight Decay"
+                  tooltip={
+                    <>
+                      L2 regularization to prevent overfitting.{" "}
+                      <a
+                        href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-primary underline"
+                      >
+                        Read more
+                      </a>
+                    </>
+                  }
+                >
+                  <Input
+                    type="number"
+                    step="0.001"
+                    value={store.weightDecay}
+                    onChange={(e) =>
+                      store.setWeightDecay(Number(e.target.value))
+                    }
+                    className="w-28 font-mono"
+                  />
+                </Row>
+              </TabsContent>
+
+              <TabsContent
+                value="schedule"
+                className="mt-3 flex flex-col gap-3"
+              >
+                <SliderRow
+                  label="Warmup Steps"
+                  tooltip={
+                    <>
+                      Gradually increase LR at training start for stability.{" "}
+                      <a
+                        href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-primary underline"
+                      >
+                        Read more
+                      </a>
+                    </>
+                  }
+                  value={store.warmupSteps}
+                  onChange={store.setWarmupSteps}
+                  min={0}
+                  max={100}
+                  step={1}
+                />
+                <Row
+                  label="Max Steps"
+                  tooltip={
+                    <>
+                      Override total steps. 0 means use epochs instead.{" "}
+                      <a
+                        href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-primary underline"
+                      >
+                        Read more
+                      </a>
+                    </>
+                  }
+                >
+                  <Input
+                    type="number"
+                    value={store.maxSteps}
+                    onChange={(e) => store.setMaxSteps(Number(e.target.value))}
+                    className="w-28 font-mono"
+                  />
+                </Row>
+                <Row
+                  label="Save Steps"
+                  tooltip={
+                    <>
+                      Save a checkpoint every N steps. 0 to disable.{" "}
+                      <a
+                        href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-primary underline"
+                      >
+                        Read more
+                      </a>
+                    </>
+                  }
+                >
+                  <Input
+                    type="number"
+                    value={store.saveSteps}
+                    onChange={(e) => store.setSaveSteps(Number(e.target.value))}
+                    className="w-28 font-mono"
+                  />
+                </Row>
+                <Row label="Seed" tooltip="Random seed for reproducibility.">
+                  <Input
+                    type="number"
+                    value={store.randomSeed}
+                    onChange={(e) =>
+                      store.setRandomSeed(Number(e.target.value))
+                    }
+                    className="w-28 font-mono"
+                  />
+                </Row>
+              </TabsContent>
+
+              <TabsContent value="memory" className="mt-3 flex flex-col gap-3">
+                <Row
+                  label="Grad Checkpoint"
+                  tooltip={
+                    <>
+                      Trade compute for memory by recomputing activations.{" "}
+                      <a
+                        href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-primary underline"
+                      >
+                        Read more
+                      </a>
+                    </>
+                  }
+                >
+                  <Select
+                    value={store.gradientCheckpointing}
+                    onValueChange={(v) =>
+                      store.setGradientCheckpointing(v as GradientCheckpointing)
+                    }
+                  >
+                    <SelectTrigger className="w-32">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">None</SelectItem>
+                      <SelectItem value="true">Standard</SelectItem>
+                      <SelectItem value="unsloth">Unsloth</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </Row>
+                {store.modelType !== "vision" && (
+                  <div className="flex items-center gap-2">
+                    <Checkbox
+                      id="packing"
+                      checked={store.packing}
+                      onCheckedChange={(v) => store.setPacking(!!v)}
+                    />
+                    <label
+                      htmlFor="packing"
+                      className="text-xs cursor-pointer text-muted-foreground"
+                    >
+                      Enable packing
+                    </label>
+                  </div>
+                )}
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="trainOnCompletions"
+                    checked={store.trainOnCompletions}
+                    onCheckedChange={(v) => store.setTrainOnCompletions(!!v)}
+                  />
+                  <label
+                    htmlFor="trainOnCompletions"
+                    className="text-xs cursor-pointer text-muted-foreground"
+                  >
+                    Assistant completions only
+                  </label>
+                </div>
+              </TabsContent>
+            </Tabs>
+          </CollapsibleContent>
+        </Collapsible>
+      </div>
+    </SectionCard>
+  );
+}
