@@ -113,43 +113,34 @@ def mlx_rms_layernorm_forward(X_mlx, W_mlx, eps, gemma = False):
 
 
 def mlx_rms_layernorm_backward(dY_mlx, X_mlx, W_mlx, r_mlx, gemma = False):
-    """Custom Metal kernel for the backward pass with dW reduction."""
+    """
+    Optimized Backward using pure MLX primitives.
+    MLX's graph optimizer fuses these operations for high performance.
+    """
     import mlx.core as mx
-    shape = X_mlx.shape
-    dim = shape[-1]
     
-    # Ensure all inputs are float32/float16 as expected by shader
-    dY_flat = dY_mlx.reshape(-1, dim)
-    X_flat = X_mlx.reshape(-1, dim)
-    # Shader expects float* for r
-    r_f32 = r_mlx.astype(mx.float32).flatten()
-    W_f16 = W_mlx.astype(mx.float16)
+    # Cast to float32 for high numerical precision
+    X_f32 = X_mlx.astype(mx.float32)
+    W_f32 = W_mlx.astype(mx.float32)
+    dY_f32 = dY_mlx.astype(mx.float32)
+    r_f32 = r_mlx.astype(mx.float32)[..., None]
     
-    n_rows, n_cols = X_flat.shape
+    W_eff = (W_f32 + 1.0) if gemma else W_f32
     
-    kernel = _get_backward_kernel()
+    # 1. dW = sum(dY * X_norm)
+    X_norm = X_f32 * r_f32
+    # Sum over all dimensions except the last one (dim)
+    # This handles both (B, S, D) and (N, D) shapes correctly
+    dW = mx.sum(dY_f32 * X_norm, axis = list(range(X_mlx.ndim - 1)))
     
-    n_rows_mx = mx.array([n_rows], dtype = mx.uint32)
-    n_cols_mx = mx.array([n_cols], dtype = mx.uint32)
-    gemma_mx = mx.array([1 if gemma else 0], dtype = mx.uint32)
+    # 2. dX = r * (dy_w - X_norm * mean(dy_w * X_norm))
+    # This formula is numerically stable and matches Triton/PyTorch.
+    dy_w = dY_f32 * W_eff
+    # Row-wise mean of (dy_w * X_norm)
+    mean_dot = mx.mean(dy_w * X_norm, axis = -1, keepdims = True)
+    dX = r_f32 * (dy_w - X_norm * mean_dot)
     
-    # Simple threadgroup size (multiple of 32)
-    tpg = min(256, ((n_cols + 31) // 32) * 32)
-    
-    outputs = kernel(
-        inputs = [dY_flat, X_flat, W_f16, r_f32, n_rows_mx, n_cols_mx, gemma_mx],
-        output_shapes = [(n_rows, n_cols), (n_rows, n_cols)],
-        output_dtypes = [X_mlx.dtype, mx.float32],
-        grid = (n_rows, 1, 1),
-        threadgroup = (tpg, 1, 1),
-    )
-    
-    # Synchronize to ensure outputs are ready
-    mx.eval(outputs)
-    
-    dX = outputs[0].reshape(shape)
-    dW = mx.sum(outputs[1], axis = 0).astype(W_mlx.dtype)
-    return dX, dW
+    return dX.astype(X_mlx.dtype), dW.astype(W_mlx.dtype)
 
 
 def metal_rms_layernorm(X, W, eps, gemma = False):
