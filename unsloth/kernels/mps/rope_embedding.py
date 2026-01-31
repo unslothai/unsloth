@@ -84,11 +84,36 @@ class MPSRoPEEmbeddingQK(torch.autograd.Function):
         # Typically Q is [B, H_q, S, D] and K is [B, H_k, S, D]
 
         # Batch, Heads, Seq, Dim
-        B, H_q, S, D = Q.shape
-        _, H_k, _, _ = K.shape
-
-        cos_final = cos.view(1, 1, S, -1)
-        sin_final = sin.view(1, 1, S, -1)
+        # Typical Q shapes:
+        # [Batch, Heads, Seq, Dim] -> Unsloth usually uses this (transposed)
+        # [Batch, Seq, Heads, Dim] -> HF mostly uses this
+        
+        # Check input dims
+        if Q.dim() == 4:
+            # Check if S is dim 1 or dim 2
+            # cos shape is [Seq, Dim] usually
+            seq_len = cos.shape[0]
+            
+            if Q.shape[1] == seq_len: # [B, S, H, D]
+                cos_final = cos.view(1, seq_len, 1, -1)
+                sin_final = sin.view(1, seq_len, 1, -1)
+            elif Q.shape[2] == seq_len: # [B, H, S, D]
+                cos_final = cos.view(1, 1, seq_len, -1)
+                sin_final = sin.view(1, 1, seq_len, -1)
+            else:
+                # Fallback or weird shape?
+                # Maybe seq_len is different due to padding?
+                # For now assume broadcasting works if we just view 1s
+                # Try to align with the dimension that matches cos.shape[0]
+                if Q.shape[1] == cos.shape[0]:
+                     cos_final = cos.view(1, cos.shape[0], 1, -1)
+                     sin_final = sin.view(1, sin.shape[0], 1, -1)
+                else: 
+                     cos_final = cos.view(1, 1, cos.shape[0], -1)
+                     sin_final = sin.view(1, 1, sin.shape[0], -1)
+        else:
+             cos_final = cos
+             sin_final = sin
 
         if cos_final.shape[-1] * 2 == D:
             cos_final = torch.cat((cos_final, cos_final), dim = -1)
