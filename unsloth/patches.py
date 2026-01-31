@@ -124,26 +124,28 @@ def patch_unsloth_zoo_for_mps() -> bool:
         torch.cuda.get_device_capability = lambda device = None: (8, 0)
         torch.cuda.is_bf16_supported = lambda: True  # Most modern Macs support it
 
-    # --- MOCK TRITON ---
-    # Triton is not available on macOS, but unsloth_zoo (and others) import it.
+    # --- MOCK TRITON (THE GHOST PACKAGE) ---
+    # Triton is not available on macOS, but unsloth_zoo (and others) import it deeply.
+    # We use a MetaPathFinder to catch ALL triton-related imports and return fakes.
     if "triton" not in sys.modules:
         from importlib.machinery import ModuleSpec
+        from importlib.abc import MetaPathFinder, Loader
         
         class FakeTriton(ModuleType):
             def __init__(self, name):
                 super().__init__(name)
                 self.__path__ = []
-                self.__spec__ = ModuleSpec(name=name, loader=None, origin="mocked")
                 self.__version__ = "3.0.0"
 
             def __getattr__(self, name):
                 if name.startswith("__"): return super().__getattribute__(name)
-                # Create and cache a sub-fake
+                # Return a sub-fake on the fly for any attribute
                 full_name = f"{self.__name__}.{name}"
-                m = FakeTriton(full_name)
-                setattr(self, name, m)
-                sys.modules[full_name] = m
-                return m
+                if full_name not in sys.modules:
+                    m = FakeTriton(full_name)
+                    m.__spec__ = ModuleSpec(name=full_name, loader=TritonMockLoader(), origin="mocked")
+                    sys.modules[full_name] = m
+                return sys.modules[full_name]
             
             def __call__(self, *args, **kwargs):
                 return self # Act as dummy decorator/constructor
@@ -151,27 +153,37 @@ def patch_unsloth_zoo_for_mps() -> bool:
             def __repr__(self):
                 return f"<FakeTriton {self.__name__}>"
 
-        # Initialize root
-        mock_triton = FakeTriton("triton")
-        sys.modules["triton"] = mock_triton
-        
-        # Pre-initialize common submodules to ensure they are in sys.modules
-        # exactly as expected by various import styles.
-        for sub in ["language", "compiler", "runtime", "backends", "backends.compiler"]:
-            getattr(mock_triton, sub)
-            
-        # Specific overrides for logic checks
-        mock_triton.backends.backends = {}
-        
-        # Satisfy specific deep check for AttrsDescriptor
-        class AttrsDescriptor:
-            def __init__(self, *args, **kwargs): pass
-        mock_triton.backends.compiler.AttrsDescriptor = AttrsDescriptor
+        class TritonMockLoader(Loader):
+            def create_module(self, spec):
+                if spec.name not in sys.modules:
+                    m = FakeTriton(spec.name)
+                    m.__spec__ = spec
+                    sys.modules[spec.name] = m
+                return sys.modules[spec.name]
+            def exec_module(self, module):
+                # Specific overrides for logic checks
+                if module.__name__ == "triton.backends":
+                    module.backends = {}
+                elif module.__name__ == "triton.backends.compiler":
+                    class AttrsDescriptor:
+                        def __init__(self, *args, **kwargs): pass
+                    module.AttrsDescriptor = AttrsDescriptor
+                elif module.__name__ == "triton.language":
+                    class MockTritonMeta:
+                        def __repr__(self): return "MockTritonMeta"
+                    module.dtype = MockTritonMeta
 
-        # Satisfy torch._dynamo.utils.common_constant_types.add(triton.language.dtype)
-        class MockTritonMeta:
-            def __repr__(self): return "MockTritonMeta"
-        mock_triton.language.dtype = MockTritonMeta
+        class TritonMockFinder(MetaPathFinder):
+            def find_spec(self, fullname, path, target=None):
+                if fullname == "triton" or fullname.startswith("triton."):
+                    return ModuleSpec(fullname, TritonMockLoader())
+                return None
+
+        # Inject the finder at the start of meta_path
+        sys.meta_path.insert(0, TritonMockFinder())
+        
+        # Trigger root import to populate sys.modules
+        import triton
 
     _PATCH_APPLIED = True
     return True
