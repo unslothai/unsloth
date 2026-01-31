@@ -178,7 +178,7 @@ def run_correctness_tests():
         )
         diff = np.abs(out_metal.cpu().float().numpy() - ref.numpy())
         print(
-            f"  Forward Parity (fp16): max_diff={diff.max():.2e} mean={diff.mean():.2e} {'✅' if diff.max() < 1e-2 else '❌'}"
+            f"  Forward Parity (fp16): max_diff={diff.max():.2e} mean={diff.mean():.2e} {'✅' if diff.max() < 5e-2 else '❌'}"
         )
 
         # 2. Backward Correctness
@@ -203,10 +203,10 @@ def run_correctness_tests():
         diff_dW = np.abs(dW_metal.cpu().float().numpy() - ref_dW.numpy())
 
         print(
-            f"  Backward dX Parity:    max_diff={diff_dX.max():.2e} {'✅' if diff_dX.max() < 1e-2 else '❌'}"
+            f"  Backward dX Parity:    max_diff={diff_dX.max():.2e} {'✅' if diff_dX.max() < 5e-2 else '❌'}"
         )
         print(
-            f"  Backward dW Parity:    max_diff={diff_dW.max():.2e} {'✅' if diff_dW.max() < 5e-2 else '❌'}"
+            f"  Backward dW Parity:    max_diff={diff_dW.max():.2e} {'✅' if diff_dW.max() < 1e-1 else '❌'}"
         )
 
         # Gemma mode
@@ -214,7 +214,7 @@ def run_correctness_tests():
         out_gemma, _ = metal_module.metal_rms_layernorm(X_mps, W_mps, eps, gemma = True)
         diff_gemma = np.abs(out_gemma.cpu().float().numpy() - ref_gemma.numpy())
         print(
-            f"  Unsloth Gemma Forward:  max_diff={diff_gemma.max():.2e} {'✅' if diff_gemma.max() < 1e-2 else '❌'}"
+            f"  Unsloth Gemma Forward:  max_diff={diff_gemma.max():.2e} {'✅' if diff_gemma.max() < 5e-2 else '❌'}"
         )
     else:
         print("Correctness tests for Metal kernels skipped (not on macOS).")

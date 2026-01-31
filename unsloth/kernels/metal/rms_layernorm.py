@@ -95,24 +95,23 @@ def _get_backward_kernel():
 
 def mlx_rms_layernorm_forward(X_mlx, W_mlx, eps, gemma = False):
     """
-    Optimized Forward using MLX Native RMSNorm where possible.
-    Includes explicit r computation for backward pass.
+    Optimized Forward using MLX.
+    Uses float32 for intermediate variance/rsqrt for high parity.
     """
     import mlx.core as mx
-    # Important: Cast to float32 for stable computation
     X_f32 = X_mlx.astype(mx.float32)
-    # mean(X^2) in float32
+    W_f32 = W_mlx.astype(mx.float32)
+    
+    # Matches PyTorch: rsqrt(mean(X^2) + eps)
     r = mx.rsqrt(mx.mean(mx.square(X_f32), axis = -1) + eps)
     
     if not gemma:
-        Y = mx.fast.rms_norm(X_mlx, W_mlx, eps)
+        Y = (X_f32 * r[..., None]) * W_f32
     else:
-        # Gemma uses (1 + W). We do it in float32 for accuracy.
-        W_f32 = W_mlx.astype(mx.float32)
+        # Gemma uses (W + 1)
         Y = (X_f32 * r[..., None]) * (W_f32 + 1.0)
-        Y = Y.astype(X_mlx.dtype)
         
-    return Y, r
+    return Y.astype(X_mlx.dtype), r
 
 
 def mlx_rms_layernorm_backward(dY_mlx, X_mlx, W_mlx, r_mlx, gemma = False):
@@ -120,10 +119,10 @@ def mlx_rms_layernorm_backward(dY_mlx, X_mlx, W_mlx, r_mlx, gemma = False):
     import mlx.core as mx
     shape = X_mlx.shape
     dim = shape[-1]
-    dY_flat = dY_mlx.reshape(-1, dim).contiguous()
-    X_flat = X_mlx.reshape(-1, dim).contiguous()
-    r_flat = r_mlx.flatten().contiguous()
-    W_contig = W_mlx.contiguous()
+    dY_flat = dY_mlx.reshape(-1, dim)
+    X_flat = X_mlx.reshape(-1, dim)
+    r_flat = r_mlx.flatten()
+    W_contig = W_mlx
     
     n_rows, n_cols = X_flat.shape
     
