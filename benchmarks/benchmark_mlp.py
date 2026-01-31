@@ -155,19 +155,35 @@ def run_benchmark():
         )
 
         # 5. Unsloth Compiled
-        # Compile the merged function
-        # Note: mx.compile returns a function that returns an mx.array (lazy).
-        # We must force eval outside to measure time.
-        compiled_fn = mx.compile(unsloth_merged_mlp)
+        # To test properly, the function must take inputs so MLX builds a graph.
         
-        def run_compiled():
-            out = compiled_fn()
+        def simple_mlp_fn(x, wm, wd):
+            # x: X_mlx, wm: W_merged, wd: W_down
+            # W_merged -> (2*I, H). X -> (..., H).
+            eg = x @ wm.T
+            split = eg.shape[-1] // 2
+            e = eg[..., :split]
+            g = eg[..., split:]
+            h = mlx_swiglu_forward(e, g)
+            return h @ wd.T
+            
+        compiled_simple_mlp = mx.compile(simple_mlp_fn)
+        
+        # Prepare Inputs in MLX
+        with mlx_context():
+             X_in = torch_to_mlx(X)
+             Wm_in = mx.concatenate([torch_to_mlx(gateW), torch_to_mlx(upW)], axis=0)
+             Wd_in = torch_to_mlx(downW)
+        
+        def run_compiled_args():
+            # Pass inputs explicitly
+            out = compiled_simple_mlp(X_in, Wm_in, Wd_in)
             mx.eval(out)
         
-        # Warmup compiled
-        for _ in range(5): run_compiled()
+        # Warmup
+        for _ in range(5): run_compiled_args()
         
-        t_compiled = benchmark_fn(run_compiled)
+        t_compiled = benchmark_fn(run_compiled_args)
         speedup_compiled = t_torch / t_compiled
         print(f"   Unsloth Compiled: {t_compiled:7.3f} ms | {speedup_compiled:.2f}x Speedup (mx.compile)")
 
