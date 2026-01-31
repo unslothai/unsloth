@@ -184,7 +184,6 @@ def run_correctness_tests():
     print()
 
 
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--perf", action = "store_true")
