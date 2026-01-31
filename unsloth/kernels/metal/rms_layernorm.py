@@ -84,6 +84,7 @@ RMS_BACKWARD_BODY = """
 @lru_cache(maxsize = 1)
 def _get_backward_kernel():
     import mlx.core as mx
+
     return mx.fast.metal_kernel(
         name = "rms_backward_v3",
         input_names = ["dY", "X", "W", "r", "n_rows", "n_cols", "gemma"],
@@ -122,28 +123,28 @@ def mlx_rms_layernorm_backward(dY_mlx, X_mlx, W_mlx, r_mlx, gemma = False):
     MLX's graph optimizer fuses these operations for high performance.
     """
     import mlx.core as mx
-    
+
     # Cast to float32 for high numerical precision
     X_f32 = X_mlx.astype(mx.float32)
     W_f32 = W_mlx.astype(mx.float32)
     dY_f32 = dY_mlx.astype(mx.float32)
     r_f32 = r_mlx.astype(mx.float32)[..., None]
-    
+
     W_eff = (W_f32 + 1.0) if gemma else W_f32
-    
+
     # 1. dW = sum(dY * X_norm)
     X_norm = X_f32 * r_f32
     # Sum over all dimensions except the last one (dim)
     # This handles both (B, S, D) and (N, D) shapes correctly
     dW = mx.sum(dY_f32 * X_norm, axis = list(range(X_mlx.ndim - 1)))
-    
+
     # 2. dX = r * (dy_w - X_norm * mean(dy_w * X_norm))
     # This formula is numerically stable and matches Triton/PyTorch.
     dy_w = dY_f32 * W_eff
     # Row-wise mean of (dy_w * X_norm)
     mean_dot = mx.mean(dy_w * X_norm, axis = -1, keepdims = True)
     dX = r_f32 * (dy_w - X_norm * mean_dot)
-    
+
     return dX.astype(X_mlx.dtype), dW.astype(W_mlx.dtype)
 
 
