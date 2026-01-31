@@ -88,19 +88,21 @@ class MPSRoPEEmbeddingQK(torch.autograd.Function):
         # Similar logic to MPSRoPEEmbedding but for both Q and K
         # Typically Q is [B, H_q, S, D] and K is [B, H_k, S, D]
 
-        # Handle position_ids slicing
         if position_ids is not None:
             # cos/sin: [MaxSeq, Dim]
             # position_ids: [B, S] or [1, S]
 
             # Use advanced indexing to get [B, S, Dim]
-            # Squeeze dim 0 if cos is [Seq, Dim]
             cos_final = cos[position_ids].unsqueeze(2)  # [B, S, 1, Dim]
             sin_final = sin[position_ids].unsqueeze(2)  # [B, S, 1, Dim]
 
-            # If Q is [B, H, S, D] (Unsloth default after transpose), we permute to [B, 1, S, Dim]
-            cos_final = cos_final.transpose(1, 2)
-            sin_final = sin_final.transpose(1, 2)
+            # Check if Q is [B, S, H, D] or [B, H, S, D]
+            if Q.shape[1] == cos_final.shape[1]: # [B, S, H, D]
+                # Align cos_final: [B, S, 1, Dim]
+                pass
+            else: # Assume [B, H, S, D]
+                cos_final = cos_final.transpose(1, 2) # [B, 1, S, Dim]
+                sin_final = sin_final.transpose(1, 2) # [B, 1, S, Dim]
 
         else:
             # Fallback to previous broadcasting logic if no position_ids

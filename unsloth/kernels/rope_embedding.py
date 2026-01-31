@@ -303,8 +303,8 @@ def fast_rope_embedding(
             from .mps.rope_embedding import mps_rope_embedding_qk
 
             return mps_rope_embedding_qk(
-                Q.transpose(1, 2).contiguous(),
-                K.transpose(1, 2).contiguous(),
+                Q,
+                K,
                 cos,
                 sin,
                 rope_embedding_indices,
