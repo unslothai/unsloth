@@ -155,6 +155,7 @@ def patch_unsloth_zoo_for_mps() -> bool:
         mock_comp = mock_sub("triton.compiler")
         mock_comp_inner = mock_sub("triton.compiler.compiler")
         mock_backends = mock_sub("triton.backends")
+        mock_backends.backends = {} # Satisfy "if 'cpu' in triton.backends.backends"
         mock_backends_comp = mock_sub("triton.backends.compiler")
         mock_runtime = mock_sub("triton.runtime")
         mock_jit = mock_sub("triton.runtime.jit")
