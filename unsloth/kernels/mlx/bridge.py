@@ -172,10 +172,11 @@ def mlx_to_torch(
     except Exception:
         # Fallback Strategy: memoryview/numpy
         import numpy as np
+
         if array.dtype == mx.bfloat16:
             array = array.astype(mx.float32)
             mx.eval(array)
-        
+
         try:
             tensor = torch.tensor(memoryview(array))
         except (TypeError, ValueError):
@@ -183,7 +184,7 @@ def mlx_to_torch(
                 tensor = torch.from_numpy(np.array(array, copy = False))
             except:
                 tensor = torch.from_numpy(np.array(array))
-        
+
         tensor = tensor.to(device = device)
 
     # Apply dtype if specified
