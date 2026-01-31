@@ -128,49 +128,54 @@ def patch_unsloth_zoo_for_mps() -> bool:
     # Triton is not available on macOS, but unsloth_zoo (and others) import it.
     if "triton" not in sys.modules:
         from importlib.machinery import ModuleSpec
-        
+
         class FakeTriton(ModuleType):
             def __init__(self, name):
                 super().__init__(name)
                 self.__path__ = []
-                self.__spec__ = ModuleSpec(name=name, loader=None, origin="mocked")
+                self.__spec__ = ModuleSpec(name = name, loader = None, origin = "mocked")
                 self.__version__ = "3.0.0"
 
             def __getattr__(self, name):
-                if name.startswith("__"): return super().__getattribute__(name)
+                if name.startswith("__"):
+                    return super().__getattribute__(name)
                 # Create and cache a sub-fake
                 full_name = f"{self.__name__}.{name}"
                 m = FakeTriton(full_name)
                 setattr(self, name, m)
                 sys.modules[full_name] = m
                 return m
-            
+
             def __call__(self, *args, **kwargs):
-                return self # Act as dummy decorator/constructor
-            
+                return self  # Act as dummy decorator/constructor
+
             def __repr__(self):
                 return f"<FakeTriton {self.__name__}>"
 
         # Initialize root
         mock_triton = FakeTriton("triton")
         sys.modules["triton"] = mock_triton
-        
+
         # Pre-initialize common submodules to ensure they are in sys.modules
         # exactly as expected by various import styles.
         for sub in ["language", "compiler", "runtime", "backends", "backends.compiler"]:
             getattr(mock_triton, sub)
-            
+
         # Specific overrides for logic checks
         mock_triton.backends.backends = {}
-        
+
         # Satisfy specific deep check for AttrsDescriptor
         class AttrsDescriptor:
-            def __init__(self, *args, **kwargs): pass
+            def __init__(self, *args, **kwargs):
+                pass
+
         mock_triton.backends.compiler.AttrsDescriptor = AttrsDescriptor
 
         # Satisfy torch._dynamo.utils.common_constant_types.add(triton.language.dtype)
         class MockTritonMeta:
-            def __repr__(self): return "MockTritonMeta"
+            def __repr__(self):
+                return "MockTritonMeta"
+
         mock_triton.language.dtype = MockTritonMeta
 
     _PATCH_APPLIED = True
