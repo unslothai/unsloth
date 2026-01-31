@@ -35,7 +35,7 @@ RMS_BACKWARD_BODY = """
     float dot = 0.0f;
     float N_inv = 1.0f / float(C);
     
-    // Scalar loop for absolute correctness verification
+    // 1. Calculate row-wise components and populate dW
     for (uint i = lid; i < C; i += tpg) {
         float dy = float(dY_row[i]);
         float x = float(X_row[i]);
@@ -45,29 +45,26 @@ RMS_BACKWARD_BODY = """
         float normed = x * inv_var;
         float dy_w = dy * w_eff;
         
-        // Store row-wise dW components
         dW_row[i] = dy * normed;
-        
-        // Accumulate row-wise dot product: sum(dy * w_eff * normed)
         dot += dy_w * normed;
     }
     
-    // Reduction for dot product across threadgroup
-    threadgroup float tg_dots[32];
-    float grp_dot = simd_sum(dot);
-    if ((lid & 31) == 0) tg_dots[lid >> 5] = grp_dot;
+    // 2. Parallel reduction for dot product in threadgroup (shared memory)
+    threadgroup float shared_dots[256];
+    shared_dots[lid] = dot;
     threadgroup_barrier(mem_flags::mem_threadgroup);
     
-    if (lid == 0) {
-        float total_dot = 0.0f;
-        for (uint i = 0; i < (tpg + 31) / 32; ++i) total_dot += tg_dots[i];
-        tg_dots[0] = total_dot;
+    for (uint s = tpg / 2; s > 0; s >>= 1) {
+        if (lid < s) {
+            shared_dots[lid] += shared_dots[lid + s];
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
     }
+    
+    float total_dot_n = shared_dots[0] * N_inv;
     threadgroup_barrier(mem_flags::mem_threadgroup);
     
-    float total_dot_n = tg_dots[0] * N_inv;
-    
-    // Second pass: Compute dX
+    // 3. Compute dX
     for (uint i = lid; i < C; i += tpg) {
         float dy = float(dY_row[i]);
         float x = float(X_row[i]);
@@ -75,7 +72,6 @@ RMS_BACKWARD_BODY = """
         float w_eff = GEMMA ? (w + 1.0f) : w;
         
         float normed = x * inv_var;
-        // dX = inv_var * (dy_w - normed * (sum(dy_w * normed) / n))
         dX_row[i] = half(inv_var * (dy * w_eff - normed * total_dot_n));
     }
 """
@@ -99,17 +95,19 @@ def mlx_rms_layernorm_forward(X_mlx, W_mlx, eps, gemma = False):
     Uses float32 for intermediate variance/rsqrt for high parity.
     """
     import mlx.core as mx
+    # Cast to float32 for robust variance calculation
     X_f32 = X_mlx.astype(mx.float32)
-    W_f32 = W_mlx.astype(mx.float32)
     
-    # Matches PyTorch: rsqrt(mean(X^2) + eps)
+    # r = 1 / sqrt(mean(X^2) + eps)
     r = mx.rsqrt(mx.mean(mx.square(X_f32), axis = -1) + eps)
     
     if not gemma:
-        Y = (X_f32 * r[..., None]) * W_f32
+        # Standard RMSNorm using native where possible for speed
+        # But native doesn't return r, so we might as well do it in float32 for parity
+        Y = (X_f32 * r[..., None]) * W_mlx.astype(mx.float32)
     else:
         # Gemma uses (W + 1)
-        Y = (X_f32 * r[..., None]) * (W_f32 + 1.0)
+        Y = (X_f32 * r[..., None]) * (W_mlx.astype(mx.float32) + 1.0)
         
     return Y.astype(X_mlx.dtype), r
 

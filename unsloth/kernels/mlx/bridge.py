@@ -38,12 +38,17 @@ if TYPE_CHECKING:
     import mlx.core as mx
 
 __all__ = [
-    "torch_to_mlx",
-    "mlx_to_torch",
-    "mlx_context",
     "synchronize_mps",
     "synchronize_mlx",
+    "is_in_mlx_context",
 ]
+
+# Thread-local storage for context state could be used, but simple global works for now
+_IN_MLX_CONTEXT = False
+
+def is_in_mlx_context() -> bool:
+    """Check if we are currently inside an mlx_context."""
+    return _IN_MLX_CONTEXT
 
 F = TypeVar("F", bound = Callable)
 
@@ -108,8 +113,8 @@ def torch_to_mlx(
     import mlx.core as mx
 
     # Ensure MPS writes are complete before accessing memory
-    # CRITICAL: This prevents data corruption when sharing memory
-    if tensor.device.type == "mps":
+    # We only sync if we are NOT already inside an mlx_context (which synced on entry)
+    if tensor.device.type == "mps" and not _IN_MLX_CONTEXT:
         synchronize_mps()
 
     # Use DLPack for zero-copy sharing on same device (MPS -> MLX)
@@ -229,13 +234,14 @@ def mlx_context():
     Raises:
         UnslothMLXError: If MLX is not available.
     """
-    if not is_mlx_available():
-        raise UnslothMLXError("mlx_context requires MLX to be installed")
-
     import mlx.core as mx
 
+    global _IN_MLX_CONTEXT
+    
     # Sync PyTorch MPS before entering MLX context
     synchronize_mps()
+    prev_state = _IN_MLX_CONTEXT
+    _IN_MLX_CONTEXT = True
 
     try:
         yield
@@ -243,6 +249,7 @@ def mlx_context():
         # Sync MLX before returning to PyTorch
         mx.eval([])
         synchronize_mps()
+        _IN_MLX_CONTEXT = prev_state
 
 
 def with_mlx_context(func: F) -> F:
