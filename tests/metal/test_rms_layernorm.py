@@ -48,10 +48,10 @@ class TestMetalKernelImports:
 class TestMetalRMSLayerNormReference:
     """Test reference implementation matching (works on all platforms)."""
 
-    def _reference_rms_layernorm(self, X, W, eps, gemma = False):
+    def _reference_rms_layernorm(self, X, W, eps, gemma=False):
         """PyTorch reference implementation of RMS LayerNorm."""
         X_f32 = X.to(torch.float32)
-        variance = X_f32.pow(2).mean(-1, keepdim = True)
+        variance = X_f32.pow(2).mean(-1, keepdim=True)
         rms_inv = torch.rsqrt(variance + eps)
         X_norm = (X_f32 * rms_inv).to(X.dtype)
 
@@ -77,8 +77,8 @@ class TestMetalRMSLayerNormReference:
         W = torch.randn(32)
         eps = 1e-5
 
-        Y_std = self._reference_rms_layernorm(X, W, eps, gemma = False)
-        Y_gemma = self._reference_rms_layernorm(X, W, eps, gemma = True)
+        Y_std = self._reference_rms_layernorm(X, W, eps, gemma=False)
+        Y_gemma = self._reference_rms_layernorm(X, W, eps, gemma=True)
 
         # Results should differ (Gemma uses 1+W scaling)
         assert not torch.allclose(Y_std, Y_gemma)
@@ -88,10 +88,10 @@ class TestMetalRMSLayerNormReference:
 class TestMetalRMSLayerNormKernel:
     """Tests that require Metal kernel to be available (macOS only)."""
 
-    def _reference_rms_layernorm(self, X, W, eps, gemma = False):
+    def _reference_rms_layernorm(self, X, W, eps, gemma=False):
         """PyTorch reference implementation."""
         X_f32 = X.to(torch.float32)
-        variance = X_f32.pow(2).mean(-1, keepdim = True)
+        variance = X_f32.pow(2).mean(-1, keepdim=True)
         rms_inv = torch.rsqrt(variance + eps)
         X_norm = (X_f32 * rms_inv).to(X.dtype)
 
@@ -104,29 +104,29 @@ class TestMetalRMSLayerNormKernel:
         """Metal kernel output should match reference implementation."""
         from unsloth.kernels.metal import metal_rms_layernorm
 
-        X = torch.randn(2, 16, 32, device = "mps")
-        W = torch.randn(32, device = "mps")
+        X = torch.randn(2, 16, 32, device="mps")
+        W = torch.randn(32, device="mps")
         eps = 1e-5
 
         Y_metal = metal_rms_layernorm(X, W, eps)
         Y_ref = self._reference_rms_layernorm(X.cpu(), W.cpu(), eps).to("mps")
 
-        assert torch.allclose(Y_metal, Y_ref, atol = 1e-5)
+        assert torch.allclose(Y_metal, Y_ref, atol=1e-5)
 
     def test_metal_kernel_gemma_variant(self):
         """Metal Gemma variant should match reference."""
         from unsloth.kernels.metal import metal_rms_layernorm
 
-        X = torch.randn(2, 16, 32, device = "mps")
-        W = torch.randn(32, device = "mps")
+        X = torch.randn(2, 16, 32, device="mps")
+        W = torch.randn(32, device="mps")
         eps = 1e-5
 
-        Y_metal = metal_rms_layernorm(X, W, eps, gemma = True)
-        Y_ref = self._reference_rms_layernorm(X.cpu(), W.cpu(), eps, gemma = True).to(
+        Y_metal = metal_rms_layernorm(X, W, eps, gemma=True)
+        Y_ref = self._reference_rms_layernorm(X.cpu(), W.cpu(), eps, gemma=True).to(
             "mps"
         )
 
-        assert torch.allclose(Y_metal, Y_ref, atol = 1e-5)
+        assert torch.allclose(Y_metal, Y_ref, atol=1e-5)
 
     @pytest.mark.parametrize("batch_size", [1, 4, 16])
     @pytest.mark.parametrize("seq_len", [128, 512, 2048])
@@ -135,22 +135,22 @@ class TestMetalRMSLayerNormKernel:
         """Metal kernel should work with various tensor shapes."""
         from unsloth.kernels.metal import metal_rms_layernorm
 
-        X = torch.randn(batch_size, seq_len, hidden_dim, device = "mps")
-        W = torch.randn(hidden_dim, device = "mps")
+        X = torch.randn(batch_size, seq_len, hidden_dim, device="mps")
+        W = torch.randn(hidden_dim, device="mps")
         eps = 1e-5
 
         Y_metal = metal_rms_layernorm(X, W, eps)
         Y_ref = self._reference_rms_layernorm(X.cpu(), W.cpu(), eps).to("mps")
 
-        assert torch.allclose(Y_metal, Y_ref, atol = 1e-4)
+        assert torch.allclose(Y_metal, Y_ref, atol=1e-4)
 
     @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
     def test_metal_kernel_various_dtypes(self, dtype):
         """Metal kernel should work with various dtypes."""
         from unsloth.kernels.metal import metal_rms_layernorm
 
-        X = torch.randn(2, 16, 32, device = "mps", dtype = dtype)
-        W = torch.randn(32, device = "mps", dtype = dtype)
+        X = torch.randn(2, 16, 32, device="mps", dtype=dtype)
+        W = torch.randn(32, device="mps", dtype=dtype)
         eps = 1e-5
 
         Y = metal_rms_layernorm(X, W, eps)

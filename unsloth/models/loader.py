@@ -121,33 +121,33 @@ DISABLE_SDPA_MODEL_NAMES = [
 class FastLanguageModel(FastLlamaModel):
     @staticmethod
     def from_pretrained(
-        model_name = "unsloth/Llama-3.2-1B-Instruct",
-        max_seq_length = 2048,
-        dtype = None,
-        load_in_4bit = True,  # 4bit QLoRA
-        load_in_8bit = False,  # 8bit  LoRA
-        load_in_16bit = False,  # 16bit LoRA
-        full_finetuning = False,
-        token = None,
-        device_map = "sequential",
-        rope_scaling = None,
-        fix_tokenizer = True,
-        trust_remote_code = False,
-        use_gradient_checkpointing = "unsloth",
-        resize_model_vocab = None,
-        revision = None,
-        use_exact_model_name = False,
-        offload_embedding = False,
-        float32_mixed_precision = None,  # Forces float32 mixed precision
-        fast_inference = False,  # uses vLLM
-        gpu_memory_utilization = 0.5,
-        float8_kv_cache = False,
-        random_state = 3407,
-        max_lora_rank = 64,
-        disable_log_stats = True,
-        qat_scheme = None,
-        load_in_fp8 = False,  # fp8 LoRA (True, False, 'block')
-        unsloth_tiled_mlp = False,
+        model_name="unsloth/Llama-3.2-1B-Instruct",
+        max_seq_length=2048,
+        dtype=None,
+        load_in_4bit=True,  # 4bit QLoRA
+        load_in_8bit=False,  # 8bit  LoRA
+        load_in_16bit=False,  # 16bit LoRA
+        full_finetuning=False,
+        token=None,
+        device_map="sequential",
+        rope_scaling=None,
+        fix_tokenizer=True,
+        trust_remote_code=False,
+        use_gradient_checkpointing="unsloth",
+        resize_model_vocab=None,
+        revision=None,
+        use_exact_model_name=False,
+        offload_embedding=False,
+        float32_mixed_precision=None,  # Forces float32 mixed precision
+        fast_inference=False,  # uses vLLM
+        gpu_memory_utilization=0.5,
+        float8_kv_cache=False,
+        random_state=3407,
+        max_lora_rank=64,
+        disable_log_stats=True,
+        qat_scheme=None,
+        load_in_fp8=False,  # fp8 LoRA (True, False, 'block')
+        unsloth_tiled_mlp=False,
         *args,
         **kwargs,
     ):
@@ -188,36 +188,36 @@ class FastLanguageModel(FastLlamaModel):
                 dtype = bnb_compute_dtype
         if load_in_8bit or full_finetuning or qat_scheme is not None:
             return FastModel.from_pretrained(
-                model_name = model_name,
-                max_seq_length = max_seq_length,
-                dtype = dtype,
-                load_in_4bit = load_in_4bit,
-                load_in_8bit = load_in_8bit,
-                load_in_16bit = load_in_16bit,
-                full_finetuning = full_finetuning,
-                token = token,
-                device_map = device_map,
-                rope_scaling = rope_scaling,  # [TODO] No effect
-                fix_tokenizer = fix_tokenizer,  # [TODO] No effect
-                trust_remote_code = trust_remote_code,
-                use_gradient_checkpointing = use_gradient_checkpointing,
-                resize_model_vocab = resize_model_vocab,  # [TODO] No effect
-                revision = revision,
-                return_logits = False,  # Return logits
-                fullgraph = True,  # No graph breaks
-                use_exact_model_name = use_exact_model_name,
-                offload_embedding = offload_embedding,
-                float32_mixed_precision = float32_mixed_precision,
+                model_name=model_name,
+                max_seq_length=max_seq_length,
+                dtype=dtype,
+                load_in_4bit=load_in_4bit,
+                load_in_8bit=load_in_8bit,
+                load_in_16bit=load_in_16bit,
+                full_finetuning=full_finetuning,
+                token=token,
+                device_map=device_map,
+                rope_scaling=rope_scaling,  # [TODO] No effect
+                fix_tokenizer=fix_tokenizer,  # [TODO] No effect
+                trust_remote_code=trust_remote_code,
+                use_gradient_checkpointing=use_gradient_checkpointing,
+                resize_model_vocab=resize_model_vocab,  # [TODO] No effect
+                revision=revision,
+                return_logits=False,  # Return logits
+                fullgraph=True,  # No graph breaks
+                use_exact_model_name=use_exact_model_name,
+                offload_embedding=offload_embedding,
+                float32_mixed_precision=float32_mixed_precision,
                 # Pass vLLM/inference parameters
-                fast_inference = fast_inference,
-                gpu_memory_utilization = gpu_memory_utilization,
-                float8_kv_cache = float8_kv_cache,
-                random_state = random_state,
-                max_lora_rank = max_lora_rank,
-                disable_log_stats = disable_log_stats,
-                qat_scheme = qat_scheme,
-                load_in_fp8 = load_in_fp8,
-                unsloth_tiled_mlp = unsloth_tiled_mlp,
+                fast_inference=fast_inference,
+                gpu_memory_utilization=gpu_memory_utilization,
+                float8_kv_cache=float8_kv_cache,
+                random_state=random_state,
+                max_lora_rank=max_lora_rank,
+                disable_log_stats=disable_log_stats,
+                qat_scheme=qat_scheme,
+                load_in_fp8=load_in_fp8,
+                unsloth_tiled_mlp=unsloth_tiled_mlp,
                 *args,
                 **kwargs,
             )
@@ -267,7 +267,7 @@ class FastLanguageModel(FastLlamaModel):
         fp8_mode = None
         if not use_exact_model_name:
             new_model_name = get_model_name(
-                model_name, load_in_4bit = load_in_4bit, load_in_fp8 = load_in_fp8
+                model_name, load_in_4bit=load_in_4bit, load_in_fp8=load_in_fp8
             )
             if new_model_name is None and load_in_fp8 != False:
                 fp8_mode = _get_fp8_mode_and_check_settings(
@@ -320,9 +320,9 @@ class FastLanguageModel(FastLlamaModel):
         try:
             model_config = AutoConfig.from_pretrained(
                 model_name,
-                token = token,
-                revision = revision,
-                trust_remote_code = trust_remote_code,
+                token=token,
+                revision=revision,
+                trust_remote_code=trust_remote_code,
             )
             is_model = True
         except ImportError:
@@ -338,9 +338,9 @@ class FastLanguageModel(FastLlamaModel):
         try:
             peft_config = PeftConfig.from_pretrained(
                 model_name,
-                token = token,
-                revision = revision,
-                trust_remote_code = trust_remote_code,
+                token=token,
+                revision=revision,
+                trust_remote_code=trust_remote_code,
             )
             is_peft = True
         except ImportError:
@@ -367,7 +367,7 @@ class FastLanguageModel(FastLlamaModel):
             )
         model_types = get_transformers_model_type(
             peft_config if peft_config is not None else model_config,
-            trust_remote_code = trust_remote_code,
+            trust_remote_code=trust_remote_code,
         )
         if len(model_types) == 1:
             model_type = model_types[0]
@@ -386,7 +386,7 @@ class FastLanguageModel(FastLlamaModel):
                 both_exist = exist_adapter_config and exist_config
             else:
                 # Because HfFileSystem assumes linux paths, we need to set the path with forward slashes, even on Windows.
-                files = HfFileSystem(token = token).glob(f"{model_name}/*.json")
+                files = HfFileSystem(token=token).glob(f"{model_name}/*.json")
                 files = list(os.path.split(x)[-1] for x in files)
                 if (
                     sum(x == "adapter_config.json" or x == "config.json" for x in files)
@@ -434,8 +434,8 @@ class FastLanguageModel(FastLlamaModel):
 
             model_config = AutoConfig.from_pretrained(
                 model_name,
-                token = token,
-                trust_remote_code = trust_remote_code,
+                token=token,
+                trust_remote_code=trust_remote_code,
             )
 
         if not was_disabled:
@@ -525,42 +525,42 @@ class FastLanguageModel(FastLlamaModel):
         #     dispatch_model = FastGraniteModel
         else:
             return FastModel.from_pretrained(
-                model_name = old_model_name,
-                max_seq_length = max_seq_length,
-                dtype = dtype,
-                load_in_4bit = load_in_4bit,
-                load_in_8bit = load_in_8bit,
-                load_in_16bit = load_in_16bit,
-                full_finetuning = full_finetuning,
-                token = token,
-                device_map = device_map,
-                rope_scaling = rope_scaling,  # [TODO] No effect
-                fix_tokenizer = fix_tokenizer,  # [TODO] No effect
-                trust_remote_code = trust_remote_code,
-                use_gradient_checkpointing = use_gradient_checkpointing,
-                resize_model_vocab = resize_model_vocab,  # [TODO] No effect
-                revision = revision,
-                return_logits = False,  # Return logits
-                fullgraph = True,  # No graph breaks
-                use_exact_model_name = use_exact_model_name,
-                offload_embedding = offload_embedding,
-                float32_mixed_precision = float32_mixed_precision,
+                model_name=old_model_name,
+                max_seq_length=max_seq_length,
+                dtype=dtype,
+                load_in_4bit=load_in_4bit,
+                load_in_8bit=load_in_8bit,
+                load_in_16bit=load_in_16bit,
+                full_finetuning=full_finetuning,
+                token=token,
+                device_map=device_map,
+                rope_scaling=rope_scaling,  # [TODO] No effect
+                fix_tokenizer=fix_tokenizer,  # [TODO] No effect
+                trust_remote_code=trust_remote_code,
+                use_gradient_checkpointing=use_gradient_checkpointing,
+                resize_model_vocab=resize_model_vocab,  # [TODO] No effect
+                revision=revision,
+                return_logits=False,  # Return logits
+                fullgraph=True,  # No graph breaks
+                use_exact_model_name=use_exact_model_name,
+                offload_embedding=offload_embedding,
+                float32_mixed_precision=float32_mixed_precision,
                 # Pass vLLM/inference parameters
-                fast_inference = fast_inference,
-                gpu_memory_utilization = gpu_memory_utilization,
-                float8_kv_cache = float8_kv_cache,
-                random_state = random_state,
-                max_lora_rank = max_lora_rank,
-                disable_log_stats = disable_log_stats,
-                qat_scheme = qat_scheme,
-                load_in_fp8 = load_in_fp8,
-                unsloth_tiled_mlp = unsloth_tiled_mlp,
+                fast_inference=fast_inference,
+                gpu_memory_utilization=gpu_memory_utilization,
+                float8_kv_cache=float8_kv_cache,
+                random_state=random_state,
+                max_lora_rank=max_lora_rank,
+                disable_log_stats=disable_log_stats,
+                qat_scheme=qat_scheme,
+                load_in_fp8=load_in_fp8,
+                unsloth_tiled_mlp=unsloth_tiled_mlp,
                 *args,
                 **kwargs,
             )
 
         if use_gradient_checkpointing == "unsloth":
-            patch_unsloth_smart_gradient_checkpointing(dtype = dtype)
+            patch_unsloth_smart_gradient_checkpointing(dtype=dtype)
 
         # Check if this is local model since the tokenizer gets overwritten
         if (
@@ -582,24 +582,24 @@ class FastLanguageModel(FastLlamaModel):
             load_in_8bit_kwargs = False
 
         model, tokenizer = dispatch_model.from_pretrained(
-            model_name = model_name,
-            max_seq_length = max_seq_length,
-            dtype = _get_dtype(dtype),
-            load_in_4bit = load_in_4bit_kwargs,
-            token = token,
-            device_map = device_map,
-            rope_scaling = rope_scaling,
-            fix_tokenizer = fix_tokenizer,
-            model_patcher = dispatch_model,
-            tokenizer_name = tokenizer_name,
-            trust_remote_code = trust_remote_code,
-            revision = revision if not is_peft else None,
-            fast_inference = fast_inference,
-            gpu_memory_utilization = gpu_memory_utilization,
-            float8_kv_cache = float8_kv_cache,
-            random_state = random_state,
-            max_lora_rank = max_lora_rank,
-            disable_log_stats = disable_log_stats,
+            model_name=model_name,
+            max_seq_length=max_seq_length,
+            dtype=_get_dtype(dtype),
+            load_in_4bit=load_in_4bit_kwargs,
+            token=token,
+            device_map=device_map,
+            rope_scaling=rope_scaling,
+            fix_tokenizer=fix_tokenizer,
+            model_patcher=dispatch_model,
+            tokenizer_name=tokenizer_name,
+            trust_remote_code=trust_remote_code,
+            revision=revision if not is_peft else None,
+            fast_inference=fast_inference,
+            gpu_memory_utilization=gpu_memory_utilization,
+            float8_kv_cache=float8_kv_cache,
+            random_state=random_state,
+            max_lora_rank=max_lora_rank,
+            disable_log_stats=disable_log_stats,
             *args,
             **kwargs,
         )
@@ -656,10 +656,10 @@ class FastLanguageModel(FastLlamaModel):
             model = PeftModel.from_pretrained(
                 model,
                 old_model_name,
-                token = token,
-                revision = revision,
-                is_trainable = True,
-                trust_remote_code = trust_remote_code,
+                token=token,
+                revision=revision,
+                is_trainable=True,
+                trust_remote_code=trust_remote_code,
             )
             # Patch it as well!
             model = dispatch_model.patch_peft_model(model, use_gradient_checkpointing)
@@ -670,7 +670,7 @@ class FastLanguageModel(FastLlamaModel):
             "UNSLOTH_TILED_MLP", "arctic" if unsloth_tiled_mlp else "0"
         )
         if patch_tiled_mlp_choice != "0" or unsloth_tiled_mlp:
-            patch_tiled_mlp(model, patch_options_str = patch_tiled_mlp_choice)
+            patch_tiled_mlp(model, patch_options_str=patch_tiled_mlp_choice)
 
         return model, tokenizer
 
@@ -700,40 +700,40 @@ class FastModel(FastBaseModel):
 
     @staticmethod
     def from_pretrained(
-        model_name = "unsloth/Llama-3.2-11B-Vision-Instruct-bnb-4bit",
-        max_seq_length = 2048,
-        dtype = None,
-        load_in_4bit = True,  # 4bit QLoRA
-        load_in_8bit = False,  # 8bit  LoRA
-        load_in_16bit = False,  # 16bit LoRA
-        full_finetuning = False,
-        token = None,
-        device_map = "sequential",
-        rope_scaling = None,  # [TODO] No effect
-        fix_tokenizer = True,  # [TODO] No effect
-        trust_remote_code = False,
-        use_gradient_checkpointing = "unsloth",
-        resize_model_vocab = None,  # [TODO] No effect
-        revision = None,
-        return_logits = False,  # Return logits
-        fullgraph = True,  # No graph breaks
-        use_exact_model_name = False,
-        auto_model = None,
-        whisper_language = None,
-        whisper_task = None,
-        unsloth_force_compile = False,
-        offload_embedding = False,
-        float32_mixed_precision = None,  # Forces float32 mixed precision
+        model_name="unsloth/Llama-3.2-11B-Vision-Instruct-bnb-4bit",
+        max_seq_length=2048,
+        dtype=None,
+        load_in_4bit=True,  # 4bit QLoRA
+        load_in_8bit=False,  # 8bit  LoRA
+        load_in_16bit=False,  # 16bit LoRA
+        full_finetuning=False,
+        token=None,
+        device_map="sequential",
+        rope_scaling=None,  # [TODO] No effect
+        fix_tokenizer=True,  # [TODO] No effect
+        trust_remote_code=False,
+        use_gradient_checkpointing="unsloth",
+        resize_model_vocab=None,  # [TODO] No effect
+        revision=None,
+        return_logits=False,  # Return logits
+        fullgraph=True,  # No graph breaks
+        use_exact_model_name=False,
+        auto_model=None,
+        whisper_language=None,
+        whisper_task=None,
+        unsloth_force_compile=False,
+        offload_embedding=False,
+        float32_mixed_precision=None,  # Forces float32 mixed precision
         # Add the missing vLLM/inference parameters
-        fast_inference = False,  # uses vLLM
-        gpu_memory_utilization = 0.5,
-        float8_kv_cache = False,
-        random_state = 3407,
-        max_lora_rank = 64,
-        disable_log_stats = True,
-        qat_scheme = None,
-        load_in_fp8 = False,  # fp8 LoRA (True, False, 'block')
-        unsloth_tiled_mlp = False,
+        fast_inference=False,  # uses vLLM
+        gpu_memory_utilization=0.5,
+        float8_kv_cache=False,
+        random_state=3407,
+        max_lora_rank=64,
+        disable_log_stats=True,
+        qat_scheme=None,
+        load_in_fp8=False,  # fp8 LoRA (True, False, 'block')
+        unsloth_tiled_mlp=False,
         *args,
         **kwargs,
     ):
@@ -858,7 +858,7 @@ class FastModel(FastBaseModel):
         fp8_mode = None
         if not use_exact_model_name:
             new_model_name = get_model_name(
-                model_name, load_in_4bit = load_in_4bit, load_in_fp8 = load_in_fp8
+                model_name, load_in_4bit=load_in_4bit, load_in_fp8=load_in_fp8
             )
             if new_model_name is None and load_in_fp8 != False:
                 fp8_mode = _get_fp8_mode_and_check_settings(
@@ -912,9 +912,9 @@ class FastModel(FastBaseModel):
         try:
             model_config = AutoConfig.from_pretrained(
                 model_name,
-                token = token,
-                revision = revision,
-                trust_remote_code = trust_remote_code,
+                token=token,
+                revision=revision,
+                trust_remote_code=trust_remote_code,
             )
             is_model = True
         except ImportError:
@@ -930,9 +930,9 @@ class FastModel(FastBaseModel):
         try:
             peft_config = PeftConfig.from_pretrained(
                 model_name,
-                token = token,
-                revision = revision,
-                trust_remote_code = trust_remote_code,
+                token=token,
+                revision=revision,
+                trust_remote_code=trust_remote_code,
             )
             is_peft = True
         except ImportError:
@@ -957,7 +957,7 @@ class FastModel(FastBaseModel):
             )
         model_types = get_transformers_model_type(
             peft_config if peft_config is not None else model_config,
-            trust_remote_code = trust_remote_code,
+            trust_remote_code=trust_remote_code,
         )
         model_types_all = ",".join(model_types) + ","
 
@@ -1109,7 +1109,7 @@ class FastModel(FastBaseModel):
                 exist_config = os.path.exists(os.path.join(model_name, "config.json"))
                 both_exist = exist_adapter_config and exist_config
             else:
-                files = HfFileSystem(token = token).glob(f"{model_name}/*.json")
+                files = HfFileSystem(token=token).glob(f"{model_name}/*.json")
                 files = list(os.path.split(x)[-1] for x in files)
                 if (
                     sum(x == "adapter_config.json" or x == "config.json" for x in files)
@@ -1157,8 +1157,8 @@ class FastModel(FastBaseModel):
 
             model_config = AutoConfig.from_pretrained(
                 model_name,
-                token = token,
-                trust_remote_code = trust_remote_code,
+                token=token,
+                trust_remote_code=trust_remote_code,
             )
 
         if not was_disabled:
@@ -1190,40 +1190,40 @@ class FastModel(FastBaseModel):
                 break
         # Patch gradient checkpointing
         if use_gradient_checkpointing == "unsloth":
-            patch_unsloth_smart_gradient_checkpointing(dtype = dtype)
+            patch_unsloth_smart_gradient_checkpointing(dtype=dtype)
         with redirector:
-            patch_loss_functions(torch_compile = False)
+            patch_loss_functions(torch_compile=False)
             model_types, supports_sdpa = unsloth_compile_transformers(
-                dtype = dtype,
-                model_name = model_name,
-                model_types = model_types,
-                token = token,
-                sdpa_dynamic_mask = True,
-                sdpa_bool_masks = True,
-                sdpa_gqa_replace = True,
-                sdpa_dynamic_compile = True,
-                compile_attention = True,
-                disable_causal_masks = True,
-                compile_torch_modules = True,
-                compile_custom_modules = True,
-                compile_function_calls = True,
-                fuse_lm_head = True,
-                gradient_checkpointing = True,
-                manual_replacements = True,
-                fast_lora_forwards = True,
-                fast_residual_stream = False,
-                accurate_accumulation = True,
-                epilogue_fusion = True,
-                max_autotune = False,
-                shape_padding = True,
-                cudagraphs = False,
-                debug = False,
-                fullgraph = fullgraph,
-                import_from_cache = False,
-                disable = False,
-                return_logits = return_logits,
-                trust_remote_code = trust_remote_code,
-                unsloth_force_compile = unsloth_force_compile,
+                dtype=dtype,
+                model_name=model_name,
+                model_types=model_types,
+                token=token,
+                sdpa_dynamic_mask=True,
+                sdpa_bool_masks=True,
+                sdpa_gqa_replace=True,
+                sdpa_dynamic_compile=True,
+                compile_attention=True,
+                disable_causal_masks=True,
+                compile_torch_modules=True,
+                compile_custom_modules=True,
+                compile_function_calls=True,
+                fuse_lm_head=True,
+                gradient_checkpointing=True,
+                manual_replacements=True,
+                fast_lora_forwards=True,
+                fast_residual_stream=False,
+                accurate_accumulation=True,
+                epilogue_fusion=True,
+                max_autotune=False,
+                shape_padding=True,
+                cudagraphs=False,
+                debug=False,
+                fullgraph=fullgraph,
+                import_from_cache=False,
+                disable=False,
+                return_logits=return_logits,
+                trust_remote_code=trust_remote_code,
+                unsloth_force_compile=unsloth_force_compile,
             )
         # Fix SDPA issues
         for model_type in DISABLE_SDPA_MODEL_NAMES:
@@ -1256,34 +1256,34 @@ class FastModel(FastBaseModel):
             load_in_8bit_kwargs = False
 
         model, tokenizer = FastBaseModel.from_pretrained(
-            model_name = model_name,
-            max_seq_length = max_seq_length,
-            dtype = _get_dtype(dtype),
-            load_in_4bit = load_in_4bit_kwargs,
-            load_in_8bit = load_in_8bit_kwargs,
-            load_in_16bit = load_in_16bit,
-            full_finetuning = full_finetuning,
-            token = token,
-            device_map = device_map,
-            trust_remote_code = trust_remote_code,
-            revision = revision if not is_peft else None,
-            model_types = model_types,
-            tokenizer_name = tokenizer_name,
-            auto_model = auto_model,
-            use_gradient_checkpointing = use_gradient_checkpointing,
-            supports_sdpa = supports_sdpa,
-            whisper_language = whisper_language,
-            whisper_task = whisper_task,
-            auto_config = model_config,
-            offload_embedding = offload_embedding,
-            float32_mixed_precision = float32_mixed_precision,
+            model_name=model_name,
+            max_seq_length=max_seq_length,
+            dtype=_get_dtype(dtype),
+            load_in_4bit=load_in_4bit_kwargs,
+            load_in_8bit=load_in_8bit_kwargs,
+            load_in_16bit=load_in_16bit,
+            full_finetuning=full_finetuning,
+            token=token,
+            device_map=device_map,
+            trust_remote_code=trust_remote_code,
+            revision=revision if not is_peft else None,
+            model_types=model_types,
+            tokenizer_name=tokenizer_name,
+            auto_model=auto_model,
+            use_gradient_checkpointing=use_gradient_checkpointing,
+            supports_sdpa=supports_sdpa,
+            whisper_language=whisper_language,
+            whisper_task=whisper_task,
+            auto_config=model_config,
+            offload_embedding=offload_embedding,
+            float32_mixed_precision=float32_mixed_precision,
             # Pass vLLM/inference parameters
-            fast_inference = fast_inference,
-            gpu_memory_utilization = gpu_memory_utilization,
-            float8_kv_cache = float8_kv_cache,
-            random_state = random_state,
-            max_lora_rank = max_lora_rank,
-            disable_log_stats = disable_log_stats,
+            fast_inference=fast_inference,
+            gpu_memory_utilization=gpu_memory_utilization,
+            float8_kv_cache=float8_kv_cache,
+            random_state=random_state,
+            max_lora_rank=max_lora_rank,
+            disable_log_stats=disable_log_stats,
             *args,
             **kwargs,
         )
@@ -1340,14 +1340,14 @@ class FastModel(FastBaseModel):
             model = PeftModel.from_pretrained(
                 model,
                 old_model_name,
-                token = token,
-                revision = revision,
-                is_trainable = True,
-                trust_remote_code = trust_remote_code,
+                token=token,
+                revision=revision,
+                is_trainable=True,
+                trust_remote_code=trust_remote_code,
             )
             # Patch it as well!
             model = FastBaseModel.post_patch_model(
-                model, use_gradient_checkpointing, trust_remote_code = trust_remote_code
+                model, use_gradient_checkpointing, trust_remote_code=trust_remote_code
             )
 
         # Apply QAT if specified
@@ -1361,7 +1361,7 @@ class FastModel(FastBaseModel):
             "UNSLOTH_TILED_MLP", "arctic" if unsloth_tiled_mlp else "0"
         )
         if patch_tiled_mlp_choice != "0" or unsloth_tiled_mlp:
-            patch_tiled_mlp(model, patch_options_str = patch_tiled_mlp_choice)
+            patch_tiled_mlp(model, patch_options_str=patch_tiled_mlp_choice)
 
         return model, tokenizer
 
