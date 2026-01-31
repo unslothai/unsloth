@@ -21,6 +21,7 @@ def test_mps_4bit_loading():
         )
     except Exception as e:
         import traceback
+
         traceback.print_exc()
         print(f"❌ Failed to load model: {e}")
         return
