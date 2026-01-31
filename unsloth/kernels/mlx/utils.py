@@ -1,9 +1,67 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 # Licensed under the Apache License, Version 2.0.
 
+import importlib.metadata
+import functools
+from packaging.version import Version, parse
 import torch
 from .quantization import quantize_4bit
 from tqdm import tqdm
+
+_MLX_AVAILABLE = False
+_MLX_VERSION = None
+
+try:
+    import mlx.core as mx
+    _MLX_AVAILABLE = True
+    # Try to get version
+    try:
+        _MLX_VERSION = importlib.metadata.version("mlx")
+    except:
+        pass
+except ImportError:
+    pass
+
+class UnslothMLXError(ImportError):
+    """Exception raised when MLX is required but not installed/functional."""
+    pass
+
+def is_mlx_available(min_version: str = "0.0.0") -> bool:
+    """Checks if MLX is available and meets the minimum version requirement."""
+    if not _MLX_AVAILABLE:
+        return False
+    
+    if min_version == "0.0.0":
+        return True
+        
+    if _MLX_VERSION is None:
+        # Cannot determine version, assume compatible if available?
+        # Or fail safe? Let's assume compatible for now but log warning?
+        return True
+        
+    return parse(_MLX_VERSION) >= parse(min_version)
+
+def get_mlx_version() -> str:
+    """Returns the installed MLX version string."""
+    return _MLX_VERSION
+
+def require_mlx(min_version: str = "0.0.0"):
+    """Decorator to require MLX for a function."""
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            if not is_mlx_available(min_version):
+                raise UnslothMLXError(
+                    f"MLX >= {min_version} is required for this function.\n"
+                    "Please install it via `pip install mlx`"
+                )
+            return func(*args, **kwargs)
+        return wrapper
+    return decorator
+
+# =============================================================================
+# Quantization Utilities
+# =============================================================================
 
 def fast_quantize(model):
     """
