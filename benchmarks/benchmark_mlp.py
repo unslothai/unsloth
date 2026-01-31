@@ -107,6 +107,8 @@ def run_benchmark():
              print("   🚀 Massive Speedup Detected!")
         elif speedup > 1.5:
              print("   ✅ Significant Improvement")
+        elif speedup < 1.0:
+             print("   ⚠️ Slower (Check overhead)")
              
         # 4. Unsloth Fused (Merged Gate/Up)
         # Idea: X @ [Gate, Up] is faster than X@Gate + X@Up
@@ -156,8 +158,6 @@ def run_benchmark():
         t_compiled = benchmark_fn(compiled_fn)
         speedup_compiled = t_torch / t_compiled
         print(f"   Unsloth Compiled: {t_compiled:7.3f} ms | {speedup_compiled:.2f}x Speedup (mx.compile)")
-        elif speedup < 1.0:
-             print("   ⚠️ Slower (Check overhead)")
 
         # 3. Unsloth Fused MLP (4-bit Quantized)
         # Quantize weights on the fly
