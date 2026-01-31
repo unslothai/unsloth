@@ -99,11 +99,12 @@ def mlx_rms_layernorm_forward(X_mlx, W_mlx, eps, gemma = False):
     Includes explicit r computation for backward pass.
     """
     import mlx.core as mx
+
     # Important: Cast to float32 for stable computation
     X_f32 = X_mlx.astype(mx.float32)
     # mean(X^2) in float32
     r = mx.rsqrt(mx.mean(mx.square(X_f32), axis = -1) + eps)
-    
+
     if not gemma:
         Y = mx.fast.rms_norm(X_mlx, W_mlx, eps)
     else:
@@ -111,31 +112,32 @@ def mlx_rms_layernorm_forward(X_mlx, W_mlx, eps, gemma = False):
         W_f32 = W_mlx.astype(mx.float32)
         Y = (X_f32 * r[..., None]) * (W_f32 + 1.0)
         Y = Y.astype(X_mlx.dtype)
-        
+
     return Y, r
 
 
 def mlx_rms_layernorm_backward(dY_mlx, X_mlx, W_mlx, r_mlx, gemma = False):
     """Custom Metal kernel for the backward pass with dW reduction."""
     import mlx.core as mx
+
     shape = X_mlx.shape
     dim = shape[-1]
     dY_flat = dY_mlx.reshape(-1, dim).contiguous()
     X_flat = X_mlx.reshape(-1, dim).contiguous()
     r_flat = r_mlx.flatten().contiguous()
     W_contig = W_mlx.contiguous()
-    
+
     n_rows, n_cols = X_flat.shape
-    
+
     kernel = _get_backward_kernel()
-    
+
     n_rows_mx = mx.array([n_rows], dtype = mx.uint32)
     n_cols_mx = mx.array([n_cols], dtype = mx.uint32)
     gemma_mx = mx.array([1 if gemma else 0], dtype = mx.uint32)
-    
+
     # Simple threadgroup size
     tpg = min(256, ((n_cols + 31) // 32) * 32)
-    
+
     outputs = kernel(
         inputs = [dY_flat, X_flat, W_contig, r_flat, n_rows_mx, n_cols_mx, gemma_mx],
         output_shapes = [(n_rows * n_cols,), (n_rows * n_cols,)],
@@ -143,7 +145,7 @@ def mlx_rms_layernorm_backward(dY_mlx, X_mlx, W_mlx, r_mlx, gemma = False):
         grid = (n_rows, 1, 1),
         threadgroup = (tpg, 1, 1),
     )
-    
+
     dX = outputs[0].reshape(shape)
     dW = mx.sum(outputs[1].reshape(n_rows, n_cols), axis = 0).astype(W_mlx.dtype)
     return dX, dW
