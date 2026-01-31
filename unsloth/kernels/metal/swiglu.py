@@ -19,7 +19,6 @@ if TYPE_CHECKING:
 __all__ = ["mlx_swiglu_forward", "mlx_swiglu_backward", "is_metal_swiglu_available"]
 
 
-
 _METAL_SWIGLU_AVAILABLE: Optional[bool] = None
 
 
@@ -89,7 +88,6 @@ SWIGLU_BACKWARD_BODY = """
     float dgv = dwv * gv;
     de_out[gid] = half(dgv * se * fma(ev, (1.0f - se), 1.0f));
 """
-
 
 
 @lru_cache(maxsize = 1)

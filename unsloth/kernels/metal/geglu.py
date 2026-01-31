@@ -25,7 +25,6 @@ __all__ = [
 ]
 
 
-
 _METAL_GEGLU_AVAILABLE: Optional[bool] = None
 
 
