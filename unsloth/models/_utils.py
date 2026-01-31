@@ -115,6 +115,7 @@ from unsloth_zoo.rl_environments import (
 # imports them locally, ignoring module-level monkeypatches.
 import sys
 import types
+
 if DEVICE_TYPE == "mps":
     # Mock bitsandbytes.nn.Linear4bit
     if "bitsandbytes" not in sys.modules:
@@ -123,7 +124,10 @@ if DEVICE_TYPE == "mps":
     if "bitsandbytes.nn" not in sys.modules:
         m = types.ModuleType("bitsandbytes.nn")
         sys.modules["bitsandbytes.nn"] = m
-        class Linear4bit(torch.nn.Module): pass
+
+        class Linear4bit(torch.nn.Module):
+            pass
+
         m.Linear4bit = Linear4bit
 
     # Mock peft.tuners.lora.Linear4bit
@@ -136,14 +140,20 @@ if DEVICE_TYPE == "mps":
     if "peft.tuners.lora" not in sys.modules:
         m = types.ModuleType("peft.tuners.lora")
         sys.modules["peft.tuners.lora"] = m
-        class Linear4bit(torch.nn.Module): pass
+
+        class Linear4bit(torch.nn.Module):
+            pass
+
         m.Linear4bit = Linear4bit
     else:
         # If it exists but might be missing Linear4bit
         m = sys.modules["peft.tuners.lora"]
         if not hasattr(m, "Linear4bit"):
-             class Linear4bit(torch.nn.Module): pass
-             m.Linear4bit = Linear4bit
+
+            class Linear4bit(torch.nn.Module):
+                pass
+
+            m.Linear4bit = Linear4bit
 
 
 from unsloth_zoo.patching_utils import (
