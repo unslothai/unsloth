@@ -29,6 +29,7 @@ if not torch.backends.mps.is_available():
     sys.exit(1)
 
 import mlx.core as mx
+import mlx.nn as nn_mlx  # Separate module for neural network ops
 
 
 def print_header():
@@ -116,7 +117,7 @@ def run_performance_benchmark():
         mx.eval(g_mlx)
 
         def mlx_composed():
-            return mx.nn.gelu(e_mlx) * g_mlx
+            return nn_mlx.gelu(e_mlx) * g_mlx
 
         t_mlx = benchmark_fn(mlx_composed)
         tp_mlx = calculate_throughput(elements, t_mlx)
