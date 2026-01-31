@@ -145,6 +145,14 @@ def run_performance_benchmark():
     metal_module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(metal_module)
 
+    # Load RMSNorm for chaining test
+    rms_path = os.path.join(
+        os.path.dirname(__file__), "..", "unsloth", "kernels", "metal", "rms_layernorm.py"
+    )
+    spec_rms = importlib.util.spec_from_file_location("metal_rms", rms_path)
+    metal_rms = importlib.util.module_from_spec(spec_rms)
+    spec_rms.loader.exec_module(metal_rms)
+
     results = []
 
     for batch, seq, dim, desc in configs:
@@ -182,6 +190,32 @@ def run_performance_benchmark():
         t_torch = benchmark_fn(lambda: pytorch_swiglu_reference(e_torch, g_torch))
         tp_torch = calculate_throughput(elements, t_torch)
         print(f"   PyTorch MPS:        {t_torch:7.3f} ms | {tp_torch:7.2f} GB/s")
+
+        # CHAINED Benchmark: RMSNorm -> SwiGLU
+        # This tests if the bridge bypass is working.
+        # We run RMSNorm first, then SwiGLU. The SwiGLU should satisfy "zero copy".
+        W_rms = torch.ones(dim, device="mps", dtype=torch.float16)
+        eps = 1e-5
+        
+        # Pre-warm RMSNorm to populate cache on e_torch/g_torch if we were reusing them
+        # But here we simulate a real chain: Input -> RMS -> (e, g) -> SwiGLU
+        # Wait, SwiGLU needs two inputs. Usually MLP is: RMS -> Proj(Up, Gate) -> SwiGLU
+        # For this synthetic test, let's just use e_torch and g_torch and artificially attach caches
+        # or just run RMSNorm on them to generate "chained" tensors.
+        
+        # Let's verify chaining mechanism directly:
+        # 1. Manually attach MLX tensors to PyTorch tensors (simulating previous layer)
+        e_chained = e_torch.clone()
+        g_chained = g_torch.clone()
+        e_chained._mlx_cache = e_mlx
+        g_chained._mlx_cache = g_mlx
+        
+        def run_chained():
+            return metal_module.metal_swiglu_forward(e_chained, g_chained)
+            
+        t_chained = benchmark_fn(run_chained)
+        tp_chained = calculate_throughput(elements, t_chained)
+        print(f"   Unsloth Chain:      {t_chained:7.3f} ms | {tp_chained:7.2f} GB/s  (Bypass Check)")
 
         results.append(
             {

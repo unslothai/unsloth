@@ -163,6 +163,10 @@ def metal_rms_layernorm(X, W, eps, gemma = False):
         # Fast path - Cache the MLX version of r to avoid re-converting in backward
         r_torch._mlx_tensor = r_mlx
         
+        # CHAINING: Attach MLX output to PyTorch tensor so next layer (SwiGLU)
+        # can use it directly without converting back from PyTorch
+        Y_torch._mlx_cache = Y_mlx
+        
         return Y_torch, r_torch
 
 
