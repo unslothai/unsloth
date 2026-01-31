@@ -278,7 +278,6 @@ def run_correctness_tests():
             f"  Fused (fp16):  max={fused_diff.max():.2e} mean={fused_diff.mean():.2e} {'✅' if fused_pass else '❌'}"
         )
 
-
         if not (mlx_pass and fused_pass):
             all_passed = False
         print()
