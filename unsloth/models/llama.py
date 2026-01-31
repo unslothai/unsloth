@@ -2225,9 +2225,11 @@ class FastLlamaModel:
             except:
                 vllm_version = ""
         elif DEVICE_TYPE == "mps":
+
             class MpsProps:
                 name = "Apple Silicon GPU"
-                total_memory = 0 # TODO: Get actual memory
+                total_memory = 0  # TODO: Get actual memory
+
             gpu_stats = MpsProps()
             gpu_stats_name = "Apple Silicon. "
             gpu_version = ""
