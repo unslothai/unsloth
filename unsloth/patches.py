@@ -120,6 +120,19 @@ def patch_unsloth_zoo_for_mps() -> bool:
         torch.cuda.get_device_capability = lambda device=None: (8, 0)
         torch.cuda.is_bf16_supported = lambda: True # Most modern Macs support it
 
+    # --- MOCK TRITON ---
+    # Triton is not available on macOS, but unsloth_zoo (and others) import it.
+    if "triton" not in sys.modules:
+        mock_triton = ModuleType("triton")
+        mock_triton.__version__ = "3.0.0"
+        
+        # Add triton.language
+        mock_triton_lang = ModuleType("triton.language")
+        mock_triton.language = mock_triton_lang
+        
+        sys.modules["triton"] = mock_triton
+        sys.modules["triton.language"] = mock_triton_lang
+
     _PATCH_APPLIED = True
     return True
 
