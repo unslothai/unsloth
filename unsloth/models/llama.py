@@ -122,6 +122,9 @@ BlockDiagonalCausalMask = (
 if DEVICE_TYPE == "xpu":
     clean_gpu_cache = torch.xpu.empty_cache
     get_current_device = torch.xpu.current_device
+elif DEVICE_TYPE == "mps":
+    clean_gpu_cache = torch.mps.empty_cache
+    get_current_device = lambda: 0
 else:
     clean_gpu_cache = torch.cuda.empty_cache
     get_current_device = torch.cuda.current_device
@@ -2221,6 +2224,15 @@ class FastLlamaModel:
                 vllm_version = f" vLLM: {importlib_version('vllm')}."
             except:
                 vllm_version = ""
+        elif DEVICE_TYPE == "mps":
+            class MpsProps:
+                name = "Apple Silicon GPU"
+                total_memory = 0 # TODO: Get actual memory
+            gpu_stats = MpsProps()
+            gpu_stats_name = "Apple Silicon. "
+            gpu_version = ""
+            gpu_stats_snippet = ""
+            vllm_version = ""
         else:
             raise ValueError(f"Unsloth: Unsupported device type: {DEVICE_TYPE}")
 
@@ -2492,6 +2504,8 @@ class FastLlamaModel:
             gc.collect()
             if DEVICE_TYPE == "xpu":
                 torch.xpu.empty_cache()
+            elif DEVICE_TYPE == "mps":
+                torch.mps.empty_cache()
             else:
                 torch.cuda.empty_cache()"""
 
