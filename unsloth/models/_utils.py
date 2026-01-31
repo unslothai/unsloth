@@ -111,27 +111,40 @@ from unsloth_zoo.rl_environments import (
 )
 
 # Fix for MPS/Systems without bitsandbytes - patch unsloth_zoo
-import unsloth_zoo.patching_utils
+# We must mock bitsandbytes and peft modules because patch_model_and_tokenizer
+# imports them locally, ignoring module-level monkeypatches.
+import sys
+import types
+if DEVICE_TYPE == "mps":
+    # Mock bitsandbytes.nn.Linear4bit
+    if "bitsandbytes" not in sys.modules:
+        m = types.ModuleType("bitsandbytes")
+        sys.modules["bitsandbytes"] = m
+    if "bitsandbytes.nn" not in sys.modules:
+        m = types.ModuleType("bitsandbytes.nn")
+        sys.modules["bitsandbytes.nn"] = m
+        class Linear4bit(torch.nn.Module): pass
+        m.Linear4bit = Linear4bit
 
-if getattr(unsloth_zoo.patching_utils, "Bnb_Linear4bit", None) is None:
-    print("Unsloth: Bnb_Linear4bit was None, patching...")
+    # Mock peft.tuners.lora.Linear4bit
+    if "peft" not in sys.modules:
+        m = types.ModuleType("peft")
+        sys.modules["peft"] = m
+    if "peft.tuners" not in sys.modules:
+        m = types.ModuleType("peft.tuners")
+        sys.modules["peft.tuners"] = m
+    if "peft.tuners.lora" not in sys.modules:
+        m = types.ModuleType("peft.tuners.lora")
+        sys.modules["peft.tuners.lora"] = m
+        class Linear4bit(torch.nn.Module): pass
+        m.Linear4bit = Linear4bit
+    else:
+        # If it exists but might be missing Linear4bit
+        m = sys.modules["peft.tuners.lora"]
+        if not hasattr(m, "Linear4bit"):
+             class Linear4bit(torch.nn.Module): pass
+             m.Linear4bit = Linear4bit
 
-    class Bnb_Linear4bit:
-        pass
-
-    unsloth_zoo.patching_utils.Bnb_Linear4bit = Bnb_Linear4bit
-if getattr(unsloth_zoo.patching_utils, "Peft_Linear4bit", None) is None:
-    print("Unsloth: Peft_Linear4bit was None, patching...")
-
-    class Peft_Linear4bit:
-        pass
-
-    unsloth_zoo.patching_utils.Peft_Linear4bit = Peft_Linear4bit
-
-print(f"DEBUG: Bnb_Linear4bit type: {type(unsloth_zoo.patching_utils.Bnb_Linear4bit)}")
-print(
-    f"DEBUG: Peft_Linear4bit type: {type(unsloth_zoo.patching_utils.Peft_Linear4bit)}"
-)
 
 from unsloth_zoo.patching_utils import (
     patch_compiling_bitsandbytes,
@@ -140,9 +153,6 @@ from unsloth_zoo.patching_utils import (
     patch_model_and_tokenizer,
     patch_compiled_autograd,
 )
-
-print(f"DEBUG: patch_model_and_tokenizer globals Bnb_Linear4bit: {patch_model_and_tokenizer.__globals__.get('Bnb_Linear4bit')}")
-print(f"DEBUG: patch_model_and_tokenizer globals Peft_Linear4bit: {patch_model_and_tokenizer.__globals__.get('Peft_Linear4bit')}")
 from unsloth_zoo.gradient_checkpointing import (
     Unsloth_Offloaded_Gradient_Checkpointer,
     unsloth_offloaded_gradient_checkpoint,
