@@ -37,7 +37,7 @@ def test_matmul_lora_parity():
     # Implementation
     Y_impl = mps_matmul_lora(X, W, None, A, B, s)
 
-    assert torch.allclose(Y_ref, Y_impl, atol=1e-5)
+    assert torch.allclose(Y_ref, Y_impl, atol = 1e-5)
     print("✅ Matmul LoRA Passed")
 
 
@@ -82,7 +82,7 @@ def test_lora_mlp_parity():
         s,
     )
 
-    assert torch.allclose(Y_ref, Y_impl, atol=1e-5)
+    assert torch.allclose(Y_ref, Y_impl, atol = 1e-5)
     print("✅ LoRA MLP SwiGLU Passed")
 
 

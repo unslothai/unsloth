@@ -26,7 +26,7 @@ class MPSRMSLayerNorm(torch.autograd.Function):
         # Use float32 for intermediate calculations for numerical stability
         # to match Triton kernels' behavior
         X_f32 = X.to(torch.float32)
-        variance = X_f32.pow(2).mean(-1, keepdim=True)
+        variance = X_f32.pow(2).mean(-1, keepdim = True)
         rms_inv = torch.rsqrt(variance + eps)
 
         # Casting back to X's dtype for the normalization
@@ -69,14 +69,14 @@ class MPSRMSLayerNorm(torch.autograd.Function):
         # X_norm = X_f32 * rms_inv
         # dW = sum(dY * X_norm)
         # Note: X_norm is in the original dtype in forward, but for gradient we use f32
-        dW = (dY_f32 * (X_f32 * rms_inv)).sum(dim=0)
+        dW = (dY_f32 * (X_f32 * rms_inv)).sum(dim = 0)
 
         # dL/dX
         N = X_f32.shape[-1]
         X_norm_f32 = X_f32 * rms_inv
 
         # rowsum_dY_normed = sum(dX_norm * X_norm)
-        rowsum_dY_normed = (dX_norm * X_norm_f32).sum(-1, keepdim=True)
+        rowsum_dY_normed = (dX_norm * X_norm_f32).sum(-1, keepdim = True)
 
         # dX = (rms_inv / N) * (N * dX_norm - X_norm * rowsum_dY_normed)
         dX = rms_inv * (dX_norm - (X_norm_f32 / N) * rowsum_dY_normed)

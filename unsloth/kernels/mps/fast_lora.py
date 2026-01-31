@@ -51,10 +51,10 @@ def _mlx_matmul(X_mlx, W, A, B, s):
         out = mx.quantized_matmul(
             X_mlx,
             W_mlx.weight,
-            scales=W_mlx.scales,
-            biases=W_mlx.biases,
-            transpose=True,
-            group_size=W_mlx.group_size,
+            scales = W_mlx.scales,
+            biases = W_mlx.biases,
+            transpose = True,
+            group_size = W_mlx.group_size,
         )
     else:
         # Standard Linear: X @ W.T
@@ -90,7 +90,7 @@ def mps_matmul_lora(X, W, W_quant, A, B, s):
         # X: (..., in_dim), A: (rank, in_dim), B: (out_dim, rank)
         XA = torch.matmul(X, A.t().to(dtype))
         out.view(-1, out.shape[-1]).addmm_(
-            XA.view(-1, XA.shape[-1]), B.t().to(dtype), alpha=s
+            XA.view(-1, XA.shape[-1]), B.t().to(dtype), alpha = s
         )
 
     return out
@@ -299,7 +299,7 @@ def mps_apply_lora_mlp_geglu_exact(
 
         h = metal_geglu_exact_forward(e, g)
     else:
-        h = F.gelu(e, approximate="none") * g
+        h = F.gelu(e, approximate = "none") * g
     return mps_matmul_lora(h, downW, downW_quant, downA, downB, downS)
 
 
@@ -357,5 +357,5 @@ def mps_apply_lora_mlp_geglu_approx(
 
         h = metal_geglu_approx_forward(e, g)
     else:
-        h = F.gelu(e, approximate="tanh") * g
+        h = F.gelu(e, approximate = "tanh") * g
     return mps_matmul_lora(h, downW, downW_quant, downA, downB, downS)

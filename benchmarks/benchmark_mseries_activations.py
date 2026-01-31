@@ -64,8 +64,8 @@ def run_benchmarks():
         print("-" * 60)
 
         # SwiGLU inputs: e (Gate), g (Up)
-        e = torch.randn(batch, seq, dim, device="mps", dtype=dtype)
-        g = torch.randn(batch, seq, dim, device="mps", dtype=dtype)
+        e = torch.randn(batch, seq, dim, device = "mps", dtype = dtype)
+        g = torch.randn(batch, seq, dim, device = "mps", dtype = dtype)
 
         # 1. PyTorch Native Reference (In-place/Optimized where possible)
         # silu(e) * g

@@ -40,10 +40,10 @@ class MPSCrossEntropyLoss(torch.autograd.Function):
             logits_f32 = logit_softcapping * torch.tanh(logits_f32 / logit_softcapping)
 
         # logsumexp = c + log(sum(exp(x - c)))
-        logits_max = logits_f32.max(dim=-1, keepdim=True).values
+        logits_max = logits_f32.max(dim = -1, keepdim = True).values
         logits_shifted = logits_f32 - logits_max
         logsumexp = logits_max.squeeze(-1) + torch.log(
-            torch.exp(logits_shifted).sum(dim=-1)
+            torch.exp(logits_shifted).sum(dim = -1)
         )
 
         # Loss calculation: logsumexp - logits[label]
@@ -83,7 +83,7 @@ class MPSCrossEntropyLoss(torch.autograd.Function):
         dlogits.scatter_add_(
             1,
             safe_labels.unsqueeze(1),
-            -torch.ones_like(safe_labels.unsqueeze(1), dtype=dlogits.dtype),
+            -torch.ones_like(safe_labels.unsqueeze(1), dtype = dlogits.dtype),
         )
 
         dlogits = dlogits * dloss_f32
