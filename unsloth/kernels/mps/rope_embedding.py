@@ -78,42 +78,63 @@ class MPSRoPEEmbedding(torch.autograd.Function):
 class MPSRoPEEmbeddingQK(torch.autograd.Function):
     @staticmethod
     def forward(
-        ctx, Q: torch.Tensor, K: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
+        ctx,
+        Q: torch.Tensor,
+        K: torch.Tensor,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+        position_ids: torch.Tensor = None,
     ):
         # Similar logic to MPSRoPEEmbedding but for both Q and K
         # Typically Q is [B, H_q, S, D] and K is [B, H_k, S, D]
 
-        # Batch, Heads, Seq, Dim
-        # Typical Q shapes:
-        # [Batch, Heads, Seq, Dim] -> Unsloth usually uses this (transposed)
-        # [Batch, Seq, Heads, Dim] -> HF mostly uses this
+        # Handle position_ids slicing
+        if position_ids is not None:
+            # cos/sin: [MaxSeq, Dim]
+            # position_ids: [B, S] or [1, S]
 
-        # Check input dims
-        if Q.dim() == 4:
-            # Check if S is dim 1 or dim 2
-            # cos shape is [Seq, Dim] usually
-            seq_len = cos.shape[0]
+            # Use advanced indexing to get [B, S, Dim]
+            # Squeeze dim 0 if cos is [Seq, Dim]
+            cos_final = cos[position_ids].unsqueeze(2)  # [B, S, 1, Dim]
+            sin_final = sin[position_ids].unsqueeze(2)  # [B, S, 1, Dim]
 
-            if Q.shape[1] == seq_len:  # [B, S, H, D]
-                cos_final = cos.view(1, seq_len, 1, -1)
-                sin_final = sin.view(1, seq_len, 1, -1)
-            elif Q.shape[2] == seq_len:  # [B, H, S, D]
-                cos_final = cos.view(1, 1, seq_len, -1)
-                sin_final = sin.view(1, 1, seq_len, -1)
-            else:
-                # Fallback or weird shape?
-                # Maybe seq_len is different due to padding?
-                # For now assume broadcasting works if we just view 1s
-                # Try to align with the dimension that matches cos.shape[0]
-                if Q.shape[1] == cos.shape[0]:
-                    cos_final = cos.view(1, cos.shape[0], 1, -1)
-                    sin_final = sin.view(1, sin.shape[0], 1, -1)
-                else:
-                    cos_final = cos.view(1, 1, cos.shape[0], -1)
-                    sin_final = sin.view(1, 1, sin.shape[0], -1)
+            # If Q is [B, H, S, D] (Unsloth default after transpose), we permute to [B, 1, S, Dim]
+            cos_final = cos_final.transpose(1, 2)
+            sin_final = sin_final.transpose(1, 2)
+
         else:
-            cos_final = cos
-            sin_final = sin
+            # Fallback to previous broadcasting logic if no position_ids
+            # Batch, Heads, Seq, Dim
+            # Typical Q shapes:
+            # [Batch, Heads, Seq, Dim] -> Unsloth usually uses this (transposed)
+            # [Batch, Seq, Heads, Dim] -> HF mostly uses this
+
+            # Check input dims
+            if Q.dim() == 4:
+                # Check if S is dim 1 or dim 2
+                # cos shape is [Seq, Dim] usually
+                seq_len = cos.shape[0]
+
+                if Q.shape[1] == seq_len:  # [B, S, H, D]
+                    cos_final = cos.view(1, seq_len, 1, -1)
+                    sin_final = sin.view(1, seq_len, 1, -1)
+                elif Q.shape[2] == seq_len:  # [B, H, S, D]
+                    cos_final = cos.view(1, 1, seq_len, -1)
+                    sin_final = sin.view(1, 1, seq_len, -1)
+                else:
+                    # Fallback or weird shape?
+                    # Maybe seq_len is different due to padding?
+                    # For now assume broadcasting works if we just view 1s
+                    # Try to align with the dimension that matches cos.shape[0]
+                    if Q.shape[1] == cos.shape[0]:
+                        cos_final = cos.view(1, cos.shape[0], 1, -1)
+                        sin_final = sin.view(1, sin.shape[0], 1, -1)
+                    else:
+                        cos_final = cos.view(1, 1, cos.shape[0], -1)
+                        sin_final = sin.view(1, 1, sin.shape[0], -1)
+            else:
+                cos_final = cos
+                sin_final = sin
 
         if cos_final.shape[-1] * 2 == Q.shape[-1]:
             cos_final = torch.cat((cos_final, cos_final), dim = -1)
@@ -138,7 +159,7 @@ class MPSRoPEEmbeddingQK(torch.autograd.Function):
         dK_rotated = rotate_half(dK)
         dK_out = (dK * cos) - (dK_rotated * sin)
 
-        return dQ_out, dK_out, None, None
+        return dQ_out, dK_out, None, None, None
 
 
 def mps_rope_embedding(Q: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor):
@@ -146,6 +167,6 @@ def mps_rope_embedding(Q: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor):
 
 
 def mps_rope_embedding_qk(
-    Q: torch.Tensor, K: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
+    Q: torch.Tensor, K: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, position_ids: torch.Tensor = None
 ):
-    return MPSRoPEEmbeddingQK.apply(Q, K, cos, sin)
+    return MPSRoPEEmbeddingQK.apply(Q, K, cos, sin, position_ids)
