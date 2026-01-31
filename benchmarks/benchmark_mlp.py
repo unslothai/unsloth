@@ -16,7 +16,7 @@ import os
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
-from unsloth.kernels.mps.fast_lora import mps_apply_lora_mlp_swiglu
+from unsloth.kernels.mps.fast_lora import mps_apply_lora_mlp_swiglu, _get_mlx_cached
 from unsloth.kernels.mlx.bridge import torch_to_mlx, mlx_to_torch, mlx_context
 
 
