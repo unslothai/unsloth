@@ -610,8 +610,9 @@ class FastLanguageModel(FastLlamaModel):
         )
 
         if DEVICE_TYPE == "mps" and load_in_4bit:
-             from unsloth.kernels.mlx.utils import fast_quantize
-             fast_quantize(model)
+            from unsloth.kernels.mlx.utils import fast_quantize
+
+            fast_quantize(model)
 
         if resize_model_vocab is not None:
             model.resize_token_embeddings(resize_model_vocab)

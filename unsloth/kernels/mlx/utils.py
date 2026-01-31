@@ -5,24 +5,25 @@ import torch
 from .quantization import quantize_4bit
 from tqdm import tqdm
 
+
 def fast_quantize(model):
     """
     Iterates over the model and pre-quantizes Linear layers to 4-bit MLX format.
     The quantized weights are stored in the `_mlx_cache` attribute of the PyTorch weight.
-    
+
     This allows the Unsloth/MLX bridge to transparently use the optimized 4-bit kernel
     without any changes to the model structure itself.
     """
     print("Unsloth: Fast 4-bit quantization for Apple Silicon...")
-    
+
     # Identify layers to quantize.
     # We focus on the heavy lifters: MLP and Attention projections.
     # usually: layers.N.mlp.gate_proj, up_proj, down_proj
     #          layers.N.self_attn.q_proj, k_proj, v_proj, o_proj
-    
+
     count = 0
     total_layers = 0
-    
+
     # First pass to count for progress bar
     for name, module in model.named_modules():
         if isinstance(module, torch.nn.Linear):
@@ -30,20 +31,20 @@ def fast_quantize(model):
             if "head" in name or "embed" in name:
                 continue
             total_layers += 1
-            
-    pbar = tqdm(total=total_layers, desc="Quantizing layers", unit="layer")
-    
+
+    pbar = tqdm(total = total_layers, desc = "Quantizing layers", unit = "layer")
+
     for name, module in model.named_modules():
         if isinstance(module, torch.nn.Linear):
             if "head" in name or "embed" in name:
                 continue
-            
+
             # Apply quantization
             # We store it directly on the weight tensor
             # The 'fast_lora' kernels check hasattr(weight, '_mlx_cache')
             module.weight._mlx_cache = quantize_4bit(module.weight)
             count += 1
             pbar.update(1)
-            
+
     pbar.close()
     print(f"Unsloth: Quantized {count} layers to 4-bit MLX.")
