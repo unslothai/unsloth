@@ -40,7 +40,7 @@ def _mlx_matmul(X_mlx, W, A, B, s):
     import mlx.core as mx
 
     W_mlx: Any = _get_mlx_cached(W)
-    
+
     # Base projection
     if isinstance(W_mlx, MLXQuantizedWeight):
         # Quantized MatMul: (x, w, scales, biases, transpose=True/False)
@@ -49,17 +49,17 @@ def _mlx_matmul(X_mlx, W, A, B, s):
         # We need X @ W.T
         # mx.quantized_matmul supports transpose.
         out = mx.quantized_matmul(
-            X_mlx, 
-            W_mlx.weight, 
-            scales=W_mlx.scales, 
-            biases=W_mlx.biases, 
-            transpose=True, 
-            group_size=W_mlx.group_size
+            X_mlx,
+            W_mlx.weight,
+            scales = W_mlx.scales,
+            biases = W_mlx.biases,
+            transpose = True,
+            group_size = W_mlx.group_size,
         )
     else:
         # Standard Linear: X @ W.T
         out = X_mlx @ W_mlx.T
-    
+
     if A is not None:
         A_mlx = _get_mlx_cached(A)
         B_mlx = _get_mlx_cached(B)
