@@ -130,7 +130,7 @@ def patch_unsloth_zoo_for_mps() -> bool:
     if "triton" not in sys.modules:
         from importlib.machinery import ModuleSpec
         from importlib.abc import MetaPathFinder, Loader
-        
+
         class FakeTriton(ModuleType):
             def __init__(self, name, *args, **kwargs):
                 # args might be (bases, dict) if used as a metaclass
@@ -138,27 +138,32 @@ def patch_unsloth_zoo_for_mps() -> bool:
                 self.__path__ = []
                 self.__version__ = "3.0.0"
                 # Satisfy importlib.util.find_spec
-                self.__spec__ = ModuleSpec(name=str(name), loader=TritonMockLoader(), origin="mocked")
+                self.__spec__ = ModuleSpec(
+                    name = str(name), loader = TritonMockLoader(), origin = "mocked"
+                )
 
             def __getattr__(self, name):
-                if name.startswith("__"): return super().__getattribute__(name)
+                if name.startswith("__"):
+                    return super().__getattribute__(name)
                 # Return a sub-fake on the fly for any attribute
                 full_name = f"{self.__name__}.{name}"
                 if full_name not in sys.modules:
                     m = FakeTriton(full_name)
-                    m.__spec__ = ModuleSpec(name=full_name, loader=TritonMockLoader(), origin="mocked")
+                    m.__spec__ = ModuleSpec(
+                        name = full_name, loader = TritonMockLoader(), origin = "mocked"
+                    )
                     sys.modules[full_name] = m
                 return sys.modules[full_name]
-            
+
             def __call__(self, *args, **kwargs):
-                return self # Act as dummy decorator/constructor
-            
+                return self  # Act as dummy decorator/constructor
+
             def __getitem__(self, key):
-                return self # Support tl.constexpr[int] or similar if needed
+                return self  # Support tl.constexpr[int] or similar if needed
 
             def __repr__(self):
                 return f"<FakeTriton {self.__name__}>"
-            
+
             # To act as a base class, we need to handle being used in a class definition
             def __class_getitem__(cls, key):
                 return cls
@@ -170,28 +175,35 @@ def patch_unsloth_zoo_for_mps() -> bool:
                     m.__spec__ = spec
                     sys.modules[spec.name] = m
                 return sys.modules[spec.name]
+
             def exec_module(self, module):
                 # Specific overrides for logic checks
                 if module.__name__ == "triton.backends":
                     module.backends = {}
                 elif module.__name__ == "triton.backends.compiler":
+
                     class AttrsDescriptor:
-                        def __init__(self, *args, **kwargs): pass
+                        def __init__(self, *args, **kwargs):
+                            pass
+
                     module.AttrsDescriptor = AttrsDescriptor
                 elif module.__name__ == "triton.language":
+
                     class MockTritonMeta:
-                        def __repr__(self): return "MockTritonMeta"
+                        def __repr__(self):
+                            return "MockTritonMeta"
+
                     module.dtype = MockTritonMeta
 
         class TritonMockFinder(MetaPathFinder):
-            def find_spec(self, fullname, path, target=None):
+            def find_spec(self, fullname, path, target = None):
                 if fullname == "triton" or fullname.startswith("triton."):
                     return ModuleSpec(fullname, TritonMockLoader())
                 return None
 
         # Inject the finder at the start of meta_path
         sys.meta_path.insert(0, TritonMockFinder())
-        
+
         # Trigger root import to populate sys.modules
         import triton
 
