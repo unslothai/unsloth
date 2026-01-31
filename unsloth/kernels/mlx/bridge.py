@@ -123,9 +123,10 @@ def torch_to_mlx(
         return mx.array(np.from_dlpack(tensor.detach()), copy = False)
     except (TypeError, RuntimeError):
         # Fallback: go through numpy (still fast on unified memory)
+        # Note: mx.array() doesn't support copy=False for numpy arrays
         if tensor.device.type != "cpu":
             tensor = tensor.cpu()
-        return mx.array(tensor.numpy(), copy = False)
+        return mx.array(tensor.numpy())
 
 
 @require_mlx
