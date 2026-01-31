@@ -13,32 +13,21 @@ if TYPE_CHECKING:
 # Optimized Metal Shaders for RMSNorm
 # -----------------------------------------------------------------------------
 
-RMS_NORM_MSL = """
-#include <metal_stdlib>
-using namespace metal;
+# Optimized Metal Shaders for RMSNorm (Bodies only)
+# -----------------------------------------------------------------------------
 
-// Forward pass: Y = X * rsqrt(mean(X^2) + eps) * (1 + W)
-// lid 0 is responsible for tail handling and computing shared variance.
-kernel void rms_forward(
-    device const half* X [[buffer(0)]],
-    device const half* W [[buffer(1)]],
-    device half* Y [[buffer(2)]],
-    device float* r [[buffer(3)]],
-    constant uint& n_rows [[buffer(4)]],
-    constant uint& n_cols [[buffer(5)]],
-    constant float& eps [[buffer(6)]],
-    constant bool& gemma [[buffer(7)]],
-    uint row [[threadgroup_position_in_grid]],
-    uint lid [[thread_position_in_threadgroup]],
-    uint tpg [[threads_per_threadgroup]]
-) {
-    if (row >= n_rows) return;
+RMS_FORWARD_BODY = """
+    uint row = threadgroup_position_in_grid.x;
+    uint lid = thread_position_in_threadgroup.x;
+    uint tpg = threads_per_threadgroup.x;
     
-    device const half* X_row = X + row * n_cols;
-    device half* Y_row = Y + row * n_cols;
+    if (row >= n_rows[0]) return;
+    
+    device const half* X_row = X + row * n_cols[0];
+    device half* Y_row = Y + row * n_cols[0];
     
     float acc = 0.0f;
-    for (uint i = lid; i < n_cols; i += tpg) {
+    for (uint i = lid; i < n_cols[0]; i += tpg) {
         float v = float(X_row[i]);
         acc = fma(v, v, acc);
     }
@@ -48,57 +37,48 @@ kernel void rms_forward(
     tg_sums[lid] = acc;
     threadgroup_barrier(mem_flags::mem_threadgroup);
     
+    // Standard reduction
     for (uint s = tpg / 2; s > 0; s >>= 1) {
         if (lid < s) tg_sums[lid] += tg_sums[lid + s];
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
     
-    float inv_var = precise::rsqrt(tg_sums[0] / float(n_cols) + eps);
+    float inv_var = precise::rsqrt(tg_sums[0] / float(n_cols[0]) + eps[0]);
     if (lid == 0) r[row] = inv_var;
     
-    for (uint i = lid; i < n_cols; i += tpg) {
+    for (uint i = lid; i < n_cols[0]; i += tpg) {
         float x = float(X_row[i]);
         float w = float(W[i]);
-        float weight = gemma ? (w + 1.0f) : w;
+        float weight = gemma[0] ? (w + 1.0f) : w;
         Y_row[i] = half(x * inv_var * weight);
     }
-}
+"""
 
-kernel void rms_backward(
-    device const half* dY [[buffer(0)]],
-    device const half* X [[buffer(1)]],
-    device const half* W [[buffer(2)]],
-    device const float* r [[buffer(3)]],
-    device half* dX [[buffer(4)]],
-    device float* dW_rows [[buffer(5)]],
-    constant uint& n_rows [[buffer(6)]],
-    constant uint& n_cols [[buffer(7)]],
-    constant bool& gemma [[buffer(8)]],
-    uint row [[threadgroup_position_in_grid]],
-    uint lid [[thread_position_in_threadgroup]],
-    uint tpg [[threads_per_threadgroup]]
-) {
-    if (row >= n_rows) return;
+RMS_BACKWARD_BODY = """
+    uint row = threadgroup_position_in_grid.x;
+    uint lid = thread_position_in_threadgroup.x;
+    uint tpg = threads_per_threadgroup.x;
     
-    device const half* dY_row = dY + row * n_cols;
-    device const half* X_row = X + row * n_cols;
-    device half* dX_row = dX + row * n_cols;
-    device float* dW_row = dW_rows + row * n_cols;
+    if (row >= n_rows[0]) return;
+    
+    device const half* dY_row = dY + row * n_cols[0];
+    device const half* X_row = X + row * n_cols[0];
+    device half* dX_row = dX + row * n_cols[0];
+    device float* dW_row = dW_rows + row * n_cols[0];
     
     float inv_var = r[row];
     
-    // rowsum_dY_normed = sum((dY * W_eff) * (X * inv_var))
     float dot = 0.0f;
-    for (uint i = lid; i < n_cols; i += tpg) {
+    for (uint i = lid; i < n_cols[0]; i += tpg) {
         float dy = float(dY_row[i]);
         float x = float(X_row[i]);
         float w = float(W[i]);
-        float w_eff = gemma ? (w + 1.0f) : w;
+        float w_eff = gemma[0] ? (w + 1.0f) : w;
         
         float normed = x * inv_var;
         float dy_w = dy * w_eff;
         
-        // Accumulate dW row-wise for later reduction
+        // Save row-wise dW components for global reduction in MLX
         dW_row[i] = dy * normed;
         
         dot = fma(dy_w, normed, dot);
@@ -114,21 +94,20 @@ kernel void rms_backward(
     }
     
     float rowsum = tg_sums[0];
-    float N_inv = 1.0f / float(n_cols);
+    float N_inv = 1.0f / float(n_cols[0]);
     
-    for (uint i = lid; i < n_cols; i += tpg) {
+    for (uint i = lid; i < n_cols[0]; i += tpg) {
         float dy = float(dY_row[i]);
         float x = float(X_row[i]);
         float w = float(W[i]);
-        float w_eff = gemma ? (w + 1.0f) : w;
+        float w_eff = gemma[0] ? (w + 1.0f) : w;
         
         float normed = x * inv_var;
         float dy_w = dy * w_eff;
         
-        // dX = (inv_var / N) * (N * dY_W - normed * rowsum_dY_normed)
+        // dX = inv_var * (dy_w - normed * rowsum / N)
         dX_row[i] = half(inv_var * (dy_w - normed * rowsum * N_inv));
     }
-}
 """
 
 @lru_cache(maxsize = 1)
@@ -137,7 +116,7 @@ def _get_forward_kernel():
         name = "rms_forward",
         input_names = ["X", "W", "n_rows", "n_cols", "eps", "gemma"],
         output_names = ["Y", "r"],
-        source = RMS_NORM_MSL,
+        source = RMS_FORWARD_BODY,
     )
 
 @lru_cache(maxsize = 1)
@@ -146,7 +125,7 @@ def _get_backward_kernel():
         name = "rms_backward",
         input_names = ["dY", "X", "W", "r", "n_rows", "n_cols", "gemma"],
         output_names = ["dX", "dW_rows"],
-        source = RMS_NORM_MSL,
+        source = RMS_BACKWARD_BODY,
     )
 
 def mlx_rms_layernorm_forward(X_mlx, W_mlx, eps, gemma = False):
