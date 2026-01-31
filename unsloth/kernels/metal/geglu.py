@@ -147,8 +147,6 @@ GEGLU_APPROX_BACKWARD_BODY = """
 """
 
 
-
-
 @lru_cache(maxsize = 1)
 def _get_exact_forward():
     import mlx.core as mx
