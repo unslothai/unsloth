@@ -109,19 +109,29 @@ from unsloth_zoo.rl_environments import (
     execute_with_time_limit,
     Benchmarker,
 )
+
 # Fix for MPS/Systems without bitsandbytes - patch unsloth_zoo
 import unsloth_zoo.patching_utils
+
 if getattr(unsloth_zoo.patching_utils, "Bnb_Linear4bit", None) is None:
     print("Unsloth: Bnb_Linear4bit was None, patching...")
-    class Bnb_Linear4bit: pass
+
+    class Bnb_Linear4bit:
+        pass
+
     unsloth_zoo.patching_utils.Bnb_Linear4bit = Bnb_Linear4bit
 if getattr(unsloth_zoo.patching_utils, "Peft_Linear4bit", None) is None:
     print("Unsloth: Peft_Linear4bit was None, patching...")
-    class Peft_Linear4bit: pass
+
+    class Peft_Linear4bit:
+        pass
+
     unsloth_zoo.patching_utils.Peft_Linear4bit = Peft_Linear4bit
 
 print(f"DEBUG: Bnb_Linear4bit type: {type(unsloth_zoo.patching_utils.Bnb_Linear4bit)}")
-print(f"DEBUG: Peft_Linear4bit type: {type(unsloth_zoo.patching_utils.Peft_Linear4bit)}")
+print(
+    f"DEBUG: Peft_Linear4bit type: {type(unsloth_zoo.patching_utils.Peft_Linear4bit)}"
+)
 
 from unsloth_zoo.patching_utils import (
     patch_compiling_bitsandbytes,
