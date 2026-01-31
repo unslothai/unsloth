@@ -166,6 +166,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
 
             if USE_METAL_KERNEL:
                 from .metal.rms_layernorm import metal_rms_layernorm
+
                 Y, r = metal_rms_layernorm(X, W, eps, gemma)
                 ctx.eps = eps
                 ctx.GEMMA = gemma
@@ -176,6 +177,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
 
             if USE_MPS_FALLBACK:
                 from .mps.rms_layernorm import mps_rms_layernorm
+
                 return mps_rms_layernorm(X, W, eps, gemma)
 
         shape = X.shape
@@ -218,12 +220,15 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
     @staticmethod
     def backward(ctx, dY: torch.Tensor):
         from ..device_type import DEVICE_TYPE
+
         X, W, r = ctx.saved_tensors
 
         if DEVICE_TYPE == "mps":
             from .metal import USE_METAL_KERNEL
+
             if USE_METAL_KERNEL:
                 from .metal.rms_layernorm import metal_rms_layernorm_backward
+
                 dX, dW = metal_rms_layernorm_backward(dY, X, W, r, ctx.eps, ctx.GEMMA)
                 return dX, dW, None, None
 
