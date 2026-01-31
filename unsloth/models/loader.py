@@ -560,7 +560,10 @@ class FastLanguageModel(FastLlamaModel):
             )
 
         if use_gradient_checkpointing == "unsloth":
-            patch_unsloth_smart_gradient_checkpointing(dtype = dtype)
+            if DEVICE_TYPE == "mps":
+                 use_gradient_checkpointing = True 
+            else:
+                 patch_unsloth_smart_gradient_checkpointing(dtype = dtype)
 
         # Check if this is local model since the tokenizer gets overwritten
         if (
