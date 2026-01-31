@@ -41,8 +41,8 @@ def run_e2e_test():
     # 3. Functional Test - SwiGLU
     print("\nTesting SwiGLU Dispatch...")
     batch, seq, dim = 2, 64, 128
-    e = torch.randn(batch, seq, dim, device = "mps", dtype = torch.float16)
-    g = torch.randn(batch, seq, dim, device = "mps", dtype = torch.float16)
+    e = torch.randn(batch, seq, dim, device="mps", dtype=torch.float16)
+    g = torch.randn(batch, seq, dim, device="mps", dtype=torch.float16)
 
     # Ground truth
     ref = F.silu(e.float()) * g.float()
@@ -55,7 +55,7 @@ def run_e2e_test():
 
     # 4. Functional Test - GEGLU Exact
     print("\nTesting GEGLU Exact Dispatch...")
-    ref_geglu = F.gelu(e.float(), approximate = "none") * g.float()
+    ref_geglu = F.gelu(e.float(), approximate="none") * g.float()
     out_geglu = geglu_exact_forward_kernel(e, g)
 
     diff_geglu = (out_geglu.float() - ref_geglu).abs().max().item()
@@ -65,7 +65,7 @@ def run_e2e_test():
 
     # 5. Functional Test - GEGLU Approx
     print("\nTesting GEGLU Approx Dispatch...")
-    ref_geglu_approx = F.gelu(e.float(), approximate = "tanh") * g.float()
+    ref_geglu_approx = F.gelu(e.float(), approximate="tanh") * g.float()
     out_geglu_approx = geglu_approx_forward_kernel(e, g)
 
     diff_geglu_approx = (out_geglu_approx.float() - ref_geglu_approx).abs().max().item()
