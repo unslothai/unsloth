@@ -181,6 +181,17 @@ def patch_unsloth_zoo_for_mps() -> bool:
         mock_lang.int32 = MockTritonMeta()
         mock_lang.uint32 = MockTritonMeta()
 
+        # 3. Config and common decorators
+        class Config:
+            def __init__(self, *args, **kwargs): pass
+        def dummy_decorator(*args, **kwargs):
+            return lambda x: x
+        
+        mock_triton.Config = Config
+        mock_triton.jit = dummy_decorator
+        mock_triton.autotune = dummy_decorator
+        mock_triton.heuristics = dummy_decorator
+
     _PATCH_APPLIED = True
     return True
 
