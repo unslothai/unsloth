@@ -16,8 +16,12 @@ from typing import TYPE_CHECKING, Tuple, Optional
 if TYPE_CHECKING:
     import torch
 
-__all__ = ["metal_swiglu_forward", "metal_swiglu_backward", "mlx_swiglu_forward", "is_metal_swiglu_available"]
-
+__all__ = [
+    "metal_swiglu_forward",
+    "metal_swiglu_backward",
+    "mlx_swiglu_forward",
+    "is_metal_swiglu_available",
+]
 
 
 from unsloth.kernels.mlx.bridge import torch_to_mlx, mlx_to_torch, mlx_context
@@ -91,7 +95,6 @@ SWIGLU_BACKWARD_BODY = """
     float dgv = dwv * gv;
     de_out[gid] = half(dgv * se * fma(ev, (1.0f - se), 1.0f));
 """
-
 
 
 @lru_cache(maxsize = 1)
@@ -172,10 +175,11 @@ def metal_swiglu_backward(
 # Pure MLX wrappers (no PyTorch conversion overhead)
 # =============================================================================
 
+
 def _mlx_swiglu_forward_pure(e_mlx, g_mlx):
     """Pure MLX SwiGLU forward - no PyTorch conversion."""
     import mlx.core as mx
-    
+
     shape = e_mlx.shape
     n = e_mlx.size
     e_flat = e_mlx.flatten()

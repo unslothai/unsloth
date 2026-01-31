@@ -170,7 +170,9 @@ def run_performance_benchmark():
         t_fused = benchmark_fn(mlx_fused)
         tp_fused = calculate_throughput(elements, t_fused)
         speedup = t_mlx / t_fused
-        print(f"   Fused Metal (MLX):  {t_fused:7.3f} ms | {tp_fused:7.2f} GB/s  ({speedup:.2f}x)")
+        print(
+            f"   Fused Metal (MLX):  {t_fused:7.3f} ms | {tp_fused:7.2f} GB/s  ({speedup:.2f}x)"
+        )
 
         # PyTorch Tensors
         e_torch = torch.randn(batch, seq, dim, device = "mps", dtype = torch.float16)
@@ -182,7 +184,9 @@ def run_performance_benchmark():
             lambda: metal_module.metal_swiglu_forward(e_torch, g_torch)
         )
         tp_metal = calculate_throughput(elements, t_metal)
-        print(f"   Fused Metal (PyTorch): {t_metal:7.3f} ms | {tp_metal:7.2f} GB/s  (includes conversion)")
+        print(
+            f"   Fused Metal (PyTorch): {t_metal:7.3f} ms | {tp_metal:7.2f} GB/s  (includes conversion)"
+        )
 
         # PyTorch MPS Reference
         t_torch = benchmark_fn(lambda: pytorch_swiglu_reference(e_torch, g_torch))
@@ -199,7 +203,6 @@ def run_performance_benchmark():
             }
         )
         print()
-
 
     # Summary
     if results:
