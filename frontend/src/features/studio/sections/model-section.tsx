@@ -170,7 +170,7 @@ export function ModelSection() {
         {/* HF Repo */}
         <div className="flex flex-col gap-2">
           <span className="text-xs font-medium text-muted-foreground">
-            HF Repo
+            Hugging Face Repo
           </span>
           <InputGroup>
             <InputGroupAddon>
@@ -260,7 +260,7 @@ export function ModelSection() {
         {/* HF Token */}
         <div className="flex flex-col gap-2">
           <span className="text-xs font-medium text-muted-foreground">
-            HF Token
+            Hugging Face Token (Optional)
           </span>
           <InputGroup>
             <InputGroupAddon>

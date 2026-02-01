@@ -207,7 +207,7 @@ export function HyperparametersStep() {
             <div className="flex flex-col gap-4">
               <div className="flex items-center justify-between">
                 <FieldLabel className="flex items-center gap-1.5 !text-sm text-muted-foreground">
-                  Rank (r)
+                  Rank
                   <Tooltip>
                     <TooltipTrigger asChild={true}>
                       <button
