@@ -135,7 +135,7 @@ function CollapsibleSection({
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className="flex w-full items-center gap-2.5 rounded-md px-2 py-2 text-sm transition-colors hover:bg-accent"
+        className="flex w-full items-center corner-squircle gap-2.5 rounded-md px-2 py-2 text-sm transition-colors hover:bg-accent"
       >
         <HugeiconsIcon icon={icon} className="size-4 text-muted-foreground" />
         <span className="flex-1 text-left font-medium">{label}</span>
@@ -218,7 +218,7 @@ export function ChatSettingsPanel({
 
   return (
     <aside
-      className={`shrink-0 h-full overflow-hidden bg-sidebar transition-[width] duration-200 ease-linear ${open ? "w-[17rem] border-l border-sidebar-border" : "w-0"}`}
+      className={`shrink-0 h-full overflow-hidden bg-sidebar transition-[width] duration-200 ease-linear ${open ? "w-[17rem]  border-sidebar-border" : "w-0"}`}
     >
       <div className="flex h-full w-[17rem] flex-col">
           {/* header */}
@@ -331,7 +331,7 @@ export function ChatSettingsPanel({
               label="Sampling"
               defaultOpen={true}
             >
-              <div className="flex flex-col gap-5">
+              <div className="flex flex-col  gap-5">
                 <ParamSlider
                   label="Temperature"
                   value={params.temperature}
