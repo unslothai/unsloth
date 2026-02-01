@@ -165,7 +165,7 @@ function ReasoningTrigger({
             Thinking...
           </AnimatedShinyText>
         ) : (
-          <span>Thought for {duration ?? 0}s</span>
+          <span>Thought for {duration ?? 0} seconds</span>
         )}
       </span>
       <ChevronDownIcon
@@ -276,6 +276,12 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
     return lastIndex >= startIndex && lastIndex <= endIndex;
   });
 
+  const persistedDuration = useAuiState(({ message }) => {
+    const d = (message.metadata?.custom as Record<string, unknown>)
+      ?.reasoningDuration;
+    return typeof d === "number" ? d : 0;
+  });
+
   const [manualOpen, setManualOpen] = useState(false);
   const [duration, setDuration] = useState<number>(0);
   const startTimeRef = useRef<number | null>(null);
@@ -319,7 +325,7 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
     >
       <ReasoningTrigger
         active={isReasoningStreaming}
-        duration={duration}
+        duration={duration || persistedDuration}
       />
       <ReasoningContent
         aria-busy={isReasoningStreaming}
