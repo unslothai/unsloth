@@ -3,11 +3,18 @@ import {
   ModelSelector,
 } from "@/components/assistant-ui/model-selector";
 import { Thread } from "@/components/assistant-ui/thread";
-import { Settings04Icon, SidebarLeft01Icon } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
-import { AnimatePresence, motion } from "motion/react";
 import {
+  SidebarProvider,
+  SidebarTrigger,
+  useSidebar,
+} from "@/components/ui/sidebar";
+import { cn } from "@/lib/utils";
+import { Settings04Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import {
+  type CSSProperties,
   type ReactElement,
+  type ReactNode,
   memo,
   useCallback,
   useEffect,
@@ -116,9 +123,9 @@ const CompareContent = memo(function CompareContent({
   return (
     <CompareHandlesProvider handlesRef={handlesRef}>
       <div className="flex min-h-0 flex-1 flex-col">
-        <div className="grid min-h-0 flex-1 grid-cols-2 gap-3 px-3">
+        <div className="grid min-h-0 flex-1 grid-cols-2  px-0">
           <div className="flex min-h-0 flex-col">
-            <div className="border-b px-3 py-1.5">
+            <div className=" px-3 py-1.5">
               <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
                 Base Model
               </span>
@@ -135,8 +142,8 @@ const CompareContent = memo(function CompareContent({
             </div>
           </div>
           <div className="flex min-h-0 flex-col">
-            <div className="border-b border-primary/30 px-3 py-1.5">
-              <span className="text-[10px] font-semibold uppercase tracking-wider text-primary">
+            <div className="  text-end px-3 py-1.5">
+              <span className="text-[10px] font-semibold uppercase  tracking-wider text-primary">
                 Fine-tuned (LoRA)
               </span>
             </div>
@@ -160,9 +167,40 @@ const CompareContent = memo(function CompareContent({
   );
 });
 
+function InlineSidebar({
+  children,
+  side = "left",
+}: {
+  children: ReactNode;
+  side?: "left" | "right";
+}) {
+  const { state } = useSidebar();
+  const collapsed = state === "collapsed";
+  return (
+    <div
+      className="group shrink-0 h-full"
+      data-state={state}
+      data-collapsible={collapsed ? "offcanvas" : ""}
+      data-side={side}
+    >
+      <aside
+        data-sidebar="sidebar"
+        className={cn(
+          "bg-sidebar text-sidebar-foreground h-full overflow-hidden transition-[width] duration-200 ease-linear",
+          !collapsed && (side === "left" ? "border-r border-sidebar-border" : "border-l border-sidebar-border"),
+          collapsed ? "w-0" : "w-(--sidebar-width)",
+        )}
+      >
+        <div className="flex h-full w-(--sidebar-width) flex-col">
+          {children}
+        </div>
+      </aside>
+    </div>
+  );
+}
+
 export function ChatPage(): ReactElement {
   const [view, setView] = useState<ChatView>({ mode: "single" });
-  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [inferenceParams, setInferenceParams] = useState<InferenceParams>(
     defaultInferenceParams,
@@ -186,42 +224,28 @@ export function ChatPage(): ReactElement {
   );
 
   return (
-    <div className="relative mx-auto flex h-[calc(100vh-4rem)] max-w-7xl px-6">
-      {/* animated left sidebar */}
-      <AnimatePresence>
-        {sidebarOpen && (
-          <motion.aside
-            initial={{ width: 0, opacity: 0 }}
-            animate={{ width: 208, opacity: 1 }}
-            exit={{ width: 0, opacity: 0 }}
-            transition={{ duration: 0.2, ease: "easeInOut" }}
-            className="flex h-full shrink-0 flex-col overflow-hidden border-r border-border/40 bg-muted/50"
-          >
-            <ThreadSidebar
-              view={view}
-              onSelect={setView}
-              onNewThread={() => setView({ mode: "single" })}
-              onNewCompare={() =>
-                setView({ mode: "compare", pairId: crypto.randomUUID() })
-              }
-            />
-          </motion.aside>
-        )}
-      </AnimatePresence>
+    <SidebarProvider
+      defaultOpen={false}
+      className="!min-h-0 h-[calc(100vh-4rem)] max-w-7xl mx-auto px-4"
+      style={{ "--sidebar-width": "14rem", "--sidebar-width-icon": "3rem" } as CSSProperties}
+    >
+      <InlineSidebar>
+        <ThreadSidebar
+          view={view}
+          onSelect={setView}
+          onNewThread={() => setView({ mode: "single" })}
+          onNewCompare={() =>
+            setView({ mode: "compare", pairId: crypto.randomUUID() })
+          }
+        />
+      </InlineSidebar>
 
       {/* main chat area */}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         {/* top bar */}
-        <div className="flex h-11 shrink-0 items-center ">
+        <div className="flex h-11 shrink-0 items-center px-2">
           <div className="flex items-center gap-1.5">
-            <button
-              type="button"
-              onClick={() => setSidebarOpen((o) => !o)}
-              className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-              title={sidebarOpen ? "Close sidebar" : "Open sidebar"}
-            >
-              <HugeiconsIcon icon={SidebarLeft01Icon} className="size-5" />
-            </button>
+            <SidebarTrigger />
             <ModelSelector
               models={models}
               value={inferenceParams.checkpoint}
@@ -231,16 +255,14 @@ export function ChatPage(): ReactElement {
             />
           </div>
           <div className="flex-1" />
-          {!settingsOpen && (
-            <button
-              type="button"
-              onClick={() => setSettingsOpen(true)}
-              className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-              title="Inference settings"
-            >
-              <HugeiconsIcon icon={Settings04Icon} className="size-5" />
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={() => setSettingsOpen((o) => !o)}
+            className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            title="Inference settings"
+          >
+            <HugeiconsIcon icon={Settings04Icon} className="size-5" />
+          </button>
         </div>
 
         {view.mode === "single" ? (
@@ -256,10 +278,9 @@ export function ChatPage(): ReactElement {
       {/* inline settings panel on right */}
       <ChatSettingsPanel
         open={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
         params={inferenceParams}
         onParamsChange={setInferenceParams}
       />
-    </div>
+    </SidebarProvider>
   );
 }
