@@ -114,7 +114,7 @@ export function SharedComposer({
   }
 
   return (
-    <div className="shadow-border ring-1 ring-border relative flex w-full flex-col rounded-2xl bg-background px-1 pt-2 transition-shadow has-[textarea:focus-visible]:ring-2 has-[textarea:focus-visible]:ring-ring/20">
+    <div className="shadow-border ring-1 ring-border relative flex w-full flex-col rounded-2xl bg-background px-1 pt-2 transition-shadow">
       <textarea
         ref={textareaRef}
         value={text}
