@@ -14,9 +14,9 @@ export function SplashScreen({
     <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-gradient-to-b from-background via-background to-primary/5">
       {/* Mascot */}
       <motion.img
-        src="/Sloth emojis/Sloth w PC Confetti no Logo.png"
+        src="/Sloth emojis/Sloth loca pc.png"
         alt="Sloth mascot"
-        className="size-48"
+        className="size-30"
         initial={{ opacity: 0, y: 40, scale: 0.95 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
         transition={{

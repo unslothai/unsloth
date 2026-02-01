@@ -477,7 +477,7 @@ export function ParamsSection(): ReactElement {
               icon={ArrowDown01Icon}
               className={`size-3.5 transition-transform ${hyperOpen ? "rotate-180" : ""}`}
             />
-            Training Hyperparams
+            Training Hyperparameters
           </CollapsibleTrigger>
           <CollapsibleContent className="mt-3">
             <Tabs defaultValue="optimization" className="w-full">

@@ -183,7 +183,7 @@ export function DatasetSection() {
               icon={ArrowDown01Icon}
               className={`size-3.5 transition-transform ${recOpen ? "rotate-180" : ""}`}
             />
-            Recommended Datasets
+            Common Datasets
           </CollapsibleTrigger>
           <CollapsibleContent className="mt-3 flex flex-col gap-1.5">
             {DATASETS.filter((d) => d.recommended).map((d) => (
