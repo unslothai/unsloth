@@ -73,7 +73,7 @@ async def start_training(request: TrainingStartRequest):
             validated_datasets = []
             # Get the backend directory (where this file is located)
             backend_dir = Path(__file__).parent.parent
-            utils_datasets_dir = backend_dir / "utils" / "datasets"
+            assets_datasets_dir = backend_dir / "assets" / "datasets"
             
             for dataset_path in request.local_datasets:
                 dataset_file = Path(dataset_path)
@@ -83,11 +83,11 @@ async def start_training(request: TrainingStartRequest):
                     # First try: relative to current working directory
                     candidate = Path.cwd() / dataset_path
                     if not candidate.exists():
-                        # Second try: relative to utils/datasets folder
-                        candidate = utils_datasets_dir / dataset_path
+                        # Second try: relative to assets/datasets folder
+                        candidate = assets_datasets_dir / dataset_path
                     if not candidate.exists():
-                        # Third try: just the filename in utils/datasets
-                        candidate = utils_datasets_dir / dataset_file.name
+                        # Third try: just the filename in assets/datasets
+                        candidate = assets_datasets_dir / dataset_file.name
                     dataset_file = candidate
                 
                 if not dataset_file.exists():
@@ -118,6 +118,8 @@ async def start_training(request: TrainingStartRequest):
             "weight_decay": request.weight_decay,
             "random_seed": request.random_seed,
             "packing": request.packing,
+            "optim": request.optim,
+            "lr_scheduler_type": request.lr_scheduler_type,
             "use_lora": request.use_lora,
             "lora_r": request.lora_r,
             "lora_alpha": request.lora_alpha,
@@ -136,8 +138,6 @@ async def start_training(request: TrainingStartRequest):
             "wandb_project": request.wandb_project or "",
             "enable_tensorboard": request.enable_tensorboard,
             "tensorboard_dir": request.tensorboard_dir or "",
-            "optim": request.optim,
-            "lr_scheduler_type": request.lr_scheduler_type,
         }
         
         # Generate job ID

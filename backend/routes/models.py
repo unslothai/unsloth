@@ -14,7 +14,7 @@ if str(backend_path) not in sys.path:
 
 # Import backend functions
 try:
-    from backend.utils import search_hf_models
+    from utils.utils import search_hf_models
     from backend.model_config import (
         scan_trained_loras,
         load_model_defaults,
@@ -28,7 +28,7 @@ except ImportError:
     parent_backend = backend_path.parent / "backend"
     if str(parent_backend) not in sys.path:
         sys.path.insert(0, str(parent_backend))
-    from backend.utils import search_hf_models
+    from utils.utils import search_hf_models
     from backend.model_config import (
         scan_trained_loras,
         load_model_defaults,

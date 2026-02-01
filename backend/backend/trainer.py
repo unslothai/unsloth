@@ -20,8 +20,8 @@ from datasets import Dataset, load_dataset
 # Add the parent directory to sys.path to import unsloth modules
 #sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from .model_config import is_vision_model
-from .dataset_utils import format_and_template_dataset
-from .dataset_utils import MODEL_TO_TEMPLATE_MAPPER, TEMPLATE_TO_RESPONSES_MAPPER
+from utils.datasets.dataset_utils import format_and_template_dataset
+from utils.datasets.dataset_utils import MODEL_TO_TEMPLATE_MAPPER, TEMPLATE_TO_RESPONSES_MAPPER
 from trl import SFTTrainer, SFTConfig
 
 # Import Unsloth trainers
@@ -313,15 +313,23 @@ class UnslothTrainer:
                 # Load local datasets
                 all_data = []
                 for dataset_file in local_datasets:
-                    file_path = os.path.join("datasets", dataset_file)
-                    if file_path.endswith('.json'):
+                    # dataset_file may already be an absolute path from routes/training.py
+                    if os.path.isabs(dataset_file):
+                        file_path = dataset_file
+                    else:
+                        # Fallback: try relative to assets/datasets
+                        script_dir = Path(__file__).parent.parent
+                        assets_datasets_dir = script_dir / "assets" / "datasets"
+                        file_path = assets_datasets_dir / dataset_file
+                    
+                    if str(file_path).endswith('.json'):
                         with open(file_path, 'r', encoding='utf-8') as f:
                             data = json.load(f)
                             if isinstance(data, list):
                                 all_data.extend(data)
                             else:
                                 all_data.append(data)
-                    elif file_path.endswith('.csv'):
+                    elif str(file_path).endswith('.csv'):
                         df = pd.read_csv(file_path)
                         all_data.extend(df.to_dict('records'))
 

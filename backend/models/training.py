@@ -31,6 +31,8 @@ class TrainingStartRequest(BaseModel):
     weight_decay: float = Field(0.01, description="Weight decay")
     random_seed: int = Field(42, description="Random seed")
     packing: bool = Field(False, description="Enable sequence packing")
+    optim: str = Field("adamw_8bit", description="Optimizer")
+    lr_scheduler_type: str = Field("linear", description="Learning rate scheduler type")
 
     # LoRA parameters
     use_lora: bool = Field(True, description="Use LoRA (derived from training_type)")
@@ -55,8 +57,6 @@ class TrainingStartRequest(BaseModel):
     wandb_project: Optional[str] = Field(None, description="W&B project name")
     enable_tensorboard: bool = Field(False, description="Enable TensorBoard logging")
     tensorboard_dir: Optional[str] = Field(None, description="TensorBoard directory")
-    optim: str = Field("adamw_8bit", description="Optimizer")
-    lr_scheduler_type: str = Field("linear", description="Learning rate scheduler type")
 
 
 class TrainingStartResponse(BaseModel):

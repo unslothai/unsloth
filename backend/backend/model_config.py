@@ -5,7 +5,7 @@ from transformers import AutoConfig
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
 from .path_utils import normalize_path, is_local_path, is_model_cached
-from .utils import without_hf_auth
+from utils.utils import without_hf_auth
 import logging
 from pathlib import Path
 from typing import List, Tuple

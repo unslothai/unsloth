@@ -66,6 +66,8 @@ class TrainingBackend:
                        weight_decay: float,
                        random_seed: int,
                        packing: bool,
+                       optim: str,
+                       lr_scheduler_type: str,
 
                        # LoRA parameters
                        use_lora: bool,  # Should be derived from training_type
@@ -89,9 +91,7 @@ class TrainingBackend:
                        wandb_token: str,
                        wandb_project: str,
                        enable_tensorboard: bool,
-                       tensorboard_dir: str,
-                       optim: str = "adamw_8bit",
-                       lr_scheduler_type: str = "linear") -> Generator[Tuple, None, None]:
+                       tensorboard_dir: str) -> Generator[Tuple, None, None]:
         """
         Start training - yields UI updates as generator.
 
@@ -601,12 +601,13 @@ def create_training_handlers(train_components: Dict[str, Any]) -> Dict[str, Any]
              hf_dataset, local_datasets, format_type,
              num_epochs, learning_rate, batch_size, gradient_accumulation_steps,
              warmup_steps, warmup_ratio, max_steps, save_steps, weight_decay, random_seed, packing,
+             optim, lr_scheduler_type,
              use_lora, lora_r, lora_alpha, lora_dropout, target_modules,
              gradient_checkpointing, use_rslora, use_loftq, train_on_completions,
              finetune_vision_layers, finetune_language_layers,
              finetune_attention_modules, finetune_mlp_modules,
              enable_wandb, wandb_token, wandb_project,
-             enable_tensorboard, tensorboard_dir, optim, lr_scheduler_type) = args
+             enable_tensorboard, tensorboard_dir) = args
 
             # Start training with correctly named parameters - this is a generator
             for update_tuple in backend.start_training(
@@ -629,6 +630,8 @@ def create_training_handlers(train_components: Dict[str, Any]) -> Dict[str, Any]
                 weight_decay=weight_decay,
                 random_seed=random_seed,
                 packing=packing,
+                optim=optim,
+                lr_scheduler_type=lr_scheduler_type,
                 use_lora=use_lora,
                 lora_r=lora_r,
                 lora_alpha=lora_alpha,
