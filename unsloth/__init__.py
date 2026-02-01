@@ -127,6 +127,7 @@ from .import_fixes import (
     fix_vllm_aimv2_issue,
     fix_vllm_guided_decoding_params,
     fix_vllm_pdl_blackwell,
+    fix_rocm_triton_key_error,
     ignore_logger_messages,
     patch_ipykernel_hf_xet,
     patch_trackio,
@@ -134,12 +135,14 @@ from .import_fixes import (
     patch_enable_input_require_grads,
     fix_openenv_no_vllm,
     fix_executorch,
+    patch_vllm_for_notebooks,
 )
 
 fix_xformers_performance_issue()
 fix_vllm_aimv2_issue()
 fix_vllm_guided_decoding_params()
 fix_vllm_pdl_blackwell()
+fix_rocm_triton_key_error()
 ignore_logger_messages()
 patch_ipykernel_hf_xet()
 patch_trackio()
@@ -147,11 +150,13 @@ patch_datasets()
 patch_enable_input_require_grads()
 fix_openenv_no_vllm()
 fix_executorch()
+patch_vllm_for_notebooks()
 
 del fix_xformers_performance_issue
 del fix_vllm_aimv2_issue
 del fix_vllm_guided_decoding_params
 del fix_vllm_pdl_blackwell
+del fix_rocm_triton_key_error
 del ignore_logger_messages
 del patch_ipykernel_hf_xet
 del patch_trackio
@@ -159,6 +164,7 @@ del patch_datasets
 del patch_enable_input_require_grads
 del fix_openenv_no_vllm
 del fix_executorch
+del patch_vllm_for_notebooks
 
 # Torch 2.4 has including_emulation
 if DEVICE_TYPE == "cuda":

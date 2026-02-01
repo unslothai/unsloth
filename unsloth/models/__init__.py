@@ -19,6 +19,7 @@ from .qwen2 import FastQwen2Model
 from .qwen3 import FastQwen3Model
 from .qwen3_moe import FastQwen3MoeModel
 from .granite import FastGraniteModel
+from .sentence_transformer import FastSentenceTransformer
 
 try:
     from .falcon_h1 import FastFalconH1Model
