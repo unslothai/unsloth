@@ -65,6 +65,9 @@ export function createStreamAdapter(apiUrl: string = API): ChatModelAdapter {
       }
       const decoder = new TextDecoder();
       let text = "";
+      let reasoningStart: number | null = null;
+      let reasoningDuration = 0;
+
       while (true) {
         const { done, value } = await reader.read();
         if (done) {
@@ -72,8 +75,21 @@ export function createStreamAdapter(apiUrl: string = API): ChatModelAdapter {
         }
         text += decoder.decode(value, { stream: true });
         const parts = parseThinkTags(text) ?? [];
+
+        if (parts.some((p) => p.type === "reasoning") && !reasoningStart) {
+          reasoningStart = Date.now();
+        }
+        if (text.includes("</think>") && reasoningStart && !reasoningDuration) {
+          reasoningDuration = Math.round(
+            (Date.now() - reasoningStart) / 1000,
+          );
+        }
+
         if (parts.length > 0) {
-          yield { content: parts };
+          yield {
+            content: parts,
+            metadata: { custom: { reasoningDuration } },
+          };
         }
       }
     },

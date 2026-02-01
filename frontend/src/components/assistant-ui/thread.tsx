@@ -19,6 +19,9 @@ import {
   MessagePrimitive,
   SuggestionPrimitive,
   ThreadPrimitive,
+  useComposerRuntime,
+  useMessageRuntime,
+  useThreadRuntime,
 } from "@assistant-ui/react";
 import { motion } from "framer-motion";
 import {
@@ -333,12 +336,21 @@ const UserMessage: FC = () => {
 const UserActionBar: FC = () => {
   return (
     <ActionBarPrimitive.Root
-      hideWhenRunning={true}
       autohide="not-last"
-      className="aui-user-action-bar-root flex flex-col items-end"
+      className="aui-user-action-bar-root flex items-center"
     >
+      <ActionBarPrimitive.Copy asChild={true}>
+        <TooltipIconButton tooltip="Copy">
+          <AuiIf condition={({ message }) => message.isCopied}>
+            <CheckIcon />
+          </AuiIf>
+          <AuiIf condition={({ message }) => !message.isCopied}>
+            <CopyIcon />
+          </AuiIf>
+        </TooltipIconButton>
+      </ActionBarPrimitive.Copy>
       <ActionBarPrimitive.Edit asChild={true}>
-        <TooltipIconButton tooltip="Edit" className="aui-user-action-edit p-4">
+        <TooltipIconButton tooltip="Edit" className="aui-user-action-edit">
           <PencilIcon />
         </TooltipIconButton>
       </ActionBarPrimitive.Edit>
@@ -347,6 +359,10 @@ const UserActionBar: FC = () => {
 };
 
 const EditComposer: FC = () => {
+  const threadRuntime = useThreadRuntime();
+  const composerRuntime = useComposerRuntime();
+  const messageRuntime = useMessageRuntime();
+
   return (
     <MessagePrimitive.Root className="aui-edit-composer-wrapper mx-auto flex w-full max-w-(--thread-max-width) flex-col px-2 py-3">
       <ComposerPrimitive.Root className="aui-edit-composer-root ml-auto flex w-full max-w-[85%] flex-col rounded-2xl bg-muted">
@@ -360,9 +376,25 @@ const EditComposer: FC = () => {
               Cancel
             </Button>
           </ComposerPrimitive.Cancel>
-          <ComposerPrimitive.Send asChild={true}>
-            <Button size="sm">Update</Button>
-          </ComposerPrimitive.Send>
+          <Button
+            size="sm"
+            onClick={() => {
+              const newText = composerRuntime.getState().text;
+              const originalText = messageRuntime.unstable_getCopyText();
+
+              if (newText === originalText) {
+                composerRuntime.cancel();
+                return;
+              }
+
+              if (threadRuntime.getState().isRunning) {
+                threadRuntime.cancelRun();
+              }
+              composerRuntime.send();
+            }}
+          >
+            Update
+          </Button>
         </div>
       </ComposerPrimitive.Root>
     </MessagePrimitive.Root>

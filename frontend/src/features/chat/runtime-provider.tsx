@@ -52,7 +52,7 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
     role: "assistant" as const,
     status: { type: "complete" as const, reason: "unknown" as const },
     metadata: {
-      custom: {},
+      custom: (m.metadata as Record<string, unknown>) ?? {},
       steps: [],
       unstable_annotations: [],
       unstable_data: [],
@@ -183,11 +183,13 @@ function ThreadHistoryProvider({
         const content = Array.isArray(message.content)
           ? JSON.parse(JSON.stringify(message.content))
           : [];
+        const custom = message.metadata?.custom;
         await db.messages.put({
           id: message.id,
           threadId: remoteId,
           role: message.role,
           content,
+          ...(custom && Object.keys(custom).length > 0 && { metadata: custom }),
           createdAt: message.createdAt?.getTime() ?? Date.now(),
         });
       },
