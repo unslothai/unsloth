@@ -11,7 +11,6 @@ import { Slider } from "@/components/ui/slider";
 import { Textarea } from "@/components/ui/textarea";
 import {
   ArrowDown01Icon,
-  Cancel01Icon,
   Delete02Icon,
   EngineIcon,
   FloppyDiskIcon,
@@ -21,7 +20,8 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { AnimatePresence, motion } from "motion/react";
-import { type ReactNode, useState } from "react";
+import type { ReactNode } from "react";
+import { useState } from "react";
 
 // --- Types & defaults ---
 
@@ -170,14 +170,12 @@ function CollapsibleSection({
 
 interface ChatSettingsPanelProps {
   open: boolean;
-  onClose: () => void;
   params: InferenceParams;
   onParamsChange: (params: InferenceParams) => void;
 }
 
 export function ChatSettingsPanel({
   open,
-  onClose,
   params,
   onParamsChange,
 }: ChatSettingsPanelProps) {
@@ -219,15 +217,10 @@ export function ChatSettingsPanel({
   }
 
   return (
-    <AnimatePresence>
-      {open && (
-        <motion.aside
-          initial={{ width: 0, opacity: 0 }}
-          animate={{ width: 272, opacity: 1 }}
-          exit={{ width: 0, opacity: 0 }}
-          transition={{ duration: 0.2, ease: "easeInOut" }}
-          className="flex h-full shrink-0 flex-col overflow-hidden border-l border-border/40 bg-muted/50"
-        >
+    <aside
+      className={`shrink-0 h-full overflow-hidden bg-sidebar transition-[width] duration-200 ease-linear ${open ? "w-[17rem] border-l border-sidebar-border" : "w-0"}`}
+    >
+      <div className="flex h-full w-[17rem] flex-col">
           {/* header */}
           <div className="flex items-center gap-2 px-3 py-2">
             <HugeiconsIcon
@@ -237,13 +230,6 @@ export function ChatSettingsPanel({
             <span className="flex-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
               Advanced Configuration
             </span>
-            <button
-              type="button"
-              onClick={onClose}
-              className="flex items-center justify-center rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent"
-            >
-              <HugeiconsIcon icon={Cancel01Icon} className="size-3.5" />
-            </button>
           </div>
 
           <div className="flex-1 overflow-y-auto px-1.5">
@@ -396,8 +382,7 @@ export function ChatSettingsPanel({
               </p>
             </CollapsibleSection>
           </div>
-        </motion.aside>
-      )}
-    </AnimatePresence>
+      </div>
+    </aside>
   );
 }

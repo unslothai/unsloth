@@ -276,6 +276,37 @@
   }
 }
 
+/* Minimal scrollbar — thumb only, no track */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+*:hover {
+  scrollbar-color: oklch(0.6 0 0 / 0.3) transparent;
+}
+.dark *:hover {
+  scrollbar-color: oklch(0.5 0 0 / 0.35) transparent;
+}
+
+/* Webkit (Chrome, Safari, Edge) */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 9999px;
+}
+*:hover::-webkit-scrollbar-thumb {
+  background: oklch(0.6 0 0 / 0.3);
+}
+.dark *:hover::-webkit-scrollbar-thumb {
+  background: oklch(0.5 0 0 / 0.35);
+}
+
 /*---break---*/
 
 @layer base {
