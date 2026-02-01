@@ -66,7 +66,7 @@ export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
           }}
         />
 
-        <ThreadPrimitive.ViewportFooter className="aui-thread-viewport-footer sticky bottom-0 mx-auto mt-auto flex w-full max-w-(--thread-max-width) flex-col gap-4 overflow-visible rounded-t-3xl pb-4 md:pb-4">
+        <ThreadPrimitive.ViewportFooter className="aui-thread-viewport-footer sticky bottom-0 mt-auto flex w-full flex-col gap-4 overflow-visible bg-background pb-4 md:pb-4 before:pointer-events-none before:absolute before:inset-x-0 before:bottom-full before:h-20 before:bg-gradient-to-t before:from-background before:to-transparent">
           <ThreadScrollToBottom />
           <AuiIf condition={({ thread }) => !thread.isEmpty}>
             {!hideComposer && <ComposerAnimated />}
@@ -138,6 +138,7 @@ const ComposerAnimated: FC = () => {
       layout={true}
       layoutId="composer"
       transition={{ type: "spring", bounce: 0.15, duration: 0.5 }}
+      className="mx-auto w-full max-w-(--thread-max-width)"
     >
       <Composer />
     </motion.div>
@@ -147,11 +148,11 @@ const ComposerAnimated: FC = () => {
 const Composer: FC = () => {
   return (
     <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col">
-      <ComposerPrimitive.AttachmentDropzone className="aui-composer-attachment-dropzone shadow-border ring-1 ring-border flex w-full flex-col rounded-2xl bg-background px-1 pt-2 outline-none transition-shadow has-[textarea:focus-visible]:ring-2 has-[textarea:focus-visible]:ring-ring/75 data-[dragging=true]:ring-ring data-[dragging=true]:bg-accent/50">
+      <ComposerPrimitive.AttachmentDropzone className="aui-composer-attachment-dropzone shadow-border ring-1 ring-border flex w-full flex-col rounded-2xl bg-background px-1 pt-2 outline-none transition-shadow data-[dragging=true]:ring-ring data-[dragging=true]:bg-accent/50">
         <ComposerAttachments />
         <ComposerPrimitive.Input
           placeholder="Send a message..."
-          className="aui-composer-input mb-1 max-h-32 min-h-14 w-full resize-none bg-transparent px-4 pt-2 pb-3 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-0"
+          className="aui-composer-input mb-1 max-h-32 min-h-12 w-full resize-none bg-transparent px-4 pt-2 pb-3 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-0"
           rows={1}
           autoFocus={true}
           aria-label="Message input"

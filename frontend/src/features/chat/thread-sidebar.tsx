@@ -8,7 +8,6 @@ import {
   SidebarMenuAction,
   SidebarMenuButton,
   SidebarMenuItem,
-  SidebarSeparator,
 } from "@/components/ui/sidebar";
 import {
   ColumnInsertIcon,
@@ -125,7 +124,7 @@ export function ThreadSidebar({
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
-        <SidebarSeparator />
+        {/*<SidebarSeparator />*/}
         <SidebarGroup className="flex-1">
           <SidebarGroupLabel>Your Chats</SidebarGroupLabel>
           <SidebarGroupContent>

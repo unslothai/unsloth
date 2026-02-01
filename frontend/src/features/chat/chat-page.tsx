@@ -187,7 +187,7 @@ function InlineSidebar({
         data-sidebar="sidebar"
         className={cn(
           "bg-sidebar text-sidebar-foreground h-full overflow-hidden transition-[width] duration-200 ease-linear",
-          !collapsed && (side === "left" ? "border-r border-sidebar-border" : "border-l border-sidebar-border"),
+          !collapsed && (side === "left" ? "border-r border-0 border-sidebar-border" : "border-l border-0 border-sidebar-border"),
           collapsed ? "w-0" : "w-(--sidebar-width)",
         )}
       >
