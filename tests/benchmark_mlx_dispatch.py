@@ -210,14 +210,33 @@ def benchmark_mlp(batch_size = 1, seq_len = 128, dim = 4096, hidden_dim = 11008,
     print(f"MLX (Full E2E):          {mlx_full_time_ms:.3f} ms / iter")
 
     # 4. Measure Exec Time with Pre-Transposed Weights (Optimization check)
-    gateW_T = gateW_mlx.T; upW_T = upW_mlx.T; downW_T = downW_mlx.T
-    gateA_T = gateA_mlx.T; gateB_T = gateB_mlx.T
-    upA_T = upA_mlx.T; upB_T = upB_mlx.T
-    downA_T = downA_mlx.T; downB_T = downB_mlx.T
-    
+    gateW_T = gateW_mlx.T
+    upW_T = upW_mlx.T
+    downW_T = downW_mlx.T
+    gateA_T = gateA_mlx.T
+    gateB_T = gateB_mlx.T
+    upA_T = upA_mlx.T
+    upB_T = upB_mlx.T
+    downA_T = downA_mlx.T
+    downB_T = downB_mlx.T
+
     # Define a kernel that expects transposed weights
     @mx.compile
-    def _compiled_mlp_transposed(X, gateW_T, gateA_T, gateB_T, gateS, upW_T, upA_T, upB_T, upS, downW_T, downA_T, downB_T, downS):
+    def _compiled_mlp_transposed(
+        X,
+        gateW_T,
+        gateA_T,
+        gateB_T,
+        gateS,
+        upW_T,
+        upA_T,
+        upB_T,
+        upS,
+        downW_T,
+        downA_T,
+        downB_T,
+        downS,
+    ):
         # gateW_T is (In, Out)
         gate = X @ gateW_T + (X @ gateA_T) @ gateB_T * gateS
         up = X @ upW_T + (X @ upA_T) @ upB_T * upS
@@ -226,37 +245,69 @@ def benchmark_mlp(batch_size = 1, seq_len = 128, dim = 4096, hidden_dim = 11008,
         return out
 
     out_mlx = _compiled_mlp_transposed(
-        X_mlx, gateW_T, gateA_T, gateB_T, gateS_mlx, 
-        upW_T, upA_T, upB_T, upS_mlx, 
-        downW_T, downA_T, downB_T, downS_mlx
+        X_mlx,
+        gateW_T,
+        gateA_T,
+        gateB_T,
+        gateS_mlx,
+        upW_T,
+        upA_T,
+        upB_T,
+        upS_mlx,
+        downW_T,
+        downA_T,
+        downB_T,
+        downS_mlx,
     )
     mx.eval(out_mlx)
-    
+
     start = time.time()
     for _ in range(iters):
         out_mlx = _compiled_mlp_transposed(
-            X_mlx, gateW_T, gateA_T, gateB_T, gateS_mlx, 
-            upW_T, upA_T, upB_T, upS_mlx, 
-            downW_T, downA_T, downB_T, downS_mlx
+            X_mlx,
+            gateW_T,
+            gateA_T,
+            gateB_T,
+            gateS_mlx,
+            upW_T,
+            upA_T,
+            upB_T,
+            upS_mlx,
+            downW_T,
+            downA_T,
+            downB_T,
+            downS_mlx,
         )
         mx.eval(out_mlx)
     transposed_time_ms = (time.time() - start) * 1000 / iters
     print(f"MLX (Pre-Transposed + Compiled): {transposed_time_ms:.3f} ms / iter")
 
     # 5. Eager Mode (No Optimization)
-    def _eager_mlp(X, gateW, gateA, gateB, gateS, upW, upA, upB, upS, downW, downA, downB, downS):
+    def _eager_mlp(
+        X, gateW, gateA, gateB, gateS, upW, upA, upB, upS, downW, downA, downB, downS
+    ):
         gate = X @ gateW.T + (X @ gateA.T) @ gateB.T * gateS
         up = X @ upW.T + (X @ upA.T) @ upB.T * upS
         act = gate * mx.sigmoid(gate) * up
         out = act @ downW.T + (act @ downA.T) @ downB.T * downS
         return out
-        
+
     start = time.time()
     for _ in range(iters):
         out_mlx = _eager_mlp(
-            X_mlx, gateW_mlx, gateA_mlx, gateB_mlx, gateS_mlx, 
-            upW_mlx, upA_mlx, upB_mlx, upS_mlx, 
-            downW_mlx, downA_mlx, downB_mlx, downS_mlx
+            X_mlx,
+            gateW_mlx,
+            gateA_mlx,
+            gateB_mlx,
+            gateS_mlx,
+            upW_mlx,
+            upA_mlx,
+            upB_mlx,
+            upS_mlx,
+            downW_mlx,
+            downA_mlx,
+            downB_mlx,
+            downS_mlx,
         )
         mx.eval(out_mlx)
     eager_time_ms = (time.time() - start) * 1000 / iters
