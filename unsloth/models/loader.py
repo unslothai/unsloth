@@ -318,7 +318,9 @@ class FastLanguageModel(FastLlamaModel):
         peft_error = None
         model_config = None
         peft_config = None
-        model_name_for_config = cfg_model_name if cfg_model_name is not None else model_name
+        model_name_for_config = (
+            cfg_model_name if cfg_model_name is not None else model_name
+        )
         try:
             model_config = AutoConfig.from_pretrained(
                 model_name_for_config,
