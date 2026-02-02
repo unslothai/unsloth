@@ -1131,13 +1131,18 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     RLTrainer_source = re.sub(r"[\n]{3,}", "\n", RLTrainer_source)
 
     # Create new function
-    created_module = create_new_function(
-        f"Unsloth{RLTrainer_name}",
-        RLTrainer_source,
-        f"trl.trainer.{trainer_file}",
-        imports,
-        overwrite = False,
-    )
+    try:
+        created_module = create_new_function(
+            f"Unsloth{RLTrainer_name}",
+            RLTrainer_source,
+            f"trl.trainer.{trainer_file}",
+            imports,
+            overwrite = False,
+        )
+    except Exception as exc:
+        if os.environ.get("UNSLOTH_LOGGING_ENABLED", "0") == "1":
+            print(f"Unsloth: Failed to compile {RLTrainer_name} ({exc}), falling back to original trainer.")
+        return
 
     # Patch Trainer
     exec(

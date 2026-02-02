@@ -124,6 +124,9 @@ from unsloth_zoo.device_type import (
 # Fix other issues
 from .import_fixes import (
     fix_xformers_performance_issue,
+    fix_deepseek_v2_moe_alias,
+    fix_qwen2_vl_max_pixels_none,
+    fix_qwen2_5_vl_tie_word_embeddings,
     fix_vllm_aimv2_issue,
     fix_vllm_guided_decoding_params,
     fix_vllm_pdl_blackwell,
@@ -139,6 +142,9 @@ from .import_fixes import (
 )
 
 fix_xformers_performance_issue()
+fix_deepseek_v2_moe_alias()
+fix_qwen2_vl_max_pixels_none()
+fix_qwen2_5_vl_tie_word_embeddings()
 fix_vllm_aimv2_issue()
 fix_vllm_guided_decoding_params()
 fix_vllm_pdl_blackwell()
@@ -153,6 +159,9 @@ fix_executorch()
 patch_vllm_for_notebooks()
 
 del fix_xformers_performance_issue
+del fix_deepseek_v2_moe_alias
+del fix_qwen2_vl_max_pixels_none
+del fix_qwen2_5_vl_tie_word_embeddings
 del fix_vllm_aimv2_issue
 del fix_vllm_guided_decoding_params
 del fix_vllm_pdl_blackwell

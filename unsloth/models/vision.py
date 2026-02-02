@@ -767,7 +767,9 @@ class FastBaseModel:
                 is_vision_model = is_vlm,
             )
             model.vllm_engine = llm
-            model.fast_generate = model.vllm_engine.generate
+            model.fast_generate = make_vllm_fast_generate_wrapper(
+                model, model.vllm_engine.generate
+            )
             model.fast_generate_batches = functools.partial(
                 generate_batches, model.vllm_engine
             )
@@ -851,6 +853,12 @@ class FastBaseModel:
             correct_dtype = correct_dtype,
         )
         model, tokenizer = patch_tokenizer(model, tokenizer)
+        if fast_inference and hasattr(model, "vllm_engine"):
+            try:
+                model.vllm_engine._unsloth_hf_model = model
+                model.vllm_engine._unsloth_tokenizer = tokenizer
+            except Exception:
+                pass
         model = post_patch_loss_function(model)
 
         # Log Unsloth version for future fastpaths for inference

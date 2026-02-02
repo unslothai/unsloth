@@ -434,6 +434,86 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__generate_and_score_completions)
 
 
+# Normalize non-string completions for reward functions
+def grpo_trainer__calculate_rewards(function_name, function):
+    if function_name != "_calculate_rewards":
+        return function
+
+    function = function.replace(
+        "        rewards_per_func = torch.zeros(len(prompts), len(self.reward_funcs), device=device)\n",
+        "        rewards_per_func = torch.zeros(len(prompts), len(self.reward_funcs), device=device)\n"
+        "        def _unsloth_completion_to_text(completion):\n"
+        "            if isinstance(completion, str):\n"
+        "                return completion\n"
+        "            if isinstance(completion, dict):\n"
+        "                if completion.get('text') is not None:\n"
+        "                    return completion['text']\n"
+        "                if completion.get('content') is not None:\n"
+        "                    return completion['content']\n"
+        "                if completion.get('message') is not None:\n"
+        "                    return _unsloth_completion_to_text(completion['message'])\n"
+        "                return str(completion)\n"
+        "            if isinstance(completion, list):\n"
+        "                return ''.join(_unsloth_completion_to_text(item) for item in completion)\n"
+        "            return str(completion)\n"
+        "        completion_texts = [_unsloth_completion_to_text(c) for c in completions]\n"
+        "        completions_are_text = all(isinstance(c, str) for c in completions)\n"
+    )
+
+    function = function.replace(
+        "        reward_kwargs[\"trainer_state\"] = self.state\n",
+        "        reward_kwargs[\"trainer_state\"] = self.state\n"
+        "        reward_kwargs[\"completion_texts\"] = completion_texts\n"
+        "        reward_kwargs[\"completion_raw\"] = completions\n",
+    )
+
+    function = function.replace(
+        "                        texts = [p + c for p, c in zip(prompts, completions, strict=True)]\n",
+        "                        texts = [p + c for p, c in zip(prompts, (completions if completions_are_text else completion_texts), strict=True)]\n",
+    )
+
+    # Add a robust try/except wrapper for reward funcs expecting dict completions.
+    if "string indices must be integers" not in function and "output_reward_func = reward_func(" in function:
+        base_try = (
+            "                    # UNSLOTH_REWARD_FUNC_TRY\n"
+            "                    try:\n"
+            "                        output_reward_func = reward_func(\n"
+            "                            prompts=prompts, completions=(completions if completions_are_text else completion_texts), completion_ids=completion_ids_list, **reward_kwargs\n"
+            "                        )\n"
+            "                    except TypeError as e:\n"
+            "                        if \"string indices must be integers\" in str(e):\n"
+            "                            def _wrap_completion_list(_comps):\n"
+            "                                if isinstance(_comps, list):\n"
+            "                                    return [c if isinstance(c, dict) else {\"content\": c} for c in _comps]\n"
+            "                                return [{\"content\": _comps}]\n"
+            "                            _wrapped = [_wrap_completion_list(c) for c in completions]\n"
+            "                            output_reward_func = reward_func(\n"
+            "                                prompts=prompts, completions=_wrapped, completion_ids=completion_ids_list, **reward_kwargs\n"
+            "                            )\n"
+            "                        else:\n"
+            "                            raise\n"
+        )
+        variant_a = (
+            "                    output_reward_func = reward_func(\n"
+            "                        prompts=prompts, completions=completions, completion_ids=completion_ids_list, **reward_kwargs\n"
+            "                    )\n"
+        )
+        variant_b = (
+            "                    output_reward_func = reward_func(\n"
+            "                        prompts=prompts, completions=(completions if completions_are_text else completion_texts), completion_ids=completion_ids_list, **reward_kwargs\n"
+            "                    )\n"
+        )
+        if variant_a in function:
+            function = function.replace(variant_a, base_try)
+        elif variant_b in function:
+            function = function.replace(variant_b, base_try)
+
+    return function
+
+
+RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__calculate_rewards)
+
+
 # Fix {"reasoning_effort" : "high"} not applied
 def grpo_trainer_fix_maybe_apply_chat_template(function_name, function):
     spaces = function.find("def ")
