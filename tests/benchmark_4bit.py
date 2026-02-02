@@ -13,11 +13,13 @@ def benchmark_4bit_vs_16bit(dim = 4096, hidden_dim = 11008, iters = 50):
 
     # 1. Setup Layer
     layer = torch.nn.Linear(dim, hidden_dim).to(device).to(dtype)
+    with torch.no_grad():
+        layer.weight.div_(dim**0.5)
     X = torch.randn(1, 1, dim, device = device, dtype = dtype)
 
     # LoRA params (dummies)
-    A = torch.randn(8, dim, device = device, dtype = dtype)
-    B = torch.randn(hidden_dim, 8, device = device, dtype = dtype)
+    A = torch.randn(8, dim, device = device, dtype = dtype) / (dim**0.5)
+    B = torch.randn(hidden_dim, 8, device = device, dtype = dtype) / (8**0.5)
     S = 1.0
 
     # 2. Benchmark 16-Bit

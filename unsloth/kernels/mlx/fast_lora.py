@@ -13,13 +13,24 @@ def quantized_matmul(X, W):
     """
     Handles both standard and quantized MLX weights.
     W can be an mx.array or MLXQuantizedWeight.
+    Auto-dispatches to Metal GEMV for FP16 Batch=1.
     """
     if isinstance(W, MLXQuantizedWeight):
         # MLX Quantized Matmul
-        # X: (..., In), W: (Out, In_packed)
         return mx.fast.quantized_matmul(
-            X, W.weight, W.scales, W.biases, group_size = W.group_size, bits = W.bits
+            X, 
+            W.weight, 
+            W.scales, 
+            W.biases, 
+            group_size = W.weight.shape[1] // W.scales.shape[1] if hasattr(W, "group_size") and W.group_size else 64, # Fallback check
+            bits = 4
         )
+    
+    # Batch=1 Optimization for FP16
+    if X.size // X.shape[-1] == 1:
+        from ..metal.gemv import fast_gemv
+        return fast_gemv(X.reshape(1, -1), W)
+
     return X @ W.T
 
 
@@ -102,39 +113,37 @@ def apply_lora_mlp_swiglu(
         # X shape is usually (Batch, Seq, Dim).
         # For decoding, Batch=1, Seq=1.
         if X_mlx.size // X_mlx.shape[-1] == 1:
-            from ..metal.gemv import fast_gemv
-
             # Need weights in MLX
             gateW_mlx = torch_to_mlx(gateW)
             gateA_mlx = torch_to_mlx(gateA)
             gateB_mlx = torch_to_mlx(gateB)
             gateS_val = gateS.item() if hasattr(gateS, "item") else gateS
-
+            
             upW_mlx = torch_to_mlx(upW)
             upA_mlx = torch_to_mlx(upA)
             upB_mlx = torch_to_mlx(upB)
             upS_val = upS.item() if hasattr(upS, "item") else upS
-
+            
             downW_mlx = torch_to_mlx(downW)
             downA_mlx = torch_to_mlx(downA)
             downB_mlx = torch_to_mlx(downB)
             downS_val = downS.item() if hasattr(downS, "item") else downS
-
+            
             # 1. Gate
-            gate = fast_gemv(X_mlx.reshape(1, -1), gateW_mlx)
+            gate = quantized_matmul(X_mlx.reshape(1, -1), gateW_mlx)
             gate += (X_mlx.reshape(1, -1) @ gateA_mlx.T) @ gateB_mlx.T * gateS_val
-
+            
             # 2. Up
-            up = fast_gemv(X_mlx.reshape(1, -1), upW_mlx)
+            up = quantized_matmul(X_mlx.reshape(1, -1), upW_mlx)
             up += (X_mlx.reshape(1, -1) @ upA_mlx.T) @ upB_mlx.T * upS_val
-
+            
             # 3. SwiGLU: silu(gate) * up
             act = (gate * mx.sigmoid(gate)) * up
-
+            
             # 4. Down
-            out = fast_gemv(act, downW_mlx)
+            out = quantized_matmul(act, downW_mlx)
             out += (act @ downA_mlx.T) @ downB_mlx.T * downS_val
-
+            
             return mlx_to_torch(out.reshape(X.shape), device = X.device, dtype = X.dtype)
 
         # Standard Batch Path (Compiled)

@@ -54,13 +54,13 @@ class ComprehensiveBenchmark:
         
         # 1. Setup Data
         X = torch.randn(batch_size, seq_len, dim, device=self.device, dtype=self.dtype)
-        gateW = torch.randn(hidden_dim, dim, device=self.device, dtype=self.dtype)
-        upW = torch.randn(hidden_dim, dim, device=self.device, dtype=self.dtype)
-        downW = torch.randn(dim, hidden_dim, device=self.device, dtype=self.dtype)
+        gateW = torch.randn(hidden_dim, dim, device=self.device, dtype=self.dtype) / (dim**0.5)
+        upW = torch.randn(hidden_dim, dim, device=self.device, dtype=self.dtype) / (dim**0.5)
+        downW = torch.randn(dim, hidden_dim, device=self.device, dtype=self.dtype) / (hidden_dim**0.5)
         
         # LoRA adapters
-        A = torch.randn(8, dim, device=self.device, dtype=self.dtype)
-        B = torch.randn(hidden_dim, 8, device=self.device, dtype=self.dtype)
+        A = torch.randn(8, dim, device=self.device, dtype=self.dtype) / (dim**0.5)
+        B = torch.randn(hidden_dim, 8, device=self.device, dtype=self.dtype) / (8**0.5)
         S = 1.0
         
         # Reference (PyTorch Naive)
@@ -140,13 +140,15 @@ class ComprehensiveBenchmark:
     def run_qkv_benchmark(self, batch_size=1, seq_len=1, dim=4096, hidden_dim=4096):
         log_header(f"QKV Benchmark: B={batch_size}, S={seq_len}, D={dim}")
         
-        QW = torch.randn(dim, dim, device=self.device, dtype=self.dtype)
-        KW = torch.randn(dim, dim, device=self.device, dtype=self.dtype)
-        VW = torch.randn(dim, dim, device=self.device, dtype=self.dtype)
+        QW = torch.randn(dim, dim, device=self.device, dtype=self.dtype) / (dim**0.5)
+        KW = torch.randn(dim, dim, device=self.device, dtype=self.dtype) / (dim**0.5)
+        VW = torch.randn(dim, dim, device=self.device, dtype=self.dtype) / (dim**0.5)
         X = torch.randn(batch_size, seq_len, dim, device=self.device, dtype=self.dtype)
         
         # LoRA Dummy
-        QA = torch.randn(8, dim, device=self.device, dtype=self.dtype); QB = torch.randn(dim, 8, device=self.device, dtype=self.dtype); QS = 1.0
+        QA = torch.randn(8, dim, device=self.device, dtype=self.dtype) / (dim**0.5)
+        QB = torch.randn(dim, 8, device=self.device, dtype=self.dtype) / (8**0.5)
+        QS = 1.0
         
         # PyTorch
         def torch_qkv(x):
