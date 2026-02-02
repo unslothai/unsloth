@@ -29,19 +29,6 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 
-const HF_REPO_MAP: Record<string, string> = {
-  "llava-1.6-7b": "unsloth/llava-v1.6-mistral-7b",
-  "llava-1.6-13b": "unsloth/llava-v1.6-vicuna-13b",
-  "qwen-vl-7b": "Qwen/Qwen-VL-Chat",
-  bark: "suno/bark",
-  "xtts-v2": "coqui/XTTS-v2",
-  "gemma-3-27b": "unsloth/gemma-3-27b",
-  "llama-3.1-8b": "unsloth/Llama-3.1-8B",
-  "mistral-7b": "unsloth/mistral-7b-v0.3",
-  "phi-4": "unsloth/phi-4",
-  "qwen-2.5-7b": "Qwen/Qwen2.5-7B",
-};
-
 const DOT_COLORS = [
   "bg-amber-400",
   "bg-blue-400",
@@ -180,7 +167,7 @@ export function ModelSection() {
               placeholder="unsloth/gemma-3-27b"
               value={
                 selectedModel
-                  ? (HF_REPO_MAP[selectedModel] ?? selectedModel)
+                  ? (MODELS.find((m) => m.id === selectedModel)?.hfRepo ?? selectedModel)
                   : ""
               }
               onChange={(e) => setSelectedModel(e.target.value || null)}

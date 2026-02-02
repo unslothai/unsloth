@@ -74,6 +74,7 @@ export const MODELS: ModelOption[] = [
     params: "7B",
     vram: "~6GB",
     context: "4K",
+    hfRepo: "unsloth/llava-v1.6-mistral-7b",
     recommended: true,
   },
   {
@@ -83,6 +84,7 @@ export const MODELS: ModelOption[] = [
     params: "13B",
     vram: "~10GB",
     context: "4K",
+    hfRepo: "unsloth/llava-v1.6-vicuna-13b",
     recommended: true,
   },
   {
@@ -92,10 +94,11 @@ export const MODELS: ModelOption[] = [
     params: "7B",
     vram: "~6GB",
     context: "8K",
+    hfRepo: "Qwen/Qwen-VL-Chat",
   },
   // TTS models
-  { id: "bark", name: "Bark", type: "tts", params: "1B", recommended: true },
-  { id: "xtts-v2", name: "XTTS v2", type: "tts", params: "500M" },
+  { id: "bark", name: "Bark", type: "tts", params: "1B", hfRepo: "suno/bark", recommended: true },
+  { id: "xtts-v2", name: "XTTS v2", type: "tts", params: "500M", hfRepo: "coqui/XTTS-v2" },
   // Embedding models
   {
     id: "bge-large",
@@ -114,6 +117,7 @@ export const MODELS: ModelOption[] = [
     params: "8B",
     vram: "~6GB",
     context: "128K",
+    hfRepo: "unsloth/Llama-3.1-8B",
     recommended: true,
   },
   {
@@ -131,6 +135,7 @@ export const MODELS: ModelOption[] = [
     params: "7B",
     vram: "~5GB",
     context: "32K",
+    hfRepo: "unsloth/mistral-7b-v0.3",
   },
   {
     id: "qwen2-7b",
@@ -163,6 +168,7 @@ export const MODELS: ModelOption[] = [
     params: "27B",
     vram: "~18GB",
     context: "128K",
+    hfRepo: "unsloth/gemma-3-27b",
     recommended: true,
   },
 ];
@@ -249,4 +255,11 @@ export const DEFAULT_HYPERPARAMS = {
   finetuneAttentionModules: true,
   finetuneMLPModules: true,
   targetModules: TARGET_MODULES,
+};
+
+export const MODEL_TYPE_TO_HF_TASK: Record<ModelType, string> = {
+  text: "text-generation",
+  vision: "image-text-to-text",
+  tts: "text-to-speech",
+  embeddings: "feature-extraction",
 };
