@@ -43,6 +43,7 @@
     "framer-motion": "^11.15.0",
     "katex": "^0.16.22",
     "lucide-react": "^0.563.0",
+    "mammoth": "^1.11.0",
     "motion": "^12.29.2",
     "next-themes": "^0.4.6",
     "radix-ui": "^1.4.3",

@@ -22,6 +22,7 @@ import {
 } from "@assistant-ui/react";
 import { createAssistantStream } from "assistant-stream";
 import { type ReactElement, type ReactNode, useEffect, useMemo } from "react";
+import mammoth from "mammoth";
 import { extractText, getDocumentProxy } from "unpdf";
 import { createStreamAdapter } from "./adapter";
 import { db } from "./db";
@@ -51,6 +52,39 @@ class PDFAttachmentAdapter implements AttachmentAdapter {
       name: attachment.name,
       contentType: attachment.contentType,
       content: [{ type: "text", text: `[PDF: ${attachment.name}]\n${text}` }],
+      status: { type: "complete" },
+    };
+  }
+
+  async remove(): Promise<void> {}
+}
+
+class DocxAttachmentAdapter implements AttachmentAdapter {
+  accept =
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
+  async add({ file }: { file: File }): Promise<PendingAttachment> {
+    return {
+      id: crypto.randomUUID(),
+      type: "document",
+      name: file.name,
+      contentType: file.type,
+      file,
+      status: { type: "requires-action", reason: "composer-send" },
+    };
+  }
+
+  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    const arrayBuffer = await attachment.file.arrayBuffer();
+    const { value } = await mammoth.extractRawText({ arrayBuffer });
+    return {
+      id: attachment.id,
+      type: "document",
+      name: attachment.name,
+      contentType: attachment.contentType,
+      content: [
+        { type: "text", text: `[DOCX: ${attachment.name}]\n${value}` },
+      ],
       status: { type: "complete" },
     };
   }
@@ -236,6 +270,7 @@ function ThreadHistoryProvider({
         new SimpleImageAttachmentAdapter(),
         new SimpleTextAttachmentAdapter(),
         new PDFAttachmentAdapter(),
+        new DocxAttachmentAdapter(),
       ]),
     [],
   );
