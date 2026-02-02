@@ -1,11 +1,6 @@
 import { SectionCard } from "@/components/section-card";
 import { Button } from "@/components/ui/button";
 import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
-import {
   Combobox,
   ComboboxContent,
   ComboboxEmpty,
@@ -27,7 +22,6 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { DATASETS } from "@/config/training";
 import {
   useDebouncedValue,
   useHfDatasetSearch,
@@ -36,7 +30,6 @@ import {
 import { formatCompact } from "@/lib/utils";
 import { useWizardStore } from "@/stores/training";
 import {
-  ArrowDown01Icon,
   CloudUploadIcon,
   Database02Icon,
   FileAttachmentIcon,
@@ -59,89 +52,26 @@ export function DatasetSection() {
         hfToken: s.hfToken,
       })),
     );
-  const [recOpen, setRecOpen] = useState(false);
 
   const [inputValue, setInputValue] = useState("");
+  const selectingRef = useRef(false);
   const debouncedQuery = useDebouncedValue(inputValue);
   const {
     results: hfResults,
     isLoading,
     isLoadingMore,
-    hasMore,
     fetchMore,
   } = useHfDatasetSearch(debouncedQuery, {
     accessToken: hfToken || undefined,
   });
 
-  const curatedDatasets = useMemo(
-    () =>
-      [...DATASETS].sort(
-        (a, b) => (b.recommended ? 1 : 0) - (a.recommended ? 1 : 0),
-      ),
-    [],
-  );
-
-  const datasetMap = useMemo(() => {
-    const map = new Map<
-      string,
-      {
-        label: string;
-        description?: string;
-        size?: string;
-        totalExamples?: number;
-        sizeCategory?: string;
-        downloads?: number;
-      }
-    >();
-    for (const d of curatedDatasets) {
-      map.set(d.id, {
-        label: d.name,
-        description: d.description,
-        size: d.size,
-      });
-    }
-    for (const r of hfResults) {
-      if (!map.has(r.id)) {
-        map.set(r.id, {
-          label: r.id,
-          downloads: r.downloads,
-          totalExamples: r.totalExamples,
-          sizeCategory: r.sizeCategory,
-        });
-      }
-    }
-    return map;
-  }, [curatedDatasets, hfResults]);
-
-  const displayIds = useMemo(() => {
-    if (!debouncedQuery.trim()) {
-      return curatedDatasets.map((d) => d.id);
-    }
-    const q = debouncedQuery.toLowerCase();
-    const curatedIds = curatedDatasets
-      .filter(
-        (d) =>
-          d.name.toLowerCase().includes(q) || d.id.toLowerCase().includes(q),
-      )
-      .map((d) => d.id);
-    const liveIds = hfResults
-      .map((r) => r.id)
-      .filter((id) => !curatedIds.includes(id));
-    return [...curatedIds, ...liveIds];
-  }, [debouncedQuery, curatedDatasets, hfResults]);
-
-  const allIds = useMemo(
-    () => [
-      ...new Set([
-        ...curatedDatasets.map((d) => d.id),
-        ...hfResults.map((r) => r.id),
-      ]),
-    ],
-    [curatedDatasets, hfResults],
-  );
+  const resultIds = useMemo(() => hfResults.map((r) => r.id), [hfResults]);
 
   const comboboxAnchorRef = useRef<HTMLDivElement>(null);
-  const { scrollRef, sentinelRef } = useInfiniteScroll(fetchMore);
+  const { scrollRef, sentinelRef } = useInfiniteScroll(
+    fetchMore,
+    hfResults.length,
+  );
 
   return (
     <SectionCard
@@ -184,13 +114,13 @@ export function DatasetSection() {
           </span>
           <div ref={comboboxAnchorRef}>
             <Combobox
-              items={allIds}
-              filteredItems={displayIds}
+              items={resultIds}
+              filteredItems={resultIds}
               filter={null}
               value={dataset}
-              onValueChange={(id) => setDataset(id)}
-              onInputValueChange={(val) => setInputValue(val)}
-              itemToStringValue={(id) => datasetMap.get(id)?.label ?? id}
+              onValueChange={(id) => { selectingRef.current = true; setDataset(id); }}
+              onInputValueChange={(val) => { if (selectingRef.current) { selectingRef.current = false; return; } setInputValue(val); }}
+              itemToStringValue={(id) => id}
               autoHighlight={true}
             >
               <ComboboxInput
@@ -204,7 +134,7 @@ export function DatasetSection() {
               <ComboboxContent anchor={comboboxAnchorRef}>
                 {isLoading ? (
                   <div className="flex items-center justify-center py-4 gap-2 text-xs text-muted-foreground">
-                    <Spinner className="size-4" /> Searching…
+                    <Spinner className="size-4" /> Searching...
                   </div>
                 ) : (
                   <ComboboxEmpty>No datasets found</ComboboxEmpty>
@@ -215,13 +145,10 @@ export function DatasetSection() {
                 >
                   <ComboboxList className="p-1 !max-h-none !overflow-visible">
                     {(id: string) => {
-                      const meta = datasetMap.get(id);
-                      const label = meta?.label ?? id;
-                      const rowLabel =
-                        meta?.size ??
-                        (meta?.totalExamples
-                          ? `${formatCompact(meta.totalExamples)} rows`
-                          : null);
+                      const r = hfResults.find((r) => r.id === id);
+                      const detail = r?.totalExamples
+                        ? `${formatCompact(r.totalExamples)} rows`
+                        : (r?.sizeCategory ?? null);
                       return (
                         <ComboboxItem
                           key={id}
@@ -231,34 +158,30 @@ export function DatasetSection() {
                           <Tooltip>
                             <TooltipTrigger asChild={true}>
                               <span className="min-w-0 flex-1 truncate">
-                                {label}
+                                {id}
                               </span>
                             </TooltipTrigger>
                             <TooltipContent
                               side="left"
                               className="max-w-xs break-all"
                             >
-                              {label}
+                              {id}
                             </TooltipContent>
                           </Tooltip>
-                          {rowLabel ? (
-                            <span className="text-xs text-muted-foreground shrink-0">
-                              {rowLabel}
-                            </span>
-                          ) : meta?.sizeCategory ? (
+                          {detail ? (
                             <span className="text-[10px] text-muted-foreground shrink-0">
-                              {meta.sizeCategory}
+                              {detail}
                             </span>
-                          ) : meta?.downloads != null ? (
+                          ) : r?.downloads != null ? (
                             <span className="text-[10px] text-muted-foreground shrink-0">
-                              ↓{formatCompact(meta.downloads)}
+                              ↓{formatCompact(r.downloads)}
                             </span>
                           ) : null}
                         </ComboboxItem>
                       );
                     }}
                   </ComboboxList>
-                  {hasMore && <div ref={sentinelRef} className="h-px" />}
+                  <div ref={sentinelRef} className="h-px" />
                   {isLoadingMore && (
                     <div className="flex items-center justify-center py-2">
                       <Spinner className="size-3.5 text-muted-foreground" />
@@ -345,41 +268,6 @@ export function DatasetSection() {
             </span>
           </div>
         )}
-
-        {/* Recommended */}
-        <Collapsible open={recOpen} onOpenChange={setRecOpen}>
-          <CollapsibleTrigger className="flex w-full cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
-            <HugeiconsIcon
-              icon={ArrowDown01Icon}
-              className={`size-3.5 transition-transform ${recOpen ? "rotate-180" : ""}`}
-            />
-            Common Datasets
-          </CollapsibleTrigger>
-          <CollapsibleContent className="mt-3 flex flex-col gap-1.5">
-            {DATASETS.filter((d) => d.recommended).map((d) => (
-              <button
-                type="button"
-                key={d.id}
-                onClick={() => setDataset(d.id)}
-                className="flex w-full corner-squircle cursor-pointer items-center gap-2.5 rounded-2xl border bg-muted/30 px-3 py-2.5 text-left text-sm transition-colors hover:bg-muted/60"
-              >
-                <HugeiconsIcon
-                  icon={Database02Icon}
-                  className="size-4 shrink-0 text-muted-foreground"
-                />
-                <div className="flex-1 min-w-0">
-                  <p className="text-xs font-medium">{d.name}</p>
-                  <p className="text-[10px] text-muted-foreground">
-                    {d.description}
-                  </p>
-                </div>
-                <span className="text-[10px] font-mono text-muted-foreground mt-0.5">
-                  {d.size}
-                </span>
-              </button>
-            ))}
-          </CollapsibleContent>
-        </Collapsible>
 
         {/* Action buttons */}
         <div className="grid grid-cols-2 gap-2">

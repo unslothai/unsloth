@@ -76,12 +76,12 @@ export function useHfDatasetSearch(
   const createIter = useCallback(
     () =>
       listDatasets({
-        search: { query },
+        search: query.trim() ? { query } : {},
         additionalFields: ["cardData"],
         ...(accessToken ? { credentials: { accessToken } } : {}),
       }) as AsyncGenerator<unknown>,
     [query, accessToken],
   );
 
-  return useHfPaginatedSearch(query, createIter, mapDataset);
+  return useHfPaginatedSearch(createIter, mapDataset);
 }

@@ -19,24 +19,26 @@ const BATCH = 20;
 
 async function pullBatch<T>(
   iter: AsyncGenerator<unknown>,
-  mapItem: (raw: unknown) => T,
+  mapItem: (raw: unknown) => T | null,
   size: number,
 ) {
   const items: T[] = [];
-  for (let i = 0; i < size; i++) {
+  while (items.length < size) {
     const result = await iter.next();
     if (result.done) {
       return { items, done: true };
     }
-    items.push(mapItem(result.value));
+    const mapped = mapItem(result.value);
+    if (mapped !== null) {
+      items.push(mapped);
+    }
   }
   return { items, done: false };
 }
 
 export function useHfPaginatedSearch<T>(
-  query: string,
   createIter: () => AsyncGenerator<unknown>,
-  mapItem: (raw: unknown) => T,
+  mapItem: (raw: unknown) => T | null,
 ): HfPaginatedState<T> & { fetchMore: () => void } {
   const [state, setState] = useState<HfPaginatedState<T>>(
     INITIAL as HfPaginatedState<T>,
@@ -50,11 +52,6 @@ export function useHfPaginatedSearch<T>(
   useEffect(() => {
     const v = ++versionRef.current;
     iterRef.current = null;
-
-    if (!query.trim()) {
-      setState(INITIAL as HfPaginatedState<T>);
-      return;
-    }
 
     setState((prev) => ({
       ...prev,
@@ -92,7 +89,7 @@ export function useHfPaginatedSearch<T>(
           error: err instanceof Error ? err.message : "Search failed",
         });
       });
-  }, [query, createIter, mapItem]);
+  }, [createIter, mapItem]);
 
   const fetchMore = useCallback(() => {
     const iter = iterRef.current;
