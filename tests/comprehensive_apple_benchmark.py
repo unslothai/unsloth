@@ -168,7 +168,9 @@ class ComprehensiveBenchmark:
             mlx_16_latency = (time.time() - start) * 1000 / iters
 
             error = (y_ref - y_mlx).abs().max().item()
-            log_result("MLX 16-Bit (Cached)", mlx_16_latency, error, mem = get_mem_stats()["mlx"])
+            log_result(
+                "MLX 16-Bit (Cached)", mlx_16_latency, error, mem = get_mem_stats()["mlx"]
+            )
 
             # 3. MLX 4-Bit
             # Cache quantized weights
@@ -225,7 +227,7 @@ class ComprehensiveBenchmark:
                 mlx_4_latency,
                 error_q,
                 extra = f"{colors.GREEN}[Quantized]{colors.ENDC}",
-                mem = get_mem_stats()["mlx"]
+                mem = get_mem_stats()["mlx"],
             )
 
     def run_qkv_benchmark(self, batch_size = 1, seq_len = 1, dim = 4096, hidden_dim = 4096):
@@ -288,7 +290,9 @@ class ComprehensiveBenchmark:
     def run_llama3_benchmark(self, batch_size = 1, seq_len = 1):
         # Llama-3-8B Scale: D=4096, H=14336
         log_header(f"Llama-3-8B Scale Benchmark (B={batch_size}, S={seq_len})")
-        self.run_mlp_benchmark(batch_size = batch_size, seq_len = seq_len, dim = 4096, hidden_dim = 14336)
+        self.run_mlp_benchmark(
+            batch_size = batch_size, seq_len = seq_len, dim = 4096, hidden_dim = 14336
+        )
 
     def diagnose(self):
         log_header("System Diagnosis")
