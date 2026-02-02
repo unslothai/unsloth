@@ -17,7 +17,7 @@ import { useState } from "react";
 const NAV_ITEMS = [
   { label: "Studio", href: "/studio", icon: ZapIcon, enabled: true },
   { label: "Evaluate", href: "/evaluate", enabled: false },
-  { label: "Export", href: "/export", enabled: false },
+  { label: "Export", href: "/export", enabled: true },
   { label: "Chat", href: "/chat", enabled: true },
 ];
 

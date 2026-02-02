@@ -4,6 +4,7 @@ import { Route as chatRoute } from "./routes/chat";
 import { Route as gridTestRoute } from "./routes/grid-test";
 import { Route as homeRoute } from "./routes/home";
 import { Route as onboardingRoute } from "./routes/onboarding";
+import { Route as exportRoute } from "./routes/export";
 import { Route as studioRoute } from "./routes/studio";
 
 const routeTree = rootRoute.addChildren([
@@ -12,6 +13,7 @@ const routeTree = rootRoute.addChildren([
   gridTestRoute,
   studioRoute,
   chatRoute,
+  exportRoute,
 ]);
 
 export const router = createRouter({ routeTree });

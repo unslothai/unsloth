@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(tree:*)",
+      "Bash(findstr:*)",
+      "Bash(bun run typecheck:*)",
+      "mcp__plugin_serena_serena__list_dir",
+      "Bash(bun x tsc:*)",
+      "mcp__plugin_perplexity_perplexity__perplexity_ask",
+      "WebSearch",
+      "WebFetch(domain:www.npmjs.com)",
+      "WebFetch(domain:github.com)"
+    ]
+  }
+}

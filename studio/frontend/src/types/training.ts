@@ -128,6 +128,7 @@ export interface ModelOption {
   params: string;
   vram?: string;
   context?: string;
+  hfRepo?: string;
   recommended?: boolean;
 }
 
