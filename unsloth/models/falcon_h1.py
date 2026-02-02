@@ -456,9 +456,9 @@ def FalconH1DecoderLayer_fast_forward(
         # Fully Connected
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(
-            self.post_attention_layernorm, hidden_states
+            self.pre_ff_layernorm, hidden_states
         )
-        hidden_states = fast_swiglu_inference(self.mlp, hidden_states)
+        hidden_states = fast_swiglu_inference(self.feed_forward, hidden_states)
         hidden_states += residual
     else:
         residual = hidden_states

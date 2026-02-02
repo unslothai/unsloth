@@ -24,7 +24,7 @@ from .utils import (
     is_cdna,
 )
 from transformers.models.llama.modeling_llama import logger
-from packaging.version import Version
+from unsloth_zoo.utils import Version
 
 from unsloth_zoo.loss_utils import (
     patch_loss_functions as _patch_loss_functions,

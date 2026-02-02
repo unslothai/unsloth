@@ -25,6 +25,7 @@ import collections
 import numpy as np
 import gc
 import subprocess
+import psutil
 
 from unsloth_zoo.tokenizer_utils import (
     mean_of_trained_tokens,

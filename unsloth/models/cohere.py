@@ -15,7 +15,7 @@
 from .llama import *
 from ._utils import __version__
 from unsloth_zoo.hf_utils import dtype_from_config
-from unsloth_zoo.utils import _get_dtype
+from unsloth_zoo.utils import _get_dtype, Version
 from ..utils.packing import get_packed_info_from_kwargs
 from ..utils.attention_dispatch import (
     AttentionConfig,
@@ -35,8 +35,6 @@ try:
         repeat_kv,
     )
 except:
-    from packaging.version import Version
-
     transformers_version = Version(transformers_version)
     if not transformers_version >= Version("4.42"):
         raise ImportError(
@@ -344,8 +342,8 @@ def CohereAttention_fast_forward_inference(
     Kn = Kn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
     Vn = Vn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
     if self.use_qk_norm:
-        Q = fast_layernorm_inference(self.q_norm, Q, self.q_norm_out_weight)
-        K = fast_layernorm_inference(self.k_norm, K, self.k_norm_out_weight)
+        Qn = fast_layernorm_inference(self.q_norm, Qn, self.q_norm_out_weight)
+        Kn = fast_layernorm_inference(self.k_norm, Kn, self.k_norm_out_weight)
 
     # cos, sin = self.rotary_emb(Vn, seq_len = kv_seq_len)
     # Qn, Kn = inplace_rope_embedding(Qn, Kn, cos, sin, position_ids)
@@ -479,7 +477,7 @@ def CohereModel_fast_forward_inference(
             )
         )
 
-        hidden_states_mlp = fast_swiglu_inference(self.mlp, hidden_states)
+        hidden_states_mlp = fast_swiglu_inference(decoder_layer.mlp, hidden_states)
         residual += hidden_states_attention
         residual += hidden_states_mlp
         hidden_states = residual
