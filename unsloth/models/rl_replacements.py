@@ -238,42 +238,6 @@ def grpo_trainer__prepare_inputs(function_name, function):
 
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__prepare_inputs)
 
-if trl_version >= Version("0.27.0"):
-    def grpo_trainer__calculate_rewards(function_name, function):
-        if function_name != "_calculate_rewards":
-            return function
-        # For TRL 0.27.0 where the function has weird chat template logic
-        target_line = '        reward_kwargs["trainer_state"] = self.state'
-
-        replacement_block = """        reward_kwargs["trainer_state"] = self.state
-
-            # --- Monkey Patch: Batch Decode for Rewards ---
-            try:
-                reward_kwargs["completions_text"] = [
-                    self.processing_class.apply_chat_template(
-                        completion,
-                        tokenize=False,
-                    )
-                    for completion in completions
-                ]
-
-                reward_kwargs["prompts_text"] = [
-                    self.processing_class.apply_chat_template(
-                        prompt,
-                        tokenize=False,
-                    )
-                    for prompt in prompts
-                ]
-            except Exception as e:
-                # Fallback or logging if chat template application fails (e.g. non-conversational format)
-                pass
-            """
-        function = function.replace(target_line, replacement_block)
-        return function
-
-
-    RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__calculate_rewards)
-
 # Remove collective RPC of reload weights from generate
 # trl added reload weights (potentially for quantized models), we don't need it for our use case (LoRA primarily)
 # https://github.com/huggingface/trl/commit/7856d3b1f6518601732f489883b341bb6dd36434#diff-964e6fd373aa93037604064cb2b822d7f8e2735e33f791065acf2c4c3552d393R1168-R1169
