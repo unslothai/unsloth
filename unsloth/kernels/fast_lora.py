@@ -263,8 +263,10 @@ def apply_lora_mlp_swiglu(self, X, inplace = True):
 
     # MLX Dispatch
     from .mlx.fast_ops import USE_MLX_FAST
+
     if USE_MLX_FAST:
         from .mlx.fast_lora import apply_lora_mlp_swiglu as mlx_apply_lora_mlp_swiglu
+
         gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
         upW, upW_quant, upA, upB, upS = get_lora_parameters(self.up_proj)
         downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
@@ -673,8 +675,10 @@ def apply_lora_qkv(self, X, inplace = True):
 
     # MLX Dispatch
     from .mlx.fast_ops import USE_MLX_FAST
+
     if USE_MLX_FAST:
         from .mlx.fast_lora import apply_lora_qkv as mlx_apply_lora_qkv
+
         QW, QW_quant, QA, QB, QS = get_lora_parameters(self.q_proj)
         KW, KW_quant, KA, KB, KS = get_lora_parameters(self.k_proj)
         VW, VW_quant, VA, VB, VS = get_lora_parameters(self.v_proj)
@@ -814,8 +818,10 @@ def apply_lora_o(self, X):
 
     # MLX Dispatch
     from .mlx.fast_ops import USE_MLX_FAST
+
     if USE_MLX_FAST:
         from .mlx.fast_lora import apply_lora_o as mlx_apply_lora_o
+
         OW, OW_quant, OA, OB, OS = get_lora_parameters(self.o_proj)
         return mlx_apply_lora_o(X, OW, OW_quant, OA, OB, OS)
 
