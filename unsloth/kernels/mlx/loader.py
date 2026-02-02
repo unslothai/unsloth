@@ -28,19 +28,36 @@ def load_mlx_weights(model, weights_path):
     if not os.path.exists(weights_path):
         return False
 
-    print(
-        f"Unsloth: Loading pre-quantized MLX weights from {os.path.basename(weights_path)}..."
-    )
+    print(f"Unsloth: Loading pre-quantized MLX weights from {os.path.basename(weights_path)}...")
 
     # Load MLX weights
     mlx_weights = mx.load(weights_path)
 
+    # Detect prefix (some models use 'model.layers.N', others just 'layers.N')
+    # Try to find a layer-like key
+    prefix = ""
+    for key in mlx_weights.keys():
+        if "layers.0" in key:
+            if key.startswith("model.layers.0"):
+                prefix = "model."
+            break
+
+    def get_mlx_val(base_key, suffix=""):
+        full_key = f"{prefix}{base_key}{suffix}"
+        return mlx_weights.get(full_key)
+
     num_layers = 0
-    while (
-        f"layers.{num_layers}.attention.wq.weight" in mlx_weights
-        or f"layers.{num_layers}.attention.wq" in mlx_weights
-    ):
-        num_layers += 1
+    while True:
+        test_key = f"{prefix}layers.{num_layers}.attention.wq"
+        if f"{test_key}.weight" in mlx_weights or test_key in mlx_weights:
+            num_layers += 1
+        else:
+            break
+
+    if num_layers == 0:
+        print(f"Unsloth: [Warning] Could not detect any layers in MLX weights {os.path.basename(weights_path)}.")
+        print(f"Unsloth: Available keys (first 10): {list(mlx_weights.keys())[:10]}")
+        return False
 
     count = 0
     for i in range(num_layers):
@@ -55,14 +72,13 @@ def load_mlx_weights(model, weights_path):
                     param = p
                     break
 
-            if param is None:
-                continue
+            if param is None: continue
 
             # Extract MLX components
             # Handle both 'key.weight' and 'key' naming conventions
-            w = mlx_weights.get(f"{mlx_base}.weight") or mlx_weights.get(mlx_base)
-            s = mlx_weights.get(f"{mlx_base}.scales")
-            b = mlx_weights.get(f"{mlx_base}.biases")
+            w = get_mlx_val(mlx_base, ".weight") or get_mlx_val(mlx_base)
+            s = get_mlx_val(mlx_base, ".scales")
+            b = get_mlx_val(mlx_base, ".biases")
 
             if w is not None and s is not None:
                 # Meta-information from the weights or model config
@@ -71,13 +87,18 @@ def load_mlx_weights(model, weights_path):
                 group_size = 64
 
                 # Check for explicit bits/group_size metadata in the file
-                bits = mlx_weights.get(f"{mlx_base}.bits", mx.array(bits)).item()
-                group_size = mlx_weights.get(
-                    f"{mlx_base}.group_size", mx.array(group_size)
-                ).item()
+                bits_arr = get_mlx_val(mlx_base, ".bits")
+                if bits_arr is not None: bits = bits_arr.item()
+
+                gs_arr = get_mlx_val(mlx_base, ".group_size")
+                if gs_arr is not None: group_size = gs_arr.item()
 
                 param._mlx_cache = MLXQuantizedWeight(
-                    weight = w, scales = s, biases = b, group_size = group_size, bits = bits
+                    weight = w,
+                    scales = s,
+                    biases = b,
+                    group_size = group_size,
+                    bits = bits
                 )
                 count += 1
 
