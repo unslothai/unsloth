@@ -1,74 +1,45 @@
+import type { PipelineType } from "@huggingface/hub";
 import { listModels } from "@huggingface/hub";
-import { useEffect, useState } from "react";
+import { useCallback } from "react";
+import { useHfPaginatedSearch } from "./use-hf-paginated-search";
 
 export interface HfModelResult {
   id: string;
   downloads: number;
   likes: number;
-  task?: string;
+  totalParams?: number;
 }
 
-interface HfSearchState {
-  results: HfModelResult[];
-  isLoading: boolean;
-  error: string | null;
+function mapModel(raw: unknown): HfModelResult {
+  const m = raw as {
+    name: string;
+    downloads: number;
+    likes: number;
+    safetensors?: { total: number };
+  };
+  return {
+    id: m.name,
+    downloads: m.downloads,
+    likes: m.likes,
+    totalParams: m.safetensors?.total,
+  };
 }
 
 export function useHfModelSearch(
   query: string,
-  options?: { task?: string; limit?: number; accessToken?: string },
-): HfSearchState {
-  const { task, limit = 20, accessToken } = options ?? {};
-  const [state, setState] = useState<HfSearchState>({
-    results: [],
-    isLoading: false,
-    error: null,
-  });
+  options?: { task?: PipelineType; accessToken?: string },
+) {
+  const { task, accessToken } = options ?? {};
 
-  useEffect(() => {
-    if (!query.trim()) {
-      setState({ results: [], isLoading: false, error: null });
-      return;
-    }
+  const createIter = useCallback(
+    () =>
+      listModels({
+        search: { query, ...(task ? { task } : {}) },
+        additionalFields: ["safetensors"],
+        ...(accessToken ? { credentials: { accessToken } } : {}),
+      }) as AsyncGenerator<unknown>,
+    [query, task, accessToken],
+  );
 
-    let cancelled = false;
-    setState((prev) => ({ ...prev, isLoading: true, error: null }));
-
-    (async () => {
-      try {
-        const results: HfModelResult[] = [];
-        const iter = listModels({
-          search: { query, ...(task ? { task } : {}) },
-          limit,
-          ...(accessToken ? { credentials: { accessToken } } : {}),
-        });
-        for await (const model of iter) {
-          if (cancelled) return;
-          results.push({
-            id: model.id,
-            downloads: model.downloads,
-            likes: model.likes,
-            task: model.task,
-          });
-        }
-        if (!cancelled) {
-          setState({ results, isLoading: false, error: null });
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setState({
-            results: [],
-            isLoading: false,
-            error: err instanceof Error ? err.message : "Search failed",
-          });
-        }
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [query, task, limit, accessToken]);
-
-  return state;
+  return useHfPaginatedSearch(query, createIter, mapModel);
 }

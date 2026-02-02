@@ -25,12 +25,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Spinner } from "@/components/ui/spinner";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { MODELS } from "@/config/training";
+import { MODEL_TYPE_TO_HF_TASK, MODELS } from "@/config/training";
+import { useDebouncedValue, useHfModelSearch, useInfiniteScroll } from "@/hooks";
+import { formatCompact } from "@/lib/utils";
 import { useWizardStore } from "@/stores/training";
 import type { TrainingMethod } from "@/types/training";
 import {
@@ -39,7 +42,7 @@ import {
   Search01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useMemo, useRef } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 export function ModelSelectionStep() {
@@ -63,18 +66,51 @@ export function ModelSelectionStep() {
     })),
   );
 
-  const filteredModels = useMemo(() => {
-    if (!modelType) {
-      return [];
-    }
-    // Sort recommended first
+  const [inputValue, setInputValue] = useState("");
+  const debouncedQuery = useDebouncedValue(inputValue);
+  const task = modelType ? MODEL_TYPE_TO_HF_TASK[modelType] : undefined;
+  const { results: hfResults, isLoading, isLoadingMore, hasMore, fetchMore } = useHfModelSearch(debouncedQuery, {
+    task,
+    accessToken: hfToken || undefined,
+  });
+
+  const curatedModels = useMemo(() => {
+    if (!modelType) return [];
     return MODELS.filter((m) => m.type === modelType).sort(
       (a, b) => (b.recommended ? 1 : 0) - (a.recommended ? 1 : 0),
     );
   }, [modelType]);
 
-  const selectedModelData = MODELS.find((m) => m.id === selectedModel);
+  const modelMap = useMemo(() => {
+    const map = new Map<string, { label: string; params?: string; totalParams?: number; downloads?: number; recommended?: boolean }>();
+    for (const m of curatedModels) {
+      map.set(m.hfRepo ?? m.id, { label: m.name, params: m.params, recommended: m.recommended });
+    }
+    for (const r of hfResults) {
+      if (!map.has(r.id)) {
+        map.set(r.id, { label: r.id, downloads: r.downloads, totalParams: r.totalParams });
+      }
+    }
+    return map;
+  }, [curatedModels, hfResults]);
+
+  const displayIds = useMemo(() => {
+    if (!debouncedQuery.trim()) {
+      return curatedModels.map((m) => m.hfRepo ?? m.id);
+    }
+    const q = debouncedQuery.toLowerCase();
+    const curatedIds = curatedModels
+      .filter((m) => m.name.toLowerCase().includes(q) || m.id.toLowerCase().includes(q) || m.hfRepo?.toLowerCase().includes(q))
+      .map((m) => m.hfRepo ?? m.id);
+    const liveIds = hfResults.map((r) => r.id).filter((id) => !curatedIds.includes(id));
+    return [...curatedIds, ...liveIds];
+  }, [debouncedQuery, curatedModels, hfResults]);
+
+  const allIds = useMemo(() => [...new Set([...curatedModels.map((m) => m.hfRepo ?? m.id), ...hfResults.map((r) => r.id)])], [curatedModels, hfResults]);
+
+  const selectedModelData = MODELS.find((m) => m.id === selectedModel || m.hfRepo === selectedModel);
   const comboboxAnchorRef = useRef<HTMLDivElement>(null);
+  const { scrollRef, sentinelRef } = useInfiniteScroll(fetchMore);
 
   return (
     <FieldGroup>
@@ -123,7 +159,7 @@ export function ModelSelectionStep() {
               </button>
             </TooltipTrigger>
             <TooltipContent>
-              Search from our curated list of optimized models.{" "}
+              Search Hugging Face models or pick from our recommended list.{" "}
               <a
                 href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/what-model-should-i-use"
                 target="_blank"
@@ -137,44 +173,71 @@ export function ModelSelectionStep() {
         </FieldLabel>
         <div ref={comboboxAnchorRef}>
           <Combobox
-            items={filteredModels.map((m) => m.name)}
-            value={selectedModelData?.name ?? null}
-            onValueChange={(name) => {
-              const model = filteredModels.find((m) => m.name === name);
-              if (model) {
-                setSelectedModel(model.id);
-              }
-            }}
+            items={allIds}
+            filteredItems={displayIds}
+            filter={null}
+            value={selectedModel}
+            onValueChange={(id) => setSelectedModel(id)}
+            onInputValueChange={(val) => setInputValue(val)}
+            itemToStringValue={(id) => modelMap.get(id)?.label ?? id}
             autoHighlight={true}
           >
-            <ComboboxInput placeholder="Search by name..." className="w-full">
+            <ComboboxInput placeholder="Search models..." className="w-full">
               <InputGroupAddon>
                 <HugeiconsIcon icon={Search01Icon} className="size-4" />
               </InputGroupAddon>
             </ComboboxInput>
             <ComboboxContent anchor={comboboxAnchorRef}>
-              <ComboboxEmpty>No models found</ComboboxEmpty>
-              <ComboboxList className="p-1">
-                {(name: string) => {
-                  const model = filteredModels.find((m) => m.name === name);
-                  return (
-                    <ComboboxItem key={name} value={name}>
-                      <span className="flex-1">{name}</span>
-                      {model && (
-                        <Badge variant="outline" className="ml-auto">
-                          {model.params}
-                        </Badge>
-                      )}
-                    </ComboboxItem>
-                  );
-                }}
-              </ComboboxList>
+              {isLoading ? (
+                <div className="flex items-center justify-center py-4 gap-2 text-xs text-muted-foreground"><Spinner className="size-4" /> Searching…</div>
+              ) : (
+                <ComboboxEmpty>No models found</ComboboxEmpty>
+              )}
+              <div ref={scrollRef} className="max-h-64 overflow-y-auto overscroll-contain [scrollbar-width:thin]">
+                <ComboboxList className="p-1 !max-h-none !overflow-visible">
+                  {(id: string) => {
+                    const meta = modelMap.get(id);
+                    const label = meta?.label ?? id;
+                    const sizeLabel = meta?.params ?? (meta?.totalParams ? formatCompact(meta.totalParams) : null);
+                    return (
+                      <ComboboxItem key={id} value={id} className="justify-between">
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span className="min-w-0 flex-1 truncate">{label}</span>
+                          </TooltipTrigger>
+                          <TooltipContent side="left" className="max-w-xs break-all">
+                            {label}
+                          </TooltipContent>
+                        </Tooltip>
+                        <span className="flex items-center gap-1.5 shrink-0">
+                          {meta?.recommended && (
+                            <Badge variant="outline" className="text-[10px] px-1.5 py-0 text-emerald-600 border-emerald-200 dark:border-emerald-800 dark:text-emerald-400">
+                              Recommended
+                            </Badge>
+                          )}
+                          {sizeLabel ? (
+                            <Badge variant="outline">{sizeLabel}</Badge>
+                          ) : meta?.downloads != null ? (
+                            <span className="text-[10px] text-muted-foreground">↓{formatCompact(meta.downloads)}</span>
+                          ) : null}
+                        </span>
+                      </ComboboxItem>
+                    );
+                  }}
+                </ComboboxList>
+                {hasMore && <div ref={sentinelRef} className="h-px" />}
+                {isLoadingMore && (
+                  <div className="flex items-center justify-center py-2">
+                    <Spinner className="size-3.5 text-muted-foreground" />
+                  </div>
+                )}
+              </div>
             </ComboboxContent>
           </Combobox>
         </div>
       </Field>
 
-      {selectedModelData && (
+      {(selectedModelData || selectedModel) && (
         <Field>
           <div className="flex items-center justify-between">
             <div>
@@ -208,7 +271,7 @@ export function ModelSelectionStep() {
                 </Tooltip>
               </FieldLabel>
               <FieldDescription>
-                Choose how to fine-tune {selectedModelData.name}
+                Choose how to fine-tune {selectedModelData?.name ?? selectedModel}
               </FieldDescription>
             </div>
             <Select

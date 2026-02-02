@@ -26,13 +26,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Spinner } from "@/components/ui/spinner";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { DATASETS } from "@/config/training";
-import { cn } from "@/lib/utils";
+import { useDebouncedValue, useHfDatasetSearch, useInfiniteScroll } from "@/hooks";
+import { cn, formatCompact } from "@/lib/utils";
 import { useWizardStore } from "@/stores/training";
 import type { DatasetFormat } from "@/types/training";
 import {
@@ -42,7 +44,7 @@ import {
   Upload04Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useMemo, useRef } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 const FORMAT_OPTIONS: { value: DatasetFormat; label: string }[] = [
@@ -79,26 +81,56 @@ export function DatasetStep() {
     })),
   );
 
-  const sortedDatasets = useMemo(
-    () =>
-      // Sort recommended first
-      [...DATASETS].sort(
-        (a, b) => (b.recommended ? 1 : 0) - (a.recommended ? 1 : 0),
-      ),
+  const [inputValue, setInputValue] = useState("");
+  const debouncedQuery = useDebouncedValue(inputValue);
+  const { results: hfResults, isLoading, isLoadingMore, hasMore, fetchMore } = useHfDatasetSearch(debouncedQuery, {
+    accessToken: hfToken || undefined,
+  });
+
+  const curatedDatasets = useMemo(
+    () => [...DATASETS].sort((a, b) => (b.recommended ? 1 : 0) - (a.recommended ? 1 : 0)),
     [],
   );
 
-  const selectedDatasetData = DATASETS.find((d) => d.id === dataset);
+  const datasetMap = useMemo(() => {
+    const map = new Map<string, { label: string; description?: string; size?: string; totalExamples?: number; sizeCategory?: string; downloads?: number; recommended?: boolean }>();
+    for (const d of curatedDatasets) {
+      map.set(d.id, { label: d.name, description: d.description, size: d.size, recommended: d.recommended });
+    }
+    for (const r of hfResults) {
+      if (!map.has(r.id)) {
+        map.set(r.id, { label: r.id, downloads: r.downloads, totalExamples: r.totalExamples, sizeCategory: r.sizeCategory });
+      }
+    }
+    return map;
+  }, [curatedDatasets, hfResults]);
+
+  const displayIds = useMemo(() => {
+    if (!debouncedQuery.trim()) {
+      return curatedDatasets.map((d) => d.id);
+    }
+    const q = debouncedQuery.toLowerCase();
+    const curatedIds = curatedDatasets
+      .filter((d) => d.name.toLowerCase().includes(q) || d.id.toLowerCase().includes(q))
+      .map((d) => d.id);
+    const liveIds = hfResults.map((r) => r.id).filter((id) => !curatedIds.includes(id));
+    return [...curatedIds, ...liveIds];
+  }, [debouncedQuery, curatedDatasets, hfResults]);
+
+  const allIds = useMemo(
+    () => [...new Set([...curatedDatasets.map((d) => d.id), ...hfResults.map((r) => r.id)])],
+    [curatedDatasets, hfResults],
+  );
+
   const comboboxAnchorRef = useRef<HTMLDivElement>(null);
+  const { scrollRef, sentinelRef } = useInfiniteScroll(fetchMore);
 
   const handleFileUpload = () => {
-    // Mock file upload
     setUploadedFile("my_dataset.jsonl");
   };
 
   return (
     <FieldGroup>
-      {/* Source Toggle */}
       <Field>
         <FieldLabel>Source</FieldLabel>
         <div className="flex gap-2">
@@ -163,48 +195,71 @@ export function DatasetStep() {
             <FieldLabel>Search datasets</FieldLabel>
             <div ref={comboboxAnchorRef}>
               <Combobox
-                items={sortedDatasets.map((d) => d.name)}
-                value={selectedDatasetData?.name ?? null}
-                onValueChange={(name) => {
-                  const ds = sortedDatasets.find((d) => d.name === name);
-                  if (ds) {
-                    setDataset(ds.id);
-                  }
-                }}
+                items={allIds}
+                filteredItems={displayIds}
+                filter={null}
+                value={dataset}
+                onValueChange={(id) => setDataset(id)}
+                onInputValueChange={(val) => setInputValue(val)}
+                itemToStringValue={(id) => datasetMap.get(id)?.label ?? id}
                 autoHighlight={true}
               >
-                <ComboboxInput
-                  placeholder="Search by name..."
-                  className="w-full"
-                >
+                <ComboboxInput placeholder="Search datasets..." className="w-full">
                   <InputGroupAddon>
                     <HugeiconsIcon icon={Search01Icon} className="size-4" />
                   </InputGroupAddon>
                 </ComboboxInput>
                 <ComboboxContent anchor={comboboxAnchorRef}>
-                  <ComboboxEmpty>No datasets found</ComboboxEmpty>
-                  <ComboboxList className="p-1">
-                    {(name: string) => {
-                      const ds = sortedDatasets.find((d) => d.name === name);
-                      return (
-                        <ComboboxItem key={name} value={name}>
-                          <div className="flex flex-col gap-0.5 flex-1">
-                            <span>{name}</span>
-                            {ds && (
-                              <span className="text-xs text-muted-foreground">
-                                {ds.description}
+                  {isLoading ? (
+                    <div className="flex items-center justify-center py-4 gap-2 text-xs text-muted-foreground"><Spinner className="size-4" /> Searching…</div>
+                  ) : (
+                    <ComboboxEmpty>No datasets found</ComboboxEmpty>
+                  )}
+                  <div ref={scrollRef} className="max-h-64 overflow-y-auto overscroll-contain [scrollbar-width:thin]">
+                    <ComboboxList className="p-1 !max-h-none !overflow-visible">
+                      {(id: string) => {
+                        const meta = datasetMap.get(id);
+                        const label = meta?.label ?? id;
+                        const rowLabel = meta?.size ?? (meta?.totalExamples ? `${formatCompact(meta.totalExamples)} rows` : null);
+                        return (
+                          <ComboboxItem key={id} value={id} className="justify-between">
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <div className="flex flex-col gap-0.5 min-w-0 flex-1">
+                                  <span className="truncate">{label}</span>
+                                  {meta?.description && (
+                                    <span className="text-xs text-muted-foreground truncate">{meta.description}</span>
+                                  )}
+                                </div>
+                              </TooltipTrigger>
+                              <TooltipContent side="left" className="max-w-xs break-all">
+                                {label}
+                              </TooltipContent>
+                            </Tooltip>
+                            {rowLabel ? (
+                              <Badge variant="outline" className="shrink-0">
+                                {rowLabel}
+                              </Badge>
+                            ) : meta?.sizeCategory ? (
+                              <span className="text-[10px] text-muted-foreground shrink-0">
+                                {meta.sizeCategory}
                               </span>
-                            )}
-                          </div>
-                          {ds && (
-                            <Badge variant="outline" className="ml-auto">
-                              {ds.size}
-                            </Badge>
-                          )}
-                        </ComboboxItem>
-                      );
-                    }}
-                  </ComboboxList>
+                            ) : meta?.downloads != null ? (
+                              <span className="text-[10px] text-muted-foreground shrink-0">
+                                ↓{formatCompact(meta.downloads)}
+                              </span>
+                            ) : null}
+                          </ComboboxItem>
+                        );
+                      }}
+                    </ComboboxList>
+                    {hasMore && <div ref={sentinelRef} className="h-px" />}
+                    {isLoadingMore && (
+                      <div className="flex items-center justify-center py-2">
+                        <Spinner className="size-3.5 text-muted-foreground" />
+                      </div>
+                    )}
+                  </div>
                 </ComboboxContent>
               </Combobox>
             </div>
@@ -250,7 +305,6 @@ export function DatasetStep() {
         </>
       )}
 
-      {/* Format Selection */}
       <Field>
         <div className="flex items-center justify-between">
           <FieldLabel className="flex items-center gap-1.5">

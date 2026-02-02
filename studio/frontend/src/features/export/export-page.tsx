@@ -8,8 +8,9 @@ import {
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { SectionCard } from "@/components/section-card";
-import { MODELS } from "@/config/training";
+import { findModelById } from "@/config/training";
 import { useWizardStore } from "@/stores/training";
+import { isAdapterMethod } from "@/types/training";
 import {
   Tooltip,
   TooltipContent,
@@ -19,6 +20,8 @@ import { InformationCircleIcon, PackageIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { useMemo, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
+import { collapseAnim } from "./anim";
 import { ExportDialog } from "./components/export-dialog";
 import { MethodPicker } from "./components/method-picker";
 import { QuantPicker } from "./components/quant-picker";
@@ -29,25 +32,27 @@ import {
   getEstimatedSize,
 } from "./constants";
 
-const anim = {
-  initial: { height: 0, opacity: 0 },
-  animate: { height: "auto" as const, opacity: 1 },
-  exit: { height: 0, opacity: 0 },
-  transition: { duration: 0.3, ease: [0.25, 0.1, 0.25, 1] as const },
-};
-
 export function ExportPage() {
-  const store = useWizardStore();
-  const isAdapter = store.trainingMethod === "lora" || store.trainingMethod === "qlora";
-  const modelInfo = useMemo(
-    () => MODELS.find((m) => m.id === store.selectedModel),
-    [store.selectedModel],
-  );
+  const { trainingMethod, selectedModel, saveSteps, trainingMetrics, epochs, loraRank, hfToken, setHfToken } =
+    useWizardStore(
+      useShallow((s) => ({
+        trainingMethod: s.trainingMethod,
+        selectedModel: s.selectedModel,
+        saveSteps: s.saveSteps,
+        trainingMetrics: s.trainingMetrics,
+        epochs: s.epochs,
+        loraRank: s.loraRank,
+        hfToken: s.hfToken,
+        setHfToken: s.setHfToken,
+      })),
+    );
+  const isAdapter = isAdapterMethod(trainingMethod);
+  const modelInfo = useMemo(() => findModelById(selectedModel), [selectedModel]);
 
   const checkpoints = useMemo(() => {
     if (isAdapter) {
-      const interval = store.saveSteps > 0 ? store.saveSteps : 100;
-      const total = store.trainingMetrics?.totalSteps ?? 500;
+      const interval = saveSteps > 0 ? saveSteps : 100;
+      const total = trainingMetrics?.totalSteps ?? 500;
       const entries: { value: string; label: string; detail: string }[] = [];
       for (let step = interval; step <= total; step += interval) {
         const loss = (1.5 - (step / total) * 0.7 + Math.random() * 0.05).toFixed(2);
@@ -60,7 +65,7 @@ export function ExportPage() {
       return entries.reverse();
     }
     return [{ value: "final-model", label: "Final Model", detail: "Full fine-tuned weights" }];
-  }, [isAdapter, store.saveSteps, store.trainingMetrics?.totalSteps]);
+  }, [isAdapter, saveSteps, trainingMetrics?.totalSteps]);
 
   const [checkpoint, setCheckpoint] = useState<string | null>(null);
   const [exportMethod, setExportMethod] = useState<ExportMethod | null>(null);
@@ -79,7 +84,7 @@ export function ExportPage() {
 
   const estimatedSize = getEstimatedSize(exportMethod, quantLevels);
   const canExport = checkpoint && exportMethod && (exportMethod !== "gguf" || quantLevels.length > 0);
-  const baseModelName = modelInfo?.name ?? store.selectedModel ?? "—";
+  const baseModelName = modelInfo?.name ?? selectedModel ?? "—";
 
   return (
     <div className="min-h-screen bg-background">
@@ -141,7 +146,7 @@ export function ExportPage() {
                   </div>
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">Method</span>
-                    <span className="font-medium">{METHOD_LABELS[store.trainingMethod] ?? store.trainingMethod}</span>
+                    <span className="font-medium">{METHOD_LABELS[trainingMethod] ?? trainingMethod}</span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">Checkpoints</span>
@@ -149,12 +154,12 @@ export function ExportPage() {
                   </div>
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">Epochs</span>
-                    <span className="font-medium">{store.epochs}</span>
+                    <span className="font-medium">{epochs}</span>
                   </div>
                   {isAdapter && (
                     <div className="flex justify-between">
                       <span className="text-muted-foreground">LoRA Rank</span>
-                      <span className="font-medium">{store.loraRank}</span>
+                      <span className="font-medium">{loraRank}</span>
                     </div>
                   )}
                   {modelInfo?.params && (
@@ -186,7 +191,7 @@ export function ExportPage() {
 
           <AnimatePresence>
             {exportMethod === "gguf" && (
-              <motion.div {...anim} className="overflow-hidden">
+              <motion.div {...collapseAnim} className="overflow-hidden">
                 <QuantPicker value={quantLevels} onChange={setQuantLevels} />
               </motion.div>
             )}
@@ -220,8 +225,8 @@ export function ExportPage() {
         onHfUsernameChange={setHfUsername}
         modelName={modelName}
         onModelNameChange={setModelName}
-        hfToken={store.hfToken}
-        onHfTokenChange={store.setHfToken}
+        hfToken={hfToken}
+        onHfTokenChange={setHfToken}
         privateRepo={privateRepo}
         onPrivateRepoChange={setPrivateRepo}
       />

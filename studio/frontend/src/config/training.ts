@@ -4,6 +4,7 @@ import type {
   ModelType,
   StepConfig,
 } from "@/types/training";
+import type { PipelineType } from "@huggingface/hub";
 
 export const STEPS: StepConfig[] = [
   {
@@ -257,7 +258,12 @@ export const DEFAULT_HYPERPARAMS = {
   targetModules: TARGET_MODULES,
 };
 
-export const MODEL_TYPE_TO_HF_TASK: Record<ModelType, string> = {
+export function findModelById(id: string | null): ModelOption | undefined {
+  if (!id) return undefined;
+  return MODELS.find((m) => m.id === id || m.hfRepo === id);
+}
+
+export const MODEL_TYPE_TO_HF_TASK: Record<ModelType, PipelineType> = {
   text: "text-generation",
   vision: "image-text-to-text",
   tts: "text-to-speech",
