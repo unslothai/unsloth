@@ -75,7 +75,7 @@ class TestBridgeConversion:
         from unsloth.kernels.mlx import mlx_to_torch
 
         arr = mx.ones((4, 4))
-        tensor = mlx_to_torch(arr, device = "cpu")
+        tensor = mlx_to_torch(arr, device="cpu")
 
         assert isinstance(tensor, torch.Tensor)
         assert tensor.shape == (4, 4)
@@ -88,9 +88,9 @@ class TestBridgeConversion:
 
         original = torch.randn(8, 8)
         arr = torch_to_mlx(original)
-        recovered = mlx_to_torch(arr, device = "cpu")
+        recovered = mlx_to_torch(arr, device="cpu")
 
-        assert torch.allclose(original, recovered, atol = 1e-5)
+        assert torch.allclose(original, recovered, atol=1e-5)
 
     def test_mlx_context_manager(self):
         """mlx_context should work as context manager."""
@@ -101,9 +101,9 @@ class TestBridgeConversion:
 
         with mlx_context():
             arr = torch_to_mlx(tensor)
-            result = mlx_to_torch(arr, device = "cpu")
+            result = mlx_to_torch(arr, device="cpu")
 
-        assert torch.allclose(tensor, result, atol = 1e-5)
+        assert torch.allclose(tensor, result, atol=1e-5)
 
     def test_with_mlx_context_decorator(self):
         """with_mlx_context decorator should work."""
@@ -113,12 +113,12 @@ class TestBridgeConversion:
         @with_mlx_context
         def process(t):
             arr = torch_to_mlx(t)
-            return mlx_to_torch(arr, device = "cpu")
+            return mlx_to_torch(arr, device="cpu")
 
         tensor = torch.randn(4, 4)
         result = process(tensor)
 
-        assert torch.allclose(tensor, result, atol = 1e-5)
+        assert torch.allclose(tensor, result, atol=1e-5)
 
 
 class TestBridgeErrorHandling:

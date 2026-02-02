@@ -52,7 +52,7 @@ def log_header(text):
     print(f"{'='*80}{colors.ENDC}")
 
 
-def log_result(name, latency, error = None, extra = "", mem = None):
+def log_result(name, latency, error=None, extra="", mem=None):
     err_str = f" | Err: {error:.2e}" if error is not None else ""
     # mem is expected to be a dict or a float
     if isinstance(mem, dict) and "mlx_active" in mem:
@@ -67,7 +67,7 @@ def log_result(name, latency, error = None, extra = "", mem = None):
 
 
 class ComprehensiveBenchmark:
-    def __init__(self, device = "mps", dtype = torch.float16):
+    def __init__(self, device="mps", dtype=torch.float16):
         if not torch.backends.mps.is_available() and device == "mps":
             print(
                 f"{colors.RED}Warning: MPS not available, switching to CPU.{colors.ENDC}"
@@ -78,26 +78,26 @@ class ComprehensiveBenchmark:
         self.dtype = dtype
         self.results = []
 
-    def run_mlp_benchmark(self, batch_size = 1, seq_len = 1, dim = 4096, hidden_dim = 11008):
+    def run_mlp_benchmark(self, batch_size=1, seq_len=1, dim=4096, hidden_dim=11008):
         log_header(
             f"MLP Benchmark: B={batch_size}, S={seq_len}, D={dim}, H={hidden_dim}"
         )
 
         # 1. Setup Data
-        X = torch.randn(batch_size, seq_len, dim, device = self.device, dtype = self.dtype)
-        gateW = torch.randn(hidden_dim, dim, device = self.device, dtype = self.dtype) / (
+        X = torch.randn(batch_size, seq_len, dim, device=self.device, dtype=self.dtype)
+        gateW = torch.randn(hidden_dim, dim, device=self.device, dtype=self.dtype) / (
             dim**0.5
         )
-        upW = torch.randn(hidden_dim, dim, device = self.device, dtype = self.dtype) / (
+        upW = torch.randn(hidden_dim, dim, device=self.device, dtype=self.dtype) / (
             dim**0.5
         )
-        downW = torch.randn(dim, hidden_dim, device = self.device, dtype = self.dtype) / (
+        downW = torch.randn(dim, hidden_dim, device=self.device, dtype=self.dtype) / (
             hidden_dim**0.5
         )
 
         # LoRA adapters
-        A = torch.randn(8, dim, device = self.device, dtype = self.dtype) / (dim**0.5)
-        B = torch.randn(hidden_dim, 8, device = self.device, dtype = self.dtype) / (8**0.5)
+        A = torch.randn(8, dim, device=self.device, dtype=self.dtype) / (dim**0.5)
+        B = torch.randn(hidden_dim, 8, device=self.device, dtype=self.dtype) / (8**0.5)
         S = 1.0
 
         # Reference (PyTorch Naive)
@@ -178,7 +178,7 @@ class ComprehensiveBenchmark:
 
             error = (y_ref - y_mlx).abs().max().item()
             log_result(
-                "MLX 16-Bit (Cached)", mlx_16_latency, error, mem = get_mem_stats()
+                "MLX 16-Bit (Cached)", mlx_16_latency, error, mem=get_mem_stats()
             )
 
             # 3. MLX 4-Bit
@@ -235,21 +235,21 @@ class ComprehensiveBenchmark:
                 "MLX 4-Bit (Cached)",
                 mlx_4_latency,
                 error_q,
-                extra = f"{colors.GREEN}[Quantized]{colors.ENDC}",
-                mem = get_mem_stats(),
+                extra=f"{colors.GREEN}[Quantized]{colors.ENDC}",
+                mem=get_mem_stats(),
             )
 
-    def run_qkv_benchmark(self, batch_size = 1, seq_len = 1, dim = 4096, hidden_dim = 4096):
+    def run_qkv_benchmark(self, batch_size=1, seq_len=1, dim=4096, hidden_dim=4096):
         log_header(f"QKV Benchmark: B={batch_size}, S={seq_len}, D={dim}")
 
-        QW = torch.randn(dim, dim, device = self.device, dtype = self.dtype) / (dim**0.5)
-        KW = torch.randn(dim, dim, device = self.device, dtype = self.dtype) / (dim**0.5)
-        VW = torch.randn(dim, dim, device = self.device, dtype = self.dtype) / (dim**0.5)
-        X = torch.randn(batch_size, seq_len, dim, device = self.device, dtype = self.dtype)
+        QW = torch.randn(dim, dim, device=self.device, dtype=self.dtype) / (dim**0.5)
+        KW = torch.randn(dim, dim, device=self.device, dtype=self.dtype) / (dim**0.5)
+        VW = torch.randn(dim, dim, device=self.device, dtype=self.dtype) / (dim**0.5)
+        X = torch.randn(batch_size, seq_len, dim, device=self.device, dtype=self.dtype)
 
         # LoRA Dummy
-        QA = torch.randn(8, dim, device = self.device, dtype = self.dtype) / (dim**0.5)
-        QB = torch.randn(dim, 8, device = self.device, dtype = self.dtype) / (8**0.5)
+        QA = torch.randn(8, dim, device=self.device, dtype=self.dtype) / (dim**0.5)
+        QB = torch.randn(dim, 8, device=self.device, dtype=self.dtype) / (8**0.5)
         QS = 1.0
 
         # PyTorch
@@ -294,13 +294,13 @@ class ComprehensiveBenchmark:
             mlx_latency = (time.time() - start) * 1000 / iters
 
             error = (q_ref - q_mlx).abs().max().item()
-            log_result("MLX Optimized", mlx_latency, error, mem = get_mem_stats())
+            log_result("MLX Optimized", mlx_latency, error, mem=get_mem_stats())
 
-    def run_llama3_benchmark(self, batch_size = 1, seq_len = 1):
+    def run_llama3_benchmark(self, batch_size=1, seq_len=1):
         # Llama-3-8B Scale: D=4096, H=14336
         log_header(f"Llama-3-8B Scale Benchmark (B={batch_size}, S={seq_len})")
         self.run_mlp_benchmark(
-            batch_size = batch_size, seq_len = seq_len, dim = 4096, hidden_dim = 14336
+            batch_size=batch_size, seq_len=seq_len, dim=4096, hidden_dim=14336
         )
 
     def diagnose(self):
@@ -316,7 +316,7 @@ class ComprehensiveBenchmark:
         # Test Bridge
         if HAS_MLX:
             log_header("Bridge & Kernel Validation")
-            X = torch.ones(2, 2, device = self.device, dtype = self.dtype)
+            X = torch.ones(2, 2, device=self.device, dtype=self.dtype)
             try:
                 X_mlx = torch_to_mlx(X)
                 X_back = mlx_to_torch(X_mlx)
@@ -351,11 +351,11 @@ if __name__ == "__main__":
 
     # 1. Decoding Cases (Batch=1, Seq=1)
     # Llama-3-8B Scale
-    benchmark.run_llama3_benchmark(batch_size = 1, seq_len = 1)
-    benchmark.run_qkv_benchmark(batch_size = 1, seq_len = 1)
+    benchmark.run_llama3_benchmark(batch_size=1, seq_len=1)
+    benchmark.run_qkv_benchmark(batch_size=1, seq_len=1)
 
     # 2. Large Workload Cases (Multi-batch)
-    benchmark.run_llama3_benchmark(batch_size = 8, seq_len = 512)
+    benchmark.run_llama3_benchmark(batch_size=8, seq_len=512)
 
     log_header("Benchmark Summary")
     print(f"{colors.YELLOW}Notes:{colors.ENDC}")

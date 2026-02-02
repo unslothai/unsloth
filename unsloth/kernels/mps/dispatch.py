@@ -22,19 +22,19 @@ from . import USE_MPS_FALLBACK
 _SUPPORTS_MPS_COMPILE = hasattr(torch, "compile") and torch.__version__ >= "2.4.0"
 
 
-@functools.lru_cache(maxsize = None)
+@functools.lru_cache(maxsize=None)
 def _get_compiled_fn(fn):
     """Caches and returns a compiled version of the function if possible."""
     if _SUPPORTS_MPS_COMPILE:
         try:
             # Using inductor with MPS backend
-            return torch.compile(fn, backend = "inductor")
+            return torch.compile(fn, backend="inductor")
         except Exception:
             return fn
     return fn
 
 
-def dispatch_rms_layernorm(X, W, eps, gemma = False):
+def dispatch_rms_layernorm(X, W, eps, gemma=False):
     if DEVICE_TYPE == "mps" and USE_MPS_FALLBACK:
         from .rms_layernorm import mps_rms_layernorm
 
@@ -58,7 +58,7 @@ def dispatch_layernorm(X, W, b, eps):
         return Fast_Layernorm.apply(X, W, b, eps)
 
 
-def dispatch_rope_embedding(Q, K, cos, sin, rope_indices = None):
+def dispatch_rope_embedding(Q, K, cos, sin, rope_indices=None):
     if DEVICE_TYPE == "mps" and USE_MPS_FALLBACK:
         from .rope_embedding import mps_rope_embedding_qk
 
@@ -70,7 +70,7 @@ def dispatch_rope_embedding(Q, K, cos, sin, rope_indices = None):
         return fast_rope_embedding(Q, K, cos, sin, rope_indices)
 
 
-def dispatch_cross_entropy_loss(logits, labels, logit_softcapping = 0, logit_scaling = 0):
+def dispatch_cross_entropy_loss(logits, labels, logit_softcapping=0, logit_scaling=0):
     if DEVICE_TYPE == "mps" and USE_MPS_FALLBACK:
         from .cross_entropy_loss import mps_cross_entropy_loss
 
@@ -166,16 +166,16 @@ def dispatch_matmul_lora(X, W, W_quant, A, B, s):
         return matmul_lora(X, W, W_quant, A, B, s)
 
 
-def dispatch_gemv(X, W, quant_state, out = None):
+def dispatch_gemv(X, W, quant_state, out=None):
     if DEVICE_TYPE == "mps" and USE_MPS_FALLBACK:
         from .linear import mps_gemv
 
         fn = _get_compiled_fn(mps_gemv)
-        return fn(X, W, out = out)
+        return fn(X, W, out=out)
     else:
         from ..utils import fast_gemv
 
-        return fast_gemv(X, W, quant_state, out = out)
+        return fast_gemv(X, W, quant_state, out=out)
 
 
 def dispatch_lora_mlp_swiglu(
@@ -260,7 +260,7 @@ def dispatch_lora_qkv(
     VA,
     VB,
     VS,
-    inplace = True,
+    inplace=True,
 ):
     if DEVICE_TYPE == "mps" and USE_MPS_FALLBACK:
         from .fast_lora import mps_apply_lora_qkv

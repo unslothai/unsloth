@@ -84,8 +84,8 @@ mps_swiglu_backward = swiglu_mod.mps_swiglu_backward
 
 def test_rms_norm():
     print("Testing RMSNorm...")
-    X = torch.randn(2, 4, 8, requires_grad = True)
-    W = torch.randn(8, requires_grad = True)
+    X = torch.randn(2, 4, 8, requires_grad=True)
+    W = torch.randn(8, requires_grad=True)
     eps = 1e-6
     Y = mps_rms_layernorm(X, W, eps)
     assert Y.shape == X.shape
@@ -96,8 +96,8 @@ def test_rms_norm():
 
 def test_swiglu():
     print("Testing SwiGLU...")
-    e = torch.randn(2, 4, 8, requires_grad = True)
-    g = torch.randn(2, 4, 8, requires_grad = True)
+    e = torch.randn(2, 4, 8, requires_grad=True)
+    g = torch.randn(2, 4, 8, requires_grad=True)
     Y = mps_swiglu_forward(e, g)
     assert torch.allclose(Y, F.silu(e) * g)
     dw = torch.randn_like(Y)
@@ -109,7 +109,7 @@ def test_swiglu():
 
 def test_cross_entropy():
     print("Testing Cross Entropy...")
-    logits = torch.randn(2, 4, 16, requires_grad = True)
+    logits = torch.randn(2, 4, 16, requires_grad=True)
     labels = torch.randint(0, 16, (2, 4))
     loss = mps_cross_entropy_loss(logits, labels)
     loss.backward()

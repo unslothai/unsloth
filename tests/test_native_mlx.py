@@ -19,10 +19,10 @@ def test_native_mlx_loading():
 
     start_time = time.time()
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name = model_name,
-        cfg_model_name = "unsloth/Llama-3.2-3B-Instruct",  # Architecture shell
-        max_seq_length = 2048,
-        load_in_4bit = True,
+        model_name=model_name,
+        cfg_model_name="unsloth/Llama-3.2-3B-Instruct",  # Architecture shell
+        max_seq_length=2048,
+        load_in_4bit=True,
     )
     load_time = time.time() - start_time
     print(f"Model loaded in {load_time:.2f} seconds.")
@@ -44,8 +44,8 @@ def test_native_mlx_loading():
 
     # Simple generation test
     FastLanguageModel.for_inference(model)
-    inputs = tokenizer(["The capital of France is"], return_tensors = "pt").to("mps")
-    outputs = model.generate(**inputs, max_new_tokens = 20)
+    inputs = tokenizer(["The capital of France is"], return_tensors="pt").to("mps")
+    outputs = model.generate(**inputs, max_new_tokens=20)
     print("Output:", tokenizer.batch_decode(outputs)[0])
 
 

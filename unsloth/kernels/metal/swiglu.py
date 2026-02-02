@@ -99,27 +99,27 @@ SWIGLU_BACKWARD_BODY = """
 """
 
 
-@lru_cache(maxsize = 1)
+@lru_cache(maxsize=1)
 def _get_forward_kernel():
     import mlx.core as mx
 
     return mx.fast.metal_kernel(
-        name = "swiglu_forward_v8",
-        input_names = ["e", "g", "n_ptr"],
-        output_names = ["h"],
-        source = SWIGLU_FORWARD_BODY,
+        name="swiglu_forward_v8",
+        input_names=["e", "g", "n_ptr"],
+        output_names=["h"],
+        source=SWIGLU_FORWARD_BODY,
     )
 
 
-@lru_cache(maxsize = 1)
+@lru_cache(maxsize=1)
 def _get_backward_kernel():
     import mlx.core as mx
 
     return mx.fast.metal_kernel(
-        name = "swiglu_backward_v8",
-        input_names = ["dw_in", "e_in", "g_in", "n_ptr"],
-        output_names = ["h_out", "df_out", "de_out"],
-        source = SWIGLU_BACKWARD_BODY,
+        name="swiglu_backward_v8",
+        input_names=["dw_in", "e_in", "g_in", "n_ptr"],
+        output_names=["h_out", "df_out", "de_out"],
+        source=SWIGLU_BACKWARD_BODY,
     )
 
 
@@ -136,15 +136,15 @@ def mlx_swiglu_forward(e_mlx, g_mlx):
     n = e_mlx.size
     e_flat = e_mlx.flatten()
     g_flat = g_mlx.flatten()
-    n_arr = mx.array([n], dtype = mx.uint32)
+    n_arr = mx.array([n], dtype=mx.uint32)
     grid_size = n
     kernel = _get_forward_kernel()
     out = kernel(
-        inputs = [e_flat, g_flat, n_arr],
-        output_shapes = [(n,)],
-        output_dtypes = [mx.float16],
-        grid = (grid_size, 1, 1),
-        threadgroup = (min(256, grid_size), 1, 1),
+        inputs=[e_flat, g_flat, n_arr],
+        output_shapes=[(n,)],
+        output_dtypes=[mx.float16],
+        grid=(grid_size, 1, 1),
+        threadgroup=(min(256, grid_size), 1, 1),
     )
     return out[0].reshape(shape)
 
@@ -158,15 +158,15 @@ def mlx_swiglu_backward(dw_mlx, e_mlx, g_mlx):
     dw_flat = dw_mlx.flatten()
     e_flat = e_mlx.flatten()
     g_flat = g_mlx.flatten()
-    n_arr = mx.array([n], dtype = mx.uint32)
+    n_arr = mx.array([n], dtype=mx.uint32)
     grid_size = n
     kernel = _get_backward_kernel()
     outputs = kernel(
-        inputs = [dw_flat, e_flat, g_flat, n_arr],
-        output_shapes = [(n,), (n,), (n,)],
-        output_dtypes = [mx.float16, mx.float16, mx.float16],
-        grid = (grid_size, 1, 1),
-        threadgroup = (min(256, grid_size), 1, 1),
+        inputs=[dw_flat, e_flat, g_flat, n_arr],
+        output_shapes=[(n,), (n,), (n,)],
+        output_dtypes=[mx.float16, mx.float16, mx.float16],
+        grid=(grid_size, 1, 1),
+        threadgroup=(min(256, grid_size), 1, 1),
     )
     h = outputs[0].reshape(shape)
     df = outputs[1].reshape(shape)

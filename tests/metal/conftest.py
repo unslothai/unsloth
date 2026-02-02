@@ -59,7 +59,7 @@ def pytest_collection_modifyitems(config, items):
     import platform
 
     if platform.system() != "Darwin":
-        skip_metal = pytest.mark.skip(reason = "Metal tests require macOS")
+        skip_metal = pytest.mark.skip(reason="Metal tests require macOS")
         for item in items:
             if "metal_only" in item.keywords:
                 item.add_marker(skip_metal)

@@ -56,7 +56,7 @@ if already_imported:
         f"to ensure all optimizations are applied. Your code may run slower or encounter "
         f"memory issues without these optimizations.\n\n"
         f"Please restructure your imports with 'import unsloth' at the top of your file.",
-        stacklevel = 2,
+        stacklevel=2,
     )
 del already_imported, critical_modules
 
@@ -184,7 +184,7 @@ if DEVICE_TYPE == "cuda":
     old_is_bf16_supported = torch.cuda.is_bf16_supported
     if "including_emulation" in str(inspect.signature(old_is_bf16_supported)):
 
-        def is_bf16_supported(including_emulation = False):
+        def is_bf16_supported(including_emulation=False):
             return old_is_bf16_supported(including_emulation)
 
         torch.cuda.is_bf16_supported = is_bf16_supported
@@ -204,7 +204,7 @@ elif DEVICE_TYPE == "xpu":
 elif DEVICE_TYPE == "mps":
     # MPS bfloat16 support depends on PyTorch version and chip
     try:
-        test_tensor = torch.tensor([1.0], dtype = torch.bfloat16, device = "mps")
+        test_tensor = torch.tensor([1.0], dtype=torch.bfloat16, device="mps")
         _ = test_tensor + test_tensor  # Test an operation
         SUPPORTS_BFLOAT16 = True
         del test_tensor
@@ -314,6 +314,7 @@ elif DEVICE_TYPE == "mps":
     bnb = None
     try:
         import peft.import_utils
+
         peft.import_utils.is_bnb_available = lambda: False
         peft.import_utils.is_bnb_4bit_available = lambda: False
         peft.import_utils.is_bnb_8bit_available = lambda: False

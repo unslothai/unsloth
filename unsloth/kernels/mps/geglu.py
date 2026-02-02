@@ -18,7 +18,7 @@ import math
 
 def mps_geglu_exact_forward(gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
     """PyTorch-native GEGLU (Exact) forward pass for MPS."""
-    return torch.nn.functional.gelu(gate, approximate = "none") * up
+    return torch.nn.functional.gelu(gate, approximate="none") * up
 
 
 def mps_geglu_exact_backward(dw: torch.Tensor, e: torch.Tensor, g: torch.Tensor):
@@ -42,7 +42,7 @@ def mps_geglu_exact_backward(dw: torch.Tensor, e: torch.Tensor, g: torch.Tensor)
 
 def mps_geglu_approx_forward(gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
     """PyTorch-native GEGLU (Approximate) forward pass for MPS."""
-    return torch.nn.functional.gelu(gate, approximate = "tanh") * up
+    return torch.nn.functional.gelu(gate, approximate="tanh") * up
 
 
 def mps_geglu_approx_backward(dw: torch.Tensor, e: torch.Tensor, g: torch.Tensor):

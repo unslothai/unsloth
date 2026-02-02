@@ -59,11 +59,11 @@ def _get_cached_block_mask(
 
     mask = _XFormersBlockMask.from_seqlens(list(lengths))
     if window_key and mask is not None and hasattr(mask, "make_local_attention"):
-        mask = mask.make_local_attention(window_size = window_key)
+        mask = mask.make_local_attention(window_size=window_key)
 
     _XFORMERS_MASK_CACHE[cache_key] = mask
     if len(_XFORMERS_MASK_CACHE) > _XFORMERS_MASK_CACHE_MAXSIZE:
-        _XFORMERS_MASK_CACHE.popitem(last = False)
+        _XFORMERS_MASK_CACHE.popitem(last=False)
     return mask
 
 
@@ -153,7 +153,7 @@ def enable_sample_packing(
                     seq_lengths.extend(int(length) for length in lengths)
             if seq_lengths:
                 batch["packed_seq_lengths"] = torch.tensor(
-                    seq_lengths, dtype = torch.int32
+                    seq_lengths, dtype=torch.int32
                 )
                 if "attention_mask" in batch:
                     batch.pop("attention_mask")
@@ -196,7 +196,7 @@ def enable_padding_free_metadata(model, trainer):
         if seq_lengths:
             batch["packed_seq_lengths"] = torch.tensor(
                 seq_lengths,
-                dtype = torch.int32,
+                dtype=torch.int32,
             )
         return batch
 
@@ -214,10 +214,10 @@ def get_packed_info_from_kwargs(
     if seq_lengths is None:
         return None
 
-    lengths = seq_lengths.to(device = device, dtype = torch.int32, non_blocking = True)
-    cu_seqlens = torch.empty(lengths.numel() + 1, dtype = torch.int32, device = device)
+    lengths = seq_lengths.to(device=device, dtype=torch.int32, non_blocking=True)
+    cu_seqlens = torch.empty(lengths.numel() + 1, dtype=torch.int32, device=device)
     cu_seqlens[0] = 0
-    torch.cumsum(lengths, dim = 0, dtype = torch.int32, out = cu_seqlens[1:])
+    torch.cumsum(lengths, dim=0, dtype=torch.int32, out=cu_seqlens[1:])
 
     max_seqlen = int(lengths.max().item())
     return lengths, cu_seqlens, max_seqlen
@@ -247,7 +247,7 @@ def build_xformers_block_causal_mask(
             and mask is not None
             and hasattr(mask, "make_local_attention")
         ):
-            mask = mask.make_local_attention(window_size = sliding_window)
+            mask = mask.make_local_attention(window_size=sliding_window)
     return mask
 
 
@@ -263,17 +263,17 @@ def build_sdpa_packed_attention_mask(
     mask = torch.full(
         (total_tokens, total_tokens),
         float("-inf"),
-        dtype = dtype,
-        device = device,
+        dtype=dtype,
+        device=device,
     )
     offset = 0
     for length in seq_lengths.tolist():
         length = int(length)
         if length <= 0:
             continue
-        block = torch.zeros((length, length), dtype = dtype, device = device)
+        block = torch.zeros((length, length), dtype=dtype, device=device)
         upper = torch.triu(
-            torch.ones((length, length), device = device), diagonal = 1
+            torch.ones((length, length), device=device), diagonal=1
         ).bool()
         block = block.masked_fill(upper, float("-inf"))
         if (
@@ -281,7 +281,7 @@ def build_sdpa_packed_attention_mask(
             and sliding_window > 0
             and length > sliding_window
         ):
-            idx = torch.arange(length, device = device)
+            idx = torch.arange(length, device=device)
             dist = idx.unsqueeze(1) - idx.unsqueeze(0)
             window_mask = dist >= sliding_window
             block = block.masked_fill(window_mask, float("-inf"))
@@ -298,9 +298,9 @@ def _normalize_packed_lengths(
     if seq_lengths is None:
         return None
     if isinstance(seq_lengths, torch.Tensor):
-        lengths = seq_lengths.to(device = device, dtype = torch.int64)
+        lengths = seq_lengths.to(device=device, dtype=torch.int64)
     else:
-        lengths = torch.tensor(seq_lengths, device = device, dtype = torch.int64)
+        lengths = torch.tensor(seq_lengths, device=device, dtype=torch.int64)
     if lengths.ndim != 1:
         lengths = lengths.reshape(-1)
     if lengths.numel() == 0:
@@ -315,13 +315,13 @@ def mask_packed_sequence_boundaries(
     ignore_index: int = -100,
 ) -> bool:
     """Mark final token of every packed sample so CE ignores boundary predictions."""
-    lengths = _normalize_packed_lengths(seq_lengths, device = shift_labels.device)
+    lengths = _normalize_packed_lengths(seq_lengths, device=shift_labels.device)
     if lengths is None:
         return False
 
     flat = shift_labels.reshape(-1)
     total_tokens = flat.shape[0]
-    boundary_positions = torch.cumsum(lengths, dim = 0) - 1
+    boundary_positions = torch.cumsum(lengths, dim=0) - 1
     valid = boundary_positions < total_tokens
     if not torch.all(valid):
         boundary_positions = boundary_positions[valid]

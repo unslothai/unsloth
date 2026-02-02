@@ -44,7 +44,7 @@ def load_mlx_weights(model, weights_path):
                 prefix = "model."
             break
 
-    def get_mlx_val(base_key, suffix = ""):
+    def get_mlx_val(base_key, suffix=""):
         full_key = f"{prefix}{base_key}{suffix}"
         return mlx_weights.get(full_key)
 
@@ -101,7 +101,7 @@ def load_mlx_weights(model, weights_path):
                     group_size = gs_arr.item()
 
                 param._mlx_cache = MLXQuantizedWeight(
-                    weight = w, scales = s, biases = b, group_size = group_size, bits = bits
+                    weight=w, scales=s, biases=b, group_size=group_size, bits=bits
                 )
                 count += 1
 

@@ -77,14 +77,14 @@ def fast_gemv(X: mx.array, W: mx.array) -> mx.array:
         return X @ W.T
 
     kernel = mx.fast.metal_kernel(
-        name = "gemv_simd_reduction_v2",
-        input_names = ["x", "W", "K", "N"],
-        output_names = ["y"],
-        source = _GEMV_SOURCE,
+        name="gemv_simd_reduction_v2",
+        input_names=["x", "W", "K", "N"],
+        output_names=["y"],
+        source=_GEMV_SOURCE,
     )
 
-    K_arg = mx.array(K, dtype = mx.uint32)
-    N_arg = mx.array(N, dtype = mx.uint32)
+    K_arg = mx.array(K, dtype=mx.uint32)
+    N_arg = mx.array(N, dtype=mx.uint32)
 
     # Grid: N warps. Each warp is 32 threads.
     grid_size = (N * 32, 1, 1)
@@ -96,11 +96,11 @@ def fast_gemv(X: mx.array, W: mx.array) -> mx.array:
         group_size = (32, 1, 1)
 
     outputs = kernel(
-        inputs = [X, W, K_arg, N_arg],
-        grid = grid_size,
-        threadgroup = group_size,
-        output_shapes = [(1, N)],
-        output_dtypes = [X.dtype],
+        inputs=[X, W, K_arg, N_arg],
+        grid=grid_size,
+        threadgroup=group_size,
+        output_shapes=[(1, N)],
+        output_dtypes=[X.dtype],
     )
 
     return outputs[0]

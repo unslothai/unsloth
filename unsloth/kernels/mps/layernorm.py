@@ -24,9 +24,9 @@ class MPSLayerNorm(torch.autograd.Function):
 
         # Intermediate in float32 for stability
         X_f32 = X.to(torch.float32)
-        mean = X_f32.mean(-1, keepdim = True)
+        mean = X_f32.mean(-1, keepdim=True)
         # Using unbiased=False to match Triton/PyTorch LayerNorm defaults
-        variance = X_f32.var(-1, keepdim = True, unbiased = False)
+        variance = X_f32.var(-1, keepdim=True, unbiased=False)
         inv_std = torch.rsqrt(variance + eps)
 
         X_norm = (X_f32 - mean) * inv_std
@@ -62,8 +62,8 @@ class MPSLayerNorm(torch.autograd.Function):
 
         # dL/dX for LayerNorm
         N = dim
-        sum_dX_norm = dX_norm.sum(-1, keepdim = True)
-        sum_dX_norm_X_norm = (dX_norm * X_norm).sum(-1, keepdim = True)
+        sum_dX_norm = dX_norm.sum(-1, keepdim=True)
+        sum_dX_norm_X_norm = (dX_norm * X_norm).sum(-1, keepdim=True)
 
         # dX = inv_std * (dX_norm - mean(dX_norm) - X_norm * mean(dX_norm * X_norm))
         dX = inv_std * (dX_norm - (sum_dX_norm / N) - X_norm * (sum_dX_norm_X_norm / N))

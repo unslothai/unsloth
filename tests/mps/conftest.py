@@ -6,7 +6,7 @@ import torch
 
 # Create a more realistic mock for modules that transformers/unsloth expect
 def create_mock_module(name):
-    mock = MagicMock(spec = types.ModuleType)
+    mock = MagicMock(spec=types.ModuleType)
     mock.__name__ = name
     mock.__file__ = f"{name}.py"
     mock.__path__ = []

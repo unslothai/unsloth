@@ -14,29 +14,29 @@ from unsloth.kernels.mlx.fast_lora import apply_lora_mlp_swiglu, apply_lora_qkv
 from unsloth.kernels.mlx.bridge import torch_to_mlx
 
 
-def benchmark_mlp(batch_size = 1, seq_len = 128, dim = 4096, hidden_dim = 11008, iters = 100):
+def benchmark_mlp(batch_size=1, seq_len=128, dim=4096, hidden_dim=11008, iters=100):
     print(f"\n--- Benchmarking MLP [B={batch_size}, S={seq_len}, D={dim}] ---")
 
     # Setup PyTorch Tensors (CPU for now, would be MPS on Mac)
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
     dtype = torch.float16
 
-    X = torch.randn(batch_size, seq_len, dim, device = device, dtype = dtype)
+    X = torch.randn(batch_size, seq_len, dim, device=device, dtype=dtype)
 
     # Weights
-    gateW = torch.randn(hidden_dim, dim, device = device, dtype = dtype)
-    gateA = torch.randn(8, dim, device = device, dtype = dtype)
-    gateB = torch.randn(hidden_dim, 8, device = device, dtype = dtype)
+    gateW = torch.randn(hidden_dim, dim, device=device, dtype=dtype)
+    gateA = torch.randn(8, dim, device=device, dtype=dtype)
+    gateB = torch.randn(hidden_dim, 8, device=device, dtype=dtype)
     gateS = 1.0
 
-    upW = torch.randn(hidden_dim, dim, device = device, dtype = dtype)
-    upA = torch.randn(8, dim, device = device, dtype = dtype)
-    upB = torch.randn(hidden_dim, 8, device = device, dtype = dtype)
+    upW = torch.randn(hidden_dim, dim, device=device, dtype=dtype)
+    upA = torch.randn(8, dim, device=device, dtype=dtype)
+    upB = torch.randn(hidden_dim, 8, device=device, dtype=dtype)
     upS = 1.0
 
-    downW = torch.randn(dim, hidden_dim, device = device, dtype = dtype)
-    downA = torch.randn(8, hidden_dim, device = device, dtype = dtype)
-    downB = torch.randn(dim, 8, device = device, dtype = dtype)
+    downW = torch.randn(dim, hidden_dim, device=device, dtype=dtype)
+    downA = torch.randn(8, hidden_dim, device=device, dtype=dtype)
+    downB = torch.randn(dim, 8, device=device, dtype=dtype)
     downS = 1.0
 
     # --- PyTorch Baseline Implementation (Naive) ---
@@ -315,5 +315,5 @@ def benchmark_mlp(batch_size = 1, seq_len = 128, dim = 4096, hidden_dim = 11008,
 
 
 if __name__ == "__main__":
-    benchmark_mlp(batch_size = 1, seq_len = 128)  # Original
-    benchmark_mlp(batch_size = 2, seq_len = 1024, iters = 50)  # Larger workload
+    benchmark_mlp(batch_size=1, seq_len=128)  # Original
+    benchmark_mlp(batch_size=2, seq_len=1024, iters=50)  # Larger workload

@@ -54,7 +54,7 @@ def is_in_mlx_context() -> bool:
     return _IN_MLX_CONTEXT
 
 
-F = TypeVar("F", bound = Callable)
+F = TypeVar("F", bound=Callable)
 
 
 def synchronize_mps() -> None:
@@ -160,7 +160,7 @@ def mlx_to_torch(
     try:
         tensor = _torch_from_dlpack(array)
         if tensor.device.type != device:
-            tensor = tensor.to(device = device)
+            tensor = tensor.to(device=device)
     except Exception:
         import mlx.core as mx
 
@@ -168,7 +168,7 @@ def mlx_to_torch(
         try:
             tensor = _torch_from_dlpack(array)
             if tensor.device.type != device:
-                tensor = tensor.to(device = device)
+                tensor = tensor.to(device=device)
         except Exception:
             import numpy as np
 
@@ -176,12 +176,12 @@ def mlx_to_torch(
                 array = array.astype(mx.float32)
                 mx.eval(array)
             try:
-                tensor = torch.as_tensor(np.array(array, copy = False), device = device)
+                tensor = torch.as_tensor(np.array(array, copy=False), device=device)
             except:
-                tensor = torch.tensor(np.array(array), device = device)
+                tensor = torch.tensor(np.array(array), device=device)
 
     if dtype is not None and tensor.dtype != dtype:
-        tensor = tensor.to(dtype = dtype)
+        tensor = tensor.to(dtype=dtype)
     return tensor
 
 

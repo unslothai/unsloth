@@ -20,7 +20,7 @@ from unsloth.kernels.mps.fast_lora import mps_apply_lora_mlp_swiglu, _get_mlx_ca
 from unsloth.kernels.mlx.bridge import torch_to_mlx, mlx_to_torch, mlx_context
 
 
-def benchmark_fn(fn, warmup = 10, iterations = 50):
+def benchmark_fn(fn, warmup=10, iterations=50):
     for _ in range(warmup):
         fn()
     torch.mps.synchronize()
@@ -50,13 +50,13 @@ def run_benchmark():
         print(f"   Hidden: {h_dim}, Intermediate: {i_dim}")
 
         # Inputs
-        X = torch.randn(b, s, h_dim, device = "mps", dtype = torch.float16)
+        X = torch.randn(b, s, h_dim, device="mps", dtype=torch.float16)
 
         # Weights (Transposed for linear layer logic: Out x In)
         # unsloth mps_matmul_lora uses X @ W.T, so W shape is [Out, In]
-        upW = torch.randn(i_dim, h_dim, device = "mps", dtype = torch.float16)
-        gateW = torch.randn(i_dim, h_dim, device = "mps", dtype = torch.float16)
-        downW = torch.randn(h_dim, i_dim, device = "mps", dtype = torch.float16)
+        upW = torch.randn(i_dim, h_dim, device="mps", dtype=torch.float16)
+        gateW = torch.randn(i_dim, h_dim, device="mps", dtype=torch.float16)
+        downW = torch.randn(h_dim, i_dim, device="mps", dtype=torch.float16)
 
         # LoRA placeholders (None for now as we test base MLP speed)
         # But our fusion supports them!
@@ -114,7 +114,7 @@ def run_benchmark():
         # Idea: X @ [Gate, Up] is faster than X@Gate + X@Up
         with mlx_context():
             W_merged = mx.concatenate(
-                [torch_to_mlx(gateW), torch_to_mlx(upW)], axis = 0
+                [torch_to_mlx(gateW), torch_to_mlx(upW)], axis=0
             )  # [2*I, H]
 
         # We need a custom merged MLP function for the benchmark
@@ -172,7 +172,7 @@ def run_benchmark():
         # Prepare Inputs in MLX
         with mlx_context():
             X_in = torch_to_mlx(X)
-            Wm_in = mx.concatenate([torch_to_mlx(gateW), torch_to_mlx(upW)], axis = 0)
+            Wm_in = mx.concatenate([torch_to_mlx(gateW), torch_to_mlx(upW)], axis=0)
             Wd_in = torch_to_mlx(downW)
 
         def run_compiled_args():
@@ -241,10 +241,10 @@ def run_benchmark():
 
     # Test on small batch
     b, s, h, i = 2, 128, 1024, 4096
-    X_small = torch.randn(b, s, h, device = "mps", dtype = torch.float16)
-    upW_small = torch.randn(i, h, device = "mps", dtype = torch.float16)
-    gateW_small = torch.randn(i, h, device = "mps", dtype = torch.float16)
-    downW_small = torch.randn(h, i, device = "mps", dtype = torch.float16)
+    X_small = torch.randn(b, s, h, device="mps", dtype=torch.float16)
+    upW_small = torch.randn(i, h, device="mps", dtype=torch.float16)
+    gateW_small = torch.randn(i, h, device="mps", dtype=torch.float16)
+    downW_small = torch.randn(h, i, device="mps", dtype=torch.float16)
 
     # Torch Reference
     up = F.linear(X_small, upW_small)

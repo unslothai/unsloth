@@ -115,19 +115,19 @@ class TestKernelUtilsImport:
         assert num_warps >= 4
 
 
-@pytest.mark.skipif(not is_mps_system(), reason = "MPS not available")
+@pytest.mark.skipif(not is_mps_system(), reason="MPS not available")
 class TestMPSIntegration:
     """Integration tests that only run on MPS systems."""
 
     def test_mps_tensor_creation(self):
         """Should be able to create tensors on MPS device."""
-        tensor = torch.tensor([1.0, 2.0, 3.0], device = "mps")
+        tensor = torch.tensor([1.0, 2.0, 3.0], device="mps")
         assert tensor.device.type == "mps"
         del tensor
 
     def test_mps_float16_support(self):
         """MPS should support float16."""
-        tensor = torch.tensor([1.0], dtype = torch.float16, device = "mps")
+        tensor = torch.tensor([1.0], dtype=torch.float16, device="mps")
         result = tensor + tensor
         assert result.dtype == torch.float16
         del tensor, result
@@ -175,7 +175,7 @@ class TestMPSIntegration:
         assert triton is None
 
 
-@pytest.mark.skipif(is_mps_system(), reason = "Only run on non-MPS systems")
+@pytest.mark.skipif(is_mps_system(), reason="Only run on non-MPS systems")
 class TestNonMPSSystems:
     """Tests that verify behavior on non-MPS systems."""
 
