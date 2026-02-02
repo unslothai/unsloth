@@ -4,31 +4,26 @@
 import mlx.core as mx
 
 _GEMV_SOURCE = """
-// gemv_row_reduction: y = x @ W.T
-// x: [1, K]
-// W: [N, K]
-// y: [1, N]
-// Grid: (N, 1, 1). Each thread computes one element of y (one row of W).
-
-kernel void gemv_row_reduction(
-    device const half* x [[ buffer(0) ]],       // Input vector (1, K)
-    device const half* W [[ buffer(1) ]],       // Weight matrix (N, K)
-    device half* y [[ buffer(2) ]],             // Output vector (1, N)
-    constant uint& K [[ buffer(3) ]],           // Input dimension
-    constant uint& N [[ buffer(4) ]],           // Output dimension
-    uint gid [[ thread_position_in_grid ]]
-) {
-    if (gid >= N) return;
+    // MLX provides:
+    // x, W, y (pointers)
+    // K, N (pointers to scalars)
+    // thread_position_in_grid (uint3)
+    
+    uint gid = thread_position_in_grid.x;
+    uint num_out = N[0]; // N is passed as 1-element array
+    uint num_in = K[0];  // K is passed as 1-element array
+    
+    if (gid >= num_out) return;
     
     float sum = 0.0f;
-    uint offset = gid * K;
+    uint offset = gid * num_in;
     
     // float4 vectorized loads
     // We cast to half4* to load 4 halves, then convert to float for math
     device const half4* x4 = (device const half4*)x;
     device const half4* W4 = (device const half4*)(W + offset);
     
-    uint K4 = K / 4;
+    uint K4 = num_in / 4;
     for (uint k = 0; k < K4; ++k) {
         half4 xv = x4[k];
         half4 wv = W4[k];
@@ -39,12 +34,11 @@ kernel void gemv_row_reduction(
     }
     
     // Remainder
-    for (uint k = K4 * 4; k < K; ++k) {
+    for (uint k = K4 * 4; k < num_in; ++k) {
         sum += (float)x[k] * (float)W[offset + k];
     }
     
     y[gid] = (half)sum;
-}
 """
 
 def fast_gemv(X: mx.array, W: mx.array) -> mx.array:
