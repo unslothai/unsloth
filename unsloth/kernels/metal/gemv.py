@@ -77,7 +77,7 @@ def fast_gemv(X: mx.array, W: mx.array) -> mx.array:
         return X @ W.T
 
     kernel = mx.fast.metal_kernel(
-        name = "gemv_simd_reduction",
+        name = "gemv_simd_reduction_v2",
         input_names = ["x", "W", "K", "N"],
         output_names = ["y"],
         source = _GEMV_SOURCE,
