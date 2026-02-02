@@ -41,6 +41,7 @@ _GEMV_SOURCE = """
     y[gid] = (half)sum;
 """
 
+
 def fast_gemv(X: mx.array, W: mx.array) -> mx.array:
     """
     Computes y = X @ W.T for Batch=1 case.
@@ -50,29 +51,33 @@ def fast_gemv(X: mx.array, W: mx.array) -> mx.array:
     """
     if X.ndim == 1:
         X = X[None, :]
-    
+
     K = X.shape[-1]
     N = W.shape[0]
-    
+
     if W.shape[1] != K:
         raise ValueError(f"Shape mismatch: X{X.shape} W{W.shape}")
 
     kernel = mx.fast.metal_kernel(
-        name="gemv_row_reduction",
-        input_names=["x", "W", "K", "N"],
-        output_names=["y"],
-        source=_GEMV_SOURCE,
+        name = "gemv_row_reduction",
+        input_names = ["x", "W", "K", "N"],
+        output_names = ["y"],
+        source = _GEMV_SOURCE,
     )
-    
-    K_arg = mx.array(K, dtype=mx.uint32)
-    N_arg = mx.array(N, dtype=mx.uint32)
-    
+
+    K_arg = mx.array(K, dtype = mx.uint32)
+    N_arg = mx.array(N, dtype = mx.uint32)
+
     outputs = kernel(
-        inputs=[X, W, K_arg, N_arg],
-        grid=(N, 1, 1),
-        threadgroup=(32, 1, 1), # Maximize thread occupancy, though they work independently
-        output_shapes=[(1, N)],
-        output_dtypes=[X.dtype],
+        inputs = [X, W, K_arg, N_arg],
+        grid = (N, 1, 1),
+        threadgroup = (
+            32,
+            1,
+            1,
+        ),  # Maximize thread occupancy, though they work independently
+        output_shapes = [(1, N)],
+        output_dtypes = [X.dtype],
     )
-    
+
     return outputs[0]
