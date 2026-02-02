@@ -2371,7 +2371,7 @@ class FastLlamaModel:
         raise_handler = RaiseUninitialized()
         if num_labels is not None:
             model = AutoModelForSequenceClassification.from_pretrained(
-                model_name,
+                cfg_model_name if cfg_model_name is not None else model_name,
                 device_map = device_map,
                 # torch_dtype             = dtype, # transformers changed torch_dtype to dtype
                 num_labels = num_labels,
@@ -2384,7 +2384,7 @@ class FastLlamaModel:
             )
         elif not fast_inference:
             model = AutoModelForCausalLM.from_pretrained(
-                model_name,
+                cfg_model_name if cfg_model_name is not None else model_name,
                 device_map = device_map,
                 # torch_dtype             = dtype, # transformers changed torch_dtype to dtype
                 # quantization_config     = bnb_config,
