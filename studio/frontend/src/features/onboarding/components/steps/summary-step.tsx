@@ -1,7 +1,8 @@
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
-import { DATASETS, MODELS } from "@/config/training";
+import { DATASETS, findModelById } from "@/config/training";
+import { isAdapterMethod } from "@/types/training";
 import { useWizardStore } from "@/stores/training";
 import { GpuIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -49,10 +50,9 @@ export function SummaryStep() {
     })),
   );
 
-  const modelData = MODELS.find((m) => m.id === selectedModel);
+  const modelData = findModelById(selectedModel);
   const datasetData = DATASETS.find((d) => d.id === dataset);
-  const showLoraParams =
-    trainingMethod === "lora" || trainingMethod === "qlora";
+  const showLoraParams = isAdapterMethod(trainingMethod);
   const datasetName =
     datasetSource === "upload" ? uploadedFile : datasetData?.name;
   const datasetDesc =

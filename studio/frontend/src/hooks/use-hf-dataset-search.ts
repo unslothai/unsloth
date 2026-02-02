@@ -1,72 +1,85 @@
 import { listDatasets } from "@huggingface/hub";
-import { useEffect, useState } from "react";
+import { useCallback } from "react";
+import { useHfPaginatedSearch } from "./use-hf-paginated-search";
+
+interface DatasetInfoSplit {
+  name: string;
+  num_bytes: number;
+  num_examples: number;
+}
+
+interface CardDataWithInfo {
+  size_categories?: string[];
+  pretty_name?: string;
+  dataset_info?:
+    | {
+        splits?: DatasetInfoSplit[];
+        download_size?: number;
+        dataset_size?: number;
+      }
+    | Array<{ splits?: DatasetInfoSplit[] }>;
+}
+
+function extractTotalExamples(
+  cardData: CardDataWithInfo | undefined,
+): number | undefined {
+  if (!cardData?.dataset_info) return undefined;
+  const infos = Array.isArray(cardData.dataset_info)
+    ? cardData.dataset_info
+    : [cardData.dataset_info];
+  let total = 0;
+  let found = false;
+  for (const info of infos) {
+    for (const split of info.splits ?? []) {
+      if (typeof split.num_examples === "number") {
+        total += split.num_examples;
+        found = true;
+      }
+    }
+  }
+  return found ? total : undefined;
+}
 
 export interface HfDatasetResult {
   id: string;
   downloads: number;
   likes: number;
+  totalExamples?: number;
+  sizeCategory?: string;
 }
 
-interface HfSearchState {
-  results: HfDatasetResult[];
-  isLoading: boolean;
-  error: string | null;
+function mapDataset(raw: unknown): HfDatasetResult {
+  const ds = raw as {
+    name: string;
+    downloads: number;
+    likes: number;
+    cardData?: unknown;
+  };
+  const card = ds.cardData as CardDataWithInfo | undefined;
+  return {
+    id: ds.name,
+    downloads: ds.downloads,
+    likes: ds.likes,
+    totalExamples: extractTotalExamples(card),
+    sizeCategory: card?.size_categories?.[0],
+  };
 }
 
 export function useHfDatasetSearch(
   query: string,
-  options?: { limit?: number; accessToken?: string },
-): HfSearchState {
-  const { limit = 20, accessToken } = options ?? {};
-  const [state, setState] = useState<HfSearchState>({
-    results: [],
-    isLoading: false,
-    error: null,
-  });
+  options?: { accessToken?: string },
+) {
+  const { accessToken } = options ?? {};
 
-  useEffect(() => {
-    if (!query.trim()) {
-      setState({ results: [], isLoading: false, error: null });
-      return;
-    }
+  const createIter = useCallback(
+    () =>
+      listDatasets({
+        search: { query },
+        additionalFields: ["cardData"],
+        ...(accessToken ? { credentials: { accessToken } } : {}),
+      }) as AsyncGenerator<unknown>,
+    [query, accessToken],
+  );
 
-    let cancelled = false;
-    setState((prev) => ({ ...prev, isLoading: true, error: null }));
-
-    (async () => {
-      try {
-        const results: HfDatasetResult[] = [];
-        const iter = listDatasets({
-          search: { query },
-          limit,
-          ...(accessToken ? { credentials: { accessToken } } : {}),
-        });
-        for await (const ds of iter) {
-          if (cancelled) return;
-          results.push({
-            id: ds.id,
-            downloads: ds.downloads,
-            likes: ds.likes,
-          });
-        }
-        if (!cancelled) {
-          setState({ results, isLoading: false, error: null });
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setState({
-            results: [],
-            isLoading: false,
-            error: err instanceof Error ? err.message : "Search failed",
-          });
-        }
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [query, limit, accessToken]);
-
-  return state;
+  return useHfPaginatedSearch(query, createIter, mapDataset);
 }

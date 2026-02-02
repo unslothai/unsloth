@@ -6,10 +6,17 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import {
-  InputGroup,
+  Combobox,
+  ComboboxContent,
+  ComboboxEmpty,
+  ComboboxInput,
+  ComboboxItem,
+  ComboboxList,
+} from "@/components/ui/combobox";
+import {
   InputGroupAddon,
-  InputGroupInput,
 } from "@/components/ui/input-group";
+import { Spinner } from "@/components/ui/spinner";
 import {
   Select,
   SelectContent,
@@ -23,6 +30,8 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { DATASETS } from "@/config/training";
+import { useDebouncedValue, useHfDatasetSearch, useInfiniteScroll } from "@/hooks";
+import { formatCompact } from "@/lib/utils";
 import { useWizardStore } from "@/stores/training";
 import {
   ArrowDown01Icon,
@@ -34,20 +43,65 @@ import {
   ViewIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 export function DatasetSection() {
-  const { dataset, setDataset, datasetFormat, setDatasetFormat } =
+  const { dataset, setDataset, datasetFormat, setDatasetFormat, hfToken } =
     useWizardStore(
       useShallow((s) => ({
         dataset: s.dataset,
         setDataset: s.setDataset,
         datasetFormat: s.datasetFormat,
         setDatasetFormat: s.setDatasetFormat,
+        hfToken: s.hfToken,
       })),
     );
   const [recOpen, setRecOpen] = useState(false);
+
+  const [inputValue, setInputValue] = useState("");
+  const debouncedQuery = useDebouncedValue(inputValue);
+  const { results: hfResults, isLoading, isLoadingMore, hasMore, fetchMore } = useHfDatasetSearch(debouncedQuery, {
+    accessToken: hfToken || undefined,
+  });
+
+  const curatedDatasets = useMemo(
+    () => [...DATASETS].sort((a, b) => (b.recommended ? 1 : 0) - (a.recommended ? 1 : 0)),
+    [],
+  );
+
+  const datasetMap = useMemo(() => {
+    const map = new Map<string, { label: string; description?: string; size?: string; totalExamples?: number; sizeCategory?: string; downloads?: number }>();
+    for (const d of curatedDatasets) {
+      map.set(d.id, { label: d.name, description: d.description, size: d.size });
+    }
+    for (const r of hfResults) {
+      if (!map.has(r.id)) {
+        map.set(r.id, { label: r.id, downloads: r.downloads, totalExamples: r.totalExamples, sizeCategory: r.sizeCategory });
+      }
+    }
+    return map;
+  }, [curatedDatasets, hfResults]);
+
+  const displayIds = useMemo(() => {
+    if (!debouncedQuery.trim()) {
+      return curatedDatasets.map((d) => d.id);
+    }
+    const q = debouncedQuery.toLowerCase();
+    const curatedIds = curatedDatasets
+      .filter((d) => d.name.toLowerCase().includes(q) || d.id.toLowerCase().includes(q))
+      .map((d) => d.id);
+    const liveIds = hfResults.map((r) => r.id).filter((id) => !curatedIds.includes(id));
+    return [...curatedIds, ...liveIds];
+  }, [debouncedQuery, curatedDatasets, hfResults]);
+
+  const allIds = useMemo(
+    () => [...new Set([...curatedDatasets.map((d) => d.id), ...hfResults.map((r) => r.id)])],
+    [curatedDatasets, hfResults],
+  );
+
+  const comboboxAnchorRef = useRef<HTMLDivElement>(null);
+  const { scrollRef, sentinelRef } = useInfiniteScroll(fetchMore);
 
   return (
     <SectionCard
@@ -75,7 +129,7 @@ export function DatasetSection() {
                 </button>
               </TooltipTrigger>
               <TooltipContent>
-                Enter a Hugging Face dataset path like 'username/dataset-name'.{" "}
+                Search Hugging Face datasets or enter a path like 'username/dataset-name'.{" "}
                 <a
                   href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/datasets-guide"
                   target="_blank"
@@ -87,17 +141,71 @@ export function DatasetSection() {
               </TooltipContent>
             </Tooltip>
           </span>
-          <InputGroup>
-            <InputGroupAddon>
-              <HugeiconsIcon icon={Search01Icon} className="size-4" />
-            </InputGroupAddon>
-            <InputGroupInput
-              placeholder="yahma/alpaca-cleaned"
-              value={dataset ?? ""}
-              className=""
-              onChange={(e) => setDataset(e.target.value || null)}
-            />
-          </InputGroup>
+          <div ref={comboboxAnchorRef}>
+            <Combobox
+              items={allIds}
+              filteredItems={displayIds}
+              filter={null}
+              value={dataset}
+              onValueChange={(id) => setDataset(id)}
+              onInputValueChange={(val) => setInputValue(val)}
+              itemToStringValue={(id) => datasetMap.get(id)?.label ?? id}
+              autoHighlight={true}
+            >
+              <ComboboxInput placeholder="Search datasets..." className="w-full">
+                <InputGroupAddon>
+                  <HugeiconsIcon icon={Search01Icon} className="size-4" />
+                </InputGroupAddon>
+              </ComboboxInput>
+              <ComboboxContent anchor={comboboxAnchorRef}>
+                {isLoading ? (
+                  <div className="flex items-center justify-center py-4 gap-2 text-xs text-muted-foreground"><Spinner className="size-4" /> Searching…</div>
+                ) : (
+                  <ComboboxEmpty>No datasets found</ComboboxEmpty>
+                )}
+                <div ref={scrollRef} className="max-h-64 overflow-y-auto overscroll-contain [scrollbar-width:thin]">
+                  <ComboboxList className="p-1 !max-h-none !overflow-visible">
+                    {(id: string) => {
+                      const meta = datasetMap.get(id);
+                      const label = meta?.label ?? id;
+                      const rowLabel = meta?.size ?? (meta?.totalExamples ? `${formatCompact(meta.totalExamples)} rows` : null);
+                      return (
+                        <ComboboxItem key={id} value={id} className="justify-between">
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <span className="min-w-0 flex-1 truncate">{label}</span>
+                            </TooltipTrigger>
+                            <TooltipContent side="left" className="max-w-xs break-all">
+                              {label}
+                            </TooltipContent>
+                          </Tooltip>
+                          {rowLabel ? (
+                            <span className="text-xs text-muted-foreground shrink-0">
+                              {rowLabel}
+                            </span>
+                          ) : meta?.sizeCategory ? (
+                            <span className="text-[10px] text-muted-foreground shrink-0">
+                              {meta.sizeCategory}
+                            </span>
+                          ) : meta?.downloads != null ? (
+                            <span className="text-[10px] text-muted-foreground shrink-0">
+                              ↓{formatCompact(meta.downloads)}
+                            </span>
+                          ) : null}
+                        </ComboboxItem>
+                      );
+                    }}
+                  </ComboboxList>
+                  {hasMore && <div ref={sentinelRef} className="h-px" />}
+                  {isLoadingMore && (
+                    <div className="flex items-center justify-center py-2">
+                      <Spinner className="size-3.5 text-muted-foreground" />
+                    </div>
+                  )}
+                </div>
+              </ComboboxContent>
+            </Combobox>
+          </div>
         </div>
 
         {/* Format */}

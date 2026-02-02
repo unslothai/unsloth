@@ -1,5 +1,9 @@
 export type ModelType = "vision" | "tts" | "embeddings" | "text";
 export type TrainingMethod = "qlora" | "lora" | "full";
+
+export function isAdapterMethod(method: TrainingMethod): boolean {
+  return method === "lora" || method === "qlora";
+}
 export type StepNumber = 1 | 2 | 3 | 4 | 5;
 export type DatasetSource = "huggingface" | "upload";
 export type DatasetFormat = "auto" | "alpaca" | "chatml" | "sharegpt";
