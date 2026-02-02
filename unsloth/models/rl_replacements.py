@@ -457,14 +457,14 @@ def grpo_trainer__calculate_rewards(function_name, function):
         "                return ''.join(_unsloth_completion_to_text(item) for item in completion)\n"
         "            return str(completion)\n"
         "        completion_texts = [_unsloth_completion_to_text(c) for c in completions]\n"
-        "        completions_are_text = all(isinstance(c, str) for c in completions)\n"
+        "        completions_are_text = all(isinstance(c, str) for c in completions)\n",
     )
 
     function = function.replace(
-        "        reward_kwargs[\"trainer_state\"] = self.state\n",
-        "        reward_kwargs[\"trainer_state\"] = self.state\n"
-        "        reward_kwargs[\"completion_texts\"] = completion_texts\n"
-        "        reward_kwargs[\"completion_raw\"] = completions\n",
+        '        reward_kwargs["trainer_state"] = self.state\n',
+        '        reward_kwargs["trainer_state"] = self.state\n'
+        '        reward_kwargs["completion_texts"] = completion_texts\n'
+        '        reward_kwargs["completion_raw"] = completions\n',
     )
 
     function = function.replace(
@@ -473,7 +473,10 @@ def grpo_trainer__calculate_rewards(function_name, function):
     )
 
     # Add a robust try/except wrapper for reward funcs expecting dict completions.
-    if "string indices must be integers" not in function and "output_reward_func = reward_func(" in function:
+    if (
+        "string indices must be integers" not in function
+        and "output_reward_func = reward_func(" in function
+    ):
         base_try = (
             "                    # UNSLOTH_REWARD_FUNC_TRY\n"
             "                    try:\n"
@@ -481,11 +484,11 @@ def grpo_trainer__calculate_rewards(function_name, function):
             "                            prompts=prompts, completions=(completions if completions_are_text else completion_texts), completion_ids=completion_ids_list, **reward_kwargs\n"
             "                        )\n"
             "                    except TypeError as e:\n"
-            "                        if \"string indices must be integers\" in str(e):\n"
+            '                        if "string indices must be integers" in str(e):\n'
             "                            def _wrap_completion_list(_comps):\n"
             "                                if isinstance(_comps, list):\n"
-            "                                    return [c if isinstance(c, dict) else {\"content\": c} for c in _comps]\n"
-            "                                return [{\"content\": _comps}]\n"
+            '                                    return [c if isinstance(c, dict) else {"content": c} for c in _comps]\n'
+            '                                return [{"content": _comps}]\n'
             "                            _wrapped = [_wrap_completion_list(c) for c in completions]\n"
             "                            output_reward_func = reward_func(\n"
             "                                prompts=prompts, completions=_wrapped, completion_ids=completion_ids_list, **reward_kwargs\n"

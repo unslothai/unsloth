@@ -217,7 +217,10 @@ def fix_deepseek_v2_moe_alias():
 
     deepseek_v2.DeepseekV2MoE = deepseek_v2.DeepseekV2Moe
     try:
-        if hasattr(deepseek_v2, "__all__") and "DeepseekV2MoE" not in deepseek_v2.__all__:
+        if (
+            hasattr(deepseek_v2, "__all__")
+            and "DeepseekV2MoE" not in deepseek_v2.__all__
+        ):
             deepseek_v2.__all__.append("DeepseekV2MoE")
     except Exception:
         pass
@@ -236,10 +239,14 @@ def fix_qwen2_vl_max_pixels_none():
     original = qwen2_vl.smart_resize
     default_max_pixels = 14 * 14 * 4 * 1280
 
-    def smart_resize(height, width, factor=28, min_pixels=56 * 56, max_pixels=default_max_pixels):
+    def smart_resize(
+        height, width, factor = 28, min_pixels = 56 * 56, max_pixels = default_max_pixels
+    ):
         if max_pixels is None:
             max_pixels = default_max_pixels
-        return original(height, width, factor=factor, min_pixels=min_pixels, max_pixels=max_pixels)
+        return original(
+            height, width, factor = factor, min_pixels = min_pixels, max_pixels = max_pixels
+        )
 
     smart_resize._unsloth_max_pixels_patch = True
     qwen2_vl.smart_resize = smart_resize
@@ -247,7 +254,9 @@ def fix_qwen2_vl_max_pixels_none():
 
 def fix_qwen2_5_vl_tie_word_embeddings():
     try:
-        from transformers.models.qwen2_5_vl.configuration_qwen2_5_vl import Qwen2_5_VLTextConfig
+        from transformers.models.qwen2_5_vl.configuration_qwen2_5_vl import (
+            Qwen2_5_VLTextConfig,
+        )
     except Exception:
         return
 
