@@ -28,7 +28,9 @@ def load_mlx_weights(model, weights_path):
     if not os.path.exists(weights_path):
         return False
 
-    print(f"Unsloth: Loading pre-quantized MLX weights from {os.path.basename(weights_path)}...")
+    print(
+        f"Unsloth: Loading pre-quantized MLX weights from {os.path.basename(weights_path)}..."
+    )
 
     # Load MLX weights
     mlx_weights = mx.load(weights_path)
@@ -42,7 +44,7 @@ def load_mlx_weights(model, weights_path):
                 prefix = "model."
             break
 
-    def get_mlx_val(base_key, suffix=""):
+    def get_mlx_val(base_key, suffix = ""):
         full_key = f"{prefix}{base_key}{suffix}"
         return mlx_weights.get(full_key)
 
@@ -55,7 +57,9 @@ def load_mlx_weights(model, weights_path):
             break
 
     if num_layers == 0:
-        print(f"Unsloth: [Warning] Could not detect any layers in MLX weights {os.path.basename(weights_path)}.")
+        print(
+            f"Unsloth: [Warning] Could not detect any layers in MLX weights {os.path.basename(weights_path)}."
+        )
         print(f"Unsloth: Available keys (first 10): {list(mlx_weights.keys())[:10]}")
         return False
 
@@ -72,7 +76,8 @@ def load_mlx_weights(model, weights_path):
                     param = p
                     break
 
-            if param is None: continue
+            if param is None:
+                continue
 
             # Extract MLX components
             # Handle both 'key.weight' and 'key' naming conventions
@@ -88,17 +93,15 @@ def load_mlx_weights(model, weights_path):
 
                 # Check for explicit bits/group_size metadata in the file
                 bits_arr = get_mlx_val(mlx_base, ".bits")
-                if bits_arr is not None: bits = bits_arr.item()
+                if bits_arr is not None:
+                    bits = bits_arr.item()
 
                 gs_arr = get_mlx_val(mlx_base, ".group_size")
-                if gs_arr is not None: group_size = gs_arr.item()
+                if gs_arr is not None:
+                    group_size = gs_arr.item()
 
                 param._mlx_cache = MLXQuantizedWeight(
-                    weight = w,
-                    scales = s,
-                    biases = b,
-                    group_size = group_size,
-                    bits = bits
+                    weight = w, scales = s, biases = b, group_size = group_size, bits = bits
                 )
                 count += 1
 
