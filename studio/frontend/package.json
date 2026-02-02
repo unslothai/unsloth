@@ -22,6 +22,7 @@
     "@fontsource-variable/space-grotesk": "^5.2.10",
     "@hugeicons/core-free-icons": "^3.1.1",
     "@hugeicons/react": "^1.1.4",
+    "@huggingface/hub": "^2.8.0",
     "@radix-ui/react-select": "^2.2.6",
     "@radix-ui/react-slot": "^1.2.3",
     "@streamdown/cjk": "^1.0.1",
