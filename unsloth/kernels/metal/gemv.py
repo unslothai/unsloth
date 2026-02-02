@@ -4,10 +4,6 @@
 import mlx.core as mx
 
 _GEMV_SOURCE = """
-    #include <metal_stdlib>
-    #include <metal_simdgroup>
-    using namespace metal;
-
     // MLX provides: x, W, y, K, N
     
     // We use a SIMD-group (warp) per row of output to ensure coalesced reads.
