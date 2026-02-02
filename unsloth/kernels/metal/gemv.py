@@ -10,8 +10,8 @@ _GEMV_SOURCE = """
     // thread_position_in_grid (uint3)
     
     uint gid = thread_position_in_grid.x;
-    uint num_out = N[0]; // N is passed as 1-element array
-    uint num_in = K[0];  // K is passed as 1-element array
+    uint num_out = N; // N is passed as reference/value
+    uint num_in = K;  // K is passed as reference/value
     
     if (gid >= num_out) return;
     
