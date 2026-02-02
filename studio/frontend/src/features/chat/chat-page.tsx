@@ -3,13 +3,23 @@ import {
   ModelSelector,
 } from "@/components/assistant-ui/model-selector";
 import { Thread } from "@/components/assistant-ui/thread";
+import { Button } from "@/components/ui/button";
 import {
   SidebarProvider,
   SidebarTrigger,
   useSidebar,
 } from "@/components/ui/sidebar";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import { Settings04Icon } from "@hugeicons/core-free-icons";
+import {
+  ColumnInsertIcon,
+  PencilEdit02Icon,
+  Settings04Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type CSSProperties,
@@ -176,7 +186,7 @@ function InlineSidebar({
       <aside
         data-sidebar="sidebar"
         className={cn(
-          "bg-sidebar text-sidebar-foreground h-full overflow-hidden transition-[width] duration-200 ease-linear",
+          "bg-sidebar text-sidebar-foreground h-full overflow-hidden rounded-2xl corner-squircle transition-[width] duration-200 ease-linear",
           !collapsed && (side === "left" ? "border-r border-0 border-sidebar-border" : "border-l border-0 border-sidebar-border"),
           collapsed ? "w-0" : "w-(--sidebar-width)",
         )}
@@ -186,6 +196,34 @@ function InlineSidebar({
         </div>
       </aside>
     </div>
+  );
+}
+
+function TopBarActions({
+  onNewThread,
+  onNewCompare,
+}: { onNewThread: () => void; onNewCompare: () => void }) {
+  const { state } = useSidebar();
+  if (state !== "collapsed") return null;
+  return (
+    <>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button variant="ghost" size="icon-sm" onClick={onNewThread}>
+            <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={2} />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom">New Chat</TooltipContent>
+      </Tooltip>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button variant="ghost" size="icon-sm" onClick={onNewCompare}>
+            <HugeiconsIcon icon={ColumnInsertIcon} strokeWidth={2} />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom">Compare</TooltipContent>
+      </Tooltip>
+    </>
   );
 }
 
@@ -204,6 +242,14 @@ export function ChatPage(): ReactElement {
     () => setInferenceParams((p) => ({ ...p, checkpoint: "" })),
     [],
   );
+  const handleNewThread = useCallback(
+    () => setView({ mode: "single" }),
+    [],
+  );
+  const handleNewCompare = useCallback(
+    () => setView({ mode: "compare", pairId: crypto.randomUUID() }),
+    [],
+  );
 
   const models =
     inferenceParams.inferenceEngine === "llama-cpp"
@@ -212,7 +258,7 @@ export function ChatPage(): ReactElement {
 
   return (
     <SidebarProvider
-      defaultOpen={false}
+      defaultOpen={true}
       className="!min-h-0 h-[calc(100vh-4rem)] max-w-7xl mx-auto px-4"
       style={{ "--sidebar-width": "14rem", "--sidebar-width-icon": "3rem" } as CSSProperties}
     >
@@ -220,17 +266,19 @@ export function ChatPage(): ReactElement {
         <ThreadSidebar
           view={view}
           onSelect={setView}
-          onNewThread={() => setView({ mode: "single" })}
-          onNewCompare={() =>
-            setView({ mode: "compare", pairId: crypto.randomUUID() })
-          }
+          onNewThread={handleNewThread}
+          onNewCompare={handleNewCompare}
         />
       </InlineSidebar>
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <div className="flex h-11 shrink-0 items-center px-2">
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1">
             <SidebarTrigger />
+            <TopBarActions
+              onNewThread={handleNewThread}
+              onNewCompare={handleNewCompare}
+            />
             <ModelSelector
               models={models}
               value={inferenceParams.checkpoint}
