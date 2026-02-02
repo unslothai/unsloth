@@ -88,7 +88,7 @@ def fast_gemv(X: mx.array, W: mx.array) -> mx.array:
 
     # Grid: N warps. Each warp is 32 threads.
     grid_size = (N * 32, 1, 1)
-    
+
     # Use larger threadgroups (128 threads = 4 warps) for better occupancy if N is divisible by 4
     if N % 4 == 0:
         group_size = (128, 1, 1)
