@@ -50,7 +50,7 @@ _GEMV_SOURCE = """
         // Remainder loop for safety (though normally K % 4 == 0)
         // Only thread 0 handles remainder to avoid over-counting in simd_sum
         for (uint k = K4 * 4; k < num_in; ++k) {
-            sum += (float)x[k] * (float)W[offset + k];
+            sum += (float)x[k] * (float)W[row_offset + k];
         }
         y[row] = (half)sum;
     }
