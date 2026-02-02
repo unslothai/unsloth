@@ -9,6 +9,23 @@ from .utils import is_mlx_available
 from .quantization import MLXQuantizedWeight
 
 
+def treeify(w):
+    """
+    Converts MLXQuantizedWeight objects into dictionaries of arrays
+    that mx.compile can trace. Standard arrays are returned as-is.
+    """
+    w_mlx = torch_to_mlx(w) if not isinstance(w, mx.array) and not isinstance(w, MLXQuantizedWeight) else w
+    if isinstance(w_mlx, MLXQuantizedWeight):
+        return {
+            "weight": w_mlx.weight,
+            "scales": w_mlx.scales,
+            "biases": w_mlx.biases,
+            "group_size": w_mlx.group_size,
+            "bits": w_mlx.bits
+        }
+    return w_mlx
+
+
 def quantized_matmul(X, W):
     """
     Handles both standard and quantized MLX weights.
@@ -16,14 +33,19 @@ def quantized_matmul(X, W):
     Auto-dispatches to Metal GEMV for FP16 Batch=1.
     """
     if isinstance(W, MLXQuantizedWeight):
-        # MLX Quantized Matmul
+        # MLX Quantized Matmul expects group_size in the packed domain
+        # i.e. original_group_size / (32 / bits)
+        bits = getattr(W, "bits", 4)
+        group_size = getattr(W, "group_size", 64)
+        packed_group_size = group_size // (32 // bits)
+        
         return mx.quantized_matmul(
             X, 
             W.weight, 
             W.scales, 
             W.biases, 
-            group_size = getattr(W, "group_size", 64),
-            bits = getattr(W, "bits", 4)
+            group_size = packed_group_size,
+            bits = bits
         )
     
     # Batch=1 Optimization for FP16
@@ -52,14 +74,10 @@ def matmul_lora(X, W, W_quant, A, B, S):
 
 
 def _dequant(W):
-    if isinstance(W, MLXQuantizedWeight):
-        # We use mx.dequantize or simple ops if dequantize isn't in mx.fast
-        # Actually, x @ W.T where W is quantized is best handled by quantized_matmul
-        # but inside mx.compile, we can just dequantize.
-        # MLX 4-bit is usually: (W_q - 8) * scales + biases? No, depends on format.
-        # mx.dequantize logic:
+    if isinstance(W, dict) and "weight" in W:
         return mx.dequantize(
-            W.weight, W.scales, W.biases, group_size = W.group_size, bits = W.bits
+            W["weight"], W["scales"], W["biases"], 
+            group_size = W["group_size"], bits = W["bits"]
         )
     return W
 
@@ -147,17 +165,17 @@ def apply_lora_mlp_swiglu(
             return mlx_to_torch(out.reshape(X.shape), device = X.device, dtype = X.dtype)
 
         # Standard Batch Path (Compiled)
-        gateW_mlx = torch_to_mlx(gateW)
+        gateW_mlx = treeify(gateW)
         gateA_mlx = torch_to_mlx(gateA)
         gateB_mlx = torch_to_mlx(gateB)
         gateS_mlx = torch_to_mlx(gateS) if hasattr(gateS, "shape") else gateS
 
-        upW_mlx = torch_to_mlx(upW)
+        upW_mlx = treeify(upW)
         upA_mlx = torch_to_mlx(upA)
         upB_mlx = torch_to_mlx(upB)
         upS_mlx = torch_to_mlx(upS) if hasattr(upS, "shape") else upS
 
-        downW_mlx = torch_to_mlx(downW)
+        downW_mlx = treeify(downW)
         downA_mlx = torch_to_mlx(downA)
         downB_mlx = torch_to_mlx(downB)
         downS_mlx = torch_to_mlx(downS) if hasattr(downS, "shape") else downS
@@ -198,8 +216,6 @@ def apply_lora_qkv(
 
         # Batch=1 Optimization
         if X_mlx.size // X_mlx.shape[-1] == 1:
-            from ..metal.gemv import fast_gemv
-
             # Inputs
             QW_mlx = torch_to_mlx(QW)
             QA_mlx = torch_to_mlx(QA)
@@ -248,17 +264,17 @@ def apply_lora_qkv(
                 ),
             )
 
-        QW_mlx = torch_to_mlx(QW)
+        QW_mlx = treeify(QW)
         QA_mlx = torch_to_mlx(QA)
         QB_mlx = torch_to_mlx(QB)
         QS_mlx = torch_to_mlx(QS) if hasattr(QS, "shape") else QS
 
-        KW_mlx = torch_to_mlx(KW)
+        KW_mlx = treeify(KW)
         KA_mlx = torch_to_mlx(KA)
         KB_mlx = torch_to_mlx(KB)
         KS_mlx = torch_to_mlx(KS) if hasattr(KS, "shape") else KS
 
-        VW_mlx = torch_to_mlx(VW)
+        VW_mlx = treeify(VW)
         VA_mlx = torch_to_mlx(VA)
         VB_mlx = torch_to_mlx(VB)
         VS_mlx = torch_to_mlx(VS) if hasattr(VS, "shape") else VS
@@ -297,8 +313,6 @@ def apply_lora_o(X, OW, OW_quant, OA, OB, OS):
 
         # Batch=1 Optimization
         if X_mlx.size // X_mlx.shape[-1] == 1:
-            from ..metal.gemv import fast_gemv
-
             OW_mlx = torch_to_mlx(OW)
             OA_mlx = torch_to_mlx(OA)
             OB_mlx = torch_to_mlx(OB)
@@ -315,7 +329,7 @@ def apply_lora_o(X, OW, OW_quant, OA, OB, OS):
                 dtype = X.dtype,
             )
 
-        OW_mlx = torch_to_mlx(OW)
+        OW_mlx = treeify(OW)
         OA_mlx = torch_to_mlx(OA)
         OB_mlx = torch_to_mlx(OB)
         OS_mlx = torch_to_mlx(OS) if hasattr(OS, "shape") else OS

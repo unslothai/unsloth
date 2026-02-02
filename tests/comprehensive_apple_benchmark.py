@@ -114,6 +114,11 @@ class ComprehensiveBenchmark:
 
         if HAS_MLX:
             # 2. MLX 16-Bit
+            # Cache weights to show true compute speed
+            gateW._mlx_cache = torch_to_mlx(gateW)
+            upW._mlx_cache = torch_to_mlx(upW)
+            downW._mlx_cache = torch_to_mlx(downW)
+
             # Warmup
             with torch.no_grad():
                 y_mlx = apply_lora_mlp_swiglu(
@@ -158,7 +163,7 @@ class ComprehensiveBenchmark:
             mlx_16_latency = (time.time() - start) * 1000 / iters
 
             error = (y_ref - y_mlx).abs().max().item()
-            log_result("MLX 16-Bit (Optimized)", mlx_16_latency, error)
+            log_result("MLX 16-Bit (Cached)", mlx_16_latency, error)
 
             # 3. MLX 4-Bit
             # Cache quantized weights
@@ -253,10 +258,15 @@ class ComprehensiveBenchmark:
 
         if HAS_MLX:
             # MLX 16-bit
+            # Cache weights to show true compute speed
+            QW._mlx_cache = torch_to_mlx(QW)
+            KW._mlx_cache = torch_to_mlx(KW)
+            VW._mlx_cache = torch_to_mlx(VW)
+            
             q_mlx, k_mlx, v_mlx = apply_lora_qkv(
                 X, QW, None, QA, QB, QS, KW, None, QA, QB, QS, VW, None, QA, QB, QS
             )
-
+            
             start = time.time()
             for _ in range(iters):
                 _ = apply_lora_qkv(
