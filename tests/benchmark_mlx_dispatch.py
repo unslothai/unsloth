@@ -315,5 +315,5 @@ def benchmark_mlp(batch_size = 1, seq_len = 128, dim = 4096, hidden_dim = 11008,
 
 
 if __name__ == "__main__":
-    benchmark_mlp(batch_size=1, seq_len=128) # Original
-    benchmark_mlp(batch_size=2, seq_len=1024, iters=50) # Larger workload
+    benchmark_mlp(batch_size = 1, seq_len = 128)  # Original
+    benchmark_mlp(batch_size = 2, seq_len = 1024, iters = 50)  # Larger workload
