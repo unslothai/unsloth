@@ -52,7 +52,7 @@ export function SectionCard({
   return (
     <div
       className={cn(
-        "bg-card corner-squircle rounded-3xl ring-1 ring-foreground/10 flex flex-col gap-5 p-5 relative overflow-hidden transition-all duration-300 ease-in-out",
+        "bg-card corner-squircle rounded-3xl ring-1 ring-foreground/10 flex flex-col gap-5 p-5 relative transition-all duration-300 ease-in-out",
         featured && styles.border,
         className,
       )}

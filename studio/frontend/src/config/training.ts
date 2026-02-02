@@ -1,9 +1,8 @@
 import type {
-  DatasetOption,
-  ModelOption,
   ModelType,
   StepConfig,
 } from "@/types/training";
+import type { PipelineType } from "@huggingface/hub";
 
 export const STEPS: StepConfig[] = [
   {
@@ -65,149 +64,6 @@ export const MODEL_TYPES: ReadonlyArray<{
   },
 ];
 
-export const MODELS: ModelOption[] = [
-  // Vision models
-  {
-    id: "llava-1.6-7b",
-    name: "LLaVA 1.6 7B",
-    type: "vision",
-    params: "7B",
-    vram: "~6GB",
-    context: "4K",
-    recommended: true,
-  },
-  {
-    id: "llava-1.6-13b",
-    name: "LLaVA 1.6 13B",
-    type: "vision",
-    params: "13B",
-    vram: "~10GB",
-    context: "4K",
-    recommended: true,
-  },
-  {
-    id: "qwen-vl-7b",
-    name: "Qwen-VL 7B",
-    type: "vision",
-    params: "7B",
-    vram: "~6GB",
-    context: "8K",
-  },
-  // TTS models
-  { id: "bark", name: "Bark", type: "tts", params: "1B", recommended: true },
-  { id: "xtts-v2", name: "XTTS v2", type: "tts", params: "500M" },
-  // Embedding models
-  {
-    id: "bge-large",
-    name: "BGE Large",
-    type: "embeddings",
-    params: "335M",
-    recommended: true,
-  },
-  { id: "e5-large", name: "E5 Large", type: "embeddings", params: "335M" },
-  { id: "gte-large", name: "GTE Large", type: "embeddings", params: "335M" },
-  // Text models
-  {
-    id: "llama-3.1-8b",
-    name: "Llama 3.1 8B",
-    type: "text",
-    params: "8B",
-    vram: "~6GB",
-    context: "128K",
-    recommended: true,
-  },
-  {
-    id: "llama-3.1-70b",
-    name: "Llama 3.1 70B",
-    type: "text",
-    params: "70B",
-    vram: "~40GB",
-    context: "128K",
-  },
-  {
-    id: "mistral-7b",
-    name: "Mistral 7B",
-    type: "text",
-    params: "7B",
-    vram: "~5GB",
-    context: "32K",
-  },
-  {
-    id: "qwen2-7b",
-    name: "Qwen2 7B",
-    type: "text",
-    params: "7B",
-    vram: "~5GB",
-    context: "32K",
-  },
-  {
-    id: "phi-3-mini",
-    name: "Phi-3 Mini",
-    type: "text",
-    params: "3.8B",
-    vram: "~3GB",
-    context: "128K",
-  },
-  {
-    id: "gemma-2-9b",
-    name: "Gemma 2 9B",
-    type: "text",
-    params: "9B",
-    vram: "~7GB",
-    context: "8K",
-  },
-  {
-    id: "gemma-3-27b",
-    name: "Gemma 3 27B",
-    type: "text",
-    params: "27B",
-    vram: "~18GB",
-    context: "128K",
-    recommended: true,
-  },
-];
-
-export const DATASETS: DatasetOption[] = [
-  {
-    id: "alpaca",
-    name: "Alpaca",
-    description: "Instruction following dataset",
-    size: "52K",
-    recommended: true,
-  },
-  {
-    id: "dolly-15k",
-    name: "Dolly 15K",
-    description: "Databricks instruction dataset",
-    size: "15K",
-    recommended: true,
-  },
-  {
-    id: "openorca",
-    name: "OpenOrca",
-    description: "Large-scale instruct dataset",
-    size: "4M",
-  },
-  {
-    id: "wizard-lm",
-    name: "WizardLM",
-    description: "Complex instruction dataset",
-    size: "196K",
-  },
-  {
-    id: "lima",
-    name: "LIMA",
-    description: "Curated high-quality dataset",
-    size: "1K",
-  },
-  {
-    id: "sharegpt",
-    name: "ShareGPT",
-    description: "Conversation dataset",
-    size: "90K",
-  },
-];
-
 export const CONTEXT_LENGTHS = [512, 1024, 2048, 4096, 8192, 16384, 32768];
 
 export const TARGET_MODULES = [
@@ -249,4 +105,11 @@ export const DEFAULT_HYPERPARAMS = {
   finetuneAttentionModules: true,
   finetuneMLPModules: true,
   targetModules: TARGET_MODULES,
+};
+
+export const MODEL_TYPE_TO_HF_TASK: Record<ModelType, PipelineType> = {
+  text: "text-generation",
+  vision: "image-text-to-text",
+  tts: "text-to-speech",
+  embeddings: "feature-extraction",
 };

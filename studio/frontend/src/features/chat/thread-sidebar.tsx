@@ -124,7 +124,6 @@ export function ThreadSidebar({
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
-        {/*<SidebarSeparator />*/}
         <SidebarGroup className="flex-1">
           <SidebarGroupLabel>Your Chats</SidebarGroupLabel>
           <SidebarGroupContent>

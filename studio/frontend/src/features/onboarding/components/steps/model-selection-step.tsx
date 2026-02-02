@@ -1,4 +1,3 @@
-import { Badge } from "@/components/ui/badge";
 import {
   Combobox,
   ComboboxContent,
@@ -25,12 +24,19 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Spinner } from "@/components/ui/spinner";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { MODELS } from "@/config/training";
+import { MODEL_TYPE_TO_HF_TASK } from "@/config/training";
+import {
+  useDebouncedValue,
+  useHfModelSearch,
+  useInfiniteScroll,
+} from "@/hooks";
+import { formatCompact } from "@/lib/utils";
 import { useWizardStore } from "@/stores/training";
 import type { TrainingMethod } from "@/types/training";
 import {
@@ -39,7 +45,7 @@ import {
   Search01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useMemo, useRef } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 export function ModelSelectionStep() {
@@ -63,18 +69,27 @@ export function ModelSelectionStep() {
     })),
   );
 
-  const filteredModels = useMemo(() => {
-    if (!modelType) {
-      return [];
-    }
-    // Sort recommended first
-    return MODELS.filter((m) => m.type === modelType).sort(
-      (a, b) => (b.recommended ? 1 : 0) - (a.recommended ? 1 : 0),
-    );
-  }, [modelType]);
+  const [inputValue, setInputValue] = useState("");
+  const selectingRef = useRef(false);
+  const debouncedQuery = useDebouncedValue(inputValue);
+  const task = modelType ? MODEL_TYPE_TO_HF_TASK[modelType] : undefined;
+  const {
+    results: hfResults,
+    isLoading,
+    isLoadingMore,
+    fetchMore,
+  } = useHfModelSearch(debouncedQuery, {
+    task,
+    accessToken: hfToken || undefined,
+  });
 
-  const selectedModelData = MODELS.find((m) => m.id === selectedModel);
+  const resultIds = useMemo(() => hfResults.map((r) => r.id), [hfResults]);
+
   const comboboxAnchorRef = useRef<HTMLDivElement>(null);
+  const { scrollRef, sentinelRef } = useInfiniteScroll(
+    fetchMore,
+    hfResults.length,
+  );
 
   return (
     <FieldGroup>
@@ -123,7 +138,7 @@ export function ModelSelectionStep() {
               </button>
             </TooltipTrigger>
             <TooltipContent>
-              Search from our curated list of optimized models.{" "}
+              Search Hugging Face models or pick from our recommended list.{" "}
               <a
                 href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/what-model-should-i-use"
                 target="_blank"
@@ -137,44 +152,83 @@ export function ModelSelectionStep() {
         </FieldLabel>
         <div ref={comboboxAnchorRef}>
           <Combobox
-            items={filteredModels.map((m) => m.name)}
-            value={selectedModelData?.name ?? null}
-            onValueChange={(name) => {
-              const model = filteredModels.find((m) => m.name === name);
-              if (model) {
-                setSelectedModel(model.id);
-              }
-            }}
+            items={resultIds}
+            filteredItems={resultIds}
+            filter={null}
+            value={selectedModel}
+            onValueChange={(id) => { selectingRef.current = true; setSelectedModel(id); }}
+            onInputValueChange={(val) => { if (selectingRef.current) { selectingRef.current = false; return; } setInputValue(val); }}
+            itemToStringValue={(id) => id}
             autoHighlight={true}
           >
-            <ComboboxInput placeholder="Search by name..." className="w-full">
+            <ComboboxInput placeholder="Search models..." className="w-full">
               <InputGroupAddon>
                 <HugeiconsIcon icon={Search01Icon} className="size-4" />
               </InputGroupAddon>
             </ComboboxInput>
             <ComboboxContent anchor={comboboxAnchorRef}>
-              <ComboboxEmpty>No models found</ComboboxEmpty>
-              <ComboboxList className="p-1">
-                {(name: string) => {
-                  const model = filteredModels.find((m) => m.name === name);
-                  return (
-                    <ComboboxItem key={name} value={name}>
-                      <span className="flex-1">{name}</span>
-                      {model && (
-                        <Badge variant="outline" className="ml-auto">
-                          {model.params}
-                        </Badge>
-                      )}
-                    </ComboboxItem>
-                  );
-                }}
-              </ComboboxList>
+              {isLoading ? (
+                <div className="flex items-center justify-center py-4 gap-2 text-xs text-muted-foreground">
+                  <Spinner className="size-4" /> Searching…
+                </div>
+              ) : (
+                <ComboboxEmpty>No models found</ComboboxEmpty>
+              )}
+              <div
+                ref={scrollRef}
+                className="max-h-64 overflow-y-auto overscroll-contain [scrollbar-width:thin]"
+              >
+                <ComboboxList className="p-1 !max-h-none !overflow-visible">
+                  {(id: string) => {
+                    const r = hfResults.find((r) => r.id === id);
+                    const sizeLabel = r?.totalParams
+                      ? formatCompact(r.totalParams)
+                      : null;
+                    return (
+                      <ComboboxItem
+                        key={id}
+                        value={id}
+                        className="justify-between"
+                      >
+                        <Tooltip>
+                          <TooltipTrigger asChild={true}>
+                            <span className="min-w-0 flex-1 truncate">
+                              {id}
+                            </span>
+                          </TooltipTrigger>
+                          <TooltipContent
+                            side="left"
+                            className="max-w-xs break-all"
+                          >
+                            {id}
+                          </TooltipContent>
+                        </Tooltip>
+                        {sizeLabel ? (
+                          <span className="text-xs text-muted-foreground shrink-0">
+                            {sizeLabel}
+                          </span>
+                        ) : r?.downloads != null ? (
+                          <span className="text-[10px] text-muted-foreground shrink-0">
+                            ↓{formatCompact(r.downloads)}
+                          </span>
+                        ) : null}
+                      </ComboboxItem>
+                    );
+                  }}
+                </ComboboxList>
+                <div ref={sentinelRef} className="h-px" />
+                {isLoadingMore && (
+                  <div className="flex items-center justify-center py-2">
+                    <Spinner className="size-3.5 text-muted-foreground" />
+                  </div>
+                )}
+              </div>
             </ComboboxContent>
           </Combobox>
         </div>
       </Field>
 
-      {selectedModelData && (
+      {selectedModel && (
         <Field>
           <div className="flex items-center justify-between">
             <div>
@@ -208,7 +262,7 @@ export function ModelSelectionStep() {
                 </Tooltip>
               </FieldLabel>
               <FieldDescription>
-                Choose how to fine-tune {selectedModelData.name}
+                Choose how to fine-tune {selectedModel}
               </FieldDescription>
             </div>
             <Select
