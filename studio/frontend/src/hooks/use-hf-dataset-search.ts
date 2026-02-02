@@ -23,23 +23,20 @@ interface CardDataWithInfo {
 function extractTotalExamples(
   cardData: CardDataWithInfo | undefined,
 ): number | undefined {
-  if (!cardData?.dataset_info) {
-    return undefined;
-  }
+  if (!cardData?.dataset_info) return undefined;
+
   const infos = Array.isArray(cardData.dataset_info)
     ? cardData.dataset_info
     : [cardData.dataset_info];
-  let total = 0;
-  let found = false;
-  for (const info of infos) {
-    for (const split of info.splits ?? []) {
-      if (typeof split.num_examples === "number") {
-        total += split.num_examples;
-        found = true;
-      }
-    }
-  }
-  return found ? total : undefined;
+
+  const examples = infos
+    .flatMap((info) => info.splits ?? [])
+    .filter((s) => typeof s.num_examples === "number")
+    .map((s) => s.num_examples);
+
+  return examples.length > 0
+    ? examples.reduce((a, b) => a + b, 0)
+    : undefined;
 }
 
 export interface HfDatasetResult {
@@ -72,7 +69,6 @@ export function useHfDatasetSearch(
   options?: { accessToken?: string },
 ) {
   const { accessToken } = options ?? {};
-
   const createIter = useCallback(
     () =>
       listDatasets({
