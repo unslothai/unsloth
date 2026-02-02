@@ -24,8 +24,7 @@ def inference(
     load_in_4bit: bool = typer.Option(True, "--load-in-4bit/--no-load-in-4bit"),
 ):
     """Run a single inference using the specified model."""
-    from backend.model_config import ModelConfig
-    from backend.inference import get_inference_backend
+    from studio.backend.core import ModelConfig, get_inference_backend
 
     inference_backend = get_inference_backend()
     model_config = ModelConfig.from_ui_selection(

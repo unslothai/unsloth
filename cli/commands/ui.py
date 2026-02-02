@@ -1,19 +1,32 @@
+import time
+from pathlib import Path
+from typing import Optional
+
 import typer
 
 
 def ui(
     port: int = typer.Option(8000, "--port", "-p", help="Port to run the UI server on."),
     host: str = typer.Option("0.0.0.0", "--host", "-H", help="Host address to bind to."),
-    share: bool = typer.Option(True, "--share", "-s", help="Create a public Gradio share link."),
+    frontend: Optional[Path] = typer.Option(None, "--frontend", "-f", help="Path to frontend build directory."),
+    silent: bool = typer.Option(False, "--silent", "-q", help="Suppress startup messages."),
 ):
-    """Launch the Unsloth web UI for training, inference, and export."""
-    from app import demo, script_dir
+    """Launch the Unsloth web UI backend server."""
+    from studio.backend.run import run_server
 
-    typer.echo(f"Starting Unsloth UI on http://{host}:{port}")
+    if not silent:
+        typer.echo(f"Starting Unsloth UI on http://{host}:{port}")
 
-    demo.launch(
-        share=share,
-        server_port=port,
-        server_name=host,
-        favicon_path=f"{script_dir}/assets/favicon-32x32.png",
+    run_server(
+        host=host,
+        port=port,
+        frontend_path=frontend,
+        silent=silent,
     )
+
+    # Keep running until interrupted
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        typer.echo("\nShutting down...")
