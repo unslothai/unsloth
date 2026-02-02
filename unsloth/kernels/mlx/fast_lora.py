@@ -33,19 +33,13 @@ def quantized_matmul(X, W):
     Auto-dispatches to Metal GEMV for FP16 Batch=1.
     """
     if isinstance(W, MLXQuantizedWeight):
-        # MLX Quantized Matmul expects group_size in the packed domain
-        # i.e. original_group_size / (32 / bits)
-        bits = getattr(W, "bits", 4)
-        group_size = getattr(W, "group_size", 64)
-        packed_group_size = group_size // (32 // bits)
-        
         return mx.quantized_matmul(
             X, 
             W.weight, 
             W.scales, 
             W.biases, 
-            group_size = packed_group_size,
-            bits = bits
+            group_size = getattr(W, "group_size", 64),
+            bits = getattr(W, "bits", 4)
         )
     
     # Batch=1 Optimization for FP16
