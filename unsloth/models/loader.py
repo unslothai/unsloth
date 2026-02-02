@@ -615,26 +615,33 @@ class FastLanguageModel(FastLlamaModel):
         if DEVICE_TYPE == "mps" and load_in_4bit:
             from unsloth.kernels.mlx.utils import fast_quantize
             from unsloth.kernels.mlx.loader import load_mlx_weights
-            
+
             # 1. Try to find MLX-native weights in the local path or hub
             mlx_loaded = False
-            
+
             # Check local file
             potential_mlx_files = ["model.safetensors", "weights.npz"]
             for f in potential_mlx_files:
-                weights_path = os.path.join(model_name, f) if os.path.isdir(model_name) else None
+                weights_path = (
+                    os.path.join(model_name, f) if os.path.isdir(model_name) else None
+                )
                 if weights_path and os.path.exists(weights_path):
                     mlx_loaded = load_mlx_weights(model, weights_path)
-                    if mlx_loaded: break
-            
+                    if mlx_loaded:
+                        break
+
             # 2. If not loaded locally, check hub (experimental)
             if not mlx_loaded and not os.path.isdir(model_name):
                 from huggingface_hub import hf_hub_download
+
                 for f in potential_mlx_files:
                     try:
-                        weights_path = hf_hub_download(repo_id = model_name, filename = f, token = token)
+                        weights_path = hf_hub_download(
+                            repo_id = model_name, filename = f, token = token
+                        )
                         mlx_loaded = load_mlx_weights(model, weights_path)
-                        if mlx_loaded: break
+                        if mlx_loaded:
+                            break
                     except:
                         continue
 
