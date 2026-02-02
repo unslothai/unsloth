@@ -1,5 +1,3 @@
-/* eslint-disable react-refresh/only-export-components */
-
 import {
   Select,
   SelectContent,
@@ -23,8 +21,6 @@ import { AnimatePresence, motion } from "motion/react";
 import type { ReactNode } from "react";
 import { useState } from "react";
 
-// --- Types & defaults ---
-
 export interface InferenceParams {
   temperature: number;
   topP: number;
@@ -33,7 +29,7 @@ export interface InferenceParams {
   maxTokens: number;
   systemPrompt: string;
   inferenceEngine: string;
-  checkpoint: string; // "" = no checkpoint (base model only)
+  checkpoint: string;
 }
 
 export const defaultInferenceParams: InferenceParams = {
@@ -80,8 +76,6 @@ const ENGINE_OPTIONS = [
   { value: "unsloth", label: "Unsloth" },
   { value: "llama-cpp", label: "llama.cpp (GGUF)" },
 ];
-
-// --- Subcomponents ---
 
 function ParamSlider({
   label,
@@ -166,8 +160,6 @@ function CollapsibleSection({
   );
 }
 
-// --- Main panel ---
-
 interface ChatSettingsPanelProps {
   open: boolean;
   params: InferenceParams;
@@ -182,8 +174,9 @@ export function ChatSettingsPanel({
   const [presets, setPresets] = useState<Preset[]>(BUILTIN_PRESETS);
   const [activePreset, setActivePreset] = useState("Default");
 
-  const set = (key: keyof InferenceParams) => (v: number | string) =>
-    onParamsChange({ ...params, [key]: v });
+  function set<K extends keyof InferenceParams>(key: K) {
+    return (v: InferenceParams[K]) => onParamsChange({ ...params, [key]: v });
+  }
 
   function applyPreset(name: string) {
     const p = presets.find((pr) => pr.name === name);
@@ -218,10 +211,9 @@ export function ChatSettingsPanel({
 
   return (
     <aside
-      className={`shrink-0 h-full overflow-hidden bg-sidebar transition-[width] duration-200 ease-linear ${open ? "w-[17rem]  border-sidebar-border" : "w-0"}`}
+      className={`shrink-0 h-full overflow-hidden bg-sidebar rounded-2xl corner-squircle transition-[width] duration-200 ease-linear ${open ? "w-[17rem] border-sidebar-border" : "w-0"}`}
     >
       <div className="flex h-full w-[17rem] flex-col">
-          {/* header */}
           <div className="flex items-center gap-2 px-3 py-2">
             <HugeiconsIcon
               icon={PencilEdit01Icon}
@@ -233,7 +225,6 @@ export function ChatSettingsPanel({
           </div>
 
           <div className="flex-1 overflow-y-auto px-1.5">
-            {/* presets */}
             <div className="px-2 pb-3">
               <div className="flex items-center gap-2">
                 <Select value={activePreset} onValueChange={applyPreset}>
@@ -279,7 +270,6 @@ export function ChatSettingsPanel({
               </div>
             </div>
 
-            {/* system prompt — always visible */}
             <div className="px-2 pb-4">
               <label
                 htmlFor="system-prompt"
@@ -297,7 +287,6 @@ export function ChatSettingsPanel({
               />
             </div>
 
-            {/* inference engine */}
             <CollapsibleSection
               icon={EngineIcon}
               label="Inference Engine"
@@ -309,7 +298,7 @@ export function ChatSettingsPanel({
                 </span>
                 <Select
                   value={params.inferenceEngine}
-                  onValueChange={(v) => set("inferenceEngine")(v)}
+                  onValueChange={set("inferenceEngine")}
                 >
                   <SelectTrigger className="h-8 w-full text-xs corner-squircle">
                     <SelectValue />
@@ -325,20 +314,19 @@ export function ChatSettingsPanel({
               </div>
             </CollapsibleSection>
 
-            {/* sampling */}
             <CollapsibleSection
               icon={SlidersHorizontalIcon}
               label="Sampling"
               defaultOpen={true}
             >
-              <div className="flex flex-col  gap-5">
+              <div className="flex flex-col gap-5">
                 <ParamSlider
                   label="Temperature"
                   value={params.temperature}
                   min={0}
                   max={2}
                   step={0.1}
-                  onChange={set("temperature") as (v: number) => void}
+                  onChange={set("temperature")}
                 />
                 <ParamSlider
                   label="Top P"
@@ -346,7 +334,7 @@ export function ChatSettingsPanel({
                   min={0}
                   max={1}
                   step={0.05}
-                  onChange={set("topP") as (v: number) => void}
+                  onChange={set("topP")}
                 />
                 <ParamSlider
                   label="Top K"
@@ -354,7 +342,7 @@ export function ChatSettingsPanel({
                   min={0}
                   max={100}
                   step={1}
-                  onChange={set("topK") as (v: number) => void}
+                  onChange={set("topK")}
                 />
                 <ParamSlider
                   label="Repetition Penalty"
@@ -362,7 +350,7 @@ export function ChatSettingsPanel({
                   min={1}
                   max={2}
                   step={0.05}
-                  onChange={set("repetitionPenalty") as (v: number) => void}
+                  onChange={set("repetitionPenalty")}
                 />
                 <ParamSlider
                   label="Max Tokens"
@@ -370,12 +358,11 @@ export function ChatSettingsPanel({
                   min={64}
                   max={4096}
                   step={64}
-                  onChange={set("maxTokens") as (v: number) => void}
+                  onChange={set("maxTokens")}
                 />
               </div>
             </CollapsibleSection>
 
-            {/* settings — empty for now */}
             <CollapsibleSection icon={Settings02Icon} label="Settings">
               <p className="text-xs text-muted-foreground">
                 No additional settings yet.

@@ -1,13 +1,12 @@
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
-import { DATASETS, MODELS } from "@/config/training";
 import { useWizardStore } from "@/stores/training";
+import { isAdapterMethod } from "@/types/training";
 import { GpuIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useShallow } from "zustand/react/shallow";
 
-// Mock system info - like checking via code
 const SYSTEM_INFO = {
   gpu: "NVIDIA RTX 4090",
   vram: "24 GB",
@@ -32,35 +31,24 @@ export function SummaryStep() {
     loraAlpha,
     loraDropout,
   } = useWizardStore(
-    useShallow((s) => ({
-      modelType: s.modelType,
-      selectedModel: s.selectedModel,
-      trainingMethod: s.trainingMethod,
-      datasetSource: s.datasetSource,
-      datasetFormat: s.datasetFormat,
-      dataset: s.dataset,
-      uploadedFile: s.uploadedFile,
-      epochs: s.epochs,
-      contextLength: s.contextLength,
-      learningRate: s.learningRate,
-      loraRank: s.loraRank,
-      loraAlpha: s.loraAlpha,
-      loraDropout: s.loraDropout,
+    useShallow(({
+      modelType, selectedModel, trainingMethod, datasetSource, datasetFormat,
+      dataset, uploadedFile, epochs, contextLength, learningRate,
+      loraRank, loraAlpha, loraDropout,
+    }) => ({
+      modelType, selectedModel, trainingMethod, datasetSource, datasetFormat,
+      dataset, uploadedFile, epochs, contextLength, learningRate,
+      loraRank, loraAlpha, loraDropout,
     })),
   );
 
-  const modelData = MODELS.find((m) => m.id === selectedModel);
-  const datasetData = DATASETS.find((d) => d.id === dataset);
-  const showLoraParams =
-    trainingMethod === "lora" || trainingMethod === "qlora";
+  const showLoraParams = isAdapterMethod(trainingMethod);
   const datasetName =
-    datasetSource === "upload" ? uploadedFile : datasetData?.name;
-  const datasetDesc =
-    datasetSource === "upload" ? "Uploaded file" : datasetData?.description;
+    datasetSource === "upload" ? uploadedFile : dataset;
 
   return (
     <div className="grid grid-cols-2 gap-4">
-      <Card size="sm" className="">
+      <Card size="sm">
         <CardHeader className="pb-2">
           <CardTitle className="text-sm text-muted-foreground">
             System
@@ -103,10 +91,9 @@ export function SummaryStep() {
         </CardHeader>
         <CardContent className="space-y-3">
           <div className="flex items-center justify-between">
-            <span className="text-sm font-medium">
-              {modelData?.name ?? "—"}
+            <span className="text-sm font-medium truncate">
+              {selectedModel ?? "—"}
             </span>
-            <Badge>{modelData?.params}</Badge>
           </div>
           <Separator />
           <div className="flex items-center justify-between text-sm">
@@ -129,14 +116,8 @@ export function SummaryStep() {
         <CardContent className="space-y-2">
           <div className="flex items-center gap-3">
             <div className="flex flex-col flex-1">
-              <span className="text-sm font-medium">{datasetName ?? "—"}</span>
-              <span className="text-xs text-muted-foreground">
-                {datasetDesc}
-              </span>
+              <span className="text-sm font-medium truncate">{datasetName ?? "—"}</span>
             </div>
-            {datasetData?.size && (
-              <Badge variant="secondary">{datasetData.size}</Badge>
-            )}
           </div>
           <Separator />
           <div className="flex items-center justify-between text-sm">
