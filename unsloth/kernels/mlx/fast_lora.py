@@ -17,7 +17,7 @@ def quantized_matmul(X, W):
     """
     if isinstance(W, MLXQuantizedWeight):
         # MLX Quantized Matmul
-        return mx.fast.quantized_matmul(
+        return mx.quantized_matmul(
             X, 
             W.weight, 
             W.scales, 
