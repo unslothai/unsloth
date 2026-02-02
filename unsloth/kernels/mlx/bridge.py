@@ -108,6 +108,10 @@ def torch_to_mlx(
         _mx_from_dlpack = getattr(mx, "from_dlpack", None)
         _mx_array = mx.array
 
+    # 0. Check for MLX Cache (Quantized Weights)
+    if hasattr(tensor, "_mlx_cache"):
+        return getattr(tensor, "_mlx_cache")
+
     # 1. MPS Fast Path (Zero-copy)
     if tensor.device.type == "mps":
         if not _IN_MLX_CONTEXT:
