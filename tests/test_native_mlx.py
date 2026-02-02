@@ -20,7 +20,7 @@ def test_native_mlx_loading():
     start_time = time.time()
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name = model_name,
-        cfg_model_name = "unsloth/Llama-3.2-3B-Instruct", # Architecture shell
+        cfg_model_name = "unsloth/Llama-3.2-3B-Instruct",  # Architecture shell
         max_seq_length = 2048,
         load_in_4bit = True,
     )

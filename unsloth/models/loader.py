@@ -386,15 +386,22 @@ class FastLanguageModel(FastLlamaModel):
                 exist_adapter_config = os.path.exists(
                     os.path.join(model_name_for_config, "adapter_config.json")
                 )
-                exist_config = os.path.exists(os.path.join(model_name_for_config, "config.json"))
+                exist_config = os.path.exists(
+                    os.path.join(model_name_for_config, "config.json")
+                )
                 both_exist = exist_adapter_config and exist_config
             else:
                 try:
                     # Because HfFileSystem assumes linux paths, we need to set the path with forward slashes, even on Windows.
-                    files = HfFileSystem(token = token).glob(f"{model_name_for_config}/*.json")
+                    files = HfFileSystem(token = token).glob(
+                        f"{model_name_for_config}/*.json"
+                    )
                     files = list(os.path.split(x)[-1] for x in files)
                     if (
-                        sum(x == "adapter_config.json" or x == "config.json" for x in files)
+                        sum(
+                            x == "adapter_config.json" or x == "config.json"
+                            for x in files
+                        )
                         >= 2
                     ):
                         both_exist = True
