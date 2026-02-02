@@ -596,6 +596,10 @@ class FastLanguageModel(FastLlamaModel):
             # MPS does not support bitsandbytes. We load in FP16 then quantize to MLX 4-bit.
             load_in_4bit_kwargs = False
             load_in_8bit_kwargs = False
+            # Strip quantization config from kwargs to prevent transformers from crashing
+            kwargs.pop("quantization_config", None)
+            kwargs["load_in_4bit"] = False
+            kwargs["load_in_8bit"] = False
 
         model, tokenizer = dispatch_model.from_pretrained(
             model_name = model_name,
