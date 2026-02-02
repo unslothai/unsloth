@@ -25,8 +25,12 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { MODEL_TYPE_TO_HF_TASK, MODELS } from "@/config/training";
-import { useDebouncedValue, useHfModelSearch, useInfiniteScroll } from "@/hooks";
+import { MODELS, MODEL_TYPE_TO_HF_TASK } from "@/config/training";
+import {
+  useDebouncedValue,
+  useHfModelSearch,
+  useInfiniteScroll,
+} from "@/hooks";
 import { formatCompact } from "@/lib/utils";
 import { useWizardStore } from "@/stores/training";
 import type { TrainingMethod } from "@/types/training";
@@ -76,26 +80,51 @@ export function ModelSection() {
   const [inputValue, setInputValue] = useState("");
   const debouncedQuery = useDebouncedValue(inputValue);
   const task = modelType ? MODEL_TYPE_TO_HF_TASK[modelType] : undefined;
-  const { results: hfResults, isLoading, isLoadingMore, hasMore, fetchMore } = useHfModelSearch(debouncedQuery, {
+  const {
+    results: hfResults,
+    isLoading,
+    isLoadingMore,
+    hasMore,
+    fetchMore,
+  } = useHfModelSearch(debouncedQuery, {
     task,
     accessToken: hfToken || undefined,
   });
 
   const curatedModels = useMemo(() => {
-    if (!modelType) return MODELS;
+    if (!modelType) {
+      return MODELS;
+    }
     return MODELS.filter((m) => m.type === modelType).sort(
       (a, b) => (b.recommended ? 1 : 0) - (a.recommended ? 1 : 0),
     );
   }, [modelType]);
 
   const modelMap = useMemo(() => {
-    const map = new Map<string, { label: string; params?: string; totalParams?: number; downloads?: number; recommended?: boolean }>();
+    const map = new Map<
+      string,
+      {
+        label: string;
+        params?: string;
+        totalParams?: number;
+        downloads?: number;
+        recommended?: boolean;
+      }
+    >();
     for (const m of curatedModels) {
-      map.set(m.hfRepo ?? m.id, { label: m.name, params: m.params, recommended: m.recommended });
+      map.set(m.hfRepo ?? m.id, {
+        label: m.name,
+        params: m.params,
+        recommended: m.recommended,
+      });
     }
     for (const r of hfResults) {
       if (!map.has(r.id)) {
-        map.set(r.id, { label: r.id, downloads: r.downloads, totalParams: r.totalParams });
+        map.set(r.id, {
+          label: r.id,
+          downloads: r.downloads,
+          totalParams: r.totalParams,
+        });
       }
     }
     return map;
@@ -107,14 +136,26 @@ export function ModelSection() {
     }
     const q = debouncedQuery.toLowerCase();
     const curatedIds = curatedModels
-      .filter((m) => m.name.toLowerCase().includes(q) || m.id.toLowerCase().includes(q) || m.hfRepo?.toLowerCase().includes(q))
+      .filter(
+        (m) =>
+          m.name.toLowerCase().includes(q) ||
+          m.id.toLowerCase().includes(q) ||
+          m.hfRepo?.toLowerCase().includes(q),
+      )
       .map((m) => m.hfRepo ?? m.id);
-    const liveIds = hfResults.map((r) => r.id).filter((id) => !curatedIds.includes(id));
+    const liveIds = hfResults
+      .map((r) => r.id)
+      .filter((id) => !curatedIds.includes(id));
     return [...curatedIds, ...liveIds];
   }, [debouncedQuery, curatedModels, hfResults]);
 
   const allIds = useMemo(
-    () => [...new Set([...curatedModels.map((m) => m.hfRepo ?? m.id), ...hfResults.map((r) => r.id)])],
+    () => [
+      ...new Set([
+        ...curatedModels.map((m) => m.hfRepo ?? m.id),
+        ...hfResults.map((r) => r.id),
+      ]),
+    ],
     [curatedModels, hfResults],
   );
 
@@ -161,7 +202,10 @@ export function ModelSection() {
               placeholder="./models/my-model"
               value={
                 selectedModel
-                  ? (MODELS.find((m) => m.id === selectedModel || m.hfRepo === selectedModel)?.hfRepo ?? selectedModel)
+                  ? (MODELS.find(
+                      (m) =>
+                        m.id === selectedModel || m.hfRepo === selectedModel,
+                    )?.hfRepo ?? selectedModel)
                   : ""
               }
               onChange={(e) => setSelectedModel(e.target.value || null)}
@@ -222,19 +266,35 @@ export function ModelSection() {
                 ) : (
                   <ComboboxEmpty>No models found</ComboboxEmpty>
                 )}
-                <div ref={scrollRef} className="max-h-64 overflow-y-auto overscroll-contain [scrollbar-width:thin]">
+                <div
+                  ref={scrollRef}
+                  className="max-h-64 overflow-y-auto overscroll-contain [scrollbar-width:thin]"
+                >
                   <ComboboxList className="p-1 !max-h-none !overflow-visible">
                     {(id: string) => {
                       const meta = modelMap.get(id);
                       const label = meta?.label ?? id;
-                      const sizeLabel = meta?.params ?? (meta?.totalParams ? formatCompact(meta.totalParams) : null);
+                      const sizeLabel =
+                        meta?.params ??
+                        (meta?.totalParams
+                          ? formatCompact(meta.totalParams)
+                          : null);
                       return (
-                        <ComboboxItem key={id} value={id} className="justify-between">
+                        <ComboboxItem
+                          key={id}
+                          value={id}
+                          className="justify-between"
+                        >
                           <Tooltip>
-                            <TooltipTrigger asChild>
-                              <span className="min-w-0 flex-1 truncate">{label}</span>
+                            <TooltipTrigger asChild={true}>
+                              <span className="min-w-0 flex-1 truncate">
+                                {label}
+                              </span>
                             </TooltipTrigger>
-                            <TooltipContent side="left" className="max-w-xs break-all">
+                            <TooltipContent
+                              side="left"
+                              className="max-w-xs break-all"
+                            >
                               {label}
                             </TooltipContent>
                           </Tooltip>

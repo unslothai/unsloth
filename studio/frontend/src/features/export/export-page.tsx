@@ -1,3 +1,4 @@
+import { SectionCard } from "@/components/section-card";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -7,15 +8,14 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
-import { SectionCard } from "@/components/section-card";
-import { findModelById } from "@/config/training";
-import { useWizardStore } from "@/stores/training";
-import { isAdapterMethod } from "@/types/training";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { findModelById } from "@/config/training";
+import { useWizardStore } from "@/stores/training";
+import { isAdapterMethod } from "@/types/training";
 import { InformationCircleIcon, PackageIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { AnimatePresence, motion } from "motion/react";
@@ -33,21 +33,32 @@ import {
 } from "./constants";
 
 export function ExportPage() {
-  const { trainingMethod, selectedModel, saveSteps, trainingMetrics, epochs, loraRank, hfToken, setHfToken } =
-    useWizardStore(
-      useShallow((s) => ({
-        trainingMethod: s.trainingMethod,
-        selectedModel: s.selectedModel,
-        saveSteps: s.saveSteps,
-        trainingMetrics: s.trainingMetrics,
-        epochs: s.epochs,
-        loraRank: s.loraRank,
-        hfToken: s.hfToken,
-        setHfToken: s.setHfToken,
-      })),
-    );
+  const {
+    trainingMethod,
+    selectedModel,
+    saveSteps,
+    trainingMetrics,
+    epochs,
+    loraRank,
+    hfToken,
+    setHfToken,
+  } = useWizardStore(
+    useShallow((s) => ({
+      trainingMethod: s.trainingMethod,
+      selectedModel: s.selectedModel,
+      saveSteps: s.saveSteps,
+      trainingMetrics: s.trainingMetrics,
+      epochs: s.epochs,
+      loraRank: s.loraRank,
+      hfToken: s.hfToken,
+      setHfToken: s.setHfToken,
+    })),
+  );
   const isAdapter = isAdapterMethod(trainingMethod);
-  const modelInfo = useMemo(() => findModelById(selectedModel), [selectedModel]);
+  const modelInfo = useMemo(
+    () => findModelById(selectedModel),
+    [selectedModel],
+  );
 
   const checkpoints = useMemo(() => {
     if (isAdapter) {
@@ -55,7 +66,11 @@ export function ExportPage() {
       const total = trainingMetrics?.totalSteps ?? 500;
       const entries: { value: string; label: string; detail: string }[] = [];
       for (let step = interval; step <= total; step += interval) {
-        const loss = (1.5 - (step / total) * 0.7 + Math.random() * 0.05).toFixed(2);
+        const loss = (
+          1.5 -
+          (step / total) * 0.7 +
+          Math.random() * 0.05
+        ).toFixed(2);
         entries.push({
           value: `checkpoint-${step}`,
           label: `checkpoint-${step}`,
@@ -64,7 +79,13 @@ export function ExportPage() {
       }
       return entries.reverse();
     }
-    return [{ value: "final-model", label: "Final Model", detail: "Full fine-tuned weights" }];
+    return [
+      {
+        value: "final-model",
+        label: "Final Model",
+        detail: "Full fine-tuned weights",
+      },
+    ];
   }, [isAdapter, saveSteps, trainingMetrics?.totalSteps]);
 
   const [checkpoint, setCheckpoint] = useState<string | null>(null);
@@ -79,19 +100,28 @@ export function ExportPage() {
 
   const handleMethodChange = (method: ExportMethod) => {
     setExportMethod(method);
-    if (method !== "gguf") setQuantLevels([]);
+    if (method !== "gguf") {
+      setQuantLevels([]);
+    }
   };
 
   const estimatedSize = getEstimatedSize(exportMethod, quantLevels);
-  const canExport = checkpoint && exportMethod && (exportMethod !== "gguf" || quantLevels.length > 0);
+  const canExport =
+    checkpoint &&
+    exportMethod &&
+    (exportMethod !== "gguf" || quantLevels.length > 0);
   const baseModelName = modelInfo?.name ?? selectedModel ?? "—";
 
   return (
     <div className="min-h-screen bg-background">
       <main className="mx-auto max-w-7xl px-6 py-8">
         <div className="mb-8 flex flex-col gap-1">
-          <h1 className="text-2xl font-semibold tracking-tight">Export Model</h1>
-          <p className="text-sm text-muted-foreground">Export your fine-tuned model for deployment</p>
+          <h1 className="text-2xl font-semibold tracking-tight">
+            Export Model
+          </h1>
+          <p className="text-sm text-muted-foreground">
+            Export your fine-tuned model for deployment
+          </p>
         </div>
 
         <SectionCard
@@ -99,7 +129,7 @@ export function ExportPage() {
           title="Export Configuration"
           description="Select checkpoint, method, and quantization"
           accent="emerald"
-          featured
+          featured={true}
           className="shadow-border ring-1 ring-border"
         >
           {/* Top row: Checkpoint + metadata | Guide */}
@@ -109,27 +139,47 @@ export function ExportPage() {
                 <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                   {isAdapter ? "Checkpoint" : "Model"}
                   <Tooltip>
-                    <TooltipTrigger asChild>
-                      <button type="button" className="text-foreground/70 hover:text-foreground">
-                        <HugeiconsIcon icon={InformationCircleIcon} className="size-3" />
+                    <TooltipTrigger asChild={true}>
+                      <button
+                        type="button"
+                        className="text-foreground/70 hover:text-foreground"
+                      >
+                        <HugeiconsIcon
+                          icon={InformationCircleIcon}
+                          className="size-3"
+                        />
                       </button>
                     </TooltipTrigger>
                     <TooltipContent>
-                      Choose a saved checkpoint to export. Lower loss generally means better quality.{" "}
-                      <a href="https://unsloth.ai/docs/basics/inference-and-deployment" target="_blank" rel="noopener noreferrer" className="text-primary underline">Read more</a>
+                      Choose a saved checkpoint to export. Lower loss generally
+                      means better quality.{" "}
+                      <a
+                        href="https://unsloth.ai/docs/basics/inference-and-deployment"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-primary underline"
+                      >
+                        Read more
+                      </a>
                     </TooltipContent>
                   </Tooltip>
                 </label>
                 <Select value={checkpoint ?? ""} onValueChange={setCheckpoint}>
                   <SelectTrigger className="w-full">
-                    <SelectValue placeholder={isAdapter ? "Select a checkpoint…" : "Select model…"} />
+                    <SelectValue
+                      placeholder={
+                        isAdapter ? "Select a checkpoint…" : "Select model…"
+                      }
+                    />
                   </SelectTrigger>
                   <SelectContent>
                     {checkpoints.map((cp) => (
                       <SelectItem key={cp.value} value={cp.value}>
                         <span className="flex items-center gap-2">
                           {cp.label}
-                          <span className="text-muted-foreground text-xs">{cp.detail}</span>
+                          <span className="text-muted-foreground text-xs">
+                            {cp.detail}
+                          </span>
                         </span>
                       </SelectItem>
                     ))}
@@ -138,7 +188,9 @@ export function ExportPage() {
               </div>
 
               <div className="rounded-xl bg-muted/50 p-3 flex flex-col gap-2">
-                <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Training Info</span>
+                <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+                  Training Info
+                </span>
                 <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-xs">
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">Base Model</span>
@@ -146,7 +198,9 @@ export function ExportPage() {
                   </div>
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">Method</span>
-                    <span className="font-medium">{METHOD_LABELS[trainingMethod] ?? trainingMethod}</span>
+                    <span className="font-medium">
+                      {METHOD_LABELS[trainingMethod] ?? trainingMethod}
+                    </span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">Checkpoints</span>
@@ -173,10 +227,15 @@ export function ExportPage() {
             </div>
 
             <div className="flex flex-col  gap-2.5">
-              <span className="text-xs font-medium text-muted-foreground">Quick Guide</span>
+              <span className="text-xs font-medium text-muted-foreground">
+                Quick Guide
+              </span>
               <ol className="flex flex-col gap-3">
                 {GUIDE_STEPS.map((step, i) => (
-                  <li key={step} className="flex items-start gap-2 text-xs text-muted-foreground">
+                  <li
+                    key={step}
+                    className="flex items-start gap-2 text-xs text-muted-foreground"
+                  >
                     <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-muted text-[10px] font-semibold">
                       {i + 1}
                     </span>
@@ -200,7 +259,10 @@ export function ExportPage() {
           <Separator />
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              <HugeiconsIcon icon={InformationCircleIcon} className="size-3.5" />
+              <HugeiconsIcon
+                icon={InformationCircleIcon}
+                className="size-3.5"
+              />
               <span>Est. size: {estimatedSize} · Free disk space: 120 GB</span>
             </div>
             <Button disabled={!canExport} onClick={() => setDialogOpen(true)}>

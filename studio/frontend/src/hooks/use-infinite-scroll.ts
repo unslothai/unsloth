@@ -6,10 +6,14 @@ export function useInfiniteScroll(fetchMore: () => void) {
 
   useEffect(() => {
     const el = sentinelRef.current;
-    if (!el) return;
+    if (!el) {
+      return;
+    }
     const obs = new IntersectionObserver(
       ([e]) => {
-        if (e.isIntersecting) fetchMore();
+        if (e.isIntersecting) {
+          fetchMore();
+        }
       },
       { threshold: 0, root: scrollRef.current },
     );
