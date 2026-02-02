@@ -4,6 +4,7 @@ import {
   createRootRoute,
   useRouterState,
 } from "@tanstack/react-router";
+import { AnimatePresence, motion } from "motion/react";
 import { Suspense } from "react";
 import { AppProvider } from "../provider";
 
@@ -20,9 +21,19 @@ function RootLayout() {
   return (
     <AppProvider>
       {!hideNavbar && <Navbar />}
-      <Suspense fallback={null}>
-        <Outlet />
-      </Suspense>
+      <AnimatePresence initial={false}>
+        <motion.div
+          key={pathname}
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ duration: 0.15 }}
+          className="flex-1"
+        >
+          <Suspense fallback={null}>
+            <Outlet />
+          </Suspense>
+        </motion.div>
+      </AnimatePresence>
     </AppProvider>
   );
 }
