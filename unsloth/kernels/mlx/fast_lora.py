@@ -22,8 +22,8 @@ def quantized_matmul(X, W):
             W.weight, 
             W.scales, 
             W.biases, 
-            group_size = W.weight.shape[1] // W.scales.shape[1] if hasattr(W, "group_size") and W.group_size else 64, # Fallback check
-            bits = 4
+            group_size = getattr(W, "group_size", 64),
+            bits = getattr(W, "bits", 4)
         )
     
     # Batch=1 Optimization for FP16
