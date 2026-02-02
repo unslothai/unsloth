@@ -312,6 +312,9 @@ elif DEVICE_TYPE == "mps":
     # MPS/Apple Silicon - bitsandbytes not supported, Triton not available
     # 16-bit LoRA and full finetuning work via PyTorch's native MPS backend
     bnb = None
+    if "bitsandbytes" in sys.modules:
+        del sys.modules["bitsandbytes"]
+    sys.modules["bitsandbytes"] = None
 
 from .models import *
 from .models import __version__
