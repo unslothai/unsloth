@@ -22,7 +22,3 @@ export interface MessageRecord {
   createdAt: number;
 }
 
-export interface RuntimeBridge {
-  switchToThread: (threadId: string) => void;
-  switchToNewThread: () => void;
-}

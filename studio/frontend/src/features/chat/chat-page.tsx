@@ -18,7 +18,6 @@ import {
   memo,
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
 } from "react";
@@ -38,7 +37,6 @@ import {
 import { ThreadSidebar } from "./thread-sidebar";
 import type { ChatView } from "./types";
 
-// TODO: fetch from API at runtime
 const LORA_MODELS: ModelOption[] = [
   {
     id: "outputs/llama-3.1-8b-instruct-lora",
@@ -75,17 +73,9 @@ const GGUF_MODELS: ModelOption[] = [
   },
 ];
 
-type SingleContentProps = {
-  threadId?: string;
-};
-
-type CompareContentProps = {
-  pairId: string;
-};
-
 const SingleContent = memo(function SingleContent({
   threadId,
-}: SingleContentProps): ReactElement {
+}: { threadId?: string }): ReactElement {
   return (
     <ChatRuntimeProvider modelType="base" initialThreadId={threadId}>
       <div className="min-h-0 flex-1">
@@ -97,7 +87,7 @@ const SingleContent = memo(function SingleContent({
 
 const CompareContent = memo(function CompareContent({
   pairId,
-}: CompareContentProps): ReactElement {
+}: { pairId: string }): ReactElement {
   const handlesRef = useRef<Record<string, CompareHandle>>({});
   const [baseThreadId, setBaseThreadId] = useState<string>();
   const [loraThreadId, setLoraThreadId] = useState<string>();
@@ -123,9 +113,9 @@ const CompareContent = memo(function CompareContent({
   return (
     <CompareHandlesProvider handlesRef={handlesRef}>
       <div className="flex min-h-0 flex-1 flex-col">
-        <div className="grid min-h-0 flex-1 grid-cols-2  px-0">
+        <div className="grid min-h-0 flex-1 grid-cols-2 px-0">
           <div className="flex min-h-0 flex-col">
-            <div className=" px-3 py-1.5">
+            <div className="px-3 py-1.5">
               <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
                 Base Model
               </span>
@@ -142,8 +132,8 @@ const CompareContent = memo(function CompareContent({
             </div>
           </div>
           <div className="flex min-h-0 flex-col">
-            <div className="  text-end px-3 py-1.5">
-              <span className="text-[10px] font-semibold uppercase  tracking-wider text-primary">
+            <div className="text-end px-3 py-1.5">
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-primary">
                 Fine-tuned (LoRA)
               </span>
             </div>
@@ -215,13 +205,10 @@ export function ChatPage(): ReactElement {
     [],
   );
 
-  const models = useMemo(
-    () =>
-      inferenceParams.inferenceEngine === "llama-cpp"
-        ? GGUF_MODELS
-        : LORA_MODELS,
-    [inferenceParams.inferenceEngine],
-  );
+  const models =
+    inferenceParams.inferenceEngine === "llama-cpp"
+      ? GGUF_MODELS
+      : LORA_MODELS;
 
   return (
     <SidebarProvider
@@ -240,9 +227,7 @@ export function ChatPage(): ReactElement {
         />
       </InlineSidebar>
 
-      {/* main chat area */}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        {/* top bar */}
         <div className="flex h-11 shrink-0 items-center px-2">
           <div className="flex items-center gap-1.5">
             <SidebarTrigger />
@@ -275,7 +260,6 @@ export function ChatPage(): ReactElement {
         )}
       </div>
 
-      {/* inline settings panel on right */}
       <ChatSettingsPanel
         open={settingsOpen}
         params={inferenceParams}
