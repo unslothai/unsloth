@@ -2417,10 +2417,14 @@ class FastLlamaModel:
                 quant_state_dict, model_config, dtype, bnb_config
             )
             model.vllm_engine = llm
-            model.fast_generate = model.vllm_engine.generate
+            model.fast_generate = make_vllm_fast_generate_wrapper(
+                model, model.vllm_engine.generate
+            )
             model.fast_generate_batches = functools.partial(
                 generate_batches, model.vllm_engine
             )
+            if isinstance(model_name, str) and "fp8" in model_name.lower():
+                model._unsloth_disable_vllm_inference = True
         raise_handler.remove()
         # Return old flag
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
@@ -2438,6 +2442,12 @@ class FastLlamaModel:
 
         model, tokenizer = patch_tokenizer(model, tokenizer)
         model, tokenizer = model_patcher.post_patch(model, tokenizer)
+        if fast_inference and hasattr(model, "vllm_engine"):
+            try:
+                model.vllm_engine._unsloth_hf_model = model
+                model.vllm_engine._unsloth_tokenizer = tokenizer
+            except Exception:
+                pass
 
         # Patch up QKV / O and MLP
         for idx, layer in enumerate(model.model.layers):
