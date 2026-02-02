@@ -44,18 +44,27 @@ import { useShallow } from "zustand/react/shallow";
 export function DatasetSection() {
   const { dataset, setDataset, datasetFormat, setDatasetFormat, hfToken } =
     useWizardStore(
-      useShallow((s) => ({
-        dataset: s.dataset,
-        setDataset: s.setDataset,
-        datasetFormat: s.datasetFormat,
-        setDatasetFormat: s.setDatasetFormat,
-        hfToken: s.hfToken,
+      useShallow(({ dataset, setDataset, datasetFormat, setDatasetFormat, hfToken }) => ({
+        dataset, setDataset, datasetFormat, setDatasetFormat, hfToken,
       })),
     );
 
   const [inputValue, setInputValue] = useState("");
   const selectingRef = useRef(false);
   const debouncedQuery = useDebouncedValue(inputValue);
+
+  function handleDatasetSelect(id: string | null) {
+    selectingRef.current = true;
+    setDataset(id);
+  }
+
+  function handleInputChange(val: string) {
+    if (selectingRef.current) {
+      selectingRef.current = false;
+      return;
+    }
+    setInputValue(val);
+  }
   const {
     results: hfResults,
     isLoading,
@@ -65,7 +74,13 @@ export function DatasetSection() {
     accessToken: hfToken || undefined,
   });
 
-  const resultIds = useMemo(() => hfResults.map((r) => r.id), [hfResults]);
+  const resultIds = useMemo(() => {
+    const ids = hfResults.map((r) => r.id);
+    if (dataset && !ids.includes(dataset)) {
+      ids.unshift(dataset);
+    }
+    return ids;
+  }, [hfResults, dataset]);
 
   const comboboxAnchorRef = useRef<HTMLDivElement>(null);
   const { scrollRef, sentinelRef } = useInfiniteScroll(
@@ -82,7 +97,6 @@ export function DatasetSection() {
       className="lg:col-span-4 min-h-[450px]"
     >
       <div className="flex flex-col gap-4">
-        {/* Load from Hub */}
         <div className="flex flex-col gap-2">
           <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
             Load from Hub
@@ -118,8 +132,8 @@ export function DatasetSection() {
               filteredItems={resultIds}
               filter={null}
               value={dataset}
-              onValueChange={(id) => { selectingRef.current = true; setDataset(id); }}
-              onInputValueChange={(val) => { if (selectingRef.current) { selectingRef.current = false; return; } setInputValue(val); }}
+              onValueChange={handleDatasetSelect}
+              onInputValueChange={handleInputChange}
               itemToStringValue={(id) => id}
               autoHighlight={true}
             >
@@ -145,10 +159,14 @@ export function DatasetSection() {
                 >
                   <ComboboxList className="p-1 !max-h-none !overflow-visible">
                     {(id: string) => {
-                      const r = hfResults.find((r) => r.id === id);
+                      const r = hfResults.find((ds) => ds.id === id);
                       const detail = r?.totalExamples
                         ? `${formatCompact(r.totalExamples)} rows`
-                        : (r?.sizeCategory ?? null);
+                        : r?.sizeCategory
+                          ? r.sizeCategory
+                          : r?.downloads != null
+                            ? `↓${formatCompact(r.downloads)}`
+                            : null;
                       return (
                         <ComboboxItem
                           key={id}
@@ -168,15 +186,11 @@ export function DatasetSection() {
                               {id}
                             </TooltipContent>
                           </Tooltip>
-                          {detail ? (
+                          {detail && (
                             <span className="text-[10px] text-muted-foreground shrink-0">
                               {detail}
                             </span>
-                          ) : r?.downloads != null ? (
-                            <span className="text-[10px] text-muted-foreground shrink-0">
-                              ↓{formatCompact(r.downloads)}
-                            </span>
-                          ) : null}
+                          )}
                         </ComboboxItem>
                       );
                     }}
@@ -193,7 +207,6 @@ export function DatasetSection() {
           </div>
         </div>
 
-        {/* Format */}
         <div className="flex flex-col gap-2">
           <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
             Dataset Format
@@ -239,7 +252,6 @@ export function DatasetSection() {
           </Select>
         </div>
 
-        {/* Active dataset display */}
         {dataset ? (
           <div className="flex items-center gap-3 rounded-lg border bg-muted/40 px-3.5 py-3">
             <div className="rounded-md bg-indigo-500/10 p-1.5">
@@ -269,7 +281,6 @@ export function DatasetSection() {
           </div>
         )}
 
-        {/* Action buttons */}
         <div className="grid grid-cols-2 gap-2">
           <Button
             variant="outline"

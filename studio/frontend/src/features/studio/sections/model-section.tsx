@@ -66,20 +66,31 @@ export function ModelSection() {
     hfToken,
     setHfToken,
   } = useWizardStore(
-    useShallow((s) => ({
-      modelType: s.modelType,
-      selectedModel: s.selectedModel,
-      setSelectedModel: s.setSelectedModel,
-      trainingMethod: s.trainingMethod,
-      setTrainingMethod: s.setTrainingMethod,
-      hfToken: s.hfToken,
-      setHfToken: s.setHfToken,
+    useShallow(({
+      modelType, selectedModel, setSelectedModel,
+      trainingMethod, setTrainingMethod, hfToken, setHfToken,
+    }) => ({
+      modelType, selectedModel, setSelectedModel,
+      trainingMethod, setTrainingMethod, hfToken, setHfToken,
     })),
   );
 
   const [inputValue, setInputValue] = useState("");
   const selectingRef = useRef(false);
   const debouncedQuery = useDebouncedValue(inputValue);
+
+  function handleModelSelect(id: string | null) {
+    selectingRef.current = true;
+    setSelectedModel(id);
+  }
+
+  function handleInputChange(val: string) {
+    if (selectingRef.current) {
+      selectingRef.current = false;
+      return;
+    }
+    setInputValue(val);
+  }
   const task = modelType ? MODEL_TYPE_TO_HF_TASK[modelType] : undefined;
   const {
     results: hfResults,
@@ -91,7 +102,13 @@ export function ModelSection() {
     accessToken: hfToken || undefined,
   });
 
-  const resultIds = useMemo(() => hfResults.map((r) => r.id), [hfResults]);
+  const resultIds = useMemo(() => {
+    const ids = hfResults.map((r) => r.id);
+    if (selectedModel && !ids.includes(selectedModel)) {
+      ids.unshift(selectedModel);
+    }
+    return ids;
+  }, [hfResults, selectedModel]);
 
   const comboboxAnchorRef = useRef<HTMLDivElement>(null);
   const { scrollRef, sentinelRef } = useInfiniteScroll(
@@ -110,7 +127,6 @@ export function ModelSection() {
       className="col-span-12 shadow-border ring-1 ring-border"
     >
       <div className="grid gap-4 lg:grid-cols-4">
-        {/* Local Model */}
         <div className="flex flex-col gap-2">
           <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
             Local Model
@@ -137,13 +153,10 @@ export function ModelSection() {
             </InputGroupAddon>
             <InputGroupInput
               placeholder="./models/my-model"
-              value={selectedModel ?? ""}
-              onChange={(e) => setSelectedModel(e.target.value || null)}
             />
           </InputGroup>
         </div>
 
-        {/* Base Model Search */}
         <div className="flex flex-col gap-2">
           <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
             Base Model
@@ -178,8 +191,8 @@ export function ModelSection() {
               filteredItems={resultIds}
               filter={null}
               value={selectedModel}
-              onValueChange={(id) => { selectingRef.current = true; setSelectedModel(id); }}
-              onInputValueChange={(val) => { if (selectingRef.current) { selectingRef.current = false; return; } setInputValue(val); }}
+              onValueChange={handleModelSelect}
+              onInputValueChange={handleInputChange}
               itemToStringValue={(id) => id}
               autoHighlight={true}
             >
@@ -202,10 +215,12 @@ export function ModelSection() {
                 >
                   <ComboboxList className="p-1 !max-h-none !overflow-visible">
                     {(id: string) => {
-                      const r = hfResults.find((r) => r.id === id);
-                      const sizeLabel = r?.totalParams
+                      const r = hfResults.find((m) => m.id === id);
+                      const detail = r?.totalParams
                         ? formatCompact(r.totalParams)
-                        : null;
+                        : r?.downloads != null
+                          ? `↓${formatCompact(r.downloads)}`
+                          : null;
                       return (
                         <ComboboxItem
                           key={id}
@@ -225,15 +240,11 @@ export function ModelSection() {
                               {id}
                             </TooltipContent>
                           </Tooltip>
-                          {sizeLabel ? (
-                            <span className="text-xs text-muted-foreground shrink-0">
-                              {sizeLabel}
-                            </span>
-                          ) : r?.downloads != null ? (
+                          {detail && (
                             <span className="text-[10px] text-muted-foreground shrink-0">
-                              ↓{formatCompact(r.downloads)}
+                              {detail}
                             </span>
-                          ) : null}
+                          )}
                         </ComboboxItem>
                       );
                     }}
@@ -250,7 +261,6 @@ export function ModelSection() {
           </div>
         </div>
 
-        {/* Training Method */}
         <div className="flex flex-col gap-2">
           <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
             Method
@@ -319,7 +329,6 @@ export function ModelSection() {
           </Select>
         </div>
 
-        {/* HF Token */}
         <div className="flex flex-col gap-2">
           <span className="text-xs font-medium text-muted-foreground">
             Hugging Face Token (Optional)
