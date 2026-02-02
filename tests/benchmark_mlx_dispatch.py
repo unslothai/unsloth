@@ -11,6 +11,7 @@ except ImportError:
     exit(0)
 
 from unsloth.kernels.mlx.fast_lora import apply_lora_mlp_swiglu, apply_lora_qkv
+from unsloth.kernels.mlx.bridge import torch_to_mlx
 
 def benchmark_mlp(batch_size=1, seq_len=128, dim=4096, hidden_dim=11008, iters=100):
     print(f"\n--- Benchmarking MLP [B={batch_size}, S={seq_len}, D={dim}] ---")
