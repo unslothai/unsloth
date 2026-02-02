@@ -78,7 +78,7 @@ def train(
         )
         raise typer.Exit(code=2)
 
-    from backend.trainer import UnslothTrainer
+    from studio.backend.core.training import UnslothTrainer
 
     trainer = UnslothTrainer()
 

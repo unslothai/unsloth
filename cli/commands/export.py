@@ -14,7 +14,7 @@ def list_checkpoints(
     ),
 ):
     """List checkpoints detected in the outputs directory."""
-    from backend.export import ExportBackend
+    from studio.backend.core.export import ExportBackend
 
     backend = ExportBackend()
     checkpoints = backend.scan_checkpoints(outputs_dir=str(outputs_dir))
@@ -65,7 +65,7 @@ def export(
         typer.echo("Error: --repo-id required when using --push-to-hub", err=True)
         raise typer.Exit(code=2)
 
-    from backend.export import ExportBackend
+    from studio.backend.core.export import ExportBackend
     backend = ExportBackend()
 
     typer.echo(f"Loading checkpoint: {checkpoint}")
