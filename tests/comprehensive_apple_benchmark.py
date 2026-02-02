@@ -66,9 +66,11 @@ class ComprehensiveBenchmark:
         # Reference (PyTorch Naive)
         def torch_mlp(x):
             g = torch.nn.functional.linear(x, gateW) + (x @ A.T) @ B.T * S
-            u = torch.nn.functional.linear(x, upW) + (x @ A.T) @ B.T * S # Reuse A,B for simplicity
+            u = torch.nn.functional.linear(x, upW) + (x @ A.T) @ B.T * S
             act = torch.nn.functional.silu(g) * u
-            return torch.nn.functional.linear(act, downW) + (act @ B.T.T) @ B.T * S # Reuse for dummy
+            # Correct shape: (batch, seq, hidden_dim) @ (hidden_dim, rank) -> (8) 
+            # then (rank) @ (rank, dim) -> (dim)
+            return torch.nn.functional.linear(act, downW) + (act @ B) @ A * S
         
         # Warmup & Reference Output
         with torch.no_grad():
@@ -91,7 +93,7 @@ class ComprehensiveBenchmark:
                     X, 
                     gateW, None, A, B, S,
                     upW,   None, A, B, S,
-                    downW, None, A, B, S
+                    downW, None, B.T, A.T, S
                 )
             
             start = time.time()
@@ -100,7 +102,7 @@ class ComprehensiveBenchmark:
                     X, 
                     gateW, None, A, B, S,
                     upW,   None, A, B, S,
-                    downW, None, A, B, S
+                    downW, None, B.T, A.T, S
                 )
             mlx_16_latency = (time.time() - start) * 1000 / iters
             
@@ -119,7 +121,7 @@ class ComprehensiveBenchmark:
                     X, 
                     gateW, None, A, B, S,
                     upW,   None, A, B, S,
-                    downW, None, A, B, S
+                    downW, None, B.T, A.T, S
                 )
             
             start = time.time()
@@ -128,7 +130,7 @@ class ComprehensiveBenchmark:
                     X, 
                     gateW, None, A, B, S,
                     upW,   None, A, B, S,
-                    downW, None, A, B, S
+                    downW, None, B.T, A.T, S
                 )
             mlx_4_latency = (time.time() - start) * 1000 / iters
             
