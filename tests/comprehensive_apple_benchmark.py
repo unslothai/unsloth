@@ -37,10 +37,12 @@ class colors:
 
 
 def get_mem_stats():
+    res = {"mps": 0, "mlx": 0}
     if torch.backends.mps.is_available():
-        # MPS doesn't have a direct memory query like CUDA, but we can use psutil or just dummy
-        return 0
-    return 0
+        res["mps"] = torch.mps.current_allocated_memory() / 1e6
+    if HAS_MLX:
+        res["mlx"] = mx.metal.get_active_memory() / 1e6
+    return res
 
 
 def log_header(text):
@@ -49,9 +51,10 @@ def log_header(text):
     print(f"{'='*80}{colors.ENDC}")
 
 
-def log_result(name, latency, error = None, extra = ""):
+def log_result(name, latency, error = None, extra = "", mem = None):
     err_str = f" | Err: {error:.2e}" if error is not None else ""
-    print(f" {name:<35} | Latency: {latency:>8.3f} ms{err_str} {extra}")
+    mem_str = f" | VRAM: {mem:.1f} MB" if mem is not None else ""
+    print(f" {name:<35} | Latency: {latency:>8.3f} ms{err_str}{mem_str} {extra}")
 
 
 class ComprehensiveBenchmark:
@@ -165,7 +168,7 @@ class ComprehensiveBenchmark:
             mlx_16_latency = (time.time() - start) * 1000 / iters
 
             error = (y_ref - y_mlx).abs().max().item()
-            log_result("MLX 16-Bit (Cached)", mlx_16_latency, error)
+            log_result("MLX 16-Bit (Cached)", mlx_16_latency, error, mem = get_mem_stats()["mlx"])
 
             # 3. MLX 4-Bit
             # Cache quantized weights
@@ -222,6 +225,7 @@ class ComprehensiveBenchmark:
                 mlx_4_latency,
                 error_q,
                 extra = f"{colors.GREEN}[Quantized]{colors.ENDC}",
+                mem = get_mem_stats()["mlx"]
             )
 
     def run_qkv_benchmark(self, batch_size = 1, seq_len = 1, dim = 4096, hidden_dim = 4096):
@@ -279,7 +283,12 @@ class ComprehensiveBenchmark:
             mlx_latency = (time.time() - start) * 1000 / iters
 
             error = (q_ref - q_mlx).abs().max().item()
-            log_result("MLX Optimized", mlx_latency, error)
+            log_result("MLX Optimized", mlx_latency, error, mem = get_mem_stats()["mlx"])
+
+    def run_llama3_benchmark(self, batch_size = 1, seq_len = 1):
+        # Llama-3-8B Scale: D=4096, H=14336
+        log_header(f"Llama-3-8B Scale Benchmark (B={batch_size}, S={seq_len})")
+        self.run_mlp_benchmark(batch_size = batch_size, seq_len = seq_len, dim = 4096, hidden_dim = 14336)
 
     def diagnose(self):
         log_header("System Diagnosis")
@@ -328,19 +337,16 @@ if __name__ == "__main__":
     benchmark.diagnose()
 
     # 1. Decoding Cases (Batch=1, Seq=1)
-    # This triggers the specialized GEMV Metal Kernel
-    benchmark.run_mlp_benchmark(batch_size = 1, seq_len = 1)
+    # Llama-3-8B Scale
+    benchmark.run_llama3_benchmark(batch_size = 1, seq_len = 1)
     benchmark.run_qkv_benchmark(batch_size = 1, seq_len = 1)
 
-    # 2. Small Context Cases (Batch=1, Seq=128)
-    # This triggers the Compiled MLX Graph
-    benchmark.run_mlp_benchmark(batch_size = 1, seq_len = 128)
-
-    # 3. Large Workload Cases (Multi-batch)
-    benchmark.run_mlp_benchmark(batch_size = 8, seq_len = 512)
+    # 2. Large Workload Cases (Multi-batch)
+    benchmark.run_llama3_benchmark(batch_size = 8, seq_len = 512)
 
     log_header("Benchmark Summary")
     print(f"{colors.YELLOW}Notes:{colors.ENDC}")
     print("- B=1 cases utilize the specialized SIMD Metal GEMV kernel.")
     print("- B>1 cases utilize the Compiled MLX graph fusion.")
-    print("- 4-bit cases use on-the-fly dequantization within the MLX graph.")
+    print("- 4-bit cases use direct quantized_matmul within the MLX graph.")
+    print("- VRAM estimates reflect active GPU memory in MB.")
