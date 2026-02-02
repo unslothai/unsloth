@@ -124,22 +124,3 @@ export interface StepConfig {
   subtitle: string;
   description: string;
 }
-
-export interface ModelOption {
-  id: string;
-  name: string;
-  type: ModelType;
-  params: string;
-  vram?: string;
-  context?: string;
-  hfRepo?: string;
-  recommended?: boolean;
-}
-
-export interface DatasetOption {
-  id: string;
-  name: string;
-  description: string;
-  size: string;
-  recommended?: boolean;
-}
