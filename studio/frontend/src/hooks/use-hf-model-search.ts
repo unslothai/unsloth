@@ -52,7 +52,7 @@ export function useHfModelSearch(
     () =>
       listModels({
         search: {
-          ...(query.trim() ? { query } : {}),
+          ...(query.trim() ? { query } : { owner: "unsloth" }),
           tags: ["transformers"],
           ...(task ? { task } : {}),
         },

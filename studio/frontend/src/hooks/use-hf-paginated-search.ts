@@ -44,7 +44,7 @@ export function useHfPaginatedSearch<T>(
     INITIAL as HfPaginatedState<T>,
   );
   const stateRef = useRef(state);
-  stateRef.current = state;
+  useEffect(() => { stateRef.current = state; });
 
   const iterRef = useRef<AsyncGenerator<unknown> | null>(null);
   const versionRef = useRef(0);
@@ -53,13 +53,10 @@ export function useHfPaginatedSearch<T>(
     const v = ++versionRef.current;
     iterRef.current = null;
 
-    setState((prev) => ({
-      ...prev,
-      results: [],
+    setState({
+      ...INITIAL as HfPaginatedState<T>,
       isLoading: true,
-      error: null,
-      hasMore: false,
-    }));
+    });
 
     const iter = createIter();
     iterRef.current = iter;
