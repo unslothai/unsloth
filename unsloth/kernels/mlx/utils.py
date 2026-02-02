@@ -109,8 +109,10 @@ def fast_quantize(model):
             # We store it directly on the weight tensor
             # The 'fast_lora' kernels check hasattr(weight, '_mlx_cache')
             if module.weight.device.type == "meta":
-                print(f"Unsloth: Warning - Skipping {name} as it is on the meta device (offloaded). "
-                      "Quantization requires the weight to be in memory.")
+                print(
+                    f"Unsloth: Warning - Skipping {name} as it is on the meta device (offloaded). "
+                    "Quantization requires the weight to be in memory."
+                )
                 continue
 
             if hasattr(module.weight, "_mlx_cache"):

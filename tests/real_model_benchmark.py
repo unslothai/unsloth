@@ -4,9 +4,9 @@ import time
 import os
 
 # Results for Llama-3.2-1B (Recommended for testing on local Macs)
-# Note: Use FP16/BF16 models. unsloth/llama-3-8b-bnb-4bit is already 4-bit BNB 
+# Note: Use FP16/BF16 models. unsloth/llama-3-8b-bnb-4bit is already 4-bit BNB
 # and cannot be re-quantized to MLX 4-bit easily.
-model_name = "unsloth/Llama-3.2-1B" 
+model_name = "unsloth/Llama-3.2-1B"
 
 
 def benchmark_model(load_in_4bit = True):
