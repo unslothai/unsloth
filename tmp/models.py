@@ -25,4 +25,3 @@ class LoRAScanResponse(BaseModel):
     """Response schema for scanning trained LoRA adapters"""
     loras: List[LoRAInfo] = Field(default_factory=list, description="List of found LoRA adapters")
     outputs_dir: str = Field(..., description="Directory that was scanned")
-
