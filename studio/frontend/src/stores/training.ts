@@ -21,13 +21,7 @@ const initialState: WizardState = {
 };
 
 function clampStep(step: number): StepNumber {
-  if (step <= MIN_STEP) {
-    return MIN_STEP;
-  }
-  if (step >= MAX_STEP) {
-    return MAX_STEP;
-  }
-  return step as StepNumber;
+  return Math.min(MAX_STEP, Math.max(MIN_STEP, step)) as StepNumber;
 }
 
 function canProceedForStep(state: WizardState): boolean {

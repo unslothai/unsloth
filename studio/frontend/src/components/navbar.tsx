@@ -5,8 +5,11 @@ import {
 } from "@/components/ui/hover-card";
 import { cn } from "@/lib/utils";
 import {
+  AiChat02Icon,
+  Analytics01Icon,
   ArrowRight01Icon,
   Book03Icon,
+  PackageIcon,
   ZapIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -16,9 +19,9 @@ import { useState } from "react";
 
 const NAV_ITEMS = [
   { label: "Studio", href: "/studio", icon: ZapIcon, enabled: true },
-  { label: "Evaluate", href: "/evaluate", enabled: false },
-  { label: "Export", href: "/export", enabled: false },
-  { label: "Chat", href: "/chat", enabled: true },
+  { label: "Evaluate", href: "/evaluate", icon: Analytics01Icon, enabled: false },
+  { label: "Export", href: "/export", icon: PackageIcon, enabled: true },
+  { label: "Chat", href: "/chat", icon: AiChat02Icon, enabled: true },
 ];
 
 export function Navbar() {
@@ -37,11 +40,11 @@ export function Navbar() {
           <motion.img
             src="https://unsloth.ai/cgi/image/unsloth_sticker_no_shadow_ldN4V4iydw00qSIIWDCUv.png?width=96&quality=80&format=auto"
             alt="unsloth"
-            className="size-8"
+            className="size-10"
             animate={{ rotate: logoHovered ? 360 : 0 }}
             transition={{ duration: 0.5, ease: [0.165, 0.84, 0.44, 1] }}
           />
-          <span className="text-xl font-bold tracking-tight font-heading">
+          <span className="text-2xl font-bold tracking-wide font-heading">
             unsloth
           </span>
           <AnimatePresence>
@@ -67,7 +70,7 @@ export function Navbar() {
               return (
                 <span
                   key={item.href}
-                  className="rounded-full px-4 py-1.5 text-sm font-medium text-muted-foreground/40 cursor-not-allowed"
+                  className="relative rounded-full px-4 py-1.5 text-sm font-medium text-muted-foreground/40 cursor-not-allowed"
                 >
                   {item.label}
                 </span>
@@ -78,19 +81,44 @@ export function Navbar() {
                 key={item.href}
                 to={item.href}
                 className={cn(
-                  "rounded-full px-4 py-1.5 text-sm font-medium transition-colors",
+                  "relative rounded-full px-4 py-1.5 text-sm font-medium transition-colors",
                   active
-                    ? "bg-foreground text-background"
+                    ? "text-background"
                     : "text-muted-foreground hover:text-foreground",
                 )}
               >
-                {"icon" in item && item.icon && (
-                  <HugeiconsIcon
-                    icon={item.icon}
-                    className="size-3.5 inline-block mr-1 -mt-px fill-current"
+                {active && (
+                  <motion.span
+                    layoutId="nav-pill"
+                    className="absolute inset-0 rounded-full bg-foreground"
+                    transition={{
+                      type: "spring",
+                      stiffness: 500,
+                      damping: 35,
+                      mass: 0.5,
+                    }}
                   />
                 )}
-                {item.label}
+                <span className="relative z-10 flex items-center gap-1.5">
+                  <AnimatePresence mode="popLayout">
+                    {active && item.icon && (
+                      <motion.span
+                        key={item.href}
+                        initial={{ width: 0, opacity: 0 }}
+                        animate={{ width: "auto", opacity: 1 }}
+                        exit={{ width: 0, opacity: 0 }}
+                        transition={{ duration: 0.2, ease: [0.165, 0.84, 0.44, 1] }}
+                        className="overflow-hidden"
+                      >
+                        <HugeiconsIcon
+                          icon={item.icon}
+                          className="size-3.5 -mt-px fill-current"
+                        />
+                      </motion.span>
+                    )}
+                  </AnimatePresence>
+                  {item.label}
+                </span>
               </Link>
             );
           })}

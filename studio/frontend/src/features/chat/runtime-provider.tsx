@@ -1,8 +1,11 @@
 import {
+  type AttachmentAdapter,
   AssistantRuntimeProvider,
+  type CompleteAttachment,
   CompositeAttachmentAdapter,
   ExportedMessageRepository,
   type ExportedMessageRepositoryItem,
+  type PendingAttachment,
   RuntimeAdapterProvider,
   SimpleImageAttachmentAdapter,
   SimpleTextAttachmentAdapter,
@@ -12,22 +15,82 @@ import {
   type ThreadUserMessagePart,
   WebSpeechDictationAdapter,
   type unstable_RemoteThreadListAdapter,
-  useAssistantRuntime,
   useAui,
+  useAuiState,
   useLocalRuntime,
   unstable_useRemoteThreadListRuntime as useRemoteThreadListRuntime,
 } from "@assistant-ui/react";
 import { createAssistantStream } from "assistant-stream";
-import {
-  type MutableRefObject,
-  type ReactElement,
-  type ReactNode,
-  useEffect,
-  useMemo,
-} from "react";
+import { type ReactElement, type ReactNode, useEffect, useMemo } from "react";
+import mammoth from "mammoth";
+import { extractText, getDocumentProxy } from "unpdf";
 import { createStreamAdapter } from "./adapter";
 import { db } from "./db";
-import type { MessageRecord, ModelType, RuntimeBridge } from "./types";
+import type { MessageRecord, ModelType } from "./types";
+
+class PDFAttachmentAdapter implements AttachmentAdapter {
+  accept = "application/pdf";
+
+  async add({ file }: { file: File }): Promise<PendingAttachment> {
+    return {
+      id: crypto.randomUUID(),
+      type: "document",
+      name: file.name,
+      contentType: file.type,
+      file,
+      status: { type: "requires-action", reason: "composer-send" },
+    };
+  }
+
+  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    const buffer = new Uint8Array(await attachment.file.arrayBuffer());
+    const pdf = await getDocumentProxy(buffer);
+    const { text } = await extractText(pdf, { mergePages: true });
+    return {
+      id: attachment.id,
+      type: "document",
+      name: attachment.name,
+      contentType: attachment.contentType,
+      content: [{ type: "text", text: `[PDF: ${attachment.name}]\n${text}` }],
+      status: { type: "complete" },
+    };
+  }
+
+  async remove(): Promise<void> {}
+}
+
+class DocxAttachmentAdapter implements AttachmentAdapter {
+  accept =
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
+  async add({ file }: { file: File }): Promise<PendingAttachment> {
+    return {
+      id: crypto.randomUUID(),
+      type: "document",
+      name: file.name,
+      contentType: file.type,
+      file,
+      status: { type: "requires-action", reason: "composer-send" },
+    };
+  }
+
+  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    const arrayBuffer = await attachment.file.arrayBuffer();
+    const { value } = await mammoth.extractRawText({ arrayBuffer });
+    return {
+      id: attachment.id,
+      type: "document",
+      name: attachment.name,
+      contentType: attachment.contentType,
+      content: [
+        { type: "text", text: `[DOCX: ${attachment.name}]\n${value}` },
+      ],
+      status: { type: "complete" },
+    };
+  }
+
+  async remove(): Promise<void> {}
+}
 
 function toThreadMessage(m: MessageRecord): ThreadMessage {
   const base = {
@@ -61,10 +124,6 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
   };
 }
 
-function threadStatus(archived: boolean): "archived" | "regular" {
-  return archived ? "archived" : "regular";
-}
-
 function createDexieAdapter(
   modelType: ModelType,
   pairId?: string,
@@ -77,7 +136,7 @@ function createDexieAdapter(
       }
       return {
         remoteId: thread.id,
-        status: threadStatus(thread.archived),
+        status: thread.archived ? "archived" : "regular",
         title: thread.title,
       };
     },
@@ -90,7 +149,9 @@ function createDexieAdapter(
         .sortBy("createdAt");
       return {
         threads: threads.map((t) => ({
-          status: threadStatus(t.archived),
+          status: (t.archived ? "archived" : "regular") as
+            | "archived"
+            | "regular",
           remoteId: t.id,
           title: t.title,
         })),
@@ -174,8 +235,7 @@ function ThreadHistoryProvider({
           .equals(remoteId)
           .sortBy("createdAt");
 
-        const converted = msgs.map((m) => toThreadMessage(m));
-        return ExportedMessageRepository.fromArray(converted);
+        return ExportedMessageRepository.fromArray(msgs.map(toThreadMessage));
       },
 
       async append({ message }: ExportedMessageRepositoryItem) {
@@ -209,6 +269,8 @@ function ThreadHistoryProvider({
       new CompositeAttachmentAdapter([
         new SimpleImageAttachmentAdapter(),
         new SimpleTextAttachmentAdapter(),
+        new PDFAttachmentAdapter(),
+        new DocxAttachmentAdapter(),
       ]),
     [],
   );
@@ -228,49 +290,19 @@ const chatAdapter = createStreamAdapter();
 const useRuntimeHook = (): ReturnType<typeof useLocalRuntime> =>
   useLocalRuntime(chatAdapter);
 
-function RuntimeBridgeCapture({
-  bridgeRef,
-}: {
-  bridgeRef: MutableRefObject<RuntimeBridge | null>;
-}): ReactElement | null {
-  const runtime = useAssistantRuntime();
-  useEffect(() => {
-    bridgeRef.current = {
-      switchToThread: (id) => runtime.threadList.switchToThread(id),
-      switchToNewThread: () => runtime.threadList.switchToNewThread(),
-    };
-    return () => {
-      bridgeRef.current = null;
-    };
-  }, [runtime, bridgeRef]);
-  return null;
-}
-
 function ThreadAutoSwitch({
   threadId,
 }: { threadId: string }): ReactElement | null {
-  const runtime = useAssistantRuntime();
+  const aui = useAui();
+  const isLoading = useAuiState(({ threads }) => threads.isLoading);
+  const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
+
   useEffect(() => {
-    function trySwitch() {
-      const s = runtime.threadList.getState();
-      if (s.isLoading || s.mainThreadId === threadId) {
-        return false;
-      }
-      runtime.threadList.switchToThread(threadId);
-      return true;
+    if (!isLoading && mainThreadId !== threadId) {
+      aui.threads().switchToThread(threadId);
     }
+  }, [aui, isLoading, mainThreadId, threadId]);
 
-    if (trySwitch()) {
-      return;
-    }
-
-    const unsub = runtime.threadList.subscribe(() => {
-      if (trySwitch()) {
-        unsub();
-      }
-    });
-    return unsub;
-  }, [runtime, threadId]);
   return null;
 }
 
@@ -278,13 +310,11 @@ export function ChatRuntimeProvider({
   children,
   modelType = "base",
   pairId,
-  bridgeRef,
   initialThreadId,
 }: {
   children: ReactNode;
   modelType?: ModelType;
   pairId?: string;
-  bridgeRef?: MutableRefObject<RuntimeBridge | null>;
   initialThreadId?: string;
 }): ReactElement {
   const runtime = useRemoteThreadListRuntime({
@@ -298,7 +328,7 @@ export function ChatRuntimeProvider({
   const aui = useAui({
     suggestions: Suggestions([
       "Draw a simple flowchart of a login system using Mermaid",
-      "Solve the integral of x²·sin(x) step by step",
+      "Solve the integral of x\u00B2\u00B7sin(x) step by step",
       "Write a Python function that finds the longest palindrome in a string",
       "Format a comparison of 3 databases as a markdown table with pros and cons",
     ]),
@@ -306,7 +336,6 @@ export function ChatRuntimeProvider({
 
   return (
     <AssistantRuntimeProvider runtime={runtime} aui={aui}>
-      {bridgeRef && <RuntimeBridgeCapture bridgeRef={bridgeRef} />}
       {initialThreadId && <ThreadAutoSwitch threadId={initialThreadId} />}
       {children}
     </AssistantRuntimeProvider>

@@ -1,15 +1,14 @@
 import { SectionCard } from "@/components/section-card";
 import { Button } from "@/components/ui/button";
 import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
-import {
-  InputGroup,
-  InputGroupAddon,
-  InputGroupInput,
-} from "@/components/ui/input-group";
+  Combobox,
+  ComboboxContent,
+  ComboboxEmpty,
+  ComboboxInput,
+  ComboboxItem,
+  ComboboxList,
+} from "@/components/ui/combobox";
+import { InputGroupAddon } from "@/components/ui/input-group";
 import {
   Select,
   SelectContent,
@@ -17,15 +16,20 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Spinner } from "@/components/ui/spinner";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { DATASETS } from "@/config/training";
+import {
+  useDebouncedValue,
+  useHfDatasetSearch,
+  useInfiniteScroll,
+} from "@/hooks";
+import { formatCompact } from "@/lib/utils";
 import { useWizardStore } from "@/stores/training";
 import {
-  ArrowDown01Icon,
   CloudUploadIcon,
   Database02Icon,
   FileAttachmentIcon,
@@ -34,20 +38,55 @@ import {
   ViewIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 export function DatasetSection() {
-  const { dataset, setDataset, datasetFormat, setDatasetFormat } =
+  const { dataset, setDataset, datasetFormat, setDatasetFormat, hfToken } =
     useWizardStore(
-      useShallow((s) => ({
-        dataset: s.dataset,
-        setDataset: s.setDataset,
-        datasetFormat: s.datasetFormat,
-        setDatasetFormat: s.setDatasetFormat,
+      useShallow(({ dataset, setDataset, datasetFormat, setDatasetFormat, hfToken }) => ({
+        dataset, setDataset, datasetFormat, setDatasetFormat, hfToken,
       })),
     );
-  const [recOpen, setRecOpen] = useState(false);
+
+  const [inputValue, setInputValue] = useState("");
+  const selectingRef = useRef(false);
+  const debouncedQuery = useDebouncedValue(inputValue);
+
+  function handleDatasetSelect(id: string | null) {
+    selectingRef.current = true;
+    setDataset(id);
+  }
+
+  function handleInputChange(val: string) {
+    if (selectingRef.current) {
+      selectingRef.current = false;
+      return;
+    }
+    setInputValue(val);
+  }
+  const {
+    results: hfResults,
+    isLoading,
+    isLoadingMore,
+    fetchMore,
+  } = useHfDatasetSearch(debouncedQuery, {
+    accessToken: hfToken || undefined,
+  });
+
+  const resultIds = useMemo(() => {
+    const ids = hfResults.map((r) => r.id);
+    if (dataset && !ids.includes(dataset)) {
+      ids.unshift(dataset);
+    }
+    return ids;
+  }, [hfResults, dataset]);
+
+  const comboboxAnchorRef = useRef<HTMLDivElement>(null);
+  const { scrollRef, sentinelRef } = useInfiniteScroll(
+    fetchMore,
+    hfResults.length,
+  );
 
   return (
     <SectionCard
@@ -58,7 +97,6 @@ export function DatasetSection() {
       className="lg:col-span-4 min-h-[450px]"
     >
       <div className="flex flex-col gap-4">
-        {/* Load from Hub */}
         <div className="flex flex-col gap-2">
           <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
             Load from Hub
@@ -75,7 +113,8 @@ export function DatasetSection() {
                 </button>
               </TooltipTrigger>
               <TooltipContent>
-                Enter a Hugging Face dataset path like 'username/dataset-name'.{" "}
+                Search Hugging Face datasets or enter a path like
+                'username/dataset-name'.{" "}
                 <a
                   href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/datasets-guide"
                   target="_blank"
@@ -87,20 +126,87 @@ export function DatasetSection() {
               </TooltipContent>
             </Tooltip>
           </span>
-          <InputGroup>
-            <InputGroupAddon>
-              <HugeiconsIcon icon={Search01Icon} className="size-4" />
-            </InputGroupAddon>
-            <InputGroupInput
-              placeholder="yahma/alpaca-cleaned"
-              value={dataset ?? ""}
-              className=""
-              onChange={(e) => setDataset(e.target.value || null)}
-            />
-          </InputGroup>
+          <div ref={comboboxAnchorRef}>
+            <Combobox
+              items={resultIds}
+              filteredItems={resultIds}
+              filter={null}
+              value={dataset}
+              onValueChange={handleDatasetSelect}
+              onInputValueChange={handleInputChange}
+              itemToStringValue={(id) => id}
+              autoHighlight={true}
+            >
+              <ComboboxInput
+                placeholder="Search datasets..."
+                className="w-full"
+              >
+                <InputGroupAddon>
+                  <HugeiconsIcon icon={Search01Icon} className="size-4" />
+                </InputGroupAddon>
+              </ComboboxInput>
+              <ComboboxContent anchor={comboboxAnchorRef}>
+                {isLoading ? (
+                  <div className="flex items-center justify-center py-4 gap-2 text-xs text-muted-foreground">
+                    <Spinner className="size-4" /> Searching...
+                  </div>
+                ) : (
+                  <ComboboxEmpty>No datasets found</ComboboxEmpty>
+                )}
+                <div
+                  ref={scrollRef}
+                  className="max-h-64 overflow-y-auto overscroll-contain [scrollbar-width:thin]"
+                >
+                  <ComboboxList className="p-1 !max-h-none !overflow-visible">
+                    {(id: string) => {
+                      const r = hfResults.find((ds) => ds.id === id);
+                      const detail = r?.totalExamples
+                        ? `${formatCompact(r.totalExamples)} rows`
+                        : r?.sizeCategory
+                          ? r.sizeCategory
+                          : r?.downloads != null
+                            ? `↓${formatCompact(r.downloads)}`
+                            : null;
+                      return (
+                        <ComboboxItem
+                          key={id}
+                          value={id}
+                          className="justify-between"
+                        >
+                          <Tooltip>
+                            <TooltipTrigger asChild={true}>
+                              <span className="min-w-0 flex-1 truncate">
+                                {id}
+                              </span>
+                            </TooltipTrigger>
+                            <TooltipContent
+                              side="left"
+                              className="max-w-xs break-all"
+                            >
+                              {id}
+                            </TooltipContent>
+                          </Tooltip>
+                          {detail && (
+                            <span className="text-[10px] text-muted-foreground shrink-0">
+                              {detail}
+                            </span>
+                          )}
+                        </ComboboxItem>
+                      );
+                    }}
+                  </ComboboxList>
+                  <div ref={sentinelRef} className="h-px" />
+                  {isLoadingMore && (
+                    <div className="flex items-center justify-center py-2">
+                      <Spinner className="size-3.5 text-muted-foreground" />
+                    </div>
+                  )}
+                </div>
+              </ComboboxContent>
+            </Combobox>
+          </div>
         </div>
 
-        {/* Format */}
         <div className="flex flex-col gap-2">
           <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
             Dataset Format
@@ -146,7 +252,6 @@ export function DatasetSection() {
           </Select>
         </div>
 
-        {/* Active dataset display */}
         {dataset ? (
           <div className="flex items-center gap-3 rounded-lg border bg-muted/40 px-3.5 py-3">
             <div className="rounded-md bg-indigo-500/10 p-1.5">
@@ -176,42 +281,6 @@ export function DatasetSection() {
           </div>
         )}
 
-        {/* Recommended */}
-        <Collapsible open={recOpen} onOpenChange={setRecOpen}>
-          <CollapsibleTrigger className="flex w-full cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
-            <HugeiconsIcon
-              icon={ArrowDown01Icon}
-              className={`size-3.5 transition-transform ${recOpen ? "rotate-180" : ""}`}
-            />
-            Common Datasets
-          </CollapsibleTrigger>
-          <CollapsibleContent className="mt-3 flex flex-col gap-1.5">
-            {DATASETS.filter((d) => d.recommended).map((d) => (
-              <button
-                type="button"
-                key={d.id}
-                onClick={() => setDataset(d.id)}
-                className="flex w-full corner-squircle cursor-pointer items-center gap-2.5 rounded-2xl border bg-muted/30 px-3 py-2.5 text-left text-sm transition-colors hover:bg-muted/60"
-              >
-                <HugeiconsIcon
-                  icon={Database02Icon}
-                  className="size-4 shrink-0 text-muted-foreground"
-                />
-                <div className="flex-1 min-w-0">
-                  <p className="text-xs font-medium">{d.name}</p>
-                  <p className="text-[10px] text-muted-foreground">
-                    {d.description}
-                  </p>
-                </div>
-                <span className="text-[10px] font-mono text-muted-foreground mt-0.5">
-                  {d.size}
-                </span>
-              </button>
-            ))}
-          </CollapsibleContent>
-        </Collapsible>
-
-        {/* Action buttons */}
         <div className="grid grid-cols-2 gap-2">
           <Button
             variant="outline"

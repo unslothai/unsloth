@@ -6,13 +6,21 @@ type RunMessages = Parameters<ChatModelAdapter["run"]>[0]["messages"];
 
 function makeBody(messages: RunMessages): string {
   return JSON.stringify({
-    messages: messages.map((m) => ({
-      role: m.role,
-      content: m.content
+    messages: messages.map((m) => {
+      const textParts = m.content
         .filter((c) => c.type === "text")
-        .map((c) => c.text)
-        .join(""),
-    })),
+        .map((c) => c.text);
+
+      if ("attachments" in m && m.attachments?.length) {
+        for (const att of m.attachments) {
+          for (const part of att.content ?? []) {
+            if (part.type === "text") textParts.push(part.text);
+          }
+        }
+      }
+
+      return { role: m.role, content: textParts.join("\n") };
+    }),
   });
 }
 

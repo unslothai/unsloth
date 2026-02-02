@@ -3,13 +3,23 @@ import {
   ModelSelector,
 } from "@/components/assistant-ui/model-selector";
 import { Thread } from "@/components/assistant-ui/thread";
+import { Button } from "@/components/ui/button";
 import {
   SidebarProvider,
   SidebarTrigger,
   useSidebar,
 } from "@/components/ui/sidebar";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import { Settings04Icon } from "@hugeicons/core-free-icons";
+import {
+  ColumnInsertIcon,
+  PencilEdit02Icon,
+  Settings04Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type CSSProperties,
@@ -18,7 +28,6 @@ import {
   memo,
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
 } from "react";
@@ -38,7 +47,6 @@ import {
 import { ThreadSidebar } from "./thread-sidebar";
 import type { ChatView } from "./types";
 
-// TODO: fetch from API at runtime
 const LORA_MODELS: ModelOption[] = [
   {
     id: "outputs/llama-3.1-8b-instruct-lora",
@@ -75,17 +83,9 @@ const GGUF_MODELS: ModelOption[] = [
   },
 ];
 
-type SingleContentProps = {
-  threadId?: string;
-};
-
-type CompareContentProps = {
-  pairId: string;
-};
-
 const SingleContent = memo(function SingleContent({
   threadId,
-}: SingleContentProps): ReactElement {
+}: { threadId?: string }): ReactElement {
   return (
     <ChatRuntimeProvider modelType="base" initialThreadId={threadId}>
       <div className="min-h-0 flex-1">
@@ -97,7 +97,7 @@ const SingleContent = memo(function SingleContent({
 
 const CompareContent = memo(function CompareContent({
   pairId,
-}: CompareContentProps): ReactElement {
+}: { pairId: string }): ReactElement {
   const handlesRef = useRef<Record<string, CompareHandle>>({});
   const [baseThreadId, setBaseThreadId] = useState<string>();
   const [loraThreadId, setLoraThreadId] = useState<string>();
@@ -123,9 +123,9 @@ const CompareContent = memo(function CompareContent({
   return (
     <CompareHandlesProvider handlesRef={handlesRef}>
       <div className="flex min-h-0 flex-1 flex-col">
-        <div className="grid min-h-0 flex-1 grid-cols-2  px-0">
+        <div className="grid min-h-0 flex-1 grid-cols-2 px-0">
           <div className="flex min-h-0 flex-col">
-            <div className=" px-3 py-1.5">
+            <div className="px-3 py-1.5">
               <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
                 Base Model
               </span>
@@ -142,8 +142,8 @@ const CompareContent = memo(function CompareContent({
             </div>
           </div>
           <div className="flex min-h-0 flex-col">
-            <div className="  text-end px-3 py-1.5">
-              <span className="text-[10px] font-semibold uppercase  tracking-wider text-primary">
+            <div className="text-end px-3 py-1.5">
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-primary">
                 Fine-tuned (LoRA)
               </span>
             </div>
@@ -186,7 +186,7 @@ function InlineSidebar({
       <aside
         data-sidebar="sidebar"
         className={cn(
-          "bg-sidebar text-sidebar-foreground h-full overflow-hidden transition-[width] duration-200 ease-linear",
+          "bg-sidebar text-sidebar-foreground h-full overflow-hidden rounded-2xl corner-squircle transition-[width] duration-200 ease-linear",
           !collapsed && (side === "left" ? "border-r border-0 border-sidebar-border" : "border-l border-0 border-sidebar-border"),
           collapsed ? "w-0" : "w-(--sidebar-width)",
         )}
@@ -196,6 +196,34 @@ function InlineSidebar({
         </div>
       </aside>
     </div>
+  );
+}
+
+function TopBarActions({
+  onNewThread,
+  onNewCompare,
+}: { onNewThread: () => void; onNewCompare: () => void }) {
+  const { state } = useSidebar();
+  if (state !== "collapsed") return null;
+  return (
+    <>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button variant="ghost" size="icon-sm" onClick={onNewThread}>
+            <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={2} />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom">New Chat</TooltipContent>
+      </Tooltip>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button variant="ghost" size="icon-sm" onClick={onNewCompare}>
+            <HugeiconsIcon icon={ColumnInsertIcon} strokeWidth={2} />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom">Compare</TooltipContent>
+      </Tooltip>
+    </>
   );
 }
 
@@ -214,18 +242,23 @@ export function ChatPage(): ReactElement {
     () => setInferenceParams((p) => ({ ...p, checkpoint: "" })),
     [],
   );
-
-  const models = useMemo(
-    () =>
-      inferenceParams.inferenceEngine === "llama-cpp"
-        ? GGUF_MODELS
-        : LORA_MODELS,
-    [inferenceParams.inferenceEngine],
+  const handleNewThread = useCallback(
+    () => setView({ mode: "single" }),
+    [],
   );
+  const handleNewCompare = useCallback(
+    () => setView({ mode: "compare", pairId: crypto.randomUUID() }),
+    [],
+  );
+
+  const models =
+    inferenceParams.inferenceEngine === "llama-cpp"
+      ? GGUF_MODELS
+      : LORA_MODELS;
 
   return (
     <SidebarProvider
-      defaultOpen={false}
+      defaultOpen={true}
       className="!min-h-0 h-[calc(100vh-4rem)] max-w-7xl mx-auto px-4"
       style={{ "--sidebar-width": "14rem", "--sidebar-width-icon": "3rem" } as CSSProperties}
     >
@@ -233,19 +266,19 @@ export function ChatPage(): ReactElement {
         <ThreadSidebar
           view={view}
           onSelect={setView}
-          onNewThread={() => setView({ mode: "single" })}
-          onNewCompare={() =>
-            setView({ mode: "compare", pairId: crypto.randomUUID() })
-          }
+          onNewThread={handleNewThread}
+          onNewCompare={handleNewCompare}
         />
       </InlineSidebar>
 
-      {/* main chat area */}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        {/* top bar */}
         <div className="flex h-11 shrink-0 items-center px-2">
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1">
             <SidebarTrigger />
+            <TopBarActions
+              onNewThread={handleNewThread}
+              onNewCompare={handleNewCompare}
+            />
             <ModelSelector
               models={models}
               value={inferenceParams.checkpoint}
@@ -275,7 +308,6 @@ export function ChatPage(): ReactElement {
         )}
       </div>
 
-      {/* inline settings panel on right */}
       <ChatSettingsPanel
         open={settingsOpen}
         params={inferenceParams}

@@ -19,9 +19,7 @@ import {
   MessagePrimitive,
   SuggestionPrimitive,
   ThreadPrimitive,
-  useComposerRuntime,
-  useMessageRuntime,
-  useThreadRuntime,
+  useAui,
 } from "@assistant-ui/react";
 import { motion } from "framer-motion";
 import {
@@ -359,9 +357,7 @@ const UserActionBar: FC = () => {
 };
 
 const EditComposer: FC = () => {
-  const threadRuntime = useThreadRuntime();
-  const composerRuntime = useComposerRuntime();
-  const messageRuntime = useMessageRuntime();
+  const aui = useAui();
 
   return (
     <MessagePrimitive.Root className="aui-edit-composer-wrapper mx-auto flex w-full max-w-(--thread-max-width) flex-col px-2 py-3">
@@ -379,18 +375,18 @@ const EditComposer: FC = () => {
           <Button
             size="sm"
             onClick={() => {
-              const newText = composerRuntime.getState().text;
-              const originalText = messageRuntime.unstable_getCopyText();
+              const newText = aui.composer().getState().text;
+              const originalText = aui.message().getCopyText();
 
               if (newText === originalText) {
-                composerRuntime.cancel();
+                aui.composer().cancel();
                 return;
               }
 
-              if (threadRuntime.getState().isRunning) {
-                threadRuntime.cancelRun();
+              if (aui.thread().getState().isRunning) {
+                aui.thread().cancelRun();
               }
-              composerRuntime.send();
+              aui.composer().send();
             }}
           >
             Update
