@@ -12,8 +12,8 @@ import {
   type ThreadUserMessagePart,
   WebSpeechDictationAdapter,
   type unstable_RemoteThreadListAdapter,
-  useAssistantRuntime,
   useAui,
+  useAuiState,
   useLocalRuntime,
   unstable_useRemoteThreadListRuntime as useRemoteThreadListRuntime,
 } from "@assistant-ui/react";
@@ -222,28 +222,16 @@ const useRuntimeHook = (): ReturnType<typeof useLocalRuntime> =>
 function ThreadAutoSwitch({
   threadId,
 }: { threadId: string }): ReactElement | null {
-  const runtime = useAssistantRuntime();
+  const aui = useAui();
+  const isLoading = useAuiState(({ threads }) => threads.isLoading);
+  const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
+
   useEffect(() => {
-    function trySwitch() {
-      const s = runtime.threadList.getState();
-      if (s.isLoading || s.mainThreadId === threadId) {
-        return false;
-      }
-      runtime.threadList.switchToThread(threadId);
-      return true;
+    if (!isLoading && mainThreadId !== threadId) {
+      aui.threads().switchToThread(threadId);
     }
+  }, [aui, isLoading, mainThreadId, threadId]);
 
-    if (trySwitch()) {
-      return;
-    }
-
-    const unsub = runtime.threadList.subscribe(() => {
-      if (trySwitch()) {
-        unsub();
-      }
-    });
-    return unsub;
-  }, [runtime, threadId]);
   return null;
 }
 
