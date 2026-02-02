@@ -28,9 +28,7 @@ def treeify(w):
 
 def quantized_matmul(X, W):
     """
-    Handles both standard and quantized MLX weights.
-    W can be an mx.array or MLXQuantizedWeight.
-    Auto-dispatches to Metal GEMV for FP16 Batch=1.
+    Universal matmul: handles arrays, MLXQuantizedWeight, and treeified dictionaries.
     """
     if isinstance(W, MLXQuantizedWeight):
         return mx.quantized_matmul(
@@ -40,6 +38,15 @@ def quantized_matmul(X, W):
             W.biases, 
             group_size = getattr(W, "group_size", 64),
             bits = getattr(W, "bits", 4)
+        )
+    if isinstance(W, dict) and "weight" in W:
+        return mx.quantized_matmul(
+            X,
+            W["weight"],
+            W["scales"],
+            W["biases"],
+            group_size = W["group_size"],
+            bits = W["bits"]
         )
     
     # Batch=1 Optimization for FP16
@@ -80,17 +87,12 @@ def _dequant(W):
 def _compiled_mlp_swiglu(
     X, gateW, gateA, gateB, gateS, upW, upA, upB, upS, downW, downA, downB, downS
 ):
-    # Dequantize weights if they are custom objects
-    # Note: mx.compile will trace this.
-    gW = _dequant(gateW)
-    uW = _dequant(upW)
-    dW = _dequant(downW)
-
-    gate = X @ gW.T + (X @ gateA.T) @ gateB.T * gateS
-    up = X @ uW.T + (X @ upA.T) @ upB.T * upS
+    # Use quantized_matmul directly - MLX will optimize this if weights are quantized trees
+    gate = quantized_matmul(X, gateW) + (X @ gateA.T) @ gateB.T * gateS
+    up = quantized_matmul(X, upW) + (X @ upA.T) @ upB.T * upS
 
     act = gate * mx.sigmoid(gate) * up
-    out = act @ dW.T + (act @ downA.T) @ downB.T * downS
+    out = quantized_matmul(act, downW) + (act @ downA.T) @ downB.T * downS
 
     return out
 
@@ -196,9 +198,9 @@ def apply_lora_mlp_swiglu(
 
 @mx.compile
 def _compiled_qkv(X, QW, QA, QB, QS, KW, KA, KB, KS, VW, VA, VB, VS):
-    Q = X @ _dequant(QW).T + (X @ QA.T) @ QB.T * QS
-    K = X @ _dequant(KW).T + (X @ KA.T) @ KB.T * KS
-    V = X @ _dequant(VW).T + (X @ VA.T) @ VB.T * VS
+    Q = quantized_matmul(X, QW) + (X @ QA.T) @ QB.T * QS
+    K = quantized_matmul(X, KW) + (X @ KA.T) @ KB.T * KS
+    V = quantized_matmul(X, VW) + (X @ VA.T) @ VB.T * VS
     return Q, K, V
 
 
@@ -298,7 +300,7 @@ def apply_lora_qkv(
 
 @mx.compile
 def _compiled_o(X, OW, OA, OB, OS):
-    return X @ _dequant(OW).T + (X @ OA.T) @ OB.T * OS
+    return quantized_matmul(X, OW) + (X @ OA.T) @ OB.T * OS
 
 
 def apply_lora_o(X, OW, OW_quant, OA, OB, OS):

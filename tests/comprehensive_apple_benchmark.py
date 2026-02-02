@@ -118,6 +118,8 @@ class ComprehensiveBenchmark:
             gateW._mlx_cache = torch_to_mlx(gateW)
             upW._mlx_cache = torch_to_mlx(upW)
             downW._mlx_cache = torch_to_mlx(downW)
+            A._mlx_cache = torch_to_mlx(A)
+            B._mlx_cache = torch_to_mlx(B)
 
             # Warmup
             with torch.no_grad():
@@ -262,6 +264,8 @@ class ComprehensiveBenchmark:
             QW._mlx_cache = torch_to_mlx(QW)
             KW._mlx_cache = torch_to_mlx(KW)
             VW._mlx_cache = torch_to_mlx(VW)
+            QA._mlx_cache = torch_to_mlx(QA)
+            QB._mlx_cache = torch_to_mlx(QB)
 
             q_mlx, k_mlx, v_mlx = apply_lora_qkv(
                 X, QW, None, QA, QB, QS, KW, None, QA, QB, QS, VW, None, QA, QB, QS
