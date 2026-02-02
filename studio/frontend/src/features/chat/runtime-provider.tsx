@@ -18,16 +18,10 @@ import {
   unstable_useRemoteThreadListRuntime as useRemoteThreadListRuntime,
 } from "@assistant-ui/react";
 import { createAssistantStream } from "assistant-stream";
-import {
-  type MutableRefObject,
-  type ReactElement,
-  type ReactNode,
-  useEffect,
-  useMemo,
-} from "react";
+import { type ReactElement, type ReactNode, useEffect, useMemo } from "react";
 import { createStreamAdapter } from "./adapter";
 import { db } from "./db";
-import type { MessageRecord, ModelType, RuntimeBridge } from "./types";
+import type { MessageRecord, ModelType } from "./types";
 
 function toThreadMessage(m: MessageRecord): ThreadMessage {
   const base = {
@@ -61,10 +55,6 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
   };
 }
 
-function threadStatus(archived: boolean): "archived" | "regular" {
-  return archived ? "archived" : "regular";
-}
-
 function createDexieAdapter(
   modelType: ModelType,
   pairId?: string,
@@ -77,7 +67,7 @@ function createDexieAdapter(
       }
       return {
         remoteId: thread.id,
-        status: threadStatus(thread.archived),
+        status: thread.archived ? "archived" : "regular",
         title: thread.title,
       };
     },
@@ -90,7 +80,9 @@ function createDexieAdapter(
         .sortBy("createdAt");
       return {
         threads: threads.map((t) => ({
-          status: threadStatus(t.archived),
+          status: (t.archived ? "archived" : "regular") as
+            | "archived"
+            | "regular",
           remoteId: t.id,
           title: t.title,
         })),
@@ -174,8 +166,7 @@ function ThreadHistoryProvider({
           .equals(remoteId)
           .sortBy("createdAt");
 
-        const converted = msgs.map((m) => toThreadMessage(m));
-        return ExportedMessageRepository.fromArray(converted);
+        return ExportedMessageRepository.fromArray(msgs.map(toThreadMessage));
       },
 
       async append({ message }: ExportedMessageRepositoryItem) {
@@ -228,24 +219,6 @@ const chatAdapter = createStreamAdapter();
 const useRuntimeHook = (): ReturnType<typeof useLocalRuntime> =>
   useLocalRuntime(chatAdapter);
 
-function RuntimeBridgeCapture({
-  bridgeRef,
-}: {
-  bridgeRef: MutableRefObject<RuntimeBridge | null>;
-}): ReactElement | null {
-  const runtime = useAssistantRuntime();
-  useEffect(() => {
-    bridgeRef.current = {
-      switchToThread: (id) => runtime.threadList.switchToThread(id),
-      switchToNewThread: () => runtime.threadList.switchToNewThread(),
-    };
-    return () => {
-      bridgeRef.current = null;
-    };
-  }, [runtime, bridgeRef]);
-  return null;
-}
-
 function ThreadAutoSwitch({
   threadId,
 }: { threadId: string }): ReactElement | null {
@@ -278,13 +251,11 @@ export function ChatRuntimeProvider({
   children,
   modelType = "base",
   pairId,
-  bridgeRef,
   initialThreadId,
 }: {
   children: ReactNode;
   modelType?: ModelType;
   pairId?: string;
-  bridgeRef?: MutableRefObject<RuntimeBridge | null>;
   initialThreadId?: string;
 }): ReactElement {
   const runtime = useRemoteThreadListRuntime({
@@ -298,7 +269,7 @@ export function ChatRuntimeProvider({
   const aui = useAui({
     suggestions: Suggestions([
       "Draw a simple flowchart of a login system using Mermaid",
-      "Solve the integral of x²·sin(x) step by step",
+      "Solve the integral of x\u00B2\u00B7sin(x) step by step",
       "Write a Python function that finds the longest palindrome in a string",
       "Format a comparison of 3 databases as a markdown table with pros and cons",
     ]),
@@ -306,7 +277,6 @@ export function ChatRuntimeProvider({
 
   return (
     <AssistantRuntimeProvider runtime={runtime} aui={aui}>
-      {bridgeRef && <RuntimeBridgeCapture bridgeRef={bridgeRef} />}
       {initialThreadId && <ThreadAutoSwitch threadId={initialThreadId} />}
       {children}
     </AssistantRuntimeProvider>
