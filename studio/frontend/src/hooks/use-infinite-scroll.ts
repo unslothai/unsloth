@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 
-export function useInfiniteScroll(fetchMore: () => void) {
+export function useInfiniteScroll(fetchMore: () => void, itemCount: number) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
 
@@ -19,7 +19,7 @@ export function useInfiniteScroll(fetchMore: () => void) {
     );
     obs.observe(el);
     return () => obs.disconnect();
-  }, [fetchMore]);
+  }, [fetchMore, itemCount]);
 
   return { scrollRef, sentinelRef };
 }

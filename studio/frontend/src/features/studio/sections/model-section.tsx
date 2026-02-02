@@ -25,7 +25,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { MODELS, MODEL_TYPE_TO_HF_TASK } from "@/config/training";
+import { MODEL_TYPE_TO_HF_TASK } from "@/config/training";
 import {
   useDebouncedValue,
   useHfModelSearch,
@@ -78,89 +78,26 @@ export function ModelSection() {
   );
 
   const [inputValue, setInputValue] = useState("");
+  const selectingRef = useRef(false);
   const debouncedQuery = useDebouncedValue(inputValue);
   const task = modelType ? MODEL_TYPE_TO_HF_TASK[modelType] : undefined;
   const {
     results: hfResults,
     isLoading,
     isLoadingMore,
-    hasMore,
     fetchMore,
   } = useHfModelSearch(debouncedQuery, {
     task,
     accessToken: hfToken || undefined,
   });
 
-  const curatedModels = useMemo(() => {
-    if (!modelType) {
-      return MODELS;
-    }
-    return MODELS.filter((m) => m.type === modelType).sort(
-      (a, b) => (b.recommended ? 1 : 0) - (a.recommended ? 1 : 0),
-    );
-  }, [modelType]);
-
-  const modelMap = useMemo(() => {
-    const map = new Map<
-      string,
-      {
-        label: string;
-        params?: string;
-        totalParams?: number;
-        downloads?: number;
-        recommended?: boolean;
-      }
-    >();
-    for (const m of curatedModels) {
-      map.set(m.hfRepo ?? m.id, {
-        label: m.name,
-        params: m.params,
-        recommended: m.recommended,
-      });
-    }
-    for (const r of hfResults) {
-      if (!map.has(r.id)) {
-        map.set(r.id, {
-          label: r.id,
-          downloads: r.downloads,
-          totalParams: r.totalParams,
-        });
-      }
-    }
-    return map;
-  }, [curatedModels, hfResults]);
-
-  const displayIds = useMemo(() => {
-    if (!debouncedQuery.trim()) {
-      return curatedModels.map((m) => m.hfRepo ?? m.id);
-    }
-    const q = debouncedQuery.toLowerCase();
-    const curatedIds = curatedModels
-      .filter(
-        (m) =>
-          m.name.toLowerCase().includes(q) ||
-          m.id.toLowerCase().includes(q) ||
-          m.hfRepo?.toLowerCase().includes(q),
-      )
-      .map((m) => m.hfRepo ?? m.id);
-    const liveIds = hfResults
-      .map((r) => r.id)
-      .filter((id) => !curatedIds.includes(id));
-    return [...curatedIds, ...liveIds];
-  }, [debouncedQuery, curatedModels, hfResults]);
-
-  const allIds = useMemo(
-    () => [
-      ...new Set([
-        ...curatedModels.map((m) => m.hfRepo ?? m.id),
-        ...hfResults.map((r) => r.id),
-      ]),
-    ],
-    [curatedModels, hfResults],
-  );
+  const resultIds = useMemo(() => hfResults.map((r) => r.id), [hfResults]);
 
   const comboboxAnchorRef = useRef<HTMLDivElement>(null);
-  const { scrollRef, sentinelRef } = useInfiniteScroll(fetchMore);
+  const { scrollRef, sentinelRef } = useInfiniteScroll(
+    fetchMore,
+    hfResults.length,
+  );
 
   return (
     <SectionCard
@@ -200,14 +137,7 @@ export function ModelSection() {
             </InputGroupAddon>
             <InputGroupInput
               placeholder="./models/my-model"
-              value={
-                selectedModel
-                  ? (MODELS.find(
-                      (m) =>
-                        m.id === selectedModel || m.hfRepo === selectedModel,
-                    )?.hfRepo ?? selectedModel)
-                  : ""
-              }
+              value={selectedModel ?? ""}
               onChange={(e) => setSelectedModel(e.target.value || null)}
             />
           </InputGroup>
@@ -244,13 +174,13 @@ export function ModelSection() {
           </span>
           <div ref={comboboxAnchorRef}>
             <Combobox
-              items={allIds}
-              filteredItems={displayIds}
+              items={resultIds}
+              filteredItems={resultIds}
               filter={null}
               value={selectedModel}
-              onValueChange={(id) => setSelectedModel(id)}
-              onInputValueChange={(val) => setInputValue(val)}
-              itemToStringValue={(id) => modelMap.get(id)?.label ?? id}
+              onValueChange={(id) => { selectingRef.current = true; setSelectedModel(id); }}
+              onInputValueChange={(val) => { if (selectingRef.current) { selectingRef.current = false; return; } setInputValue(val); }}
+              itemToStringValue={(id) => id}
               autoHighlight={true}
             >
               <ComboboxInput placeholder="Search models..." className="w-full">
@@ -272,13 +202,10 @@ export function ModelSection() {
                 >
                   <ComboboxList className="p-1 !max-h-none !overflow-visible">
                     {(id: string) => {
-                      const meta = modelMap.get(id);
-                      const label = meta?.label ?? id;
-                      const sizeLabel =
-                        meta?.params ??
-                        (meta?.totalParams
-                          ? formatCompact(meta.totalParams)
-                          : null);
+                      const r = hfResults.find((r) => r.id === id);
+                      const sizeLabel = r?.totalParams
+                        ? formatCompact(r.totalParams)
+                        : null;
                       return (
                         <ComboboxItem
                           key={id}
@@ -288,30 +215,30 @@ export function ModelSection() {
                           <Tooltip>
                             <TooltipTrigger asChild={true}>
                               <span className="min-w-0 flex-1 truncate">
-                                {label}
+                                {id}
                               </span>
                             </TooltipTrigger>
                             <TooltipContent
                               side="left"
                               className="max-w-xs break-all"
                             >
-                              {label}
+                              {id}
                             </TooltipContent>
                           </Tooltip>
                           {sizeLabel ? (
                             <span className="text-xs text-muted-foreground shrink-0">
                               {sizeLabel}
                             </span>
-                          ) : meta?.downloads != null ? (
+                          ) : r?.downloads != null ? (
                             <span className="text-[10px] text-muted-foreground shrink-0">
-                              ↓{formatCompact(meta.downloads)}
+                              ↓{formatCompact(r.downloads)}
                             </span>
                           ) : null}
                         </ComboboxItem>
                       );
                     }}
                   </ComboboxList>
-                  {hasMore && <div ref={sentinelRef} className="h-px" />}
+                  <div ref={sentinelRef} className="h-px" />
                   {isLoadingMore && (
                     <div className="flex items-center justify-center py-2">
                       <Spinner className="size-3.5 text-muted-foreground" />
