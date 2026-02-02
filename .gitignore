@@ -1,2 +1,36 @@
 ._*
 .idea/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Unsloth cache
+unsloth_compiled_cache/
+
+# ML artifacts (large files)
+outputs/
+*.gguf
+*.safetensors
+models/
+
+# IDE / Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Other
+resources/

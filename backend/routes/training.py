@@ -19,13 +19,13 @@ if str(backend_path) not in sys.path:
 
 # Import backend functions
 try:
-    from backend.training import get_training_backend
+    from core.training import get_training_backend
 except ImportError:
     # Fallback: try to import from parent directory
     parent_backend = backend_path.parent / "backend"
     if str(parent_backend) not in sys.path:
         sys.path.insert(0, str(parent_backend))
-    from backend.training import get_training_backend
+    from core.training import get_training_backend
 
 from models.training import (
     TrainingStartRequest,
