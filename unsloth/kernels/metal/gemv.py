@@ -76,7 +76,7 @@ def fast_gemv(X: mx.array, W: mx.array) -> mx.array:
     outputs = kernel(
         inputs=[X, W, K_arg, N_arg],
         grid=(N, 1, 1),
-        thread_group=(32, 1, 1), # Maximize thread occupancy, though they work independently
+        threadgroup=(32, 1, 1), # Maximize thread occupancy, though they work independently
         output_shapes=[(1, N)],
         output_dtypes=[X.dtype],
     )
