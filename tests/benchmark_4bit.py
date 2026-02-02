@@ -23,11 +23,21 @@ def benchmark_4bit_vs_16bit(dim=4096, hidden_dim=11008, iters=50):
     print("\nRunning 16-Bit MLX Benchmark...")
     # Warmup
     for _ in range(5):
-        _ = apply_lora_mlp_swiglu(X, layer.weight, None, A, B, S, layer.weight, A, B, S, layer.weight, B.T, A.T, S)
+        _ = apply_lora_mlp_swiglu(
+            X, 
+            layer.weight, None, A, B, S, # gate
+            layer.weight, None, A, B, S, # up
+            layer.weight, None, A, B, S  # down
+        )
     
     start = time.time()
     for _ in range(iters):
-        _ = apply_lora_mlp_swiglu(X, layer.weight, None, A, B, S, layer.weight, A, B, S, layer.weight, B.T, A.T, S)
+        _ = apply_lora_mlp_swiglu(
+            X, 
+            layer.weight, None, A, B, S, # gate
+            layer.weight, None, A, B, S, # up
+            layer.weight, None, A, B, S  # down
+        )
     time_16 = (time.time() - start) * 1000 / iters
     print(f"16-Bit Latency: {time_16:.3f} ms")
     
@@ -41,11 +51,21 @@ def benchmark_4bit_vs_16bit(dim=4096, hidden_dim=11008, iters=50):
     print("Running 4-Bit MLX Benchmark...")
     # Warmup
     for _ in range(5):
-        _ = apply_lora_mlp_swiglu(X, layer.weight, None, A, B, S, layer.weight, A, B, S, layer.weight, B.T, A.T, S)
+        _ = apply_lora_mlp_swiglu(
+            X, 
+            layer.weight, None, A, B, S, # gate
+            layer.weight, None, A, B, S, # up
+            layer.weight, None, A, B, S  # down
+        )
         
     start = time.time()
     for _ in range(iters):
-        _ = apply_lora_mlp_swiglu(X, layer.weight, None, A, B, S, layer.weight, A, B, S, layer.weight, B.T, A.T, S)
+        _ = apply_lora_mlp_swiglu(
+            X, 
+            layer.weight, None, A, B, S, # gate
+            layer.weight, None, A, B, S, # up
+            layer.weight, None, A, B, S  # down
+        )
     time_4 = (time.time() - start) * 1000 / iters
     print(f"4-Bit Latency:  {time_4:.3f} ms")
     
