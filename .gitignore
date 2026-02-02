@@ -20,7 +20,7 @@ unsloth_compiled_cache/
 outputs/
 *.gguf
 *.safetensors
-models/
+/models/
 
 # IDE / Editors
 .vscode/
