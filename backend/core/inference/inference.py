@@ -9,8 +9,8 @@ from peft import PeftModel, PeftModelForCausalLM
 import sys
 import torch
 from typing import Optional, Generator, Tuple
-from .model_config import ModelConfig, get_base_model_from_lora
-from .path_utils import is_model_cached
+from utils.models import ModelConfig, get_base_model_from_lora
+from utils.paths import is_model_cached
 from utils.utils import format_error_message, log_gpu_memory
 from io import StringIO
 import logging
@@ -319,7 +319,7 @@ class InferenceBackend:
         Prepare for eval: ensure base model and the specified adapter are loaded.
         """
         try:
-            from .model_config import ModelConfig
+            from utils.models import ModelConfig
             lora_config = ModelConfig.from_lora_path(lora_path, hf_token)
             if not lora_config:
                 return False, None, None
@@ -368,7 +368,7 @@ class InferenceBackend:
         This function is idempotent and handles all states correctly.
         """
         try:
-            from .model_config import ModelConfig
+            from utils.models import ModelConfig
             lora_config = ModelConfig.from_lora_path(lora_path, hf_token)
             if not lora_config:
                 return False, None, None

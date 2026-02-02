@@ -12,8 +12,8 @@ from huggingface_hub import HfApi, ModelCard
 from transformers.modeling_utils import PushToHubMixin
 import torch
 
-from .model_config import is_vision_model, get_base_model_from_lora
-from .inference import get_inference_backend
+from utils.models import is_vision_model, get_base_model_from_lora
+from core.inference import get_inference_backend
 
 logger = logging.getLogger(__name__)
 

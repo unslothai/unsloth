@@ -494,7 +494,7 @@ class TrainingBackend:
         print("=" * 60)
 
         try:
-            from .inference import get_inference_backend
+            from ..inference import get_inference_backend
 
             session = self.current_training_session
 
