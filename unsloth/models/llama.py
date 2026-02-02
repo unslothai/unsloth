@@ -2153,6 +2153,7 @@ class FastLlamaModel:
         unsloth_vllm_standby = False,
         num_labels = None,
         qat_scheme = None,
+        cfg_model_name = None,
         **kwargs,
     ):
         os.environ["UNSLOTH_USE_NEW_MODEL"] = "0"

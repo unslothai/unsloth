@@ -148,6 +148,7 @@ class FastLanguageModel(FastLlamaModel):
         qat_scheme = None,
         load_in_fp8 = False,  # fp8 LoRA (True, False, 'block')
         unsloth_tiled_mlp = False,
+        cfg_model_name = None,
         *args,
         **kwargs,
     ):
@@ -317,9 +318,10 @@ class FastLanguageModel(FastLlamaModel):
         peft_error = None
         model_config = None
         peft_config = None
+        model_name_for_config = cfg_model_name if cfg_model_name is not None else model_name
         try:
             model_config = AutoConfig.from_pretrained(
-                model_name,
+                model_name_for_config,
                 token = token,
                 revision = revision,
                 trust_remote_code = trust_remote_code,
@@ -337,7 +339,7 @@ class FastLanguageModel(FastLlamaModel):
             is_model = False
         try:
             peft_config = PeftConfig.from_pretrained(
-                model_name,
+                model_name_for_config,
                 token = token,
                 revision = revision,
                 trust_remote_code = trust_remote_code,
@@ -591,6 +593,7 @@ class FastLanguageModel(FastLlamaModel):
 
         model, tokenizer = dispatch_model.from_pretrained(
             model_name = model_name,
+            cfg_model_name = cfg_model_name,
             max_seq_length = max_seq_length,
             dtype = _get_dtype(dtype),
             load_in_4bit = load_in_4bit_kwargs,
@@ -772,6 +775,7 @@ class FastModel(FastBaseModel):
         qat_scheme = None,
         load_in_fp8 = False,  # fp8 LoRA (True, False, 'block')
         unsloth_tiled_mlp = False,
+        cfg_model_name = None,
         *args,
         **kwargs,
     ):
