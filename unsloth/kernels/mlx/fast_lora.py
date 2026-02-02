@@ -199,7 +199,7 @@ def apply_lora_qkv(
         )
 
         # mx.eval(Q_mlx, K_mlx, V_mlx)
-        
+
         Q = mlx_to_torch(Q_mlx, device = X.device, dtype = X.dtype)
         K = mlx_to_torch(K_mlx, device = X.device, dtype = X.dtype)
         V = mlx_to_torch(V_mlx, device = X.device, dtype = X.dtype)
