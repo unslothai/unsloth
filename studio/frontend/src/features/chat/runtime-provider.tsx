@@ -1,8 +1,11 @@
 import {
+  type AttachmentAdapter,
   AssistantRuntimeProvider,
+  type CompleteAttachment,
   CompositeAttachmentAdapter,
   ExportedMessageRepository,
   type ExportedMessageRepositoryItem,
+  type PendingAttachment,
   RuntimeAdapterProvider,
   SimpleImageAttachmentAdapter,
   SimpleTextAttachmentAdapter,
@@ -19,9 +22,41 @@ import {
 } from "@assistant-ui/react";
 import { createAssistantStream } from "assistant-stream";
 import { type ReactElement, type ReactNode, useEffect, useMemo } from "react";
+import { extractText, getDocumentProxy } from "unpdf";
 import { createStreamAdapter } from "./adapter";
 import { db } from "./db";
 import type { MessageRecord, ModelType } from "./types";
+
+class PDFAttachmentAdapter implements AttachmentAdapter {
+  accept = "application/pdf";
+
+  async add({ file }: { file: File }): Promise<PendingAttachment> {
+    return {
+      id: crypto.randomUUID(),
+      type: "document",
+      name: file.name,
+      contentType: file.type,
+      file,
+      status: { type: "requires-action", reason: "composer-send" },
+    };
+  }
+
+  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    const buffer = new Uint8Array(await attachment.file.arrayBuffer());
+    const pdf = await getDocumentProxy(buffer);
+    const { text } = await extractText(pdf, { mergePages: true });
+    return {
+      id: attachment.id,
+      type: "document",
+      name: attachment.name,
+      contentType: attachment.contentType,
+      content: [{ type: "text", text: `[PDF: ${attachment.name}]\n${text}` }],
+      status: { type: "complete" },
+    };
+  }
+
+  async remove(): Promise<void> {}
+}
 
 function toThreadMessage(m: MessageRecord): ThreadMessage {
   const base = {
@@ -200,6 +235,7 @@ function ThreadHistoryProvider({
       new CompositeAttachmentAdapter([
         new SimpleImageAttachmentAdapter(),
         new SimpleTextAttachmentAdapter(),
+        new PDFAttachmentAdapter(),
       ]),
     [],
   );
