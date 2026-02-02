@@ -3,6 +3,7 @@
 
 import importlib.metadata
 import functools
+import gc
 from packaging.version import Version, parse
 import torch
 from .quantization import quantize_4bit
