@@ -605,8 +605,8 @@ class FastLanguageModel(FastLlamaModel):
             load_in_8bit_kwargs = False
             # Strip quantization config from kwargs to prevent transformers from crashing
             kwargs.pop("quantization_config", None)
-            kwargs["load_in_4bit"] = False
-            kwargs["load_in_8bit"] = False
+            kwargs.pop("load_in_4bit", None)
+            kwargs.pop("load_in_8bit", None)
 
         model, tokenizer = dispatch_model.from_pretrained(
             model_name = model_name,
