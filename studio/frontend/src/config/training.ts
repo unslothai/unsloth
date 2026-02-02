@@ -98,8 +98,21 @@ export const MODELS: ModelOption[] = [
     hfRepo: "Qwen/Qwen-VL-Chat",
   },
   // TTS models
-  { id: "bark", name: "Bark", type: "tts", params: "1B", hfRepo: "suno/bark", recommended: true },
-  { id: "xtts-v2", name: "XTTS v2", type: "tts", params: "500M", hfRepo: "coqui/XTTS-v2" },
+  {
+    id: "bark",
+    name: "Bark",
+    type: "tts",
+    params: "1B",
+    hfRepo: "suno/bark",
+    recommended: true,
+  },
+  {
+    id: "xtts-v2",
+    name: "XTTS v2",
+    type: "tts",
+    params: "500M",
+    hfRepo: "coqui/XTTS-v2",
+  },
   // Embedding models
   {
     id: "bge-large",
@@ -111,24 +124,6 @@ export const MODELS: ModelOption[] = [
   { id: "e5-large", name: "E5 Large", type: "embeddings", params: "335M" },
   { id: "gte-large", name: "GTE Large", type: "embeddings", params: "335M" },
   // Text models
-  {
-    id: "llama-3.1-8b",
-    name: "Llama 3.1 8B",
-    type: "text",
-    params: "8B",
-    vram: "~6GB",
-    context: "128K",
-    hfRepo: "unsloth/Llama-3.1-8B",
-    recommended: true,
-  },
-  {
-    id: "llama-3.1-70b",
-    name: "Llama 3.1 70B",
-    type: "text",
-    params: "70B",
-    vram: "~40GB",
-    context: "128K",
-  },
   {
     id: "mistral-7b",
     name: "Mistral 7B",
@@ -153,24 +148,6 @@ export const MODELS: ModelOption[] = [
     params: "3.8B",
     vram: "~3GB",
     context: "128K",
-  },
-  {
-    id: "gemma-2-9b",
-    name: "Gemma 2 9B",
-    type: "text",
-    params: "9B",
-    vram: "~7GB",
-    context: "8K",
-  },
-  {
-    id: "gemma-3-27b",
-    name: "Gemma 3 27B",
-    type: "text",
-    params: "27B",
-    vram: "~18GB",
-    context: "128K",
-    hfRepo: "unsloth/gemma-3-27b",
-    recommended: true,
   },
 ];
 
@@ -259,7 +236,9 @@ export const DEFAULT_HYPERPARAMS = {
 };
 
 export function findModelById(id: string | null): ModelOption | undefined {
-  if (!id) return undefined;
+  if (!id) {
+    return undefined;
+  }
   return MODELS.find((m) => m.id === id || m.hfRepo === id);
 }
 

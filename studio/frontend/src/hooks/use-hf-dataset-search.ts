@@ -23,7 +23,9 @@ interface CardDataWithInfo {
 function extractTotalExamples(
   cardData: CardDataWithInfo | undefined,
 ): number | undefined {
-  if (!cardData?.dataset_info) return undefined;
+  if (!cardData?.dataset_info) {
+    return undefined;
+  }
   const infos = Array.isArray(cardData.dataset_info)
     ? cardData.dataset_info
     : [cardData.dataset_info];

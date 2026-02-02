@@ -68,7 +68,9 @@ export function ExportDialog({
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Export Model</DialogTitle>
-          <DialogDescription>Choose where to save your exported model.</DialogDescription>
+          <DialogDescription>
+            Choose where to save your exported model.
+          </DialogDescription>
         </DialogHeader>
 
         <div className="flex gap-2">
@@ -94,18 +96,32 @@ export function ExportDialog({
               <div className="flex flex-col gap-4 px-0.5">
                 <div className="grid grid-cols-2 gap-3">
                   <div className="flex flex-col gap-1.5">
-                    <label className="text-xs font-medium text-muted-foreground">Username / Org</label>
-                    <Input placeholder="your-username" value={hfUsername} onChange={(e) => onHfUsernameChange(e.target.value)} />
+                    <label className="text-xs font-medium text-muted-foreground">
+                      Username / Org
+                    </label>
+                    <Input
+                      placeholder="your-username"
+                      value={hfUsername}
+                      onChange={(e) => onHfUsernameChange(e.target.value)}
+                    />
                   </div>
                   <div className="flex flex-col gap-1.5">
-                    <label className="text-xs font-medium text-muted-foreground">Model Name</label>
-                    <Input placeholder="my-model-gguf" value={modelName} onChange={(e) => onModelNameChange(e.target.value)} />
+                    <label className="text-xs font-medium text-muted-foreground">
+                      Model Name
+                    </label>
+                    <Input
+                      placeholder="my-model-gguf"
+                      value={modelName}
+                      onChange={(e) => onModelNameChange(e.target.value)}
+                    />
                   </div>
                 </div>
 
                 <div className="flex flex-col gap-1.5">
                   <div className="flex items-center justify-between">
-                    <label className="text-xs font-medium text-muted-foreground">HF Write Token</label>
+                    <label className="text-xs font-medium text-muted-foreground">
+                      HF Write Token
+                    </label>
                     <a
                       href="https://huggingface.co/settings/tokens"
                       target="_blank"
@@ -113,21 +129,41 @@ export function ExportDialog({
                       className="flex items-center gap-1 text-[11px] text-emerald-600 hover:text-emerald-700 transition-colors"
                     >
                       Get token
-                      <HugeiconsIcon icon={ArrowRight01Icon} className="size-3" />
+                      <HugeiconsIcon
+                        icon={ArrowRight01Icon}
+                        className="size-3"
+                      />
                     </a>
                   </div>
                   <InputGroup>
                     <InputGroupAddon>
                       <HugeiconsIcon icon={Key01Icon} className="size-4" />
                     </InputGroupAddon>
-                    <InputGroupInput type="password" placeholder="hf_..." value={hfToken} onChange={(e) => onHfTokenChange(e.target.value)} />
+                    <InputGroupInput
+                      type="password"
+                      placeholder="hf_..."
+                      value={hfToken}
+                      onChange={(e) => onHfTokenChange(e.target.value)}
+                    />
                   </InputGroup>
-                  <p className="text-[11px] text-muted-foreground/70">Leave empty if already logged in via CLI.</p>
+                  <p className="text-[11px] text-muted-foreground/70">
+                    Leave empty if already logged in via CLI.
+                  </p>
                 </div>
 
                 <div className="flex items-center gap-3">
-                  <Switch id="private-repo" size="sm" checked={privateRepo} onCheckedChange={onPrivateRepoChange} />
-                  <label htmlFor="private-repo" className="text-xs font-medium cursor-pointer">Private Repository</label>
+                  <Switch
+                    id="private-repo"
+                    size="sm"
+                    checked={privateRepo}
+                    onCheckedChange={onPrivateRepoChange}
+                  />
+                  <label
+                    htmlFor="private-repo"
+                    className="text-xs font-medium cursor-pointer"
+                  >
+                    Private Repository
+                  </label>
                 </div>
               </div>
             </motion.div>
@@ -153,7 +189,9 @@ export function ExportDialog({
           {exportMethod === "gguf" && quantLevels.length > 0 && (
             <div className="flex justify-between">
               <span>Quantizations</span>
-              <span className="font-medium text-foreground">{quantLevels.join(", ")}</span>
+              <span className="font-medium text-foreground">
+                {quantLevels.join(", ")}
+              </span>
             </div>
           )}
           <div className="flex justify-between">
@@ -163,7 +201,9 @@ export function ExportDialog({
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
           <Button onClick={() => onOpenChange(false)}>Start Export</Button>
         </DialogFooter>
       </DialogContent>

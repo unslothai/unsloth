@@ -9,9 +9,27 @@ export const EXPORT_METHODS: {
   tooltip: string;
   badge?: string;
 }[] = [
-  { value: "merged", title: "Merged Model", description: "Full 16-bit model ready for inference.", tooltip: "Merges adapter weights into the base model. Best for direct deployment with vLLM or TGI." },
-  { value: "lora", title: "LoRA Only", description: "Lightweight adapter files (~100 MB). Needs base model.", tooltip: "Exports only the trained adapter. Pair with the base model at inference time to save storage." },
-  { value: "gguf", title: "GGUF / Llama.cpp", description: "Quantized formats for local AI runners.", tooltip: "Converts to GGUF for llama.cpp, Ollama, and other local runners. Pick a quantization level below." },
+  {
+    value: "merged",
+    title: "Merged Model",
+    description: "Full 16-bit model ready for inference.",
+    tooltip:
+      "Merges adapter weights into the base model. Best for direct deployment with vLLM or TGI.",
+  },
+  {
+    value: "lora",
+    title: "LoRA Only",
+    description: "Lightweight adapter files (~100 MB). Needs base model.",
+    tooltip:
+      "Exports only the trained adapter. Pair with the base model at inference time to save storage.",
+  },
+  {
+    value: "gguf",
+    title: "GGUF / Llama.cpp",
+    description: "Quantized formats for local AI runners.",
+    tooltip:
+      "Converts to GGUF for llama.cpp, Ollama, and other local runners. Pick a quantization level below.",
+  },
 ];
 
 export const QUANT_OPTIONS = [
@@ -27,17 +45,27 @@ export const QUANT_OPTIONS = [
   { value: "f16", label: "F16", size: "~14.2 GB" },
 ];
 
-export function getEstimatedSize(method: ExportMethod | null, quantLevels: string[]) {
-  const sizeOf = (v: string) => QUANT_OPTIONS.find((q) => q.value === v)?.size ?? "—";
+export function getEstimatedSize(
+  method: ExportMethod | null,
+  quantLevels: string[],
+) {
+  const sizeOf = (v: string) =>
+    QUANT_OPTIONS.find((q) => q.value === v)?.size ?? "—";
   if (method === "gguf" && quantLevels.length > 0) {
-    if (quantLevels.length === 1) return sizeOf(quantLevels[0]);
+    if (quantLevels.length === 1) {
+      return sizeOf(quantLevels[0]);
+    }
     const total = quantLevels
       .map((q) => Number.parseFloat(sizeOf(q).replace(/[^0-9.]/g, "")))
       .reduce((a, b) => a + b, 0);
     return `~${total.toFixed(1)} GB (${quantLevels.length} files)`;
   }
-  if (method === "merged") return "~14.2 GB";
-  if (method === "lora") return "~100 MB";
+  if (method === "merged") {
+    return "~14.2 GB";
+  }
+  if (method === "lora") {
+    return "~100 MB";
+  }
   return "—";
 }
 
