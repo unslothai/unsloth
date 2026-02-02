@@ -25,7 +25,9 @@ async function pullBatch<T>(
   const items: T[] = [];
   for (let i = 0; i < size; i++) {
     const result = await iter.next();
-    if (result.done) return { items, done: true };
+    if (result.done) {
+      return { items, done: true };
+    }
     items.push(mapItem(result.value));
   }
   return { items, done: false };
@@ -67,7 +69,9 @@ export function useHfPaginatedSearch<T>(
 
     pullBatch(iter, mapItem, BATCH)
       .then(({ items, done }) => {
-        if (versionRef.current !== v) return;
+        if (versionRef.current !== v) {
+          return;
+        }
         setState({
           results: items,
           isLoading: false,
@@ -77,7 +81,9 @@ export function useHfPaginatedSearch<T>(
         });
       })
       .catch((err) => {
-        if (versionRef.current !== v) return;
+        if (versionRef.current !== v) {
+          return;
+        }
         setState({
           results: [],
           isLoading: false,
@@ -91,14 +97,18 @@ export function useHfPaginatedSearch<T>(
   const fetchMore = useCallback(() => {
     const iter = iterRef.current;
     const { isLoading, isLoadingMore, hasMore } = stateRef.current;
-    if (!iter || isLoading || isLoadingMore || !hasMore) return;
+    if (!iter || isLoading || isLoadingMore || !hasMore) {
+      return;
+    }
 
     const v = versionRef.current;
     setState((prev) => ({ ...prev, isLoadingMore: true }));
 
     pullBatch(iter, mapItem, BATCH)
       .then(({ items, done }) => {
-        if (versionRef.current !== v) return;
+        if (versionRef.current !== v) {
+          return;
+        }
         setState((prev) => ({
           ...prev,
           results: [...prev.results, ...items],
@@ -107,7 +117,9 @@ export function useHfPaginatedSearch<T>(
         }));
       })
       .catch(() => {
-        if (versionRef.current !== v) return;
+        if (versionRef.current !== v) {
+          return;
+        }
         setState((prev) => ({ ...prev, isLoadingMore: false, hasMore: false }));
       });
   }, [mapItem]);

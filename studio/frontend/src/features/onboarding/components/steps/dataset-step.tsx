@@ -33,7 +33,11 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { DATASETS } from "@/config/training";
-import { useDebouncedValue, useHfDatasetSearch, useInfiniteScroll } from "@/hooks";
+import {
+  useDebouncedValue,
+  useHfDatasetSearch,
+  useInfiniteScroll,
+} from "@/hooks";
 import { cn, formatCompact } from "@/lib/utils";
 import { useWizardStore } from "@/stores/training";
 import type { DatasetFormat } from "@/types/training";
@@ -83,23 +87,53 @@ export function DatasetStep() {
 
   const [inputValue, setInputValue] = useState("");
   const debouncedQuery = useDebouncedValue(inputValue);
-  const { results: hfResults, isLoading, isLoadingMore, hasMore, fetchMore } = useHfDatasetSearch(debouncedQuery, {
+  const {
+    results: hfResults,
+    isLoading,
+    isLoadingMore,
+    hasMore,
+    fetchMore,
+  } = useHfDatasetSearch(debouncedQuery, {
     accessToken: hfToken || undefined,
   });
 
   const curatedDatasets = useMemo(
-    () => [...DATASETS].sort((a, b) => (b.recommended ? 1 : 0) - (a.recommended ? 1 : 0)),
+    () =>
+      [...DATASETS].sort(
+        (a, b) => (b.recommended ? 1 : 0) - (a.recommended ? 1 : 0),
+      ),
     [],
   );
 
   const datasetMap = useMemo(() => {
-    const map = new Map<string, { label: string; description?: string; size?: string; totalExamples?: number; sizeCategory?: string; downloads?: number; recommended?: boolean }>();
+    const map = new Map<
+      string,
+      {
+        label: string;
+        description?: string;
+        size?: string;
+        totalExamples?: number;
+        sizeCategory?: string;
+        downloads?: number;
+        recommended?: boolean;
+      }
+    >();
     for (const d of curatedDatasets) {
-      map.set(d.id, { label: d.name, description: d.description, size: d.size, recommended: d.recommended });
+      map.set(d.id, {
+        label: d.name,
+        description: d.description,
+        size: d.size,
+        recommended: d.recommended,
+      });
     }
     for (const r of hfResults) {
       if (!map.has(r.id)) {
-        map.set(r.id, { label: r.id, downloads: r.downloads, totalExamples: r.totalExamples, sizeCategory: r.sizeCategory });
+        map.set(r.id, {
+          label: r.id,
+          downloads: r.downloads,
+          totalExamples: r.totalExamples,
+          sizeCategory: r.sizeCategory,
+        });
       }
     }
     return map;
@@ -111,14 +145,24 @@ export function DatasetStep() {
     }
     const q = debouncedQuery.toLowerCase();
     const curatedIds = curatedDatasets
-      .filter((d) => d.name.toLowerCase().includes(q) || d.id.toLowerCase().includes(q))
+      .filter(
+        (d) =>
+          d.name.toLowerCase().includes(q) || d.id.toLowerCase().includes(q),
+      )
       .map((d) => d.id);
-    const liveIds = hfResults.map((r) => r.id).filter((id) => !curatedIds.includes(id));
+    const liveIds = hfResults
+      .map((r) => r.id)
+      .filter((id) => !curatedIds.includes(id));
     return [...curatedIds, ...liveIds];
   }, [debouncedQuery, curatedDatasets, hfResults]);
 
   const allIds = useMemo(
-    () => [...new Set([...curatedDatasets.map((d) => d.id), ...hfResults.map((r) => r.id)])],
+    () => [
+      ...new Set([
+        ...curatedDatasets.map((d) => d.id),
+        ...hfResults.map((r) => r.id),
+      ]),
+    ],
     [curatedDatasets, hfResults],
   );
 
@@ -204,35 +248,56 @@ export function DatasetStep() {
                 itemToStringValue={(id) => datasetMap.get(id)?.label ?? id}
                 autoHighlight={true}
               >
-                <ComboboxInput placeholder="Search datasets..." className="w-full">
+                <ComboboxInput
+                  placeholder="Search datasets..."
+                  className="w-full"
+                >
                   <InputGroupAddon>
                     <HugeiconsIcon icon={Search01Icon} className="size-4" />
                   </InputGroupAddon>
                 </ComboboxInput>
                 <ComboboxContent anchor={comboboxAnchorRef}>
                   {isLoading ? (
-                    <div className="flex items-center justify-center py-4 gap-2 text-xs text-muted-foreground"><Spinner className="size-4" /> Searching…</div>
+                    <div className="flex items-center justify-center py-4 gap-2 text-xs text-muted-foreground">
+                      <Spinner className="size-4" /> Searching…
+                    </div>
                   ) : (
                     <ComboboxEmpty>No datasets found</ComboboxEmpty>
                   )}
-                  <div ref={scrollRef} className="max-h-64 overflow-y-auto overscroll-contain [scrollbar-width:thin]">
+                  <div
+                    ref={scrollRef}
+                    className="max-h-64 overflow-y-auto overscroll-contain [scrollbar-width:thin]"
+                  >
                     <ComboboxList className="p-1 !max-h-none !overflow-visible">
                       {(id: string) => {
                         const meta = datasetMap.get(id);
                         const label = meta?.label ?? id;
-                        const rowLabel = meta?.size ?? (meta?.totalExamples ? `${formatCompact(meta.totalExamples)} rows` : null);
+                        const rowLabel =
+                          meta?.size ??
+                          (meta?.totalExamples
+                            ? `${formatCompact(meta.totalExamples)} rows`
+                            : null);
                         return (
-                          <ComboboxItem key={id} value={id} className="justify-between">
+                          <ComboboxItem
+                            key={id}
+                            value={id}
+                            className="justify-between"
+                          >
                             <Tooltip>
-                              <TooltipTrigger asChild>
+                              <TooltipTrigger asChild={true}>
                                 <div className="flex flex-col gap-0.5 min-w-0 flex-1">
                                   <span className="truncate">{label}</span>
                                   {meta?.description && (
-                                    <span className="text-xs text-muted-foreground truncate">{meta.description}</span>
+                                    <span className="text-xs text-muted-foreground truncate">
+                                      {meta.description}
+                                    </span>
                                   )}
                                 </div>
                               </TooltipTrigger>
-                              <TooltipContent side="left" className="max-w-xs break-all">
+                              <TooltipContent
+                                side="left"
+                                className="max-w-xs break-all"
+                              >
                                 {label}
                               </TooltipContent>
                             </Tooltip>
