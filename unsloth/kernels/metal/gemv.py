@@ -65,36 +65,36 @@ def fast_gemv(X: mx.array, W: mx.array) -> mx.array:
     """
     if X.ndim == 1:
         X = X[None, :]
-    
+
     K = X.shape[-1]
     N = W.shape[0]
-    
+
     # Kernel assumes K is multiple of 4 (half4) and ideally 128?
     # For now ensuring vec4 alignment check
     if K % 4 != 0:
-         # Fallback or strict check
-         return (X @ W.T)
+        # Fallback or strict check
+        return X @ W.T
 
     kernel = mx.fast.metal_kernel(
-        name="gemv_simd_reduction",
-        input_names=["x", "W", "K", "N"],
-        output_names=["y"],
-        source=_GEMV_SOURCE,
+        name = "gemv_simd_reduction",
+        input_names = ["x", "W", "K", "N"],
+        output_names = ["y"],
+        source = _GEMV_SOURCE,
     )
-    
-    K_arg = mx.array(K, dtype=mx.uint32)
-    N_arg = mx.array(N, dtype=mx.uint32)
-    
+
+    K_arg = mx.array(K, dtype = mx.uint32)
+    N_arg = mx.array(N, dtype = mx.uint32)
+
     # Grid: N warps. Each warp is 32 threads.
     grid_size = (N * 32, 1, 1)
     group_size = (32, 1, 1)
-    
+
     outputs = kernel(
-        inputs=[X, W, K_arg, N_arg],
-        grid=grid_size,
-        threadgroup=group_size,
-        output_shapes=[(1, N)],
-        output_dtypes=[X.dtype],
+        inputs = [X, W, K_arg, N_arg],
+        grid = grid_size,
+        threadgroup = group_size,
+        output_shapes = [(1, N)],
+        output_dtypes = [X.dtype],
     )
-    
+
     return outputs[0]
