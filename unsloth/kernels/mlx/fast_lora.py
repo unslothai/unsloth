@@ -14,14 +14,18 @@ def treeify(w):
     Converts MLXQuantizedWeight objects into dictionaries of arrays
     that mx.compile can trace. Standard arrays are returned as-is.
     """
-    w_mlx = torch_to_mlx(w) if not isinstance(w, mx.array) and not isinstance(w, MLXQuantizedWeight) else w
+    w_mlx = (
+        torch_to_mlx(w)
+        if not isinstance(w, mx.array) and not isinstance(w, MLXQuantizedWeight)
+        else w
+    )
     if isinstance(w_mlx, MLXQuantizedWeight):
         return {
             "weight": w_mlx.weight,
             "scales": w_mlx.scales,
             "biases": w_mlx.biases,
             "group_size": w_mlx.group_size,
-            "bits": w_mlx.bits
+            "bits": w_mlx.bits,
         }
     return w_mlx
 
@@ -38,19 +42,15 @@ def quantized_matmul(X, W):
         bits = getattr(W, "bits", 4)
         group_size = getattr(W, "group_size", 64)
         packed_group_size = group_size // (32 // bits)
-        
+
         return mx.quantized_matmul(
-            X, 
-            W.weight, 
-            W.scales, 
-            W.biases, 
-            group_size = packed_group_size,
-            bits = bits
+            X, W.weight, W.scales, W.biases, group_size = packed_group_size, bits = bits
         )
-    
+
     # Batch=1 Optimization for FP16
     if X.size // X.shape[-1] == 1:
         from ..metal.gemv import fast_gemv
+
         return fast_gemv(X.reshape(1, -1), W)
 
     return X @ W.T
@@ -76,8 +76,11 @@ def matmul_lora(X, W, W_quant, A, B, S):
 def _dequant(W):
     if isinstance(W, dict) and "weight" in W:
         return mx.dequantize(
-            W["weight"], W["scales"], W["biases"], 
-            group_size = W["group_size"], bits = W["bits"]
+            W["weight"],
+            W["scales"],
+            W["biases"],
+            group_size = W["group_size"],
+            bits = W["bits"],
         )
     return W
 
@@ -136,32 +139,32 @@ def apply_lora_mlp_swiglu(
             gateA_mlx = torch_to_mlx(gateA)
             gateB_mlx = torch_to_mlx(gateB)
             gateS_val = gateS.item() if hasattr(gateS, "item") else gateS
-            
+
             upW_mlx = torch_to_mlx(upW)
             upA_mlx = torch_to_mlx(upA)
             upB_mlx = torch_to_mlx(upB)
             upS_val = upS.item() if hasattr(upS, "item") else upS
-            
+
             downW_mlx = torch_to_mlx(downW)
             downA_mlx = torch_to_mlx(downA)
             downB_mlx = torch_to_mlx(downB)
             downS_val = downS.item() if hasattr(downS, "item") else downS
-            
+
             # 1. Gate
             gate = quantized_matmul(X_mlx.reshape(1, -1), gateW_mlx)
             gate += (X_mlx.reshape(1, -1) @ gateA_mlx.T) @ gateB_mlx.T * gateS_val
-            
+
             # 2. Up
             up = quantized_matmul(X_mlx.reshape(1, -1), upW_mlx)
             up += (X_mlx.reshape(1, -1) @ upA_mlx.T) @ upB_mlx.T * upS_val
-            
+
             # 3. SwiGLU: silu(gate) * up
             act = (gate * mx.sigmoid(gate)) * up
-            
+
             # 4. Down
             out = quantized_matmul(act, downW_mlx)
             out += (act @ downA_mlx.T) @ downB_mlx.T * downS_val
-            
+
             return mlx_to_torch(out.reshape(X.shape), device = X.device, dtype = X.dtype)
 
         # Standard Batch Path (Compiled)

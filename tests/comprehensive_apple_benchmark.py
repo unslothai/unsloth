@@ -262,11 +262,11 @@ class ComprehensiveBenchmark:
             QW._mlx_cache = torch_to_mlx(QW)
             KW._mlx_cache = torch_to_mlx(KW)
             VW._mlx_cache = torch_to_mlx(VW)
-            
+
             q_mlx, k_mlx, v_mlx = apply_lora_qkv(
                 X, QW, None, QA, QB, QS, KW, None, QA, QB, QS, VW, None, QA, QB, QS
             )
-            
+
             start = time.time()
             for _ in range(iters):
                 _ = apply_lora_qkv(
