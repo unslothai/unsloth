@@ -108,9 +108,25 @@ def fast_quantize(model):
             # Apply quantization
             # We store it directly on the weight tensor
             # The 'fast_lora' kernels check hasattr(weight, '_mlx_cache')
+            if module.weight.device.type == "meta":
+                print(f"Unsloth: Warning - Skipping {name} as it is on the meta device (offloaded). "
+                      "Quantization requires the weight to be in memory.")
+                continue
+
+            if hasattr(module.weight, "_mlx_cache"):
+                count += 1
+                pbar.update(1)
+                continue
+
             module.weight._mlx_cache = quantize_4bit(module.weight)
             count += 1
             pbar.update(1)
+
+            # Periodic memory cleanup to prevent offloading/OOM
+            if count % 10 == 0:
+                gc.collect()
+                if torch.backends.mps.is_available():
+                    torch.mps.empty_cache()
 
     pbar.close()
     print(f"Unsloth: Quantized {count} layers to 4-bit MLX.")
