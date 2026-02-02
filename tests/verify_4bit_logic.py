@@ -3,12 +3,14 @@ import torch
 import torch.nn as nn
 from unittest.mock import MagicMock
 
+
 # 1. Create robust Mock
 class MockMLX:
     def __init__(self):
         self.core = MagicMock()
         self.core.__spec__ = MagicMock()
         self.core.fast = MagicMock()
+
 
 mock_mlx = MockMLX()
 sys.modules["mlx"] = mock_mlx
@@ -18,16 +20,18 @@ from unsloth.kernels.mlx.bridge import torch_to_mlx
 from unsloth.kernels.mlx.quantization import MLXQuantizedWeight
 from unsloth.kernels.mlx.fast_lora import fast_dequantize, quantized_matmul
 
+
 def test_bridge_cache():
     print("Testing bridge cache logic...")
     W = torch.randn(10, 10)
     mock_quant = MLXQuantizedWeight(MagicMock(), MagicMock(), MagicMock(), 64)
     W._mlx_cache = mock_quant
-    
+
     # torch_to_mlx should return the cache if present
     res = torch_to_mlx(W)
     assert res == mock_quant
     print("✅ Bridge cache check passed.")
+
 
 def test_fast_dequantize_logic():
     print("Testing fast_dequantize logic...")
@@ -37,16 +41,19 @@ def test_fast_dequantize_logic():
     assert res == mock_quant
     print("✅ fast_dequantize logic passed.")
 
+
 def test_quantized_matmul_dispatch():
     print("Testing quantized_matmul dispatch...")
     X = MagicMock()
     mock_quant = MLXQuantizedWeight(MagicMock(), MagicMock(), MagicMock(), 64)
-    
+
     # Should call mx.fast.quantized_matmul
     import mlx.core.fast as mxf
+
     quantized_matmul(X, mock_quant)
     mxf.quantized_matmul.assert_called_once()
     print("✅ quantized_matmul dispatch passed.")
+
 
 if __name__ == "__main__":
     try:

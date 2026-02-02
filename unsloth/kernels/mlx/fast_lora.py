@@ -18,12 +18,7 @@ def quantized_matmul(X, W):
         # MLX Quantized Matmul
         # X: (..., In), W: (Out, In_packed)
         return mx.fast.quantized_matmul(
-            X, 
-            W.weight, 
-            W.scales, 
-            W.biases, 
-            group_size = W.group_size, 
-            bits = W.bits
+            X, W.weight, W.scales, W.biases, group_size = W.group_size, bits = W.bits
         )
     return X @ W.T
 
@@ -52,7 +47,9 @@ def _dequant(W):
         # but inside mx.compile, we can just dequantize.
         # MLX 4-bit is usually: (W_q - 8) * scales + biases? No, depends on format.
         # mx.dequantize logic:
-        return mx.dequantize(W.weight, W.scales, W.biases, group_size=W.group_size, bits=W.bits)
+        return mx.dequantize(
+            W.weight, W.scales, W.biases, group_size = W.group_size, bits = W.bits
+        )
     return W
 
 
@@ -67,7 +64,7 @@ def _compiled_mlp_swiglu(
     dW = _dequant(downW)
 
     gate = X @ gW.T + (X @ gateA.T) @ gateB.T * gateS
-    up   = X @ uW.T + (X @ upA.T) @ upB.T * upS
+    up = X @ uW.T + (X @ upA.T) @ upB.T * upS
 
     act = gate * mx.sigmoid(gate) * up
     out = act @ dW.T + (act @ downA.T) @ downB.T * downS
@@ -100,44 +97,44 @@ def apply_lora_mlp_swiglu(
         # Let's stick to whatever shape X comes in, assuming matmul handles it.
 
         X_mlx = torch_to_mlx(X)
-        
+
         # Batch=1 Optimization: Use custom GEMV for base projections
         # X shape is usually (Batch, Seq, Dim).
         # For decoding, Batch=1, Seq=1.
         if X_mlx.size // X_mlx.shape[-1] == 1:
             from ..metal.gemv import fast_gemv
-            
+
             # Need weights in MLX
             gateW_mlx = torch_to_mlx(gateW)
             gateA_mlx = torch_to_mlx(gateA)
             gateB_mlx = torch_to_mlx(gateB)
             gateS_val = gateS.item() if hasattr(gateS, "item") else gateS
-            
+
             upW_mlx = torch_to_mlx(upW)
             upA_mlx = torch_to_mlx(upA)
             upB_mlx = torch_to_mlx(upB)
             upS_val = upS.item() if hasattr(upS, "item") else upS
-            
+
             downW_mlx = torch_to_mlx(downW)
             downA_mlx = torch_to_mlx(downA)
             downB_mlx = torch_to_mlx(downB)
             downS_val = downS.item() if hasattr(downS, "item") else downS
-            
+
             # 1. Gate
             gate = fast_gemv(X_mlx.reshape(1, -1), gateW_mlx)
             gate += (X_mlx.reshape(1, -1) @ gateA_mlx.T) @ gateB_mlx.T * gateS_val
-            
+
             # 2. Up
             up = fast_gemv(X_mlx.reshape(1, -1), upW_mlx)
             up += (X_mlx.reshape(1, -1) @ upA_mlx.T) @ upB_mlx.T * upS_val
-            
+
             # 3. SwiGLU: silu(gate) * up
             act = (gate * mx.sigmoid(gate)) * up
-            
+
             # 4. Down
             out = fast_gemv(act, downW_mlx)
             out += (act @ downA_mlx.T) @ downB_mlx.T * downS_val
-            
+
             return mlx_to_torch(out.reshape(X.shape), device = X.device, dtype = X.dtype)
 
         # Standard Batch Path (Compiled)
@@ -145,17 +142,17 @@ def apply_lora_mlp_swiglu(
         gateA_mlx = torch_to_mlx(gateA)
         gateB_mlx = torch_to_mlx(gateB)
         gateS_mlx = torch_to_mlx(gateS) if hasattr(gateS, "shape") else gateS
-        
+
         upW_mlx = torch_to_mlx(upW)
         upA_mlx = torch_to_mlx(upA)
         upB_mlx = torch_to_mlx(upB)
         upS_mlx = torch_to_mlx(upS) if hasattr(upS, "shape") else upS
-        
+
         downW_mlx = torch_to_mlx(downW)
         downA_mlx = torch_to_mlx(downA)
         downB_mlx = torch_to_mlx(downB)
         downS_mlx = torch_to_mlx(downS) if hasattr(downS, "shape") else downS
-        
+
         # Execute compiled kernel
         out_mlx = _compiled_mlp_swiglu(
             X_mlx,
@@ -172,7 +169,7 @@ def apply_lora_mlp_swiglu(
             downB_mlx,
             downS_mlx,
         )
-        
+
         return mlx_to_torch(out_mlx, device = X.device, dtype = X.dtype)
 
 
@@ -189,50 +186,94 @@ def apply_lora_qkv(
 ):
     with mlx_context():
         X_mlx = torch_to_mlx(X)
-        
+
         # Batch=1 Optimization
         if X_mlx.size // X_mlx.shape[-1] == 1:
             from ..metal.gemv import fast_gemv
+
             # Inputs
-            QW_mlx = torch_to_mlx(QW); QA_mlx = torch_to_mlx(QA); QB_mlx = torch_to_mlx(QB)
-            KW_mlx = torch_to_mlx(KW); KA_mlx = torch_to_mlx(KA); KB_mlx = torch_to_mlx(KB)
-            VW_mlx = torch_to_mlx(VW); VA_mlx = torch_to_mlx(VA); VB_mlx = torch_to_mlx(VB)
-            
+            QW_mlx = torch_to_mlx(QW)
+            QA_mlx = torch_to_mlx(QA)
+            QB_mlx = torch_to_mlx(QB)
+            KW_mlx = torch_to_mlx(KW)
+            KA_mlx = torch_to_mlx(KA)
+            KB_mlx = torch_to_mlx(KB)
+            VW_mlx = torch_to_mlx(VW)
+            VA_mlx = torch_to_mlx(VA)
+            VB_mlx = torch_to_mlx(VB)
+
             QS_val = QS.item() if hasattr(QS, "item") else QS
             KS_val = KS.item() if hasattr(KS, "item") else KS
             VS_val = VS.item() if hasattr(VS, "item") else VS
-            
+
             X_flat = X_mlx.reshape(1, -1)
-            
-            Q = quantized_matmul(X_flat, QW_mlx) + (X_flat @ QA_mlx.T) @ QB_mlx.T * QS_val
-            K = quantized_matmul(X_flat, KW_mlx) + (X_flat @ KA_mlx.T) @ KB_mlx.T * KS_val
-            V = quantized_matmul(X_flat, VW_mlx) + (X_flat @ VA_mlx.T) @ VB_mlx.T * VS_val
-            
-            return (
-                mlx_to_torch(Q.reshape(X.shape[:-1] + (QW.shape[0],)), device=X.device, dtype=X.dtype),
-                mlx_to_torch(K.reshape(X.shape[:-1] + (KW.shape[0],)), device=X.device, dtype=X.dtype),
-                mlx_to_torch(V.reshape(X.shape[:-1] + (VW.shape[0],)), device=X.device, dtype=X.dtype),
+
+            Q = (
+                quantized_matmul(X_flat, QW_mlx)
+                + (X_flat @ QA_mlx.T) @ QB_mlx.T * QS_val
+            )
+            K = (
+                quantized_matmul(X_flat, KW_mlx)
+                + (X_flat @ KA_mlx.T) @ KB_mlx.T * KS_val
+            )
+            V = (
+                quantized_matmul(X_flat, VW_mlx)
+                + (X_flat @ VA_mlx.T) @ VB_mlx.T * VS_val
             )
 
-        QW_mlx = torch_to_mlx(QW); QA_mlx = torch_to_mlx(QA); QB_mlx = torch_to_mlx(QB)
+            return (
+                mlx_to_torch(
+                    Q.reshape(X.shape[:-1] + (QW.shape[0],)),
+                    device = X.device,
+                    dtype = X.dtype,
+                ),
+                mlx_to_torch(
+                    K.reshape(X.shape[:-1] + (KW.shape[0],)),
+                    device = X.device,
+                    dtype = X.dtype,
+                ),
+                mlx_to_torch(
+                    V.reshape(X.shape[:-1] + (VW.shape[0],)),
+                    device = X.device,
+                    dtype = X.dtype,
+                ),
+            )
+
+        QW_mlx = torch_to_mlx(QW)
+        QA_mlx = torch_to_mlx(QA)
+        QB_mlx = torch_to_mlx(QB)
         QS_mlx = torch_to_mlx(QS) if hasattr(QS, "shape") else QS
 
-        KW_mlx = torch_to_mlx(KW); KA_mlx = torch_to_mlx(KA); KB_mlx = torch_to_mlx(KB)
+        KW_mlx = torch_to_mlx(KW)
+        KA_mlx = torch_to_mlx(KA)
+        KB_mlx = torch_to_mlx(KB)
         KS_mlx = torch_to_mlx(KS) if hasattr(KS, "shape") else KS
 
-        VW_mlx = torch_to_mlx(VW); VA_mlx = torch_to_mlx(VA); VB_mlx = torch_to_mlx(VB)
+        VW_mlx = torch_to_mlx(VW)
+        VA_mlx = torch_to_mlx(VA)
+        VB_mlx = torch_to_mlx(VB)
         VS_mlx = torch_to_mlx(VS) if hasattr(VS, "shape") else VS
 
         Q_mlx, K_mlx, V_mlx = _compiled_qkv(
-            X_mlx, QW_mlx, QA_mlx, QB_mlx, QS_mlx,
-            KW_mlx, KA_mlx, KB_mlx, KS_mlx,
-            VW_mlx, VA_mlx, VB_mlx, VS_mlx,
+            X_mlx,
+            QW_mlx,
+            QA_mlx,
+            QB_mlx,
+            QS_mlx,
+            KW_mlx,
+            KA_mlx,
+            KB_mlx,
+            KS_mlx,
+            VW_mlx,
+            VA_mlx,
+            VB_mlx,
+            VS_mlx,
         )
 
         return (
-            mlx_to_torch(Q_mlx, device=X.device, dtype=X.dtype),
-            mlx_to_torch(K_mlx, device=X.device, dtype=X.dtype),
-            mlx_to_torch(V_mlx, device=X.device, dtype=X.dtype),
+            mlx_to_torch(Q_mlx, device = X.device, dtype = X.dtype),
+            mlx_to_torch(K_mlx, device = X.device, dtype = X.dtype),
+            mlx_to_torch(V_mlx, device = X.device, dtype = X.dtype),
         )
 
 
@@ -244,21 +285,31 @@ def _compiled_o(X, OW, OA, OB, OS):
 def apply_lora_o(X, OW, OW_quant, OA, OB, OS):
     with mlx_context():
         X_mlx = torch_to_mlx(X)
-        
+
         # Batch=1 Optimization
         if X_mlx.size // X_mlx.shape[-1] == 1:
             from ..metal.gemv import fast_gemv
-            OW_mlx = torch_to_mlx(OW); OA_mlx = torch_to_mlx(OA); OB_mlx = torch_to_mlx(OB)
+
+            OW_mlx = torch_to_mlx(OW)
+            OA_mlx = torch_to_mlx(OA)
+            OB_mlx = torch_to_mlx(OB)
             OS_val = OS.item() if hasattr(OS, "item") else OS
-            
+
             X_flat = X_mlx.reshape(1, -1)
-            out = quantized_matmul(X_flat, OW_mlx) + (X_flat @ OA_mlx.T) @ OB_mlx.T * OS_val
-            return mlx_to_torch(out.reshape(X.shape[:-1] + (OW.shape[0],)), device=X.device, dtype=X.dtype)
+            out = (
+                quantized_matmul(X_flat, OW_mlx)
+                + (X_flat @ OA_mlx.T) @ OB_mlx.T * OS_val
+            )
+            return mlx_to_torch(
+                out.reshape(X.shape[:-1] + (OW.shape[0],)),
+                device = X.device,
+                dtype = X.dtype,
+            )
 
         OW_mlx = torch_to_mlx(OW)
         OA_mlx = torch_to_mlx(OA)
         OB_mlx = torch_to_mlx(OB)
         OS_mlx = torch_to_mlx(OS) if hasattr(OS, "shape") else OS
-        
+
         out_mlx = _compiled_o(X_mlx, OW_mlx, OA_mlx, OB_mlx, OS_mlx)
         return mlx_to_torch(out_mlx, device = X.device, dtype = X.dtype)
