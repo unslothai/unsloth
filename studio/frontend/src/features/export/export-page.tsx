@@ -13,7 +13,6 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { findModelById } from "@/config/training";
 import { useWizardStore } from "@/stores/training";
 import { isAdapterMethod } from "@/types/training";
 import { InformationCircleIcon, PackageIcon } from "@hugeicons/core-free-icons";
@@ -55,10 +54,6 @@ export function ExportPage() {
     })),
   );
   const isAdapter = isAdapterMethod(trainingMethod);
-  const modelInfo = useMemo(
-    () => findModelById(selectedModel),
-    [selectedModel],
-  );
 
   const checkpoints = useMemo(() => {
     if (isAdapter) {
@@ -110,7 +105,7 @@ export function ExportPage() {
     checkpoint &&
     exportMethod &&
     (exportMethod !== "gguf" || quantLevels.length > 0);
-  const baseModelName = modelInfo?.name ?? selectedModel ?? "—";
+  const baseModelName = selectedModel ?? "—";
 
   return (
     <div className="min-h-screen bg-background">
@@ -214,12 +209,6 @@ export function ExportPage() {
                     <div className="flex justify-between">
                       <span className="text-muted-foreground">LoRA Rank</span>
                       <span className="font-medium">{loraRank}</span>
-                    </div>
-                  )}
-                  {modelInfo?.params && (
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Params</span>
-                      <span className="font-medium">{modelInfo.params}</span>
                     </div>
                   )}
                 </div>

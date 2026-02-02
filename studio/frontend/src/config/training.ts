@@ -1,6 +1,4 @@
 import type {
-  DatasetOption,
-  ModelOption,
   ModelType,
   StepConfig,
 } from "@/types/training";
@@ -66,132 +64,6 @@ export const MODEL_TYPES: ReadonlyArray<{
   },
 ];
 
-export const MODELS: ModelOption[] = [
-  // Vision models
-  {
-    id: "llava-1.6-7b",
-    name: "LLaVA 1.6 7B",
-    type: "vision",
-    params: "7B",
-    vram: "~6GB",
-    context: "4K",
-    hfRepo: "unsloth/llava-v1.6-mistral-7b",
-    recommended: true,
-  },
-  {
-    id: "llava-1.6-13b",
-    name: "LLaVA 1.6 13B",
-    type: "vision",
-    params: "13B",
-    vram: "~10GB",
-    context: "4K",
-    hfRepo: "unsloth/llava-v1.6-vicuna-13b",
-    recommended: true,
-  },
-  {
-    id: "qwen-vl-7b",
-    name: "Qwen-VL 7B",
-    type: "vision",
-    params: "7B",
-    vram: "~6GB",
-    context: "8K",
-    hfRepo: "Qwen/Qwen-VL-Chat",
-  },
-  // TTS models
-  {
-    id: "bark",
-    name: "Bark",
-    type: "tts",
-    params: "1B",
-    hfRepo: "suno/bark",
-    recommended: true,
-  },
-  {
-    id: "xtts-v2",
-    name: "XTTS v2",
-    type: "tts",
-    params: "500M",
-    hfRepo: "coqui/XTTS-v2",
-  },
-  // Embedding models
-  {
-    id: "bge-large",
-    name: "BGE Large",
-    type: "embeddings",
-    params: "335M",
-    recommended: true,
-  },
-  { id: "e5-large", name: "E5 Large", type: "embeddings", params: "335M" },
-  { id: "gte-large", name: "GTE Large", type: "embeddings", params: "335M" },
-  // Text models
-  {
-    id: "mistral-7b",
-    name: "Mistral 7B",
-    type: "text",
-    params: "7B",
-    vram: "~5GB",
-    context: "32K",
-    hfRepo: "unsloth/mistral-7b-v0.3",
-  },
-  {
-    id: "qwen2-7b",
-    name: "Qwen2 7B",
-    type: "text",
-    params: "7B",
-    vram: "~5GB",
-    context: "32K",
-  },
-  {
-    id: "phi-3-mini",
-    name: "Phi-3 Mini",
-    type: "text",
-    params: "3.8B",
-    vram: "~3GB",
-    context: "128K",
-  },
-];
-
-export const DATASETS: DatasetOption[] = [
-  {
-    id: "alpaca",
-    name: "Alpaca",
-    description: "Instruction following dataset",
-    size: "52K",
-    recommended: true,
-  },
-  {
-    id: "dolly-15k",
-    name: "Dolly 15K",
-    description: "Databricks instruction dataset",
-    size: "15K",
-    recommended: true,
-  },
-  {
-    id: "openorca",
-    name: "OpenOrca",
-    description: "Large-scale instruct dataset",
-    size: "4M",
-  },
-  {
-    id: "wizard-lm",
-    name: "WizardLM",
-    description: "Complex instruction dataset",
-    size: "196K",
-  },
-  {
-    id: "lima",
-    name: "LIMA",
-    description: "Curated high-quality dataset",
-    size: "1K",
-  },
-  {
-    id: "sharegpt",
-    name: "ShareGPT",
-    description: "Conversation dataset",
-    size: "90K",
-  },
-];
-
 export const CONTEXT_LENGTHS = [512, 1024, 2048, 4096, 8192, 16384, 32768];
 
 export const TARGET_MODULES = [
@@ -234,13 +106,6 @@ export const DEFAULT_HYPERPARAMS = {
   finetuneMLPModules: true,
   targetModules: TARGET_MODULES,
 };
-
-export function findModelById(id: string | null): ModelOption | undefined {
-  if (!id) {
-    return undefined;
-  }
-  return MODELS.find((m) => m.id === id || m.hfRepo === id);
-}
 
 export const MODEL_TYPE_TO_HF_TASK: Record<ModelType, PipelineType> = {
   text: "text-generation",
