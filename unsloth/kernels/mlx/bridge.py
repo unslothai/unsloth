@@ -41,6 +41,7 @@ __all__ = [
     "synchronize_mps",
     "synchronize_mlx",
     "is_in_mlx_context",
+    "mlx_context",
 ]
 
 # Thread-local storage for context state could be used, but simple global works for now
