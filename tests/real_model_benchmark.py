@@ -12,7 +12,7 @@ def benchmark_model(load_in_4bit=True):
     start_time = time.time()
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name = model_name,
-        max_seq_len = 2048,
+        max_seq_length = 2048,
         load_in_4bit = load_in_4bit,
     )
     FastLanguageModel.for_inference(model)

@@ -37,11 +37,12 @@ class colors:
 
 
 def get_mem_stats():
-    res = {"mps": 0, "mlx": 0}
+    res = {"mps": 0, "mlx_active": 0, "mlx_peak": 0}
     if torch.backends.mps.is_available():
         res["mps"] = torch.mps.current_allocated_memory() / 1e6
     if HAS_MLX:
-        res["mlx"] = mx.metal.get_active_memory() / 1e6
+        res["mlx_active"] = mx.get_active_memory() / 1e6
+        res["mlx_peak"] = mx.get_peak_memory() / 1e6
     return res
 
 
@@ -53,7 +54,13 @@ def log_header(text):
 
 def log_result(name, latency, error = None, extra = "", mem = None):
     err_str = f" | Err: {error:.2e}" if error is not None else ""
-    mem_str = f" | VRAM: {mem:.1f} MB" if mem is not None else ""
+    # mem is expected to be a dict or a float
+    if isinstance(mem, dict) and "mlx_active" in mem:
+        mem_str = f" | VRAM (Active/Peak): {mem['mlx_active']:.1f}/{mem['mlx_peak']:.1f} MB"
+    elif mem is not None:
+        mem_str = f" | VRAM: {mem:.1f} MB"
+    else:
+        mem_str = ""
     print(f" {name:<35} | Latency: {latency:>8.3f} ms{err_str}{mem_str} {extra}")
 
 
@@ -168,7 +175,7 @@ class ComprehensiveBenchmark:
             mlx_16_latency = (time.time() - start) * 1000 / iters
 
             error = (y_ref - y_mlx).abs().max().item()
-            log_result("MLX 16-Bit (Cached)", mlx_16_latency, error, mem = get_mem_stats()["mlx"])
+            log_result("MLX 16-Bit (Cached)", mlx_16_latency, error, mem = get_mem_stats())
 
             # 3. MLX 4-Bit
             # Cache quantized weights
@@ -225,7 +232,7 @@ class ComprehensiveBenchmark:
                 mlx_4_latency,
                 error_q,
                 extra = f"{colors.GREEN}[Quantized]{colors.ENDC}",
-                mem = get_mem_stats()["mlx"]
+                mem = get_mem_stats()
             )
 
     def run_qkv_benchmark(self, batch_size = 1, seq_len = 1, dim = 4096, hidden_dim = 4096):
@@ -283,7 +290,7 @@ class ComprehensiveBenchmark:
             mlx_latency = (time.time() - start) * 1000 / iters
 
             error = (q_ref - q_mlx).abs().max().item()
-            log_result("MLX Optimized", mlx_latency, error, mem = get_mem_stats()["mlx"])
+            log_result("MLX Optimized", mlx_latency, error, mem = get_mem_stats())
 
     def run_llama3_benchmark(self, batch_size = 1, seq_len = 1):
         # Llama-3-8B Scale: D=4096, H=14336
