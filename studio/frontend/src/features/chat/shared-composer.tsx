@@ -1,6 +1,6 @@
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
-import { useAssistantRuntime } from "@assistant-ui/react";
+import { useAui } from "@assistant-ui/react";
 import { ArrowUpIcon, SquareIcon } from "lucide-react";
 import {
   type KeyboardEvent,
@@ -44,7 +44,7 @@ export function RegisterCompareHandle({
   name: string;
 }): ReactElement | null {
   const handlesRef = useContext(CompareHandlesContext);
-  const runtime = useAssistantRuntime();
+  const aui = useAui();
 
   useEffect(() => {
     if (!handlesRef) {
@@ -52,14 +52,14 @@ export function RegisterCompareHandle({
     }
     const currentHandles = handlesRef.current;
     currentHandles[name] = {
-      append: (content) => runtime.thread.append({ role: "user", content }),
-      cancel: () => runtime.thread.cancelRun(),
-      isRunning: () => runtime.thread.getState().isRunning,
+      append: (content) => aui.thread().append({ role: "user", content }),
+      cancel: () => aui.thread().cancelRun(),
+      isRunning: () => aui.thread().getState().isRunning,
     };
     return () => {
       delete currentHandles[name];
     };
-  }, [handlesRef, name, runtime]);
+  }, [handlesRef, name, aui]);
 
   return null;
 }
