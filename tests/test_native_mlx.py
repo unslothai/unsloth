@@ -4,8 +4,8 @@ import time
 import os
 
 # Test with a community model that HAS a standard HF shell but MLX weights
-# mlx-community/Llama-3.2-1B-4bit usually has the standard config.json
-model_name = "mlx-community/Llama-3.2-1B-4bit"
+# mlx-community/Llama-3.2-3B-Instruct-4bit
+model_name = "mlx-community/Llama-3.2-3B-Instruct-4bit"
 
 
 def test_native_mlx_loading():
@@ -20,7 +20,7 @@ def test_native_mlx_loading():
     start_time = time.time()
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name = model_name,
-        cfg_model_name = "unsloth/Llama-3.2-1B", # Architecture shell
+        cfg_model_name = "unsloth/Llama-3.2-3B-Instruct", # Architecture shell
         max_seq_length = 2048,
         load_in_4bit = True,
     )
