@@ -577,6 +577,35 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__generate_and_score_completions)
 
 
+# Fix 6: TRL 0.25.0+ _calculate_rewards text arguments
+#
+# TRL 0.25.0+ passes `prompts` and `completions` to _calculate_rewards in different formats:
+#   - For conversational inputs: list of dicts [{"role": "assistant", "content": "..."}]
+#   - For non-conversational inputs: plain text strings
+#
+# This inconsistency causes reward functions to fail when they expect one format but get the other.
+# The variables `prompts_text` and `completions_text` always contain plain decoded text strings.
+#
+# Fix: Always pass plain text (prompts_text, completions_text) to _calculate_rewards for consistency.
+# This ensures reward functions receive predictable string format regardless of conversational mode.
+def grpo_trainer__calculate_rewards_text_fix(function_name, function):
+    if function_name != "_generate_and_score_completions":
+        return function
+
+    # Only apply if prompts_text and completions_text exist (TRL 0.25.0+)
+    if "prompts_text" in function and "completions_text" in function:
+        # Replace the _calculate_rewards call to use text versions
+        function = function.replace(
+            "self._calculate_rewards(inputs, prompts, completions, completion_ids_list)",
+            "self._calculate_rewards(inputs, prompts_text, completions_text, completion_ids_list)",
+        )
+
+    return function
+
+
+RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__calculate_rewards_text_fix)
+
+
 # Fix {"reasoning_effort" : "high"} not applied
 def grpo_trainer_fix_maybe_apply_chat_template(function_name, function):
     spaces = function.find("def ")
