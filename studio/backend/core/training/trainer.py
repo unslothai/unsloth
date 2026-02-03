@@ -20,8 +20,8 @@ from datasets import Dataset, load_dataset
 # Add the parent directory to sys.path to import unsloth modules
 #sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from utils.models import is_vision_model
-from utils.datasets.dataset_utils import format_and_template_dataset
-from utils.datasets.dataset_utils import MODEL_TO_TEMPLATE_MAPPER, TEMPLATE_TO_RESPONSES_MAPPER
+from utils.datasets import format_and_template_dataset
+from utils.datasets import MODEL_TO_TEMPLATE_MAPPER, TEMPLATE_TO_RESPONSES_MAPPER
 from trl import SFTTrainer, SFTConfig
 
 # Import Unsloth trainers
