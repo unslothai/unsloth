@@ -473,7 +473,9 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
                     for prompt in prompts
                 ]"""
 
-    function = function.replace(string_to_find_fwd_single, replacement_string_fwd_single)
+    function = function.replace(
+        string_to_find_fwd_single, replacement_string_fwd_single
+    )
 
     # This path is for TRL 0.24.0 images is a variable exclusive to this version
     string_to_find = """        if images is not None:
