@@ -2,7 +2,7 @@
 Pydantic schemas for Training API
 """
 from pydantic import BaseModel, Field
-from typing import Optional, List
+from typing import Optional, List, Literal
 
 
 class TrainingStartRequest(BaseModel):
@@ -59,38 +59,44 @@ class TrainingStartRequest(BaseModel):
     tensorboard_dir: Optional[str] = Field(None, description="TensorBoard directory")
 
 
-class TrainingStartResponse(BaseModel):
-    """Response schema for training start"""
-    status: str = Field(..., description="Status: 'started' or 'error'")
-    job_id: Optional[str] = Field(None, description="Training job ID")
-    message: str = Field(..., description="Status message")
-    error: Optional[str] = Field(None, description="Error message if status is 'error'")
+class TrainingJobResponse(BaseModel):
+    """Immediate response when training is initiated"""
+    job_id: str = Field(..., description="Unique training job identifier")
+    status: Literal["queued", "error"] = Field(..., description="Initial job status")
+    message: str = Field(..., description="Human-readable status message")
+    error: Optional[str] = Field(None, description="Error details if status is 'error'")
 
 
-class TrainingStatusResponse(BaseModel):
-    """Response schema for training status"""
-    status: str = Field(..., description="Status: 'idle', 'preparing', 'training', 'stopping', 'error'")
-    is_active: bool = Field(..., description="Whether training is currently active (actual training running)")
-    message: str = Field(..., description="Status message")
-    current_step: Optional[int] = Field(None, description="Current training step")
-    total_steps: Optional[int] = Field(None, description="Total training steps")
+class TrainingStatus(BaseModel):
+    """Current training job status - works for streaming or polling"""
+    job_id: str = Field(..., description="Training job identifier")
+    phase: Literal[
+        "idle",
+        "loading_model",
+        "loading_dataset",
+        "configuring",
+        "training",
+        "completed",
+        "error",
+        "stopped"
+    ] = Field(..., description="Current phase of training pipeline")
+    is_training_running: bool = Field(..., description="True if training loop is actively running")
+    message: str = Field(..., description="Human-readable status message")
+    error: Optional[str] = Field(None, description="Error details if phase is 'error'")
+    details: Optional[dict] = Field(None, description="Phase-specific info, e.g. {'model_size': '8B'}")
 
 
-class TrainingMetricsResponse(BaseModel):
-    """Response schema for training metrics"""
-    loss_history: List[float] = Field(default_factory=list, description="Loss values")
-    lr_history: List[float] = Field(default_factory=list, description="Learning rate values")
-    step_history: List[int] = Field(default_factory=list, description="Step numbers")
-    current_loss: Optional[float] = Field(None, description="Current loss value")
-    current_lr: Optional[float] = Field(None, description="Current learning rate")
-    current_step: Optional[int] = Field(None, description="Current step")
-
-
-class TrainingProgressResponse(BaseModel):
-    """Response schema for training progress updates"""
-    step: int = Field(..., description="Current step")
-    loss: float = Field(..., description="Current loss")
+class TrainingProgress(BaseModel):
+    """Training progress metrics - for streaming or polling"""
+    job_id: str = Field(..., description="Training job identifier")
+    step: int = Field(..., description="Current training step")
+    total_steps: int = Field(..., description="Total training steps")
+    loss: float = Field(..., description="Current loss value")
     learning_rate: float = Field(..., description="Current learning rate")
-    status_message: str = Field(..., description="Status message")
-    progress_percent: Optional[float] = Field(None, description="Progress percentage")
+    progress_percent: float = Field(..., description="Progress percentage (0.0 to 100.0)")
+    epoch: Optional[int] = Field(None, description="Current epoch")
+    elapsed_seconds: Optional[float] = Field(None, description="Time elapsed since training started")
+    eta_seconds: Optional[float] = Field(None, description="Estimated time remaining")
+    grad_norm: Optional[float] = Field(None, description="L2 norm of gradients, computed before gradient clipping")
+    num_tokens: Optional[int] = Field(None, description="Total number of tokens processed so far")
 
