@@ -318,8 +318,13 @@ elif DEVICE_TYPE == "mps":
         if key.startswith("bitsandbytes"):
             del sys.modules[key]
     
-    # Fake bitsandbytes to prevent downstream imports from failing or succeeding
-    sys.modules["bitsandbytes"] = None
+    # Patch importlib.util.find_spec to prevent other libraries from detecting it
+    import importlib.util
+    _old_find_spec = importlib.util.find_spec
+    def _new_find_spec(name, package = None):
+        if name == "bitsandbytes": return None
+        return _old_find_spec(name, package)
+    importlib.util.find_spec = _new_find_spec
 
     try:
         import peft.import_utils
