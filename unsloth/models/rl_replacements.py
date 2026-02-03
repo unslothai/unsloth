@@ -248,13 +248,22 @@ def grpo_trainer__generate_single_turn(function_name, function):
         function,
     )
 
-    # TRL 0.24.0-0.25.1 right-truncation regression
-    # These versions pass max_length=self.max_prompt_length and truncation=True to the
-    # tokenizer, which right-truncates prompts and strips the assistant turn suffix.
-    # TRL 0.26.2+ removed these kwargs. We strip them for all versions (no-op if absent).
-    # Handles both direct kwargs (TRL 0.24.0) and processor_kwargs dict (TRL 0.25.1):
-    #   Direct: max_length=self.max_prompt_length,
-    #   Dict:   "max_length": self.max_prompt_length,
+    # TRL 0.24.0-0.25.1 truncation regression fix
+    #
+    # TRL 0.22.2-0.23.1 used smart truncation via truncate_with_protected_tokens():
+    #   - Tokenizes first without truncation
+    #   - Then truncates keeping the RIGHTMOST tokens (preserves assistant turn)
+    #   - Protects special tokens (image_token, vision_start/end) from removal
+    #
+    # TRL 0.24.0-0.25.1 removed this and passed kwargs directly to the tokenizer:
+    #   max_length=self.max_prompt_length, truncation=True, add_special_tokens=False
+    # This causes issues because tokenizer truncation doesn't protect special tokens
+    # and may not preserve the end of the prompt properly.
+    #
+    # TRL 0.26.2+ removed these kwargs entirely (no tokenizer-level truncation).
+    #
+    # Fix: Remove these kwargs so TRL 0.24.0-0.25.1 behaves like 0.26.2+ (no truncation).
+    # This is a no-op for versions that don't have these kwargs (0.22.2-0.23.1, 0.26.2+).
     for pattern in [
         r'["\']?max_length["\']?\s*[:=]\s*self\.max_prompt_length\s*,\s*\n?',
         r'["\']?truncation["\']?\s*[:=]\s*True\s*,\s*\n?',
