@@ -83,16 +83,18 @@ SWIGLU_BACKWARD_BODY = """
     float ev = float(e_in[gid]);
     float gv = float(g_in[gid]);
     
+    // Stable SiLU backward: f'(x) = sigmoid(x) * (1 + x * sigmoid(-x))
     float se = 1.0f / (1.0f + exp(-ev));
+    float nse = 1.0f / (1.0f + exp(ev));
+    float df_de = se * fma(ev, nse, 1.0f);
     float f = ev * se;
     
     // h = silu(e) * g
     h_out[gid] = half(f * gv);
     // df = dw * f
     df_out[gid] = half(dwv * f);
-    // de = dw * g * se * (1 + e * (1 - se))
-    float dgv = dwv * gv;
-    de_out[gid] = half(dgv * se * fma(ev, (1.0f - se), 1.0f));
+    // de = dw * g * df_de
+    de_out[gid] = half(dwv * gv * df_de);
 """
 
 

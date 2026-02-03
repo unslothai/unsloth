@@ -109,7 +109,10 @@ GEGLU_EXACT_BACKWARD_BODY = """
     df_out[gid] = half(dwv * f);
     
     float dgv = dwv * gv;
-    float df_de = f_partial + 0.3989422804f * ev * exp(-0.5f * ev * ev);
+    float df_de = f_partial;
+    if (abs(ev) < 10.0f) {
+        df_de += 0.3989422804f * ev * exp(-0.5f * ev * ev);
+    }
     de_out[gid] = half(dgv * df_de);
 """
 
@@ -137,14 +140,18 @@ GEGLU_APPROX_BACKWARD_BODY = """
     float gv = float(g_in[gid]);
     
     float s = 0.7978845608f;
-    float T = 1.0f + tanh(s * ev * (1.0f + 0.044715f * ev * ev));
+    float inner = s * ev * fma(ev, ev * 0.044715f, 1.0f);
+    float t = tanh(clamp(inner, -10.0f, 10.0f));
+    float T = 1.0f + t;
     float T2 = 0.5f * T;
     float f = T2 * ev;
     
     h_out[gid] = half(f * gv);
     df_out[gid] = half(dwv * f);
     
-    float Q2 = -T2 * (T - 2.0f) * (s * ev + 3.0f * (s * ev * 0.044715f * ev * ev));
+    // derivative of tanh-GELU: 0.5 * (1 + tanh(x)) + 0.5 * x * (1 - tanh^2(x)) * (s * (1 + 3 * 0.044715 * x^2))
+    float sech2 = 1.0f - t * t;
+    float Q2 = 0.5f * ev * sech2 * s * fma(ev, ev * 0.134145f, 1.0f);
     de_out[gid] = half(dwv * gv * (T2 + Q2));
 """
 
