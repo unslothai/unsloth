@@ -206,6 +206,8 @@ def apply_lora_mlp_swiglu(
             downS_mlx,
         )
 
+        if return_mlx:
+            return out_mlx
         return mlx_to_torch(out_mlx, device=X.device, dtype=X.dtype)
 
 
