@@ -125,11 +125,13 @@ def apply_lora_mlp_swiglu(
 ):
     with mlx_context():
         # Convert inputs to MLX
-        # X is likely (Batch, Seq, Dim) or (Batch*Seq, Dim)
-        # Unsloth flattens to 2D for some kernels. MLX prefers 3D?
-        # Let's stick to whatever shape X comes in, assuming matmul handles it.
-
-        X_mlx = torch_to_mlx(X)
+        if isinstance(X, mx.array):
+            X_mlx = X
+            # If input is MLX, we return MLX array directly
+            return_mlx = True
+        else:
+            X_mlx = torch_to_mlx(X)
+            return_mlx = False
 
         # Batch=1 Optimization: Use custom GEMV for base projections
         # X shape is usually (Batch, Seq, Dim).
@@ -166,7 +168,10 @@ def apply_lora_mlp_swiglu(
             out = quantized_matmul(act, downW_mlx)
             out += (act @ downA_mlx.T) @ downB_mlx.T * downS_val
 
-            return mlx_to_torch(out.reshape(X.shape), device=X.device, dtype=X.dtype)
+            out_reshaped = out.reshape(X.shape)
+            if return_mlx:
+                return out_reshaped
+            return mlx_to_torch(out_reshaped, device=X.device, dtype=X.dtype)
 
         # Standard Batch Path (Compiled)
         gateW_mlx = treeify(gateW)
@@ -216,7 +221,12 @@ def apply_lora_qkv(
     X, QW, QW_quant, QA, QB, QS, KW, KW_quant, KA, KB, KS, VW, VW_quant, VA, VB, VS
 ):
     with mlx_context():
-        X_mlx = torch_to_mlx(X)
+        if isinstance(X, mx.array):
+            X_mlx = X
+            return_mlx = True
+        else:
+            X_mlx = torch_to_mlx(X)
+            return_mlx = False
 
         # Batch=1 Optimization
         if X_mlx.size // X_mlx.shape[-1] == 1:
@@ -250,22 +260,17 @@ def apply_lora_qkv(
                 + (X_flat @ VA_mlx.T) @ VB_mlx.T * VS_val
             )
 
+            Q_out = Q.reshape(X.shape[:-1] + (QW.shape[0],))
+            K_out = K.reshape(X.shape[:-1] + (KW.shape[0],))
+            V_out = V.reshape(X.shape[:-1] + (VW.shape[0],))
+
+            if return_mlx:
+                return Q_out, K_out, V_out
+
             return (
-                mlx_to_torch(
-                    Q.reshape(X.shape[:-1] + (QW.shape[0],)),
-                    device=X.device,
-                    dtype=X.dtype,
-                ),
-                mlx_to_torch(
-                    K.reshape(X.shape[:-1] + (KW.shape[0],)),
-                    device=X.device,
-                    dtype=X.dtype,
-                ),
-                mlx_to_torch(
-                    V.reshape(X.shape[:-1] + (VW.shape[0],)),
-                    device=X.device,
-                    dtype=X.dtype,
-                ),
+                mlx_to_torch(Q_out, device=X.device, dtype=X.dtype),
+                mlx_to_torch(K_out, device=X.device, dtype=X.dtype),
+                mlx_to_torch(V_out, device=X.device, dtype=X.dtype),
             )
 
         QW_mlx = treeify(QW)
@@ -299,6 +304,9 @@ def apply_lora_qkv(
             VS_mlx,
         )
 
+        if return_mlx:
+            return Q_mlx, K_mlx, V_mlx
+
         return (
             mlx_to_torch(Q_mlx, device=X.device, dtype=X.dtype),
             mlx_to_torch(K_mlx, device=X.device, dtype=X.dtype),
@@ -313,7 +321,12 @@ def _compiled_o(X, OW, OA, OB, OS):
 
 def apply_lora_o(X, OW, OW_quant, OA, OB, OS):
     with mlx_context():
-        X_mlx = torch_to_mlx(X)
+        if isinstance(X, mx.array):
+            X_mlx = X
+            return_mlx = True
+        else:
+            X_mlx = torch_to_mlx(X)
+            return_mlx = False
 
         # Batch=1 Optimization
         if X_mlx.size // X_mlx.shape[-1] == 1:
@@ -327,8 +340,13 @@ def apply_lora_o(X, OW, OW_quant, OA, OB, OS):
                 quantized_matmul(X_flat, OW_mlx)
                 + (X_flat @ OA_mlx.T) @ OB_mlx.T * OS_val
             )
+            out_reshaped = out.reshape(X.shape[:-1] + (OW.shape[0],))
+            
+            if return_mlx:
+                return out_reshaped
+
             return mlx_to_torch(
-                out.reshape(X.shape[:-1] + (OW.shape[0],)),
+                out_reshaped,
                 device=X.device,
                 dtype=X.dtype,
             )
@@ -339,4 +357,8 @@ def apply_lora_o(X, OW, OW_quant, OA, OB, OS):
         OS_mlx = torch_to_mlx(OS) if hasattr(OS, "shape") else OS
 
         out_mlx = _compiled_o(X_mlx, OW_mlx, OA_mlx, OB_mlx, OS_mlx)
+        
+        if return_mlx:
+            return out_mlx
+            
         return mlx_to_torch(out_mlx, device=X.device, dtype=X.dtype)

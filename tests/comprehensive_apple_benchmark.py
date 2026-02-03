@@ -133,26 +133,29 @@ class ComprehensiveBenchmark:
             A._mlx_cache = torch_to_mlx(A)
             B._mlx_cache = torch_to_mlx(B)
 
+            # Pre-convert X for raw kernel speed
+            X_mlx = torch_to_mlx(X)
+
             # Warmup
-            with torch.no_grad():
-                y_mlx = apply_lora_mlp_swiglu(
-                    X,
-                    gateW,
-                    None,
-                    A,
-                    B,
-                    S,
-                    upW,
-                    None,
-                    A,
-                    B,
-                    S,
-                    downW,
-                    None,
-                    B.T,
-                    A.T,
-                    S,
-                )
+            res = apply_lora_mlp_swiglu(
+                X_mlx,
+                gateW,
+                None,
+                gateA,
+                gateB,
+                gateS,
+                upW,
+                None,
+                upA,
+                upB,
+                upS,
+                downW,
+                None,
+                downB.T,
+                downA.T,
+                downS,
+            )
+            mx.eval(res)
 
             start = time.time()
             for _ in range(iters):
@@ -282,15 +285,21 @@ class ComprehensiveBenchmark:
             QA._mlx_cache = torch_to_mlx(QA)
             QB._mlx_cache = torch_to_mlx(QB)
 
+            # Pre-convert X for raw kernel speed
+            X_mlx = torch_to_mlx(X)
+
             q_mlx, k_mlx, v_mlx = apply_lora_qkv(
-                X, QW, None, QA, QB, QS, KW, None, QA, QB, QS, VW, None, QA, QB, QS
+                X_mlx, QW, None, QA, QB, QS, KW, None, QA, QB, QS, VW, None, QA, QB, QS
             )
+            mx.eval(q_mlx, k_mlx, v_mlx)
 
             start = time.time()
             for _ in range(iters):
-                _ = apply_lora_qkv(
-                    X, QW, None, QA, QB, QS, KW, None, QA, QB, QS, VW, None, QA, QB, QS
+                res = apply_lora_qkv(
+                    X_mlx, QW, None, QA, QB, QS, KW, None, QA, QB, QS, VW, None, QA, QB, QS
                 )
+                # Force eval (tuple of arrays)
+                mx.eval(*res)
             mlx_latency = (time.time() - start) * 1000 / iters
 
             error = (q_ref - q_mlx).abs().max().item()
