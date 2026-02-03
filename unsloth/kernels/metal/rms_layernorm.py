@@ -203,14 +203,22 @@ class Metal_RMSLayerNorm(torch.autograd.Function):
 
 def metal_rms_layernorm(X, W, eps, gemma=False):
     """Fused Metal RMS LayerNorm (PyTorch interface)."""
+    import mlx.core as mx
+
     with mlx_context():
-        X_mlx = torch_to_mlx(X)
+        if isinstance(X, mx.array):
+            X_mlx = X
+        else:
+            X_mlx = torch_to_mlx(X)
 
         # Check for cached MLX weight
         W_mlx = getattr(W, "_mlx_cache", None)
         if W_mlx is None:
-            W_mlx = torch_to_mlx(W)
-            W._mlx_cache = W_mlx
+            if isinstance(W, mx.array):
+                W_mlx = W
+            else:
+                W_mlx = torch_to_mlx(W)
+                W._mlx_cache = W_mlx
 
         Y_mlx, r_mlx = mlx_rms_layernorm_forward(X_mlx, W_mlx, eps, gemma)
 
