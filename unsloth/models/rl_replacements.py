@@ -29,7 +29,16 @@ from unsloth_zoo.rl_replacements import RL_REPLACEMENTS, left_pack_padding
 from unsloth_zoo.utils import Version
 from importlib.metadata import version as importlib_version
 from unsloth_zoo.log import logger
-from unsloth_zoo.device_type import device_synchronize
+# device_synchronize may not exist in older unsloth_zoo versions
+try:
+    from unsloth_zoo.device_type import device_synchronize
+except ImportError:
+    import torch
+    def device_synchronize():
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        elif hasattr(torch, "xpu") and torch.xpu.is_available():
+            torch.xpu.synchronize()
 import importlib.util
 from ..device_type import (
     is_hip,
@@ -575,6 +584,35 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
 
 
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__generate_and_score_completions)
+
+
+# Fix 6: TRL 0.25.0+ _calculate_rewards text arguments
+#
+# TRL 0.25.0+ passes `prompts` and `completions` to _calculate_rewards in different formats:
+#   - For conversational inputs: list of dicts [{"role": "assistant", "content": "..."}]
+#   - For non-conversational inputs: plain text strings
+#
+# This inconsistency causes reward functions to fail when they expect one format but get the other.
+# The variables `prompts_text` and `completions_text` always contain plain decoded text strings.
+#
+# Fix: Always pass plain text (prompts_text, completions_text) to _calculate_rewards for consistency.
+# This ensures reward functions receive predictable string format regardless of conversational mode.
+def grpo_trainer__calculate_rewards_text_fix(function_name, function):
+    if function_name != "_generate_and_score_completions":
+        return function
+
+    # Only apply if prompts_text and completions_text exist (TRL 0.25.0+)
+    if "prompts_text" in function and "completions_text" in function:
+        # Replace the _calculate_rewards call to use text versions
+        function = function.replace(
+            "self._calculate_rewards(inputs, prompts, completions, completion_ids_list)",
+            "self._calculate_rewards(inputs, prompts_text, completions_text, completion_ids_list)",
+        )
+
+    return function
+
+
+RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__calculate_rewards_text_fix)
 
 
 # Fix {"reasoning_effort" : "high"} not applied
