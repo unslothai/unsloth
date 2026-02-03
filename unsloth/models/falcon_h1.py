@@ -732,7 +732,18 @@ class FastFalconH1Model(FastLlamaModel):
             LlamaRotaryEmbedding
         )
         return
-
+    @staticmethod
+    def from_pretrained(  # TODO: Change after release
+        model_name = "Qwen/FalconH1-7B",
+        max_seq_length = 4096,
+        dtype = None,
+        load_in_4bit = True,
+        token = None,
+        device_map = "sequential",
+        rope_scaling = None,
+        fix_tokenizer = True,
+        model_patcher = None,
+        tokenizer_name = None,
         trust_remote_code = False,
         cfg_model_name = None,
         **kwargs,

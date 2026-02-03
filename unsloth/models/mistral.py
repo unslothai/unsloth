@@ -439,6 +439,17 @@ class FastMistralModel(FastLlamaModel):
         return
 
     @staticmethod
+    def from_pretrained(
+        model_name = "unsloth/mistral-7b-bnb-4bit",
+        max_seq_length = None,
+        dtype = None,
+        load_in_4bit = True,
+        token = None,
+        device_map = "sequential",
+        rope_scaling = None,  # Mistral does not support RoPE scaling
+        fix_tokenizer = True,
+        model_patcher = None,
+        tokenizer_name = None,
         trust_remote_code = False,
         cfg_model_name = None,
         **kwargs,
