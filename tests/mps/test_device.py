@@ -121,7 +121,7 @@ class TestMPSSpecificBehavior:
     @pytest.mark.skipif(
         not hasattr(__import__("torch").backends, "mps")
         or not __import__("torch").backends.mps.is_available(),
-        reason = "MPS not available",
+        reason="MPS not available",
     )
     def test_mps_device_type(self):
         """On MPS, get_device_type() should return 'mps'."""
@@ -132,7 +132,7 @@ class TestMPSSpecificBehavior:
     @pytest.mark.skipif(
         not hasattr(__import__("torch").backends, "mps")
         or not __import__("torch").backends.mps.is_available(),
-        reason = "MPS not available",
+        reason="MPS not available",
     )
     def test_mps_device_count_is_one(self):
         """On MPS, device count should be 1."""
@@ -143,7 +143,7 @@ class TestMPSSpecificBehavior:
     @pytest.mark.skipif(
         not hasattr(__import__("torch").backends, "mps")
         or not __import__("torch").backends.mps.is_available(),
-        reason = "MPS not available",
+        reason="MPS not available",
     )
     def test_mps_bitsandbytes_disabled(self):
         """On MPS, bitsandbytes should be disabled."""
@@ -154,7 +154,7 @@ class TestMPSSpecificBehavior:
     @pytest.mark.skipif(
         not hasattr(__import__("torch").backends, "mps")
         or not __import__("torch").backends.mps.is_available(),
-        reason = "MPS not available",
+        reason="MPS not available",
     )
     def test_mps_prequantized_disabled(self):
         """On MPS, prequantized models should be disabled."""

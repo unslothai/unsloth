@@ -110,10 +110,10 @@ def get_fused_kernel():
         h[gid] = half(silu_e * g_val);
     """
     return mx.fast.metal_kernel(
-        name = "swiglu_fused",
-        input_names = ["e", "g", "n_ptr"],
-        output_names = ["h"],
-        source = kernel_source,
+        name="swiglu_fused",
+        input_names=["e", "g", "n_ptr"],
+        output_names=["h"],
+        source=kernel_source,
     )
 
 
@@ -188,8 +188,8 @@ def run_performance_benchmark():
         )
 
         # PyTorch MPS Reference
-        e_torch = torch.randn(batch, seq, dim, device = "mps", dtype = torch.float16)
-        g_torch = torch.randn(batch, seq, dim, device = "mps", dtype = torch.float16)
+        e_torch = torch.randn(batch, seq, dim, device="mps", dtype=torch.float16)
+        g_torch = torch.randn(batch, seq, dim, device="mps", dtype=torch.float16)
         torch.mps.synchronize()
 
         t_torch = benchmark_fn(lambda: pytorch_swiglu_reference(e_torch, g_torch))
@@ -199,7 +199,7 @@ def run_performance_benchmark():
         # CHAINED Benchmark: RMSNorm -> SwiGLU
         # This tests if the bridge bypass is working.
         # We run RMSNorm first, then SwiGLU. The SwiGLU should satisfy "zero copy".
-        W_rms = torch.ones(dim, device = "mps", dtype = torch.float16)
+        W_rms = torch.ones(dim, device="mps", dtype=torch.float16)
         eps = 1e-5
 
         # Pre-warm RMSNorm to populate cache on e_torch/g_torch if we were reusing them
@@ -275,8 +275,8 @@ def run_correctness_tests():
         print("-" * 50)
 
         torch.manual_seed(42)
-        e_torch = torch.randn(batch, seq, dim, dtype = torch.float32)
-        g_torch = torch.randn(batch, seq, dim, dtype = torch.float32)
+        e_torch = torch.randn(batch, seq, dim, dtype=torch.float32)
+        g_torch = torch.randn(batch, seq, dim, dtype=torch.float32)
 
         # PyTorch Reference
         ref_output = pytorch_swiglu_reference(e_torch, g_torch)
@@ -339,12 +339,12 @@ def run_correctness_tests():
 
 
 def main():
-    parser = argparse.ArgumentParser(description = "SwiGLU Kernel Benchmark Suite")
+    parser = argparse.ArgumentParser(description="SwiGLU Kernel Benchmark Suite")
     parser.add_argument(
-        "--perf", action = "store_true", help = "Run performance benchmarks only"
+        "--perf", action="store_true", help="Run performance benchmarks only"
     )
     parser.add_argument(
-        "--correctness", action = "store_true", help = "Run correctness tests only"
+        "--correctness", action="store_true", help="Run correctness tests only"
     )
     args = parser.parse_args()
 

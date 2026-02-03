@@ -31,7 +31,7 @@ def print_header():
     print()
 
 
-def benchmark_fn(fn, warmup = 10, iterations = 50):
+def benchmark_fn(fn, warmup=10, iterations=50):
     # Warmup
     for _ in range(warmup):
         res = fn()
@@ -56,7 +56,7 @@ def benchmark_fn(fn, warmup = 10, iterations = 50):
     return (end - start) * 1000 / iterations
 
 
-def calculate_throughput(elements, time_ms, dtype_size = 2):
+def calculate_throughput(elements, time_ms, dtype_size=2):
     # RMSNorm is memory bound. Read X, W. Write Y. r is secondary.
     # Total bytes = elements * dtype_size * 2 (read X, write Y) + dim * dtype_size (read W)
     # Plus whatever internal overhead.
@@ -93,14 +93,14 @@ def run_performance_benchmark():
         print("-" * 70)
 
         # PyTorch MPS Reference (Native Implementation)
-        X_torch = torch.randn(batch, seq, dim, device = "mps", dtype = torch.float16)
-        W_torch = torch.randn(dim, device = "mps", dtype = torch.float16)
+        X_torch = torch.randn(batch, seq, dim, device="mps", dtype=torch.float16)
+        W_torch = torch.randn(dim, device="mps", dtype=torch.float16)
 
         def pytorch_native_mps():
             # Manual PyTorch implementation (matches Llama style)
             # This is what we want to beat.
             x = X_torch.to(torch.float32)
-            var = x.pow(2).mean(-1, keepdim = True)
+            var = x.pow(2).mean(-1, keepdim=True)
             inv = torch.rsqrt(var + eps)
             return W_torch * (x * inv).to(torch.float16)
 
@@ -122,7 +122,7 @@ def run_performance_benchmark():
 
         # Fused Metal (unsloth) - Forward
         def unsloth_metal_forward():
-            return metal_module.metal_rms_layernorm(X_torch, W_torch, eps, gemma = False)
+            return metal_module.metal_rms_layernorm(X_torch, W_torch, eps, gemma=False)
 
         t_metal_fwd = benchmark_fn(unsloth_metal_forward)
         tp_metal_fwd = calculate_throughput(elements, t_metal_fwd)
@@ -137,7 +137,7 @@ def run_performance_benchmark():
 
         def unsloth_metal_backward():
             return metal_module.metal_rms_layernorm_backward(
-                dY_torch, X_torch, W_torch, r_torch, eps, gemma = False
+                dY_torch, X_torch, W_torch, r_torch, eps, gemma=False
             )
 
         t_metal_bwd = benchmark_fn(unsloth_metal_backward)
@@ -158,11 +158,11 @@ def run_correctness_tests():
     batch, seq, dim = 2, 512, 1024
     eps = 1e-5
 
-    X = torch.randn(batch, seq, dim, dtype = torch.float32)
-    W = torch.randn(dim, dtype = torch.float32)
+    X = torch.randn(batch, seq, dim, dtype=torch.float32)
+    W = torch.randn(dim, dtype=torch.float32)
 
     # Reference (PyTorch Float32 CPU)
-    variance = X.pow(2).mean(-1, keepdim = True)
+    variance = X.pow(2).mean(-1, keepdim=True)
     rms_inv = torch.rsqrt(variance + eps)
     ref = (X * rms_inv) * W
 
@@ -174,7 +174,7 @@ def run_correctness_tests():
 
         # 1. Forward Correctness
         out_metal, r_metal = metal_module.metal_rms_layernorm(
-            X_mps, W_mps, eps, gemma = False
+            X_mps, W_mps, eps, gemma=False
         )
         diff = np.abs(out_metal.cpu().float().numpy() - ref.numpy())
         print(
@@ -187,7 +187,7 @@ def run_correctness_tests():
         torch.mps.empty_cache()
 
         dX_metal, dW_metal = metal_module.metal_rms_layernorm_backward(
-            dY_mps, X_mps, W_mps, r_metal, eps, gemma = False
+            dY_mps, X_mps, W_mps, r_metal, eps, gemma=False
         )
 
         # Ref Backward (Simplified)
@@ -197,10 +197,10 @@ def run_correctness_tests():
 
         X_norm = X_f32 * rms_inv
         dX_norm = dY_f32 * W_f32
-        rowsum = (dX_norm * X_norm).sum(-1, keepdim = True)
+        rowsum = (dX_norm * X_norm).sum(-1, keepdim=True)
         ref_dX = rms_inv * (dX_norm - (X_norm / dim) * rowsum)
         # Fix dW summation: sum over batch and seq (dims 0 and 1)
-        ref_dW = (dY_f32 * X_norm).sum(dim = (0, 1))
+        ref_dW = (dY_f32 * X_norm).sum(dim=(0, 1))
 
         diff_dX = np.abs(dX_metal.cpu().float().numpy() - ref_dX.numpy())
         diff_dW = np.abs(dW_metal.cpu().float().numpy() - ref_dW.numpy())
@@ -215,7 +215,7 @@ def run_correctness_tests():
 
         # Gemma mode
         ref_gemma = (X * rms_inv) * (W + 1.0)
-        out_gemma, _ = metal_module.metal_rms_layernorm(X_mps, W_mps, eps, gemma = True)
+        out_gemma, _ = metal_module.metal_rms_layernorm(X_mps, W_mps, eps, gemma=True)
         diff_gemma = np.abs(out_gemma.cpu().float().numpy() - ref_gemma.numpy())
         print(
             f"  Unsloth Gemma Forward:  max_diff={diff_gemma.max():.2e} {'✅' if diff_gemma.max() < 5e-2 else '❌'}"
@@ -226,8 +226,8 @@ def run_correctness_tests():
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--perf", action = "store_true")
-    parser.add_argument("--correctness", action = "store_true")
+    parser.add_argument("--perf", action="store_true")
+    parser.add_argument("--correctness", action="store_true")
     args = parser.parse_args()
 
     print_header()

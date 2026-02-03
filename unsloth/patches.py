@@ -103,7 +103,7 @@ def patch_unsloth_zoo_for_mps() -> bool:
             torch.cuda.memory = MockMemory
 
         # We MUST override even if it exists, because the original raises AssertionError
-        def mock_mem_get_info(device = None):
+        def mock_mem_get_info(device=None):
             return (16 * 1024**3, 24 * 1024**3)
 
         torch.cuda.memory.mem_get_info = mock_mem_get_info
@@ -116,12 +116,12 @@ def patch_unsloth_zoo_for_mps() -> bool:
             total_global_mem = 24 * 1024**3
             name = "Apple Silicon (MPS Mock)"
 
-        torch.cuda.get_device_properties = lambda device = None: MockProps()
-        torch.cuda.synchronize = lambda device = None: None
+        torch.cuda.get_device_properties = lambda device=None: MockProps()
+        torch.cuda.synchronize = lambda device=None: None
         torch.cuda.empty_cache = lambda: None
         torch.cuda.set_device = lambda device: None
         torch.cuda.current_device = lambda: 0
-        torch.cuda.get_device_capability = lambda device = None: (8, 0)
+        torch.cuda.get_device_capability = lambda device=None: (8, 0)
         torch.cuda.is_bf16_supported = lambda: True  # Most modern Macs support it
 
     # --- MOCK TRITON (THE GHOST PACKAGE) ---
@@ -139,7 +139,7 @@ def patch_unsloth_zoo_for_mps() -> bool:
                 self.__version__ = "3.0.0"
                 # Satisfy importlib.util.find_spec
                 self.__spec__ = ModuleSpec(
-                    name = str(name), loader = TritonMockLoader(), origin = "mocked"
+                    name=str(name), loader=TritonMockLoader(), origin="mocked"
                 )
 
             def __getattr__(self, name):
@@ -150,7 +150,7 @@ def patch_unsloth_zoo_for_mps() -> bool:
                 if full_name not in sys.modules:
                     m = FakeTriton(full_name)
                     m.__spec__ = ModuleSpec(
-                        name = full_name, loader = TritonMockLoader(), origin = "mocked"
+                        name=full_name, loader=TritonMockLoader(), origin="mocked"
                     )
                     sys.modules[full_name] = m
                 return sys.modules[full_name]
@@ -196,7 +196,7 @@ def patch_unsloth_zoo_for_mps() -> bool:
                     module.dtype = MockTritonMeta
 
         class TritonMockFinder(MetaPathFinder):
-            def find_spec(self, fullname, path, target = None):
+            def find_spec(self, fullname, path, target=None):
                 if fullname == "triton" or fullname.startswith("triton."):
                     return ModuleSpec(fullname, TritonMockLoader())
                 if fullname == "bitsandbytes" or fullname.startswith("bitsandbytes."):

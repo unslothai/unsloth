@@ -5,7 +5,7 @@ from unsloth.kernels.mlx.fast_lora import apply_lora_mlp_swiglu
 from unsloth.kernels.mlx.utils import fast_quantize
 
 
-def benchmark_4bit_vs_16bit(dim = 4096, hidden_dim = 11008, iters = 50):
+def benchmark_4bit_vs_16bit(dim=4096, hidden_dim=11008, iters=50):
     print(f"--- Benchmarking 4-Bit vs 16-Bit MLX [D={dim}, H={hidden_dim}] ---")
 
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
@@ -15,11 +15,11 @@ def benchmark_4bit_vs_16bit(dim = 4096, hidden_dim = 11008, iters = 50):
     layer = torch.nn.Linear(dim, hidden_dim).to(device).to(dtype)
     with torch.no_grad():
         layer.weight.div_(dim**0.5)
-    X = torch.randn(1, 1, dim, device = device, dtype = dtype)
+    X = torch.randn(1, 1, dim, device=device, dtype=dtype)
 
     # LoRA params (dummies)
-    A = torch.randn(8, dim, device = device, dtype = dtype) / (dim**0.5)
-    B = torch.randn(hidden_dim, 8, device = device, dtype = dtype) / (8**0.5)
+    A = torch.randn(8, dim, device=device, dtype=dtype) / (dim**0.5)
+    B = torch.randn(hidden_dim, 8, device=device, dtype=dtype) / (8**0.5)
     S = 1.0
 
     # 2. Benchmark 16-Bit

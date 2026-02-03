@@ -10,7 +10,7 @@ class MLXQuantizedWeight:
     Holds the packed weight data, scales, and biases.
     """
 
-    def __init__(self, weight, scales, biases, group_size, bits = 4):
+    def __init__(self, weight, scales, biases, group_size, bits=4):
         self.weight = weight
         self.scales = scales
         self.biases = biases
@@ -30,7 +30,7 @@ class MLXQuantizedWeight:
         return self
 
 
-def quantize_4bit(tensor, group_size = 64):
+def quantize_4bit(tensor, group_size=64):
     """
     Quantizes a PyTorch tensor to 4-bit MLX format.
 
@@ -52,4 +52,4 @@ def quantize_4bit(tensor, group_size = 64):
     # Check MLX docs: quantize(w, group_size, bits) -> (w_q, scales, biases)
     w_q, scales, biases = mx.quantize(w_mlx, group_size, 4)
 
-    return MLXQuantizedWeight(w_q, scales, biases, group_size, bits = 4)
+    return MLXQuantizedWeight(w_q, scales, biases, group_size, bits=4)

@@ -59,7 +59,7 @@ def reference_rms_layernorm(
 ) -> torch.Tensor:
     """PyTorch reference implementation."""
     X_f32 = X.to(torch.float32)
-    variance = X_f32.pow(2).mean(-1, keepdim = True)
+    variance = X_f32.pow(2).mean(-1, keepdim=True)
     rms_inv = torch.rsqrt(variance + eps)
     X_norm = (X_f32 * rms_inv).to(X.dtype)
     return W.to(X.dtype) * X_norm
@@ -123,8 +123,8 @@ def run_benchmarks():
         print(f"Config: batch={batch_size}, seq={seq_len}, hidden={hidden_dim}")
         print("-" * 50)
 
-        X = torch.randn(batch_size, seq_len, hidden_dim, device = "mps", dtype = dtype)
-        W = torch.randn(hidden_dim, device = "mps", dtype = dtype)
+        X = torch.randn(batch_size, seq_len, hidden_dim, device="mps", dtype=dtype)
+        W = torch.randn(hidden_dim, device="mps", dtype=dtype)
 
         # Benchmark PyTorch MPS reference
         t_ref = benchmark_fn(lambda: reference_rms_layernorm(X, W, eps))

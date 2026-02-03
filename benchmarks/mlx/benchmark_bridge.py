@@ -66,7 +66,7 @@ def benchmark_torch_to_mlx(sizes: List[Tuple[int, ...]], n_iterations: int = 100
 
     for shape in sizes:
         # Create tensor on MPS
-        tensor = torch.randn(shape, device = "mps", dtype = torch.float32)
+        tensor = torch.randn(shape, device="mps", dtype=torch.float32)
         synchronize_mps()
 
         # Warmup
@@ -98,17 +98,17 @@ def benchmark_mlx_to_torch(sizes: List[Tuple[int, ...]], n_iterations: int = 100
 
     for shape in sizes:
         # Create MLX array
-        arr = mx.random.normal(shape = shape)
+        arr = mx.random.normal(shape=shape)
         mx.eval(arr)
 
         # Warmup
         for _ in range(5):
-            _ = mlx_to_torch(arr, device = "mps")
+            _ = mlx_to_torch(arr, device="mps")
 
         # Benchmark
         start = time.perf_counter()
         for _ in range(n_iterations):
-            _ = mlx_to_torch(arr, device = "mps")
+            _ = mlx_to_torch(arr, device="mps")
         elapsed = time.perf_counter() - start
 
         total_ms = elapsed * 1000
@@ -131,19 +131,19 @@ def benchmark_roundtrip(sizes: List[Tuple[int, ...]], n_iterations: int = 100):
 
     for shape in sizes:
         # Create tensor on MPS
-        tensor = torch.randn(shape, device = "mps", dtype = torch.float32)
+        tensor = torch.randn(shape, device="mps", dtype=torch.float32)
         synchronize_mps()
 
         # Warmup
         for _ in range(5):
             arr = torch_to_mlx(tensor)
-            _ = mlx_to_torch(arr, device = "mps")
+            _ = mlx_to_torch(arr, device="mps")
 
         # Benchmark
         start = time.perf_counter()
         for _ in range(n_iterations):
             arr = torch_to_mlx(tensor)
-            _ = mlx_to_torch(arr, device = "mps")
+            _ = mlx_to_torch(arr, device="mps")
         elapsed = time.perf_counter() - start
 
         total_ms = elapsed * 1000

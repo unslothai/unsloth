@@ -22,21 +22,21 @@ def test_mlp():
     B, S, D = 1, 128, 4096
     HD = 11008  # Llama-2-7b size approx
 
-    X = torch.randn(B, S, D, device = "cpu", dtype = torch.float16)
+    X = torch.randn(B, S, D, device="cpu", dtype=torch.float16)
 
-    gateW = torch.randn(HD, D, device = "cpu", dtype = torch.float16)
-    gateA = torch.randn(8, D, device = "cpu", dtype = torch.float16)
-    gateB = torch.randn(HD, 8, device = "cpu", dtype = torch.float16)
+    gateW = torch.randn(HD, D, device="cpu", dtype=torch.float16)
+    gateA = torch.randn(8, D, device="cpu", dtype=torch.float16)
+    gateB = torch.randn(HD, 8, device="cpu", dtype=torch.float16)
     gateS = 1.0
 
-    upW = torch.randn(HD, D, device = "cpu", dtype = torch.float16)
-    upA = torch.randn(8, D, device = "cpu", dtype = torch.float16)
-    upB = torch.randn(HD, 8, device = "cpu", dtype = torch.float16)
+    upW = torch.randn(HD, D, device="cpu", dtype=torch.float16)
+    upA = torch.randn(8, D, device="cpu", dtype=torch.float16)
+    upB = torch.randn(HD, 8, device="cpu", dtype=torch.float16)
     upS = 1.0
 
-    downW = torch.randn(D, HD, device = "cpu", dtype = torch.float16)
-    downA = torch.randn(8, HD, device = "cpu", dtype = torch.float16)
-    downB = torch.randn(D, 8, device = "cpu", dtype = torch.float16)
+    downW = torch.randn(D, HD, device="cpu", dtype=torch.float16)
+    downA = torch.randn(8, HD, device="cpu", dtype=torch.float16)
+    downB = torch.randn(D, 8, device="cpu", dtype=torch.float16)
     downS = 1.0
 
     print("Running MLX MLP...")
@@ -94,24 +94,24 @@ def test_qkv():
     print("\n=== Testing LoRA QKV ===")
     B, S, D = 1, 128, 4096
 
-    X = torch.randn(B, S, D, device = "cpu", dtype = torch.float16)
+    X = torch.randn(B, S, D, device="cpu", dtype=torch.float16)
 
     # Q
-    QW = torch.randn(D, D, device = "cpu", dtype = torch.float16)
-    QA = torch.randn(8, D, device = "cpu", dtype = torch.float16)
-    QB = torch.randn(D, 8, device = "cpu", dtype = torch.float16)
+    QW = torch.randn(D, D, device="cpu", dtype=torch.float16)
+    QA = torch.randn(8, D, device="cpu", dtype=torch.float16)
+    QB = torch.randn(D, 8, device="cpu", dtype=torch.float16)
     QS = 1.0
 
     # K
-    KW = torch.randn(D, D, device = "cpu", dtype = torch.float16)
-    KA = torch.randn(8, D, device = "cpu", dtype = torch.float16)
-    KB = torch.randn(D, 8, device = "cpu", dtype = torch.float16)
+    KW = torch.randn(D, D, device="cpu", dtype=torch.float16)
+    KA = torch.randn(8, D, device="cpu", dtype=torch.float16)
+    KB = torch.randn(D, 8, device="cpu", dtype=torch.float16)
     KS = 1.0
 
     # V
-    VW = torch.randn(D, D, device = "cpu", dtype = torch.float16)
-    VA = torch.randn(8, D, device = "cpu", dtype = torch.float16)
-    VB = torch.randn(D, 8, device = "cpu", dtype = torch.float16)
+    VW = torch.randn(D, D, device="cpu", dtype=torch.float16)
+    VA = torch.randn(8, D, device="cpu", dtype=torch.float16)
+    VB = torch.randn(D, 8, device="cpu", dtype=torch.float16)
     VS = 1.0
 
     print("Running MLX QKV...")

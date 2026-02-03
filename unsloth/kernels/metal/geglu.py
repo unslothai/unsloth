@@ -152,51 +152,51 @@ GEGLU_APPROX_BACKWARD_BODY = """
 """
 
 
-@lru_cache(maxsize = 1)
+@lru_cache(maxsize=1)
 def _get_exact_forward():
     import mlx.core as mx
 
     return mx.fast.metal_kernel(
-        name = "geglu_exact_forward_v8",
-        input_names = ["e", "g", "n_ptr"],
-        output_names = ["h"],
-        source = GEGLU_EXACT_FORWARD_BODY,
+        name="geglu_exact_forward_v8",
+        input_names=["e", "g", "n_ptr"],
+        output_names=["h"],
+        source=GEGLU_EXACT_FORWARD_BODY,
     )
 
 
-@lru_cache(maxsize = 1)
+@lru_cache(maxsize=1)
 def _get_exact_backward():
     import mlx.core as mx
 
     return mx.fast.metal_kernel(
-        name = "geglu_exact_backward_v8",
-        input_names = ["dw_in", "e_in", "g_in", "n_ptr"],
-        output_names = ["h_out", "df_out", "de_out"],
-        source = GEGLU_EXACT_BACKWARD_BODY,
+        name="geglu_exact_backward_v8",
+        input_names=["dw_in", "e_in", "g_in", "n_ptr"],
+        output_names=["h_out", "df_out", "de_out"],
+        source=GEGLU_EXACT_BACKWARD_BODY,
     )
 
 
-@lru_cache(maxsize = 1)
+@lru_cache(maxsize=1)
 def _get_approx_forward():
     import mlx.core as mx
 
     return mx.fast.metal_kernel(
-        name = "geglu_approx_forward_v8",
-        input_names = ["e", "g", "n_ptr"],
-        output_names = ["h"],
-        source = GEGLU_APPROX_FORWARD_BODY,
+        name="geglu_approx_forward_v8",
+        input_names=["e", "g", "n_ptr"],
+        output_names=["h"],
+        source=GEGLU_APPROX_FORWARD_BODY,
     )
 
 
-@lru_cache(maxsize = 1)
+@lru_cache(maxsize=1)
 def _get_approx_backward():
     import mlx.core as mx
 
     return mx.fast.metal_kernel(
-        name = "geglu_approx_backward_v8",
-        input_names = ["dw_in", "e_in", "g_in", "n_ptr"],
-        output_names = ["h_out", "df_out", "de_out"],
-        source = GEGLU_APPROX_BACKWARD_BODY,
+        name="geglu_approx_backward_v8",
+        input_names=["dw_in", "e_in", "g_in", "n_ptr"],
+        output_names=["h_out", "df_out", "de_out"],
+        source=GEGLU_APPROX_BACKWARD_BODY,
     )
 
 
@@ -213,14 +213,14 @@ def _mlx_geglu_forward(e_mlx, g_mlx, kernel_fn):
     n = e_mlx.size
     e_flat = e_mlx.flatten()
     g_flat = g_mlx.flatten()
-    n_arr = mx.array([n], dtype = mx.uint32)
+    n_arr = mx.array([n], dtype=mx.uint32)
     grid_size = n
     out = kernel_fn(
-        inputs = [e_flat, g_flat, n_arr],
-        output_shapes = [(n,)],
-        output_dtypes = [mx.float16],
-        grid = (grid_size, 1, 1),
-        threadgroup = (min(256, grid_size), 1, 1),
+        inputs=[e_flat, g_flat, n_arr],
+        output_shapes=[(n,)],
+        output_dtypes=[mx.float16],
+        grid=(grid_size, 1, 1),
+        threadgroup=(min(256, grid_size), 1, 1),
     )
     return out[0].reshape(shape)
 
@@ -234,14 +234,14 @@ def _mlx_geglu_backward(dw_mlx, e_mlx, g_mlx, kernel_fn):
     dw_flat = dw_mlx.flatten()
     e_flat = e_mlx.flatten()
     g_flat = g_mlx.flatten()
-    n_arr = mx.array([n], dtype = mx.uint32)
+    n_arr = mx.array([n], dtype=mx.uint32)
     grid_size = n
     outs = kernel_fn(
-        inputs = [dw_flat, e_flat, g_flat, n_arr],
-        output_shapes = [(n,), (n,), (n,)],
-        output_dtypes = [mx.float16, mx.float16, mx.float16],
-        grid = (grid_size, 1, 1),
-        threadgroup = (min(256, grid_size), 1, 1),
+        inputs=[dw_flat, e_flat, g_flat, n_arr],
+        output_shapes=[(n,), (n,), (n,)],
+        output_dtypes=[mx.float16, mx.float16, mx.float16],
+        grid=(grid_size, 1, 1),
+        threadgroup=(min(256, grid_size), 1, 1),
     )
     h = outs[0].reshape(shape)
     df = outs[1].reshape(shape)

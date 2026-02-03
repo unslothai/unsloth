@@ -14,13 +14,13 @@ def test_mlp_correctness():
 
     # Proper Initialization to avoid FP16 overflow
     # Inputs: N(0, 1)
-    X = torch.randn(b, s, h, device = "mps", dtype = torch.float16)
+    X = torch.randn(b, s, h, device="mps", dtype=torch.float16)
 
     # Weights: Scaled to keep variance constant (He/Xavier-ish)
     # std = 1 / sqrt(in_features)
-    upW = torch.randn(i, h, device = "mps", dtype = torch.float16) * (1 / (h**0.5))
-    gateW = torch.randn(i, h, device = "mps", dtype = torch.float16) * (1 / (h**0.5))
-    downW = torch.randn(h, i, device = "mps", dtype = torch.float16) * (1 / (i**0.5))
+    upW = torch.randn(i, h, device="mps", dtype=torch.float16) * (1 / (h**0.5))
+    gateW = torch.randn(i, h, device="mps", dtype=torch.float16) * (1 / (h**0.5))
+    downW = torch.randn(h, i, device="mps", dtype=torch.float16) * (1 / (i**0.5))
 
     # 1. PyTorch Reference
     print("Running PyTorch Reference...")

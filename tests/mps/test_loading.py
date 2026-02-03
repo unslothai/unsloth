@@ -13,11 +13,11 @@ def test_mps_4bit_loading():
 
     try:
         model, tokenizer = FastLanguageModel.from_pretrained(
-            model_name = model_name,
-            max_seq_length = 128,
-            dtype = None,
-            load_in_4bit = True,  # This triggers our new path
-            device_map = "mps",
+            model_name=model_name,
+            max_seq_length=128,
+            dtype=None,
+            load_in_4bit=True,  # This triggers our new path
+            device_map="mps",
         )
     except Exception as e:
         import traceback
@@ -47,10 +47,10 @@ def test_mps_4bit_loading():
 
     # Run Inference
     print("Running Inference (Generation)...")
-    inputs = tokenizer("Hello, how are you?", return_tensors = "pt").to("mps")
+    inputs = tokenizer("Hello, how are you?", return_tensors="pt").to("mps")
 
     # Should use the quantized kernels automatically
-    outputs = model.generate(**inputs, max_new_tokens = 10, use_cache = True)
+    outputs = model.generate(**inputs, max_new_tokens=10, use_cache=True)
 
     text = tokenizer.decode(outputs[0])
     print(f"Generated: {text}")

@@ -22,7 +22,7 @@ def rotate_half(x: torch.Tensor) -> torch.Tensor:
     half = shape[-1] // 2
     x1 = x[..., :half]
     x2 = x[..., half:]
-    return torch.cat((-x2, x1), dim = -1)
+    return torch.cat((-x2, x1), dim=-1)
 
 
 class MPSRoPEEmbedding(torch.autograd.Function):
@@ -89,8 +89,8 @@ class MPSRoPEEmbedding(torch.autograd.Function):
 
         # If head_dim in cos/sin is half of Q's head_dim, we repeat it
         if cos_final.shape[-1] * 2 == Q.shape[-1]:
-            cos_final = torch.cat((cos_final, cos_final), dim = -1)
-            sin_final = torch.cat((sin_final, sin_final), dim = -1)
+            cos_final = torch.cat((cos_final, cos_final), dim=-1)
+            sin_final = torch.cat((sin_final, sin_final), dim=-1)
 
         Q_rotated = rotate_half(Q)
         Y = (Q * cos_final) + (Q_rotated * sin_final)
@@ -161,8 +161,8 @@ class MPSRoPEEmbeddingQK(torch.autograd.Function):
                 sin_final = sin
 
         if cos_final.shape[-1] * 2 == Q.shape[-1]:
-            cos_final = torch.cat((cos_final, cos_final), dim = -1)
-            sin_final = torch.cat((sin_final, sin_final), dim = -1)
+            cos_final = torch.cat((cos_final, cos_final), dim=-1)
+            sin_final = torch.cat((sin_final, sin_final), dim=-1)
 
         Q_rotated = rotate_half(Q)
         Q_out = (Q * cos_final) + (Q_rotated * sin_final)

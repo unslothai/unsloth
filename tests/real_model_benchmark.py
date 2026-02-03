@@ -9,30 +9,30 @@ import os
 model_name = "unsloth/Llama-3.2-1B"
 
 
-def benchmark_model(load_in_4bit = True):
+def benchmark_model(load_in_4bit=True):
     print(f"\n--- Benchmarking Model (load_in_4bit={load_in_4bit}) ---")
 
     start_time = time.time()
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name = model_name,
-        max_seq_length = 2048,
-        load_in_4bit = load_in_4bit,
+        model_name=model_name,
+        max_seq_length=2048,
+        load_in_4bit=load_in_4bit,
     )
     FastLanguageModel.for_inference(model)
     load_time = time.time() - start_time
     print(f"Model loaded in {load_time:.2f} seconds.")
 
     # Simple prompt
-    inputs = tokenizer(["What is the capital of France?"], return_tensors = "pt").to(
+    inputs = tokenizer(["What is the capital of France?"], return_tensors="pt").to(
         "mps"
     )
 
     # Warmup
-    _ = model.generate(**inputs, max_new_tokens = 1)
+    _ = model.generate(**inputs, max_new_tokens=1)
 
     # Benchmark generation
     start = time.time()
-    outputs = model.generate(**inputs, max_new_tokens = 50)
+    outputs = model.generate(**inputs, max_new_tokens=50)
     generation_time = time.time() - start
 
     # Decode
@@ -47,4 +47,4 @@ def benchmark_model(load_in_4bit = True):
 
 if __name__ == "__main__":
     # Note: On Mac, load_in_4bit=True will automatically use the new MLX backend
-    benchmark_model(load_in_4bit = True)
+    benchmark_model(load_in_4bit=True)

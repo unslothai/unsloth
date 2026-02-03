@@ -79,7 +79,7 @@ def mlx_layer_norm(
     Y_mlx = mx.fast.layer_norm(X_mlx, W_mlx, b_mlx, eps)
     mx.eval(Y_mlx)
 
-    Y = mlx_to_torch(Y_mlx, device = X.device, dtype = X.dtype)
+    Y = mlx_to_torch(Y_mlx, device=X.device, dtype=X.dtype)
     return Y.view(*shape)
 
 
@@ -103,14 +103,14 @@ def mlx_rope(
     if Q_mlx.ndim == 4:
         Q_mlx = mx.transpose(Q_mlx, (0, 2, 1, 3))
 
-    Y_mlx = mx.fast.rope(Q_mlx, Q_mlx.shape[-1], traditional = False, offset = offset)
+    Y_mlx = mx.fast.rope(Q_mlx, Q_mlx.shape[-1], traditional=False, offset=offset)
 
     # Transpose back
     if Y_mlx.ndim == 4:
         Y_mlx = mx.transpose(Y_mlx, (0, 2, 1, 3))
 
     mx.eval(Y_mlx)
-    Y = mlx_to_torch(Y_mlx, device = Q.device, dtype = Q.dtype)
+    Y = mlx_to_torch(Y_mlx, device=Q.device, dtype=Q.dtype)
     return Y
 
 
@@ -137,8 +137,8 @@ def mlx_rope_qk(
         K_mlx = mx.transpose(K_mlx, (0, 2, 1, 3))
 
     dim = Q_mlx.shape[-1]
-    Q_out = mx.fast.rope(Q_mlx, dim, traditional = False, offset = offset)
-    K_out = mx.fast.rope(K_mlx, dim, traditional = False, offset = offset)
+    Q_out = mx.fast.rope(Q_mlx, dim, traditional=False, offset=offset)
+    K_out = mx.fast.rope(K_mlx, dim, traditional=False, offset=offset)
 
     # Transpose back
     if Q_out.ndim == 4:
@@ -147,8 +147,8 @@ def mlx_rope_qk(
 
     mx.eval(Q_out, K_out)
 
-    Q_t = mlx_to_torch(Q_out, device = Q.device, dtype = Q.dtype)
-    K_t = mlx_to_torch(K_out, device = K.device, dtype = K.dtype)
+    Q_t = mlx_to_torch(Q_out, device=Q.device, dtype=Q.dtype)
+    K_t = mlx_to_torch(K_out, device=K.device, dtype=K.dtype)
     return Q_t, K_t
 
 
@@ -176,11 +176,11 @@ def mlx_scaled_dot_product_attention(
     mask_mlx = torch_to_mlx(mask.contiguous()) if mask is not None else None
 
     Y_mlx = mx.fast.scaled_dot_product_attention(
-        Q_mlx, K_mlx, V_mlx, scale = scale, mask = mask_mlx
+        Q_mlx, K_mlx, V_mlx, scale=scale, mask=mask_mlx
     )
     mx.eval(Y_mlx)
 
-    return mlx_to_torch(Y_mlx, device = Q.device, dtype = Q.dtype)
+    return mlx_to_torch(Y_mlx, device=Q.device, dtype=Q.dtype)
 
 
 __all__ = [

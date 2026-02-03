@@ -99,7 +99,7 @@ def fast_quantize(model):
                 continue
             total_layers += 1
 
-    pbar = tqdm(total = total_layers, desc = "Quantizing layers", unit = "layer")
+    pbar = tqdm(total=total_layers, desc="Quantizing layers", unit="layer")
 
     for name, module in model.named_modules():
         if isinstance(module, torch.nn.Linear):

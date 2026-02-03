@@ -155,8 +155,8 @@ def run_correctness_tests():
 
     batch, seq, dim = 2, 512, 1024
     torch.manual_seed(42)
-    e = torch.randn(batch, seq, dim, dtype = torch.float32)
-    g = torch.randn(batch, seq, dim, dtype = torch.float32)
+    e = torch.randn(batch, seq, dim, dtype=torch.float32)
+    g = torch.randn(batch, seq, dim, dtype=torch.float32)
 
     # Convert to MLX
     e_mlx = mx.array(e.numpy()).astype(mx.float16)
@@ -164,7 +164,7 @@ def run_correctness_tests():
 
     # Exact
     print("Testing GEGLU Exact...")
-    ref = torch.nn.functional.gelu(e, approximate = "none") * g
+    ref = torch.nn.functional.gelu(e, approximate="none") * g
     out = metal_module.mlx_geglu_exact_forward(e_mlx, g_mlx)
     mx.eval(out)
     diff = np.abs(np.array(out).astype(np.float32) - ref.numpy())
@@ -174,7 +174,7 @@ def run_correctness_tests():
 
     # Approx
     print("Testing GEGLU Approx...")
-    ref = torch.nn.functional.gelu(e, approximate = "tanh") * g
+    ref = torch.nn.functional.gelu(e, approximate="tanh") * g
     out = metal_module.mlx_geglu_approx_forward(e_mlx, g_mlx)
     mx.eval(out)
     diff = np.abs(np.array(out).astype(np.float32) - ref.numpy())
@@ -186,8 +186,8 @@ def run_correctness_tests():
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--perf", action = "store_true")
-    parser.add_argument("--correctness", action = "store_true")
+    parser.add_argument("--perf", action="store_true")
+    parser.add_argument("--correctness", action="store_true")
     args = parser.parse_args()
 
     print_header()
