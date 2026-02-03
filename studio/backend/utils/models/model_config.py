@@ -625,6 +625,66 @@ class ModelConfig:
             logger.error(f"Error creating ModelConfig from LoRA path: {e}")
             return None
 
+    @classmethod
+    def from_identifier(
+        cls,
+        model_id: str,
+        hf_token: Optional[str] = None,
+        is_lora: bool = False
+    ) -> Optional['ModelConfig']:
+        """
+        Create ModelConfig from a clean model identifier.
+        
+        For FastAPI routes where the frontend sends sanitized model paths.
+        No Gradio dropdown parsing - expects clean identifiers like:
+        - "unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit"
+        - "./outputs/my_lora_adapter"
+        - "/absolute/path/to/model"
+        
+        Args:
+            model_id: Clean model identifier (HF repo name or local path)
+            hf_token: Optional HF token for vision detection on gated models
+            is_lora: Whether this is a LoRA adapter
+        
+        Returns:
+            ModelConfig or None if configuration cannot be created
+        """
+        if not model_id or not model_id.strip():
+            return None
+        
+        identifier = model_id.strip()
+        is_local = is_local_path(identifier)
+        path = normalize_path(identifier) if is_local else identifier
+        
+        # Add unsloth/ prefix for shorthand HF models
+        if not is_local and "/" not in identifier:
+            identifier = f"unsloth/{identifier}"
+            path = identifier
+        
+        # Handle LoRA adapters
+        base_model = None
+        if is_lora:
+            base_model = get_base_model_from_lora(path)
+            if not base_model:
+                logger.warning(f"Could not determine base model for LoRA '{path}'")
+                return None
+            vision = is_vision_model(base_model, hf_token=hf_token)
+        else:
+            vision = is_vision_model(identifier, hf_token=hf_token)
+        
+        display_name = Path(path).name if is_local else identifier.split("/")[-1]
+        
+        return cls(
+            identifier=identifier,
+            display_name=display_name,
+            path=path,
+            is_local=is_local,
+            is_cached=is_model_cached(identifier) if not is_local else True,
+            is_vision=vision,
+            is_lora=is_lora,
+            base_model=base_model,
+        )
+
 
     @classmethod
     def from_ui_selection(cls,
