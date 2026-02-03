@@ -13,8 +13,18 @@
 # You should have received a copy of the GNU Lesser General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-import triton
-import triton.language as tl
+from ..device_type import DEVICE_TYPE
+if DEVICE_TYPE != "mps":
+    import triton
+    import triton.language as tl
+else:
+    import types
+    triton = types.SimpleNamespace()
+    triton.jit = lambda f: f
+    triton.heuristics = lambda h: lambda f: f
+    triton.language = types.SimpleNamespace()
+    triton.language.constexpr = int
+    tl = triton.language
 import torch
 from ..device_type import DEVICE_COUNT
 from .utils import calculate_settings, torch_gpu_device, torch_device_stream

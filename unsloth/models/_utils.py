@@ -860,6 +860,14 @@ elif DEVICE_TYPE == "hip":
             HAS_FLASH_ATTENTION = False
 elif DEVICE_TYPE == "xpu":
     SUPPORTS_BFLOAT16 = True
+elif DEVICE_TYPE == "mps":
+    try:
+        test_tensor = torch.tensor([1.0], dtype=torch.bfloat16, device="mps")
+        _ = test_tensor + test_tensor
+        SUPPORTS_BFLOAT16 = True
+        del test_tensor
+    except:
+        SUPPORTS_BFLOAT16 = False
 
 # =============================================
 # Get Xformers

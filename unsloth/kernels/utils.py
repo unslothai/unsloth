@@ -34,7 +34,13 @@ if DEVICE_TYPE != "mps":
     MAX_FUSED_SIZE: int = 65536
     next_power_of_2 = triton.next_power_of_2
 else:
-    triton = None
+    import types
+    triton = types.SimpleNamespace()
+    triton.jit = lambda f: f
+    triton.heuristics = lambda h: lambda f: f
+    triton.language = types.SimpleNamespace()
+    triton.language.constexpr = int
+    tl = triton.language
     MAX_FUSED_SIZE: int = 65536
 
     # Pure Python fallback for next_power_of_2

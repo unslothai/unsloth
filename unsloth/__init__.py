@@ -15,6 +15,8 @@
 import warnings, importlib, sys
 from packaging.version import Version
 import os, re, subprocess, inspect, functools
+import types
+
 import numpy as np
 
 # Log Unsloth is being used
@@ -222,7 +224,10 @@ elif DEVICE_TYPE == "mps":
 
 # Triton does not support MPS/Metal - skip import for Apple Silicon
 if DEVICE_TYPE != "mps":
-    import triton
+    try:
+        import triton
+    except Exception:
+        triton = None
 else:
     triton = None
 

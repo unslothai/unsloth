@@ -14,8 +14,18 @@
 import os
 import torch
 import torch.nn as nn
-import triton
-import triton.language as tl
+from ..device_type import DEVICE_TYPE
+if DEVICE_TYPE != "mps":
+    import triton
+    import triton.language as tl
+else:
+    import types
+    triton = types.SimpleNamespace()
+    triton.jit = lambda f: f
+    triton.heuristics = lambda h: lambda f: f
+    triton.language = types.SimpleNamespace()
+    triton.language.constexpr = int
+    tl = triton.language
 from torch.nn import functional as F
 import math
 from unsloth_zoo.utils import Version

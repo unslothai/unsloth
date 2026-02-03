@@ -12,8 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import triton
-import triton.language as tl
+from ..device_type import DEVICE_TYPE
+if DEVICE_TYPE != "mps":
+    import triton
+    import triton.language as tl
+else:
+    import types
+    triton = types.SimpleNamespace()
+    triton.jit = lambda f: f
+    triton.heuristics = lambda h: lambda f: f
+    triton.language = types.SimpleNamespace()
+    triton.language.constexpr = int
+    tl = triton.language
 import torch
 from .utils import (
     calculate_settings,
