@@ -156,6 +156,7 @@ class ComprehensiveBenchmark:
                 S,
             )
             mx.eval(res)
+            y_mlx = mlx_to_torch(res)
 
             start = time.time()
             for _ in range(iters):
@@ -293,6 +294,9 @@ class ComprehensiveBenchmark:
                 X_mlx, QW, None, QA, QB, QS, KW, None, QA, QB, QS, VW, None, QA, QB, QS
             )
             mx.eval(q_mlx, k_mlx, v_mlx)
+            q_mlx = mlx_to_torch(q_mlx)
+            k_mlx = mlx_to_torch(k_mlx)
+            v_mlx = mlx_to_torch(v_mlx)
 
             start = time.time()
             for _ in range(iters):
