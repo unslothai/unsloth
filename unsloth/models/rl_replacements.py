@@ -29,16 +29,20 @@ from unsloth_zoo.rl_replacements import RL_REPLACEMENTS, left_pack_padding
 from unsloth_zoo.utils import Version
 from importlib.metadata import version as importlib_version
 from unsloth_zoo.log import logger
+
 # device_synchronize may not exist in older unsloth_zoo versions
 try:
     from unsloth_zoo.device_type import device_synchronize
 except ImportError:
     import torch
+
     def device_synchronize():
         if torch.cuda.is_available():
             torch.cuda.synchronize()
         elif hasattr(torch, "xpu") and torch.xpu.is_available():
             torch.xpu.synchronize()
+
+
 import importlib.util
 from ..device_type import (
     is_hip,
