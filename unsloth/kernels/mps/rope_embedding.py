@@ -68,21 +68,20 @@ class MPSRoPEEmbedding(torch.autograd.Function):
         else:
             # Full sequence RoPE
             if Q.dim() == 4:
-                seq_len = cos.shape[0]
-                if Q.shape[2] == seq_len:  # [B, H, S, D]
-                    cos_final = cos.view(1, 1, seq_len, -1)
-                    sin_final = sin.view(1, 1, seq_len, -1)
-                elif Q.shape[1] == seq_len:  # [B, S, H, D]
-                    cos_final = cos.view(1, seq_len, 1, -1)
-                    sin_final = sin.view(1, seq_len, 1, -1)
+                # Determine sequence length and heads mapping
+                # Unsloth usually uses (batch, n_heads, seq_len, head_dim)
+                # But it might be (batch, seq_len, n_heads, head_dim)
+                s1 = Q.shape[1]
+                s2 = Q.shape[2]
+                
+                if s2 == cos.shape[0] or (s2 < cos.shape[0] and s1 != cos.shape[0]):
+                    # [B, H, S, D] case
+                    cos_final = cos[:s2].view(1, 1, s2, -1)
+                    sin_final = sin[:s2].view(1, 1, s2, -1)
                 else:
-                    # Fallback matching the first dimension of cos
-                    if Q.shape[1] == cos.shape[0]:
-                        cos_final = cos.view(1, cos.shape[0], 1, -1)
-                        sin_final = sin.view(1, sin.shape[0], 1, -1)
-                    else:
-                        cos_final = cos.view(1, 1, cos.shape[0], -1)
-                        sin_final = sin.view(1, 1, sin.shape[0], -1)
+                    # [B, S, H, D] case
+                    cos_final = cos[:s1].view(1, s1, 1, -1)
+                    sin_final = sin[:s1].view(1, s1, 1, -1)
             else:
                 cos_final = cos
                 sin_final = sin
@@ -142,20 +141,17 @@ class MPSRoPEEmbeddingQK(torch.autograd.Function):
                 sin_final = s
         else:
             if Q.dim() == 4:
-                seq_len = cos.shape[0]
-                if Q.shape[2] == seq_len:  # [B, H, S, D]
-                    cos_final = cos.view(1, 1, seq_len, -1)
-                    sin_final = sin.view(1, 1, seq_len, -1)
-                elif Q.shape[1] == seq_len:  # [B, S, H, D]
-                    cos_final = cos.view(1, seq_len, 1, -1)
-                    sin_final = sin.view(1, seq_len, 1, -1)
+                s1 = Q.shape[1]
+                s2 = Q.shape[2]
+                
+                if s2 == cos.shape[0] or (s2 < cos.shape[0] and s1 != cos.shape[0]):
+                    # [B, H, S, D] case
+                    cos_final = cos[:s2].view(1, 1, s2, -1)
+                    sin_final = sin[:s2].view(1, 1, s2, -1)
                 else:
-                    if Q.shape[1] == cos.shape[0]:
-                        cos_final = cos.view(1, cos.shape[0], 1, -1)
-                        sin_final = sin.view(1, sin.shape[0], 1, -1)
-                    else:
-                        cos_final = cos.view(1, 1, cos.shape[0], -1)
-                        sin_final = sin.view(1, 1, sin.shape[0], -1)
+                    # [B, S, H, D] case
+                    cos_final = cos[:s1].view(1, s1, 1, -1)
+                    sin_final = sin[:s1].view(1, s1, 1, -1)
             else:
                 cos_final = cos
                 sin_final = sin
