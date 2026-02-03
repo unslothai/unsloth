@@ -97,4 +97,6 @@ class TrainingProgress(BaseModel):
     epoch: Optional[int] = Field(None, description="Current epoch")
     elapsed_seconds: Optional[float] = Field(None, description="Time elapsed since training started")
     eta_seconds: Optional[float] = Field(None, description="Estimated time remaining")
+    grad_norm: Optional[float] = Field(None, description="L2 norm of gradients, computed before gradient clipping")
+    num_tokens: Optional[int] = Field(None, description="Total number of tokens processed so far")
 
