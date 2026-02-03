@@ -104,7 +104,7 @@ def mlx_rms_layernorm_forward(X_mlx, W_mlx, eps, gemma=False):
         # Gemma uses (W + 1)
         Y = (X_f32 * r) * (W_mlx.astype(mx.float32) + 1.0)
 
-    mx.eval(Y, r)
+
     return Y.astype(X_mlx.dtype), r
 
 
@@ -144,7 +144,7 @@ def mlx_rms_layernorm_backward(dY_mlx, X_mlx, W_mlx, r_mlx, gemma=False):
     dX = r_f32 * (dy_w - X_norm * mean_dot)
     
     # Trigger evaluation to ensure parity and catch errors
-    mx.eval(dX, dW)
+
     return dX.astype(X_mlx.dtype), dW.astype(W_mlx.dtype)
 
 

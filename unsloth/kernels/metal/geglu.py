@@ -247,7 +247,6 @@ def _mlx_geglu_forward(e_mlx, g_mlx, kernel_fn):
         threadgroup=(min(256, grid_size), 1, 1),
     )
     h = out[0].reshape(shape)
-    mx.eval(h)
     return h
 
 
@@ -275,7 +274,6 @@ def _mlx_geglu_backward(dw_mlx, e_mlx, g_mlx, kernel_fn):
     h = outs[0].reshape(shape)
     df = outs[1].reshape(shape)
     de = outs[2].reshape(shape)
-    mx.eval(h, df, de)
     return h, df, de
 
 

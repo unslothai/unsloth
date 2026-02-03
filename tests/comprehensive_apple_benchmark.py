@@ -165,11 +165,16 @@ class ComprehensiveBenchmark:
             actual_iters = iters * 10 if batch_size == 1 else iters
             
             start = time.time()
+            results = []
             for _ in range(actual_iters):
                 res = apply_lora_mlp_swiglu(
                     X_mlx, gateW, None, A, B, S, upW, None, A, B, S, downW, None, B.T, A.T, S
                 )
-            mx.eval(res)
+                results.append(res)
+                if len(results) >= 10:
+                    mx.eval(*results)
+                    results = []
+            mx.eval(*results)
             mlx_16_latency = (time.time() - start) * 1000 / actual_iters
 
             error = (y_ref - y_mlx).abs().max().item()
@@ -208,12 +213,20 @@ class ComprehensiveBenchmark:
             # Increase iters for small batches
             actual_iters = iters * 10 if batch_size == 1 else iters
             
+            # Increase iters for small batches
+            actual_iters = iters * 10 if batch_size == 1 else iters
+            
             start = time.time()
+            results = []
             for _ in range(actual_iters):
                 res = apply_lora_mlp_swiglu(
                     X, gateW, None, A, B, S, upW, None, A, B, S, downW, None, B.T, A.T, S
                 )
-            mx.eval(res)
+                results.append(res)
+                if len(results) >= 10:
+                    mx.eval(*results)
+                    results = []
+            mx.eval(*results)
             mlx_4_latency = (time.time() - start) * 1000 / actual_iters
 
             error_q = (y_ref - y_q).abs().max().item()
@@ -284,12 +297,20 @@ class ComprehensiveBenchmark:
             actual_iters = iters * 10 if batch_size == 1 else iters
             
             start = time.time()
+            results = []
             for _ in range(actual_iters):
                 res = apply_lora_qkv(
                     X_mlx, QW, None, QA, QB, QS, KW, None, QA, QB, QS, VW, None, QA, QB, QS
                 )
+                if isinstance(res, tuple):
+                    results.extend(list(res))
+                else:
+                    results.append(res)
+                if len(results) >= 20: # 3 results per iter
+                    mx.eval(*results)
+                    results = []
             # Force final eval
-            mx.eval(*res)
+            mx.eval(*results)
             mlx_latency = (time.time() - start) * 1000 / actual_iters
 
             error = (q_ref - q_mlx).abs().max().item()
@@ -340,9 +361,13 @@ class ComprehensiveBenchmark:
                 return mx.sigmoid(e_mlx) * e_mlx * g_mlx
             
             start = time.time()
+            results = []
             for _ in range(actual_iters):
-                res = mlx_composed()
-            mx.eval(res)
+                results.append(mlx_composed())
+                if len(results) >= 20:
+                    mx.eval(*results)
+                    results = []
+            mx.eval(*results)
             mlx_lat = (time.time() - start) * 1000 / actual_iters
             log_result("MLX Composed", mlx_lat)
             
@@ -351,9 +376,13 @@ class ComprehensiveBenchmark:
                 return mlx_swiglu_forward(e_mlx, g_mlx)
                 
             start = time.time()
+            results = []
             for _ in range(actual_iters):
-                res = mlx_fused()
-            mx.eval(res)
+                results.append(mlx_fused())
+                if len(results) >= 20:
+                    mx.eval(*results)
+                    results = []
+            mx.eval(*results)
             fused_lat = (time.time() - start) * 1000 / actual_iters
             speedup = mlx_lat / fused_lat
             log_result("Unsloth Fused Metal", fused_lat, extra=f"({speedup:.2f}x Speedup)", mem=get_mem_stats())
@@ -425,10 +454,15 @@ class ComprehensiveBenchmark:
             actual_iters = iters * 10 if batch_size == 1 else iters
             
             start = time.time()
+            results = []
             for _ in range(actual_iters):
                  res = mlx_rope_qk(Q_mlx, K_mlx, cos_mlx, sin_mlx)
+                 results.extend(list(res))
+                 if len(results) >= 20:
+                     mx.eval(*results)
+                     results = []
             # Final sync
-            mx.eval(res[0], res[1])
+            mx.eval(*results)
             mlx_latency = (time.time() - start) * 1000 / actual_iters
             
             # Error check
@@ -478,9 +512,13 @@ class ComprehensiveBenchmark:
             actual_iters = iters * 10 if batch_size == 1 else iters
             
             start = time.time()
+            results = []
             for _ in range(actual_iters):
-                res = mlx_fused()
-            mx.eval(res)
+                results.append(mlx_fused())
+                if len(results) >= 20:
+                    mx.eval(*results)
+                    results = []
+            mx.eval(*results)
             fused_lat = (time.time() - start) * 1000 / actual_iters
             log_result("Unsloth Fused Metal", fused_lat, mem=get_mem_stats())
 

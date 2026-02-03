@@ -174,7 +174,7 @@ def mlx_rope(
 
     Y_mlx = _mlx_rope_kernel(Q_mlx, cos_mlx, sin_mlx)
 
-    mx.eval(Y_mlx)
+
     
     if return_mlx:
         return Y_mlx
@@ -228,7 +228,7 @@ def mlx_rope_qk(
     Q_out = _mlx_rope_kernel(Q_mlx, cos_mlx, sin_mlx)
     K_out = _mlx_rope_kernel(K_mlx, cos_mlx, sin_mlx)
 
-    mx.eval(Q_out, K_out)
+
 
     if return_mlx:
         return Q_out, K_out

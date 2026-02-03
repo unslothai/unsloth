@@ -154,7 +154,6 @@ def mlx_swiglu_forward(e_mlx, g_mlx):
         threadgroup=(min(256, grid_size), 1, 1),
     )
     h = out[0].reshape(shape)
-    mx.eval(h)
     return h
 
 
@@ -183,7 +182,6 @@ def mlx_swiglu_backward(dw_mlx, e_mlx, g_mlx):
     h = outputs[0].reshape(shape)
     df = outputs[1].reshape(shape)
     de = outputs[2].reshape(shape)
-    mx.eval(h, df, de)
     return h, df, de
 
 
