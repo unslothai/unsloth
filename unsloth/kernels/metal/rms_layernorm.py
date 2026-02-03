@@ -1,11 +1,8 @@
-# Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
-# Licensed under the Apache License, Version 2.0.
-
+from __future__ import annotations
 from unsloth.kernels.mlx.bridge import torch_to_mlx, mlx_to_torch, mlx_context
 from functools import lru_cache
+from typing import Tuple, TYPE_CHECKING, Optional, Dict
 import torch
-if TYPE_CHECKING:
-    pass
 
 # Metal Shader for RMSNorm Backward
 # -----------------------------------------------------------------------------

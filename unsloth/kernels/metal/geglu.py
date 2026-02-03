@@ -9,11 +9,9 @@ Supports both Exact and Approximate (Tanh) variants.
 """
 
 from __future__ import annotations
-
 from functools import lru_cache
+from typing import TYPE_CHECKING, Tuple, Optional
 import torch
-if TYPE_CHECKING:
-    pass
 
 __all__ = [
     "metal_geglu_exact_forward",
