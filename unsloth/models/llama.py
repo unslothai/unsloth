@@ -19,7 +19,7 @@ import functools
 from typing import Optional, Tuple, List, Union
 
 from ._utils import *
-from ._utils import patch_unsloth_smart_gradient_checkpointing
+from ._utils import apply_unsloth_gradient_checkpointing
 from ._utils import __version__, importlib_version
 from ._utils import move_to_device
 from ._utils import (
@@ -2693,10 +2693,12 @@ class FastLlamaModel:
             return model
         transformers_set_seed(random_state)
 
-        if use_gradient_checkpointing == "unsloth":
-            patch_unsloth_smart_gradient_checkpointing(
-                dtype = model.get_input_embeddings().weight.dtype
-            )
+        # Apply gradient checkpointing with smart heuristics
+        max_seq = getattr(model, "max_seq_length", 512)
+        dtype = model.get_input_embeddings().weight.dtype
+        use_gradient_checkpointing = apply_unsloth_gradient_checkpointing(
+            use_gradient_checkpointing, max_seq, dtype
+        )
 
         if type(r) is not int:
             raise TypeError(f"Unsloth: Rank of {str(r)} must be an integer.")
