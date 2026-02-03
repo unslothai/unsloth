@@ -159,16 +159,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
     @staticmethod
     def forward(ctx, X: torch.Tensor, W: torch.Tensor, eps: float, gemma: bool = False):
         from ..device_type import DEVICE_TYPE
-
         if DEVICE_TYPE == "mps":
-            # Priority: MLX fast > Metal kernel > MPS fallback > Triton
-            from .mlx import USE_MLX_FAST
-
-            if USE_MLX_FAST:
-                from .mlx import mlx_rms_norm
-
-                return mlx_rms_norm(X, W, eps)
-
             from .metal import USE_METAL_KERNEL
 
             if USE_METAL_KERNEL:
@@ -179,13 +170,6 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
                 ctx.GEMMA = gemma
                 ctx.save_for_backward(X, W, r)
                 return Y
-
-            from .mps import USE_MPS_FALLBACK
-
-            if USE_MPS_FALLBACK:
-                from .mps.rms_layernorm import mps_rms_layernorm
-
-                return mps_rms_layernorm(X, W, eps, gemma)
 
         shape = X.shape
         dim: int = shape[-1]
@@ -276,12 +260,33 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
 # [TODO] Unsure why RMS Layernorm is not torch.compiling properly
 @torch.compiler.disable
 def fast_rms_layernorm(layernorm, X: torch.Tensor, gemma: bool = False):
+    from ..device_type import DEVICE_TYPE
+
     W: torch.Tensor = layernorm.weight
     eps: float = (
         layernorm.variance_epsilon
         if hasattr(layernorm, "variance_epsilon")
         else layernorm.eps
     )
+
+    if DEVICE_TYPE == "mps":
+        from .mlx import USE_MLX_FAST
+
+        if USE_MLX_FAST:
+            from .mlx import mlx_rms_norm
+
+            return mlx_rms_norm(X, W, eps)
+
+        from .metal import USE_METAL_KERNEL
+
+        if not USE_METAL_KERNEL:
+            from .mps import USE_MPS_FALLBACK
+
+            if USE_MPS_FALLBACK:
+                from .mps.rms_layernorm import mps_rms_layernorm
+
+                return mps_rms_layernorm(X, W, eps, gemma)
+
     out = Fast_RMS_Layernorm.apply(X, W, eps, gemma)
     return out
 
