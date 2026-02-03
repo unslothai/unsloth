@@ -357,6 +357,7 @@ class Unsloth{RLConfig_name}({RLConfig_name}):
                 )
         self.unsloth_logit_chunk_multiplier = unsloth_logit_chunk_multiplier
         {max_seq_length_post}
+{RLConfig_post}
 pass
 
 {RLTrainer_extras}
@@ -1025,6 +1026,18 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     RLConfig_extra_args = extra_args
     RLConfig_call_args = call_args
 
+    # TRL 0.27.0+ forces use_reentrant=False in gradient_checkpointing_kwargs.
+    # Unsloth gradient checkpointing requires use_reentrant=True, so we remove
+    # the setting after super().__init__() when it gets auto-applied.
+    RLConfig_post = ""
+    if trl_version >= Version("0.27.0") and RLConfig_name == "GRPOConfig":
+        RLConfig_post = (
+            "        # Unsloth: Remove use_reentrant=False forced by TRL 0.27.0+\n"
+            "        if getattr(self, 'gradient_checkpointing_kwargs', None) is not None:\n"
+            "            if 'use_reentrant' in self.gradient_checkpointing_kwargs:\n"
+            "                del self.gradient_checkpointing_kwargs['use_reentrant']\n"
+        )
+
     # Patch vLLM and other functions
     RLTrainer_extras = patch_functions(
         RLTrainer, trainer_file, RLTrainer_name, all_imports, imports
@@ -1077,6 +1090,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         RLConfig_extra_args = RLConfig_extra_args,
         RLConfig_call_args = RLConfig_call_args,
         RLConfig_kwargs = ",**kwargs"[1 if RLConfig_call_args.endswith(",") else 0 :],
+        RLConfig_post = RLConfig_post,
         RLTrainer_extras = RLTrainer_extras,
         RLTrainer_post = RLTrainer_post,
         RL_pre = RL_pre,
@@ -1229,6 +1243,10 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
     # New TRL 0.20.0
     init = init.replace(
         "model = self._prepare_peft_model(model, peft_config, args)\n", "pass\n"
+    )
+    # TRL 0.22.0+ uses prepare_peft_model as a standalone function
+    init = init.replace(
+        "model = prepare_peft_model(model, peft_config, args)", "pass"
     )
 
     # Skip add_adapter("ref") for reference model computation
