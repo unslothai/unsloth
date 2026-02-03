@@ -54,14 +54,13 @@ def test_mps_finetuning():
     }
     dataset = Dataset.from_dict(data)
 
-    # Detect correct precision
-    is_bf16_supported = torch.cuda.is_bf16_supported() if torch.cuda.is_available() else False
-    if torch.backends.mps.is_available():
-        # Check for bfloat16 support on MPS (requires newer torch/macOS)
-        try:
-            is_bf16_supported = torch.cuda.is_bf16_supported()
-        except:
-            is_bf16_supported = False
+    # Detect correct precision from the model itself
+    model_dtype = getattr(model.config, "torch_dtype", None)
+    if model_dtype is None:
+        model_dtype = model.dtype
+    
+    is_bf16 = (model_dtype == torch.bfloat16)
+    is_fp16 = (model_dtype == torch.float16)
     
     # Training arguments
     training_args = TrainingArguments(
@@ -70,8 +69,8 @@ def test_mps_finetuning():
         warmup_steps=1,
         max_steps=3,  # Just 3 steps to verify it works
         learning_rate=2e-4,
-        fp16=not is_bf16_supported,
-        bf16=is_bf16_supported,
+        fp16=is_fp16,
+        bf16=is_bf16,
         logging_steps=1,
         optim="adamw_torch",
         weight_decay=0.01,
