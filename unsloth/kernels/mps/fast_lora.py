@@ -249,6 +249,24 @@ def mps_apply_lora_qkv(
     X, QW, QW_quant, QA, QB, QS, KW, KW_quant, KA, KB, KS, VW, VW_quant, VA, VB, VS
 ):
     """MPS QKV projection fallback using PyTorch operations."""
+    
+    # CHAINING: MLX Fast Path
+    if getattr(X, "_mlx_cache", None) is not None and not torch.is_grad_enabled():
+        with mlx_context():
+            X_mlx = _get_mlx_cached(X)
+            
+            # Import MLX kernel locally to avoid circular imports
+            from ..metal.lora import apply_lora_qkv_mlx
+            
+            Q_mlx, K_mlx, V_mlx = apply_lora_qkv_mlx(
+                X_mlx, 
+                _get_mlx_cached(QW), QW_quant, _get_mlx_cached(QA), _get_mlx_cached(QB), QS,
+                _get_mlx_cached(KW), KW_quant, _get_mlx_cached(KA), _get_mlx_cached(KB), KS,
+                _get_mlx_cached(VW), VW_quant, _get_mlx_cached(VA), _get_mlx_cached(VB), VS
+            )
+            
+            return mlx_to_torch(Q_mlx), mlx_to_torch(K_mlx), mlx_to_torch(V_mlx)
+
     Q = mps_matmul_lora(X, QW, QW_quant, QA, QB, QS)
     K = mps_matmul_lora(X, KW, KW_quant, KA, KB, KS)
     V = mps_matmul_lora(X, VW, VW_quant, VA, VB, VS)
@@ -257,6 +275,20 @@ def mps_apply_lora_qkv(
 
 def mps_apply_lora_o(X, OW, OW_quant, OA, OB, OS):
     """MPS O projection fallback using PyTorch operations."""
+    
+    # CHAINING: MLX Fast Path
+    if getattr(X, "_mlx_cache", None) is not None and not torch.is_grad_enabled():
+        with mlx_context():
+            X_mlx = _get_mlx_cached(X)
+            
+            from ..metal.lora import apply_lora_o_mlx
+            
+            out_mlx = apply_lora_o_mlx(
+                X_mlx, _get_mlx_cached(OW), OW_quant, _get_mlx_cached(OA), _get_mlx_cached(OB), OS
+            )
+            
+            return mlx_to_torch(out_mlx)
+            
     return mps_matmul_lora(X, OW, OW_quant, OA, OB, OS)
 
 
