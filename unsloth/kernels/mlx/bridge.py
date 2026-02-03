@@ -117,6 +117,9 @@ def torch_to_mlx(
         if not _IN_MLX_CONTEXT:
             synchronize_mps()
 
+        if not tensor.is_contiguous():
+            tensor = tensor.contiguous()
+
         try:
             capsule = _torch_to_dlpack(tensor)
             if _mx_from_dlpack is not None:
@@ -124,8 +127,7 @@ def torch_to_mlx(
             # Fallback to mx.array(capsule) if from_dlpack is missing
             return _mx_array(capsule)
         except Exception:
-            # If DLPack fails on MPS, something is very wrong.
-            # We fallback to CPU but it will be slow.
+            # Fallback to CPU if DLPack fails
             pass
 
     # 2. CPU Fallback

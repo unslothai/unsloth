@@ -104,6 +104,7 @@ def mlx_rms_layernorm_forward(X_mlx, W_mlx, eps, gemma=False):
         # Gemma uses (W + 1)
         Y = (X_f32 * r) * (W_mlx.astype(mx.float32) + 1.0)
 
+    mx.eval(Y, r)
     return Y.astype(X_mlx.dtype), r
 
 
@@ -120,21 +121,30 @@ def mlx_rms_layernorm_backward(dY_mlx, X_mlx, W_mlx, r_mlx, gemma=False):
     dY_f32 = dY_mlx.astype(mx.float32)
     r_f32 = r_mlx.astype(mx.float32)
 
+    # Clip gradients to the float16 range to avoid inf - inf = nan
+    # This is especially important on MPS/MLX where FP16 is sensitive.
+    dY_safe = mx.clip(dY_f32, -65504.0, 65504.0)
+    
     W_eff = (W_f32 + 1.0) if gemma else W_f32
 
     # 1. dW = sum(dY * X_norm)
     X_norm = X_f32 * r_f32
     # Sum over all dimensions except the last one (dim)
     # This handles both (B, S, D) and (N, D) shapes correctly
-    dW = mx.sum(dY_f32 * X_norm, axis=list(range(X_mlx.ndim - 1)))
+    dW = mx.sum(dY_safe * X_norm, axis=list(range(X_mlx.ndim - 1)))
 
     # 2. dX = r * (dy_w - X_norm * mean(dy_w * X_norm))
     # This formula is numerically stable and matches Triton/PyTorch.
-    dy_w = dY_f32 * W_eff
+    dy_w = dY_safe * W_eff
     # Row-wise mean of (dy_w * X_norm)
-    mean_dot = mx.mean(dy_w * X_norm, axis=-1, keepdims=True)
+    dot = dy_w * X_norm
+    mean_dot = mx.mean(dot, axis=-1, keepdims=True)
+    
+    # Check for NaNs/Infs that could cause inf - inf
     dX = r_f32 * (dy_w - X_norm * mean_dot)
-
+    
+    # Trigger evaluation to ensure parity and catch errors
+    mx.eval(dX, dW)
     return dX.astype(X_mlx.dtype), dW.astype(W_mlx.dtype)
 
 

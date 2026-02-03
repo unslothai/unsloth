@@ -153,7 +153,9 @@ def mlx_swiglu_forward(e_mlx, g_mlx):
         grid=(grid_size, 1, 1),
         threadgroup=(min(256, grid_size), 1, 1),
     )
-    return out[0].reshape(shape)
+    h = out[0].reshape(shape)
+    mx.eval(h)
+    return h
 
 
 def mlx_swiglu_backward(dw_mlx, e_mlx, g_mlx):
@@ -162,6 +164,9 @@ def mlx_swiglu_backward(dw_mlx, e_mlx, g_mlx):
 
     shape = e_mlx.shape
     n = e_mlx.size
+    # Clip gradients to avoid inf propagation
+    dw_mlx = mx.clip(dw_mlx.astype(mx.float32), -65504.0, 65504.0).astype(dw_mlx.dtype)
+    
     dw_flat = dw_mlx.flatten()
     e_flat = e_mlx.flatten()
     g_flat = g_mlx.flatten()
@@ -178,6 +183,7 @@ def mlx_swiglu_backward(dw_mlx, e_mlx, g_mlx):
     h = outputs[0].reshape(shape)
     df = outputs[1].reshape(shape)
     de = outputs[2].reshape(shape)
+    mx.eval(h, df, de)
     return h, df, de
 
 
