@@ -95,15 +95,14 @@ def mlx_rms_layernorm_forward(X_mlx, W_mlx, eps, gemma=False):
     X_f32 = X_mlx.astype(mx.float32)
 
     # r = 1 / sqrt(mean(X^2) + eps)
-    r = mx.rsqrt(mx.mean(mx.square(X_f32), axis=-1) + eps)
+    r = mx.rsqrt(mx.mean(mx.square(X_f32), axis=-1, keepdims=True) + eps)
 
     if not gemma:
-        # Standard RMSNorm using native where possible for speed
-        # But native doesn't return r, so we might as well do it in float32 for parity
-        Y = (X_f32 * r[..., None]) * W_mlx.astype(mx.float32)
+        # Standard RMSNorm
+        Y = (X_f32 * r) * W_mlx.astype(mx.float32)
     else:
         # Gemma uses (W + 1)
-        Y = (X_f32 * r[..., None]) * (W_mlx.astype(mx.float32) + 1.0)
+        Y = (X_f32 * r) * (W_mlx.astype(mx.float32) + 1.0)
 
     return Y.astype(X_mlx.dtype), r
 
