@@ -206,8 +206,15 @@ def mlx_rope_qk(
         K_mlx = torch_to_mlx(K.contiguous())
         return_mlx = False
 
-    cos_mlx = torch_to_mlx(cos)
-    sin_mlx = torch_to_mlx(sin)
+    if isinstance(cos, mx.array):
+        cos_mlx = cos
+    else:
+        cos_mlx = torch_to_mlx(cos)
+        
+    if isinstance(sin, mx.array):
+        sin_mlx = sin
+    else:
+        sin_mlx = torch_to_mlx(sin)
 
     # Broadcasting
     if Q_mlx.ndim == 4:
