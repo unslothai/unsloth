@@ -339,16 +339,19 @@ class ComprehensiveBenchmark:
         from unsloth.kernels.rope_embedding import Slow_RoPE_Embedding
         
         def torch_rope(q, k, c, s):
-            # Slow implementation expects (batch, heads, seq, dim)
-            # But Slow_RoPE_Embedding takes (Q, cos, sin, position_ids)
-            # and reshapes Q to (batch, seq, heads, dim) internally? 
-            # Wait, Slow_RoPE_Embedding forward implementation:
-            # Q * cos + ...
-            # it handles broadcasting.
+            # Slow_RoPE_Embedding expects (cos, sin) to be broadcastable to [batch, seq, heads, dim]
+            # Input Q/K are (batch, heads, seq, head_dim)
+            # Transposed they are (batch, seq, heads, head_dim)
+            # cos/sin are (seq, head_dim). Need to unsqueeze to (1, seq, 1, head_dim)
+            c_fixed = c.unsqueeze(0).unsqueeze(2)
+            s_fixed = s.unsqueeze(0).unsqueeze(2)
             
-            # Let's use the exact reference logic from slow_rope
-            q_out = Slow_RoPE_Embedding.apply(q.transpose(1, 2), c, s, None).transpose(1, 2)
-            k_out = Slow_RoPE_Embedding.apply(k.transpose(1, 2), c, s, None).transpose(1, 2)
+            q_trans = q.transpose(1, 2)
+            # Use clone to avoid in-place issues if needed, though Slow_RoPE handles it
+            q_out = Slow_RoPE_Embedding.apply(q_trans, c_fixed, s_fixed, None).transpose(1, 2)
+            
+            k_trans = k.transpose(1, 2)
+            k_out = Slow_RoPE_Embedding.apply(k_trans, c_fixed, s_fixed, None).transpose(1, 2)
             return q_out, k_out
 
         # Warmup
