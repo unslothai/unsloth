@@ -168,6 +168,7 @@ def mlx_swiglu_backward(dw_mlx, e_mlx, g_mlx):
     h = outputs[0].reshape(shape)
     df = outputs[1].reshape(shape)
     de = outputs[2].reshape(shape)
+    return h, df, de
 
 
 # =============================================================================
