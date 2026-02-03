@@ -1587,6 +1587,7 @@ def _patch_prepare_multimodal_messages():
     # Also patch in grpo_trainer module if imported
     try:
         import trl.trainer.grpo_trainer as _gt
+
         if hasattr(_gt, "prepare_multimodal_messages"):
             _gt.prepare_multimodal_messages = _safe_prepare_multimodal_messages
     except ImportError:
