@@ -847,24 +847,16 @@ class InferenceBackend:
         formatted += "Assistant: "
         return formatted
 
-    def check_vision_model_compatibility(self, show_warning: bool = True) -> bool:
+    def check_vision_model_compatibility(self) -> bool:
         """
-        Check if current model supports vision and optionally show warning if image uploaded to text-only model
-
-        Args:
-            show_warning: Whether to show Gradio warning if vision not supported
+        Check if current model supports vision.
 
         Returns:
             bool: True if current model supports vision, False otherwise
         """
         current_model = self.get_current_model()
         if current_model and current_model in self.models:
-            is_vision = self.models[current_model].get("is_vision", False)
-            if not is_vision and show_warning:
-                import gradio as gr
-                model_short = current_model.split('/')[-1] if '/' in current_model else current_model
-                gr.Warning(f"Image uploaded, but {model_short} is a text-only model. Please select a vision model to analyze images.")
-            return is_vision
+            return self.models[current_model].get("is_vision", False)
         return False
 
     def _reset_model_generation_state(self, model_name: str):
@@ -1066,94 +1058,7 @@ class InferenceBackend:
             logger.error(f"Error in load_model_simple: {e}")
             return False
 
-    def add_local_model_to_dropdown(self, model_path: str):
-        """Add successfully loaded local model to dropdown storage"""
-        try:
-            from pathlib import Path
 
-            path_obj = Path(model_path)
-            display_name = f"{path_obj.name}"
-
-            # Check if already exists
-            for existing_display, existing_path in self.loaded_local_models:
-                if existing_path == model_path:
-                    logger.debug(f"Local model already in dropdown: {model_path}")
-                    return
-
-            # Add to beginning of list
-            self.loaded_local_models.insert(0, (display_name, model_path))
-            logger.info(f"Added local model to dropdown: {display_name} -> {model_path}")
-
-            # Keep only last 5
-            if len(self.loaded_local_models) > 5:
-                self.loaded_local_models.pop()
-
-        except Exception as e:
-            logger.error(f"Error adding local model to dropdown: {e}")
-
-    def get_model_dropdown_choices(self, models: list = None) -> list:
-        """Get model dropdown choices with status indicators"""
-        if models is None:
-            models = self.default_models
-
-        try:
-            active_model = self.active_model_name
-            loading_model = self.get_loading_model()
-
-            choices = []
-
-            # Add local models first
-            for local_display, local_path in self.loaded_local_models:
-                if local_path == active_model:
-                    choices.append((f"{local_display} (Active)", local_path))
-                else:
-                    choices.append((local_display, local_path))
-
-            # Add default models
-            for model in models:
-                short_name = model.split('/')[-1] if '/' in model else model
-
-                if model == active_model:
-                    display_name = f"{short_name} (Active)"
-                elif model == loading_model:
-                    display_name = f"{short_name} (Loading...)"
-                elif model in self.models and self.models[model].get("model"):
-                # Model is loaded in memory
-                    display_name = f"{short_name} (Ready)"
-                # elif model in self.models:
-                #     display_name = f"{short_name} (Ready)"
-                elif is_model_cached(model):
-                    # Model is downloaded but not loaded
-                    display_name = f"{short_name} (Cached)"
-                else:
-                    display_name = f"↓ {short_name}"  # Not downloaded
-
-                choices.append((display_name, model))
-
-            return choices
-
-        except Exception as e:
-            logger.error(f"Error getting model choices: {e}")
-            return [(model.split('/')[-1], model) for model in models]
-
-
-    def update_model_dropdown(self, models: list = None):
-        """Update model dropdown with current status"""
-        try:
-            import gradio as gr
-
-            choices = self.get_model_dropdown_choices(models)
-            active_model = self.active_model_name
-
-            # Set value to active model if exists
-            value = active_model if active_model else (choices[0][1] if choices else None)
-
-            return gr.update(choices=choices, value=value)
-
-        except Exception as e:
-            logger.error(f"Error updating model dropdown: {e}")
-            import gradio as gr
-            return gr.update()
 
     def load_model_simple(self,
                      model_path: str,
