@@ -39,6 +39,41 @@ from .data_collators import DeepSeekOCRDataCollator, VLMDataCollator
 from .model_mappings import TEMPLATE_TO_MODEL_MAPPER, RESPONSE_MARKERS
 
 
+def _apply_user_mapping(dataset, mapping: dict, batch_size: int = 1000):
+    """
+    Apply user-provided column mapping to convert dataset to conversations format.
+    
+    Args:
+        dataset: HuggingFace dataset
+        mapping: Dict like {"question": "user", "answer": "assistant", "context": "system"}
+        batch_size: Batch size for processing
+    
+    Returns:
+        Dataset with single 'conversations' column (no extra columns preserved)
+    """
+    def _convert(examples):
+        num_examples = len(examples[list(examples.keys())[0]])
+        conversations = []
+        
+        for i in range(num_examples):
+            convo = []
+            role_order = ['system', 'user', 'assistant']
+            
+            for target_role in role_order:
+                for col_name, role in mapping.items():
+                    if role == target_role and col_name in examples:
+                        content = examples[col_name][i]
+                        # User explicitly mapped - always include even if empty
+                        convo.append({"role": role, "content": str(content) if content else ""})
+            
+            conversations.append(convo)
+        
+        # ONLY return conversations - no extra columns
+        return {"conversations": conversations}
+    
+    return dataset.map(_convert, batched=True, batch_size=batch_size, remove_columns=dataset.column_names)
+
+
 def format_dataset(
     dataset,
     format_type           = "auto",
@@ -66,8 +101,37 @@ def format_dataset(
         }
     """
 
-    # Detect multimodal first
+    # Detect multimodal first (needed for all flows)
     multimodal_info = detect_multimodal_dataset(dataset)
+
+    # NEW: If user provided explicit mapping, skip detection and apply directly
+    if custom_format_mapping:
+        try:
+            mapped_dataset = _apply_user_mapping(dataset, custom_format_mapping, batch_size)
+            return {
+                "dataset": mapped_dataset,
+                "detected_format": "user_mapped",
+                "final_format": "chatml_conversations",
+                "chat_column": "conversations",
+                "is_standardized": True,
+                "requires_manual_mapping": False,
+                "is_multimodal": multimodal_info["is_multimodal"],
+                "multimodal_info": multimodal_info,
+                "warnings": [f"Applied user-provided column mapping: {custom_format_mapping}"]
+            }
+        except Exception as e:
+            return {
+                "dataset": dataset,
+                "detected_format": "user_mapped",
+                "final_format": "unknown",
+                "chat_column": None,
+                "is_standardized": False,
+                "requires_manual_mapping": True,
+                "is_multimodal": multimodal_info["is_multimodal"],
+                "multimodal_info": multimodal_info,
+                "warnings": [f"Failed to apply user mapping: {e}"]
+            }
+
 
     # Detect current format
     detected = detect_dataset_format(dataset)
@@ -439,6 +503,71 @@ def format_and_template_dataset(
         errors = []
 
         multimodal_info = detect_multimodal_dataset(dataset)
+
+        # NEW: If user provided explicit mapping for VLM, use it directly
+        if custom_format_mapping:
+            # Expect mapping like: {"image_col": "image", "caption_col": "text"}
+            user_vlm_image_column = None
+            user_vlm_text_column = None
+            
+            for col, role in custom_format_mapping.items():
+                if role == "image":
+                    user_vlm_image_column = col
+                elif role in ["text", "user", "caption", "assistant"]:
+                    user_vlm_text_column = col
+            
+            if user_vlm_image_column and user_vlm_text_column:
+                try:
+                    dataset = convert_to_vlm_format(
+                        dataset,
+                        instruction=vlm_instruction,
+                        text_column=user_vlm_text_column,
+                        image_column=user_vlm_image_column,
+                        dataset_name=dataset_name,
+                    )
+                    warnings.append(f"Applied user VLM mapping: image='{user_vlm_image_column}', text='{user_vlm_text_column}'")
+                    
+                    return {
+                        "dataset": dataset,
+                        "detected_format": "user_mapped",
+                        "final_format": "vlm_messages",
+                        "chat_column": "messages",
+                        "is_vlm": True,
+                        "is_multimodal": True,
+                        "multimodal_info": multimodal_info,
+                        "success": True,
+                        "requires_manual_mapping": False,
+                        "warnings": warnings,
+                        "errors": [],
+                    }
+                except Exception as e:
+                    errors.append(f"Failed to apply user VLM mapping: {e}")
+                    return {
+                        "dataset": dataset,
+                        "detected_format": "user_mapped",
+                        "final_format": "vlm_conversion_failed",
+                        "is_vlm": True,
+                        "success": False,
+                        "requires_manual_mapping": True,
+                        "warnings": warnings,
+                        "errors": errors,
+                    }
+            else:
+                errors.append(
+                    f"Invalid VLM mapping: need 'image' and 'text' roles. Got: {custom_format_mapping}"
+                )
+                return {
+                    "dataset": dataset,
+                    "detected_format": "user_mapped",
+                    "final_format": "vlm_unknown",
+                    "is_vlm": True,
+                    "success": False,
+                    "requires_manual_mapping": True,
+                    "warnings": warnings,
+                    "errors": errors,
+                }
+
+        # Auto-detect VLM structure
         vlm_structure = detect_vlm_dataset_structure(dataset)
 
         # Handle Llava format
