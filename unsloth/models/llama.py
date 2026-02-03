@@ -1431,7 +1431,7 @@ def CausalLM_fast_forward(fast_forward_inference):
                     n_items=n_items,
                     scaling=getattr(self, "accelerator_scaler", None),
                     target_gb=None,
-                    torch_compile=True,
+                    torch_compile=DEVICE_TYPE != "mps",
                     logit_softcapping=logit_softcapping,
                 )
                 if not return_dict:

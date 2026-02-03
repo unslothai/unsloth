@@ -329,7 +329,7 @@ def MistralForCausalLM_fast_forward(
                 n_items = n_items,
                 scaling = getattr(self, "accelerator_scaler", None),
                 target_gb = None,
-                torch_compile = True,
+                torch_compile = DEVICE_TYPE != "mps",
                 logit_softcapping = logit_softcapping,
             )
             if not return_dict:
