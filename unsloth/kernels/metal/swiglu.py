@@ -180,18 +180,19 @@ def mlx_swiglu_backward(dw_mlx, e_mlx, g_mlx):
 
 def metal_swiglu_forward(e: "torch.Tensor", g: "torch.Tensor") -> "torch.Tensor":
     """Fused SwiGLU forward using Metal kernel (PyTorch interface)."""
+    import torch
+    if torch.is_grad_enabled():
+        return Metal_SwiGLU.apply(e, g)
+    
     import mlx.core as mx
-
     shape = e.shape
     with mlx_context():
         # CHAINING: Check for cached MLX tensors on inputs
         e_mlx = getattr(e, "_mlx_cache", None)
-        if e_mlx is None:
-            e_mlx = torch_to_mlx(e)
+        if e_mlx is None: e_mlx = torch_to_mlx(e)
 
         g_mlx = getattr(g, "_mlx_cache", None)
-        if g_mlx is None:
-            g_mlx = torch_to_mlx(g)
+        if g_mlx is None: g_mlx = torch_to_mlx(g)
 
         out_mlx = mlx_swiglu_forward(e_mlx, g_mlx)
 
@@ -234,3 +235,47 @@ def metal_swiglu_backward(
         de._mlx_cache = de_mlx
 
         return h, df, de
+
+
+class Metal_SwiGLU(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, e, g):
+        with mlx_context():
+            e_mlx = getattr(e, "_mlx_cache", None)
+            if e_mlx is None: e_mlx = torch_to_mlx(e)
+            
+            g_mlx = getattr(g, "_mlx_cache", None)
+            if g_mlx is None: g_mlx = torch_to_mlx(g)
+            
+            h_mlx = mlx_swiglu_forward(e_mlx, g_mlx)
+            h = mlx_to_torch(h_mlx)
+            
+            ctx.save_for_backward(e, g)
+            
+            # CHAINING: Attach MLX output
+            h._mlx_cache = h_mlx
+            return h
+
+    @staticmethod
+    def backward(ctx, dw):
+        e, g = ctx.saved_tensors
+        with mlx_context():
+            dw_mlx = getattr(dw, "_mlx_cache", None)
+            if dw_mlx is None: dw_mlx = torch_to_mlx(dw)
+            
+            e_mlx = getattr(e, "_mlx_cache", None)
+            if e_mlx is None: e_mlx = torch_to_mlx(e)
+            
+            g_mlx = getattr(g, "_mlx_cache", None)
+            if g_mlx is None: g_mlx = torch_to_mlx(g)
+            
+            h_mlx, df_mlx, de_mlx = mlx_swiglu_backward(dw_mlx, e_mlx, g_mlx)
+            
+            df = mlx_to_torch(df_mlx)
+            de = mlx_to_torch(de_mlx)
+            
+            # CHAINING: Attach MLX outputs
+            df._mlx_cache = df_mlx
+            de._mlx_cache = de_mlx
+            
+            return de, df

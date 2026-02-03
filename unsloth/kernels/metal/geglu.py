@@ -323,7 +323,89 @@ def _metal_geglu_backward(
         return h, df, de
 
 
+class Metal_GEGLU_Exact(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, e, g):
+        with mlx_context():
+            e_mlx = getattr(e, "_mlx_cache", None)
+            if e_mlx is None: e_mlx = torch_to_mlx(e)
+            
+            g_mlx = getattr(g, "_mlx_cache", None)
+            if g_mlx is None: g_mlx = torch_to_mlx(g)
+            
+            h_mlx = mlx_geglu_exact_forward(e_mlx, g_mlx)
+            h = mlx_to_torch(h_mlx)
+            
+            ctx.save_for_backward(e, g)
+            h._mlx_cache = h_mlx
+            return h
+
+    @staticmethod
+    def backward(ctx, dw):
+        e, g = ctx.saved_tensors
+        with mlx_context():
+            dw_mlx = getattr(dw, "_mlx_cache", None)
+            if dw_mlx is None: dw_mlx = torch_to_mlx(dw)
+            
+            e_mlx = getattr(e, "_mlx_cache", None)
+            if e_mlx is None: e_mlx = torch_to_mlx(e)
+            
+            g_mlx = getattr(g, "_mlx_cache", None)
+            if g_mlx is None: g_mlx = torch_to_mlx(g)
+            
+            h_mlx, df_mlx, de_mlx = mlx_geglu_exact_backward(dw_mlx, e_mlx, g_mlx)
+            
+            df = mlx_to_torch(df_mlx)
+            de = mlx_to_torch(de_mlx)
+            
+            df._mlx_cache = df_mlx
+            de._mlx_cache = de_mlx
+            return de, df
+
+
+class Metal_GEGLU_Approx(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, e, g):
+        with mlx_context():
+            e_mlx = getattr(e, "_mlx_cache", None)
+            if e_mlx is None: e_mlx = torch_to_mlx(e)
+            
+            g_mlx = getattr(g, "_mlx_cache", None)
+            if g_mlx is None: g_mlx = torch_to_mlx(g)
+            
+            h_mlx = mlx_geglu_approx_forward(e_mlx, g_mlx)
+            h = mlx_to_torch(h_mlx)
+            
+            ctx.save_for_backward(e, g)
+            h._mlx_cache = h_mlx
+            return h
+
+    @staticmethod
+    def backward(ctx, dw):
+        e, g = ctx.saved_tensors
+        with mlx_context():
+            dw_mlx = getattr(dw, "_mlx_cache", None)
+            if dw_mlx is None: dw_mlx = torch_to_mlx(dw)
+            
+            e_mlx = getattr(e, "_mlx_cache", None)
+            if e_mlx is None: e_mlx = torch_to_mlx(e)
+            
+            g_mlx = getattr(g, "_mlx_cache", None)
+            if g_mlx is None: g_mlx = torch_to_mlx(g)
+            
+            h_mlx, df_mlx, de_mlx = mlx_geglu_approx_backward(dw_mlx, e_mlx, g_mlx)
+            
+            df = mlx_to_torch(df_mlx)
+            de = mlx_to_torch(de_mlx)
+            
+            df._mlx_cache = df_mlx
+            de._mlx_cache = de_mlx
+            return de, df
+
+
 def metal_geglu_exact_forward(e, g):
+    if torch.is_grad_enabled():
+        return Metal_GEGLU_Exact.apply(e, g)
     return _metal_geglu_forward(e, g, mlx_geglu_exact_forward)
 
 
@@ -332,6 +414,8 @@ def metal_geglu_exact_backward(dw, e, g):
 
 
 def metal_geglu_approx_forward(e, g):
+    if torch.is_grad_enabled():
+        return Metal_GEGLU_Approx.apply(e, g)
     return _metal_geglu_forward(e, g, mlx_geglu_approx_forward)
 
 

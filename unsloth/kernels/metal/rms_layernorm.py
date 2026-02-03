@@ -143,6 +143,59 @@ def mlx_rms_layernorm_backward(dY_mlx, X_mlx, W_mlx, r_mlx, gemma=False):
     return dX.astype(X_mlx.dtype), dW.astype(W_mlx.dtype)
 
 
+class Metal_RMSLayerNorm(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, X, W, eps, gemma=False):
+        with mlx_context():
+            X_mlx = torch_to_mlx(X)
+
+            # Check for cached MLX weight
+            W_mlx = getattr(W, "_mlx_cache", None)
+            if W_mlx is None:
+                W_mlx = torch_to_mlx(W)
+                W._mlx_cache = W_mlx
+
+            Y_mlx, r_mlx = mlx_rms_layernorm_forward(X_mlx, W_mlx, eps, gemma)
+
+            Y_torch = mlx_to_torch(Y_mlx)
+            
+            # Save for backward
+            ctx.save_for_backward(X, W, mlx_to_torch(r_mlx))
+            ctx.eps = eps
+            ctx.gemma = gemma
+            
+            # CHAINING: Attach MLX output to PyTorch tensor
+            Y_torch._mlx_cache = Y_mlx
+            return Y_torch
+
+    @staticmethod
+    def backward(ctx, dY):
+        X, W, r = ctx.saved_tensors
+        eps = ctx.eps
+        gemma = ctx.gemma
+
+        with mlx_context():
+            dY_mlx = torch_to_mlx(dY)
+            X_mlx = torch_to_mlx(X)
+            
+            # Retrieve cached MLX weight
+            W_mlx = getattr(W, "_mlx_cache", None)
+            if W_mlx is None: W_mlx = torch_to_mlx(W)
+            
+            r_mlx = torch_to_mlx(r)
+
+            dX_mlx, dW_mlx = mlx_rms_layernorm_backward(dY_mlx, X_mlx, W_mlx, r_mlx, gemma)
+            
+            dX = mlx_to_torch(dX_mlx)
+            dW = mlx_to_torch(dW_mlx)
+            
+            # CHAINING: Attach MLX outputs
+            dX._mlx_cache = dX_mlx
+            dW._mlx_cache = dW_mlx
+            
+            return dX, dW, None, None
+
+
 def metal_rms_layernorm(X, W, eps, gemma=False):
     """Fused Metal RMS LayerNorm (PyTorch interface)."""
     with mlx_context():
