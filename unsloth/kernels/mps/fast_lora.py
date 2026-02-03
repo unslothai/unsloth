@@ -88,20 +88,21 @@ def mps_matmul_lora(X, W, W_quant, A, B, s):
     # LoRA contribution: (X @ A.t()) @ (B.t() * s)
     if A is not None:
         # X: (..., in_dim), A: (rank, in_dim), B: (out_dim, rank)
-        # Ensure consistent dtype for all operands
-        if out.dtype != dtype:
-            out = out.to(dtype=dtype)
-            
+        # Prepare operands, ensuring they all match X.dtype strictly
         A_ = A.t().to(dtype)
         B_ = B.t().to(dtype)
         
         XA = torch.matmul(X, A_)
         
-        # print(f"DEBUG: dtype={dtype}, X={X.dtype}, A_={A_.dtype}, B_={B_.dtype}, XA={XA.dtype}, out={out.dtype}")
-        
-        if XA.dtype != B_.dtype:
-            # Force B_ to match XA if inconsistent
-            B_ = B_.to(XA.dtype)
+        # Strict casting before in-place addmm_
+        # MPS matmul or intermediate ops might silently produce float32
+        # This prevents "RuntimeError: self and mat2 must have the same dtype"
+        if out.dtype != dtype:
+            out = out.to(dtype=dtype)
+        if XA.dtype != dtype:
+            XA = XA.to(dtype=dtype)
+        if B_.dtype != dtype:
+            B_ = B_.to(dtype=dtype)
 
         out.view(-1, out.shape[-1]).addmm_(
             XA.view(-1, XA.shape[-1]), B_, alpha=s
