@@ -61,6 +61,7 @@ def format_dataset(
             "final_format": final format after processing,
             "chat_column": column name with chat data,
             "is_standardized": whether role names are standardized,
+            "requires_manual_mapping": True if format detection failed and user must map columns,
             "warnings": list of warning messages
         }
     """
@@ -89,6 +90,7 @@ def format_dataset(
                 "final_format": "alpaca",
                 "chat_column": None,
                 "is_standardized": True,
+                "requires_manual_mapping": False,
                 "is_multimodal": multimodal_info["is_multimodal"],
                 "multimodal_info": multimodal_info,
                 "warnings": []
@@ -108,6 +110,7 @@ def format_dataset(
                     "final_format": f"chatml_{detected['chat_column']}",
                     "chat_column": detected["chat_column"],
                     "is_standardized": True,
+                    "requires_manual_mapping": False,
                     "is_multimodal": multimodal_info["is_multimodal"],
                     "multimodal_info": multimodal_info,
                     "warnings": []
@@ -120,6 +123,7 @@ def format_dataset(
                     "final_format": "sharegpt",
                     "chat_column": detected["chat_column"],
                     "is_standardized": False,
+                    "requires_manual_mapping": True,
                     "is_multimodal": multimodal_info["is_multimodal"],
                     "multimodal_info": multimodal_info,
                     "warnings": warnings
@@ -132,6 +136,7 @@ def format_dataset(
                 "final_format": f"chatml_{detected['chat_column']}",
                 "chat_column": detected["chat_column"],
                 "is_standardized": True,
+                "requires_manual_mapping": False,
                 "is_multimodal": multimodal_info["is_multimodal"],
                 "multimodal_info": multimodal_info,
                 "warnings": warnings
@@ -205,6 +210,7 @@ def format_dataset(
                             "final_format": "chatml_conversations",
                             "chat_column": "conversations",
                             "is_standardized": True,
+                            "requires_manual_mapping": False,
                             "is_multimodal": multimodal_info["is_multimodal"],
                             "multimodal_info": multimodal_info,
                             "warnings": warnings
@@ -227,6 +233,7 @@ def format_dataset(
                         "final_format": f"chatml_{detected['chat_column']}",
                         "chat_column": detected["chat_column"],
                         "is_standardized": True,
+                        "requires_manual_mapping": False,
                         "is_multimodal": multimodal_info["is_multimodal"],
                         "multimodal_info": multimodal_info,
                         "warnings": warnings
@@ -241,6 +248,7 @@ def format_dataset(
                 "final_format": "unknown",
                 "chat_column": detected["chat_column"],
                 "is_standardized": False,
+                "requires_manual_mapping": True,
                 "is_multimodal": multimodal_info["is_multimodal"],
                 "multimodal_info": multimodal_info,
                 "warnings": warnings
@@ -256,6 +264,7 @@ def format_dataset(
                 "final_format": "alpaca",
                 "chat_column": None,
                 "is_standardized": True,
+                "requires_manual_mapping": False,
                 "is_multimodal": multimodal_info["is_multimodal"],
                 "multimodal_info": multimodal_info,
                 "warnings": []
@@ -278,6 +287,7 @@ def format_dataset(
                 "final_format": "alpaca",
                 "chat_column": None,
                 "is_standardized": True,
+                "requires_manual_mapping": False,
                 "is_multimodal": multimodal_info["is_multimodal"],
                 "multimodal_info": multimodal_info,
                 "warnings": []
@@ -291,6 +301,7 @@ def format_dataset(
                 "final_format": "unknown",
                 "chat_column": detected["chat_column"],
                 "is_standardized": False,
+                "requires_manual_mapping": True,
                 "is_multimodal": multimodal_info["is_multimodal"],
                 "multimodal_info": multimodal_info,
                 "warnings": warnings
@@ -307,6 +318,7 @@ def format_dataset(
                 "final_format": "chatml_conversations",
                 "chat_column": "conversations",
                 "is_standardized": True,
+                "requires_manual_mapping": False,
                 "is_multimodal": multimodal_info["is_multimodal"],
                 "multimodal_info": multimodal_info,
                 "warnings": []
@@ -324,6 +336,7 @@ def format_dataset(
                 "final_format": f"chatml_{detected['chat_column']}",
                 "chat_column": detected["chat_column"],
                 "is_standardized": True,
+                "requires_manual_mapping": False,
                 "is_multimodal": multimodal_info["is_multimodal"],
                 "multimodal_info": multimodal_info,
                 "warnings": []
@@ -336,6 +349,7 @@ def format_dataset(
                 "final_format": f"chatml_{detected['chat_column']}",
                 "chat_column": detected["chat_column"],
                 "is_standardized": True,
+                "requires_manual_mapping": False,
                 "is_multimodal": multimodal_info["is_multimodal"],
                 "multimodal_info": multimodal_info,
                 "warnings": []
@@ -355,6 +369,7 @@ def format_dataset(
                     "final_format": f"chatml_{detected['chat_column']}",
                     "chat_column": detected["chat_column"],
                     "is_standardized": True,
+                    "requires_manual_mapping": False,
                     "is_multimodal": multimodal_info["is_multimodal"],
                     "multimodal_info": multimodal_info,
                     "warnings": warnings
@@ -367,6 +382,7 @@ def format_dataset(
                     "final_format": "unknown",
                     "chat_column": detected["chat_column"],
                     "is_standardized": False,
+                    "requires_manual_mapping": True,
                     "is_multimodal": multimodal_info["is_multimodal"],
                     "multimodal_info": multimodal_info,
                     "warnings": warnings
@@ -410,6 +426,7 @@ def format_and_template_dataset(
             "detected_format": Original format,
             "final_format": Format after processing,
             "success": Whether template application succeeded,
+            "requires_manual_mapping": True if format detection failed and user must map columns,
             "warnings": List of warnings,
             "errors": List of errors,
             "summary": Human-readable summary
@@ -440,6 +457,7 @@ def format_and_template_dataset(
                     "final_format": "vlm_conversion_failed",
                     "is_vlm": True,
                     "success": False,
+                    "requires_manual_mapping": True,
                     "warnings": warnings,
                     "errors": errors,
                 }
@@ -461,6 +479,7 @@ def format_and_template_dataset(
                     "final_format": "vlm_unknown",
                     "is_vlm": True,
                     "success": False,
+                    "requires_manual_mapping": True,
                     "warnings": warnings,
                     "errors": errors,
                 }
@@ -490,6 +509,7 @@ def format_and_template_dataset(
                     "final_format": "vlm_conversion_failed",
                     "is_vlm": True,
                     "success": False,
+                    "requires_manual_mapping": True,
                     "warnings": warnings,
                     "errors": errors,
                 }
@@ -510,6 +530,7 @@ def format_and_template_dataset(
             "multimodal_info": multimodal_info,
             "vlm_structure": vlm_structure,
             "success": True,
+            "requires_manual_mapping": False,
             "warnings": warnings,
             "errors": errors,
         }
@@ -561,6 +582,7 @@ def format_and_template_dataset(
             "chat_column": dataset_info.get("chat_column"),
             "is_vlm": False,  # This is LLM flow
             "success": template_result["success"],
+            "requires_manual_mapping": dataset_info.get("requires_manual_mapping", False),
             "warnings": all_warnings,
             "errors": all_errors,
             "summary": summary,
