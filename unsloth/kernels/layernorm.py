@@ -184,7 +184,7 @@ def fast_layernorm(layernorm, X):
     if DEVICE_TYPE == "mps":
         from .mlx import USE_MLX_FAST
 
-        if USE_MLX_FAST:
+        if USE_MLX_FAST and not torch.is_grad_enabled():
             from .mlx import mlx_layer_norm
 
             return mlx_layer_norm(X, W, bias, eps)

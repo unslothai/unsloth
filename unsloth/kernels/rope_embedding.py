@@ -292,7 +292,7 @@ def fast_rope_embedding(
         # Priority: MLX fast > MPS fallback > Triton
         from .mlx import USE_MLX_FAST
 
-        if USE_MLX_FAST:
+        if USE_MLX_FAST and not torch.is_grad_enabled():
             from .mlx import mlx_rope_qk
 
             return mlx_rope_qk(Q, K, cos, sin, rope_embedding_indices)

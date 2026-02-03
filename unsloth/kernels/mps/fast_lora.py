@@ -170,7 +170,7 @@ def mps_apply_lora_mlp_swiglu(
     """MPS SwiGLU MLP fallback using PyTorch operations."""
 
     # CHAINING: If input has MLX cache, runs entirely in MLX (sandwich)
-    if getattr(X, "_mlx_cache", None) is not None:
+    if getattr(X, "_mlx_cache", None) is not None and not torch.is_grad_enabled():
         with mlx_context():
             X_mlx = _get_mlx_cached(X)
 
@@ -266,7 +266,7 @@ def mps_apply_lora_mlp_geglu_exact(
     """MPS GEGLU (Exact) MLP fallback using PyTorch operations."""
 
     # CHAINING: MLX Fast Path
-    if getattr(X, "_mlx_cache", None) is not None:
+    if getattr(X, "_mlx_cache", None) is not None and not torch.is_grad_enabled():
         with mlx_context():
             X_mlx = _get_mlx_cached(X)
             e_mlx = _mlx_matmul(X_mlx, gateW, gateA, gateB, gateS)
@@ -324,7 +324,7 @@ def mps_apply_lora_mlp_geglu_approx(
     """MPS GEGLU (Approximate) MLP fallback using PyTorch operations."""
 
     # CHAINING: MLX Fast Path
-    if getattr(X, "_mlx_cache", None) is not None:
+    if getattr(X, "_mlx_cache", None) is not None and not torch.is_grad_enabled():
         with mlx_context():
             X_mlx = _get_mlx_cached(X)
             e_mlx = _mlx_matmul(X_mlx, gateW, gateA, gateB, gateS)
