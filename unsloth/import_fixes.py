@@ -812,3 +812,45 @@ def fix_vllm_pdl_blackwell():
     else:
         # Just set the env var - vLLM might be an older version without supports_pdl
         logger.info(f"Unsloth: Set TRITON_DISABLE_PDL=1 for SM100 ({sm100_gpu_name})")
+
+
+def patch_openspiel_env_async():
+    """Apply nest_asyncio for OpenEnv EnvClient async compatibility.
+
+    OpenEnv's EnvClient uses async methods (reset/step). In Jupyter notebooks
+    these work via top-level await, but converted scripts need
+    asyncio.get_event_loop().run_until_complete() wrappers. Applying nest_asyncio
+    ensures nested event loop calls work in all contexts without replacing the
+    original async methods (which would break scripts that already have their own
+    sync wrappers).
+    """
+    try:
+        import inspect
+        from openenv.core.env_client import EnvClient
+
+        if not inspect.iscoroutinefunction(EnvClient.reset):
+            return  # Already sync, nothing to do
+
+        try:
+            import nest_asyncio
+
+            nest_asyncio.apply()
+            logger.info(
+                "Unsloth: Applied nest_asyncio for OpenEnv EnvClient async compatibility"
+            )
+        except ImportError:
+            logger.info(
+                "Unsloth: nest_asyncio not installed, OpenEnv async methods may need manual wrapping"
+            )
+    except (ImportError, AttributeError):
+        pass  # openenv not installed
+
+
+def patch_torchcodec_audio_decoder():
+    """Call unsloth_zoo's AudioDecoder patch."""
+    try:
+        from unsloth_zoo.dataset_utils import patch_torchcodec_audio_decoder as _patch
+
+        _patch()
+    except (ImportError, AttributeError):
+        pass
