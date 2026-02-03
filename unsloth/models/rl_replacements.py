@@ -405,6 +405,57 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
 
     function = function.replace(string_to_find_vision, replacement_string_vision)
 
+    # Unsloth: Skip apply_chat_template in the forward_kwargs block for pre-templated
+    # string prompts. When prompts are already strings (from notebooks that pre-applied
+    # apply_chat_template), calling it again crashes because strings aren't dicts.
+    # We use prompts directly as prompts_text instead.
+
+    # TRL 0.26.2+ variant (has tools=self.tools)
+    string_to_find_fwd = """        if images is not None:
+            prompts_text = [
+                apply_chat_template(
+                    {"prompt": prompt}, self.processing_class, tools=self.tools, **self.chat_template_kwargs
+                )["prompt"]
+                for prompt in prompts
+            ]"""
+
+    replacement_string_fwd = """        if images is not None:
+            # Unsloth: skip apply_chat_template for pre-templated string prompts
+            if prompts and isinstance(prompts[0], str):
+                prompts_text = prompts
+            else:
+                prompts_text = [
+                    apply_chat_template(
+                        {"prompt": prompt}, self.processing_class, tools=self.tools, **self.chat_template_kwargs
+                    )["prompt"]
+                    for prompt in prompts
+                ]"""
+
+    function = function.replace(string_to_find_fwd, replacement_string_fwd)
+
+    # TRL 0.25.x variant (no tools parameter)
+    string_to_find_fwd_old = """        if images is not None:
+            prompts_text = [
+                apply_chat_template(
+                    {"prompt": prompt}, self.processing_class, **self.chat_template_kwargs
+                )["prompt"]
+                for prompt in prompts
+            ]"""
+
+    replacement_string_fwd_old = """        if images is not None:
+            # Unsloth: skip apply_chat_template for pre-templated string prompts
+            if prompts and isinstance(prompts[0], str):
+                prompts_text = prompts
+            else:
+                prompts_text = [
+                    apply_chat_template(
+                        {"prompt": prompt}, self.processing_class, **self.chat_template_kwargs
+                    )["prompt"]
+                    for prompt in prompts
+                ]"""
+
+    function = function.replace(string_to_find_fwd_old, replacement_string_fwd_old)
+
     # This path is for TRL 0.24.0 images is a variable exclusive to this version
     string_to_find = """        if images is not None:
             output["num_images"] = num_images"""
