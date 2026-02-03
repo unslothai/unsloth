@@ -214,6 +214,16 @@ from unsloth_zoo.loss_utils import (
     _unsloth_get_batch_samples,
     unsloth_fused_ce_loss,
 )
+
+# Patch unsloth_zoo's fused cross entropy loss for MPS to avoid CUDA mem_get_info calls
+if DEVICE_TYPE == "mps":
+    try:
+        import unsloth_zoo.fused_losses.cross_entropy_loss as ce_loss_mod
+        def _mps_get_chunk_multiplier(vocab_size, target_gb):
+            return 1.0
+        ce_loss_mod._get_chunk_multiplier = _mps_get_chunk_multiplier
+    except:
+        pass
 from unsloth_zoo.vision_utils import (
     process_vision_info,
 )
