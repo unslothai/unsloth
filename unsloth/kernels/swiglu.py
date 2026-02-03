@@ -43,8 +43,8 @@ def _fg_kernel(
         offsets = block_idx * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = offsets < n_elements
 
-    e_row = tl.load(e + offsets, mask = mask, other = 0).to(tl.float32)
-    g_row = tl.load(g + offsets, mask = mask, other = 0)  # .to(tl.float32)
+    e_row = tl.load(e + offsets, mask=mask, other=0).to(tl.float32)
+    g_row = tl.load(g + offsets, mask=mask, other=0)  # .to(tl.float32)
 
     # f = e * sigmoid(e)
     f_row = e_row * tl.sigmoid(e_row)  # e_row / (1 + tl.exp(-e_row))
@@ -53,13 +53,32 @@ def _fg_kernel(
     h_row = f_row * g_row
 
     # Store h
-    tl.store(h + offsets, h_row, mask = mask)
+    tl.store(h + offsets, h_row, mask=mask)
 
 
 def swiglu_fg_kernel(e, g):
+    from ..device_type import DEVICE_TYPE
+
+    if DEVICE_TYPE == "mps":
+        # Try Metal kernel first for maximum performance
+        from .metal import is_metal_swiglu_available
+
+        if is_metal_swiglu_available():
+            from .metal.swiglu import metal_swiglu_forward
+
+            return metal_swiglu_forward(e, g)
+
+        # Fall back to MPS PyTorch implementation
+        from .mps import USE_MPS_FALLBACK
+
+        if USE_MPS_FALLBACK:
+            from .mps.swiglu import mps_swiglu_forward
+
+            return mps_swiglu_forward(e, g)
+
     batch, seq_len, hd = e.shape
     n_elements = e.numel()
-    h = torch.empty((batch, seq_len, hd), dtype = e.dtype, device = e.device)
+    h = torch.empty((batch, seq_len, hd), dtype=e.dtype, device=e.device)
     grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
     with torch_gpu_device(e.device):
         _fg_kernel[grid](
@@ -67,8 +86,8 @@ def swiglu_fg_kernel(e, g):
             g,
             h,
             n_elements,
-            BLOCK_SIZE = BLOCK_SIZE,
-            LONG_INDEXING = 0 if n_elements <= INT32_SAFETY_BUFFER else 1,
+            BLOCK_SIZE=BLOCK_SIZE,
+            LONG_INDEXING=0 if n_elements <= INT32_SAFETY_BUFFER else 1,
         )
     return h
 
@@ -101,9 +120,9 @@ def _DWf_DW_dfg_kernel(
         offsets = block_idx * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = offsets < n_elements
 
-    DW_row = tl.load(DW + offsets, mask = mask, other = 0)  # .to(tl.float32)
-    e_row = tl.load(e + offsets, mask = mask, other = 0).to(tl.float32)
-    g_row = tl.load(g + offsets, mask = mask, other = 0)  # .to(tl.float32)
+    DW_row = tl.load(DW + offsets, mask=mask, other=0)  # .to(tl.float32)
+    e_row = tl.load(e + offsets, mask=mask, other=0).to(tl.float32)
+    g_row = tl.load(g + offsets, mask=mask, other=0)  # .to(tl.float32)
 
     # e = e.float()
     # se = 1.0 / (1.0 + torch.exp(-e))
@@ -122,12 +141,31 @@ def _DWf_DW_dfg_kernel(
     de_row = de_row.to(DW_row.dtype)
 
     # Store derivatives in buffers
-    tl.store(DW + offsets, h_row, mask = mask)  # h  = f * g
-    tl.store(e + offsets, df_row, mask = mask)  # df = DW * f
-    tl.store(g + offsets, de_row, mask = mask)  # de
+    tl.store(DW + offsets, h_row, mask=mask)  # h  = f * g
+    tl.store(e + offsets, df_row, mask=mask)  # df = DW * f
+    tl.store(g + offsets, de_row, mask=mask)  # de
 
 
 def swiglu_DWf_DW_dfg_kernel(DW, e, g):
+    from ..device_type import DEVICE_TYPE
+
+    if DEVICE_TYPE == "mps":
+        # Try Metal kernel first for maximum performance
+        from .metal import is_metal_swiglu_available
+
+        if is_metal_swiglu_available():
+            from .metal.swiglu import metal_swiglu_backward
+
+            return metal_swiglu_backward(DW, e, g)
+
+        # Fall back to MPS PyTorch implementation
+        from .mps import USE_MPS_FALLBACK
+
+        if USE_MPS_FALLBACK:
+            from .mps.swiglu import mps_swiglu_backward
+
+            return mps_swiglu_backward(DW, e, g)
+
     batch_seq_len, hd = e.shape  # Flattened to 2D, so 1st dim is bsz * seq_len
     n_elements = e.numel()
     grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
@@ -137,7 +175,7 @@ def swiglu_DWf_DW_dfg_kernel(DW, e, g):
             e,
             g,
             n_elements,
-            BLOCK_SIZE = BLOCK_SIZE,
-            LONG_INDEXING = 0 if n_elements <= INT32_SAFETY_BUFFER else 1,
+            BLOCK_SIZE=BLOCK_SIZE,
+            LONG_INDEXING=0 if n_elements <= INT32_SAFETY_BUFFER else 1,
         )
     return DW, e, g

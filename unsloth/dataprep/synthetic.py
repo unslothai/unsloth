@@ -40,7 +40,7 @@ from .synthetic_configs import (
 )
 
 
-def terminate_tree(proc: subprocess.Popen, timeout = 15):
+def terminate_tree(proc: subprocess.Popen, timeout=15):
     if proc is None or proc.poll() is not None:
         return
 
@@ -48,10 +48,10 @@ def terminate_tree(proc: subprocess.Popen, timeout = 15):
         import psutil
 
         parent = psutil.Process(proc.pid)
-        for child in parent.children(recursive = True):
+        for child in parent.children(recursive=True):
             child.terminate()
         parent.terminate()
-        parent.wait(timeout = timeout / 2)
+        parent.wait(timeout=timeout / 2)
         return
     except:
         pass
@@ -60,17 +60,17 @@ def terminate_tree(proc: subprocess.Popen, timeout = 15):
         try:
             subprocess.run(
                 ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
-                capture_output = True,
-                timeout = 5,
+                capture_output=True,
+                timeout=5,
             )
-            proc.wait(timeout = 1)
+            proc.wait(timeout=1)
             return
         except:
             pass
 
     proc.kill()
     try:
-        proc.wait(timeout = 5)
+        proc.wait(timeout=5)
     except:
         pass
 
@@ -81,16 +81,16 @@ class PipeCapture:
     def __init__(
         self,
         pipe,
-        keep_lines = 2000,
-        echo = False,
-        name = "",
-        text = True,
-        encoding = "utf-8",
-        errors = "replace",
-        ready_regex = None,
+        keep_lines=2000,
+        echo=False,
+        name="",
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        ready_regex=None,
     ):
         self.pipe = pipe
-        self.buf = deque(maxlen = keep_lines)
+        self.buf = deque(maxlen=keep_lines)
         self.lock = threading.Lock()
         self.echo = echo
         self.name = name
@@ -107,7 +107,7 @@ class PipeCapture:
                 ready_regex = re.compile(ready_regex)
             self.ready_regex = ready_regex
 
-        self.t = threading.Thread(target = self._reader, daemon = True)
+        self.t = threading.Thread(target=self._reader, daemon=True)
         self.t.start()
 
     def _reader(self):
@@ -136,16 +136,16 @@ class PipeCapture:
                 pass
             self.closed_event.set()
 
-    def wait_for_ready(self, timeout = None):
+    def wait_for_ready(self, timeout=None):
         return self.ready_event.wait(timeout)
 
     def has_closed(self):
         return self.closed_event.is_set()
 
-    def wait_until_closed(self, timeout = None):
+    def wait_until_closed(self, timeout=None):
         return self.closed_event.wait(timeout)
 
-    def tail(self, n = 200):
+    def tail(self, n=200):
         with self.lock:
             return "\n".join(list(self.buf)[-n:])
 
@@ -153,13 +153,13 @@ class PipeCapture:
 class SyntheticDataKit:
     def __init__(
         self,
-        model_name = "unsloth/Llama-3.1-8B-Instruct-unsloth-bnb-4bit",
-        max_seq_length = 2048,
-        gpu_memory_utilization = 0.98,
-        float8_kv_cache = False,
-        conservativeness = 1.0,
-        token = None,
-        timeout = 1200,  # maybe this is not enough for large models if we need to download
+        model_name="unsloth/Llama-3.1-8B-Instruct-unsloth-bnb-4bit",
+        max_seq_length=2048,
+        gpu_memory_utilization=0.98,
+        float8_kv_cache=False,
+        conservativeness=1.0,
+        token=None,
+        timeout=1200,  # maybe this is not enough for large models if we need to download
         **kwargs,
     ):
         assert type(model_name) is str
@@ -176,25 +176,25 @@ class SyntheticDataKit:
 
         self.config = AutoConfig.from_pretrained(
             model_name,
-            token = token,
+            token=token,
         )
         self.tokenizer = AutoTokenizer.from_pretrained(
             model_name,
-            token = token,
+            token=token,
         )
-        patch_vllm(debug = False)
+        patch_vllm(debug=False)
         engine_args = load_vllm(
-            model_name = model_name,
-            config = self.config,
-            gpu_memory_utilization = gpu_memory_utilization,
-            max_seq_length = max_seq_length,
-            disable_log_stats = True,
-            float8_kv_cache = float8_kv_cache,
-            conservativeness = conservativeness,
-            return_args = True,
-            enable_lora = False,
-            use_bitsandbytes = False,
-            compilation_config = 3,
+            model_name=model_name,
+            config=self.config,
+            gpu_memory_utilization=gpu_memory_utilization,
+            max_seq_length=max_seq_length,
+            disable_log_stats=True,
+            float8_kv_cache=float8_kv_cache,
+            conservativeness=conservativeness,
+            return_args=True,
+            enable_lora=False,
+            use_bitsandbytes=False,
+            compilation_config=3,
             **kwargs,
         )
         if "dtype" in engine_args:
@@ -252,31 +252,31 @@ class SyntheticDataKit:
         logger.info(subprocess_commands)
         vllm_process = subprocess.Popen(
             subprocess_commands,
-            stdout = subprocess.PIPE,
-            stderr = subprocess.PIPE,
-            start_new_session = True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
         )
         ready_re = re.compile(r"Starting vLLM API server(?:\s+\d+)?\s+on\b")
         self.vllm_process = vllm_process
         self.stdout_capture = PipeCapture(
             vllm_process.stdout,
-            keep_lines = 1000,
-            echo = True,
-            name = "vLLM STDOUT",
-            ready_regex = ready_re,
-            text = False,
+            keep_lines=1000,
+            echo=True,
+            name="vLLM STDOUT",
+            ready_regex=ready_re,
+            text=False,
         )
         self.stderr_capture = PipeCapture(
             vllm_process.stderr,
-            keep_lines = 2000,
-            echo = False,
-            name = "vLLM STDERR",
-            ready_regex = None,
-            text = False,
+            keep_lines=2000,
+            echo=False,
+            name="vLLM STDERR",
+            ready_regex=None,
+            text=False,
         )
         # we don't print stderr to console but self.stderr_capture.tail(200) will print the last 200 lines
 
-        ready = self.stdout_capture.wait_for_ready(timeout = timeout)
+        ready = self.stdout_capture.wait_for_ready(timeout=timeout)
         if not ready:
             if self.stdout_capture.has_closed() or self.vllm_process.poll() is not None:
                 print("Stdout stream ended before readiness message detected.")
@@ -305,21 +305,21 @@ class SyntheticDataKit:
 
     @staticmethod
     def from_pretrained(
-        model_name = "unsloth/Llama-3.1-8B-Instruct-unsloth-bnb-4bit",
-        max_seq_length = 2048,
-        gpu_memory_utilization = 0.9,
-        float8_kv_cache = False,
-        conservativeness = 1.0,
-        token = None,
+        model_name="unsloth/Llama-3.1-8B-Instruct-unsloth-bnb-4bit",
+        max_seq_length=2048,
+        gpu_memory_utilization=0.9,
+        float8_kv_cache=False,
+        conservativeness=1.0,
+        token=None,
         **kwargs,
     ):
         return SyntheticDataKit(
-            model_name = model_name,
-            max_seq_length = max_seq_length,
-            gpu_memory_utilization = gpu_memory_utilization,
-            float8_kv_cache = float8_kv_cache,
-            conservativeness = conservativeness,
-            token = token,
+            model_name=model_name,
+            max_seq_length=max_seq_length,
+            gpu_memory_utilization=gpu_memory_utilization,
+            float8_kv_cache=float8_kv_cache,
+            conservativeness=conservativeness,
+            token=token,
             **kwargs,
         )
 
@@ -340,7 +340,7 @@ class SyntheticDataKit:
         print("Attempting to terminate the VLLM server gracefully...")
         try:
             vllm_process.terminate()
-            vllm_process.wait(timeout = 10)
+            vllm_process.wait(timeout=10)
             print("Server terminated gracefully.")
         except subprocess.TimeoutExpired:
             print(
@@ -364,7 +364,7 @@ class SyntheticDataKit:
             gc.collect()
 
         # Delete vLLM module as well
-        delete_vllm(llm = None)
+        delete_vllm(llm=None)
 
     def __enter__(self):
         return self
@@ -375,7 +375,7 @@ class SyntheticDataKit:
     def __del__(self):
         self.cleanup()
 
-    def chunk_data(self, filename = None):
+    def chunk_data(self, filename=None):
         # Chunks data by max tokens and generation length
         assert filename is not None
         assert os.path.exists(filename)
@@ -387,7 +387,7 @@ class SyntheticDataKit:
         if not hasattr(self, "overlap") or not hasattr(self, "max_generation_tokens"):
             raise RuntimeError("Please use prepare_qa_generation first!")
 
-        with open(filename, "r", encoding = "utf-8") as f:
+        with open(filename, "r", encoding="utf-8") as f:
             text = f.read()
 
         max_tokens = (
@@ -395,7 +395,7 @@ class SyntheticDataKit:
         )  # -128 to reduce errors
         if max_tokens <= 5:
             raise RuntimeError("Generation length is way too long!")
-        input_ids = self.tokenizer(text, add_special_tokens = False).input_ids
+        input_ids = self.tokenizer(text, add_special_tokens=False).input_ids
 
         # Get left and right boundaries
         length = len(input_ids)
@@ -416,21 +416,21 @@ class SyntheticDataKit:
             chunked_text = self.tokenizer.decode(input_ids[left:right])
             new_filename = f"{filename}_{i}{extension}"
             all_filenames.append(new_filename)
-            with open(new_filename, "w", encoding = "utf-8") as f:
+            with open(new_filename, "w", encoding="utf-8") as f:
                 f.write(chunked_text)
         return all_filenames
 
     def prepare_qa_generation(
         self,
-        output_folder = "data",
-        max_generation_tokens = 512,
-        temperature = 0.7,
-        top_p = 0.95,
-        overlap = 64,
-        default_num_pairs = 25,
-        cleanup_threshold = 1.0,
-        cleanup_batch_size = 4,
-        cleanup_temperature = 0.3,
+        output_folder="data",
+        max_generation_tokens=512,
+        temperature=0.7,
+        top_p=0.95,
+        overlap=64,
+        default_num_pairs=25,
+        cleanup_threshold=1.0,
+        cleanup_batch_size=4,
+        cleanup_temperature=0.3,
     ):
         assert hasattr(self, "model_name")
         assert hasattr(self, "max_seq_length")
@@ -439,7 +439,7 @@ class SyntheticDataKit:
         locations = "pdf,html,youtube,docx,ppt,txt,output,generated,cleaned,final"
         locations = locations.split(",")
         for path in locations:
-            os.makedirs(os.path.join(output_folder, path), exist_ok = True)
+            os.makedirs(os.path.join(output_folder, path), exist_ok=True)
 
         self.max_generation_tokens = max_generation_tokens
 
@@ -459,7 +459,7 @@ class SyntheticDataKit:
             .replace("{cleanup_temperature}", str(cleanup_temperature))
         )
 
-        with open("synthetic_data_kit_config.yaml", "w", encoding = "utf-8") as f:
+        with open("synthetic_data_kit_config.yaml", "w", encoding="utf-8") as f:
             f.write(config)
 
         self.overlap = overlap

@@ -49,22 +49,41 @@ def _exact_forward_kernel(
 
     # f = 1/2 * e * (1 + erf(1/sqrt(2) * e))
     # h = f * up
-    e_row = tl.load(e + offsets, mask = mask, other = 0).to(tl.float32)
-    g_row = tl.load(g + offsets, mask = mask, other = 0)  # .to(tl.float32)
+    e_row = tl.load(e + offsets, mask=mask, other=0).to(tl.float32)
+    g_row = tl.load(g + offsets, mask=mask, other=0)  # .to(tl.float32)
 
     f_row = 0.5 * e_row * (tl.math.erf(tl.math.rsqrt(2.0) * e_row) + 1.0)
     f_row = f_row.to(g_row.dtype)  # Exact copy from HF
     h_row = f_row * g_row
 
     # Store h
-    tl.store(h + offsets, h_row, mask = mask)
+    tl.store(h + offsets, h_row, mask=mask)
 
 
 def geglu_exact_forward_kernel(gate, up):
+    from ..device_type import DEVICE_TYPE
+    from .mps import USE_MPS_FALLBACK
+
+    if DEVICE_TYPE == "mps":
+        # Try Metal kernel first for maximum performance
+        from .metal import is_metal_geglu_available
+
+        if is_metal_geglu_available():
+            from .metal.geglu import metal_geglu_exact_forward
+
+            return metal_geglu_exact_forward(gate, up)
+
+        from .mps import USE_MPS_FALLBACK
+
+        if USE_MPS_FALLBACK:
+            from .mps.geglu import mps_geglu_exact_forward
+
+            return mps_geglu_exact_forward(gate, up)
+
     batch, seq_len, hd = gate.shape
     n_elements = gate.numel()
     device = gate.device
-    out = torch.empty((batch, seq_len, hd), dtype = gate.dtype, device = device)
+    out = torch.empty((batch, seq_len, hd), dtype=gate.dtype, device=device)
     grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
     with torch_gpu_device(device):
         _exact_forward_kernel[grid](
@@ -72,8 +91,8 @@ def geglu_exact_forward_kernel(gate, up):
             up,
             out,
             n_elements,
-            BLOCK_SIZE = BLOCK_SIZE,
-            LONG_INDEXING = 0 if n_elements <= INT32_SAFETY_BUFFER else 1,
+            BLOCK_SIZE=BLOCK_SIZE,
+            LONG_INDEXING=0 if n_elements <= INT32_SAFETY_BUFFER else 1,
         )
     return out
 
@@ -107,9 +126,9 @@ def _exact_backward_kernel(
         offsets = block_idx * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = offsets < n_elements
 
-    DW_row = tl.load(DW + offsets, mask = mask, other = 0)  # .to(tl.float32)
-    e_row = tl.load(e + offsets, mask = mask, other = 0).to(tl.float32)
-    g_row = tl.load(g + offsets, mask = mask, other = 0)  # .to(tl.float32)
+    DW_row = tl.load(DW + offsets, mask=mask, other=0)  # .to(tl.float32)
+    e_row = tl.load(e + offsets, mask=mask, other=0).to(tl.float32)
+    g_row = tl.load(g + offsets, mask=mask, other=0)  # .to(tl.float32)
 
     # Break e_row away for re-use
     # f = 1/2 * e * (1 + erf(1/sqrt(2) * e))
@@ -132,12 +151,31 @@ def _exact_backward_kernel(
     de_row = de_row.to(DW_row.dtype)
 
     # Store derivatives in buffers
-    tl.store(DW + offsets, h_row, mask = mask)  # h  = f * g
-    tl.store(e + offsets, df_row, mask = mask)  # df = DW * f
-    tl.store(g + offsets, de_row, mask = mask)  # de
+    tl.store(DW + offsets, h_row, mask=mask)  # h  = f * g
+    tl.store(e + offsets, df_row, mask=mask)  # df = DW * f
+    tl.store(g + offsets, de_row, mask=mask)  # de
 
 
 def geglu_exact_backward_kernel(DW, e, g):
+    from ..device_type import DEVICE_TYPE
+    from .mps import USE_MPS_FALLBACK
+
+    if DEVICE_TYPE == "mps":
+        # Try Metal kernel first for maximum performance
+        from .metal import is_metal_geglu_available
+
+        if is_metal_geglu_available():
+            from .metal.geglu import metal_geglu_exact_backward
+
+            return metal_geglu_exact_backward(DW, e, g)
+
+        from .mps import USE_MPS_FALLBACK
+
+        if USE_MPS_FALLBACK:
+            from .mps.geglu import mps_geglu_exact_backward
+
+            return mps_geglu_exact_backward(DW, e, g)
+
     batch_seq_len, hd = e.shape
     n_elements = e.numel()
     grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
@@ -147,8 +185,8 @@ def geglu_exact_backward_kernel(DW, e, g):
             e,
             g,
             n_elements,
-            BLOCK_SIZE = BLOCK_SIZE,
-            LONG_INDEXING = 0 if n_elements <= INT32_SAFETY_BUFFER else 1,
+            BLOCK_SIZE=BLOCK_SIZE,
+            LONG_INDEXING=0 if n_elements <= INT32_SAFETY_BUFFER else 1,
         )
     return DW, e, g
 
@@ -177,8 +215,8 @@ def _approx_forward_kernel(
     # h = f * up
     s = 0.7978845608028654  # math.sqrt(2 / math.pi)
 
-    e_row = tl.load(e + offsets, mask = mask, other = 0).to(tl.float32)
-    g_row = tl.load(g + offsets, mask = mask, other = 0)  # .to(tl.float32)
+    e_row = tl.load(e + offsets, mask=mask, other=0).to(tl.float32)
+    g_row = tl.load(g + offsets, mask=mask, other=0)  # .to(tl.float32)
 
     f_row = (
         0.5 * e_row * (triton_tanh(s * e_row * (1.0 + 0.044715 * e_row * e_row)) + 1.0)
@@ -187,14 +225,33 @@ def _approx_forward_kernel(
     h_row = f_row * g_row
 
     # Store h
-    tl.store(h + offsets, h_row, mask = mask)
+    tl.store(h + offsets, h_row, mask=mask)
 
 
 def geglu_approx_forward_kernel(gate, up):
+    from ..device_type import DEVICE_TYPE
+    from .mps import USE_MPS_FALLBACK
+
+    if DEVICE_TYPE == "mps":
+        # Try Metal kernel first for maximum performance
+        from .metal import is_metal_geglu_available
+
+        if is_metal_geglu_available():
+            from .metal.geglu import metal_geglu_approx_forward
+
+            return metal_geglu_approx_forward(gate, up)
+
+        from .mps import USE_MPS_FALLBACK
+
+        if USE_MPS_FALLBACK:
+            from .mps.geglu import mps_geglu_approx_forward
+
+            return mps_geglu_approx_forward(gate, up)
+
     batch, seq_len, hd = gate.shape
     n_elements = gate.numel()
     device = gate.device
-    out = torch.empty((batch, seq_len, hd), dtype = gate.dtype, device = device)
+    out = torch.empty((batch, seq_len, hd), dtype=gate.dtype, device=device)
     grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
     with torch_gpu_device(device):
         _approx_forward_kernel[grid](
@@ -202,8 +259,8 @@ def geglu_approx_forward_kernel(gate, up):
             up,
             out,
             n_elements,
-            BLOCK_SIZE = BLOCK_SIZE,
-            LONG_INDEXING = 0 if n_elements <= INT32_SAFETY_BUFFER else 1,
+            BLOCK_SIZE=BLOCK_SIZE,
+            LONG_INDEXING=0 if n_elements <= INT32_SAFETY_BUFFER else 1,
         )
     return out
 
@@ -241,9 +298,9 @@ def _approx_backward_kernel(
         offsets = block_idx * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = offsets < n_elements
 
-    DW_row = tl.load(DW + offsets, mask = mask, other = 0)  # .to(tl.float32)
-    e_row = tl.load(e + offsets, mask = mask, other = 0).to(tl.float32)
-    g_row = tl.load(g + offsets, mask = mask, other = 0)  # .to(tl.float32)
+    DW_row = tl.load(DW + offsets, mask=mask, other=0)  # .to(tl.float32)
+    e_row = tl.load(e + offsets, mask=mask, other=0).to(tl.float32)
+    g_row = tl.load(g + offsets, mask=mask, other=0)  # .to(tl.float32)
 
     # See https://www.desmos.com/calculator/nqprfoni6x
     s = 0.7978845608028654  # math.sqrt(2 / math.pi)
@@ -269,12 +326,31 @@ def _approx_backward_kernel(
     de_row = de_row.to(DW_row.dtype)
 
     # Store derivatives in buffers
-    tl.store(DW + offsets, h_row, mask = mask)  # h  = f * g
-    tl.store(e + offsets, df_row, mask = mask)  # df = DW * f
-    tl.store(g + offsets, de_row, mask = mask)  # de
+    tl.store(DW + offsets, h_row, mask=mask)  # h  = f * g
+    tl.store(e + offsets, df_row, mask=mask)  # df = DW * f
+    tl.store(g + offsets, de_row, mask=mask)  # de
 
 
 def geglu_approx_backward_kernel(DW, e, g):
+    from ..device_type import DEVICE_TYPE
+    from .mps import USE_MPS_FALLBACK
+
+    if DEVICE_TYPE == "mps":
+        # Try Metal kernel first for maximum performance
+        from .metal import is_metal_geglu_available
+
+        if is_metal_geglu_available():
+            from .metal.geglu import metal_geglu_approx_backward
+
+            return metal_geglu_approx_backward(DW, e, g)
+
+        from .mps import USE_MPS_FALLBACK
+
+        if USE_MPS_FALLBACK:
+            from .mps.geglu import mps_geglu_approx_backward
+
+            return mps_geglu_approx_backward(DW, e, g)
+
     batch_seq_len, hd = e.shape
     n_elements = e.numel()
     grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
@@ -284,7 +360,7 @@ def geglu_approx_backward_kernel(DW, e, g):
             e,
             g,
             n_elements,
-            BLOCK_SIZE = BLOCK_SIZE,
-            LONG_INDEXING = 0 if n_elements <= INT32_SAFETY_BUFFER else 1,
+            BLOCK_SIZE=BLOCK_SIZE,
+            LONG_INDEXING=0 if n_elements <= INT32_SAFETY_BUFFER else 1,
         )
     return DW, e, g

@@ -56,7 +56,7 @@ if already_imported:
         f"to ensure all optimizations are applied. Your code may run slower or encounter "
         f"memory issues without these optimizations.\n\n"
         f"Please restructure your imports with 'import unsloth' at the top of your file.",
-        stacklevel = 2,
+        stacklevel=2,
     )
 del already_imported, critical_modules
 
@@ -75,6 +75,16 @@ os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 
 from importlib.metadata import version as importlib_version
 from importlib.metadata import PackageNotFoundError
+
+# ==============================================================================
+# Apple Silicon MPS Patch - MUST be applied before unsloth_zoo import
+# ==============================================================================
+# unsloth_zoo.device_type raises NotImplementedError on Apple Silicon.
+# This patch injects a mock device_type module that returns "mps".
+from .patches import patch_unsloth_zoo_for_mps
+
+_mps_patched = patch_unsloth_zoo_for_mps()
+del patch_unsloth_zoo_for_mps
 
 # Check for unsloth_zoo
 try:
@@ -174,7 +184,7 @@ if DEVICE_TYPE == "cuda":
     old_is_bf16_supported = torch.cuda.is_bf16_supported
     if "including_emulation" in str(inspect.signature(old_is_bf16_supported)):
 
-        def is_bf16_supported(including_emulation = False):
+        def is_bf16_supported(including_emulation=False):
             return old_is_bf16_supported(including_emulation)
 
         torch.cuda.is_bf16_supported = is_bf16_supported
@@ -191,10 +201,30 @@ elif DEVICE_TYPE == "xpu":
     # torch.xpu.is_bf16_supported() does not have including_emulation
     # set SUPPORTS_BFLOAT16 as torch.xpu.is_bf16_supported()
     SUPPORTS_BFLOAT16 = torch.xpu.is_bf16_supported()
+elif DEVICE_TYPE == "mps":
+    # MPS bfloat16 support depends on PyTorch version and chip
+    try:
+        test_tensor = torch.tensor([1.0], dtype=torch.bfloat16, device="mps")
+        _ = test_tensor + test_tensor  # Test an operation
+        SUPPORTS_BFLOAT16 = True
+        del test_tensor
+    except Exception:
+        SUPPORTS_BFLOAT16 = False
+
+    print(
+        f"Unsloth: Running on Apple Silicon (MPS)\n"
+        f"   bfloat16 support: {SUPPORTS_BFLOAT16}\n"
+        f"   Note: 16-bit LoRA and full finetuning work."
+    )
 
 # For Gradio HF Spaces?
 # if "SPACE_AUTHOR_NAME" not in os.environ and "SPACE_REPO_NAME" not in os.environ:
-import triton
+
+# Triton does not support MPS/Metal - skip import for Apple Silicon
+if DEVICE_TYPE != "mps":
+    import triton
+else:
+    triton = None
 
 if DEVICE_TYPE == "cuda":
     libcuda_dirs = lambda: None
@@ -278,6 +308,18 @@ elif DEVICE_TYPE == "xpu":
 
     # TODO: check triton for intel installed properly.
     pass
+elif DEVICE_TYPE == "mps":
+    # MPS/Apple Silicon - bitsandbytes not supported, Triton not available
+    # 16-bit LoRA and full finetuning work via PyTorch's native MPS backend
+    bnb = None
+    try:
+        import peft.import_utils
+
+        peft.import_utils.is_bnb_available = lambda: False
+        peft.import_utils.is_bnb_4bit_available = lambda: False
+        peft.import_utils.is_bnb_8bit_available = lambda: False
+    except ImportError:
+        pass
 
 from .models import *
 from .models import __version__
