@@ -54,6 +54,7 @@ from .fast_ops import (
     is_mlx_fast_available,
     USE_MLX_FAST,
     mlx_layer_norm,
+    mlx_rms_norm,
     mlx_rope,
     mlx_rope_qk,
     mlx_scaled_dot_product_attention,
@@ -77,6 +78,7 @@ __all__ = [
     "synchronize_mlx",
     # Fast operations
     "mlx_layer_norm",
+    "mlx_rms_norm",
     "mlx_rope",
     "mlx_rope_qk",
     "mlx_scaled_dot_product_attention",
