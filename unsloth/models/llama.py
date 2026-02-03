@@ -2156,6 +2156,9 @@ class FastLlamaModel:
         cfg_model_name=None,
         **kwargs,
     ):
+        if device_map == "sequential" and DEVICE_TYPE == "mps":
+            device_map = None
+
         os.environ["UNSLOTH_USE_NEW_MODEL"] = "0"
         if trust_remote_code:
             if fast_inference:
@@ -2382,6 +2385,9 @@ class FastLlamaModel:
                 attn_implementation="eager",
                 **kwargs,
             )
+            if DEVICE_TYPE == "mps" and device_map is None:
+                model = model.to("mps")
+                if hasattr(model, "hf_device_map"): del model.hf_device_map
         elif not fast_inference:
             model = AutoModelForCausalLM.from_pretrained(
                 cfg_model_name if cfg_model_name is not None else model_name,
@@ -2394,6 +2400,9 @@ class FastLlamaModel:
                 attn_implementation="eager",
                 **kwargs,
             )
+            if DEVICE_TYPE == "mps" and device_map is None:
+                model = model.to("mps")
+                if hasattr(model, "hf_device_map"): del model.hf_device_map
             model.fast_generate = make_fast_generate_wrapper(model.generate)
             model.fast_generate_batches = None
         else:

@@ -349,6 +349,8 @@ class FastBaseModel:
         unsloth_vllm_standby=False,
         **kwargs,
     ):
+        if device_map == "sequential" and DEVICE_TYPE == "mps":
+            device_map = None
         if unsloth_vllm_standby and os.environ.get("UNSLOTH_VLLM_STANDBY", "0") != "1":
             raise RuntimeError(
                 "Unsloth: UNSLOTH_VLLM_STANDBY is True, but UNSLOTH_VLLM_STANDBY is not set to 1!"
@@ -673,6 +675,9 @@ class FastBaseModel:
                 # attn_implementation   = attn_implementation,
                 **kwargs,
             )
+            if DEVICE_TYPE == "mps" and device_map is None:
+                model = model.to("mps")
+                if hasattr(model, "hf_device_map"): del model.hf_device_map
             if hasattr(model, "generate"):
                 model.fast_generate = make_fast_generate_wrapper(model.generate)
                 model.fast_generate_batches = error_out_no_vllm
