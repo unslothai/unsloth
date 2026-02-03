@@ -108,13 +108,40 @@ def mlx_rms_norm(
     return Y.view(*shape)
 
 
+@mx.compile
+def _mlx_rope_kernel(Q, cos, sin):
+    # Standard Rotary: [q0, q1, ..., qn/2, qn/2+1, ..., qn]
+    # rotate_half: [-qn/2, ..., -qn, q0, ..., qn/2]
+    half = Q.shape[-1] // 2
+    Q1 = Q[..., :half]
+    Q2 = Q[..., half:]
+    
+    # cos/sin are [1, 1, S, D] or similar, broadcastable to Q
+    # We expect cos/sin to be the full head_dim (or broadcastable)
+    # Match MPS fallback: (Q * cos) + (rotate_half(Q) * sin)
+    # Out1 = Q1 * cos1 - Q2 * sin1
+    # Out2 = Q2 * cos2 + Q1 * sin2 (if cos1 == cos2)
+    
+    # If cos/sin were provided as half-dim [S, D/2], we assume they are repeated
+    # In fast_ops, bridge will likely have them as full dim if we follow the MPS fallback logic
+    
+    cos1 = cos[..., :half]
+    cos2 = cos[..., half:]
+    sin1 = sin[..., :half]
+    sin2 = sin[..., half:]
+
+    out1 = Q1 * cos1 - Q2 * sin1
+    out2 = Q2 * cos2 + Q1 * sin2
+    
+    return mx.concatenate([out1, out2], axis=-1)
+
 def mlx_rope(
     Q: "torch.Tensor",
     cos: "torch.Tensor",
     sin: "torch.Tensor",
     position_ids: "torch.Tensor" = None,
 ) -> "torch.Tensor":
-    """RoPE embedding using mx.fast.rope."""
+    """RoPE embedding using correctly composed MLX arithmetic."""
     import torch
     import mlx.core as mx
     from .bridge import torch_to_mlx, mlx_to_torch, synchronize_mps
@@ -122,29 +149,29 @@ def mlx_rope(
     synchronize_mps()
 
     if isinstance(Q, mx.array):
-        # MLX input path
         Q_mlx = Q
         return_mlx = True
     else:
-        # Pytorch Input path
         Q_mlx = torch_to_mlx(Q.contiguous())
         return_mlx = False
 
-    # mx.fast.rope expects shape (batch, seq, heads, dim)
-    # Unsloth uses (batch, heads, seq, dim) - need transpose
+    cos_mlx = torch_to_mlx(cos)
+    sin_mlx = torch_to_mlx(sin)
+
+    # Broadcast cos/sin to Q_mlx shape (usually batch, heads, seq, dim)
+    # We assume cos/sin are [seq, dim] or [batch, seq, dim]
+    # We need to unsqueeze to match Q_mlx [B, H, S, D]
     if Q_mlx.ndim == 4:
-        Q_mlx = mx.transpose(Q_mlx, (0, 2, 1, 3))
+        # Check if Q is [B, H, S, D] (Unsloth typical)
+        # or [B, S, H, D]
+        if Q_mlx.shape[2] == cos_mlx.shape[-2]: # [B, H, S, D]
+            cos_mlx = cos_mlx.reshape(1, 1, cos_mlx.shape[-2], cos_mlx.shape[-1])
+            sin_mlx = sin_mlx.reshape(1, 1, sin_mlx.shape[-2], sin_mlx.shape[-1])
+        else: # [B, S, H, D]
+            cos_mlx = cos_mlx.reshape(1, cos_mlx.shape[-2], 1, cos_mlx.shape[-1])
+            sin_mlx = sin_mlx.reshape(1, sin_mlx.shape[-2], 1, sin_mlx.shape[-1])
 
-    dim = Q_mlx.shape[-1]
-    offset = 0
-    if position_ids is not None:
-        offset = torch_to_mlx(position_ids)
-
-    Y_mlx = mx.fast.rope(Q_mlx, dim, traditional=False, base=10000.0, scale=1.0, offset=offset)
-
-    # Transpose back
-    if Y_mlx.ndim == 4:
-        Y_mlx = mx.transpose(Y_mlx, (0, 2, 1, 3))
+    Y_mlx = _mlx_rope_kernel(Q_mlx, cos_mlx, sin_mlx)
 
     mx.eval(Y_mlx)
     
@@ -162,7 +189,7 @@ def mlx_rope_qk(
     sin: "torch.Tensor",
     position_ids: "torch.Tensor" = None,
 ) -> tuple["torch.Tensor", "torch.Tensor"]:
-    """RoPE embedding for Q and K using mx.fast.rope."""
+    """RoPE embedding for Q and K using correctly composed MLX arithmetic."""
     import torch
     import mlx.core as mx
     from .bridge import torch_to_mlx, mlx_to_torch, synchronize_mps
@@ -178,31 +205,20 @@ def mlx_rope_qk(
         K_mlx = torch_to_mlx(K.contiguous())
         return_mlx = False
 
-    # Transpose to (batch, seq, heads, dim) for MLX
+    cos_mlx = torch_to_mlx(cos)
+    sin_mlx = torch_to_mlx(sin)
+
+    # Broadcasting
     if Q_mlx.ndim == 4:
-        Q_mlx = mx.transpose(Q_mlx, (0, 2, 1, 3))
-        K_mlx = mx.transpose(K_mlx, (0, 2, 1, 3))
+        if Q_mlx.shape[2] == cos_mlx.shape[-2]: # [B, H, S, D]
+            cos_mlx = cos_mlx.reshape(1, 1, cos_mlx.shape[-2], cos_mlx.shape[-1])
+            sin_mlx = sin_mlx.reshape(1, 1, sin_mlx.shape[-2], sin_mlx.shape[-1])
+        else: # [B, S, H, D]
+            cos_mlx = cos_mlx.reshape(1, cos_mlx.shape[-2], 1, cos_mlx.shape[-1])
+            sin_mlx = sin_mlx.reshape(1, sin_mlx.shape[-2], 1, sin_mlx.shape[-1])
 
-    dim = Q_mlx.shape[-1]
-    
-    # MLX rope expects offset to be the starting position or an array of positions
-    offset = 0
-    if position_ids is not None:
-        if isinstance(position_ids, mx.array):
-             offset = position_ids
-        else:
-             offset = torch_to_mlx(position_ids)
-
-    # Some versions of MLX require base and scale as keywords
-    # Typical Llama defaults: base=10000.0, scale=1.0
-    # We use keywords to match the expected signature in the error message
-    Q_out = mx.fast.rope(Q_mlx, dim, traditional=False, base=10000.0, scale=1.0, offset=offset)
-    K_out = mx.fast.rope(K_mlx, dim, traditional=False, base=10000.0, scale=1.0, offset=offset)
-
-    # Transpose back
-    if Q_out.ndim == 4:
-        Q_out = mx.transpose(Q_out, (0, 2, 1, 3))
-        K_out = mx.transpose(K_out, (0, 2, 1, 3))
+    Q_out = _mlx_rope_kernel(Q_mlx, cos_mlx, sin_mlx)
+    K_out = _mlx_rope_kernel(K_mlx, cos_mlx, sin_mlx)
 
     mx.eval(Q_out, K_out)
 
