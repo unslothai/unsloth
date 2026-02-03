@@ -292,10 +292,10 @@ def fast_rope_embedding(
         # Priority: MLX fast > MPS fallback > Triton
         from .mlx import USE_MLX_FAST
 
-        if USE_MLX_FAST and rope_embedding_indices is None:
+        if USE_MLX_FAST:
             from .mlx import mlx_rope_qk
 
-            return mlx_rope_qk(Q, K, cos, sin)
+            return mlx_rope_qk(Q, K, cos, sin, rope_embedding_indices)
 
         from .mps import USE_MPS_FALLBACK
 

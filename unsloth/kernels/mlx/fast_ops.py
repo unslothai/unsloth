@@ -83,11 +83,36 @@ def mlx_layer_norm(
     return Y.view(*shape)
 
 
+def mlx_rms_norm(
+    X: "torch.Tensor",
+    W: "torch.Tensor",
+    eps: float,
+) -> "torch.Tensor":
+    """RMSNorm using mx.fast.rms_norm."""
+    import torch
+    import mlx.core as mx
+    from .bridge import torch_to_mlx, mlx_to_torch, synchronize_mps
+
+    shape = X.shape
+    X_2d = X.reshape(-1, shape[-1]).contiguous()
+
+    synchronize_mps()
+
+    X_mlx = torch_to_mlx(X_2d)
+    W_mlx = torch_to_mlx(W)
+
+    Y_mlx = mx.fast.rms_norm(X_mlx, W_mlx, eps)
+    mx.eval(Y_mlx)
+
+    Y = mlx_to_torch(Y_mlx, device=X.device, dtype=X.dtype)
+    return Y.view(*shape)
+
+
 def mlx_rope(
     Q: "torch.Tensor",
     cos: "torch.Tensor",
     sin: "torch.Tensor",
-    offset: int = 0,
+    position_ids: "torch.Tensor" = None,
 ) -> "torch.Tensor":
     """RoPE embedding using mx.fast.rope."""
     import torch
@@ -103,7 +128,12 @@ def mlx_rope(
     if Q_mlx.ndim == 4:
         Q_mlx = mx.transpose(Q_mlx, (0, 2, 1, 3))
 
-    Y_mlx = mx.fast.rope(Q_mlx, Q_mlx.shape[-1], traditional=False, offset=offset)
+    dim = Q_mlx.shape[-1]
+    offset = 0
+    if position_ids is not None:
+        offset = torch_to_mlx(position_ids)
+
+    Y_mlx = mx.fast.rope(Q_mlx, dim, traditional=False, base=10000.0, scale=1.0, offset=offset)
 
     # Transpose back
     if Y_mlx.ndim == 4:
@@ -119,7 +149,7 @@ def mlx_rope_qk(
     K: "torch.Tensor",
     cos: "torch.Tensor",
     sin: "torch.Tensor",
-    offset: int = 0,
+    position_ids: "torch.Tensor" = None,
 ) -> tuple["torch.Tensor", "torch.Tensor"]:
     """RoPE embedding for Q and K using mx.fast.rope."""
     import torch
@@ -137,8 +167,17 @@ def mlx_rope_qk(
         K_mlx = mx.transpose(K_mlx, (0, 2, 1, 3))
 
     dim = Q_mlx.shape[-1]
-    Q_out = mx.fast.rope(Q_mlx, dim, traditional=False, offset=offset)
-    K_out = mx.fast.rope(K_mlx, dim, traditional=False, offset=offset)
+    
+    # MLX rope expects offset to be the starting position or an array of positions
+    offset = 0
+    if position_ids is not None:
+        offset = torch_to_mlx(position_ids)
+
+    # Some versions of MLX require base and scale as keywords
+    # Typical Llama defaults: base=10000.0, scale=1.0
+    # We use keywords to match the expected signature in the error message
+    Q_out = mx.fast.rope(Q_mlx, dim, traditional=False, base=10000.0, scale=1.0, offset=offset)
+    K_out = mx.fast.rope(K_mlx, dim, traditional=False, base=10000.0, scale=1.0, offset=offset)
 
     # Transpose back
     if Q_out.ndim == 4:
@@ -187,6 +226,7 @@ __all__ = [
     "is_mlx_fast_available",
     "USE_MLX_FAST",
     "mlx_layer_norm",
+    "mlx_rms_norm",
     "mlx_rope",
     "mlx_rope_qk",
     "mlx_scaled_dot_product_attention",

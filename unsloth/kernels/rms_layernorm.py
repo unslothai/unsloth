@@ -161,7 +161,14 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         from ..device_type import DEVICE_TYPE
 
         if DEVICE_TYPE == "mps":
-            # Priority: Metal kernel > MPS fallback > Triton
+            # Priority: MLX fast > Metal kernel > MPS fallback > Triton
+            from .mlx import USE_MLX_FAST
+
+            if USE_MLX_FAST:
+                from .mlx import mlx_rms_norm
+
+                return mlx_rms_norm(X, W, eps)
+
             from .metal import USE_METAL_KERNEL
 
             if USE_METAL_KERNEL:
