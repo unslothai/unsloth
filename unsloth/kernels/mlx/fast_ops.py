@@ -121,7 +121,14 @@ def mlx_rope(
 
     synchronize_mps()
 
-    Q_mlx = torch_to_mlx(Q.contiguous())
+    if isinstance(Q, mx.array):
+        # MLX input path
+        Q_mlx = Q
+        return_mlx = True
+    else:
+        # Pytorch Input path
+        Q_mlx = torch_to_mlx(Q.contiguous())
+        return_mlx = False
 
     # mx.fast.rope expects shape (batch, seq, heads, dim)
     # Unsloth uses (batch, heads, seq, dim) - need transpose
@@ -140,6 +147,10 @@ def mlx_rope(
         Y_mlx = mx.transpose(Y_mlx, (0, 2, 1, 3))
 
     mx.eval(Y_mlx)
+    
+    if return_mlx:
+        return Y_mlx
+        
     Y = mlx_to_torch(Y_mlx, device=Q.device, dtype=Q.dtype)
     return Y
 
@@ -158,8 +169,14 @@ def mlx_rope_qk(
 
     synchronize_mps()
 
-    Q_mlx = torch_to_mlx(Q.contiguous())
-    K_mlx = torch_to_mlx(K.contiguous())
+    if isinstance(Q, mx.array):
+        Q_mlx = Q
+        K_mlx = K
+        return_mlx = True
+    else:
+        Q_mlx = torch_to_mlx(Q.contiguous())
+        K_mlx = torch_to_mlx(K.contiguous())
+        return_mlx = False
 
     # Transpose to (batch, seq, heads, dim) for MLX
     if Q_mlx.ndim == 4:
@@ -171,7 +188,10 @@ def mlx_rope_qk(
     # MLX rope expects offset to be the starting position or an array of positions
     offset = 0
     if position_ids is not None:
-        offset = torch_to_mlx(position_ids)
+        if isinstance(position_ids, mx.array):
+             offset = position_ids
+        else:
+             offset = torch_to_mlx(position_ids)
 
     # Some versions of MLX require base and scale as keywords
     # Typical Llama defaults: base=10000.0, scale=1.0
@@ -185,6 +205,9 @@ def mlx_rope_qk(
         K_out = mx.transpose(K_out, (0, 2, 1, 3))
 
     mx.eval(Q_out, K_out)
+
+    if return_mlx:
+        return Q_out, K_out
 
     Q_t = mlx_to_torch(Q_out, device=Q.device, dtype=Q.dtype)
     K_t = mlx_to_torch(K_out, device=K.device, dtype=K.dtype)

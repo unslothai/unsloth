@@ -323,6 +323,77 @@ class ComprehensiveBenchmark:
         # Imports
         from unsloth.kernels.metal.swiglu import mlx_swiglu_forward
         
+    def run_rope_benchmark(self, batch_size=1, seq_len=1, dim=4096, n_heads=32):
+        log_header(f"RoPE Benchmark: B={batch_size}, S={seq_len}, D={dim}")
+        
+        head_dim = dim // n_heads
+        Q = torch.randn(batch_size, n_heads, seq_len, head_dim, device=self.device, dtype=self.dtype)
+        K = torch.randn(batch_size, n_heads, seq_len, head_dim, device=self.device, dtype=self.dtype)
+        
+        # RoPE cos/sin
+        cos = torch.randn(seq_len, head_dim, device=self.device, dtype=self.dtype)
+        sin = torch.randn(seq_len, head_dim, device=self.device, dtype=self.dtype)
+        
+        # PyTorch Fallback (Simulated Reference)
+        # Using the slow implementation manually for baseline
+        from unsloth.kernels.rope_embedding import Slow_RoPE_Embedding
+        
+        def torch_rope(q, k, c, s):
+            # Slow implementation expects (batch, heads, seq, dim)
+            # But Slow_RoPE_Embedding takes (Q, cos, sin, position_ids)
+            # and reshapes Q to (batch, seq, heads, dim) internally? 
+            # Wait, Slow_RoPE_Embedding forward implementation:
+            # Q * cos + ...
+            # it handles broadcasting.
+            
+            # Let's use the exact reference logic from slow_rope
+            q_out = Slow_RoPE_Embedding.apply(q.transpose(1, 2), c, s, None).transpose(1, 2)
+            k_out = Slow_RoPE_Embedding.apply(k.transpose(1, 2), c, s, None).transpose(1, 2)
+            return q_out, k_out
+
+        # Warmup
+        q_ref, k_ref = torch_rope(Q, K, cos, sin)
+        if self.device.type == "mps":
+             torch.mps.synchronize()
+
+        iters = 50
+        start = time.time()
+        for _ in range(iters):
+            _ = torch_rope(Q, K, cos, sin)
+        if self.device.type == "mps":
+            torch.mps.synchronize()
+        torch_latency = (time.time() - start) * 1000 / iters
+        log_result("PyTorch Native", torch_latency)
+
+        if HAS_MLX:
+            # MLX Optimized
+            from unsloth.kernels.mlx.fast_ops import mlx_rope_qk
+            
+            # Pre-convert inputs
+            Q_mlx = torch_to_mlx(Q)
+            K_mlx = torch_to_mlx(K)
+            cos_mlx = torch_to_mlx(cos)
+            sin_mlx = torch_to_mlx(sin)
+            
+            # Warmup
+            q_out, k_out = mlx_rope_qk(Q_mlx, K_mlx, cos_mlx, sin_mlx)
+            mx.eval(q_out, k_out)
+            
+            start = time.time()
+            for _ in range(iters):
+                 res = mlx_rope_qk(Q_mlx, K_mlx, cos_mlx, sin_mlx)
+                 mx.eval(res[0], res[1])
+            # No sync needed as it returns torch tensors which syncs
+            mlx_latency = (time.time() - start) * 1000 / iters
+            
+            # Error check
+            # res is (q_out_mlx, k_out_mlx)
+            q_res_torch = mlx_to_torch(res[0])
+            err_q = (q_ref - q_res_torch).abs().max().item()
+            
+            log_result("MLX Optimized", mlx_latency, err_q, mem=get_mem_stats())
+
+        
         elements = batch_size * seq_len * dim
         e = torch.randn(batch_size, seq_len, dim, device=self.device, dtype=self.dtype)
         g = torch.randn(batch_size, seq_len, dim, device=self.device, dtype=self.dtype)
@@ -504,12 +575,16 @@ if __name__ == "__main__":
     benchmark.run_llama3_benchmark(batch_size=8, seq_len=512)
     benchmark.run_qkv_benchmark(batch_size=8, seq_len=512)
     benchmark.run_swiglu_benchmark(batch_size=8, seq_len=512, dim=14336)
-    benchmark.run_geglu_benchmark(batch_size=8, seq_len=512, dim=4096)
+    benchmark.run_geglu_benchmark(batch_size=8, seq_len=512)
     benchmark.run_rms_benchmark(batch_size=8, seq_len=512, dim=4096)
+    benchmark.run_rope_benchmark(batch_size=8, seq_len=512)
 
-    log_header("Benchmark Summary")
+    print("\n" + "="*80)
+    print(f"{'Benchmark Summary':^80}")
+    print("="*80)
     print(f"{colors.YELLOW}Notes:{colors.ENDC}")
     print("- B=1 cases utilize the specialized SIMD Metal GEMV kernel.")
     print("- B>1 cases utilize the Compiled MLX graph fusion.")
     print("- 4-bit cases use direct quantized_matmul within the MLX graph.")
     print("- VRAM estimates reflect active GPU memory in MB.")
+
