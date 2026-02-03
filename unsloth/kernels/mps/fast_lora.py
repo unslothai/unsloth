@@ -96,6 +96,13 @@ def mps_matmul_lora(X, W, W_quant, A, B, s):
         B_ = B.t().to(dtype)
         
         XA = torch.matmul(X, A_)
+        
+        # print(f"DEBUG: dtype={dtype}, X={X.dtype}, A_={A_.dtype}, B_={B_.dtype}, XA={XA.dtype}, out={out.dtype}")
+        
+        if XA.dtype != B_.dtype:
+            # Force B_ to match XA if inconsistent
+            B_ = B_.to(XA.dtype)
+
         out.view(-1, out.shape[-1]).addmm_(
             XA.view(-1, XA.shape[-1]), B_, alpha=s
         )
