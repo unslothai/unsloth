@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Optional
 if TYPE_CHECKING:
     import torch
 
+import mlx.core as mx
 _MLX_FAST_AVAILABLE: Optional[bool] = None
 
 
