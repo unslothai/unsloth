@@ -384,6 +384,27 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
 
     function = function.replace(string_to_find, replacement_string)
 
+    # Unsloth: Skip prepare_multimodal_messages when prompts are pre-templated strings.
+    # When notebooks pre-apply apply_chat_template(), prompts become strings with image tokens
+    # already embedded. Calling prepare_multimodal_messages on strings crashes with TypeError.
+    # Skipping it keeps prompts as strings so TRL uses the non-conversational path, which
+    # ensures completions are strings and reward functions work correctly.
+    string_to_find_vision = """        if images is not None:
+            prompts = [
+                prepare_multimodal_messages(prompt, image_list)
+                for prompt, image_list in zip(prompts, images, strict=True)
+            ]"""
+
+    replacement_string_vision = """        if images is not None:
+            # Unsloth: skip prepare_multimodal_messages for pre-templated string prompts
+            if not prompts or not isinstance(prompts[0], str):
+                prompts = [
+                    prepare_multimodal_messages(prompt, image_list)
+                    for prompt, image_list in zip(prompts, images, strict=True)
+                ]"""
+
+    function = function.replace(string_to_find_vision, replacement_string_vision)
+
     # This path is for TRL 0.24.0 images is a variable exclusive to this version
     string_to_find = """        if images is not None:
             output["num_images"] = num_images"""
