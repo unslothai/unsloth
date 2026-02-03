@@ -65,6 +65,7 @@ except Exception:
     except Exception:
         trl_version = Version("0.0.0")
 
+
 # Check untrained tokens
 def sft_trainer_fix_untrained_tokens(call_args, extra_args):
     if "model" in call_args and "train_dataset" in call_args:
@@ -237,6 +238,7 @@ def grpo_trainer__prepare_inputs(function_name, function):
 
 
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__prepare_inputs)
+
 
 # Remove collective RPC of reload weights from generate
 # trl added reload weights (potentially for quantized models), we don't need it for our use case (LoRA primarily)
@@ -411,7 +413,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         # We replace the call using 'completions' with one using 'completions_text'
         string_to_find = "        rewards_per_func = self._calculate_rewards(inputs, prompts, completions, completion_ids_list)"
         replacement_string = "        rewards_per_func = self._calculate_rewards(inputs, prompts_text, completions_text, completion_ids_list)"
-        
+
         function = function.replace(string_to_find, replacement_string)
 
     if "wake_up()" not in function:
@@ -935,7 +937,7 @@ def grpo_trainer_compute_loss(function_name, function):
         logit_scale_divide = getattr(model.config, "logits_scaling", 0)  # Granite
         if logit_scale_divide is None:
             logit_scale_divide = 0
-        
+
         max_left_pad = inputs.get("max_left_pad", 0)
         if per_token_logps is not None:
             loss, completion_length, mean_kl, delta, flat_is_ratio, coef_1 = (
@@ -1076,7 +1078,8 @@ def grpo_trainer_compute_loss(function_name, function):
                 .item()
             )
 
-        completion_token_count = completion_mask.sum().clamp(min=1.0)
+        completion_token_count = completion_mask.sum().clamp(min = 1.0)
+
         def masked_batch_mean(x):
             if x.shape[1] == 1:  # when importance_sampling_level == "sequence"
                 return x.mean()
@@ -1097,21 +1100,32 @@ def grpo_trainer_compute_loss(function_name, function):
             clip_ratio = masked_batch_mean(is_region_clipped.float())
 
             gathered_low_clip = self.accelerator.gather(low_clip)
-            self._metrics[mode]["clip_ratio/low_mean"].append(gathered_low_clip.nanmean().item())
-            self._metrics[mode]["clip_ratio/low_min"].append(nanmin(gathered_low_clip).item())
+            self._metrics[mode]["clip_ratio/low_mean"].append(
+                gathered_low_clip.nanmean().item()
+            )
+            self._metrics[mode]["clip_ratio/low_min"].append(
+                nanmin(gathered_low_clip).item()
+            )
             gathered_high_clip = self.accelerator.gather(high_clip)
-            self._metrics[mode]["clip_ratio/high_mean"].append(gathered_high_clip.nanmean().item())
-            self._metrics[mode]["clip_ratio/high_max"].append(nanmax(gathered_high_clip).item())
+            self._metrics[mode]["clip_ratio/high_mean"].append(
+                gathered_high_clip.nanmean().item()
+            )
+            self._metrics[mode]["clip_ratio/high_max"].append(
+                nanmax(gathered_high_clip).item()
+            )
             gathered_clip_ratio = self.accelerator.gather(clip_ratio)
-            self._metrics[mode]["clip_ratio/region_mean"].append(gathered_clip_ratio.nanmean().item())
+            self._metrics[mode]["clip_ratio/region_mean"].append(
+                gathered_clip_ratio.nanmean().item()
+            )
         elif self.loss_type == "cispo":
             is_cispo_clipped = (coef_1 > self.epsilon_high) & (advantages > 0)
             cispo_clip_ratio = masked_batch_mean(is_cispo_clipped.float())
             gathered_cispo_clip_ratio = self.accelerator.gather(cispo_clip_ratio)
-            self._metrics[mode]["cispo_clip_ratio"].append(gathered_cispo_clip_ratio.nanmean().item())
+            self._metrics[mode]["cispo_clip_ratio"].append(
+                gathered_cispo_clip_ratio.nanmean().item()
+            )
 
         return loss
-
 
     function = inspect.getsource(compute_loss)
     return function

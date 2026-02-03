@@ -487,9 +487,9 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             checkpoint_pattern,
             "\n        # Gradient checkpointing version check removed via script\n",
             old_RLConfig_source,
-            flags=re.DOTALL
+            flags = re.DOTALL,
         )
-    
+
     all_imports = dir(trainer)
     # Fix _deprecate_arguments not getting imported so stop __ but not _
     imports = [x for x in all_imports if not x.startswith("__")]
@@ -1123,22 +1123,21 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         RLTrainer_source = re.sub(
             pattern, new_options, RLTrainer_source, flags = re.DOTALL
         )
-        
+
         if trl_version >= Version("0.26.0"):
             peft_block_pattern = (
-                r"\s*if is_peft_available\(\) and isinstance\(model, PeftModel\) and peft_config is not None:" 
-                r".*?" 
-                r"param\.data = param\.data\.to\(torch\.bfloat16\)" 
+                r"\s*if is_peft_available\(\) and isinstance\(model, PeftModel\) and peft_config is not None:"
+                r".*?"
+                r"param\.data = param\.data\.to\(torch\.bfloat16\)"
             )
 
             RLTrainer_source = re.sub(
-                peft_block_pattern, 
-                "\n        # TRL PEFT 0.26.0 initialization logic removed on unsloth side.\n", 
-                RLTrainer_source, 
-                flags=re.DOTALL
+                peft_block_pattern,
+                "\n        # TRL PEFT 0.26.0 initialization logic removed on unsloth side.\n",
+                RLTrainer_source,
+                flags = re.DOTALL,
             )
-    
-    
+
     if RLTrainer_name == "SFTTrainer":
         original_text = 'self._signature_columns = ["input_ids", "attention_mask", "completion_mask"]'
         new_text = 'self._signature_columns = ["input_ids", "attention_mask", "completion_mask","labels"]'
