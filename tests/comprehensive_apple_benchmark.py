@@ -141,26 +141,26 @@ class ComprehensiveBenchmark:
                 X_mlx,
                 gateW,
                 None,
-                gateA,
-                gateB,
-                gateS,
+                A,
+                B,
+                S,
                 upW,
                 None,
-                upA,
-                upB,
-                upS,
+                A,
+                B,
+                S,
                 downW,
                 None,
-                downB.T,
-                downA.T,
-                downS,
+                B.T,
+                A.T,
+                S,
             )
             mx.eval(res)
 
             start = time.time()
             for _ in range(iters):
-                _ = apply_lora_mlp_swiglu(
-                    X,
+                res = apply_lora_mlp_swiglu(
+                    X_mlx,
                     gateW,
                     None,
                     A,
@@ -177,6 +177,7 @@ class ComprehensiveBenchmark:
                     A.T,
                     S,
                 )
+                mx.eval(res)
             mlx_16_latency = (time.time() - start) * 1000 / iters
 
             error = (y_ref - y_mlx).abs().max().item()
