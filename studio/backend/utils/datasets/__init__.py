@@ -59,6 +59,7 @@ from .model_mappings import (
 # Legacy imports from the original dataset_utils.py for backward compatibility
 # These functions have not yet been refactored into separate modules
 from .dataset_utils import (
+    check_dataset_format,
     format_and_template_dataset,
     format_dataset,
 )
@@ -90,7 +91,8 @@ __all__ = [
     "TEMPLATE_TO_MODEL_MAPPER",
     "MODEL_TO_TEMPLATE_MAPPER",
     "TEMPLATE_TO_RESPONSES_MAPPER",
-    # Legacy (backward compat)
+    # Main entry points
+    "check_dataset_format",
     "format_and_template_dataset",
     "format_dataset",
 ]
