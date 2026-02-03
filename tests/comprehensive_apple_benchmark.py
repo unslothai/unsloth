@@ -116,12 +116,15 @@ class ComprehensiveBenchmark:
                 torch.mps.synchronize()
 
         iters = 50
+        # Increase iters for small batches
+        actual_iters = iters * 10 if batch_size == 1 else iters
+        
         start = time.time()
-        for _ in range(iters):
-            _ = torch_mlp(X)
+        for _ in range(actual_iters):
+             _ = torch_mlp(X)
         if self.device.type == "mps":
-            torch.mps.synchronize()
-        torch_latency = (time.time() - start) * 1000 / iters
+             torch.mps.synchronize()
+        torch_latency = (time.time() - start) * 1000 / actual_iters
         log_result("PyTorch Native (FP16)", torch_latency)
 
         if HAS_MLX:
@@ -158,28 +161,16 @@ class ComprehensiveBenchmark:
             mx.eval(res)
             y_mlx = mlx_to_torch(res)
 
+            # Increase iters for small batches
+            actual_iters = iters * 10 if batch_size == 1 else iters
+            
             start = time.time()
-            for _ in range(iters):
+            for _ in range(actual_iters):
                 res = apply_lora_mlp_swiglu(
-                    X_mlx,
-                    gateW,
-                    None,
-                    A,
-                    B,
-                    S,
-                    upW,
-                    None,
-                    A,
-                    B,
-                    S,
-                    downW,
-                    None,
-                    B.T,
-                    A.T,
-                    S,
+                    X_mlx, gateW, None, A, B, S, upW, None, A, B, S, downW, None, B.T, A.T, S
                 )
-                mx.eval(res)
-            mlx_16_latency = (time.time() - start) * 1000 / iters
+            mx.eval(res)
+            mlx_16_latency = (time.time() - start) * 1000 / actual_iters
 
             error = (y_ref - y_mlx).abs().max().item()
             log_result(
@@ -214,26 +205,16 @@ class ComprehensiveBenchmark:
                 )
 
             start = time.time()
-            for _ in range(iters):
-                _ = apply_lora_mlp_swiglu(
-                    X,
-                    gateW,
-                    None,
-                    A,
-                    B,
-                    S,
-                    upW,
-                    None,
-                    A,
-                    B,
-                    S,
-                    downW,
-                    None,
-                    B.T,
-                    A.T,
-                    S,
+            # Increase iters for small batches
+            actual_iters = iters * 10 if batch_size == 1 else iters
+            
+            start = time.time()
+            for _ in range(actual_iters):
+                res = apply_lora_mlp_swiglu(
+                    X, gateW, None, A, B, S, upW, None, A, B, S, downW, None, B.T, A.T, S
                 )
-            mlx_4_latency = (time.time() - start) * 1000 / iters
+            mx.eval(res)
+            mlx_4_latency = (time.time() - start) * 1000 / actual_iters
 
             error_q = (y_ref - y_q).abs().max().item()
             log_result(
@@ -299,13 +280,17 @@ class ComprehensiveBenchmark:
             v_mlx = mlx_to_torch(v_mlx)
 
             start = time.time()
-            for _ in range(iters):
+            # Increase iters for small batches
+            actual_iters = iters * 10 if batch_size == 1 else iters
+            
+            start = time.time()
+            for _ in range(actual_iters):
                 res = apply_lora_qkv(
                     X_mlx, QW, None, QA, QB, QS, KW, None, QA, QB, QS, VW, None, QA, QB, QS
                 )
-                # Force eval (tuple of arrays)
-                mx.eval(*res)
-            mlx_latency = (time.time() - start) * 1000 / iters
+            # Force final eval
+            mx.eval(*res)
+            mlx_latency = (time.time() - start) * 1000 / actual_iters
 
             error = (q_ref - q_mlx).abs().max().item()
             log_result("MLX Optimized", mlx_latency, error, mem=get_mem_stats())
@@ -332,27 +317,33 @@ class ComprehensiveBenchmark:
             return torch.nn.functional.silu(e) * g
             
         iters = 50
+        # Increase iters for small batches
+        actual_iters = iters * 10 if batch_size == 1 else iters
+        
         start = time.time()
-        for _ in range(iters):
-            _ = torch_swiglu()
+        for _ in range(actual_iters):
+             _ = torch_swiglu()
         if self.device.type == "mps":
-            torch.mps.synchronize()
-        torch_lat = (time.time() - start) * 1000 / iters
+             torch.mps.synchronize()
+        torch_lat = (time.time() - start) * 1000 / actual_iters
         log_result("PyTorch Native", torch_lat)
 
         if HAS_MLX:
             e_mlx = torch_to_mlx(e)
             g_mlx = torch_to_mlx(g)
             
+            # Increase iters for small batches
+            actual_iters = iters * 10 if batch_size == 1 else iters
+            
             # MLX Composed
             def mlx_composed():
                 return mx.sigmoid(e_mlx) * e_mlx * g_mlx
             
             start = time.time()
-            for _ in range(iters):
+            for _ in range(actual_iters):
                 res = mlx_composed()
-                mx.eval(res)
-            mlx_lat = (time.time() - start) * 1000 / iters
+            mx.eval(res)
+            mlx_lat = (time.time() - start) * 1000 / actual_iters
             log_result("MLX Composed", mlx_lat)
             
             # Unsloth Fused
@@ -360,10 +351,10 @@ class ComprehensiveBenchmark:
                 return mlx_swiglu_forward(e_mlx, g_mlx)
                 
             start = time.time()
-            for _ in range(iters):
+            for _ in range(actual_iters):
                 res = mlx_fused()
-                mx.eval(res)
-            fused_lat = (time.time() - start) * 1000 / iters
+            mx.eval(res)
+            fused_lat = (time.time() - start) * 1000 / actual_iters
             speedup = mlx_lat / fused_lat
             log_result("Unsloth Fused Metal", fused_lat, extra=f"({speedup:.2f}x Speedup)", mem=get_mem_stats())
 
@@ -405,12 +396,15 @@ class ComprehensiveBenchmark:
              torch.mps.synchronize()
 
         iters = 50
+        # Increase iters for small batches
+        actual_iters = iters * 10 if batch_size == 1 else iters
+
         start = time.time()
-        for _ in range(iters):
+        for _ in range(actual_iters):
             _ = torch_rope(Q.clone(), K.clone(), cos, sin)
         if self.device.type == "mps":
             torch.mps.synchronize()
-        torch_latency = (time.time() - start) * 1000 / iters
+        torch_latency = (time.time() - start) * 1000 / actual_iters
         log_result("PyTorch Native", torch_latency)
 
         if HAS_MLX:
@@ -427,12 +421,15 @@ class ComprehensiveBenchmark:
             q_out, k_out = mlx_rope_qk(Q_mlx, K_mlx, cos_mlx, sin_mlx)
             mx.eval(q_out, k_out)
             
+            # Increase iters for small batches
+            actual_iters = iters * 10 if batch_size == 1 else iters
+            
             start = time.time()
-            for _ in range(iters):
+            for _ in range(actual_iters):
                  res = mlx_rope_qk(Q_mlx, K_mlx, cos_mlx, sin_mlx)
-                 mx.eval(res[0], res[1])
-            # No sync needed as it returns torch tensors which syncs
-            mlx_latency = (time.time() - start) * 1000 / iters
+            # Final sync
+            mx.eval(res[0], res[1])
+            mlx_latency = (time.time() - start) * 1000 / actual_iters
             
             # Error check
             # res is (q_out_mlx, k_out_mlx)
@@ -458,12 +455,15 @@ class ComprehensiveBenchmark:
             return torch.nn.functional.gelu(e) * g
 
         iters = 50
+        # Increase iters for small batches
+        actual_iters = iters * 10 if batch_size == 1 else iters
+        
         start = time.time()
-        for _ in range(iters):
-            _ = torch_geglu()
+        for _ in range(actual_iters):
+             _ = torch_geglu()
         if self.device.type == "mps":
-            torch.mps.synchronize()
-        torch_lat = (time.time() - start) * 1000 / iters
+             torch.mps.synchronize()
+        torch_lat = (time.time() - start) * 1000 / actual_iters
         log_result("PyTorch Native", torch_lat)
 
         if HAS_MLX:
@@ -474,11 +474,14 @@ class ComprehensiveBenchmark:
             def mlx_fused():
                 return mlx_geglu_exact_forward(e_mlx, g_mlx)
 
+            # Increase iters for small batches
+            actual_iters = iters * 10 if batch_size == 1 else iters
+            
             start = time.time()
-            for _ in range(iters):
+            for _ in range(actual_iters):
                 res = mlx_fused()
-                mx.eval(res)
-            fused_lat = (time.time() - start) * 1000 / iters
+            mx.eval(res)
+            fused_lat = (time.time() - start) * 1000 / actual_iters
             log_result("Unsloth Fused Metal", fused_lat, mem=get_mem_stats())
 
     def run_rms_benchmark(self, batch_size=1, seq_len=1, dim=4096):
@@ -498,26 +501,32 @@ class ComprehensiveBenchmark:
             return torch.no_grad()(lambda: x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + eps) * w)()
 
         iters = 50
+        # Increase iters for small batches
+        actual_iters = iters * 10 if batch_size == 1 else iters
+        
         start = time.time()
-        for _ in range(iters):
-            _ = torch_rms()
+        for _ in range(actual_iters):
+             _ = torch_rms()
         if self.device.type == "mps":
-            torch.mps.synchronize()
-        torch_lat = (time.time() - start) * 1000 / iters
+             torch.mps.synchronize()
+        torch_lat = (time.time() - start) * 1000 / actual_iters
         log_result("PyTorch Native (Simulated)", torch_lat)
 
         if HAS_MLX:
             x_mlx = torch_to_mlx(x)
             w_mlx = torch_to_mlx(w)
             
+            # Increase iters for small batches
+            actual_iters = iters * 10 if batch_size == 1 else iters
+            
             def mlx_fused():
                 return metal_rms_layernorm(x_mlx, w_mlx, eps)
             
             start = time.time()
-            for _ in range(iters):
+            for _ in range(actual_iters):
                 res = mlx_fused()
-                mx.eval(res)
-            fused_lat = (time.time() - start) * 1000 / iters
+            mx.eval(res)
+            fused_lat = (time.time() - start) * 1000 / actual_iters
             log_result("Unsloth Fused Metal", fused_lat, mem=get_mem_stats())
 
 
