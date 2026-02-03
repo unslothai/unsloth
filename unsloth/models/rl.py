@@ -1550,10 +1550,47 @@ def patch_trl_openenv():
     return
 
 
+def _patch_prepare_multimodal_messages():
+    """Fix 2: TRL >= 0.25.1 calls prepare_multimodal_messages unconditionally for
+    vision models. When notebooks pre-apply chat templates (converting prompts to strings),
+    the function crashes iterating over characters. This patch adds isinstance(messages, str)
+    guard to return strings unchanged."""
+    try:
+        import trl.data_utils as _du
+    except ImportError:
+        return
+
+    _original = getattr(_du, "prepare_multimodal_messages", None)
+    if _original is None:
+        return
+    if getattr(_original, "_unsloth_patched", False):
+        return
+
+    def _safe_prepare_multimodal_messages(messages, *args, **kwargs):
+        # If messages is already a string (pre-applied chat template), return as-is
+        if isinstance(messages, str):
+            return messages
+        return _original(messages, *args, **kwargs)
+
+    _safe_prepare_multimodal_messages._unsloth_patched = True
+    _du.prepare_multimodal_messages = _safe_prepare_multimodal_messages
+
+    # Also patch in grpo_trainer module if imported
+    try:
+        import trl.trainer.grpo_trainer as _gt
+        if hasattr(_gt, "prepare_multimodal_messages"):
+            _gt.prepare_multimodal_messages = _safe_prepare_multimodal_messages
+    except ImportError:
+        pass
+
+    logger.info("Unsloth: Patched prepare_multimodal_messages with string guard")
+
+
 def PatchFastRL(algorithm = None, FastLanguageModel = None):
     if FastLanguageModel is not None:
         PatchRL(FastLanguageModel)
     patch_trl_rl_trainers()
     patch_trl_openenv()
+    _patch_prepare_multimodal_messages()
     if type(algorithm) is str and algorithm.islower():
         PatchRLStatistics(algorithm)
