@@ -891,6 +891,15 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         )
         extra_args += learning_rate_check
 
+    # Fix num_train_epochs = None causing TypeError in Trainer.__init__
+    # Trainer does `args.num_train_epochs > 0` which fails when None
+    if "num_train_epochs" in call_args:
+        num_train_epochs_check = (
+            "if num_train_epochs is None:\n"
+            "    num_train_epochs = 3.0  # Default to 3 epochs if None, max_steps will override\n"
+        )
+        extra_args += num_train_epochs_check
+
     # Check if max_seq_length is NOT defined (max_length is now default)
     if "max_seq_length" not in call_args and "max_length" in call_args:
         max_seq_length_pre = """max_seq_length : Optional[int] = field(
