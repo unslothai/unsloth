@@ -59,6 +59,7 @@ __all__ = [
     "unsloth_fused_ce_loss",
     "patch_unsloth_smart_gradient_checkpointing",
     "unpatch_unsloth_smart_gradient_checkpointing",
+    "apply_unsloth_gradient_checkpointing",
     "patch_compiled_autograd",
     "process_vision_info",
     "unsloth_compile_transformers",
@@ -147,6 +148,39 @@ from unsloth_zoo.training_utils import (
 from unsloth_zoo.temporary_patches import (
     TEMPORARY_PATCHES,
 )
+
+
+def apply_unsloth_gradient_checkpointing(use_gradient_checkpointing, max_seq_length, dtype):
+    """
+    Apply gradient checkpointing with smart heuristics.
+
+    For seq < 512, the overhead of gradient offloading in gc="unsloth" mode
+    is not worth it. Benchmarks show standard gc is faster for small sequences.
+
+    Args:
+        use_gradient_checkpointing: "unsloth", True, False, or None
+        max_seq_length: The maximum sequence length
+        dtype: The model dtype for patching
+
+    Returns:
+        The effective use_gradient_checkpointing value (may change from "unsloth" to True)
+    """
+    if use_gradient_checkpointing == "unsloth":
+        # Gradient offloading overhead is not worth it for small sequences.
+        # Benchmarks show crossover point is around seq_len 384-512.
+        # For seq < 512, standard gradient checkpointing is faster.
+        if max_seq_length < 512:
+            unpatch_unsloth_smart_gradient_checkpointing()
+            return True
+        else:
+            patch_unsloth_smart_gradient_checkpointing(dtype=dtype)
+            return "unsloth"
+    elif use_gradient_checkpointing in (True, False):
+        # User explicitly set True or False - unpatch any previous "unsloth" patching
+        unpatch_unsloth_smart_gradient_checkpointing()
+        return use_gradient_checkpointing
+    return use_gradient_checkpointing
+
 
 for temporary_patch in TEMPORARY_PATCHES:
     temporary_patch()
