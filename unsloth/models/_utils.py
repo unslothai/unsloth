@@ -150,7 +150,9 @@ from unsloth_zoo.temporary_patches import (
 )
 
 
-def apply_unsloth_gradient_checkpointing(use_gradient_checkpointing, max_seq_length, dtype):
+def apply_unsloth_gradient_checkpointing(
+    use_gradient_checkpointing, max_seq_length, dtype
+):
     """
     Apply gradient checkpointing with smart heuristics.
 
@@ -173,7 +175,7 @@ def apply_unsloth_gradient_checkpointing(use_gradient_checkpointing, max_seq_len
             unpatch_unsloth_smart_gradient_checkpointing()
             return True
         else:
-            patch_unsloth_smart_gradient_checkpointing(dtype=dtype)
+            patch_unsloth_smart_gradient_checkpointing(dtype = dtype)
             return "unsloth"
     elif use_gradient_checkpointing in (True, False):
         # User explicitly set True or False - unpatch any previous "unsloth" patching
