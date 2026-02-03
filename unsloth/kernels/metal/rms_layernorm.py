@@ -3,10 +3,9 @@
 
 from unsloth.kernels.mlx.bridge import torch_to_mlx, mlx_to_torch, mlx_context
 from functools import lru_cache
-from typing import Tuple, TYPE_CHECKING, Optional, Dict
-
+import torch
 if TYPE_CHECKING:
-    import torch
+    pass
 
 # Metal Shader for RMSNorm Backward
 # -----------------------------------------------------------------------------

@@ -11,10 +11,9 @@ Achieves ~97 GB/s on M4 (81% of 120 GB/s peak) vs ~60 GB/s PyTorch MPS.
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import TYPE_CHECKING, Tuple, Optional
-
+import torch
 if TYPE_CHECKING:
-    import torch
+    pass
 
 __all__ = [
     "metal_swiglu_forward",
