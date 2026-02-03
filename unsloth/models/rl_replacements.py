@@ -412,8 +412,12 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
     if trl_version >= Version("0.25.0"):
         # We replace the call using 'completions' with one using 'completions_text'
         string_to_find = "        rewards_per_func = self._calculate_rewards(inputs, prompts, completions, completion_ids_list)"
-        replacement_string = "        rewards_per_func = self._calculate_rewards(inputs, prompts_text, completions_text, completion_ids_list)"
-
+        replacement_string = (
+            "        if images is not None:\n"
+            "            rewards_per_func = self._calculate_rewards(inputs, prompts_text, completions_text, completion_ids_list)\n"
+            "        else:\n"
+            "            rewards_per_func = self._calculate_rewards(inputs, prompts, completions, completion_ids_list)"
+        )
         function = function.replace(string_to_find, replacement_string)
 
     if "wake_up()" not in function:
