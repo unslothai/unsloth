@@ -489,7 +489,7 @@ class InferenceBackend:
 
                 # Step 1: Apply get_chat_template if model is in mapper
                 try:
-                    from utils.datasets.dataset_utils import MODEL_TO_TEMPLATE_MAPPER, get_tokenizer_chat_template
+                    from utils.datasets import MODEL_TO_TEMPLATE_MAPPER, get_tokenizer_chat_template
 
                     model_name_lower = self.active_model_name.lower()
 
@@ -954,7 +954,7 @@ class InferenceBackend:
         }
 
         try:
-            from utils.datasets.dataset_utils import MODEL_TO_TEMPLATE_MAPPER
+            from utils.datasets import MODEL_TO_TEMPLATE_MAPPER
             #Try exact match first
             model_name_lower = model_name.lower()
             if model_name_lower in MODEL_TO_TEMPLATE_MAPPER:
