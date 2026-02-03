@@ -126,8 +126,9 @@ def torch_to_mlx(
                 return _mx_from_dlpack(capsule)
             # Fallback to mx.array(capsule) if from_dlpack is missing
             return _mx_array(capsule)
-        except Exception:
+        except Exception as e:
             # Fallback to CPU if DLPack fails
+            # print(f"Unsloth: MLX DLPack conversion failed: {str(e)}")
             pass
 
     # 2. CPU Fallback
@@ -135,6 +136,11 @@ def torch_to_mlx(
         tensor = tensor.contiguous()
     if tensor.device.type != "cpu":
         tensor = tensor.cpu()
+    
+    # NumPy does not support bfloat16
+    if tensor.dtype == torch.bfloat16:
+        tensor = tensor.float()
+        
     return _mx_array(tensor.detach().numpy())
 
 
