@@ -88,9 +88,16 @@ def mps_matmul_lora(X, W, W_quant, A, B, s):
     # LoRA contribution: (X @ A.t()) @ (B.t() * s)
     if A is not None:
         # X: (..., in_dim), A: (rank, in_dim), B: (out_dim, rank)
-        XA = torch.matmul(X, A.t().to(dtype))
+        # Ensure consistent dtype for all operands
+        if out.dtype != dtype:
+            out = out.to(dtype=dtype)
+            
+        A_ = A.t().to(dtype)
+        B_ = B.t().to(dtype)
+        
+        XA = torch.matmul(X, A_)
         out.view(-1, out.shape[-1]).addmm_(
-            XA.view(-1, XA.shape[-1]), B.t().to(dtype), alpha=s
+            XA.view(-1, XA.shape[-1]), B_, alpha=s
         )
 
     return out
