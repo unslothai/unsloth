@@ -2,6 +2,7 @@
 Dataset utilities for format detection, conversion, and template application.
 
 This module provides the main entry points for dataset processing:
+- check_dataset_format: Lightweight check if manual mapping is needed (for frontend)
 - format_dataset: Detects and normalizes dataset formats
 - format_and_template_dataset: End-to-end processing with chat template application
 
@@ -38,6 +39,79 @@ from .vlm_processing import generate_smart_vlm_instruction
 from .data_collators import DeepSeekOCRDataCollator, VLMDataCollator
 from .model_mappings import TEMPLATE_TO_MODEL_MAPPER, RESPONSE_MARKERS
 
+
+def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
+    """
+    Lightweight format check without processing - for frontend validation.
+    
+    Use this to quickly determine if user needs to manually map columns
+    before calling the full format_and_template_dataset().
+    
+    Args:
+        dataset: HuggingFace dataset
+        is_vlm: Whether this is a Vision-Language Model dataset
+    
+    Returns:
+        dict: {
+            "requires_manual_mapping": bool - True if user must map columns,
+            "detected_format": str - The detected format,
+            "columns": list - Available column names for mapping UI,
+            "suggested_mapping": dict or None - Auto-detected mapping if available,
+            "detected_image_column": str or None - For VLM only,
+            "detected_text_column": str or None - For VLM only,
+        }
+    """
+    columns = list(dataset.column_names) if hasattr(dataset, 'column_names') else list(next(iter(dataset)).keys())
+    
+    if is_vlm:
+        vlm_structure = detect_vlm_dataset_structure(dataset)
+        requires_mapping = vlm_structure["format"] == "unknown"
+        
+        return {
+            "requires_manual_mapping": requires_mapping,
+            "detected_format": vlm_structure["format"],
+            "columns": columns,
+            "suggested_mapping": None,
+            "detected_image_column": vlm_structure.get("image_column"),
+            "detected_text_column": vlm_structure.get("text_column"),
+        }
+    else:
+        # LLM flow
+        detected = detect_dataset_format(dataset)
+        
+        # If format is unknown, try heuristic detection
+        if detected["format"] == "unknown":
+            heuristic_mapping = detect_custom_format_heuristic(dataset)
+            if heuristic_mapping:
+                # Heuristic succeeded - no manual mapping needed
+                return {
+                    "requires_manual_mapping": False,
+                    "detected_format": "custom_heuristic",
+                    "columns": columns,
+                    "suggested_mapping": heuristic_mapping,
+                    "detected_image_column": None,
+                    "detected_text_column": None,
+                }
+            else:
+                # Both detection and heuristic failed
+                return {
+                    "requires_manual_mapping": True,
+                    "detected_format": "unknown",
+                    "columns": columns,
+                    "suggested_mapping": None,
+                    "detected_image_column": None,
+                    "detected_text_column": None,
+                }
+        
+        # Known format detected
+        return {
+            "requires_manual_mapping": False,
+            "detected_format": detected["format"],
+            "columns": columns,
+            "suggested_mapping": None,
+            "detected_image_column": None,
+            "detected_text_column": None,
+        }
 
 def _apply_user_mapping(dataset, mapping: dict, batch_size: int = 1000):
     """
