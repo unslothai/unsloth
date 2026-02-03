@@ -303,6 +303,136 @@ class ComprehensiveBenchmark:
             batch_size=batch_size, seq_len=seq_len, dim=4096, hidden_dim=14336
         )
 
+    def run_swiglu_benchmark(self, batch_size=1, seq_len=1, dim=4096):
+        log_header(f"SwiGLU Benchmark: B={batch_size}, S={seq_len}, D={dim}")
+        
+        # Imports
+        from unsloth.kernels.metal.swiglu import mlx_swiglu_forward
+        
+        elements = batch_size * seq_len * dim
+        e = torch.randn(batch_size, seq_len, dim, device=self.device, dtype=self.dtype)
+        g = torch.randn(batch_size, seq_len, dim, device=self.device, dtype=self.dtype)
+        
+        # PyTorch Native
+        def torch_swiglu():
+            return torch.nn.functional.silu(e) * g
+            
+        iters = 50
+        start = time.time()
+        for _ in range(iters):
+            _ = torch_swiglu()
+        if self.device.type == "mps":
+            torch.mps.synchronize()
+        torch_lat = (time.time() - start) * 1000 / iters
+        log_result("PyTorch Native", torch_lat)
+
+        if HAS_MLX:
+            e_mlx = torch_to_mlx(e)
+            g_mlx = torch_to_mlx(g)
+            
+            # MLX Composed
+            def mlx_composed():
+                return mx.sigmoid(e_mlx) * e_mlx * g_mlx
+            
+            start = time.time()
+            for _ in range(iters):
+                res = mlx_composed()
+                mx.eval(res)
+            mlx_lat = (time.time() - start) * 1000 / iters
+            log_result("MLX Composed", mlx_lat)
+            
+            # Unsloth Fused
+            def mlx_fused():
+                return mlx_swiglu_forward(e_mlx, g_mlx)
+                
+            start = time.time()
+            for _ in range(iters):
+                res = mlx_fused()
+                mx.eval(res)
+            fused_lat = (time.time() - start) * 1000 / iters
+            speedup = mlx_lat / fused_lat
+            log_result("Unsloth Fused Metal", fused_lat, extra=f"({speedup:.2f}x Speedup)", mem=get_mem_stats())
+            
+    def run_geglu_benchmark(self, batch_size=1, seq_len=1, dim=4096):
+        log_header(f"GEGLU Benchmark: B={batch_size}, S={seq_len}, D={dim}")
+         # Imports
+        try:
+            from unsloth.kernels.metal.geglu import mlx_geglu_exact_forward
+        except ImportError:
+            print("GEGLU kernel not found.")
+            return
+
+        e = torch.randn(batch_size, seq_len, dim, device=self.device, dtype=self.dtype)
+        g = torch.randn(batch_size, seq_len, dim, device=self.device, dtype=self.dtype)
+
+        # PyTorch Native
+        def torch_geglu():
+            return torch.nn.functional.gelu(e) * g
+
+        iters = 50
+        start = time.time()
+        for _ in range(iters):
+            _ = torch_geglu()
+        if self.device.type == "mps":
+            torch.mps.synchronize()
+        torch_lat = (time.time() - start) * 1000 / iters
+        log_result("PyTorch Native", torch_lat)
+
+        if HAS_MLX:
+            e_mlx = torch_to_mlx(e)
+            g_mlx = torch_to_mlx(g)
+            
+            # unsloth fused
+            def mlx_fused():
+                return mlx_geglu_exact_forward(e_mlx, g_mlx)
+
+            start = time.time()
+            for _ in range(iters):
+                res = mlx_fused()
+                mx.eval(res)
+            fused_lat = (time.time() - start) * 1000 / iters
+            log_result("Unsloth Fused Metal", fused_lat, mem=get_mem_stats())
+
+    def run_rms_benchmark(self, batch_size=1, seq_len=1, dim=4096):
+        log_header(f"RMS Norm Benchmark: B={batch_size}, S={seq_len}, D={dim}")
+        try:
+             from unsloth.kernels.metal import metal_rms_layernorm
+        except ImportError:
+            print("RMS kernel not found.")
+            return
+
+        x = torch.randn(batch_size, seq_len, dim, device=self.device, dtype=self.dtype)
+        w = torch.randn(dim, device=self.device, dtype=self.dtype)
+        eps = 1e-6
+
+        # PyTorch Native
+        def torch_rms():
+            return torch.no_grad()(lambda: x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + eps) * w)()
+
+        iters = 50
+        start = time.time()
+        for _ in range(iters):
+            _ = torch_rms()
+        if self.device.type == "mps":
+            torch.mps.synchronize()
+        torch_lat = (time.time() - start) * 1000 / iters
+        log_result("PyTorch Native (Simulated)", torch_lat)
+
+        if HAS_MLX:
+            x_mlx = torch_to_mlx(x)
+            w_mlx = torch_to_mlx(w)
+            
+            def mlx_fused():
+                return metal_rms_layernorm(x_mlx, w_mlx, eps)
+            
+            start = time.time()
+            for _ in range(iters):
+                res = mlx_fused()
+                mx.eval(res)
+            fused_lat = (time.time() - start) * 1000 / iters
+            log_result("Unsloth Fused Metal", fused_lat, mem=get_mem_stats())
+
+
     def diagnose(self):
         log_header("System Diagnosis")
         print(f" Torch Version: {torch.__version__}")
@@ -353,9 +483,13 @@ if __name__ == "__main__":
     # Llama-3-8B Scale
     benchmark.run_llama3_benchmark(batch_size=1, seq_len=1)
     benchmark.run_qkv_benchmark(batch_size=1, seq_len=1)
+    benchmark.run_swiglu_benchmark(batch_size=1, seq_len=1, dim=14336)
+    benchmark.run_rms_benchmark(batch_size=1, seq_len=1, dim=4096)
 
     # 2. Large Workload Cases (Multi-batch)
     benchmark.run_llama3_benchmark(batch_size=8, seq_len=512)
+    benchmark.run_swiglu_benchmark(batch_size=8, seq_len=512, dim=14336)
+    benchmark.run_geglu_benchmark(batch_size=8, seq_len=512, dim=4096)
 
     log_header("Benchmark Summary")
     print(f"{colors.YELLOW}Notes:{colors.ENDC}")

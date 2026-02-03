@@ -24,11 +24,23 @@ def benchmark_fn(fn, warmup=10, iterations=50):
     for _ in range(warmup):
         fn()
     torch.mps.synchronize()
+    
+    start_mem = 0
+    if torch.backends.mps.is_available():
+        start_mem = torch.mps.current_allocated_memory()
+
     start = time.perf_counter()
     for _ in range(iterations):
         fn()
     torch.mps.synchronize()
-    return (time.perf_counter() - start) / iterations * 1000
+    
+    end_mem = 0
+    if torch.backends.mps.is_available():
+        end_mem = torch.mps.current_allocated_memory()
+        
+    avg_lat = (time.perf_counter() - start) / iterations * 1000
+    mem_delta = (end_mem - start_mem) / 1024 / 1024 # MB
+    return avg_lat, mem_delta
 
 
 def run_benchmark():
@@ -70,8 +82,8 @@ def run_benchmark():
             out = F.linear(act, downW)
             return out
 
-        t_torch = benchmark_fn(torch_mlp)
-        print(f"   PyTorch Native:   {t_torch:7.3f} ms")
+        t_torch, m_torch = benchmark_fn(torch_mlp)
+        print(f"   PyTorch Native:   {t_torch:7.3f} ms | Mem: {m_torch:.2f} MB")
 
         # 2. Unsloth Fused MLP (Simulated Chain)
         # We manually attach _mlx_cache to X to trigger the "Sandwich" path
@@ -99,9 +111,9 @@ def run_benchmark():
                 1.0,  # Down
             )
 
-        t_unsloth = benchmark_fn(unsloth_mlp)
+        t_unsloth, m_unsloth = benchmark_fn(unsloth_mlp)
         speedup = t_torch / t_unsloth
-        print(f"   Unsloth Fused:    {t_unsloth:7.3f} ms | {speedup:.2f}x Speedup")
+        print(f"   Unsloth Fused:    {t_unsloth:7.3f} ms | {speedup:.2f}x Speedup | Mem: {m_unsloth:.2f} MB")
 
         if speedup > 3.0:
             print("   🚀 Massive Speedup Detected!")
@@ -148,10 +160,10 @@ def run_benchmark():
         for _ in range(3):
             unsloth_merged_mlp()
 
-        t_merged = benchmark_fn(unsloth_merged_mlp)
+        t_merged, m_merged = benchmark_fn(unsloth_merged_mlp)
         speedup_merged = t_torch / t_merged
         print(
-            f"   Unsloth Merged:   {t_merged:7.3f} ms | {speedup_merged:.2f}x Speedup (Merged Gate/Up)"
+            f"   Unsloth Merged:   {t_merged:7.3f} ms | {speedup_merged:.2f}x Speedup (Merged Gate/Up) | Mem: {m_merged:.2f} MB"
         )
 
         # 5. Unsloth Compiled
@@ -184,10 +196,10 @@ def run_benchmark():
         for _ in range(5):
             run_compiled_args()
 
-        t_compiled = benchmark_fn(run_compiled_args)
+        t_compiled, m_compiled = benchmark_fn(run_compiled_args)
         speedup_compiled = t_torch / t_compiled
         print(
-            f"   Unsloth Compiled: {t_compiled:7.3f} ms | {speedup_compiled:.2f}x Speedup (mx.compile)"
+            f"   Unsloth Compiled: {t_compiled:7.3f} ms | {speedup_compiled:.2f}x Speedup (mx.compile) | Mem: {m_compiled:.2f} MB"
         )
 
         # 3. Unsloth Fused MLP (4-bit Quantized)
@@ -229,10 +241,10 @@ def run_benchmark():
                 1.0,
             )
 
-        t_unsloth_4bit = benchmark_fn(unsloth_mlp_4bit)
+        t_unsloth_4bit, m_4bit = benchmark_fn(unsloth_mlp_4bit)
         speedup_4bit = t_torch / t_unsloth_4bit
         print(
-            f"   Unsloth 4-bit:    {t_unsloth_4bit:7.3f} ms | {speedup_4bit:.2f}x Speedup (vs FP16 Torch)"
+            f"   Unsloth 4-bit:    {t_unsloth_4bit:7.3f} ms | {speedup_4bit:.2f}x Speedup (vs FP16 Torch) | Mem: {m_4bit:.2f} MB"
         )
 
     print("\n" + "=" * 60)
