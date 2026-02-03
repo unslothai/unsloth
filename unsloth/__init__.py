@@ -134,8 +134,10 @@ from .import_fixes import (
     patch_datasets,
     patch_enable_input_require_grads,
     fix_openenv_no_vllm,
+    patch_openspiel_env_async,
     fix_executorch,
     patch_vllm_for_notebooks,
+    patch_torchcodec_audio_decoder,
 )
 
 fix_xformers_performance_issue()
@@ -149,8 +151,10 @@ patch_trackio()
 patch_datasets()
 patch_enable_input_require_grads()
 fix_openenv_no_vllm()
+patch_openspiel_env_async()
 fix_executorch()
 patch_vllm_for_notebooks()
+patch_torchcodec_audio_decoder()
 
 del fix_xformers_performance_issue
 del fix_vllm_aimv2_issue
@@ -163,8 +167,10 @@ del patch_trackio
 del patch_datasets
 del patch_enable_input_require_grads
 del fix_openenv_no_vllm
+del patch_openspiel_env_async
 del fix_executorch
 del patch_vllm_for_notebooks
+del patch_torchcodec_audio_decoder
 
 # Torch 2.4 has including_emulation
 if DEVICE_TYPE == "cuda":
