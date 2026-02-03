@@ -1245,9 +1245,7 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
         "model = self._prepare_peft_model(model, peft_config, args)\n", "pass\n"
     )
     # TRL 0.22.0+ uses prepare_peft_model as a standalone function
-    init = init.replace(
-        "model = prepare_peft_model(model, peft_config, args)", "pass"
-    )
+    init = init.replace("model = prepare_peft_model(model, peft_config, args)", "pass")
 
     # Skip add_adapter("ref") for reference model computation
     # Unsloth: We comment out the "ref" adapter creation because:
