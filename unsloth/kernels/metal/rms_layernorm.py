@@ -119,7 +119,7 @@ def mlx_rms_layernorm_backward(dY_mlx, X_mlx, W_mlx, r_mlx, gemma=False):
     X_f32 = X_mlx.astype(mx.float32)
     W_f32 = W_mlx.astype(mx.float32)
     dY_f32 = dY_mlx.astype(mx.float32)
-    r_f32 = r_mlx.astype(mx.float32)[..., None]
+    r_f32 = r_mlx.astype(mx.float32)
 
     W_eff = (W_f32 + 1.0) if gemma else W_f32
 
