@@ -488,8 +488,10 @@ if __name__ == "__main__":
 
     # 2. Large Workload Cases (Multi-batch)
     benchmark.run_llama3_benchmark(batch_size=8, seq_len=512)
+    benchmark.run_qkv_benchmark(batch_size=8, seq_len=512)
     benchmark.run_swiglu_benchmark(batch_size=8, seq_len=512, dim=14336)
     benchmark.run_geglu_benchmark(batch_size=8, seq_len=512, dim=4096)
+    benchmark.run_rms_benchmark(batch_size=8, seq_len=512, dim=4096)
 
     log_header("Benchmark Summary")
     print(f"{colors.YELLOW}Notes:{colors.ENDC}")
