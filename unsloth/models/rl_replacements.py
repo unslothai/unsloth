@@ -247,6 +247,21 @@ def grpo_trainer__generate_single_turn(function_name, function):
         "",
         function,
     )
+
+    # TRL 0.24.0-0.25.1 right-truncation regression
+    # These versions pass max_length=self.max_prompt_length and truncation=True to the
+    # tokenizer, which right-truncates prompts and strips the assistant turn suffix.
+    # TRL 0.26.2+ removed these kwargs. We strip them for all versions (no-op if absent).
+    # Handles both direct kwargs (TRL 0.24.0) and processor_kwargs dict (TRL 0.25.1):
+    #   Direct: max_length=self.max_prompt_length,
+    #   Dict:   "max_length": self.max_prompt_length,
+    for pattern in [
+        r'["\']?max_length["\']?\s*[:=]\s*self\.max_prompt_length\s*,\s*\n?',
+        r'["\']?truncation["\']?\s*[:=]\s*True\s*,\s*\n?',
+        r'["\']?add_special_tokens["\']?\s*[:=]\s*False\s*,\s*\n?',
+    ]:
+        function = re.sub(pattern, "", function)
+
     return function
 
 
@@ -384,6 +399,31 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             output["sampling_per_token_logps"] = None"""
 
     function = function.replace(string_to_find, replacement_string)
+
+    # TRL 0.24.0+ extracts prompts = [x["prompt"] for x in inputs], losing metadata
+    # like reasoning_effort. Inject code to store per-sample chat_template_kwargs on self.
+    _metadata_extraction = (
+        "\n"
+        "        # Unsloth: Extract per-sample chat_template_kwargs before metadata is lost\n"
+        "        _ct_ = getattr(self.processing_class, 'chat_template', None) or ''\n"
+        "        _sk_ = {'prompt', 'chosen', 'rejected', 'completion', 'messages', 'label',\n"
+        "                'images', 'image', 'videos', 'video', 'audios', 'audio'}\n"
+        "        self._unsloth_batch_chat_kwargs = []\n"
+        "        for _inp_ in inputs:\n"
+        "            _kw_ = {}\n"
+        "            if isinstance(_inp_, dict):\n"
+        "                for _k_ in _inp_.keys() - _sk_:\n"
+        "                    if _k_ in _ct_ and isinstance(_inp_[_k_], str):\n"
+        "                        _kw_[_k_] = _inp_[_k_]\n"
+        "            self._unsloth_batch_chat_kwargs.append(_kw_)\n"
+    )
+    # Insert after: prompts = [x["prompt"] for x in inputs]
+    _target_line = 'prompts = [x["prompt"] for x in inputs]'
+    if _target_line in function:
+        function = function.replace(
+            _target_line,
+            _target_line + _metadata_extraction,
+        )
 
     # Unsloth: Skip prepare_multimodal_messages when prompts are pre-templated strings.
     # When notebooks pre-apply apply_chat_template(), prompts become strings with image tokens
@@ -538,9 +578,10 @@ def grpo_trainer_fix_maybe_apply_chat_template(function_name, function):
         _chat_template_ = getattr(self.processing_class, "chat_template", None)
         if _chat_template_ is None: _chat_template_ = ""
         _supported_keys_ = set(("prompt", "chosen", "rejected", "completion", "messages", "label"))
+        _batch_chat_kwargs_ = getattr(self, "_unsloth_batch_chat_kwargs", None)
 
         prompts_text = []
-        for _example_ in __INPUTS__REPLACEMENT__:
+        for _idx_, _example_ in enumerate(__INPUTS__REPLACEMENT__):
             _tokenizer_kwargs_ = {}
             if type(_example_) is not dict:
                 _example_ = {"prompt": _example_}
@@ -550,6 +591,10 @@ def grpo_trainer_fix_maybe_apply_chat_template(function_name, function):
                     v = _example_[k]
                     if type(v) is str:
                         _tokenizer_kwargs_[k] = v
+            if _batch_chat_kwargs_ is not None and _idx_ < len(_batch_chat_kwargs_):
+                for _bk_, _bv_ in _batch_chat_kwargs_[_idx_].items():
+                    if _bk_ not in _tokenizer_kwargs_:
+                        _tokenizer_kwargs_[_bk_] = _bv_
             _x_ = maybe_apply_chat_template(_example_, self.processing_class, **_tokenizer_kwargs_)["prompt"]
             prompts_text.append(_x_)
     """
