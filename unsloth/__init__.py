@@ -312,13 +312,28 @@ elif DEVICE_TYPE == "mps":
     # MPS/Apple Silicon - bitsandbytes not supported, Triton not available
     # 16-bit LoRA and full finetuning work via PyTorch's native MPS backend
     bnb = None
+    import sys
+    # Forcefully unload bitsandbytes if it was somehow loaded
+    for key in list(sys.modules.keys()):
+        if key.startswith("bitsandbytes"):
+            del sys.modules[key]
+    
+    # Fake bitsandbytes to prevent downstream imports from failing or succeeding
+    sys.modules["bitsandbytes"] = None
+
     try:
         import peft.import_utils
-
         peft.import_utils.is_bnb_available = lambda: False
         peft.import_utils.is_bnb_4bit_available = lambda: False
         peft.import_utils.is_bnb_8bit_available = lambda: False
-    except ImportError:
+        # Also patch peft.utils.other if it exists
+        try:
+            import peft.utils.other
+            peft.utils.other.is_bnb_available = lambda: False
+            peft.utils.other.is_bnb_4bit_available = lambda: False
+            peft.utils.other.is_bnb_8bit_available = lambda: False
+        except: pass
+    except:
         pass
 
 from .models import *
