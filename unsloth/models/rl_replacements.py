@@ -456,6 +456,25 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
 
     function = function.replace(string_to_find_fwd_old, replacement_string_fwd_old)
 
+    # TRL 0.25.1 single-line variant (no tools, single-line apply_chat_template call)
+    string_to_find_fwd_single = """        if images is not None:
+            prompts_text = [
+                apply_chat_template({"prompt": prompt}, self.processing_class, **self.chat_template_kwargs)["prompt"]
+                for prompt in prompts
+            ]"""
+
+    replacement_string_fwd_single = """        if images is not None:
+            # Unsloth: skip apply_chat_template for pre-templated string prompts
+            if prompts and isinstance(prompts[0], str):
+                prompts_text = prompts
+            else:
+                prompts_text = [
+                    apply_chat_template({"prompt": prompt}, self.processing_class, **self.chat_template_kwargs)["prompt"]
+                    for prompt in prompts
+                ]"""
+
+    function = function.replace(string_to_find_fwd_single, replacement_string_fwd_single)
+
     # This path is for TRL 0.24.0 images is a variable exclusive to this version
     string_to_find = """        if images is not None:
             output["num_images"] = num_images"""
