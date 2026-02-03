@@ -1093,35 +1093,26 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     )
 
     if RLTrainer_name == "GRPOTrainer":
-        # Generate torch_compile_options based on device type
-        if DEVICE_TYPE == "cuda":
-            new_options = """torch_compile_options = {
+        # Base torch_compile_options shared by all device types
+        base_options = """torch_compile_options = {
             "epilogue_fusion"   : True,
             "max_autotune"      : False,
             "shape_padding"     : True,
-            "trace.enabled"     : False,
-            #"combo_kernels"     : torch.cuda.get_device_capability()[0] >= 10,
+            "trace.enabled"     : False,"""
+
+        # Generate torch_compile_options based on device type
+        if DEVICE_TYPE == "cuda":
+            # CUDA-specific options (added to base options)
+            new_options = base_options + """
             "triton.enable_persistent_tma_matmul": torch.cuda.get_device_capability()[0] >= 9,
-            "cuda.cutlass_epilogue_fusion_enabled": torch.cuda.get_device_capability()[0] >= 9, 
-            "cuda.cutlass_tma_only": torch.cuda.get_device_capability()[0] >= 9, 
+            "cuda.cutlass_epilogue_fusion_enabled": torch.cuda.get_device_capability()[0] >= 9,
+            "cuda.cutlass_tma_only": torch.cuda.get_device_capability()[0] >= 9,
             "cuda.compile_opt_level"              : "-O2",
             "cuda.enable_cuda_lto"                : True,
         }"""
-        elif DEVICE_TYPE == "xpu":
-            # XPU-specific torch_compile_options (disable CUDA-specific options)
-            new_options = """torch_compile_options = {
-            "epilogue_fusion"   : True,
-            "max_autotune"      : False,
-            "shape_padding"     : True,
-            "trace.enabled"     : False,
-        }"""
         else:
-            # Default options for other device types (hip, etc.)
-            new_options = """torch_compile_options = {
-            "epilogue_fusion"   : True,
-            "max_autotune"      : False,
-            "shape_padding"     : True,
-            "trace.enabled"     : False,
+            # XPU, HIP, and other device types use base options only
+            new_options = base_options + """
         }"""
 
         pattern = r"torch_compile_options\s*=\s*\{[^}]*\}"
