@@ -138,6 +138,7 @@ def torch_to_mlx(
         tensor = tensor.cpu()
     
     # NumPy does not support bfloat16
+    import torch
     if tensor.dtype == torch.bfloat16:
         tensor = tensor.float()
         
