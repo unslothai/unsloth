@@ -88,7 +88,7 @@ from ._utils import (
     patch_compiling_bitsandbytes,
     patch_model_and_tokenizer,
     prepare_model_for_kbit_training,
-    patch_unsloth_smart_gradient_checkpointing,
+    apply_unsloth_gradient_checkpointing,
     patch_compiled_autograd,
     process_vision_info,
     unsloth_compile_transformers,
@@ -559,8 +559,10 @@ class FastLanguageModel(FastLlamaModel):
                 **kwargs,
             )
 
-        if use_gradient_checkpointing == "unsloth":
-            patch_unsloth_smart_gradient_checkpointing(dtype = dtype)
+        # Apply gradient checkpointing with smart heuristics
+        use_gradient_checkpointing = apply_unsloth_gradient_checkpointing(
+            use_gradient_checkpointing, max_seq_length, dtype
+        )
 
         # Check if this is local model since the tokenizer gets overwritten
         if (
@@ -1189,9 +1191,10 @@ class FastModel(FastBaseModel):
                 os.environ["UNSLOTH_FORCE_FLOAT32"] = "1"
                 dtype = torch.bfloat16  # Change to bfloat16 loading
                 break
-        # Patch gradient checkpointing
-        if use_gradient_checkpointing == "unsloth":
-            patch_unsloth_smart_gradient_checkpointing(dtype = dtype)
+        # Apply gradient checkpointing with smart heuristics
+        use_gradient_checkpointing = apply_unsloth_gradient_checkpointing(
+            use_gradient_checkpointing, max_seq_length, dtype
+        )
         with redirector:
             patch_loss_functions(torch_compile = False)
             model_types, supports_sdpa = unsloth_compile_transformers(

@@ -26,6 +26,7 @@ from unsloth_zoo.compiler import create_new_function
 from unsloth_zoo.log import logger
 from unsloth_zoo.logging_utils import PatchRLStatistics
 from unsloth_zoo.rl_replacements import RL_REPLACEMENTS
+from ..device_type import DEVICE_TYPE
 from .rl_replacements import (
     RL_EXTRA_ARGS,
     RL_FUNCTIONS,
@@ -251,6 +252,7 @@ from torch.nn import functional as F
 import inspect
 from transformers import DataCollatorForSeq2Seq, DataCollatorForLanguageModeling as TransformersDataCollatorForLanguageModeling
 from transformers.training_args import ParallelMode
+from unsloth_zoo.device_type import DEVICE_TYPE, device_synchronize
 
 # Wrap trainer with padding to right and enable training mode
 # Also patches W&B since multiple runs must use wandb.finish()
@@ -1091,18 +1093,33 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     )
 
     if RLTrainer_name == "GRPOTrainer":
-        new_options = """torch_compile_options = {
+        # Base torch_compile_options shared by all device types
+        base_options = """torch_compile_options = {
             "epilogue_fusion"   : True,
             "max_autotune"      : False,
             "shape_padding"     : True,
-            "trace.enabled"     : False,
-            #"combo_kernels"     : torch.cuda.get_device_capability()[0] >= 10,
+            "trace.enabled"     : False,"""
+
+        # Generate torch_compile_options based on device type
+        if DEVICE_TYPE == "cuda":
+            # CUDA-specific options (added to base options)
+            new_options = (
+                base_options
+                + """
             "triton.enable_persistent_tma_matmul": torch.cuda.get_device_capability()[0] >= 9,
-            "cuda.cutlass_epilogue_fusion_enabled": torch.cuda.get_device_capability()[0] >= 9, 
-            "cuda.cutlass_tma_only": torch.cuda.get_device_capability()[0] >= 9, 
+            "cuda.cutlass_epilogue_fusion_enabled": torch.cuda.get_device_capability()[0] >= 9,
+            "cuda.cutlass_tma_only": torch.cuda.get_device_capability()[0] >= 9,
             "cuda.compile_opt_level"              : "-O2",
             "cuda.enable_cuda_lto"                : True,
         }"""
+            )
+        else:
+            # XPU, HIP, and other device types use base options only
+            new_options = (
+                base_options
+                + """
+        }"""
+            )
 
         pattern = r"torch_compile_options\s*=\s*\{[^}]*\}"
 
