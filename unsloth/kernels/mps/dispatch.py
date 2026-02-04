@@ -268,51 +268,72 @@ def dispatch_lora_mlp_swiglu(
     downB,
     downS,
 ):
-    if DEVICE_TYPE == "mps" and USE_MPS_FALLBACK:
-        from .fast_lora import mps_apply_lora_mlp_swiglu
-
-        fn = _get_compiled_fn(mps_apply_lora_mlp_swiglu)
-        return fn(
-            X,
-            gateW,
-            gateW_quant,
-            gateA,
-            gateB,
-            gateS,
-            upW,
-            upW_quant,
-            upA,
-            upB,
-            upS,
-            downW,
-            downW_quant,
-            downA,
-            downB,
-            downS,
-        )
-    else:
-        from ..fast_lora import LoRA_MLP, swiglu_fg_kernel, swiglu_DWf_DW_dfg_kernel
-
-        return LoRA_MLP.apply(
-            X,
-            gateW,
-            gateW_quant,
-            gateA,
-            gateB,
-            gateS,
-            upW,
-            upW_quant,
-            upA,
-            upB,
-            upS,
-            downW,
-            downW_quant,
-            downA,
-            downB,
-            downS,
-            swiglu_fg_kernel,
-            swiglu_DWf_DW_dfg_kernel,
-        )
+    if DEVICE_TYPE == "mps":
+        # Priority 1: MLX fast_lora (compiled graph fusion + batch-1 GEMV)
+        if _is_mlx_available():
+            from ..mlx.fast_lora import apply_lora_mlp_swiglu
+            return apply_lora_mlp_swiglu(
+                X,
+                gateW,
+                gateW_quant,
+                gateA,
+                gateB,
+                gateS,
+                upW,
+                upW_quant,
+                upA,
+                upB,
+                upS,
+                downW,
+                downW_quant,
+                downA,
+                downB,
+                downS,
+            )
+        # Priority 2: MPS fallback (PyTorch-native)
+        if USE_MPS_FALLBACK:
+            from .fast_lora import mps_apply_lora_mlp_swiglu
+            fn = _get_compiled_fn(mps_apply_lora_mlp_swiglu)
+            return fn(
+                X,
+                gateW,
+                gateW_quant,
+                gateA,
+                gateB,
+                gateS,
+                upW,
+                upW_quant,
+                upA,
+                upB,
+                upS,
+                downW,
+                downW_quant,
+                downA,
+                downB,
+                downS,
+            )
+    # Default: CUDA/Triton path
+    from ..fast_lora import LoRA_MLP, swiglu_fg_kernel, swiglu_DWf_DW_dfg_kernel
+    return LoRA_MLP.apply(
+        X,
+        gateW,
+        gateW_quant,
+        gateA,
+        gateB,
+        gateS,
+        upW,
+        upW_quant,
+        upA,
+        upB,
+        upS,
+        downW,
+        downW_quant,
+        downA,
+        downB,
+        downS,
+        swiglu_fg_kernel,
+        swiglu_DWf_DW_dfg_kernel,
+    )
 
 
 def dispatch_lora_qkv(
@@ -334,59 +355,84 @@ def dispatch_lora_qkv(
     VS,
     inplace=True,
 ):
-    if DEVICE_TYPE == "mps" and USE_MPS_FALLBACK:
-        from .fast_lora import mps_apply_lora_qkv
-
-        fn = _get_compiled_fn(mps_apply_lora_qkv)
-        return fn(
-            X,
-            QW,
-            QW_quant,
-            QA,
-            QB,
-            QS,
-            KW,
-            KW_quant,
-            KA,
-            KB,
-            KS,
-            VW,
-            VW_quant,
-            VA,
-            VB,
-            VS,
-        )
-    else:
-        from ..fast_lora import LoRA_QKV
-
-        return LoRA_QKV.apply(
-            X,
-            QW,
-            QW_quant,
-            QA,
-            QB,
-            QS,
-            KW,
-            KW_quant,
-            KA,
-            KB,
-            KS,
-            VW,
-            VW_quant,
-            VA,
-            VB,
-            VS,
-            inplace,
-        )
+    if DEVICE_TYPE == "mps":
+        # Priority 1: MLX fast_lora (compiled graph fusion + batch-1 GEMV)
+        if _is_mlx_available():
+            from ..mlx.fast_lora import apply_lora_qkv
+            return apply_lora_qkv(
+                X,
+                QW,
+                QW_quant,
+                QA,
+                QB,
+                QS,
+                KW,
+                KW_quant,
+                KA,
+                KB,
+                KS,
+                VW,
+                VW_quant,
+                VA,
+                VB,
+                VS,
+            )
+        # Priority 2: MPS fallback (PyTorch-native)
+        if USE_MPS_FALLBACK:
+            from .fast_lora import mps_apply_lora_qkv
+            fn = _get_compiled_fn(mps_apply_lora_qkv)
+            return fn(
+                X,
+                QW,
+                QW_quant,
+                QA,
+                QB,
+                QS,
+                KW,
+                KW_quant,
+                KA,
+                KB,
+                KS,
+                VW,
+                VW_quant,
+                VA,
+                VB,
+                VS,
+            )
+    # Default: CUDA/Triton path
+    from ..fast_lora import LoRA_QKV
+    return LoRA_QKV.apply(
+        X,
+        QW,
+        QW_quant,
+        QA,
+        QB,
+        QS,
+        KW,
+        KW_quant,
+        KA,
+        KB,
+        KS,
+        VW,
+        VW_quant,
+        VA,
+        VB,
+        VS,
+        inplace,
+    )
 
 
 def dispatch_lora_o(X, OW, OW_quant, OA, OB, OS):
-    if DEVICE_TYPE == "mps" and USE_MPS_FALLBACK:
-        from .fast_lora import mps_apply_lora_o
-
-        fn = _get_compiled_fn(mps_apply_lora_o)
-        return fn(X, OW, OW_quant, OA, OB, OS)
-    else:
-        from ..fast_lora import LoRA_W
-
-        return LoRA_W.apply(X, OW, OW_quant, OA, OB, OS)
+    if DEVICE_TYPE == "mps":
+        # Priority 1: MLX fast_lora (compiled graph fusion + batch-1 GEMV)
+        if _is_mlx_available():
+            from ..mlx.fast_lora import apply_lora_o
+            return apply_lora_o(X, OW, OW_quant, OA, OB, OS)
+        # Priority 2: MPS fallback (PyTorch-native)
+        if USE_MPS_FALLBACK:
+            from .fast_lora import mps_apply_lora_o
+            fn = _get_compiled_fn(mps_apply_lora_o)
+            return fn(X, OW, OW_quant, OA, OB, OS)
+    # Default: CUDA/Triton path
+    from ..fast_lora import LoRA_W
+    return LoRA_W.apply(X, OW, OW_quant, OA, OB, OS)
