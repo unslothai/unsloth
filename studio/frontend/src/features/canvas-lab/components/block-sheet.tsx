@@ -1,0 +1,243 @@
+import { Button } from "@/components/ui/button";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger,
+} from "@/components/ui/sheet";
+import {
+  ArrowLeft02Icon,
+  ArrowRight01Icon,
+  CodeIcon,
+  Database02Icon,
+  Flowchart01Icon,
+  PlusSignIcon,
+  SparklesIcon,
+} from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import type { ReactElement } from "react";
+import type { LlmType, SamplerType } from "../types";
+
+type SheetView = "root" | "sampler" | "llm";
+
+type BlockSheetProps = {
+  container: HTMLDivElement | null;
+  view: SheetView;
+  onViewChange: (view: SheetView) => void;
+  onAddSampler: (type: SamplerType) => void;
+  onAddLlm: (type: LlmType) => void;
+};
+
+function getSheetTitle(view: SheetView): string {
+  if (view === "root") {
+    return "Add a block";
+  }
+  if (view === "sampler") {
+    return "Sampler blocks";
+  }
+  return "LLM blocks";
+}
+
+const MAIN_SHEET_ITEMS = [
+  {
+    kind: "sampler" as const,
+    title: "Sampler",
+    description: "Numeric + categorical blocks.",
+    icon: Database02Icon,
+  },
+  {
+    kind: "llm" as const,
+    title: "LLM",
+    description: "Text + structured blocks.",
+    icon: SparklesIcon,
+  },
+];
+
+const SAMPLER_ITEMS = [
+  {
+    type: "category" as const,
+    title: "Category",
+    description: "Pick from a list of values.",
+    icon: Database02Icon,
+  },
+  {
+    type: "subcategory" as const,
+    title: "Subcategory",
+    description: "Map sub-values to a category.",
+    icon: Database02Icon,
+  },
+  {
+    type: "uniform" as const,
+    title: "Uniform",
+    description: "Random number between low/high.",
+    icon: Database02Icon,
+  },
+  {
+    type: "gaussian" as const,
+    title: "Gaussian",
+    description: "Normal distribution sampler.",
+    icon: Database02Icon,
+  },
+  {
+    type: "datetime" as const,
+    title: "Datetime",
+    description: "Date/time range sampler.",
+    icon: Database02Icon,
+  },
+  {
+    type: "uuid" as const,
+    title: "UUID",
+    description: "UUID string sampler.",
+    icon: Database02Icon,
+  },
+  {
+    type: "person" as const,
+    title: "Person",
+    description: "Synthetic person sampler.",
+    icon: Database02Icon,
+  },
+];
+
+const LLM_ITEMS = [
+  {
+    type: "text" as const,
+    title: "LLM Text",
+    description: "Free-form prompt generation.",
+    icon: SparklesIcon,
+  },
+  {
+    type: "structured" as const,
+    title: "LLM Structured",
+    description: "JSON output via schema.",
+    icon: Flowchart01Icon,
+  },
+  {
+    type: "code" as const,
+    title: "LLM Code",
+    description: "Generate code or SQL.",
+    icon: CodeIcon,
+  },
+];
+
+export function BlockSheet({
+  container,
+  view,
+  onViewChange,
+  onAddSampler,
+  onAddLlm,
+}: BlockSheetProps): ReactElement {
+  const title = getSheetTitle(view);
+  return (
+    <Sheet>
+      <SheetTrigger asChild={true}>
+        <Button size="icon-sm" variant="secondary">
+          <HugeiconsIcon icon={PlusSignIcon} className="size-4" />
+        </Button>
+      </SheetTrigger>
+      <SheetContent
+        side="right"
+        container={container}
+        className="absolute gap-0 p-0 shadow-none"
+        overlayClassName="absolute inset-0 bg-transparent backdrop-blur-0 supports-backdrop-filter:backdrop-blur-0 data-open:fade-in-0 data-closed:fade-out-0"
+      >
+        <SheetHeader className="border-b border-border/60 px-6 py-5">
+          <div className="flex items-center gap-2">
+            {view !== "root" && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                onClick={() => onViewChange("root")}
+              >
+                <HugeiconsIcon icon={ArrowLeft02Icon} className="size-4" />
+              </Button>
+            )}
+            <SheetTitle>{title}</SheetTitle>
+          </div>
+        </SheetHeader>
+        <div className="px-6 py-4">
+          <div className="mt-4 flex flex-col gap-2">
+            {view === "root" &&
+              MAIN_SHEET_ITEMS.map((item) => (
+                <button
+                  key={item.kind}
+                  type="button"
+                  onClick={() =>
+                    onViewChange(item.kind === "sampler" ? "sampler" : "llm")
+                  }
+                  className="flex w-full items-center gap-3 rounded-2xl border border-border/60 bg-white px-3 py-3 text-left transition hover:border-border hover:bg-muted/40"
+                >
+                  <div className="flex size-9 items-center justify-center rounded-xl border border-border bg-muted/30 text-muted-foreground">
+                    <HugeiconsIcon icon={item.icon} className="size-4" />
+                  </div>
+                  <div className="flex-1">
+                    <p className="text-sm font-semibold text-foreground">
+                      {item.title}
+                    </p>
+                    <p className="text-[11px] text-muted-foreground">
+                      {item.description}
+                    </p>
+                  </div>
+                  <HugeiconsIcon
+                    icon={ArrowRight01Icon}
+                    className="size-3.5 text-muted-foreground"
+                  />
+                </button>
+              ))}
+            {view === "sampler" &&
+              SAMPLER_ITEMS.map((item) => (
+                <button
+                  key={item.type}
+                  type="button"
+                  onClick={() => onAddSampler(item.type)}
+                  className="flex w-full items-center gap-3 rounded-2xl border border-border/60 bg-white px-3 py-3 text-left transition hover:border-border hover:bg-muted/40"
+                >
+                  <div className="flex size-9 items-center justify-center rounded-xl border border-border bg-muted/30 text-muted-foreground">
+                    <HugeiconsIcon icon={item.icon} className="size-4" />
+                  </div>
+                  <div className="flex-1">
+                    <p className="text-sm font-semibold text-foreground">
+                      {item.title}
+                    </p>
+                    <p className="text-[11px] text-muted-foreground">
+                      {item.description}
+                    </p>
+                  </div>
+                  <HugeiconsIcon
+                    icon={ArrowRight01Icon}
+                    className="size-3.5 text-muted-foreground"
+                  />
+                </button>
+              ))}
+            {view === "llm" &&
+              LLM_ITEMS.map((item) => (
+                <button
+                  key={item.type}
+                  type="button"
+                  onClick={() => onAddLlm(item.type)}
+                  className="flex w-full items-center gap-3 rounded-2xl border border-border/60 bg-white px-3 py-3 text-left transition hover:border-border hover:bg-muted/40"
+                >
+                  <div className="flex size-9 items-center justify-center rounded-xl border border-border bg-muted/30 text-muted-foreground">
+                    <HugeiconsIcon icon={item.icon} className="size-4" />
+                  </div>
+                  <div className="flex-1">
+                    <p className="text-sm font-semibold text-foreground">
+                      {item.title}
+                    </p>
+                    <p className="text-[11px] text-muted-foreground">
+                      {item.description}
+                    </p>
+                  </div>
+                  <HugeiconsIcon
+                    icon={ArrowRight01Icon}
+                    className="size-3.5 text-muted-foreground"
+                  />
+                </button>
+              ))}
+          </div>
+        </div>
+      </SheetContent>
+    </Sheet>
+  );
+}

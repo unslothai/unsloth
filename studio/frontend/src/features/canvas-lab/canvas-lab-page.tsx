@@ -1,0 +1,200 @@
+import {
+  Background,
+  BackgroundVariant,
+  type Node,
+  type NodeTypes,
+  Panel,
+  ReactFlow,
+} from "@xyflow/react";
+import { type ReactElement, useCallback, useMemo, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
+import "@xyflow/react/dist/style.css";
+import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
+import { EyeIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { previewCanvas } from "./api";
+import { BlockSheet } from "./components/block-sheet";
+import { CanvasNode } from "./components/canvas-node";
+import { ConfigDialog } from "./dialogs/config-dialog";
+import { useCanvasLabStore } from "./stores/canvas-lab";
+import type { CanvasNodeData, SamplerConfig } from "./types";
+import { isCategoryConfig } from "./utils";
+import { buildCanvasPayload } from "./utils/payload";
+
+const NODE_TYPES: NodeTypes = { builder: CanvasNode };
+
+export function CanvasLabPage(): ReactElement {
+  const {
+    nodes,
+    edges,
+    configs,
+    sheetView,
+    activeConfigId,
+    dialogOpen,
+    onNodesChange,
+    onEdgesChange,
+    onConnect,
+    addSamplerNode,
+    addLlmNode,
+    openConfig,
+    updateConfig,
+    isValidConnection,
+    setSheetView,
+    setDialogOpen,
+  } = useCanvasLabStore(
+    useShallow((state) => ({
+      nodes: state.nodes,
+      edges: state.edges,
+      configs: state.configs,
+      sheetView: state.sheetView,
+      activeConfigId: state.activeConfigId,
+      dialogOpen: state.dialogOpen,
+      onNodesChange: state.onNodesChange,
+      onEdgesChange: state.onEdgesChange,
+      onConnect: state.onConnect,
+      addSamplerNode: state.addSamplerNode,
+      addLlmNode: state.addLlmNode,
+      openConfig: state.openConfig,
+      updateConfig: state.updateConfig,
+      isValidConnection: state.isValidConnection,
+      setSheetView: state.setSheetView,
+      setDialogOpen: state.setDialogOpen,
+    })),
+  );
+  const [sheetContainer, setSheetContainer] = useState<HTMLDivElement | null>(
+    null,
+  );
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [statusMessage, setStatusMessage] = useState<{
+    tone: "success" | "error";
+    text: string;
+  } | null>(null);
+
+  const handleNodeClick = useCallback(
+    (_: unknown, node: Node<CanvasNodeData>) => {
+      openConfig(node.id);
+    },
+    [openConfig],
+  );
+
+  const config = activeConfigId ? configs[activeConfigId] : null;
+  const categoryOptions = useMemo<SamplerConfig[]>(
+    () => Object.values(configs).filter(isCategoryConfig),
+    [configs],
+  );
+
+  const handlePreview = async (): Promise<void> => {
+    setPreviewLoading(true);
+    setStatusMessage(null);
+    try {
+      const { payload, errors } = buildCanvasPayload(configs, nodes, edges);
+      if (errors.length > 0) {
+        setStatusMessage({
+          tone: "error",
+          text: errors[0] ?? "Fix config errors before preview.",
+        });
+        return;
+      }
+      const result = await previewCanvas(payload);
+      const rows = Array.isArray(result.dataset) ? result.dataset.length : 0;
+      setStatusMessage({
+        tone: "success",
+        text: `Preview ready (${rows} rows).`,
+      });
+    } catch (error) {
+      setStatusMessage({
+        tone: "error",
+        text: error instanceof Error ? error.message : "Preview failed.",
+      });
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-background">
+      <main className="w-full px-6 py-8">
+        <div className="mb-6 flex flex-col gap-4">
+          <div className="flex flex-col gap-4 lg:grid lg:grid-cols-[1fr_auto] lg:items-center">
+            <div>
+              <h1 className="text-2xl font-semibold tracking-tight">
+                Canvas Lab
+              </h1>
+              <p className="text-sm text-muted-foreground">
+                Minimal React Flow canvas.
+              </p>
+              {statusMessage && (
+                <p
+                  className={
+                    statusMessage.tone === "success"
+                      ? "mt-2 text-xs text-emerald-600"
+                      : "mt-2 text-xs text-rose-600"
+                  }
+                >
+                  {statusMessage.text}
+                </p>
+              )}
+            </div>
+            <div className="flex items-center justify-start gap-2 lg:justify-end">
+              <Button
+                type="button"
+                size="sm"
+                onClick={handlePreview}
+                disabled={previewLoading}
+                className="gap-2 text-xs"
+              >
+                {previewLoading ? (
+                  <Spinner className="size-3.5" />
+                ) : (
+                  <HugeiconsIcon icon={EyeIcon} className="size-3.5" />
+                )}
+                Preview
+              </Button>
+            </div>
+          </div>
+        </div>
+        <div
+          className="relative h-[75vh] w-full rounded-3xl border border-border/60 bg-white shadow-sm"
+          ref={setSheetContainer}
+        >
+          <ReactFlow
+            nodes={nodes}
+            edges={edges}
+            nodeTypes={NODE_TYPES}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
+            onConnect={onConnect}
+            onNodeClick={handleNodeClick}
+            isValidConnection={isValidConnection}
+            fitView={true}
+            className="h-full w-full"
+          >
+            <Background
+              variant={BackgroundVariant.Dots}
+              gap={18}
+              size={1}
+              color="#d4d4d8"
+            />
+            <Panel position="top-right" className="m-3">
+              <BlockSheet
+                container={sheetContainer}
+                view={sheetView}
+                onViewChange={setSheetView}
+                onAddSampler={addSamplerNode}
+                onAddLlm={addLlmNode}
+              />
+            </Panel>
+          </ReactFlow>
+        </div>
+      </main>
+      <ConfigDialog
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
+        config={config}
+        categoryOptions={categoryOptions}
+        onUpdate={updateConfig}
+      />
+    </div>
+  );
+}
