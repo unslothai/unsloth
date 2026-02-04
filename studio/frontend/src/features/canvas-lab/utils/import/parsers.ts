@@ -1,39 +1,12 @@
-import type { Edge } from "@xyflow/react";
 import type {
-  CanvasNode,
   ExpressionConfig,
   ExpressionDtype,
   LlmConfig,
   NodeConfig,
   SamplerConfig,
   SamplerType,
-} from "../types";
-import { nodeDataFromConfig } from "./index";
-
-export type CanvasSnapshot = {
-  configs: Record<string, NodeConfig>;
-  nodes: CanvasNode[];
-  edges: Edge[];
-  nextId: number;
-  nextY: number;
-};
-
-export type ImportResult = {
-  errors: string[];
-  snapshot: CanvasSnapshot | null;
-};
-
-type RecipeInput = {
-  columns?: unknown;
-  model_configs?: unknown;
-  model_providers?: unknown;
-  processors?: unknown;
-};
-
-type UiInput = {
-  nodes?: unknown;
-  edges?: unknown;
-};
+} from "../../types";
+import { normalizeOutputFormat, readNumberString, readString } from "./helpers";
 
 const SAMPLER_TYPES: SamplerType[] = [
   "category",
@@ -47,47 +20,6 @@ const SAMPLER_TYPES: SamplerType[] = [
 
 const EXPRESSION_DTYPES: ExpressionDtype[] = ["str", "int", "float", "bool"];
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value));
-}
-
-function readString(value: unknown): string | null {
-  return typeof value === "string" ? value : null;
-}
-
-function readNumberString(value: unknown): string {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return String(value);
-  }
-  if (typeof value === "string") {
-    return value;
-  }
-  return "";
-}
-
-function parseJson(
-  input: string,
-): { data: unknown | null; error?: string } {
-  try {
-    return { data: JSON.parse(input) };
-  } catch (error) {
-    return {
-      data: null,
-      error: error instanceof Error ? error.message : "Invalid JSON.",
-    };
-  }
-}
-
-function normalizeOutputFormat(value: unknown): string {
-  if (typeof value === "string") {
-    return value;
-  }
-  if (isRecord(value)) {
-    return JSON.stringify(value, null, 2);
-  }
-  return "";
-}
-
 function parseSampler(
   column: Record<string, unknown>,
   name: string,
@@ -99,7 +31,10 @@ function parseSampler(
     errors.push(`Sampler ${name}: unsupported sampler_type.`);
     return null;
   }
-  const params = isRecord(column.params) ? column.params : {};
+  const params =
+    typeof column.params === "object" && column.params
+      ? (column.params as Record<string, unknown>)
+      : {};
   if (samplerType === "category") {
     const values = Array.isArray(params.values)
       ? params.values.filter((item) => typeof item === "string")
@@ -119,7 +54,7 @@ function parseSampler(
   }
   if (samplerType === "subcategory") {
     const mapping: Record<string, string[]> = {};
-    if (isRecord(params.values)) {
+    if (params.values && typeof params.values === "object") {
       for (const [key, value] of Object.entries(params.values)) {
         if (Array.isArray(value)) {
           mapping[key] = value.filter((item) => typeof item === "string");
@@ -276,7 +211,7 @@ const COLUMN_PARSERS: Record<string, ColumnParser> = {
   "llm-code": (column, name, id) => parseLlm(column, name, id),
 };
 
-function parseColumn(
+export function parseColumn(
   column: Record<string, unknown>,
   id: string,
   errors: string[],
@@ -293,183 +228,4 @@ function parseColumn(
   }
   errors.push(`Column ${name}: unsupported column_type.`);
   return null;
-}
-
-function extractRefs(template: string): string[] {
-  const matches = template.matchAll(/{{\s*([a-zA-Z0-9_]+)\s*}}/g);
-  const refs = new Set<string>();
-  for (const match of matches) {
-    if (match[1]) {
-      refs.add(match[1]);
-    }
-  }
-  return Array.from(refs);
-}
-
-function buildEdges(
-  configs: NodeConfig[],
-  nameToId: Map<string, string>,
-  uiEdges: Array<{ from: string; to: string }> | null,
-): Edge[] {
-  const edges: Edge[] = [];
-  const seen = new Set<string>();
-  const addEdgeByName = (from: string, to: string) => {
-    const sourceId = nameToId.get(from);
-    const targetId = nameToId.get(to);
-    if (!(sourceId && targetId)) {
-      return;
-    }
-    const key = `${sourceId}-${targetId}`;
-    if (seen.has(key)) {
-      return;
-    }
-    seen.add(key);
-    edges.push({ id: `e-${key}`, source: sourceId, target: targetId });
-  };
-
-  if (uiEdges && uiEdges.length > 0) {
-    for (const edge of uiEdges) {
-      addEdgeByName(edge.from, edge.to);
-    }
-  } else {
-    for (const config of configs) {
-      if (config.kind === "llm") {
-        for (const ref of extractRefs(config.prompt ?? "")) {
-          addEdgeByName(ref, config.name);
-        }
-        for (const ref of extractRefs(config.system_prompt ?? "")) {
-          addEdgeByName(ref, config.name);
-        }
-      }
-      if (config.kind === "expression") {
-        for (const ref of extractRefs(config.expr)) {
-          addEdgeByName(ref, config.name);
-        }
-      }
-      if (
-        config.kind === "sampler" &&
-        config.sampler_type === "subcategory" &&
-        config.subcategory_parent
-      ) {
-        addEdgeByName(config.subcategory_parent, config.name);
-      }
-    }
-  }
-
-  return edges;
-}
-
-function buildNodes(
-  configs: NodeConfig[],
-  positions: Map<string, { x: number; y: number }>,
-): CanvasNode[] {
-  return configs.map((config, index) => {
-    const position =
-      positions.get(config.name) ?? ({ x: 0, y: index * 140 } as const);
-    return {
-      id: config.id,
-      type: "builder",
-      position,
-      data: nodeDataFromConfig(config),
-    };
-  });
-}
-
-function parseUi(
-  ui: UiInput | null,
-): {
-  positions: Map<string, { x: number; y: number }>;
-  edges: Array<{ from: string; to: string }> | null;
-} {
-  const positions = new Map<string, { x: number; y: number }>();
-  const edges: Array<{ from: string; to: string }> = [];
-  if (ui && Array.isArray(ui.nodes)) {
-    for (const node of ui.nodes) {
-      if (isRecord(node)) {
-        const id = readString(node.id);
-        const x = typeof node.x === "number" ? node.x : null;
-        const y = typeof node.y === "number" ? node.y : null;
-        if (id && x !== null && y !== null) {
-          positions.set(id, { x, y });
-        }
-      }
-    }
-  }
-  if (ui && Array.isArray(ui.edges)) {
-    for (const edge of ui.edges) {
-      if (isRecord(edge)) {
-        const from = readString(edge.from);
-        const to = readString(edge.to);
-        if (from && to) {
-          edges.push({ from, to });
-        }
-      }
-    }
-  }
-  return { positions, edges: edges.length > 0 ? edges : null };
-}
-
-export function importCanvasPayload(input: string): ImportResult {
-  const parsed = parseJson(input);
-  if (!parsed.data || !isRecord(parsed.data)) {
-    return {
-      errors: [parsed.error ?? "Invalid JSON payload."],
-      snapshot: null,
-    };
-  }
-
-  const recipe = (isRecord(parsed.data.recipe)
-    ? parsed.data.recipe
-    : parsed.data) as RecipeInput;
-  const ui = isRecord(parsed.data.ui) ? (parsed.data.ui as UiInput) : null;
-
-  if (!Array.isArray(recipe.columns)) {
-    return { errors: ["Recipe must include columns."], snapshot: null };
-  }
-
-  const errors: string[] = [];
-  const configs: NodeConfig[] = [];
-  const nameToId = new Map<string, string>();
-
-  recipe.columns.forEach((column, index) => {
-    if (!isRecord(column)) {
-      errors.push(`Column ${index + 1}: invalid object.`);
-      return;
-    }
-    const id = `n${index + 1}`;
-    const config = parseColumn(column, id, errors);
-    if (!config) {
-      return;
-    }
-    if (nameToId.has(config.name)) {
-      errors.push(`Duplicate column name: ${config.name}.`);
-      return;
-    }
-    nameToId.set(config.name, config.id);
-    configs.push(config);
-  });
-
-  if (errors.length > 0) {
-    return { errors, snapshot: null };
-  }
-
-  const { positions, edges: uiEdges } = parseUi(ui);
-  const nodes = buildNodes(configs, positions);
-  const edges = buildEdges(configs, nameToId, uiEdges);
-
-  const maxY = nodes.reduce(
-    (acc, node) => Math.max(acc, node.position.y),
-    0,
-  );
-
-  return {
-    errors: [],
-    snapshot: {
-      configs: Object.fromEntries(configs.map((config) => [config.id, config])),
-      nodes,
-      edges,
-      nextId: configs.length + 1,
-      nextY: maxY + 140,
-    },
-  };
 }

@@ -4,6 +4,7 @@ import {
   type EdgeChange,
   type IsValidConnection,
   type NodeChange,
+  addEdge,
   applyEdgeChanges,
   applyNodeChanges,
 } from "@xyflow/react";
