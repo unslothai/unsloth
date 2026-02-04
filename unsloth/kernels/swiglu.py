@@ -78,6 +78,13 @@ def swiglu_fg_kernel(e, g):
 
             return metal_swiglu_forward(e, g)
 
+        from .mlx import USE_MLX_FAST
+
+        if USE_MLX_FAST and not torch.is_grad_enabled():
+            from .mlx import mlx_swiglu
+
+            return mlx_swiglu(e, g)
+
         # Fall back to MPS PyTorch implementation
         from .mps import USE_MPS_FALLBACK
 

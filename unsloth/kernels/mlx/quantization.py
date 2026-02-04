@@ -7,27 +7,41 @@ import mlx.core as mx
 class MLXQuantizedWeight:
     """
     Container for quantized weights (4-bit).
-    Holds the packed weight data, scales, and biases.
+    Holds the packed weight data, scales, and biases for MLX.
     """
 
-    def __init__(self, weight, scales, biases, group_size, bits=4):
+    def __init__(self, weight, scales, biases, group_size, bits=4, shape=None):
         self.weight = weight
         self.scales = scales
         self.biases = biases
         self.group_size = group_size
         self.bits = bits
-        self.shape = (
-            weight.shape[0],
-            weight.shape[1] * (32 // bits),
-        )  # Approx original shape reconstruction logic
+        self._shape = shape
 
     @property
-    def T(self):
-        """
-        Helper for transposed access logic.
-        MLX quantized matmul expects (x, w, scales, biases).
-        """
-        return self
+    def shape(self):
+        return self._shape
+
+    def dequantize(self):
+        """Dequantize back to FP16."""
+        return mx.dequantize(
+            self.weight,
+            self.scales,
+            self.biases,
+            group_size=self.group_size,
+            bits=self.bits,
+        )
+
+    def __mx_compile_flatten__(self):
+        """Allows mx.compile to trace this object."""
+        return (
+            [self.weight, self.scales, self.biases],
+            {"group_size": self.group_size, "bits": self.bits, "shape": self._shape},
+        )
+
+    @classmethod
+    def __mx_compile_unflatten__(cls, arrays, metadata):
+        return cls(*arrays, **metadata)
 
 
 def quantize_4bit(tensor, group_size=64):
@@ -41,15 +55,16 @@ def quantize_4bit(tensor, group_size=64):
     Returns:
         MLXQuantizedWeight: Packed quantized object.
     """
-    from unsloth.kernels.mlx.bridge import torch_to_mlx
+    from .bridge import torch_to_mlx
 
-    # 1. Convert to MLX (FP16/FP32)
-    # Ensure it's on the right device? torch_to_mlx handles it or we ensure it.
+    # 1. Convert to MLX
     w_mlx = torch_to_mlx(tensor)
+    original_shape = w_mlx.shape
 
-    # MLX quantize expects (Out, In) usually.
+    # 2. MLX quantize
     # mx.quantize returns (quantized_w, scales, biases)
-    # Check MLX docs: quantize(w, group_size, bits) -> (w_q, scales, biases)
     w_q, scales, biases = mx.quantize(w_mlx, group_size, 4)
 
-    return MLXQuantizedWeight(w_q, scales, biases, group_size, bits=4)
+    return MLXQuantizedWeight(
+        w_q, scales, biases, group_size, bits=4, shape=original_shape
+    )

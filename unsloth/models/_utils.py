@@ -884,10 +884,11 @@ try:
     # [TODO] Xformers does NOT work on RTX 50x (12), B200 (10), Jetson (11)
     # See https://github.com/facebookresearch/xformers/issues/1329
     # CUDA error (/workspace/xfrm2/third_party/flash-attention/hopper/flash_fwd_launch_template.h:188)
-    major_version, minor_version = torch.cuda.get_device_capability()
-    if (f"{major_version}.{minor_version}" in ("10.0", "11.0", "12.0")) and (
-        Version(xformers_version) in (Version("0.0.32.post2"),)
-    ):
+    if DEVICE_TYPE == "cuda":
+        major_version, minor_version = torch.cuda.get_device_capability()
+        if (f"{major_version}.{minor_version}" in ("10.0", "11.0", "12.0")) and (
+            Version(xformers_version) in (Version("0.0.32.post2"),)
+        ):
         raise NotImplementedError(
             "Unsloth: Xformers does not work in RTX 50X, Blackwell GPUs as of yet. Please build from source via\n"
             "```\n"
@@ -2547,8 +2548,8 @@ def make_fast_generate_wrapper(original_generate):
         if "sampling_params" in kwargs:
             raise ValueError(
                 "Unsloth: `sampling_params` is only supported when `fast_inference=True` (vLLM). "
-                "Since `fast_inference=False`, use HuggingFace generate arguments instead:\n"
-                "  model.fast_generate(**tokens.to('cuda'), max_new_tokens=64, temperature=1.0, top_p=0.95)"
+                f"Since `fast_inference=False`, use HuggingFace generate arguments instead:\n"
+                f"  model.fast_generate(**tokens.to('{DEVICE_TYPE_TORCH}'), max_new_tokens=64, temperature=1.0, top_p=0.95)"
             )
 
         if "lora_request" in kwargs:
@@ -2579,7 +2580,7 @@ def make_fast_generate_wrapper(original_generate):
                     '      return_tensors="pt", return_dict=True\n'
                     "  )\n"
                     "  output = model.fast_generate(\n"
-                    "      **messages.to('cuda'),\n"
+                    f"      **messages.to('{DEVICE_TYPE_TORCH}'),\n"
                     "      max_new_tokens=64,\n"
                     "      temperature=1.0,\n"
                     "  )"

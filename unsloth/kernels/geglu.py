@@ -83,6 +83,13 @@ def geglu_exact_forward_kernel(gate, up):
 
             return metal_geglu_exact_forward(gate, up)
 
+        from .mlx import USE_MLX_FAST
+
+        if USE_MLX_FAST and not torch.is_grad_enabled():
+            from .mlx import mlx_geglu_exact
+
+            return mlx_geglu_exact(gate, up)
+
         from .mps import USE_MPS_FALLBACK
 
         if USE_MPS_FALLBACK:
@@ -250,6 +257,13 @@ def geglu_approx_forward_kernel(gate, up):
             from .metal.geglu import metal_geglu_approx_forward
 
             return metal_geglu_approx_forward(gate, up)
+
+        from .mlx import USE_MLX_FAST
+
+        if USE_MLX_FAST and not torch.is_grad_enabled():
+            from .mlx import mlx_geglu_approx
+
+            return mlx_geglu_approx(gate, up)
 
         from .mps import USE_MPS_FALLBACK
 

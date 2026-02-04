@@ -740,6 +740,11 @@ class FastLanguageModel(FastLlamaModel):
         if patch_tiled_mlp_choice != "0" or unsloth_tiled_mlp:
             patch_tiled_mlp(model, patch_options_str=patch_tiled_mlp_choice)
 
+        # [MPS] On-the-fly 4-bit MLX quantization
+        if DEVICE_TYPE == "mps" and load_in_4bit:
+            from .quantization_mlx import quantize_model_mlx
+            model = quantize_model_mlx(model)
+
         return model, tokenizer
 
 
@@ -891,12 +896,18 @@ class FastModel(FastBaseModel):
         if qat_scheme == "phone-deployment":
             qat_scheme = "int8-int4"
         # Check if 4bit is allowed specifically for AMD
-        if not ALLOW_BITSANDBYTES and not use_exact_model_name:
+        if (
+            not ALLOW_BITSANDBYTES
+            and not use_exact_model_name
+            and DEVICE_TYPE != "mps"
+        ):
             if load_in_4bit or load_in_8bit or model_name.lower().endswith("-bnb-4bit"):
                 print(
                     "Unsloth: AMD currently is not stable with 4bit bitsandbytes. Disabling for now."
                 )
             load_in_4bit = False
+        elif DEVICE_TYPE == "mps" and load_in_4bit:
+            print("Unsloth: Apple Silicon detected. Will use on-the-fly MLX 4-bit quantization.")
 
         if fast_inference:
             if importlib.util.find_spec("vllm") is None:
@@ -1320,7 +1331,7 @@ class FastModel(FastBaseModel):
 
         load_in_4bit_kwargs = load_in_4bit
         load_in_8bit_kwargs = load_in_8bit
-        if quantization_config is not None and not fast_inference:
+        if (quantization_config is not None and not fast_inference) or DEVICE_TYPE == "mps":
             load_in_4bit_kwargs = False
             load_in_8bit_kwargs = False
 

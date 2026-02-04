@@ -222,7 +222,7 @@ def Gemma2DecoderLayer_fast_forward(
         self, "_flag_for_generation"
     ):  # past_key_value is not None:
         out_weight = torch.empty(
-            self.input_layernorm.weight.shape, dtype=torch.float32, device="cuda:0"
+            self.input_layernorm.weight.shape, dtype=torch.float32, device=hidden_states.device
         )
 
         # Self Attention
@@ -252,7 +252,13 @@ def Gemma2DecoderLayer_fast_forward(
         hidden_states = fast_rms_layernorm_inference_gemma(
             self.pre_feedforward_layernorm, hidden_states, out_weight
         )
-        hidden_states = fast_geglu_inference(self.mlp, hidden_states)
+        from ..kernels.mps.dispatch import dispatch_lora_mlp_geglu_approx
+        hidden_states = dispatch_lora_mlp_geglu_approx(
+            hidden_states,
+            *get_lora_parameters(self.mlp.gate_proj),
+            *get_lora_parameters(self.mlp.up_proj),
+            *get_lora_parameters(self.mlp.down_proj),
+        )
         hidden_states = fast_rms_layernorm_inference_gemma(
             self.post_feedforward_layernorm, hidden_states, out_weight
         )
@@ -283,7 +289,13 @@ def Gemma2DecoderLayer_fast_forward(
         hidden_states = fast_rms_layernorm(
             self.pre_feedforward_layernorm, hidden_states, gemma=True
         )
-        hidden_states = self.mlp(hidden_states)
+        from ..kernels.mps.dispatch import dispatch_lora_mlp_geglu_approx
+        hidden_states = dispatch_lora_mlp_geglu_approx(
+            hidden_states,
+            *get_lora_parameters(self.mlp.gate_proj),
+            *get_lora_parameters(self.mlp.up_proj),
+            *get_lora_parameters(self.mlp.down_proj),
+        )
         hidden_states = fast_rms_layernorm(
             self.post_feedforward_layernorm, hidden_states, gemma=True
         )

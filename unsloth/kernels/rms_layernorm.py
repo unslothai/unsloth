@@ -285,7 +285,7 @@ def fast_rms_layernorm(layernorm, X: torch.Tensor, gemma: bool = False):
         if USE_MLX_FAST and not torch.is_grad_enabled():
             from .mlx import mlx_rms_norm
 
-            return mlx_rms_norm(X, W, eps)
+            return mlx_rms_norm(X, W, eps, gemma)
 
         from .metal import USE_METAL_KERNEL
 

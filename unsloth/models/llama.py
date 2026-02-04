@@ -1210,17 +1210,17 @@ def _LlamaModel_fast_forward_inference(
         assert q_len == 1
         # Get saved buffers to reduce memory movement
         residual = torch.empty(
-            (bsz, q_len, hd), dtype=torch.float32, device=f"{DEVICE_TYPE_TORCH}:0"
+            (bsz, q_len, hd), dtype=torch.float32, device=X.device
         )
         _XX = torch.empty(
-            (2, bsz, q_len, hd), dtype=torch.float32, device=f"{DEVICE_TYPE_TORCH}:0"
+            (2, bsz, q_len, hd), dtype=torch.float32, device=X.device
         )
         XX, XX2 = _XX[0], _XX[1]
         variance = torch.empty(
-            (bsz, q_len, 1), dtype=torch.float32, device=f"{DEVICE_TYPE_TORCH}:0"
+            (bsz, q_len, 1), dtype=torch.float32, device=X.device
         )
         temp_mlp = torch.empty(
-            (2, bsz, 1, mlp_size), dtype=X.dtype, device=f"{DEVICE_TYPE_TORCH}:0"
+            (2, bsz, 1, mlp_size), dtype=X.dtype, device=X.device
         )
         temp_gates, temp_ups = (
             tuple(temp_mlp[0].to(torch.device(x)) for x in range(DEVICE_COUNT)),

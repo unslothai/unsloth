@@ -88,6 +88,7 @@ def mlx_rms_norm(
     X: "torch.Tensor",
     W: "torch.Tensor",
     eps: float,
+    gemma: bool = False,
 ) -> "torch.Tensor":
     """RMSNorm using mx.fast.rms_norm."""
     import torch
@@ -101,6 +102,9 @@ def mlx_rms_norm(
 
     X_mlx = torch_to_mlx(X_2d)
     W_mlx = torch_to_mlx(W)
+
+    if gemma:
+        W_mlx = W_mlx + 1.0
 
     Y_mlx = mx.fast.rms_norm(X_mlx, W_mlx, eps)
     mx.eval(Y_mlx)
@@ -281,6 +285,86 @@ def mlx_rope_qk(
     return Q_t, K_t
 
 
+@mx.compile
+def _mlx_swiglu_kernel(e, g):
+    return (e * mx.sigmoid(e)) * g
+
+
+def mlx_swiglu(
+    e: "torch.Tensor",
+    g: "torch.Tensor",
+) -> "torch.Tensor":
+    """SwiGLU activation using MLX."""
+    import torch
+    import mlx.core as mx
+    from .bridge import torch_to_mlx, mlx_to_torch, synchronize_mps
+
+    shape = e.shape
+    synchronize_mps()
+
+    e_mlx = torch_to_mlx(e.contiguous())
+    g_mlx = torch_to_mlx(g.contiguous())
+
+    h_mlx = _mlx_swiglu_kernel(e_mlx, g_mlx)
+    mx.eval(h_mlx)
+
+    return mlx_to_torch(h_mlx, device=e.device, dtype=e.dtype)
+
+
+@mx.compile
+def _mlx_geglu_exact_kernel(e, g):
+    return (0.5 * e * (1 + mx.erf(e / 1.4142135623730951))) * g  # 1.414... is sqrt(2)
+
+
+def mlx_geglu_exact(
+    e: "torch.Tensor",
+    g: "torch.Tensor",
+) -> "torch.Tensor":
+    """Exact GeGLU activation using MLX."""
+    import torch
+    import mlx.core as mx
+    from .bridge import torch_to_mlx, mlx_to_torch, synchronize_mps
+
+    shape = e.shape
+    synchronize_mps()
+
+    e_mlx = torch_to_mlx(e.contiguous())
+    g_mlx = torch_to_mlx(g.contiguous())
+
+    h_mlx = _mlx_geglu_exact_kernel(e_mlx, g_mlx)
+    mx.eval(h_mlx)
+
+    return mlx_to_torch(h_mlx, device=e.device, dtype=e.dtype)
+
+
+@mx.compile
+def _mlx_geglu_approx_kernel(e, g):
+    # f = 1/2 * e * (1 + tanh( sqrt(2/pi) * (x + 0.044715 * x^3 ) ))
+    s = 0.7978845608028654  # sqrt(2 / pi)
+    return (0.5 * e * (1 + mx.tanh(s * (e + 0.044715 * e * e * e)))) * g
+
+
+def mlx_geglu_approx(
+    e: "torch.Tensor",
+    g: "torch.Tensor",
+) -> "torch.Tensor":
+    """Approximate GeGLU activation using MLX."""
+    import torch
+    import mlx.core as mx
+    from .bridge import torch_to_mlx, mlx_to_torch, synchronize_mps
+
+    shape = e.shape
+    synchronize_mps()
+
+    e_mlx = torch_to_mlx(e.contiguous())
+    g_mlx = torch_to_mlx(g.contiguous())
+
+    h_mlx = _mlx_geglu_approx_kernel(e_mlx, g_mlx)
+    mx.eval(h_mlx)
+
+    return mlx_to_torch(h_mlx, device=e.device, dtype=e.dtype)
+
+
 def mlx_scaled_dot_product_attention(
     Q: "torch.Tensor",
     K: "torch.Tensor",
@@ -319,5 +403,8 @@ __all__ = [
     "mlx_rms_norm",
     "mlx_rope",
     "mlx_rope_qk",
+    "mlx_swiglu",
+    "mlx_geglu_exact",
+    "mlx_geglu_approx",
     "mlx_scaled_dot_product_attention",
 ]

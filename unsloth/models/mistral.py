@@ -31,6 +31,16 @@ from .llama import (
     LlamaRotaryEmbedding,
     LlamaLinearScalingRotaryEmbedding,
 )
+from ..kernels import (
+    fast_rope_embedding,
+    inplace_rope_embedding,
+    dispatch_rope_embedding,
+    dispatch_rms_layernorm,
+    dispatch_swiglu_fg,
+    get_lora_parameters,
+    apply_lora_qkv,
+    apply_lora_o,
+)
 from transformers.models.mistral.modeling_mistral import (
     MistralAttention,
     MistralDecoderLayer,
@@ -100,7 +110,7 @@ def MistralAttention_fast_forward(
         position_ids if position_ids is not None else kwargs.get("position_ids")
     )
     # Useful for LongRoPE
-    Q, K = fast_rope_embedding(Q, K, cos, sin, rope_position_ids)
+    Q, K = dispatch_rope_embedding(Q, K, cos, sin, rope_position_ids)
 
     if past_key_value is not None:
         K = torch.cat([past_key_value[0], K], dim = 2)

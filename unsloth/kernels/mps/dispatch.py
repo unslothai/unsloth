@@ -336,6 +336,191 @@ def dispatch_lora_mlp_swiglu(
     )
 
 
+def dispatch_lora_mlp_geglu_exact(
+    X,
+    gateW,
+    gateW_quant,
+    gateA,
+    gateB,
+    gateS,
+    upW,
+    upW_quant,
+    upA,
+    upB,
+    upS,
+    downW,
+    downW_quant,
+    downA,
+    downB,
+    downS,
+):
+    if DEVICE_TYPE == "mps":
+        # Priority 1: MLX fast_lora (compiled graph fusion + batch-1 GEMV)
+        if _is_mlx_available():
+            # We use the same MLX kernel, but Gemma usually uses approximate
+            # For exact, we can still use the MLX kernel if we want, but MLX fast.gelu is approx
+            # However, for Unsloth MLX path, we use the fast kernel
+            from ..mlx.fast_lora import apply_lora_mlp_geglu
+
+            return apply_lora_mlp_geglu(
+                X,
+                gateW,
+                gateW_quant,
+                gateA,
+                gateB,
+                gateS,
+                upW,
+                upW_quant,
+                upA,
+                upB,
+                upS,
+                downW,
+                downW_quant,
+                downA,
+                downB,
+                downS,
+            )
+        # Priority 2: MPS fallback (PyTorch-native)
+        if USE_MPS_FALLBACK:
+            from .fast_lora import mps_apply_lora_mlp_geglu_exact
+
+            fn = _get_compiled_fn(mps_apply_lora_mlp_geglu_exact)
+            return fn(
+                X,
+                gateW,
+                gateW_quant,
+                gateA,
+                gateB,
+                gateS,
+                upW,
+                upW_quant,
+                upA,
+                upB,
+                upS,
+                downW,
+                downW_quant,
+                downA,
+                downB,
+                downS,
+            )
+    # Default: CUDA/Triton path
+    from ..fast_lora import LoRA_MLP, geglu_exact_forward_kernel, geglu_exact_backward_kernel
+
+    return LoRA_MLP.apply(
+        X,
+        gateW,
+        gateW_quant,
+        gateA,
+        gateB,
+        gateS,
+        upW,
+        upW_quant,
+        upA,
+        upB,
+        upS,
+        downW,
+        downW_quant,
+        downA,
+        downB,
+        downS,
+        geglu_exact_forward_kernel,
+        geglu_exact_backward_kernel,
+    )
+
+
+def dispatch_lora_mlp_geglu_approx(
+    X,
+    gateW,
+    gateW_quant,
+    gateA,
+    gateB,
+    gateS,
+    upW,
+    upW_quant,
+    upA,
+    upB,
+    upS,
+    downW,
+    downW_quant,
+    downA,
+    downB,
+    downS,
+):
+    if DEVICE_TYPE == "mps":
+        # Priority 1: MLX fast_lora (compiled graph fusion + batch-1 GEMV)
+        if _is_mlx_available():
+            from ..mlx.fast_lora import apply_lora_mlp_geglu
+
+            return apply_lora_mlp_geglu(
+                X,
+                gateW,
+                gateW_quant,
+                gateA,
+                gateB,
+                gateS,
+                upW,
+                upW_quant,
+                upA,
+                upB,
+                upS,
+                downW,
+                downW_quant,
+                downA,
+                downB,
+                downS,
+            )
+        # Priority 2: MPS fallback (PyTorch-native)
+        if USE_MPS_FALLBACK:
+            from .fast_lora import mps_apply_lora_mlp_geglu_approx
+
+            fn = _get_compiled_fn(mps_apply_lora_mlp_geglu_approx)
+            return fn(
+                X,
+                gateW,
+                gateW_quant,
+                gateA,
+                gateB,
+                gateS,
+                upW,
+                upW_quant,
+                upA,
+                upB,
+                upS,
+                downW,
+                downW_quant,
+                downA,
+                downB,
+                downS,
+            )
+    # Default: CUDA/Triton path
+    from ..fast_lora import (
+        LoRA_MLP,
+        geglu_approx_forward_kernel,
+        geglu_approx_backward_kernel,
+    )
+
+    return LoRA_MLP.apply(
+        X,
+        gateW,
+        gateW_quant,
+        gateA,
+        gateB,
+        gateS,
+        upW,
+        upW_quant,
+        upA,
+        upB,
+        upS,
+        downW,
+        downW_quant,
+        downA,
+        downB,
+        downS,
+        geglu_approx_forward_kernel,
+        geglu_approx_backward_kernel,
+    )
+
+
 def dispatch_lora_qkv(
     X,
     QW,

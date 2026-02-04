@@ -188,7 +188,7 @@ def CohereDecoderLayer_fast_forward(
         self, "_flag_for_generation"
     ):  # past_key_value is not None:
         out_weight = torch.empty(
-            self.input_layernorm.weight.shape, dtype=torch.float32, device="cuda:0"
+            self.input_layernorm.weight.shape, dtype=torch.float32, device=hidden_states.device
         )
 
         # Self Attention
@@ -274,29 +274,30 @@ def CohereAttention_fast_forward_inference(
     # Prefill phase
     # if not hasattr(self, "paged_attention"):
     if do_prefill:
+        device = hidden_states.device
         self.paged_attention = torch.empty(
             (KV_CACHE_INCREMENT + seq_len + 1, 2, bsz, n_kv_heads, head_dim),
             dtype=dtype,
-            device="cuda:0",
+            device=device,
         )
         self.paged_attention_K = self.paged_attention[:, 0]
         self.paged_attention_V = self.paged_attention[:, 1]
         self.paged_attention_K[:seq_len] = K1.permute(2, 0, 1, 3)
         self.paged_attention_V[:seq_len] = V1.permute(2, 0, 1, 3)
         self.temp_QA = torch.empty(
-            (2, bsz, 1, attention_size), dtype=dtype, device="cuda:0"
+            (2, bsz, 1, attention_size), dtype=dtype, device=device
         )
         self.temp_KV = torch.empty(
-            (2, bsz, 1, n_kv_heads * head_dim), dtype=dtype, device="cuda:0"
+            (2, bsz, 1, n_kv_heads * head_dim), dtype=dtype, device=device
         )
         self.RH_Q = torch.empty(
-            (bsz, n_heads, 1, head_dim), dtype=dtype, device="cuda:0"
+            (bsz, n_heads, 1, head_dim), dtype=dtype, device=device
         )
 
         # Mistral Nemo 12b has weird dimensions
         if attention_size != hidden_size:
             self.temp_O = torch.empty(
-                (1, bsz, hidden_size), dtype=dtype, device="cuda:0"
+                (1, bsz, hidden_size), dtype=dtype, device=device
             )
         else:
             self.temp_O = self.temp_QA[1][:, :, :hidden_size]
@@ -304,17 +305,17 @@ def CohereAttention_fast_forward_inference(
         self.attention = torch.empty(
             (bsz, n_heads, 1, KV_CACHE_INCREMENT + seq_len),
             dtype=dtype,
-            device="cuda:0",
+            device=device,
         )
         self.scalar = 1.0 / math_sqrt(self.head_dim)
         self.half_head_dim = head_dim // 2
         # Cohere has QK layernorms
         if self.use_qk_norm:
             self.q_norm_out_weight = torch.empty(
-                self.q_norm.weight.shape, dtype=torch.float32, device="cuda:0"
+                self.q_norm.weight.shape, dtype=torch.float32, device=device
             )
             self.k_norm_out_weight = torch.empty(
-                self.k_norm.weight.shape, dtype=torch.float32, device="cuda:0"
+                self.k_norm.weight.shape, dtype=torch.float32, device=device
             )
         else:
             self.q_norm_out_weight = None
@@ -436,7 +437,7 @@ def CohereModel_fast_forward_inference(
         torch.empty_like(
             self.model.layers[0].input_layernorm.weight,
             dtype=torch.float32,
-            device=torch.device(x),
+            device=torch.device(f"{DEVICE_TYPE_TORCH}:{x}") if DEVICE_TYPE != "mps" else torch.device("mps"),
         )
         for x in range(DEVICE_COUNT)
     )

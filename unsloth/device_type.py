@@ -144,9 +144,14 @@ if DEVICE_TYPE == "hip":
 elif DEVICE_TYPE == "mps":
     # bitsandbytes does not support MPS/Apple Silicon yet
     # See https://github.com/bitsandbytes-foundation/bitsandbytes/issues/1292
-    print(
-        "Unsloth: bitsandbytes does not support Apple Silicon (MPS) yet. "
-        "4-bit/8-bit quantization is disabled, but 16-bit LoRA and full finetuning work."
-    )
-    ALLOW_PREQUANTIZED_MODELS = False
-    ALLOW_BITSANDBYTES = False
+    if os.environ.get("UNSLOTH_ENABLE_MLX_QUANT", "1") == "0":
+        print(
+            "Unsloth: bitsandbytes does not support Apple Silicon (MPS) yet. "
+            "4-bit/8-bit quantization is disabled, but 16-bit LoRA and full finetuning work."
+        )
+        ALLOW_PREQUANTIZED_MODELS = False
+        ALLOW_BITSANDBYTES = False
+    else:
+        # We will use MLX for quantization!
+        ALLOW_PREQUANTIZED_MODELS = True
+        ALLOW_BITSANDBYTES = False # Still keep False for bitsandbytes specific gates

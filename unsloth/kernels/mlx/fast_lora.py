@@ -14,20 +14,17 @@ def treeify(w):
     Converts MLXQuantizedWeight objects into dictionaries of arrays
     that mx.compile can trace. Standard arrays are returned as-is.
     """
-    w_mlx = (
-        torch_to_mlx(w)
-        if not isinstance(w, mx.array) and not isinstance(w, MLXQuantizedWeight)
-        else w
-    )
-    if isinstance(w_mlx, MLXQuantizedWeight):
+    if isinstance(w, MLXQuantizedWeight):
         return {
-            "weight": w_mlx.weight,
-            "scales": w_mlx.scales,
-            "biases": w_mlx.biases,
-            "group_size": w_mlx.group_size,
-            "bits": w_mlx.bits,
+            "weight": w.weight,
+            "scales": w.scales,
+            "biases": w.biases,
+            "group_size": w.group_size,
+            "bits": w.bits,
         }
-    return w_mlx
+    if not isinstance(w, mx.array):
+        return torch_to_mlx(w)
+    return w
 
 
 def quantized_matmul(X, W):
@@ -40,8 +37,8 @@ def quantized_matmul(X, W):
             W.weight,
             W.scales,
             W.biases,
-            group_size=getattr(W, "group_size", 64),
-            bits=getattr(W, "bits", 4),
+            group_size=W.group_size,
+            bits=W.bits,
         )
     if isinstance(W, dict) and "weight" in W:
         return mx.quantized_matmul(
@@ -55,9 +52,9 @@ def quantized_matmul(X, W):
 
     # Batch=1 Optimization for FP16
     if X.size // X.shape[-1] == 1:
-        from ..metal.gemv import fast_gemv
-
-        return fast_gemv(X.reshape(1, -1), W)
+        # For decoding, a simple matmul or custom GEMV is often faster than quantized_matmul 
+        # but here we are in the FP16 path.
+        return X @ W.T
 
     return X @ W.T
 
@@ -92,14 +89,16 @@ def _dequant(W):
 
 
 @mx.compile
-def _compiled_mlp_swiglu(
+def _compiled_mlp_geglu(
     X, gateW, gateA, gateB, gateS, upW, upA, upB, upS, downW, downA, downB, downS
 ):
     # Use quantized_matmul directly - MLX will optimize this if weights are quantized trees
     gate = quantized_matmul(X, gateW) + (X @ gateA.T) @ gateB.T * gateS
     up = quantized_matmul(X, upW) + (X @ upA.T) @ upB.T * upS
 
-    act = gate * mx.sigmoid(gate) * up
+    # GEGLU: gelu(gate) * up
+    # MLX fast.gelu is the tanh approximation
+    act = mx.fast.gelu(gate) * up
     out = quantized_matmul(act, downW) + (act @ downA.T) @ downB.T * downS
 
     return out
@@ -191,6 +190,108 @@ def apply_lora_mlp_swiglu(
 
         # Execute compiled kernel
         out_mlx = _compiled_mlp_swiglu(
+            X_mlx,
+            gateW_mlx,
+            gateA_mlx,
+            gateB_mlx,
+            gateS_mlx,
+            upW_mlx,
+            upA_mlx,
+            upB_mlx,
+            upS_mlx,
+            downW_mlx,
+            downA_mlx,
+            downB_mlx,
+            downS_mlx,
+        )
+
+        if return_mlx:
+            return out_mlx
+        return mlx_to_torch(out_mlx, device=X.device, dtype=X.dtype)
+
+
+def apply_lora_mlp_geglu(
+    X,
+    gateW,
+    gateW_quant,
+    gateA,
+    gateB,
+    gateS,
+    upW,
+    upW_quant,
+    upA,
+    upB,
+    upS,
+    downW,
+    downW_quant,
+    downA,
+    downB,
+    downS,
+):
+    with mlx_context():
+        # Convert inputs to MLX
+        if isinstance(X, mx.array):
+            X_mlx = X
+            return_mlx = True
+        else:
+            X_mlx = torch_to_mlx(X)
+            return_mlx = False
+
+        # Batch=1 Optimization
+        if X_mlx.size // X_mlx.shape[-1] == 1:
+            gateW_mlx = torch_to_mlx(gateW)
+            gateA_mlx = torch_to_mlx(gateA)
+            gateB_mlx = torch_to_mlx(gateB)
+            gateS_val = gateS.item() if hasattr(gateS, "item") else gateS
+
+            upW_mlx = torch_to_mlx(upW)
+            upA_mlx = torch_to_mlx(upA)
+            upB_mlx = torch_to_mlx(upB)
+            upS_val = upS.item() if hasattr(upS, "item") else upS
+
+            downW_mlx = torch_to_mlx(downW)
+            downA_mlx = torch_to_mlx(downA)
+            downB_mlx = torch_to_mlx(downB)
+            downS_val = downS.item() if hasattr(downS, "item") else downS
+
+            # 1. Gate
+            gate = quantized_matmul(X_mlx.reshape(1, -1), gateW_mlx)
+            gate += (X_mlx.reshape(1, -1) @ gateA_mlx.T) @ gateB_mlx.T * gateS_val
+
+            # 2. Up
+            up = quantized_matmul(X_mlx.reshape(1, -1), upW_mlx)
+            up += (X_mlx.reshape(1, -1) @ upA_mlx.T) @ upB_mlx.T * upS_val
+
+            # 3. GEGLU: gelu(gate) * up
+            act = mx.fast.gelu(gate) * up
+
+            # 4. Down
+            out = quantized_matmul(act, downW_mlx)
+            out += (act @ downA_mlx.T) @ downB_mlx.T * downS_val
+
+            out_reshaped = out.reshape(X.shape)
+            if return_mlx:
+                return out_reshaped
+            return mlx_to_torch(out_reshaped, device=X.device, dtype=X.dtype)
+
+        # Standard Batch Path (Compiled)
+        gateW_mlx = treeify(gateW)
+        gateA_mlx = torch_to_mlx(gateA)
+        gateB_mlx = torch_to_mlx(gateB)
+        gateS_mlx = torch_to_mlx(gateS) if hasattr(gateS, "shape") else gateS
+
+        upW_mlx = treeify(upW)
+        upA_mlx = torch_to_mlx(upA)
+        upB_mlx = torch_to_mlx(upB)
+        upS_mlx = torch_to_mlx(upS) if hasattr(upS, "shape") else upS
+
+        downW_mlx = treeify(downW)
+        downA_mlx = torch_to_mlx(downA)
+        downB_mlx = torch_to_mlx(downB)
+        downS_mlx = torch_to_mlx(downS) if hasattr(downS, "shape") else downS
+
+        # Execute compiled kernel
+        out_mlx = _compiled_mlp_geglu(
             X_mlx,
             gateW_mlx,
             gateA_mlx,
