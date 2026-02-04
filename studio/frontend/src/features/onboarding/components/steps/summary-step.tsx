@@ -31,20 +31,41 @@ export function SummaryStep() {
     loraAlpha,
     loraDropout,
   } = useWizardStore(
-    useShallow(({
-      modelType, selectedModel, trainingMethod, datasetSource, datasetFormat,
-      dataset, uploadedFile, epochs, contextLength, learningRate,
-      loraRank, loraAlpha, loraDropout,
-    }) => ({
-      modelType, selectedModel, trainingMethod, datasetSource, datasetFormat,
-      dataset, uploadedFile, epochs, contextLength, learningRate,
-      loraRank, loraAlpha, loraDropout,
-    })),
+    useShallow(
+      ({
+        modelType,
+        selectedModel,
+        trainingMethod,
+        datasetSource,
+        datasetFormat,
+        dataset,
+        uploadedFile,
+        epochs,
+        contextLength,
+        learningRate,
+        loraRank,
+        loraAlpha,
+        loraDropout,
+      }) => ({
+        modelType,
+        selectedModel,
+        trainingMethod,
+        datasetSource,
+        datasetFormat,
+        dataset,
+        uploadedFile,
+        epochs,
+        contextLength,
+        learningRate,
+        loraRank,
+        loraAlpha,
+        loraDropout,
+      }),
+    ),
   );
 
   const showLoraParams = isAdapterMethod(trainingMethod);
-  const datasetName =
-    datasetSource === "upload" ? uploadedFile : dataset;
+  const datasetName = datasetSource === "upload" ? uploadedFile : dataset;
 
   return (
     <div className="grid grid-cols-2 gap-4">
@@ -116,7 +137,9 @@ export function SummaryStep() {
         <CardContent className="space-y-2">
           <div className="flex items-center gap-3">
             <div className="flex flex-col flex-1">
-              <span className="text-sm font-medium truncate">{datasetName ?? "—"}</span>
+              <span className="text-sm font-medium truncate">
+                {datasetName ?? "—"}
+              </span>
             </div>
           </div>
           <Separator />

@@ -187,7 +187,10 @@ function InlineSidebar({
         data-sidebar="sidebar"
         className={cn(
           "bg-sidebar text-sidebar-foreground h-full overflow-hidden rounded-2xl corner-squircle transition-[width] duration-200 ease-linear",
-          !collapsed && (side === "left" ? "border-r border-0 border-sidebar-border" : "border-l border-0 border-sidebar-border"),
+          !collapsed &&
+            (side === "left"
+              ? "border-r border-0 border-sidebar-border"
+              : "border-l border-0 border-sidebar-border"),
           collapsed ? "w-0" : "w-(--sidebar-width)",
         )}
       >
@@ -204,11 +207,13 @@ function TopBarActions({
   onNewCompare,
 }: { onNewThread: () => void; onNewCompare: () => void }) {
   const { state } = useSidebar();
-  if (state !== "collapsed") return null;
+  if (state !== "collapsed") {
+    return null;
+  }
   return (
     <>
       <Tooltip>
-        <TooltipTrigger asChild>
+        <TooltipTrigger asChild={true}>
           <Button variant="ghost" size="icon-sm" onClick={onNewThread}>
             <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={2} />
           </Button>
@@ -216,7 +221,7 @@ function TopBarActions({
         <TooltipContent side="bottom">New Chat</TooltipContent>
       </Tooltip>
       <Tooltip>
-        <TooltipTrigger asChild>
+        <TooltipTrigger asChild={true}>
           <Button variant="ghost" size="icon-sm" onClick={onNewCompare}>
             <HugeiconsIcon icon={ColumnInsertIcon} strokeWidth={2} />
           </Button>
@@ -242,25 +247,25 @@ export function ChatPage(): ReactElement {
     () => setInferenceParams((p) => ({ ...p, checkpoint: "" })),
     [],
   );
-  const handleNewThread = useCallback(
-    () => setView({ mode: "single" }),
-    [],
-  );
+  const handleNewThread = useCallback(() => setView({ mode: "single" }), []);
   const handleNewCompare = useCallback(
     () => setView({ mode: "compare", pairId: crypto.randomUUID() }),
     [],
   );
 
   const models =
-    inferenceParams.inferenceEngine === "llama-cpp"
-      ? GGUF_MODELS
-      : LORA_MODELS;
+    inferenceParams.inferenceEngine === "llama-cpp" ? GGUF_MODELS : LORA_MODELS;
 
   return (
     <SidebarProvider
       defaultOpen={true}
       className="!min-h-0 h-[calc(100vh-4rem)] max-w-7xl mx-auto px-4"
-      style={{ "--sidebar-width": "14rem", "--sidebar-width-icon": "3rem" } as CSSProperties}
+      style={
+        {
+          "--sidebar-width": "14rem",
+          "--sidebar-width-icon": "3rem",
+        } as CSSProperties
+      }
     >
       <InlineSidebar>
         <ThreadSidebar

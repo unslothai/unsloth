@@ -3,25 +3,42 @@ import type { ChatModelAdapter, ChatModelRunResult } from "@assistant-ui/react";
 const API = import.meta.env.VITE_INFERENCE_URL || "/api/chat/generate";
 type ContentPart = NonNullable<ChatModelRunResult["content"]>[number];
 type RunMessages = Parameters<ChatModelAdapter["run"]>[0]["messages"];
+type RunMessage = RunMessages[number];
 
-function makeBody(messages: RunMessages): string {
-  return JSON.stringify({
-    messages: messages.map((m) => {
-      const textParts = m.content
-        .filter((c) => c.type === "text")
-        .map((c) => c.text);
+function collectTextParts(message: RunMessage): string[] {
+  const textParts = message.content
+    .filter((c) => c.type === "text")
+    .map((c) => c.text);
 
-      if ("attachments" in m && m.attachments?.length) {
-        for (const att of m.attachments) {
-          for (const part of att.content ?? []) {
-            if (part.type === "text") textParts.push(part.text);
-          }
+  if ("attachments" in message && (message.attachments?.length ?? 0) > 0) {
+    for (const att of message.attachments) {
+      for (const part of att.content ?? []) {
+        if (part.type === "text") {
+          textParts.push(part.text);
         }
       }
+    }
+  }
 
-      return { role: m.role, content: textParts.join("\n") };
-    }),
-  });
+  return textParts;
+}
+
+function messageToPayload(message: RunMessage): {
+  role: string;
+  content: string;
+} {
+  return {
+    role: message.role,
+    content: collectTextParts(message).join("\n"),
+  };
+}
+
+function makeBody(messages: RunMessages): string {
+  const payloadMessages: Array<{ role: string; content: string }> = [];
+  for (const message of messages) {
+    payloadMessages.push(messageToPayload(message));
+  }
+  return JSON.stringify({ messages: payloadMessages });
 }
 
 export function parseThinkTags(raw: string): ChatModelRunResult["content"] {
@@ -60,6 +77,7 @@ export function parseThinkTags(raw: string): ChatModelRunResult["content"] {
 
 export function createStreamAdapter(apiUrl: string = API): ChatModelAdapter {
   return {
+    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: stream loop ok
     async *run({ messages, abortSignal }) {
       const res = await fetch(apiUrl, {
         method: "POST",
@@ -88,9 +106,7 @@ export function createStreamAdapter(apiUrl: string = API): ChatModelAdapter {
           reasoningStart = Date.now();
         }
         if (text.includes("</think>") && reasoningStart && !reasoningDuration) {
-          reasoningDuration = Math.round(
-            (Date.now() - reasoningStart) / 1000,
-          );
+          reasoningDuration = Math.round((Date.now() - reasoningStart) / 1000);
         }
 
         if (parts.length > 0) {
