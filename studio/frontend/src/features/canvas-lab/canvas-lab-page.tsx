@@ -6,6 +6,7 @@ import {
   type NodeTypes,
   Panel,
   ReactFlow,
+  useReactFlow,
 } from "@xyflow/react";
 import { type ReactElement, useCallback, useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -29,6 +30,38 @@ import { buildCanvasPayload } from "./utils/payload";
 const NODE_TYPES: NodeTypes = { builder: CanvasNode };
 const EDGE_TYPES: EdgeTypes = { canvas: CanvasEdge };
 
+type LayoutControlsProps = {
+  direction: "LR" | "TB";
+  onLayout: () => void;
+  onToggleDirection: () => void;
+};
+
+function LayoutControls({
+  direction,
+  onLayout,
+  onToggleDirection,
+}: LayoutControlsProps): ReactElement {
+  const { fitView } = useReactFlow();
+
+  const handleLayout = useCallback(() => {
+    onLayout();
+    requestAnimationFrame(() => {
+      fitView({ duration: 250 });
+    });
+  }, [fitView, onLayout]);
+
+  return (
+    <Panel position="top-left" className="m-3 flex items-center gap-2">
+      <Button size="sm" variant="secondary" onClick={handleLayout}>
+        Auto layout
+      </Button>
+      <Button size="sm" variant="outline" onClick={onToggleDirection}>
+        {direction}
+      </Button>
+    </Panel>
+  );
+}
+
 export function CanvasLabPage(): ReactElement {
   const {
     nodes,
@@ -37,6 +70,7 @@ export function CanvasLabPage(): ReactElement {
     sheetView,
     activeConfigId,
     dialogOpen,
+    layoutDirection,
     onNodesChange,
     onEdgesChange,
     onConnect,
@@ -49,6 +83,8 @@ export function CanvasLabPage(): ReactElement {
     setSheetView,
     setDialogOpen,
     loadCanvas,
+    setLayoutDirection,
+    applyLayout,
   } = useCanvasLabStore(
     useShallow((state) => ({
       nodes: state.nodes,
@@ -57,6 +93,7 @@ export function CanvasLabPage(): ReactElement {
       sheetView: state.sheetView,
       activeConfigId: state.activeConfigId,
       dialogOpen: state.dialogOpen,
+      layoutDirection: state.layoutDirection,
       onNodesChange: state.onNodesChange,
       onEdgesChange: state.onEdgesChange,
       onConnect: state.onConnect,
@@ -69,6 +106,8 @@ export function CanvasLabPage(): ReactElement {
       setSheetView: state.setSheetView,
       setDialogOpen: state.setDialogOpen,
       loadCanvas: state.loadCanvas,
+      setLayoutDirection: state.setLayoutDirection,
+      applyLayout: state.applyLayout,
     })),
   );
   const [sheetContainer, setSheetContainer] = useState<HTMLDivElement | null>(
@@ -93,6 +132,10 @@ export function CanvasLabPage(): ReactElement {
     () => Object.values(configs).filter(isCategoryConfig),
     [configs],
   );
+
+  const handleToggleDirection = useCallback(() => {
+    setLayoutDirection(layoutDirection === "LR" ? "TB" : "LR");
+  }, [layoutDirection, setLayoutDirection]);
 
   const handlePreview = async (): Promise<void> => {
     setPreviewLoading(true);
@@ -244,6 +287,11 @@ export function CanvasLabPage(): ReactElement {
             fitView={true}
             className="h-full w-full"
           >
+            <LayoutControls
+              direction={layoutDirection}
+              onLayout={applyLayout}
+              onToggleDirection={handleToggleDirection}
+            />
             <Background
               variant={BackgroundVariant.Dots}
               gap={18}

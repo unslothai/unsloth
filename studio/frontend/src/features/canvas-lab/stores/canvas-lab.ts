@@ -11,6 +11,7 @@ import {
 import { create } from "zustand";
 import type {
   CanvasNode,
+  LayoutDirection,
   LlmType,
   NodeConfig,
   SamplerConfig,
@@ -20,10 +21,12 @@ import { getBlockDefinition } from "../blocks/registry";
 import { isCategoryConfig, isSubcategoryConfig } from "../utils";
 import { applyCanvasConnection, isValidCanvasConnection } from "../utils/graph";
 import type { CanvasSnapshot } from "../utils/import";
+import { getLayoutedElements } from "../utils/layout";
 import {
   applyRemovalToConfig,
   applyRemovalToConfigs,
   applyRenameToConfigs,
+  applyLayoutDirectionToNodes,
   buildNodeUpdate,
   findNodeIdByName,
   updateNodeData,
@@ -38,11 +41,14 @@ type CanvasLabState = {
   sheetView: SheetView;
   activeConfigId: string | null;
   dialogOpen: boolean;
+  layoutDirection: LayoutDirection;
   nextId: number;
   nextY: number;
   setSheetView: (view: SheetView) => void;
   setDialogOpen: (open: boolean) => void;
   openConfig: (id: string) => void;
+  setLayoutDirection: (direction: LayoutDirection) => void;
+  applyLayout: () => void;
   addSamplerNode: (type: SamplerType) => void;
   addLlmNode: (type: LlmType) => void;
   addExpressionNode: () => void;
@@ -61,11 +67,34 @@ export const useCanvasLabStore = create<CanvasLabState>((set, get) => ({
   sheetView: "root",
   activeConfigId: null,
   dialogOpen: false,
+  layoutDirection: "LR",
   nextId: 3,
   nextY: 280,
   setSheetView: (view) => set({ sheetView: view }),
   setDialogOpen: (open) => set({ dialogOpen: open }),
   openConfig: (id) => set({ activeConfigId: id, dialogOpen: true }),
+  setLayoutDirection: (direction) =>
+    set((state) => ({
+      layoutDirection: direction,
+      nodes: applyLayoutDirectionToNodes(
+        state.nodes,
+        state.configs,
+        direction,
+      ),
+    })),
+  applyLayout: () =>
+    set((state) => {
+      const { nodes } = getLayoutedElements(state.nodes, state.edges, {
+        direction: state.layoutDirection,
+      });
+      return {
+        nodes: applyLayoutDirectionToNodes(
+          nodes,
+          state.configs,
+          state.layoutDirection,
+        ),
+      };
+    }),
   addSamplerNode: (type) => {
     set((state) => {
       const id = `n${state.nextId}`;
@@ -75,7 +104,7 @@ export const useCanvasLabStore = create<CanvasLabState>((set, get) => ({
         return state;
       }
       const config = definition.createConfig(id, existing);
-      return buildNodeUpdate(state, config);
+      return buildNodeUpdate(state, config, state.layoutDirection);
     });
   },
   addLlmNode: (type) => {
@@ -87,7 +116,7 @@ export const useCanvasLabStore = create<CanvasLabState>((set, get) => ({
         return state;
       }
       const config = definition.createConfig(id, existing);
-      return buildNodeUpdate(state, config);
+      return buildNodeUpdate(state, config, state.layoutDirection);
     });
   },
   addExpressionNode: () => {
@@ -99,20 +128,24 @@ export const useCanvasLabStore = create<CanvasLabState>((set, get) => ({
         return state;
       }
       const config = definition.createConfig(id, existing);
-      return buildNodeUpdate(state, config);
+      return buildNodeUpdate(state, config, state.layoutDirection);
     });
   },
   loadCanvas: (snapshot) =>
-    set({
+    set((state) => ({
       configs: snapshot.configs,
-      nodes: snapshot.nodes,
+      nodes: applyLayoutDirectionToNodes(
+        snapshot.nodes,
+        snapshot.configs,
+        state.layoutDirection,
+      ),
       edges: snapshot.edges,
       nextId: snapshot.nextId,
       nextY: snapshot.nextY,
       activeConfigId: null,
       dialogOpen: false,
       sheetView: "root",
-    }),
+    })),
   updateConfig: (id, patch) => {
     // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: store update
     const applyUpdate = (state: CanvasLabState) => {
@@ -128,7 +161,12 @@ export const useCanvasLabStore = create<CanvasLabState>((set, get) => ({
         ...state.configs,
         [id]: next,
       };
-      const nodes = updateNodeData(state.nodes, id, next);
+      const nodes = updateNodeData(
+        state.nodes,
+        id,
+        next,
+        state.layoutDirection,
+      );
       let edges = state.edges;
 
       const hasParentPatch = Object.prototype.hasOwnProperty.call(

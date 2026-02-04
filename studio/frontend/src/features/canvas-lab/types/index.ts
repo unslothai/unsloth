@@ -14,11 +14,14 @@ export type LlmType = "text" | "structured" | "code";
 
 export type ExpressionDtype = "str" | "int" | "float" | "bool";
 
+export type LayoutDirection = "LR" | "TB";
+
 export type CanvasNodeData = {
   title: string;
   name: string;
   kind: "sampler" | "llm" | "expression";
   subtype: string;
+  layoutDirection?: LayoutDirection;
 };
 
 export type CanvasNode = Node<CanvasNodeData, "builder">;
