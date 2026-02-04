@@ -612,9 +612,8 @@ def torchvision_compatibility_check():
     # Detect nightly/dev/alpha/beta/rc builds from the raw version string.
     # These often have version mismatches that are expected.
     _pre_tags = (".dev", "a0", "b0", "rc", "alpha", "beta", "nightly")
-    is_prerelease = (
-        any(t in torch_version_raw for t in _pre_tags)
-        or any(t in torchvision_version_raw for t in _pre_tags)
+    is_prerelease = any(t in torch_version_raw for t in _pre_tags) or any(
+        t in torchvision_version_raw for t in _pre_tags
     )
 
     # Downgrade to warning for custom/source/pre-release builds or formula-predicted
