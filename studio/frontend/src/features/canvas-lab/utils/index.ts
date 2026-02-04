@@ -1,5 +1,7 @@
 import type {
   CanvasNodeData,
+  ExpressionConfig,
+  ExpressionDtype,
   LlmConfig,
   LlmType,
   NodeConfig,
@@ -21,6 +23,13 @@ const LLM_LABELS: Record<LlmType, string> = {
   text: "LLM Text",
   structured: "LLM Structured",
   code: "LLM Code",
+};
+
+const EXPRESSION_LABELS: Record<ExpressionDtype, string> = {
+  str: "Text",
+  int: "Int",
+  float: "Float",
+  bool: "Bool",
 };
 
 export function nextName(existing: NodeConfig[], prefix: string): string {
@@ -161,8 +170,8 @@ export function makeLlmConfig(
     llm_type: llmType,
     name,
     // biome-ignore lint/style/useNamingConvention: api schema
-    model_alias: "local-text",
-    prompt: "Write a response about {{ sampler_1 }}.",
+    model_alias: "stepfun/step-3.5-flash:free",
+    prompt: "Write a response.",
     // biome-ignore lint/style/useNamingConvention: api schema
     system_prompt: "",
     // biome-ignore lint/style/useNamingConvention: api schema
@@ -170,6 +179,19 @@ export function makeLlmConfig(
     // biome-ignore lint/style/useNamingConvention: api schema
     output_format:
       llmType === "structured" ? '{\n  "field": "string"\n}' : undefined,
+  };
+}
+
+export function makeExpressionConfig(
+  id: string,
+  existing: NodeConfig[],
+): ExpressionConfig {
+  return {
+    id,
+    kind: "expression",
+    name: nextName(existing, "expr"),
+    expr: "",
+    dtype: "str",
   };
 }
 
@@ -181,12 +203,24 @@ export function labelForLlm(type: LlmType): string {
   return LLM_LABELS[type] ?? "LLM";
 }
 
+export function labelForExpression(type: ExpressionDtype): string {
+  return EXPRESSION_LABELS[type] ?? "Expression";
+}
+
 export function nodeDataFromConfig(config: NodeConfig): CanvasNodeData {
   if (config.kind === "sampler") {
     return {
       title: "Sampler",
       kind: "sampler",
       subtype: labelForSampler(config.sampler_type),
+      name: config.name,
+    };
+  }
+  if (config.kind === "expression") {
+    return {
+      title: "Expression",
+      kind: "expression",
+      subtype: labelForExpression(config.dtype),
       name: config.name,
     };
   }
@@ -226,6 +260,12 @@ export function isLlmConfig(
   config: NodeConfig | null | undefined,
 ): config is LlmConfig {
   return Boolean(config && config.kind === "llm");
+}
+
+export function isExpressionConfig(
+  config: NodeConfig | null | undefined,
+): config is ExpressionConfig {
+  return Boolean(config && config.kind === "expression");
 }
 
 function parseNumber(value?: string): number | null {
@@ -296,16 +336,29 @@ export function getConfigErrors(config: NodeConfig | null): string[] {
   if (config.kind === "llm" && !config.prompt.trim()) {
     errors.push("Prompt is required.");
   }
+  if (config.kind === "llm" && config.llm_type === "code") {
+    if (!config.code_lang) {
+      errors.push("Code language is required.");
+    }
+  }
   if (
     config.kind === "llm" &&
     config.llm_type === "structured" &&
-    typeof config.output_format === "string" &&
-    config.output_format.trim()
+    typeof config.output_format === "string"
   ) {
-    try {
-      JSON.parse(config.output_format);
-    } catch {
-      errors.push("Output format must be valid JSON.");
+    if (!config.output_format.trim()) {
+      errors.push("Output format is required.");
+    } else {
+      try {
+        JSON.parse(config.output_format);
+      } catch {
+        errors.push("Output format must be valid JSON.");
+      }
+    }
+  }
+  if (config.kind === "expression") {
+    if (!config.expr.trim()) {
+      errors.push("Expression is required.");
     }
   }
   return errors;

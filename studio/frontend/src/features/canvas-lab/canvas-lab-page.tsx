@@ -37,6 +37,7 @@ export function CanvasLabPage(): ReactElement {
     onConnect,
     addSamplerNode,
     addLlmNode,
+    addExpressionNode,
     openConfig,
     updateConfig,
     isValidConnection,
@@ -55,6 +56,7 @@ export function CanvasLabPage(): ReactElement {
       onConnect: state.onConnect,
       addSamplerNode: state.addSamplerNode,
       addLlmNode: state.addLlmNode,
+      addExpressionNode: state.addExpressionNode,
       openConfig: state.openConfig,
       updateConfig: state.updateConfig,
       isValidConnection: state.isValidConnection,
@@ -183,6 +185,7 @@ export function CanvasLabPage(): ReactElement {
                 onViewChange={setSheetView}
                 onAddSampler={addSamplerNode}
                 onAddLlm={addLlmNode}
+                onAddExpression={addExpressionNode}
               />
             </Panel>
           </ReactFlow>

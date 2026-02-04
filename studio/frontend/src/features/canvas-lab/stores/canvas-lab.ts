@@ -4,7 +4,6 @@ import {
   type EdgeChange,
   type IsValidConnection,
   type NodeChange,
-  addEdge,
   applyEdgeChanges,
   applyNodeChanges,
 } from "@xyflow/react";
@@ -19,12 +18,14 @@ import type {
 import {
   isCategoryConfig,
   isSubcategoryConfig,
+  makeExpressionConfig,
   makeLlmConfig,
   makeSamplerConfig,
   nodeDataFromConfig,
 } from "../utils";
+import { applyCanvasConnection, isValidCanvasConnection } from "../utils/graph";
 
-type SheetView = "root" | "sampler" | "llm";
+type SheetView = "root" | "sampler" | "llm" | "expression";
 
 type CanvasLabState = {
   nodes: CanvasNode[];
@@ -40,6 +41,7 @@ type CanvasLabState = {
   openConfig: (id: string) => void;
   addSamplerNode: (type: SamplerType) => void;
   addLlmNode: (type: LlmType) => void;
+  addExpressionNode: () => void;
   updateConfig: (id: string, patch: Partial<NodeConfig>) => void;
   onNodesChange: (changes: NodeChange<CanvasNode>[]) => void;
   onEdgesChange: (changes: EdgeChange<Edge>[]) => void;
@@ -57,16 +59,6 @@ function updateNodeData(
   );
 }
 
-function buildPromptWithRef(prompt: string, ref: string): string {
-  if (prompt.includes(ref)) {
-    return prompt;
-  }
-  if (prompt.trim()) {
-    return `${prompt}\n${ref}`;
-  }
-  return ref;
-}
-
 function findNodeIdByName(
   configs: Record<string, NodeConfig>,
   name: string,
@@ -75,34 +67,6 @@ function findNodeIdByName(
     ([, config]) => config.name === name,
   );
   return entry ? entry[0] : null;
-}
-
-function syncSubcategoryMapping(
-  subcategory: SamplerConfig,
-  parent: NodeConfig,
-): SamplerConfig {
-  if (!isCategoryConfig(parent)) {
-    return {
-      ...subcategory,
-      // biome-ignore lint/style/useNamingConvention: api schema
-      subcategory_parent: parent.name,
-    };
-  }
-  const nextMapping: Record<string, string[]> = {
-    ...(subcategory.subcategory_mapping ?? {}),
-  };
-  for (const value of parent.values ?? []) {
-    if (!nextMapping[value]) {
-      nextMapping[value] = [];
-    }
-  }
-  return {
-    ...subcategory,
-    // biome-ignore lint/style/useNamingConvention: api schema
-    subcategory_parent: parent.name,
-    // biome-ignore lint/style/useNamingConvention: api schema
-    subcategory_mapping: nextMapping,
-  };
 }
 
 export const useCanvasLabStore = create<CanvasLabState>((set, get) => ({
@@ -143,6 +107,27 @@ export const useCanvasLabStore = create<CanvasLabState>((set, get) => ({
       const id = `n${state.nextId}`;
       const existing = Object.values(state.configs);
       const config = makeLlmConfig(id, type, existing);
+      const node: CanvasNode = {
+        id,
+        type: "builder",
+        position: { x: 0, y: state.nextY },
+        data: nodeDataFromConfig(config),
+      };
+      return {
+        configs: { ...state.configs, [id]: config },
+        nodes: [...state.nodes, node],
+        nextId: state.nextId + 1,
+        nextY: state.nextY + 140,
+        activeConfigId: id,
+        dialogOpen: true,
+      };
+    });
+  },
+  addExpressionNode: () => {
+    set((state) => {
+      const id = `n${state.nextId}`;
+      const existing = Object.values(state.configs);
+      const config = makeExpressionConfig(id, existing);
       const node: CanvasNode = {
         id,
         type: "builder",
@@ -289,55 +274,17 @@ export const useCanvasLabStore = create<CanvasLabState>((set, get) => ({
     set((state) => ({ edges: applyEdgeChanges(changes, state.edges) }));
   },
   onConnect: (connection) => {
-    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: store update
-    const applyConnect = (state: CanvasLabState) => {
-      const source = connection.source
-        ? state.configs[connection.source]
-        : undefined;
-      const target = connection.target
-        ? state.configs[connection.target]
-        : undefined;
-      if (isSubcategoryConfig(target) && !isCategoryConfig(source)) {
-        return state;
-      }
-      const edges = addEdge(connection, state.edges);
-      if (!(connection.source && connection.target)) {
-        return { edges };
-      }
-      if (!(source && target)) {
-        return { edges };
-      }
-      const sourceName = source.name;
-      let configs = state.configs;
-
-      if (target.kind === "llm") {
-        const ref = `{{ ${sourceName} }}`;
-        const nextPrompt = buildPromptWithRef(target.prompt ?? "", ref);
-        const next = { ...target, prompt: nextPrompt };
-        configs = { ...configs, [target.id]: next };
-        return { edges, configs };
-      }
-
-      if (isSubcategoryConfig(target)) {
-        const next = syncSubcategoryMapping(target, source);
-        configs = { ...configs, [target.id]: next };
-        return { edges, configs };
-      }
-
-      return { edges };
-    };
-    set(applyConnect);
+    set((state) => {
+      const result = applyCanvasConnection(
+        connection,
+        state.configs,
+        state.edges,
+      );
+      return result.configs
+        ? { edges: result.edges, configs: result.configs }
+        : { edges: result.edges };
+    });
   },
-  isValidConnection: (connection) => {
-    if (!(connection.source && connection.target)) {
-      return false;
-    }
-    const configs = get().configs;
-    const source = configs[connection.source];
-    const target = configs[connection.target];
-    if (isSubcategoryConfig(target)) {
-      return isCategoryConfig(source);
-    }
-    return connection.source !== connection.target;
-  },
+  isValidConnection: (connection) =>
+    isValidCanvasConnection(connection, get().configs),
 }));

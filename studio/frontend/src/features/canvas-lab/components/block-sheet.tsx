@@ -19,7 +19,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactElement } from "react";
 import type { LlmType, SamplerType } from "../types";
 
-type SheetView = "root" | "sampler" | "llm";
+type SheetView = "root" | "sampler" | "llm" | "expression";
 
 type BlockSheetProps = {
   container: HTMLDivElement | null;
@@ -27,6 +27,7 @@ type BlockSheetProps = {
   onViewChange: (view: SheetView) => void;
   onAddSampler: (type: SamplerType) => void;
   onAddLlm: (type: LlmType) => void;
+  onAddExpression: () => void;
 };
 
 function getSheetTitle(view: SheetView): string {
@@ -35,6 +36,9 @@ function getSheetTitle(view: SheetView): string {
   }
   if (view === "sampler") {
     return "Sampler blocks";
+  }
+  if (view === "expression") {
+    return "Expression blocks";
   }
   return "LLM blocks";
 }
@@ -51,6 +55,12 @@ const MAIN_SHEET_ITEMS = [
     title: "LLM",
     description: "Text + structured blocks.",
     icon: SparklesIcon,
+  },
+  {
+    kind: "expression" as const,
+    title: "Expression",
+    description: "Derived columns with Jinja.",
+    icon: CodeIcon,
   },
 ];
 
@@ -120,12 +130,31 @@ const LLM_ITEMS = [
   },
 ];
 
+const EXPRESSION_ITEMS = [
+  {
+    title: "Expression",
+    description: "Transform columns with Jinja.",
+    icon: CodeIcon,
+  },
+];
+
+function nextViewForKind(kind: "sampler" | "llm" | "expression"): SheetView {
+  if (kind === "sampler") {
+    return "sampler";
+  }
+  if (kind === "expression") {
+    return "expression";
+  }
+  return "llm";
+}
+
 export function BlockSheet({
   container,
   view,
   onViewChange,
   onAddSampler,
   onAddLlm,
+  onAddExpression,
 }: BlockSheetProps): ReactElement {
   const title = getSheetTitle(view);
   return (
@@ -138,8 +167,10 @@ export function BlockSheet({
       <SheetContent
         side="right"
         container={container}
+        position="absolute"
+        overlayPosition="absolute"
         className="absolute gap-0 p-0 shadow-none"
-        overlayClassName="absolute inset-0 bg-transparent backdrop-blur-0 supports-backdrop-filter:backdrop-blur-0 data-open:fade-in-0 data-closed:fade-out-0"
+        overlayClassName="bg-transparent pointer-events-none"
       >
         <SheetHeader className="border-b border-border/60 px-6 py-5">
           <div className="flex items-center gap-2">
@@ -163,9 +194,7 @@ export function BlockSheet({
                 <button
                   key={item.kind}
                   type="button"
-                  onClick={() =>
-                    onViewChange(item.kind === "sampler" ? "sampler" : "llm")
-                  }
+                  onClick={() => onViewChange(nextViewForKind(item.kind))}
                   className="flex w-full items-center gap-3 rounded-2xl border border-border/60 bg-white px-3 py-3 text-left transition hover:border-border hover:bg-muted/40"
                 >
                   <div className="flex size-9 items-center justify-center rounded-xl border border-border bg-muted/30 text-muted-foreground">
@@ -216,6 +245,31 @@ export function BlockSheet({
                   key={item.type}
                   type="button"
                   onClick={() => onAddLlm(item.type)}
+                  className="flex w-full items-center gap-3 rounded-2xl border border-border/60 bg-white px-3 py-3 text-left transition hover:border-border hover:bg-muted/40"
+                >
+                  <div className="flex size-9 items-center justify-center rounded-xl border border-border bg-muted/30 text-muted-foreground">
+                    <HugeiconsIcon icon={item.icon} className="size-4" />
+                  </div>
+                  <div className="flex-1">
+                    <p className="text-sm font-semibold text-foreground">
+                      {item.title}
+                    </p>
+                    <p className="text-[11px] text-muted-foreground">
+                      {item.description}
+                    </p>
+                  </div>
+                  <HugeiconsIcon
+                    icon={ArrowRight01Icon}
+                    className="size-3.5 text-muted-foreground"
+                  />
+                </button>
+              ))}
+            {view === "expression" &&
+              EXPRESSION_ITEMS.map((item) => (
+                <button
+                  key={item.title}
+                  type="button"
+                  onClick={onAddExpression}
                   className="flex w-full items-center gap-3 rounded-2xl border border-border/60 bg-white px-3 py-3 text-left transition hover:border-border hover:bg-muted/40"
                 >
                   <div className="flex size-9 items-center justify-center rounded-xl border border-border bg-muted/30 text-muted-foreground">

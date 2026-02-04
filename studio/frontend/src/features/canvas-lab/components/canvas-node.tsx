@@ -1,5 +1,9 @@
 import { cn } from "@/lib/utils";
-import { Database02Icon, SparklesIcon } from "@hugeicons/core-free-icons";
+import {
+  CodeIcon,
+  Database02Icon,
+  SparklesIcon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { NodeProps } from "@xyflow/react";
 import { Handle, Position } from "@xyflow/react";
@@ -14,6 +18,10 @@ const NODE_META = {
   llm: {
     icon: SparklesIcon,
     tone: "bg-purple-50 text-purple-600 border-purple-100",
+  },
+  expression: {
+    icon: CodeIcon,
+    tone: "bg-sky-50 text-sky-600 border-sky-100",
   },
 } as const;
 
