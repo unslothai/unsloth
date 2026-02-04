@@ -20,7 +20,12 @@ export function buildEdges(
       return;
     }
     seen.add(key);
-    edges.push({ id: `e-${key}`, source: sourceId, target: targetId });
+    edges.push({
+      id: `e-${key}`,
+      source: sourceId,
+      target: targetId,
+      type: "canvas",
+    });
   };
 
   if (uiEdges && uiEdges.length > 0) {
