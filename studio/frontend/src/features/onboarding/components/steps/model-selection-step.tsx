@@ -156,8 +156,17 @@ export function ModelSelectionStep() {
             filteredItems={resultIds}
             filter={null}
             value={selectedModel}
-            onValueChange={(id) => { selectingRef.current = true; setSelectedModel(id); }}
-            onInputValueChange={(val) => { if (selectingRef.current) { selectingRef.current = false; return; } setInputValue(val); }}
+            onValueChange={(id) => {
+              selectingRef.current = true;
+              setSelectedModel(id);
+            }}
+            onInputValueChange={(val) => {
+              if (selectingRef.current) {
+                selectingRef.current = false;
+                return;
+              }
+              setInputValue(val);
+            }}
             itemToStringValue={(id) => id}
             autoHighlight={true}
           >
