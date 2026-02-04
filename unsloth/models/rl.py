@@ -26,6 +26,7 @@ from unsloth_zoo.compiler import create_new_function
 from unsloth_zoo.log import logger
 from unsloth_zoo.logging_utils import PatchRLStatistics
 from unsloth_zoo.rl_replacements import RL_REPLACEMENTS
+from ..device_type import DEVICE_TYPE
 from .rl_replacements import (
     RL_EXTRA_ARGS,
     RL_FUNCTIONS,
@@ -251,6 +252,7 @@ from torch.nn import functional as F
 import inspect
 from transformers import DataCollatorForSeq2Seq, DataCollatorForLanguageModeling as TransformersDataCollatorForLanguageModeling
 from transformers.training_args import ParallelMode
+from unsloth_zoo.device_type import DEVICE_TYPE, device_synchronize
 
 # Wrap trainer with padding to right and enable training mode
 # Also patches W&B since multiple runs must use wandb.finish()
@@ -355,6 +357,7 @@ class Unsloth{RLConfig_name}({RLConfig_name}):
                 )
         self.unsloth_logit_chunk_multiplier = unsloth_logit_chunk_multiplier
         {max_seq_length_post}
+{RLConfig_post}
 pass
 
 {RLTrainer_extras}
@@ -902,6 +905,15 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         )
         extra_args += learning_rate_check
 
+    # Fix num_train_epochs = None causing TypeError in Trainer.__init__
+    # Trainer does `args.num_train_epochs > 0` which fails when None
+    if "num_train_epochs" in call_args:
+        num_train_epochs_check = (
+            "if num_train_epochs is None:\n"
+            "    num_train_epochs = 3.0  # Default to 3 epochs if None, max_steps will override\n"
+        )
+        extra_args += num_train_epochs_check
+
     # Check if max_seq_length is NOT defined (max_length is now default)
     if "max_seq_length" not in call_args and "max_length" in call_args:
         max_seq_length_pre = """max_seq_length : Optional[int] = field(
@@ -1037,6 +1049,18 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     RLConfig_extra_args = extra_args
     RLConfig_call_args = call_args
 
+    # TRL 0.27.0+ forces use_reentrant=False in gradient_checkpointing_kwargs.
+    # Unsloth gradient checkpointing requires use_reentrant=True, so we remove
+    # the setting after super().__init__() when it gets auto-applied.
+    RLConfig_post = ""
+    if trl_version >= Version("0.27.0") and RLConfig_name == "GRPOConfig":
+        RLConfig_post = (
+            "        # Unsloth: Remove use_reentrant=False forced by TRL 0.27.0+\n"
+            "        if getattr(self, 'gradient_checkpointing_kwargs', None) is not None:\n"
+            "            if 'use_reentrant' in self.gradient_checkpointing_kwargs:\n"
+            "                del self.gradient_checkpointing_kwargs['use_reentrant']\n"
+        )
+
     # Patch vLLM and other functions
     RLTrainer_extras = patch_functions(
         RLTrainer, trainer_file, RLTrainer_name, all_imports, imports
@@ -1089,6 +1113,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         RLConfig_extra_args = RLConfig_extra_args,
         RLConfig_call_args = RLConfig_call_args,
         RLConfig_kwargs = ",**kwargs"[1 if RLConfig_call_args.endswith(",") else 0 :],
+        RLConfig_post = RLConfig_post,
         RLTrainer_extras = RLTrainer_extras,
         RLTrainer_post = RLTrainer_post,
         RL_pre = RL_pre,
@@ -1105,18 +1130,33 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     )
 
     if RLTrainer_name == "GRPOTrainer":
-        new_options = """torch_compile_options = {
+        # Base torch_compile_options shared by all device types
+        base_options = """torch_compile_options = {
             "epilogue_fusion"   : True,
             "max_autotune"      : False,
             "shape_padding"     : True,
-            "trace.enabled"     : False,
-            #"combo_kernels"     : torch.cuda.get_device_capability()[0] >= 10,
+            "trace.enabled"     : False,"""
+
+        # Generate torch_compile_options based on device type
+        if DEVICE_TYPE == "cuda":
+            # CUDA-specific options (added to base options)
+            new_options = (
+                base_options
+                + """
             "triton.enable_persistent_tma_matmul": torch.cuda.get_device_capability()[0] >= 9,
-            "cuda.cutlass_epilogue_fusion_enabled": torch.cuda.get_device_capability()[0] >= 9, 
-            "cuda.cutlass_tma_only": torch.cuda.get_device_capability()[0] >= 9, 
+            "cuda.cutlass_epilogue_fusion_enabled": torch.cuda.get_device_capability()[0] >= 9,
+            "cuda.cutlass_tma_only": torch.cuda.get_device_capability()[0] >= 9,
             "cuda.compile_opt_level"              : "-O2",
             "cuda.enable_cuda_lto"                : True,
         }"""
+            )
+        else:
+            # XPU, HIP, and other device types use base options only
+            new_options = (
+                base_options
+                + """
+        }"""
+            )
 
         pattern = r"torch_compile_options\s*=\s*\{[^}]*\}"
 
@@ -1241,6 +1281,8 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
     init = init.replace(
         "model = self._prepare_peft_model(model, peft_config, args)\n", "pass\n"
     )
+    # TRL 0.22.0+ uses prepare_peft_model as a standalone function
+    init = init.replace("model = prepare_peft_model(model, peft_config, args)", "pass")
 
     # Skip add_adapter("ref") for reference model computation
     # Unsloth: We comment out the "ref" adapter creation because:

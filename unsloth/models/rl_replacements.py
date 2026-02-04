@@ -30,6 +30,7 @@ from unsloth_zoo.utils import Version
 from trl import __version__ as trl_version_raw
 from importlib.metadata import version as importlib_version
 from unsloth_zoo.log import logger
+from unsloth_zoo.device_type import device_synchronize
 import importlib.util
 from ..device_type import (
     is_hip,
@@ -255,6 +256,30 @@ def grpo_trainer__generate_single_turn(function_name, function):
         "",
         function,
     )
+
+    # TRL 0.24.0-0.25.1 truncation regression fix
+    #
+    # TRL 0.22.2-0.23.1 used smart truncation via truncate_with_protected_tokens():
+    #   - Tokenizes first without truncation
+    #   - Then truncates keeping the RIGHTMOST tokens (preserves assistant turn)
+    #   - Protects special tokens (image_token, vision_start/end) from removal
+    #
+    # TRL 0.24.0-0.25.1 removed this and passed kwargs directly to the tokenizer:
+    #   max_length=self.max_prompt_length, truncation=True, add_special_tokens=False
+    # This causes issues because tokenizer truncation doesn't protect special tokens
+    # and may not preserve the end of the prompt properly.
+    #
+    # TRL 0.26.2+ removed these kwargs entirely (no tokenizer-level truncation).
+    #
+    # Fix: Remove these kwargs so TRL 0.24.0-0.25.1 behaves like 0.26.2+ (no truncation).
+    # This is a no-op for versions that don't have these kwargs (0.22.2-0.23.1, 0.26.2+).
+    for pattern in [
+        r'["\']?max_length["\']?\s*[:=]\s*self\.max_prompt_length\s*,\s*\n?',
+        r'["\']?truncation["\']?\s*[:=]\s*True\s*,\s*\n?',
+        r'["\']?add_special_tokens["\']?\s*[:=]\s*False\s*,\s*\n?',
+    ]:
+        function = re.sub(pattern, "", function)
+
     return function
 
 
@@ -393,6 +418,124 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
 
     function = function.replace(string_to_find, replacement_string)
 
+    # TRL 0.24.0+ extracts prompts = [x["prompt"] for x in inputs], losing metadata
+    # like reasoning_effort. Inject code to store per-sample chat_template_kwargs on self.
+    _metadata_extraction = (
+        "\n"
+        "        # Unsloth: Extract per-sample chat_template_kwargs before metadata is lost\n"
+        "        _ct_ = getattr(self.processing_class, 'chat_template', None) or ''\n"
+        "        _sk_ = {'prompt', 'chosen', 'rejected', 'completion', 'messages', 'label',\n"
+        "                'images', 'image', 'videos', 'video', 'audios', 'audio'}\n"
+        "        self._unsloth_batch_chat_kwargs = []\n"
+        "        for _inp_ in inputs:\n"
+        "            _kw_ = {}\n"
+        "            if isinstance(_inp_, dict):\n"
+        "                for _k_ in _inp_.keys() - _sk_:\n"
+        "                    if _k_ in _ct_ and isinstance(_inp_[_k_], str):\n"
+        "                        _kw_[_k_] = _inp_[_k_]\n"
+        "            self._unsloth_batch_chat_kwargs.append(_kw_)\n"
+    )
+    # Insert after: prompts = [x["prompt"] for x in inputs]
+    _target_line = 'prompts = [x["prompt"] for x in inputs]'
+    if _target_line in function:
+        function = function.replace(
+            _target_line,
+            _target_line + _metadata_extraction,
+        )
+
+    # Unsloth: Skip prepare_multimodal_messages when prompts are pre-templated strings.
+    # When notebooks pre-apply apply_chat_template(), prompts become strings with image tokens
+    # already embedded. Calling prepare_multimodal_messages on strings crashes with TypeError.
+    # Skipping it keeps prompts as strings so TRL uses the non-conversational path, which
+    # ensures completions are strings and reward functions work correctly.
+    string_to_find_vision = """        if images is not None:
+            prompts = [
+                prepare_multimodal_messages(prompt, image_list)
+                for prompt, image_list in zip(prompts, images, strict=True)
+            ]"""
+
+    replacement_string_vision = """        if images is not None:
+            # Unsloth: skip prepare_multimodal_messages for pre-templated string prompts
+            if not prompts or not isinstance(prompts[0], str):
+                prompts = [
+                    prepare_multimodal_messages(prompt, image_list)
+                    for prompt, image_list in zip(prompts, images, strict=True)
+                ]"""
+
+    function = function.replace(string_to_find_vision, replacement_string_vision)
+
+    # Unsloth: Skip apply_chat_template in the forward_kwargs block for pre-templated
+    # string prompts. When prompts are already strings (from notebooks that pre-applied
+    # apply_chat_template), calling it again crashes because strings aren't dicts.
+    # We use prompts directly as prompts_text instead.
+
+    # TRL 0.26.2+ variant (has tools=self.tools)
+    string_to_find_fwd = """        if images is not None:
+            prompts_text = [
+                apply_chat_template(
+                    {"prompt": prompt}, self.processing_class, tools=self.tools, **self.chat_template_kwargs
+                )["prompt"]
+                for prompt in prompts
+            ]"""
+
+    replacement_string_fwd = """        if images is not None:
+            # Unsloth: skip apply_chat_template for pre-templated string prompts
+            if prompts and isinstance(prompts[0], str):
+                prompts_text = prompts
+            else:
+                prompts_text = [
+                    apply_chat_template(
+                        {"prompt": prompt}, self.processing_class, tools=self.tools, **self.chat_template_kwargs
+                    )["prompt"]
+                    for prompt in prompts
+                ]"""
+
+    function = function.replace(string_to_find_fwd, replacement_string_fwd)
+
+    # TRL 0.25.x variant (no tools parameter)
+    string_to_find_fwd_old = """        if images is not None:
+            prompts_text = [
+                apply_chat_template(
+                    {"prompt": prompt}, self.processing_class, **self.chat_template_kwargs
+                )["prompt"]
+                for prompt in prompts
+            ]"""
+
+    replacement_string_fwd_old = """        if images is not None:
+            # Unsloth: skip apply_chat_template for pre-templated string prompts
+            if prompts and isinstance(prompts[0], str):
+                prompts_text = prompts
+            else:
+                prompts_text = [
+                    apply_chat_template(
+                        {"prompt": prompt}, self.processing_class, **self.chat_template_kwargs
+                    )["prompt"]
+                    for prompt in prompts
+                ]"""
+
+    function = function.replace(string_to_find_fwd_old, replacement_string_fwd_old)
+
+    # TRL 0.25.1 single-line variant (no tools, single-line apply_chat_template call)
+    string_to_find_fwd_single = """        if images is not None:
+            prompts_text = [
+                apply_chat_template({"prompt": prompt}, self.processing_class, **self.chat_template_kwargs)["prompt"]
+                for prompt in prompts
+            ]"""
+
+    replacement_string_fwd_single = """        if images is not None:
+            # Unsloth: skip apply_chat_template for pre-templated string prompts
+            if prompts and isinstance(prompts[0], str):
+                prompts_text = prompts
+            else:
+                prompts_text = [
+                    apply_chat_template({"prompt": prompt}, self.processing_class, **self.chat_template_kwargs)["prompt"]
+                    for prompt in prompts
+                ]"""
+
+    function = function.replace(
+        string_to_find_fwd_single, replacement_string_fwd_single
+    )
+
     # This path is for TRL 0.24.0 images is a variable exclusive to this version
     string_to_find = """        if images is not None:
             output["num_images"] = num_images"""
@@ -464,9 +607,10 @@ def grpo_trainer_fix_maybe_apply_chat_template(function_name, function):
         _chat_template_ = getattr(self.processing_class, "chat_template", None)
         if _chat_template_ is None: _chat_template_ = ""
         _supported_keys_ = set(("prompt", "chosen", "rejected", "completion", "messages", "label"))
+        _batch_chat_kwargs_ = getattr(self, "_unsloth_batch_chat_kwargs", None)
 
         prompts_text = []
-        for _example_ in __INPUTS__REPLACEMENT__:
+        for _idx_, _example_ in enumerate(__INPUTS__REPLACEMENT__):
             _tokenizer_kwargs_ = {}
             if type(_example_) is not dict:
                 _example_ = {"prompt": _example_}
@@ -476,6 +620,10 @@ def grpo_trainer_fix_maybe_apply_chat_template(function_name, function):
                     v = _example_[k]
                     if type(v) is str:
                         _tokenizer_kwargs_[k] = v
+            if _batch_chat_kwargs_ is not None and _idx_ < len(_batch_chat_kwargs_):
+                for _bk_, _bv_ in _batch_chat_kwargs_[_idx_].items():
+                    if _bk_ not in _tokenizer_kwargs_:
+                        _tokenizer_kwargs_[_bk_] = _bv_
             _x_ = maybe_apply_chat_template(_example_, self.processing_class, **_tokenizer_kwargs_)["prompt"]
             prompts_text.append(_x_)
     """
@@ -801,7 +949,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         )
                     # This is needed to avoid race conditions with GPT OSS offload_embbed=True
                     # However, it seems that this line does not slow down or disrupt models.
-                    torch.cuda.synchronize()
+                    device_synchronize()
                     all_logprobs_list.append(logprobs_chunk)
                 logprobs = torch.cat(all_logprobs_list, dim = 0)
                 entropies = None
