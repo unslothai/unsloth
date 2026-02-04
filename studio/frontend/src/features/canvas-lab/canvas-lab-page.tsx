@@ -17,9 +17,11 @@ import { previewCanvas } from "./api";
 import { BlockSheet } from "./components/block-sheet";
 import { CanvasNode } from "./components/canvas-node";
 import { ConfigDialog } from "./dialogs/config-dialog";
+import { ImportDialog } from "./dialogs/import-dialog";
 import { useCanvasLabStore } from "./stores/canvas-lab";
 import type { CanvasNodeData, SamplerConfig } from "./types";
 import { isCategoryConfig } from "./utils";
+import { importCanvasPayload } from "./utils/import";
 import { buildCanvasPayload } from "./utils/payload";
 
 const NODE_TYPES: NodeTypes = { builder: CanvasNode };
@@ -43,6 +45,7 @@ export function CanvasLabPage(): ReactElement {
     isValidConnection,
     setSheetView,
     setDialogOpen,
+    loadCanvas,
   } = useCanvasLabStore(
     useShallow((state) => ({
       nodes: state.nodes,
@@ -62,12 +65,14 @@ export function CanvasLabPage(): ReactElement {
       isValidConnection: state.isValidConnection,
       setSheetView: state.setSheetView,
       setDialogOpen: state.setDialogOpen,
+      loadCanvas: state.loadCanvas,
     })),
   );
   const [sheetContainer, setSheetContainer] = useState<HTMLDivElement | null>(
     null,
   );
   const [previewLoading, setPreviewLoading] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [statusMessage, setStatusMessage] = useState<{
     tone: "success" | "error";
     text: string;
@@ -114,6 +119,47 @@ export function CanvasLabPage(): ReactElement {
     }
   };
 
+  const handleCopyRecipe = async (): Promise<void> => {
+    setStatusMessage(null);
+    const { payload, errors } = buildCanvasPayload(configs, nodes, edges);
+    if (errors.length > 0) {
+      setStatusMessage({
+        tone: "error",
+        text: errors[0] ?? "Fix config errors before copy.",
+      });
+      return;
+    }
+    if (!navigator.clipboard) {
+      setStatusMessage({
+        tone: "error",
+        text: "Clipboard not available.",
+      });
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
+      setStatusMessage({
+        tone: "success",
+        text: "Recipe copied to clipboard.",
+      });
+    } catch (error) {
+      setStatusMessage({
+        tone: "error",
+        text: error instanceof Error ? error.message : "Copy failed.",
+      });
+    }
+  };
+
+  const handleImport = (value: string): string | null => {
+    const result = importCanvasPayload(value);
+    if (result.errors.length > 0 || !result.snapshot) {
+      return result.errors[0] ?? "Invalid payload.";
+    }
+    loadCanvas(result.snapshot);
+    setStatusMessage({ tone: "success", text: "Recipe imported." });
+    return null;
+  };
+
   return (
     <div className="min-h-screen bg-background">
       <main className="w-full px-6 py-8">
@@ -139,6 +185,24 @@ export function CanvasLabPage(): ReactElement {
               )}
             </div>
             <div className="flex items-center justify-start gap-2 lg:justify-end">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={handleCopyRecipe}
+                className="text-xs"
+              >
+                Copy recipe
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => setImportOpen(true)}
+                className="text-xs"
+              >
+                Import
+              </Button>
               <Button
                 type="button"
                 size="sm"
@@ -197,6 +261,11 @@ export function CanvasLabPage(): ReactElement {
         config={config}
         categoryOptions={categoryOptions}
         onUpdate={updateConfig}
+      />
+      <ImportDialog
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        onImport={handleImport}
       />
     </div>
   );
