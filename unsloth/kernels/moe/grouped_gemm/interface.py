@@ -4,25 +4,100 @@
 import logging
 import warnings
 from dataclasses import asdict
+from typing import Optional
 
 import torch
-import triton
 
-from grouped_gemm.kernels.backward import (
-    _autotuned_grouped_gemm_dW_kernel,
-    _autotuned_grouped_gemm_dX_kernel,
-    _grouped_gemm_dW_kernel,
-    _grouped_gemm_dX_kernel,
-)
-from grouped_gemm.kernels.forward import (
-    _autotuned_grouped_gemm_forward_kernel,
-    _grouped_gemm_forward_kernel,
-)
-from grouped_gemm.kernels.tuning import (
-    KernelConfigBackward_dW,
-    KernelConfigBackward_dX,
-    KernelConfigForward,
-)
+# =============================================================================
+# MPS Device Detection
+# =============================================================================
+# Detect if we're on Apple Silicon (MPS) to dispatch to PyTorch fallback
+# instead of Triton kernels which are CUDA-only.
+
+_DEVICE_TYPE = None
+
+def _get_device_type():
+    """Get the device type, cached for performance."""
+    global _DEVICE_TYPE
+    if _DEVICE_TYPE is None:
+        try:
+            from unsloth.device_type import DEVICE_TYPE
+            _DEVICE_TYPE = DEVICE_TYPE
+        except ImportError:
+            # Fallback detection
+            if hasattr(torch, "cuda") and torch.cuda.is_available():
+                _DEVICE_TYPE = "cuda"
+            elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                _DEVICE_TYPE = "mps"
+            else:
+                _DEVICE_TYPE = "cpu"
+    return _DEVICE_TYPE
+
+
+def _is_mps_device(tensor: torch.Tensor) -> bool:
+    """Check if a tensor is on an MPS device."""
+    return tensor.device.type == "mps" or _get_device_type() == "mps"
+
+
+# =============================================================================
+# Conditional Triton Imports
+# =============================================================================
+# Triton is only available on CUDA. We import lazily to avoid errors on MPS.
+
+_triton = None
+_triton_kernels_loaded = False
+_grouped_gemm_forward_kernel = None
+_autotuned_grouped_gemm_forward_kernel = None
+_grouped_gemm_dW_kernel = None
+_autotuned_grouped_gemm_dW_kernel = None
+_grouped_gemm_dX_kernel = None
+_autotuned_grouped_gemm_dX_kernel = None
+_KernelConfigForward = None
+_KernelConfigBackward_dW = None
+_KernelConfigBackward_dX = None
+
+
+def _load_triton_kernels():
+    """Lazily load Triton kernels. Only call on CUDA devices."""
+    global _triton, _triton_kernels_loaded
+    global _grouped_gemm_forward_kernel, _autotuned_grouped_gemm_forward_kernel
+    global _grouped_gemm_dW_kernel, _autotuned_grouped_gemm_dW_kernel
+    global _grouped_gemm_dX_kernel, _autotuned_grouped_gemm_dX_kernel
+    global _KernelConfigForward, _KernelConfigBackward_dW, _KernelConfigBackward_dX
+    
+    if _triton_kernels_loaded:
+        return
+    
+    import triton
+    _triton = triton
+    
+    from grouped_gemm.kernels.backward import (
+        _autotuned_grouped_gemm_dW_kernel as dW_auto,
+        _autotuned_grouped_gemm_dX_kernel as dX_auto,
+        _grouped_gemm_dW_kernel as dW_kernel,
+        _grouped_gemm_dX_kernel as dX_kernel,
+    )
+    from grouped_gemm.kernels.forward import (
+        _autotuned_grouped_gemm_forward_kernel as fwd_auto,
+        _grouped_gemm_forward_kernel as fwd_kernel,
+    )
+    from grouped_gemm.kernels.tuning import (
+        KernelConfigBackward_dW,
+        KernelConfigBackward_dX,
+        KernelConfigForward,
+    )
+    
+    _grouped_gemm_forward_kernel = fwd_kernel
+    _autotuned_grouped_gemm_forward_kernel = fwd_auto
+    _grouped_gemm_dW_kernel = dW_kernel
+    _autotuned_grouped_gemm_dW_kernel = dW_auto
+    _grouped_gemm_dX_kernel = dX_kernel
+    _autotuned_grouped_gemm_dX_kernel = dX_auto
+    _KernelConfigForward = KernelConfigForward
+    _KernelConfigBackward_dW = KernelConfigBackward_dW
+    _KernelConfigBackward_dX = KernelConfigBackward_dX
+    
+    _triton_kernels_loaded = True
 
 logger = logging.getLogger(__name__)
 # Set formatter to include timestamp, pathname and lineno
@@ -42,7 +117,12 @@ _SUPPORTS_TMA = None
 def supports_tma():
     global _SUPPORTS_TMA
     if _SUPPORTS_TMA is None:
-        _SUPPORTS_TMA = torch.cuda.get_device_capability()[0] >= 9
+        if _get_device_type() == "mps":
+            _SUPPORTS_TMA = False
+        elif torch.cuda.is_available():
+            _SUPPORTS_TMA = torch.cuda.get_device_capability()[0] >= 9
+        else:
+            _SUPPORTS_TMA = False
     return _SUPPORTS_TMA
 
 
@@ -69,9 +149,8 @@ def get_per_device_per_stream_alloc_fn(device):
     return _per_device_alloc_fns[device]
 
 
-def log_kernel_info(
-    compiled_kernel: triton.compiler.CompiledKernel, best_config: triton.Config = None
-):
+def log_kernel_info(compiled_kernel, best_config=None):
+    """Log kernel information for debugging. Only called on CUDA path."""
     kernel_name = compiled_kernel.name
     nregs = compiled_kernel.n_regs
     nspills = compiled_kernel.n_spills
@@ -134,6 +213,23 @@ def grouped_gemm_forward(
     Returns:
         y: (total_tokens, N) output of grouped GEMM
     """
+    # MPS dispatch - use fallback implementation
+    if _is_mps_device(X):
+        from .mps import grouped_gemm_mps_forward
+        return grouped_gemm_mps_forward(
+            X=X,
+            W=W,
+            topk=topk,
+            m_sizes=m_sizes,
+            gather_indices=gather_indices,
+            topk_weights=topk_weights,
+            permute_x=permute_x,
+            permute_y=permute_y,
+            fuse_mul_post=fuse_mul_post,
+        )
+    
+    # Load Triton kernels for CUDA path
+    _load_triton_kernels()
 
     assert X.device.type == "cuda", "X and W must be on CUDA"
     assert m_sizes.device.type == "cuda", "m_sizes must be on CUDA"
@@ -162,7 +258,7 @@ def grouped_gemm_forward(
         def alloc_fn(size: int, alignment: int, stream: int):
             return torch.empty(size, device="cuda", dtype=torch.int8)
 
-        triton.set_allocator(alloc_fn)
+        _triton.set_allocator(alloc_fn)
 
     X = X.view(-1, X.shape[-1])
     W = W.view(-1, W.shape[-1])
@@ -276,7 +372,7 @@ def grouped_gemm_forward(
         if autotune
         else _grouped_gemm_forward_kernel
     )
-    compiled_kernel: triton.compiler.CompiledKernel = kernel[grid](**kernel_args)
+    compiled_kernel = kernel[grid](**kernel_args)
 
     if autotune:
         log_kernel_info(compiled_kernel, kernel.best_config)
@@ -328,6 +424,22 @@ def grouped_gemm_dX(
     use_tma_load_w: use TMA for loading weights.  If TMA supported, this should always be enabled as it is faster than global memory load.
     use_tma_store: use TMA for storing dX.  Incompatible with permute_x.  TODO: add TMA gather / scatter support for Blackwell+ which will enable permute_x and use_tma_store.
     """
+    # MPS dispatch - use fallback implementation
+    if _is_mps_device(dY):
+        from .mps import grouped_gemm_mps_dX
+        return grouped_gemm_mps_dX(
+            dY=dY,
+            W=W,
+            gather_indices=gather_indices,
+            m_sizes=m_sizes,
+            topk=topk,
+            permute_x=permute_x,
+            permute_y=permute_y,
+        )
+    
+    # Load Triton kernels for CUDA path
+    _load_triton_kernels()
+    
     assert (
         not fuse_mul_pre
     ), "fuse_mul_pre should only be used for inference, not for training"
@@ -359,7 +471,7 @@ def grouped_gemm_dX(
             # print(f"DEBUG::GROUPED_GEMM alloc_fn {size=} {alignment=} {stream=}")
             return torch.empty(size, device="cuda", dtype=torch.int8)
 
-        triton.set_allocator(alloc_fn)
+        _triton.set_allocator(alloc_fn)
 
     num_experts = m_sizes.shape[0]
     dY = dY.view(-1, dY.shape[-1])
@@ -437,7 +549,7 @@ def grouped_gemm_dX(
             }
         )
     kernel = _autotuned_grouped_gemm_dX_kernel if autotune else _grouped_gemm_dX_kernel
-    compiled_kernel: triton.compiler.CompiledKernel = kernel[grid](**kernel_args)
+    compiled_kernel = kernel[grid](**kernel_args)
 
     if autotune:
         log_kernel_info(compiled_kernel, kernel.best_config)
@@ -486,6 +598,22 @@ def grouped_gemm_dW(
     use_tma_load_x: use TMA for loading x. use_tma_load_x is incompatible with permute_x.  TODO: add TMA gather / scatter support for Blackwell+ which will enable permute_x and use_tma_load_x.
     use_tma_store: use TMA for storing dW.  If TMA supported, this should always be enabled as it is faster than global memory store.
     """
+    # MPS dispatch - use fallback implementation
+    if _is_mps_device(X):
+        from .mps import grouped_gemm_mps_dW
+        return grouped_gemm_mps_dW(
+            X=X,
+            dY=dY,
+            m_sizes=m_sizes,
+            gather_indices=gather_indices,
+            topk=topk,
+            permute_x=permute_x,
+            permute_y=permute_y,
+        )
+    
+    # Load Triton kernels for CUDA path
+    _load_triton_kernels()
+    
     assert not fuse_mul_pre, "fuse_mul_pre not supported"
     assert not fuse_mul_post, "fuse_mul_post not supported"
     NUM_SMS = (
@@ -514,7 +642,7 @@ def grouped_gemm_dW(
         def alloc_fn(size: int, alignment: int, stream: int):
             return torch.empty(size, device="cuda", dtype=torch.int8)
 
-        triton.set_allocator(alloc_fn)
+        _triton.set_allocator(alloc_fn)
 
     if permute_x or permute_y:
         assert gather_indices is not None
@@ -607,7 +735,7 @@ def grouped_gemm_dW(
         )
 
     kernel = _autotuned_grouped_gemm_dW_kernel if autotune else _grouped_gemm_dW_kernel
-    compiled_kernel: triton.compiler.CompiledKernel = kernel[grid](**kernel_args)
+    compiled_kernel = kernel[grid](**kernel_args)
 
     if autotune:
         log_kernel_info(compiled_kernel, kernel.best_config)
@@ -868,9 +996,9 @@ def grouped_gemm(
     permute_y: bool = False,
     topk_weights=None,
     fuse_mul_post=False,
-    kernel_config_fwd: KernelConfigForward = None,
-    kernel_config_bwd_dX: KernelConfigBackward_dX = None,
-    kernel_config_bwd_dW: KernelConfigBackward_dW = None,
+    kernel_config_fwd=None,  # KernelConfigForward - type hint removed for MPS compatibility
+    kernel_config_bwd_dX=None,  # KernelConfigBackward_dX
+    kernel_config_bwd_dW=None,  # KernelConfigBackward_dW
     autotune: bool = False,
     is_first_gemm: bool = True,
     # Only for debugging
@@ -900,6 +1028,30 @@ def grouped_gemm(
     This will impact whether TMA can be used for loading and storing.
 
     """
+    # =========================================================================
+    # MPS Device Dispatch
+    # =========================================================================
+    # On Apple Silicon (MPS), use PyTorch-native fallback instead of Triton kernels
+    if _is_mps_device(X):
+        from .mps import grouped_gemm_mps
+        return grouped_gemm_mps(
+            X=X,
+            W=W,
+            m_sizes=m_sizes,
+            topk=topk,
+            gather_indices=gather_indices,
+            permute_x=permute_x,
+            permute_y=permute_y,
+            topk_weights=topk_weights,
+            fuse_mul_post=fuse_mul_post,
+        )
+    
+    # =========================================================================
+    # CUDA/Triton Path
+    # =========================================================================
+    # Load Triton kernels (lazy import)
+    _load_triton_kernels()
+
     if not autotune:
         assert (
             kernel_config_fwd is not None
