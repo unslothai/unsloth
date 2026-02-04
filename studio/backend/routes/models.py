@@ -3,14 +3,18 @@ Model Management API routes
 """
 import sys
 from pathlib import Path
-from fastapi import APIRouter, HTTPException, Query
-from typing import Optional
+from fastapi import APIRouter, Depends, HTTPException, Query
+from typing import List, Optional
 import logging
+
+from pydantic import BaseModel
 
 # Add backend directory to path
 backend_path = Path(__file__).parent.parent.parent
 if str(backend_path) not in sys.path:
     sys.path.insert(0, str(backend_path))
+
+from auth.jwt import get_current_subject
 
 # Import backend functions
 try:
@@ -38,15 +42,41 @@ except ImportError:
     )
     from core.inference import get_inference_backend
 
-from models.models import (
-    ModelSearchRequest,
-    ModelSearchResponse,
-    ModelInfo,
-    ModelListResponse,
-    ModelConfigResponse,
+from models import (
+    ModelDetails,
     LoRAScanResponse,
     LoRAInfo,
 )
+
+
+class ModelInfo(BaseModel):
+    """Basic model info used in search/list responses"""
+
+    id: str
+    name: Optional[str] = None
+    is_vision: Optional[bool] = False
+    is_lora: Optional[bool] = False
+
+
+class ModelSearchRequest(BaseModel):
+    """Request body for model search"""
+
+    query: str
+    hf_token: Optional[str] = None
+
+
+class ModelSearchResponse(BaseModel):
+    """Response schema for model search"""
+
+    models: List[ModelInfo]
+    total: int
+
+
+class ModelListResponse(BaseModel):
+    """Response schema for listing models"""
+
+    models: List[ModelInfo]
+    default_models: List[str]
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -62,7 +92,10 @@ if not logger.handlers:
 
 
 @router.post("/search")
-async def search_models(request: ModelSearchRequest):
+async def search_models(
+    request: ModelSearchRequest,
+    current_subject: str = Depends(get_current_subject),
+):
     """
     Search for models on HuggingFace Hub.
     
@@ -117,7 +150,9 @@ async def search_models(request: ModelSearchRequest):
 
 
 @router.get("/list")
-async def list_models():
+async def list_models(
+    current_subject: str = Depends(get_current_subject),
+):
     """
     List available models (default models and loaded models).
     
@@ -174,7 +209,10 @@ async def list_models():
 
 
 @router.get("/config/{model_name:path}")
-async def get_model_config(model_name: str):
+async def get_model_config(
+    model_name: str,
+    current_subject: str = Depends(get_current_subject),
+):
     """
     Get configuration for a specific model.
     
@@ -200,12 +238,12 @@ async def get_model_config(model_name: str):
             # If ModelConfig creation fails, use defaults
             pass
         
-        return ModelConfigResponse(
+        return ModelDetails(
             model_name=model_name,
             config=config_dict,
             is_vision=is_vision,
             is_lora=is_lora,
-            base_model=base_model
+            base_model=base_model,
         )
         
     except Exception as e:
@@ -218,7 +256,8 @@ async def get_model_config(model_name: str):
 
 @router.get("/loras")
 async def scan_loras(
-    outputs_dir: str = Query(default="./outputs", description="Directory to scan for LoRA adapters")
+    outputs_dir: str = Query(default="./outputs", description="Directory to scan for LoRA adapters"),
+    current_subject: str = Depends(get_current_subject),
 ):
     """
     Scan for trained LoRA adapters in the outputs directory.
@@ -256,7 +295,10 @@ async def scan_loras(
 
 
 @router.get("/loras/{lora_path:path}/base-model")
-async def get_lora_base_model(lora_path: str):
+async def get_lora_base_model(
+    lora_path: str,
+    current_subject: str = Depends(get_current_subject),
+):
     """
     Get the base model for a LoRA adapter.
     
@@ -287,7 +329,10 @@ async def get_lora_base_model(lora_path: str):
 
 
 @router.get("/check-vision/{model_name:path}")
-async def check_vision_model(model_name: str):
+async def check_vision_model(
+    model_name: str,
+    current_subject: str = Depends(get_current_subject),
+):
     """
     Check if a model is a vision model.
     

@@ -3,35 +3,25 @@ Pydantic models for API request/response schemas
 """
 from .training import (
     TrainingStartRequest,
-    TrainingStartResponse,
-    TrainingStatusResponse,
-    TrainingMetricsResponse,
-    TrainingProgressResponse,
+    TrainingJobResponse,
+    TrainingStatus,
+    TrainingProgress,
 )
 from .models import (
-    ModelSearchRequest,
-    ModelSearchResponse,
-    ModelListResponse,
-    ModelConfigResponse,
-    LoRAScanResponse,
+    ModelDetails,
     LoRAInfo,
-    ModelInfo,
+    LoRAScanResponse,
 )
 
 __all__ = [
     # Training schemas
     "TrainingStartRequest",
-    "TrainingStartResponse",
-    "TrainingStatusResponse",
-    "TrainingMetricsResponse",
-    "TrainingProgressResponse",
+    "TrainingJobResponse",
+    "TrainingStatus",
+    "TrainingProgress",
     # Model management schemas
-    "ModelSearchRequest",
-    "ModelSearchResponse",
-    "ModelListResponse",
-    "ModelConfigResponse",
-    "LoRAScanResponse",
+    "ModelDetails",
     "LoRAInfo",
-    "ModelInfo",
+    "LoRAScanResponse",
 ]
 
