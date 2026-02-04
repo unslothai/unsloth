@@ -1,6 +1,7 @@
 import type { Edge } from "@xyflow/react";
 import type {
   CanvasNode,
+  ExpressionConfig,
   LlmConfig,
   NodeConfig,
   SamplerConfig,
@@ -182,6 +183,22 @@ function buildLlmColumn(
   };
 }
 
+function buildExpressionColumn(
+  config: ExpressionConfig,
+  errors: string[],
+): Record<string, unknown> {
+  if (!config.expr.trim()) {
+    errors.push(`Expression ${config.name}: expr required.`);
+  }
+  return {
+    // biome-ignore lint/style/useNamingConvention: api schema
+    column_type: "expression",
+    name: config.name,
+    expr: config.expr,
+    dtype: config.dtype,
+  };
+}
+
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: payload build
 export function buildCanvasPayload(
   configs: Record<string, NodeConfig>,
@@ -217,14 +234,16 @@ export function buildCanvasPayload(
         sampler_type: config.sampler_type,
         params: buildSamplerParams(config, errors),
       });
-      continue;
+    } else if (config.kind === "llm") {
+      columns.push(buildLlmColumn(config, errors));
+      if (config.model_alias) {
+        modelAliases.add(config.model_alias);
+      }
+      nameToConfig.set(config.name, config);
+    } else {
+      columns.push(buildExpressionColumn(config, errors));
+      nameToConfig.set(config.name, config);
     }
-
-    columns.push(buildLlmColumn(config, errors));
-    if (config.model_alias) {
-      modelAliases.add(config.model_alias);
-    }
-    nameToConfig.set(config.name, config);
   }
 
   for (const config of Object.values(configs)) {
