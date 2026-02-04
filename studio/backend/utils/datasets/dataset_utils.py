@@ -37,7 +37,8 @@ from .chat_templates import (
 )
 from .vlm_processing import generate_smart_vlm_instruction
 from .data_collators import DeepSeekOCRDataCollator, VLMDataCollator
-from .model_mappings import TEMPLATE_TO_MODEL_MAPPER, RESPONSE_MARKERS
+from .model_mappings import TEMPLATE_TO_MODEL_MAPPER
+# , RESPONSE_MARKERS
 
 
 def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
