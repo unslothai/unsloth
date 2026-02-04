@@ -200,10 +200,9 @@ def grouped_gemm_mps_dX(
         
         # Get gradient for this expert's outputs
         if permute_y:
-            # dY is in token order, need to gather
+            # dY is in token order (total_tokens, N), need to gather to expert order
             expert_indices = gather_indices[m_start:m_end]
-            token_indices = expert_indices // topk
-            dY_expert = dY[token_indices]  # (m_size, N)
+            dY_expert = dY[expert_indices]  # (m_size, N)
         else:
             dY_expert = dY[m_start:m_end]  # (m_size, N)
         
@@ -283,9 +282,9 @@ def grouped_gemm_mps_dW(
         
         # Get gradient for this expert
         if permute_y:
+            # dY is in token order (total_tokens, N), need to gather to expert order
             expert_indices = gather_indices[m_start:m_end]
-            token_indices = expert_indices // topk
-            dY_expert = dY[token_indices]  # (m_size, N)
+            dY_expert = dY[expert_indices]  # (m_size, N)
         else:
             dY_expert = dY[m_start:m_end]  # (m_size, N)
         
