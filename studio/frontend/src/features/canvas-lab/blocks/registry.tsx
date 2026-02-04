@@ -171,7 +171,9 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
     icon: Database02Icon,
     createConfig: (id, existing) => makeSamplerConfig(id, "person", existing),
     renderDialog: ({ config, onUpdate }) =>
-      config.kind === "sampler" && config.sampler_type === "person" ? (
+      config.kind === "sampler" &&
+      (config.sampler_type === "person" ||
+        config.sampler_type === "person_from_faker") ? (
         <PersonDialog
           config={config}
           onUpdate={(patch) => onUpdate(config.id, patch)}
@@ -262,7 +264,11 @@ export function getBlockDefinitionForConfig(
     return null;
   }
   if (config.kind === "sampler") {
-    return getBlockDefinition("sampler", config.sampler_type);
+    const samplerType =
+      config.sampler_type === "person_from_faker"
+        ? "person"
+        : config.sampler_type;
+    return getBlockDefinition("sampler", samplerType);
   }
   if (config.kind === "llm") {
     return getBlockDefinition("llm", config.llm_type);

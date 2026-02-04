@@ -8,6 +8,7 @@ import type {
   SamplerConfig,
   SamplerType,
 } from "../types";
+export { getConfigErrors } from "./validation";
 
 const SAMPLER_LABELS: Record<SamplerType, string> = {
   category: "Category",
@@ -17,6 +18,7 @@ const SAMPLER_LABELS: Record<SamplerType, string> = {
   datetime: "Datetime",
   uuid: "UUID",
   person: "Person",
+  person_from_faker: "Person (Faker)",
 };
 
 const LLM_LABELS: Record<LlmType, string> = {
@@ -130,6 +132,23 @@ export function makeSamplerConfig(
       uuid_format: "",
     };
   }
+  if (samplerType === "person_from_faker") {
+    return {
+      id,
+      kind: "sampler",
+      // biome-ignore lint/style/useNamingConvention: api schema
+      sampler_type: "person_from_faker",
+      name,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      person_locale: "",
+      // biome-ignore lint/style/useNamingConvention: api schema
+      person_sex: "",
+      // biome-ignore lint/style/useNamingConvention: api schema
+      person_age_range: "",
+      // biome-ignore lint/style/useNamingConvention: api schema
+      person_city: "",
+    };
+  }
   return {
     id,
     kind: "sampler",
@@ -146,8 +165,6 @@ export function makeSamplerConfig(
     person_city: "",
     // biome-ignore lint/style/useNamingConvention: api schema
     person_with_synthetic_personas: false,
-    // biome-ignore lint/style/useNamingConvention: api schema
-    person_sample_dataset_when_available: false,
   };
 }
 
@@ -170,7 +187,7 @@ export function makeLlmConfig(
     llm_type: llmType,
     name,
     // biome-ignore lint/style/useNamingConvention: api schema
-    model_alias: "stepfun/step-3.5-flash:free",
+    model_alias: "allenai/olmo-3.1-32b-instruct",
     prompt: "Write a response.",
     // biome-ignore lint/style/useNamingConvention: api schema
     system_prompt: "",
@@ -266,99 +283,4 @@ export function isExpressionConfig(
   config: NodeConfig | null | undefined,
 ): config is ExpressionConfig {
   return Boolean(config && config.kind === "expression");
-}
-
-function parseNumber(value?: string): number | null {
-  if (!value) {
-    return null;
-  }
-  const num = Number(value);
-  return Number.isFinite(num) ? num : null;
-}
-
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: validation rules
-export function getConfigErrors(config: NodeConfig | null): string[] {
-  if (!config) {
-    return [];
-  }
-  const errors: string[] = [];
-  if (!config.name.trim()) {
-    errors.push("Name is required.");
-  }
-  if (config.kind === "sampler") {
-    if (config.sampler_type === "category") {
-      const values = config.values ?? [];
-      if (values.length < 2) {
-        errors.push("Category needs at least 2 values.");
-      }
-      const weights = config.weights ?? [];
-      const hasWeights = weights.some((weight) => weight !== null);
-      if (hasWeights && weights.some((weight) => weight === null)) {
-        errors.push("Weights must be set for all values.");
-      }
-    }
-    if (config.sampler_type === "uniform") {
-      const low = parseNumber(config.low);
-      const high = parseNumber(config.high);
-      if (low === null || high === null) {
-        errors.push("Uniform low/high must be numbers.");
-      } else if (low >= high) {
-        errors.push("Uniform low must be < high.");
-      }
-    }
-    if (config.sampler_type === "gaussian") {
-      const mean = parseNumber(config.mean);
-      const std = parseNumber(config.std);
-      if (mean === null || std === null) {
-        errors.push("Gaussian mean/std must be numbers.");
-      } else if (std <= 0) {
-        errors.push("Gaussian std must be > 0.");
-      }
-    }
-    if (config.sampler_type === "datetime") {
-      if (!config.datetime_unit) {
-        errors.push("Datetime unit required.");
-      }
-      if (config.datetime_start && config.datetime_end) {
-        const start = new Date(config.datetime_start).getTime();
-        const end = new Date(config.datetime_end).getTime();
-        if (!(Number.isFinite(start) && Number.isFinite(end))) {
-          errors.push("Datetime start/end must be valid.");
-        } else if (start >= end) {
-          errors.push("Datetime start must be before end.");
-        }
-      }
-    }
-    if (config.sampler_type === "subcategory" && !config.subcategory_parent) {
-      errors.push("Subcategory needs a parent category column.");
-    }
-  }
-  if (config.kind === "llm") {
-    if (!config.model_alias.trim()) {
-      errors.push("Model alias is required.");
-    }
-    if (!config.prompt.trim()) {
-      errors.push("Prompt is required.");
-    }
-    if (config.llm_type === "code" && !config.code_lang) {
-      errors.push("Code language is required.");
-    }
-    if (config.llm_type === "structured") {
-      if (!config.output_format?.trim()) {
-        errors.push("Output format is required.");
-      } else {
-        try {
-          JSON.parse(config.output_format);
-        } catch {
-          errors.push("Output format must be valid JSON.");
-        }
-      }
-    }
-  }
-  if (config.kind === "expression") {
-    if (!config.expr.trim()) {
-      errors.push("Expression is required.");
-    }
-  }
-  return errors;
 }
