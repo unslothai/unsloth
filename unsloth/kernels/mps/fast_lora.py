@@ -82,8 +82,11 @@ def mps_matmul_lora(X, W, W_quant, A, B, s):
     """
     dtype = X.dtype
 
+    # Ensure W matches X's dtype (prevents half vs bfloat16 errors)
+    W_ = W.to(dtype) if W.dtype != dtype else W
+    
     # Base projection: X @ W.t()
-    out = torch.matmul(X, W.t())
+    out = torch.matmul(X, W_.t())
 
     # LoRA contribution: (X @ A.t()) @ (B.t() * s)
     if A is not None:

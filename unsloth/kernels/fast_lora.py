@@ -236,6 +236,35 @@ def apply_lora_mlp_swiglu(self, X, inplace=True):
     from ..device_type import DEVICE_TYPE
     from .mps import USE_MPS_FALLBACK
 
+    # Priority 1: MLX Dispatch (optimized fused kernels)
+    if DEVICE_TYPE == "mps":
+        from .mlx.fast_ops import USE_MLX_FAST
+        if USE_MLX_FAST:
+            from .mlx.fast_lora import apply_lora_mlp_swiglu as mlx_apply_lora_mlp_swiglu
+
+            gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
+            upW, upW_quant, upA, upB, upS = get_lora_parameters(self.up_proj)
+            downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
+            return mlx_apply_lora_mlp_swiglu(
+                X,
+                gateW,
+                gateW_quant,
+                gateA,
+                gateB,
+                gateS,
+                upW,
+                upW_quant,
+                upA,
+                upB,
+                upS,
+                downW,
+                downW_quant,
+                downA,
+                downB,
+                downS,
+            )
+
+    # Priority 2: MPS fallback (PyTorch-native)
     if DEVICE_TYPE == "mps" and USE_MPS_FALLBACK:
         from .mps.fast_lora import mps_apply_lora_mlp_swiglu
 
@@ -261,34 +290,7 @@ def apply_lora_mlp_swiglu(self, X, inplace=True):
             downS,
         )
 
-    # MLX Dispatch
-    from .mlx.fast_ops import USE_MLX_FAST
-
-    if USE_MLX_FAST:
-        from .mlx.fast_lora import apply_lora_mlp_swiglu as mlx_apply_lora_mlp_swiglu
-
-        gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
-        upW, upW_quant, upA, upB, upS = get_lora_parameters(self.up_proj)
-        downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
-        return mlx_apply_lora_mlp_swiglu(
-            X,
-            gateW,
-            gateW_quant,
-            gateA,
-            gateB,
-            gateS,
-            upW,
-            upW_quant,
-            upA,
-            upB,
-            upS,
-            downW,
-            downW_quant,
-            downA,
-            downB,
-            downS,
-        )
-
+    # Default: CUDA/Triton path
     X = _maybe_fake_quantize_activations(X, self.gate_proj)
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
     upW, upW_quant, upA, upB, upS = get_lora_parameters(self.up_proj)
@@ -648,6 +650,35 @@ def apply_lora_qkv(self, X, inplace=True):
     from ..device_type import DEVICE_TYPE
     from .mps import USE_MPS_FALLBACK
 
+    # Priority 1: MLX Dispatch (optimized fused kernels)
+    if DEVICE_TYPE == "mps":
+        from .mlx.fast_ops import USE_MLX_FAST
+        if USE_MLX_FAST:
+            from .mlx.fast_lora import apply_lora_qkv as mlx_apply_lora_qkv
+
+            QW, QW_quant, QA, QB, QS = get_lora_parameters(self.q_proj)
+            KW, KW_quant, KA, KB, KS = get_lora_parameters(self.k_proj)
+            VW, VW_quant, VA, VB, VS = get_lora_parameters(self.v_proj)
+            return mlx_apply_lora_qkv(
+                X,
+                QW,
+                QW_quant,
+                QA,
+                QB,
+                QS,
+                KW,
+                KW_quant,
+                KA,
+                KB,
+                KS,
+                VW,
+                VW_quant,
+                VA,
+                VB,
+                VS,
+            )
+
+    # Priority 2: MPS fallback (PyTorch-native)
     if DEVICE_TYPE == "mps" and USE_MPS_FALLBACK:
         from .mps.fast_lora import mps_apply_lora_qkv
 
@@ -673,34 +704,7 @@ def apply_lora_qkv(self, X, inplace=True):
             VS,
         )
 
-    # MLX Dispatch
-    from .mlx.fast_ops import USE_MLX_FAST
-
-    if USE_MLX_FAST:
-        from .mlx.fast_lora import apply_lora_qkv as mlx_apply_lora_qkv
-
-        QW, QW_quant, QA, QB, QS = get_lora_parameters(self.q_proj)
-        KW, KW_quant, KA, KB, KS = get_lora_parameters(self.k_proj)
-        VW, VW_quant, VA, VB, VS = get_lora_parameters(self.v_proj)
-        return mlx_apply_lora_qkv(
-            X,
-            QW,
-            QW_quant,
-            QA,
-            QB,
-            QS,
-            KW,
-            KW_quant,
-            KA,
-            KB,
-            KS,
-            VW,
-            VW_quant,
-            VA,
-            VB,
-            VS,
-        )
-
+    # Default: CUDA/Triton path
     X = _maybe_fake_quantize_activations(X, self.q_proj)
     QW, QW_quant, QA, QB, QS = get_lora_parameters(self.q_proj)
     KW, KW_quant, KA, KB, KS = get_lora_parameters(self.k_proj)
