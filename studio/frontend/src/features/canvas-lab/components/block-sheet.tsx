@@ -20,6 +20,7 @@ import type { ReactElement } from "react";
 import type { LlmType, SamplerType } from "../types";
 
 type SheetView = "root" | "sampler" | "llm" | "expression";
+type SheetKind = "sampler" | "llm" | "expression";
 
 type BlockSheetProps = {
   container: HTMLDivElement | null;
@@ -43,21 +44,26 @@ function getSheetTitle(view: SheetView): string {
   return "LLM blocks";
 }
 
-const MAIN_SHEET_ITEMS = [
+const MAIN_SHEET_ITEMS: Array<{
+  kind: SheetKind;
+  title: string;
+  description: string;
+  icon: typeof Database02Icon;
+}> = [
   {
-    kind: "sampler" as const,
+    kind: "sampler",
     title: "Sampler",
     description: "Numeric + categorical blocks.",
     icon: Database02Icon,
   },
   {
-    kind: "llm" as const,
+    kind: "llm",
     title: "LLM",
     description: "Text + structured blocks.",
     icon: SparklesIcon,
   },
   {
-    kind: "expression" as const,
+    kind: "expression",
     title: "Expression",
     description: "Derived columns with Jinja.",
     icon: CodeIcon,
@@ -138,7 +144,7 @@ const EXPRESSION_ITEMS = [
   },
 ];
 
-function nextViewForKind(kind: "sampler" | "llm" | "expression"): SheetView {
+function nextViewForKind(kind: SheetKind): SheetView {
   if (kind === "sampler") {
     return "sampler";
   }
@@ -146,6 +152,38 @@ function nextViewForKind(kind: "sampler" | "llm" | "expression"): SheetView {
     return "expression";
   }
   return "llm";
+}
+
+function BlockSheetButton({
+  icon,
+  title,
+  description,
+  onClick,
+}: {
+  icon: typeof Database02Icon;
+  title: string;
+  description: string;
+  onClick: () => void;
+}): ReactElement {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex w-full items-center gap-3 rounded-2xl border border-border/60 bg-white px-3 py-3 text-left transition hover:border-border hover:bg-muted/40"
+    >
+      <div className="flex size-9 items-center justify-center rounded-xl border border-border bg-muted/30 text-muted-foreground">
+        <HugeiconsIcon icon={icon} className="size-4" />
+      </div>
+      <div className="flex-1">
+        <p className="text-sm font-semibold text-foreground">{title}</p>
+        <p className="text-[11px] text-muted-foreground">{description}</p>
+      </div>
+      <HugeiconsIcon
+        icon={ArrowRight01Icon}
+        className="size-3.5 text-muted-foreground"
+      />
+    </button>
+  );
 }
 
 export function BlockSheet({
@@ -191,103 +229,43 @@ export function BlockSheet({
           <div className="mt-4 flex flex-col gap-2">
             {view === "root" &&
               MAIN_SHEET_ITEMS.map((item) => (
-                <button
+                <BlockSheetButton
                   key={item.kind}
-                  type="button"
+                  icon={item.icon}
+                  title={item.title}
+                  description={item.description}
                   onClick={() => onViewChange(nextViewForKind(item.kind))}
-                  className="flex w-full items-center gap-3 rounded-2xl border border-border/60 bg-white px-3 py-3 text-left transition hover:border-border hover:bg-muted/40"
-                >
-                  <div className="flex size-9 items-center justify-center rounded-xl border border-border bg-muted/30 text-muted-foreground">
-                    <HugeiconsIcon icon={item.icon} className="size-4" />
-                  </div>
-                  <div className="flex-1">
-                    <p className="text-sm font-semibold text-foreground">
-                      {item.title}
-                    </p>
-                    <p className="text-[11px] text-muted-foreground">
-                      {item.description}
-                    </p>
-                  </div>
-                  <HugeiconsIcon
-                    icon={ArrowRight01Icon}
-                    className="size-3.5 text-muted-foreground"
-                  />
-                </button>
+                />
               ))}
             {view === "sampler" &&
               SAMPLER_ITEMS.map((item) => (
-                <button
+                <BlockSheetButton
                   key={item.type}
-                  type="button"
+                  icon={item.icon}
+                  title={item.title}
+                  description={item.description}
                   onClick={() => onAddSampler(item.type)}
-                  className="flex w-full items-center gap-3 rounded-2xl border border-border/60 bg-white px-3 py-3 text-left transition hover:border-border hover:bg-muted/40"
-                >
-                  <div className="flex size-9 items-center justify-center rounded-xl border border-border bg-muted/30 text-muted-foreground">
-                    <HugeiconsIcon icon={item.icon} className="size-4" />
-                  </div>
-                  <div className="flex-1">
-                    <p className="text-sm font-semibold text-foreground">
-                      {item.title}
-                    </p>
-                    <p className="text-[11px] text-muted-foreground">
-                      {item.description}
-                    </p>
-                  </div>
-                  <HugeiconsIcon
-                    icon={ArrowRight01Icon}
-                    className="size-3.5 text-muted-foreground"
-                  />
-                </button>
+                />
               ))}
             {view === "llm" &&
               LLM_ITEMS.map((item) => (
-                <button
+                <BlockSheetButton
                   key={item.type}
-                  type="button"
+                  icon={item.icon}
+                  title={item.title}
+                  description={item.description}
                   onClick={() => onAddLlm(item.type)}
-                  className="flex w-full items-center gap-3 rounded-2xl border border-border/60 bg-white px-3 py-3 text-left transition hover:border-border hover:bg-muted/40"
-                >
-                  <div className="flex size-9 items-center justify-center rounded-xl border border-border bg-muted/30 text-muted-foreground">
-                    <HugeiconsIcon icon={item.icon} className="size-4" />
-                  </div>
-                  <div className="flex-1">
-                    <p className="text-sm font-semibold text-foreground">
-                      {item.title}
-                    </p>
-                    <p className="text-[11px] text-muted-foreground">
-                      {item.description}
-                    </p>
-                  </div>
-                  <HugeiconsIcon
-                    icon={ArrowRight01Icon}
-                    className="size-3.5 text-muted-foreground"
-                  />
-                </button>
+                />
               ))}
             {view === "expression" &&
               EXPRESSION_ITEMS.map((item) => (
-                <button
+                <BlockSheetButton
                   key={item.title}
-                  type="button"
+                  icon={item.icon}
+                  title={item.title}
+                  description={item.description}
                   onClick={onAddExpression}
-                  className="flex w-full items-center gap-3 rounded-2xl border border-border/60 bg-white px-3 py-3 text-left transition hover:border-border hover:bg-muted/40"
-                >
-                  <div className="flex size-9 items-center justify-center rounded-xl border border-border bg-muted/30 text-muted-foreground">
-                    <HugeiconsIcon icon={item.icon} className="size-4" />
-                  </div>
-                  <div className="flex-1">
-                    <p className="text-sm font-semibold text-foreground">
-                      {item.title}
-                    </p>
-                    <p className="text-[11px] text-muted-foreground">
-                      {item.description}
-                    </p>
-                  </div>
-                  <HugeiconsIcon
-                    icon={ArrowRight01Icon}
-                    className="size-3.5 text-muted-foreground"
-                  />
-                </button>
+                />
               ))}
           </div>
         </div>
