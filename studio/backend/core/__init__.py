@@ -3,10 +3,10 @@ Unified core module for Unsloth backend
 """
 
 # Inference
-from .inference import InferenceBackend, get_inference_backend
+from .inference.inference import InferenceBackend, get_inference_backend
 
 # Training
-from .training import UnslothTrainer, get_trainer, TrainingBackend, get_training_backend, create_training_handlers, TrainingProgress
+from .training.training import UnslothTrainer, get_trainer, TrainingBackend, get_training_backend, create_training_handlers, TrainingProgress
 
 # Configuration (from utils)
 from utils.models import is_vision_model, ModelConfig, scan_trained_loras, load_model_defaults, get_base_model_from_lora
