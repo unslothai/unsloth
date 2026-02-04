@@ -73,7 +73,7 @@ export function applyCanvasConnection(
   if (!(source && target)) {
     return { edges };
   }
-  const nextEdges = addEdge(connection, edges);
+  const nextEdges = addEdge({ ...connection, type: "canvas" }, edges);
   if (isLlmConfig(target)) {
     const ref = `{{ ${source.name} }}`;
     const next = {

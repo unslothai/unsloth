@@ -1,6 +1,7 @@
 import {
   Background,
   BackgroundVariant,
+  type EdgeTypes,
   type Node,
   type NodeTypes,
   Panel,
@@ -15,6 +16,7 @@ import { EyeIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { previewCanvas } from "./api";
 import { BlockSheet } from "./components/block-sheet";
+import { CanvasEdge } from "./components/canvas-edge";
 import { CanvasNode } from "./components/canvas-node";
 import { ConfigDialog } from "./dialogs/config-dialog";
 import { ImportDialog } from "./dialogs/import-dialog";
@@ -25,6 +27,7 @@ import { importCanvasPayload } from "./utils/import";
 import { buildCanvasPayload } from "./utils/payload";
 
 const NODE_TYPES: NodeTypes = { builder: CanvasNode };
+const EDGE_TYPES: EdgeTypes = { canvas: CanvasEdge };
 
 export function CanvasLabPage(): ReactElement {
   const {
@@ -228,6 +231,11 @@ export function CanvasLabPage(): ReactElement {
             nodes={nodes}
             edges={edges}
             nodeTypes={NODE_TYPES}
+            edgeTypes={EDGE_TYPES}
+            defaultEdgeOptions={{
+              type: "canvas",
+              style: { strokeWidth: 1.5, stroke: "#cbd5f5" },
+            }}
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
