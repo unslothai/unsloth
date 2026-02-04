@@ -1,0 +1,196 @@
+import type { CanvasNode, NodeConfig } from "../types";
+import { nodeDataFromConfig } from "../utils";
+import { removeRef, replaceRef } from "../utils/refs";
+
+type NodeUpdateState = {
+  configs: Record<string, NodeConfig>;
+  nodes: CanvasNode[];
+  nextId: number;
+  nextY: number;
+};
+
+type NodeUpdateResult = {
+  configs: Record<string, NodeConfig>;
+  nodes: CanvasNode[];
+  nextId: number;
+  nextY: number;
+  activeConfigId: string;
+  dialogOpen: boolean;
+};
+
+export function updateNodeData(
+  nodes: CanvasNode[],
+  id: string,
+  config: NodeConfig,
+): CanvasNode[] {
+  return nodes.map((node) =>
+    node.id === id ? { ...node, data: nodeDataFromConfig(config) } : node,
+  );
+}
+
+export function findNodeIdByName(
+  configs: Record<string, NodeConfig>,
+  name: string,
+): string | null {
+  const entry = Object.entries(configs).find(
+    ([, config]) => config.name === name,
+  );
+  return entry ? entry[0] : null;
+}
+
+export function buildNodeUpdate(
+  state: NodeUpdateState,
+  config: NodeConfig,
+): NodeUpdateResult {
+  const node: CanvasNode = {
+    id: config.id,
+    type: "builder",
+    position: { x: 0, y: state.nextY },
+    data: nodeDataFromConfig(config),
+  };
+  return {
+    configs: { ...state.configs, [config.id]: config },
+    nodes: [...state.nodes, node],
+    nextId: state.nextId + 1,
+    nextY: state.nextY + 140,
+    activeConfigId: config.id,
+    dialogOpen: true,
+  };
+}
+
+function updateTemplateFields(
+  config: NodeConfig,
+  updater: (value: string) => string,
+): NodeConfig {
+  if (config.kind === "llm") {
+    const nextPrompt = updater(config.prompt);
+    const nextSystem = updater(config.system_prompt);
+    const nextOutput =
+      typeof config.output_format === "string"
+        ? updater(config.output_format)
+        : config.output_format;
+    if (
+      nextPrompt === config.prompt &&
+      nextSystem === config.system_prompt &&
+      nextOutput === config.output_format
+    ) {
+      return config;
+    }
+    return {
+      ...config,
+      prompt: nextPrompt,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      system_prompt: nextSystem,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      output_format: nextOutput,
+    };
+  }
+  if (config.kind === "expression") {
+    const nextExpr = updater(config.expr);
+    if (nextExpr === config.expr) {
+      return config;
+    }
+    return { ...config, expr: nextExpr };
+  }
+  return config;
+}
+
+export function applyRenameToConfig(
+  config: NodeConfig,
+  from: string,
+  to: string,
+): NodeConfig {
+  let next = updateTemplateFields(config, (value) =>
+    replaceRef(value, from, to),
+  );
+  if (
+    config.kind === "sampler" &&
+    config.sampler_type === "subcategory" &&
+    config.subcategory_parent === from
+  ) {
+    next =
+      next === config
+        ? {
+            ...config,
+            // biome-ignore lint/style/useNamingConvention: api schema
+            subcategory_parent: to,
+          }
+        : {
+            ...next,
+            // biome-ignore lint/style/useNamingConvention: api schema
+            subcategory_parent: to,
+          };
+  }
+  return next;
+}
+
+export function applyRemovalToConfig(
+  config: NodeConfig,
+  ref: string,
+): NodeConfig {
+  let next = updateTemplateFields(config, (value) => removeRef(value, ref));
+  if (
+    config.kind === "sampler" &&
+    config.sampler_type === "subcategory" &&
+    config.subcategory_parent === ref
+  ) {
+    next =
+      next === config
+        ? {
+            ...config,
+            // biome-ignore lint/style/useNamingConvention: api schema
+            subcategory_parent: "",
+            // biome-ignore lint/style/useNamingConvention: api schema
+            subcategory_mapping: {},
+          }
+        : {
+            ...next,
+            // biome-ignore lint/style/useNamingConvention: api schema
+            subcategory_parent: "",
+            // biome-ignore lint/style/useNamingConvention: api schema
+            subcategory_mapping: {},
+          };
+  }
+  return next;
+}
+
+export function applyRenameToConfigs(
+  configs: Record<string, NodeConfig>,
+  from: string,
+  to: string,
+): Record<string, NodeConfig> {
+  if (!from || from === to) {
+    return configs;
+  }
+  let next = configs;
+  for (const [id, config] of Object.entries(configs)) {
+    const updated = applyRenameToConfig(config, from, to);
+    if (updated !== config) {
+      if (next === configs) {
+        next = { ...configs };
+      }
+      next[id] = updated;
+    }
+  }
+  return next;
+}
+
+export function applyRemovalToConfigs(
+  configs: Record<string, NodeConfig>,
+  ref: string,
+): Record<string, NodeConfig> {
+  if (!ref) {
+    return configs;
+  }
+  let next = configs;
+  for (const [id, config] of Object.entries(configs)) {
+    const updated = applyRemovalToConfig(config, ref);
+    if (updated !== config) {
+      if (next === configs) {
+        next = { ...configs };
+      }
+      next[id] = updated;
+    }
+  }
+  return next;
+}

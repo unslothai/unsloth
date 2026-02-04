@@ -2,17 +2,9 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter } from "@/components/ui/dialog";
 import type { ReactElement } from "react";
 import type { NodeConfig, SamplerConfig } from "../types";
-import { LlmDialog } from "./llm/llm-dialog";
-import { CategoryDialog } from "./samplers/category-dialog";
-import { DatetimeDialog } from "./samplers/datetime-dialog";
-import { GaussianDialog } from "./samplers/gaussian-dialog";
-import { PersonDialog } from "./samplers/person-dialog";
-import { SubcategoryDialog } from "./samplers/subcategory-dialog";
-import { UniformDialog } from "./samplers/uniform-dialog";
-import { UuidDialog } from "./samplers/uuid-dialog";
+import { renderBlockDialog } from "../blocks/registry";
 import { DialogShell } from "./shared/dialog-shell";
 import { ValidationBanner } from "./shared/validation-banner";
-import { ExpressionDialog } from "./expression/expression-dialog";
 
 type ConfigDialogProps = {
   open: boolean;
@@ -41,65 +33,7 @@ export function ConfigDialog({
         {config && (
           <div className="space-y-4">
             <ValidationBanner config={config} />
-            {config.kind === "sampler" &&
-              config.sampler_type === "category" && (
-                <CategoryDialog
-                  config={config}
-                  onUpdate={(patch) => onUpdate(config.id, patch)}
-                />
-              )}
-            {config.kind === "sampler" &&
-              config.sampler_type === "subcategory" && (
-                <SubcategoryDialog
-                  config={config}
-                  categoryOptions={categoryOptions}
-                  onUpdate={(patch) => onUpdate(config.id, patch)}
-                />
-              )}
-            {config.kind === "sampler" && config.sampler_type === "uniform" && (
-              <UniformDialog
-                config={config}
-                onUpdate={(patch) => onUpdate(config.id, patch)}
-              />
-            )}
-            {config.kind === "sampler" &&
-              config.sampler_type === "gaussian" && (
-                <GaussianDialog
-                  config={config}
-                  onUpdate={(patch) => onUpdate(config.id, patch)}
-                />
-              )}
-            {config.kind === "sampler" &&
-              config.sampler_type === "datetime" && (
-                <DatetimeDialog
-                  config={config}
-                  onUpdate={(patch) => onUpdate(config.id, patch)}
-                />
-              )}
-            {config.kind === "sampler" && config.sampler_type === "uuid" && (
-              <UuidDialog
-                config={config}
-                onUpdate={(patch) => onUpdate(config.id, patch)}
-              />
-            )}
-            {config.kind === "sampler" && config.sampler_type === "person" && (
-              <PersonDialog
-                config={config}
-                onUpdate={(patch) => onUpdate(config.id, patch)}
-              />
-            )}
-            {config.kind === "llm" && (
-              <LlmDialog
-                config={config}
-                onUpdate={(patch) => onUpdate(config.id, patch)}
-              />
-            )}
-            {config.kind === "expression" && (
-              <ExpressionDialog
-                config={config}
-                onUpdate={(patch) => onUpdate(config.id, patch)}
-              />
-            )}
+            {renderBlockDialog(config, categoryOptions, onUpdate)}
           </div>
         )}
         <DialogFooter>

@@ -8,16 +8,13 @@ import {
 } from "@/components/ui/sheet";
 import {
   ArrowLeft02Icon,
-  ArrowRight01Icon,
-  CodeIcon,
-  Database02Icon,
-  Flowchart01Icon,
+  ArrowRight01Icon, type Database02Icon,
   PlusSignIcon,
-  SparklesIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactElement } from "react";
 import type { LlmType, SamplerType } from "../types";
+import { BLOCK_GROUPS, getBlocksForKind } from "../blocks/registry";
 
 type SheetView = "root" | "sampler" | "llm" | "expression";
 type SheetKind = "sampler" | "llm" | "expression";
@@ -44,115 +41,12 @@ function getSheetTitle(view: SheetView): string {
   return "LLM blocks";
 }
 
-const MAIN_SHEET_ITEMS: Array<{
-  kind: SheetKind;
-  title: string;
-  description: string;
-  icon: typeof Database02Icon;
-}> = [
-  {
-    kind: "sampler",
-    title: "Sampler",
-    description: "Numeric + categorical blocks.",
-    icon: Database02Icon,
-  },
-  {
-    kind: "llm",
-    title: "LLM",
-    description: "Text + structured blocks.",
-    icon: SparklesIcon,
-  },
-  {
-    kind: "expression",
-    title: "Expression",
-    description: "Derived columns with Jinja.",
-    icon: CodeIcon,
-  },
-];
-
-const SAMPLER_ITEMS = [
-  {
-    type: "category" as const,
-    title: "Category",
-    description: "Pick from a list of values.",
-    icon: Database02Icon,
-  },
-  {
-    type: "subcategory" as const,
-    title: "Subcategory",
-    description: "Map sub-values to a category.",
-    icon: Database02Icon,
-  },
-  {
-    type: "uniform" as const,
-    title: "Uniform",
-    description: "Random number between low/high.",
-    icon: Database02Icon,
-  },
-  {
-    type: "gaussian" as const,
-    title: "Gaussian",
-    description: "Normal distribution sampler.",
-    icon: Database02Icon,
-  },
-  {
-    type: "datetime" as const,
-    title: "Datetime",
-    description: "Date/time range sampler.",
-    icon: Database02Icon,
-  },
-  {
-    type: "uuid" as const,
-    title: "UUID",
-    description: "UUID string sampler.",
-    icon: Database02Icon,
-  },
-  {
-    type: "person" as const,
-    title: "Person",
-    description: "Synthetic person sampler.",
-    icon: Database02Icon,
-  },
-];
-
-const LLM_ITEMS = [
-  {
-    type: "text" as const,
-    title: "LLM Text",
-    description: "Free-form prompt generation.",
-    icon: SparklesIcon,
-  },
-  {
-    type: "structured" as const,
-    title: "LLM Structured",
-    description: "JSON output via schema.",
-    icon: Flowchart01Icon,
-  },
-  {
-    type: "code" as const,
-    title: "LLM Code",
-    description: "Generate code or SQL.",
-    icon: CodeIcon,
-  },
-];
-
-const EXPRESSION_ITEMS = [
-  {
-    title: "Expression",
-    description: "Transform columns with Jinja.",
-    icon: CodeIcon,
-  },
-];
-
-function nextViewForKind(kind: SheetKind): SheetView {
-  if (kind === "sampler") {
-    return "sampler";
-  }
-  if (kind === "expression") {
-    return "expression";
-  }
-  return "llm";
-}
+const VIEW_KIND: Record<SheetView, SheetKind | null> = {
+  root: null,
+  sampler: "sampler",
+  llm: "llm",
+  expression: "expression",
+};
 
 function BlockSheetButton({
   icon,
@@ -228,43 +122,31 @@ export function BlockSheet({
         <div className="px-6 py-4">
           <div className="mt-4 flex flex-col gap-2">
             {view === "root" &&
-              MAIN_SHEET_ITEMS.map((item) => (
+              BLOCK_GROUPS.map((item) => (
                 <BlockSheetButton
                   key={item.kind}
                   icon={item.icon}
                   title={item.title}
                   description={item.description}
-                  onClick={() => onViewChange(nextViewForKind(item.kind))}
+                  onClick={() => onViewChange(item.kind)}
                 />
               ))}
-            {view === "sampler" &&
-              SAMPLER_ITEMS.map((item) => (
+            {view !== "root" &&
+              getBlocksForKind(VIEW_KIND[view] ?? "sampler").map((item) => (
                 <BlockSheetButton
                   key={item.type}
                   icon={item.icon}
                   title={item.title}
                   description={item.description}
-                  onClick={() => onAddSampler(item.type)}
-                />
-              ))}
-            {view === "llm" &&
-              LLM_ITEMS.map((item) => (
-                <BlockSheetButton
-                  key={item.type}
-                  icon={item.icon}
-                  title={item.title}
-                  description={item.description}
-                  onClick={() => onAddLlm(item.type)}
-                />
-              ))}
-            {view === "expression" &&
-              EXPRESSION_ITEMS.map((item) => (
-                <BlockSheetButton
-                  key={item.title}
-                  icon={item.icon}
-                  title={item.title}
-                  description={item.description}
-                  onClick={onAddExpression}
+                  onClick={() => {
+                    if (item.kind === "sampler") {
+                      onAddSampler(item.type as SamplerType);
+                    } else if (item.kind === "llm") {
+                      onAddLlm(item.type as LlmType);
+                    } else {
+                      onAddExpression();
+                    }
+                  }}
                 />
               ))}
           </div>
