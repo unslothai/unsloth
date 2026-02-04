@@ -215,7 +215,15 @@ def grouped_gemm_forward(
     """
     # MPS dispatch - use fallback implementation
     if _is_mps_device(X):
-        from .mps import grouped_gemm_mps_forward
+        from ...mlx.utils import is_mlx_available
+        if is_mlx_available():
+            ops = _load_mlx_ops()
+            if ops is not None:
+                return ops.mx_grouped_gemm_forward(
+                    X, W, topk, m_sizes, gather_indices, topk_weights, permute_x, permute_y, fuse_mul_post
+                )
+        
+        from .mps.fallback import grouped_gemm_mps_forward
         return grouped_gemm_mps_forward(
             X=X,
             W=W,
@@ -426,7 +434,10 @@ def grouped_gemm_dX(
     """
     # MPS dispatch - use fallback implementation
     if _is_mps_device(dY):
-        from .mps import grouped_gemm_mps_dX
+        # Note: We don't have a standalone MLX dX yet without the Autograd Function wrapper
+        # but the autograd path will use the MLX function if available.
+        # For direct calls, we fallback to MPS.
+        from .mps.fallback import grouped_gemm_mps_dX
         return grouped_gemm_mps_dX(
             dY=dY,
             W=W,
@@ -600,7 +611,7 @@ def grouped_gemm_dW(
     """
     # MPS dispatch - use fallback implementation
     if _is_mps_device(X):
-        from .mps import grouped_gemm_mps_dW
+        from .mps.fallback import grouped_gemm_mps_dW
         return grouped_gemm_mps_dW(
             X=X,
             dY=dY,
@@ -1029,11 +1040,17 @@ def grouped_gemm(
 
     """
     # =========================================================================
-    # MPS Device Dispatch
-    # =========================================================================
-    # On Apple Silicon (MPS), use PyTorch-native fallback instead of Triton kernels
+    # MPS/MLX Dispatch
     if _is_mps_device(X):
-        from .mps import grouped_gemm_mps
+        from ...mlx.utils import is_mlx_available
+        if is_mlx_available():
+            ops = _load_mlx_ops()
+            if ops is not None:
+                return ops.mlx_grouped_gemm(
+                    X, W, m_sizes, topk, gather_indices, permute_x, permute_y, topk_weights, fuse_mul_post
+                )
+        
+        from .mps.fallback import grouped_gemm_mps
         return grouped_gemm_mps(
             X=X,
             W=W,
@@ -1048,8 +1065,7 @@ def grouped_gemm(
     
     # =========================================================================
     # CUDA/Triton Path
-    # =========================================================================
-    # Load Triton kernels (lazy import)
+    # Lazy load Triton kernels
     _load_triton_kernels()
 
     if not autotune:
