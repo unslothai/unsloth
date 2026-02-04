@@ -86,10 +86,7 @@ export function ThreadSidebar({
       await db.messages.where("threadId").equals(item.id).delete();
       await db.threads.delete(item.id);
     } else {
-      const paired = await db.threads
-        .where("pairId")
-        .equals(item.id)
-        .toArray();
+      const paired = await db.threads.where("pairId").equals(item.id).toArray();
       for (const t of paired) {
         await db.messages.where("threadId").equals(t.id).delete();
         await db.threads.delete(t.id);
@@ -137,7 +134,7 @@ export function ThreadSidebar({
                     <span>{item.title}</span>
                   </SidebarMenuButton>
                   <SidebarMenuAction
-                    showOnHover
+                    showOnHover={true}
                     onClick={() => handleDelete(item)}
                     title="Delete"
                   >

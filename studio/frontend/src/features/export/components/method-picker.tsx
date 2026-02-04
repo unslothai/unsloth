@@ -79,15 +79,17 @@ export function MethodPicker({ value, onChange }: MethodPickerProps) {
                   <span className="text-sm font-medium">{m.title}</span>
                   <Tooltip>
                     <TooltipTrigger asChild={true}>
-                      <span
+                      <button
+                        type="button"
                         className="shrink-0 text-foreground/50 hover:text-foreground cursor-help"
                         onClick={(e) => e.stopPropagation()}
+                        aria-label={`${m.title} info`}
                       >
                         <HugeiconsIcon
                           icon={InformationCircleIcon}
                           className="size-3"
                         />
-                      </span>
+                      </button>
                     </TooltipTrigger>
                     <TooltipContent className="max-w-xs">
                       {m.tooltip}{" "}

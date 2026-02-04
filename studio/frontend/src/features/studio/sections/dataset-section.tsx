@@ -44,9 +44,21 @@ import { useShallow } from "zustand/react/shallow";
 export function DatasetSection() {
   const { dataset, setDataset, datasetFormat, setDatasetFormat, hfToken } =
     useWizardStore(
-      useShallow(({ dataset, setDataset, datasetFormat, setDatasetFormat, hfToken }) => ({
-        dataset, setDataset, datasetFormat, setDatasetFormat, hfToken,
-      })),
+      useShallow(
+        ({
+          dataset,
+          setDataset,
+          datasetFormat,
+          setDatasetFormat,
+          hfToken,
+        }) => ({
+          dataset,
+          setDataset,
+          datasetFormat,
+          setDatasetFormat,
+          hfToken,
+        }),
+      ),
     );
 
   const [inputValue, setInputValue] = useState("");
