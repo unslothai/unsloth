@@ -1,3 +1,5 @@
+import { extractRefs as extractJinjaRefs } from "../refs";
+
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
@@ -40,12 +42,5 @@ export function normalizeOutputFormat(value: unknown): string {
 }
 
 export function extractRefs(template: string): string[] {
-  const matches = template.matchAll(/{{\s*([a-zA-Z0-9_]+)\s*}}/g);
-  const refs = new Set<string>();
-  for (const match of matches) {
-    if (match[1]) {
-      refs.add(match[1]);
-    }
-  }
-  return Array.from(refs);
+  return extractJinjaRefs(template);
 }
