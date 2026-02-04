@@ -24,6 +24,7 @@ import {
   nodeDataFromConfig,
 } from "../utils";
 import { applyCanvasConnection, isValidCanvasConnection } from "../utils/graph";
+import type { CanvasSnapshot } from "../utils/import";
 
 type SheetView = "root" | "sampler" | "llm" | "expression";
 
@@ -43,6 +44,7 @@ type CanvasLabState = {
   addLlmNode: (type: LlmType) => void;
   addExpressionNode: () => void;
   updateConfig: (id: string, patch: Partial<NodeConfig>) => void;
+  loadCanvas: (snapshot: CanvasSnapshot) => void;
   onNodesChange: (changes: NodeChange<CanvasNode>[]) => void;
   onEdgesChange: (changes: EdgeChange<Edge>[]) => void;
   onConnect: (connection: Connection) => void;
@@ -144,6 +146,17 @@ export const useCanvasLabStore = create<CanvasLabState>((set, get) => ({
       };
     });
   },
+  loadCanvas: (snapshot) =>
+    set({
+      configs: snapshot.configs,
+      nodes: snapshot.nodes,
+      edges: snapshot.edges,
+      nextId: snapshot.nextId,
+      nextY: snapshot.nextY,
+      activeConfigId: null,
+      dialogOpen: false,
+      sheetView: "root",
+    }),
   updateConfig: (id, patch) => {
     // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: store update
     const applyUpdate = (state: CanvasLabState) => {
