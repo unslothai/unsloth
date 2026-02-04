@@ -4,7 +4,9 @@ import { useHfPaginatedSearch } from "./use-hf-paginated-search";
 
 interface DatasetInfoSplit {
   name: string;
+  // biome-ignore lint/style/useNamingConvention: external schema
   num_bytes: number;
+  // biome-ignore lint/style/useNamingConvention: external schema
   num_examples: number;
 }
 
@@ -23,7 +25,9 @@ interface CardDataWithInfo {
 function extractTotalExamples(
   cardData: CardDataWithInfo | undefined,
 ): number | undefined {
-  if (!cardData?.dataset_info) return undefined;
+  if (!cardData?.dataset_info) {
+    return undefined;
+  }
 
   const infos = Array.isArray(cardData.dataset_info)
     ? cardData.dataset_info
@@ -34,9 +38,7 @@ function extractTotalExamples(
     .filter((s) => typeof s.num_examples === "number")
     .map((s) => s.num_examples);
 
-  return examples.length > 0
-    ? examples.reduce((a, b) => a + b, 0)
-    : undefined;
+  return examples.length > 0 ? examples.reduce((a, b) => a + b, 0) : undefined;
 }
 
 export interface HfDatasetResult {
