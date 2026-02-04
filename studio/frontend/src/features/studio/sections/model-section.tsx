@@ -66,13 +66,25 @@ export function ModelSection() {
     hfToken,
     setHfToken,
   } = useWizardStore(
-    useShallow(({
-      modelType, selectedModel, setSelectedModel,
-      trainingMethod, setTrainingMethod, hfToken, setHfToken,
-    }) => ({
-      modelType, selectedModel, setSelectedModel,
-      trainingMethod, setTrainingMethod, hfToken, setHfToken,
-    })),
+    useShallow(
+      ({
+        modelType,
+        selectedModel,
+        setSelectedModel,
+        trainingMethod,
+        setTrainingMethod,
+        hfToken,
+        setHfToken,
+      }) => ({
+        modelType,
+        selectedModel,
+        setSelectedModel,
+        trainingMethod,
+        setTrainingMethod,
+        hfToken,
+        setHfToken,
+      }),
+    ),
   );
 
   const [inputValue, setInputValue] = useState("");
@@ -151,9 +163,7 @@ export function ModelSection() {
             <InputGroupAddon>
               <HugeiconsIcon icon={FolderSearchIcon} className="size-4" />
             </InputGroupAddon>
-            <InputGroupInput
-              placeholder="./models/my-model"
-            />
+            <InputGroupInput placeholder="./models/my-model" />
           </InputGroup>
         </div>
 
