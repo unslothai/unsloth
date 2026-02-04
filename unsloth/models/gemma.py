@@ -62,20 +62,14 @@ torch_nn_functional_gelu = torch.nn.functional.gelu
 
 
 def fast_geglu_inference(self, X):
-    # gate = self.gate_proj(X)
-    # up   = self.up_proj(X)
-    bsz, _, hd = X.shape
-    # mlp_size = self.config.intermediate_size
-    # temp = torch.empty((2, bsz, 1, mlp_size), dtype = X.dtype, device = "cuda:0")
-
-    gate = fast_linear_forward(self.gate_proj, X)  # , out = temp[0])
-    up = fast_linear_forward(self.up_proj, X)  # , out = temp[1])
-    gate = torch_nn_functional_gelu(gate, approximate="tanh")
-    gate *= up
-
-    # X = self.down_proj(gate)
-    down = fast_linear_forward(self.down_proj, gate, out=up[:, :, :hd])
-    return down
+    # This is retained for backward compatibility but routes to dispatch for speed
+    from ..kernels.mps.dispatch import dispatch_lora_mlp_geglu_approx
+    return dispatch_lora_mlp_geglu_approx(
+        X,
+        *get_lora_parameters(self.gate_proj),
+        *get_lora_parameters(self.up_proj),
+        *get_lora_parameters(self.down_proj),
+    )
 
 
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L590
@@ -96,7 +90,7 @@ def GemmaDecoderLayer_fast_forward(
         self, "_flag_for_generation"
     ):  # past_key_value is not None:
         out_weight = torch.empty(
-            self.input_layernorm.weight.shape, dtype=torch.float32, device="cuda:0"
+            self.input_layernorm.weight.shape, dtype=torch.float32, device=hidden_states.device
         )
 
         # Self Attention
@@ -122,7 +116,13 @@ def GemmaDecoderLayer_fast_forward(
         hidden_states = fast_rms_layernorm_inference_gemma(
             self.post_attention_layernorm, hidden_states, out_weight
         )
-        hidden_states = fast_geglu_inference(self.mlp, hidden_states)
+        from ..kernels.mps.dispatch import dispatch_lora_mlp_geglu_approx
+        hidden_states = dispatch_lora_mlp_geglu_approx(
+            hidden_states,
+            *get_lora_parameters(self.mlp.gate_proj),
+            *get_lora_parameters(self.mlp.up_proj),
+            *get_lora_parameters(self.mlp.down_proj),
+        )
         hidden_states += residual
     else:
         residual = hidden_states
@@ -286,11 +286,15 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
             )
 
         # dummy so that patch_utils doesn't fail for now
+        if torch.cuda.is_available():
+            device_idx = torch.cuda.current_device()
+        else:
+            device_idx = 0
         self.cos_cached = torch.empty(
-            1, device=torch.cuda.current_device(), dtype=torch.get_default_dtype()
+            1, device=device_idx, dtype=torch.get_default_dtype()
         )
         self.sin_cached = torch.empty(
-            1, device=torch.cuda.current_device(), dtype=torch.get_default_dtype()
+            1, device=device_idx, dtype=torch.get_default_dtype()
         )
 
     def _set_cos_sin_cache(self, seq_len, device, dtype):
@@ -331,7 +335,10 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
 
     def get_cached(self, seq_len=None, device_index=None):
         if device_index is None:
-            device_index = torch.cuda.current_device()
+            if torch.cuda.is_available():
+                device_index = torch.cuda.current_device()
+            else:
+                device_index = 0
         return self.multi_gpu_cos_cached[device_index], self.multi_gpu_sin_cached[
             device_index
         ]
@@ -470,5 +477,8 @@ class FastGemmaModel(FastLlamaModel):
 
         for _ in range(3):
             gc.collect()
-            torch.cuda.empty_cache()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                torch.mps.empty_cache()
         return model, tokenizer

@@ -17,6 +17,7 @@ try:
         apply_lora_mlp_swiglu,
         apply_lora_qkv,
         apply_lora_o,
+        apply_lora_mlp_geglu_approx,
     )
     from unsloth.kernels.mlx.quantization import quantize_4bit
 
@@ -238,7 +239,100 @@ class ComprehensiveBenchmark:
                 mem=get_mem_stats(),
             )
 
-    def run_qkv_benchmark(self, batch_size=1, seq_len=1, dim=4096, hidden_dim=4096):
+    def run_mlp_geglu_benchmark(self, batch_size=1, seq_len=1, dim=4096, hidden_dim=11008):
+        log_header(
+            f"MLP (GeGLU) Benchmark: B={batch_size}, S={seq_len}, D={dim}, H={hidden_dim}"
+        )
+
+        # 1. Setup Data
+        X = torch.randn(batch_size, seq_len, dim, device=self.device, dtype=self.dtype)
+        gateW = torch.randn(hidden_dim, dim, device=self.device, dtype=self.dtype) / (dim**0.5)
+        upW = torch.randn(hidden_dim, dim, device=self.device, dtype=self.dtype) / (dim**0.5)
+        downW = torch.randn(dim, hidden_dim, device=self.device, dtype=self.dtype) / (hidden_dim**0.5)
+
+        # LoRA adapters
+        A = torch.randn(8, dim, device=self.device, dtype=self.dtype) / (dim**0.5)
+        B = torch.randn(hidden_dim, 8, device=self.device, dtype=self.dtype) / (8**0.5)
+        S = 1.0
+
+        # Reference (PyTorch Naive - GeGLU Approx)
+        def torch_mlp(x):
+            # Gelu approx: 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
+            gw = torch.nn.functional.linear(x, gateW) + (x @ A.T) @ B.T * S
+            uw = torch.nn.functional.linear(x, upW) + (x @ A.T) @ B.T * S
+            act = torch.nn.functional.gelu(gw, approximate="tanh") * uw
+            return torch.nn.functional.linear(act, downW) + (act @ B) @ A * S
+
+        # Warmup
+        with torch.no_grad():
+            y_ref = torch_mlp(X)
+            if self.device.type == "mps":
+                torch.mps.synchronize()
+
+        iters = 50
+        actual_iters = iters * 10 if batch_size == 1 else iters
+        
+        start = time.time()
+        for _ in range(actual_iters):
+             _ = torch_mlp(X)
+        if self.device.type == "mps":
+             torch.mps.synchronize()
+        torch_latency = (time.time() - start) * 1000 / actual_iters
+        log_result("PyTorch Native (FP16)", torch_latency)
+
+        if HAS_MLX:
+             # Cache
+            gateW._mlx_cache = torch_to_mlx(gateW)
+            upW._mlx_cache = torch_to_mlx(upW)
+            downW._mlx_cache = torch_to_mlx(downW)
+            A._mlx_cache = torch_to_mlx(A)
+            B._mlx_cache = torch_to_mlx(B)
+            X_mlx = torch_to_mlx(X)
+
+            # Warmup
+            res = apply_lora_mlp_geglu_approx(
+                X_mlx, gateW, None, A, B, S, upW, None, A, B, S, downW, None, B.T, A.T, S
+            )
+            mx.eval(res)
+            y_mlx = mlx_to_torch(res)
+
+            start = time.time()
+            results = []
+            for _ in range(actual_iters):
+                res = apply_lora_mlp_geglu_approx(
+                    X_mlx, gateW, None, A, B, S, upW, None, A, B, S, downW, None, B.T, A.T, S
+                )
+                results.append(res)
+                if len(results) >= 10:
+                    mx.eval(*results)
+                    results = []
+            mx.eval(*results)
+            mlx_latency = (time.time() - start) * 1000 / actual_iters
+            
+            error = (y_ref - y_mlx).abs().max().item()
+            log_result("MLX 16-Bit (Cached)", mlx_latency, error, mem=get_mem_stats())
+
+    def run_gemma_benchmark(self, batch_size=1, seq_len=1):
+        # Gemma-7B: D=3072, H=24576, GeGLU
+        log_header(f"Gemma-7B Scale Benchmark (B={batch_size}, S={seq_len})")
+        self.run_mlp_geglu_benchmark(
+            batch_size=batch_size, seq_len=seq_len, dim=3072, hidden_dim=24576
+        )
+
+    def run_mistral_benchmark(self, batch_size=1, seq_len=1):
+        # Mistral-7B: D=4096, H=14336, SwiGLU
+        log_header(f"Mistral-7B Scale Benchmark (B={batch_size}, S={seq_len})")
+        self.run_mlp_benchmark(
+            batch_size=batch_size, seq_len=seq_len, dim=4096, hidden_dim=14336
+        )
+
+    def run_qwen2_benchmark(self, batch_size=1, seq_len=1):
+        # Qwen2-7B: D=3584, H=18944, SwiGLU
+        log_header(f"Qwen2-7B Scale Benchmark (B={batch_size}, S={seq_len})")
+        self.run_mlp_benchmark(
+            batch_size=batch_size, seq_len=seq_len, dim=3584, hidden_dim=18944
+        )
+
         log_header(f"QKV Benchmark: B={batch_size}, S={seq_len}, D={dim}")
 
         QW = torch.randn(dim, dim, device=self.device, dtype=self.dtype) / (dim**0.5)
@@ -620,6 +714,10 @@ if __name__ == "__main__":
     benchmark.run_qkv_benchmark(batch_size=1, seq_len=1)
     benchmark.run_swiglu_benchmark(batch_size=1, seq_len=1, dim=14336)
     benchmark.run_rms_benchmark(batch_size=1, seq_len=1, dim=4096)
+    
+    benchmark.run_gemma_benchmark(batch_size=1, seq_len=1)
+    benchmark.run_mistral_benchmark(batch_size=1, seq_len=1)
+    benchmark.run_qwen2_benchmark(batch_size=1, seq_len=1)
 
     # 2. Large Workload Cases (Multi-batch)
     benchmark.run_llama3_benchmark(batch_size=8, seq_len=512)
@@ -628,6 +726,10 @@ if __name__ == "__main__":
     benchmark.run_geglu_benchmark(batch_size=8, seq_len=512)
     benchmark.run_rms_benchmark(batch_size=8, seq_len=512, dim=4096)
     benchmark.run_rope_benchmark(batch_size=8, seq_len=512)
+
+    benchmark.run_gemma_benchmark(batch_size=8, seq_len=512)
+    benchmark.run_mistral_benchmark(batch_size=8, seq_len=512)
+    benchmark.run_qwen2_benchmark(batch_size=8, seq_len=512)
 
     print("\n" + "="*80)
     print(f"{'Benchmark Summary':^80}")

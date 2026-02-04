@@ -126,6 +126,20 @@ def supports_tma():
     return _SUPPORTS_TMA
 
 
+
+_mlx_ops = None
+
+def _load_mlx_ops():
+    global _mlx_ops
+    if _mlx_ops is None:
+        try:
+            from .mps import mlx_ops
+            _mlx_ops = mlx_ops
+        except ImportError:
+            _mlx_ops = None
+    return _mlx_ops
+
+
 _per_device_alloc_fns = {}
 
 
