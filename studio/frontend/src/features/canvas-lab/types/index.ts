@@ -11,10 +11,12 @@ export type SamplerType =
 
 export type LlmType = "text" | "structured" | "code";
 
+export type ExpressionDtype = "str" | "int" | "float" | "bool";
+
 export type CanvasNodeData = {
   title: string;
   name: string;
-  kind: "sampler" | "llm";
+  kind: "sampler" | "llm" | "expression";
   subtype: string;
 };
 
@@ -75,4 +77,12 @@ export type LlmConfig = {
   output_format?: string;
 };
 
-export type NodeConfig = SamplerConfig | LlmConfig;
+export type ExpressionConfig = {
+  id: string;
+  kind: "expression";
+  name: string;
+  expr: string;
+  dtype: ExpressionDtype;
+};
+
+export type NodeConfig = SamplerConfig | LlmConfig | ExpressionConfig;

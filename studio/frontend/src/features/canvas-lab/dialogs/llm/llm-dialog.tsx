@@ -122,6 +122,9 @@ export function LlmDialog({ config, onUpdate }: LlmDialogProps): ReactElement {
               updateField("output_format", event.target.value)
             }
           />
+          <p className="text-xs text-muted-foreground">
+            Paste a JSON schema object or minimal shape.
+          </p>
         </div>
       )}
       <div className="grid gap-2">

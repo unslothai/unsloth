@@ -12,6 +12,7 @@ import { UniformDialog } from "./samplers/uniform-dialog";
 import { UuidDialog } from "./samplers/uuid-dialog";
 import { DialogShell } from "./shared/dialog-shell";
 import { ValidationBanner } from "./shared/validation-banner";
+import { ExpressionDialog } from "./expression/expression-dialog";
 
 type ConfigDialogProps = {
   open: boolean;
@@ -89,6 +90,12 @@ export function ConfigDialog({
             )}
             {config.kind === "llm" && (
               <LlmDialog
+                config={config}
+                onUpdate={(patch) => onUpdate(config.id, patch)}
+              />
+            )}
+            {config.kind === "expression" && (
+              <ExpressionDialog
                 config={config}
                 onUpdate={(patch) => onUpdate(config.id, patch)}
               />
