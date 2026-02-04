@@ -6,8 +6,8 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { NodeProps } from "@xyflow/react";
-import { Handle, Position } from "@xyflow/react";
-import { type ReactElement, memo } from "react";
+import { Handle, Position, useUpdateNodeInternals } from "@xyflow/react";
+import { type ReactElement, memo, useEffect } from "react";
 import type { CanvasNode as CanvasNodeType } from "../types";
 
 const NODE_META = {
@@ -26,10 +26,19 @@ const NODE_META = {
 } as const;
 
 function CanvasNodeBase({
+  id,
   data,
   selected,
 }: NodeProps<CanvasNodeType>): ReactElement {
   const meta = NODE_META[data.kind];
+  const layoutDirection = data.layoutDirection ?? "LR";
+  const isHorizontal = layoutDirection === "LR";
+  const updateNodeInternals = useUpdateNodeInternals();
+
+  useEffect(() => {
+    updateNodeInternals(id);
+  }, [id, layoutDirection, updateNodeInternals]);
+
   return (
     <div
       className={cn(
@@ -57,12 +66,12 @@ function CanvasNodeBase({
       </div>
       <Handle
         type="target"
-        position={Position.Left}
+        position={isHorizontal ? Position.Left : Position.Top}
         className="size-2 border border-border bg-white"
       />
       <Handle
         type="source"
-        position={Position.Right}
+        position={isHorizontal ? Position.Right : Position.Bottom}
         className="size-2 border border-border bg-white"
       />
     </div>

@@ -2,6 +2,7 @@ import type {
   CanvasNodeData,
   ExpressionConfig,
   ExpressionDtype,
+  LayoutDirection,
   LlmConfig,
   LlmType,
   NodeConfig,
@@ -224,13 +225,17 @@ export function labelForExpression(type: ExpressionDtype): string {
   return EXPRESSION_LABELS[type] ?? "Expression";
 }
 
-export function nodeDataFromConfig(config: NodeConfig): CanvasNodeData {
+export function nodeDataFromConfig(
+  config: NodeConfig,
+  layoutDirection: LayoutDirection = "LR",
+): CanvasNodeData {
   if (config.kind === "sampler") {
     return {
       title: "Sampler",
       kind: "sampler",
       subtype: labelForSampler(config.sampler_type),
       name: config.name,
+      layoutDirection,
     };
   }
   if (config.kind === "expression") {
@@ -239,6 +244,7 @@ export function nodeDataFromConfig(config: NodeConfig): CanvasNodeData {
       kind: "expression",
       subtype: labelForExpression(config.dtype),
       name: config.name,
+      layoutDirection,
     };
   }
   return {
@@ -246,6 +252,7 @@ export function nodeDataFromConfig(config: NodeConfig): CanvasNodeData {
     kind: "llm",
     subtype: labelForLlm(config.llm_type),
     name: config.name,
+    layoutDirection,
   };
 }
 
