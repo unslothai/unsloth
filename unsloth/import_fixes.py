@@ -516,7 +516,10 @@ def _is_custom_torch_build(raw_version_str):
     local = raw_version_str.split("+", 1)[1]
     if not local:
         return False
-    return not re.match(r"(cu|rocm|cpu|xpu)", local)
+    # cu/xpu must be followed by a digit to avoid matching e.g. "+custom_build".
+    # cpu/xpu as exact matches (no trailing chars) are standard.
+    # Case-insensitive since some builds may use uppercase.
+    return not re.match(r"(cu\d|rocm\d|cpu$|xpu$|xpu\d)", local, re.IGNORECASE)
 
 
 def _infer_required_torchvision(torch_major, torch_minor):
@@ -606,11 +609,21 @@ def torchvision_compatibility_check():
         torchvision_version_raw
     )
 
-    # Downgrade to warning for custom/source builds or formula-predicted versions
-    if is_custom or not is_in_known_table:
+    # Detect nightly/dev/alpha/beta/rc builds from the raw version string.
+    # These often have version mismatches that are expected.
+    _pre_tags = (".dev", "a0", "b0", "rc", "alpha", "beta", "nightly")
+    is_prerelease = any(t in torch_version_raw for t in _pre_tags)
+
+    # Downgrade to warning for custom/source/pre-release builds or formula-predicted
+    if is_custom or is_prerelease or not is_in_known_table:
+        reason = (
+            "custom/source build" if is_custom else
+            "pre-release build" if is_prerelease else
+            "newer torch version"
+        )
         logger.warning(
             f"{message}\n"
-            f"Detected a {'custom/source build' if is_custom else 'newer torch version'}. "
+            f"Detected a {reason}. "
             f"Continuing with a warning. "
             f"Set UNSLOTH_SKIP_TORCHVISION_CHECK=1 to silence this."
         )
