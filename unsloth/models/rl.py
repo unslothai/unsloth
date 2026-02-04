@@ -1166,34 +1166,29 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
 
         if trl_version >= Version("0.27.0"):
             peft_pattern = (
-                r"\s*if is_peft_available\(\) and is_peft_model\(model\) and args\.beta != 0\.0:"  
-                r".*?"                                                                            
-                r"param\.data = param\.data\.to\(torch\.bfloat16\)"                                
+                r"\s*if is_peft_available\(\) and is_peft_model\(model\) and args\.beta != 0\.0:"
+                r".*?"
+                r"param\.data = param\.data\.to\(torch\.bfloat16\)"
             )
 
-            replacement_comment = (
-                "\n        # PEFT initialization logic removed via script for trl >= 0.27.0\n"
-            )
+            replacement_comment = "\n        # PEFT initialization logic removed via script for trl >= 0.27.0\n"
 
             RLTrainer_source = re.sub(
-                peft_pattern, 
-                replacement_comment, 
-                RLTrainer_source, 
-                flags=re.DOTALL
+                peft_pattern, replacement_comment, RLTrainer_source, flags = re.DOTALL
             )
-            
-        elif  trl_version >= Version("0.26.0"):
+
+        elif trl_version >= Version("0.26.0"):
             peft_block_pattern = (
-                r"\s*if is_peft_available\(\) and isinstance\(model, PeftModel\) and peft_config is not None:" 
-                r".*?" 
-                r"param\.data = param\.data\.to\(torch\.bfloat16\)" 
+                r"\s*if is_peft_available\(\) and isinstance\(model, PeftModel\) and peft_config is not None:"
+                r".*?"
+                r"param\.data = param\.data\.to\(torch\.bfloat16\)"
             )
 
             RLTrainer_source = re.sub(
-                peft_block_pattern, 
-                "\n        # TRL PEFT 0.26.0 initialization logic removed on unsloth side.\n", 
-                RLTrainer_source, 
-                flags=re.DOTALL
+                peft_block_pattern,
+                "\n        # TRL PEFT 0.26.0 initialization logic removed on unsloth side.\n",
+                RLTrainer_source,
+                flags = re.DOTALL,
             )
 
     if RLTrainer_name == "SFTTrainer":
