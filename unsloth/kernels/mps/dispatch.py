@@ -21,6 +21,44 @@ from . import USE_MPS_FALLBACK
 # Require torch 2.4+ for better MPS support in inductor
 _SUPPORTS_MPS_COMPILE = hasattr(torch, "compile") and torch.__version__ >= "2.4.0"
 
+# =============================================================================
+# Metal / MLX Kernel Priority System
+# =============================================================================
+# Priority order for Apple Silicon:
+#   1. Metal kernels (highest performance, custom fused ops)
+#   2. MLX fast ops (mx.fast.* operations)
+#   3. MPS fallback (PyTorch-native with torch.compile)
+#   4. CUDA/Triton (default path for NVIDIA GPUs)
+# =============================================================================
+
+# Lazy-loaded availability flags for Metal/MLX
+_METAL_AVAILABLE = None
+_MLX_AVAILABLE = None
+
+
+def _is_metal_available():
+    """Check if Metal kernels are available (cached)."""
+    global _METAL_AVAILABLE
+    if _METAL_AVAILABLE is None:
+        try:
+            from ..metal import is_metal_available
+            _METAL_AVAILABLE = is_metal_available()
+        except ImportError:
+            _METAL_AVAILABLE = False
+    return _METAL_AVAILABLE
+
+
+def _is_mlx_available():
+    """Check if MLX is available (cached)."""
+    global _MLX_AVAILABLE
+    if _MLX_AVAILABLE is None:
+        try:
+            from ..mlx import is_mlx_available
+            _MLX_AVAILABLE = is_mlx_available()
+        except ImportError:
+            _MLX_AVAILABLE = False
+    return _MLX_AVAILABLE
+
 
 @functools.lru_cache(maxsize=None)
 def _get_compiled_fn(fn):
@@ -35,15 +73,21 @@ def _get_compiled_fn(fn):
 
 
 def dispatch_rms_layernorm(X, W, eps, gemma=False):
-    if DEVICE_TYPE == "mps" and USE_MPS_FALLBACK:
-        from .rms_layernorm import mps_rms_layernorm
-
-        fn = _get_compiled_fn(mps_rms_layernorm)
-        return fn(X, W, eps, gemma)
-    else:
-        from ..rms_layernorm import Fast_RMS_Layernorm
-
-        return Fast_RMS_Layernorm.apply(X, W, eps, gemma)
+    if DEVICE_TYPE == "mps":
+        # Priority 1: Metal kernel (fused, highest performance)
+        if _is_metal_available():
+            from ..metal.rms_layernorm import metal_rms_layernorm
+            # Metal returns (Y, r) but we only need Y for forward
+            Y, _ = metal_rms_layernorm(X, W, eps, gemma)
+            return Y
+        # Priority 2: MPS fallback (PyTorch-native)
+        if USE_MPS_FALLBACK:
+            from .rms_layernorm import mps_rms_layernorm
+            fn = _get_compiled_fn(mps_rms_layernorm)
+            return fn(X, W, eps, gemma)
+    # Default: CUDA/Triton path
+    from ..rms_layernorm import Fast_RMS_Layernorm
+    return Fast_RMS_Layernorm.apply(X, W, eps, gemma)
 
 
 def dispatch_layernorm(X, W, b, eps):
@@ -59,15 +103,19 @@ def dispatch_layernorm(X, W, b, eps):
 
 
 def dispatch_rope_embedding(Q, K, cos, sin, rope_indices=None):
-    if DEVICE_TYPE == "mps" and USE_MPS_FALLBACK:
-        from .rope_embedding import mps_rope_embedding_qk
-
-        fn = _get_compiled_fn(mps_rope_embedding_qk)
-        return fn(Q, K, cos, sin)
-    else:
-        from ..rope_embedding import fast_rope_embedding
-
-        return fast_rope_embedding(Q, K, cos, sin, rope_indices)
+    if DEVICE_TYPE == "mps":
+        # Priority 1: MLX RoPE (uses mx.fast.rope or optimized MLX arithmetic)
+        if _is_mlx_available():
+            from ..mlx.fast_ops import mlx_rope_qk
+            return mlx_rope_qk(Q, K, cos, sin, rope_indices)
+        # Priority 2: MPS fallback (PyTorch-native)
+        if USE_MPS_FALLBACK:
+            from .rope_embedding import mps_rope_embedding_qk
+            fn = _get_compiled_fn(mps_rope_embedding_qk)
+            return fn(Q, K, cos, sin)
+    # Default: CUDA/Triton path
+    from ..rope_embedding import fast_rope_embedding
+    return fast_rope_embedding(Q, K, cos, sin, rope_indices)
 
 
 def dispatch_cross_entropy_loss(logits, labels, logit_softcapping=0, logit_scaling=0):
@@ -83,75 +131,99 @@ def dispatch_cross_entropy_loss(logits, labels, logit_softcapping=0, logit_scali
 
 
 def dispatch_swiglu_fg(e, g):
-    if DEVICE_TYPE == "mps" and USE_MPS_FALLBACK:
-        from .swiglu import mps_swiglu_forward
-
-        fn = _get_compiled_fn(mps_swiglu_forward)
-        return fn(e, g)
-    else:
-        from ..swiglu import swiglu_fg_kernel
-
-        return swiglu_fg_kernel(e, g)
+    if DEVICE_TYPE == "mps":
+        # Priority 1: Metal kernel (fused SwiGLU)
+        if _is_metal_available():
+            from ..metal.swiglu import metal_swiglu_forward
+            return metal_swiglu_forward(e, g)
+        # Priority 2: MPS fallback (PyTorch-native)
+        if USE_MPS_FALLBACK:
+            from .swiglu import mps_swiglu_forward
+            fn = _get_compiled_fn(mps_swiglu_forward)
+            return fn(e, g)
+    # Default: CUDA/Triton path
+    from ..swiglu import swiglu_fg_kernel
+    return swiglu_fg_kernel(e, g)
 
 
 def dispatch_swiglu_backward(dw, e, g):
-    if DEVICE_TYPE == "mps" and USE_MPS_FALLBACK:
-        from .swiglu import mps_swiglu_backward
-
-        fn = _get_compiled_fn(mps_swiglu_backward)
-        return fn(dw, e, g)
-    else:
-        from ..swiglu import swiglu_DWf_DW_dfg_kernel
-
-        return swiglu_DWf_DW_dfg_kernel(dw, e, g)
+    if DEVICE_TYPE == "mps":
+        # Priority 1: Metal kernel (fused SwiGLU backward)
+        if _is_metal_available():
+            from ..metal.swiglu import metal_swiglu_backward
+            return metal_swiglu_backward(dw, e, g)
+        # Priority 2: MPS fallback (PyTorch-native)
+        if USE_MPS_FALLBACK:
+            from .swiglu import mps_swiglu_backward
+            fn = _get_compiled_fn(mps_swiglu_backward)
+            return fn(dw, e, g)
+    # Default: CUDA/Triton path
+    from ..swiglu import swiglu_DWf_DW_dfg_kernel
+    return swiglu_DWf_DW_dfg_kernel(dw, e, g)
 
 
 def dispatch_geglu_exact_forward(gate, up):
-    if DEVICE_TYPE == "mps" and USE_MPS_FALLBACK:
-        from .geglu import mps_geglu_exact_forward
-
-        fn = _get_compiled_fn(mps_geglu_exact_forward)
-        return fn(gate, up)
-    else:
-        from ..geglu import geglu_exact_forward_kernel
-
-        return geglu_exact_forward_kernel(gate, up)
+    if DEVICE_TYPE == "mps":
+        # Priority 1: Metal kernel (fused GEGLU exact)
+        if _is_metal_available():
+            from ..metal.geglu import metal_geglu_exact_forward
+            return metal_geglu_exact_forward(gate, up)
+        # Priority 2: MPS fallback (PyTorch-native)
+        if USE_MPS_FALLBACK:
+            from .geglu import mps_geglu_exact_forward
+            fn = _get_compiled_fn(mps_geglu_exact_forward)
+            return fn(gate, up)
+    # Default: CUDA/Triton path
+    from ..geglu import geglu_exact_forward_kernel
+    return geglu_exact_forward_kernel(gate, up)
 
 
 def dispatch_geglu_exact_backward(dw, e, g):
-    if DEVICE_TYPE == "mps" and USE_MPS_FALLBACK:
-        from .geglu import mps_geglu_exact_backward
-
-        fn = _get_compiled_fn(mps_geglu_exact_backward)
-        return fn(dw, e, g)
-    else:
-        from ..geglu import geglu_exact_backward_kernel
-
-        return geglu_exact_backward_kernel(dw, e, g)
+    if DEVICE_TYPE == "mps":
+        # Priority 1: Metal kernel (fused GEGLU exact backward)
+        if _is_metal_available():
+            from ..metal.geglu import metal_geglu_exact_backward
+            return metal_geglu_exact_backward(dw, e, g)
+        # Priority 2: MPS fallback (PyTorch-native)
+        if USE_MPS_FALLBACK:
+            from .geglu import mps_geglu_exact_backward
+            fn = _get_compiled_fn(mps_geglu_exact_backward)
+            return fn(dw, e, g)
+    # Default: CUDA/Triton path
+    from ..geglu import geglu_exact_backward_kernel
+    return geglu_exact_backward_kernel(dw, e, g)
 
 
 def dispatch_geglu_approx_forward(gate, up):
-    if DEVICE_TYPE == "mps" and USE_MPS_FALLBACK:
-        from .geglu import mps_geglu_approx_forward
-
-        fn = _get_compiled_fn(mps_geglu_approx_forward)
-        return fn(gate, up)
-    else:
-        from ..geglu import geglu_approx_forward_kernel
-
-        return geglu_approx_forward_kernel(gate, up)
+    if DEVICE_TYPE == "mps":
+        # Priority 1: Metal kernel (fused GEGLU approx)
+        if _is_metal_available():
+            from ..metal.geglu import metal_geglu_approx_forward
+            return metal_geglu_approx_forward(gate, up)
+        # Priority 2: MPS fallback (PyTorch-native)
+        if USE_MPS_FALLBACK:
+            from .geglu import mps_geglu_approx_forward
+            fn = _get_compiled_fn(mps_geglu_approx_forward)
+            return fn(gate, up)
+    # Default: CUDA/Triton path
+    from ..geglu import geglu_approx_forward_kernel
+    return geglu_approx_forward_kernel(gate, up)
 
 
 def dispatch_geglu_approx_backward(dw, e, g):
-    if DEVICE_TYPE == "mps" and USE_MPS_FALLBACK:
-        from .geglu import mps_geglu_approx_backward
-
-        fn = _get_compiled_fn(mps_geglu_approx_backward)
-        return fn(dw, e, g)
-    else:
-        from ..geglu import geglu_approx_backward_kernel
-
-        return geglu_approx_backward_kernel(dw, e, g)
+    if DEVICE_TYPE == "mps":
+        # Priority 1: Metal kernel (fused GEGLU approx backward)
+        if _is_metal_available():
+            from ..metal.geglu import metal_geglu_approx_backward
+            return metal_geglu_approx_backward(dw, e, g)
+        # Priority 2: MPS fallback (PyTorch-native)
+        if USE_MPS_FALLBACK:
+            from .geglu import mps_geglu_approx_backward
+            fn = _get_compiled_fn(mps_geglu_approx_backward)
+            return fn(dw, e, g)
+    # Default: CUDA/Triton path
+    from ..geglu import geglu_approx_backward_kernel
+    return geglu_approx_backward_kernel(dw, e, g)
 
 
 def dispatch_matmul_lora(X, W, W_quant, A, B, s):
