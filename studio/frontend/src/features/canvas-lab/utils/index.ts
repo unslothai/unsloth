@@ -333,26 +333,25 @@ export function getConfigErrors(config: NodeConfig | null): string[] {
       errors.push("Subcategory needs a parent category column.");
     }
   }
-  if (config.kind === "llm" && !config.prompt.trim()) {
-    errors.push("Prompt is required.");
-  }
-  if (config.kind === "llm" && config.llm_type === "code") {
-    if (!config.code_lang) {
+  if (config.kind === "llm") {
+    if (!config.model_alias.trim()) {
+      errors.push("Model alias is required.");
+    }
+    if (!config.prompt.trim()) {
+      errors.push("Prompt is required.");
+    }
+    if (config.llm_type === "code" && !config.code_lang) {
       errors.push("Code language is required.");
     }
-  }
-  if (
-    config.kind === "llm" &&
-    config.llm_type === "structured" &&
-    typeof config.output_format === "string"
-  ) {
-    if (!config.output_format.trim()) {
-      errors.push("Output format is required.");
-    } else {
-      try {
-        JSON.parse(config.output_format);
-      } catch {
-        errors.push("Output format must be valid JSON.");
+    if (config.llm_type === "structured") {
+      if (!config.output_format?.trim()) {
+        errors.push("Output format is required.");
+      } else {
+        try {
+          JSON.parse(config.output_format);
+        } catch {
+          errors.push("Output format must be valid JSON.");
+        }
       }
     }
   }

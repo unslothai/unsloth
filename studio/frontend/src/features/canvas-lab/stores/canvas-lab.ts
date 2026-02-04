@@ -16,16 +16,18 @@ import type {
   SamplerConfig,
   SamplerType,
 } from "../types";
-import {
-  isCategoryConfig,
-  isSubcategoryConfig,
-  makeExpressionConfig,
-  makeLlmConfig,
-  makeSamplerConfig,
-  nodeDataFromConfig,
-} from "../utils";
+import { getBlockDefinition } from "../blocks/registry";
+import { isCategoryConfig, isSubcategoryConfig } from "../utils";
 import { applyCanvasConnection, isValidCanvasConnection } from "../utils/graph";
 import type { CanvasSnapshot } from "../utils/import";
+import {
+  applyRemovalToConfig,
+  applyRemovalToConfigs,
+  applyRenameToConfigs,
+  buildNodeUpdate,
+  findNodeIdByName,
+  updateNodeData,
+} from "./canvas-lab-helpers";
 
 type SheetView = "root" | "sampler" | "llm" | "expression";
 
@@ -52,26 +54,6 @@ type CanvasLabState = {
   isValidConnection: IsValidConnection;
 };
 
-function updateNodeData(
-  nodes: CanvasNode[],
-  id: string,
-  config: NodeConfig,
-): CanvasNode[] {
-  return nodes.map((node) =>
-    node.id === id ? { ...node, data: nodeDataFromConfig(config) } : node,
-  );
-}
-
-function findNodeIdByName(
-  configs: Record<string, NodeConfig>,
-  name: string,
-): string | null {
-  const entry = Object.entries(configs).find(
-    ([, config]) => config.name === name,
-  );
-  return entry ? entry[0] : null;
-}
-
 export const useCanvasLabStore = create<CanvasLabState>((set, get) => ({
   nodes: [],
   edges: [],
@@ -88,63 +70,36 @@ export const useCanvasLabStore = create<CanvasLabState>((set, get) => ({
     set((state) => {
       const id = `n${state.nextId}`;
       const existing = Object.values(state.configs);
-      const config = makeSamplerConfig(id, type, existing);
-      const node: CanvasNode = {
-        id,
-        type: "builder",
-        position: { x: 0, y: state.nextY },
-        data: nodeDataFromConfig(config),
-      };
-      return {
-        configs: { ...state.configs, [id]: config },
-        nodes: [...state.nodes, node],
-        nextId: state.nextId + 1,
-        nextY: state.nextY + 140,
-        activeConfigId: id,
-        dialogOpen: true,
-      };
+      const definition = getBlockDefinition("sampler", type);
+      if (!definition) {
+        return state;
+      }
+      const config = definition.createConfig(id, existing);
+      return buildNodeUpdate(state, config);
     });
   },
   addLlmNode: (type) => {
     set((state) => {
       const id = `n${state.nextId}`;
       const existing = Object.values(state.configs);
-      const config = makeLlmConfig(id, type, existing);
-      const node: CanvasNode = {
-        id,
-        type: "builder",
-        position: { x: 0, y: state.nextY },
-        data: nodeDataFromConfig(config),
-      };
-      return {
-        configs: { ...state.configs, [id]: config },
-        nodes: [...state.nodes, node],
-        nextId: state.nextId + 1,
-        nextY: state.nextY + 140,
-        activeConfigId: id,
-        dialogOpen: true,
-      };
+      const definition = getBlockDefinition("llm", type);
+      if (!definition) {
+        return state;
+      }
+      const config = definition.createConfig(id, existing);
+      return buildNodeUpdate(state, config);
     });
   },
   addExpressionNode: () => {
     set((state) => {
       const id = `n${state.nextId}`;
       const existing = Object.values(state.configs);
-      const config = makeExpressionConfig(id, existing);
-      const node: CanvasNode = {
-        id,
-        type: "builder",
-        position: { x: 0, y: state.nextY },
-        data: nodeDataFromConfig(config),
-      };
-      return {
-        configs: { ...state.configs, [id]: config },
-        nodes: [...state.nodes, node],
-        nextId: state.nextId + 1,
-        nextY: state.nextY + 140,
-        activeConfigId: id,
-        dialogOpen: true,
-      };
+      const definition = getBlockDefinition("expression", "expression");
+      if (!definition) {
+        return state;
+      }
+      const config = definition.createConfig(id, existing);
+      return buildNodeUpdate(state, config);
     });
   },
   loadCanvas: (snapshot) =>
@@ -166,6 +121,9 @@ export const useCanvasLabStore = create<CanvasLabState>((set, get) => ({
         return state;
       }
       const next = { ...current, ...patch } as NodeConfig;
+      const oldName = current.name;
+      const newName = next.name;
+      const nameChanged = oldName !== newName;
       let configs: Record<string, NodeConfig> = {
         ...state.configs,
         [id]: next,
@@ -198,12 +156,9 @@ export const useCanvasLabStore = create<CanvasLabState>((set, get) => ({
       }
 
       if (isCategoryConfig(current)) {
-        const oldName = current.name;
         const nextCategory = isCategoryConfig(next) ? next : current;
-        const newName = nextCategory.name;
         const oldValues = current.values ?? [];
         const newValues = nextCategory.values ?? [];
-        const nameChanged = oldName !== newName;
         const valuesChanged =
           oldValues.length !== newValues.length ||
           oldValues.some((value, index) => value !== newValues[index]);
@@ -233,6 +188,10 @@ export const useCanvasLabStore = create<CanvasLabState>((set, get) => ({
         }
       }
 
+      if (nameChanged) {
+        configs = applyRenameToConfigs(configs, oldName, newName);
+      }
+
       return { configs, nodes, edges };
     };
     set(applyUpdate);
@@ -247,6 +206,7 @@ export const useCanvasLabStore = create<CanvasLabState>((set, get) => ({
       let edges = state.edges;
       let configs = state.configs;
       if (removedIds.length > 0) {
+        const removedNames: string[] = [];
         edges = edges.filter(
           (edge) =>
             !(
@@ -258,6 +218,9 @@ export const useCanvasLabStore = create<CanvasLabState>((set, get) => ({
         for (const id of removedIds) {
           const removed = configs[id];
           delete configs[id];
+          if (removed?.name) {
+            removedNames.push(removed.name);
+          }
           if (isCategoryConfig(removed)) {
             const removedName = removed.name;
             for (const config of Object.values(configs)) {
@@ -277,6 +240,9 @@ export const useCanvasLabStore = create<CanvasLabState>((set, get) => ({
             }
           }
         }
+        for (const name of removedNames) {
+          configs = applyRemovalToConfigs(configs, name);
+        }
       }
 
       const nodes = applyNodeChanges<CanvasNode>(changes, state.nodes);
@@ -285,7 +251,33 @@ export const useCanvasLabStore = create<CanvasLabState>((set, get) => ({
     set(applyNodesChange);
   },
   onEdgesChange: (changes) => {
-    set((state) => ({ edges: applyEdgeChanges(changes, state.edges) }));
+    set((state) => {
+      const removedEdges = changes
+        .filter((change) => change.type === "remove")
+        .map((change) => state.edges.find((edge) => edge.id === change.id))
+        .filter((edge): edge is Edge => Boolean(edge));
+
+      let configs = state.configs;
+      if (removedEdges.length > 0) {
+        for (const edge of removedEdges) {
+          const source = configs[edge.source];
+          const target = configs[edge.target];
+          if (!(source && target)) {
+            continue;
+          }
+          const updated = applyRemovalToConfig(target, source.name);
+          if (updated !== target) {
+            if (configs === state.configs) {
+              configs = { ...configs };
+            }
+            configs[target.id] = updated;
+          }
+        }
+      }
+
+      const edges = applyEdgeChanges(changes, state.edges);
+      return configs === state.configs ? { edges } : { edges, configs };
+    });
   },
   onConnect: (connection) => {
     set((state) => {
