@@ -178,8 +178,17 @@ export function DatasetStep() {
                 filteredItems={resultIds}
                 filter={null}
                 value={dataset}
-                onValueChange={(id) => { selectingRef.current = true; setDataset(id); }}
-                onInputValueChange={(val) => { if (selectingRef.current) { selectingRef.current = false; return; } setInputValue(val); }}
+                onValueChange={(id) => {
+                  selectingRef.current = true;
+                  setDataset(id);
+                }}
+                onInputValueChange={(val) => {
+                  if (selectingRef.current) {
+                    selectingRef.current = false;
+                    return;
+                  }
+                  setInputValue(val);
+                }}
                 itemToStringValue={(id) => id}
                 autoHighlight={true}
               >
@@ -216,7 +225,7 @@ export function DatasetStep() {
                             className="justify-between"
                           >
                             <Tooltip>
-                              <TooltipTrigger asChild>
+                              <TooltipTrigger asChild={true}>
                                 <span className="min-w-0 flex-1 truncate">
                                   {id}
                                 </span>

@@ -2,8 +2,8 @@
 
 /* eslint-disable react-refresh/only-export-components */
 
-import { AnimatedShinyText } from "@/components/ui/animated-shiny-text";
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
+import { AnimatedShinyText } from "@/components/ui/animated-shiny-text";
 import {
   Collapsible,
   CollapsibleContent,
@@ -161,9 +161,7 @@ function ReasoningTrigger({
         className="aui-reasoning-trigger-label-wrapper relative inline-block leading-none"
       >
         {active ? (
-          <AnimatedShinyText className="text-sm">
-            Thinking...
-          </AnimatedShinyText>
+          <AnimatedShinyText className="text-sm">Thinking...</AnimatedShinyText>
         ) : (
           <span>Thought for {duration ?? 0} seconds</span>
         )}
@@ -219,12 +217,18 @@ function ReasoningText({
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!streaming || !scrollRef.current) return;
+    if (!(streaming && scrollRef.current)) {
+      return;
+    }
     const el = scrollRef.current;
     const observer = new MutationObserver(() => {
       el.scrollTop = el.scrollHeight;
     });
-    observer.observe(el, { childList: true, subtree: true, characterData: true });
+    observer.observe(el, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    });
     el.scrollTop = el.scrollHeight;
     return () => observer.disconnect();
   }, [streaming]);
@@ -292,9 +296,7 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
         startTimeRef.current = Date.now();
       }
     } else if (startTimeRef.current !== null) {
-      const elapsed = Math.round(
-        (Date.now() - startTimeRef.current) / 1000,
-      );
+      const elapsed = Math.round((Date.now() - startTimeRef.current) / 1000);
       setDuration(elapsed);
       startTimeRef.current = null;
     }

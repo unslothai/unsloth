@@ -33,6 +33,7 @@
     "@tanstack/react-router": "^1.156.0",
     "@toolwind/corner-shape": "^0.0.8-3",
     "@types/canvas-confetti": "^1.9.0",
+    "@xyflow/react": "^12.10.0",
     "assistant-stream": "^0.3.0",
     "canvas-confetti": "^1.9.4",
     "class-variance-authority": "^0.7.1",
