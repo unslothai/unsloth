@@ -21,7 +21,6 @@ from .llama import (
 from transformers.models.mixtral.modeling_mixtral import (
     MixtralAttention,
     MixtralSparseMoeBlock,
-    MixtralBlock as MixtralMLP,
     MixtralDecoderLayer,
     MixtralModel,
     MixtralForCausalLM,
