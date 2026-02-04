@@ -92,12 +92,17 @@ def get_routing_indices(
             Indices for unpermuting gathered inputs back to token order, shape ``(bs * seqlen * top_k,)``.
     """
     # group tokens together by expert indices from 0 to num_experts and pass that to experts forward
-    token_counts_by_expert = torch.histc(
-        selected_experts.view(-1),
-        bins=num_experts,
-        min=0,
-        max=num_experts,
-    )
+    selected_experts_flat = selected_experts.view(-1)
+    if selected_experts_flat.device.type == "mps":
+        # torch.histc is not implemented for Long on MPS, use bincount instead
+        token_counts_by_expert = torch.bincount(selected_experts_flat, minlength=num_experts).float()
+    else:
+        token_counts_by_expert = torch.histc(
+            selected_experts_flat,
+            bins=num_experts,
+            min=0,
+            max=num_experts,
+        )
     # token_indices_experts_sorted shape (bs*slen*top_k,)
     gather_indices = torch.argsort(selected_experts.view(-1), stable=True)
     if return_scatter_indices:
