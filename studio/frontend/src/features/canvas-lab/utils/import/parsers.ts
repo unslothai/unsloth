@@ -16,6 +16,7 @@ const SAMPLER_TYPES: SamplerType[] = [
   "datetime",
   "uuid",
   "person",
+  "person_from_faker",
 ];
 
 const EXPRESSION_DTYPES: ExpressionDtype[] = ["str", "int", "float", "bool"];
@@ -31,6 +32,11 @@ function parseSampler(
     errors.push(`Sampler ${name}: unsupported sampler_type.`);
     return null;
   }
+  const convertTo = readString(column.convert_to);
+  const normalizedConvertTo =
+    convertTo && ["float", "int", "str"].includes(convertTo)
+      ? (convertTo as "float" | "int" | "str")
+      : undefined;
   const params =
     typeof column.params === "object" && column.params
       ? (column.params as Record<string, unknown>)
@@ -48,6 +54,8 @@ function parseSampler(
       // biome-ignore lint/style/useNamingConvention: api schema
       sampler_type: "category",
       name,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      convert_to: normalizedConvertTo,
       values,
       weights,
     };
@@ -68,6 +76,8 @@ function parseSampler(
       sampler_type: "subcategory",
       name,
       // biome-ignore lint/style/useNamingConvention: api schema
+      convert_to: normalizedConvertTo,
+      // biome-ignore lint/style/useNamingConvention: api schema
       subcategory_parent: readString(params.category) ?? "",
       // biome-ignore lint/style/useNamingConvention: api schema
       subcategory_mapping: mapping,
@@ -80,6 +90,8 @@ function parseSampler(
       // biome-ignore lint/style/useNamingConvention: api schema
       sampler_type: "uniform",
       name,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      convert_to: normalizedConvertTo,
       low: readNumberString(params.low),
       high: readNumberString(params.high),
     };
@@ -91,6 +103,8 @@ function parseSampler(
       // biome-ignore lint/style/useNamingConvention: api schema
       sampler_type: "gaussian",
       name,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      convert_to: normalizedConvertTo,
       mean: readNumberString(params.mean),
       std: readNumberString(params.std),
     };
@@ -102,6 +116,8 @@ function parseSampler(
       // biome-ignore lint/style/useNamingConvention: api schema
       sampler_type: "datetime",
       name,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      convert_to: normalizedConvertTo,
       // biome-ignore lint/style/useNamingConvention: api schema
       datetime_start: readString(params.start) ?? "",
       // biome-ignore lint/style/useNamingConvention: api schema
@@ -118,34 +134,45 @@ function parseSampler(
       sampler_type: "uuid",
       name,
       // biome-ignore lint/style/useNamingConvention: api schema
+      convert_to: normalizedConvertTo,
+      // biome-ignore lint/style/useNamingConvention: api schema
       uuid_format: readString(params.format) ?? "",
     };
   }
-  return {
+  const ageRange =
+    Array.isArray(params.age_range) &&
+    params.age_range.length === 2 &&
+    params.age_range.every((item) => typeof item === "number")
+      ? `${params.age_range[0]}-${params.age_range[1]}`
+      : readString(params.age_range) ?? "";
+  const base = {
     id,
     kind: "sampler",
-    // biome-ignore lint/style/useNamingConvention: api schema
-    sampler_type: "person",
     name,
+    // biome-ignore lint/style/useNamingConvention: api schema
+    sampler_type: samplerType as SamplerType,
+    // biome-ignore lint/style/useNamingConvention: api schema
+    convert_to: normalizedConvertTo,
     // biome-ignore lint/style/useNamingConvention: api schema
     person_locale: readString(params.locale) ?? "",
     // biome-ignore lint/style/useNamingConvention: api schema
     person_sex: readString(params.sex) ?? "",
     // biome-ignore lint/style/useNamingConvention: api schema
-    person_age_range: readString(params.age_range) ?? "",
+    person_age_range: ageRange,
     // biome-ignore lint/style/useNamingConvention: api schema
     person_city: readString(params.city) ?? "",
-    // biome-ignore lint/style/useNamingConvention: api schema
-    person_with_synthetic_personas:
-      typeof params.with_synthetic_personas === "boolean"
-        ? params.with_synthetic_personas
-        : false,
-    // biome-ignore lint/style/useNamingConvention: api schema
-    person_sample_dataset_when_available:
-      typeof params.sample_dataset_when_available === "boolean"
-        ? params.sample_dataset_when_available
-        : false,
   };
+  if (samplerType === "person") {
+    return {
+      ...base,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      person_with_synthetic_personas:
+        typeof params.with_synthetic_personas === "boolean"
+          ? params.with_synthetic_personas
+          : false,
+    };
+  }
+  return base;
 }
 
 function parseLlm(
