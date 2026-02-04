@@ -1,4 +1,4 @@
-import type { CanvasNode, NodeConfig } from "../types";
+import type { CanvasNode, LayoutDirection, NodeConfig } from "../types";
 import { nodeDataFromConfig } from "../utils";
 import { removeRef, replaceRef } from "../utils/refs";
 
@@ -22,9 +22,12 @@ export function updateNodeData(
   nodes: CanvasNode[],
   id: string,
   config: NodeConfig,
+  layoutDirection: LayoutDirection,
 ): CanvasNode[] {
   return nodes.map((node) =>
-    node.id === id ? { ...node, data: nodeDataFromConfig(config) } : node,
+    node.id === id
+      ? { ...node, data: nodeDataFromConfig(config, layoutDirection) }
+      : node,
   );
 }
 
@@ -41,12 +44,13 @@ export function findNodeIdByName(
 export function buildNodeUpdate(
   state: NodeUpdateState,
   config: NodeConfig,
+  layoutDirection: LayoutDirection,
 ): NodeUpdateResult {
   const node: CanvasNode = {
     id: config.id,
     type: "builder",
     position: { x: 0, y: state.nextY },
-    data: nodeDataFromConfig(config),
+    data: nodeDataFromConfig(config, layoutDirection),
   };
   return {
     configs: { ...state.configs, [config.id]: config },
@@ -56,6 +60,23 @@ export function buildNodeUpdate(
     activeConfigId: config.id,
     dialogOpen: true,
   };
+}
+
+export function applyLayoutDirectionToNodes(
+  nodes: CanvasNode[],
+  configs: Record<string, NodeConfig>,
+  layoutDirection: LayoutDirection,
+): CanvasNode[] {
+  return nodes.map((node) => {
+    const config = configs[node.id];
+    if (config) {
+      return { ...node, data: nodeDataFromConfig(config, layoutDirection) };
+    }
+    return {
+      ...node,
+      data: { ...node.data, layoutDirection },
+    };
+  });
 }
 
 function updateTemplateFields(
@@ -108,18 +129,12 @@ export function applyRenameToConfig(
     config.sampler_type === "subcategory" &&
     config.subcategory_parent === from
   ) {
-    next =
-      next === config
-        ? {
-            ...config,
-            // biome-ignore lint/style/useNamingConvention: api schema
-            subcategory_parent: to,
-          }
-        : {
-            ...next,
-            // biome-ignore lint/style/useNamingConvention: api schema
-            subcategory_parent: to,
-          };
+    const base = next === config ? config : next;
+    next = {
+      ...base,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      subcategory_parent: to,
+    };
   }
   return next;
 }
@@ -134,22 +149,14 @@ export function applyRemovalToConfig(
     config.sampler_type === "subcategory" &&
     config.subcategory_parent === ref
   ) {
-    next =
-      next === config
-        ? {
-            ...config,
-            // biome-ignore lint/style/useNamingConvention: api schema
-            subcategory_parent: "",
-            // biome-ignore lint/style/useNamingConvention: api schema
-            subcategory_mapping: {},
-          }
-        : {
-            ...next,
-            // biome-ignore lint/style/useNamingConvention: api schema
-            subcategory_parent: "",
-            // biome-ignore lint/style/useNamingConvention: api schema
-            subcategory_mapping: {},
-          };
+    const base = next === config ? config : next;
+    next = {
+      ...base,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      subcategory_parent: "",
+      // biome-ignore lint/style/useNamingConvention: api schema
+      subcategory_mapping: {},
+    };
   }
   return next;
 }
