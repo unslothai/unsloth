@@ -602,9 +602,8 @@ def torchvision_compatibility_check():
         f"for more information."
     )
 
-    is_custom = (
-        _is_custom_torch_build(torch_version_raw)
-        or _is_custom_torch_build(torchvision_version_raw)
+    is_custom = _is_custom_torch_build(torch_version_raw) or _is_custom_torch_build(
+        torchvision_version_raw
     )
 
     # Downgrade to warning for custom/source builds or formula-predicted versions
