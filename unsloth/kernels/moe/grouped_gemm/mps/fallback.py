@@ -17,6 +17,7 @@ Key operations:
 import torch
 import warnings
 from typing import Optional
+from ..reference.moe_ops import permute, unpermute
 
 # Flag to track warning state
 _MPS_WARN_SHOWN = False
@@ -82,14 +83,11 @@ def grouped_gemm_mps_forward(
         total_tokens = X.shape[0]
         num_tokens = total_tokens // topk
     
-    # Allocate output
-    if permute_y:
-        Y = torch.zeros((num_tokens, N), device=X.device, dtype=X.dtype)
-    else:
-        Y = torch.empty((total_tokens, N), device=X.device, dtype=X.dtype)
+    # Allocate expert-order output buffer
+    Y_expert_order = torch.empty((total_tokens, N), device=X.device, dtype=X.dtype)
     
     if total_tokens == 0 or N == 0:
-        return Y
+        return Y_expert_order
     
     # Compute cumulative sums for expert boundaries  
     m_cumsum = torch.zeros(num_experts + 1, device=m_sizes.device, dtype=torch.long)
@@ -105,6 +103,7 @@ def grouped_gemm_mps_forward(
             continue
         
         # Get expert weight: W[expert_idx] has shape (N, K)
+        # Weight tensor W is reshaped as (E*N, K) in the caller
         W_expert = W[expert_idx * N : (expert_idx + 1) * N, :]  # (N, K)
         
         # Get input tokens for this expert
@@ -120,22 +119,24 @@ def grouped_gemm_mps_forward(
         # Compute Y = X @ W.T -> (m_size, K) @ (K, N) = (m_size, N)
         Y_expert = X_expert @ W_expert.t()
         
-        # Store output
-        if permute_y:
-            # Output in token order - scatter back
-            expert_indices = gather_indices[m_start:m_end]
-            token_indices = expert_indices // topk
-            
-            if fuse_mul_post and topk_weights is not None:
-                weights_expert = topk_weights[m_start:m_end].unsqueeze(-1)
-                Y_expert = Y_expert * weights_expert
-            
-            # Accumulate (multiple experts may contribute to same token)
-            Y.index_add_(0, token_indices, Y_expert)
-        else:
-            Y[m_start:m_end] = Y_expert
+        # Store output in expert order
+        Y_expert_order[m_start:m_end] = Y_expert
     
-    return Y
+    if permute_y:
+        # Unpermute results back to token order
+        Y_unperm = unpermute(Y_expert_order, gather_indices)
+        
+        if fuse_mul_post:
+            # For inference: multiply by topk weights and reduce to token count
+            if topk_weights is not None:
+                Y_unperm = Y_unperm * topk_weights.view(-1, 1)
+            # Sum topk entries for each token
+            return Y_unperm.view(num_tokens, topk, N).sum(dim=1)
+        else:
+            # Just return all total_tokens in unpermuted order
+            return Y_unperm
+    
+    return Y_expert_order
 
 
 def grouped_gemm_mps_dX(
@@ -365,9 +366,11 @@ class GroupedGemmMPS(torch.autograd.Function):
             permute_y=permute_y,
         )
         
-        # Reduce dX if topk > 1 and permute_x was used
-        if topk > 1 and permute_x:
-            dX = dX.view(X.shape[0], topk, -1).sum(dim=1)
+        # If permute_x was used, we need to unpermute dX and THEN sum
+        if permute_x:
+            # dX currently has size (total_tokens, K) and is in expert order
+            dX_unperm = unpermute(dX, gather_indices)
+            dX = dX_unperm.view(X.shape[0], topk, -1).sum(dim=1)
         
         return (
             dX,       # X

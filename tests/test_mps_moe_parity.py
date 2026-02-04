@@ -116,6 +116,8 @@ class TestMoEMPSParity(unittest.TestCase):
             permute_y=True
         )
         
+        # In this case (fuse_mul_post=False), the output should have total_tokens (128)
+        self.assertEqual(test_out.shape, (self.num_tokens * self.topk, self.intermediate_size))
         torch.testing.assert_close(test_out, ref_out, atol=1e-5, rtol=1e-5)
         print("✓ Forward (Permute Y) Passed")
 
@@ -172,8 +174,8 @@ class TestMoEMPSParity(unittest.TestCase):
         torch.testing.assert_close(test_dW, ref_dW, atol=1e-5, rtol=1e-5)
         print("✓ Backward dW Passed")
 
-    def test_autograd_full_pass(self):
-        # Full autograd test
+    def test_autograd_permute_x(self):
+        # Test autograd with permute_x (First GEMM)
         X_ref = self.X.detach().clone().requires_grad_(True)
         W_ref = self.W.detach().clone().requires_grad_(True)
         
@@ -182,18 +184,17 @@ class TestMoEMPSParity(unittest.TestCase):
         
         # Forward Reference
         X_perm_ref = permute(X_ref, self.gather_indices, self.topk)
-        out_perm_ref = torch_grouped_gemm(X_perm_ref, W_ref, self.m_sizes)
-        out_ref = unpermute(out_perm_ref, self.gather_indices)
+        out_ref = torch_grouped_gemm(X_perm_ref, W_ref, self.m_sizes)
         
-        # Forward Test (calls GroupedGemmMPS.apply)
+        # Forward Test
         out_test = grouped_gemm_mps(
             X=X_test,
             W=W_test,
             m_sizes=self.m_sizes,
             topk=self.topk,
             gather_indices=self.gather_indices,
-            permute_x=True, # Fuse permute_x
-            permute_y=True, # Fuse permute_y
+            permute_x=True,
+            permute_y=False,
         )
         
         torch.testing.assert_close(out_test, out_ref, atol=1e-5, rtol=1e-5)
@@ -205,7 +206,73 @@ class TestMoEMPSParity(unittest.TestCase):
         
         torch.testing.assert_close(X_test.grad, X_ref.grad, atol=1e-5, rtol=1e-5)
         torch.testing.assert_close(W_test.grad, W_ref.grad, atol=1e-5, rtol=1e-5)
-        print("✓ Autograd Full Pass Passed")
+        print("✓ Autograd Permute X Passed")
+
+    def test_autograd_permute_y(self):
+        # Test autograd with permute_y (Second GEMM)
+        X_perm = permute(self.X, self.gather_indices, self.topk)
+        
+        X_ref = X_perm.detach().clone().requires_grad_(True)
+        W_ref = self.W.detach().clone().requires_grad_(True)
+        
+        X_test = X_perm.detach().clone().requires_grad_(True)
+        W_test = self.W.detach().clone().requires_grad_(True)
+        
+        # Forward Reference
+        out_perm_ref = torch_grouped_gemm(X_ref, W_ref, self.m_sizes)
+        out_ref = unpermute(out_perm_ref, self.gather_indices)
+        
+        # Forward Test
+        out_test = grouped_gemm_mps(
+            X=X_test,
+            W=W_test,
+            m_sizes=self.m_sizes,
+            topk=self.topk,
+            gather_indices=self.gather_indices,
+            permute_x=False,
+            permute_y=True,
+        )
+        
+        torch.testing.assert_close(out_test, out_ref, atol=1e-5, rtol=1e-5)
+        
+        # Backward
+        grad_output = torch.randn_like(out_ref)
+        out_ref.backward(grad_output)
+        out_test.backward(grad_output)
+        
+        torch.testing.assert_close(X_test.grad, X_ref.grad, atol=1e-5, rtol=1e-5)
+        torch.testing.assert_close(W_test.grad, W_ref.grad, atol=1e-5, rtol=1e-5)
+        print("✓ Autograd Permute Y Passed")
+
+    def test_inference_fuse_mul_post(self):
+        # Test inference-only fused weight + reduce
+        # Reference
+        X_perm = permute(self.X, self.gather_indices, self.topk)
+        out_perm = torch_grouped_gemm(X_perm, self.W, self.m_sizes)
+        # Multiply by weights in token-expert order
+        # Weighting happens on expert-order outputs in my implementation if fuse_mul_post is True?
+        # Let's check: Y_unperm = Y_unperm * topk_weights.view(-1, 1)
+        # So weights are in token-expert order.
+        out_unperm = unpermute(out_perm, self.gather_indices)
+        out_weighted = out_unperm * self.topk_weights.view(-1, 1)
+        ref_out = out_weighted.view(self.num_tokens, self.topk, self.intermediate_size).sum(dim=1)
+        
+        # MPS Fallback
+        test_out = grouped_gemm_mps_forward(
+            X=X_perm,
+            W=self.W,
+            topk=self.topk,
+            m_sizes=self.m_sizes,
+            gather_indices=self.gather_indices,
+            topk_weights=self.topk_weights,
+            permute_x=False,
+            permute_y=True,
+            fuse_mul_post=True
+        )
+        
+        self.assertEqual(test_out.shape, (self.num_tokens, self.intermediate_size))
+        torch.testing.assert_close(test_out, ref_out, atol=1e-5, rtol=1e-5)
+        print("✓ Inference Fuse Mul Post Passed")
 
 if __name__ == "__main__":
     unittest.main()
