@@ -25,6 +25,7 @@ from ._utils import (
 from .granite import FastGraniteModel
 from .llama import FastLlamaModel, logger
 from .mistral import FastMistralModel
+from .mixtral import FastMixtralModel
 from .qwen2 import FastQwen2Model
 from .qwen3 import FastQwen3Model
 from .qwen3_moe import FastQwen3MoeModel
@@ -477,6 +478,8 @@ class FastLanguageModel(FastLlamaModel):
 
         elif model_type == "mistral":
             dispatch_model = FastMistralModel
+        elif model_type == "mixtral":
+            dispatch_model = FastMixtralModel
         elif model_type == "gemma":
             if not SUPPORTS_GEMMA:
                 raise ImportError(
