@@ -206,29 +206,72 @@ def mlx_rope_qk(
         K_mlx = torch_to_mlx(K.contiguous())
         return_mlx = False
 
-    if isinstance(cos, mx.array):
-        cos_mlx = cos
-    else:
-        cos_mlx = torch_to_mlx(cos)
+    # Handle position_ids for sliced RoPE (generation/prefill)
+    if position_ids is not None:
+        if isinstance(cos, mx.array):
+            cos_mlx = cos
+            sin_mlx = sin
+        else:
+            cos_mlx = torch_to_mlx(cos)
+            sin_mlx = torch_to_mlx(sin)
         
-    if isinstance(sin, mx.array):
-        sin_mlx = sin
+        # Index into cos/sin using position_ids
+        pos_mlx = torch_to_mlx(position_ids) if not isinstance(position_ids, mx.array) else position_ids
+        cos_mlx = cos_mlx[pos_mlx]  # [B, S, D/2] or [S, D/2]
+        sin_mlx = sin_mlx[pos_mlx]
+        
+        # Add dimensions for broadcasting
+        if cos_mlx.ndim == 2:
+            cos_mlx = cos_mlx[None, ...]  # [1, S, D/2]
+            sin_mlx = sin_mlx[None, ...]
+        
+        if Q_mlx.ndim == 4:
+            seq_len = cos_mlx.shape[-2]
+            if Q_mlx.shape[2] == seq_len:  # [B, H, S, D]
+                cos_mlx = cos_mlx[:, None, :, :]  # [B, 1, S, D/2]
+                sin_mlx = sin_mlx[:, None, :, :]
+            else:  # [B, S, H, D]
+                cos_mlx = cos_mlx[:, :, None, :]  # [B, S, 1, D/2]
+                sin_mlx = sin_mlx[:, :, None, :]
     else:
-        sin_mlx = torch_to_mlx(sin)
+        # Full sequence RoPE - cos/sin are [MaxSeq, D] or [MaxSeq, D/2]
+        if isinstance(cos, mx.array):
+            cos_mlx = cos
+            sin_mlx = sin
+        else:
+            cos_mlx = torch_to_mlx(cos)
+            sin_mlx = torch_to_mlx(sin)
+        
+        if Q_mlx.ndim == 4:
+            # Determine sequence length from Q
+            # Q is either [B, H, S, D] or [B, S, H, D]
+            s1 = Q_mlx.shape[1]
+            s2 = Q_mlx.shape[2]
+            
+            # Heuristic: if s2 <= cos seq dim and s1 != cos seq dim, then Q is [B, H, S, D]
+            cos_seq_dim = cos_mlx.shape[0] if cos_mlx.ndim == 2 else cos_mlx.shape[-2]
+            
+            if s2 <= cos_seq_dim and s1 != cos_seq_dim:
+                # [B, H, S, D] case - slice cos/sin to actual seq length
+                cos_mlx = cos_mlx[:s2].reshape(1, 1, s2, -1)
+                sin_mlx = sin_mlx[:s2].reshape(1, 1, s2, -1)
+            else:
+                # [B, S, H, D] case
+                cos_mlx = cos_mlx[:s1].reshape(1, s1, 1, -1)
+                sin_mlx = sin_mlx[:s1].reshape(1, s1, 1, -1)
+        elif Q_mlx.ndim == 3:
+            # [B, S, D] - slice to actual seq
+            seq = Q_mlx.shape[1]
+            cos_mlx = cos_mlx[:seq].reshape(1, seq, -1)
+            sin_mlx = sin_mlx[:seq].reshape(1, seq, -1)
 
-    # Broadcasting
-    if Q_mlx.ndim == 4:
-        if Q_mlx.shape[2] == cos_mlx.shape[-2]: # [B, H, S, D]
-            cos_mlx = cos_mlx.reshape(1, 1, cos_mlx.shape[-2], cos_mlx.shape[-1])
-            sin_mlx = sin_mlx.reshape(1, 1, sin_mlx.shape[-2], sin_mlx.shape[-1])
-        else: # [B, S, H, D]
-            cos_mlx = cos_mlx.reshape(1, cos_mlx.shape[-2], 1, cos_mlx.shape[-1])
-            sin_mlx = sin_mlx.reshape(1, sin_mlx.shape[-2], 1, sin_mlx.shape[-1])
+    # If head_dim in cos/sin is half of Q's head_dim, repeat it
+    if cos_mlx.shape[-1] * 2 == Q_mlx.shape[-1]:
+        cos_mlx = mx.concatenate([cos_mlx, cos_mlx], axis=-1)
+        sin_mlx = mx.concatenate([sin_mlx, sin_mlx], axis=-1)
 
     Q_out = _mlx_rope_kernel(Q_mlx, cos_mlx, sin_mlx)
     K_out = _mlx_rope_kernel(K_mlx, cos_mlx, sin_mlx)
-
-
 
     if return_mlx:
         return Q_out, K_out
