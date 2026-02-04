@@ -57,16 +57,7 @@ export function isValidCanvasConnection(
   }
   const source = configs[connection.source];
   const target = configs[connection.target];
-  if (!(source && target)) {
-    return false;
-  }
-  if (isSubcategoryConfig(target)) {
-    return isCategoryConfig(source);
-  }
-  if (isLlmConfig(target) || isExpressionConfig(target)) {
-    return true;
-  }
-  return false;
+  return Boolean(source && target);
 }
 
 export function applyCanvasConnection(
@@ -99,7 +90,7 @@ export function applyCanvasConnection(
     };
     return { edges: nextEdges, configs: { ...configs, [target.id]: next } };
   }
-  if (isSubcategoryConfig(target)) {
+  if (isSubcategoryConfig(target) && isCategoryConfig(source)) {
     const next = syncSubcategoryMapping(target, source);
     return { edges: nextEdges, configs: { ...configs, [target.id]: next } };
   }

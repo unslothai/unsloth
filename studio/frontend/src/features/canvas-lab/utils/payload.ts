@@ -23,7 +23,7 @@ const DEFAULT_PROVIDER = {
 
 const DEFAULT_CONFIG = {
   provider: "openrouter",
-  model: "stepfun/step-3.5-flash:free",
+  model: "allenai/olmo-3.1-32b-instruct",
   // biome-ignore lint/style/useNamingConvention: api schema
   inference_parameters: {
     temperature: 0.7,
@@ -64,6 +64,29 @@ function parseNumber(value?: string): number | null {
   }
   const num = Number(value);
   return Number.isFinite(num) ? num : null;
+}
+
+function parseAgeRange(value?: string): [number, number] | null {
+  if (!value) {
+    return null;
+  }
+  const parts = value.split(/[^0-9.]+/).filter(Boolean);
+  if (parts.length !== 2) {
+    return null;
+  }
+  const min = Number(parts[0]);
+  const max = Number(parts[1]);
+  if (!Number.isFinite(min) || !Number.isFinite(max)) {
+    return null;
+  }
+  return [min, max];
+}
+
+function isValidSex(value?: string): value is "Male" | "Female" {
+  if (!value) {
+    return false;
+  }
+  return value === "Male" || value === "Female";
 }
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: per type logic
@@ -121,18 +144,37 @@ function buildSamplerParams(
       format: config.uuid_format ?? undefined,
     };
   }
-  return {
-    locale: config.person_locale ?? undefined,
-    sex: config.person_sex ?? undefined,
+  const params: Record<string, unknown> = {};
+  if (config.person_locale?.trim()) {
+    params.locale = config.person_locale.trim();
+  }
+  if (config.sampler_type === "person") {
+    if (isValidSex(config.person_sex?.trim())) {
+      params.sex = config.person_sex?.trim();
+    } else if (config.person_sex?.trim()) {
+      errors.push(`Person ${config.name}: sex must be Male or Female.`);
+    }
+  } else if (config.person_sex?.trim()) {
+    params.sex = config.person_sex.trim();
+  }
+  if (config.person_city?.trim()) {
+    params.city = config.person_city.trim();
+  }
+  if (config.person_age_range?.trim()) {
+    const parsed = parseAgeRange(config.person_age_range);
+    if (parsed) {
+      // biome-ignore lint/style/useNamingConvention: api schema
+      params.age_range = parsed;
+    } else {
+      errors.push(`Person ${config.name}: age range must be like 18-70.`);
+    }
+  }
+  if (config.sampler_type === "person") {
     // biome-ignore lint/style/useNamingConvention: api schema
-    age_range: config.person_age_range ?? undefined,
-    city: config.person_city ?? undefined,
-    // biome-ignore lint/style/useNamingConvention: api schema
-    with_synthetic_personas: config.person_with_synthetic_personas ?? undefined,
-    // biome-ignore lint/style/useNamingConvention: api schema
-    sample_dataset_when_available:
-      config.person_sample_dataset_when_available ?? undefined,
-  };
+    params.with_synthetic_personas =
+      config.person_with_synthetic_personas ?? undefined;
+  }
+  return params;
 }
 
 function buildLlmColumn(
@@ -233,6 +275,8 @@ export function buildCanvasPayload(
         // biome-ignore lint/style/useNamingConvention: api schema
         sampler_type: config.sampler_type,
         params: buildSamplerParams(config, errors),
+        // biome-ignore lint/style/useNamingConvention: api schema
+        convert_to: config.convert_to ?? undefined,
       });
     } else if (config.kind === "llm") {
       columns.push(buildLlmColumn(config, errors));

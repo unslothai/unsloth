@@ -1,4 +1,11 @@
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import type { ReactElement } from "react";
 import type { SamplerConfig } from "../../types";
 import { NameField } from "../shared/name-field";
@@ -14,6 +21,7 @@ export function GaussianDialog({
 }: GaussianDialogProps): ReactElement {
   const meanId = `${config.id}-gaussian-mean`;
   const stdId = `${config.id}-gaussian-std`;
+  const convertId = `${config.id}-gaussian-convert`;
   return (
     <div className="space-y-4">
       <NameField
@@ -51,6 +59,33 @@ export function GaussianDialog({
             onChange={(event) => onUpdate({ std: event.target.value })}
           />
         </div>
+      </div>
+      <div className="grid gap-2">
+        <label
+          className="text-xs font-semibold uppercase text-muted-foreground"
+          htmlFor={convertId}
+        >
+          Convert to
+        </label>
+        <Select
+          value={config.convert_to ?? "none"}
+          onValueChange={(value) =>
+            onUpdate({
+              // biome-ignore lint/style/useNamingConvention: api schema
+              convert_to: value === "none" ? undefined : (value as "int" | "float" | "str"),
+            })
+          }
+        >
+          <SelectTrigger className="nodrag w-full" id={convertId}>
+            <SelectValue placeholder="No conversion" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="none">None</SelectItem>
+            <SelectItem value="int">int</SelectItem>
+            <SelectItem value="float">float</SelectItem>
+            <SelectItem value="str">str</SelectItem>
+          </SelectContent>
+        </Select>
       </div>
     </div>
   );

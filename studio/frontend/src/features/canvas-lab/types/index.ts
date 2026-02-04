@@ -7,7 +7,8 @@ export type SamplerType =
   | "gaussian"
   | "datetime"
   | "uuid"
-  | "person";
+  | "person"
+  | "person_from_faker";
 
 export type LlmType = "text" | "structured" | "code";
 
@@ -28,6 +29,8 @@ export type SamplerConfig = {
   // biome-ignore lint/style/useNamingConvention: api schema
   sampler_type: SamplerType;
   name: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  convert_to?: "float" | "int" | "str";
   values?: string[];
   weights?: Array<number | null>;
   low?: string;
@@ -52,8 +55,6 @@ export type SamplerConfig = {
   person_city?: string;
   // biome-ignore lint/style/useNamingConvention: api schema
   person_with_synthetic_personas?: boolean;
-  // biome-ignore lint/style/useNamingConvention: api schema
-  person_sample_dataset_when_available?: boolean;
   // biome-ignore lint/style/useNamingConvention: api schema
   subcategory_parent?: string;
   // biome-ignore lint/style/useNamingConvention: api schema
