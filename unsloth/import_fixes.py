@@ -617,9 +617,11 @@ def torchvision_compatibility_check():
     # Downgrade to warning for custom/source/pre-release builds or formula-predicted
     if is_custom or is_prerelease or not is_in_known_table:
         reason = (
-            "custom/source build" if is_custom else
-            "pre-release build" if is_prerelease else
-            "newer torch version"
+            "custom/source build"
+            if is_custom
+            else "pre-release build"
+            if is_prerelease
+            else "newer torch version"
         )
         logger.warning(
             f"{message}\n"
