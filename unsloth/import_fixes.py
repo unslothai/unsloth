@@ -516,10 +516,10 @@ def _is_custom_torch_build(raw_version_str):
     local = raw_version_str.split("+", 1)[1]
     if not local:
         return False
-    # cu/xpu must be followed by a digit to avoid matching e.g. "+custom_build".
-    # cpu/xpu as exact matches (no trailing chars) are standard.
+    # Use fullmatch so the entire local identifier must match, not just a prefix.
+    # cu/rocm require a trailing digit (e.g. cu124, rocm6.3). cpu/xpu are exact.
     # Case-insensitive since some builds may use uppercase.
-    return not re.match(r"(cu\d|rocm\d|cpu$|xpu$|xpu\d)", local, re.IGNORECASE)
+    return not re.fullmatch(r"cu\d[\d.]*|rocm\d[\d.]*|cpu|xpu", local, re.IGNORECASE)
 
 
 def _infer_required_torchvision(torch_major, torch_minor):
@@ -540,7 +540,7 @@ def _infer_required_torchvision(torch_major, torch_minor):
 
 def torchvision_compatibility_check():
     # Allow skipping via environment variable for custom environments
-    if os.environ.get("UNSLOTH_SKIP_TORCHVISION_CHECK", "0") in ("1", "true", "True"):
+    if os.environ.get("UNSLOTH_SKIP_TORCHVISION_CHECK", "0").lower() in ("1", "true"):
         return
 
     if importlib.util.find_spec("torch") is None:
@@ -612,7 +612,10 @@ def torchvision_compatibility_check():
     # Detect nightly/dev/alpha/beta/rc builds from the raw version string.
     # These often have version mismatches that are expected.
     _pre_tags = (".dev", "a0", "b0", "rc", "alpha", "beta", "nightly")
-    is_prerelease = any(t in torch_version_raw for t in _pre_tags)
+    is_prerelease = (
+        any(t in torch_version_raw for t in _pre_tags)
+        or any(t in torchvision_version_raw for t in _pre_tags)
+    )
 
     # Downgrade to warning for custom/source/pre-release builds or formula-predicted
     if is_custom or is_prerelease or not is_in_known_table:
