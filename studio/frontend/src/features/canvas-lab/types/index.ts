@@ -19,9 +19,14 @@ export type LayoutDirection = "LR" | "TB";
 export type CanvasNodeData = {
   title: string;
   name: string;
-  kind: "sampler" | "llm" | "expression";
+  kind: "sampler" | "llm" | "expression" | "model_provider" | "model_config";
   subtype: string;
-  blockType: SamplerType | LlmType | "expression";
+  blockType:
+    | SamplerType
+    | LlmType
+    | "expression"
+    | "model_provider"
+    | "model_config";
   layoutDirection?: LayoutDirection;
 };
 
@@ -94,6 +99,39 @@ export type LlmConfig = {
   scores?: Score[];
 };
 
+export type ModelProviderConfig = {
+  id: string;
+  kind: "model_provider";
+  name: string;
+  endpoint: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  provider_type: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  api_key_env?: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  api_key?: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  extra_headers?: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  extra_body?: string;
+};
+
+export type ModelConfig = {
+  id: string;
+  kind: "model_config";
+  name: string;
+  model: string;
+  provider: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  inference_temperature?: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  inference_top_p?: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  inference_max_tokens?: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  skip_health_check?: boolean;
+};
+
 export type ExpressionConfig = {
   id: string;
   kind: "expression";
@@ -102,4 +140,9 @@ export type ExpressionConfig = {
   dtype: ExpressionDtype;
 };
 
-export type NodeConfig = SamplerConfig | LlmConfig | ExpressionConfig;
+export type NodeConfig =
+  | SamplerConfig
+  | LlmConfig
+  | ExpressionConfig
+  | ModelProviderConfig
+  | ModelConfig;

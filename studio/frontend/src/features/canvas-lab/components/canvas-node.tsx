@@ -10,6 +10,8 @@ import {
   FunctionIcon,
   Parabola02Icon,
   PencilEdit02Icon,
+  Plant01Icon,
+  Shield02Icon,
   Tag01Icon,
   TagsIcon,
   UserAccountIcon,
@@ -35,6 +37,12 @@ const NODE_META = {
   },
   expression: {
     tone: "bg-sky-50 text-sky-600 border-sky-100",
+  },
+  model_provider: {
+    tone: "bg-amber-50 text-amber-600 border-amber-100",
+  },
+  model_config: {
+    tone: "bg-indigo-50 text-indigo-600 border-indigo-100",
   },
 } as const;
 
@@ -68,6 +76,12 @@ function resolveNodeIcon(
   }
   if (kind === "expression") {
     return FunctionIcon;
+  }
+  if (kind === "model_provider") {
+    return Shield02Icon;
+  }
+  if (kind === "model_config") {
+    return Plant01Icon;
   }
   return DiceFaces03Icon;
 }
