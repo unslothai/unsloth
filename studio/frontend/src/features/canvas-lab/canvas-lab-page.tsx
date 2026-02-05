@@ -18,8 +18,9 @@ import { EyeIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { previewCanvas } from "./api";
 import { BlockSheet } from "./components/block-sheet";
-import { CanvasEdge } from "./components/canvas-edge";
 import { CanvasNode } from "./components/canvas-node";
+import { CanvasSemanticEdge } from "./components/canvas-semantic-edge";
+import { DataEdge } from "./components/rf-ui/data-edge";
 import { ConfigDialog } from "./dialogs/config-dialog";
 import { ImportDialog } from "./dialogs/import-dialog";
 import { ProcessorsDialog } from "./dialogs/processors-dialog";
@@ -31,7 +32,7 @@ import { buildCanvasPayload } from "./utils/payload";
 import { buildDefaultSchemaTransform } from "./utils/processors";
 
 const NODE_TYPES: NodeTypes = { builder: CanvasNode };
-const EDGE_TYPES: EdgeTypes = { canvas: CanvasEdge, semantic: CanvasEdge };
+const EDGE_TYPES: EdgeTypes = { canvas: DataEdge, semantic: CanvasSemanticEdge };
 
 type LayoutControlsProps = {
   direction: "LR" | "TB";
@@ -83,7 +84,7 @@ export function CanvasLabPage(): ReactElement {
     addModelProviderNode,
     addModelConfigNode,
     addExpressionNode,
-    openConfig,
+    selectConfig,
     updateConfig,
     isValidConnection,
     setSheetView,
@@ -110,7 +111,7 @@ export function CanvasLabPage(): ReactElement {
       addModelProviderNode: state.addModelProviderNode,
       addModelConfigNode: state.addModelConfigNode,
       addExpressionNode: state.addExpressionNode,
-      openConfig: state.openConfig,
+      selectConfig: state.selectConfig,
       updateConfig: state.updateConfig,
       isValidConnection: state.isValidConnection,
       setSheetView: state.setSheetView,
@@ -134,9 +135,9 @@ export function CanvasLabPage(): ReactElement {
 
   const handleNodeClick = useCallback(
     (_: unknown, node: Node<CanvasNodeData>) => {
-      openConfig(node.id);
+      selectConfig(node.id);
     },
-    [openConfig],
+    [selectConfig],
   );
 
   const config = activeConfigId ? configs[activeConfigId] : null;
@@ -310,7 +311,8 @@ export function CanvasLabPage(): ReactElement {
             edgeTypes={EDGE_TYPES}
             defaultEdgeOptions={{
               type: "canvas",
-              style: { strokeWidth: 1.5, stroke: "#cbd5f5" },
+              data: { key: "name", path: "smoothstep" },
+              style: { strokeWidth: 1.5, stroke: "var(--border)" },
             }}
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
