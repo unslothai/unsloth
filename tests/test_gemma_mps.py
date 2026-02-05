@@ -41,11 +41,11 @@ class TestGemmaMPS(unittest.TestCase):
         try:
             # Load model
             # On Mac, we CANNOT use bitsandbytes 4-bit models.
-            # Use 16-bit models or Unsloth's MLX quantization instead.
-            print("Loading google/gemma-2b (16-bit) for MPS testing...")
+            # Use 16-bit models. Using unsloth's copy to avoid gating.
+            print("Loading unsloth/gemma-2b (16-bit) for MPS testing...")
             
             model, tokenizer = FastLanguageModel.from_pretrained(
-                model_name = "google/gemma-2b", # Using smaller 2b for faster testing
+                model_name = "unsloth/gemma-2b", # Using Unsloth's public copy
                 max_seq_length = 512,
                 load_in_4bit = False, # Must be False on Mac (no bitsandbytes)
                 dtype = torch.float16,
