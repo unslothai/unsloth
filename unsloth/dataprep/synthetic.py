@@ -278,6 +278,17 @@ class SyntheticDataKit:
 
         ready = self.stdout_capture.wait_for_ready(timeout = timeout)
         if not ready:
+            # vLLM readiness log can land on stderr in some versions.
+            # Fall back to the metrics endpoint if available.
+            try:
+                import urllib.request
+                with urllib.request.urlopen("http://localhost:8000/metrics", timeout = 2) as resp:
+                    if getattr(resp, "status", None) == 200:
+                        print("vLLM metrics endpoint detected; proceeding without ready log.")
+                        ready = True
+            except Exception:
+                pass
+        if not ready:
             if self.stdout_capture.has_closed() or self.vllm_process.poll() is not None:
                 print("Stdout stream ended before readiness message detected.")
                 print("\n--- stdout tail ---\n", self.stdout_capture.tail(50))
