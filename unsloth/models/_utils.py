@@ -75,6 +75,8 @@ __all__ = [
     "verify_fp8_support_if_applicable",
     "_get_inference_mode_context_manager",
     "hf_login",
+    "is_moe_model",
+    "get_moe_target_parameters",
     "make_fast_generate_wrapper",
 ]
 
@@ -597,6 +599,12 @@ try:
     # Some Config files use layer_type_validation
     # for eg Gemma-2, so we must import it to stop errors.
     from transformers.configuration_utils import layer_type_validation
+except:
+    pass
+
+try:
+    # Transformers 5.0+ uses RotaryEmbeddingConfigMixin as a base class for configs
+    from transformers.modeling_rope_utils import RotaryEmbeddingConfigMixin
 except:
     pass
 from transformers import __version__ as transformers_version
@@ -2494,6 +2502,117 @@ def hf_login(token: Optional[str] = None) -> Optional[str]:
     except Exception as e:
         logger.info(f"Failed to login to huggingface using token with error: {e}")
     return token
+
+
+# =============================================
+# MoE (Mixture of Experts) Detection and LoRA Utilities
+
+
+def is_moe_model(model) -> bool:
+    """
+    Detect if a model is a Mixture of Experts (MoE) model.
+
+    Args:
+        model: The model to check (can be HF model or config)
+
+    Returns:
+        True if the model is an MoE model, False otherwise
+    """
+    config = getattr(model, "config", model)
+
+    # Different MoE models use different config attribute names:
+    # - Qwen3-MoE: num_experts
+    # - GLM4-MoE: n_routed_experts, num_local_experts
+    # - Mixtral: num_local_experts
+    num_experts = None
+    for attr in ("num_experts", "n_routed_experts", "num_local_experts"):
+        num_experts = getattr(config, attr, None)
+        if num_experts is not None:
+            break
+
+    # Check text_config for VL models
+    if num_experts is None and hasattr(config, "text_config"):
+        for attr in ("num_experts", "n_routed_experts", "num_local_experts"):
+            num_experts = getattr(config.text_config, attr, None)
+            if num_experts is not None:
+                break
+
+    return num_experts is not None and num_experts > 0
+
+
+def get_moe_target_parameters(model, target_modules = None) -> Optional[List[str]]:
+    """
+    Get the target_parameters for MoE expert layers if applicable.
+
+    For MoE models, returns the parameter paths for expert weights
+    (gate_up_proj, down_proj) that should be targeted by PEFT's
+    target_parameters for LoRA on nn.Parameter.
+
+    Only includes MoE parameters that match what's in target_modules:
+    - If "down_proj" is in target_modules -> includes "mlp.experts.down_proj"
+    - If "gate_proj" or "up_proj" is in target_modules -> includes "mlp.experts.gate_up_proj"
+
+    Args:
+        model: The model to get target parameters for
+        target_modules: List/tuple of target module names to match against
+
+    Returns:
+        List of parameter paths for MoE experts, or None if not an MoE model
+    """
+    if not is_moe_model(model):
+        return None
+
+    config = getattr(model, "config", model)
+    # Get num_experts from various possible config attributes
+    num_experts = None
+    for attr in ("num_experts", "n_routed_experts", "num_local_experts"):
+        num_experts = getattr(config, attr, None)
+        if num_experts is not None:
+            break
+    if num_experts is None and hasattr(config, "text_config"):
+        for attr in ("num_experts", "n_routed_experts", "num_local_experts"):
+            num_experts = getattr(config.text_config, attr, None)
+            if num_experts is not None:
+                break
+    if num_experts is None:
+        num_experts = 0
+
+    # Determine which MoE parameters to include based on target_modules
+    moe_params = []
+
+    # Normalize target_modules to a set for efficient lookup
+    if target_modules is None:
+        # If no target_modules specified, include all MoE params
+        target_set = {"gate_proj", "up_proj", "down_proj", "gate_up_proj"}
+    elif isinstance(target_modules, str):
+        target_set = {target_modules}
+        # Heuristic for regex matching MLPs
+        if "proj" in target_modules and (
+            "mlp" in target_modules or "ffn" in target_modules
+        ):
+            target_set.update({"gate_proj", "up_proj", "down_proj", "gate_up_proj"})
+    else:
+        target_set = set(target_modules) if target_modules else set()
+
+    # gate_up_proj combines both gate_proj and up_proj in MoE
+    # Also match "gate_up_proj" directly since users may specify the fused name
+    if (
+        "gate_proj" in target_set
+        or "up_proj" in target_set
+        or "gate_up_proj" in target_set
+    ):
+        moe_params.append("mlp.experts.gate_up_proj")
+
+    if "down_proj" in target_set:
+        moe_params.append("mlp.experts.down_proj")
+
+    if moe_params:
+        print(
+            f"Unsloth: Detected MoE model with {num_experts} experts - enabling LoRA on: {moe_params}"
+        )
+        return moe_params
+
+    return None
 
 
 def make_fast_generate_wrapper(original_generate):

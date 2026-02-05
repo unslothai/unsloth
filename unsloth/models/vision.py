@@ -98,6 +98,7 @@ VLLM_SUPPORTED_VLM = [
     "gemma3",
     "mistral3",
     "qwen3_vl",
+    "qwen3_vl_moe",
 ]
 VLLM_NON_LORA_VLM = [
     "mllama",
@@ -960,6 +961,7 @@ class FastBaseModel:
         task_type = TaskType.CAUSAL_LM,
         temporary_location = "_unsloth_temporary_saved_buffers",
         qat_scheme = None,
+        target_parameters = None,  # For MoE expert layers (nn.Parameter)
         ensure_weight_tying = False,  # [TODO] Add `ensure_weight_tying` for `modules_to_save` for vision models
         **kwargs,
     ):
@@ -1040,6 +1042,10 @@ class FastBaseModel:
         loftq_config = validate_loftq_config(
             loftq_config, lora_dropout, bias, init_lora_weights, model
         )
+
+        # Auto-detect MoE models and populate target_parameters for expert layers
+        if target_parameters is None:
+            target_parameters = get_moe_target_parameters(model, target_modules)
 
         # Get only allowed parameters for LoraConfig
         local_variables = {
