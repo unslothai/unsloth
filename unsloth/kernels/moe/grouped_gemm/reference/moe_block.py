@@ -5,13 +5,13 @@ import torch
 from transformers.models.qwen3_moe.configuration_qwen3_moe import Qwen3MoeConfig
 from transformers.models.qwen3_moe.modeling_qwen3_moe import Qwen3MoeSparseMoeBlock
 
-from grouped_gemm.interface import grouped_gemm
-from grouped_gemm.kernels.tuning import (
+from ..interface import grouped_gemm
+from ..kernels.tuning import (
     KernelConfigBackward_dW,
     KernelConfigBackward_dX,
     KernelConfigForward,
 )
-from grouped_gemm.reference.moe_ops import (
+from .moe_ops import (
     Qwen3MoeGroupedGEMMBlock,
     permute,
     unpermute,

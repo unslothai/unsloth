@@ -1,5 +1,18 @@
-# SPDX-License-Identifier: GNU Affero General Public License v3.0
-# Copyright 2023-present the Unsloth team. All rights reserved.
+# Unsloth
+# Copyright 2023-present Daniel Han-Chen, Michael Han-Chen & the Unsloth team. All rights reserved.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published
+# by the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 """
 Autotuning utils
@@ -36,17 +49,39 @@ def convert_args_to_list(args):
     return [val_to_list(arg) for arg in args]
 
 
+def _triton_supports_tma():
+    """Check if current Triton version supports TMA API."""
+    import triton.language as tl
+
+    # Check for both old experimental and new stable API names
+    return hasattr(tl, "make_tensor_descriptor") or hasattr(
+        tl, "_experimental_make_tensor_descriptor"
+    )
+
+
+# Precompute at module import
+# NOTE: TMA is disabled for now due to compatibility issues with permute_x/permute_y settings
+# in the MoE grouped GEMM forward/backward passes. Re-enable once these are resolved.
+_TRITON_HAS_TMA = False  # _triton_supports_tma()
+
+
 def get_forward_configs(
     BLOCK_M = DEFAULT_M_BLOCK_SIZES,
     BLOCK_N = DEFAULT_N_BLOCK_SIZES,
     BLOCK_K = DEFAULT_K_BLOCK_SIZES,
-    TMA_LOAD_X = True,
-    TMA_LOAD_W = True,
+    TMA_LOAD_X = None,  # Auto-detect if not specified
+    TMA_LOAD_W = None,  # Auto-detect if not specified
     TMA_STORE = False,  # NOTE: TMA_STORE is disabled for now
     num_warps = DEFAULT_NUM_WARPS,
     num_stages = DEFAULT_NUM_STAGES,
     num_ctas = DEFAULT_NUM_CTAS,
 ):
+    # Auto-detect TMA support
+    if TMA_LOAD_X is None:
+        TMA_LOAD_X = _TRITON_HAS_TMA
+    if TMA_LOAD_W is None:
+        TMA_LOAD_W = _TRITON_HAS_TMA
+
     (
         BLOCK_M,
         BLOCK_N,
@@ -115,13 +150,18 @@ def get_dX_kernel_configs(
     BLOCK_M = DEFAULT_M_BLOCK_SIZES,
     BLOCK_N = DEFAULT_N_BLOCK_SIZES,
     BLOCK_K = DEFAULT_K_BLOCK_SIZES,
-    TMA_LOAD_dY = True,
-    TMA_LOAD_W = True,
+    TMA_LOAD_dY = None,  # Auto-detect if not specified
+    TMA_LOAD_W = None,  # Auto-detect if not specified
     TMA_STORE = False,  # NOTE: TMA_STORE is disabled for now
     num_warps = DEFAULT_NUM_WARPS,
     num_stages = DEFAULT_NUM_STAGES,
     num_ctas = DEFAULT_NUM_CTAS,
 ):
+    # Auto-detect TMA support
+    if TMA_LOAD_dY is None:
+        TMA_LOAD_dY = _TRITON_HAS_TMA
+    if TMA_LOAD_W is None:
+        TMA_LOAD_W = _TRITON_HAS_TMA
     (
         BLOCK_M,
         BLOCK_N,
@@ -193,10 +233,15 @@ def get_dW_kernel_configs(
     num_warps = DEFAULT_NUM_WARPS,
     num_stages = DEFAULT_NUM_STAGES,
     num_ctas = DEFAULT_NUM_CTAS,
-    TMA_LOAD_dY = True,
-    TMA_LOAD_X = True,
+    TMA_LOAD_dY = None,  # Auto-detect if not specified
+    TMA_LOAD_X = None,  # Auto-detect if not specified
     TMA_STORE = False,
 ):
+    # Auto-detect TMA support
+    if TMA_LOAD_dY is None:
+        TMA_LOAD_dY = _TRITON_HAS_TMA
+    if TMA_LOAD_X is None:
+        TMA_LOAD_X = _TRITON_HAS_TMA
     (
         BLOCK_M,
         BLOCK_N,
@@ -291,8 +336,8 @@ def exceeds_smem_capacity(
 
 
 def common_prune_criteria(config: triton.Config, kwargs: dict, dtype):
-    from grouped_gemm.interface import supports_tma
-    from grouped_gemm.kernels.tuning import get_device_properties
+    from ..interface import supports_tma
+    from .tuning import get_device_properties
 
     smem_size = get_device_properties().SIZE_SMEM
 
@@ -323,7 +368,7 @@ def common_prune_criteria(config: triton.Config, kwargs: dict, dtype):
 
 
 def maybe_disable_tma(config: triton.Config):
-    from grouped_gemm.interface import supports_tma
+    from ..interface import supports_tma
 
     tma_keys = [k for k in config.kwargs.keys() if k.startswith("USE_TMA_")]
     if not supports_tma():
