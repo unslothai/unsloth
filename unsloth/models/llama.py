@@ -2288,7 +2288,9 @@ class FastLlamaModel:
         model_function = MODEL_FOR_CAUSAL_LM_MAPPING[model_config.__class__]
         IS_FALCON_H1 = model_config.model_type.startswith("falcon_h1")
 
-        preferred_attn_impl = prefer_flex_attn_if_supported(model_function, model_config) or "eager"
+        preferred_attn_impl = (
+            prefer_flex_attn_if_supported(model_function, model_config) or "eager"
+        )
 
         has_rope_scaling = False
         try:

@@ -193,7 +193,9 @@ def prefer_flex_attn_if_supported(model_class, config):
 
         if not is_torch_flex_attn_available():
             return None
-        if model_class is None or not getattr(model_class, "_supports_flex_attn", False):
+        if model_class is None or not getattr(
+            model_class, "_supports_flex_attn", False
+        ):
             return None
         if config is not None:
             setattr(config, "_attn_implementation", "flex_attention")
