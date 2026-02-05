@@ -98,6 +98,7 @@ VLLM_SUPPORTED_VLM = [
     "gemma3",
     "mistral3",
     "qwen3_vl",
+    "qwen3_vl_moe",
 ]
 VLLM_NON_LORA_VLM = [
     "mllama",
@@ -517,9 +518,23 @@ class FastBaseModel:
                 correct_dtype = None
 
         # Stop SDPA for some archs like Pixtral / Mistral3
+        flex_attn_impl = None
+        if auto_config is None:
+            auto_config = AutoConfig.from_pretrained(
+                model_name,
+                token = token,
+                trust_remote_code = trust_remote_code,
+            )
+        try:
+            model_class = auto_model._model_mapping[auto_config.__class__]
+        except Exception:
+            model_class = None
+        flex_attn_impl = prefer_flex_attn_if_supported(model_class, auto_config)
+
+        default_attn_impl = "flex_attention" if flex_attn_impl else "sdpa"
         if not ("attn_implementation" in kwargs):
-            kwargs["attn_implementation"] = "sdpa"
-        if not supports_sdpa:
+            kwargs["attn_implementation"] = default_attn_impl
+        if not supports_sdpa and kwargs.get("attn_implementation") == "sdpa":
             if os.environ.get("UNSLOTH_ENABLE_FLEX_ATTENTION", "0") == "0":
                 print(
                     f"Unsloth: {model_type_arch.title()} does not support SDPA - switching to fast eager."
@@ -651,12 +666,19 @@ class FastBaseModel:
 
         kwargs = add_dtype_kwargs(torch_dtype, kwargs)
 
-        model_config = AutoConfig.from_pretrained(
-            model_name,
-            token = token,
-            attn_implementation = "sdpa" if supports_sdpa else "eager",
-            trust_remote_code = trust_remote_code,
-        )
+        config_attn_impl = kwargs.get("attn_implementation", None)
+        if config_attn_impl is None:
+            config_attn_impl = "sdpa" if supports_sdpa else "eager"
+        if auto_config is None:
+            auto_config = AutoConfig.from_pretrained(
+                model_name,
+                token = token,
+                trust_remote_code = trust_remote_code,
+            )
+        setattr(auto_config, "_attn_implementation", config_attn_impl)
+        if hasattr(auto_config, "attn_implementation"):
+            setattr(auto_config, "attn_implementation", config_attn_impl)
+        model_config = auto_config
         verify_fp8_support_if_applicable(model_config)
 
         raise_handler = RaiseUninitialized()
@@ -939,6 +961,7 @@ class FastBaseModel:
         task_type = TaskType.CAUSAL_LM,
         temporary_location = "_unsloth_temporary_saved_buffers",
         qat_scheme = None,
+        target_parameters = None,  # For MoE expert layers (nn.Parameter)
         ensure_weight_tying = False,  # [TODO] Add `ensure_weight_tying` for `modules_to_save` for vision models
         **kwargs,
     ):
@@ -1019,6 +1042,10 @@ class FastBaseModel:
         loftq_config = validate_loftq_config(
             loftq_config, lora_dropout, bias, init_lora_weights, model
         )
+
+        # Auto-detect MoE models and populate target_parameters for expert layers
+        if target_parameters is None:
+            target_parameters = get_moe_target_parameters(model, target_modules)
 
         # Get only allowed parameters for LoraConfig
         local_variables = {
