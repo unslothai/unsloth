@@ -415,23 +415,57 @@ def _patch_trl_trainer():
     if Version(trl) <= Version("0.11.0"):
         return
 
+    def _patch_trl_module(trl_module):
+        trl_classes = dir(trl_module)
+        trl_trainers = set(
+            x[: -len("Trainer")] for x in trl_classes if x.endswith("Trainer")
+        )
+        trl_configs = set(
+            x[: -len("Config")] for x in trl_classes if x.endswith("Config")
+        )
+        trl_bases = list(trl_trainers & trl_configs)
+
+        for base in trl_bases:
+            if base == "":
+                continue
+            try:
+                trainer_cls = getattr(trl_module, f"{base}Trainer")
+                config_cls = getattr(trl_module, f"{base}Config")
+                trainer_cls.__init__ = _backwards_compatible_trainer(
+                    trainer_cls, config_cls
+                )
+            except Exception:
+                continue
+
     import trl.trainer
 
-    trl_classes = dir(trl.trainer)
-    trl_trainers = set(
-        x[: -len("Trainer")] for x in trl_classes if x.endswith("Trainer")
-    )
-    trl_configs = set(x[: -len("Config")] for x in trl_classes if x.endswith("Config"))
-    trl_classes = list(trl_trainers & trl_configs)
+    _patch_trl_module(trl.trainer)
 
-    for x in trl_classes:
-        try:
-            exec(
-                f"trl.{x}Trainer.__init__ = _backwards_compatible_trainer(trl.{x}Trainer, trl.{x}Config)",
-                globals(),
-            )
-        except:
-            continue
+    # Best-effort patch for trl.experimental (forward/backward compatible)
+    try:
+        import trl.experimental as trl_experimental
+        import importlib
+        import pkgutil
+        import sys
+
+        _patch_trl_module(trl_experimental)
+
+        # Patch any already imported experimental submodules
+        for module_name, module in list(sys.modules.items()):
+            if module_name.startswith("trl.experimental.") and module is not None:
+                _patch_trl_module(module)
+
+        # Patch *_trainer modules if present without hard dependency
+        if hasattr(trl_experimental, "__path__"):
+            for mod in pkgutil.iter_modules(trl_experimental.__path__):
+                if mod.name.endswith("_trainer"):
+                    try:
+                        submod = importlib.import_module(f"trl.experimental.{mod.name}")
+                        _patch_trl_module(submod)
+                    except Exception:
+                        continue
+    except Exception:
+        pass
 
     _patch_sft_trainer_auto_packing(trl)
 
