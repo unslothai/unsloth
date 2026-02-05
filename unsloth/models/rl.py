@@ -1091,18 +1091,30 @@ def _patch_trl_rl_trainers(trainer_file="grpo_trainer"):
     )
 
     if RLTrainer_name == "GRPOTrainer":
-        new_options = """torch_compile_options = {
-            "epilogue_fusion"   : True,
-            "max_autotune"      : False,
-            "shape_padding"     : True,
-            "trace.enabled"     : False,
-            #"combo_kernels"     : torch.cuda.get_device_capability()[0] >= 10,
-            "triton.enable_persistent_tma_matmul": torch.cuda.get_device_capability()[0] >= 9,
-            "cuda.cutlass_epilogue_fusion_enabled": torch.cuda.get_device_capability()[0] >= 9, 
-            "cuda.cutlass_tma_only": torch.cuda.get_device_capability()[0] >= 9, 
-            "cuda.compile_opt_level"              : "-O2",
-            "cuda.enable_cuda_lto"                : True,
-        }"""
+        from unsloth_zoo.device_type import DEVICE_TYPE
+        if DEVICE_TYPE == "mps":
+             new_options = """torch_compile_options = {
+                "epilogue_fusion"   : True,
+                "max_autotune"      : False,
+                "shape_padding"     : True,
+                "trace.enabled"     : False,
+                "triton.enable_persistent_tma_matmul": False,
+                "cuda.cutlass_epilogue_fusion_enabled": False, 
+                "cuda.cutlass_tma_only": False, 
+            }"""
+        else:
+             new_options = """torch_compile_options = {
+                "epilogue_fusion"   : True,
+                "max_autotune"      : False,
+                "shape_padding"     : True,
+                "trace.enabled"     : False,
+                #"combo_kernels"     : torch.cuda.get_device_capability()[0] >= 10,
+                "triton.enable_persistent_tma_matmul": torch.cuda.get_device_capability()[0] >= 9,
+                "cuda.cutlass_epilogue_fusion_enabled": torch.cuda.get_device_capability()[0] >= 9, 
+                "cuda.cutlass_tma_only": torch.cuda.get_device_capability()[0] >= 9, 
+                "cuda.compile_opt_level"              : "-O2",
+                "cuda.enable_cuda_lto"                : True,
+            }"""
 
         pattern = r"torch_compile_options\s*=\s*\{[^}]*\}"
 

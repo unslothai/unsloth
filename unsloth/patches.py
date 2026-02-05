@@ -102,7 +102,29 @@ def patch_unsloth_zoo_for_mps() -> bool:
 
             torch.cuda.memory = MockMemory
 
-        # We MUST override even if it exists, because the original raises AssertionError
+        # [Phase 3.1] Add truthful mocks for get_device_properties and get_device_capability
+        # to satisfy external libraries and generated code without "lying" about NVIDIA.
+        class AppleSiliconProps:
+            def __init__(self):
+                try:
+                    from unsloth.kernels.mps import get_apple_hardware_info
+                    hw_info = get_apple_hardware_info()
+                    self.name = hw_info.get("chip_name", "Apple Silicon")
+                    self.total_memory = int(hw_info.get("usable_memory_gb", 16) * 1024**3)
+                except:
+                    self.name = "Apple Silicon"
+                    self.total_memory = 16 * 1024**3
+                self.major = 0
+                self.minor = 0
+                self.multi_processor_count = 1
+                self.is_integrated = True
+
+        def mock_get_device_properties(device=None):
+            return AppleSiliconProps()
+
+        def mock_get_device_capability(device=None):
+            return (0, 0)
+
         def mock_mem_get_info(device=None):
             # Use real memory info when available
             try:
@@ -114,6 +136,8 @@ def patch_unsloth_zoo_for_mps() -> bool:
             except Exception:
                 return (16 * 1024**3, 24 * 1024**3)
 
+        torch.cuda.get_device_properties = mock_get_device_properties
+        torch.cuda.get_device_capability = mock_get_device_capability
         torch.cuda.memory.mem_get_info = mock_mem_get_info
 
         pass
