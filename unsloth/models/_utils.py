@@ -63,6 +63,7 @@ __all__ = [
     "patch_compiled_autograd",
     "process_vision_info",
     "unsloth_compile_transformers",
+    "prefer_flex_attn_if_supported",
     "patch_fast_lora",
     "validate_loftq_config",
     "RaiseUninitialized",
@@ -182,6 +183,27 @@ def apply_unsloth_gradient_checkpointing(
         unpatch_unsloth_smart_gradient_checkpointing()
         return use_gradient_checkpointing
     return use_gradient_checkpointing
+
+
+def prefer_flex_attn_if_supported(model_class, config):
+    if os.environ.get("UNSLOTH_ENABLE_FLEX_ATTENTION", "1") == "0":
+        return None
+    try:
+        from transformers.utils.import_utils import is_torch_flex_attn_available
+
+        if not is_torch_flex_attn_available():
+            return None
+        if model_class is None or not getattr(
+            model_class, "_supports_flex_attn", False
+        ):
+            return None
+        if config is not None:
+            setattr(config, "_attn_implementation", "flex_attention")
+            if hasattr(config, "attn_implementation"):
+                setattr(config, "attn_implementation", "flex_attention")
+        return "flex_attention"
+    except Exception:
+        return None
 
 
 for temporary_patch in TEMPORARY_PATCHES:
