@@ -399,18 +399,20 @@ class FastBaseModel:
         SUPPORTS_BFLOAT16 = is_bfloat16_supported()
 
         if DEVICE_TYPE == "cuda":
-            gpu_stats = torch.cuda.get_device_properties(0)
+            from unsloth.device_utils import get_device_properties
+            gpu_stats = get_device_properties()
             gpu_stats_name = (
                 gpu_stats.name + ". " if gpu_stats.name != "" else "NVIDIA GPU Device. "
             )
             gpu_version = torch.version.cuda
-            gpu_stats_snippet = f"CUDA: {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit: {gpu_version}."
+            gpu_stats_snippet = f"CUDA. CUDA Toolkit: {gpu_version}."
             try:
                 vllm_version = f" vLLM: {importlib_version('vllm')}."
             except:
                 vllm_version = ""
         elif DEVICE_TYPE == "hip":
-            gpu_stats = torch.cuda.get_device_properties(0)
+            from unsloth.device_utils import get_device_properties
+            gpu_stats = get_device_properties()
             gpu_stats_name = (
                 gpu_stats.name + ". " if gpu_stats.name != "" else "AMD GPU Device. "
             )
@@ -421,7 +423,8 @@ class FastBaseModel:
             except:
                 vllm_version = ""
         elif DEVICE_TYPE == "xpu":
-            gpu_stats = torch.xpu.get_device_properties(0)
+            from unsloth.device_utils import get_device_properties
+            gpu_stats = get_device_properties()
             gpu_stats_name = (
                 gpu_stats.name + ". " if gpu_stats.name != "" else "Intel XPU Device. "
             )
@@ -430,23 +433,8 @@ class FastBaseModel:
             # [TODO] After adding vLLM support for XPU, change this
             vllm_version = ""
         elif DEVICE_TYPE == "mps":
-            # Use proper Apple Silicon hardware detection
-            try:
-                from unsloth.kernels.mps import get_apple_hardware_info
-                hw_info = get_apple_hardware_info()
-                gpu_stats = types.SimpleNamespace()
-                gpu_stats.total_memory = hw_info.get("total_memory_bytes", 16 * 1024**3)
-                gpu_stats.name = hw_info.get("chip_name", "Apple Silicon")
-                gpu_stats.major = 1
-                gpu_stats.minor = 0
-            except Exception:
-                import psutil
-                gpu_stats = types.SimpleNamespace()
-                gpu_stats.total_memory = psutil.virtual_memory().total
-                gpu_stats.name = "Apple Silicon"
-                gpu_stats.major = 1
-                gpu_stats.minor = 0
-            
+            from unsloth.device_utils import get_device_properties
+            gpu_stats = get_device_properties()
             gpu_stats_name = f"{gpu_stats.name}. "
             gpu_version = "Metal Performance Shaders"
             gpu_stats_snippet = "MPS."
