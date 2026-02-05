@@ -1,5 +1,6 @@
 import { type Connection, type Edge, addEdge } from "@xyflow/react";
 import type { NodeConfig, SamplerConfig } from "../types";
+import { HANDLE_IDS } from "./handles";
 import {
   isCategoryConfig,
   isExpressionConfig,
@@ -45,18 +46,28 @@ function syncSubcategoryMapping(
   };
 }
 
-function isSemanticEdge(source: NodeConfig, target: NodeConfig): boolean {
+function isSemanticRelation(source: NodeConfig, target: NodeConfig): boolean {
   if (source.kind === "model_provider" && target.kind === "model_config") {
     return true;
   }
-  if (source.kind === "model_config" && target.kind === "llm") {
-    return true;
-  }
+  return source.kind === "model_config" && target.kind === "llm";
+}
+
+function isModelInfraNode(config: NodeConfig): boolean {
+  return config.kind === "model_provider" || config.kind === "model_config";
+}
+
+function isSemanticLane(connection: Connection): boolean {
   return (
-    source.kind === "sampler" &&
-    source.sampler_type === "category" &&
-    target.kind === "sampler" &&
-    target.sampler_type === "subcategory"
+    connection.sourceHandle === HANDLE_IDS.semanticOut &&
+    connection.targetHandle === HANDLE_IDS.semanticIn
+  );
+}
+
+function isDataLane(connection: Connection): boolean {
+  return (
+    connection.sourceHandle === HANDLE_IDS.dataOut &&
+    connection.targetHandle === HANDLE_IDS.dataIn
   );
 }
 
@@ -72,7 +83,17 @@ export function isValidCanvasConnection(
   }
   const source = configs[connection.source];
   const target = configs[connection.target];
-  return Boolean(source && target);
+  if (!(source && target)) {
+    return false;
+  }
+  const semanticRelation = isSemanticRelation(source, target);
+  if (semanticRelation) {
+    return isSemanticLane(connection);
+  }
+  if (isModelInfraNode(source) || isModelInfraNode(target)) {
+    return false;
+  }
+  return isDataLane(connection);
 }
 
 export function applyCanvasConnection(
@@ -88,8 +109,9 @@ export function applyCanvasConnection(
   if (!(source && target)) {
     return { edges };
   }
+  const semanticRelation = isSemanticRelation(source, target);
   const nextEdges = addEdge(
-    { ...connection, type: isSemanticEdge(source, target) ? "semantic" : "canvas" },
+    { ...connection, type: semanticRelation ? "semantic" : "canvas" },
     edges,
   );
   if (source.kind === "model_provider" && target.kind === "model_config") {
@@ -98,6 +120,19 @@ export function applyCanvasConnection(
   }
   if (source.kind === "model_config" && target.kind === "llm") {
     const next = { ...target, model_alias: source.name };
+    return { edges: nextEdges, configs: { ...configs, [target.id]: next } };
+  }
+  if (
+    source.kind === "sampler" &&
+    source.sampler_type === "datetime" &&
+    target.kind === "sampler" &&
+    target.sampler_type === "timedelta"
+  ) {
+    const next = {
+      ...target,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      reference_column_name: source.name,
+    };
     return { edges: nextEdges, configs: { ...configs, [target.id]: next } };
   }
   if (isLlmConfig(target) && source.kind !== "model_provider" && source.kind !== "model_config") {

@@ -30,9 +30,11 @@ import { ModelConfigDialog } from "../dialogs/models/model-config-dialog";
 import { ModelProviderDialog } from "../dialogs/models/model-provider-dialog";
 import { CategoryDialog } from "../dialogs/samplers/category-dialog";
 import { DatetimeDialog } from "../dialogs/samplers/datetime-dialog";
+import { BernoulliDialog } from "../dialogs/samplers/bernoulli-dialog";
 import { GaussianDialog } from "../dialogs/samplers/gaussian-dialog";
 import { PersonDialog } from "../dialogs/samplers/person-dialog";
 import { SubcategoryDialog } from "../dialogs/samplers/subcategory-dialog";
+import { TimedeltaDialog } from "../dialogs/samplers/timedelta-dialog";
 import { UniformDialog } from "../dialogs/samplers/uniform-dialog";
 import { UuidDialog } from "../dialogs/samplers/uuid-dialog";
 
@@ -101,6 +103,7 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
     renderDialog: ({ config, onUpdate }) =>
       config.kind === "sampler" && config.sampler_type === "category" ? (
         <CategoryDialog
+          key={config.id}
           config={config}
           onUpdate={(patch) => onUpdate(config.id, patch)}
         />
@@ -155,6 +158,22 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
   },
   {
     kind: "sampler",
+    type: "bernoulli",
+    title: "Bernoulli",
+    description: "Binary sampler with probability.",
+    icon: EqualSignIcon,
+    createConfig: (id, existing) =>
+      makeSamplerConfig(id, "bernoulli", existing),
+    renderDialog: ({ config, onUpdate }) =>
+      config.kind === "sampler" && config.sampler_type === "bernoulli" ? (
+        <BernoulliDialog
+          config={config}
+          onUpdate={(patch) => onUpdate(config.id, patch)}
+        />
+      ) : null,
+  },
+  {
+    kind: "sampler",
     type: "datetime",
     title: "Datetime",
     description: "Date/time range sampler.",
@@ -163,6 +182,22 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
     renderDialog: ({ config, onUpdate }) =>
       config.kind === "sampler" && config.sampler_type === "datetime" ? (
         <DatetimeDialog
+          config={config}
+          onUpdate={(patch) => onUpdate(config.id, patch)}
+        />
+      ) : null,
+  },
+  {
+    kind: "sampler",
+    type: "timedelta",
+    title: "Timedelta",
+    description: "Offset from datetime column.",
+    icon: Clock01Icon,
+    createConfig: (id, existing) =>
+      makeSamplerConfig(id, "timedelta", existing),
+    renderDialog: ({ config, onUpdate }) =>
+      config.kind === "sampler" && config.sampler_type === "timedelta" ? (
+        <TimedeltaDialog
           config={config}
           onUpdate={(patch) => onUpdate(config.id, patch)}
         />

@@ -1,5 +1,6 @@
 import type { Edge } from "@xyflow/react";
 import type {
+  CategoryConditionalParams,
   CanvasNode,
   ExpressionConfig,
   LlmConfig,
@@ -43,15 +44,7 @@ function isSemanticRelation(
   if (source.kind === "model_provider" && target.kind === "model_config") {
     return true;
   }
-  if (source.kind === "model_config" && target.kind === "llm") {
-    return true;
-  }
-  return (
-    source.kind === "sampler" &&
-    source.sampler_type === "category" &&
-    target.kind === "sampler" &&
-    target.sampler_type === "subcategory"
-  );
+  return source.kind === "model_config" && target.kind === "llm";
 }
 
 function parseNumber(value?: string): number | null {
@@ -97,6 +90,46 @@ function parseJsonObject(
   }
   errors.push(`${label}: must be a JSON object.`);
   return undefined;
+}
+
+function buildCategoryConditionalParams(
+  config: SamplerConfig,
+  errors: string[],
+): Record<string, CategoryConditionalParams> | undefined {
+  const conditional = config.conditional_params ?? {};
+  const output: Record<string, CategoryConditionalParams> = {};
+  for (const [rawCondition, params] of Object.entries(conditional)) {
+    const condition = rawCondition.trim();
+    if (!condition) {
+      errors.push(`Sampler ${config.name}: conditional rule needs condition text.`);
+      continue;
+    }
+    const values = (params.values ?? [])
+      .map((value) => value.trim())
+      .filter(Boolean);
+    if (values.length === 0) {
+      errors.push(`Sampler ${config.name}: conditional '${condition}' needs values.`);
+      continue;
+    }
+    const weights = params.weights ?? [];
+    const hasWeights = weights.some((weight) => weight !== null);
+    if (
+      hasWeights &&
+      (weights.length !== values.length || weights.some((weight) => weight === null))
+    ) {
+      errors.push(`Sampler ${config.name}: conditional '${condition}' weights invalid.`);
+      continue;
+    }
+    output[condition] = {
+      // biome-ignore lint/style/useNamingConvention: api schema
+      sampler_type: "category",
+      values,
+      weights: hasWeights
+        ? weights.filter((weight): weight is number => weight !== null)
+        : undefined,
+    };
+  }
+  return Object.keys(output).length > 0 ? output : undefined;
 }
 
 function buildModelProvider(
@@ -216,11 +249,27 @@ function buildSamplerParams(
       std: parseNumber(config.std),
     };
   }
+  if (config.sampler_type === "bernoulli") {
+    return {
+      p: parseNumber(config.p),
+    };
+  }
   if (config.sampler_type === "datetime") {
     return {
       start: config.datetime_start ?? undefined,
       end: config.datetime_end ?? undefined,
       unit: config.datetime_unit ?? undefined,
+    };
+  }
+  if (config.sampler_type === "timedelta") {
+    return {
+      // biome-ignore lint/style/useNamingConvention: api schema
+      dt_min: parseNumber(config.dt_min),
+      // biome-ignore lint/style/useNamingConvention: api schema
+      dt_max: parseNumber(config.dt_max),
+      // biome-ignore lint/style/useNamingConvention: api schema
+      reference_column_name: config.reference_column_name || undefined,
+      unit: config.timedelta_unit || undefined,
     };
   }
   if (config.sampler_type === "uuid") {
@@ -389,7 +438,7 @@ export function buildCanvasPayload(
 
     if (config.kind === "sampler") {
       nameToConfig.set(config.name, config);
-      columns.push({
+      const samplerColumn: Record<string, unknown> = {
         // biome-ignore lint/style/useNamingConvention: api schema
         column_type: "sampler",
         name: config.name,
@@ -398,7 +447,15 @@ export function buildCanvasPayload(
         params: buildSamplerParams(config, errors),
         // biome-ignore lint/style/useNamingConvention: api schema
         convert_to: config.convert_to ?? undefined,
-      });
+      };
+      if (config.sampler_type === "category") {
+        const conditionalParams = buildCategoryConditionalParams(config, errors);
+        if (conditionalParams) {
+          // biome-ignore lint/style/useNamingConvention: api schema
+          samplerColumn.conditional_params = conditionalParams;
+        }
+      }
+      columns.push(samplerColumn);
     } else if (config.kind === "llm") {
       columns.push(buildLlmColumn(config, errors));
       if (config.model_alias) {
@@ -440,6 +497,24 @@ export function buildCanvasPayload(
           `Subcategory ${config.name}: '${value}' needs at least 1 subcategory.`,
         );
       }
+    }
+  }
+  for (const config of Object.values(configs)) {
+    if (config.kind !== "sampler" || config.sampler_type !== "timedelta") {
+      continue;
+    }
+    const reference = config.reference_column_name?.trim() ?? "";
+    if (!reference) {
+      errors.push(`Timedelta ${config.name}: reference datetime column required.`);
+      continue;
+    }
+    const parent = nameToConfig.get(reference);
+    if (
+      !parent ||
+      parent.kind !== "sampler" ||
+      parent.sampler_type !== "datetime"
+    ) {
+      errors.push(`Timedelta ${config.name}: reference '${reference}' must be datetime.`);
     }
   }
 

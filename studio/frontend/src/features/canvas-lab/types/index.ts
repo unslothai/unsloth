@@ -5,7 +5,9 @@ export type SamplerType =
   | "subcategory"
   | "uniform"
   | "gaussian"
+  | "bernoulli"
   | "datetime"
+  | "timedelta"
   | "uuid"
   | "person"
   | "person_from_faker";
@@ -32,6 +34,13 @@ export type CanvasNodeData = {
 
 export type CanvasNode = Node<CanvasNodeData, "builder">;
 
+export type CategoryConditionalParams = {
+  // biome-ignore lint/style/useNamingConvention: api schema
+  sampler_type: "category";
+  values: string[];
+  weights?: Array<number | null>;
+};
+
 export type SamplerConfig = {
   id: string;
   kind: "sampler";
@@ -46,12 +55,21 @@ export type SamplerConfig = {
   high?: string;
   mean?: string;
   std?: string;
+  p?: string;
   // biome-ignore lint/style/useNamingConvention: api schema
   datetime_start?: string;
   // biome-ignore lint/style/useNamingConvention: api schema
   datetime_end?: string;
   // biome-ignore lint/style/useNamingConvention: api schema
   datetime_unit?: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  dt_min?: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  dt_max?: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  reference_column_name?: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  timedelta_unit?: "D" | "h" | "m" | "s";
   // biome-ignore lint/style/useNamingConvention: api schema
   uuid_format?: string;
   // biome-ignore lint/style/useNamingConvention: api schema
@@ -68,6 +86,8 @@ export type SamplerConfig = {
   subcategory_parent?: string;
   // biome-ignore lint/style/useNamingConvention: api schema
   subcategory_mapping?: Record<string, string[]>;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  conditional_params?: Record<string, CategoryConditionalParams>;
 };
 
 export type ScoreOption = {

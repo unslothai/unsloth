@@ -1,20 +1,13 @@
 import type { Edge } from "@xyflow/react";
 import type { NodeConfig } from "../../types";
+import { HANDLE_IDS } from "../handles";
 import { extractRefs } from "./helpers";
 
 function isSemanticConnection(source: NodeConfig, target: NodeConfig): boolean {
   if (source.kind === "model_provider" && target.kind === "model_config") {
     return true;
   }
-  if (source.kind === "model_config" && target.kind === "llm") {
-    return true;
-  }
-  return (
-    source.kind === "sampler" &&
-    source.sampler_type === "category" &&
-    target.kind === "sampler" &&
-    target.sampler_type === "subcategory"
-  );
+  return source.kind === "model_config" && target.kind === "llm";
 }
 
 export function buildEdges(
@@ -42,11 +35,22 @@ export function buildEdges(
       source && target && isSemanticConnection(source, target)
         ? "semantic"
         : (type ?? "canvas");
+    const handles =
+      normalizedType === "semantic"
+        ? {
+            sourceHandle: HANDLE_IDS.semanticOut,
+            targetHandle: HANDLE_IDS.semanticIn,
+          }
+        : {
+            sourceHandle: HANDLE_IDS.dataOut,
+            targetHandle: HANDLE_IDS.dataIn,
+          };
     edges.push({
       id: `e-${key}`,
       source: sourceId,
       target: targetId,
       type: normalizedType,
+      ...handles,
     });
   };
 
@@ -76,10 +80,17 @@ export function buildEdges(
       config.sampler_type === "subcategory" &&
       config.subcategory_parent
     ) {
-      addEdgeByName(config.subcategory_parent, config.name, "semantic");
+      addEdgeByName(config.subcategory_parent, config.name, "canvas");
     }
     if (config.kind === "model_config" && config.provider) {
       addEdgeByName(config.provider, config.name, "semantic");
+    }
+    if (
+      config.kind === "sampler" &&
+      config.sampler_type === "timedelta" &&
+      config.reference_column_name
+    ) {
+      addEdgeByName(config.reference_column_name, config.name, "canvas");
     }
     if (config.kind === "llm" && config.model_alias) {
       addEdgeByName(config.model_alias, config.name, "semantic");

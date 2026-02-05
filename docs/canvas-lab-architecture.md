@@ -99,6 +99,7 @@ File:
 Responsibilities:
 - create default config objects (`makeSamplerConfig`, `makeLlmConfig`, `makeModelProviderConfig`, `makeModelConfig`, `makeExpressionConfig`)
 - map `NodeConfig -> CanvasNodeData` via `nodeDataFromConfig`
+- sampler set includes `category`, `subcategory`, `uniform`, `gaussian`, `bernoulli`, `datetime`, `timedelta`, `uuid`, `person`, `person_from_faker`
 
 Example mapping:
 
@@ -148,15 +149,19 @@ Semantic edge classifier:
 ```ts
 function isSemanticEdge(source: NodeConfig, target: NodeConfig): boolean {
   if (source.kind === "model_provider" && target.kind === "model_config") return true;
-  if (source.kind === "model_config" && target.kind === "llm") return true;
-  return source.kind === "sampler" && source.sampler_type === "category"
-    && target.kind === "sampler" && target.sampler_type === "subcategory";
+  return source.kind === "model_config" && target.kind === "llm";
 }
 ```
+
+Handle lanes:
+- data edges use `data-out -> data-in` (`right -> left`)
+- semantic edges use `semantic-out -> semantic-in` (`bottom -> top`)
+- semantic lane only used for `model_provider -> model_config -> llm`
 
 Connection side effects:
 - `model_provider -> model_config`: set `model_config.provider = source.name`
 - `model_config -> llm`: set `llm.model_alias = source.name`
+- `datetime -> timedelta`: set `timedelta.reference_column_name = source.name`
 - regular data edges into LLM/expression append `{{ source_name }}` refs
 
 Edge rendering (dotted semantic edges):
@@ -208,7 +213,9 @@ How relation is enforced:
 - collect `model_alias` values used by LLM columns
 - ensure each alias exists in `recipe.model_configs`
 - validate `model_config.provider` points to existing provider
+- validate `timedelta.reference_column_name` points to a datetime sampler
 - require endpoint/provider_type only for providers that are actually referenced
+- category sampler supports typed `conditional_params` in payload output
 
 This is why unused provider/config blocks can exist without blocking preview.
 
@@ -227,10 +234,11 @@ Order of reconstruction:
 Edge inference file:
 `/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/utils/import/edges.ts`
 
-If UI edges missing, infer semantic edges from fields:
-- `subcategory_parent`
+If UI edges missing, infer edges from fields:
+- `subcategory_parent` (canvas edge)
 - `model_config.provider`
 - `llm.model_alias`
+- infer data edge from `timedelta.reference_column_name`
 
 ## 11) Dialog routing and edit UIs
 
@@ -249,6 +257,7 @@ Model dialogs:
 `ModelConfigDialog` and `LlmDialog` use shadcn `Combobox` fed from store configs:
 - model config `provider` suggests model-provider node names
 - llm `model_alias` suggests model-config aliases
+- timedelta dialog suggests datetime columns for `reference_column_name`
 
 ## 12) How to add a new block (checklist)
 

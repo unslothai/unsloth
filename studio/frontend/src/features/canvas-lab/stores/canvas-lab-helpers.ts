@@ -1,4 +1,11 @@
-import type { CanvasNode, LayoutDirection, NodeConfig } from "../types";
+import type {
+  CanvasNode,
+  LayoutDirection,
+  LlmConfig,
+  ModelConfig,
+  NodeConfig,
+  SamplerConfig,
+} from "../types";
 import { nodeDataFromConfig } from "../utils";
 import { removeRef, replaceRef } from "../utils/refs";
 
@@ -129,19 +136,31 @@ export function applyRenameToConfig(
     config.sampler_type === "subcategory" &&
     config.subcategory_parent === from
   ) {
-    const base = next === config ? config : next;
+    const base = next as SamplerConfig;
     next = {
       ...base,
       // biome-ignore lint/style/useNamingConvention: api schema
       subcategory_parent: to,
     };
   }
+  if (
+    config.kind === "sampler" &&
+    config.sampler_type === "timedelta" &&
+    config.reference_column_name === from
+  ) {
+    const base = next as SamplerConfig;
+    next = {
+      ...base,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      reference_column_name: to,
+    };
+  }
   if (config.kind === "model_config" && config.provider === from) {
-    const base = next === config ? config : next;
+    const base = next as ModelConfig;
     next = { ...base, provider: to };
   }
   if (config.kind === "llm" && config.model_alias === from) {
-    const base = next === config ? config : next;
+    const base = next as LlmConfig;
     next = { ...base, model_alias: to };
   }
   return next;
@@ -157,7 +176,7 @@ export function applyRemovalToConfig(
     config.sampler_type === "subcategory" &&
     config.subcategory_parent === ref
   ) {
-    const base = next === config ? config : next;
+    const base = next as SamplerConfig;
     next = {
       ...base,
       // biome-ignore lint/style/useNamingConvention: api schema
@@ -166,12 +185,24 @@ export function applyRemovalToConfig(
       subcategory_mapping: {},
     };
   }
+  if (
+    config.kind === "sampler" &&
+    config.sampler_type === "timedelta" &&
+    config.reference_column_name === ref
+  ) {
+    const base = next as SamplerConfig;
+    next = {
+      ...base,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      reference_column_name: "",
+    };
+  }
   if (config.kind === "model_config" && config.provider === ref) {
-    const base = next === config ? config : next;
+    const base = next as ModelConfig;
     next = { ...base, provider: "" };
   }
   if (config.kind === "llm" && config.model_alias === ref) {
-    const base = next === config ? config : next;
+    const base = next as LlmConfig;
     next = { ...base, model_alias: "" };
   }
   return next;
