@@ -1051,5 +1051,5 @@ def patch_torchcodec_audio_decoder():
         from unsloth_zoo.dataset_utils import patch_torchcodec_audio_decoder as _patch
 
         _patch()
-    except (ImportError, AttributeError):
+    except (ImportError, AttributeError, RuntimeError):
         pass
