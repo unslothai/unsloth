@@ -23,7 +23,7 @@ try:
         apply_lora_mlp_swiglu,
         apply_lora_qkv,
         apply_lora_o,
-        apply_lora_mlp_geglu_approx,
+        apply_lora_mlp_geglu,
     )
     from unsloth.kernels.mlx.quantization import quantize_4bit
 
