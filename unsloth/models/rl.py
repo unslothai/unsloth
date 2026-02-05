@@ -18,6 +18,7 @@ __all__ = [
 ]
 
 import torch
+
 UNSLOTH_SFT_VLM_FIX = True
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 import inspect
@@ -229,7 +230,9 @@ def PatchRL(FastLanguageModel):
                 continue
             if hasattr(current_trainer, unwrap):
                 try:
-                    setattr(current_trainer, unwrap, unsloth_unwrap_model_for_generation)
+                    setattr(
+                        current_trainer, unwrap, unsloth_unwrap_model_for_generation
+                    )
                 except Exception:
                     continue
 
@@ -1229,16 +1232,24 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer", module_prefix = "trl.t
 
     # Patch Trainer
     try:
-        setattr(trl, RLTrainer_name, getattr(created_module, f"Unsloth{RLTrainer_name}"))
+        setattr(
+            trl, RLTrainer_name, getattr(created_module, f"Unsloth{RLTrainer_name}")
+        )
     except Exception:
         pass
     try:
         root_module = importlib.import_module(module_prefix)
-        setattr(root_module, RLTrainer_name, getattr(created_module, f"Unsloth{RLTrainer_name}"))
+        setattr(
+            root_module,
+            RLTrainer_name,
+            getattr(created_module, f"Unsloth{RLTrainer_name}"),
+        )
     except Exception:
         pass
     try:
-        setattr(trainer, RLTrainer_name, getattr(created_module, f"Unsloth{RLTrainer_name}"))
+        setattr(
+            trainer, RLTrainer_name, getattr(created_module, f"Unsloth{RLTrainer_name}")
+        )
     except Exception:
         pass
 
@@ -1249,11 +1260,17 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer", module_prefix = "trl.t
         pass
     try:
         root_module = importlib.import_module(module_prefix)
-        setattr(root_module, RLConfig_name, getattr(created_module, f"Unsloth{RLConfig_name}"))
+        setattr(
+            root_module,
+            RLConfig_name,
+            getattr(created_module, f"Unsloth{RLConfig_name}"),
+        )
     except Exception:
         pass
     try:
-        setattr(trainer, RLConfig_name, getattr(created_module, f"Unsloth{RLConfig_name}"))
+        setattr(
+            trainer, RLConfig_name, getattr(created_module, f"Unsloth{RLConfig_name}")
+        )
     except Exception:
         pass
 
