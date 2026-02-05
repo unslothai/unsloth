@@ -63,13 +63,23 @@ torch_nn_functional_gelu = torch.nn.functional.gelu
 
 def fast_geglu_inference(self, X):
     # This is retained for backward compatibility but routes to dispatch for speed
-    from ..kernels.mps.dispatch import dispatch_lora_mlp_geglu_approx
-    return dispatch_lora_mlp_geglu_approx(
-        X,
-        *get_lora_parameters(self.gate_proj),
-        *get_lora_parameters(self.up_proj),
-        *get_lora_parameters(self.down_proj),
-    )
+    from ..device_type import DEVICE_TYPE
+    if DEVICE_TYPE == "mps":
+        from ..kernels.mps.dispatch import dispatch_lora_mlp_geglu_approx
+        return dispatch_lora_mlp_geglu_approx(
+            X,
+            *get_lora_parameters(self.gate_proj),
+            *get_lora_parameters(self.up_proj),
+            *get_lora_parameters(self.down_proj),
+        )
+    
+    # Non-MPS fallback
+    from .llama import fast_linear_forward
+    gate = fast_linear_forward(self.gate_proj, X)
+    up   = fast_linear_forward(self.up_proj,   X)
+    gate = torch.nn.functional.gelu(gate, approximate = "tanh")
+    gate *= up
+    return fast_linear_forward(self.down_proj, gate)
 
 
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L590
@@ -116,13 +126,17 @@ def GemmaDecoderLayer_fast_forward(
         hidden_states = fast_rms_layernorm_inference_gemma(
             self.post_attention_layernorm, hidden_states, out_weight
         )
-        from ..kernels.mps.dispatch import dispatch_lora_mlp_geglu_approx
-        hidden_states = dispatch_lora_mlp_geglu_approx(
-            hidden_states,
-            *get_lora_parameters(self.mlp.gate_proj),
-            *get_lora_parameters(self.mlp.up_proj),
-            *get_lora_parameters(self.mlp.down_proj),
-        )
+        from ..device_type import DEVICE_TYPE
+        if DEVICE_TYPE == "mps":
+            from ..kernels.mps.dispatch import dispatch_lora_mlp_geglu_approx
+            hidden_states = dispatch_lora_mlp_geglu_approx(
+                hidden_states,
+                *get_lora_parameters(self.mlp.gate_proj),
+                *get_lora_parameters(self.mlp.up_proj),
+                *get_lora_parameters(self.mlp.down_proj),
+            )
+        else:
+            hidden_states = self.mlp(hidden_states)
         hidden_states += residual
     else:
         residual = hidden_states

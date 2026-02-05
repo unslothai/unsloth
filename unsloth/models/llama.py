@@ -511,6 +511,15 @@ torch_nn_functional_silu = torch.nn.functional.silu
 def fast_swiglu_inference(
     self, X, temp_gate=None, temp_up=None, gate_multiplier=None, down_multiplier=None
 ):
+    from ..device_type import DEVICE_TYPE
+    if DEVICE_TYPE == "mps":
+        from ..kernels.mps.dispatch import dispatch_lora_mlp_swiglu
+        return dispatch_lora_mlp_swiglu(
+            self, X,
+            gate_multiplier=gate_multiplier,
+            down_multiplier=down_multiplier
+        )
+
     # gate = self.gate_proj(X)
     # up   = self.up_proj(X)
     bsz, _, hd = X.shape
@@ -541,6 +550,11 @@ torch_mean = torch.mean
 
 
 def fast_rms_layernorm_inference(self, X, XX=None, XX2=None, variance=None):
+    from ..device_type import DEVICE_TYPE
+    if DEVICE_TYPE == "mps":
+        from ..kernels.mps.dispatch import dispatch_rms_layernorm
+        return dispatch_rms_layernorm(X, self.weight, self.variance_epsilon, gemma=False)
+
     old_dtype = X.dtype
     if XX is None:
         XX = X.to(torch.float32)
@@ -561,6 +575,11 @@ def fast_rms_layernorm_inference(self, X, XX=None, XX2=None, variance=None):
 
 
 def fast_rms_layernorm_inference_gemma(self, X, out_weight=None):
+    from ..device_type import DEVICE_TYPE
+    if DEVICE_TYPE == "mps":
+        from ..kernels.mps.dispatch import dispatch_rms_layernorm
+        return dispatch_rms_layernorm(X, self.weight, self.variance_epsilon, gemma=True)
+
     XX = X.to(torch.float32)
     variance = XX.square().mean(-1, keepdim=True)
     variance += self.variance_epsilon

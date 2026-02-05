@@ -299,26 +299,8 @@ def fast_rope_embedding(
     from ..device_type import DEVICE_TYPE
 
     if DEVICE_TYPE == "mps":
-        # Priority: MLX fast > MPS fallback > Triton
-        from .mlx import USE_MLX_FAST
-
-        if USE_MLX_FAST and not torch.is_grad_enabled():
-            from .mlx import mlx_rope_qk
-
-            return mlx_rope_qk(Q, K, cos, sin, rope_embedding_indices)
-
-        from .mps import USE_MPS_FALLBACK
-
-        if USE_MPS_FALLBACK:
-            from .mps.rope_embedding import mps_rope_embedding_qk
-
-            return mps_rope_embedding_qk(
-                Q,
-                K,
-                cos,
-                sin,
-                rope_embedding_indices,
-            )
+        from .mps.dispatch import dispatch_rope_embedding
+        return dispatch_rope_embedding(Q, K, cos, sin, rope_embedding_indices)
 
     if rope_embedding_indices is not None:
         Q_out, K_out = Fast_RoPE_Embedding_QK.apply(
@@ -493,6 +475,10 @@ class Slow_RoPE_Embedding(torch.autograd.Function):
 
 
 def inplace_rope_embedding(Q, K, cos, sin, position_ids):
+    from ..device_type import DEVICE_TYPE
+    if DEVICE_TYPE == "mps":
+        from .mps.dispatch import dispatch_rope_embedding
+        return dispatch_rope_embedding(Q, K, cos, sin, position_ids)
     Q = Slow_RoPE_Embedding.apply(Q, cos, sin, position_ids)
     K = Slow_RoPE_Embedding.apply(K, cos, sin, position_ids)
     torch_device_stream(Q.device).synchronize()

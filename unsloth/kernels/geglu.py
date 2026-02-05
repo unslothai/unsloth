@@ -72,30 +72,9 @@ def _exact_forward_kernel(
 
 def geglu_exact_forward_kernel(gate, up):
     from ..device_type import DEVICE_TYPE
-    from .mps import USE_MPS_FALLBACK
-
     if DEVICE_TYPE == "mps":
-        # Try Metal kernel first for maximum performance
-        from .metal import is_metal_geglu_available
-
-        if is_metal_geglu_available():
-            from .metal.geglu import metal_geglu_exact_forward
-
-            return metal_geglu_exact_forward(gate, up)
-
-        from .mlx import USE_MLX_FAST
-
-        if USE_MLX_FAST and not torch.is_grad_enabled():
-            from .mlx import mlx_geglu_exact
-
-            return mlx_geglu_exact(gate, up)
-
-        from .mps import USE_MPS_FALLBACK
-
-        if USE_MPS_FALLBACK:
-            from .mps.geglu import mps_geglu_exact_forward
-
-            return mps_geglu_exact_forward(gate, up)
+        from .mps.dispatch import dispatch_geglu_exact_forward
+        return dispatch_geglu_exact_forward(gate, up)
 
     batch, seq_len, hd = gate.shape
     n_elements = gate.numel()
@@ -175,23 +154,9 @@ def _exact_backward_kernel(
 
 def geglu_exact_backward_kernel(DW, e, g):
     from ..device_type import DEVICE_TYPE
-    from .mps import USE_MPS_FALLBACK
-
     if DEVICE_TYPE == "mps":
-        # Try Metal kernel first for maximum performance
-        from .metal import is_metal_geglu_available
-
-        if is_metal_geglu_available():
-            from .metal.geglu import metal_geglu_exact_backward
-
-            return metal_geglu_exact_backward(DW, e, g)
-
-        from .mps import USE_MPS_FALLBACK
-
-        if USE_MPS_FALLBACK:
-            from .mps.geglu import mps_geglu_exact_backward
-
-            return mps_geglu_exact_backward(DW, e, g)
+        from .mps.dispatch import dispatch_geglu_exact_backward
+        return dispatch_geglu_exact_backward(DW, e, g)
 
     batch_seq_len, hd = e.shape
     n_elements = e.numel()
@@ -247,30 +212,9 @@ def _approx_forward_kernel(
 
 def geglu_approx_forward_kernel(gate, up):
     from ..device_type import DEVICE_TYPE
-    from .mps import USE_MPS_FALLBACK
-
     if DEVICE_TYPE == "mps":
-        # Try Metal kernel first for maximum performance
-        from .metal import is_metal_geglu_available
-
-        if is_metal_geglu_available():
-            from .metal.geglu import metal_geglu_approx_forward
-
-            return metal_geglu_approx_forward(gate, up)
-
-        from .mlx import USE_MLX_FAST
-
-        if USE_MLX_FAST and not torch.is_grad_enabled():
-            from .mlx import mlx_geglu_approx
-
-            return mlx_geglu_approx(gate, up)
-
-        from .mps import USE_MPS_FALLBACK
-
-        if USE_MPS_FALLBACK:
-            from .mps.geglu import mps_geglu_approx_forward
-
-            return mps_geglu_approx_forward(gate, up)
+        from .mps.dispatch import dispatch_geglu_approx_forward
+        return dispatch_geglu_approx_forward(gate, up)
 
     batch, seq_len, hd = gate.shape
     n_elements = gate.numel()
@@ -357,23 +301,9 @@ def _approx_backward_kernel(
 
 def geglu_approx_backward_kernel(DW, e, g):
     from ..device_type import DEVICE_TYPE
-    from .mps import USE_MPS_FALLBACK
-
     if DEVICE_TYPE == "mps":
-        # Try Metal kernel first for maximum performance
-        from .metal import is_metal_geglu_available
-
-        if is_metal_geglu_available():
-            from .metal.geglu import metal_geglu_approx_backward
-
-            return metal_geglu_approx_backward(DW, e, g)
-
-        from .mps import USE_MPS_FALLBACK
-
-        if USE_MPS_FALLBACK:
-            from .mps.geglu import mps_geglu_approx_backward
-
-            return mps_geglu_approx_backward(DW, e, g)
+        from .mps.dispatch import dispatch_geglu_approx_backward
+        return dispatch_geglu_approx_backward(DW, e, g)
 
     batch_seq_len, hd = e.shape
     n_elements = e.numel()

@@ -280,26 +280,9 @@ def fast_rms_layernorm(layernorm, X: torch.Tensor, gemma: bool = False):
     )
 
     if DEVICE_TYPE == "mps":
-        from .mlx import USE_MLX_FAST
+        from .mps.dispatch import dispatch_rms_layernorm
 
-        if USE_MLX_FAST and not torch.is_grad_enabled():
-            from .mlx import mlx_rms_norm
-
-            return mlx_rms_norm(X, W, eps, gemma)
-
-        from .metal import USE_METAL_KERNEL
-
-        if USE_METAL_KERNEL:
-            from .metal.rms_layernorm import Metal_RMSLayerNorm
-
-            return Metal_RMSLayerNorm.apply(X, W, eps, gemma)
-
-        from .mps import USE_MPS_FALLBACK
-
-        if USE_MPS_FALLBACK:
-            from .mps.rms_layernorm import mps_rms_layernorm
-
-            return mps_rms_layernorm(X, W, eps, gemma)
+        return dispatch_rms_layernorm(X, W, eps, gemma)
 
     out = Fast_RMS_Layernorm.apply(X, W, eps, gemma)
     return out

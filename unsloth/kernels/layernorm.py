@@ -192,19 +192,9 @@ def fast_layernorm(layernorm, X):
     )
 
     if DEVICE_TYPE == "mps":
-        from .mlx import USE_MLX_FAST
+        from .mps.dispatch import dispatch_layernorm
 
-        if USE_MLX_FAST and not torch.is_grad_enabled():
-            from .mlx import mlx_layer_norm
-
-            return mlx_layer_norm(X, W, bias, eps)
-
-        from .mps import USE_MPS_FALLBACK
-
-        if USE_MPS_FALLBACK:
-            from .mps.layernorm import mps_layernorm
-
-            return mps_layernorm(X, W, bias, eps)
+        return dispatch_layernorm(X, W, bias, eps)
 
     out = Fast_Layernorm.apply(X, W, bias, eps)
     return out

@@ -252,13 +252,17 @@ def Gemma2DecoderLayer_fast_forward(
         hidden_states = fast_rms_layernorm_inference_gemma(
             self.pre_feedforward_layernorm, hidden_states, out_weight
         )
-        from ..kernels.mps.dispatch import dispatch_lora_mlp_geglu_approx
-        hidden_states = dispatch_lora_mlp_geglu_approx(
-            hidden_states,
-            *get_lora_parameters(self.mlp.gate_proj),
-            *get_lora_parameters(self.mlp.up_proj),
-            *get_lora_parameters(self.mlp.down_proj),
-        )
+        from ..device_type import DEVICE_TYPE
+        if DEVICE_TYPE == "mps":
+            from ..kernels.mps.dispatch import dispatch_lora_mlp_geglu_approx
+            hidden_states = dispatch_lora_mlp_geglu_approx(
+                hidden_states,
+                *get_lora_parameters(self.mlp.gate_proj),
+                *get_lora_parameters(self.mlp.up_proj),
+                *get_lora_parameters(self.mlp.down_proj),
+            )
+        else:
+            hidden_states = self.mlp(hidden_states)
         hidden_states = fast_rms_layernorm_inference_gemma(
             self.post_feedforward_layernorm, hidden_states, out_weight
         )
@@ -289,13 +293,17 @@ def Gemma2DecoderLayer_fast_forward(
         hidden_states = fast_rms_layernorm(
             self.pre_feedforward_layernorm, hidden_states, gemma=True
         )
-        from ..kernels.mps.dispatch import dispatch_lora_mlp_geglu_approx
-        hidden_states = dispatch_lora_mlp_geglu_approx(
-            hidden_states,
-            *get_lora_parameters(self.mlp.gate_proj),
-            *get_lora_parameters(self.mlp.up_proj),
-            *get_lora_parameters(self.mlp.down_proj),
-        )
+        from ..device_type import DEVICE_TYPE
+        if DEVICE_TYPE == "mps":
+            from ..kernels.mps.dispatch import dispatch_lora_mlp_geglu_approx
+            hidden_states = dispatch_lora_mlp_geglu_approx(
+                hidden_states,
+                *get_lora_parameters(self.mlp.gate_proj),
+                *get_lora_parameters(self.mlp.up_proj),
+                *get_lora_parameters(self.mlp.down_proj),
+            )
+        else:
+            hidden_states = self.mlp(hidden_states)
         hidden_states = fast_rms_layernorm(
             self.post_feedforward_layernorm, hidden_states, gemma=True
         )
