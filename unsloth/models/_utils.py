@@ -889,7 +889,7 @@ try:
         if (f"{major_version}.{minor_version}" in ("10.0", "11.0", "12.0")) and (
             Version(xformers_version) in (Version("0.0.32.post2"),)
         ):
-        raise NotImplementedError(
+            raise NotImplementedError(
             "Unsloth: Xformers does not work in RTX 50X, Blackwell GPUs as of yet. Please build from source via\n"
             "```\n"
             "pip install ninja\n"
