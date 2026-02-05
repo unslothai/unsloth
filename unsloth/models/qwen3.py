@@ -420,10 +420,12 @@ class FastQwen3Model(FastLlamaModel):
         # https://github.com/huggingface/transformers/pull/27931
         # https://github.com/huggingface/transformers/blob/v4.37.2/src/transformers/models/llama/modeling_llama.py
         import transformers.models.qwen3.modeling_qwen3
+        from transformers.models.qwen3.modeling_qwen3 import Qwen3MLP
 
         transformers.models.qwen3.modeling_qwen3.Qwen3RotaryEmbedding = (
             LlamaRotaryEmbedding
         )
+        Qwen3MLP.forward = fast_swiglu_inference
         return
     @staticmethod
     def from_pretrained(  # TODO: Change after release

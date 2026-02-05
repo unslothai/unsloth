@@ -2147,6 +2147,22 @@ class FastLlamaModel:
         transformers.models.llama.modeling_llama.LlamaLinearScalingRotaryEmbedding = (
             LlamaLinearScalingRotaryEmbedding
         )
+
+        from transformers.models.llama.modeling_llama import LlamaMLP
+        try:
+            from transformers.models.mistral.modeling_mistral import MistralMLP
+        except:
+            MistralMLP = None
+        try:
+            from transformers.models.qwen2.modeling_qwen2 import Qwen2MLP
+        except:
+            Qwen2MLP = None
+
+        LlamaMLP.forward = fast_swiglu_inference
+        if MistralMLP is not None:
+            MistralMLP.forward = fast_swiglu_inference
+        if Qwen2MLP is not None:
+            Qwen2MLP.forward = fast_swiglu_inference
         return
 
     @staticmethod

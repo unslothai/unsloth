@@ -456,10 +456,12 @@ class FastGemmaModel(FastLlamaModel):
         # https://github.com/huggingface/transformers/pull/27931
         # https://github.com/huggingface/transformers/blob/v4.37.2/src/transformers/models/llama/modeling_llama.py
         import transformers.models.gemma.modeling_gemma
+        from transformers.models.gemma.modeling_gemma import GemmaMLP
 
         transformers.models.gemma.modeling_gemma.GemmaRotaryEmbedding = (
             GemmaFixedRotaryEmbedding
         )
+        GemmaMLP.forward = fast_geglu_inference
         return
 
     @staticmethod
