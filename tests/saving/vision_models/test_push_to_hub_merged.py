@@ -29,7 +29,7 @@ train_dataset = dataset.select(range(2000))
 # To select the next 200 examples for evaluation
 eval_dataset = dataset.select(range(2000, 2200))
 
-print(f"✅ Dataset loaded successfully!")
+print("✅ Dataset loaded successfully!")
 print(f"   📈 Training samples: {len(train_dataset)}")
 print(f"   📊 Evaluation samples: {len(eval_dataset)}")
 
@@ -111,10 +111,10 @@ try:
         loftq_config = None,  # And LoftQ
     )
     print("✅ LoRA configuration applied successfully!")
-    print(f"   🎯 LoRA rank (r): 16")
-    print(f"   📊 LoRA alpha: 32")
-    print(f"   🔍 Vision layers: Enabled")
-    print(f"   💬 Language layers: Enabled")
+    print("   🎯 LoRA rank (r): 16")
+    print("   📊 LoRA alpha: 32")
+    print("   🔍 Vision layers: Enabled")
+    print("   💬 Language layers: Enabled")
 except Exception as e:
     print(f"❌ Failed to apply LoRA configuration: {e}")
     raise
@@ -166,10 +166,10 @@ try:
         ),
     )
     print("✅ Trainer setup completed!")
-    print(f"   📦 Batch size: 2")
-    print(f"   🔄 Gradient accumulation steps: 4")
-    print(f"   📈 Max training steps: 10")
-    print(f"   🎯 Learning rate: 2e-4")
+    print("   📦 Batch size: 2")
+    print("   🔄 Gradient accumulation steps: 4")
+    print("   📈 Max training steps: 10")
+    print("   🎯 Learning rate: 2e-4")
     print(f"   💾 Precision: {'BF16' if is_bf16_supported() else 'FP16'}")
 except Exception as e:
     print(f"❌ Failed to setup trainer: {e}")

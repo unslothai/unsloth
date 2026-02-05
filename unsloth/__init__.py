@@ -12,9 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import warnings, importlib, sys
+import warnings
+import importlib
+import sys
 from packaging.version import Version
-import os, re, subprocess, inspect, functools
+import os
+import re
+import subprocess
+import inspect
+import functools
 import numpy as np
 
 # Log Unsloth is being used
@@ -95,7 +101,7 @@ try:
     import unsloth_zoo
 except PackageNotFoundError:
     raise ImportError(
-        f"Unsloth: Please install unsloth_zoo via `pip install unsloth_zoo` then retry!"
+        "Unsloth: Please install unsloth_zoo via `pip install unsloth_zoo` then retry!"
     )
 except:
     raise

@@ -336,7 +336,6 @@ def exceeds_smem_capacity(
 
 
 def common_prune_criteria(config: triton.Config, kwargs: dict, dtype):
-    from ..interface import supports_tma
     from .tuning import get_device_properties
 
     smem_size = get_device_properties().SIZE_SMEM

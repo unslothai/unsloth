@@ -19,18 +19,13 @@ import ctypes
 MAX_FUSED_SIZE: int = 65536
 next_power_of_2 = triton.next_power_of_2
 import functools
-from typing import Optional
 
 from ..device_type import (
     is_hip,
-    get_device_type,
     DEVICE_TYPE,
-    DEVICE_TYPE_TORCH,
     DEVICE_COUNT,
-    ALLOW_PREQUANTIZED_MODELS,
 )
 from .fp8 import weight_dequant, fp8_linear
-import functools
 
 # torch.cuda.amp.custom_fwd is deprecated >= 2.4
 import torch

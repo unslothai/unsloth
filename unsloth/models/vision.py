@@ -17,7 +17,6 @@ from transformers import (
     BitsAndBytesConfig,
     AutoProcessor,
     AutoTokenizer,
-    AutoModelForCausalLM,
 )
 
 try:
@@ -61,29 +60,22 @@ from unsloth_zoo.patching_utils import patch_model_and_tokenizer
 from unsloth_zoo.training_utils import prepare_model_for_training
 
 from unsloth_zoo.utils import Version
-from transformers import __version__ as transformers_version
 
 import types
 import functools
 import os
 import gc
-import math
-from typing import Optional, Tuple, List, Union
-import re, inspect, sys
-import contextlib
+import inspect
 
 try:
-    from huggingface_hub.utils import get_token
+    pass
 except:
     # Old HF Hub versions <= 0.0.25
-    from huggingface_hub.utils._token import get_token
+    pass
 from ..device_type import (
-    is_hip,
-    get_device_type,
     DEVICE_TYPE,
     DEVICE_TYPE_TORCH,
     DEVICE_COUNT,
-    ALLOW_PREQUANTIZED_MODELS,
 )
 
 __all__ = [
@@ -107,7 +99,7 @@ PRE_COMPILE_INFERENCE = [
     "gpt_oss",
 ]
 
-from transformers import GenerationConfig, CompileConfig, AutoConfig
+from transformers import CompileConfig, AutoConfig
 
 try:
     from transformers import PreTrainedConfig
@@ -125,10 +117,6 @@ _compile_config = CompileConfig(
 )
 _compile_config.disable = True  # Must set manually
 
-from unsloth_zoo.vllm_utils import (
-    convert_lora_modules,
-    return_lora_modules,
-)
 
 try:
     torch_compiler_set_stance = torch.compiler.set_stance
@@ -532,7 +520,7 @@ class FastBaseModel:
         flex_attn_impl = prefer_flex_attn_if_supported(model_class, auto_config)
 
         default_attn_impl = "flex_attention" if flex_attn_impl else "sdpa"
-        if not ("attn_implementation" in kwargs):
+        if "attn_implementation" not in kwargs:
             kwargs["attn_implementation"] = default_attn_impl
         if not supports_sdpa and kwargs.get("attn_implementation") == "sdpa":
             if os.environ.get("UNSLOTH_ENABLE_FLEX_ATTENTION", "0") == "0":
@@ -580,13 +568,13 @@ class FastBaseModel:
             if dtype == torch.bfloat16:
                 if float32_mixed_precision != True:
                     print(
-                        f"Unsloth: Using bfloat16 full finetuning which cuts memory usage by 50%.\n"
-                        f"To enable float32 training, use `float32_mixed_precision = True` during FastLanguageModel.from_pretrained"
+                        "Unsloth: Using bfloat16 full finetuning which cuts memory usage by 50%.\n"
+                        "To enable float32 training, use `float32_mixed_precision = True` during FastLanguageModel.from_pretrained"
                     )
                 else:
                     print(
-                        f"Unsloth: Using full float32 full finetuning. "
-                        f"To enable bfloat16 training to reduce VRAM usage by 50% albeit with a slightly higher loss, do:\n"
+                        "Unsloth: Using full float32 full finetuning. "
+                        "To enable bfloat16 training to reduce VRAM usage by 50% albeit with a slightly higher loss, do:\n"
                         "use `float32_mixed_precision = False` during FastLanguageModel.from_pretrained"
                     )
                     os.environ["UNSLOTH_BFLOAT16_MIXED_PRECISION"] = "1"

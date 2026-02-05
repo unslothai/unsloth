@@ -15,20 +15,17 @@
 from ._utils import (
     _prepare_model_for_qat,
     is_bfloat16_supported,
-    is_vLLM_available,
     HAS_FLASH_ATTENTION,
     HAS_FLASH_ATTENTION_SOFTCAPPING,
     USE_MODELSCOPE,
     get_transformers_model_type,
     hf_login,
 )
-from .granite import FastGraniteModel
 from .llama import FastLlamaModel, logger
 from .mistral import FastMistralModel
 from .qwen2 import FastQwen2Model
 from .qwen3 import FastQwen3Model
 from .qwen3_moe import FastQwen3MoeModel
-from .cohere import FastCohereModel
 from transformers import AutoConfig
 from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
@@ -38,22 +35,20 @@ from .loader_utils import (
     _tag_model_with_fp8_torchao_config,
     get_model_name,
 )
-import os, contextlib, sys
+import os
+import contextlib
 
 try:
-    from huggingface_hub import get_token
+    pass
 except:
     try:
-        from huggingface_hub.utils import get_token
+        pass
     except:
         # For older versions of huggingface_hub
-        from huggingface_hub.utils._token import get_token
+        pass
 from huggingface_hub import HfFileSystem
 import importlib.util
 from ..device_type import (
-    is_hip,
-    get_device_type,
-    DEVICE_TYPE,
     DEVICE_TYPE_TORCH,
     DEVICE_COUNT,
     ALLOW_PREQUANTIZED_MODELS,
@@ -82,15 +77,12 @@ if SUPPORTS_GEMMA:
 if SUPPORTS_GEMMA2:
     from .gemma2 import FastGemma2Model
 if SUPPORTS_FALCON_H1:
-    from .falcon_h1 import FastFalconH1Model
+    pass
 import torch
 from ._utils import (
     patch_compiling_bitsandbytes,
-    patch_model_and_tokenizer,
-    prepare_model_for_kbit_training,
     apply_unsloth_gradient_checkpointing,
     patch_compiled_autograd,
-    process_vision_info,
     unsloth_compile_transformers,
     fast_inference_setup,
 )
@@ -679,7 +671,6 @@ class FastLanguageModel(FastLlamaModel):
 
 from ..kernels import (
     patch_loss_functions,
-    post_patch_loss_function,
 )
 from .vision import FastBaseModel
 from transformers import (

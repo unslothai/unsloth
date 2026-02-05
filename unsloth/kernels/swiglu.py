@@ -15,7 +15,7 @@
 import triton
 import triton.language as tl
 import torch
-from .utils import calculate_settings, torch_gpu_device
+from .utils import torch_gpu_device
 
 # signed int32 max is 2**31-1 so num_elements cannot exceed 2**31
 NUM_INT32_ELEMENTS = 2**31
