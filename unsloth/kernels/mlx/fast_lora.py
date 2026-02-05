@@ -23,7 +23,12 @@ def treeify(w):
             "bits": w.bits,
         }
     if not isinstance(w, mx.array):
-        return torch_to_mlx(w)
+        # Convert to MLX - this may return MLXQuantizedWeight from cache
+        converted = torch_to_mlx(w)
+        # Recursively treeify in case we got a cached MLXQuantizedWeight
+        if isinstance(converted, MLXQuantizedWeight):
+            return treeify(converted)
+        return converted
     return w
 
 
