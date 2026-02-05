@@ -245,6 +245,69 @@ def fix_xformers_performance_issue():
             logger.info(f"Unsloth: Failed patching Xformers with error = {str(e)}")
 
 
+def fix_deepseek_v2_moe_alias():
+    try:
+        from transformers.models.deepseek_v2 import modeling_deepseek_v2 as deepseek_v2
+    except Exception:
+        return
+
+    if hasattr(deepseek_v2, "DeepseekV2MoE"):
+        return
+    if not hasattr(deepseek_v2, "DeepseekV2Moe"):
+        return
+
+    deepseek_v2.DeepseekV2MoE = deepseek_v2.DeepseekV2Moe
+    try:
+        if (
+            hasattr(deepseek_v2, "__all__")
+            and "DeepseekV2MoE" not in deepseek_v2.__all__
+        ):
+            deepseek_v2.__all__.append("DeepseekV2MoE")
+    except Exception:
+        pass
+    logger.info("Unsloth: Added DeepseekV2MoE alias for DeepseekV2Moe")
+
+
+def fix_qwen2_vl_max_pixels_none():
+    try:
+        from transformers.models.qwen2_vl import image_processing_qwen2_vl as qwen2_vl
+    except Exception:
+        return
+
+    if getattr(qwen2_vl.smart_resize, "_unsloth_max_pixels_patch", False):
+        return
+
+    original = qwen2_vl.smart_resize
+    default_max_pixels = 14 * 14 * 4 * 1280
+
+    def smart_resize(
+        height, width, factor = 28, min_pixels = 56 * 56, max_pixels = default_max_pixels
+    ):
+        if max_pixels is None:
+            max_pixels = default_max_pixels
+        return original(
+            height, width, factor = factor, min_pixels = min_pixels, max_pixels = max_pixels
+        )
+
+    smart_resize._unsloth_max_pixels_patch = True
+    qwen2_vl.smart_resize = smart_resize
+
+
+def fix_qwen2_5_vl_tie_word_embeddings():
+    try:
+        from transformers.models.qwen2_5_vl.configuration_qwen2_5_vl import (
+            Qwen2_5_VLTextConfig,
+        )
+    except Exception:
+        return
+
+    if hasattr(Qwen2_5_VLTextConfig, "tie_word_embeddings"):
+        return
+
+    Qwen2_5_VLTextConfig.tie_word_embeddings = True
+    logger.info("Unsloth: Added tie_word_embeddings to Qwen2_5_VLTextConfig")
+
+
 def patch_vllm_for_notebooks():
     import sys
 
@@ -373,18 +436,26 @@ def fix_vllm_guided_decoding_params():
     # trl still wants to use GuidedDecodingParams. This is a temporary patch till trl updates
     try:
         import vllm
-    except ImportError as e:
+    except Exception as e:
         _maybe_raise_vllm_transformers_mismatch(e)
-        raise
+        logger.warning(
+            "Unsloth: vLLM import failed, skipping GuidedDecodingParams patch. "
+            f"Error: {e}"
+        )
+        return
 
     try:
         from vllm.sampling_params import GuidedDecodingParams
-    except ImportError as e:
+    except Exception as e:
         _maybe_raise_vllm_transformers_mismatch(e)
         if not hasattr(vllm, "sampling_params") or not hasattr(
             vllm.sampling_params, "StructuredOutputsParams"
         ):
-            raise
+            logger.warning(
+                "Unsloth: vLLM sampling_params missing StructuredOutputsParams; "
+                "skipping GuidedDecodingParams patch."
+            )
+            return
         vllm.sampling_params.GuidedDecodingParams = (
             vllm.sampling_params.StructuredOutputsParams
         )
