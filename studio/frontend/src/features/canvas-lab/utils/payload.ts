@@ -36,6 +36,24 @@ export type CanvasPayloadResult = {
   payload: CanvasPayload;
 };
 
+function isSemanticRelation(
+  source: NodeConfig,
+  target: NodeConfig,
+): boolean {
+  if (source.kind === "model_provider" && target.kind === "model_config") {
+    return true;
+  }
+  if (source.kind === "model_config" && target.kind === "llm") {
+    return true;
+  }
+  return (
+    source.kind === "sampler" &&
+    source.sampler_type === "category" &&
+    target.kind === "sampler" &&
+    target.sampler_type === "subcategory"
+  );
+}
+
 function parseNumber(value?: string): number | null {
   if (!value) {
     return null;
@@ -485,7 +503,10 @@ export function buildCanvasPayload(
       {
         from: source.name,
         to: target.name,
-        type: edge.type ?? "canvas",
+        type:
+          edge.type === "semantic" || isSemanticRelation(source, target)
+            ? "semantic"
+            : "canvas",
       },
     ];
   });

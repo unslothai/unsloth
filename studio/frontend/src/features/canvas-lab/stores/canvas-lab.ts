@@ -251,6 +251,37 @@ export const useCanvasLabStore = create<CanvasLabState>((set, get) => ({
         }
       }
 
+      const hasModelAliasPatch = Object.prototype.hasOwnProperty.call(
+        patch,
+        "model_alias",
+      );
+      if (current.kind === "llm" && hasModelAliasPatch) {
+        const nextAlias =
+          (patch as Partial<NodeConfig> & { model_alias?: string }).model_alias ?? "";
+        edges = edges.filter((edge) => {
+          if (edge.target !== id) {
+            return true;
+          }
+          const source = configs[edge.source];
+          return !(source && source.kind === "model_config");
+        });
+        if (nextAlias) {
+          const modelConfigId = findNodeIdByName(configs, nextAlias);
+          if (modelConfigId) {
+            edges = addEdge(
+              {
+                source: modelConfigId,
+                target: id,
+                sourceHandle: null,
+                targetHandle: null,
+                type: "semantic",
+              },
+              edges,
+            );
+          }
+        }
+      }
+
       if (isCategoryConfig(current)) {
         const nextCategory = isCategoryConfig(next) ? next : current;
         const oldValues = current.values ?? [];

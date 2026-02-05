@@ -12,6 +12,7 @@ type ConfigDialogProps = {
   config: NodeConfig | null;
   categoryOptions: SamplerConfig[];
   onUpdate: (id: string, patch: Partial<NodeConfig>) => void;
+  container?: HTMLDivElement | null;
 };
 
 export function ConfigDialog({
@@ -20,10 +21,17 @@ export function ConfigDialog({
   config,
   categoryOptions,
   onUpdate,
+  container,
 }: ConfigDialogProps): ReactElement {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-2xl">
+      <DialogContent
+        container={container}
+        position="absolute"
+        overlayPosition="absolute"
+        overlayClassName="bg-transparent"
+        className="sm:max-w-2xl shadow-border"
+      >
         <DialogShell />
         {!config && (
           <div className="text-sm text-muted-foreground">
