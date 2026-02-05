@@ -1,4 +1,12 @@
 import { Button } from "@/components/ui/button";
+import {
+  Combobox,
+  ComboboxContent,
+  ComboboxEmpty,
+  ComboboxInput,
+  ComboboxItem,
+  ComboboxList,
+} from "@/components/ui/combobox";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -8,7 +16,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import type { ReactElement } from "react";
+import { type ReactElement, useMemo, useRef } from "react";
+import { useCanvasLabStore } from "../../stores/canvas-lab";
 import type { LlmConfig, Score, ScoreOption } from "../../types";
 import { NameField } from "../shared/name-field";
 
@@ -37,11 +46,20 @@ type LlmDialogProps = {
 };
 
 export function LlmDialog({ config, onUpdate }: LlmDialogProps): ReactElement {
+  const configs = useCanvasLabStore((state) => state.configs);
+  const modelConfigAliases = useMemo(
+    () =>
+      Object.values(configs)
+        .filter((item) => item.kind === "model_config")
+        .map((item) => item.name),
+    [configs],
+  );
   const modelAliasId = `${config.id}-model-alias`;
   const codeLangId = `${config.id}-code-lang`;
   const promptId = `${config.id}-prompt`;
   const outputFormatId = `${config.id}-output-format`;
   const systemPromptId = `${config.id}-system-prompt`;
+  const modelAliasAnchorRef = useRef<HTMLDivElement>(null);
   const scores = config.scores ?? [];
   const updateField = <K extends keyof LlmConfig>(
     key: K,
@@ -118,12 +136,37 @@ export function LlmDialog({ config, onUpdate }: LlmDialogProps): ReactElement {
         >
           Model alias
         </label>
-        <Input
-          id={modelAliasId}
-          className="nodrag"
-          value={config.model_alias}
-          onChange={(event) => updateField("model_alias", event.target.value)}
-        />
+        <div ref={modelAliasAnchorRef}>
+          <Combobox
+            items={modelConfigAliases}
+            filteredItems={modelConfigAliases}
+            filter={null}
+            value={config.model_alias || null}
+            onValueChange={(value) => updateField("model_alias", value ?? "")}
+            onInputValueChange={(value) => updateField("model_alias", value)}
+            itemToStringValue={(value) => value}
+            autoHighlight={true}
+          >
+            <ComboboxInput
+              id={modelAliasId}
+              className="nodrag w-full"
+              placeholder="Pick model alias or type"
+            />
+            <ComboboxContent anchor={modelAliasAnchorRef}>
+              <ComboboxEmpty>No model configs found</ComboboxEmpty>
+              <ComboboxList>
+                {(alias: string) => (
+                  <ComboboxItem key={alias} value={alias}>
+                    {alias}
+                  </ComboboxItem>
+                )}
+              </ComboboxList>
+            </ComboboxContent>
+          </Combobox>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Pick a model config alias. Matching node link becomes semantic.
+        </p>
       </div>
       {config.llm_type === "code" && (
         <div className="grid gap-2">

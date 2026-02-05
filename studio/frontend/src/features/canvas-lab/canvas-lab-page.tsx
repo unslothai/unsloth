@@ -325,11 +325,13 @@ export function CanvasLabPage(): ReactElement {
         config={config}
         categoryOptions={categoryOptions}
         onUpdate={updateConfig}
+        container={sheetContainer}
       />
       <ImportDialog
         open={importOpen}
         onOpenChange={setImportOpen}
         onImport={handleImport}
+        container={sheetContainer}
       />
     </div>
   );

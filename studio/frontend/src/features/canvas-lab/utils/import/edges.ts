@@ -2,6 +2,21 @@ import type { Edge } from "@xyflow/react";
 import type { NodeConfig } from "../../types";
 import { extractRefs } from "./helpers";
 
+function isSemanticConnection(source: NodeConfig, target: NodeConfig): boolean {
+  if (source.kind === "model_provider" && target.kind === "model_config") {
+    return true;
+  }
+  if (source.kind === "model_config" && target.kind === "llm") {
+    return true;
+  }
+  return (
+    source.kind === "sampler" &&
+    source.sampler_type === "category" &&
+    target.kind === "sampler" &&
+    target.sampler_type === "subcategory"
+  );
+}
+
 export function buildEdges(
   configs: NodeConfig[],
   nameToId: Map<string, string>,
@@ -9,6 +24,7 @@ export function buildEdges(
 ): Edge[] {
   const edges: Edge[] = [];
   const seen = new Set<string>();
+  const configByName = new Map(configs.map((config) => [config.name, config]));
   const addEdgeByName = (from: string, to: string, type?: string) => {
     const sourceId = nameToId.get(from);
     const targetId = nameToId.get(to);
@@ -20,11 +36,17 @@ export function buildEdges(
       return;
     }
     seen.add(key);
+    const source = configByName.get(from);
+    const target = configByName.get(to);
+    const normalizedType =
+      source && target && isSemanticConnection(source, target)
+        ? "semantic"
+        : (type ?? "canvas");
     edges.push({
       id: `e-${key}`,
       source: sourceId,
       target: targetId,
-      type: type ?? "canvas",
+      type: normalizedType,
     });
   };
 
