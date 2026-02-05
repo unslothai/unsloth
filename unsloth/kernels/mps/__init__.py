@@ -40,6 +40,9 @@ __all__ = [
     "mps_apply_lora_mlp_geglu_approx",
     "mps_apply_lora_qkv",
     "mps_apply_lora_o",
+    # MoE operations
+    "dispatch_grouped_gemm",
+    "grouped_gemm_mps",
 ]
 
 
@@ -213,4 +216,8 @@ from .fast_lora import (
     mps_apply_lora_mlp_geglu_approx,
     mps_apply_lora_qkv,
     mps_apply_lora_o,
+)
+from .moe import (
+    dispatch_grouped_gemm,
+    grouped_gemm_mps,
 )
