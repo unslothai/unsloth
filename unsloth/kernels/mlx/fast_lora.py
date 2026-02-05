@@ -71,6 +71,9 @@ def matmul_lora(X, W, W_quant, A, B, S):
     out = quantized_matmul(X, W)
 
     # 2. LoRA
+    if A is None:
+        return out
+
     # Unsloth: A (Rank, In), B (Out, Rank).
     lora_out = (X @ A.T) @ B.T
     return out + lora_out * S
@@ -367,37 +370,46 @@ def apply_lora_qkv(
             X_mlx = torch_to_mlx(X)
             return_mlx = False
 
+        has_lora = QA is not None
+
         # Batch=1 Optimization
         if X_mlx.size // X_mlx.shape[-1] == 1:
             # Inputs
             QW_mlx = torch_to_mlx(QW)
-            QA_mlx = torch_to_mlx(QA)
-            QB_mlx = torch_to_mlx(QB)
             KW_mlx = torch_to_mlx(KW)
-            KA_mlx = torch_to_mlx(KA)
-            KB_mlx = torch_to_mlx(KB)
             VW_mlx = torch_to_mlx(VW)
-            VA_mlx = torch_to_mlx(VA)
-            VB_mlx = torch_to_mlx(VB)
-
-            QS_val = QS.item() if hasattr(QS, "item") else QS
-            KS_val = KS.item() if hasattr(KS, "item") else KS
-            VS_val = VS.item() if hasattr(VS, "item") else VS
 
             X_flat = X_mlx.reshape(1, -1)
 
-            Q = (
-                quantized_matmul(X_flat, QW_mlx)
-                + (X_flat @ QA_mlx.T) @ QB_mlx.T * QS_val
-            )
-            K = (
-                quantized_matmul(X_flat, KW_mlx)
-                + (X_flat @ KA_mlx.T) @ KB_mlx.T * KS_val
-            )
-            V = (
-                quantized_matmul(X_flat, VW_mlx)
-                + (X_flat @ VA_mlx.T) @ VB_mlx.T * VS_val
-            )
+            if not has_lora:
+                Q = quantized_matmul(X_flat, QW_mlx)
+                K = quantized_matmul(X_flat, KW_mlx)
+                V = quantized_matmul(X_flat, VW_mlx)
+            else:
+                QA_mlx = torch_to_mlx(QA)
+                QB_mlx = torch_to_mlx(QB)
+                QS_val = QS.item() if hasattr(QS, "item") else QS
+                
+                KA_mlx = torch_to_mlx(KA)
+                KB_mlx = torch_to_mlx(KB)
+                KS_val = KS.item() if hasattr(KS, "item") else KS
+                
+                VA_mlx = torch_to_mlx(VA)
+                VB_mlx = torch_to_mlx(VB)
+                VS_val = VS.item() if hasattr(VS, "item") else VS
+
+                Q = (
+                    quantized_matmul(X_flat, QW_mlx)
+                    + (X_flat @ QA_mlx.T) @ QB_mlx.T * QS_val
+                )
+                K = (
+                    quantized_matmul(X_flat, KW_mlx)
+                    + (X_flat @ KA_mlx.T) @ KB_mlx.T * KS_val
+                )
+                V = (
+                    quantized_matmul(X_flat, VW_mlx)
+                    + (X_flat @ VA_mlx.T) @ VB_mlx.T * VS_val
+                )
 
             Q_out = Q.reshape(X.shape[:-1] + (QW.shape[0],))
             K_out = K.reshape(X.shape[:-1] + (KW.shape[0],))
@@ -413,35 +425,41 @@ def apply_lora_qkv(
             )
 
         QW_mlx = treeify(QW)
-        QA_mlx = torch_to_mlx(QA)
-        QB_mlx = torch_to_mlx(QB)
-        QS_mlx = torch_to_mlx(QS) if hasattr(QS, "shape") else QS
-
         KW_mlx = treeify(KW)
-        KA_mlx = torch_to_mlx(KA)
-        KB_mlx = torch_to_mlx(KB)
-        KS_mlx = torch_to_mlx(KS) if hasattr(KS, "shape") else KS
-
         VW_mlx = treeify(VW)
-        VA_mlx = torch_to_mlx(VA)
-        VB_mlx = torch_to_mlx(VB)
-        VS_mlx = torch_to_mlx(VS) if hasattr(VS, "shape") else VS
 
-        Q_mlx, K_mlx, V_mlx = _compiled_qkv(
-            X_mlx,
-            QW_mlx,
-            QA_mlx,
-            QB_mlx,
-            QS_mlx,
-            KW_mlx,
-            KA_mlx,
-            KB_mlx,
-            KS_mlx,
-            VW_mlx,
-            VA_mlx,
-            VB_mlx,
-            VS_mlx,
-        )
+        if not has_lora:
+            Q_mlx = quantized_matmul(X_mlx, QW_mlx)
+            K_mlx = quantized_matmul(X_mlx, KW_mlx)
+            V_mlx = quantized_matmul(X_mlx, VW_mlx)
+        else:
+            QA_mlx = torch_to_mlx(QA)
+            QB_mlx = torch_to_mlx(QB)
+            QS_mlx = torch_to_mlx(QS) if hasattr(QS, "shape") else QS
+
+            KA_mlx = torch_to_mlx(KA)
+            KB_mlx = torch_to_mlx(KB)
+            KS_mlx = torch_to_mlx(KS) if hasattr(KS, "shape") else KS
+
+            VA_mlx = torch_to_mlx(VA)
+            VB_mlx = torch_to_mlx(VB)
+            VS_mlx = torch_to_mlx(VS) if hasattr(VS, "shape") else VS
+
+            Q_mlx, K_mlx, V_mlx = _compiled_qkv(
+                X_mlx,
+                QW_mlx,
+                QA_mlx,
+                QB_mlx,
+                QS_mlx,
+                KW_mlx,
+                KA_mlx,
+                KB_mlx,
+                KS_mlx,
+                VW_mlx,
+                VA_mlx,
+                VB_mlx,
+                VS_mlx,
+            )
 
         if return_mlx:
             return Q_mlx, K_mlx, V_mlx
@@ -467,18 +485,24 @@ def apply_lora_o(X, OW, OW_quant, OA, OB, OS):
             X_mlx = torch_to_mlx(X)
             return_mlx = False
 
+        has_lora = OA is not None
+
         # Batch=1 Optimization
         if X_mlx.size // X_mlx.shape[-1] == 1:
             OW_mlx = torch_to_mlx(OW)
-            OA_mlx = torch_to_mlx(OA)
-            OB_mlx = torch_to_mlx(OB)
-            OS_val = OS.item() if hasattr(OS, "item") else OS
-
             X_flat = X_mlx.reshape(1, -1)
-            out = (
-                quantized_matmul(X_flat, OW_mlx)
-                + (X_flat @ OA_mlx.T) @ OB_mlx.T * OS_val
-            )
+
+            if not has_lora:
+                out = quantized_matmul(X_flat, OW_mlx)
+            else:
+                OA_mlx = torch_to_mlx(OA)
+                OB_mlx = torch_to_mlx(OB)
+                OS_val = OS.item() if hasattr(OS, "item") else OS
+                out = (
+                    quantized_matmul(X_flat, OW_mlx)
+                    + (X_flat @ OA_mlx.T) @ OB_mlx.T * OS_val
+                )
+            
             out_reshaped = out.reshape(X.shape[:-1] + (OW.shape[0],))
             
             if return_mlx:
@@ -491,11 +515,14 @@ def apply_lora_o(X, OW, OW_quant, OA, OB, OS):
             )
 
         OW_mlx = treeify(OW)
-        OA_mlx = torch_to_mlx(OA)
-        OB_mlx = torch_to_mlx(OB)
-        OS_mlx = torch_to_mlx(OS) if hasattr(OS, "shape") else OS
-
-        out_mlx = _compiled_o(X_mlx, OW_mlx, OA_mlx, OB_mlx, OS_mlx)
+        
+        if not has_lora:
+            out_mlx = quantized_matmul(X_mlx, OW_mlx)
+        else:
+            OA_mlx = torch_to_mlx(OA)
+            OB_mlx = torch_to_mlx(OB)
+            OS_mlx = torch_to_mlx(OS) if hasattr(OS, "shape") else OS
+            out_mlx = _compiled_o(X_mlx, OW_mlx, OA_mlx, OB_mlx, OS_mlx)
         
         if return_mlx:
             return out_mlx

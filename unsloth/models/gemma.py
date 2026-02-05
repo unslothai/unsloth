@@ -502,8 +502,5 @@ class FastGemmaModel(FastLlamaModel):
 
         for _ in range(3):
             gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-                torch.mps.empty_cache()
+            clean_gpu_cache()
         return model, tokenizer

@@ -598,6 +598,11 @@ def fast_rms_layernorm_inference_gemma(self, X, out_weight=None):
 # Normal layernorm with mean removal
 @torch.compile(fullgraph=False, dynamic=True, options=torch_compile_options)
 def fast_layernorm_compiled(layernorm, X):
+    from ..device_type import DEVICE_TYPE
+    if DEVICE_TYPE == "mps":
+        from ..kernels.mps.dispatch import dispatch_layernorm
+        return dispatch_layernorm(X, layernorm.weight, getattr(layernorm, "bias", None), getattr(layernorm, "variance_epsilon", getattr(layernorm, "eps", 1e-5)))
+
     old_dtype = X.dtype
     X = X.float()
     mean = X.mean(-1, keepdim=True)
@@ -668,7 +673,7 @@ def LlamaAttention_fast_forward(
     #     if rope_position_ids is None
     #     else inplace_rope_embedding(Q, K, cos, sin, rope_position_ids)
     # )
-    Q, K = fast_rope_embedding(Q, K, cos, sin, rope_position_ids)
+    Q, K = dispatch_rope_embedding(Q, K, cos, sin, rope_position_ids)
 
     if past_key_value is not None:
         K = torch.cat([past_key_value[0], K], dim=2)

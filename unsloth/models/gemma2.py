@@ -672,5 +672,5 @@ class FastGemma2Model(FastLlamaModel):
 
         for _ in range(3):
             gc.collect()
-            torch.cuda.empty_cache()
+            clean_gpu_cache()
         return model, tokenizer
