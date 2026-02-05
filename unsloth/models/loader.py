@@ -746,10 +746,9 @@ class FastLanguageModel(FastLlamaModel):
         if patch_tiled_mlp_choice != "0" or unsloth_tiled_mlp:
             patch_tiled_mlp(model, patch_options_str=patch_tiled_mlp_choice)
 
-        # [MPS] On-the-fly 4-bit MLX quantization
-        if DEVICE_TYPE == "mps" and load_in_4bit:
-            from .quantization_mlx import quantize_model_mlx
-            model = quantize_model_mlx(model)
+
+        # NOTE: MLX quantization is already handled in the earlier block (line ~673)
+        # The fast_quantize call handles on-the-fly 4-bit quantization for MPS
 
         return model, tokenizer
 
