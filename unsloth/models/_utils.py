@@ -59,9 +59,11 @@ __all__ = [
     "unsloth_fused_ce_loss",
     "patch_unsloth_smart_gradient_checkpointing",
     "unpatch_unsloth_smart_gradient_checkpointing",
+    "apply_unsloth_gradient_checkpointing",
     "patch_compiled_autograd",
     "process_vision_info",
     "unsloth_compile_transformers",
+    "prefer_flex_attn_if_supported",
     "patch_fast_lora",
     "validate_loftq_config",
     "RaiseUninitialized",
@@ -147,6 +149,68 @@ from unsloth_zoo.training_utils import (
 from unsloth_zoo.temporary_patches import (
     TEMPORARY_PATCHES,
 )
+
+
+def apply_unsloth_gradient_checkpointing(
+    use_gradient_checkpointing, max_seq_length, dtype
+):
+    """
+    Apply gradient checkpointing with smart heuristics.
+
+    For seq < 512, the overhead of gradient offloading in gc="unsloth" mode
+    is not worth it. Benchmarks show standard gc is faster for small sequences.
+
+    Args:
+        use_gradient_checkpointing: "unsloth", True, False, or None
+        max_seq_length: The maximum sequence length
+        dtype: The model dtype for patching
+
+    Returns:
+        The effective use_gradient_checkpointing value (may change from "unsloth" to True)
+    """
+    if use_gradient_checkpointing == "unsloth":
+        # Gradient offloading overhead is not worth it for small sequences.
+        # Benchmarks show crossover point is around seq_len 384-512.
+        # For seq < 512, standard gradient checkpointing is faster.
+        if max_seq_length < 512:
+            unpatch_unsloth_smart_gradient_checkpointing()
+            return True
+        else:
+            patch_unsloth_smart_gradient_checkpointing(dtype = dtype)
+            return "unsloth"
+    elif use_gradient_checkpointing in (True, False):
+        # User explicitly set True or False - unpatch any previous "unsloth" patching
+        unpatch_unsloth_smart_gradient_checkpointing()
+        return use_gradient_checkpointing
+    return use_gradient_checkpointing
+
+
+def prefer_flex_attn_if_supported(model_class, config):
+    if os.environ.get("UNSLOTH_ENABLE_FLEX_ATTENTION", "1") == "0":
+        return None
+    try:
+        from transformers.utils.import_utils import is_torch_flex_attn_available
+
+        if not is_torch_flex_attn_available():
+            return None
+        if model_class is None or not getattr(
+            model_class, "_supports_flex_attn", False
+        ):
+            return None
+        # GPT-OSS uses eager attention during inference since flex attention
+        # returns incorrect results (likely due to left padding issues).
+        # Skip setting flex_attention to avoid BlockMask type errors.
+        model_type = getattr(config, "model_type", "") if config else ""
+        if model_type == "gpt_oss":
+            return None
+        if config is not None:
+            setattr(config, "_attn_implementation", "flex_attention")
+            if hasattr(config, "attn_implementation"):
+                setattr(config, "attn_implementation", "flex_attention")
+        return "flex_attention"
+    except Exception:
+        return None
+
 
 for temporary_patch in TEMPORARY_PATCHES:
     temporary_patch()
@@ -1088,8 +1152,12 @@ def has_internet(host = "8.8.8.8", port = 53, timeout = 3):
         return False
     try:
         socket.setdefaulttimeout(timeout)
-        socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect((host, port))
-        return True
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.connect((host, port))
+            return True
+        finally:
+            sock.close()
     except socket.error as ex:
         return False
 
