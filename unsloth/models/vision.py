@@ -430,16 +430,26 @@ class FastBaseModel:
             # [TODO] After adding vLLM support for XPU, change this
             vllm_version = ""
         elif DEVICE_TYPE == "mps":
-            import psutil
-            gpu_stats = types.SimpleNamespace()
-            gpu_stats.total_memory = psutil.virtual_memory().total
-            gpu_stats.name = "Apple Silicon"
-            gpu_stats.major = 0
-            gpu_stats.minor = 0
+            # Use proper Apple Silicon hardware detection
+            try:
+                from unsloth.kernels.mps import get_apple_hardware_info
+                hw_info = get_apple_hardware_info()
+                gpu_stats = types.SimpleNamespace()
+                gpu_stats.total_memory = hw_info.get("total_memory_bytes", 16 * 1024**3)
+                gpu_stats.name = hw_info.get("chip_name", "Apple Silicon")
+                gpu_stats.major = 1
+                gpu_stats.minor = 0
+            except Exception:
+                import psutil
+                gpu_stats = types.SimpleNamespace()
+                gpu_stats.total_memory = psutil.virtual_memory().total
+                gpu_stats.name = "Apple Silicon"
+                gpu_stats.major = 1
+                gpu_stats.minor = 0
             
-            gpu_stats_name = "Apple Silicon. "
+            gpu_stats_name = f"{gpu_stats.name}. "
             gpu_version = "Metal Performance Shaders"
-            gpu_stats_snippet = f"MPS. "
+            gpu_stats_snippet = "MPS."
             vllm_version = ""
         else:
             raise ValueError(f"Unsloth: Unsupported device type: {DEVICE_TYPE}")

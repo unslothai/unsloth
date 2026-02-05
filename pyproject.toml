@@ -40,7 +40,8 @@ triton = [
     "triton-windows ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 ]
 apple = [
-    "mlx>=0.6.0 ; sys_platform == 'darwin'",
+    "mlx>=0.6.0 ; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "psutil ; sys_platform == 'darwin'",
 ]
 
 huggingfacenotorch = [

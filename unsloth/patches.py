@@ -104,24 +104,68 @@ def patch_unsloth_zoo_for_mps() -> bool:
 
         # We MUST override even if it exists, because the original raises AssertionError
         def mock_mem_get_info(device=None):
-            return (16 * 1024**3, 24 * 1024**3)
+            # Use real memory info when available
+            try:
+                from unsloth.kernels.mps import get_apple_hardware_info
+                hw_info = get_apple_hardware_info()
+                total = hw_info.get("total_memory_bytes", 24 * 1024**3)
+                usable = int(hw_info.get("usable_memory_gb", 16) * 1024**3)
+                return (usable, total)
+            except Exception:
+                return (16 * 1024**3, 24 * 1024**3)
 
         torch.cuda.memory.mem_get_info = mock_mem_get_info
 
-        # Mock torch.cuda.get_device_properties
-        class MockProps:
-            major = 8
-            minor = 0
-            multi_processor_count = 1
-            total_global_mem = 24 * 1024**3
-            name = "Apple Silicon (MPS Mock)"
+        # AppleSiliconProps - uses real hardware detection instead of fake NVIDIA values
+        class AppleSiliconProps:
+            """
+            Provides CUDA-compatible device properties using real Apple Silicon info.
+            This replaces the fake NVIDIA mocking with actual hardware data.
+            """
+            def __init__(self):
+                self._hw_info = None
+                
+            def _get_hw_info(self):
+                if self._hw_info is None:
+                    try:
+                        from unsloth.kernels.mps import get_apple_hardware_info
+                        self._hw_info = get_apple_hardware_info()
+                    except Exception:
+                        self._hw_info = {}
+                return self._hw_info
+            
+            @property
+            def major(self):
+                return 1  # Apple Silicon "compute capability"
+            
+            @property
+            def minor(self):
+                return 0
+            
+            @property
+            def multi_processor_count(self):
+                return self._get_hw_info().get("gpu_cores", 8)
+            
+            @property
+            def total_memory(self):
+                return self._get_hw_info().get("total_memory_bytes", 16 * 1024**3)
+            
+            @property
+            def total_global_mem(self):
+                return self.total_memory
+            
+            @property
+            def name(self):
+                return self._get_hw_info().get("chip_name", "Apple Silicon")
 
-        torch.cuda.get_device_properties = lambda device=None: MockProps()
+        # Cache a single instance for all calls
+        _apple_props_instance = AppleSiliconProps()
+        torch.cuda.get_device_properties = lambda device=None: _apple_props_instance
         torch.cuda.synchronize = lambda device=None: None
         torch.cuda.empty_cache = lambda: None
         torch.cuda.set_device = lambda device: None
         torch.cuda.current_device = lambda: 0
-        torch.cuda.get_device_capability = lambda device=None: (8, 0)
+        torch.cuda.get_device_capability = lambda device=None: (1, 0)  # Apple Silicon
         torch.cuda.is_bf16_supported = lambda: True  # Most modern Macs support it
 
     # --- MOCK TRITON (THE GHOST PACKAGE) ---

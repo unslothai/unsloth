@@ -23,7 +23,12 @@ from unsloth_zoo.llama_cpp import (
     check_llama_cpp,
     _download_convert_hf_to_gguf,
 )
-from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
+try:
+    from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
+    BNB_AVAILABLE = True
+except ImportError:
+    Bnb_Linear4bit = None
+    BNB_AVAILABLE = False
 from peft.tuners.lora import Linear4bit as Peft_Linear4bit
 from peft.tuners.lora import Linear as Peft_Linear
 from typing import Optional, Callable, Union, List
@@ -625,9 +630,19 @@ def unsloth_save_model(
         internal_model.model.embed_tokens.weight.data.to(torch_dtype)
     )
 
-    max_vram = int(
-        torch.cuda.get_device_properties(0).total_memory * maximum_memory_usage
-    )
+    # Get max VRAM based on device type
+    if DEVICE_TYPE == "mps":
+        # MPS uses unified memory - use a portion of system memory
+        try:
+            from unsloth.kernels.mps import get_apple_hardware_info
+            hw_info = get_apple_hardware_info()
+            max_vram = int(hw_info.get("total_memory_bytes", 16 * 1024**3) * maximum_memory_usage)
+        except Exception:
+            max_vram = int(psutil.virtual_memory().total * maximum_memory_usage)
+    else:
+        max_vram = int(
+            torch.cuda.get_device_properties(0).total_memory * maximum_memory_usage
+        )
 
     print("Unsloth: Saving model... This might take 5 minutes ...")
 

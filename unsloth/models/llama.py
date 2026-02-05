@@ -2269,15 +2269,30 @@ class FastLlamaModel:
             except:
                 vllm_version = ""
         elif DEVICE_TYPE == "mps":
-
-            class MpsProps:
-                name = "Apple Silicon GPU"
-                total_memory = 0  # TODO: Get actual memory
-
-            gpu_stats = MpsProps()
-            gpu_stats_name = "Apple Silicon. "
-            gpu_version = ""
-            gpu_stats_snippet = ""
+            # Use proper Apple Silicon hardware detection
+            try:
+                from unsloth.kernels.mps import get_apple_hardware_info
+                hw_info = get_apple_hardware_info()
+                
+                class AppleSiliconStats:
+                    name = hw_info.get("chip_name", "Apple Silicon")
+                    total_memory = hw_info.get("total_memory_bytes", 16 * 1024**3)
+                    major = 1
+                    minor = 0
+                
+                gpu_stats = AppleSiliconStats()
+            except Exception:
+                import psutil
+                class MpsProps:
+                    name = "Apple Silicon"
+                    total_memory = psutil.virtual_memory().total
+                    major = 1
+                    minor = 0
+                gpu_stats = MpsProps()
+            
+            gpu_stats_name = f"{gpu_stats.name}. "
+            gpu_version = "Metal Performance Shaders"
+            gpu_stats_snippet = "MPS."
             vllm_version = ""
         else:
             raise ValueError(f"Unsloth: Unsupported device type: {DEVICE_TYPE}")
