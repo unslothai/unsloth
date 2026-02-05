@@ -197,6 +197,12 @@ def prefer_flex_attn_if_supported(model_class, config):
             model_class, "_supports_flex_attn", False
         ):
             return None
+        # GPT-OSS uses eager attention during inference since flex attention
+        # returns incorrect results (likely due to left padding issues).
+        # Skip setting flex_attention to avoid BlockMask type errors.
+        model_type = getattr(config, "model_type", "") if config else ""
+        if model_type == "gpt_oss":
+            return None
         if config is not None:
             setattr(config, "_attn_implementation", "flex_attention")
             if hasattr(config, "attn_implementation"):
