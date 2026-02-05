@@ -1,6 +1,7 @@
 import {
   Background,
   BackgroundVariant,
+  Controls,
   type EdgeTypes,
   type Node,
   type NodeTypes,
@@ -52,10 +53,10 @@ function LayoutControls({
 
   return (
     <Panel position="top-left" className="m-3 flex items-center gap-2">
-      <Button size="sm" variant="secondary" onClick={handleLayout}>
+      <Button size="sm" className="corner-squircle" variant="secondary" onClick={handleLayout}>
         Auto layout
       </Button>
-      <Button size="sm" variant="outline" onClick={onToggleDirection}>
+      <Button size="sm" className="corner-squircle" variant="outline" onClick={onToggleDirection}>
         {direction}
       </Button>
     </Panel>
@@ -267,7 +268,7 @@ export function CanvasLabPage(): ReactElement {
           </div>
         </div>
         <div
-          className="relative h-[75vh] w-full rounded-3xl border border-border/60 bg-white shadow-sm"
+          className="relative h-[75vh] w-full rounded-2xl corner-squircle border "
           ref={setSheetContainer}
         >
           <ReactFlow
@@ -308,6 +309,7 @@ export function CanvasLabPage(): ReactElement {
                 onAddExpression={addExpressionNode}
               />
             </Panel>
+            <Controls position="bottom-left" />
           </ReactFlow>
         </div>
       </main>

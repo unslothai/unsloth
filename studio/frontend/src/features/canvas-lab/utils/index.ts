@@ -26,6 +26,7 @@ const LLM_LABELS: Record<LlmType, string> = {
   text: "LLM Text",
   structured: "LLM Structured",
   code: "LLM Code",
+  judge: "LLM Judge",
 };
 
 const EXPRESSION_LABELS: Record<ExpressionDtype, string> = {
@@ -179,6 +180,8 @@ export function makeLlmConfig(
     namePrefix = "llm_structured";
   } else if (llmType === "code") {
     namePrefix = "llm_code";
+  } else if (llmType === "judge") {
+    namePrefix = "llm_judge";
   }
   const name = nextName(existing, namePrefix);
   return {
@@ -189,7 +192,10 @@ export function makeLlmConfig(
     name,
     // biome-ignore lint/style/useNamingConvention: api schema
     model_alias: "allenai/olmo-3.1-32b-instruct",
-    prompt: "Write a response.",
+    prompt:
+      llmType === "judge"
+        ? "Evaluate the content using the scoring criteria below."
+        : "Write a response.",
     // biome-ignore lint/style/useNamingConvention: api schema
     system_prompt: "",
     // biome-ignore lint/style/useNamingConvention: api schema
@@ -197,6 +203,20 @@ export function makeLlmConfig(
     // biome-ignore lint/style/useNamingConvention: api schema
     output_format:
       llmType === "structured" ? '{\n  "field": "string"\n}' : undefined,
+    scores:
+      llmType === "judge"
+        ? [
+            {
+              name: "Quality",
+              description: "Overall quality based on the criteria.",
+              options: [
+                { value: "1", description: "Poor" },
+                { value: "3", description: "Acceptable" },
+                { value: "5", description: "Excellent" },
+              ],
+            },
+          ]
+        : undefined,
   };
 }
 
@@ -234,6 +254,7 @@ export function nodeDataFromConfig(
       title: "Sampler",
       kind: "sampler",
       subtype: labelForSampler(config.sampler_type),
+      blockType: config.sampler_type,
       name: config.name,
       layoutDirection,
     };
@@ -243,6 +264,7 @@ export function nodeDataFromConfig(
       title: "Expression",
       kind: "expression",
       subtype: labelForExpression(config.dtype),
+      blockType: "expression",
       name: config.name,
       layoutDirection,
     };
@@ -251,6 +273,7 @@ export function nodeDataFromConfig(
     title: "LLM",
     kind: "llm",
     subtype: labelForLlm(config.llm_type),
+    blockType: config.llm_type,
     name: config.name,
     layoutDirection,
   };

@@ -5,8 +5,15 @@ import type {
   NodeConfig,
   SamplerConfig,
   SamplerType,
+  Score,
+  ScoreOption,
 } from "../../types";
-import { normalizeOutputFormat, readNumberString, readString } from "./helpers";
+import {
+  isRecord,
+  normalizeOutputFormat,
+  readNumberString,
+  readString,
+} from "./helpers";
 
 const SAMPLER_TYPES: SamplerType[] = [
   "category",
@@ -186,7 +193,28 @@ function parseLlm(
     llmType = "structured";
   } else if (columnType === "llm-code") {
     llmType = "code";
+  } else if (columnType === "llm-judge") {
+    llmType = "judge";
   }
+  const scores: Score[] =
+    columnType === "llm-judge" && Array.isArray(column.scores)
+      ? column.scores
+          .filter((score) => isRecord(score))
+          .map((score) => {
+            const options: ScoreOption[] = [];
+            const rawOptions = isRecord(score.options) ? score.options : {};
+            for (const [key, value] of Object.entries(rawOptions)) {
+              const description =
+                typeof value === "string" ? value : JSON.stringify(value);
+              options.push({ value: String(key), description });
+            }
+            return {
+              name: readString(score.name) ?? "",
+              description: readString(score.description) ?? "",
+              options,
+            };
+          })
+      : [];
   return {
     id,
     kind: "llm",
@@ -202,6 +230,7 @@ function parseLlm(
     code_lang: readString(column.code_lang) ?? "",
     // biome-ignore lint/style/useNamingConvention: api schema
     output_format: normalizeOutputFormat(column.output_format),
+    scores: llmType === "judge" ? scores : undefined,
   };
 }
 
@@ -236,6 +265,7 @@ const COLUMN_PARSERS: Record<string, ColumnParser> = {
   "llm-text": (column, name, id) => parseLlm(column, name, id),
   "llm-structured": (column, name, id) => parseLlm(column, name, id),
   "llm-code": (column, name, id) => parseLlm(column, name, id),
+  "llm-judge": (column, name, id) => parseLlm(column, name, id),
 };
 
 export function parseColumn(
