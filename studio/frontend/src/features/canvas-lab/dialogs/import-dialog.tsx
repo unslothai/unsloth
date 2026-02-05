@@ -7,29 +7,31 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
-import { type ReactElement, useEffect, useState } from "react";
+import { type ReactElement, useState } from "react";
 
 type ImportDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onImport: (value: string) => string | null;
+  container?: HTMLDivElement | null;
 };
 
 export function ImportDialog({
   open,
   onOpenChange,
   onImport,
+  container,
 }: ImportDialogProps): ReactElement {
   const [value, setValue] = useState("");
   const [error, setError] = useState<string | null>(null);
   const payloadId = "canvas-import-payload";
-
-  useEffect(() => {
-    if (!open) {
+  const handleOpenChange = (nextOpen: boolean) => {
+    if (!nextOpen) {
       setValue("");
       setError(null);
     }
-  }, [open]);
+    onOpenChange(nextOpen);
+  };
 
   const handleImport = () => {
     const message = onImport(value);
@@ -37,12 +39,18 @@ export function ImportDialog({
       setError(message);
       return;
     }
-    onOpenChange(false);
+    handleOpenChange(false);
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[85vh] overflow-auto sm:max-w-2xl">
+    <Dialog open={open} onOpenChange={handleOpenChange}>
+      <DialogContent
+        container={container}
+        position="absolute"
+        overlayPosition="absolute"
+        overlayClassName="bg-transparent"
+        className="max-h-[85vh] overflow-auto sm:max-w-2xl"
+      >
         <DialogHeader>
           <DialogTitle>Import recipe</DialogTitle>
         </DialogHeader>

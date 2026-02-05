@@ -1,6 +1,14 @@
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Combobox,
+  ComboboxContent,
+  ComboboxEmpty,
+  ComboboxInput,
+  ComboboxItem,
+  ComboboxList,
+} from "@/components/ui/combobox";
 import { Input } from "@/components/ui/input";
-import type { ReactElement } from "react";
+import { type ReactElement, useMemo, useRef } from "react";
 import type { ModelConfig } from "../../types";
 import { useCanvasLabStore } from "../../stores/canvas-lab";
 import { NameField } from "../shared/name-field";
@@ -14,17 +22,20 @@ export function ModelConfigDialog({
   config,
   onUpdate,
 }: ModelConfigDialogProps): ReactElement {
-  const providerOptions = useCanvasLabStore((state) =>
-    Object.values(state.configs)
-      .filter((item) => item.kind === "model_provider")
-      .map((item) => item.name),
+  const configs = useCanvasLabStore((state) => state.configs);
+  const providerOptions = useMemo(
+    () =>
+      Object.values(configs)
+        .filter((item) => item.kind === "model_provider")
+        .map((item) => item.name),
+    [configs],
   );
   const modelId = `${config.id}-model`;
   const providerId = `${config.id}-provider`;
-  const providerListId = `${config.id}-provider-list`;
   const tempId = `${config.id}-temperature`;
   const topPId = `${config.id}-top-p`;
   const maxTokensId = `${config.id}-max-tokens`;
+  const providerAnchorRef = useRef<HTMLDivElement>(null);
   const updateField = <K extends keyof ModelConfig>(
     key: K,
     value: ModelConfig[K],
@@ -60,18 +71,37 @@ export function ModelConfigDialog({
         >
           Provider name
         </label>
-        <Input
-          id={providerId}
-          className="nodrag"
-          value={config.provider}
-          list={providerListId}
-          onChange={(event) => updateField("provider", event.target.value)}
-        />
-        <datalist id={providerListId}>
-          {providerOptions.map((provider) => (
-            <option key={provider} value={provider} />
-          ))}
-        </datalist>
+        <div ref={providerAnchorRef}>
+          <Combobox
+            items={providerOptions}
+            filteredItems={providerOptions}
+            filter={null}
+            value={config.provider || null}
+            onValueChange={(value) => updateField("provider", value ?? "")}
+            onInputValueChange={(value) => updateField("provider", value)}
+            itemToStringValue={(value) => value}
+            autoHighlight={true}
+          >
+            <ComboboxInput
+              id={providerId}
+              className="nodrag w-full"
+              placeholder="Pick provider or type name"
+            />
+            <ComboboxContent anchor={providerAnchorRef}>
+              <ComboboxEmpty>No providers found</ComboboxEmpty>
+              <ComboboxList>
+                {(provider: string) => (
+                  <ComboboxItem key={provider} value={provider}>
+                    {provider}
+                  </ComboboxItem>
+                )}
+              </ComboboxList>
+            </ComboboxContent>
+          </Combobox>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Pick provider name from list. Matching node link becomes semantic.
+        </p>
       </div>
       <div className="grid gap-2">
         <label className="text-xs font-semibold uppercase text-muted-foreground">
