@@ -631,18 +631,9 @@ def unsloth_save_model(
     )
 
     # Get max VRAM based on device type
-    if DEVICE_TYPE == "mps":
-        # MPS uses unified memory - use a portion of system memory
-        try:
-            from unsloth.kernels.mps import get_apple_hardware_info
-            hw_info = get_apple_hardware_info()
-            max_vram = int(hw_info.get("total_memory_bytes", 16 * 1024**3) * maximum_memory_usage)
-        except Exception:
-            max_vram = int(psutil.virtual_memory().total * maximum_memory_usage)
-    else:
-        max_vram = int(
-            torch.cuda.get_device_properties(0).total_memory * maximum_memory_usage
-        )
+    from unsloth.device_utils import get_device_properties
+    gpu_stats = get_device_properties()
+    max_vram = int(gpu_stats.total_memory * maximum_memory_usage)
 
     print("Unsloth: Saving model... This might take 5 minutes ...")
 
@@ -652,13 +643,32 @@ def unsloth_save_model(
         for item in LLAMA_WEIGHTS:
             proj = eval(f"layer.{item}")
             name = f"model.layers.{j}.{item}.weight"
+
+            # [Phase 2.1] OOM protection for Apple Silicon / Unified Memory
+            from unsloth.device_utils import get_available_memory, DEVICE_TYPE
+            if DEVICE_TYPE == "mps":
+                in_f = getattr(proj, "in_features", proj.weight.shape[1] if len(proj.weight.shape) > 1 else 0)
+                out_f = getattr(proj, "out_features", proj.weight.shape[0])
+                est_bytes = in_f * out_f * 2 # 16-bit estimate
+                
+                # If available memory is less than 2x the estimated size, be careful
+                if get_available_memory() < est_bytes * 2:
+                    import gc
+                    gc.collect()
+                    if get_available_memory() < est_bytes * 1.5:
+                        logger.warning_once(
+                            f"\nUnsloth: Low memory ({get_available_memory()/(1024**3):.2f}GB) "
+                            f"detected while merging {name}. System OOM risk is HIGH."
+                        )
+
             W, bias = _merge_lora(proj, name)
 
             # Bias term
             if bias is not None:
                 state_dict[f"model.layers.{j}.{item}.bias"] = bias
 
-            if (torch.cuda.memory_allocated() + W.nbytes) < max_vram:
+            from unsloth.device_utils import get_current_memory_usage, get_available_memory
+            if (get_current_memory_usage() + W.nbytes) < max_vram:
                 # Save to GPU memory
                 state_dict[name] = W
             # [TODO] Saving to RAM seems to leak memory???

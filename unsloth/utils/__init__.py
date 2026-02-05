@@ -30,6 +30,12 @@ from .attention_dispatch import (
     run_attention,
     select_attention_backend,
 )
+from ..device_utils import (
+    get_memory_allocated,
+    get_current_memory_usage,
+    get_available_memory,
+    get_total_memory,
+)
 
 __all__ = [
     "configure_sample_packing",
@@ -45,4 +51,8 @@ __all__ = [
     "SDPA",
     "run_attention",
     "select_attention_backend",
+    "get_memory_allocated",
+    "get_current_memory_usage",
+    "get_available_memory",
+    "get_total_memory",
 ]

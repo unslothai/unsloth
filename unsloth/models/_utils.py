@@ -1339,18 +1339,9 @@ def get_statistics(local_files_only=False):
         disabled = True
     _get_statistics(None)
     _get_statistics("repeat", force_download=False)
-    if DEVICE_TYPE == "xpu":
-        total_memory = torch.xpu.get_device_properties(0).total_memory
-    elif DEVICE_TYPE == "mps":
-        # Use proper Apple Silicon hardware detection
-        try:
-            from unsloth.kernels.mps import get_apple_hardware_info
-            hw_info = get_apple_hardware_info()
-            total_memory = hw_info.get("total_memory_bytes", psutil.virtual_memory().total)
-        except Exception:
-            total_memory = psutil.virtual_memory().total
-    else:
-        total_memory = torch.cuda.get_device_properties(0).total_memory
+    from unsloth.device_utils import get_device_properties
+    gpu_stats = get_device_properties()
+    total_memory = gpu_stats.total_memory
     vram = total_memory / 1024 / 1024 / 1024
     if vram <= 8:
         vram = 8
