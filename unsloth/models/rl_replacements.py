@@ -459,7 +459,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
 
     function = function.replace(string_to_find, replacement_string)
 
-    if trl_version >= Version("0.25.0"):
+    if trl_version >= Version("0.24.0"):
         # We replace the call using 'completions' with one using 'completions_text'
         string_to_find = "        rewards_per_func = self._calculate_rewards(inputs, prompts, completions, completion_ids_list)"
         replacement_string = (
