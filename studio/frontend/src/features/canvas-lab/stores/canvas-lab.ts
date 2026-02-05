@@ -11,6 +11,7 @@ import {
 import { create } from "zustand";
 import type {
   CanvasNode,
+  CanvasProcessorConfig,
   LayoutDirection,
   LlmType,
   ModelConfig,
@@ -34,12 +35,13 @@ import {
   updateNodeData,
 } from "./canvas-lab-helpers";
 
-type SheetView = "root" | "sampler" | "llm" | "expression";
+type SheetView = "root" | "sampler" | "llm" | "expression" | "processor";
 
 type CanvasLabState = {
   nodes: CanvasNode[];
   edges: Edge[];
   configs: Record<string, NodeConfig>;
+  processors: CanvasProcessorConfig[];
   sheetView: SheetView;
   activeConfigId: string | null;
   dialogOpen: boolean;
@@ -47,6 +49,7 @@ type CanvasLabState = {
   nextId: number;
   nextY: number;
   setSheetView: (view: SheetView) => void;
+  setProcessors: (processors: CanvasProcessorConfig[]) => void;
   setDialogOpen: (open: boolean) => void;
   openConfig: (id: string) => void;
   setLayoutDirection: (direction: LayoutDirection) => void;
@@ -68,6 +71,7 @@ export const useCanvasLabStore = create<CanvasLabState>((set, get) => ({
   nodes: [],
   edges: [],
   configs: {},
+  processors: [],
   sheetView: "root",
   activeConfigId: null,
   dialogOpen: false,
@@ -75,6 +79,7 @@ export const useCanvasLabStore = create<CanvasLabState>((set, get) => ({
   nextId: 3,
   nextY: 280,
   setSheetView: (view) => set({ sheetView: view }),
+  setProcessors: (processors) => set({ processors }),
   setDialogOpen: (open) => set({ dialogOpen: open }),
   openConfig: (id) => set({ activeConfigId: id, dialogOpen: true }),
   setLayoutDirection: (direction) =>
@@ -168,6 +173,7 @@ export const useCanvasLabStore = create<CanvasLabState>((set, get) => ({
         state.layoutDirection,
       ),
       edges: snapshot.edges,
+      processors: snapshot.processors,
       nextId: snapshot.nextId,
       nextY: snapshot.nextY,
       activeConfigId: null,

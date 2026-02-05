@@ -1,5 +1,6 @@
 import type { Edge } from "@xyflow/react";
 import type {
+  CanvasProcessorConfig,
   CategoryConditionalParams,
   CanvasNode,
   ExpressionConfig,
@@ -316,6 +317,7 @@ function buildLlmColumn(
 ): Record<string, unknown> {
   const base = {
     name: config.name,
+    drop: config.drop ?? false,
     // biome-ignore lint/style/useNamingConvention: api schema
     model_alias: config.model_alias,
     prompt: config.prompt,
@@ -401,9 +403,44 @@ function buildExpressionColumn(
     // biome-ignore lint/style/useNamingConvention: api schema
     column_type: "expression",
     name: config.name,
+    drop: config.drop ?? false,
     expr: config.expr,
     dtype: config.dtype,
   };
+}
+
+function buildProcessors(
+  processors: CanvasProcessorConfig[],
+  errors: string[],
+): Record<string, unknown>[] {
+  const output: Record<string, unknown>[] = [];
+  for (const processor of processors) {
+    if (processor.processor_type !== "schema_transform") {
+      continue;
+    }
+    const name = processor.name.trim();
+    if (!name) {
+      errors.push("Schema transform: name is required.");
+      continue;
+    }
+    const template = parseJsonObject(
+      processor.template,
+      `Schema transform ${name} template`,
+      errors,
+    );
+    if (!template) {
+      continue;
+    }
+    output.push({
+      // biome-ignore lint/style/useNamingConvention: api schema
+      processor_type: "schema_transform",
+      name,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      build_stage: "post_batch",
+      template,
+    });
+  }
+  return output;
 }
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: payload build
@@ -411,6 +448,7 @@ export function buildCanvasPayload(
   configs: Record<string, NodeConfig>,
   nodes: CanvasNode[],
   edges: Edge[],
+  processors: CanvasProcessorConfig[] = [],
 ): CanvasPayloadResult {
   const errors: string[] = [];
   const columns: Record<string, unknown>[] = [];
@@ -442,6 +480,7 @@ export function buildCanvasPayload(
         // biome-ignore lint/style/useNamingConvention: api schema
         column_type: "sampler",
         name: config.name,
+        drop: config.drop ?? false,
         // biome-ignore lint/style/useNamingConvention: api schema
         sampler_type: config.sampler_type,
         params: buildSamplerParams(config, errors),
@@ -585,6 +624,7 @@ export function buildCanvasPayload(
       },
     ];
   });
+  const recipeProcessors = buildProcessors(processors, errors);
 
   return {
     errors,
@@ -595,7 +635,7 @@ export function buildCanvasPayload(
         // biome-ignore lint/style/useNamingConvention: api schema
         model_configs: modelConfigs,
         columns,
-        processors: [],
+        processors: recipeProcessors,
       },
       run: {
         rows: 5,

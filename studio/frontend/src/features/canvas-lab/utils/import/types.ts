@@ -1,10 +1,15 @@
 import type { Edge } from "@xyflow/react";
-import type { CanvasNode, NodeConfig } from "../../types";
+import type {
+  CanvasNode,
+  CanvasProcessorConfig,
+  NodeConfig,
+} from "../../types";
 
 export type CanvasSnapshot = {
   configs: Record<string, NodeConfig>;
   nodes: CanvasNode[];
   edges: Edge[];
+  processors: CanvasProcessorConfig[];
   nextId: number;
   nextY: number;
 };

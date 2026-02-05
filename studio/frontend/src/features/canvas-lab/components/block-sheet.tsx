@@ -8,7 +8,9 @@ import {
 } from "@/components/ui/sheet";
 import {
   ArrowLeft02Icon,
-  ArrowRight01Icon, type Database02Icon,
+  ArrowRight01Icon,
+  CodeIcon,
+  type Database02Icon,
   PlusSignIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -16,8 +18,15 @@ import type { ReactElement } from "react";
 import type { LlmType, SamplerType } from "../types";
 import { BLOCK_GROUPS, getBlocksForKind } from "../blocks/registry";
 
-type SheetView = "root" | "sampler" | "llm" | "expression";
+type SheetView = "root" | "sampler" | "llm" | "expression" | "processor";
 type SheetKind = "sampler" | "llm" | "expression";
+type RootSheetView = Exclude<SheetView, "root">;
+type RootGroup = {
+  kind: RootSheetView;
+  title: string;
+  description: string;
+  icon: typeof Database02Icon;
+};
 
 type BlockSheetProps = {
   container: HTMLDivElement | null;
@@ -28,6 +37,7 @@ type BlockSheetProps = {
   onAddModelProvider: () => void;
   onAddModelConfig: () => void;
   onAddExpression: () => void;
+  onOpenProcessors: () => void;
 };
 
 function getSheetTitle(view: SheetView): string {
@@ -40,6 +50,9 @@ function getSheetTitle(view: SheetView): string {
   if (view === "expression") {
     return "Expression blocks";
   }
+  if (view === "processor") {
+    return "Processor blocks";
+  }
   return "LLM blocks";
 }
 
@@ -48,7 +61,18 @@ const VIEW_KIND: Record<SheetView, SheetKind | null> = {
   sampler: "sampler",
   llm: "llm",
   expression: "expression",
+  processor: null,
 };
+
+const ROOT_GROUPS: RootGroup[] = [
+  ...BLOCK_GROUPS,
+  {
+    kind: "processor",
+    title: "Processors",
+    description: "Output schema + post batch.",
+    icon: CodeIcon,
+  },
+];
 
 function BlockSheetButton({
   icon,
@@ -97,6 +121,7 @@ export function BlockSheet({
   onAddModelProvider,
   onAddModelConfig,
   onAddExpression,
+  onOpenProcessors,
 }: BlockSheetProps): ReactElement {
   const title = getSheetTitle(view);
   return (
@@ -138,7 +163,7 @@ export function BlockSheet({
         <div className=" py-4">
           <div className="mt-4 flex flex-col gap-2">
             {view === "root" &&
-              BLOCK_GROUPS.map((item, index) => (
+              ROOT_GROUPS.map((item, index) => (
                 <BlockSheetButton
                   key={item.kind}
                   icon={item.icon}
@@ -148,7 +173,17 @@ export function BlockSheet({
                   onClick={() => onViewChange(item.kind)}
                 />
               ))}
+            {view === "processor" && (
+              <BlockSheetButton
+                icon={CodeIcon}
+                title="Schema Transform"
+                description="Transform final dataset schema."
+                isActive={true}
+                onClick={onOpenProcessors}
+              />
+            )}
             {view !== "root" &&
+              view !== "processor" &&
               getBlocksForKind(VIEW_KIND[view] ?? "sampler").map(
                 (item, index) => (
                 <BlockSheetButton
