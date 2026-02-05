@@ -1448,6 +1448,26 @@ import transformers.utils.quantization_config
 transformers.utils.quantization_config.BitsAndBytesConfig.__init__ = (
     _BitsAndBytesConfig__init__
 )
+
+# Patch post_init to skip bitsandbytes version check on MPS
+if DEVICE_TYPE == "mps":
+    _original_post_init = transformers.utils.quantization_config.BitsAndBytesConfig.post_init
+    
+    def _mps_safe_post_init(self):
+        """MPS-safe post_init that skips bitsandbytes version checks."""
+        # Skip the version check entirely on MPS - we use MLX quantization instead
+        if self.load_in_4bit:
+            # Set defaults without checking bitsandbytes version
+            if self.bnb_4bit_compute_dtype is None:
+                import torch
+                self.bnb_4bit_compute_dtype = torch.float32
+            # Skip all bitsandbytes-specific validation
+            return
+        if self.load_in_8bit:
+            # 8-bit not supported on MPS
+            return
+    
+    transformers.utils.quantization_config.BitsAndBytesConfig.post_init = _mps_safe_post_init
 # =============================================
 
 # Offloading to disk for modules (lm_head, embed_tokens)
