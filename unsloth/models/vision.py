@@ -429,6 +429,18 @@ class FastBaseModel:
             gpu_stats_snippet = f"Intel Toolkit: {gpu_version}."
             # [TODO] After adding vLLM support for XPU, change this
             vllm_version = ""
+        elif DEVICE_TYPE == "mps":
+            import psutil
+            gpu_stats = types.SimpleNamespace()
+            gpu_stats.total_memory = psutil.virtual_memory().total
+            gpu_stats.name = "Apple Silicon"
+            gpu_stats.major = 0
+            gpu_stats.minor = 0
+            
+            gpu_stats_name = "Apple Silicon. "
+            gpu_version = "Metal Performance Shaders"
+            gpu_stats_snippet = f"MPS. "
+            vllm_version = ""
         else:
             raise ValueError(f"Unsloth: Unsupported device type: {DEVICE_TYPE}")
 

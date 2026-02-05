@@ -98,7 +98,9 @@ from ..device_type import (
     DEVICE_TYPE_TORCH,
     DEVICE_COUNT,
     ALLOW_PREQUANTIZED_MODELS,
+    is_mps,
 )
+is_mps_available = is_mps
 from unsloth_zoo.log import logger
 from unsloth_zoo.tokenizer_utils import (
     patch_tokenizer as _patch_tokenizer,
@@ -1037,16 +1039,16 @@ def is_big_gpu(index) -> bool:
             torch.device("xpu", index) if type(index) is int else index
         )
         min_sms = 16
-    else:
+    elif DEVICE_TYPE == "cuda":
         prop = DeviceProperties.create(
             torch.device("cuda", index) if type(index) is int else index
         )
         min_sms = 80
-
-    avail_sms = prop.multi_processor_count
-    if avail_sms < min_sms:
-        return False
-    return True
+        avail_sms = prop.multi_processor_count
+        if avail_sms < min_sms:
+            return False
+        return True
+    return False
 
 
 import torch._inductor.utils

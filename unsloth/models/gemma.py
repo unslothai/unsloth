@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from .llama import *
-from ._utils import __version__
+from ._utils import __version__, is_mps_available
 from unsloth_zoo.utils import _get_dtype, Version
 from unsloth_zoo.hf_utils import dtype_from_config
 from ..utils.packing import (
@@ -286,7 +286,7 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
             dim = getattr(config, "head_dim", None)
             if dim is None:
                 dim = int((config.hidden_size // config.num_attention_heads))
-            device = "cuda" if torch.cuda.is_available() else "cpu"
+            device = "cuda" if torch.cuda.is_available() else ("mps" if is_mps_available() else "cpu")
             max_position_embeddings = config.max_position_embeddings
         self.dim = dim
         self.max_position_embeddings = max_position_embeddings
@@ -308,7 +308,7 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
         if torch.cuda.is_available():
             device_idx = torch.cuda.current_device()
         elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            device_idx = torch.device("mps")
+            device_idx = 0
         else:
             device_idx = 0
         self.cos_cached = torch.empty(
@@ -359,7 +359,7 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
             if torch.cuda.is_available():
                 device_index = torch.cuda.current_device()
             elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-                device_index = 0 # MPS is always device 0 effectively
+                device_index = 0
             else:
                 device_index = 0
         return self.multi_gpu_cos_cached[device_index], self.multi_gpu_sin_cached[

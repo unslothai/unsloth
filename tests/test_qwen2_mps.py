@@ -36,7 +36,7 @@ class TestQwen2MPS(unittest.TestCase):
         kernel_counts = {
             "dispatch_rms_layernorm": 0,
             "dispatch_rope_embedding": 0,
-            "dispatch_swiglu_fg": 0 # Qwen2 uses SwiGLU
+            "dispatch_lora_mlp_swiglu": 0 # Qwen2 uses SwiGLU
         }
 
         original_funcs = {}
