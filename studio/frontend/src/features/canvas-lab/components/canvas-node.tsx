@@ -25,6 +25,7 @@ import type {
   LlmType,
   SamplerType,
 } from "../types";
+import { HANDLE_IDS } from "../utils/handles";
 
 type IconType = typeof CodeIcon;
 
@@ -51,7 +52,9 @@ const SAMPLER_ICONS: Record<SamplerType, IconType> = {
   subcategory: TagsIcon,
   uniform: EqualSignIcon,
   gaussian: Parabola02Icon,
+  bernoulli: EqualSignIcon,
   datetime: Clock01Icon,
+  timedelta: Clock01Icon,
   uuid: FingerPrintIcon,
   person: UserAccountIcon,
   person_from_faker: UserAccountIcon,
@@ -94,12 +97,25 @@ function CanvasNodeBase({
   const meta = NODE_META[data.kind];
   const icon = resolveNodeIcon(data.kind, data.blockType);
   const layoutDirection = data.layoutDirection ?? "LR";
-  const isHorizontal = layoutDirection === "LR";
   const updateNodeInternals = useUpdateNodeInternals();
 
   useEffect(() => {
     updateNodeInternals(id);
   }, [id, layoutDirection, updateNodeInternals]);
+
+  const showDataHandles =
+    data.kind === "llm" ||
+    data.kind === "expression" ||
+    (data.kind === "sampler" &&
+      data.blockType !== "model_provider" &&
+      data.blockType !== "model_config");
+  const showSemanticIn =
+    data.kind === "llm" ||
+    data.kind === "model_config";
+  const showSemanticOut =
+    data.kind === "llm" ||
+    data.kind === "model_config" ||
+    data.kind === "model_provider";
 
   return (
     <div
@@ -126,16 +142,38 @@ function CanvasNodeBase({
           </p>
         </div>
       </div>
-      <Handle
-        type="target"
-        position={isHorizontal ? Position.Left : Position.Top}
-        className="size-2 border border-border bg-white"
-      />
-      <Handle
-        type="source"
-        position={isHorizontal ? Position.Right : Position.Bottom}
-        className="size-2 border border-border bg-white"
-      />
+      {showDataHandles && (
+        <>
+          <Handle
+            id={HANDLE_IDS.dataIn}
+            type="target"
+            position={Position.Left}
+            className="size-2 border border-border bg-white"
+          />
+          <Handle
+            id={HANDLE_IDS.dataOut}
+            type="source"
+            position={Position.Right}
+            className="size-2 border border-border bg-white"
+          />
+        </>
+      )}
+      {showSemanticIn && (
+        <Handle
+          id={HANDLE_IDS.semanticIn}
+          type="target"
+          position={Position.Top}
+          className="size-2 border border-border bg-white"
+        />
+      )}
+      {showSemanticOut && (
+        <Handle
+          id={HANDLE_IDS.semanticOut}
+          type="source"
+          position={Position.Bottom}
+          className="size-2 border border-border bg-white"
+        />
+      )}
     </div>
   );
 }
