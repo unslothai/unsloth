@@ -113,6 +113,21 @@ def _compiled_mlp_geglu(
     return out
 
 
+@mx.compile
+def _compiled_mlp_swiglu(
+    X, gateW, gateA, gateB, gateS, upW, upA, upB, upS, downW, downA, downB, downS
+):
+    # Use quantized_matmul directly - MLX will optimize this if weights are quantized trees
+    gate = quantized_matmul(X, gateW) + (X @ gateA.T) @ gateB.T * gateS
+    up = quantized_matmul(X, upW) + (X @ upA.T) @ upB.T * upS
+
+    # SwiGLU: silu(gate) * up = (gate * sigmoid(gate)) * up
+    act = (gate * mx.sigmoid(gate)) * up
+    out = quantized_matmul(act, downW) + (act @ downA.T) @ downB.T * downS
+
+    return out
+
+
 def apply_lora_mlp_swiglu(
     X,
     gateW,
