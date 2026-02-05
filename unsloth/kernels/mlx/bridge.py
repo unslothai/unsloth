@@ -98,7 +98,12 @@ def torch_to_mlx(
 ) -> "mx.array":
     """
     Optimized Tensor conversion. Minimizes Python overhead.
+    Returns None if tensor is None (e.g., when LoRA adapters are not attached).
     """
+    # Handle None tensors (e.g., LoRA adapters not attached)
+    if tensor is None:
+        return None
+    
     global _torch_to_dlpack, _mx_from_dlpack, _mx_array
     if _mx_array is None:
         import torch.utils.dlpack

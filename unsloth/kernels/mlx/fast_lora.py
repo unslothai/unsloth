@@ -132,78 +132,93 @@ def apply_lora_mlp_swiglu(
             X_mlx = torch_to_mlx(X)
             return_mlx = False
 
+        # Check if LoRA is attached (any adapter is not None)
+        has_lora = gateA is not None and gateB is not None
+
         # Batch=1 Optimization: Use custom GEMV for base projections
         # X shape is usually (Batch, Seq, Dim).
         # For decoding, Batch=1, Seq=1.
         if X_mlx.size // X_mlx.shape[-1] == 1:
             # Need weights in MLX
             gateW_mlx = torch_to_mlx(gateW)
-            gateA_mlx = torch_to_mlx(gateA)
-            gateB_mlx = torch_to_mlx(gateB)
-            gateS_val = gateS.item() if hasattr(gateS, "item") else gateS
-
             upW_mlx = torch_to_mlx(upW)
-            upA_mlx = torch_to_mlx(upA)
-            upB_mlx = torch_to_mlx(upB)
-            upS_val = upS.item() if hasattr(upS, "item") else upS
-
             downW_mlx = torch_to_mlx(downW)
-            downA_mlx = torch_to_mlx(downA)
-            downB_mlx = torch_to_mlx(downB)
-            downS_val = downS.item() if hasattr(downS, "item") else downS
+
+            X_flat = X_mlx.reshape(1, -1)
 
             # 1. Gate
-            gate = quantized_matmul(X_mlx.reshape(1, -1), gateW_mlx)
-            gate += (X_mlx.reshape(1, -1) @ gateA_mlx.T) @ gateB_mlx.T * gateS_val
+            gate = quantized_matmul(X_flat, gateW_mlx)
+            if has_lora:
+                gateA_mlx = torch_to_mlx(gateA)
+                gateB_mlx = torch_to_mlx(gateB)
+                gateS_val = gateS.item() if hasattr(gateS, "item") else gateS
+                gate = gate + (X_flat @ gateA_mlx.T) @ gateB_mlx.T * gateS_val
 
             # 2. Up
-            up = quantized_matmul(X_mlx.reshape(1, -1), upW_mlx)
-            up += (X_mlx.reshape(1, -1) @ upA_mlx.T) @ upB_mlx.T * upS_val
+            up = quantized_matmul(X_flat, upW_mlx)
+            if has_lora:
+                upA_mlx = torch_to_mlx(upA)
+                upB_mlx = torch_to_mlx(upB)
+                upS_val = upS.item() if hasattr(upS, "item") else upS
+                up = up + (X_flat @ upA_mlx.T) @ upB_mlx.T * upS_val
 
             # 3. SwiGLU: silu(gate) * up
             act = (gate * mx.sigmoid(gate)) * up
 
             # 4. Down
             out = quantized_matmul(act, downW_mlx)
-            out += (act @ downA_mlx.T) @ downB_mlx.T * downS_val
+            if has_lora:
+                downA_mlx = torch_to_mlx(downA)
+                downB_mlx = torch_to_mlx(downB)
+                downS_val = downS.item() if hasattr(downS, "item") else downS
+                out = out + (act @ downA_mlx.T) @ downB_mlx.T * downS_val
 
             out_reshaped = out.reshape(X.shape)
             if return_mlx:
                 return out_reshaped
             return mlx_to_torch(out_reshaped, device=X.device, dtype=X.dtype)
 
-        # Standard Batch Path (Compiled)
+        # Standard Batch Path
         gateW_mlx = treeify(gateW)
-        gateA_mlx = torch_to_mlx(gateA)
-        gateB_mlx = torch_to_mlx(gateB)
-        gateS_mlx = torch_to_mlx(gateS) if hasattr(gateS, "shape") else gateS
-
         upW_mlx = treeify(upW)
-        upA_mlx = torch_to_mlx(upA)
-        upB_mlx = torch_to_mlx(upB)
-        upS_mlx = torch_to_mlx(upS) if hasattr(upS, "shape") else upS
-
         downW_mlx = treeify(downW)
-        downA_mlx = torch_to_mlx(downA)
-        downB_mlx = torch_to_mlx(downB)
-        downS_mlx = torch_to_mlx(downS) if hasattr(downS, "shape") else downS
+        
+        if not has_lora:
+            # No LoRA: simple base projection path
+            gate = quantized_matmul(X_mlx, gateW_mlx)
+            up = quantized_matmul(X_mlx, upW_mlx)
+            act = (gate * mx.sigmoid(gate)) * up
+            out_mlx = quantized_matmul(act, downW_mlx)
+        else:
+            # With LoRA: use compiled kernel
+            gateA_mlx = torch_to_mlx(gateA)
+            gateB_mlx = torch_to_mlx(gateB)
+            gateS_mlx = torch_to_mlx(gateS) if hasattr(gateS, "shape") else gateS
 
-        # Execute compiled kernel
-        out_mlx = _compiled_mlp_swiglu(
-            X_mlx,
-            gateW_mlx,
-            gateA_mlx,
-            gateB_mlx,
-            gateS_mlx,
-            upW_mlx,
-            upA_mlx,
-            upB_mlx,
-            upS_mlx,
-            downW_mlx,
-            downA_mlx,
-            downB_mlx,
-            downS_mlx,
-        )
+            upA_mlx = torch_to_mlx(upA)
+            upB_mlx = torch_to_mlx(upB)
+            upS_mlx = torch_to_mlx(upS) if hasattr(upS, "shape") else upS
+
+            downA_mlx = torch_to_mlx(downA)
+            downB_mlx = torch_to_mlx(downB)
+            downS_mlx = torch_to_mlx(downS) if hasattr(downS, "shape") else downS
+
+            # Execute compiled kernel
+            out_mlx = _compiled_mlp_swiglu(
+                X_mlx,
+                gateW_mlx,
+                gateA_mlx,
+                gateB_mlx,
+                gateS_mlx,
+                upW_mlx,
+                upA_mlx,
+                upB_mlx,
+                upS_mlx,
+                downW_mlx,
+                downA_mlx,
+                downB_mlx,
+                downS_mlx,
+            )
 
         if return_mlx:
             return out_mlx
@@ -237,75 +252,90 @@ def apply_lora_mlp_geglu(
             X_mlx = torch_to_mlx(X)
             return_mlx = False
 
+        # Check if LoRA is attached (any adapter is not None)
+        has_lora = gateA is not None and gateB is not None
+        
         # Batch=1 Optimization
         if X_mlx.size // X_mlx.shape[-1] == 1:
             gateW_mlx = torch_to_mlx(gateW)
-            gateA_mlx = torch_to_mlx(gateA)
-            gateB_mlx = torch_to_mlx(gateB)
-            gateS_val = gateS.item() if hasattr(gateS, "item") else gateS
-
             upW_mlx = torch_to_mlx(upW)
-            upA_mlx = torch_to_mlx(upA)
-            upB_mlx = torch_to_mlx(upB)
-            upS_val = upS.item() if hasattr(upS, "item") else upS
-
             downW_mlx = torch_to_mlx(downW)
-            downA_mlx = torch_to_mlx(downA)
-            downB_mlx = torch_to_mlx(downB)
-            downS_val = downS.item() if hasattr(downS, "item") else downS
 
+            X_flat = X_mlx.reshape(1, -1)
+            
             # 1. Gate
-            gate = quantized_matmul(X_mlx.reshape(1, -1), gateW_mlx)
-            gate += (X_mlx.reshape(1, -1) @ gateA_mlx.T) @ gateB_mlx.T * gateS_val
+            gate = quantized_matmul(X_flat, gateW_mlx)
+            if has_lora:
+                gateA_mlx = torch_to_mlx(gateA)
+                gateB_mlx = torch_to_mlx(gateB)
+                gateS_val = gateS.item() if hasattr(gateS, "item") else gateS
+                gate = gate + (X_flat @ gateA_mlx.T) @ gateB_mlx.T * gateS_val
 
             # 2. Up
-            up = quantized_matmul(X_mlx.reshape(1, -1), upW_mlx)
-            up += (X_mlx.reshape(1, -1) @ upA_mlx.T) @ upB_mlx.T * upS_val
+            up = quantized_matmul(X_flat, upW_mlx)
+            if has_lora:
+                upA_mlx = torch_to_mlx(upA)
+                upB_mlx = torch_to_mlx(upB)
+                upS_val = upS.item() if hasattr(upS, "item") else upS
+                up = up + (X_flat @ upA_mlx.T) @ upB_mlx.T * upS_val
 
             # 3. GEGLU: gelu(gate) * up
             act = mx.fast.gelu(gate) * up
 
             # 4. Down
             out = quantized_matmul(act, downW_mlx)
-            out += (act @ downA_mlx.T) @ downB_mlx.T * downS_val
+            if has_lora:
+                downA_mlx = torch_to_mlx(downA)
+                downB_mlx = torch_to_mlx(downB)
+                downS_val = downS.item() if hasattr(downS, "item") else downS
+                out = out + (act @ downA_mlx.T) @ downB_mlx.T * downS_val
 
             out_reshaped = out.reshape(X.shape)
             if return_mlx:
                 return out_reshaped
             return mlx_to_torch(out_reshaped, device=X.device, dtype=X.dtype)
 
-        # Standard Batch Path (Compiled)
+        # Standard Batch Path
         gateW_mlx = treeify(gateW)
-        gateA_mlx = torch_to_mlx(gateA)
-        gateB_mlx = torch_to_mlx(gateB)
-        gateS_mlx = torch_to_mlx(gateS) if hasattr(gateS, "shape") else gateS
-
         upW_mlx = treeify(upW)
-        upA_mlx = torch_to_mlx(upA)
-        upB_mlx = torch_to_mlx(upB)
-        upS_mlx = torch_to_mlx(upS) if hasattr(upS, "shape") else upS
-
         downW_mlx = treeify(downW)
-        downA_mlx = torch_to_mlx(downA)
-        downB_mlx = torch_to_mlx(downB)
-        downS_mlx = torch_to_mlx(downS) if hasattr(downS, "shape") else downS
+        
+        if not has_lora:
+            # No LoRA: simple base projection path
+            gate = quantized_matmul(X_mlx, gateW_mlx)
+            up = quantized_matmul(X_mlx, upW_mlx)
+            act = mx.fast.gelu(gate) * up
+            out_mlx = quantized_matmul(act, downW_mlx)
+        else:
+            # With LoRA: use compiled kernel
+            gateA_mlx = torch_to_mlx(gateA)
+            gateB_mlx = torch_to_mlx(gateB)
+            gateS_mlx = torch_to_mlx(gateS) if hasattr(gateS, "shape") else gateS
 
-        # Execute compiled kernel
-        out_mlx = _compiled_mlp_geglu(
-            X_mlx,
-            gateW_mlx,
-            gateA_mlx,
-            gateB_mlx,
-            gateS_mlx,
-            upW_mlx,
-            upA_mlx,
-            upB_mlx,
-            upS_mlx,
-            downW_mlx,
-            downA_mlx,
-            downB_mlx,
-            downS_mlx,
-        )
+            upA_mlx = torch_to_mlx(upA)
+            upB_mlx = torch_to_mlx(upB)
+            upS_mlx = torch_to_mlx(upS) if hasattr(upS, "shape") else upS
+
+            downA_mlx = torch_to_mlx(downA)
+            downB_mlx = torch_to_mlx(downB)
+            downS_mlx = torch_to_mlx(downS) if hasattr(downS, "shape") else downS
+
+            # Execute compiled kernel
+            out_mlx = _compiled_mlp_geglu(
+                X_mlx,
+                gateW_mlx,
+                gateA_mlx,
+                gateB_mlx,
+                gateS_mlx,
+                upW_mlx,
+                upA_mlx,
+                upB_mlx,
+                upS_mlx,
+                downW_mlx,
+                downA_mlx,
+                downB_mlx,
+                downS_mlx,
+            )
 
         if return_mlx:
             return out_mlx
