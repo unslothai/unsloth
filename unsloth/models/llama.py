@@ -2645,6 +2645,7 @@ class FastLlamaModel:
             "up_proj",
             "down_proj",
         ],
+        target_parameters = None,
         lora_alpha = 16,
         lora_dropout = 0.0,
         bias = "none",
@@ -2654,6 +2655,7 @@ class FastLlamaModel:
         random_state = 3407,
         max_seq_length = 2048,  # not used anymore
         use_rslora = False,
+        use_dora = False,
         modules_to_save = None,
         init_lora_weights = True,
         loftq_config = {},
@@ -2677,6 +2679,7 @@ class FastLlamaModel:
                 model = model,
                 r = r,
                 target_modules = target_modules,
+                target_parameters = target_parameters,
                 lora_alpha = lora_alpha,
                 lora_dropout = lora_dropout,
                 bias = bias,
@@ -2686,6 +2689,7 @@ class FastLlamaModel:
                 random_state = random_state,
                 max_seq_length = max_seq_length,
                 use_rslora = use_rslora,
+                use_dora = use_dora,
                 modules_to_save = modules_to_save,
                 init_lora_weights = init_lora_weights,
                 loftq_config = loftq_config,
@@ -2810,6 +2814,37 @@ class FastLlamaModel:
                 f"Unsloth will patch all other layers, except LoRA matrices, causing a performance hit."
             )
 
+        # Validate target_parameters constraints (PEFT ParamWrapper limitations)
+        if target_parameters is not None:
+            if lora_dropout != 0:
+                raise ValueError(
+                    "Unsloth: target_parameters does not support lora_dropout != 0.\n"
+                    "Please set lora_dropout = 0 when using target_parameters."
+                )
+            if use_dora:
+                raise ValueError(
+                    "Unsloth: target_parameters does not support use_dora = True.\n"
+                    "Please set use_dora = False when using target_parameters."
+                )
+            if kwargs.get("lora_bias", False):
+                raise ValueError(
+                    "Unsloth: target_parameters does not support lora_bias = True.\n"
+                    "Please set lora_bias = False when using target_parameters."
+                )
+            # Validate that embed_tokens/lm_head are not in target_parameters
+            invalid_params = [
+                p
+                for p in target_parameters
+                if p
+                in ("lm_head.weight", "lm_head", "embed_tokens.weight", "embed_tokens")
+            ]
+            if invalid_params:
+                raise ValueError(
+                    f"Unsloth: target_parameters should not contain {invalid_params}.\n"
+                    f"target_parameters is for targeting nn.Parameter objects directly (e.g., MoE expert weights).\n"
+                    f"For embed_tokens/lm_head, use modules_to_save instead for full fine-tuning."
+                )
+
         if not (
             type(init_lora_weights) is bool
             or init_lora_weights == "gaussian"
@@ -2875,6 +2910,7 @@ class FastLlamaModel:
 
         train_lm_head = False
         train_embed_tokens = False
+
         final_modules = []
         for module in target_modules:
             if module == "lm_head":
@@ -2984,6 +3020,7 @@ class FastLlamaModel:
             r = r,
             lora_alpha = lora_alpha,
             target_modules = final_modules,
+            target_parameters = target_parameters,
             lora_dropout = lora_dropout,
             bias = bias,
             task_type = TaskType.CAUSAL_LM if not is_classification else TaskType.SEQ_CLS,
@@ -2991,6 +3028,7 @@ class FastLlamaModel:
             init_lora_weights = init_lora_weights,
             loftq_config = loftq_config,
             use_rslora = use_rslora,
+            use_dora = use_dora,
             modules_to_save = modules_to_save,
             target_parameters = target_parameters,
             ensure_weight_tying = ensure_weight_tying,
