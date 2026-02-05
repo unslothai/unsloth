@@ -1,4 +1,4 @@
-import type { NodeConfig } from "../../types";
+import type { CanvasProcessorConfig, NodeConfig } from "../../types";
 import { buildEdges } from "./edges";
 import { isRecord, parseJson, readString } from "./helpers";
 import {
@@ -21,6 +21,40 @@ type UiInput = {
   edges?: unknown;
 };
 
+function parseProcessors(input: unknown): CanvasProcessorConfig[] {
+  if (!Array.isArray(input)) {
+    return [];
+  }
+  const processors: CanvasProcessorConfig[] = [];
+  input.forEach((item, index) => {
+    if (!isRecord(item)) {
+      return;
+    }
+    const type = readString(item.processor_type);
+    const templateRaw = item.template;
+    const isSchemaTransform =
+      type === "schema_transform" || isRecord(templateRaw);
+    if (!isSchemaTransform) {
+      return;
+    }
+    const name = readString(item.name) ?? `schema_transform_${index + 1}`;
+    const template =
+      typeof templateRaw === "string"
+        ? templateRaw
+        : isRecord(templateRaw)
+          ? JSON.stringify(templateRaw, null, 2)
+          : "{\n  \"text\": \"{{ column_name }}\"\n}";
+    processors.push({
+      id: `p${index + 1}`,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      processor_type: "schema_transform",
+      name,
+      template,
+    });
+  });
+  return processors;
+}
+
 export function importCanvasPayload(input: string): ImportResult {
   const parsed = parseJson(input);
   if (!parsed.data || !isRecord(parsed.data)) {
@@ -41,6 +75,7 @@ export function importCanvasPayload(input: string): ImportResult {
 
   const errors: string[] = [];
   const configs: NodeConfig[] = [];
+  const processors = parseProcessors(recipe.processors);
   const nameToId = new Map<string, string>();
 
   let nextId = 1;
@@ -129,6 +164,7 @@ export function importCanvasPayload(input: string): ImportResult {
       configs: Object.fromEntries(configs.map((config) => [config.id, config])),
       nodes,
       edges,
+      processors,
       nextId,
       nextY: maxY + 140,
     },

@@ -1,5 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter } from "@/components/ui/dialog";
+import { Switch } from "@/components/ui/switch";
 import type { ReactElement } from "react";
 import type { NodeConfig, SamplerConfig } from "../types";
 import { renderBlockDialog } from "../blocks/registry";
@@ -41,6 +42,22 @@ export function ConfigDialog({
         {config && (
           <div className="space-y-4">
             <ValidationBanner config={config} />
+            {(config.kind === "sampler" ||
+              config.kind === "llm" ||
+              config.kind === "expression") && (
+              <div className="flex items-center justify-between gap-3 rounded-2xl border border-border/60 px-3 py-2">
+                <div>
+                  <p className="text-sm font-semibold">Drop from final dataset</p>
+                  <p className="text-xs text-muted-foreground">
+                    Keep for generation but omit from exported rows.
+                  </p>
+                </div>
+                <Switch
+                  checked={config.drop ?? false}
+                  onCheckedChange={(value) => onUpdate(config.id, { drop: value })}
+                />
+              </div>
+            )}
             {renderBlockDialog(config, categoryOptions, onUpdate)}
           </div>
         )}

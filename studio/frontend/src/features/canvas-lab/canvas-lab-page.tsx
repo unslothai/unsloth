@@ -22,11 +22,13 @@ import { CanvasEdge } from "./components/canvas-edge";
 import { CanvasNode } from "./components/canvas-node";
 import { ConfigDialog } from "./dialogs/config-dialog";
 import { ImportDialog } from "./dialogs/import-dialog";
+import { ProcessorsDialog } from "./dialogs/processors-dialog";
 import { useCanvasLabStore } from "./stores/canvas-lab";
 import type { CanvasNodeData, SamplerConfig } from "./types";
 import { isCategoryConfig } from "./utils";
 import { importCanvasPayload } from "./utils/import";
 import { buildCanvasPayload } from "./utils/payload";
+import { buildDefaultSchemaTransform } from "./utils/processors";
 
 const NODE_TYPES: NodeTypes = { builder: CanvasNode };
 const EDGE_TYPES: EdgeTypes = { canvas: CanvasEdge, semantic: CanvasEdge };
@@ -68,6 +70,7 @@ export function CanvasLabPage(): ReactElement {
     nodes,
     edges,
     configs,
+    processors,
     sheetView,
     activeConfigId,
     dialogOpen,
@@ -84,6 +87,7 @@ export function CanvasLabPage(): ReactElement {
     updateConfig,
     isValidConnection,
     setSheetView,
+    setProcessors,
     setDialogOpen,
     loadCanvas,
     setLayoutDirection,
@@ -93,6 +97,7 @@ export function CanvasLabPage(): ReactElement {
       nodes: state.nodes,
       edges: state.edges,
       configs: state.configs,
+      processors: state.processors,
       sheetView: state.sheetView,
       activeConfigId: state.activeConfigId,
       dialogOpen: state.dialogOpen,
@@ -109,6 +114,7 @@ export function CanvasLabPage(): ReactElement {
       updateConfig: state.updateConfig,
       isValidConnection: state.isValidConnection,
       setSheetView: state.setSheetView,
+      setProcessors: state.setProcessors,
       setDialogOpen: state.setDialogOpen,
       loadCanvas: state.loadCanvas,
       setLayoutDirection: state.setLayoutDirection,
@@ -120,6 +126,7 @@ export function CanvasLabPage(): ReactElement {
   );
   const [previewLoading, setPreviewLoading] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [processorsOpen, setProcessorsOpen] = useState(false);
   const [statusMessage, setStatusMessage] = useState<{
     tone: "success" | "error";
     text: string;
@@ -146,7 +153,12 @@ export function CanvasLabPage(): ReactElement {
     setPreviewLoading(true);
     setStatusMessage(null);
     try {
-      const { payload, errors } = buildCanvasPayload(configs, nodes, edges);
+      const { payload, errors } = buildCanvasPayload(
+        configs,
+        nodes,
+        edges,
+        processors,
+      );
       if (errors.length > 0) {
         setStatusMessage({
           tone: "error",
@@ -172,7 +184,12 @@ export function CanvasLabPage(): ReactElement {
 
   const handleCopyRecipe = async (): Promise<void> => {
     setStatusMessage(null);
-    const { payload, errors } = buildCanvasPayload(configs, nodes, edges);
+    const { payload, errors } = buildCanvasPayload(
+      configs,
+      nodes,
+      edges,
+      processors,
+    );
     if (errors.length > 0) {
       setStatusMessage({
         tone: "error",
@@ -210,6 +227,17 @@ export function CanvasLabPage(): ReactElement {
     setStatusMessage({ tone: "success", text: "Recipe imported." });
     return null;
   };
+
+  const handleOpenProcessorsFromSheet = useCallback(() => {
+    if (
+      !processors.some(
+        (processor) => processor.processor_type === "schema_transform",
+      )
+    ) {
+      setProcessors([...processors, buildDefaultSchemaTransform()]);
+    }
+    setProcessorsOpen(true);
+  }, [processors, setProcessors]);
 
   return (
     <div className="min-h-screen bg-background">
@@ -313,6 +341,7 @@ export function CanvasLabPage(): ReactElement {
                 onAddModelProvider={addModelProviderNode}
                 onAddModelConfig={addModelConfigNode}
                 onAddExpression={addExpressionNode}
+                onOpenProcessors={handleOpenProcessorsFromSheet}
               />
             </Panel>
             <Controls position="bottom-left" />
@@ -331,6 +360,13 @@ export function CanvasLabPage(): ReactElement {
         open={importOpen}
         onOpenChange={setImportOpen}
         onImport={handleImport}
+        container={sheetContainer}
+      />
+      <ProcessorsDialog
+        open={processorsOpen}
+        onOpenChange={setProcessorsOpen}
+        processors={processors}
+        onProcessorsChange={setProcessors}
         container={sheetContainer}
       />
     </div>
