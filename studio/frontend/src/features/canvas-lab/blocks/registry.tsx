@@ -1,8 +1,17 @@
 import {
+  BalanceScaleIcon,
+  Clock01Icon,
   CodeIcon,
-  Database02Icon,
-  Flowchart01Icon,
-  SparklesIcon,
+  CodeSimpleIcon,
+  DiceFaces03Icon,
+  EqualSignIcon,
+  FingerPrintIcon,
+  FunctionIcon,
+  Parabola02Icon,
+  PencilEdit02Icon,
+  Tag01Icon,
+  TagsIcon,
+  UserAccountIcon,
 } from "@hugeicons/core-free-icons";
 import type { ReactElement } from "react";
 import type { LlmType, NodeConfig, SamplerConfig, SamplerType } from "../types";
@@ -24,7 +33,7 @@ import { UuidDialog } from "../dialogs/samplers/uuid-dialog";
 export type BlockKind = "sampler" | "llm" | "expression";
 export type BlockType = SamplerType | LlmType | "expression";
 
-type IconType = typeof Database02Icon;
+type IconType = typeof CodeIcon;
 
 type BlockGroup = {
   kind: BlockKind;
@@ -54,19 +63,19 @@ export const BLOCK_GROUPS: BlockGroup[] = [
     kind: "sampler",
     title: "Sampler",
     description: "Numeric + categorical blocks.",
-    icon: Database02Icon,
+    icon: DiceFaces03Icon,
   },
   {
     kind: "llm",
     title: "LLM",
     description: "Text + structured blocks.",
-    icon: SparklesIcon,
+    icon: PencilEdit02Icon,
   },
   {
     kind: "expression",
     title: "Expression",
     description: "Derived columns with Jinja.",
-    icon: CodeIcon,
+    icon: FunctionIcon,
   },
 ];
 
@@ -76,7 +85,7 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
     type: "category",
     title: "Category",
     description: "Pick from a list of values.",
-    icon: Database02Icon,
+    icon: Tag01Icon,
     createConfig: (id, existing) => makeSamplerConfig(id, "category", existing),
     renderDialog: ({ config, onUpdate }) =>
       config.kind === "sampler" && config.sampler_type === "category" ? (
@@ -91,7 +100,7 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
     type: "subcategory",
     title: "Subcategory",
     description: "Map sub-values to a category.",
-    icon: Database02Icon,
+    icon: TagsIcon,
     createConfig: (id, existing) =>
       makeSamplerConfig(id, "subcategory", existing),
     renderDialog: ({ config, categoryOptions, onUpdate }) =>
@@ -108,7 +117,7 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
     type: "uniform",
     title: "Uniform",
     description: "Random number between low/high.",
-    icon: Database02Icon,
+    icon: EqualSignIcon,
     createConfig: (id, existing) => makeSamplerConfig(id, "uniform", existing),
     renderDialog: ({ config, onUpdate }) =>
       config.kind === "sampler" && config.sampler_type === "uniform" ? (
@@ -123,7 +132,7 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
     type: "gaussian",
     title: "Gaussian",
     description: "Normal distribution sampler.",
-    icon: Database02Icon,
+    icon: Parabola02Icon,
     createConfig: (id, existing) => makeSamplerConfig(id, "gaussian", existing),
     renderDialog: ({ config, onUpdate }) =>
       config.kind === "sampler" && config.sampler_type === "gaussian" ? (
@@ -138,7 +147,7 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
     type: "datetime",
     title: "Datetime",
     description: "Date/time range sampler.",
-    icon: Database02Icon,
+    icon: Clock01Icon,
     createConfig: (id, existing) => makeSamplerConfig(id, "datetime", existing),
     renderDialog: ({ config, onUpdate }) =>
       config.kind === "sampler" && config.sampler_type === "datetime" ? (
@@ -153,7 +162,7 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
     type: "uuid",
     title: "UUID",
     description: "UUID string sampler.",
-    icon: Database02Icon,
+    icon: FingerPrintIcon,
     createConfig: (id, existing) => makeSamplerConfig(id, "uuid", existing),
     renderDialog: ({ config, onUpdate }) =>
       config.kind === "sampler" && config.sampler_type === "uuid" ? (
@@ -168,7 +177,7 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
     type: "person",
     title: "Person",
     description: "Synthetic person sampler.",
-    icon: Database02Icon,
+    icon: UserAccountIcon,
     createConfig: (id, existing) => makeSamplerConfig(id, "person", existing),
     renderDialog: ({ config, onUpdate }) =>
       config.kind === "sampler" &&
@@ -185,7 +194,7 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
     type: "text",
     title: "LLM Text",
     description: "Free-form prompt generation.",
-    icon: SparklesIcon,
+    icon: PencilEdit02Icon,
     createConfig: (id, existing) => makeLlmConfig(id, "text", existing),
     renderDialog: ({ config, onUpdate }) =>
       config.kind === "llm" && config.llm_type === "text" ? (
@@ -200,7 +209,7 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
     type: "structured",
     title: "LLM Structured",
     description: "JSON output via schema.",
-    icon: Flowchart01Icon,
+    icon: CodeIcon,
     createConfig: (id, existing) => makeLlmConfig(id, "structured", existing),
     renderDialog: ({ config, onUpdate }) =>
       config.kind === "llm" && config.llm_type === "structured" ? (
@@ -215,10 +224,25 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
     type: "code",
     title: "LLM Code",
     description: "Generate code or SQL.",
-    icon: CodeIcon,
+    icon: CodeSimpleIcon,
     createConfig: (id, existing) => makeLlmConfig(id, "code", existing),
     renderDialog: ({ config, onUpdate }) =>
       config.kind === "llm" && config.llm_type === "code" ? (
+        <LlmDialog
+          config={config}
+          onUpdate={(patch) => onUpdate(config.id, patch)}
+        />
+      ) : null,
+  },
+  {
+    kind: "llm",
+    type: "judge",
+    title: "LLM Judge",
+    description: "Score outputs with criteria.",
+    icon: BalanceScaleIcon,
+    createConfig: (id, existing) => makeLlmConfig(id, "judge", existing),
+    renderDialog: ({ config, onUpdate }) =>
+      config.kind === "llm" && config.llm_type === "judge" ? (
         <LlmDialog
           config={config}
           onUpdate={(patch) => onUpdate(config.id, patch)}
@@ -230,7 +254,7 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
     type: "expression",
     title: "Expression",
     description: "Transform columns with Jinja.",
-    icon: CodeIcon,
+    icon: FunctionIcon,
     createConfig: (id, existing) => makeExpressionConfig(id, existing),
     renderDialog: ({ config, onUpdate }) =>
       config.kind === "expression" ? (

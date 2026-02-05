@@ -53,20 +53,26 @@ function BlockSheetButton({
   title,
   description,
   onClick,
+  isActive = false,
 }: {
   icon: typeof Database02Icon;
   title: string;
   description: string;
   onClick: () => void;
+  isActive?: boolean;
 }): ReactElement {
   return (
     <button
       type="button"
       onClick={onClick}
-      className="flex w-full items-center gap-3 rounded-2xl border border-border/60 bg-white px-3 py-3 text-left transition hover:border-border hover:bg-muted/40"
+      className={`flex w-full items-center gap-3  bg-white px-3 py-3 text-left transition border-l-2 ${
+        isActive
+          ? "border-emerald-500"
+          : "border-transparent hover:border-border/60"
+      }`}
     >
-      <div className="flex size-9 items-center justify-center rounded-xl border border-border bg-muted/30 text-muted-foreground">
-        <HugeiconsIcon icon={icon} className="size-4" />
+      <div className="flex size-9 items-center justify-center rounded-xl text-foreground/70">
+        <HugeiconsIcon icon={icon} className="size-5" />
       </div>
       <div className="flex-1">
         <p className="text-sm font-semibold text-foreground">{title}</p>
@@ -90,9 +96,15 @@ export function BlockSheet({
 }: BlockSheetProps): ReactElement {
   const title = getSheetTitle(view);
   return (
-    <Sheet>
+    <Sheet
+      onOpenChange={(open) => {
+        if (open) {
+          onViewChange("root");
+        }
+      }}
+    >
       <SheetTrigger asChild={true}>
-        <Button size="icon-sm" variant="secondary">
+        <Button size="lg" className={"corner-squircle "} variant="secondary">
           <HugeiconsIcon icon={PlusSignIcon} className="size-4" />
         </Button>
       </SheetTrigger>
@@ -102,7 +114,7 @@ export function BlockSheet({
         position="absolute"
         overlayPosition="absolute"
         className="absolute gap-0 p-0 shadow-none"
-        overlayClassName="bg-transparent pointer-events-none"
+        overlayClassName="bg-transparent pointer-events-none backdrop-blur-none supports-backdrop-filter:backdrop-blur-none"
       >
         <SheetHeader className="border-b border-border/60 px-6 py-5">
           <div className="flex items-center gap-2">
@@ -119,25 +131,28 @@ export function BlockSheet({
             <SheetTitle>{title}</SheetTitle>
           </div>
         </SheetHeader>
-        <div className="px-6 py-4">
+        <div className=" py-4">
           <div className="mt-4 flex flex-col gap-2">
             {view === "root" &&
-              BLOCK_GROUPS.map((item) => (
+              BLOCK_GROUPS.map((item, index) => (
                 <BlockSheetButton
                   key={item.kind}
                   icon={item.icon}
                   title={item.title}
                   description={item.description}
+                  isActive={index === 0}
                   onClick={() => onViewChange(item.kind)}
                 />
               ))}
             {view !== "root" &&
-              getBlocksForKind(VIEW_KIND[view] ?? "sampler").map((item) => (
+              getBlocksForKind(VIEW_KIND[view] ?? "sampler").map(
+                (item, index) => (
                 <BlockSheetButton
                   key={item.type}
                   icon={item.icon}
                   title={item.title}
                   description={item.description}
+                  isActive={index === 0}
                   onClick={() => {
                     if (item.kind === "sampler") {
                       onAddSampler(item.type as SamplerType);
@@ -148,7 +163,8 @@ export function BlockSheet({
                     }
                   }}
                 />
-              ))}
+                ),
+              )}
           </div>
         </div>
       </SheetContent>

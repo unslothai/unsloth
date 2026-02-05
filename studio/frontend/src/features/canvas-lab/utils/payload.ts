@@ -216,6 +216,38 @@ function buildLlmColumn(
       output_format: outputFormat,
     };
   }
+  if (config.llm_type === "judge") {
+    const scores = (config.scores ?? [])
+      .map((score) => {
+        const options: Record<string, string> = {};
+        for (const option of score.options ?? []) {
+          const key = option.value.trim();
+          const value = option.description.trim();
+          if (!key || !value) {
+            continue;
+          }
+          options[key] = value;
+        }
+        return {
+          name: score.name.trim(),
+          description: score.description.trim(),
+          options,
+        };
+      })
+      .filter(
+        (score) =>
+          score.name && score.description && Object.keys(score.options).length > 0,
+      );
+    if (scores.length === 0) {
+      errors.push(`LLM ${config.name}: scores required for LLM Judge.`);
+    }
+    return {
+      // biome-ignore lint/style/useNamingConvention: api schema
+      column_type: "llm-judge",
+      ...base,
+      scores,
+    };
+  }
   return {
     // biome-ignore lint/style/useNamingConvention: api schema
     column_type: "llm-text",
