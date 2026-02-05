@@ -18,7 +18,6 @@ __all__ = [
 ]
 
 import torch
-from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 import inspect
 import os
 import re
@@ -414,8 +413,6 @@ def _wrap_grpo_generate_and_score(trainer_cls):
 
 def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     # Patch for vLLM and Unsloth PEFT
-    import trl
-    import trl.trainer
 
     try:
         trainer = eval(f"trl.trainer.{trainer_file}")

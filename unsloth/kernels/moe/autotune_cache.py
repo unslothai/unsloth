@@ -23,9 +23,8 @@ import json
 import logging
 import os
 import time
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, Optional, Tuple, Any
 import torch
-import triton
 
 logger = logging.getLogger(__name__)
 

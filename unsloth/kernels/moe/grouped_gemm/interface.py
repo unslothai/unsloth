@@ -3,7 +3,6 @@
 
 import logging
 import warnings
-from dataclasses import asdict
 
 import torch
 import triton

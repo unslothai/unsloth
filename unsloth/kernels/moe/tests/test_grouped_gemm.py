@@ -7,7 +7,6 @@ import pytest
 import torch
 
 from grouped_gemm.interface import (
-    grouped_gemm,
     grouped_gemm_dW,
     grouped_gemm_dX,
     grouped_gemm_forward,
@@ -582,7 +581,6 @@ def _test_grouped_gemm_backward_dX(
             kernel_config_bwd_dW = KernelConfigBackward_dW()
         else:
             from grouped_gemm.kernels.backward import (
-                _autotuned_grouped_gemm_dW_kernel,
                 _autotuned_grouped_gemm_dX_kernel,
             )
             from grouped_gemm.kernels.forward import (

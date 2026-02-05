@@ -2,9 +2,6 @@
 
 from unsloth import FastVisionModel
 
-import torch
-from qwen_vl_utils import process_vision_info
-import os
 from datasets import load_dataset
 from trl import SFTTrainer, SFTConfig
 
@@ -20,7 +17,6 @@ from tests.utils.ocr_eval import OCRModelEvaluator
 
 
 ## Dataset Preparation
-from datasets import load_dataset
 
 dataset = load_dataset("lbourdois/OCR-liboaccn-OPUS-MIT-5M-clean", "en", split = "train")
 # To select the first 2000 examples
@@ -66,12 +62,6 @@ train_dataset = [format_data(sample) for sample in train_dataset]
 eval_dataset = [format_data(sample) for sample in eval_dataset]
 
 ## Setup OCR main evaluation function and helpers
-import os
-import torch
-from tqdm import tqdm
-import pandas as pd
-from jiwer import wer, cer
-from qwen_vl_utils import process_vision_info
 
 #
 ocr_evaluator = OCRModelEvaluator()

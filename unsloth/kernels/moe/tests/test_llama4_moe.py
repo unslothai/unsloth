@@ -2,7 +2,6 @@
 # Copyright 2023-present the Unsloth team. All rights reserved.
 
 import argparse
-import sys
 from contextlib import contextmanager
 from functools import partial
 

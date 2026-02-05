@@ -18,7 +18,6 @@ from .utils import (
     fast_dequantize,
     QUANT_STATE,
     get_lora_parameters,
-    get_lora_parameters_bias,
     matmul_lora,
     torch_amp_custom_fwd,
     torch_amp_custom_bwd,

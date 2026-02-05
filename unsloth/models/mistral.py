@@ -14,7 +14,6 @@
 
 from .llama import *
 import os
-from ._utils import __version__
 from unsloth_zoo.utils import _get_dtype
 from unsloth_zoo.hf_utils import dtype_from_config
 from ..utils.packing import (
@@ -47,7 +46,6 @@ try:
 except:
     MistralSdpaAttention = MistralAttention
     MistralFlashAttention2 = MistralAttention
-from unsloth_zoo.utils import Version, _get_dtype
 
 
 def MistralAttention_fast_forward(

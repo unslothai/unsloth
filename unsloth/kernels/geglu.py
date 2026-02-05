@@ -16,7 +16,6 @@ import triton
 import triton.language as tl
 import torch
 from .utils import (
-    calculate_settings,
     triton_tanh,
     torch_gpu_device,
 )

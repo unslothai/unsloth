@@ -13,9 +13,7 @@
 # limitations under the License.
 
 from .llama import *
-import os
-from ._utils import __version__
-from unsloth_zoo.utils import Version, _get_dtype
+from unsloth_zoo.utils import Version
 from ..utils.packing import get_packed_info_from_kwargs
 from ..utils.attention_dispatch import (
     AttentionConfig,
@@ -47,9 +45,6 @@ except:
             f'Try `pip install --upgrade "transformers>=4.50.3"`\n'
             f"to obtain the latest transformers build, then restart this session."
         )
-from transformers.modeling_attn_mask_utils import (
-    _prepare_4d_causal_attention_mask_for_sdpa,
-)
 
 # For Pytorch 2.1.1
 try:

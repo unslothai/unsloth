@@ -178,7 +178,7 @@ def save_autotune_results(autotune_cache, mode, ref_time, fused_time, results_di
 
     for key, config in autotune_cache.items():
         key = [
-            str(k) if not "torch" in str(k) else str(k.split("torch.")[-1]) for k in key
+            str(k) if "torch" not in str(k) else str(k.split("torch.")[-1]) for k in key
         ]
         filename = "_".join(key)
         save_path = f"{save_dir}/{filename}.json"

@@ -101,8 +101,6 @@ def run(args):
         return {"text": texts}
 
     def load_dataset_smart(args):
-        from transformers.utils import strtobool
-
         if args.raw_text_file:
             # Use raw text loader
             loader = RawTextDataLoader(tokenizer, args.chunk_size, args.stride)

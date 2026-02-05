@@ -7,7 +7,6 @@ Tests basic functionality without heavy dependencies.
 import sys
 import os
 import tempfile
-from pathlib import Path
 import importlib.util
 
 

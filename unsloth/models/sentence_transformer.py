@@ -346,9 +346,9 @@ class FastSentenceTransformer(FastModel):
                                 print(f"Pooling mode detected as {mode}, updating...")
                             return mode
 
-        except Exception as e:
+        except Exception:
             print(
-                f"Failed to detect pooling mode, not a sentence-transformers model. Using default pooling mode 'mean', this may or may not work."
+                "Failed to detect pooling mode, not a sentence-transformers model. Using default pooling mode 'mean', this may or may not work."
             )
             return "mean"
 

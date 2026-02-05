@@ -13,7 +13,6 @@
 # limitations under the License.
 
 from .llama import *
-import os
 from ._utils import __version__
 from unsloth_zoo.utils import _get_dtype, Version
 from unsloth_zoo.hf_utils import dtype_from_config
@@ -265,8 +264,6 @@ def GraniteDecoderLayer_fast_forward(
     return outputs
 
 
-from math import sqrt as math_sqrt
-
 KV_CACHE_INCREMENT = 256  # KV Cache update size
 torch_nn_functional_softmax = torch.nn.functional.softmax
 torch_matmul = torch.matmul
@@ -285,7 +282,7 @@ def GraniteAttention_fast_forward_inference(
 ):
     assert (
         position_embeddings is not None
-    ), f"Granite model requires position embeddings to be specified"
+    ), "Granite model requires position embeddings to be specified"
 
     Xn = hidden_states
     bsz, _, hd = hidden_states.size()

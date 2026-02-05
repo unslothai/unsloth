@@ -28,19 +28,16 @@ from peft.tuners.lora import Linear4bit as Peft_Linear4bit
 from peft.tuners.lora import Linear as Peft_Linear
 from typing import Optional, Callable, Union, List
 import sys
-import requests
 import torch
 import os
 import shutil
 import pickle
 import gc
 from transformers.models.llama.modeling_llama import logger
-from .kernels import fast_dequantize, QUANT_STATE, get_lora_parameters_bias
+from .kernels import fast_dequantize, get_lora_parameters_bias
 import subprocess
 import psutil
 import re
-from transformers.models.llama.modeling_llama import logger
-from .tokenizer_utils import fix_sentencepiece_gguf
 from .models.loader_utils import get_model_name
 from .models._utils import _convert_torchao_model
 from .ollama_template_mappers import OLLAMA_TEMPLATES, MODEL_TO_OLLAMA_TEMPLATE_MAPPER
@@ -1224,7 +1221,7 @@ def save_to_gguf(
         print(
             f"Unsloth: [1] Converting model into {first_conversion_dtype} GGUF format."
         )
-        print(f"This might take 3 minutes...")
+        print("This might take 3 minutes...")
 
         initial_files, is_vlm_update = convert_to_gguf(
             model_name = model_name,
@@ -1289,7 +1286,7 @@ def save_to_gguf(
                     )
                     all_saved_locations.append(quantized_file)
                     quants_created = True
-                except Exception as e:
+                except Exception:
                     if IS_KAGGLE_ENVIRONMENT:
                         raise RuntimeError(
                             f"Unsloth: Quantization failed for {output_location}\n"
@@ -1328,7 +1325,7 @@ def save_to_gguf(
     else:
         want_full_precision = first_conversion in frozenset(quantization_method)
 
-    print(f"Unsloth: All GGUF conversions completed successfully!")
+    print("Unsloth: All GGUF conversions completed successfully!")
     print(f"Generated files: {all_saved_locations}")
 
     return all_saved_locations, want_full_precision, is_vlm
@@ -2118,7 +2115,7 @@ def unsloth_push_to_hub_gguf(
         cleanup_temp = False
 
     # Step 2: Call save_pretrained_gguf to do the conversion
-    print(f"Unsloth: Converting model to GGUF format...")
+    print("Unsloth: Converting model to GGUF format...")
 
     try:
         # Call save_pretrained_gguf - it returns all the info we need
@@ -2512,13 +2509,11 @@ def unsloth_convert_lora_to_ggml_and_save_locally(
     )
 
 
-from .models.loader_utils import get_model_name
 from unsloth_zoo.saving_utils import (
     merge_and_overwrite_lora,
     prepare_saving,
 )
 from unsloth_zoo.llama_cpp import (
-    install_llama_cpp,
     convert_to_gguf as _convert_to_gguf,
 )
 
@@ -2829,7 +2824,6 @@ def _unsloth_save_torchao_with_given_config(
         AutoModelForImageTextToText,
         AutoProcessor,
     )
-    from torchao import quantize_
 
     if isinstance(torchao_config, TorchAoConfig):
         quantization_config = torchao_config
@@ -2967,7 +2961,6 @@ def not_implemented_save(*args, **kwargs):
 def patch_saving_functions(model, vision = False):
     import inspect
     import types
-    from typing import Callable, Optional, Union, List
 
     # And now re add our saving methods!
     if model.push_to_hub.__name__ == "unsloth_push_to_hub":

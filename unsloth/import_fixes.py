@@ -69,7 +69,7 @@ class HideLoggingMessage(logging.Filter):
         self.text = text
 
     def filter(self, x):
-        return not (self.text in x.getMessage())
+        return self.text not in x.getMessage()
 
 
 class HidePrintMessage:
