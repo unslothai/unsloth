@@ -2288,6 +2288,8 @@ class FastLlamaModel:
         model_function = MODEL_FOR_CAUSAL_LM_MAPPING[model_config.__class__]
         IS_FALCON_H1 = model_config.model_type.startswith("falcon_h1")
 
+        preferred_attn_impl = prefer_flex_attn_if_supported(model_function, model_config) or "eager"
+
         has_rope_scaling = False
         try:
             with open(inspect.getfile(model_function), "r", encoding = "utf-8") as file:
@@ -2366,7 +2368,7 @@ class FastLlamaModel:
                 token = token,
                 max_position_embeddings = max_position_embeddings,
                 trust_remote_code = trust_remote_code,
-                attn_implementation = "eager",
+                attn_implementation = preferred_attn_impl,
                 **kwargs,
             )
         elif not fast_inference:
@@ -2378,7 +2380,7 @@ class FastLlamaModel:
                 token = token,
                 max_position_embeddings = max_position_embeddings,
                 trust_remote_code = trust_remote_code,
-                attn_implementation = "eager",
+                attn_implementation = preferred_attn_impl,
                 **kwargs,
             )
             model.fast_generate = make_fast_generate_wrapper(model.generate)
