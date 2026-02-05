@@ -49,12 +49,12 @@ class TestMistralMPS(unittest.TestCase):
 
         try:
             # Load model
-            print("Loading unsloth/mistral-7b-bnb-4bit...")
-            # Use 4-bit to save resources if supported, else full
+            # On Mac, we CANNOT use bitsandbytes 4-bit models.
+            print("Loading mistralai/Mistral-7B-v0.1 (16-bit) for MPS testing...")
             model, tokenizer = FastLanguageModel.from_pretrained(
-                model_name = "unsloth/mistral-7b-bnb-4bit",
+                model_name = "mistralai/Mistral-7B-v0.1",
                 max_seq_length = 512,
-                load_in_4bit = True,
+                load_in_4bit = False, # Must be False on Mac (no bitsandbytes)
                 dtype = torch.float16,
             )
 

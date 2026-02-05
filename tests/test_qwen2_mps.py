@@ -52,17 +52,14 @@ class TestQwen2MPS(unittest.TestCase):
 
         try:
             # Load model
-            print("Loading unsloth/Qwen2-7B-bnb-4bit...")
-            # Note: Qwen2-7B might be large. If there's a smaller one like 1.5B or 0.5B it would be faster.
-            # Qwen/Qwen2-0.5B or 1.5B is better for CI/testing.
-            # But the task says "Qwen/Qwen2-7B". I will stick to 7B or 4bit equivalent if easily available.
-            # Let's try Qwen/Qwen2-0.5B for speed if permissible, but strictly 7B is safer for parity.
-            model_name = "unsloth/Qwen2-0.5B-bnb-4bit" # Faster for test
+            # On Mac, we CANNOT use bitsandbytes 4-bit models.
+            print("Loading Qwen/Qwen2-0.5B (16-bit) for MPS testing...")
+            model_name = "Qwen/Qwen2-0.5B" # Small model for faster testing
             
             model, tokenizer = FastLanguageModel.from_pretrained(
                 model_name = model_name,
                 max_seq_length = 512,
-                load_in_4bit = True,
+                load_in_4bit = False, # Must be False on Mac (no bitsandbytes)
                 dtype = torch.float16,
             )
 
