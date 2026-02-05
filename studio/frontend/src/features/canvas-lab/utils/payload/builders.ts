@@ -1,97 +1,18 @@
-import type { Edge } from "@xyflow/react";
 import type {
   CanvasProcessorConfig,
   CategoryConditionalParams,
-  CanvasNode,
   ExpressionConfig,
   LlmConfig,
   ModelConfig,
   ModelProviderConfig,
-  NodeConfig,
   SamplerConfig,
-} from "../types";
-import { getConfigErrors } from "./index";
-
-type CanvasPayload = {
-  recipe: {
-    // biome-ignore lint/style/useNamingConvention: api schema
-    model_providers: Record<string, unknown>[];
-    // biome-ignore lint/style/useNamingConvention: api schema
-    model_configs: Record<string, unknown>[];
-    columns: Record<string, unknown>[];
-    processors: Record<string, unknown>[];
-  };
-  run: {
-    rows: number;
-    preview: boolean;
-    // biome-ignore lint/style/useNamingConvention: api schema
-    output_formats: string[];
-  };
-  ui: {
-    nodes: { id: string; x: number; y: number }[];
-    edges: { from: string; to: string; type?: string }[];
-  };
-};
-
-export type CanvasPayloadResult = {
-  errors: string[];
-  payload: CanvasPayload;
-};
-
-function isSemanticRelation(
-  source: NodeConfig,
-  target: NodeConfig,
-): boolean {
-  if (source.kind === "model_provider" && target.kind === "model_config") {
-    return true;
-  }
-  return source.kind === "model_config" && target.kind === "llm";
-}
-
-function parseNumber(value?: string): number | null {
-  if (!value) {
-    return null;
-  }
-  const num = Number(value);
-  return Number.isFinite(num) ? num : null;
-}
-
-function parseAgeRange(value?: string): [number, number] | null {
-  if (!value) {
-    return null;
-  }
-  const parts = value.split(/[^0-9.]+/).filter(Boolean);
-  if (parts.length !== 2) {
-    return null;
-  }
-  const min = Number(parts[0]);
-  const max = Number(parts[1]);
-  if (!Number.isFinite(min) || !Number.isFinite(max)) {
-    return null;
-  }
-  return [min, max];
-}
-
-function parseJsonObject(
-  value: string | undefined,
-  label: string,
-  errors: string[],
-): Record<string, unknown> | undefined {
-  if (!value || !value.trim()) {
-    return undefined;
-  }
-  try {
-    const parsed = JSON.parse(value);
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>;
-    }
-  } catch {
-    errors.push(`${label}: invalid JSON.`);
-    return undefined;
-  }
-  errors.push(`${label}: must be a JSON object.`);
-  return undefined;
-}
+} from "../../types";
+import {
+  isValidSex,
+  parseAgeRange,
+  parseJsonObject,
+  parseNumber,
+} from "./parse";
 
 function buildCategoryConditionalParams(
   config: SamplerConfig,
@@ -133,7 +54,7 @@ function buildCategoryConditionalParams(
   return Object.keys(output).length > 0 ? output : undefined;
 }
 
-function buildModelProvider(
+export function buildModelProvider(
   config: ModelProviderConfig,
   errors: string[],
 ): Record<string, unknown> {
@@ -163,7 +84,7 @@ function buildModelProvider(
   };
 }
 
-function buildModelConfig(config: ModelConfig): Record<string, unknown> {
+export function buildModelConfig(config: ModelConfig): Record<string, unknown> {
   const inference: Record<string, unknown> = {};
   const temp = config.inference_temperature?.trim();
   const topP = config.inference_top_p?.trim();
@@ -198,13 +119,6 @@ function buildModelConfig(config: ModelConfig): Record<string, unknown> {
     // biome-ignore lint/style/useNamingConvention: api schema
     skip_health_check: config.skip_health_check || undefined,
   };
-}
-
-function isValidSex(value?: string): value is "Male" | "Female" {
-  if (!value) {
-    return false;
-  }
-  return value === "Male" || value === "Female";
 }
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: per type logic
@@ -311,7 +225,32 @@ function buildSamplerParams(
   return params;
 }
 
-function buildLlmColumn(
+export function buildSamplerColumn(
+  config: SamplerConfig,
+  errors: string[],
+): Record<string, unknown> {
+  const samplerColumn: Record<string, unknown> = {
+    // biome-ignore lint/style/useNamingConvention: api schema
+    column_type: "sampler",
+    name: config.name,
+    drop: config.drop ?? false,
+    // biome-ignore lint/style/useNamingConvention: api schema
+    sampler_type: config.sampler_type,
+    params: buildSamplerParams(config, errors),
+    // biome-ignore lint/style/useNamingConvention: api schema
+    convert_to: config.convert_to ?? undefined,
+  };
+  if (config.sampler_type === "category") {
+    const conditionalParams = buildCategoryConditionalParams(config, errors);
+    if (conditionalParams) {
+      // biome-ignore lint/style/useNamingConvention: api schema
+      samplerColumn.conditional_params = conditionalParams;
+    }
+  }
+  return samplerColumn;
+}
+
+export function buildLlmColumn(
   config: LlmConfig,
   errors: string[],
 ): Record<string, unknown> {
@@ -392,7 +331,7 @@ function buildLlmColumn(
   };
 }
 
-function buildExpressionColumn(
+export function buildExpressionColumn(
   config: ExpressionConfig,
   errors: string[],
 ): Record<string, unknown> {
@@ -409,7 +348,7 @@ function buildExpressionColumn(
   };
 }
 
-function buildProcessors(
+export function buildProcessors(
   processors: CanvasProcessorConfig[],
   errors: string[],
 ): Record<string, unknown>[] {
@@ -441,212 +380,4 @@ function buildProcessors(
     });
   }
   return output;
-}
-
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: payload build
-export function buildCanvasPayload(
-  configs: Record<string, NodeConfig>,
-  nodes: CanvasNode[],
-  edges: Edge[],
-  processors: CanvasProcessorConfig[] = [],
-): CanvasPayloadResult {
-  const errors: string[] = [];
-  const columns: Record<string, unknown>[] = [];
-  const modelAliases = new Set<string>();
-  const modelProviderNames = new Set<string>();
-  const modelProviders: Record<string, unknown>[] = [];
-  const modelConfigs: Record<string, unknown>[] = [];
-  const modelProviderConfigs: ModelProviderConfig[] = [];
-  const modelConfigConfigs: ModelConfig[] = [];
-  const nameSet = new Set<string>();
-  const nameToConfig = new Map<string, NodeConfig>();
-
-  for (const node of nodes) {
-    const config = configs[node.id];
-    if (!config) {
-      continue;
-    }
-    for (const error of getConfigErrors(config)) {
-      errors.push(`${config.name}: ${error}`);
-    }
-    if (nameSet.has(config.name)) {
-      errors.push(`Duplicate node name: ${config.name}.`);
-    }
-    nameSet.add(config.name);
-
-    if (config.kind === "sampler") {
-      nameToConfig.set(config.name, config);
-      const samplerColumn: Record<string, unknown> = {
-        // biome-ignore lint/style/useNamingConvention: api schema
-        column_type: "sampler",
-        name: config.name,
-        drop: config.drop ?? false,
-        // biome-ignore lint/style/useNamingConvention: api schema
-        sampler_type: config.sampler_type,
-        params: buildSamplerParams(config, errors),
-        // biome-ignore lint/style/useNamingConvention: api schema
-        convert_to: config.convert_to ?? undefined,
-      };
-      if (config.sampler_type === "category") {
-        const conditionalParams = buildCategoryConditionalParams(config, errors);
-        if (conditionalParams) {
-          // biome-ignore lint/style/useNamingConvention: api schema
-          samplerColumn.conditional_params = conditionalParams;
-        }
-      }
-      columns.push(samplerColumn);
-    } else if (config.kind === "llm") {
-      columns.push(buildLlmColumn(config, errors));
-      if (config.model_alias) {
-        modelAliases.add(config.model_alias);
-      }
-      nameToConfig.set(config.name, config);
-    } else if (config.kind === "expression") {
-      columns.push(buildExpressionColumn(config, errors));
-      nameToConfig.set(config.name, config);
-    } else if (config.kind === "model_provider") {
-      modelProviderNames.add(config.name);
-      modelProviders.push(buildModelProvider(config, errors));
-      modelProviderConfigs.push(config);
-    } else if (config.kind === "model_config") {
-      modelConfigs.push(buildModelConfig(config));
-      modelConfigConfigs.push(config);
-    }
-  }
-
-  for (const config of Object.values(configs)) {
-    if (config.kind !== "sampler" || config.sampler_type !== "subcategory") {
-      continue;
-    }
-    const parentName = config.subcategory_parent;
-    if (!parentName) {
-      errors.push(`Subcategory ${config.name}: parent category required.`);
-      continue;
-    }
-    const parent = nameToConfig.get(parentName);
-    const parentValues =
-      parent && parent.kind === "sampler" && parent.sampler_type === "category"
-        ? (parent.values ?? [])
-        : [];
-    const mapping = config.subcategory_mapping ?? {};
-    for (const value of parentValues) {
-      const list = mapping[value];
-      if (!list || list.length === 0) {
-        errors.push(
-          `Subcategory ${config.name}: '${value}' needs at least 1 subcategory.`,
-        );
-      }
-    }
-  }
-  for (const config of Object.values(configs)) {
-    if (config.kind !== "sampler" || config.sampler_type !== "timedelta") {
-      continue;
-    }
-    const reference = config.reference_column_name?.trim() ?? "";
-    if (!reference) {
-      errors.push(`Timedelta ${config.name}: reference datetime column required.`);
-      continue;
-    }
-    const parent = nameToConfig.get(reference);
-    if (
-      !parent ||
-      parent.kind !== "sampler" ||
-      parent.sampler_type !== "datetime"
-    ) {
-      errors.push(`Timedelta ${config.name}: reference '${reference}' must be datetime.`);
-    }
-  }
-
-  for (const alias of modelAliases) {
-    if (
-      !modelConfigs.some(
-        (config) => (config.alias as string | undefined) === alias,
-      )
-    ) {
-      errors.push(`LLM model_alias ${alias}: missing model config.`);
-    }
-  }
-
-  for (const config of modelConfigConfigs) {
-    const provider = config.provider.trim();
-    const alias = config.name;
-    if (modelAliases.has(alias) && !config.model.trim()) {
-      errors.push(`Model config ${alias}: model is required.`);
-    }
-    if (provider && !modelProviderNames.has(provider)) {
-      errors.push(`Model config ${alias}: provider ${provider} not found.`);
-    }
-  }
-
-  const usedProviders = new Set(
-    modelConfigConfigs.map((config) => config.provider.trim()).filter(Boolean),
-  );
-  for (const provider of modelProviderConfigs) {
-    if (!usedProviders.has(provider.name)) {
-      continue;
-    }
-    if (!provider.endpoint.trim()) {
-      errors.push(`Model provider ${provider.name}: endpoint is required.`);
-    }
-    if (!provider.provider_type.trim()) {
-      errors.push(`Model provider ${provider.name}: provider_type is required.`);
-    }
-  }
-
-  const uiNodes = nodes.flatMap((node) => {
-    const config = configs[node.id];
-    if (!config) {
-      return [];
-    }
-    return [
-      {
-        id: config.name,
-        x: node.position.x,
-        y: node.position.y,
-      },
-    ];
-  });
-
-  const uiEdges = edges.flatMap((edge) => {
-    const source = edge.source ? configs[edge.source] : null;
-    const target = edge.target ? configs[edge.target] : null;
-    if (!(source && target)) {
-      return [];
-    }
-    return [
-      {
-        from: source.name,
-        to: target.name,
-        type:
-          edge.type === "semantic" || isSemanticRelation(source, target)
-            ? "semantic"
-            : "canvas",
-      },
-    ];
-  });
-  const recipeProcessors = buildProcessors(processors, errors);
-
-  return {
-    errors,
-    payload: {
-      recipe: {
-        // biome-ignore lint/style/useNamingConvention: api schema
-        model_providers: modelProviders,
-        // biome-ignore lint/style/useNamingConvention: api schema
-        model_configs: modelConfigs,
-        columns,
-        processors: recipeProcessors,
-      },
-      run: {
-        rows: 5,
-        preview: true,
-        // biome-ignore lint/style/useNamingConvention: api schema
-        output_formats: ["jsonl"],
-      },
-      ui: {
-        nodes: uiNodes,
-        edges: uiEdges,
-      },
-    },
-  };
 }

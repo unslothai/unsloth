@@ -17,7 +17,7 @@ This doc explains current architecture, how nodes map to payload/import, and how
 4. Graph connection logic updates references + semantic edges:
 `/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/utils/graph.ts`
 5. Export (preview/copy) converts in-memory graph/config to API payload:
-`/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/utils/payload.ts`
+`/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/utils/payload/build-payload.ts`
 6. Import reconstructs configs, nodes, edges from JSON:
 `/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/utils/import/importer.ts`
 
@@ -192,7 +192,7 @@ This keeps graph fields stable when upstream nodes renamed/deleted.
 ## 9) Payload building (node graph -> API)
 
 File:
-`/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/utils/payload.ts`
+`/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/utils/payload/build-payload.ts`
 
 `buildCanvasPayload(configs, nodes, edges)` outputs:
 
@@ -283,7 +283,7 @@ Minimal path for a new block type:
 5. Add store add-action if block should be special-cased from sheet:
 `/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/stores/canvas-lab.ts`
 6. Add payload serialization/validation in:
-`/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/utils/payload.ts`
+`/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/utils/payload/`
 7. Add import parsing + inferred edges in:
 `/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/utils/import/parsers.ts`
 `/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/utils/import/importer.ts`
