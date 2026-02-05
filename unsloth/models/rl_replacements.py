@@ -27,8 +27,10 @@ import inspect
 from collections import defaultdict
 from unsloth_zoo.rl_replacements import RL_REPLACEMENTS, left_pack_padding
 from unsloth_zoo.utils import Version
+from trl import __version__ as trl_version_raw
 from importlib.metadata import version as importlib_version
 from unsloth_zoo.log import logger
+from unsloth_zoo.device_type import device_synchronize
 import importlib.util
 from ..device_type import (
     is_hip,
@@ -56,6 +58,14 @@ torch_compile_options = {
     "triton.cudagraphs": False,
 }
 
+try:
+    trl_version = Version(trl_version_raw)
+except Exception:
+    try:
+        trl_version = Version(importlib_version("trl"))
+    except Exception:
+        trl_version = Version("0.0.0")
+
 
 # Check untrained tokens
 def sft_trainer_fix_untrained_tokens(call_args, extra_args):
@@ -73,6 +83,16 @@ def sft_trainer_fix_untrained_tokens(call_args, extra_args):
 
 
 RL_EXTRA_ARGS["sft_trainer"].append(sft_trainer_fix_untrained_tokens)
+
+
+# Fix top_k for GRPO vLLM.
+# https://github.com/huggingface/trl/pull/4695 with this change trl added top_k in GRPOConfig and defaults to 0
+# We don't want that since vllm's all include top_k is -1 and 0 returns an error on SamplingParams creation.
+def grpo_config_fix_vllm_top_k(old_RLTrainer_source, old_RLConfig_source):
+    return "if use_vllm and (top_k is None or top_k == 0): top_k = -1\n"
+
+
+RL_CONFIG_CHANGES["grpo_trainer"].append(grpo_config_fix_vllm_top_k)
 
 
 # Remove DPO columns which might randomnly be tokenized
@@ -236,6 +256,30 @@ def grpo_trainer__generate_single_turn(function_name, function):
         "",
         function,
     )
+
+    # TRL 0.24.0-0.25.1 truncation regression fix
+    #
+    # TRL 0.22.2-0.23.1 used smart truncation via truncate_with_protected_tokens():
+    #   - Tokenizes first without truncation
+    #   - Then truncates keeping the RIGHTMOST tokens (preserves assistant turn)
+    #   - Protects special tokens (image_token, vision_start/end) from removal
+    #
+    # TRL 0.24.0-0.25.1 removed this and passed kwargs directly to the tokenizer:
+    #   max_length=self.max_prompt_length, truncation=True, add_special_tokens=False
+    # This causes issues because tokenizer truncation doesn't protect special tokens
+    # and may not preserve the end of the prompt properly.
+    #
+    # TRL 0.26.2+ removed these kwargs entirely (no tokenizer-level truncation).
+    #
+    # Fix: Remove these kwargs so TRL 0.24.0-0.25.1 behaves like 0.26.2+ (no truncation).
+    # This is a no-op for versions that don't have these kwargs (0.22.2-0.23.1, 0.26.2+).
+    for pattern in [
+        r'["\']?max_length["\']?\s*[:=]\s*self\.max_prompt_length\s*,\s*\n?',
+        r'["\']?truncation["\']?\s*[:=]\s*True\s*,\s*\n?',
+        r'["\']?add_special_tokens["\']?\s*[:=]\s*False\s*,\s*\n?',
+    ]:
+        function = re.sub(pattern, "", function)
+
     return function
 
 
@@ -283,7 +327,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         re.MULTILINE,
     )
 
-    replacement_text = """        
+    replacement_text = """
             if self.args.gradient_accumulation_steps % generate_every != 0 or (
                 self.use_vllm
             ):"""
@@ -365,7 +409,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
     replacement_string = """        if "image_sizes" in prompt_inputs:
             output["image_sizes"] = prompt_inputs["image_sizes"]
         if max_left_pad is not None:
-            output["max_left_pad"] = torch.tensor(prompt_ids.shape[0] * [max_left_pad]).unsqueeze(-1)        
+            output["max_left_pad"] = torch.tensor(prompt_ids.shape[0] * [max_left_pad]).unsqueeze(-1)
         try:
             if self.use_vllm and getattr(self, "vllm_importance_sampling_correction", False):
                 output["sampling_per_token_logps"] = sampling_per_token_logps
@@ -373,6 +417,31 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             output["sampling_per_token_logps"] = None"""
 
     function = function.replace(string_to_find, replacement_string)
+
+    # TRL 0.24.0+ extracts prompts = [x["prompt"] for x in inputs], losing metadata
+    # like reasoning_effort. Inject code to store per-sample chat_template_kwargs on self.
+    _metadata_extraction = (
+        "\n"
+        "        # Unsloth: Extract per-sample chat_template_kwargs before metadata is lost\n"
+        "        _ct_ = getattr(self.processing_class, 'chat_template', None) or ''\n"
+        "        _sk_ = {'prompt', 'chosen', 'rejected', 'completion', 'messages', 'label',\n"
+        "                'images', 'image', 'videos', 'video', 'audios', 'audio'}\n"
+        "        self._unsloth_batch_chat_kwargs = []\n"
+        "        for _inp_ in inputs:\n"
+        "            _kw_ = {}\n"
+        "            if isinstance(_inp_, dict):\n"
+        "                for _k_ in _inp_.keys() - _sk_:\n"
+        "                    if _k_ in _ct_ and isinstance(_inp_[_k_], str):\n"
+        "                        _kw_[_k_] = _inp_[_k_]\n"
+        "            self._unsloth_batch_chat_kwargs.append(_kw_)\n"
+    )
+    # Insert after: prompts = [x["prompt"] for x in inputs]
+    _target_line = 'prompts = [x["prompt"] for x in inputs]'
+    if _target_line in function:
+        function = function.replace(
+            _target_line,
+            _target_line + _metadata_extraction,
+        )
 
     # This path is for TRL 0.24.0 images is a variable exclusive to this version
     string_to_find = """        if images is not None:
@@ -381,7 +450,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
     replacement_string = """        if images is not None:
             output["num_images"] = num_images
         if max_left_pad is not None:
-            output["max_left_pad"] = torch.tensor(prompt_ids.shape[0] * [max_left_pad]).unsqueeze(-1)        
+            output["max_left_pad"] = torch.tensor(prompt_ids.shape[0] * [max_left_pad]).unsqueeze(-1)
         try:
             if self.use_vllm and getattr(self, "vllm_importance_sampling_correction", False):
                 output["sampling_per_token_logps"] = sampling_per_token_logps
@@ -389,6 +458,17 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             output["sampling_per_token_logps"] = None"""
 
     function = function.replace(string_to_find, replacement_string)
+
+    if trl_version >= Version("0.25.0"):
+        # We replace the call using 'completions' with one using 'completions_text'
+        string_to_find = "        rewards_per_func = self._calculate_rewards(inputs, prompts, completions, completion_ids_list)"
+        replacement_string = (
+            "        if images is not None:\n"
+            "            rewards_per_func = self._calculate_rewards(inputs, prompts_text, completions_text, completion_ids_list)\n"
+            "        else:\n"
+            "            rewards_per_func = self._calculate_rewards(inputs, prompts, completions, completion_ids_list)"
+        )
+        function = function.replace(string_to_find, replacement_string)
 
     if "wake_up()" not in function:
         # Sleep functionality has been added to trl in v0.23.0. We do not want to redo this.
@@ -434,9 +514,10 @@ def grpo_trainer_fix_maybe_apply_chat_template(function_name, function):
         _chat_template_ = getattr(self.processing_class, "chat_template", None)
         if _chat_template_ is None: _chat_template_ = ""
         _supported_keys_ = set(("prompt", "chosen", "rejected", "completion", "messages", "label"))
+        _batch_chat_kwargs_ = getattr(self, "_unsloth_batch_chat_kwargs", None)
 
         prompts_text = []
-        for _example_ in __INPUTS__REPLACEMENT__:
+        for _idx_, _example_ in enumerate(__INPUTS__REPLACEMENT__):
             _tokenizer_kwargs_ = {}
             if type(_example_) is not dict:
                 _example_ = {"prompt": _example_}
@@ -446,6 +527,10 @@ def grpo_trainer_fix_maybe_apply_chat_template(function_name, function):
                     v = _example_[k]
                     if type(v) is str:
                         _tokenizer_kwargs_[k] = v
+            if _batch_chat_kwargs_ is not None and _idx_ < len(_batch_chat_kwargs_):
+                for _bk_, _bv_ in _batch_chat_kwargs_[_idx_].items():
+                    if _bk_ not in _tokenizer_kwargs_:
+                        _tokenizer_kwargs_[_bk_] = _bv_
             _x_ = maybe_apply_chat_template(_example_, self.processing_class, **_tokenizer_kwargs_)["prompt"]
             prompts_text.append(_x_)
     """
@@ -771,7 +856,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         )
                     # This is needed to avoid race conditions with GPT OSS offload_embbed=True
                     # However, it seems that this line does not slow down or disrupt models.
-                    torch.cuda.synchronize()
+                    device_synchronize()
                     all_logprobs_list.append(logprobs_chunk)
                 logprobs = torch.cat(all_logprobs_list, dim = 0)
                 entropies = None
@@ -914,7 +999,7 @@ def grpo_trainer_compute_loss(function_name, function):
 
         max_left_pad = inputs.get("max_left_pad", 0)
         if per_token_logps is not None:
-            loss, completion_length, mean_kl, delta, flat_is_ratio = (
+            loss, completion_length, mean_kl, delta, flat_is_ratio, coef_1 = (
                 grpo_compute_loss_slow(
                     ref_logps,
                     per_token_logps,
@@ -944,7 +1029,7 @@ def grpo_trainer_compute_loss(function_name, function):
             )
         else:
             if hasattr(self.args, "loss_type"):
-                loss, completion_length, mean_kl, delta, flat_is_ratio = (
+                loss, completion_length, mean_kl, delta, flat_is_ratio, coef_1 = (
                     grpo_accumulated_loss(
                         trainer = self,
                         input_ids = _input_ids,
@@ -976,7 +1061,7 @@ def grpo_trainer_compute_loss(function_name, function):
                 )
             else:
                 # to ensure backwards compatibility with trl 0.15.2 and maybe even 0.17
-                loss, completion_length, mean_kl = grpo_accumulated_loss(
+                loss, completion_length, mean_kl, coef_1 = grpo_accumulated_loss(
                     trainer = self,
                     input_ids = _input_ids,
                     logits_to_keep = logits_to_keep,
@@ -991,7 +1076,6 @@ def grpo_trainer_compute_loss(function_name, function):
                     logit_scale_divide = logit_scale_divide,
                     attention_mask = attention_mask,
                 )
-
         if "train" in self._metrics:
             mode = "eval" if self.control.should_evaluate else "train"
             self._metrics[mode]["completion_length"].append(completion_length.item())
@@ -1051,6 +1135,53 @@ def grpo_trainer_compute_loss(function_name, function):
                 .nan_to_num(nan = float("-inf"))
                 .max()
                 .item()
+            )
+
+        completion_token_count = completion_mask.sum().clamp(min = 1.0)
+
+        def masked_batch_mean(x):
+            if x.shape[1] == 1:  # when importance_sampling_level == "sequence"
+                return x.mean()
+            else:
+                return (x * completion_mask).sum() / completion_token_count
+
+        if advantages.dim() == 1:
+            advantages = advantages.unsqueeze(1)
+
+        if self.loss_type in ["grpo", "bnpo", "dr_grpo", "dapo"]:
+            # Compute the clipped probability ratios
+            is_low_clipped = (coef_1 < 1 - self.epsilon_low) & (advantages < 0)
+            is_high_clipped = (coef_1 > 1 + self.epsilon_high) & (advantages > 0)
+            is_region_clipped = is_low_clipped | is_high_clipped
+
+            low_clip = masked_batch_mean(is_low_clipped.float())
+            high_clip = masked_batch_mean(is_high_clipped.float())
+            clip_ratio = masked_batch_mean(is_region_clipped.float())
+
+            gathered_low_clip = self.accelerator.gather(low_clip)
+            self._metrics[mode]["clip_ratio/low_mean"].append(
+                gathered_low_clip.nanmean().item()
+            )
+            self._metrics[mode]["clip_ratio/low_min"].append(
+                nanmin(gathered_low_clip).item()
+            )
+            gathered_high_clip = self.accelerator.gather(high_clip)
+            self._metrics[mode]["clip_ratio/high_mean"].append(
+                gathered_high_clip.nanmean().item()
+            )
+            self._metrics[mode]["clip_ratio/high_max"].append(
+                nanmax(gathered_high_clip).item()
+            )
+            gathered_clip_ratio = self.accelerator.gather(clip_ratio)
+            self._metrics[mode]["clip_ratio/region_mean"].append(
+                gathered_clip_ratio.nanmean().item()
+            )
+        elif self.loss_type == "cispo":
+            is_cispo_clipped = (coef_1 > self.epsilon_high) & (advantages > 0)
+            cispo_clip_ratio = masked_batch_mean(is_cispo_clipped.float())
+            gathered_cispo_clip_ratio = self.accelerator.gather(cispo_clip_ratio)
+            self._metrics[mode]["cispo_clip_ratio"].append(
+                gathered_cispo_clip_ratio.nanmean().item()
             )
 
         return loss

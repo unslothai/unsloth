@@ -125,43 +125,56 @@ from unsloth_zoo.device_type import (
 from .import_fixes import (
     fix_xformers_performance_issue,
     fix_vllm_aimv2_issue,
+    check_vllm_torch_sm100_compatibility,
     fix_vllm_guided_decoding_params,
     fix_vllm_pdl_blackwell,
+    fix_rocm_triton_key_error,
     ignore_logger_messages,
     patch_ipykernel_hf_xet,
     patch_trackio,
     patch_datasets,
     patch_enable_input_require_grads,
     fix_openenv_no_vllm,
+    patch_openspiel_env_async,
     fix_executorch,
     patch_vllm_for_notebooks,
+    patch_torchcodec_audio_decoder,
 )
 
 fix_xformers_performance_issue()
 fix_vllm_aimv2_issue()
+# Check vLLM + torch < 2.9.0 + SM100 compatibility BEFORE importing vLLM
+check_vllm_torch_sm100_compatibility()
 fix_vllm_guided_decoding_params()
 fix_vllm_pdl_blackwell()
+fix_rocm_triton_key_error()
 ignore_logger_messages()
 patch_ipykernel_hf_xet()
 patch_trackio()
 patch_datasets()
 patch_enable_input_require_grads()
 fix_openenv_no_vllm()
+patch_openspiel_env_async()
 fix_executorch()
 patch_vllm_for_notebooks()
+patch_torchcodec_audio_decoder()
 
 del fix_xformers_performance_issue
 del fix_vllm_aimv2_issue
+del check_vllm_torch_sm100_compatibility
 del fix_vllm_guided_decoding_params
 del fix_vllm_pdl_blackwell
+del fix_rocm_triton_key_error
 del ignore_logger_messages
 del patch_ipykernel_hf_xet
 del patch_trackio
 del patch_datasets
 del patch_enable_input_require_grads
 del fix_openenv_no_vllm
+del patch_openspiel_env_async
 del fix_executorch
 del patch_vllm_for_notebooks
+del patch_torchcodec_audio_decoder
 
 # Torch 2.4 has including_emulation
 if DEVICE_TYPE == "cuda":
