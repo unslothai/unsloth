@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2026.1.4"
+__version__ = "2026.2.1"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -59,9 +59,11 @@ __all__ = [
     "unsloth_fused_ce_loss",
     "patch_unsloth_smart_gradient_checkpointing",
     "unpatch_unsloth_smart_gradient_checkpointing",
+    "apply_unsloth_gradient_checkpointing",
     "patch_compiled_autograd",
     "process_vision_info",
     "unsloth_compile_transformers",
+    "prefer_flex_attn_if_supported",
     "patch_fast_lora",
     "validate_loftq_config",
     "RaiseUninitialized",
@@ -73,6 +75,8 @@ __all__ = [
     "verify_fp8_support_if_applicable",
     "_get_inference_mode_context_manager",
     "hf_login",
+    "is_moe_model",
+    "get_moe_target_parameters",
     "make_fast_generate_wrapper",
 ]
 
@@ -147,6 +151,68 @@ from unsloth_zoo.training_utils import (
 from unsloth_zoo.temporary_patches import (
     TEMPORARY_PATCHES,
 )
+
+
+def apply_unsloth_gradient_checkpointing(
+    use_gradient_checkpointing, max_seq_length, dtype
+):
+    """
+    Apply gradient checkpointing with smart heuristics.
+
+    For seq < 512, the overhead of gradient offloading in gc="unsloth" mode
+    is not worth it. Benchmarks show standard gc is faster for small sequences.
+
+    Args:
+        use_gradient_checkpointing: "unsloth", True, False, or None
+        max_seq_length: The maximum sequence length
+        dtype: The model dtype for patching
+
+    Returns:
+        The effective use_gradient_checkpointing value (may change from "unsloth" to True)
+    """
+    if use_gradient_checkpointing == "unsloth":
+        # Gradient offloading overhead is not worth it for small sequences.
+        # Benchmarks show crossover point is around seq_len 384-512.
+        # For seq < 512, standard gradient checkpointing is faster.
+        if max_seq_length < 512:
+            unpatch_unsloth_smart_gradient_checkpointing()
+            return True
+        else:
+            patch_unsloth_smart_gradient_checkpointing(dtype = dtype)
+            return "unsloth"
+    elif use_gradient_checkpointing in (True, False):
+        # User explicitly set True or False - unpatch any previous "unsloth" patching
+        unpatch_unsloth_smart_gradient_checkpointing()
+        return use_gradient_checkpointing
+    return use_gradient_checkpointing
+
+
+def prefer_flex_attn_if_supported(model_class, config):
+    if os.environ.get("UNSLOTH_ENABLE_FLEX_ATTENTION", "1") == "0":
+        return None
+    try:
+        from transformers.utils.import_utils import is_torch_flex_attn_available
+
+        if not is_torch_flex_attn_available():
+            return None
+        if model_class is None or not getattr(
+            model_class, "_supports_flex_attn", False
+        ):
+            return None
+        # GPT-OSS uses eager attention during inference since flex attention
+        # returns incorrect results (likely due to left padding issues).
+        # Skip setting flex_attention to avoid BlockMask type errors.
+        model_type = getattr(config, "model_type", "") if config else ""
+        if model_type == "gpt_oss":
+            return None
+        if config is not None:
+            setattr(config, "_attn_implementation", "flex_attention")
+            if hasattr(config, "attn_implementation"):
+                setattr(config, "attn_implementation", "flex_attention")
+        return "flex_attention"
+    except Exception:
+        return None
+
 
 for temporary_patch in TEMPORARY_PATCHES:
     temporary_patch()
@@ -533,6 +599,12 @@ try:
     # Some Config files use layer_type_validation
     # for eg Gemma-2, so we must import it to stop errors.
     from transformers.configuration_utils import layer_type_validation
+except:
+    pass
+
+try:
+    # Transformers 5.0+ uses RotaryEmbeddingConfigMixin as a base class for configs
+    from transformers.modeling_rope_utils import RotaryEmbeddingConfigMixin
 except:
     pass
 from transformers import __version__ as transformers_version
@@ -1088,8 +1160,12 @@ def has_internet(host = "8.8.8.8", port = 53, timeout = 3):
         return False
     try:
         socket.setdefaulttimeout(timeout)
-        socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect((host, port))
-        return True
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.connect((host, port))
+            return True
+        finally:
+            sock.close()
     except socket.error as ex:
         return False
 
@@ -2426,6 +2502,117 @@ def hf_login(token: Optional[str] = None) -> Optional[str]:
     except Exception as e:
         logger.info(f"Failed to login to huggingface using token with error: {e}")
     return token
+
+
+# =============================================
+# MoE (Mixture of Experts) Detection and LoRA Utilities
+
+
+def is_moe_model(model) -> bool:
+    """
+    Detect if a model is a Mixture of Experts (MoE) model.
+
+    Args:
+        model: The model to check (can be HF model or config)
+
+    Returns:
+        True if the model is an MoE model, False otherwise
+    """
+    config = getattr(model, "config", model)
+
+    # Different MoE models use different config attribute names:
+    # - Qwen3-MoE: num_experts
+    # - GLM4-MoE: n_routed_experts, num_local_experts
+    # - Mixtral: num_local_experts
+    num_experts = None
+    for attr in ("num_experts", "n_routed_experts", "num_local_experts"):
+        num_experts = getattr(config, attr, None)
+        if num_experts is not None:
+            break
+
+    # Check text_config for VL models
+    if num_experts is None and hasattr(config, "text_config"):
+        for attr in ("num_experts", "n_routed_experts", "num_local_experts"):
+            num_experts = getattr(config.text_config, attr, None)
+            if num_experts is not None:
+                break
+
+    return num_experts is not None and num_experts > 0
+
+
+def get_moe_target_parameters(model, target_modules = None) -> Optional[List[str]]:
+    """
+    Get the target_parameters for MoE expert layers if applicable.
+
+    For MoE models, returns the parameter paths for expert weights
+    (gate_up_proj, down_proj) that should be targeted by PEFT's
+    target_parameters for LoRA on nn.Parameter.
+
+    Only includes MoE parameters that match what's in target_modules:
+    - If "down_proj" is in target_modules -> includes "mlp.experts.down_proj"
+    - If "gate_proj" or "up_proj" is in target_modules -> includes "mlp.experts.gate_up_proj"
+
+    Args:
+        model: The model to get target parameters for
+        target_modules: List/tuple of target module names to match against
+
+    Returns:
+        List of parameter paths for MoE experts, or None if not an MoE model
+    """
+    if not is_moe_model(model):
+        return None
+
+    config = getattr(model, "config", model)
+    # Get num_experts from various possible config attributes
+    num_experts = None
+    for attr in ("num_experts", "n_routed_experts", "num_local_experts"):
+        num_experts = getattr(config, attr, None)
+        if num_experts is not None:
+            break
+    if num_experts is None and hasattr(config, "text_config"):
+        for attr in ("num_experts", "n_routed_experts", "num_local_experts"):
+            num_experts = getattr(config.text_config, attr, None)
+            if num_experts is not None:
+                break
+    if num_experts is None:
+        num_experts = 0
+
+    # Determine which MoE parameters to include based on target_modules
+    moe_params = []
+
+    # Normalize target_modules to a set for efficient lookup
+    if target_modules is None:
+        # If no target_modules specified, include all MoE params
+        target_set = {"gate_proj", "up_proj", "down_proj", "gate_up_proj"}
+    elif isinstance(target_modules, str):
+        target_set = {target_modules}
+        # Heuristic for regex matching MLPs
+        if "proj" in target_modules and (
+            "mlp" in target_modules or "ffn" in target_modules
+        ):
+            target_set.update({"gate_proj", "up_proj", "down_proj", "gate_up_proj"})
+    else:
+        target_set = set(target_modules) if target_modules else set()
+
+    # gate_up_proj combines both gate_proj and up_proj in MoE
+    # Also match "gate_up_proj" directly since users may specify the fused name
+    if (
+        "gate_proj" in target_set
+        or "up_proj" in target_set
+        or "gate_up_proj" in target_set
+    ):
+        moe_params.append("mlp.experts.gate_up_proj")
+
+    if "down_proj" in target_set:
+        moe_params.append("mlp.experts.down_proj")
+
+    if moe_params:
+        print(
+            f"Unsloth: Detected MoE model with {num_experts} experts - enabling LoRA on: {moe_params}"
+        )
+        return moe_params
+
+    return None
 
 
 def make_fast_generate_wrapper(original_generate):
