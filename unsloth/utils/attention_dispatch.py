@@ -227,6 +227,20 @@ def run_attention(
         else:
             out = out.view(bsz, q_len, n_heads, head_dim)
         return out
+    elif backend == MLX:
+        from ..kernels.mlx.fast_ops import mlx_scaled_dot_product_attention
+
+        local_mask = context.attention_mask
+        if context.seq_info is not None and local_mask is None:
+            local_mask = build_sdpa_packed_attention_mask(
+                context.seq_info,
+                dtype=Q.dtype,
+                device=Q.device,
+                sliding_window=sliding_window,
+            )
+        scale = sdpa_kwargs.get("scale", context.head_dim**-0.5)
+        out = mlx_scaled_dot_product_attention(Q, K, V, scale=scale, mask=local_mask)
+        return out.transpose(1, 2)
     else:
         local_mask = context.attention_mask
         is_causal_local = False
@@ -270,23 +284,6 @@ def run_attention(
             **kwargs,
         )
         return out.transpose(1, 2).contiguous()
-    elif backend == MLX:
-        from ..kernels.mlx.fast_ops import mlx_scaled_dot_product_attention
-
-        local_mask = context.attention_mask
-        if context.seq_info is not None and local_mask is None:
-            local_mask = build_sdpa_packed_attention_mask(
-                context.seq_info,
-                dtype=Q.dtype,
-                device=Q.device,
-                sliding_window=sliding_window,
-            )
-        scale = sdpa_kwargs.get("scale", context.head_dim**-0.5)
-        out = mlx_scaled_dot_product_attention(Q, K, V, scale=scale, mask=local_mask)
-        # mlx_apply handles internal transpose to [B, S, H, D] or similar
-        # but the MLX fast kernel generally returns [B, H, S, D] if inputs are [B, H, S, D]
-        # Wait, let's check mlx_scaled_dot_product_attention return shape
-        return out.transpose(1, 2)
 
 
 __all__ = [
