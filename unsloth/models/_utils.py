@@ -1468,6 +1468,30 @@ if DEVICE_TYPE == "mps":
             return
     
     transformers.utils.quantization_config.BitsAndBytesConfig.post_init = _mps_safe_post_init
+    
+    # Also patch the HfQuantizer validate_environment to skip bnb checks
+    try:
+        from transformers.quantizers.quantizer_bnb_4bit import Bnb4BitHfQuantizer
+        from transformers.quantizers.quantizer_bnb_8bit import Bnb8BitHfQuantizer
+        
+        def _mps_validate_environment_noop(self, *args, **kwargs):
+            """No-op validation for MPS - we handle quantization via MLX."""
+            pass
+        
+        Bnb4BitHfQuantizer.validate_environment = _mps_validate_environment_noop
+        Bnb8BitHfQuantizer.validate_environment = _mps_validate_environment_noop
+        
+        # Also need to patch update_torch_dtype to not crash
+        def _mps_update_torch_dtype(self, torch_dtype):
+            import torch
+            if torch_dtype is None:
+                torch_dtype = torch.float16
+            return torch_dtype
+        
+        Bnb4BitHfQuantizer.update_torch_dtype = _mps_update_torch_dtype
+        Bnb8BitHfQuantizer.update_torch_dtype = _mps_update_torch_dtype
+    except ImportError:
+        pass  # Older transformers version without quantizers module
 # =============================================
 
 # Offloading to disk for modules (lm_head, embed_tokens)
