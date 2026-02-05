@@ -5,6 +5,12 @@ import numpy as np
 import os
 import gc
 
+# Import unsloth first to trigger proper initialization
+try:
+    import unsloth
+except ImportError:
+    pass
+
 try:
     import mlx.core as mx
     from unsloth.kernels.mlx.bridge import (
@@ -22,8 +28,10 @@ try:
     from unsloth.kernels.mlx.quantization import quantize_4bit
 
     HAS_MLX = True
-except ImportError:
+except ImportError as e:
+    print(f"MLX import error: {e}")
     HAS_MLX = False
+
 
 
 # Colors for terminal output
