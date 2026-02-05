@@ -8,6 +8,7 @@ import type {
 } from "../types";
 import { nodeDataFromConfig } from "../utils";
 import { removeRef, replaceRef } from "../utils/refs";
+import { getConfigUiMode } from "../components/inline/inline-policy";
 
 type NodeUpdateState = {
   configs: Record<string, NodeConfig>;
@@ -58,14 +59,16 @@ export function buildNodeUpdate(
     type: "builder",
     position: { x: 0, y: state.nextY },
     data: nodeDataFromConfig(config, layoutDirection),
+    selected: true,
   };
+  const mode = getConfigUiMode(config);
   return {
     configs: { ...state.configs, [config.id]: config },
-    nodes: [...state.nodes, node],
+    nodes: [...state.nodes.map((item) => ({ ...item, selected: false })), node],
     nextId: state.nextId + 1,
     nextY: state.nextY + 140,
     activeConfigId: config.id,
-    dialogOpen: true,
+    dialogOpen: mode === "dialog",
   };
 }
 
