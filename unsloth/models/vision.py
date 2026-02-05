@@ -533,7 +533,7 @@ class FastBaseModel:
         default_attn_impl = "flex_attention" if flex_attn_impl else "sdpa"
         if not ("attn_implementation" in kwargs):
             kwargs["attn_implementation"] = default_attn_impl
-        if not supports_sdpa:
+        if not supports_sdpa and kwargs.get("attn_implementation") == "sdpa":
             if os.environ.get("UNSLOTH_ENABLE_FLEX_ATTENTION", "0") == "0":
                 print(
                     f"Unsloth: {model_type_arch.title()} does not support SDPA - switching to fast eager."
