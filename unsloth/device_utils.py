@@ -59,11 +59,11 @@ def get_device_properties() -> SimpleNamespace:
         from unsloth.kernels.mps import get_apple_hardware_info
         hw = get_apple_hardware_info()
         return SimpleNamespace(
-            name=hw.chip_name,
-            total_memory=hw.memory_bytes,
+            name=hw.get("chip_name", "Apple Silicon"),
+            total_memory=hw.get("total_memory_bytes", 16 * 1024**3),
             major=0,  # Not applicable for Apple Silicon
             minor=0,
-            multi_processor_count=hw.gpu_cores,
+            multi_processor_count=hw.get("gpu_cores", 8),
         )
     
     elif DEVICE_TYPE == "xpu":
