@@ -1068,6 +1068,7 @@ def disable_torchcodec_if_broken():
     """
     try:
         import importlib.util
+
         if importlib.util.find_spec("torchcodec") is None:
             return  # torchcodec not installed, nothing to do
 
@@ -1077,6 +1078,7 @@ def disable_torchcodec_if_broken():
         # torchcodec cannot load - disable it in transformers
         try:
             import transformers.utils.import_utils as tf_import_utils
+
             tf_import_utils._torchcodec_available = False
         except (ImportError, AttributeError):
             pass
