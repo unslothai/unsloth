@@ -33,12 +33,7 @@ from unsloth_zoo.log import logger
 from unsloth_zoo.device_type import device_synchronize
 import importlib.util
 from ..device_type import (
-    is_hip,
-    get_device_type,
     DEVICE_TYPE,
-    DEVICE_TYPE_TORCH,
-    DEVICE_COUNT,
-    ALLOW_PREQUANTIZED_MODELS,
 )
 import textwrap
 from ._utils import _get_inference_mode_context_manager

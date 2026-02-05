@@ -13,14 +13,8 @@
 # limitations under the License.
 
 from .llama import *
-from ._utils import __version__
 from unsloth_zoo.utils import _get_dtype, Version
 from unsloth_zoo.hf_utils import dtype_from_config
-from ..utils.packing import (
-    build_sdpa_packed_attention_mask,
-    build_xformers_block_causal_mask,
-    get_packed_info_from_kwargs,
-)
 import math
 
 try:
@@ -29,9 +23,6 @@ try:
         GemmaDecoderLayer,
         GemmaModel,
         GemmaForCausalLM,
-        GemmaRotaryEmbedding,
-        apply_rotary_pos_emb,
-        repeat_kv,
     )
 except:
     transformers_version = Version(transformers_version)

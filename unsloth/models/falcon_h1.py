@@ -13,8 +13,6 @@
 # limitations under the License.
 
 from .llama import *
-import os
-from ._utils import __version__
 from unsloth_zoo.utils import Version, _get_dtype
 from unsloth_zoo.hf_utils import dtype_from_config
 from ..utils.packing import get_packed_info_from_kwargs
@@ -28,7 +26,6 @@ from ..utils.attention_dispatch import (
 from .llama import (
     LlamaRotaryEmbedding,
     LlamaLinearScalingRotaryEmbedding,
-    _LlamaModel_fast_forward_inference,
 )
 
 try:
@@ -37,7 +34,6 @@ try:
         FalconH1DecoderLayer,
         FalconH1Model,
         FalconH1ForCausalLM,
-        FalconHybridMambaAttentionDynamicCache,
     )
 except:
     from transformers import __version__ as transformers_version

@@ -11,7 +11,6 @@ import sys
 from pathlib import Path
 import multiprocessing as mp
 import gc
-from multiprocessing import Queue
 
 REPO_ROOT = Path(__file__).parents[3]
 sys.path.insert(0, str(REPO_ROOT))

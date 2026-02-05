@@ -13,11 +13,8 @@
 # limitations under the License.
 import os
 import torch
-import torch.nn as nn
 import triton
 import triton.language as tl
-from torch.nn import functional as F
-import math
 from unsloth_zoo.utils import Version
 from unsloth_zoo.log import logger
 from unsloth_zoo.temporary_patches.common import torch_compile
@@ -582,7 +579,7 @@ try:
         # This check is a must for consumer grade GPUs which fail
         if test_has_fbgemm():
             os.environ["UNSLOTH_HAS_FBGEMM"] = "1"
-            logger.info(f"Using fbgemm_gpu block quantized FP8 matmul")
+            logger.info("Using fbgemm_gpu block quantized FP8 matmul")
             fp8_block_quant_linear = fp8_fbgemm_block_linear
         else:
             os.environ["UNSLOTH_HAS_FBGEMM"] = "0"

@@ -85,33 +85,24 @@ from typing import Union, Optional, List, Any, Callable, Tuple, Iterator
 from platform import system as platform_system
 
 platform_system = platform_system()
-import numpy as np
-import contextlib
 import re
 from dataclasses import dataclass, field
 import functools
 import textwrap
 import logging
-import warnings, subprocess, inspect, psutil, os, math
+import warnings
+import inspect
+import psutil
+import os
 from unsloth_zoo.utils import Version, get_quant_type
 from importlib.metadata import version as importlib_version
 from ..device_type import (
-    is_hip,
-    get_device_type,
     DEVICE_TYPE,
-    DEVICE_TYPE_TORCH,
     DEVICE_COUNT,
-    ALLOW_PREQUANTIZED_MODELS,
 )
 from unsloth_zoo.log import logger
 from unsloth_zoo.tokenizer_utils import (
     patch_tokenizer as _patch_tokenizer,
-)
-from unsloth_zoo.rl_environments import (
-    check_python_modules,
-    create_locked_down_function,
-    execute_with_time_limit,
-    Benchmarker,
 )
 from unsloth_zoo.patching_utils import (
     patch_compiling_bitsandbytes,
@@ -125,8 +116,6 @@ from unsloth_zoo.gradient_checkpointing import (
     unsloth_offloaded_gradient_checkpoint,
     patch_unsloth_gradient_checkpointing,
     unpatch_unsloth_gradient_checkpointing,
-    Unsloth_Gradient_Checkpointer,
-    unsloth_gradient_checkpoint,
     patch_gradient_checkpointing,
     unpatch_gradient_checkpointing,
     patch_unsloth_smart_gradient_checkpointing,
@@ -252,7 +241,7 @@ class HideLoggingMessage(logging.Filter):
         self.text = text
 
     def filter(self, x):
-        return not (self.text in x.getMessage())
+        return self.text not in x.getMessage()
 
 
 # Stop vLLM messages
@@ -598,21 +587,21 @@ def patch_mistral_nemo_config(config):
 try:
     # Some Config files use layer_type_validation
     # for eg Gemma-2, so we must import it to stop errors.
-    from transformers.configuration_utils import layer_type_validation
+    pass
 except:
     pass
 
 try:
     # Transformers 5.0+ uses RotaryEmbeddingConfigMixin as a base class for configs
-    from transformers.modeling_rope_utils import RotaryEmbeddingConfigMixin
+    pass
 except:
     pass
 from transformers import __version__ as transformers_version
 
 try:
-    from transformers import PreTrainedConfig
+    pass
 except:
-    from transformers import PretrainedConfig
+    pass
 
 model_architectures = [
     "llama",
@@ -711,7 +700,7 @@ from transformers.utils import is_openai_available
 
 if is_openai_available():
     try:
-        from openai import OpenAI
+        pass
     except:
         print("Unsloth: OpenAI failed to import - ignoring for now.")
         import transformers.utils
@@ -723,9 +712,7 @@ if is_openai_available():
 
 # =============================================
 # Get Flash Attention v2 if Ampere (RTX 30xx, A100)
-import bitsandbytes as bnb
 
-from transformers import AutoTokenizer
 from transformers.utils.import_utils import _is_package_available
 
 SUPPORTS_BFLOAT16 = False
@@ -743,9 +730,9 @@ if DEVICE_TYPE == "cuda":
             try:
                 try:
                     # See https://github.com/unslothai/unsloth/issues/1437
-                    from flash_attn.flash_attn_interface import flash_attn_gpu
+                    pass
                 except:
-                    from flash_attn.flash_attn_interface import flash_attn_cuda
+                    pass
                 HAS_FLASH_ATTENTION = True
 
                 # Also check for softcapping
@@ -795,9 +782,9 @@ elif DEVICE_TYPE == "hip":
         try:
             try:
                 # See https://github.com/unslothai/unsloth/issues/1437
-                from flash_attn.flash_attn_interface import flash_attn_gpu
+                pass
             except:
-                from flash_attn.flash_attn_interface import flash_attn_cuda
+                pass
             HAS_FLASH_ATTENTION = True
 
             # Also check for softcapping
@@ -1148,7 +1135,7 @@ USE_MODELSCOPE = os.environ.get("UNSLOTH_USE_MODELSCOPE", "0") == "1"
 if USE_MODELSCOPE:
     if importlib.util.find_spec("modelscope") is None:
         raise ImportError(
-            f"You are using the modelscope hub, please install modelscope by `pip install modelscope -U`"
+            "You are using the modelscope hub, please install modelscope by `pip install modelscope -U`"
         )
 
 import socket
@@ -1166,11 +1153,8 @@ def has_internet(host = "8.8.8.8", port = 53, timeout = 3):
             return True
         finally:
             sock.close()
-    except socket.error as ex:
+    except socket.error:
         return False
-
-
-import psutil
 
 
 def _get_statistics(statistics = None, force_download = True):
@@ -1339,7 +1323,6 @@ def get_statistics(local_files_only = False):
 # Fixes Bitsandbytes to remove missing warnings
 from transformers.utils.quantization_config import (
     BitsAndBytesConfig,
-    QuantizationMethod,
 )
 
 BitsAndBytesConfig__init__ = inspect.getsource(BitsAndBytesConfig.__init__)
