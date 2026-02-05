@@ -18,6 +18,7 @@ __all__ = [
 ]
 
 import torch
+UNSLOTH_SFT_VLM_FIX = True
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 import inspect
 import os
@@ -215,20 +216,35 @@ def PatchRL(FastLanguageModel):
         return (loss, logits, labels)
 
     import trl.trainer
+    import sys
 
-    trainers = dir(trl.trainer)
-    trainers = [x for x in trainers if x.endswith("_trainer")]
-    unwrap = "unwrap_model_for_generation"
-    for trainer in trainers:
-        try:
-            current_trainer = getattr(trl.trainer, trainer)
-        except:
-            continue
-        if hasattr(current_trainer, unwrap):
+    def _patch_unwrap(module):
+        trainers = dir(module)
+        trainers = [x for x in trainers if x.endswith("_trainer")]
+        unwrap = "unwrap_model_for_generation"
+        for trainer in trainers:
             try:
-                setattr(current_trainer, unwrap, unsloth_unwrap_model_for_generation)
-            except:
+                current_trainer = getattr(module, trainer)
+            except Exception:
                 continue
+            if hasattr(current_trainer, unwrap):
+                try:
+                    setattr(current_trainer, unwrap, unsloth_unwrap_model_for_generation)
+                except Exception:
+                    continue
+
+    _patch_unwrap(trl.trainer)
+
+    # Best-effort patch for trl.experimental modules already imported
+    try:
+        import trl.experimental as trl_experimental
+
+        _patch_unwrap(trl_experimental)
+        for module_name, module in list(sys.modules.items()):
+            if module_name.startswith("trl.experimental.") and module is not None:
+                _patch_unwrap(module)
+    except Exception:
+        pass
     Trainer.prediction_step = unsloth_prediction_step
 
 
@@ -412,15 +428,27 @@ def _wrap_grpo_generate_and_score(trainer_cls):
     trainer_cls._generate_and_score_completions = wrapped
 
 
-def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
+def _patch_trl_rl_trainers(trainer_file = "grpo_trainer", module_prefix = "trl.trainer"):
     # Patch for vLLM and Unsloth PEFT
+    import importlib
+    import importlib.util
+    import os
     import trl
-    import trl.trainer
+    from unsloth_zoo.log import logger
+
+    def _log_optional(message: str) -> None:
+        if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") == "1":
+            logger.info(message)
+
+    if module_prefix.startswith("trl.experimental"):
+        # Skip silently if experimental module is unavailable in this TRL version.
+        if importlib.util.find_spec(f"{module_prefix}.{trainer_file}") is None:
+            return
 
     try:
-        trainer = eval(f"trl.trainer.{trainer_file}")
-    except Exception as error:
-        print(f"Unsloth: Could not import trl.trainer.{trainer_file}: {error}")
+        trainer = importlib.import_module(f"{module_prefix}.{trainer_file}")
+    except Exception:
+        _log_optional(f"Unsloth: Could not import {module_prefix}.{trainer_file}")
         return
 
     # Get SFTTrainer and SFTConfig names
@@ -439,13 +467,13 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         and trainer_file.split("_")[0] in x.lower()
     ]
     if len(name) != 1:
-        logger.info(
-            f"Unsloth: Could not find Trainer class in trl.trainer.{trainer_file}. Found: {name}"
+        _log_optional(
+            f"Unsloth: Could not find Trainer class in {module_prefix}.{trainer_file}. Found: {name}"
         )
         return
     if len(config) != 1:
-        logger.info(
-            f"Unsloth: Could not find Config class in trl.trainer.{trainer_file}. Found: {config}"
+        _log_optional(
+            f"Unsloth: Could not find Config class in {module_prefix}.{trainer_file}. Found: {config}"
         )
         return
 
@@ -453,17 +481,17 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     RLTrainer_name = name[0]
     RLConfig_name = config[0]
     try:
-        RLTrainer = eval(f"trl.trainer.{trainer_file}.{RLTrainer_name}")
-    except Exception as e:
-        logger.info(
-            f"Unsloth: Could not load {RLTrainer_name} from trl.trainer.{trainer_file}: {e}"
+        RLTrainer = getattr(trainer, RLTrainer_name)
+    except Exception:
+        _log_optional(
+            f"Unsloth: Could not load {RLTrainer_name} from {module_prefix}.{trainer_file}"
         )
         return
     try:
-        RLConfig = eval(f"trl.trainer.{trainer_file}.{RLConfig_name}")
-    except Exception as e:
-        logger.info(
-            f"Unsloth: Could not load {RLConfig_name} from trl.trainer.{trainer_file}: {e}"
+        RLConfig = getattr(trainer, RLConfig_name)
+    except Exception:
+        _log_optional(
+            f"Unsloth: Could not load {RLConfig_name} from {module_prefix}.{trainer_file}"
         )
         return
 
@@ -700,7 +728,11 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         data_collator_check = (
             "__tokenizer = processing_class if 'processing_class' in locals() else tokenizer\n"
             "from unsloth_zoo.vision_utils import UnslothVisionDataCollator\n"
-            "if not isinstance(data_collator, UnslothVisionDataCollator):\n"
+            "try:\n"
+            "    from trl.trainer.dpo_trainer import DataCollatorForPreference\n"
+            "except Exception:\n"
+            "    class DataCollatorForPreference: pass\n"
+            "if not isinstance(data_collator, (UnslothVisionDataCollator, DataCollatorForPreference)):\n"
             "    if isinstance(data_collator, DataCollatorForSeq2Seq) and 'labels' not in train_dataset.column_names:\n"
             "        data_collator = TransformersDataCollatorForLanguageModeling(\n"
             "            __tokenizer,\n"
@@ -722,7 +754,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
 
         # Also check if .pad exists -> if not, and is VLM, then change it!
         pad_check = (
-            "if not isinstance(data_collator, UnslothVisionDataCollator):\n"
+            "if not isinstance(data_collator, (UnslothVisionDataCollator, DataCollatorForPreference)):\n"
             "    if not hasattr(__tokenizer, 'pad') and hasattr(__tokenizer, 'tokenizer'):\n"
             "        if isinstance(data_collator, DataCollatorForSeq2Seq):\n"
             "            data_collator = DataCollatorForSeq2Seq(\n"
@@ -1150,33 +1182,6 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             pattern, new_options, RLTrainer_source, flags = re.DOTALL
         )
 
-        if trl_version >= Version("0.27.0"):
-            peft_pattern = (
-                r"\s*if is_peft_available\(\) and is_peft_model\(model\) and args\.beta != 0\.0:"
-                r".*?"
-                r"param\.data = param\.data\.to\(torch\.bfloat16\)"
-            )
-
-            replacement_comment = "\n        # PEFT initialization logic removed via script for trl >= 0.27.0\n"
-
-            RLTrainer_source = re.sub(
-                peft_pattern, replacement_comment, RLTrainer_source, flags = re.DOTALL
-            )
-
-        elif trl_version >= Version("0.26.0"):
-            peft_block_pattern = (
-                r"\s*if is_peft_available\(\) and isinstance\(model, PeftModel\) and peft_config is not None:"
-                r".*?"
-                r"param\.data = param\.data\.to\(torch\.bfloat16\)"
-            )
-
-            RLTrainer_source = re.sub(
-                peft_block_pattern,
-                "\n        # TRL PEFT 0.26.0 initialization logic removed on unsloth side.\n",
-                RLTrainer_source,
-                flags = re.DOTALL,
-            )
-
     if RLTrainer_name == "SFTTrainer":
         original_text = 'self._signature_columns = ["input_ids", "attention_mask", "completion_mask"]'
         new_text = 'self._signature_columns = ["input_ids", "attention_mask", "completion_mask","labels"]'
@@ -1198,47 +1203,59 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     RLTrainer_source = re.sub(r"[\n]{3,}", "\n", RLTrainer_source)
 
     # Create new function
-    created_module = create_new_function(
-        f"Unsloth{RLTrainer_name}",
-        RLTrainer_source,
-        f"trl.trainer.{trainer_file}",
-        imports,
-        overwrite = False,
-    )
+    try:
+        created_module = create_new_function(
+            f"Unsloth{RLTrainer_name}",
+            RLTrainer_source,
+            f"{module_prefix}.{trainer_file}",
+            imports,
+            overwrite = False,
+        )
+    except RuntimeError as e:
+        # TRL trainer modules sometimes move/remove symbols across versions.
+        # If the compiled wrapper cannot import due to missing symbols, skip
+        # patching this trainer to preserve backward compatibility.
+        if "Direct module loading failed for Unsloth" in str(e):
+            logger.info(
+                f"Unsloth: Skipping patch for {RLTrainer_name} from {trainer_file} due to import mismatch: {e}"
+            )
+            return
+        raise
+    except ImportError as e:
+        logger.info(
+            f"Unsloth: Skipping patch for {RLTrainer_name} from {trainer_file} due to import error: {e}"
+        )
+        return
 
     # Patch Trainer
-    exec(
-        f"trl.{RLTrainer_name} = created_module.Unsloth{RLTrainer_name}",
-        locals(),
-        globals(),
-    )
-    exec(
-        f"trl.trainer.{RLTrainer_name} = created_module.Unsloth{RLTrainer_name}",
-        locals(),
-        globals(),
-    )
-    exec(
-        f"trl.trainer.{trainer_file}.{RLTrainer_name} = created_module.Unsloth{RLTrainer_name}",
-        locals(),
-        globals(),
-    )
+    try:
+        setattr(trl, RLTrainer_name, getattr(created_module, f"Unsloth{RLTrainer_name}"))
+    except Exception:
+        pass
+    try:
+        root_module = importlib.import_module(module_prefix)
+        setattr(root_module, RLTrainer_name, getattr(created_module, f"Unsloth{RLTrainer_name}"))
+    except Exception:
+        pass
+    try:
+        setattr(trainer, RLTrainer_name, getattr(created_module, f"Unsloth{RLTrainer_name}"))
+    except Exception:
+        pass
 
     # Patch Config
-    exec(
-        f"trl.{RLConfig_name} = created_module.Unsloth{RLConfig_name}",
-        locals(),
-        globals(),
-    )
-    exec(
-        f"trl.trainer.{RLConfig_name} = created_module.Unsloth{RLConfig_name}",
-        locals(),
-        globals(),
-    )
-    exec(
-        f"trl.trainer.{trainer_file}.{RLConfig_name} = created_module.Unsloth{RLConfig_name}",
-        locals(),
-        globals(),
-    )
+    try:
+        setattr(trl, RLConfig_name, getattr(created_module, f"Unsloth{RLConfig_name}"))
+    except Exception:
+        pass
+    try:
+        root_module = importlib.import_module(module_prefix)
+        setattr(root_module, RLConfig_name, getattr(created_module, f"Unsloth{RLConfig_name}"))
+    except Exception:
+        pass
+    try:
+        setattr(trainer, RLConfig_name, getattr(created_module, f"Unsloth{RLConfig_name}"))
+    except Exception:
+        pass
 
     if trainer_file == "grpo_trainer":
         try:
@@ -1567,6 +1584,8 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
 def patch_trl_rl_trainers():
     # Patch all TRL modules if they have vLLM or PEFT
     import trl.trainer
+    import sys
+    import pkgutil
 
     all_trainers = dir(trl.trainer)
     all_trainers = [
@@ -1575,7 +1594,36 @@ def patch_trl_rl_trainers():
         if x.islower() and x.endswith("_trainer") and x != "base_trainer"
     ]
     for trainer in all_trainers:
-        _patch_trl_rl_trainers(trainer)
+        _patch_trl_rl_trainers(trainer, module_prefix = "trl.trainer")
+
+    # Best-effort patch for trl.experimental trainers (if present)
+    try:
+        import importlib.util
+
+        if importlib.util.find_spec("trl.experimental") is None:
+            return
+
+        import trl.experimental as trl_experimental
+
+        experimental_trainers = set()
+
+        # Already-imported experimental submodules
+        for module_name in list(sys.modules.keys()):
+            if module_name.startswith("trl.experimental."):
+                last_part = module_name.split(".")[-1]
+                if last_part.endswith("_trainer"):
+                    experimental_trainers.add(last_part)
+
+        # Scan for *_trainer modules under trl.experimental if available
+        if hasattr(trl_experimental, "__path__"):
+            for mod in pkgutil.iter_modules(trl_experimental.__path__):
+                if mod.name.endswith("_trainer"):
+                    experimental_trainers.add(mod.name)
+
+        for trainer in sorted(experimental_trainers):
+            _patch_trl_rl_trainers(trainer, module_prefix = "trl.experimental")
+    except Exception:
+        pass
     return
 
 
