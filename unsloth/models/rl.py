@@ -479,20 +479,6 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     old_RLTrainer_source = inspect.getsource(RLTrainer)
     old_RLConfig_source = inspect.getsource(RLConfig)
 
-    if trl_version >= Version("0.27.0") and RLConfig_name == "GRPOConfig":
-        checkpoint_pattern = (
-            r"\s*if self\.gradient_checkpointing and Version\(transformers\.__version__\) < Version\(\"5\.0\.0\"\):"
-            r".*?"
-            r"self\.gradient_checkpointing_kwargs\.setdefault\(\"use_reentrant\", False\)"
-        )
-
-        old_RLConfig_source = re.sub(
-            checkpoint_pattern,
-            "\n        # Gradient checkpointing version check removed via script\n",
-            old_RLConfig_source,
-            flags = re.DOTALL,
-        )
-
     all_imports = dir(trainer)
     # Fix _deprecate_arguments not getting imported so stop __ but not _
     imports = [x for x in all_imports if not x.startswith("__")]
