@@ -24,6 +24,7 @@ from torch import Tensor
 from torch.nn.functional import scaled_dot_product_attention
 
 from ..models._utils import *
+from ..device_type import DEVICE_TYPE
 from ..utils.packing import (
     build_sdpa_packed_attention_mask,
     build_xformers_block_causal_mask,
