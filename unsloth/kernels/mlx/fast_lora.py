@@ -89,6 +89,13 @@ def _dequant(W):
 
 
 @mx.compile
+def _gelu_approx(x):
+    # f = 1/2 * x * (1 + tanh( sqrt(2/pi) * (x + 0.044715 * x^3 ) ))
+    s = 0.7978845608028654  # sqrt(2 / pi)
+    return (0.5 * x * (1 + mx.tanh(s * (x + 0.044715 * x * x * x))))
+
+
+@mx.compile
 def _compiled_mlp_geglu(
     X, gateW, gateA, gateB, gateS, upW, upA, upB, upS, downW, downA, downB, downS
 ):
@@ -97,8 +104,7 @@ def _compiled_mlp_geglu(
     up = quantized_matmul(X, upW) + (X @ upA.T) @ upB.T * upS
 
     # GEGLU: gelu(gate) * up
-    # MLX fast.gelu is the tanh approximation
-    act = mx.fast.gelu(gate) * up
+    act = _gelu_approx(gate) * up
     out = quantized_matmul(act, downW) + (act @ downA.T) @ downB.T * downS
 
     return out
@@ -280,7 +286,7 @@ def apply_lora_mlp_geglu(
                 up = up + (X_flat @ upA_mlx.T) @ upB_mlx.T * upS_val
 
             # 3. GEGLU: gelu(gate) * up
-            act = mx.fast.gelu(gate) * up
+            act = _gelu_approx(gate) * up
 
             # 4. Down
             out = quantized_matmul(act, downW_mlx)
@@ -304,7 +310,7 @@ def apply_lora_mlp_geglu(
             # No LoRA: simple base projection path
             gate = quantized_matmul(X_mlx, gateW_mlx)
             up = quantized_matmul(X_mlx, upW_mlx)
-            act = mx.fast.gelu(gate) * up
+            act = _gelu_approx(gate) * up
             out_mlx = quantized_matmul(act, downW_mlx)
         else:
             # With LoRA: use compiled kernel
