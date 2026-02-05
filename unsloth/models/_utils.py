@@ -1490,6 +1490,31 @@ if DEVICE_TYPE == "mps":
         
         Bnb4BitHfQuantizer.update_torch_dtype = _mps_update_torch_dtype
         Bnb8BitHfQuantizer.update_torch_dtype = _mps_update_torch_dtype
+        
+        # Patch the model processing methods to skip bnb linear replacement
+        def _mps_process_model_before_noop(self, model, *args, **kwargs):
+            """Skip bitsandbytes linear replacement on MPS - we use MLX quantization."""
+            return model
+        
+        def _mps_process_model_after_noop(self, model, *args, **kwargs):
+            """Skip bitsandbytes post-processing on MPS."""
+            return model
+        
+        def _mps_is_serializable(self, *args, **kwargs):
+            return True
+        
+        def _mps_is_trainable(self, *args, **kwargs):
+            return True
+        
+        Bnb4BitHfQuantizer._process_model_before_weight_loading = _mps_process_model_before_noop
+        Bnb4BitHfQuantizer._process_model_after_weight_loading = _mps_process_model_after_noop
+        Bnb4BitHfQuantizer.is_serializable = property(lambda self: True)
+        Bnb4BitHfQuantizer.is_trainable = property(lambda self: True)
+        
+        Bnb8BitHfQuantizer._process_model_before_weight_loading = _mps_process_model_before_noop
+        Bnb8BitHfQuantizer._process_model_after_weight_loading = _mps_process_model_after_noop
+        Bnb8BitHfQuantizer.is_serializable = property(lambda self: True)
+        Bnb8BitHfQuantizer.is_trainable = property(lambda self: True)
     except ImportError:
         pass  # Older transformers version without quantizers module
 # =============================================
