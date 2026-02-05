@@ -1,7 +1,7 @@
 import { BaseEdge, type EdgeProps, getSmoothStepPath } from "@xyflow/react";
 import { memo, type ReactElement } from "react";
 
-export const CanvasEdge = memo(function CanvasEdge({
+export const CanvasSemanticEdge = memo(function CanvasSemanticEdge({
   id,
   sourceX,
   sourceY,
@@ -10,7 +10,7 @@ export const CanvasEdge = memo(function CanvasEdge({
   sourcePosition,
   targetPosition,
   style,
-  type,
+  markerEnd,
 }: EdgeProps): ReactElement {
   const [path] = getSmoothStepPath({
     sourceX,
@@ -23,10 +23,17 @@ export const CanvasEdge = memo(function CanvasEdge({
     offset: 16,
   });
 
-  const nextStyle =
-    type === "semantic"
-      ? { ...style, strokeDasharray: "4 4" }
-      : style;
-
-  return <BaseEdge id={id} path={path} style={nextStyle} />;
+  return (
+    <BaseEdge
+      id={id}
+      path={path}
+      markerEnd={markerEnd}
+      style={{
+        strokeDasharray: "4 4",
+        strokeWidth: 1.5,
+        stroke: "var(--muted-foreground)",
+        ...style,
+      }}
+    />
+  );
 });

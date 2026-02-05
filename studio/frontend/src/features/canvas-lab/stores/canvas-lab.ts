@@ -51,6 +51,7 @@ type CanvasLabState = {
   setSheetView: (view: SheetView) => void;
   setProcessors: (processors: CanvasProcessorConfig[]) => void;
   setDialogOpen: (open: boolean) => void;
+  selectConfig: (id: string) => void;
   openConfig: (id: string) => void;
   setLayoutDirection: (direction: LayoutDirection) => void;
   applyLayout: () => void;
@@ -81,6 +82,7 @@ export const useCanvasLabStore = create<CanvasLabState>((set, get) => ({
   setSheetView: (view) => set({ sheetView: view }),
   setProcessors: (processors) => set({ processors }),
   setDialogOpen: (open) => set({ dialogOpen: open }),
+  selectConfig: (id) => set({ activeConfigId: id, dialogOpen: false }),
   openConfig: (id) => set({ activeConfigId: id, dialogOpen: true }),
   setLayoutDirection: (direction) =>
     set((state) => ({
@@ -93,8 +95,11 @@ export const useCanvasLabStore = create<CanvasLabState>((set, get) => ({
     })),
   applyLayout: () =>
     set((state) => {
+      const isTopBottom = state.layoutDirection === "TB";
       const { nodes } = getLayoutedElements(state.nodes, state.edges, {
         direction: state.layoutDirection,
+        nodesep: isTopBottom ? 120 : 80,
+        ranksep: isTopBottom ? 140 : 80,
       });
       return {
         nodes: applyLayoutDirectionToNodes(

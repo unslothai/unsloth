@@ -71,6 +71,61 @@ function isDataLane(connection: Connection): boolean {
   );
 }
 
+type SingleRefRelation =
+  | "provider"
+  | "model_alias"
+  | "reference_column_name"
+  | "subcategory_parent";
+
+function getSingleRefRelation(
+  source: NodeConfig,
+  target: NodeConfig,
+): SingleRefRelation | null {
+  if (source.kind === "model_provider" && target.kind === "model_config") {
+    return "provider";
+  }
+  if (source.kind === "model_config" && target.kind === "llm") {
+    return "model_alias";
+  }
+  if (
+    source.kind === "sampler" &&
+    source.sampler_type === "datetime" &&
+    target.kind === "sampler" &&
+    target.sampler_type === "timedelta"
+  ) {
+    return "reference_column_name";
+  }
+  if (isCategoryConfig(source) && isSubcategoryConfig(target)) {
+    return "subcategory_parent";
+  }
+  return null;
+}
+
+function isCompetingIncomingEdge(
+  edge: Edge,
+  targetId: string,
+  relation: SingleRefRelation,
+  configs: Record<string, NodeConfig>,
+): boolean {
+  if (edge.target !== targetId) {
+    return false;
+  }
+  const source = configs[edge.source];
+  if (!source) {
+    return false;
+  }
+  if (relation === "provider") {
+    return source.kind === "model_provider";
+  }
+  if (relation === "model_alias") {
+    return source.kind === "model_config";
+  }
+  if (relation === "subcategory_parent") {
+    return isCategoryConfig(source);
+  }
+  return source.kind === "sampler" && source.sampler_type === "datetime";
+}
+
 export function isValidCanvasConnection(
   connection: Connection,
   configs: Record<string, NodeConfig>,
@@ -110,9 +165,22 @@ export function applyCanvasConnection(
     return { edges };
   }
   const semanticRelation = isSemanticRelation(source, target);
+  const singleRefRelation = getSingleRefRelation(source, target);
+  const nextBaseEdges =
+    singleRefRelation
+      ? edges.filter(
+          (edge) =>
+            !isCompetingIncomingEdge(
+              edge,
+              target.id,
+              singleRefRelation,
+              configs,
+            ),
+        )
+      : edges;
   const nextEdges = addEdge(
     { ...connection, type: semanticRelation ? "semantic" : "canvas" },
-    edges,
+    nextBaseEdges,
   );
   if (source.kind === "model_provider" && target.kind === "model_config") {
     const next = { ...target, provider: source.name };
