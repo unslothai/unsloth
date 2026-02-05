@@ -15,7 +15,7 @@ import torch
 import triton
 from triton.runtime.errors import OutOfResources
 
-from grouped_gemm.kernels.autotuning import (
+from .autotuning import (
     BOOLS,
     DEFAULT_K_BLOCK_SIZES,
     DEFAULT_M_BLOCK_SIZES,
