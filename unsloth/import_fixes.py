@@ -1053,3 +1053,32 @@ def patch_torchcodec_audio_decoder():
         _patch()
     except (ImportError, AttributeError, RuntimeError):
         pass
+
+
+def disable_torchcodec_if_broken():
+    """Disable torchcodec in transformers if it cannot actually load.
+
+    transformers checks if torchcodec is installed via importlib.util.find_spec(),
+    but this returns True even when torchcodec cannot load its native libraries
+    (e.g., when FFmpeg is missing). This causes runtime errors when transformers
+    tries to use torchcodec for audio loading.
+
+    This function tests if torchcodec can actually load and if not, patches
+    transformers to think torchcodec is unavailable so it falls back to librosa.
+    """
+    try:
+        import importlib.util
+
+        if importlib.util.find_spec("torchcodec") is None:
+            return  # torchcodec not installed, nothing to do
+
+        # Test if torchcodec can actually load
+        from torchcodec.decoders import AudioDecoder
+    except (ImportError, RuntimeError, OSError):
+        # torchcodec cannot load - disable it in transformers
+        try:
+            import transformers.utils.import_utils as tf_import_utils
+
+            tf_import_utils._torchcodec_available = False
+        except (ImportError, AttributeError):
+            pass
