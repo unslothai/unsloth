@@ -111,7 +111,7 @@ def get_available_memory() -> int:
     elif DEVICE_TYPE == "mps":
         # MPS unified memory - use system available memory
         import psutil
-        return int(psutil.virtual_memory().available * 0.75)  # Conservative estimate
+        return psutil.virtual_memory().available
     
     elif DEVICE_TYPE == "xpu":
         return torch.xpu.get_device_properties(0).total_memory - torch.xpu.memory_allocated(0)
