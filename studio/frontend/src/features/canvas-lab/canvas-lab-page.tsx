@@ -29,7 +29,7 @@ import { importCanvasPayload } from "./utils/import";
 import { buildCanvasPayload } from "./utils/payload";
 
 const NODE_TYPES: NodeTypes = { builder: CanvasNode };
-const EDGE_TYPES: EdgeTypes = { canvas: CanvasEdge };
+const EDGE_TYPES: EdgeTypes = { canvas: CanvasEdge, semantic: CanvasEdge };
 
 type LayoutControlsProps = {
   direction: "LR" | "TB";
@@ -77,6 +77,8 @@ export function CanvasLabPage(): ReactElement {
     onConnect,
     addSamplerNode,
     addLlmNode,
+    addModelProviderNode,
+    addModelConfigNode,
     addExpressionNode,
     openConfig,
     updateConfig,
@@ -100,6 +102,8 @@ export function CanvasLabPage(): ReactElement {
       onConnect: state.onConnect,
       addSamplerNode: state.addSamplerNode,
       addLlmNode: state.addLlmNode,
+      addModelProviderNode: state.addModelProviderNode,
+      addModelConfigNode: state.addModelConfigNode,
       addExpressionNode: state.addExpressionNode,
       openConfig: state.openConfig,
       updateConfig: state.updateConfig,
@@ -306,6 +310,8 @@ export function CanvasLabPage(): ReactElement {
                 onViewChange={setSheetView}
                 onAddSampler={addSamplerNode}
                 onAddLlm={addLlmNode}
+                onAddModelProvider={addModelProviderNode}
+                onAddModelConfig={addModelConfigNode}
                 onAddExpression={addExpressionNode}
               />
             </Panel>

@@ -9,6 +9,8 @@ import {
   FunctionIcon,
   Parabola02Icon,
   PencilEdit02Icon,
+  Plant01Icon,
+  Shield02Icon,
   Tag01Icon,
   TagsIcon,
   UserAccountIcon,
@@ -18,10 +20,14 @@ import type { LlmType, NodeConfig, SamplerConfig, SamplerType } from "../types";
 import {
   makeExpressionConfig,
   makeLlmConfig,
+  makeModelConfig,
+  makeModelProviderConfig,
   makeSamplerConfig,
 } from "../utils";
 import { ExpressionDialog } from "../dialogs/expression/expression-dialog";
 import { LlmDialog } from "../dialogs/llm/llm-dialog";
+import { ModelConfigDialog } from "../dialogs/models/model-config-dialog";
+import { ModelProviderDialog } from "../dialogs/models/model-provider-dialog";
 import { CategoryDialog } from "../dialogs/samplers/category-dialog";
 import { DatetimeDialog } from "../dialogs/samplers/datetime-dialog";
 import { GaussianDialog } from "../dialogs/samplers/gaussian-dialog";
@@ -31,7 +37,12 @@ import { UniformDialog } from "../dialogs/samplers/uniform-dialog";
 import { UuidDialog } from "../dialogs/samplers/uuid-dialog";
 
 export type BlockKind = "sampler" | "llm" | "expression";
-export type BlockType = SamplerType | LlmType | "expression";
+export type BlockType =
+  | SamplerType
+  | LlmType
+  | "expression"
+  | "model_provider"
+  | "model_config";
 
 type IconType = typeof CodeIcon;
 
@@ -250,6 +261,36 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
       ) : null,
   },
   {
+    kind: "llm",
+    type: "model_provider",
+    title: "Model Provider",
+    description: "Configure API endpoint + key.",
+    icon: Shield02Icon,
+    createConfig: (id, existing) => makeModelProviderConfig(id, existing),
+    renderDialog: ({ config, onUpdate }) =>
+      config.kind === "model_provider" ? (
+        <ModelProviderDialog
+          config={config}
+          onUpdate={(patch) => onUpdate(config.id, patch)}
+        />
+      ) : null,
+  },
+  {
+    kind: "llm",
+    type: "model_config",
+    title: "Model Config",
+    description: "Alias + model + inference params.",
+    icon: Plant01Icon,
+    createConfig: (id, existing) => makeModelConfig(id, existing),
+    renderDialog: ({ config, onUpdate }) =>
+      config.kind === "model_config" ? (
+        <ModelConfigDialog
+          config={config}
+          onUpdate={(patch) => onUpdate(config.id, patch)}
+        />
+      ) : null,
+  },
+  {
     kind: "expression",
     type: "expression",
     title: "Expression",
@@ -296,6 +337,12 @@ export function getBlockDefinitionForConfig(
   }
   if (config.kind === "llm") {
     return getBlockDefinition("llm", config.llm_type);
+  }
+  if (config.kind === "model_provider") {
+    return getBlockDefinition("llm", "model_provider");
+  }
+  if (config.kind === "model_config") {
+    return getBlockDefinition("llm", "model_config");
   }
   return getBlockDefinition("expression", "expression");
 }
