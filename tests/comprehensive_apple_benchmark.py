@@ -298,7 +298,7 @@ class ComprehensiveBenchmark:
             X_mlx = torch_to_mlx(X)
 
             # Warmup
-            res = apply_lora_mlp_geglu_approx(
+            res = apply_lora_mlp_geglu(
                 X_mlx, gateW, None, A, B, S, upW, None, A, B, S, downW, None, B.T, A.T, S
             )
             mx.eval(res)
@@ -307,7 +307,7 @@ class ComprehensiveBenchmark:
             start = time.time()
             results = []
             for _ in range(actual_iters):
-                res = apply_lora_mlp_geglu_approx(
+                res = apply_lora_mlp_geglu(
                     X_mlx, gateW, None, A, B, S, upW, None, A, B, S, downW, None, B.T, A.T, S
                 )
                 results.append(res)
