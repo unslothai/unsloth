@@ -44,6 +44,7 @@ from .kernels import fast_dequantize, QUANT_STATE, get_lora_parameters_bias
 import subprocess
 import psutil
 import re
+import platform
 from transformers.models.llama.modeling_llama import logger
 from .tokenizer_utils import fix_sentencepiece_gguf
 from .models.loader_utils import get_model_name
@@ -910,8 +911,12 @@ def install_llama_cpp_make_non_blocking():
     else:
         # Uses new CMAKE
         n_jobs = max(int(psutil.cpu_count() or 1), 1)  # Use less CPUs since 1.5x faster
+        
+        # [Phase 2.2] Enable Metal for Apple Silicon
+        METAL_FLAG = "-DGGML_METAL=ON" if platform.system() == "Darwin" else "-DGGML_CUDA=OFF"
+        
         check = os.system(
-            f"cmake llama.cpp -B llama.cpp/build -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=OFF {CURL_FLAG}"
+            f"cmake llama.cpp -B llama.cpp/build -DBUILD_SHARED_LIBS=OFF {METAL_FLAG} {CURL_FLAG}"
         )
 
         if check != 0:
@@ -1132,12 +1137,21 @@ def save_to_gguf(
         )
 
     # Check if bfloat16 is supported
-    if model_dtype == "bf16" and not torch.cuda.is_bf16_supported():
-        logger.warning(
-            "Unsloth: Cannot convert to bf16 GGUF since your computer doesn't support it.\n"
-            "We shall switch instead to f16."
-        )
-        model_dtype = "f16"
+    from unsloth_zoo.device_type import DEVICE_TYPE
+    # On MPS, bf16 is supported but f16 is often faster/more reliable for GGUF
+    if model_dtype == "bf16":
+        if DEVICE_TYPE == "mps":
+             logger.warning(
+                "Unsloth: Converting to f16 GGUF on Mac for better Metal compatibility.\n"
+                "f16 is natively faster on Apple Silicon for GGUF inference."
+            )
+             model_dtype = "f16"
+        elif not torch.cuda.is_bf16_supported():
+            logger.warning(
+                "Unsloth: Cannot convert to bf16 GGUF since your computer doesn't support it.\n"
+                "We shall switch instead to f16."
+            )
+            model_dtype = "f16"
 
     # Check first_conversion as well
     if first_conversion is None:
