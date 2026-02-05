@@ -13,6 +13,7 @@ import type {
   CanvasNode,
   LayoutDirection,
   LlmType,
+  ModelConfig,
   NodeConfig,
   SamplerConfig,
   SamplerType,
@@ -51,6 +52,8 @@ type CanvasLabState = {
   applyLayout: () => void;
   addSamplerNode: (type: SamplerType) => void;
   addLlmNode: (type: LlmType) => void;
+  addModelProviderNode: () => void;
+  addModelConfigNode: () => void;
   addExpressionNode: () => void;
   updateConfig: (id: string, patch: Partial<NodeConfig>) => void;
   loadCanvas: (snapshot: CanvasSnapshot) => void;
@@ -112,6 +115,30 @@ export const useCanvasLabStore = create<CanvasLabState>((set, get) => ({
       const id = `n${state.nextId}`;
       const existing = Object.values(state.configs);
       const definition = getBlockDefinition("llm", type);
+      if (!definition) {
+        return state;
+      }
+      const config = definition.createConfig(id, existing);
+      return buildNodeUpdate(state, config, state.layoutDirection);
+    });
+  },
+  addModelProviderNode: () => {
+    set((state) => {
+      const id = `n${state.nextId}`;
+      const existing = Object.values(state.configs);
+      const definition = getBlockDefinition("llm", "model_provider");
+      if (!definition) {
+        return state;
+      }
+      const config = definition.createConfig(id, existing);
+      return buildNodeUpdate(state, config, state.layoutDirection);
+    });
+  },
+  addModelConfigNode: () => {
+    set((state) => {
+      const id = `n${state.nextId}`;
+      const existing = Object.values(state.configs);
+      const definition = getBlockDefinition("llm", "model_config");
       if (!definition) {
         return state;
       }
@@ -187,9 +214,40 @@ export const useCanvasLabStore = create<CanvasLabState>((set, get) => ({
               target: id,
               sourceHandle: null,
               targetHandle: null,
+              type: "semantic",
             },
             edges,
           );
+        }
+      }
+
+      const hasProviderPatch = Object.prototype.hasOwnProperty.call(
+        patch,
+        "provider",
+      );
+      if (current.kind === "model_config" && hasProviderPatch) {
+        const nextProvider = (patch as Partial<ModelConfig>).provider ?? "";
+        edges = edges.filter((edge) => {
+          if (edge.target !== id) {
+            return true;
+          }
+          const source = configs[edge.source];
+          return !(source && source.kind === "model_provider");
+        });
+        if (nextProvider) {
+          const providerId = findNodeIdByName(configs, nextProvider);
+          if (providerId) {
+            edges = addEdge(
+              {
+                source: providerId,
+                target: id,
+                sourceHandle: null,
+                targetHandle: null,
+                type: "semantic",
+              },
+              edges,
+            );
+          }
         }
       }
 

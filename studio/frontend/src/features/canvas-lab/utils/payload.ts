@@ -3,34 +3,12 @@ import type {
   CanvasNode,
   ExpressionConfig,
   LlmConfig,
+  ModelConfig,
+  ModelProviderConfig,
   NodeConfig,
   SamplerConfig,
 } from "../types";
 import { getConfigErrors } from "./index";
-
-const DEFAULT_PROVIDER = {
-  name: "openrouter",
-  // biome-ignore lint/style/useNamingConvention: api schema
-  provider_type: "openai",
-  endpoint: "https://openrouter.ai/api/v1",
-  // biome-ignore lint/style/useNamingConvention: api schema
-  api_key_env: "OPENROUTER_API_KEY",
-  // biome-ignore lint/style/useNamingConvention: api schema
-  extra_headers: {},
-  // biome-ignore lint/style/useNamingConvention: api schema
-  extra_body: {},
-};
-
-const DEFAULT_CONFIG = {
-  provider: "openrouter",
-  model: "allenai/olmo-3.1-32b-instruct",
-  // biome-ignore lint/style/useNamingConvention: api schema
-  inference_parameters: {
-    temperature: 0.7,
-    // biome-ignore lint/style/useNamingConvention: api schema
-    max_tokens: 256,
-  },
-};
 
 type CanvasPayload = {
   recipe: {
@@ -49,7 +27,7 @@ type CanvasPayload = {
   };
   ui: {
     nodes: { id: string; x: number; y: number }[];
-    edges: { from: string; to: string }[];
+    edges: { from: string; to: string; type?: string }[];
   };
 };
 
@@ -80,6 +58,94 @@ function parseAgeRange(value?: string): [number, number] | null {
     return null;
   }
   return [min, max];
+}
+
+function parseJsonObject(
+  value: string | undefined,
+  label: string,
+  errors: string[],
+): Record<string, unknown> | undefined {
+  if (!value || !value.trim()) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(value);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    errors.push(`${label}: invalid JSON.`);
+    return undefined;
+  }
+  errors.push(`${label}: must be a JSON object.`);
+  return undefined;
+}
+
+function buildModelProvider(
+  config: ModelProviderConfig,
+  errors: string[],
+): Record<string, unknown> {
+  const extraHeaders = parseJsonObject(
+    config.extra_headers,
+    `Provider ${config.name} extra_headers`,
+    errors,
+  );
+  const extraBody = parseJsonObject(
+    config.extra_body,
+    `Provider ${config.name} extra_body`,
+    errors,
+  );
+  return {
+    name: config.name,
+    endpoint: config.endpoint,
+    // biome-ignore lint/style/useNamingConvention: api schema
+    provider_type: config.provider_type,
+    // biome-ignore lint/style/useNamingConvention: api schema
+    api_key_env: config.api_key_env?.trim() || undefined,
+    // biome-ignore lint/style/useNamingConvention: api schema
+    api_key: config.api_key?.trim() || undefined,
+    // biome-ignore lint/style/useNamingConvention: api schema
+    extra_headers: extraHeaders ?? {},
+    // biome-ignore lint/style/useNamingConvention: api schema
+    extra_body: extraBody ?? {},
+  };
+}
+
+function buildModelConfig(config: ModelConfig): Record<string, unknown> {
+  const inference: Record<string, unknown> = {};
+  const temp = config.inference_temperature?.trim();
+  const topP = config.inference_top_p?.trim();
+  const maxTokens = config.inference_max_tokens?.trim();
+  if (temp) {
+    const parsed = Number(temp);
+    if (Number.isFinite(parsed)) {
+      inference.temperature = parsed;
+    }
+  }
+  if (topP) {
+    const parsed = Number(topP);
+    if (Number.isFinite(parsed)) {
+      // biome-ignore lint/style/useNamingConvention: api schema
+      inference.top_p = parsed;
+    }
+  }
+  if (maxTokens) {
+    const parsed = Number(maxTokens);
+    if (Number.isFinite(parsed)) {
+      // biome-ignore lint/style/useNamingConvention: api schema
+      inference.max_tokens = parsed;
+    }
+  }
+  return {
+    alias: config.name,
+    model: config.model,
+    provider: config.provider || undefined,
+    // biome-ignore lint/style/useNamingConvention: api schema
+    inference_parameters:
+      Object.keys(inference).length > 0 ? inference : undefined,
+    // biome-ignore lint/style/useNamingConvention: api schema
+    skip_health_check: config.skip_health_check || undefined,
+  };
 }
 
 function isValidSex(value?: string): value is "Male" | "Female" {
@@ -282,6 +348,11 @@ export function buildCanvasPayload(
   const errors: string[] = [];
   const columns: Record<string, unknown>[] = [];
   const modelAliases = new Set<string>();
+  const modelProviderNames = new Set<string>();
+  const modelProviders: Record<string, unknown>[] = [];
+  const modelConfigs: Record<string, unknown>[] = [];
+  const modelProviderConfigs: ModelProviderConfig[] = [];
+  const modelConfigConfigs: ModelConfig[] = [];
   const nameSet = new Set<string>();
   const nameToConfig = new Map<string, NodeConfig>();
 
@@ -294,7 +365,7 @@ export function buildCanvasPayload(
       errors.push(`${config.name}: ${error}`);
     }
     if (nameSet.has(config.name)) {
-      errors.push(`Duplicate column name: ${config.name}.`);
+      errors.push(`Duplicate node name: ${config.name}.`);
     }
     nameSet.add(config.name);
 
@@ -316,9 +387,16 @@ export function buildCanvasPayload(
         modelAliases.add(config.model_alias);
       }
       nameToConfig.set(config.name, config);
-    } else {
+    } else if (config.kind === "expression") {
       columns.push(buildExpressionColumn(config, errors));
       nameToConfig.set(config.name, config);
+    } else if (config.kind === "model_provider") {
+      modelProviderNames.add(config.name);
+      modelProviders.push(buildModelProvider(config, errors));
+      modelProviderConfigs.push(config);
+    } else if (config.kind === "model_config") {
+      modelConfigs.push(buildModelConfig(config));
+      modelConfigConfigs.push(config);
     }
   }
 
@@ -347,14 +425,41 @@ export function buildCanvasPayload(
     }
   }
 
-  const modelProviders = modelAliases.size > 0 ? [DEFAULT_PROVIDER] : [];
-  const modelConfigs =
-    modelAliases.size > 0
-      ? Array.from(modelAliases).map((alias) => ({
-          alias,
-          ...DEFAULT_CONFIG,
-        }))
-      : [];
+  for (const alias of modelAliases) {
+    if (
+      !modelConfigs.some(
+        (config) => (config.alias as string | undefined) === alias,
+      )
+    ) {
+      errors.push(`LLM model_alias ${alias}: missing model config.`);
+    }
+  }
+
+  for (const config of modelConfigConfigs) {
+    const provider = config.provider.trim();
+    const alias = config.name;
+    if (modelAliases.has(alias) && !config.model.trim()) {
+      errors.push(`Model config ${alias}: model is required.`);
+    }
+    if (provider && !modelProviderNames.has(provider)) {
+      errors.push(`Model config ${alias}: provider ${provider} not found.`);
+    }
+  }
+
+  const usedProviders = new Set(
+    modelConfigConfigs.map((config) => config.provider.trim()).filter(Boolean),
+  );
+  for (const provider of modelProviderConfigs) {
+    if (!usedProviders.has(provider.name)) {
+      continue;
+    }
+    if (!provider.endpoint.trim()) {
+      errors.push(`Model provider ${provider.name}: endpoint is required.`);
+    }
+    if (!provider.provider_type.trim()) {
+      errors.push(`Model provider ${provider.name}: provider_type is required.`);
+    }
+  }
 
   const uiNodes = nodes.flatMap((node) => {
     const config = configs[node.id];
@@ -380,6 +485,7 @@ export function buildCanvasPayload(
       {
         from: source.name,
         to: target.name,
+        type: edge.type ?? "canvas",
       },
     ];
   });

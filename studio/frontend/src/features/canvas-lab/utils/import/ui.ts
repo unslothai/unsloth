@@ -11,10 +11,10 @@ export function parseUi(
   ui: UiInput | null,
 ): {
   positions: Map<string, { x: number; y: number }>;
-  edges: Array<{ from: string; to: string }> | null;
+  edges: Array<{ from: string; to: string; type?: string }> | null;
 } {
   const positions = new Map<string, { x: number; y: number }>();
-  const edges: Array<{ from: string; to: string }> = [];
+  const edges: Array<{ from: string; to: string; type?: string }> = [];
   if (ui && Array.isArray(ui.nodes)) {
     for (const node of ui.nodes) {
       if (isRecord(node)) {
@@ -33,7 +33,11 @@ export function parseUi(
         const from = readString(edge.from);
         const to = readString(edge.to);
         if (from && to) {
-          edges.push({ from, to });
+          edges.push({
+            from,
+            to,
+            type: readString(edge.type) ?? undefined,
+          });
         }
       }
     }

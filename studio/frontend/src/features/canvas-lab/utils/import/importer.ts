@@ -1,7 +1,11 @@
 import type { NodeConfig } from "../../types";
 import { buildEdges } from "./edges";
-import { isRecord, parseJson } from "./helpers";
-import { parseColumn } from "./parsers";
+import { isRecord, parseJson, readString } from "./helpers";
+import {
+  parseColumn,
+  parseModelConfig,
+  parseModelProvider,
+} from "./parsers";
 import { buildNodes, parseUi } from "./ui";
 import type { ImportResult } from "./types";
 
@@ -39,12 +43,61 @@ export function importCanvasPayload(input: string): ImportResult {
   const configs: NodeConfig[] = [];
   const nameToId = new Map<string, string>();
 
+  let nextId = 1;
+
+  if (Array.isArray(recipe.model_providers)) {
+    recipe.model_providers.forEach((provider, index) => {
+      if (!isRecord(provider)) {
+        errors.push(`Model provider ${index + 1}: invalid object.`);
+        return;
+      }
+      const name = readString(provider.name);
+      if (!name) {
+        errors.push(`Model provider ${index + 1}: missing name.`);
+        return;
+      }
+      const id = `n${nextId}`;
+      nextId += 1;
+      const config = parseModelProvider(provider, name, id);
+      if (nameToId.has(config.name)) {
+        errors.push(`Duplicate column name: ${config.name}.`);
+        return;
+      }
+      nameToId.set(config.name, config.id);
+      configs.push(config);
+    });
+  }
+
+  if (Array.isArray(recipe.model_configs)) {
+    recipe.model_configs.forEach((model, index) => {
+      if (!isRecord(model)) {
+        errors.push(`Model config ${index + 1}: invalid object.`);
+        return;
+      }
+      const name = readString(model.alias) ?? readString(model.name);
+      if (!name) {
+        errors.push(`Model config ${index + 1}: missing alias.`);
+        return;
+      }
+      const id = `n${nextId}`;
+      nextId += 1;
+      const config = parseModelConfig(model, name, id);
+      if (nameToId.has(config.name)) {
+        errors.push(`Duplicate column name: ${config.name}.`);
+        return;
+      }
+      nameToId.set(config.name, config.id);
+      configs.push(config);
+    });
+  }
+
   recipe.columns.forEach((column, index) => {
     if (!isRecord(column)) {
       errors.push(`Column ${index + 1}: invalid object.`);
       return;
     }
-    const id = `n${index + 1}`;
+    const id = `n${nextId}`;
+    nextId += 1;
     const config = parseColumn(column, id, errors);
     if (!config) {
       return;
@@ -76,7 +129,7 @@ export function importCanvasPayload(input: string): ImportResult {
       configs: Object.fromEntries(configs.map((config) => [config.id, config])),
       nodes,
       edges,
-      nextId: configs.length + 1,
+      nextId,
       nextY: maxY + 140,
     },
   };

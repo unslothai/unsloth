@@ -10,6 +10,7 @@ export const CanvasEdge = memo(function CanvasEdge({
   sourcePosition,
   targetPosition,
   style,
+  type,
 }: EdgeProps): JSX.Element {
   const [path] = getSmoothStepPath({
     sourceX,
@@ -22,5 +23,10 @@ export const CanvasEdge = memo(function CanvasEdge({
     offset: 16,
   });
 
-  return <BaseEdge id={id} path={path} style={style} />;
+  const nextStyle =
+    type === "semantic"
+      ? { ...style, strokeDasharray: "4 4" }
+      : style;
+
+  return <BaseEdge id={id} path={path} style={nextStyle} />;
 });

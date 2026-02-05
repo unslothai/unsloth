@@ -45,6 +45,21 @@ function syncSubcategoryMapping(
   };
 }
 
+function isSemanticEdge(source: NodeConfig, target: NodeConfig): boolean {
+  if (source.kind === "model_provider" && target.kind === "model_config") {
+    return true;
+  }
+  if (source.kind === "model_config" && target.kind === "llm") {
+    return true;
+  }
+  return (
+    source.kind === "sampler" &&
+    source.sampler_type === "category" &&
+    target.kind === "sampler" &&
+    target.sampler_type === "subcategory"
+  );
+}
+
 export function isValidCanvasConnection(
   connection: Connection,
   configs: Record<string, NodeConfig>,
@@ -73,8 +88,19 @@ export function applyCanvasConnection(
   if (!(source && target)) {
     return { edges };
   }
-  const nextEdges = addEdge({ ...connection, type: "canvas" }, edges);
-  if (isLlmConfig(target)) {
+  const nextEdges = addEdge(
+    { ...connection, type: isSemanticEdge(source, target) ? "semantic" : "canvas" },
+    edges,
+  );
+  if (source.kind === "model_provider" && target.kind === "model_config") {
+    const next = { ...target, provider: source.name };
+    return { edges: nextEdges, configs: { ...configs, [target.id]: next } };
+  }
+  if (source.kind === "model_config" && target.kind === "llm") {
+    const next = { ...target, model_alias: source.name };
+    return { edges: nextEdges, configs: { ...configs, [target.id]: next } };
+  }
+  if (isLlmConfig(target) && source.kind !== "model_provider" && source.kind !== "model_config") {
     const ref = `{{ ${source.name} }}`;
     const next = {
       ...target,
@@ -82,7 +108,7 @@ export function applyCanvasConnection(
     };
     return { edges: nextEdges, configs: { ...configs, [target.id]: next } };
   }
-  if (isExpressionConfig(target)) {
+  if (isExpressionConfig(target) && source.kind !== "model_provider" && source.kind !== "model_config") {
     const ref = `{{ ${source.name} }}`;
     const next = {
       ...target,

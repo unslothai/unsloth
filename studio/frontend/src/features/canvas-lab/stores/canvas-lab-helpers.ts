@@ -136,6 +136,14 @@ export function applyRenameToConfig(
       subcategory_parent: to,
     };
   }
+  if (config.kind === "model_config" && config.provider === from) {
+    const base = next === config ? config : next;
+    next = { ...base, provider: to };
+  }
+  if (config.kind === "llm" && config.model_alias === from) {
+    const base = next === config ? config : next;
+    next = { ...base, model_alias: to };
+  }
   return next;
 }
 
@@ -157,6 +165,14 @@ export function applyRemovalToConfig(
       // biome-ignore lint/style/useNamingConvention: api schema
       subcategory_mapping: {},
     };
+  }
+  if (config.kind === "model_config" && config.provider === ref) {
+    const base = next === config ? config : next;
+    next = { ...base, provider: "" };
+  }
+  if (config.kind === "llm" && config.model_alias === ref) {
+    const base = next === config ? config : next;
+    next = { ...base, model_alias: "" };
   }
   return next;
 }

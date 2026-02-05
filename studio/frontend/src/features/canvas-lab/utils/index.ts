@@ -5,6 +5,8 @@ import type {
   LayoutDirection,
   LlmConfig,
   LlmType,
+  ModelConfig,
+  ModelProviderConfig,
   NodeConfig,
   SamplerConfig,
   SamplerType,
@@ -220,6 +222,49 @@ export function makeLlmConfig(
   };
 }
 
+export function makeModelProviderConfig(
+  id: string,
+  existing: NodeConfig[],
+): ModelProviderConfig {
+  return {
+    id,
+    kind: "model_provider",
+    name: nextName(existing, "provider"),
+    endpoint: "",
+    // biome-ignore lint/style/useNamingConvention: api schema
+    provider_type: "openai",
+    // biome-ignore lint/style/useNamingConvention: api schema
+    api_key_env: "",
+    // biome-ignore lint/style/useNamingConvention: api schema
+    api_key: "",
+    // biome-ignore lint/style/useNamingConvention: api schema
+    extra_headers: "",
+    // biome-ignore lint/style/useNamingConvention: api schema
+    extra_body: "",
+  };
+}
+
+export function makeModelConfig(
+  id: string,
+  existing: NodeConfig[],
+): ModelConfig {
+  return {
+    id,
+    kind: "model_config",
+    name: nextName(existing, "model"),
+    model: "",
+    provider: "",
+    // biome-ignore lint/style/useNamingConvention: api schema
+    inference_temperature: "0.7",
+    // biome-ignore lint/style/useNamingConvention: api schema
+    inference_max_tokens: "256",
+    // biome-ignore lint/style/useNamingConvention: api schema
+    inference_top_p: "",
+    // biome-ignore lint/style/useNamingConvention: api schema
+    skip_health_check: false,
+  };
+}
+
 export function makeExpressionConfig(
   id: string,
   existing: NodeConfig[],
@@ -265,6 +310,26 @@ export function nodeDataFromConfig(
       kind: "expression",
       subtype: labelForExpression(config.dtype),
       blockType: "expression",
+      name: config.name,
+      layoutDirection,
+    };
+  }
+  if (config.kind === "model_provider") {
+    return {
+      title: "Model Provider",
+      kind: "model_provider",
+      subtype: config.provider_type || "Provider",
+      blockType: "model_provider",
+      name: config.name,
+      layoutDirection,
+    };
+  }
+  if (config.kind === "model_config") {
+    return {
+      title: "Model Config",
+      kind: "model_config",
+      subtype: config.model || "Model",
+      blockType: "model_config",
       name: config.name,
       layoutDirection,
     };

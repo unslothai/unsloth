@@ -25,6 +25,8 @@ type BlockSheetProps = {
   onViewChange: (view: SheetView) => void;
   onAddSampler: (type: SamplerType) => void;
   onAddLlm: (type: LlmType) => void;
+  onAddModelProvider: () => void;
+  onAddModelConfig: () => void;
   onAddExpression: () => void;
 };
 
@@ -92,6 +94,8 @@ export function BlockSheet({
   onViewChange,
   onAddSampler,
   onAddLlm,
+  onAddModelProvider,
+  onAddModelConfig,
   onAddExpression,
 }: BlockSheetProps): ReactElement {
   const title = getSheetTitle(view);
@@ -157,7 +161,13 @@ export function BlockSheet({
                     if (item.kind === "sampler") {
                       onAddSampler(item.type as SamplerType);
                     } else if (item.kind === "llm") {
-                      onAddLlm(item.type as LlmType);
+                      if (item.type === "model_provider") {
+                        onAddModelProvider();
+                      } else if (item.type === "model_config") {
+                        onAddModelConfig();
+                      } else {
+                        onAddLlm(item.type as LlmType);
+                      }
                     } else {
                       onAddExpression();
                     }
