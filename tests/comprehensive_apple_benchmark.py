@@ -333,6 +333,7 @@ class ComprehensiveBenchmark:
             batch_size=batch_size, seq_len=seq_len, dim=3584, hidden_dim=18944
         )
 
+    def run_qkv_benchmark(self, batch_size=1, seq_len=1, dim=4096):
         log_header(f"QKV Benchmark: B={batch_size}, S={seq_len}, D={dim}")
 
         QW = torch.randn(dim, dim, device=self.device, dtype=self.dtype) / (dim**0.5)

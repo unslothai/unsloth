@@ -171,14 +171,19 @@ def GemmaModel_fast_forward_inference(
     attention_mask=None,
     **kwargs,
 ):
-    out_weights = tuple(
-        torch.empty_like(
+    out_weights = []
+    for x in range(DEVICE_COUNT):
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            # MPS does not support torch.device(0) style indexing efficiently or at all correctly sometimes
+            dev = torch.device("mps")
+        else:
+            dev = torch.device(x)
+        out_weights.append(torch.empty_like(
             self.model.layers[0].input_layernorm.weight,
             dtype=torch.float32,
-            device=torch.device(x),
-        )
-        for x in range(DEVICE_COUNT)
-    )
+            device=dev,
+        ))
+    out_weights = tuple(out_weights)
     input_ids = input_ids[:, : self.max_seq_length]
     hidden_states = self.model.embed_tokens(input_ids)
     hidden_states = hidden_states.to(_get_dtype(dtype_from_config(self.config)))
@@ -267,7 +272,7 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
             dim = getattr(config, "head_dim", None)
             if dim is None:
                 dim = int((config.hidden_size // config.num_attention_heads))
-            device = "cuda"
+            device = "cuda" if torch.cuda.is_available() else "cpu"
             max_position_embeddings = config.max_position_embeddings
         self.dim = dim
         self.max_position_embeddings = max_position_embeddings
@@ -288,6 +293,8 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
         # dummy so that patch_utils doesn't fail for now
         if torch.cuda.is_available():
             device_idx = torch.cuda.current_device()
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            device_idx = torch.device("mps")
         else:
             device_idx = 0
         self.cos_cached = torch.empty(
@@ -337,6 +344,8 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
         if device_index is None:
             if torch.cuda.is_available():
                 device_index = torch.cuda.current_device()
+            elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                device_index = 0 # MPS is always device 0 effectively
             else:
                 device_index = 0
         return self.multi_gpu_cos_cached[device_index], self.multi_gpu_sin_cached[
