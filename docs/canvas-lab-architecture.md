@@ -202,12 +202,20 @@ File:
     model_providers: [...],
     model_configs: [...],
     columns: [...],
-    processors: [],
+    processors: [...],
   },
   run: { rows: 5, preview: true, output_formats: ["jsonl"] },
   ui: { nodes: [...], edges: [...] }
 }
 ```
+
+Current processor UI surface:
+- `schema_transform` (sheet -> `Processors` -> `Schema Transform`)
+- mapped to recipe processor with `build_stage: "post_batch"` and JSON `template`.
+
+Current drop policy:
+- column dialogs (`sampler` / `llm` / `expression`) expose `drop` toggle.
+- payload writes column `drop` directly (preferred over drop-columns processor in v1).
 
 How relation is enforced:
 - collect `model_alias` values used by LLM columns
@@ -253,6 +261,8 @@ Model dialogs:
 `/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/dialogs/models/model-provider-dialog.tsx`
 - model config:
 `/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/dialogs/models/model-config-dialog.tsx`
+- processors:
+`/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/dialogs/processors-dialog.tsx`
 
 `ModelConfigDialog` and `LlmDialog` use shadcn `Combobox` fed from store configs:
 - model config `provider` suggests model-provider node names
@@ -291,3 +301,36 @@ Minimal path for a new block type:
 - payload/import utils = external contract boundary.
 
 If one piece changes, keep all six in sync.
+
+## 14) Processors roadmap (decision)
+
+Current decision: **Option 3 (hybrid)**.
+
+v1 scope:
+- add `drop` toggle on column blocks (sampler/llm/expression).
+- add processor config surface for `schema_transform`.
+- keep payload builder as single mapper to `recipe.processors`.
+- keep processor state separate from node graph for now.
+
+Reason:
+- fastest ship path.
+- matches Data Designer column-level `drop`.
+- avoids duplicate/complex processor edge logic in v1.
+
+Future option noted: **Option 2 (processor chain in graph)**.
+
+Option 2 structure:
+- add virtual node `Dataset Output`.
+- processors become graph nodes: `Schema Transform`, `Drop Columns`, future processors.
+- processor order derived from chain edges:
+  `Dataset Output -> P1 -> P2 -> ...`
+- enforce chain rules:
+  - no cycles
+  - one incoming max per processor
+  - one outgoing max per processor
+  - chain must start at `Dataset Output`
+
+Migration from option 3 -> 2:
+- keep same processor schema/payload contracts.
+- move order source from list/order field to edge traversal.
+- UI changes mostly in canvas rendering + validation; payload adapter stays mostly same.

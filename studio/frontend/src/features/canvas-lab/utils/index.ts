@@ -68,6 +68,7 @@ export function makeSamplerConfig(
       // biome-ignore lint/style/useNamingConvention: api schema
       sampler_type: "category",
       name,
+      drop: false,
       values: ["A", "B", "C"],
       weights: [null, null, null],
     };
@@ -79,6 +80,7 @@ export function makeSamplerConfig(
       // biome-ignore lint/style/useNamingConvention: api schema
       sampler_type: "subcategory",
       name,
+      drop: false,
       // biome-ignore lint/style/useNamingConvention: api schema
       subcategory_parent: "",
       // biome-ignore lint/style/useNamingConvention: api schema
@@ -97,6 +99,7 @@ export function makeSamplerConfig(
       // biome-ignore lint/style/useNamingConvention: api schema
       sampler_type: "uniform",
       name,
+      drop: false,
       low: "0",
       high: "1",
     };
@@ -108,6 +111,7 @@ export function makeSamplerConfig(
       // biome-ignore lint/style/useNamingConvention: api schema
       sampler_type: "gaussian",
       name,
+      drop: false,
       mean: "0",
       std: "1",
     };
@@ -119,6 +123,7 @@ export function makeSamplerConfig(
       // biome-ignore lint/style/useNamingConvention: api schema
       sampler_type: "bernoulli",
       name,
+      drop: false,
       p: "0.5",
     };
   }
@@ -129,6 +134,7 @@ export function makeSamplerConfig(
       // biome-ignore lint/style/useNamingConvention: api schema
       sampler_type: "datetime",
       name,
+      drop: false,
       // biome-ignore lint/style/useNamingConvention: api schema
       datetime_start: "",
       // biome-ignore lint/style/useNamingConvention: api schema
@@ -144,6 +150,7 @@ export function makeSamplerConfig(
       // biome-ignore lint/style/useNamingConvention: api schema
       sampler_type: "timedelta",
       name,
+      drop: false,
       // biome-ignore lint/style/useNamingConvention: api schema
       dt_min: "0",
       // biome-ignore lint/style/useNamingConvention: api schema
@@ -161,6 +168,7 @@ export function makeSamplerConfig(
       // biome-ignore lint/style/useNamingConvention: api schema
       sampler_type: "uuid",
       name,
+      drop: false,
       // biome-ignore lint/style/useNamingConvention: api schema
       uuid_format: "",
     };
@@ -172,6 +180,7 @@ export function makeSamplerConfig(
       // biome-ignore lint/style/useNamingConvention: api schema
       sampler_type: "person_from_faker",
       name,
+      drop: false,
       // biome-ignore lint/style/useNamingConvention: api schema
       person_locale: "",
       // biome-ignore lint/style/useNamingConvention: api schema
@@ -188,6 +197,7 @@ export function makeSamplerConfig(
     // biome-ignore lint/style/useNamingConvention: api schema
     sampler_type: "person",
     name,
+    drop: false,
     // biome-ignore lint/style/useNamingConvention: api schema
     person_locale: "",
     // biome-ignore lint/style/useNamingConvention: api schema
@@ -221,6 +231,7 @@ export function makeLlmConfig(
     // biome-ignore lint/style/useNamingConvention: api schema
     llm_type: llmType,
     name,
+    drop: false,
     // biome-ignore lint/style/useNamingConvention: api schema
     model_alias: "allenai/olmo-3.1-32b-instruct",
     prompt:
@@ -302,6 +313,7 @@ export function makeExpressionConfig(
     id,
     kind: "expression",
     name: nextName(existing, "expr"),
+    drop: false,
     expr: "",
     dtype: "str",
   };

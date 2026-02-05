@@ -72,6 +72,7 @@ function parseSampler(
   id: string,
   errors: string[],
 ): SamplerConfig | null {
+  const drop = column.drop === true;
   const samplerType = readString(column.sampler_type);
   if (!samplerType || !SAMPLER_TYPES.includes(samplerType as SamplerType)) {
     errors.push(`Sampler ${name}: unsupported sampler_type.`);
@@ -99,6 +100,7 @@ function parseSampler(
       // biome-ignore lint/style/useNamingConvention: api schema
       sampler_type: "category",
       name,
+      drop,
       // biome-ignore lint/style/useNamingConvention: api schema
       convert_to: normalizedConvertTo,
       values,
@@ -122,6 +124,7 @@ function parseSampler(
       // biome-ignore lint/style/useNamingConvention: api schema
       sampler_type: "subcategory",
       name,
+      drop,
       // biome-ignore lint/style/useNamingConvention: api schema
       convert_to: normalizedConvertTo,
       // biome-ignore lint/style/useNamingConvention: api schema
@@ -137,6 +140,7 @@ function parseSampler(
       // biome-ignore lint/style/useNamingConvention: api schema
       sampler_type: "uniform",
       name,
+      drop,
       // biome-ignore lint/style/useNamingConvention: api schema
       convert_to: normalizedConvertTo,
       low: readNumberString(params.low),
@@ -150,6 +154,7 @@ function parseSampler(
       // biome-ignore lint/style/useNamingConvention: api schema
       sampler_type: "gaussian",
       name,
+      drop,
       // biome-ignore lint/style/useNamingConvention: api schema
       convert_to: normalizedConvertTo,
       mean: readNumberString(params.mean),
@@ -163,6 +168,7 @@ function parseSampler(
       // biome-ignore lint/style/useNamingConvention: api schema
       sampler_type: "bernoulli",
       name,
+      drop,
       // biome-ignore lint/style/useNamingConvention: api schema
       convert_to: normalizedConvertTo,
       p: readNumberString(params.p),
@@ -175,6 +181,7 @@ function parseSampler(
       // biome-ignore lint/style/useNamingConvention: api schema
       sampler_type: "datetime",
       name,
+      drop,
       // biome-ignore lint/style/useNamingConvention: api schema
       convert_to: normalizedConvertTo,
       // biome-ignore lint/style/useNamingConvention: api schema
@@ -197,6 +204,7 @@ function parseSampler(
       // biome-ignore lint/style/useNamingConvention: api schema
       sampler_type: "timedelta",
       name,
+      drop,
       // biome-ignore lint/style/useNamingConvention: api schema
       convert_to: normalizedConvertTo,
       // biome-ignore lint/style/useNamingConvention: api schema
@@ -216,6 +224,7 @@ function parseSampler(
       // biome-ignore lint/style/useNamingConvention: api schema
       sampler_type: "uuid",
       name,
+      drop,
       // biome-ignore lint/style/useNamingConvention: api schema
       convert_to: normalizedConvertTo,
       // biome-ignore lint/style/useNamingConvention: api schema
@@ -232,6 +241,7 @@ function parseSampler(
     id,
     kind: "sampler",
     name,
+    drop,
     // biome-ignore lint/style/useNamingConvention: api schema
     sampler_type: samplerType as SamplerType,
     // biome-ignore lint/style/useNamingConvention: api schema
@@ -297,6 +307,7 @@ function parseLlm(
     // biome-ignore lint/style/useNamingConvention: api schema
     llm_type: llmType,
     name,
+    drop: column.drop === true,
     // biome-ignore lint/style/useNamingConvention: api schema
     model_alias: readString(column.model_alias) ?? "",
     prompt: readString(column.prompt) ?? "",
@@ -378,6 +389,7 @@ function parseExpression(
     id,
     kind: "expression",
     name,
+    drop: column.drop === true,
     expr: readString(column.expr) ?? "",
     dtype: normalized,
   };

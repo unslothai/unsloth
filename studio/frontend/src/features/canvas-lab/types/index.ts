@@ -47,6 +47,7 @@ export type SamplerConfig = {
   // biome-ignore lint/style/useNamingConvention: api schema
   sampler_type: SamplerType;
   name: string;
+  drop?: boolean;
   // biome-ignore lint/style/useNamingConvention: api schema
   convert_to?: "float" | "int" | "str";
   values?: string[];
@@ -107,6 +108,7 @@ export type LlmConfig = {
   // biome-ignore lint/style/useNamingConvention: api schema
   llm_type: LlmType;
   name: string;
+  drop?: boolean;
   // biome-ignore lint/style/useNamingConvention: api schema
   model_alias: string;
   prompt: string;
@@ -156,9 +158,20 @@ export type ExpressionConfig = {
   id: string;
   kind: "expression";
   name: string;
+  drop?: boolean;
   expr: string;
   dtype: ExpressionDtype;
 };
+
+export type SchemaTransformProcessorConfig = {
+  id: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  processor_type: "schema_transform";
+  name: string;
+  template: string;
+};
+
+export type CanvasProcessorConfig = SchemaTransformProcessorConfig;
 
 export type NodeConfig =
   | SamplerConfig
