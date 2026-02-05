@@ -268,9 +268,15 @@ class FastLanguageModel(FastLlamaModel):
         old_model_name = model_name
         fp8_mode = None
         if not use_exact_model_name:
-            new_model_name = get_model_name(
-                model_name, load_in_4bit=load_in_4bit, load_in_fp8=load_in_fp8
-            )
+            # On MPS, skip BnB quantized model lookup - we use MLX quantization instead
+            if DEVICE_TYPE == "mps" and load_in_4bit:
+                # Don't remap to pre-quantized BnB models on MPS
+                # Keep the original model name and quantize via MLX later
+                new_model_name = model_name
+            else:
+                new_model_name = get_model_name(
+                    model_name, load_in_4bit=load_in_4bit, load_in_fp8=load_in_fp8
+                )
             if new_model_name is None and load_in_fp8 != False:
                 fp8_mode = _get_fp8_mode_and_check_settings(
                     load_in_fp8,
