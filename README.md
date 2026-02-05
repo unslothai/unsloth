@@ -194,9 +194,9 @@ pip install unsloth
 </details>
 
 ### Advanced Pip Installation
-`⚠️Do **NOT** use this if you have Conda.` Pip is a bit more complex since there are dependency issues. The pip command is different for `torch 2.2,2.3,2.4,2.5,2.6,2.7,2.8,2.9` and CUDA versions.
+`⚠️Do **NOT** use this if you have Conda.` Pip is a bit more complex since there are dependency issues. The pip command is different for `torch 2.2,2.3,2.4,2.5,2.6,2.7,2.8,2.9,2.10` and CUDA versions.
 
-For other torch versions, we support `torch211`, `torch212`, `torch220`, `torch230`, `torch240`, `torch250`, `torch260`, `torch270`, `torch280`, `torch290` and for CUDA versions, we support `cu118` and `cu121` and `cu124`. For Ampere devices (A100, H100, RTX3090) and above, use `cu118-ampere` or `cu121-ampere` or `cu124-ampere`.
+For other torch versions, we support `torch211`, `torch212`, `torch220`, `torch230`, `torch240`, `torch250`, `torch260`, `torch270`, `torch280`, `torch290`, `torch2100` and for CUDA versions, we support `cu118` and `cu121` and `cu124`. For Ampere devices (A100, H100, RTX3090) and above, use `cu118-ampere` or `cu121-ampere` or `cu124-ampere`. Note: torch 2.10 only supports CUDA 12.6, 12.8, and 13.0.
 
 For example, if you have `torch 2.4` and `CUDA 12.1`, use:
 ```bash
@@ -208,6 +208,12 @@ Another example, if you have `torch 2.9` and `CUDA 13.0`, use:
 ```bash
 pip install --upgrade pip
 pip install "unsloth[cu130-torch290] @ git+https://github.com/unslothai/unsloth.git"
+```
+
+Another example, if you have `torch 2.10` and `CUDA 12.6`, use:
+```bash
+pip install --upgrade pip
+pip install "unsloth[cu126-torch2100] @ git+https://github.com/unslothai/unsloth.git"
 ```
 
 And other examples:
@@ -254,8 +260,10 @@ elif v  < V('2.8.0'): x = 'cu{}{}-torch271'
 elif v  < V('2.8.9'): x = 'cu{}{}-torch280'
 elif v  < V('2.9.1'): x = 'cu{}{}-torch290'
 elif v  < V('2.9.2'): x = 'cu{}{}-torch291'
+elif v  < V('2.10.1'): x = 'cu{}{}-torch2100'
 else: raise RuntimeError(f"Torch = {v} too new!")
 if v > V('2.6.9') and cuda not in ("11.8", "12.6", "12.8", "13.0"): raise RuntimeError(f"CUDA = {cuda} not supported!")
+if v >= V('2.10.0') and cuda not in ("12.6", "12.8", "13.0"): raise RuntimeError(f"Torch 2.10 requires CUDA 12.6, 12.8, or 13.0! Got CUDA = {cuda}")
 x = x.format(cuda.replace(".", ""), "-ampere" if False else "") # is_ampere is broken due to flash-attn
 print(f'pip install --upgrade pip && pip install --no-deps git+https://github.com/unslothai/unsloth-zoo.git && pip install "unsloth[{x}] @ git+https://github.com/unslothai/unsloth.git" --no-build-isolation')
 ```
