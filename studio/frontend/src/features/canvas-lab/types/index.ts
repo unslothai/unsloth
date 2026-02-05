@@ -10,7 +10,7 @@ export type SamplerType =
   | "person"
   | "person_from_faker";
 
-export type LlmType = "text" | "structured" | "code";
+export type LlmType = "text" | "structured" | "code" | "judge";
 
 export type ExpressionDtype = "str" | "int" | "float" | "bool";
 
@@ -21,6 +21,7 @@ export type CanvasNodeData = {
   name: string;
   kind: "sampler" | "llm" | "expression";
   subtype: string;
+  blockType: SamplerType | LlmType | "expression";
   layoutDirection?: LayoutDirection;
 };
 
@@ -64,6 +65,17 @@ export type SamplerConfig = {
   subcategory_mapping?: Record<string, string[]>;
 };
 
+export type ScoreOption = {
+  value: string;
+  description: string;
+};
+
+export type Score = {
+  name: string;
+  description: string;
+  options: ScoreOption[];
+};
+
 export type LlmConfig = {
   id: string;
   kind: "llm";
@@ -79,6 +91,7 @@ export type LlmConfig = {
   code_lang?: string;
   // biome-ignore lint/style/useNamingConvention: api schema
   output_format?: string;
+  scores?: Score[];
 };
 
 export type ExpressionConfig = {

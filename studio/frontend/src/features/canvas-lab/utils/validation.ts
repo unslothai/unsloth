@@ -124,6 +124,32 @@ export function getConfigErrors(config: NodeConfig | null): string[] {
         }
       }
     }
+    if (config.llm_type === "judge") {
+      const scores = config.scores ?? [];
+      if (scores.length === 0) {
+        errors.push("LLM Judge needs at least one score.");
+      }
+      for (const score of scores) {
+        if (!score.name.trim()) {
+          errors.push("LLM Judge score name is required.");
+        }
+        if (!score.description.trim()) {
+          errors.push("LLM Judge score description is required.");
+        }
+        const options = score.options ?? [];
+        if (options.length === 0) {
+          errors.push(`LLM Judge score ${score.name || "Unnamed"} needs options.`);
+        }
+        for (const option of options) {
+          if (!option.value.trim() || !option.description.trim()) {
+            errors.push(
+              `LLM Judge score ${score.name || "Unnamed"} options need value + description.`,
+            );
+            break;
+          }
+        }
+      }
+    }
   }
   if (config.kind === "expression") {
     if (!config.expr.trim()) {
