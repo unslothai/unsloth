@@ -420,7 +420,9 @@ def _patch_trl_trainer():
         trl_trainers = set(
             x[: -len("Trainer")] for x in trl_classes if x.endswith("Trainer")
         )
-        trl_configs = set(x[: -len("Config")] for x in trl_classes if x.endswith("Config"))
+        trl_configs = set(
+            x[: -len("Config")] for x in trl_classes if x.endswith("Config")
+        )
         trl_bases = list(trl_trainers & trl_configs)
 
         for base in trl_bases:
@@ -458,9 +460,7 @@ def _patch_trl_trainer():
             for mod in pkgutil.iter_modules(trl_experimental.__path__):
                 if mod.name.endswith("_trainer"):
                     try:
-                        submod = importlib.import_module(
-                            f"trl.experimental.{mod.name}"
-                        )
+                        submod = importlib.import_module(f"trl.experimental.{mod.name}")
                         _patch_trl_module(submod)
                     except Exception:
                         continue

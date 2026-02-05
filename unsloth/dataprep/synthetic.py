@@ -282,9 +282,14 @@ class SyntheticDataKit:
             # Fall back to the metrics endpoint if available.
             try:
                 import urllib.request
-                with urllib.request.urlopen("http://localhost:8000/metrics", timeout = 2) as resp:
+
+                with urllib.request.urlopen(
+                    "http://localhost:8000/metrics", timeout = 2
+                ) as resp:
                     if getattr(resp, "status", None) == 200:
-                        print("vLLM metrics endpoint detected; proceeding without ready log.")
+                        print(
+                            "vLLM metrics endpoint detected; proceeding without ready log."
+                        )
                         ready = True
             except Exception:
                 pass
