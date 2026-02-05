@@ -18,7 +18,9 @@ const SAMPLER_LABELS: Record<SamplerType, string> = {
   subcategory: "Subcategory",
   uniform: "Uniform",
   gaussian: "Gaussian",
+  bernoulli: "Bernoulli",
   datetime: "Datetime",
+  timedelta: "Timedelta",
   uuid: "UUID",
   person: "Person",
   person_from_faker: "Person (Faker)",
@@ -110,6 +112,16 @@ export function makeSamplerConfig(
       std: "1",
     };
   }
+  if (samplerType === "bernoulli") {
+    return {
+      id,
+      kind: "sampler",
+      // biome-ignore lint/style/useNamingConvention: api schema
+      sampler_type: "bernoulli",
+      name,
+      p: "0.5",
+    };
+  }
   if (samplerType === "datetime") {
     return {
       id,
@@ -123,6 +135,23 @@ export function makeSamplerConfig(
       datetime_end: "",
       // biome-ignore lint/style/useNamingConvention: api schema
       datetime_unit: "day",
+    };
+  }
+  if (samplerType === "timedelta") {
+    return {
+      id,
+      kind: "sampler",
+      // biome-ignore lint/style/useNamingConvention: api schema
+      sampler_type: "timedelta",
+      name,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      dt_min: "0",
+      // biome-ignore lint/style/useNamingConvention: api schema
+      dt_max: "1",
+      // biome-ignore lint/style/useNamingConvention: api schema
+      reference_column_name: "",
+      // biome-ignore lint/style/useNamingConvention: api schema
+      timedelta_unit: "D",
     };
   }
   if (samplerType === "uuid") {

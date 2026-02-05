@@ -1,5 +1,5 @@
 import { BaseEdge, type EdgeProps, getSmoothStepPath } from "@xyflow/react";
-import { memo } from "react";
+import { memo, type ReactElement } from "react";
 
 export const CanvasEdge = memo(function CanvasEdge({
   id,
@@ -11,7 +11,7 @@ export const CanvasEdge = memo(function CanvasEdge({
   targetPosition,
   style,
   type,
-}: EdgeProps): JSX.Element {
+}: EdgeProps): ReactElement {
   const [path] = getSmoothStepPath({
     sourceX,
     sourceY,

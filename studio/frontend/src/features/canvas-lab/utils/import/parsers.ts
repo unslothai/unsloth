@@ -22,13 +22,49 @@ const SAMPLER_TYPES: SamplerType[] = [
   "subcategory",
   "uniform",
   "gaussian",
+  "bernoulli",
   "datetime",
+  "timedelta",
   "uuid",
   "person",
   "person_from_faker",
 ];
 
 const EXPRESSION_DTYPES: ExpressionDtype[] = ["str", "int", "float", "bool"];
+const TIMEDELTA_UNITS = new Set(["D", "h", "m", "s"]);
+
+function parseCategoryConditionalParams(
+  column: Record<string, unknown>,
+): SamplerConfig["conditional_params"] {
+  if (!isRecord(column.conditional_params)) {
+    return undefined;
+  }
+  const conditional: NonNullable<SamplerConfig["conditional_params"]> = {};
+  for (const [condition, rawParams] of Object.entries(column.conditional_params)) {
+    if (!isRecord(rawParams)) {
+      continue;
+    }
+    if (readString(rawParams.sampler_type) !== "category") {
+      continue;
+    }
+    const values = Array.isArray(rawParams.values)
+      ? rawParams.values.filter((item) => typeof item === "string")
+      : [];
+    if (values.length === 0) {
+      continue;
+    }
+    const weights = Array.isArray(rawParams.weights)
+      ? rawParams.weights.map((item) => (typeof item === "number" ? item : null))
+      : undefined;
+    conditional[condition] = {
+      // biome-ignore lint/style/useNamingConvention: api schema
+      sampler_type: "category",
+      values,
+      weights,
+    };
+  }
+  return Object.keys(conditional).length > 0 ? conditional : undefined;
+}
 
 function parseSampler(
   column: Record<string, unknown>,
@@ -67,6 +103,8 @@ function parseSampler(
       convert_to: normalizedConvertTo,
       values,
       weights,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      conditional_params: parseCategoryConditionalParams(column),
     };
   }
   if (samplerType === "subcategory") {
@@ -118,6 +156,18 @@ function parseSampler(
       std: readNumberString(params.std),
     };
   }
+  if (samplerType === "bernoulli") {
+    return {
+      id,
+      kind: "sampler",
+      // biome-ignore lint/style/useNamingConvention: api schema
+      sampler_type: "bernoulli",
+      name,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      convert_to: normalizedConvertTo,
+      p: readNumberString(params.p),
+    };
+  }
   if (samplerType === "datetime") {
     return {
       id,
@@ -133,6 +183,30 @@ function parseSampler(
       datetime_end: readString(params.end) ?? "",
       // biome-ignore lint/style/useNamingConvention: api schema
       datetime_unit: readString(params.unit) ?? "",
+    };
+  }
+  if (samplerType === "timedelta") {
+    const rawUnit = readString(params.unit);
+    const unit =
+      rawUnit && TIMEDELTA_UNITS.has(rawUnit)
+        ? (rawUnit as "D" | "h" | "m" | "s")
+        : "D";
+    return {
+      id,
+      kind: "sampler",
+      // biome-ignore lint/style/useNamingConvention: api schema
+      sampler_type: "timedelta",
+      name,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      convert_to: normalizedConvertTo,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      dt_min: readNumberString(params.dt_min),
+      // biome-ignore lint/style/useNamingConvention: api schema
+      dt_max: readNumberString(params.dt_max),
+      // biome-ignore lint/style/useNamingConvention: api schema
+      reference_column_name: readString(params.reference_column_name) ?? "",
+      // biome-ignore lint/style/useNamingConvention: api schema
+      timedelta_unit: unit,
     };
   }
   if (samplerType === "uuid") {
@@ -154,7 +228,7 @@ function parseSampler(
     params.age_range.every((item) => typeof item === "number")
       ? `${params.age_range[0]}-${params.age_range[1]}`
       : readString(params.age_range) ?? "";
-  const base = {
+  const base: SamplerConfig = {
     id,
     kind: "sampler",
     name,

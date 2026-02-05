@@ -21,6 +21,7 @@ import type {
 import { getBlockDefinition } from "../blocks/registry";
 import { isCategoryConfig, isSubcategoryConfig } from "../utils";
 import { applyCanvasConnection, isValidCanvasConnection } from "../utils/graph";
+import { HANDLE_IDS } from "../utils/handles";
 import type { CanvasSnapshot } from "../utils/import";
 import { getLayoutedElements } from "../utils/layout";
 import {
@@ -212,9 +213,9 @@ export const useCanvasLabStore = create<CanvasLabState>((set, get) => ({
             {
               source: parentId,
               target: id,
-              sourceHandle: null,
-              targetHandle: null,
-              type: "semantic",
+              sourceHandle: HANDLE_IDS.dataOut,
+              targetHandle: HANDLE_IDS.dataIn,
+              type: "canvas",
             },
             edges,
           );
@@ -241,9 +242,54 @@ export const useCanvasLabStore = create<CanvasLabState>((set, get) => ({
               {
                 source: providerId,
                 target: id,
-                sourceHandle: null,
-                targetHandle: null,
+                sourceHandle: HANDLE_IDS.semanticOut,
+                targetHandle: HANDLE_IDS.semanticIn,
                 type: "semantic",
+              },
+              edges,
+            );
+          }
+        }
+      }
+
+      const hasReferencePatch = Object.prototype.hasOwnProperty.call(
+        patch,
+        "reference_column_name",
+      );
+      if (
+        current.kind === "sampler" &&
+        current.sampler_type === "timedelta" &&
+        hasReferencePatch
+      ) {
+        const nextReference =
+          (patch as Partial<SamplerConfig>).reference_column_name ?? "";
+        edges = edges.filter((edge) => {
+          if (edge.target !== id) {
+            return true;
+          }
+          const source = configs[edge.source];
+          return !(
+            source &&
+            source.kind === "sampler" &&
+            source.sampler_type === "datetime"
+          );
+        });
+        if (nextReference) {
+          const referenceId = findNodeIdByName(configs, nextReference);
+          const source = referenceId ? configs[referenceId] : null;
+          if (
+            referenceId &&
+            source &&
+            source.kind === "sampler" &&
+            source.sampler_type === "datetime"
+          ) {
+            edges = addEdge(
+              {
+                source: referenceId,
+                target: id,
+                sourceHandle: HANDLE_IDS.dataOut,
+                targetHandle: HANDLE_IDS.dataIn,
+                type: "canvas",
               },
               edges,
             );
@@ -272,8 +318,8 @@ export const useCanvasLabStore = create<CanvasLabState>((set, get) => ({
               {
                 source: modelConfigId,
                 target: id,
-                sourceHandle: null,
-                targetHandle: null,
+                sourceHandle: HANDLE_IDS.semanticOut,
+                targetHandle: HANDLE_IDS.semanticIn,
                 type: "semantic",
               },
               edges,
@@ -419,5 +465,13 @@ export const useCanvasLabStore = create<CanvasLabState>((set, get) => ({
     });
   },
   isValidConnection: (connection) =>
-    isValidCanvasConnection(connection, get().configs),
+    isValidCanvasConnection(
+      {
+        source: connection.source ?? null,
+        target: connection.target ?? null,
+        sourceHandle: connection.sourceHandle ?? null,
+        targetHandle: connection.targetHandle ?? null,
+      },
+      get().configs,
+    ),
 }));

@@ -44,6 +44,34 @@ export function getConfigErrors(config: NodeConfig | null): string[] {
       if (hasWeights && weights.some((weight) => weight === null)) {
         errors.push("Weights must be set for all values.");
       }
+      for (const [condition, params] of Object.entries(
+        config.conditional_params ?? {},
+      )) {
+        if (!condition.trim()) {
+          errors.push("Category conditional rule needs condition text.");
+          continue;
+        }
+        const conditionalValues = (params.values ?? [])
+          .map((value) => value.trim())
+          .filter(Boolean);
+        if (conditionalValues.length === 0) {
+          errors.push(`Category conditional '${condition}' needs values.`);
+          continue;
+        }
+        const conditionalWeights = params.weights ?? [];
+        const hasConditionalWeights = conditionalWeights.some(
+          (weight) => weight !== null,
+        );
+        if (
+          hasConditionalWeights &&
+          (conditionalWeights.length !== conditionalValues.length ||
+            conditionalWeights.some((weight) => weight === null))
+        ) {
+          errors.push(
+            `Category conditional '${condition}' weights must be set for all values.`,
+          );
+        }
+      }
     }
     if (config.sampler_type === "uniform") {
       const low = parseNumber(config.low);
@@ -63,6 +91,14 @@ export function getConfigErrors(config: NodeConfig | null): string[] {
         errors.push("Gaussian std must be > 0.");
       }
     }
+    if (config.sampler_type === "bernoulli") {
+      const p = parseNumber(config.p);
+      if (p === null) {
+        errors.push("Bernoulli p must be a number.");
+      } else if (p < 0 || p > 1) {
+        errors.push("Bernoulli p must be between 0 and 1.");
+      }
+    }
     if (config.sampler_type === "datetime") {
       if (!config.datetime_unit) {
         errors.push("Datetime unit required.");
@@ -75,6 +111,21 @@ export function getConfigErrors(config: NodeConfig | null): string[] {
         } else if (start >= end) {
           errors.push("Datetime start must be before end.");
         }
+      }
+    }
+    if (config.sampler_type === "timedelta") {
+      const min = parseNumber(config.dt_min);
+      const max = parseNumber(config.dt_max);
+      if (min === null || max === null) {
+        errors.push("Timedelta dt_min/dt_max must be numbers.");
+      } else if (min >= max) {
+        errors.push("Timedelta dt_min must be < dt_max.");
+      }
+      if (!config.reference_column_name?.trim()) {
+        errors.push("Timedelta reference datetime column required.");
+      }
+      if (!config.timedelta_unit) {
+        errors.push("Timedelta unit required.");
       }
     }
     if (config.sampler_type === "subcategory" && !config.subcategory_parent) {
