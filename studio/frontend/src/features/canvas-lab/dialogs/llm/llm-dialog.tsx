@@ -15,8 +15,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { type ReactElement, useMemo, useRef } from "react";
-import { useCanvasLabStore } from "../../stores/canvas-lab";
+import { type ReactElement, useRef } from "react";
 import type { LlmConfig, Score } from "../../types";
 import { NameField } from "../shared/name-field";
 
@@ -41,18 +40,15 @@ const CODE_LANG_OPTIONS = [
 
 type LlmDialogProps = {
   config: LlmConfig;
+  modelConfigAliases: string[];
   onUpdate: (patch: Partial<LlmConfig>) => void;
 };
 
-export function LlmDialog({ config, onUpdate }: LlmDialogProps): ReactElement {
-  const configs = useCanvasLabStore((state) => state.configs);
-  const modelConfigAliases = useMemo(
-    () =>
-      Object.values(configs)
-        .filter((item) => item.kind === "model_config")
-        .map((item) => item.name),
-    [configs],
-  );
+export function LlmDialog({
+  config,
+  modelConfigAliases,
+  onUpdate,
+}: LlmDialogProps): ReactElement {
   const modelAliasId = `${config.id}-model-alias`;
   const codeLangId = `${config.id}-code-lang`;
   const promptId = `${config.id}-prompt`;

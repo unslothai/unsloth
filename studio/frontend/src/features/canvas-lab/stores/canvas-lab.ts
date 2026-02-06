@@ -5,7 +5,6 @@ import {
   type IsValidConnection,
   type NodeChange,
   type XYPosition,
-  addEdge,
   applyEdgeChanges,
   applyNodeChanges,
 } from "@xyflow/react";
@@ -15,15 +14,12 @@ import type {
   CanvasProcessorConfig,
   LayoutDirection,
   LlmType,
-  ModelConfig,
   NodeConfig,
-  SamplerConfig,
   SamplerType,
 } from "../types";
 import { getBlockDefinition } from "../blocks/registry";
 import { isCategoryConfig, isSubcategoryConfig } from "../utils";
 import { applyCanvasConnection, isValidCanvasConnection } from "../utils/graph";
-import { HANDLE_IDS } from "../utils/handles";
 import type { CanvasSnapshot } from "../utils/import";
 import { getLayoutedElements } from "../utils/layout";
 import {
@@ -32,7 +28,8 @@ import {
   applyRenameToConfigs,
   applyLayoutDirectionToNodes,
   buildNodeUpdate,
-  findNodeIdByName,
+  syncEdgesForConfigPatch,
+  syncSubcategoryConfigsForCategoryUpdate,
   updateNodeData,
 } from "./canvas-lab-helpers";
 
@@ -236,7 +233,6 @@ export const useCanvasLabStore = create<CanvasLabState>((set, get) => ({
       return state;
     }),
   updateConfig: (id, patch) => {
-    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: store update
     const applyUpdate = (state: CanvasLabState) => {
       const current = state.configs[id];
       if (!current) {
@@ -256,171 +252,15 @@ export const useCanvasLabStore = create<CanvasLabState>((set, get) => ({
         next,
         state.layoutDirection,
       );
-      let edges = state.edges;
-
-      const hasParentPatch = Object.prototype.hasOwnProperty.call(
-        patch,
-        "subcategory_parent",
+      const edges = syncEdgesForConfigPatch(current, patch, configs, state.edges);
+      configs = syncSubcategoryConfigsForCategoryUpdate(
+        current,
+        next,
+        configs,
+        oldName,
+        newName,
+        nameChanged,
       );
-      if (isSubcategoryConfig(current) && hasParentPatch) {
-        const nextParent =
-          (patch as Partial<SamplerConfig>).subcategory_parent ?? "";
-        const parentId = nextParent
-          ? findNodeIdByName(configs, nextParent)
-          : null;
-        edges = edges.filter((edge) => edge.target !== id);
-        if (parentId) {
-          edges = addEdge(
-            {
-              source: parentId,
-              target: id,
-              sourceHandle: HANDLE_IDS.dataOut,
-              targetHandle: HANDLE_IDS.dataIn,
-              type: "canvas",
-            },
-            edges,
-          );
-        }
-      }
-
-      const hasProviderPatch = Object.prototype.hasOwnProperty.call(
-        patch,
-        "provider",
-      );
-      if (current.kind === "model_config" && hasProviderPatch) {
-        const nextProvider = (patch as Partial<ModelConfig>).provider ?? "";
-        edges = edges.filter((edge) => {
-          if (edge.target !== id) {
-            return true;
-          }
-          const source = configs[edge.source];
-          return !(source && source.kind === "model_provider");
-        });
-        if (nextProvider) {
-          const providerId = findNodeIdByName(configs, nextProvider);
-          if (providerId) {
-            edges = addEdge(
-              {
-                source: providerId,
-                target: id,
-                sourceHandle: HANDLE_IDS.semanticOut,
-                targetHandle: HANDLE_IDS.semanticIn,
-                type: "semantic",
-              },
-              edges,
-            );
-          }
-        }
-      }
-
-      const hasReferencePatch = Object.prototype.hasOwnProperty.call(
-        patch,
-        "reference_column_name",
-      );
-      if (
-        current.kind === "sampler" &&
-        current.sampler_type === "timedelta" &&
-        hasReferencePatch
-      ) {
-        const nextReference =
-          (patch as Partial<SamplerConfig>).reference_column_name ?? "";
-        edges = edges.filter((edge) => {
-          if (edge.target !== id) {
-            return true;
-          }
-          const source = configs[edge.source];
-          return !(
-            source &&
-            source.kind === "sampler" &&
-            source.sampler_type === "datetime"
-          );
-        });
-        if (nextReference) {
-          const referenceId = findNodeIdByName(configs, nextReference);
-          const source = referenceId ? configs[referenceId] : null;
-          if (
-            referenceId &&
-            source &&
-            source.kind === "sampler" &&
-            source.sampler_type === "datetime"
-          ) {
-            edges = addEdge(
-              {
-                source: referenceId,
-                target: id,
-                sourceHandle: HANDLE_IDS.dataOut,
-                targetHandle: HANDLE_IDS.dataIn,
-                type: "canvas",
-              },
-              edges,
-            );
-          }
-        }
-      }
-
-      const hasModelAliasPatch = Object.prototype.hasOwnProperty.call(
-        patch,
-        "model_alias",
-      );
-      if (current.kind === "llm" && hasModelAliasPatch) {
-        const nextAlias =
-          (patch as Partial<NodeConfig> & { model_alias?: string }).model_alias ?? "";
-        edges = edges.filter((edge) => {
-          if (edge.target !== id) {
-            return true;
-          }
-          const source = configs[edge.source];
-          return !(source && source.kind === "model_config");
-        });
-        if (nextAlias) {
-          const modelConfigId = findNodeIdByName(configs, nextAlias);
-          if (modelConfigId) {
-            edges = addEdge(
-              {
-                source: modelConfigId,
-                target: id,
-                sourceHandle: HANDLE_IDS.semanticOut,
-                targetHandle: HANDLE_IDS.semanticIn,
-                type: "semantic",
-              },
-              edges,
-            );
-          }
-        }
-      }
-
-      if (isCategoryConfig(current)) {
-        const nextCategory = isCategoryConfig(next) ? next : current;
-        const oldValues = current.values ?? [];
-        const newValues = nextCategory.values ?? [];
-        const valuesChanged =
-          oldValues.length !== newValues.length ||
-          oldValues.some((value, index) => value !== newValues[index]);
-
-        for (const config of Object.values(configs)) {
-          if (!isSubcategoryConfig(config)) {
-            continue;
-          }
-          if (config.subcategory_parent !== oldName) {
-            continue;
-          }
-          const mapping = config.subcategory_mapping ?? {};
-          const nextMapping: Record<string, string[]> = {};
-          for (const value of newValues) {
-            nextMapping[value] = mapping[value] ?? [];
-          }
-          const updated: NodeConfig = {
-            ...config,
-            // biome-ignore lint/style/useNamingConvention: api schema
-            subcategory_parent: nameChanged
-              ? newName
-              : config.subcategory_parent,
-            // biome-ignore lint/style/useNamingConvention: api schema
-            subcategory_mapping: valuesChanged ? nextMapping : mapping,
-          };
-          configs = { ...configs, [config.id]: updated };
-        }
-      }
 
       if (nameChanged) {
         configs = applyRenameToConfigs(configs, oldName, newName);

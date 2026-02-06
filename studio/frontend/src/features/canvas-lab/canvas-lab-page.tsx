@@ -8,7 +8,6 @@ import {
   type Node,
   type NodeChange,
   type NodeTypes,
-  type XYPosition,
   Panel,
   ReactFlow,
   useReactFlow,
@@ -43,7 +42,7 @@ import type {
   SamplerConfig,
 } from "./types";
 import { isCategoryConfig } from "./utils";
-import { getLlmJudgeScoreHandleId, HANDLE_IDS } from "./utils/handles";
+import { deriveDisplayGraph } from "./utils/graph/derive-display-graph";
 import { importCanvasPayload } from "./utils/import";
 import { buildCanvasPayload } from "./utils/payload";
 import { buildDefaultSchemaTransform } from "./utils/processors";
@@ -210,125 +209,13 @@ export function CanvasLabPage(): ReactElement {
   );
 
   const displayGraph = useMemo(() => {
-    const auxNodes: Node<CanvasAuxNodeData>[] = [];
-    const auxEdges: Edge[] = [];
-    const auxDefaults: Record<string, XYPosition> = {};
-    const auxNodeIds: string[] = [];
-
-    for (const node of nodes) {
-      const config = configs[node.id];
-      if (!(config && config.kind === "llm")) {
-        continue;
-      }
-      const llmDirection = node.data.layoutDirection ?? layoutDirection;
-      const items: Array<{
-        key: string;
-        targetHandle: string;
-        data: CanvasAuxNodeData;
-      }> = [];
-
-      if (config.system_prompt.trim()) {
-        items.push({
-          key: "system",
-          targetHandle: HANDLE_IDS.llmSystemIn,
-          data: {
-            kind: "llm-prompt-input",
-            llmId: config.id,
-            field: "system_prompt",
-            title: "System Prompt",
-            layoutDirection: llmDirection,
-          },
-        });
-      }
-
-      if (config.prompt.trim()) {
-        items.push({
-          key: "prompt",
-          targetHandle: HANDLE_IDS.llmPromptIn,
-          data: {
-            kind: "llm-prompt-input",
-            llmId: config.id,
-            field: "prompt",
-            title: "Prompt",
-            layoutDirection: llmDirection,
-          },
-        });
-      }
-
-      if (config.llm_type === "judge") {
-        (config.scores ?? []).forEach((_score, scoreIndex) => {
-          items.push({
-            key: `score-${scoreIndex}`,
-            targetHandle: getLlmJudgeScoreHandleId(scoreIndex),
-            data: {
-              kind: "llm-judge-score",
-              llmId: config.id,
-              scoreIndex,
-              layoutDirection: llmDirection,
-            },
-          });
-        });
-      }
-
-      if (items.length === 0) {
-        continue;
-      }
-
-      const itemSpan = 140;
-      const itemCenterOffset = ((items.length - 1) * itemSpan) / 2;
-      const horizontalSpan = 300;
-      const horizontalCenterOffset = ((items.length - 1) * horizontalSpan) / 2;
-
-      items.forEach((item, index) => {
-        const auxId = `aux-${node.id}-${item.key}`;
-        const defaultPosition =
-          llmDirection === "TB"
-            ? {
-                x: node.position.x + index * horizontalSpan - horizontalCenterOffset,
-                y: node.position.y - 210,
-              }
-            : {
-                x: node.position.x - 330,
-                y: node.position.y + index * itemSpan - itemCenterOffset,
-              };
-        const position = auxNodePositions[auxId] ?? defaultPosition;
-        auxNodeIds.push(auxId);
-        if (!auxNodePositions[auxId]) {
-          auxDefaults[auxId] = defaultPosition;
-        }
-
-        auxNodes.push({
-          id: auxId,
-          type: "aux",
-          data: item.data,
-          position,
-          draggable: true,
-          selectable: true,
-          focusable: true,
-          connectable: false,
-        });
-
-        auxEdges.push({
-          id: `e-${auxId}-${node.id}`,
-          source: auxId,
-          sourceHandle: HANDLE_IDS.llmInputOut,
-          target: node.id,
-          targetHandle: item.targetHandle,
-          type: "canvas",
-          data: { path: "auto" },
-          selectable: false,
-          focusable: false,
-          style: { strokeWidth: 1.5, stroke: "var(--border)" },
-        });
-      });
-    }
-
-    return {
-      nodes: [...nodes, ...auxNodes],
-      edges: [...edges, ...auxEdges],
-      auxNodeIds,
-      auxDefaults,
-    };
+    return deriveDisplayGraph({
+      nodes,
+      edges,
+      configs,
+      layoutDirection,
+      auxNodePositions,
+    });
   }, [auxNodePositions, configs, edges, layoutDirection, nodes]);
   const displayNodeIds = useMemo(
     () => displayGraph.nodes.map((node) => node.id),
@@ -388,6 +275,29 @@ export function CanvasLabPage(): ReactElement {
   const config = activeConfigId ? configs[activeConfigId] : null;
   const categoryOptions = useMemo<SamplerConfig[]>(
     () => Object.values(configs).filter(isCategoryConfig),
+    [configs],
+  );
+  const modelConfigAliases = useMemo<string[]>(
+    () =>
+      Object.values(configs)
+        .filter((item) => item.kind === "model_config")
+        .map((item) => item.name),
+    [configs],
+  );
+  const modelProviderOptions = useMemo<string[]>(
+    () =>
+      Object.values(configs)
+        .filter((item) => item.kind === "model_provider")
+        .map((item) => item.name),
+    [configs],
+  );
+  const datetimeOptions = useMemo<string[]>(
+    () =>
+      Object.values(configs)
+        .filter(
+          (item) => item.kind === "sampler" && item.sampler_type === "datetime",
+        )
+        .map((item) => item.name),
     [configs],
   );
 
@@ -589,6 +499,9 @@ export function CanvasLabPage(): ReactElement {
         onOpenChange={setDialogOpen}
         config={config}
         categoryOptions={categoryOptions}
+        modelConfigAliases={modelConfigAliases}
+        modelProviderOptions={modelProviderOptions}
+        datetimeOptions={datetimeOptions}
         onUpdate={updateConfig}
         container={sheetContainer}
       />
