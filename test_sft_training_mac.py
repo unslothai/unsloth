@@ -11,6 +11,7 @@ Run with: python test_sft_training_mac.py
 """
 import torch
 import os
+import platform
 from unsloth import FastLanguageModel
 from datasets import Dataset
 from trl import SFTTrainer, SFTConfig
@@ -20,6 +21,13 @@ def main():
     print(" UNSLOTH SFT TRAINING TEST (Apple Silicon)")
     print("="*50)
 
+    # Detect if running on MPS (Apple Silicon)
+    is_mps = platform.system() == "Darwin" and torch.backends.mps.is_available()
+    
+    if is_mps:
+        print("\n🍎 Running on Apple Silicon (MPS)")
+        print("   Note: Disabling 4-bit quantization (not supported on MPS)")
+    
     # Use a very small model for testing
     model_name = "unsloth/Llama-3.2-1B-Instruct"
     max_seq_length = 512
@@ -28,7 +36,8 @@ def main():
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=model_name,
         max_seq_length=max_seq_length,
-        load_in_4bit=True,  # Enable MLX quantization on Mac
+        load_in_4bit=False if is_mps else True,  # 4-bit not supported on MPS
+        dtype=torch.bfloat16 if is_mps else None,
     )
 
     print("\n[2] Configuring LoRA adapters...")
@@ -51,6 +60,8 @@ def main():
     dataset = Dataset.from_list(data)
 
     print("\n[4] Configuring training arguments...")
+    if is_mps:
+        print("   Using adamw_torch optimizer (8-bit not supported on MPS)")
     training_args = SFTConfig(
         output_dir="./test_sft_output",
         per_device_train_batch_size=2,
@@ -58,7 +69,7 @@ def main():
         max_steps=5,  # Very short run
         learning_rate=2e-4,
         logging_steps=1,
-        optim="adamw_8bit",
+        optim="adamw_torch" if is_mps else "adamw_8bit",
         seed=42,
         max_seq_length=max_seq_length,
         dataset_text_field="text",
