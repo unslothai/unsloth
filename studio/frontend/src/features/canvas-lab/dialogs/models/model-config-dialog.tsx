@@ -8,28 +8,21 @@ import {
   ComboboxList,
 } from "@/components/ui/combobox";
 import { Input } from "@/components/ui/input";
-import { type ReactElement, useMemo, useRef } from "react";
+import { type ReactElement, useRef } from "react";
 import type { ModelConfig } from "../../types";
-import { useCanvasLabStore } from "../../stores/canvas-lab";
 import { NameField } from "../shared/name-field";
 
 type ModelConfigDialogProps = {
   config: ModelConfig;
+  providerOptions: string[];
   onUpdate: (patch: Partial<ModelConfig>) => void;
 };
 
 export function ModelConfigDialog({
   config,
+  providerOptions,
   onUpdate,
 }: ModelConfigDialogProps): ReactElement {
-  const configs = useCanvasLabStore((state) => state.configs);
-  const providerOptions = useMemo(
-    () =>
-      Object.values(configs)
-        .filter((item) => item.kind === "model_provider")
-        .map((item) => item.name),
-    [configs],
-  );
   const modelId = `${config.id}-model`;
   const providerId = `${config.id}-provider`;
   const tempId = `${config.id}-temperature`;

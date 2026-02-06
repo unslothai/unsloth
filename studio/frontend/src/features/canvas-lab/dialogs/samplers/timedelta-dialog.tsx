@@ -6,8 +6,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { type ReactElement, useMemo } from "react";
-import { useCanvasLabStore } from "../../stores/canvas-lab";
+import type { ReactElement } from "react";
 import type { SamplerConfig } from "../../types";
 import { NameField } from "../shared/name-field";
 
@@ -16,23 +15,15 @@ const NONE_VALUE = "__none";
 
 type TimedeltaDialogProps = {
   config: SamplerConfig;
+  datetimeOptions: string[];
   onUpdate: (patch: Partial<SamplerConfig>) => void;
 };
 
 export function TimedeltaDialog({
   config,
+  datetimeOptions,
   onUpdate,
 }: TimedeltaDialogProps): ReactElement {
-  const configs = useCanvasLabStore((state) => state.configs);
-  const datetimeOptions = useMemo(
-    () =>
-      Object.values(configs)
-        .filter(
-          (item) => item.kind === "sampler" && item.sampler_type === "datetime",
-        )
-        .map((item) => item.name),
-    [configs],
-  );
   const dtMinId = `${config.id}-timedelta-min`;
   const dtMaxId = `${config.id}-timedelta-max`;
   const unitId = `${config.id}-timedelta-unit`;

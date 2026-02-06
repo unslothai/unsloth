@@ -3,32 +3,109 @@
 Root:
 `/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab`
 
-This doc reflects current code shape (React Flow UI node/edge shell + inline/dialog split + derived aux nodes).
+Goal of this layout:
+- simple ownership
+- low coupling
+- predictable edit points
+- behavior driven by config + store, not view side-effects
 
-## 1) High-level flow
+## 1) Ownership Map (hard boundaries)
 
-1. Page shell + React Flow canvas:
+### Page orchestration boundary
+File:
 `/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/canvas-lab-page.tsx`
-2. Block picker sheet (plus/import/copy floating controls):
-`/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/components/block-sheet.tsx`
-3. Zustand state + all graph/config mutations:
+
+Owns:
+- React Flow mount + wiring
+- selector/orchestration glue from Zustand
+- derived display graph (`deriveDisplayGraph`)
+- modal/sheet open-close UI state
+
+Do not place here:
+- config mutation rules
+- connection legality rules
+- payload/import mapping
+
+### Store mutation boundary
+File:
 `/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/stores/canvas-lab.ts`
-4. Connection validation + edge side-effects:
-`/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/utils/graph.ts`
-5. Export/payload map:
-`/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/utils/payload/build-payload.ts`
-6. Import/rebuild:
-`/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/utils/import/importer.ts`
 
-## 2) Core types
+Owns:
+- source-of-truth state (`configs`, `nodes`, `edges`, `processors`)
+- mutation entrypoints (`updateConfig`, `onConnect`, `onNodesChange`, etc)
+- selection/dialog state (`selectConfig`, `openConfig`)
+- aux node position persistence
 
-Source of truth:
+Helper module:
+`/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/stores/canvas-lab-helpers.ts`
+
+Owns:
+- pure relation sync helpers (edge/config sync)
+- rename/remove propagation helpers
+- node data/layout transformation helpers
+
+Do not place in helpers:
+- React component logic
+- network/API calls
+
+### Graph rules boundary
+Files:
+- `.../utils/graph/canvas-connection.ts`
+- `.../utils/graph/derive-display-graph.ts`
+- `.../utils/graph.ts` (re-export shim)
+
+`canvas-connection.ts` owns:
+- valid/invalid connection rules
+- connect side-effects (config updates from edges)
+- single-incoming relation enforcement
+
+`derive-display-graph.ts` owns:
+- derived aux nodes/edges (LLM prompt/system/scorer projections)
+- default aux positioning
+
+Do not place here:
+- dialog form logic
+- block creation defaults
+
+### Registry boundary
+File:
+`/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/blocks/registry.tsx`
+
+Owns:
+- block metadata for sheet
+- config factory per block
+- dialog router per block type
+
+Notes:
+- registry passes `modelConfigAliases` into `LlmDialog`
+- avoids dialog -> store dependency cycle
+
+Do not place here:
+- cross-node graph mutation logic
+- payload/export code
+
+### Import/export boundary
+Files:
+- `.../utils/payload/build-payload.ts`
+- `.../utils/import/importer.ts`
+- `.../utils/import/edges.ts`
+
+Owns:
+- contract mapping between UI state and backend payload
+- edge inference fallback when import payload has no `ui.edges`
+
+Do not place here:
+- ReactFlow render logic
+- store actions
+
+## 2) Core Types
+
+Source:
 `/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/types/index.ts`
 
-`NodeConfig` union:
-
+`NodeConfig` is business truth:
 ```ts
-export type NodeConfig =
+type NodeConfig =
   | SamplerConfig
   | LlmConfig
   | ExpressionConfig
@@ -36,261 +113,140 @@ export type NodeConfig =
   | ModelConfig;
 ```
 
-`CanvasNodeData` is derived from config (`nodeDataFromConfig`), not edited directly.
+`CanvasNodeData` is derived display data (`nodeDataFromConfig`), not primary state.
 
-## 3) Entrypoint wiring
+## 3) React Flow Composition
 
-File:
-`/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/canvas-lab-page.tsx`
-
-Current wiring:
-
+Page wiring:
 ```ts
-const NODE_TYPES: NodeTypes = { builder: CanvasNode, aux: CanvasAuxNode };
-const EDGE_TYPES: EdgeTypes = { canvas: DataEdge, semantic: CanvasSemanticEdge };
+const NODE_TYPES = { builder: CanvasNode, aux: CanvasAuxNode };
+const EDGE_TYPES = { canvas: DataEdge, semantic: CanvasSemanticEdge };
 ```
 
-Default data edge style uses auto path selection:
-
+Data edges use auto path mode:
 ```ts
 defaultEdgeOptions={{
   type: "canvas",
   data: { key: "name", path: "auto" },
-  style: { strokeWidth: 1.5, stroke: "var(--border)" },
 }}
 ```
 
-Node click selects config (`selectConfig`), does not auto-open dialog.
-Dialog opens via node `Details` button (`openConfig`) or explicit flows.
-Aux nodes (prompt/system/scorer) are derived in page and mounted as `type: "aux"`.
+Dialog flow:
+- node click -> `selectConfig` (no forced modal)
+- node `Details` button -> `openConfig`
 
-## 4) Registry-driven block system
-
-File:
-`/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/blocks/registry.tsx`
-
-Registry owns:
-- block metadata for sheet (title/icon/description)
-- config factory (`createConfig`)
-- dialog renderer (`renderDialog`)
-
-If adding new `NodeConfig.kind`, keep `getBlockDefinitionForConfig` coverage complete.
-
-## 5) Store responsibilities
-
-File:
-`/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/stores/canvas-lab.ts`
-
-Store owns:
-- `nodes`, `edges`, `configs`, `processors`
-- `auxNodePositions` (derived aux-node position persistence)
-- add/update/remove/connect logic
-- `layoutDirection` + dagre apply-layout
-- config selection/dialog state
-
-Current config-selection API:
-- `selectConfig(id)`: select node config, keep dialog closed
-- `openConfig(id)`: select + open modal
-
-Aux-node API:
-- `setAuxNodePosition(id, position)`: persist independent drag position
-- `syncAuxNodePositions(activeIds, defaults)`: cleanup stale aux positions + seed new defaults
-
-Add-node behavior is mode-aware via:
-`/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/stores/canvas-lab-helpers.ts`
-
-New nodes:
-- become selected
-- set `activeConfigId`
-- open dialog only for dialog-first config modes
-
-## 6) Inline vs dialog config policy
+## 4) UI Mode Policy (Inline vs Dialog)
 
 File:
 `/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/components/inline/inline-policy.ts`
 
-Inline mode:
+Inline:
 - sampler: `uniform`, `gaussian`, `bernoulli`, `uuid`
-- `model_provider`
-- `model_config`
+- `model_provider`, `model_config`
 - llm: `text`, `code`
 - `expression`
 
-Dialog mode:
+Dialog:
 - sampler: `category`, `subcategory`, `datetime`, `timedelta`, `person`, `person_from_faker`
 - llm: `structured`, `judge`
 
 Inline editors:
-- `/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/components/inline/inline-sampler.tsx`
-- `/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/components/inline/inline-model.tsx`
-- `/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/components/inline/inline-llm.tsx`
-- `/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/components/inline/inline-expression.tsx`
+- `.../components/inline/inline-sampler.tsx`
+- `.../components/inline/inline-model.tsx`
+- `.../components/inline/inline-llm.tsx`
+- `.../components/inline/inline-expression.tsx`
 
-LLM inline scope:
-- text: `model_alias` only
-- code: `model_alias`, `code_lang`
-- prompt/system prompt edited in dialog or spawned aux prompt nodes
-
-## 7) Node UI architecture (React Flow UI shell)
+## 5) Handle Contract (stable IDs)
 
 File:
-`/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/components/canvas-node.tsx`
-
-Node shell uses feature-local RF UI primitives:
-- `/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/components/rf-ui/base-node.tsx`
-- `/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/components/rf-ui/labeled-handle.tsx`
-
-Current node UX:
-- `corner-squircle` + `rounded-lg` container
-- inline editor shown by default for inline-capable configs
-- summary text for dialog-first configs
-- `Details` button opens modal dialog
-- node resizer logic enabled (`NodeResizer`), visuals hidden (no corner/box affordance)
-- LLM input handles (system/prompt/scorers) render in dedicated content rows (no overlay on inline controls)
-
-## 8) Handles + layout direction
-
-Handle IDs (kept stable):
 `/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/utils/handles.ts`
 
-```ts
-dataIn: "data-in"
-dataOut: "data-out"
-semanticIn: "semantic-in"
-semanticOut: "semantic-out"
-llmPromptIn: "llm-prompt-in"
-llmSystemIn: "llm-system-in"
-llmInputOut: "llm-input-out"
-getLlmJudgeScoreHandleId(index): `llm-judge-score-in-${index}`
-```
+Stable IDs:
+- `data-in`, `data-out`
+- `semantic-in`, `semantic-out`
+- `llm-prompt-in`, `llm-system-in`, `llm-input-out`
+- `llm-judge-score-in-${index}`
 
-`canvas-node.tsx` switches handle positions by layout direction:
-- `LR`: data left/right, semantic top/bottom
-- `TB`: data top/bottom, semantic left/right
+These are contract-level values for:
+- connection validity
+- edge inference
+- payload consistency
 
-After direction toggle or auto-layout, page refreshes node internals to avoid stale edge anchor offsets.
+## 6) LLM Derived Aux Nodes
 
-## 9) Edge architecture
+Behavior source:
+`.../utils/graph/derive-display-graph.ts`
 
-Data edge:
-`/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/components/rf-ui/data-edge.tsx`
+Rules:
+- non-empty `prompt` => spawn editable prompt aux node
+- non-empty `system_prompt` => spawn editable system aux node
+- `llm_type === "judge"` => spawn scorer aux nodes from `scores[]`
 
-Features:
-- label from source node data key
-- `path: "auto"` chooses straight vs smoothstep/bezier based on geometry/positions
+Aux nodes:
+- are UI projections, not new payload schema entities
+- have independent drag positions persisted in Zustand `auxNodePositions`
 
-Semantic edge:
-`/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/components/canvas-semantic-edge.tsx`
-
-Features:
-- custom dashed smooth-step
-- muted stroke styling
-
-Legacy mixed edge component is removed (no `canvas-edge.tsx` path in active flow).
-
-## 9.1) Derived aux nodes (LLM prompt/system/scorer)
-
-Files:
-- `/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/components/canvas-aux-node.tsx`
-- `/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/canvas-lab-page.tsx`
-
-Behavior:
-- If `llm.prompt` is non-empty, spawn `llm-prompt-input` aux node
-- If `llm.system_prompt` is non-empty, spawn `llm-prompt-input` aux node
-- For `llm_type === "judge"`, spawn one `llm-judge-score` aux node per `scores[index]`
-- Aux edges auto-connect from aux `llmInputOut` to parent LLM target handles
-- Aux nodes are draggable independently; positions persist in Zustand `auxNodePositions`
-- Aux nodes are derived UI/editor projections only (no payload schema change)
-
-## 10) Connection semantics + side effects
+## 7) Connect Rules (single source of truth)
 
 File:
-`/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/utils/graph.ts`
+`.../utils/graph/canvas-connection.ts`
 
-Lane rules:
-- semantic lane only: `semantic-out -> semantic-in`
-- data lane only: `data-out -> data-in`
-- model infra nodes (`model_provider`, `model_config`) blocked from data lane
+Rules:
+- semantic lane only for model infra relations
+- data lane for sampler/llm/expression flow
+- model infra blocked from data lane
 
-Semantic relations:
-- `model_provider -> model_config`
-- `model_config -> llm`
-
-Connect side effects:
-- provider edge sets `model_config.provider`
-- model config edge sets `llm.model_alias`
-- datetime edge sets `timedelta.reference_column_name`
-- data edges into llm/expression append `{{ source_name }}` refs
-- category -> subcategory syncs mapping scaffold
-
-Single-incoming enforcement (competing refs pruned on connect):
+Single incoming enforced for:
 - `provider`
 - `model_alias`
 - `reference_column_name`
 - `subcategory_parent`
 
-Multi data refs remain allowed for llm/expression prompt/expr templates.
+Connect side-effects:
+- provider/model alias/ref-column update target config fields
+- category->subcategory scaffolds mapping
+- llm/expression data refs append template references
 
-## 11) Canvas controls UX
+## 8) Circular Dependency Prevention
 
-File:
-`/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/components/block-sheet.tsx`
+Current safe flow:
+- store state -> page (`configs`)
+- page derives `modelConfigAliases`
+- page passes aliases -> `ConfigDialog`
+- dialog passes aliases -> registry -> `LlmDialog`
 
-Top-right floating controls are icon-only:
-- `+` opens add-block sheet
-- import icon opens import dialog
-- copy icon copies recipe (brief check icon state on success)
+No dialog component should import store directly.
 
-All use same no-bg bordered button style (`corner-squircle`, hover primary border/icon).
+## 9) Add New Block (exact flow)
 
-## 12) Dialog routing
+1. Add config type:
+`.../types/index.ts`
+2. Add defaults + `nodeDataFromConfig` mapping:
+`.../utils/index.ts`
+3. Add registry definition:
+`.../blocks/registry.tsx`
+4. Add dialog component + wire via `renderDialog`:
+`.../dialogs/...`
+5. Choose UI mode policy:
+`.../components/inline/inline-policy.ts`
+6. If inline, add inline editor:
+`.../components/inline/...`
+7. Add connect semantics if needed:
+`.../utils/graph/canvas-connection.ts`
+8. Add payload mapping:
+`.../utils/payload/...`
+9. Add import parse/inference update:
+`.../utils/import/...`
 
-Config modal shell:
-`/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/dialogs/config-dialog.tsx`
+## 10) Keep It Simple Rules
 
-Routes block-specific forms through registry renderer:
-`renderBlockDialog(config, categoryOptions, onUpdate)`
+- Keep mutation logic in store/helpers only
+- Keep graph legality/side-effects in graph utils only
+- Keep view files free of business mutation branching
+- Remove dead code in same pass as refactor
+- Prefer narrow pure helpers over giant mixed functions
 
-Current modal-only edits still live here (structured/judge/category/subcategory/etc).
-
-## 13) Payload + import boundary
-
-Payload map:
-`/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/utils/payload/build-payload.ts`
-
-Import map:
-`/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/utils/import/importer.ts`
-
-If `ui.edges` missing on import, inferred edges are built from config refs in:
-`/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/utils/import/edges.ts`
-
-## 14) Add new block checklist
-
-1. Add/extend config type in:
-`/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/types/index.ts`
-2. Add factory + `nodeDataFromConfig` mapping in:
-`/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/utils/index.ts`
-3. Add registry entry in:
-`/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/blocks/registry.tsx`
-4. Add dialog and wire in registry `renderDialog`
-5. Decide inline vs dialog mode; update:
-`/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/components/inline/inline-policy.ts`
-6. If inline, add inline editor component under:
-`/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/components/inline/`
-7. Add payload mapping/validation updates in:
-`/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/utils/payload/`
-8. Add import parse/infer updates in:
-`/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/utils/import/`
-9. Extend connection semantics if needed in:
-`/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/utils/graph.ts`
-
-## 15) Mental model
-
-- `NodeConfig` = business truth
-- `CanvasNodeData` = derived presentational truth
-- registry = block metadata + factories + dialog routing
-- store = orchestration + consistency
-- graph utils = legal edges + side effects
-- payload/import = external contract boundary
-
-Keep all 6 synchronized when adding/changing block behavior.
+If unsure where code belongs:
+- “changes config/edges?” => store/helpers or graph utils
+- “changes visuals only?” => components/page
+- “changes payload contract?” => payload/import utils
