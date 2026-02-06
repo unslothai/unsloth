@@ -8,6 +8,7 @@ import {
   Panel,
   ReactFlow,
   useReactFlow,
+  useUpdateNodeInternals,
 } from "@xyflow/react";
 import { type ReactElement, useCallback, useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -45,21 +46,39 @@ function LayoutControls({
   onLayout,
   onToggleDirection,
 }: LayoutControlsProps): ReactElement {
-  const { fitView } = useReactFlow();
+  const { fitView, getNodes } = useReactFlow();
+  const updateNodeInternals = useUpdateNodeInternals();
+
+  const refreshNodeInternals = useCallback(() => {
+    const nodeIds = getNodes().map((node) => node.id);
+    if (nodeIds.length > 0) {
+      updateNodeInternals(nodeIds);
+    }
+  }, [getNodes, updateNodeInternals]);
 
   const handleLayout = useCallback(() => {
     onLayout();
     requestAnimationFrame(() => {
-      fitView({ duration: 250 });
+      refreshNodeInternals();
+      requestAnimationFrame(() => {
+        fitView({ duration: 250 });
+      });
     });
-  }, [fitView, onLayout]);
+  }, [fitView, onLayout, refreshNodeInternals]);
+
+  const handleToggleDirection = useCallback(() => {
+    onToggleDirection();
+    requestAnimationFrame(() => {
+      refreshNodeInternals();
+    });
+  }, [onToggleDirection, refreshNodeInternals]);
 
   return (
     <Panel position="top-left" className="m-3 flex items-center gap-2">
       <Button size="sm" className="corner-squircle" variant="secondary" onClick={handleLayout}>
         Auto layout
       </Button>
-      <Button size="sm" className="corner-squircle" variant="outline" onClick={onToggleDirection}>
+      <Button size="sm" className="corner-squircle" variant="outline" onClick={handleToggleDirection}>
         {direction}
       </Button>
     </Panel>
