@@ -1,4 +1,5 @@
 import type { CanvasNode, NodeConfig } from "../../types";
+import { DEFAULT_NODE_WIDTH } from "../../constants";
 import { nodeDataFromConfig } from "../index";
 import { isRecord, readString } from "./helpers";
 
@@ -10,10 +11,10 @@ type UiInput = {
 export function parseUi(
   ui: UiInput | null,
 ): {
-  positions: Map<string, { x: number; y: number }>;
+  layouts: Map<string, { x: number; y: number; width?: number }>;
   edges: Array<{ from: string; to: string; type?: string }> | null;
 } {
-  const positions = new Map<string, { x: number; y: number }>();
+  const layouts = new Map<string, { x: number; y: number; width?: number }>();
   const edges: Array<{ from: string; to: string; type?: string }> = [];
   if (ui && Array.isArray(ui.nodes)) {
     for (const node of ui.nodes) {
@@ -21,8 +22,13 @@ export function parseUi(
         const id = readString(node.id);
         const x = typeof node.x === "number" ? node.x : null;
         const y = typeof node.y === "number" ? node.y : null;
+        const width = typeof node.width === "number" ? node.width : null;
         if (id && x !== null && y !== null) {
-          positions.set(id, { x, y });
+          layouts.set(id, {
+            x,
+            y,
+            ...(width && width > 0 ? { width } : {}),
+          });
         }
       }
     }
@@ -42,21 +48,26 @@ export function parseUi(
       }
     }
   }
-  return { positions, edges: edges.length > 0 ? edges : null };
+  return { layouts, edges: edges.length > 0 ? edges : null };
 }
 
 export function buildNodes(
   configs: NodeConfig[],
-  positions: Map<string, { x: number; y: number }>,
+  layouts: Map<string, { x: number; y: number; width?: number }>,
 ): CanvasNode[] {
   return configs.map((config, index) => {
-    const position =
-      positions.get(config.name) ?? ({ x: 0, y: index * 140 } as const);
+    const fallbackLayout: { x: number; y: number; width?: number } = {
+      x: 0,
+      y: index * 140,
+    };
+    const layout =
+      layouts.get(config.name) ?? fallbackLayout;
     return {
       id: config.id,
       type: "builder",
-      position,
+      position: { x: layout.x, y: layout.y },
       data: nodeDataFromConfig(config),
+      style: { width: layout.width ?? DEFAULT_NODE_WIDTH },
     };
   });
 }
