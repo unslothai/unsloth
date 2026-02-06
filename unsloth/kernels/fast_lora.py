@@ -235,8 +235,8 @@ from .swiglu import swiglu_fg_kernel, swiglu_DWf_DW_dfg_kernel
 def apply_lora_mlp_swiglu(self, X, inplace=True):
     from ..device_type import DEVICE_TYPE
     if DEVICE_TYPE == "mps":
-        from .mps.dispatch import dispatch_apply_lora_mlp_swiglu
-        return dispatch_apply_lora_mlp_swiglu(self, X, inplace=inplace)
+        from .mps.dispatch import dispatch_lora_mlp_swiglu
+        return dispatch_lora_mlp_swiglu(self, X, inplace=inplace)
 
     # Default: CUDA/Triton path
     X = _maybe_fake_quantize_activations(X, self.gate_proj)
@@ -273,8 +273,8 @@ from .geglu import geglu_exact_forward_kernel, geglu_exact_backward_kernel
 def apply_lora_mlp_geglu_exact(self, X, inplace=True):
     from ..device_type import DEVICE_TYPE
     if DEVICE_TYPE == "mps":
-        from .mps.dispatch import dispatch_apply_lora_mlp_geglu_exact
-        return dispatch_apply_lora_mlp_geglu_exact(self, X, inplace=inplace)
+        from .mps.dispatch import dispatch_lora_mlp_geglu_exact
+        return dispatch_lora_mlp_geglu_exact(self, X, inplace=inplace)
 
     X = _maybe_fake_quantize_activations(X, self.gate_proj)
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
@@ -310,8 +310,8 @@ from .geglu import geglu_approx_forward_kernel, geglu_approx_backward_kernel
 def apply_lora_mlp_geglu_approx(self, X):
     from ..device_type import DEVICE_TYPE
     if DEVICE_TYPE == "mps":
-        from .mps.dispatch import dispatch_apply_lora_mlp_geglu_approx
-        return dispatch_apply_lora_mlp_geglu_approx(self, X)
+        from .mps.dispatch import dispatch_lora_mlp_geglu_approx
+        return dispatch_lora_mlp_geglu_approx(self, X)
 
     X = _maybe_fake_quantize_activations(X, self.gate_proj)
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
@@ -551,8 +551,8 @@ class LoRA_QKV(torch.autograd.Function):
 def apply_lora_qkv(self, X, inplace=True):
     from ..device_type import DEVICE_TYPE
     if DEVICE_TYPE == "mps":
-        from .mps.dispatch import dispatch_apply_lora_qkv
-        return dispatch_apply_lora_qkv(self, X, inplace=inplace)
+        from .mps.dispatch import dispatch_lora_qkv
+        return dispatch_lora_qkv(self, X, inplace=inplace)
 
     # Default: CUDA/Triton path
     X = _maybe_fake_quantize_activations(X, self.q_proj)
@@ -663,8 +663,8 @@ class LoRA_W(torch.autograd.Function):
 def apply_lora_o(self, X):
     from ..device_type import DEVICE_TYPE
     if DEVICE_TYPE == "mps":
-        from .mps.dispatch import dispatch_apply_lora_o
-        return dispatch_apply_lora_o(self, X)
+        from .mps.dispatch import dispatch_lora_o
+        return dispatch_lora_o(self, X)
 
     X = _maybe_fake_quantize_activations(X, self.o_proj)
     OW, OW_quant, OA, OB, OS = get_lora_parameters(self.o_proj)
