@@ -135,6 +135,14 @@ except:
     torch_compiler_set_stance = None
 
 
+if DEVICE_TYPE == "xpu":
+    clean_gpu_cache = torch.xpu.empty_cache
+elif DEVICE_TYPE == "mps":
+    clean_gpu_cache = torch.mps.empty_cache
+else:
+    clean_gpu_cache = torch.cuda.empty_cache
+
+
 def unsloth_base_fast_generate(
     self,
     *args,
@@ -552,7 +560,11 @@ class FastBaseModel:
             raise RuntimeError(
                 "Unsloth: Can only load in 4bit or 8bit or 16bit, not a combination!"
             )
-        if load_in_4bit:
+
+        if DEVICE_TYPE == "mps" and (load_in_4bit or load_in_8bit):
+            # bitsandbytes does not support MPS. We load in 16-bit and quantize later via MLX if needed.
+            bnb_config = None
+        elif load_in_4bit:
             bnb_config = BitsAndBytesConfig(
                 load_in_4bit=True,
                 bnb_4bit_use_double_quant=True,
@@ -673,8 +685,12 @@ class FastBaseModel:
 
         raise_handler = RaiseUninitialized()
         if not fast_inference:
-            # Prevent load_in_fp8 from being forwarded into HF internal model loading
-            load_in_fp8 = kwargs.pop("load_in_fp8", None)
+            # Skip quantization config in kwargs if we are on MPS (bnb not supported)
+            if DEVICE_TYPE == "mps":
+                kwargs.pop("quantization_config", None)
+                kwargs.pop("load_in_4bit", None)
+                kwargs.pop("load_in_8bit", None)
+
             model = auto_model.from_pretrained(
                 model_name,
                 device_map=device_map,
@@ -688,6 +704,7 @@ class FastBaseModel:
             if DEVICE_TYPE == "mps" and device_map is None:
                 model = model.to("mps")
                 if hasattr(model, "hf_device_map"): del model.hf_device_map
+
             if hasattr(model, "generate"):
                 model.fast_generate = make_fast_generate_wrapper(model.generate)
                 model.fast_generate_batches = error_out_no_vllm
@@ -718,9 +735,14 @@ class FastBaseModel:
                     # embed_tokens.register_forward_pre_hook(pre_hook,  prepend = True)
                     # embed_tokens.register_forward_hook    (post_hook, prepend = True)
                     # Must free GPU memory otherwise will not free!
-                    torch.cuda.empty_cache()
+                    clean_gpu_cache()
                     gc.collect()
         else:
+            if DEVICE_TYPE == "mps":
+                raise RuntimeError(
+                    "Unsloth: fast_inference (vLLM) is not yet supported for Vision models on Apple Silicon.\n"
+                    "Please set `fast_inference=False` to use native Unsloth inference."
+                )
             from unsloth_zoo.vllm_utils import (
                 load_vllm,
                 get_vllm_state_dict,
