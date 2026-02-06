@@ -18,7 +18,12 @@ import {
   UserAccountIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Position, useUpdateNodeInternals, type NodeProps } from "@xyflow/react";
+import {
+  NodeResizer,
+  Position,
+  useUpdateNodeInternals,
+  type NodeProps,
+} from "@xyflow/react";
 import { memo, type ReactElement, useEffect } from "react";
 import { useCanvasLabStore } from "../stores/canvas-lab";
 import type {
@@ -223,7 +228,11 @@ function renderInlineEditor(
   return null;
 }
 
-function CanvasNodeBase({ id, data }: NodeProps<CanvasNodeType>): ReactElement {
+function CanvasNodeBase({
+  id,
+  data,
+  selected,
+}: NodeProps<CanvasNodeType>): ReactElement {
   const meta = NODE_META[data.kind];
   const icon = resolveNodeIcon(data.kind, data.blockType);
   const layoutDirection = data.layoutDirection ?? "LR";
@@ -251,7 +260,19 @@ function CanvasNodeBase({ id, data }: NodeProps<CanvasNodeType>): ReactElement {
   const summary = getConfigSummary(config);
 
   return (
-    <BaseNode className="relative min-w-[260px] overflow-visible rounded-xl border-border/60 shadow-sm">
+    <BaseNode className="corner-squircle relative min-w-[260px] overflow-visible rounded-lg border-border/60 shadow-sm">
+      <NodeResizer
+        isVisible={selected}
+        minWidth={260}
+        minHeight={120}
+        maxWidth={760}
+        maxHeight={520}
+        color="var(--primary)"
+        lineClassName="!border-transparent !shadow-none"
+        lineStyle={{ opacity: 0 }}
+        handleClassName="!h-3 !w-3 !border-transparent !bg-transparent"
+        handleStyle={{ opacity: 0 }}
+      />
       <BaseNodeHeader className="border-b border-border/50 px-3 py-2">
         <div className="flex min-w-0 items-center gap-2">
           <div
