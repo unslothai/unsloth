@@ -1,6 +1,7 @@
 import torch
 import os
 import sys
+from unittest.mock import MagicMock, patch
 
 # Mock MLX and Metal for verification if not available
 # (In a real scenario, these would be present on the Mac)

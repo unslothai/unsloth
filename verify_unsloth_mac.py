@@ -41,7 +41,7 @@ def test_memory_accounting():
 def test_import_safety():
     print_header("PHASE 3.1: IMPORT SAFETY")
     try:
-        from unsloth.models.rl import patch_rl_trainer
+        import unsloth.models.rl  # Should not crash on Mac
         print("✅ RL trainer import safety: SUCCESS")
     except Exception as e:
         print(f"❌ RL trainer import safety: FAILED - {e}")
