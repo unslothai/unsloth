@@ -108,7 +108,16 @@ def mps_cross_entropy_loss(
     labels: torch.Tensor,
     logit_softcapping: float = 0,
     logit_scaling: float = 0,
+    n_items: int = None,
 ):
     losses = MPSCrossEntropyLoss.apply(logits, labels, logit_softcapping, logit_scaling)
-    n_items = torch.count_nonzero(labels != -100)
+
+    if n_items is None:
+        n_items = torch.count_nonzero(labels != -100)
+
+    # Handle edge case: no valid labels
+    if n_items == 0:
+        # Return zero loss that still has grad_fn for backward compatibility
+        return losses.sum() * 0.0
+
     return losses.sum() / n_items
