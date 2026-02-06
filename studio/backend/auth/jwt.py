@@ -6,14 +6,19 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 
+from .storage import load_jwt_secret
 
-# Ephemeral in-memory secret:
-# - Generated fresh on each backend process start
-# - Never written to disk
-# - Not configurable by the user
-SECRET_KEY = secrets.token_urlsafe(64)
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
+
+# Load stable secret from SQLite (set during first-time setup)
+# This will raise RuntimeError if auth hasn't been initialized yet
+try:
+    SECRET_KEY = load_jwt_secret()
+except RuntimeError:
+    # Fallback: use a temporary secret until setup is complete
+    # This allows the app to start, but protected routes will fail until setup
+    SECRET_KEY = secrets.token_urlsafe(64)
 
 security = HTTPBearer()  # Reads Authorization: Bearer <token>
 
@@ -23,10 +28,9 @@ def create_access_token(
     expires_delta: Optional[timedelta] = None,
 ) -> str:
     """
-    Create a signed JWT for the given subject (e.g. "local-user").
+    Create a signed JWT for the given subject (e.g. username).
 
-    Tokens are valid only for the lifetime of this process, because the
-    SECRET_KEY is regenerated each time the backend restarts.
+    Tokens are valid across restarts because SECRET_KEY is stored in SQLite.
     """
     to_encode = {"sub": subject}
     expire = datetime.now(UTC) + (
@@ -34,6 +38,16 @@ def create_access_token(
     )
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def reload_secret() -> None:
+    """
+    Reload the JWT secret from SQLite.
+    
+    Call this after setup to ensure new tokens use the persistent secret.
+    """
+    global SECRET_KEY
+    SECRET_KEY = load_jwt_secret()
 
 
 async def get_current_subject(
@@ -63,7 +77,7 @@ async def get_current_subject(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired token",
         )
-token = create_access_token("local-user")
-print(token)
+# token = create_access_token("local-user")
+# print(token)
 
 
