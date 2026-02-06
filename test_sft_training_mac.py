@@ -14,7 +14,8 @@ import os
 import platform
 from unsloth import FastLanguageModel
 from datasets import Dataset
-from trl import SFTTrainer, SFTConfig
+from trl import SFTTrainer
+from transformers import TrainingArguments
 
 def main():
     print("="*50)
@@ -59,10 +60,20 @@ def main():
     ] * 10  # 20 samples total
     dataset = Dataset.from_list(data)
 
+    # Detect correct precision from the model itself
     print("\n[4] Configuring training arguments...")
+    model_dtype = getattr(model.config, "torch_dtype", None)
+    if model_dtype is None:
+        model_dtype = model.dtype
+    
+    is_bf16 = (model_dtype == torch.bfloat16)
+    is_fp16 = (model_dtype == torch.float16)
+    
     if is_mps:
         print("   Using adamw_torch optimizer (8-bit not supported on MPS)")
-    training_args = SFTConfig(
+        print(f"   Using fp16={is_fp16}, bf16={is_bf16}")
+    
+    training_args = TrainingArguments(
         output_dir="./test_sft_output",
         per_device_train_batch_size=2,
         gradient_accumulation_steps=2,
@@ -71,9 +82,8 @@ def main():
         logging_steps=1,
         optim="adamw_torch" if is_mps else "adamw_8bit",
         seed=42,
-        max_seq_length=max_seq_length,
-        dataset_text_field="text",
-        packing=False,  # Test without packing first
+        fp16=is_fp16,
+        bf16=is_bf16,
     )
 
     print("\n[5] Initializing SFTTrainer...")
@@ -81,6 +91,8 @@ def main():
         model=model,
         tokenizer=tokenizer,
         train_dataset=dataset,
+        dataset_text_field="text",
+        max_seq_length=max_seq_length,
         args=training_args,
     )
 
