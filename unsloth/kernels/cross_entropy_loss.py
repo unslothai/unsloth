@@ -449,7 +449,7 @@ def fast_cross_entropy_loss(
 
     if DEVICE_TYPE == "mps":
         from .mps.dispatch import dispatch_cross_entropy_loss
-        return dispatch_cross_entropy_loss(logits, labels, logit_softcapping, logit_scaling)
+        return dispatch_cross_entropy_loss(logits, labels, logit_softcapping, logit_scaling, n_items)
 
     batch, seq_len, d = logits.shape
     assert labels.shape == (batch, seq_len)

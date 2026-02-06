@@ -118,16 +118,16 @@ def dispatch_rope_embedding(Q, K, cos, sin, rope_indices=None):
     return fast_rope_embedding(Q, K, cos, sin, rope_indices)
 
 
-def dispatch_cross_entropy_loss(logits, labels, logit_softcapping=0, logit_scaling=0):
+def dispatch_cross_entropy_loss(logits, labels, logit_softcapping=0, logit_scaling=0, n_items=None):
     if DEVICE_TYPE == "mps" and USE_MPS_FALLBACK:
         from .cross_entropy_loss import mps_cross_entropy_loss
 
         fn = _get_compiled_fn(mps_cross_entropy_loss)
-        return fn(logits, labels, logit_softcapping, logit_scaling)
+        return fn(logits, labels, logit_softcapping, logit_scaling, n_items)
     else:
         from ..cross_entropy_loss import fast_cross_entropy_loss
 
-        return fast_cross_entropy_loss(logits, labels, logit_softcapping, logit_scaling)
+        return fast_cross_entropy_loss(logits, labels, logit_softcapping, logit_scaling, n_items)
 
 
 def dispatch_swiglu_fg(e, g):
