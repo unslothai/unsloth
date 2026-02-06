@@ -9,7 +9,7 @@ from pathlib import Path
 from datetime import datetime
 
 # Import routers
-from routes import training_router, models_router, inference_router, datasets_router
+from routes import training_router, models_router, inference_router, datasets_router, auth_router
 
 # Create FastAPI app
 app = FastAPI(
@@ -30,6 +30,7 @@ app.add_middleware(
 # ============ Register API Routes ============
 
 # Register routers
+app.include_router(auth_router, prefix="/api/auth", tags=["auth"])
 app.include_router(training_router, prefix="/api/train", tags=["training"])
 app.include_router(models_router, prefix="/api/models", tags=["models"])
 app.include_router(inference_router, prefix="/api/inference", tags=["inference"])
