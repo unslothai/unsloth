@@ -1,0 +1,76 @@
+{
+  "name": "ulid",
+  "version": "3.0.2",
+  "description": "A universally-unique, lexicographically-sortable, identifier generator",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": {
+        "require": "./dist/index.d.cts",
+        "default": "./dist/index.d.ts"
+      },
+      "node": {
+        "require": "./dist/node/index.cjs",
+        "default": "./dist/node/index.js"
+      },
+      "default": {
+        "require": "./dist/browser/index.cjs",
+        "default": "./dist/browser/index.js"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "dist/node/index.cjs",
+  "module": "./dist/node/index.js",
+  "browser": {
+    "./dist/node/index.cjs": "./dist/browser/index.cjs",
+    "./dist/node/index.js": "./dist/browser/index.js"
+  },
+  "react-native": "./dist/browser/index.cjs",
+  "types": "dist/index.d.ts",
+  "sideEffects": false,
+  "bin": "./dist/cli.js",
+  "scripts": {
+    "bench": "npm run build && node test/benchmark.js",
+    "build": "npm run clean && npm run build:node:cjs && npm run build:node:esm && npm run build:browser:cjs && npm run build:browser:esm && npm run build:cli && npm run build:types",
+    "build:browser:cjs": "FMT=cjs ENV=browser rollup -c --name ulidx",
+    "build:browser:esm": "FMT=esm ENV=browser rollup -c --name ulidx",
+    "build:cli": "FMT=esm ENV=cli rollup -c && chmod +x ./dist/cli.js",
+    "build:node:cjs": "FMT=cjs ENV=node rollup -c",
+    "build:node:esm": "FMT=esm ENV=node rollup -c",
+    "build:types": "tsc -p tsconfig.dec.json --emitDeclarationOnly  && find ./dist -name '*.d.ts' -exec sh -c 'cp {} $(dirname {})/$(basename -s .d.ts {}).d.cts' \\;",
+    "clean": "rm -rf ./dist",
+    "format": "prettier --write \"{{source,test}/**/*.{js,ts},rollup.config.js,vitest.config.js}\"",
+    "prepublishOnly": "npm run build",
+    "test": "npm run build && npm run test:specs && npm run test:format && npm run test:types",
+    "test:format": "prettier --check \"{{source,test}/**/*.{js,ts},rollup.config.js,vitest.config.js}\"",
+    "test:specs": "vitest",
+    "test:types": "npx --yes @arethetypeswrong/cli --pack ."
+  },
+  "files": [
+    "dist/**/*"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ulid/javascript.git"
+  },
+  "author": "Alizain Feerasta",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/ulid/javascript/issues"
+  },
+  "homepage": "https://github.com/ulid/javascript#readme",
+  "devDependencies": {
+    "@rollup/plugin-alias": "^5.1.1",
+    "@rollup/plugin-commonjs": "^28.0.3",
+    "@rollup/plugin-node-resolve": "^16.0.1",
+    "@rollup/plugin-typescript": "^12.1.2",
+    "@types/node": "^22.15.30",
+    "benchmark": "^2.1.4",
+    "prettier": "^3.5.3",
+    "rollup": "^4.42.0",
+    "tslib": "^2.8.1",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.2"
+  }
+}

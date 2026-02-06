@@ -1,0 +1,31 @@
+{
+  "name": "opencode-agent-memory",
+  "version": "0.1.0",
+  "description": "Letta-style editable memory blocks for OpenCode.",
+  "author": "Josh Thomas <josh@joshthomas.dev>",
+  "license": "MIT",
+  "main": "src/plugin.ts",
+  "type": "module",
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "^1.0.115",
+    "js-yaml": "^4.1.0",
+    "zod": "^4.1.13"
+  },
+  "devDependencies": {
+    "@tsconfig/bun": "^1.0.10",
+    "@types/bun": "^1.3.3",
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^24.10.1",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "bun": ">=1.0.0"
+  }
+}

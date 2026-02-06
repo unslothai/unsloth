@@ -250,6 +250,20 @@ def dispatch_gemv(X, W, quant_state, out=None):
         return fast_gemv(X, W, quant_state, out=out)
 
 
+def dispatch_lora_mlp_swiglu(
+    X,
+    gateW,
+    gateW_quant,
+    gateA,
+    gateB,
+    gateS,
+    upW,
+    upW_quant,
+    upA,
+    upB,
+    upS,
+    downW,
+    downW_quant,
     downA,
     downB,
     downS,
