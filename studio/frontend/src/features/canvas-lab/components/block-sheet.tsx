@@ -10,8 +10,11 @@ import {
   ArrowLeft02Icon,
   ArrowRight01Icon,
   CodeIcon,
+  Copy02Icon,
   type Database02Icon,
   PlusSignIcon,
+  Tick02Icon,
+  Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactElement } from "react";
@@ -38,6 +41,9 @@ type BlockSheetProps = {
   onAddModelConfig: () => void;
   onAddExpression: () => void;
   onOpenProcessors: () => void;
+  copied: boolean;
+  onCopy: () => void;
+  onImport: () => void;
 };
 
 function getSheetTitle(view: SheetView): string {
@@ -112,6 +118,9 @@ function BlockSheetButton({
   );
 }
 
+const FLOATING_ICON_BUTTON_CLASS =
+  "corner-squircle group h-11 w-11 rounded-xl border border-border/60 bg-transparent p-0 text-muted-foreground hover:bg-transparent hover:text-primary hover:border-primary/60";
+
 export function BlockSheet({
   container,
   view,
@@ -122,97 +131,129 @@ export function BlockSheet({
   onAddModelConfig,
   onAddExpression,
   onOpenProcessors,
+  copied,
+  onCopy,
+  onImport,
 }: BlockSheetProps): ReactElement {
   const title = getSheetTitle(view);
   return (
-    <Sheet
-      onOpenChange={(open) => {
-        if (open) {
-          onViewChange("root");
-        }
-      }}
-    >
-      <SheetTrigger asChild={true}>
-        <Button size="lg" className={"corner-squircle "} variant="secondary">
-          <HugeiconsIcon icon={PlusSignIcon} className="size-4" />
-        </Button>
-      </SheetTrigger>
-      <SheetContent
-        side="right"
-        container={container}
-        position="absolute"
-        overlayPosition="absolute"
-        className="absolute gap-0 p-0 shadow-none"
-        overlayClassName="bg-transparent pointer-events-none backdrop-blur-none supports-backdrop-filter:backdrop-blur-none"
+    <div className="flex flex-col items-end gap-2">
+      <Sheet
+        onOpenChange={(open) => {
+          if (open) {
+            onViewChange("root");
+          }
+        }}
       >
-        <SheetHeader className="border-b border-border/60 px-6 py-5">
-          <div className="flex items-center gap-2">
-            {view !== "root" && (
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-sm"
-                onClick={() => onViewChange("root")}
-              >
-                <HugeiconsIcon icon={ArrowLeft02Icon} className="size-4" />
-              </Button>
-            )}
-            <SheetTitle>{title}</SheetTitle>
-          </div>
-        </SheetHeader>
-        <div className=" py-4">
-          <div className="mt-4 flex flex-col gap-2">
-            {view === "root" &&
-              ROOT_GROUPS.map((item, index) => (
-                <BlockSheetButton
-                  key={item.kind}
-                  icon={item.icon}
-                  title={item.title}
-                  description={item.description}
-                  isActive={index === 0}
-                  onClick={() => onViewChange(item.kind)}
-                />
-              ))}
-            {view === "processor" && (
-              <BlockSheetButton
-                icon={CodeIcon}
-                title="Schema Transform"
-                description="Transform final dataset schema."
-                isActive={true}
-                onClick={onOpenProcessors}
-              />
-            )}
-            {view !== "root" &&
-              view !== "processor" &&
-              getBlocksForKind(VIEW_KIND[view] ?? "sampler").map(
-                (item, index) => (
-                <BlockSheetButton
-                  key={item.type}
-                  icon={item.icon}
-                  title={item.title}
-                  description={item.description}
-                  isActive={index === 0}
-                  onClick={() => {
-                    if (item.kind === "sampler") {
-                      onAddSampler(item.type as SamplerType);
-                    } else if (item.kind === "llm") {
-                      if (item.type === "model_provider") {
-                        onAddModelProvider();
-                      } else if (item.type === "model_config") {
-                        onAddModelConfig();
-                      } else {
-                        onAddLlm(item.type as LlmType);
-                      }
-                    } else {
-                      onAddExpression();
-                    }
-                  }}
-                />
-                ),
+        <SheetTrigger asChild={true}>
+          <Button size="icon" className={FLOATING_ICON_BUTTON_CLASS} variant="ghost">
+            <HugeiconsIcon
+              icon={PlusSignIcon}
+              className="size-5 text-muted-foreground group-hover:text-primary"
+            />
+          </Button>
+        </SheetTrigger>
+        <SheetContent
+          side="right"
+          container={container}
+          position="absolute"
+          overlayPosition="absolute"
+          className="absolute gap-0 p-0 shadow-none"
+          overlayClassName="bg-transparent pointer-events-none backdrop-blur-none supports-backdrop-filter:backdrop-blur-none"
+        >
+          <SheetHeader className="border-b border-border/60 px-6 py-5">
+            <div className="flex items-center gap-2">
+              {view !== "root" && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={() => onViewChange("root")}
+                >
+                  <HugeiconsIcon icon={ArrowLeft02Icon} className="size-4" />
+                </Button>
               )}
+              <SheetTitle>{title}</SheetTitle>
+            </div>
+          </SheetHeader>
+          <div className=" py-4">
+            <div className="mt-4 flex flex-col gap-2">
+              {view === "root" &&
+                ROOT_GROUPS.map((item, index) => (
+                  <BlockSheetButton
+                    key={item.kind}
+                    icon={item.icon}
+                    title={item.title}
+                    description={item.description}
+                    isActive={index === 0}
+                    onClick={() => onViewChange(item.kind)}
+                  />
+                ))}
+              {view === "processor" && (
+                <BlockSheetButton
+                  icon={CodeIcon}
+                  title="Schema Transform"
+                  description="Transform final dataset schema."
+                  isActive={true}
+                  onClick={onOpenProcessors}
+                />
+              )}
+              {view !== "root" &&
+                view !== "processor" &&
+                getBlocksForKind(VIEW_KIND[view] ?? "sampler").map(
+                  (item, index) => (
+                    <BlockSheetButton
+                      key={item.type}
+                      icon={item.icon}
+                      title={item.title}
+                      description={item.description}
+                      isActive={index === 0}
+                      onClick={() => {
+                        if (item.kind === "sampler") {
+                          onAddSampler(item.type as SamplerType);
+                        } else if (item.kind === "llm") {
+                          if (item.type === "model_provider") {
+                            onAddModelProvider();
+                          } else if (item.type === "model_config") {
+                            onAddModelConfig();
+                          } else {
+                            onAddLlm(item.type as LlmType);
+                          }
+                        } else {
+                          onAddExpression();
+                        }
+                      }}
+                    />
+                  ),
+                )}
+            </div>
           </div>
-        </div>
-      </SheetContent>
-    </Sheet>
+        </SheetContent>
+      </Sheet>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        className={FLOATING_ICON_BUTTON_CLASS}
+        onClick={onImport}
+      >
+        <HugeiconsIcon
+          icon={Upload01Icon}
+          className="size-5 text-muted-foreground group-hover:text-primary"
+        />
+      </Button>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        className={FLOATING_ICON_BUTTON_CLASS}
+        onClick={onCopy}
+      >
+        <HugeiconsIcon
+          icon={copied ? Tick02Icon : Copy02Icon}
+          className="size-5 text-muted-foreground group-hover:text-primary"
+        />
+      </Button>
+    </div>
   );
 }

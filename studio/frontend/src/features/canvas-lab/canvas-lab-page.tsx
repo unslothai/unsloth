@@ -126,6 +126,7 @@ export function CanvasLabPage(): ReactElement {
     null,
   );
   const [previewLoading, setPreviewLoading] = useState(false);
+  const [copied, setCopied] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [processorsOpen, setProcessorsOpen] = useState(false);
   const [statusMessage, setStatusMessage] = useState<{
@@ -184,6 +185,7 @@ export function CanvasLabPage(): ReactElement {
   };
 
   const handleCopyRecipe = async (): Promise<void> => {
+    setCopied(false);
     setStatusMessage(null);
     const { payload, errors } = buildCanvasPayload(
       configs,
@@ -207,6 +209,8 @@ export function CanvasLabPage(): ReactElement {
     }
     try {
       await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
       setStatusMessage({
         tone: "success",
         text: "Recipe copied to clipboard.",
@@ -268,24 +272,6 @@ export function CanvasLabPage(): ReactElement {
               <Button
                 type="button"
                 size="sm"
-                variant="outline"
-                onClick={handleCopyRecipe}
-                className="text-xs"
-              >
-                Copy recipe
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                onClick={() => setImportOpen(true)}
-                className="text-xs"
-              >
-                Import
-              </Button>
-              <Button
-                type="button"
-                size="sm"
                 onClick={handlePreview}
                 disabled={previewLoading}
                 className="gap-2 text-xs"
@@ -311,7 +297,7 @@ export function CanvasLabPage(): ReactElement {
             edgeTypes={EDGE_TYPES}
             defaultEdgeOptions={{
               type: "canvas",
-              data: { key: "name", path: "smoothstep" },
+              data: { key: "name", path: "auto" },
               style: { strokeWidth: 1.5, stroke: "var(--border)" },
             }}
             onNodesChange={onNodesChange}
@@ -344,6 +330,9 @@ export function CanvasLabPage(): ReactElement {
                 onAddModelConfig={addModelConfigNode}
                 onAddExpression={addExpressionNode}
                 onOpenProcessors={handleOpenProcessorsFromSheet}
+                copied={copied}
+                onCopy={handleCopyRecipe}
+                onImport={() => setImportOpen(true)}
               />
             </Panel>
             <Controls position="bottom-left" />

@@ -14,11 +14,11 @@ import {
 
 export type DataEdge<T extends Node = Node> = Edge<{
   key?: keyof T["data"];
-  path?: "bezier" | "smoothstep" | "step" | "straight";
+  path?: "auto" | "bezier" | "smoothstep" | "step" | "straight";
 }>;
 
 export function DataEdge({
-  data = { path: "bezier" },
+  data = { path: "auto" },
   id,
   markerEnd,
   source,
@@ -31,8 +31,17 @@ export function DataEdge({
   targetY,
 }: EdgeProps<DataEdge>): ReactElement {
   const nodeData = useStore((state) => state.nodeLookup.get(source)?.data);
+  const resolvedPathType = resolvePathType({
+    type: data.path ?? "auto",
+    sourceX,
+    sourceY,
+    targetX,
+    targetY,
+    sourcePosition,
+    targetPosition,
+  });
   const [edgePath, labelX, labelY] = getPath({
-    type: data.path ?? "bezier",
+    type: resolvedPathType,
     sourceX,
     sourceY,
     sourcePosition,
@@ -127,4 +136,48 @@ function getPath({
     targetX,
     targetY,
   });
+}
+
+function resolvePathType({
+  type,
+  sourceX,
+  sourceY,
+  targetX,
+  targetY,
+  sourcePosition,
+  targetPosition,
+}: {
+  type: "auto" | "bezier" | "smoothstep" | "step" | "straight";
+  sourceX: number;
+  sourceY: number;
+  targetX: number;
+  targetY: number;
+  sourcePosition: Position;
+  targetPosition: Position;
+}): "bezier" | "smoothstep" | "step" | "straight" {
+  if (type !== "auto") {
+    return type;
+  }
+
+  const isVerticalFlow =
+    (sourcePosition === Position.Bottom && targetPosition === Position.Top) ||
+    (sourcePosition === Position.Top && targetPosition === Position.Bottom);
+  if (isVerticalFlow && Math.abs(sourceX - targetX) <= 18) {
+    return "straight";
+  }
+
+  const isHorizontalFlow =
+    (sourcePosition === Position.Right && targetPosition === Position.Left) ||
+    (sourcePosition === Position.Left && targetPosition === Position.Right);
+  if (isHorizontalFlow && Math.abs(sourceY - targetY) <= 18) {
+    return "straight";
+  }
+
+  const deltaX = Math.abs(sourceX - targetX);
+  const deltaY = Math.abs(sourceY - targetY);
+  if (deltaX < 40 || deltaY < 40) {
+    return "smoothstep";
+  }
+
+  return "bezier";
 }
