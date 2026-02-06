@@ -25,6 +25,22 @@ import {
   validateUsedProviders,
 } from "./validate";
 
+function getNodeWidth(node: CanvasNode): number | null {
+  if (typeof node.width === "number" && Number.isFinite(node.width)) {
+    return node.width;
+  }
+  if (typeof node.style?.width === "number" && Number.isFinite(node.style.width)) {
+    return node.style.width;
+  }
+  if (typeof node.style?.width === "string") {
+    const parsed = Number.parseFloat(node.style.width);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: payload build
 export function buildCanvasPayload(
   configs: Record<string, NodeConfig>,
@@ -100,11 +116,13 @@ export function buildCanvasPayload(
     if (!config) {
       return [];
     }
+    const width = getNodeWidth(node);
     return [
       {
         id: config.name,
         x: node.position.x,
         y: node.position.y,
+        ...(width !== null ? { width } : {}),
       },
     ];
   });

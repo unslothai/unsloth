@@ -26,6 +26,7 @@ import {
   type NodeProps,
 } from "@xyflow/react";
 import { memo, type ReactElement, useEffect } from "react";
+import { MAX_NODE_WIDTH, MIN_NODE_WIDTH } from "../constants";
 import { useCanvasLabStore } from "../stores/canvas-lab";
 import type {
   CanvasNode as CanvasNodeType,
@@ -270,7 +271,7 @@ function LlmInputHandles({ items, isTopBottom }: LlmInputHandlesProps): ReactEle
   return (
     <div className="space-y-1 pb-1">
       {items.map((item) => (
-        <div key={item.id} className="pointer-events-none relative pl-3">
+        <div key={item.id} className="pointer-events-none relative min-w-0 pl-3">
           <Handle
             id={item.id}
             type="target"
@@ -278,7 +279,9 @@ function LlmInputHandles({ items, isTopBottom }: LlmInputHandlesProps): ReactEle
             className="pointer-events-auto !size-2 !border-border !bg-background"
             style={{ left: -3, top: "50%", transform: "translate(-50%, -50%)" }}
           />
-          <span className="text-[10px] text-muted-foreground">{item.label}</span>
+          <span className="block truncate text-[10px] text-muted-foreground">
+            {item.label}
+          </span>
         </div>
       ))}
     </div>
@@ -318,12 +321,12 @@ function CanvasNodeBase({
   const llmInputHandles = getLlmInputHandleItems(config);
 
   return (
-    <BaseNode className="corner-squircle relative min-w-[260px] overflow-visible rounded-lg border-border/60 shadow-sm">
+    <BaseNode className="corner-squircle relative w-full min-w-0 overflow-visible rounded-lg border-border/60 shadow-sm">
       <NodeResizer
         isVisible={selected}
-        minWidth={260}
+        minWidth={MIN_NODE_WIDTH}
         minHeight={120}
-        maxWidth={760}
+        maxWidth={MAX_NODE_WIDTH}
         maxHeight={520}
         color="var(--primary)"
         lineClassName="!border-transparent !shadow-none"

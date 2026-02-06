@@ -8,6 +8,7 @@ import {
 } from "@/components/ui/select";
 import type { ReactElement } from "react";
 import type { SamplerConfig } from "../../types";
+import { InlineField } from "./inline-field";
 
 type InlineSamplerProps = {
   config: SamplerConfig;
@@ -30,7 +31,7 @@ function ConvertToField({
         onValueChange(next === "none" ? undefined : (next as ConvertTo))
       }
     >
-      <SelectTrigger className="nodrag h-7 text-xs">
+      <SelectTrigger className="nodrag h-8 w-full text-xs">
         <SelectValue placeholder="Convert" />
       </SelectTrigger>
       <SelectContent>
@@ -49,92 +50,108 @@ export function InlineSampler({
 }: InlineSamplerProps): ReactElement | null {
   if (config.sampler_type === "uniform") {
     return (
-      <div className="grid grid-cols-3 gap-2">
-        <Input
-          className="nodrag h-7 text-xs"
-          type="number"
-          placeholder="Low"
-          value={config.low ?? ""}
-          onChange={(event) => onUpdate({ low: event.target.value })}
-        />
-        <Input
-          className="nodrag h-7 text-xs"
-          type="number"
-          placeholder="High"
-          value={config.high ?? ""}
-          onChange={(event) => onUpdate({ high: event.target.value })}
-        />
-        <ConvertToField
-          value={config.convert_to}
-          onValueChange={(value) =>
-            onUpdate({
-              // biome-ignore lint/style/useNamingConvention: api schema
-              convert_to: value,
-            })
-          }
-        />
+      <div className="grid gap-3 sm:grid-cols-3">
+        <InlineField label="Low">
+          <Input
+            className="nodrag h-8 w-full text-xs"
+            type="number"
+            placeholder="0"
+            value={config.low ?? ""}
+            onChange={(event) => onUpdate({ low: event.target.value })}
+          />
+        </InlineField>
+        <InlineField label="High">
+          <Input
+            className="nodrag h-8 w-full text-xs"
+            type="number"
+            placeholder="100"
+            value={config.high ?? ""}
+            onChange={(event) => onUpdate({ high: event.target.value })}
+          />
+        </InlineField>
+        <InlineField label="Convert to">
+          <ConvertToField
+            value={config.convert_to}
+            onValueChange={(value) =>
+              onUpdate({
+                // biome-ignore lint/style/useNamingConvention: api schema
+                convert_to: value,
+              })
+            }
+          />
+        </InlineField>
       </div>
     );
   }
 
   if (config.sampler_type === "gaussian") {
     return (
-      <div className="grid grid-cols-3 gap-2">
-        <Input
-          className="nodrag h-7 text-xs"
-          type="number"
-          placeholder="Mean"
-          value={config.mean ?? ""}
-          onChange={(event) => onUpdate({ mean: event.target.value })}
-        />
-        <Input
-          className="nodrag h-7 text-xs"
-          type="number"
-          placeholder="Std"
-          value={config.std ?? ""}
-          onChange={(event) => onUpdate({ std: event.target.value })}
-        />
-        <ConvertToField
-          value={config.convert_to}
-          onValueChange={(value) =>
-            onUpdate({
-              // biome-ignore lint/style/useNamingConvention: api schema
-              convert_to: value,
-            })
-          }
-        />
+      <div className="grid gap-3 sm:grid-cols-3">
+        <InlineField label="Mean">
+          <Input
+            className="nodrag h-8 w-full text-xs"
+            type="number"
+            placeholder="0"
+            value={config.mean ?? ""}
+            onChange={(event) => onUpdate({ mean: event.target.value })}
+          />
+        </InlineField>
+        <InlineField label="Std dev">
+          <Input
+            className="nodrag h-8 w-full text-xs"
+            type="number"
+            placeholder="1"
+            value={config.std ?? ""}
+            onChange={(event) => onUpdate({ std: event.target.value })}
+          />
+        </InlineField>
+        <InlineField label="Convert to">
+          <ConvertToField
+            value={config.convert_to}
+            onValueChange={(value) =>
+              onUpdate({
+                // biome-ignore lint/style/useNamingConvention: api schema
+                convert_to: value,
+              })
+            }
+          />
+        </InlineField>
       </div>
     );
   }
 
   if (config.sampler_type === "bernoulli") {
     return (
-      <Input
-        className="nodrag h-7 text-xs"
-        type="number"
-        min="0"
-        max="1"
-        step="0.01"
-        placeholder="p"
-        value={config.p ?? ""}
-        onChange={(event) => onUpdate({ p: event.target.value })}
-      />
+      <InlineField label="Probability (p)">
+        <Input
+          className="nodrag h-8 w-full text-xs"
+          type="number"
+          min="0"
+          max="1"
+          step="0.01"
+          placeholder="0.5"
+          value={config.p ?? ""}
+          onChange={(event) => onUpdate({ p: event.target.value })}
+        />
+      </InlineField>
     );
   }
 
   if (config.sampler_type === "uuid") {
     return (
-      <Input
-        className="nodrag h-7 text-xs"
-        placeholder="UUID format"
-        value={config.uuid_format ?? ""}
-        onChange={(event) =>
-          onUpdate({
-            // biome-ignore lint/style/useNamingConvention: api schema
-            uuid_format: event.target.value,
-          })
-        }
-      />
+      <InlineField label="UUID format">
+        <Input
+          className="nodrag h-8 w-full text-xs"
+          placeholder="uuid4"
+          value={config.uuid_format ?? ""}
+          onChange={(event) =>
+            onUpdate({
+              // biome-ignore lint/style/useNamingConvention: api schema
+              uuid_format: event.target.value,
+            })
+          }
+        />
+      </InlineField>
     );
   }
 

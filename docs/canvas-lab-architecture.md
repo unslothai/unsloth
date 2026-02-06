@@ -34,7 +34,8 @@ Owns:
 - source-of-truth state (`configs`, `nodes`, `edges`, `processors`)
 - mutation entrypoints (`updateConfig`, `onConnect`, `onNodesChange`, etc)
 - selection/dialog state (`selectConfig`, `openConfig`)
-- aux node position persistence
+- aux node position persistence (`auxNodePositions`)
+- aux node size persistence (`auxNodeSizes`)
 
 Helper module:
 `/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/stores/canvas-lab-helpers.ts`
@@ -77,7 +78,7 @@ Owns:
 - dialog router per block type
 
 Notes:
-- registry passes `modelConfigAliases` into `LlmDialog`
+- registry receives dialog option lists from page and forwards to block dialogs
 - avoids dialog -> store dependency cycle
 
 Do not place here:
@@ -93,6 +94,7 @@ Files:
 Owns:
 - contract mapping between UI state and backend payload
 - edge inference fallback when import payload has no `ui.edges`
+- node width persistence via `ui.nodes[].width`
 
 Do not place here:
 - ReactFlow render logic
@@ -134,6 +136,13 @@ defaultEdgeOptions={{
 Dialog flow:
 - node click -> `selectConfig` (no forced modal)
 - node `Details` button -> `openConfig`
+
+Node sizing:
+- default builder/aux node width is `400px`
+- users can resize builder + aux nodes
+- resized width is kept in canvas state and round-tripped through import/export
+- sizing constants live in:
+`/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/constants.ts`
 
 ## 4) UI Mode Policy (Inline vs Dialog)
 
@@ -185,6 +194,9 @@ Rules:
 Aux nodes:
 - are UI projections, not new payload schema entities
 - have independent drag positions persisted in Zustand `auxNodePositions`
+- have independent sizes persisted in Zustand `auxNodeSizes`
+- are resizable (same hidden-control resize UX as builder nodes)
+- are re-anchored near parent nodes after auto-layout/direction change
 
 ## 7) Connect Rules (single source of truth)
 
@@ -211,9 +223,9 @@ Connect side-effects:
 
 Current safe flow:
 - store state -> page (`configs`)
-- page derives `modelConfigAliases`
-- page passes aliases -> `ConfigDialog`
-- dialog passes aliases -> registry -> `LlmDialog`
+- page derives dialog option lists (`modelConfigAliases`, `modelProviderOptions`, `datetimeOptions`)
+- page passes these options -> `ConfigDialog`
+- dialog passes options -> registry -> block dialogs (`LlmDialog`, `ModelConfigDialog`, `TimedeltaDialog`)
 
 No dialog component should import store directly.
 

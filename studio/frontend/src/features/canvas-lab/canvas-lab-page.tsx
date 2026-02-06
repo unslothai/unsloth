@@ -130,6 +130,7 @@ export function CanvasLabPage(): ReactElement {
     nodes,
     edges,
     auxNodePositions,
+    auxNodeSizes,
     configs,
     processors,
     sheetView,
@@ -154,12 +155,15 @@ export function CanvasLabPage(): ReactElement {
     setLayoutDirection,
     applyLayout,
     setAuxNodePosition,
+    setAuxNodeSize,
     syncAuxNodePositions,
+    syncAuxNodeSizes,
   } = useCanvasLabStore(
     useShallow((state) => ({
       nodes: state.nodes,
       edges: state.edges,
       auxNodePositions: state.auxNodePositions,
+      auxNodeSizes: state.auxNodeSizes,
       configs: state.configs,
       processors: state.processors,
       sheetView: state.sheetView,
@@ -184,7 +188,9 @@ export function CanvasLabPage(): ReactElement {
       setLayoutDirection: state.setLayoutDirection,
       applyLayout: state.applyLayout,
       setAuxNodePosition: state.setAuxNodePosition,
+      setAuxNodeSize: state.setAuxNodeSize,
       syncAuxNodePositions: state.syncAuxNodePositions,
+      syncAuxNodeSizes: state.syncAuxNodeSizes,
     })),
   );
   const [sheetContainer, setSheetContainer] = useState<HTMLDivElement | null>(
@@ -215,8 +221,9 @@ export function CanvasLabPage(): ReactElement {
       configs,
       layoutDirection,
       auxNodePositions,
+      auxNodeSizes,
     });
-  }, [auxNodePositions, configs, edges, layoutDirection, nodes]);
+  }, [auxNodePositions, auxNodeSizes, configs, edges, layoutDirection, nodes]);
   const displayNodeIds = useMemo(
     () => displayGraph.nodes.map((node) => node.id),
     [displayGraph.nodes],
@@ -224,6 +231,9 @@ export function CanvasLabPage(): ReactElement {
   useEffect(() => {
     syncAuxNodePositions(displayGraph.auxNodeIds, displayGraph.auxDefaults);
   }, [displayGraph.auxDefaults, displayGraph.auxNodeIds, syncAuxNodePositions]);
+  useEffect(() => {
+    syncAuxNodeSizes(displayGraph.auxNodeIds);
+  }, [displayGraph.auxNodeIds, syncAuxNodeSizes]);
 
   const handleNodeClick = useCallback(
     (_: unknown, node: Node<CanvasNodeData | CanvasAuxNodeData>) => {
@@ -240,13 +250,25 @@ export function CanvasLabPage(): ReactElement {
       for (const change of changes) {
         if (
           !("id" in change) ||
-          change.type !== "position" ||
-          !change.id.startsWith("aux-") ||
-          !change.position
+          !change.id.startsWith("aux-")
         ) {
           continue;
         }
-        setAuxNodePosition(change.id, change.position);
+        if (change.type === "position" && change.position) {
+          setAuxNodePosition(change.id, change.position);
+          continue;
+        }
+        if (
+          change.type === "dimensions" &&
+          change.dimensions &&
+          change.dimensions.width > 0 &&
+          change.dimensions.height > 0
+        ) {
+          setAuxNodeSize(change.id, {
+            width: change.dimensions.width,
+            height: change.dimensions.height,
+          });
+        }
       }
       const next = changes.filter(
         (change): change is NodeChange<CanvasBuilderNode> =>
@@ -256,7 +278,7 @@ export function CanvasLabPage(): ReactElement {
         onNodesChange(next);
       }
     },
-    [baseNodeIds, onNodesChange, setAuxNodePosition],
+    [baseNodeIds, onNodesChange, setAuxNodePosition, setAuxNodeSize],
   );
 
   const handleEdgesChange = useCallback(
