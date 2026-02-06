@@ -149,8 +149,8 @@ export function importCanvasPayload(input: string): ImportResult {
     return { errors, snapshot: null };
   }
 
-  const { positions, edges: uiEdges } = parseUi(ui);
-  const nodes = buildNodes(configs, positions);
+  const { layouts, edges: uiEdges } = parseUi(ui);
+  const nodes = buildNodes(configs, layouts);
   const edges = buildEdges(configs, nameToId, uiEdges);
 
   const maxY = nodes.reduce(

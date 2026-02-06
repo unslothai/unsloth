@@ -39,6 +39,7 @@ type CanvasLabState = {
   nodes: CanvasNode[];
   edges: Edge[];
   auxNodePositions: Record<string, XYPosition>;
+  auxNodeSizes: Record<string, { width: number; height: number }>;
   configs: Record<string, NodeConfig>;
   processors: CanvasProcessorConfig[];
   sheetView: SheetView;
@@ -62,10 +63,15 @@ type CanvasLabState = {
   updateConfig: (id: string, patch: Partial<NodeConfig>) => void;
   loadCanvas: (snapshot: CanvasSnapshot) => void;
   setAuxNodePosition: (id: string, position: XYPosition) => void;
+  setAuxNodeSize: (
+    id: string,
+    size: { width: number; height: number },
+  ) => void;
   syncAuxNodePositions: (
     activeIds: string[],
     defaults: Record<string, XYPosition>,
   ) => void;
+  syncAuxNodeSizes: (activeIds: string[]) => void;
   onNodesChange: (changes: NodeChange<CanvasNode>[]) => void;
   onEdgesChange: (changes: EdgeChange<Edge>[]) => void;
   onConnect: (connection: Connection) => void;
@@ -76,6 +82,7 @@ export const useCanvasLabStore = create<CanvasLabState>((set, get) => ({
   nodes: [],
   edges: [],
   auxNodePositions: {},
+  auxNodeSizes: {},
   configs: {},
   processors: [],
   sheetView: "root",
@@ -92,6 +99,7 @@ export const useCanvasLabStore = create<CanvasLabState>((set, get) => ({
   setLayoutDirection: (direction) =>
     set((state) => ({
       layoutDirection: direction,
+      auxNodePositions: {},
       nodes: applyLayoutDirectionToNodes(
         state.nodes,
         state.configs,
@@ -107,6 +115,7 @@ export const useCanvasLabStore = create<CanvasLabState>((set, get) => ({
         ranksep: isTopBottom ? 140 : 80,
       });
       return {
+        auxNodePositions: {},
         nodes: applyLayoutDirectionToNodes(
           nodes,
           state.configs,
@@ -187,6 +196,7 @@ export const useCanvasLabStore = create<CanvasLabState>((set, get) => ({
       nextId: snapshot.nextId,
       nextY: snapshot.nextY,
       auxNodePositions: {},
+      auxNodeSizes: {},
       activeConfigId: null,
       dialogOpen: false,
       sheetView: "root",
@@ -201,6 +211,21 @@ export const useCanvasLabStore = create<CanvasLabState>((set, get) => ({
         auxNodePositions: {
           ...state.auxNodePositions,
           [id]: position,
+        },
+      };
+    }),
+  setAuxNodeSize: (id, size) =>
+    set((state) => {
+      const width = Math.max(1, size.width);
+      const height = Math.max(1, size.height);
+      const current = state.auxNodeSizes[id];
+      if (current && current.width === width && current.height === height) {
+        return state;
+      }
+      return {
+        auxNodeSizes: {
+          ...state.auxNodeSizes,
+          [id]: { width, height },
         },
       };
     }),
@@ -228,6 +253,29 @@ export const useCanvasLabStore = create<CanvasLabState>((set, get) => ({
         const next = nextPositions[id];
         if (!(prev && prev.x === next.x && prev.y === next.y)) {
           return { auxNodePositions: nextPositions };
+        }
+      }
+      return state;
+    }),
+  syncAuxNodeSizes: (activeIds) =>
+    set((state) => {
+      const activeSet = new Set(activeIds);
+      const nextSizes: Record<string, { width: number; height: number }> = {};
+      for (const [id, size] of Object.entries(state.auxNodeSizes)) {
+        if (activeSet.has(id)) {
+          nextSizes[id] = size;
+        }
+      }
+      const prevIds = Object.keys(state.auxNodeSizes);
+      const nextIds = Object.keys(nextSizes);
+      if (prevIds.length !== nextIds.length) {
+        return { auxNodeSizes: nextSizes };
+      }
+      for (const id of nextIds) {
+        const prev = state.auxNodeSizes[id];
+        const next = nextSizes[id];
+        if (!(prev && prev.width === next.width && prev.height === next.height)) {
+          return { auxNodeSizes: nextSizes };
         }
       }
       return state;

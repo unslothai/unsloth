@@ -1,4 +1,5 @@
 import { type Edge, addEdge } from "@xyflow/react";
+import { DEFAULT_NODE_WIDTH } from "../constants";
 import type {
   CanvasNode,
   LayoutDirection,
@@ -61,6 +62,7 @@ export function buildNodeUpdate(
     type: "builder",
     position: { x: 0, y: state.nextY },
     data: nodeDataFromConfig(config, layoutDirection),
+    style: { width: DEFAULT_NODE_WIDTH },
     selected: true,
   };
   const mode = getConfigUiMode(config);
