@@ -79,7 +79,7 @@ from importlib.metadata import PackageNotFoundError
 # Check for unsloth_zoo
 try:
     unsloth_zoo_version = importlib_version("unsloth_zoo")
-    if Version(unsloth_zoo_version) < Version("2026.1.2"):
+    if Version(unsloth_zoo_version) < Version("2026.2.1"):
         print(
             "Unsloth: Please update Unsloth and Unsloth-Zoo to the latest version!\n"
             "Do this via `pip install --upgrade --force-reinstall --no-cache-dir --no-deps unsloth unsloth_zoo`"
@@ -139,6 +139,7 @@ from .import_fixes import (
     fix_executorch,
     patch_vllm_for_notebooks,
     patch_torchcodec_audio_decoder,
+    disable_torchcodec_if_broken,
 )
 
 fix_xformers_performance_issue()
@@ -158,6 +159,7 @@ patch_openspiel_env_async()
 fix_executorch()
 patch_vllm_for_notebooks()
 patch_torchcodec_audio_decoder()
+disable_torchcodec_if_broken()
 
 del fix_xformers_performance_issue
 del fix_vllm_aimv2_issue
@@ -175,6 +177,7 @@ del patch_openspiel_env_async
 del fix_executorch
 del patch_vllm_for_notebooks
 del patch_torchcodec_audio_decoder
+del disable_torchcodec_if_broken
 
 # Torch 2.4 has including_emulation
 if DEVICE_TYPE == "cuda":

@@ -2288,6 +2288,10 @@ class FastLlamaModel:
         model_function = MODEL_FOR_CAUSAL_LM_MAPPING[model_config.__class__]
         IS_FALCON_H1 = model_config.model_type.startswith("falcon_h1")
 
+        preferred_attn_impl = (
+            prefer_flex_attn_if_supported(model_function, model_config) or "eager"
+        )
+
         has_rope_scaling = False
         try:
             with open(inspect.getfile(model_function), "r", encoding = "utf-8") as file:
@@ -2366,7 +2370,7 @@ class FastLlamaModel:
                 token = token,
                 max_position_embeddings = max_position_embeddings,
                 trust_remote_code = trust_remote_code,
-                attn_implementation = "eager",
+                attn_implementation = preferred_attn_impl,
                 **kwargs,
             )
         elif not fast_inference:
@@ -2378,7 +2382,7 @@ class FastLlamaModel:
                 token = token,
                 max_position_embeddings = max_position_embeddings,
                 trust_remote_code = trust_remote_code,
-                attn_implementation = "eager",
+                attn_implementation = preferred_attn_impl,
                 **kwargs,
             )
             model.fast_generate = make_fast_generate_wrapper(model.generate)
@@ -2655,6 +2659,7 @@ class FastLlamaModel:
         loftq_config = {},
         temporary_location = "_unsloth_temporary_saved_buffers",
         qat_scheme = None,
+        target_parameters = None,  # For MoE expert layers (nn.Parameter)
         ensure_weight_tying = False,
         **kwargs,
     ):
@@ -2685,6 +2690,7 @@ class FastLlamaModel:
                 init_lora_weights = init_lora_weights,
                 loftq_config = loftq_config,
                 temporary_location = temporary_location,
+                target_parameters = target_parameters,
                 ensure_weight_tying = ensure_weight_tying,
                 **kwargs,
             )
@@ -2970,6 +2976,10 @@ class FastLlamaModel:
         # Does not get lora yet, so get name from model, not base model
         is_classification = "Classification" in str(type(model))
 
+        # Auto-detect MoE models and populate target_parameters for expert layers
+        if target_parameters is None:
+            target_parameters = get_moe_target_parameters(model, target_modules)
+
         arguments = dict(
             r = r,
             lora_alpha = lora_alpha,
@@ -2982,6 +2992,7 @@ class FastLlamaModel:
             loftq_config = loftq_config,
             use_rslora = use_rslora,
             modules_to_save = modules_to_save,
+            target_parameters = target_parameters,
             ensure_weight_tying = ensure_weight_tying,
             **kwargs,
         )

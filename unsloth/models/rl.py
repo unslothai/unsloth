@@ -70,6 +70,12 @@ except Exception:
     except Exception:
         trl_version = Version("0.0.0")
 
+# Get PyTorch version for feature detection
+try:
+    torch_version = Version(torch.__version__.split("+")[0].split("a")[0].split("b")[0])
+except Exception:
+    torch_version = Version("0.0.0")
+
 
 def vLLMSamplingParams(**kwargs):
     from vllm import SamplingParams
@@ -420,7 +426,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     try:
         trainer = eval(f"trl.trainer.{trainer_file}")
     except Exception as error:
-        print(f"Unsloth: Could not import trl.trainer.{trainer_file}: {error}")
+        logger.info(f"Unsloth: Could not import trl.trainer.{trainer_file}: {error}")
         return
 
     # Get SFTTrainer and SFTConfig names
@@ -1126,16 +1132,18 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         # Generate torch_compile_options based on device type
         if DEVICE_TYPE == "cuda":
             # CUDA-specific options (added to base options)
-            new_options = (
-                base_options
-                + """
-            "triton.enable_persistent_tma_matmul": torch.cuda.get_device_capability()[0] >= 9,
+            cuda_options = """
+            "triton.enable_persistent_tma_matmul": torch.cuda.get_device_capability()[0] >= 9,"""
+            # cutlass options were added in PyTorch 2.8.0
+            if torch_version >= Version("2.8.0"):
+                cuda_options += """
             "cuda.cutlass_epilogue_fusion_enabled": torch.cuda.get_device_capability()[0] >= 9,
-            "cuda.cutlass_tma_only": torch.cuda.get_device_capability()[0] >= 9,
+            "cuda.cutlass_tma_only": torch.cuda.get_device_capability()[0] >= 9,"""
+            cuda_options += """
             "cuda.compile_opt_level"              : "-O2",
             "cuda.enable_cuda_lto"                : True,
         }"""
-            )
+            new_options = base_options + cuda_options
         else:
             # XPU, HIP, and other device types use base options only
             new_options = (
@@ -1149,6 +1157,33 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         RLTrainer_source = re.sub(
             pattern, new_options, RLTrainer_source, flags = re.DOTALL
         )
+
+        if trl_version >= Version("0.27.0"):
+            peft_pattern = (
+                r"\s*if is_peft_available\(\) and is_peft_model\(model\) and args\.beta != 0\.0:"
+                r".*?"
+                r"param\.data = param\.data\.to\(torch\.bfloat16\)"
+            )
+
+            replacement_comment = "\n        # PEFT initialization logic removed via script for trl >= 0.27.0\n"
+
+            RLTrainer_source = re.sub(
+                peft_pattern, replacement_comment, RLTrainer_source, flags = re.DOTALL
+            )
+
+        elif trl_version >= Version("0.26.0"):
+            peft_block_pattern = (
+                r"\s*if is_peft_available\(\) and isinstance\(model, PeftModel\) and peft_config is not None:"
+                r".*?"
+                r"param\.data = param\.data\.to\(torch\.bfloat16\)"
+            )
+
+            RLTrainer_source = re.sub(
+                peft_block_pattern,
+                "\n        # TRL PEFT 0.26.0 initialization logic removed on unsloth side.\n",
+                RLTrainer_source,
+                flags = re.DOTALL,
+            )
 
     if RLTrainer_name == "SFTTrainer":
         original_text = 'self._signature_columns = ["input_ids", "attention_mask", "completion_mask"]'
