@@ -179,6 +179,15 @@ def patch_unsloth_zoo_for_mps() -> bool:
             def __getitem__(self, key):
                 return self  # Support tl.constexpr[int] or similar if needed
 
+            def __len__(self):
+                return 0
+
+            def __iter__(self):
+                return iter([])
+
+            def __bool__(self):
+                return False
+
             def __repr__(self):
                 return f"<FakeTriton {self.__name__}>"
 

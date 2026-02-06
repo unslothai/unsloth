@@ -85,6 +85,22 @@ def _check_distributed_strategy_on_mps(config):
             "Apple Silicon uses a unified memory architecture without the multi-GPU sharding that FSDP requires.\n"
             "Please set `fsdp=None` and use standard LoRA/QLoRA training instead."
         )
+
+
+def _check_optimizer_on_mps(config):
+    """Auto-switch CUDA-only optimizers on Apple Silicon."""
+    if DEVICE_TYPE != "mps":
+        return
+    
+    optim = getattr(config, "optim", None)
+    if optim and any(x in str(optim).lower() for x in ("8bit", "paged", "fused")):
+        # bitsandbytes or fused CUDA optimizers won't work on MPS
+        print(
+            f"Unsloth: Optimizer '{optim}' is not supported on Apple Silicon (requires CUDA).\n"
+            f"Unsloth: Auto-switching to 'adamw_torch' for compatibility."
+        )
+        setattr(config, "optim", "adamw_torch")
+
     
     # Check for DeepSpeed ZeRO
     deepspeed_config = getattr(config, "deepspeed", None)
@@ -342,6 +358,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
         # Block FSDP/ZeRO-3 on Apple Silicon early
         if config_arg is not None:
             _check_distributed_strategy_on_mps(config_arg)
+            _check_optimizer_on_mps(config_arg)
 
         # Check if model type is unsupported for padding_free
         model = kwargs.get("model")
