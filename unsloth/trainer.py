@@ -62,13 +62,21 @@ def _check_distributed_strategy_on_mps(config):
     fsdp_val = getattr(config, "fsdp", None)
     fsdp_config_val = getattr(config, "fsdp_config", None)
     
+    print(f"DEBUG: fsdp_val={repr(fsdp_val)} type={type(fsdp_val)}")
+    print(f"DEBUG: fsdp_config_val={repr(fsdp_config_val)} type={type(fsdp_config_val)}")
+
     # Only treat as FSDP enabled if it's a non-empty, non-falsy value
     fsdp_enabled = False
     if fsdp_val and fsdp_val not in ("", "off", "none", False):
-        if isinstance(fsdp_val, (list, tuple)) and len(fsdp_val) > 0:
-            fsdp_enabled = True
+        # In newer transformers, fsdp can be a list of strings
+        if isinstance(fsdp_val, (list, tuple)):
+            if len(fsdp_val) > 0: fsdp_enabled = True
         elif isinstance(fsdp_val, str) and fsdp_val.strip():
             fsdp_enabled = True
+        else:
+            # Fallback for other non-falsy types (like enums)
+            fsdp_enabled = True
+            
     if fsdp_config_val and isinstance(fsdp_config_val, dict) and len(fsdp_config_val) > 0:
         fsdp_enabled = True
     
