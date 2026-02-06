@@ -19,6 +19,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
+  Handle,
   NodeResizer,
   Position,
   useUpdateNodeInternals,
@@ -32,7 +33,7 @@ import type {
   NodeConfig,
   SamplerType,
 } from "../types";
-import { HANDLE_IDS } from "../utils/handles";
+import { getLlmJudgeScoreHandleId, HANDLE_IDS } from "../utils/handles";
 import { InlineExpression } from "./inline/inline-expression";
 import { InlineLlm } from "./inline/inline-llm";
 import { InlineModel } from "./inline/inline-model";
@@ -108,20 +109,6 @@ function resolveNodeIcon(
   return DiceFaces03Icon;
 }
 
-function toSingleLine(value: string | undefined): string {
-  if (!value) {
-    return "";
-  }
-  const normalized = value.replace(/\s+/g, " ").trim();
-  if (!normalized) {
-    return "";
-  }
-  if (normalized.length <= 96) {
-    return normalized;
-  }
-  return `${normalized.slice(0, 93)}...`;
-}
-
 function getConfigSummary(config: NodeConfig | undefined): string {
   if (!config) {
     return "Open details for config";
@@ -164,21 +151,14 @@ function getConfigSummary(config: NodeConfig | undefined): string {
   }
 
   if (config.kind === "llm") {
-    const prompt = toSingleLine(config.prompt);
     if (config.llm_type === "structured") {
-      if (prompt) {
-        return `Prompt: ${prompt}`;
-      }
       return "Structured output schema in details";
     }
     if (config.llm_type === "judge") {
       const scoreCount = config.scores?.length ?? 0;
-      if (prompt) {
-        return `${scoreCount} scores · ${prompt}`;
-      }
-      return `${scoreCount} scores`;
+      return `${scoreCount} scorers`;
     }
-    return "Open details for config";
+    return "Prompt/system via linked input nodes";
   }
 
   return "Open details for config";
@@ -228,6 +208,83 @@ function renderInlineEditor(
   return null;
 }
 
+type LlmInputHandleItem = {
+  id: string;
+  label: string;
+};
+
+function getLlmInputHandleItems(config: NodeConfig | undefined): LlmInputHandleItem[] {
+  if (!(config && config.kind === "llm")) {
+    return [];
+  }
+  const items: LlmInputHandleItem[] = [];
+  if (config.system_prompt.trim()) {
+    items.push({ id: HANDLE_IDS.llmSystemIn, label: "System" });
+  }
+  if (config.prompt.trim()) {
+    items.push({ id: HANDLE_IDS.llmPromptIn, label: "Prompt" });
+  }
+  if (config.llm_type === "judge") {
+    (config.scores ?? []).forEach((score, index) => {
+      items.push({
+        id: getLlmJudgeScoreHandleId(index),
+        label: score.name.trim() || `Score ${index + 1}`,
+      });
+    });
+  }
+  return items;
+}
+
+type LlmInputHandlesProps = {
+  items: LlmInputHandleItem[];
+  isTopBottom: boolean;
+};
+
+function LlmInputHandles({ items, isTopBottom }: LlmInputHandlesProps): ReactElement | null {
+  if (items.length === 0) {
+    return null;
+  }
+
+  if (isTopBottom) {
+    return (
+      <div className="flex flex-wrap gap-2 pb-1">
+        {items.map((item) => (
+          <div
+            key={item.id}
+            className="pointer-events-none relative flex min-w-[80px] flex-1 justify-center pt-2"
+          >
+            <Handle
+              id={item.id}
+              type="target"
+              position={Position.Top}
+              className="pointer-events-auto !size-2 !border-border !bg-background"
+              style={{ left: "50%", top: 0, transform: "translate(-50%, -50%)" }}
+            />
+            <span className="text-[10px] text-muted-foreground">{item.label}</span>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-1 pb-1">
+      {items.map((item) => (
+        <div key={item.id} className="pointer-events-none relative pl-3">
+          <Handle
+            id={item.id}
+            type="target"
+            position={Position.Left}
+            className="pointer-events-auto !size-2 !border-border !bg-background"
+            style={{ left: -3, top: "50%", transform: "translate(-50%, -50%)" }}
+          />
+          <span className="text-[10px] text-muted-foreground">{item.label}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function CanvasNodeBase({
   id,
   data,
@@ -258,6 +315,7 @@ function CanvasNodeBase({
 
   const inlineEditor = renderInlineEditor(config, updateConfig);
   const summary = getConfigSummary(config);
+  const llmInputHandles = getLlmInputHandleItems(config);
 
   return (
     <BaseNode className="corner-squircle relative min-w-[260px] overflow-visible rounded-lg border-border/60 shadow-sm">
@@ -308,6 +366,7 @@ function CanvasNodeBase({
       </BaseNodeHeader>
 
       <BaseNodeContent className="gap-2 px-3 py-2">
+        <LlmInputHandles items={llmInputHandles} isTopBottom={isTopBottom} />
         {inlineEditor ? (
           inlineEditor
         ) : (

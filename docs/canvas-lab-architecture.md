@@ -3,7 +3,7 @@
 Root:
 `/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab`
 
-This doc reflects current code shape (React Flow UI node/edge shell + inline config split).
+This doc reflects current code shape (React Flow UI node/edge shell + inline/dialog split + derived aux nodes).
 
 ## 1) High-level flow
 
@@ -46,7 +46,7 @@ File:
 Current wiring:
 
 ```ts
-const NODE_TYPES: NodeTypes = { builder: CanvasNode };
+const NODE_TYPES: NodeTypes = { builder: CanvasNode, aux: CanvasAuxNode };
 const EDGE_TYPES: EdgeTypes = { canvas: DataEdge, semantic: CanvasSemanticEdge };
 ```
 
@@ -62,6 +62,7 @@ defaultEdgeOptions={{
 
 Node click selects config (`selectConfig`), does not auto-open dialog.
 Dialog opens via node `Details` button (`openConfig`) or explicit flows.
+Aux nodes (prompt/system/scorer) are derived in page and mounted as `type: "aux"`.
 
 ## 4) Registry-driven block system
 
@@ -82,6 +83,7 @@ File:
 
 Store owns:
 - `nodes`, `edges`, `configs`, `processors`
+- `auxNodePositions` (derived aux-node position persistence)
 - add/update/remove/connect logic
 - `layoutDirection` + dagre apply-layout
 - config selection/dialog state
@@ -89,6 +91,10 @@ Store owns:
 Current config-selection API:
 - `selectConfig(id)`: select node config, keep dialog closed
 - `openConfig(id)`: select + open modal
+
+Aux-node API:
+- `setAuxNodePosition(id, position)`: persist independent drag position
+- `syncAuxNodePositions(activeIds, defaults)`: cleanup stale aux positions + seed new defaults
 
 Add-node behavior is mode-aware via:
 `/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/stores/canvas-lab-helpers.ts`
@@ -120,6 +126,11 @@ Inline editors:
 - `/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/components/inline/inline-llm.tsx`
 - `/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/components/inline/inline-expression.tsx`
 
+LLM inline scope:
+- text: `model_alias` only
+- code: `model_alias`, `code_lang`
+- prompt/system prompt edited in dialog or spawned aux prompt nodes
+
 ## 7) Node UI architecture (React Flow UI shell)
 
 File:
@@ -135,6 +146,7 @@ Current node UX:
 - summary text for dialog-first configs
 - `Details` button opens modal dialog
 - node resizer logic enabled (`NodeResizer`), visuals hidden (no corner/box affordance)
+- LLM input handles (system/prompt/scorers) render in dedicated content rows (no overlay on inline controls)
 
 ## 8) Handles + layout direction
 
@@ -146,6 +158,10 @@ dataIn: "data-in"
 dataOut: "data-out"
 semanticIn: "semantic-in"
 semanticOut: "semantic-out"
+llmPromptIn: "llm-prompt-in"
+llmSystemIn: "llm-system-in"
+llmInputOut: "llm-input-out"
+getLlmJudgeScoreHandleId(index): `llm-judge-score-in-${index}`
 ```
 
 `canvas-node.tsx` switches handle positions by layout direction:
@@ -171,6 +187,20 @@ Features:
 - muted stroke styling
 
 Legacy mixed edge component is removed (no `canvas-edge.tsx` path in active flow).
+
+## 9.1) Derived aux nodes (LLM prompt/system/scorer)
+
+Files:
+- `/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/components/canvas-aux-node.tsx`
+- `/Volumes/Expansion/projects/new-ui-prototype/studio/frontend/src/features/canvas-lab/canvas-lab-page.tsx`
+
+Behavior:
+- If `llm.prompt` is non-empty, spawn `llm-prompt-input` aux node
+- If `llm.system_prompt` is non-empty, spawn `llm-prompt-input` aux node
+- For `llm_type === "judge"`, spawn one `llm-judge-score` aux node per `scores[index]`
+- Aux edges auto-connect from aux `llmInputOut` to parent LLM target handles
+- Aux nodes are draggable independently; positions persist in Zustand `auxNodePositions`
+- Aux nodes are derived UI/editor projections only (no payload schema change)
 
 ## 10) Connection semantics + side effects
 

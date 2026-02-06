@@ -6,7 +6,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Textarea } from "@/components/ui/textarea";
 import type { ReactElement } from "react";
 import type { LlmConfig } from "../../types";
 
@@ -72,12 +71,9 @@ export function InlineLlm({ config, onUpdate }: InlineLlmProps): ReactElement {
           </SelectContent>
         </Select>
       )}
-      <Textarea
-        className="nodrag min-h-[56px] text-xs"
-        placeholder="Prompt"
-        value={config.prompt}
-        onChange={(event) => onUpdate({ prompt: event.target.value })}
-      />
+      <p className="text-[11px] text-muted-foreground">
+        Prompt/System are edited in dialog or linked input nodes.
+      </p>
     </div>
   );
 }
