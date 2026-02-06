@@ -2,15 +2,25 @@ import {
   Background,
   BackgroundVariant,
   Controls,
+  type Edge,
+  type EdgeChange,
   type EdgeTypes,
   type Node,
+  type NodeChange,
   type NodeTypes,
+  type XYPosition,
   Panel,
   ReactFlow,
   useReactFlow,
   useUpdateNodeInternals,
 } from "@xyflow/react";
-import { type ReactElement, useCallback, useMemo, useState } from "react";
+import {
+  type ReactElement,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import { useShallow } from "zustand/react/shallow";
 import "@xyflow/react/dist/style.css";
 import { Button } from "@/components/ui/button";
@@ -18,6 +28,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { EyeIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { previewCanvas } from "./api";
+import { CanvasAuxNode, type CanvasAuxNodeData } from "./components/canvas-aux-node";
 import { BlockSheet } from "./components/block-sheet";
 import { CanvasNode } from "./components/canvas-node";
 import { CanvasSemanticEdge } from "./components/canvas-semantic-edge";
@@ -26,13 +37,18 @@ import { ConfigDialog } from "./dialogs/config-dialog";
 import { ImportDialog } from "./dialogs/import-dialog";
 import { ProcessorsDialog } from "./dialogs/processors-dialog";
 import { useCanvasLabStore } from "./stores/canvas-lab";
-import type { CanvasNodeData, SamplerConfig } from "./types";
+import type {
+  CanvasNode as CanvasBuilderNode,
+  CanvasNodeData,
+  SamplerConfig,
+} from "./types";
 import { isCategoryConfig } from "./utils";
+import { getLlmJudgeScoreHandleId, HANDLE_IDS } from "./utils/handles";
 import { importCanvasPayload } from "./utils/import";
 import { buildCanvasPayload } from "./utils/payload";
 import { buildDefaultSchemaTransform } from "./utils/processors";
 
-const NODE_TYPES: NodeTypes = { builder: CanvasNode };
+const NODE_TYPES: NodeTypes = { builder: CanvasNode, aux: CanvasAuxNode };
 const EDGE_TYPES: EdgeTypes = { canvas: DataEdge, semantic: CanvasSemanticEdge };
 
 type LayoutControlsProps = {
@@ -40,6 +56,28 @@ type LayoutControlsProps = {
   onLayout: () => void;
   onToggleDirection: () => void;
 };
+
+type InternalsSyncProps = {
+  nodeIds: string[];
+};
+
+function InternalsSync({ nodeIds }: InternalsSyncProps): null {
+  const updateNodeInternals = useUpdateNodeInternals();
+
+  useEffect(() => {
+    if (nodeIds.length === 0) {
+      return;
+    }
+    requestAnimationFrame(() => {
+      updateNodeInternals(nodeIds);
+      requestAnimationFrame(() => {
+        updateNodeInternals(nodeIds);
+      });
+    });
+  }, [nodeIds, updateNodeInternals]);
+
+  return null;
+}
 
 function LayoutControls({
   direction,
@@ -70,6 +108,9 @@ function LayoutControls({
     onToggleDirection();
     requestAnimationFrame(() => {
       refreshNodeInternals();
+      requestAnimationFrame(() => {
+        refreshNodeInternals();
+      });
     });
   }, [onToggleDirection, refreshNodeInternals]);
 
@@ -89,6 +130,7 @@ export function CanvasLabPage(): ReactElement {
   const {
     nodes,
     edges,
+    auxNodePositions,
     configs,
     processors,
     sheetView,
@@ -112,10 +154,13 @@ export function CanvasLabPage(): ReactElement {
     loadCanvas,
     setLayoutDirection,
     applyLayout,
+    setAuxNodePosition,
+    syncAuxNodePositions,
   } = useCanvasLabStore(
     useShallow((state) => ({
       nodes: state.nodes,
       edges: state.edges,
+      auxNodePositions: state.auxNodePositions,
       configs: state.configs,
       processors: state.processors,
       sheetView: state.sheetView,
@@ -139,6 +184,8 @@ export function CanvasLabPage(): ReactElement {
       loadCanvas: state.loadCanvas,
       setLayoutDirection: state.setLayoutDirection,
       applyLayout: state.applyLayout,
+      setAuxNodePosition: state.setAuxNodePosition,
+      syncAuxNodePositions: state.syncAuxNodePositions,
     })),
   );
   const [sheetContainer, setSheetContainer] = useState<HTMLDivElement | null>(
@@ -153,11 +200,189 @@ export function CanvasLabPage(): ReactElement {
     text: string;
   } | null>(null);
 
+  const baseNodeIds = useMemo(
+    () => new Set(nodes.map((node) => node.id)),
+    [nodes],
+  );
+  const baseEdgeIds = useMemo(
+    () => new Set(edges.map((edge) => edge.id)),
+    [edges],
+  );
+
+  const displayGraph = useMemo(() => {
+    const auxNodes: Node<CanvasAuxNodeData>[] = [];
+    const auxEdges: Edge[] = [];
+    const auxDefaults: Record<string, XYPosition> = {};
+    const auxNodeIds: string[] = [];
+
+    for (const node of nodes) {
+      const config = configs[node.id];
+      if (!(config && config.kind === "llm")) {
+        continue;
+      }
+      const llmDirection = node.data.layoutDirection ?? layoutDirection;
+      const items: Array<{
+        key: string;
+        targetHandle: string;
+        data: CanvasAuxNodeData;
+      }> = [];
+
+      if (config.system_prompt.trim()) {
+        items.push({
+          key: "system",
+          targetHandle: HANDLE_IDS.llmSystemIn,
+          data: {
+            kind: "llm-prompt-input",
+            llmId: config.id,
+            field: "system_prompt",
+            title: "System Prompt",
+            layoutDirection: llmDirection,
+          },
+        });
+      }
+
+      if (config.prompt.trim()) {
+        items.push({
+          key: "prompt",
+          targetHandle: HANDLE_IDS.llmPromptIn,
+          data: {
+            kind: "llm-prompt-input",
+            llmId: config.id,
+            field: "prompt",
+            title: "Prompt",
+            layoutDirection: llmDirection,
+          },
+        });
+      }
+
+      if (config.llm_type === "judge") {
+        (config.scores ?? []).forEach((_score, scoreIndex) => {
+          items.push({
+            key: `score-${scoreIndex}`,
+            targetHandle: getLlmJudgeScoreHandleId(scoreIndex),
+            data: {
+              kind: "llm-judge-score",
+              llmId: config.id,
+              scoreIndex,
+              layoutDirection: llmDirection,
+            },
+          });
+        });
+      }
+
+      if (items.length === 0) {
+        continue;
+      }
+
+      const itemSpan = 140;
+      const itemCenterOffset = ((items.length - 1) * itemSpan) / 2;
+      const horizontalSpan = 300;
+      const horizontalCenterOffset = ((items.length - 1) * horizontalSpan) / 2;
+
+      items.forEach((item, index) => {
+        const auxId = `aux-${node.id}-${item.key}`;
+        const defaultPosition =
+          llmDirection === "TB"
+            ? {
+                x: node.position.x + index * horizontalSpan - horizontalCenterOffset,
+                y: node.position.y - 210,
+              }
+            : {
+                x: node.position.x - 330,
+                y: node.position.y + index * itemSpan - itemCenterOffset,
+              };
+        const position = auxNodePositions[auxId] ?? defaultPosition;
+        auxNodeIds.push(auxId);
+        if (!auxNodePositions[auxId]) {
+          auxDefaults[auxId] = defaultPosition;
+        }
+
+        auxNodes.push({
+          id: auxId,
+          type: "aux",
+          data: item.data,
+          position,
+          draggable: true,
+          selectable: true,
+          focusable: true,
+          connectable: false,
+        });
+
+        auxEdges.push({
+          id: `e-${auxId}-${node.id}`,
+          source: auxId,
+          sourceHandle: HANDLE_IDS.llmInputOut,
+          target: node.id,
+          targetHandle: item.targetHandle,
+          type: "canvas",
+          data: { path: "auto" },
+          selectable: false,
+          focusable: false,
+          style: { strokeWidth: 1.5, stroke: "var(--border)" },
+        });
+      });
+    }
+
+    return {
+      nodes: [...nodes, ...auxNodes],
+      edges: [...edges, ...auxEdges],
+      auxNodeIds,
+      auxDefaults,
+    };
+  }, [auxNodePositions, configs, edges, layoutDirection, nodes]);
+  const displayNodeIds = useMemo(
+    () => displayGraph.nodes.map((node) => node.id),
+    [displayGraph.nodes],
+  );
+  useEffect(() => {
+    syncAuxNodePositions(displayGraph.auxNodeIds, displayGraph.auxDefaults);
+  }, [displayGraph.auxDefaults, displayGraph.auxNodeIds, syncAuxNodePositions]);
+
   const handleNodeClick = useCallback(
-    (_: unknown, node: Node<CanvasNodeData>) => {
+    (_: unknown, node: Node<CanvasNodeData | CanvasAuxNodeData>) => {
+      if (node.type !== "builder") {
+        return;
+      }
       selectConfig(node.id);
     },
     [selectConfig],
+  );
+
+  const handleNodesChange = useCallback(
+    (changes: NodeChange<Node<CanvasNodeData | CanvasAuxNodeData>>[]) => {
+      for (const change of changes) {
+        if (
+          !("id" in change) ||
+          change.type !== "position" ||
+          !change.id.startsWith("aux-") ||
+          !change.position
+        ) {
+          continue;
+        }
+        setAuxNodePosition(change.id, change.position);
+      }
+      const next = changes.filter(
+        (change): change is NodeChange<CanvasBuilderNode> =>
+          "id" in change && baseNodeIds.has(change.id),
+      );
+      if (next.length > 0) {
+        onNodesChange(next);
+      }
+    },
+    [baseNodeIds, onNodesChange, setAuxNodePosition],
+  );
+
+  const handleEdgesChange = useCallback(
+    (changes: EdgeChange<Edge>[]) => {
+      const next = changes.filter(
+        (change): change is EdgeChange<Edge> =>
+          "id" in change && baseEdgeIds.has(change.id),
+      );
+      if (next.length > 0) {
+        onEdgesChange(next);
+      }
+    },
+    [baseEdgeIds, onEdgesChange],
   );
 
   const config = activeConfigId ? configs[activeConfigId] : null;
@@ -310,8 +535,8 @@ export function CanvasLabPage(): ReactElement {
           ref={setSheetContainer}
         >
           <ReactFlow
-            nodes={nodes}
-            edges={edges}
+            nodes={displayGraph.nodes}
+            edges={displayGraph.edges}
             nodeTypes={NODE_TYPES}
             edgeTypes={EDGE_TYPES}
             defaultEdgeOptions={{
@@ -319,8 +544,8 @@ export function CanvasLabPage(): ReactElement {
               data: { key: "name", path: "auto" },
               style: { strokeWidth: 1.5, stroke: "var(--border)" },
             }}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
+            onNodesChange={handleNodesChange}
+            onEdgesChange={handleEdgesChange}
             onConnect={onConnect}
             onNodeClick={handleNodeClick}
             isValidConnection={isValidConnection}
@@ -332,6 +557,7 @@ export function CanvasLabPage(): ReactElement {
               onLayout={applyLayout}
               onToggleDirection={handleToggleDirection}
             />
+            <InternalsSync nodeIds={displayNodeIds} />
             <Background
               variant={BackgroundVariant.Dots}
               gap={18}

@@ -18,8 +18,8 @@ const INLINE_FIELD_MAP: InlineFieldMap = {
   uuid: ["uuid_format"],
   model_provider: ["provider_type", "endpoint"],
   model_config: ["provider", "model", "inference_temperature"],
-  llm_text: ["model_alias", "prompt"],
-  llm_code: ["model_alias", "code_lang", "prompt"],
+  llm_text: ["model_alias"],
+  llm_code: ["model_alias", "code_lang"],
   expression: ["dtype", "expr"],
 };
 

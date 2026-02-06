@@ -4,6 +4,7 @@ import {
   type EdgeChange,
   type IsValidConnection,
   type NodeChange,
+  type XYPosition,
   addEdge,
   applyEdgeChanges,
   applyNodeChanges,
@@ -40,6 +41,7 @@ type SheetView = "root" | "sampler" | "llm" | "expression" | "processor";
 type CanvasLabState = {
   nodes: CanvasNode[];
   edges: Edge[];
+  auxNodePositions: Record<string, XYPosition>;
   configs: Record<string, NodeConfig>;
   processors: CanvasProcessorConfig[];
   sheetView: SheetView;
@@ -62,6 +64,11 @@ type CanvasLabState = {
   addExpressionNode: () => void;
   updateConfig: (id: string, patch: Partial<NodeConfig>) => void;
   loadCanvas: (snapshot: CanvasSnapshot) => void;
+  setAuxNodePosition: (id: string, position: XYPosition) => void;
+  syncAuxNodePositions: (
+    activeIds: string[],
+    defaults: Record<string, XYPosition>,
+  ) => void;
   onNodesChange: (changes: NodeChange<CanvasNode>[]) => void;
   onEdgesChange: (changes: EdgeChange<Edge>[]) => void;
   onConnect: (connection: Connection) => void;
@@ -71,6 +78,7 @@ type CanvasLabState = {
 export const useCanvasLabStore = create<CanvasLabState>((set, get) => ({
   nodes: [],
   edges: [],
+  auxNodePositions: {},
   configs: {},
   processors: [],
   sheetView: "root",
@@ -181,10 +189,52 @@ export const useCanvasLabStore = create<CanvasLabState>((set, get) => ({
       processors: snapshot.processors,
       nextId: snapshot.nextId,
       nextY: snapshot.nextY,
+      auxNodePositions: {},
       activeConfigId: null,
       dialogOpen: false,
       sheetView: "root",
     })),
+  setAuxNodePosition: (id, position) =>
+    set((state) => {
+      const current = state.auxNodePositions[id];
+      if (current && current.x === position.x && current.y === position.y) {
+        return state;
+      }
+      return {
+        auxNodePositions: {
+          ...state.auxNodePositions,
+          [id]: position,
+        },
+      };
+    }),
+  syncAuxNodePositions: (activeIds, defaults) =>
+    set((state) => {
+      const nextPositions: Record<string, XYPosition> = {};
+      for (const id of activeIds) {
+        const existing = state.auxNodePositions[id];
+        if (existing) {
+          nextPositions[id] = existing;
+          continue;
+        }
+        const fallback = defaults[id];
+        if (fallback) {
+          nextPositions[id] = fallback;
+        }
+      }
+      const prevIds = Object.keys(state.auxNodePositions);
+      const nextIds = Object.keys(nextPositions);
+      if (prevIds.length !== nextIds.length) {
+        return { auxNodePositions: nextPositions };
+      }
+      for (const id of nextIds) {
+        const prev = state.auxNodePositions[id];
+        const next = nextPositions[id];
+        if (!(prev && prev.x === next.x && prev.y === next.y)) {
+          return { auxNodePositions: nextPositions };
+        }
+      }
+      return state;
+    }),
   updateConfig: (id, patch) => {
     // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: store update
     const applyUpdate = (state: CanvasLabState) => {

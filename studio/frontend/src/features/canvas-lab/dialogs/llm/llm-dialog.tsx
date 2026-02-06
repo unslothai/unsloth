@@ -7,7 +7,6 @@ import {
   ComboboxItem,
   ComboboxList,
 } from "@/components/ui/combobox";
-import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -18,7 +17,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { type ReactElement, useMemo, useRef } from "react";
 import { useCanvasLabStore } from "../../stores/canvas-lab";
-import type { LlmConfig, Score, ScoreOption } from "../../types";
+import type { LlmConfig, Score } from "../../types";
 import { NameField } from "../shared/name-field";
 
 const CODE_LANG_OPTIONS = [
@@ -68,13 +67,6 @@ export function LlmDialog({ config, onUpdate }: LlmDialogProps): ReactElement {
     onUpdate({ [key]: value } as Partial<LlmConfig>);
   };
   const updateScores = (next: Score[]) => updateField("scores", next);
-  const updateScore = (index: number, patch: Partial<Score>) => {
-    updateScores(
-      scores.map((score, i) =>
-        i === index ? { ...score, ...patch } : score,
-      ),
-    );
-  };
   const removeScore = (index: number) => {
     updateScores(scores.filter((_, i) => i !== index));
   };
@@ -90,38 +82,6 @@ export function LlmDialog({ config, onUpdate }: LlmDialogProps): ReactElement {
         ],
       },
     ]);
-  };
-  const updateOption = (
-    scoreIndex: number,
-    optionIndex: number,
-    patch: Partial<ScoreOption>,
-  ) => {
-    const score = scores[scoreIndex];
-    if (!score) {
-      return;
-    }
-    const nextOptions = score.options.map((option, i) =>
-      i === optionIndex ? { ...option, ...patch } : option,
-    );
-    updateScore(scoreIndex, { options: nextOptions });
-  };
-  const addOption = (scoreIndex: number) => {
-    const score = scores[scoreIndex];
-    if (!score) {
-      return;
-    }
-    updateScore(scoreIndex, {
-      options: [...score.options, { value: "", description: "" }],
-    });
-  };
-  const removeOption = (scoreIndex: number, optionIndex: number) => {
-    const score = scores[scoreIndex];
-    if (!score) {
-      return;
-    }
-    updateScore(scoreIndex, {
-      options: score.options.filter((_, i) => i !== optionIndex),
-    });
   };
   return (
     <div className="space-y-4">
@@ -211,100 +171,30 @@ export function LlmDialog({ config, onUpdate }: LlmDialogProps): ReactElement {
         <div className="space-y-3">
           <div className="flex items-center justify-between">
             <p className="text-xs font-semibold uppercase text-muted-foreground">
-              Scores
+              Scorers
             </p>
             <Button type="button" size="xs" variant="outline" onClick={addScore}>
-              Add score
+              Add scorer block
             </Button>
           </div>
           {scores.length === 0 && (
             <p className="text-xs text-muted-foreground">
-              Add at least one score to define evaluation criteria.
+              Add scorer blocks. Each block spawns on canvas and connects to this judge node.
             </p>
           )}
           {scores.map((score, index) => (
-            <div
-              key={`${config.id}-score-${index}`}
-              className="rounded-2xl border border-border/60 p-3"
-            >
-              <div className="flex items-start justify-between gap-2">
-                <div className="grid flex-1 gap-2">
-                  <Input
-                    className="nodrag"
-                    placeholder="Score name (e.g., Relevance)"
-                    value={score.name}
-                    onChange={(event) =>
-                      updateScore(index, { name: event.target.value })
-                    }
-                  />
-                  <Textarea
-                    className="nodrag"
-                    placeholder="Score description and scoring guide"
-                    value={score.description}
-                    onChange={(event) =>
-                      updateScore(index, { description: event.target.value })
-                    }
-                  />
-                </div>
-                <Button
-                  type="button"
-                  size="xs"
-                  variant="ghost"
-                  onClick={() => removeScore(index)}
-                >
-                  Remove
-                </Button>
+            <div key={`${config.id}-score-${index}`} className="flex items-center justify-between rounded-xl border border-border/60 px-3 py-2">
+              <div>
+                <p className="text-xs font-semibold text-foreground">
+                  {score.name.trim() || `Scorer ${index + 1}`}
+                </p>
+                <p className="text-[11px] text-muted-foreground">
+                  {(score.options ?? []).length} options
+                </p>
               </div>
-              <div className="mt-3 space-y-2">
-                <div className="flex items-center justify-between">
-                  <p className="text-xs font-semibold uppercase text-muted-foreground">
-                    Options
-                  </p>
-                  <Button
-                    type="button"
-                    size="xs"
-                    variant="outline"
-                    onClick={() => addOption(index)}
-                  >
-                    Add option
-                  </Button>
-                </div>
-                {score.options.map((option, optionIndex) => (
-                  <div
-                    key={`${config.id}-score-${index}-opt-${optionIndex}`}
-                    className="flex items-start gap-2"
-                  >
-                    <Input
-                      className="nodrag w-20"
-                      placeholder="Value"
-                      value={option.value}
-                      onChange={(event) =>
-                        updateOption(index, optionIndex, {
-                          value: event.target.value,
-                        })
-                      }
-                    />
-                    <Textarea
-                      className="nodrag min-h-[2.5rem] flex-1"
-                      placeholder="Description"
-                      value={option.description}
-                      onChange={(event) =>
-                        updateOption(index, optionIndex, {
-                          description: event.target.value,
-                        })
-                      }
-                    />
-                    <Button
-                      type="button"
-                      size="xs"
-                      variant="ghost"
-                      onClick={() => removeOption(index, optionIndex)}
-                    >
-                      Remove
-                    </Button>
-                  </div>
-                ))}
-              </div>
+              <Button type="button" size="xs" variant="ghost" onClick={() => removeScore(index)}>
+                Remove
+              </Button>
             </div>
           ))}
         </div>
