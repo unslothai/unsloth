@@ -58,9 +58,21 @@ def _check_distributed_strategy_on_mps(config):
         return
     
     # Check for FSDP - be careful about default empty values
-    fsdp_config = getattr(config, "fsdp", None) or getattr(config, "fsdp_config", None)
-    # fsdp can be "", [], None, or an actual config - only block if it's a real config
-    if fsdp_config and fsdp_config not in ("", [], None, "none", "off"):
+    # SFTConfig/TrainingArguments can default to "", [], False, None
+    fsdp_val = getattr(config, "fsdp", None)
+    fsdp_config_val = getattr(config, "fsdp_config", None)
+    
+    # Only treat as FSDP enabled if it's a non-empty, non-falsy value
+    fsdp_enabled = False
+    if fsdp_val and fsdp_val not in ("", "off", "none", False):
+        if isinstance(fsdp_val, (list, tuple)) and len(fsdp_val) > 0:
+            fsdp_enabled = True
+        elif isinstance(fsdp_val, str) and fsdp_val.strip():
+            fsdp_enabled = True
+    if fsdp_config_val and isinstance(fsdp_config_val, dict) and len(fsdp_config_val) > 0:
+        fsdp_enabled = True
+    
+    if fsdp_enabled:
         raise RuntimeError(
             "Unsloth: FSDP (Fully Sharded Data Parallel) is not supported on Apple Silicon.\n"
             "Apple Silicon uses a unified memory architecture without the multi-GPU sharding that FSDP requires.\n"
