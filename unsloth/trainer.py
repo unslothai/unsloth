@@ -314,24 +314,30 @@ def _patch_sft_trainer_auto_packing(trl_module):
         processing_class = kwargs.get("processing_class") or kwargs.get("tokenizer")
         data_collator = kwargs.get("data_collator")
 
-        # We also disable vision language models for padding free collators
+        # Check if context parallelism is enabled
+        cp_size = getattr(config_arg, "context_parallel_size", 1) or 1
+        is_context_parallel = cp_size > 1
+
+        # Block packing/padding-free for incompatible configurations
         blocked = (
             (data_collator is not None)
             or isinstance(processing_class, ProcessorMixin)
             or is_vlm
             or is_unsupported_model
+            or is_context_parallel  # CP uses ring attention which doesn't support packed masks
             or (
                 os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1"
             )  # Disable padding free on forced logits
         )
         requested_pack = bool(getattr(config_arg, "packing", False))
+        padding_free_requested = getattr(config_arg, "padding_free", None) is True
         if blocked:
             if hasattr(config_arg, "packing"):
                 setattr(config_arg, "packing", False)
             if hasattr(config_arg, "padding_free"):
                 setattr(config_arg, "padding_free", False)
 
-        if blocked and requested_pack:
+        if blocked and (requested_pack or padding_free_requested):
             reason = "custom data collator"
             if data_collator is None and isinstance(processing_class, ProcessorMixin):
                 reason = "processor-based model"
@@ -339,7 +345,9 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 reason = "vision-language model"
             elif is_unsupported_model:
                 reason = f"unsupported model type(s): {', '.join(model_types)}"
-            message = "Unsloth: Sample packing skipped " f"({reason} detected)."
+            elif is_context_parallel:
+                reason = "context parallelism enabled"
+            message = "Unsloth: Sample packing/padding-free skipped " f"({reason})."
             print(message)
 
         packing_active = False
@@ -349,7 +357,6 @@ def _patch_sft_trainer_auto_packing(trl_module):
             logger.info("Unsloth: Sample packing enabled for SFTTrainer instance.")
 
         auto_padding_free_active = False
-        padding_free_requested = getattr(config_arg, "padding_free", None) is True
         if not blocked:
             if padding_free_requested:
                 configure_padding_free(config_arg)
