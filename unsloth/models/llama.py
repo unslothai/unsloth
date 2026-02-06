@@ -513,11 +513,18 @@ def fast_swiglu_inference(
 ):
     from ..device_type import DEVICE_TYPE
     if DEVICE_TYPE == "mps":
+        from ..kernels.utils import get_lora_parameters
+        gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
+        upW, upW_quant, upA, upB, upS = get_lora_parameters(self.up_proj)
+        downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
         from ..kernels.mps.dispatch import dispatch_lora_mlp_swiglu
         return dispatch_lora_mlp_swiglu(
-            self, X,
+            X,
+            gateW, gateW_quant, gateA, gateB, gateS,
+            upW, upW_quant, upA, upB, upS,
+            downW, downW_quant, downA, downB, downS,
             gate_multiplier=gate_multiplier,
-            down_multiplier=down_multiplier
+            down_multiplier=down_multiplier,
         )
 
     # gate = self.gate_proj(X)

@@ -250,23 +250,11 @@ def dispatch_gemv(X, W, quant_state, out=None):
         return fast_gemv(X, W, quant_state, out=out)
 
 
-def dispatch_lora_mlp_swiglu(
-    X,
-    gateW,
-    gateW_quant,
-    gateA,
-    gateB,
-    gateS,
-    upW,
-    upW_quant,
-    upA,
-    upB,
-    upS,
-    downW,
-    downW_quant,
     downA,
     downB,
     downS,
+    gate_multiplier=None,
+    down_multiplier=None,
 ):
     if DEVICE_TYPE == "mps":
         # Priority 1: MLX fast_lora (compiled graph fusion + batch-1 GEMV)
@@ -289,6 +277,8 @@ def dispatch_lora_mlp_swiglu(
                 downA,
                 downB,
                 downS,
+                gate_multiplier=gate_multiplier,
+                down_multiplier=down_multiplier,
             )
         # Priority 2: MPS fallback (PyTorch-native)
         if USE_MPS_FALLBACK:
@@ -353,6 +343,8 @@ def dispatch_lora_mlp_geglu_exact(
     downA,
     downB,
     downS,
+    gate_multiplier=None,
+    down_multiplier=None,
 ):
     if DEVICE_TYPE == "mps":
         # Priority 1: MLX fast_lora (compiled graph fusion + batch-1 GEMV)
@@ -361,7 +353,6 @@ def dispatch_lora_mlp_geglu_exact(
             # For exact, we can still use the MLX kernel if we want, but MLX fast.gelu is approx
             # However, for Unsloth MLX path, we use the fast kernel
             from ..mlx.fast_lora import apply_lora_mlp_geglu
-
             return apply_lora_mlp_geglu(
                 X,
                 gateW,
@@ -379,11 +370,12 @@ def dispatch_lora_mlp_geglu_exact(
                 downA,
                 downB,
                 downS,
+                gate_multiplier=gate_multiplier,
+                down_multiplier=down_multiplier,
             )
         # Priority 2: MPS fallback (PyTorch-native)
         if USE_MPS_FALLBACK:
             from .fast_lora import mps_apply_lora_mlp_geglu_exact
-
             fn = _get_compiled_fn(mps_apply_lora_mlp_geglu_exact)
             return fn(
                 X,
@@ -402,6 +394,8 @@ def dispatch_lora_mlp_geglu_exact(
                 downA,
                 downB,
                 downS,
+                gate_multiplier=gate_multiplier,
+                down_multiplier=down_multiplier,
             )
     # Default: CUDA/Triton path
     from ..fast_lora import LoRA_MLP, geglu_exact_forward_kernel, geglu_exact_backward_kernel
@@ -445,6 +439,8 @@ def dispatch_lora_mlp_geglu_approx(
     downA,
     downB,
     downS,
+    gate_multiplier=None,
+    down_multiplier=None,
 ):
     if DEVICE_TYPE == "mps":
         # Priority 1: MLX fast_lora (compiled graph fusion + batch-1 GEMV)
@@ -468,6 +464,8 @@ def dispatch_lora_mlp_geglu_approx(
                 downA,
                 downB,
                 downS,
+                gate_multiplier=gate_multiplier,
+                down_multiplier=down_multiplier,
             )
         # Priority 2: MPS fallback (PyTorch-native)
         if USE_MPS_FALLBACK:
@@ -491,6 +489,8 @@ def dispatch_lora_mlp_geglu_approx(
                 downA,
                 downB,
                 downS,
+                gate_multiplier=gate_multiplier,
+                down_multiplier=down_multiplier,
             )
     # Default: CUDA/Triton path
     from ..fast_lora import (

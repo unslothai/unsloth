@@ -120,15 +120,21 @@ def _compiled_mlp_geglu(
 
 @mx.compile
 def _compiled_mlp_swiglu(
-    X, gateW, gateA, gateB, gateS, upW, upA, upB, upS, downW, downA, downB, downS
+    X, gateW, gateA, gateB, gateS, upW, upA, upB, upS, downW, downA, downB, downS,
+    gate_multiplier=None, down_multiplier=None
 ):
     # Use quantized_matmul directly - MLX will optimize this if weights are quantized trees
     gate = quantized_matmul(X, gateW) + (X @ gateA.T) @ gateB.T * gateS
+    if gate_multiplier is not None:
+        gate = gate * gate_multiplier
+        
     up = quantized_matmul(X, upW) + (X @ upA.T) @ upB.T * upS
 
     # SwiGLU: silu(gate) * up = (gate * sigmoid(gate)) * up
     act = (gate * mx.sigmoid(gate)) * up
     out = quantized_matmul(act, downW) + (act @ downA.T) @ downB.T * downS
+    if down_multiplier is not None:
+        out = out * down_multiplier
 
     return out
 
@@ -150,6 +156,8 @@ def apply_lora_mlp_swiglu(
     downA,
     downB,
     downS,
+    gate_multiplier=None,
+    down_multiplier=None,
 ):
     with mlx_context():
         # Convert inputs to MLX
@@ -182,6 +190,9 @@ def apply_lora_mlp_swiglu(
                 gateB_mlx = torch_to_mlx(gateB)
                 gateS_val = gateS.item() if hasattr(gateS, "item") else gateS
                 gate = gate + (X_flat @ gateA_mlx.T) @ gateB_mlx.T * gateS_val
+            
+            if gate_multiplier is not None:
+                gate = gate * gate_multiplier
 
             # 2. Up
             up = quantized_matmul(X_flat, upW_mlx)
@@ -202,6 +213,9 @@ def apply_lora_mlp_swiglu(
                 downS_val = downS.item() if hasattr(downS, "item") else downS
                 out = out + (act @ downA_mlx.T) @ downB_mlx.T * downS_val
 
+            if down_multiplier is not None:
+                out = out * down_multiplier
+                
             out_reshaped = out.reshape(X.shape)
             if return_mlx:
                 return out_reshaped
@@ -215,9 +229,13 @@ def apply_lora_mlp_swiglu(
         if not has_lora:
             # No LoRA: simple base projection path
             gate = quantized_matmul(X_mlx, gateW_mlx)
+            if gate_multiplier is not None:
+                gate = gate * gate_multiplier
             up = quantized_matmul(X_mlx, upW_mlx)
             act = (gate * mx.sigmoid(gate)) * up
             out_mlx = quantized_matmul(act, downW_mlx)
+            if down_multiplier is not None:
+                out_mlx = out_mlx * down_multiplier
         else:
             # With LoRA: use compiled kernel
             gateA_mlx = torch_to_mlx(gateA)
@@ -247,6 +265,8 @@ def apply_lora_mlp_swiglu(
                 downA_mlx,
                 downB_mlx,
                 downS_mlx,
+                gate_multiplier=gate_multiplier,
+                down_multiplier=down_multiplier,
             )
 
         if return_mlx:
@@ -271,6 +291,8 @@ def apply_lora_mlp_geglu(
     downA,
     downB,
     downS,
+    gate_multiplier=None,
+    down_multiplier=None,
 ):
     with mlx_context():
         # Convert inputs to MLX
@@ -299,6 +321,9 @@ def apply_lora_mlp_geglu(
                 gateB_mlx = torch_to_mlx(gateB)
                 gateS_val = gateS.item() if hasattr(gateS, "item") else gateS
                 gate = gate + (X_flat @ gateA_mlx.T) @ gateB_mlx.T * gateS_val
+            
+            if gate_multiplier is not None:
+                gate = gate * gate_multiplier
 
             # 2. Up
             up = quantized_matmul(X_flat, upW_mlx)
@@ -319,6 +344,9 @@ def apply_lora_mlp_geglu(
                 downS_val = downS.item() if hasattr(downS, "item") else downS
                 out = out + (act @ downA_mlx.T) @ downB_mlx.T * downS_val
 
+            if down_multiplier is not None:
+                out = out * down_multiplier
+                
             out_reshaped = out.reshape(X.shape)
             if return_mlx:
                 return out_reshaped
@@ -332,9 +360,13 @@ def apply_lora_mlp_geglu(
         if not has_lora:
             # No LoRA: simple base projection path
             gate = quantized_matmul(X_mlx, gateW_mlx)
+            if gate_multiplier is not None:
+                gate = gate * gate_multiplier
             up = quantized_matmul(X_mlx, upW_mlx)
             act = _gelu_approx(gate) * up
             out_mlx = quantized_matmul(act, downW_mlx)
+            if down_multiplier is not None:
+                out_mlx = out_mlx * down_multiplier
         else:
             # With LoRA: use compiled kernel
             gateA_mlx = torch_to_mlx(gateA)
@@ -364,6 +396,8 @@ def apply_lora_mlp_geglu(
                 downA_mlx,
                 downB_mlx,
                 downS_mlx,
+                gate_multiplier=gate_multiplier,
+                down_multiplier=down_multiplier,
             )
 
         if return_mlx:

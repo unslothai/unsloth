@@ -184,6 +184,8 @@ def mps_apply_lora_mlp_swiglu(
     downA,
     downB,
     downS,
+    gate_multiplier=None,
+    down_multiplier=None,
 ):
     """MPS SwiGLU MLP fallback using PyTorch operations."""
 
@@ -194,6 +196,9 @@ def mps_apply_lora_mlp_swiglu(
 
             # 1. Up/Gate Projections (Fused in MLX)
             e_mlx = _mlx_matmul(X_mlx, gateW, gateA, gateB, gateS)
+            if gate_multiplier is not None:
+                e_mlx = e_mlx * gate_multiplier
+                
             g_mlx = _mlx_matmul(X_mlx, upW, upA, upB, upS)
 
             # 2. SwiGLU Activation (Fused in MLX)
@@ -207,7 +212,9 @@ def mps_apply_lora_mlp_swiglu(
 
             # 3. Down Projection (Fused in MLX)
             out_mlx = _mlx_matmul(h_mlx, downW, downA, downB, downS)
-
+            if down_multiplier is not None:
+                out_mlx = out_mlx * down_multiplier
+                
             # Return PyTorch tensor with cache for next layer
             out = mlx_to_torch(out_mlx).view_as(
                 X
@@ -235,6 +242,9 @@ def mps_apply_lora_mlp_swiglu(
     # Dispatching to torch-native implementation
     # For now, we use the device-agnostic logic but with MPS-friendly matmul
     e = mps_matmul_lora(X, gateW, gateW_quant, gateA, gateB, gateS)
+    if gate_multiplier is not None:
+        e = e * gate_multiplier
+        
     g = mps_matmul_lora(X, upW, upW_quant, upA, upB, upS)
     
     # Use optimized Metal SwiGLU if available (now handles autograd correctly)
@@ -245,7 +255,10 @@ def mps_apply_lora_mlp_swiglu(
     else:
         h = F.silu(e) * g
     
-    return mps_matmul_lora(h, downW, downW_quant, downA, downB, downS)
+    out = mps_matmul_lora(h, downW, downW_quant, downA, downB, downS)
+    if down_multiplier is not None:
+        out = out * down_multiplier
+    return out
 
 
 def mps_apply_lora_qkv(
@@ -312,6 +325,8 @@ def mps_apply_lora_mlp_geglu_exact(
     downA,
     downB,
     downS,
+    gate_multiplier=None,
+    down_multiplier=None,
 ):
     """MPS GEGLU (Exact) MLP fallback using PyTorch operations."""
 
@@ -339,6 +354,9 @@ def mps_apply_lora_mlp_geglu_exact(
             return out
 
     e = mps_matmul_lora(X, gateW, gateW_quant, gateA, gateB, gateS)
+    if gate_multiplier is not None:
+        e = e * gate_multiplier
+        
     g = mps_matmul_lora(X, upW, upW_quant, upA, upB, upS)
     
     # Use optimized Metal GEGLU if available (now handles autograd correctly)
@@ -349,7 +367,11 @@ def mps_apply_lora_mlp_geglu_exact(
     else:
         h = F.gelu(e, approximate="none") * g
     
-    return mps_matmul_lora(h, downW, downW_quant, downA, downB, downS)
+    out = mps_matmul_lora(h, downW, downW_quant, downA, downB, downS)
+    if down_multiplier is not None:
+        out = out * down_multiplier
+    return out
+    
 
 
 def mps_apply_lora_mlp_geglu_approx(
@@ -369,6 +391,8 @@ def mps_apply_lora_mlp_geglu_approx(
     downA,
     downB,
     downS,
+    gate_multiplier=None,
+    down_multiplier=None,
 ):
     """MPS GEGLU (Approximate) MLP fallback using PyTorch operations."""
 
@@ -396,6 +420,9 @@ def mps_apply_lora_mlp_geglu_approx(
             return out
 
     e = mps_matmul_lora(X, gateW, gateW_quant, gateA, gateB, gateS)
+    if gate_multiplier is not None:
+        e = e * gate_multiplier
+        
     g = mps_matmul_lora(X, upW, upW_quant, upA, upB, upS)
     
     # Use optimized Metal GEGLU if available (now handles autograd correctly)
@@ -406,4 +433,7 @@ def mps_apply_lora_mlp_geglu_approx(
     else:
         h = F.gelu(e, approximate="tanh") * g
     
-    return mps_matmul_lora(h, downW, downW_quant, downA, downB, downS)
+    out = mps_matmul_lora(h, downW, downW_quant, downA, downB, downS)
+    if down_multiplier is not None:
+        out = out * down_multiplier
+    return out
