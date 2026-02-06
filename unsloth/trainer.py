@@ -38,6 +38,7 @@ from unsloth_zoo.vision_utils import (
 )
 from unsloth_zoo.hf_utils import get_transformers_model_type
 from unsloth_zoo.utils import Version
+from unsloth.device_type import DEVICE_TYPE
 import dataclasses
 
 __all__ = [
@@ -49,6 +50,35 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+
+def _check_distributed_strategy_on_mps(config):
+    """Block FSDP/ZeRO-3 on Apple Silicon with helpful error."""
+    if DEVICE_TYPE != "mps":
+        return
+    
+    # Check for FSDP
+    fsdp_config = getattr(config, "fsdp", None) or getattr(config, "fsdp_config", None)
+    if fsdp_config:
+        raise RuntimeError(
+            "Unsloth: FSDP (Fully Sharded Data Parallel) is not supported on Apple Silicon.\n"
+            "Apple Silicon uses a unified memory architecture without the multi-GPU sharding that FSDP requires.\n"
+            "Please set `fsdp=None` and use standard LoRA/QLoRA training instead."
+        )
+    
+    # Check for DeepSpeed ZeRO
+    deepspeed_config = getattr(config, "deepspeed", None)
+    if deepspeed_config:
+        zero_stage = None
+        if isinstance(deepspeed_config, dict):
+            zero_stage = deepspeed_config.get("zero_optimization", {}).get("stage", 0)
+        if zero_stage and zero_stage >= 2:
+            raise RuntimeError(
+                f"Unsloth: DeepSpeed ZeRO Stage {zero_stage} is not supported on Apple Silicon.\n"
+                "Apple Silicon does not support NCCL/GLOO backends required by DeepSpeed.\n"
+                "Please set `deepspeed=None` and use standard LoRA/QLoRA training instead."
+            )
+
 
 _AUTO_PADDING_FREE_ENV_DISABLED = os.environ.get(
     "UNSLOTH_DISABLE_AUTO_PADDING_FREE", ""
@@ -288,6 +318,10 @@ def _patch_sft_trainer_auto_packing(trl_module):
             config_arg = args[1]
         else:
             config_arg = kwargs.get("args")
+
+        # Block FSDP/ZeRO-3 on Apple Silicon early
+        if config_arg is not None:
+            _check_distributed_strategy_on_mps(config_arg)
 
         # Check if model type is unsupported for padding_free
         model = kwargs.get("model")
