@@ -1,0 +1,54 @@
+{
+  "name": "micode",
+  "version": "0.9.1",
+  "description": "OpenCode plugin with Brainstorm-Research-Plan-Implement workflow",
+  "module": "dist/index.js",
+  "main": "dist/index.js",
+  "types": "src/index.ts",
+  "type": "module",
+  "files": [
+    "src",
+    "dist",
+    "INSTALL_CLAUDE.md"
+  ],
+  "scripts": {
+    "prepare": "lefthook install",
+    "build": "bun build src/index.ts --outdir dist --target bun --external bun-pty",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "bun run typecheck",
+    "test": "bun test",
+    "test:watch": "bun test --watch",
+    "format": "biome format --write .",
+    "lint": "biome lint .",
+    "check": "biome check ."
+  },
+  "keywords": [
+    "opencode",
+    "plugin",
+    "research",
+    "plan",
+    "implement"
+  ],
+  "author": "vtemian",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vtemian/micode.git"
+  },
+  "homepage": "https://github.com/vtemian/micode#readme",
+  "bugs": {
+    "url": "https://github.com/vtemian/micode/issues"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "1.1.23",
+    "bun-pty": "^0.4.5",
+    "valibot": "^1.2.0",
+    "yaml": "^2.8.2"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.3.10",
+    "bun-types": "latest",
+    "lefthook": "^2.0.13",
+    "typescript": "^5.7.3"
+  }
+}

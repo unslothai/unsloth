@@ -1,0 +1,39 @@
+{
+  "name": "@anthropic-ai/tokenizer",
+  "version": "0.0.4",
+  "description": "Claude tokenizer",
+  "author": "Anthropic <support@anthropic.com>",
+  "types": "dist/cjs/index.d.ts",
+  "main": "dist/cjs/index.js",
+  "type": "commonjs",
+  "repository": "github:anthropics/anthropic-tokenizer-typescript",
+  "license": "Apache-2.0",
+  "private": false,
+  "scripts": {
+    "test": "yarn jest",
+    "build": "bash ./build",
+    "prepack": "yarn build",
+    "format": "prettier --write .",
+    "tsn": "ts-node -r tsconfig-paths/register",
+    "fix": "eslint --fix --ext ts,js ."
+  },
+  "dependencies": {
+    "@types/node": "^18.11.18",
+    "tiktoken": "^1.0.10"
+  },
+  "devDependencies": {
+    "@anthropic-ai/tokenizer": "link:.",
+    "@types/jest": "^27.5.0",
+    "@typescript-eslint/eslint-plugin": "^5.33.0",
+    "@typescript-eslint/parser": "^5.33.0",
+    "eslint": "^8.22.0",
+    "eslint-plugin-unused-imports": "^2.0.0",
+    "jest": "^28.1.0",
+    "prettier": "rattrayalex/prettier#postfix-ternaries",
+    "ts-jest": "^28.0.2",
+    "ts-node": "^10.5.0",
+    "tsc-alias": "^1.6.9",
+    "tsconfig-paths": "^3.12.0",
+    "typescript": "^4.8.2"
+  }
+}
