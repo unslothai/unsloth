@@ -58,6 +58,9 @@ type BlockGroup = {
 type BlockDialogArgs = {
   config: NodeConfig;
   categoryOptions: SamplerConfig[];
+  modelConfigAliases: string[];
+  modelProviderOptions: string[];
+  datetimeOptions: string[];
   onUpdate: (id: string, patch: Partial<NodeConfig>) => void;
 };
 
@@ -195,10 +198,11 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
     icon: Clock01Icon,
     createConfig: (id, existing) =>
       makeSamplerConfig(id, "timedelta", existing),
-    renderDialog: ({ config, onUpdate }) =>
+    renderDialog: ({ config, datetimeOptions, onUpdate }) =>
       config.kind === "sampler" && config.sampler_type === "timedelta" ? (
         <TimedeltaDialog
           config={config}
+          datetimeOptions={datetimeOptions}
           onUpdate={(patch) => onUpdate(config.id, patch)}
         />
       ) : null,
@@ -242,10 +246,11 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
     description: "Free-form prompt generation.",
     icon: PencilEdit02Icon,
     createConfig: (id, existing) => makeLlmConfig(id, "text", existing),
-    renderDialog: ({ config, onUpdate }) =>
+    renderDialog: ({ config, modelConfigAliases, onUpdate }) =>
       config.kind === "llm" && config.llm_type === "text" ? (
         <LlmDialog
           config={config}
+          modelConfigAliases={modelConfigAliases}
           onUpdate={(patch) => onUpdate(config.id, patch)}
         />
       ) : null,
@@ -257,10 +262,11 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
     description: "JSON output via schema.",
     icon: CodeIcon,
     createConfig: (id, existing) => makeLlmConfig(id, "structured", existing),
-    renderDialog: ({ config, onUpdate }) =>
+    renderDialog: ({ config, modelConfigAliases, onUpdate }) =>
       config.kind === "llm" && config.llm_type === "structured" ? (
         <LlmDialog
           config={config}
+          modelConfigAliases={modelConfigAliases}
           onUpdate={(patch) => onUpdate(config.id, patch)}
         />
       ) : null,
@@ -272,10 +278,11 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
     description: "Generate code or SQL.",
     icon: CodeSimpleIcon,
     createConfig: (id, existing) => makeLlmConfig(id, "code", existing),
-    renderDialog: ({ config, onUpdate }) =>
+    renderDialog: ({ config, modelConfigAliases, onUpdate }) =>
       config.kind === "llm" && config.llm_type === "code" ? (
         <LlmDialog
           config={config}
+          modelConfigAliases={modelConfigAliases}
           onUpdate={(patch) => onUpdate(config.id, patch)}
         />
       ) : null,
@@ -287,10 +294,11 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
     description: "Score outputs with criteria.",
     icon: BalanceScaleIcon,
     createConfig: (id, existing) => makeLlmConfig(id, "judge", existing),
-    renderDialog: ({ config, onUpdate }) =>
+    renderDialog: ({ config, modelConfigAliases, onUpdate }) =>
       config.kind === "llm" && config.llm_type === "judge" ? (
         <LlmDialog
           config={config}
+          modelConfigAliases={modelConfigAliases}
           onUpdate={(patch) => onUpdate(config.id, patch)}
         />
       ) : null,
@@ -317,10 +325,11 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
     description: "Alias + model + inference params.",
     icon: Plant01Icon,
     createConfig: (id, existing) => makeModelConfig(id, existing),
-    renderDialog: ({ config, onUpdate }) =>
+    renderDialog: ({ config, modelProviderOptions, onUpdate }) =>
       config.kind === "model_config" ? (
         <ModelConfigDialog
           config={config}
+          providerOptions={modelProviderOptions}
           onUpdate={(patch) => onUpdate(config.id, patch)}
         />
       ) : null,
@@ -385,11 +394,21 @@ export function getBlockDefinitionForConfig(
 export function renderBlockDialog(
   config: NodeConfig | null,
   categoryOptions: SamplerConfig[],
+  modelConfigAliases: string[],
+  modelProviderOptions: string[],
+  datetimeOptions: string[],
   onUpdate: (id: string, patch: Partial<NodeConfig>) => void,
 ): ReactElement | null {
   const definition = getBlockDefinitionForConfig(config);
   if (!definition || !config) {
     return null;
   }
-  return definition.renderDialog({ config, categoryOptions, onUpdate });
+  return definition.renderDialog({
+    config,
+    categoryOptions,
+    modelConfigAliases,
+    modelProviderOptions,
+    datetimeOptions,
+    onUpdate,
+  });
 }

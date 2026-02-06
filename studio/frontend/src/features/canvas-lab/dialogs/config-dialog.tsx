@@ -12,6 +12,9 @@ type ConfigDialogProps = {
   onOpenChange: (open: boolean) => void;
   config: NodeConfig | null;
   categoryOptions: SamplerConfig[];
+  modelConfigAliases: string[];
+  modelProviderOptions: string[];
+  datetimeOptions: string[];
   onUpdate: (id: string, patch: Partial<NodeConfig>) => void;
   container?: HTMLDivElement | null;
 };
@@ -21,6 +24,9 @@ export function ConfigDialog({
   onOpenChange,
   config,
   categoryOptions,
+  modelConfigAliases,
+  modelProviderOptions,
+  datetimeOptions,
   onUpdate,
   container,
 }: ConfigDialogProps): ReactElement {
@@ -58,7 +64,14 @@ export function ConfigDialog({
                 />
               </div>
             )}
-            {renderBlockDialog(config, categoryOptions, onUpdate)}
+            {renderBlockDialog(
+              config,
+              categoryOptions,
+              modelConfigAliases,
+              modelProviderOptions,
+              datetimeOptions,
+              onUpdate,
+            )}
           </div>
         )}
         <DialogFooter>
