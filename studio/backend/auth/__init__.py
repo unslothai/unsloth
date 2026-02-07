@@ -1,7 +1,7 @@
 """
 Authentication module for JWT-based auth with SQLite storage.
 """
-from .jwt import create_access_token, get_current_subject, reload_secret
+from .authentication import create_access_token, get_current_subject, reload_secret
 from .storage import (
     is_initialized,
     create_initial_user,

@@ -11,6 +11,7 @@ from .models import (
     ModelDetails,
     LoRAInfo,
     LoRAScanResponse,
+    ModelListResponse,
 )
 from .auth import (
     AuthSetupRequest,
@@ -28,6 +29,7 @@ __all__ = [
     "ModelDetails",
     "LoRAInfo",
     "LoRAScanResponse",
+    "ModelListResponse",
     # Auth schemas
     "AuthSetupRequest",
     "AuthLoginRequest",
