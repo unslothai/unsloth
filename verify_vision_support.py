@@ -88,7 +88,11 @@ def test_vision_fast_inference_mps():
 
     from unsloth.models.vision import FastBaseModel
 
-    mock_model = torch.nn.Module()
+    # Create mock model with required config attribute
+    mock_model = MagicMock()
+    mock_model.config = MagicMock()
+    mock_model.config.model_type = "mllama"
+    mock_model.config.torch_dtype = torch.float16
     mock_tokenizer = MagicMock()
 
     # Test that fast_inference=True on MPS issues a warning and disables fast_inference
