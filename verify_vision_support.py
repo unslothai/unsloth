@@ -17,10 +17,22 @@ try:
 except ImportError:
     print("Mocking MLX for verification...")
     from unittest.mock import MagicMock
+    import importlib.machinery
+    import types
 
-    sys.modules["mlx"] = MagicMock()
-    sys.modules["mlx.core"] = MagicMock()
-    sys.modules["mlx.nn"] = MagicMock()
+    def create_mock_module(name):
+        mock = MagicMock()
+        mock.__name__ = name
+        mock.__path__ = []
+        # Use a real ModuleSpec for Python 3.12+ compatibility
+        mock.__spec__ = importlib.machinery.ModuleSpec(name, None, is_package=True)
+        sys.modules[name] = mock
+        return mock
+
+    create_mock_module("mlx")
+    create_mock_module("mlx.core")
+    create_mock_module("mlx.nn")
+    create_mock_module("mlx.optimizers")
 
 # Mock unsloth.kernels.mlx
 try:
@@ -175,29 +187,31 @@ def test_padding_free_block_mps():
 
     from unsloth.trainer import _patch_sft_trainer_auto_packing
     
+    # Use a dummy class instead of MagicMock for the trainer to avoid InvalidSpecError
+    class MockSFTTrainer:
+        def __init__(self, *args, **kwargs):
+            self.args = kwargs.get("args")
+            self.model = kwargs.get("model")
+            
     # Create a mock trl module
     mock_trl = MagicMock()
-    mock_sft_trainer = MagicMock()
-    mock_trl.SFTTrainer = mock_sft_trainer
+    mock_trl.SFTTrainer = MockSFTTrainer
     
     # Patch the trainer
     _patch_sft_trainer_auto_packing(mock_trl)
     
-    # Get the new __init__
-    new_init = mock_sft_trainer.__init__
+    # Get the patched class (it's the same class but its __init__ was patched)
+    patched_trainer_class = mock_trl.SFTTrainer
     
     # Mock args
     mock_args = MagicMock()
     mock_args.padding_free = True
     mock_args.packing = False
     
-    # Call new_init
-    # We use a mock self, and pass args as a keyword argument
-    mock_self = MagicMock()
-    
     # Patch print to catch the block message
     with patch("builtins.print") as mock_print:
-        new_init(mock_self, model=MagicMock(), args=mock_args)
+        # Instantiate the patched trainer
+        _ = patched_trainer_class(model=MagicMock(), args=mock_args)
         
         # Verify padding_free was set to False
         assert mock_args.padding_free is False
@@ -218,27 +232,24 @@ def test_vision_bnb_config_mps():
 
     from unsloth.models.vision import FastVisionModel, FastBaseModel
     
-    mock_model = torch.nn.Module()
+    # Mock return values
+    mock_model = MagicMock()
+    mock_model.config = MagicMock()
+    mock_model.config.model_type = "mllama"
     mock_tokenizer = MagicMock()
     
+    # Patch FastBaseModel.from_pretrained
     with patch("unsloth.models.vision.FastBaseModel.from_pretrained", return_value=(mock_model, mock_tokenizer)) as mock_from_pretrained:
         FastVisionModel.from_pretrained(
             model_name="unsloth/Llama-3.2-11B-Vision-Instruct",
             load_in_4bit=True,
         )
         
-        # Check call arguments
+        # Check call arguments to FastBaseModel.from_pretrained
+        # We want to ensure quantization_config is None on MPS
         call_kwargs = mock_from_pretrained.call_args[1]
-        
-        # On MPS, bnb_config should be None inside FastVisionModel.from_pretrained 
-        # but we need to verify how it's passed to FastModel.from_pretrained
-        # In our refactored code, we set bnb_config = None and it's (implicitly) returned or used.
-        # Actually FastVisionModel.from_pretrained calls FastModel.from_pretrained
-        
-        # Wait, FastVisionModel.from_pretrained directly calls FastModel.from_pretrained
-        # with its own arguments. Let's re-verify the logic.
-        
-    print("BitsAndBytesConfig guard verified (logic check passed)")
+        assert call_kwargs.get("quantization_config") is None
+        print("quantization_config was correctly passed as None to FastBaseModel.from_pretrained")
 
 if __name__ == "__main__":
     # Force MPS for testing logic if we want to see it work
