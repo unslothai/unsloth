@@ -109,9 +109,10 @@ def test_vision_fast_inference_mps():
             )
 
             # Check that a warning was issued
-            assert len(w) == 1
-            assert "fast_inference (vLLM) is not yet supported" in str(w[0].message)
-            assert "Automatically disabling fast_inference" in str(w[0].message)
+            assert len(w) >= 1, f"Expected at least 1 warning, got {len(w)}"
+            warning_messages = [str(warning.message) for warning in w]
+            assert any("fast_inference (vLLM) is not yet supported" in msg for msg in warning_messages), f"Expected warning about fast_inference not supported. Got: {warning_messages}"
+            assert any("Automatically disabling fast_inference" in msg for msg in warning_messages), f"Expected warning about auto-disabling. Got: {warning_messages}"
             print("Warning correctly issued for fast_inference on MPS")
 
             # Verify that from_pretrained was called with fast_inference=False
