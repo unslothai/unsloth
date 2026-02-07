@@ -915,7 +915,16 @@ class FastModel(FastBaseModel):
             print("Unsloth: Apple Silicon detected. Will use on-the-fly MLX 4-bit quantization.")
 
         if fast_inference:
-            if importlib.util.find_spec("vllm") is None:
+            # Disable fast_inference on Apple Silicon (MPS) - vLLM not supported
+            if DEVICE_TYPE == "mps":
+                warnings.warn(
+                    "Unsloth: fast_inference (vLLM) is not yet supported for Vision models on Apple Silicon. "
+                    "Automatically disabling fast_inference and using native Unsloth inference instead.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+                fast_inference = False
+            elif importlib.util.find_spec("vllm") is None:
                 raise ImportError(
                     "Unsloth: Please install vLLM before enabling `fast_inference`!\n"
                     "You can do this in a terminal via `pip install vllm`"
