@@ -105,7 +105,8 @@ def dispatch_layernorm(X, W, b, eps):
 def dispatch_rope_embedding(Q, K, cos, sin, rope_indices=None):
     if DEVICE_TYPE == "mps":
         # Priority 1: MLX RoPE (uses mx.fast.rope or optimized MLX arithmetic)
-        if _is_mlx_available():
+        # Only use MLX path for inference — MLX ops are outside PyTorch autograd
+        if _is_mlx_available() and not torch.is_grad_enabled():
             from ..mlx.fast_ops import mlx_rope_qk
             return mlx_rope_qk(Q, K, cos, sin, rope_indices)
         # Priority 2: MPS fallback (PyTorch-native)
@@ -272,7 +273,8 @@ def dispatch_lora_mlp_swiglu(
 ):
     if DEVICE_TYPE == "mps":
         # Priority 1: MLX fast_lora (compiled graph fusion + batch-1 GEMV)
-        if _is_mlx_available():
+        # Only use MLX path for inference — MLX ops are outside PyTorch autograd
+        if _is_mlx_available() and not torch.is_grad_enabled():
             from ..mlx.fast_lora import apply_lora_mlp_swiglu
             return apply_lora_mlp_swiglu(
                 X,
@@ -294,7 +296,7 @@ def dispatch_lora_mlp_swiglu(
                 gate_multiplier=gate_multiplier,
                 down_multiplier=down_multiplier,
             )
-        # Priority 2: MPS fallback (PyTorch-native)
+        # Priority 2: MPS fallback (PyTorch-native, preserves autograd)
         if USE_MPS_FALLBACK:
             from .fast_lora import mps_apply_lora_mlp_swiglu
             fn = _get_compiled_fn(mps_apply_lora_mlp_swiglu)
@@ -362,10 +364,8 @@ def dispatch_lora_mlp_geglu_exact(
 ):
     if DEVICE_TYPE == "mps":
         # Priority 1: MLX fast_lora (compiled graph fusion + batch-1 GEMV)
-        if _is_mlx_available():
-            # We use the same MLX kernel, but Gemma usually uses approximate
-            # For exact, we can still use the MLX kernel if we want, but MLX fast.gelu is approx
-            # However, for Unsloth MLX path, we use the fast kernel
+        # Only use MLX path for inference — MLX ops are outside PyTorch autograd
+        if _is_mlx_available() and not torch.is_grad_enabled():
             from ..mlx.fast_lora import apply_lora_mlp_geglu
             return apply_lora_mlp_geglu(
                 X,
@@ -387,7 +387,7 @@ def dispatch_lora_mlp_geglu_exact(
                 gate_multiplier=gate_multiplier,
                 down_multiplier=down_multiplier,
             )
-        # Priority 2: MPS fallback (PyTorch-native)
+        # Priority 2: MPS fallback (PyTorch-native, preserves autograd)
         if USE_MPS_FALLBACK:
             from .fast_lora import mps_apply_lora_mlp_geglu_exact
             fn = _get_compiled_fn(mps_apply_lora_mlp_geglu_exact)
@@ -458,7 +458,8 @@ def dispatch_lora_mlp_geglu_approx(
 ):
     if DEVICE_TYPE == "mps":
         # Priority 1: MLX fast_lora (compiled graph fusion + batch-1 GEMV)
-        if _is_mlx_available():
+        # Only use MLX path for inference — MLX ops are outside PyTorch autograd
+        if _is_mlx_available() and not torch.is_grad_enabled():
             from ..mlx.fast_lora import apply_lora_mlp_geglu
 
             return apply_lora_mlp_geglu(
@@ -481,7 +482,7 @@ def dispatch_lora_mlp_geglu_approx(
                 gate_multiplier=gate_multiplier,
                 down_multiplier=down_multiplier,
             )
-        # Priority 2: MPS fallback (PyTorch-native)
+        # Priority 2: MPS fallback (PyTorch-native, preserves autograd)
         if USE_MPS_FALLBACK:
             from .fast_lora import mps_apply_lora_mlp_geglu_approx
 
@@ -556,7 +557,8 @@ def dispatch_lora_qkv(
 ):
     if DEVICE_TYPE == "mps":
         # Priority 1: MLX fast_lora (compiled graph fusion + batch-1 GEMV)
-        if _is_mlx_available():
+        # Only use MLX path for inference — MLX ops are outside PyTorch autograd
+        if _is_mlx_available() and not torch.is_grad_enabled():
             from ..mlx.fast_lora import apply_lora_qkv
             return apply_lora_qkv(
                 X,
@@ -576,7 +578,7 @@ def dispatch_lora_qkv(
                 VB,
                 VS,
             )
-        # Priority 2: MPS fallback (PyTorch-native)
+        # Priority 2: MPS fallback (PyTorch-native, preserves autograd)
         if USE_MPS_FALLBACK:
             from .fast_lora import mps_apply_lora_qkv
             fn = _get_compiled_fn(mps_apply_lora_qkv)
@@ -624,10 +626,11 @@ def dispatch_lora_qkv(
 def dispatch_lora_o(X, OW, OW_quant, OA, OB, OS):
     if DEVICE_TYPE == "mps":
         # Priority 1: MLX fast_lora (compiled graph fusion + batch-1 GEMV)
-        if _is_mlx_available():
+        # Only use MLX path for inference — MLX ops are outside PyTorch autograd
+        if _is_mlx_available() and not torch.is_grad_enabled():
             from ..mlx.fast_lora import apply_lora_o
             return apply_lora_o(X, OW, OW_quant, OA, OB, OS)
-        # Priority 2: MPS fallback (PyTorch-native)
+        # Priority 2: MPS fallback (PyTorch-native, preserves autograd)
         if USE_MPS_FALLBACK:
             from .fast_lora import mps_apply_lora_o
             fn = _get_compiled_fn(mps_apply_lora_o)
