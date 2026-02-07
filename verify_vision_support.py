@@ -248,7 +248,7 @@ def test_vision_bnb_config_mps():
         print("Skip test (not on MPS).")
         return
 
-    from unsloth.models.vision import FastVisionModel, FastBaseModel
+    from unsloth.models.vision import FastBaseModel
     
     # Mock return values
     mock_model = MagicMock()
