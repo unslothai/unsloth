@@ -317,7 +317,9 @@ def unsloth_base_fast_generate(
     return output
 
 
-def _construct_vlm_processor_fallback(tokenizer_name, model_type, token, trust_remote_code):
+def _construct_vlm_processor_fallback(
+    tokenizer_name, model_type, token, trust_remote_code
+):
     """Construct a VLM processor manually when AutoProcessor.from_pretrained fails.
 
     Some VLMs (e.g., LFM2.5-VL) have tokenizer_class entries that AutoTokenizer
@@ -331,21 +333,34 @@ def _construct_vlm_processor_fallback(tokenizer_name, model_type, token, trust_r
 
         # Load image processor
         image_processor = AutoImageProcessor.from_pretrained(
-            tokenizer_name, token=token, trust_remote_code=trust_remote_code,
+            tokenizer_name,
+            token = token,
+            trust_remote_code = trust_remote_code,
         )
         # Load tokenizer via PreTrainedTokenizerFast (bypasses tokenizer_class check)
         tok = PreTrainedTokenizerFast.from_pretrained(
-            tokenizer_name, padding_side="left", token=token, trust_remote_code=trust_remote_code,
+            tokenizer_name,
+            padding_side = "left",
+            token = token,
+            trust_remote_code = trust_remote_code,
         )
         # Read tokenizer_config.json for model-specific special tokens
         try:
             from huggingface_hub import hf_hub_download
-            config_path = hf_hub_download(tokenizer_name, "tokenizer_config.json", token=token)
-            with open(config_path, "r", encoding="utf-8") as f:
+
+            config_path = hf_hub_download(
+                tokenizer_name, "tokenizer_config.json", token = token
+            )
+            with open(config_path, "r", encoding = "utf-8") as f:
                 tok_config = json.load(f)
             # Set model-specific special tokens and their IDs
-            for key in ("image_token", "image_start_token", "image_end_token",
-                        "image_thumbnail", "video_token"):
+            for key in (
+                "image_token",
+                "image_start_token",
+                "image_end_token",
+                "image_thumbnail",
+                "video_token",
+            ):
                 if key in tok_config and not hasattr(tok, key):
                     setattr(tok, key, tok_config[key])
                     id_key = key + "_id" if not key.endswith("_id") else key
@@ -362,7 +377,9 @@ def _construct_vlm_processor_fallback(tokenizer_name, model_type, token, trust_r
             # Try the top-level config.model_type which often has the processor mapping.
             try:
                 config = AutoConfig.from_pretrained(
-                    tokenizer_name, token=token, trust_remote_code=trust_remote_code,
+                    tokenizer_name,
+                    token = token,
+                    trust_remote_code = trust_remote_code,
                 )
                 proc_class_name = PROCESSOR_MAPPING_NAMES.get(config.model_type)
             except Exception:
@@ -370,11 +387,14 @@ def _construct_vlm_processor_fallback(tokenizer_name, model_type, token, trust_r
 
         if proc_class_name is not None:
             import transformers
+
             proc_class = getattr(transformers, proc_class_name, None)
             if proc_class is not None:
-                processor = proc_class(image_processor=image_processor, tokenizer=tok)
+                processor = proc_class(image_processor = image_processor, tokenizer = tok)
                 # Copy chat_template from tokenizer to processor if needed
-                if not getattr(processor, "chat_template", None) and getattr(tok, "chat_template", None):
+                if not getattr(processor, "chat_template", None) and getattr(
+                    tok, "chat_template", None
+                ):
                     processor.chat_template = tok.chat_template
                 return processor
     except Exception:
@@ -922,11 +942,18 @@ class FastBaseModel:
         # try constructing the processor manually from separate components.
         if tokenizer is None and is_vlm:
             tokenizer = _construct_vlm_processor_fallback(
-                tokenizer_name, model_type_arch, token, trust_remote_code,
+                tokenizer_name,
+                model_type_arch,
+                token,
+                trust_remote_code,
             )
             if tokenizer is None:
                 import sys
-                print(f"Unsloth: Warning - VLM processor fallback returned None for model_type={model_type_arch}", file=sys.stderr)
+
+                print(
+                    f"Unsloth: Warning - VLM processor fallback returned None for model_type={model_type_arch}",
+                    file = sys.stderr,
+                )
         if hasattr(tokenizer, "tokenizer"):
             __tokenizer = tokenizer.tokenizer
             # Add padding side as well
@@ -957,6 +984,7 @@ class FastBaseModel:
             # Try loading tokenizer separately via AutoTokenizer as fallback.
             try:
                 from transformers import AutoTokenizer as _AutoTokenizer
+
                 _fallback_tok = _AutoTokenizer.from_pretrained(
                     tokenizer_name,
                     padding_side = "left",
@@ -982,6 +1010,7 @@ class FastBaseModel:
             # Last resort: try loading tokenizer via AutoTokenizer, then PreTrainedTokenizerFast
             try:
                 from transformers import AutoTokenizer as _AutoTokenizer
+
                 tokenizer = _AutoTokenizer.from_pretrained(
                     tokenizer_name,
                     padding_side = "left",
@@ -991,6 +1020,7 @@ class FastBaseModel:
             except Exception:
                 try:
                     from transformers import PreTrainedTokenizerFast
+
                     tokenizer = PreTrainedTokenizerFast.from_pretrained(
                         tokenizer_name,
                         padding_side = "left",

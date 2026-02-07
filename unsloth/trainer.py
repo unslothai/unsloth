@@ -209,8 +209,10 @@ def _resolve_trainer_params(trainer_class, init_fn):
     """
     params = inspect.signature(init_fn).parameters
     named = {
-        k for k, v in params.items()
-        if v.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+        k
+        for k, v in params.items()
+        if v.kind
+        in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
         and k != "self"
     }
     if named:
@@ -226,8 +228,13 @@ def _resolve_trainer_params(trainer_class, init_fn):
         try:
             parent_params = inspect.signature(parent_init).parameters
             parent_named = {
-                k for k, v in parent_params.items()
-                if v.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+                k
+                for k, v in parent_params.items()
+                if v.kind
+                in (
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                    inspect.Parameter.KEYWORD_ONLY,
+                )
                 and k != "self"
             }
             if parent_named:

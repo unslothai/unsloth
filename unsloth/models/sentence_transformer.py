@@ -1233,6 +1233,7 @@ class FastSentenceTransformer(FastModel):
             # But disable for models with known SDPA + torch.compile backward issues
             _force_eager = False
             from unsloth.models.loader import DISABLE_SDPA_MODEL_NAMES
+
             for _sdpa_model in DISABLE_SDPA_MODEL_NAMES:
                 if _sdpa_model in model_type.lower():
                     supports_sdpa = False
