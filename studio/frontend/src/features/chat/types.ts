@@ -21,4 +21,3 @@ export interface MessageRecord {
   metadata?: Record<string, unknown>;
   createdAt: number;
 }
-

@@ -1,7 +1,4 @@
-import type {
-  ModelType,
-  StepConfig,
-} from "@/types/training";
+import type { ModelType, StepConfig } from "@/types/training";
 import type { PipelineType } from "@huggingface/hub";
 
 export const STEPS: StepConfig[] = [

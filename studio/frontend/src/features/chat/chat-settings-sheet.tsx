@@ -214,161 +214,159 @@ export function ChatSettingsPanel({
       className={`shrink-0 h-full overflow-hidden bg-sidebar rounded-2xl corner-squircle transition-[width] duration-200 ease-linear ${open ? "w-[17rem] border-sidebar-border" : "w-0"}`}
     >
       <div className="flex h-full w-[17rem] flex-col">
-          <div className="flex items-center gap-2 px-3 py-2">
-            <HugeiconsIcon
-              icon={PencilEdit01Icon}
-              className="size-3.5 text-muted-foreground"
-            />
-            <span className="flex-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-              Advanced Configuration
-            </span>
+        <div className="flex items-center gap-2 px-3 py-2">
+          <HugeiconsIcon
+            icon={PencilEdit01Icon}
+            className="size-3.5 text-muted-foreground"
+          />
+          <span className="flex-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            Advanced Configuration
+          </span>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-1.5">
+          <div className="px-2 pb-3">
+            <div className="flex items-center gap-2">
+              <Select value={activePreset} onValueChange={applyPreset}>
+                <SelectTrigger className="h-8 flex-1 corner-squircle text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {presets.map((p) => (
+                    <SelectItem key={p.name} value={p.name}>
+                      <div className="flex w-full items-center justify-between gap-2">
+                        <span>{p.name}</span>
+                        {!BUILTIN_PRESETS.some((bp) => bp.name === p.name) && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              deletePreset(p.name);
+                            }}
+                            className="text-muted-foreground hover:text-destructive"
+                          >
+                            <HugeiconsIcon
+                              icon={Delete02Icon}
+                              className="size-3"
+                            />
+                          </button>
+                        )}
+                      </div>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <button
+                type="button"
+                onClick={savePreset}
+                className="flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs text-muted-foreground transition-colors hover:bg-accent"
+                title="Save preset"
+              >
+                <HugeiconsIcon icon={FloppyDiskIcon} className="size-3.5" />
+                Save
+              </button>
+            </div>
           </div>
 
-          <div className="flex-1 overflow-y-auto px-1.5">
-            <div className="px-2 pb-3">
-              <div className="flex items-center gap-2">
-                <Select value={activePreset} onValueChange={applyPreset}>
-                  <SelectTrigger className="h-8 flex-1 corner-squircle text-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {presets.map((p) => (
-                      <SelectItem key={p.name} value={p.name}>
-                        <div className="flex w-full items-center justify-between gap-2">
-                          <span>{p.name}</span>
-                          {!BUILTIN_PRESETS.some(
-                            (bp) => bp.name === p.name,
-                          ) && (
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                deletePreset(p.name);
-                              }}
-                              className="text-muted-foreground hover:text-destructive"
-                            >
-                              <HugeiconsIcon
-                                icon={Delete02Icon}
-                                className="size-3"
-                              />
-                            </button>
-                          )}
-                        </div>
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <button
-                  type="button"
-                  onClick={savePreset}
-                  className="flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs text-muted-foreground transition-colors hover:bg-accent"
-                  title="Save preset"
-                >
-                  <HugeiconsIcon icon={FloppyDiskIcon} className="size-3.5" />
-                  Save
-                </button>
-              </div>
-            </div>
+          <div className="px-2 pb-4">
+            <label
+              htmlFor="system-prompt"
+              className="mb-1.5 block text-xs font-medium"
+            >
+              System Prompt
+            </label>
+            <Textarea
+              id="system-prompt"
+              value={params.systemPrompt}
+              onChange={(e) => set("systemPrompt")(e.target.value)}
+              placeholder="You are a helpful assistant..."
+              className="min-h-20 text-xs corner-squircle"
+              rows={3}
+            />
+          </div>
 
-            <div className="px-2 pb-4">
-              <label
-                htmlFor="system-prompt"
-                className="mb-1.5 block text-xs font-medium"
+          <CollapsibleSection
+            icon={EngineIcon}
+            label="Inference Engine"
+            defaultOpen={true}
+          >
+            <div>
+              <span className="mb-1 block text-[11px] text-muted-foreground">
+                Backend
+              </span>
+              <Select
+                value={params.inferenceEngine}
+                onValueChange={set("inferenceEngine")}
               >
-                System Prompt
-              </label>
-              <Textarea
-                id="system-prompt"
-                value={params.systemPrompt}
-                onChange={(e) => set("systemPrompt")(e.target.value)}
-                placeholder="You are a helpful assistant..."
-                className="min-h-20 text-xs corner-squircle"
-                rows={3}
+                <SelectTrigger className="h-8 w-full text-xs corner-squircle">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {ENGINE_OPTIONS.map((o) => (
+                    <SelectItem key={o.value} value={o.value}>
+                      {o.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </CollapsibleSection>
+
+          <CollapsibleSection
+            icon={SlidersHorizontalIcon}
+            label="Sampling"
+            defaultOpen={true}
+          >
+            <div className="flex flex-col gap-5">
+              <ParamSlider
+                label="Temperature"
+                value={params.temperature}
+                min={0}
+                max={2}
+                step={0.1}
+                onChange={set("temperature")}
+              />
+              <ParamSlider
+                label="Top P"
+                value={params.topP}
+                min={0}
+                max={1}
+                step={0.05}
+                onChange={set("topP")}
+              />
+              <ParamSlider
+                label="Top K"
+                value={params.topK}
+                min={0}
+                max={100}
+                step={1}
+                onChange={set("topK")}
+              />
+              <ParamSlider
+                label="Repetition Penalty"
+                value={params.repetitionPenalty}
+                min={1}
+                max={2}
+                step={0.05}
+                onChange={set("repetitionPenalty")}
+              />
+              <ParamSlider
+                label="Max Tokens"
+                value={params.maxTokens}
+                min={64}
+                max={4096}
+                step={64}
+                onChange={set("maxTokens")}
               />
             </div>
+          </CollapsibleSection>
 
-            <CollapsibleSection
-              icon={EngineIcon}
-              label="Inference Engine"
-              defaultOpen={true}
-            >
-              <div>
-                <span className="mb-1 block text-[11px] text-muted-foreground">
-                  Backend
-                </span>
-                <Select
-                  value={params.inferenceEngine}
-                  onValueChange={set("inferenceEngine")}
-                >
-                  <SelectTrigger className="h-8 w-full text-xs corner-squircle">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {ENGINE_OPTIONS.map((o) => (
-                      <SelectItem key={o.value} value={o.value}>
-                        {o.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </CollapsibleSection>
-
-            <CollapsibleSection
-              icon={SlidersHorizontalIcon}
-              label="Sampling"
-              defaultOpen={true}
-            >
-              <div className="flex flex-col gap-5">
-                <ParamSlider
-                  label="Temperature"
-                  value={params.temperature}
-                  min={0}
-                  max={2}
-                  step={0.1}
-                  onChange={set("temperature")}
-                />
-                <ParamSlider
-                  label="Top P"
-                  value={params.topP}
-                  min={0}
-                  max={1}
-                  step={0.05}
-                  onChange={set("topP")}
-                />
-                <ParamSlider
-                  label="Top K"
-                  value={params.topK}
-                  min={0}
-                  max={100}
-                  step={1}
-                  onChange={set("topK")}
-                />
-                <ParamSlider
-                  label="Repetition Penalty"
-                  value={params.repetitionPenalty}
-                  min={1}
-                  max={2}
-                  step={0.05}
-                  onChange={set("repetitionPenalty")}
-                />
-                <ParamSlider
-                  label="Max Tokens"
-                  value={params.maxTokens}
-                  min={64}
-                  max={4096}
-                  step={64}
-                  onChange={set("maxTokens")}
-                />
-              </div>
-            </CollapsibleSection>
-
-            <CollapsibleSection icon={Settings02Icon} label="Settings">
-              <p className="text-xs text-muted-foreground">
-                No additional settings yet.
-              </p>
-            </CollapsibleSection>
-          </div>
+          <CollapsibleSection icon={Settings02Icon} label="Settings">
+            <p className="text-xs text-muted-foreground">
+              No additional settings yet.
+            </p>
+          </CollapsibleSection>
+        </div>
       </div>
     </aside>
   );
