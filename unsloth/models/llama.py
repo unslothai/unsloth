@@ -931,36 +931,29 @@ def LlamaModel_fast_forward(
         else:
             inputs_requires_grad = inputs_embeds.requires_grad
             if not inputs_embeds.is_leaf:
-                inputs_embeds = inputs_embeds.detach()
-                inputs_requires_grad = True
+                # Don't detach - we need to preserve the computation graph for training
+                # Just scale and keep gradient tracking intact
+                inputs_embeds = inputs_embeds * normalizer
             elif inputs_requires_grad:
                 inputs_embeds.requires_grad_(False)
-            inputs_embeds *= normalizer
-            # inputs_embeds *= math_sqrt(self.config.hidden_size)
-            if inputs_requires_grad:
+                inputs_embeds *= normalizer
                 inputs_embeds.requires_grad_(True)
+            else:
+                inputs_embeds *= normalizer
 
-    # Fix up attention mask by setting elements to 0
-    # Specifically for DPO
-    if (
-        getattr(self, "_has_no_labels", False) is True
-        and (attention_mask is not None)
-        and (past_key_values is None)
-        and (not train_embed_tokens)
-        and self.training
-    ):
-        # Careful for inference the attention_mask is size (1, kv_seq_len)
-        # Whilst the input_embeds is size (1, 1, 4096)
-        inputs_requires_grad = inputs_embeds.requires_grad
-        if not inputs_embeds.is_leaf:
-            inputs_embeds = inputs_embeds.detach()
-            inputs_requires_grad = True
-        elif inputs_requires_grad:
-            inputs_embeds.requires_grad_(False)
-        attention_mask = attention_mask[:, : self.max_seq_length]  # Must resize!
-        inputs_embeds *= attention_mask.unsqueeze(0).transpose(0, 1).transpose(1, 2)
-        if inputs_requires_grad:
-            inputs_embeds.requires_grad_(True)
+        # Fix up attention mask by setting elements to 0
+        # Specifically for DPO
+        if (
+            getattr(self, "_has_no_labels", False) is True
+            and (attention_mask is not None)
+            and (past_key_values is None)
+            and (not train_embed_tokens)
+            and self.training
+        ):
+            # Careful for inference the attention_mask is size (1, kv_seq_len)
+            # Whilst the input_embeds is size (1, 1, 4096)
+            attention_mask = attention_mask[:, : self.max_seq_length]  # Must resize!
+            inputs_embeds = inputs_embeds * attention_mask.unsqueeze(0).transpose(0, 1).transpose(1, 2)
 
     # Ignore attention_mask
     if attention_mask is None:
