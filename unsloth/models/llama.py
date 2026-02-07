@@ -929,17 +929,8 @@ def LlamaModel_fast_forward(
             # Careful we must not do an inplace op!
             inputs_embeds = inputs_embeds * normalizer
         else:
-            inputs_requires_grad = inputs_embeds.requires_grad
-            if not inputs_embeds.is_leaf:
-                # Don't detach - we need to preserve the computation graph for training
-                # Just scale and keep gradient tracking intact
-                inputs_embeds = inputs_embeds * normalizer
-            elif inputs_requires_grad:
-                inputs_embeds.requires_grad_(False)
-                inputs_embeds *= normalizer
-                inputs_embeds.requires_grad_(True)
-            else:
-                inputs_embeds *= normalizer
+            # Always use out-of-place ops to preserve computation graph for training
+            inputs_embeds = inputs_embeds * normalizer
 
         # Fix up attention mask by setting elements to 0
         # Specifically for DPO
