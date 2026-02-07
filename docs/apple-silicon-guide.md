@@ -58,13 +58,14 @@ The following features are **not supported** or have **limited support** on Appl
 | **8-bit Optimizers (adamw_8bit)** | Requires bitsandbytes | Use `adamw_torch` (auto-switched) |
 | **VLLM Inference** | VLLM doesn't support MPS backend | Use standard generation or GGUF export |
 | **Flash Attention** | Custom Triton kernels don't support MPS | PyTorch's `scaled_dot_product_attention` is used |
+| **GGUF Export** | Requires CUDA for weight merging | Use `.save_pretrained()` to save LoRA weights, merge on CUDA machine |
 
 ### ⚠️ Partially Supported
 
 | Feature | Limitations | Notes |
 |---------|-------------|-------|
-| **Vision Models** | No quantization support | Works in 16-bit mode, GGUF export supported |
-| **GGUF Export** | Requires manual llama.cpp build | Metal-accelerated conversion available |
+| **Vision Models** | No quantization support | Works in 16-bit mode |
+| **GGUF Export** | Currently not supported | Use .save_pretrained() for LoRA weights, merge on CUDA |
 | **Training Optimizers** | No fused/paged optimizers | Standard PyTorch optimizers work fine |
 | **bfloat16** | Limited on older hardware | M1/M2 may fall back to float16 |
 

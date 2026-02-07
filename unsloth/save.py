@@ -1887,6 +1887,19 @@ def unsloth_save_pretrained_gguf(
     if tokenizer is None:
         raise ValueError("Unsloth: Saving to GGUF must have a tokenizer.")
 
+    # Check for MPS - GGUF export requires CUDA for weight merging
+    from unsloth_zoo.device_type import DEVICE_TYPE
+    if DEVICE_TYPE == "mps":
+        raise RuntimeError(
+            "Unsloth: GGUF export on Apple Silicon (MPS) is currently not supported.\n"
+            "The underlying merge operation requires CUDA.\n\n"
+            "Workarounds:\n"
+            "1. Save as LoRA weights (.save_pretrained) and merge on a CUDA machine\n"
+            "2. Use merged_16bit export (.save_pretrained_merged) for standard HF format\n"
+            "3. Wait for unsloth_zoo MPS support (tracked in GitHub issues)\n\n"
+            "For now, please use .save_pretrained() to save LoRA weights."
+        )
+
     try:
         base_model_name = get_model_name(self.config._name_or_path, load_in_4bit=False)
         model_name = base_model_name.split("/")[-1]

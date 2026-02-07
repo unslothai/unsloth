@@ -138,8 +138,8 @@ def smoke_test_model():
     return True
 
 def test_gguf_export(skip_downloads=False):
-    """Test GGUF export functionality with a small model."""
-    print_header("5. GGUF Export Test")
+    """Test GGUF export handling on Apple Silicon (MPS)."""
+    print_header("5. GGUF Export Test (MPS Limitation Check)")
     
     if skip_downloads:
         print("⏭️  Skipped (requires model download)")
@@ -147,20 +147,25 @@ def test_gguf_export(skip_downloads=False):
     
     try:
         from unsloth import FastLanguageModel
+        from unsloth_zoo.device_type import DEVICE_TYPE
         import torch
+        
+        if DEVICE_TYPE != "mps":
+            print("⚠️  Not running on MPS, skipping MPS-specific test")
+            return True
         
         # Use a very small model for testing
         model_name = "unsloth/Llama-3.2-1B-Instruct"
         
-        print(f"Loading small model for GGUF export test: {model_name}")
+        print(f"Loading small model to test GGUF export: {model_name}")
         model, tokenizer = FastLanguageModel.from_pretrained(
             model_name=model_name,
             max_seq_length=512,
-            load_in_4bit=False,  # 4-bit not supported on MPS
+            load_in_4bit=False,
             dtype=torch.bfloat16,
         )
         
-        # Apply LoRA so we have something to merge
+        # Apply LoRA
         model = FastLanguageModel.get_peft_model(
             model,
             r=8,
@@ -172,25 +177,22 @@ def test_gguf_export(skip_downloads=False):
         with tempfile.TemporaryDirectory() as tmpdir:
             print(f"Testing GGUF export to: {tmpdir}")
             
-            # Test GGUF export (without actually running llama.cpp)
-            # Just verify the export function doesn't crash
+            # Test GGUF export - should fail gracefully on MPS
             try:
                 model.save_pretrained_gguf(
                     tmpdir,
                     tokenizer,
                     quantization_method="q4_k_m",
                 )
-                print("✅ GGUF export successful")
-            except Exception as e:
-                # Some errors are expected if llama.cpp isn't installed
-                if "llama.cpp" in str(e).lower() or "convert" in str(e).lower():
-                    print(f"⚠️  GGUF export requires llama.cpp (expected error): {type(e).__name__}")
-                    print("✅ Export function executed without crash")
+                print("⚠️  GGUF export succeeded (unexpected on MPS)")
+                return True
+            except RuntimeError as e:
+                if "Apple Silicon" in str(e) or "MPS" in str(e):
+                    print("✅ GGUF export correctly blocked on MPS with helpful message")
+                    print(f"   Message: {str(e)[:100]}...")
+                    return True
                 else:
                     raise
-        
-        print("✅ GGUF export test passed")
-        return True
         
     except Exception as e:
         print(f"❌ ERROR during GGUF export test: {str(e)}")
