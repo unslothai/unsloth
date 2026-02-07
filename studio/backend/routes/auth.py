@@ -11,7 +11,7 @@ from models.auth import (
 )
 from models.users import Token
 from auth import storage, hashing
-from auth.jwt import create_access_token, reload_secret
+from auth.authentication import create_access_token, reload_secret
 
 router = APIRouter()
 
@@ -56,7 +56,7 @@ async def setup_auth(payload: AuthSetupRequest) -> Token:
             detail=f"Failed to create user: {str(e)}",
         )
 
-    # Reload JWT secret from DB (so jwt.py picks it up)
+    # Reload JWT secret from DB (so authentication.py picks it up)
     reload_secret()
 
     # Issue a token for the new user

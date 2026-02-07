@@ -28,7 +28,7 @@ except ImportError:
     from core.training import get_training_backend
 
 # Auth
-from auth.jwt import get_current_subject
+from auth.authentication import get_current_subject
 
 from models import (
     TrainingStartRequest,

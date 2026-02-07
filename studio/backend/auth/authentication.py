@@ -4,7 +4,7 @@ from typing import Optional
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jose import JWTError, jwt
+import jwt
 
 from .storage import load_jwt_secret
 
@@ -72,7 +72,7 @@ async def get_current_subject(
                 detail="Invalid token payload",
             )
         return subject
-    except JWTError:
+    except jwt.InvalidTokenError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired token",
