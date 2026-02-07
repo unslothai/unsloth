@@ -117,7 +117,8 @@ def mps_cross_entropy_loss(
 
     # Handle edge case: no valid labels
     if n_items == 0:
-        # Return zero loss that still has grad_fn for backward compatibility
-        return losses.sum() * 0.0
+        # Return zero loss that still requires grad for backward compatibility
+        # We multiply by logits.sum() * 0 to maintain the gradient graph
+        return losses.sum() * 0.0 + logits.sum() * 0.0
 
     return losses.sum() / n_items
