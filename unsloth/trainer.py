@@ -420,14 +420,14 @@ def _patch_sft_trainer_auto_packing(trl_module):
 
         if blocked and (requested_pack or padding_free_requested):
             reason = "custom data collator"
-            if data_collator is None and isinstance(processing_class, ProcessorMixin):
+            if DEVICE_TYPE == "mps":
+                reason = "Apple Silicon (MPS) does not support padding-free training kernels"
+            elif data_collator is None and isinstance(processing_class, ProcessorMixin):
                 reason = "processor-based model"
             elif is_vlm:
                 reason = "vision-language model"
             elif is_unsupported_model:
                 reason = f"unsupported model type(s): {', '.join(model_types)}"
-            elif DEVICE_TYPE == "mps":
-                reason = "Apple Silicon (MPS) does not support padding-free training kernels"
             message = "Unsloth: Sample packing/padding-free training skipped " f"({reason} detected)."
             print(message)
 

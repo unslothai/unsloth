@@ -217,8 +217,12 @@ def test_padding_free_block_mps():
     
     # Patch print to catch the block message
     with patch("builtins.print") as mock_print:
+        # Create a mock model that won't be identified as a VLM by accident
+        mock_model = MagicMock()
+        mock_model.config = MagicMock(spec=[]) # No attributes, so hasattr(vision_config) is False
+        
         # Instantiate the patched trainer
-        _ = patched_trainer_class(model=MagicMock(), args=mock_args)
+        _ = patched_trainer_class(model=mock_model, args=mock_args)
         
         # Verify padding_free was set to False
         assert mock_args.padding_free is False
@@ -226,7 +230,13 @@ def test_padding_free_block_mps():
         
         # Verify the block message was printed
         printed_messages = [call.args[0] for call in mock_print.call_args_list]
-        assert any("Apple Silicon (MPS) does not support padding-free training kernels" in msg for msg in printed_messages)
+        success = any("Apple Silicon (MPS) does not support padding-free training kernels" in msg for msg in printed_messages)
+        if not success:
+            print(f"DEBUG: Printed messages were: {printed_messages}")
+            # Also check why it might have been blocked differently
+            print(f"DEBUG: DEVICE_TYPE is {device_type.DEVICE_TYPE}")
+        
+        assert success, "Expected MPS block message not found in printed messages"
         print("Correct block message was printed")
 
 def test_vision_bnb_config_mps():
