@@ -3,18 +3,21 @@ Model Management API routes
 """
 import sys
 from pathlib import Path
-from fastapi import APIRouter, HTTPException, Query
-from typing import Optional
+from fastapi import APIRouter, Depends, HTTPException, Query
+from typing import List, Optional
 import logging
+
+from pydantic import BaseModel
 
 # Add backend directory to path
 backend_path = Path(__file__).parent.parent.parent
 if str(backend_path) not in sys.path:
     sys.path.insert(0, str(backend_path))
 
+from auth.authentication import get_current_subject
+
 # Import backend functions
 try:
-    from utils.utils import search_hf_models
     from utils.models import (
         scan_trained_loras,
         load_model_defaults,
@@ -28,7 +31,6 @@ except ImportError:
     parent_backend = backend_path.parent / "backend"
     if str(parent_backend) not in sys.path:
         sys.path.insert(0, str(parent_backend))
-    from utils.utils import search_hf_models
     from utils.models import (
         scan_trained_loras,
         load_model_defaults,
@@ -38,16 +40,12 @@ except ImportError:
     )
     from core.inference import get_inference_backend
 
-from models.models import (
-    ModelSearchRequest,
-    ModelSearchResponse,
-    ModelInfo,
-    ModelListResponse,
-    ModelConfigResponse,
+from models import (
+    ModelDetails,
     LoRAScanResponse,
     LoRAInfo,
+    ModelListResponse,
 )
-
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
@@ -61,63 +59,12 @@ if not logger.handlers:
     logger.setLevel(logging.INFO)
 
 
-@router.post("/search")
-async def search_models(request: ModelSearchRequest):
-    """
-    Search for models on HuggingFace Hub.
-    
-    This endpoint wraps the backend search_hf_models function.
-    """
-    try:
-        # Call backend search function
-        gradio_update = search_hf_models(
-            search_query=request.query,
-            hf_token=request.hf_token
-        )
-        
-        # Convert Gradio update to list of model IDs
-        model_list = []
-        if gradio_update and hasattr(gradio_update, 'choices'):
-            choices = gradio_update.choices
-        elif isinstance(gradio_update, dict) and 'choices' in gradio_update:
-            choices = gradio_update['choices']
-        elif isinstance(gradio_update, list):
-            choices = gradio_update
-        else:
-            choices = []
-        
-        # Process choices - they may be tuples (display_name, model_id) or just strings
-        for choice in choices:
-            if isinstance(choice, tuple) and len(choice) >= 2:
-                # Format: (display_name, model_id)
-                model_id = choice[1] if len(choice) > 1 else choice[0]
-                display_name = choice[0]
-                model_info = ModelInfo(
-                    id=model_id,
-                    name=display_name
-                )
-            elif isinstance(choice, str):
-                # Just a model ID string
-                model_info = ModelInfo(id=choice)
-            else:
-                continue
-            model_list.append(model_info)
-        
-        return ModelSearchResponse(
-            models=model_list,
-            total=len(model_list)
-        )
-        
-    except Exception as e:
-        logger.error(f"Error searching models: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to search models: {str(e)}"
-        )
 
 
 @router.get("/list")
-async def list_models():
+async def list_models(
+    current_subject: str = Depends(get_current_subject),
+):
     """
     List available models (default models and loaded models).
     
@@ -132,7 +79,7 @@ async def list_models():
         # Get loaded models
         loaded_models = []
         for model_name, model_data in inference_backend.models.items():
-            model_info = ModelInfo(
+            model_info = ModelDetails(
                 id=model_name,
                 name=model_name.split("/")[-1] if "/" in model_name else model_name,
                 is_vision=model_data.get("is_vision", False),
@@ -147,7 +94,7 @@ async def list_models():
         # Add default models
         for model_id in default_models:
             if model_id not in seen_ids:
-                model_info = ModelInfo(
+                model_info = ModelDetails(
                     id=model_id,
                     name=model_id.split("/")[-1] if "/" in model_id else model_id
                 )
@@ -174,7 +121,10 @@ async def list_models():
 
 
 @router.get("/config/{model_name:path}")
-async def get_model_config(model_name: str):
+async def get_model_config(
+    model_name: str,
+    current_subject: str = Depends(get_current_subject),
+):
     """
     Get configuration for a specific model.
     
@@ -200,12 +150,13 @@ async def get_model_config(model_name: str):
             # If ModelConfig creation fails, use defaults
             pass
         
-        return ModelConfigResponse(
+        return ModelDetails(
+            id=model_name,
             model_name=model_name,
             config=config_dict,
             is_vision=is_vision,
             is_lora=is_lora,
-            base_model=base_model
+            base_model=base_model,
         )
         
     except Exception as e:
@@ -218,7 +169,8 @@ async def get_model_config(model_name: str):
 
 @router.get("/loras")
 async def scan_loras(
-    outputs_dir: str = Query(default="./outputs", description="Directory to scan for LoRA adapters")
+    outputs_dir: str = Query(default="./outputs", description="Directory to scan for LoRA adapters"),
+    current_subject: str = Depends(get_current_subject),
 ):
     """
     Scan for trained LoRA adapters in the outputs directory.
@@ -256,7 +208,10 @@ async def scan_loras(
 
 
 @router.get("/loras/{lora_path:path}/base-model")
-async def get_lora_base_model(lora_path: str):
+async def get_lora_base_model(
+    lora_path: str,
+    current_subject: str = Depends(get_current_subject),
+):
     """
     Get the base model for a LoRA adapter.
     
@@ -287,7 +242,10 @@ async def get_lora_base_model(lora_path: str):
 
 
 @router.get("/check-vision/{model_name:path}")
-async def check_vision_model(model_name: str):
+async def check_vision_model(
+    model_name: str,
+    current_subject: str = Depends(get_current_subject),
+):
     """
     Check if a model is a vision model.
     
