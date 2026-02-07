@@ -2064,6 +2064,11 @@ def unsloth_compile_transformers(
     if disable:
         return model_types, False
 
+    # Skip CUDA-specific compilation on non-CUDA platforms (MPS, XPU, etc.)
+    # The unsloth_zoo compiler has CUDA-specific code that fails on other platforms
+    if DEVICE_TYPE != "cuda" and DEVICE_TYPE != "hip":
+        return model_types, False
+
     supports_sdpa = [True]
     for model_type in model_types:
         _unsloth_compile_transformers(
