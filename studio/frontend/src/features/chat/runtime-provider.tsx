@@ -1,6 +1,6 @@
 import {
-  type AttachmentAdapter,
   AssistantRuntimeProvider,
+  type AttachmentAdapter,
   type CompleteAttachment,
   CompositeAttachmentAdapter,
   ExportedMessageRepository,
@@ -21,8 +21,8 @@ import {
   unstable_useRemoteThreadListRuntime as useRemoteThreadListRuntime,
 } from "@assistant-ui/react";
 import { createAssistantStream } from "assistant-stream";
-import { type ReactElement, type ReactNode, useEffect, useMemo } from "react";
 import mammoth from "mammoth";
+import { type ReactElement, type ReactNode, useEffect, useMemo } from "react";
 import { extractText, getDocumentProxy } from "unpdf";
 import { createStreamAdapter } from "./adapter";
 import { db } from "./db";
@@ -31,15 +31,15 @@ import type { MessageRecord, ModelType } from "./types";
 class PDFAttachmentAdapter implements AttachmentAdapter {
   accept = "application/pdf";
 
-  async add({ file }: { file: File }): Promise<PendingAttachment> {
-    return {
+  add({ file }: { file: File }): Promise<PendingAttachment> {
+    return Promise.resolve({
       id: crypto.randomUUID(),
       type: "document",
       name: file.name,
       contentType: file.type,
       file,
       status: { type: "requires-action", reason: "composer-send" },
-    };
+    });
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
@@ -56,22 +56,24 @@ class PDFAttachmentAdapter implements AttachmentAdapter {
     };
   }
 
-  async remove(): Promise<void> {}
+  remove(): Promise<void> {
+    return Promise.resolve();
+  }
 }
 
 class DocxAttachmentAdapter implements AttachmentAdapter {
   accept =
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
-  async add({ file }: { file: File }): Promise<PendingAttachment> {
-    return {
+  add({ file }: { file: File }): Promise<PendingAttachment> {
+    return Promise.resolve({
       id: crypto.randomUUID(),
       type: "document",
       name: file.name,
       contentType: file.type,
       file,
       status: { type: "requires-action", reason: "composer-send" },
-    };
+    });
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
@@ -82,14 +84,14 @@ class DocxAttachmentAdapter implements AttachmentAdapter {
       type: "document",
       name: attachment.name,
       contentType: attachment.contentType,
-      content: [
-        { type: "text", text: `[DOCX: ${attachment.name}]\n${value}` },
-      ],
+      content: [{ type: "text", text: `[DOCX: ${attachment.name}]\n${value}` }],
       status: { type: "complete" },
     };
   }
 
-  async remove(): Promise<void> {}
+  remove(): Promise<void> {
+    return Promise.resolve();
+  }
 }
 
 function toThreadMessage(m: MessageRecord): ThreadMessage {
