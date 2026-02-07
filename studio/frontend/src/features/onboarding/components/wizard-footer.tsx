@@ -1,5 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { STEPS } from "@/config/training";
+import { markOnboardingDone } from "@/features/auth/session";
 import { useWizardStore } from "@/stores/training";
 import { ArrowLeft02Icon, ArrowRight02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -33,7 +34,10 @@ export function WizardFooter() {
         </Button>
         {isLast ? (
           <Button
-            onClick={() => navigate({ to: "/studio" })}
+            onClick={() => {
+              markOnboardingDone();
+              navigate({ to: "/studio" });
+            }}
             disabled={!canProceed}
             className="px-4 !pr-4"
           >
