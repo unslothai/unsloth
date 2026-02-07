@@ -386,23 +386,27 @@ def _patch_sft_trainer_auto_packing(trl_module):
         data_collator = kwargs.get("data_collator")
 
         # We also disable vision language models for padding free collators
+        # And disable Apple Silicon (MPS) as it doesn't support Triton/CUDA padding-free kernels
         blocked = (
             (data_collator is not None)
             or isinstance(processing_class, ProcessorMixin)
             or is_vlm
             or is_unsupported_model
+            or DEVICE_TYPE == "mps"
             or (
                 os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1"
             )  # Disable padding free on forced logits
         )
         requested_pack = bool(getattr(config_arg, "packing", False))
+        padding_free_requested = getattr(config_arg, "padding_free", None) is True
+
         if blocked:
             if hasattr(config_arg, "packing"):
                 setattr(config_arg, "packing", False)
             if hasattr(config_arg, "padding_free"):
                 setattr(config_arg, "padding_free", False)
 
-        if blocked and requested_pack:
+        if blocked and (requested_pack or padding_free_requested):
             reason = "custom data collator"
             if data_collator is None and isinstance(processing_class, ProcessorMixin):
                 reason = "processor-based model"
@@ -410,7 +414,9 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 reason = "vision-language model"
             elif is_unsupported_model:
                 reason = f"unsupported model type(s): {', '.join(model_types)}"
-            message = "Unsloth: Sample packing skipped " f"({reason} detected)."
+            elif DEVICE_TYPE == "mps":
+                reason = "Apple Silicon (MPS) does not support padding-free training kernels"
+            message = "Unsloth: Sample packing/padding-free training skipped " f"({reason} detected)."
             print(message)
 
         packing_active = False

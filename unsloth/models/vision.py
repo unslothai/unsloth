@@ -685,19 +685,27 @@ class FastBaseModel:
         if DEVICE_TYPE == "mps" and (load_in_4bit or load_in_8bit):
             # bitsandbytes does not support MPS. We load in 16-bit and quantize later via MLX if needed.
             bnb_config = None
-        elif load_in_4bit:
-            bnb_config = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_use_double_quant=True,
-                bnb_4bit_quant_type="nf4",
-                bnb_4bit_compute_dtype=bnb_compute_dtype,
-                llm_int8_skip_modules=SKIP_QUANTIZATION_MODULES.copy(),
-            )
+        if load_in_4bit:
+            if DEVICE_TYPE == "mps":
+                # BitsAndBytes is not supported on MPS.
+                # We load in FP16 and then use MLX fast_quantize.
+                bnb_config = None
+            else:
+                bnb_config = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_use_double_quant=True,
+                    bnb_4bit_quant_type="nf4",
+                    bnb_4bit_compute_dtype=bnb_compute_dtype,
+                    llm_int8_skip_modules=SKIP_QUANTIZATION_MODULES.copy(),
+                )
         elif load_in_8bit:
-            bnb_config = BitsAndBytesConfig(
-                load_in_8bit=True,
-                llm_int8_skip_modules=SKIP_QUANTIZATION_MODULES.copy(),
-            )
+            if DEVICE_TYPE == "mps":
+                bnb_config = None
+            else:
+                bnb_config = BitsAndBytesConfig(
+                    load_in_8bit=True,
+                    llm_int8_skip_modules=SKIP_QUANTIZATION_MODULES.copy(),
+                )
         elif load_in_16bit:
             bnb_config = None
         elif not load_in_4bit and not load_in_8bit and not full_finetuning:
