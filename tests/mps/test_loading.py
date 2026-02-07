@@ -1,3 +1,9 @@
+# Apply Mac compatibility patches BEFORE importing unsloth
+import platform
+if platform.system() == "Darwin":
+    from patcher import patch_for_mac
+    patch_for_mac()
+
 import os
 import torch
 from unsloth import FastLanguageModel

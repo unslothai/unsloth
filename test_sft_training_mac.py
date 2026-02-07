@@ -9,9 +9,14 @@ This script tests:
 
 Run with: python test_sft_training_mac.py
 """
+# Apply Mac compatibility patches BEFORE importing unsloth
+import platform
+if platform.system() == "Darwin":
+    from patcher import patch_for_mac
+    patch_for_mac()
+
 import torch
 import os
-import platform
 from unsloth import FastLanguageModel
 from datasets import Dataset
 from trl import SFTTrainer

@@ -19,6 +19,12 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Apply Mac compatibility patches BEFORE importing unsloth
+import platform
+if platform.system() == "Darwin":
+    from patcher import patch_for_mac
+    patch_for_mac()
+
 
 def test_mps_training():
     """Quick training test on MPS."""

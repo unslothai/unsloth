@@ -10,6 +10,12 @@ import os
 # Add the project root to sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+# Apply Mac compatibility patches BEFORE importing unsloth
+import platform
+if platform.system() == "Darwin":
+    from patcher import patch_for_mac
+    patch_for_mac()
+
 from unsloth.kernels.moe.grouped_gemm.mps.fallback import (
     grouped_gemm_mps_forward,
     grouped_gemm_mps_dX,

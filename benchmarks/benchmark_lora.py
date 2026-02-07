@@ -3,9 +3,17 @@ LoRA Benchmark Suite (Fused MLX vs PyTorch MPS)
 Tests QKV and Output projections with LoRA adapters.
 """
 
+# Apply Mac compatibility patches BEFORE importing unsloth
+import platform
+import sys
+import os
+if platform.system() == "Darwin":
+    sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+    from patcher import patch_for_mac
+    patch_for_mac()
+
 import sys
 import time
-import platform
 import torch
 import torch.nn.functional as F
 import mlx.core as mx

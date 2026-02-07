@@ -10,11 +10,17 @@ Run:
 
 import sys
 import os
-import pytest
 import platform
 
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Apply Mac compatibility patches BEFORE importing unsloth
+if platform.system() == "Darwin":
+    from patcher import patch_for_mac
+    patch_for_mac()
+
+import pytest
 
 
 # Skip all tests if not on macOS

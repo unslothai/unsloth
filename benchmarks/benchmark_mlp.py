@@ -3,9 +3,17 @@ MLP Block Benchmark Suite (Fused vs Native)
 Tests the "Maximum Fusion" strategy: Up/Gate -> SwiGLU -> Down in a single MLX chain.
 """
 
+# Apply Mac compatibility patches BEFORE importing unsloth
+import platform
+if platform.system() == "Darwin":
+    import sys
+    import os
+    sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+    from patcher import patch_for_mac
+    patch_for_mac()
+
 import sys
 import time
-import platform
 import torch
 import torch.nn.functional as F
 import mlx.core as mx

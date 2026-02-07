@@ -31,6 +31,105 @@ Happy fine-tuning!
 
 import argparse
 import os
+import sys
+import platform
+import subprocess
+
+
+def print_system_info():
+    """Display system information for bug reporting."""
+    print("=" * 70)
+    print("                 Unsloth System Information")
+    print("=" * 70)
+    
+    # Basic system info
+    print("\n📋 Basic System Information:")
+    print(f"  OS: {platform.system()} {platform.release()}")
+    print(f"  Architecture: {platform.machine()}")
+    print(f"  Python Version: {platform.python_version()}")
+    
+    # Try to get CPU info
+    try:
+        if platform.system() == "Darwin":
+            result = subprocess.run(['sysctl', '-n', 'machdep.cpu.brand_string'], 
+                                  capture_output=True, text=True)
+            if result.returncode == 0:
+                print(f"  CPU: {result.stdout.strip()}")
+            result = subprocess.run(['sysctl', '-n', 'hw.memsize'], 
+                                  capture_output=True, text=True)
+            if result.returncode == 0:
+                mem_gb = int(result.stdout.strip()) / (1024**3)
+                print(f"  Total Memory: {mem_gb:.1f} GB")
+    except Exception:
+        pass
+    
+    # PyTorch information
+    print("\n🔥 PyTorch Information:")
+    try:
+        import torch
+        print(f"  PyTorch Version: {torch.__version__}")
+        
+        # CUDA
+        if hasattr(torch, 'cuda') and torch.cuda.is_available():
+            print(f"  CUDA Available: Yes")
+            print(f"  CUDA Version: {torch.version.cuda}")
+            print(f"  GPU Count: {torch.cuda.device_count()}")
+            for i in range(torch.cuda.device_count()):
+                props = torch.cuda.get_device_properties(i)
+                print(f"    GPU {i}: {props.name} ({props.total_memory / 1024**3:.1f} GB)")
+        else:
+            print(f"  CUDA Available: No")
+        
+        # MPS (Apple Silicon)
+        if hasattr(torch.backends, 'mps'):
+            mps_available = torch.backends.mps.is_available()
+            print(f"  MPS Available: {'Yes' if mps_available else 'No'}")
+            if mps_available:
+                print(f"    Note: Running on Apple Silicon")
+        
+        # XPU (Intel)
+        if hasattr(torch, 'xpu') and torch.xpu.is_available():
+            print(f"  XPU Available: Yes (Intel GPU)")
+        
+    except ImportError:
+        print("  ❌ PyTorch not installed")
+    
+    # Unsloth information
+    print("\n🦥 Unsloth Information:")
+    try:
+        import unsloth
+        print(f"  Unsloth Version: {unsloth.__version__}")
+        
+        try:
+            from unsloth_zoo.device_type import DEVICE_TYPE
+            print(f"  Device Type: {DEVICE_TYPE}")
+        except ImportError:
+            pass
+        
+        try:
+            from unsloth.patches import is_patched
+            print(f"  Patches Applied: {'Yes' if is_patched() else 'No'}")
+        except ImportError:
+            pass
+            
+    except ImportError:
+        print("  ❌ Unsloth not installed")
+    
+    # Additional libraries
+    print("\n📚 Additional Libraries:")
+    libs = ['transformers', 'trl', 'datasets', 'peft', 'bitsandbytes']
+    for lib in libs:
+        try:
+            module = __import__(lib)
+            version = getattr(module, '__version__', 'unknown')
+            print(f"  {lib}: {version}")
+        except ImportError:
+            print(f"  {lib}: ❌ Not installed")
+    
+    print("\n" + "=" * 70)
+    print("Copy the above information when reporting issues at:")
+    print("https://github.com/unslothai/unsloth/issues")
+    print("=" * 70)
 
 
 def run(args):
@@ -469,5 +568,19 @@ if __name__ == "__main__":
         "--stride", type=int, default=512, help="Overlap between chunks"
     )
 
+    # System info command for bug reporting
+    info_group = parser.add_argument_group("ℹ️  System Information")
+    info_group.add_argument(
+        "--sys-info",
+        action="store_true",
+        help="Display system information for bug reporting (Mac/Linux/Windows)",
+    )
+
     args = parser.parse_args()
+    
+    # Handle sys-info command before imports
+    if args.sys_info:
+        print_system_info()
+        sys.exit(0)
+    
     run(args)

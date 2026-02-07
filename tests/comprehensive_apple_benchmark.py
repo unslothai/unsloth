@@ -1,8 +1,16 @@
+# Apply Mac compatibility patches BEFORE importing unsloth
+import platform
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if platform.system() == "Darwin":
+    from patcher import patch_for_mac
+    patch_for_mac()
+
 import torch
 import torch.nn as nn
 import time
 import numpy as np
-import os
 import gc
 
 # Import unsloth first to trigger proper initialization

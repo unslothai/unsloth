@@ -1,4 +1,10 @@
 """Debug script to see what warnings are issued."""
+# Apply Mac compatibility patches BEFORE importing unsloth
+import platform
+if platform.system() == "Darwin":
+    from patcher import patch_for_mac
+    patch_for_mac()
+
 import warnings
 from unittest.mock import MagicMock, patch
 import torch
