@@ -109,9 +109,22 @@ def get_available_memory() -> int:
         return torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated(0)
     
     elif DEVICE_TYPE == "mps":
-        # MPS unified memory - use system available memory
+        # MPS unified memory - use system available memory capped by usable limit
+        from unsloth.kernels.mps import get_apple_hardware_info
+        hw = get_apple_hardware_info()
         import psutil
-        return psutil.virtual_memory().available
+        available = psutil.virtual_memory().available
+        
+        # We should not exceed the "usable" memory limit for ML tasks
+        total_usable = hw.get("usable_memory_gb", 0.0) * (1024**3)
+        if total_usable > 0:
+            # Allocated by MPS
+            allocated = torch.mps.current_allocated_memory()
+            # Approximation of what's left within the usable budget
+            usable_remaining = max(0, total_usable - allocated)
+            return min(available, int(usable_remaining))
+        
+        return available
     
     elif DEVICE_TYPE == "xpu":
         return torch.xpu.get_device_properties(0).total_memory - torch.xpu.memory_allocated(0)
@@ -129,10 +142,8 @@ def get_memory_allocated() -> int:
         return torch.cuda.memory_allocated(0)
     
     elif DEVICE_TYPE == "mps":
-        # MPS unified memory - return used system memory as approximation
-        import psutil
-        vm = psutil.virtual_memory()
-        return vm.total - vm.available
+        # MPS unified memory - return current MPS allocation
+        return torch.mps.current_allocated_memory()
     
     elif DEVICE_TYPE == "xpu":
         return torch.xpu.memory_allocated(0)

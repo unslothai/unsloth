@@ -29,6 +29,18 @@ try:
 except ImportError:
     Bnb_Linear4bit = None
     BNB_AVAILABLE = False
+
+def get_bnb_linear_type():
+    """Robustly get the Bnb_Linear4bit type, handling mocks/patches."""
+    if Bnb_Linear4bit is not None:
+        return Bnb_Linear4bit
+    # Check if patched in sys.modules
+    if "bitsandbytes" in sys.modules:
+        try:
+            return sys.modules["bitsandbytes"].nn.Linear4bit
+        except AttributeError:
+            pass
+    return None
 from peft.tuners.lora import Linear4bit as Peft_Linear4bit
 from peft.tuners.lora import Linear as Peft_Linear
 from typing import Optional, Callable, Union, List
@@ -194,7 +206,8 @@ def _free_cached_model(model):
 
 def _merge_lora(layer, name):
     bias = getattr(layer, "bias", None)
-    if isinstance(layer, (Bnb_Linear4bit, Peft_Linear4bit, Peft_Linear)):
+    Bnb_Linear4bit = get_bnb_linear_type()
+    if Bnb_Linear4bit is not None and isinstance(layer, Bnb_Linear4bit) or isinstance(layer, (Peft_Linear4bit, Peft_Linear)):
         # Is LoRA so we need to merge!
         W, quant_state, A, B, s, bias = get_lora_parameters_bias(layer)
         if quant_state is not None:
@@ -546,7 +559,8 @@ def unsloth_save_model(
     print("Unsloth: Merging 4bit and LoRA weights to 16bit...")
 
     # Determine max RAM usage minus sharding
-    max_ram = psutil.virtual_memory().available
+    from .device_utils import get_available_memory, get_total_memory, DEVICE_TYPE
+    max_ram = get_available_memory()
     sharded_ram_usage = 5 * 1024 * 1024 * 1024
     if type(max_shard_size) is str:
         gb_found = re.match(
@@ -594,7 +608,7 @@ def unsloth_save_model(
     print(
         f"Unsloth: Will use up to "
         f"{round(max_ram/1024/1024/1024, 2)} out of "
-        f"{round(psutil.virtual_memory().total/1024/1024/1024, 2)} RAM for saving."
+        f"{round(get_total_memory()/1024/1024/1024, 2)} RAM for saving."
     )
 
     # Move temporary_location to /tmp in Kaggle
@@ -632,9 +646,7 @@ def unsloth_save_model(
     )
 
     # Get max VRAM based on device type
-    from unsloth.device_utils import get_device_properties
-    gpu_stats = get_device_properties()
-    max_vram = int(gpu_stats.total_memory * maximum_memory_usage)
+    max_vram = int(get_total_memory() * maximum_memory_usage)
 
     print("Unsloth: Saving model... This might take 5 minutes ...")
 
