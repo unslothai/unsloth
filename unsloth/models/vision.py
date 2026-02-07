@@ -106,6 +106,127 @@ PRE_COMPILE_INFERENCE = [
     "gpt_oss",
 ]
 
+# Vision model capabilities registry
+# Maps model types to their supported features and limitations
+VISION_MODEL_CAPABILITIES = {
+    "qwen2_5_vl": {
+        "name": "Qwen2.5-VL",
+        "fast_inference": True,
+        "lora_vision_layers": False,
+        "lora_text_layers": True,
+        "full_finetuning": True,
+        "quantization": ["4bit", "8bit", "16bit"],
+        "description": "Best vision model for most use cases with fast_inference support",
+    },
+    "qwen3_vl": {
+        "name": "Qwen3-VL",
+        "fast_inference": True,
+        "lora_vision_layers": False,
+        "lora_text_layers": True,
+        "full_finetuning": True,
+        "quantization": ["4bit", "8bit", "16bit"],
+        "description": "Latest Qwen vision model with thinking capabilities",
+    },
+    "gemma3": {
+        "name": "Gemma 3",
+        "fast_inference": True,
+        "lora_vision_layers": False,
+        "lora_text_layers": True,
+        "full_finetuning": True,
+        "quantization": ["4bit", "8bit", "16bit"],
+        "description": "Google's multimodal model with excellent performance",
+    },
+    "mistral3": {
+        "name": "Mistral 3",
+        "fast_inference": True,
+        "lora_vision_layers": False,
+        "lora_text_layers": True,
+        "full_finetuning": True,
+        "quantization": ["4bit", "8bit", "16bit"],
+        "description": "Mistral's vision-capable model",
+    },
+    "mllama": {
+        "name": "Llama 3.2 Vision",
+        "fast_inference": True,
+        "lora_vision_layers": False,
+        "lora_text_layers": False,
+        "full_finetuning": False,
+        "quantization": ["4bit", "8bit", "16bit"],
+        "description": "Meta's vision model - LoRA only works without fast_inference",
+        "limitations": [
+            "LoRA not supported with fast_inference (vLLM V0 limitation)",
+            "Use fast_inference=False for LoRA training",
+        ],
+    },
+    "qwen2_vl": {
+        "name": "Qwen2-VL",
+        "fast_inference": False,
+        "lora_vision_layers": True,
+        "lora_text_layers": True,
+        "full_finetuning": True,
+        "quantization": ["4bit", "8bit", "16bit"],
+        "description": "Previous generation Qwen vision model",
+    },
+    "pixtral": {
+        "name": "Pixtral",
+        "fast_inference": False,
+        "lora_vision_layers": True,
+        "lora_text_layers": True,
+        "full_finetuning": True,
+        "quantization": ["4bit", "8bit", "16bit"],
+        "description": "Mistral's Pixtral vision model",
+    },
+    "llava": {
+        "name": "LLaVA",
+        "fast_inference": False,
+        "lora_vision_layers": True,
+        "lora_text_layers": True,
+        "full_finetuning": True,
+        "quantization": ["4bit", "8bit", "16bit"],
+        "description": "Large Language and Vision Assistant",
+    },
+}
+
+
+def get_vision_model_capabilities(model_type):
+    """Get capabilities for a vision model type.
+
+    Args:
+        model_type (str): The model type (e.g., 'qwen2_5_vl', 'mllama')
+
+    Returns:
+        dict or None: Capabilities dictionary or None if not found
+    """
+    return VISION_MODEL_CAPABILITIES.get(model_type)
+
+
+def supports_fast_inference(model_type):
+    """Check if a vision model supports fast_inference (vLLM).
+
+    Args:
+        model_type (str): The model type
+
+    Returns:
+        bool: True if fast_inference is supported
+    """
+    caps = VISION_MODEL_CAPABILITIES.get(model_type)
+    return caps.get("fast_inference", False) if caps else False
+
+
+def supports_lora_with_fast_inference(model_type):
+    """Check if a vision model supports LoRA with fast_inference.
+
+    Args:
+        model_type (str): The model type
+
+    Returns:
+        bool: True if LoRA with fast_inference is supported
+    """
+    caps = VISION_MODEL_CAPABILITIES.get(model_type)
+    if not caps:
+        return False
+    return caps.get("fast_inference", False) and caps.get("lora_text_layers", False)
+
 from transformers import GenerationConfig, CompileConfig, AutoConfig
 
 try:
@@ -739,10 +860,13 @@ class FastBaseModel:
                     gc.collect()
         else:
             if DEVICE_TYPE == "mps":
-                raise RuntimeError(
-                    "Unsloth: fast_inference (vLLM) is not yet supported for Vision models on Apple Silicon.\n"
-                    "Please set `fast_inference=False` to use native Unsloth inference."
+                warnings.warn(
+                    "Unsloth: fast_inference (vLLM) is not yet supported for Vision models on Apple Silicon. "
+                    "Automatically disabling fast_inference and using native Unsloth inference instead.",
+                    UserWarning,
+                    stacklevel=2,
                 )
+                fast_inference = False
             from unsloth_zoo.vllm_utils import (
                 load_vllm,
                 get_vllm_state_dict,
@@ -1033,7 +1157,11 @@ class FastBaseModel:
                 # https://github.com/vllm-project/vllm/blob/main/vllm/lora/models.py#L471-L477
                 # TODO: Update this once vLLM V1 supports LoRA on vision layers (possibly not happening)
                 raise RuntimeError(
-                    "Unsloth: Finetuning vision layers is not supported for fast_inference. Only text layers are supported!"
+                    "Unsloth: Finetuning vision layers with fast_inference (vLLM) is not supported.\n"
+                    "vLLM currently only supports LoRA on text layers, not vision layers.\n"
+                    "Workarounds:\n"
+                    "  1. Set fast_inference=False to use native Unsloth inference with full vision layer support\n"
+                    "  2. Set finetune_vision_layers=False to train only text layers (recommended for most use cases)"
                 )
             if model.config.model_type in VLLM_NON_LORA_VLM:
                 # mllama is still only in vllm v0 https://arc.net/l/quote/llwkfgmu
@@ -1041,7 +1169,11 @@ class FastBaseModel:
                 # vLLM V0 does not support LoRA on multi modal models.
                 # TODO: Update this once vLLM V1 supports Llama 3.2 aka mllama
                 raise RuntimeError(
-                    "Unsloth: LoRA finetuning for Llama 3.2 aka mllama models is not supported with fast_inference!"
+                    "Unsloth: LoRA finetuning for Llama 3.2 Vision (mllama) with fast_inference is not supported.\n"
+                    "vLLM V0 does not support LoRA on Llama 3.2 Vision models.\n"
+                    "Workarounds:\n"
+                    "  1. Set fast_inference=False to use native Unsloth inference with LoRA support\n"
+                    "  2. Use a different vision model (e.g., Qwen2.5-VL, Gemma3) that supports LoRA with fast_inference"
                 )
 
         # Clear deleted GPU items

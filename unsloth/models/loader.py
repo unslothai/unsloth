@@ -1490,7 +1490,111 @@ class FastModel(FastBaseModel):
 
 
 class FastVisionModel(FastModel):
-    pass
+    """Vision-language model support for Unsloth.
+
+    FastVisionModel extends FastModel with vision-specific functionality for
+    loading and fine-tuning multimodal models that process both images and text.
+
+    Supported vision models:
+    - Qwen2.5-VL (3B, 7B, 32B, 72B)
+    - Qwen3-VL (2B, 4B, 8B, 32B)
+    - Gemma3 (1B, 4B, 12B, 27B)
+    - Llama 3.2 Vision (11B, 90B)
+    - Pixtral, LLaVA, and more
+
+    Platform Support:
+    - CUDA: Full support including fast_inference (vLLM)
+    - ROCm: Full support including fast_inference (vLLM)
+    - Apple Silicon (MPS): Supported without fast_inference
+
+    Limitations:
+    - fast_inference (vLLM) on MPS: Not supported, automatically disabled
+    - LoRA on vision layers with fast_inference: Not supported (text-only LoRA)
+    - Llama 3.2 Vision with fast_inference: LoRA not supported at all
+
+    Example:
+        >>> from unsloth import FastVisionModel
+        >>> model, tokenizer = FastVisionModel.from_pretrained(
+        ...     "unsloth/Llama-3.2-11B-Vision-Instruct",
+        ...     load_in_4bit=True,
+        ... )
+        >>> # Process images and text
+        >>> inputs = tokenizer(text="Describe this image:", images=[image], return_tensors="pt")
+        >>> outputs = model.generate(**inputs)
+    """
+
+    @staticmethod
+    def from_pretrained(
+        model_name="unsloth/Llama-3.2-11B-Vision-Instruct-bnb-4bit",
+        max_seq_length=2048,
+        dtype=None,
+        load_in_4bit=True,
+        load_in_8bit=False,
+        load_in_16bit=False,
+        full_finetuning=False,
+        token=None,
+        device_map="sequential",
+        trust_remote_code=False,
+        use_gradient_checkpointing="unsloth",
+        revision=None,
+        fast_inference=False,
+        gpu_memory_utilization=0.5,
+        float8_kv_cache=False,
+        random_state=3407,
+        max_lora_rank=64,
+        disable_log_stats=True,
+        **kwargs,
+    ):
+        """Load a vision-language model with Unsloth optimizations.
+
+        Args:
+            model_name (str): HuggingFace model name or path.
+            max_seq_length (int): Maximum sequence length.
+            dtype: Data type (None for auto-detection).
+            load_in_4bit (bool): Enable 4-bit quantization (QLoRA).
+            load_in_8bit (bool): Enable 8-bit quantization.
+            load_in_16bit (bool): Enable 16-bit loading.
+            full_finetuning (bool): Enable full fine-tuning (not LoRA).
+            token (str): HuggingFace API token for private models.
+            device_map (str): Device mapping strategy.
+            trust_remote_code (bool): Allow remote code execution.
+            use_gradient_checkpointing (str): Gradient checkpointing mode.
+            revision (str): Model revision to load.
+            fast_inference (bool): Use vLLM for faster inference.
+            gpu_memory_utilization (float): GPU memory fraction for vLLM.
+            float8_kv_cache (bool): Use FP8 KV cache.
+            random_state (int): Random seed for reproducibility.
+            max_lora_rank (int): Maximum LoRA rank.
+            disable_log_stats (bool): Disable vLLM logging.
+            **kwargs: Additional arguments passed to transformers.
+
+        Returns:
+            tuple: (model, tokenizer) with Unsloth optimizations applied.
+
+        Raises:
+            RuntimeError: If vision model is not supported or configuration invalid.
+        """
+        return FastModel.from_pretrained(
+            model_name=model_name,
+            max_seq_length=max_seq_length,
+            dtype=dtype,
+            load_in_4bit=load_in_4bit,
+            load_in_8bit=load_in_8bit,
+            load_in_16bit=load_in_16bit,
+            full_finetuning=full_finetuning,
+            token=token,
+            device_map=device_map,
+            trust_remote_code=trust_remote_code,
+            use_gradient_checkpointing=use_gradient_checkpointing,
+            revision=revision,
+            fast_inference=fast_inference,
+            gpu_memory_utilization=gpu_memory_utilization,
+            float8_kv_cache=float8_kv_cache,
+            random_state=random_state,
+            max_lora_rank=max_lora_rank,
+            disable_log_stats=disable_log_stats,
+            **kwargs,
+        )
 
 
 class FastTextModel(FastModel):
