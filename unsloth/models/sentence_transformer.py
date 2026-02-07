@@ -1230,8 +1230,18 @@ class FastSentenceTransformer(FastModel):
             model_kwargs = {"torch_dtype": dtype}
 
             # Enable SDPA if supported (1.2x extra speedup on top of torch.compile)
+            # But disable for models with known SDPA + torch.compile backward issues
+            _force_eager = False
+            from unsloth.models.loader import DISABLE_SDPA_MODEL_NAMES
+            for _sdpa_model in DISABLE_SDPA_MODEL_NAMES:
+                if _sdpa_model in model_type.lower():
+                    supports_sdpa = False
+                    _force_eager = True
+                    break
             if supports_sdpa:
                 model_kwargs["attn_implementation"] = "sdpa"
+            elif _force_eager:
+                model_kwargs["attn_implementation"] = "eager"
 
             # Print optimization status
             sdpa_str = " + SDPA" if supports_sdpa else ""

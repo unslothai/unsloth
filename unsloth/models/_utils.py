@@ -500,6 +500,7 @@ class _RaiseUninitialized(logging.Handler):
             and ("classifier.weight" not in record_lower)
             and ("cls.predictions" not in record_lower)
             and ("predictions.decoder" not in record_lower)
+            and ("multi_modal_projector.layer_norm" not in record_lower)
             and (os.environ.get("UNSLOTH_WARN_UNINITIALIZED", "1") == "1")
         ):
             raise Exception(

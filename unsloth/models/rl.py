@@ -1190,13 +1190,30 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         new_text = 'self._signature_columns = ["input_ids", "attention_mask", "completion_mask","labels"]'
         RLTrainer_source = RLTrainer_source.replace(original_text, new_text)
 
-        # Temporary patch _is_vlm to False
-        # as of 0.22 it only exists in sfttrainer
-        original_is_vlm_text = "self._is_vlm = True"
-        new_is_vlm_text = "self._is_vlm = False"
-        RLTrainer_source = RLTrainer_source.replace(
-            original_is_vlm_text, new_is_vlm_text
+        # Do NOT override _is_vlm -- let TRL detect VLM models naturally.
+        # In TRL 0.27.1+, forcing _is_vlm=False causes a ValueError when
+        # vision datasets are used with VLM models.
+        #
+        # However, some notebooks pass a bare tokenizer (processor.tokenizer) as
+        # processing_class. TRL then sets _is_vlm=False even for VLM models.
+        # Add a model-architecture-based override before the validation check.
+        _vlm_check_original = (
+            '        self._is_vision_dataset = "image" in dataset_sample or "images" in dataset_sample\n'
+            '        if self._is_vision_dataset and not self._is_vlm:'
         )
+        _vlm_check_patched = (
+            '        self._is_vision_dataset = "image" in dataset_sample or "images" in dataset_sample\n'
+            '        # Unsloth: override _is_vlm for VLM models that pass a bare tokenizer\n'
+            '        if not self._is_vlm and self._is_vision_dataset:\n'
+            '            _m = model\n'
+            '            if hasattr(_m, "model"): _m = _m.model\n'
+            '            if hasattr(getattr(_m, "config", None), "vision_config") or \\\n'
+            '               _m.__class__.__name__.endswith("ForConditionalGeneration"):\n'
+            '                self._is_vlm = True\n'
+            '        if self._is_vision_dataset and not self._is_vlm:'
+        )
+        if _vlm_check_original in RLTrainer_source:
+            RLTrainer_source = RLTrainer_source.replace(_vlm_check_original, _vlm_check_patched)
 
     # Remove multiple doc strings
     if __RLConfig_doc__ != "" and RLTrainer_source.count(__RLTrainer_doc__) == 2:
