@@ -457,8 +457,10 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         try:
             config_mod = eval(f"trl.trainer.{config_module_name}")
             config = [
-                x for x in dir(config_mod)
-                if x.endswith("Config") and x != "Config"
+                x
+                for x in dir(config_mod)
+                if x.endswith("Config")
+                and x != "Config"
                 and not x.startswith("_")
                 and trainer_file.split("_")[0] in x.lower()
             ]
@@ -488,9 +490,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             config_module_name = trainer_file.replace("_trainer", "_config")
             RLConfig = eval(f"trl.trainer.{config_module_name}.{RLConfig_name}")
         except Exception as e:
-            logger.info(
-                f"Unsloth: Could not load {RLConfig_name}: {e}"
-            )
+            logger.info(f"Unsloth: Could not load {RLConfig_name}: {e}")
             return
 
     # Check name
@@ -507,25 +507,31 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     try:
         if len(inspect.getsource(RLTrainer)) < 1000:
             for _parent in RLTrainer.__mro__[1:]:
-                if _parent is object: continue
+                if _parent is object:
+                    continue
                 try:
                     if len(inspect.getsource(_parent)) > 1000:
                         RLTrainer = _parent
                         _trainer_resolved_module = inspect.getmodule(_parent)
                         break
-                except Exception: continue
-    except Exception: pass
+                except Exception:
+                    continue
+    except Exception:
+        pass
 
     try:
         if len(inspect.getsource(RLConfig)) < 1000:
             for _parent in RLConfig.__mro__[1:]:
-                if _parent is object: continue
+                if _parent is object:
+                    continue
                 try:
                     if len(inspect.getsource(_parent)) > 1000:
                         RLConfig = _parent
                         break
-                except Exception: continue
-    except Exception: pass
+                except Exception:
+                    continue
+    except Exception:
+        pass
 
     # Get old source
     old_RLTrainer_source = inspect.getsource(RLTrainer)

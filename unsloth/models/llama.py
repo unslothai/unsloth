@@ -844,7 +844,10 @@ def LlamaModel_fast_forward(
             input_ids = input_ids[:, : self.max_seq_length]
         elif inputs_embeds is not None:
             inputs_embeds = inputs_embeds[:, : self.max_seq_length, :]
-        if attention_mask is not None and attention_mask.shape[-1] > self.max_seq_length:
+        if (
+            attention_mask is not None
+            and attention_mask.shape[-1] > self.max_seq_length
+        ):
             attention_mask = attention_mask[:, : self.max_seq_length]
 
     past_key_values_length = 0
