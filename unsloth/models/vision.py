@@ -317,6 +317,91 @@ def unsloth_base_fast_generate(
     return output
 
 
+def _construct_vlm_processor_fallback(
+    tokenizer_name, model_type, token, trust_remote_code
+):
+    """Construct a VLM processor manually when AutoProcessor.from_pretrained fails.
+
+    Some VLMs (e.g., LFM2.5-VL) have tokenizer_class entries that AutoTokenizer
+    cannot resolve. This function loads the image processor and tokenizer separately,
+    sets required special token attributes, and constructs the processor.
+    """
+    try:
+        from transformers import AutoImageProcessor, PreTrainedTokenizerFast, AutoConfig
+        from transformers.models.auto.processing_auto import PROCESSOR_MAPPING_NAMES
+        import json
+
+        # Load image processor
+        image_processor = AutoImageProcessor.from_pretrained(
+            tokenizer_name,
+            token = token,
+            trust_remote_code = trust_remote_code,
+        )
+        # Load tokenizer via PreTrainedTokenizerFast (bypasses tokenizer_class check)
+        tok = PreTrainedTokenizerFast.from_pretrained(
+            tokenizer_name,
+            padding_side = "left",
+            token = token,
+            trust_remote_code = trust_remote_code,
+        )
+        # Read tokenizer_config.json for model-specific special tokens
+        try:
+            from huggingface_hub import hf_hub_download
+
+            config_path = hf_hub_download(
+                tokenizer_name, "tokenizer_config.json", token = token
+            )
+            with open(config_path, "r", encoding = "utf-8") as f:
+                tok_config = json.load(f)
+            # Set model-specific special tokens and their IDs
+            for key in (
+                "image_token",
+                "image_start_token",
+                "image_end_token",
+                "image_thumbnail",
+                "video_token",
+            ):
+                if key in tok_config and not hasattr(tok, key):
+                    setattr(tok, key, tok_config[key])
+                    id_key = key + "_id" if not key.endswith("_id") else key
+                    token_id = tok.convert_tokens_to_ids(tok_config[key])
+                    if not hasattr(tok, id_key):
+                        setattr(tok, id_key, token_id)
+        except Exception:
+            pass
+
+        # Find the processor class - try model_type first, then top-level config model_type
+        proc_class_name = PROCESSOR_MAPPING_NAMES.get(model_type)
+        if proc_class_name is None:
+            # model_type might be a sub-model type (e.g. "lfm2" instead of "lfm2_vl").
+            # Try the top-level config.model_type which often has the processor mapping.
+            try:
+                config = AutoConfig.from_pretrained(
+                    tokenizer_name,
+                    token = token,
+                    trust_remote_code = trust_remote_code,
+                )
+                proc_class_name = PROCESSOR_MAPPING_NAMES.get(config.model_type)
+            except Exception:
+                pass
+
+        if proc_class_name is not None:
+            import transformers
+
+            proc_class = getattr(transformers, proc_class_name, None)
+            if proc_class is not None:
+                processor = proc_class(image_processor = image_processor, tokenizer = tok)
+                # Copy chat_template from tokenizer to processor if needed
+                if not getattr(processor, "chat_template", None) and getattr(
+                    tok, "chat_template", None
+                ):
+                    processor.chat_template = tok.chat_template
+                return processor
+    except Exception:
+        pass
+    return None
+
+
 class FastBaseModel:
     @staticmethod
     def from_pretrained(
@@ -826,14 +911,17 @@ class FastBaseModel:
         if (whisper_language and whisper_task) or auto_model.__name__.endswith(
             "ForConditionalGeneration"
         ):
-            tokenizer = auto_processor.from_pretrained(
-                tokenizer_name,
-                padding_side = "left",
-                token = token,
-                language = whisper_language,
-                task = whisper_task,
-                trust_remote_code = trust_remote_code,
-            )
+            try:
+                tokenizer = auto_processor.from_pretrained(
+                    tokenizer_name,
+                    padding_side = "left",
+                    token = token,
+                    language = whisper_language,
+                    task = whisper_task,
+                    trust_remote_code = trust_remote_code,
+                )
+            except Exception:
+                tokenizer = None
         else:
             try:
                 tokenizer = auto_processor.from_pretrained(
@@ -848,6 +936,23 @@ class FastBaseModel:
                     padding_side = "left",
                     token = token,
                     trust_remote_code = trust_remote_code,
+                )
+
+        # If processor loading failed (e.g., tokenizer class not found),
+        # try constructing the processor manually from separate components.
+        if tokenizer is None and is_vlm:
+            tokenizer = _construct_vlm_processor_fallback(
+                tokenizer_name,
+                model_type_arch,
+                token,
+                trust_remote_code,
+            )
+            if tokenizer is None:
+                import sys
+
+                print(
+                    f"Unsloth: Warning - VLM processor fallback returned None for model_type={model_type_arch}",
+                    file = sys.stderr,
                 )
         if hasattr(tokenizer, "tokenizer"):
             __tokenizer = tokenizer.tokenizer
@@ -872,7 +977,29 @@ class FastBaseModel:
             do_forced_float32 = do_forced_float32,
             correct_dtype = correct_dtype,
         )
-        model, tokenizer = patch_tokenizer(model, tokenizer)
+        try:
+            model, tokenizer = patch_tokenizer(model, tokenizer)
+        except Exception as _patch_err:
+            # Some VLM processors (e.g., ERNIE VL) may fail during tokenizer patching.
+            # Try loading tokenizer separately via AutoTokenizer as fallback.
+            try:
+                from transformers import AutoTokenizer as _AutoTokenizer
+
+                _fallback_tok = _AutoTokenizer.from_pretrained(
+                    tokenizer_name,
+                    padding_side = "left",
+                    token = token,
+                    trust_remote_code = trust_remote_code,
+                )
+                model, _fallback_tok = patch_tokenizer(model, _fallback_tok)
+                # Re-attach as processor wrapper if original was a processor
+                if hasattr(tokenizer, "image_processor"):
+                    tokenizer.tokenizer = _fallback_tok
+                else:
+                    tokenizer = _fallback_tok
+            except Exception:
+                # If fallback also fails, raise the original error
+                raise _patch_err
         model = post_patch_loss_function(model)
 
         # Log Unsloth version for future fastpaths for inference
@@ -880,10 +1007,31 @@ class FastBaseModel:
             model.config.update({"unsloth_version": __version__})
         patch_saving_functions(model, vision = True)
         if tokenizer is None:
-            del model
-            raise RuntimeError(
-                "Unsloth: The tokenizer is weirdly not loaded? Please check if there is one."
-            )
+            # Last resort: try loading tokenizer via AutoTokenizer, then PreTrainedTokenizerFast
+            try:
+                from transformers import AutoTokenizer as _AutoTokenizer
+
+                tokenizer = _AutoTokenizer.from_pretrained(
+                    tokenizer_name,
+                    padding_side = "left",
+                    token = token,
+                    trust_remote_code = trust_remote_code,
+                )
+            except Exception:
+                try:
+                    from transformers import PreTrainedTokenizerFast
+
+                    tokenizer = PreTrainedTokenizerFast.from_pretrained(
+                        tokenizer_name,
+                        padding_side = "left",
+                        token = token,
+                        trust_remote_code = trust_remote_code,
+                    )
+                except Exception:
+                    del model
+                    raise RuntimeError(
+                        "Unsloth: The tokenizer is weirdly not loaded? Please check if there is one."
+                    )
         patch_saving_functions(tokenizer, vision = True)
 
         # Fix gradient accumulation

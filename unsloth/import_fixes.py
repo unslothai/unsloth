@@ -164,6 +164,39 @@ if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") != "1":
         "ignore", message = r"unclosed file.*dev/null", category = ResourceWarning
     )
 
+    # torch 2.9+ pin_memory/is_pinned device arg deprecation
+    warnings.filterwarnings(
+        "ignore",
+        message = r"The `device` argument is deprecated",
+        category = DeprecationWarning,
+    )
+    warnings.filterwarnings(
+        "ignore",
+        message = r".*pin_memory.*device.*deprecated",
+        category = DeprecationWarning,
+    )
+    warnings.filterwarnings(
+        "ignore",
+        message = r".*is_pinned.*device.*deprecated",
+        category = DeprecationWarning,
+    )
+
+    # vllm "Level is deprecated" stderr noise
+    sys.stderr.add_filter("Level is deprecated")
+
+    # PydanticSerializationUnexpectedValue warning
+    warnings.filterwarnings(
+        "ignore",
+        message = r".*PydanticSerializationUnexpectedValue",
+    )
+    warnings.filterwarnings(
+        "ignore",
+        message = r"Expected.*but got.*with value.*is not.*subclass",
+    )
+
+    # Triton "df: No such file or directory" stderr noise
+    sys.stderr.add_filter("df: No such file")
+
 
 # Fix up AttributeError: 'MessageFactory' object has no attribute 'GetPrototype'
 # MUST do this at the start primarily due to tensorflow causing issues

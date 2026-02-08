@@ -1193,6 +1193,29 @@ def grpo_trainer_compute_loss(function_name, function):
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer_compute_loss)
 
 
+# Fix KTO shape mismatch when Unsloth model forward truncates input_ids
+# but labels aren't truncated. TRL 0.27.2+ _process_tokens only truncates
+# completions, not prompts -- so prompts exceeding max_seq_length cause the
+# model to produce shorter logits than the labels expect.
+def kto_trainer_get_batch_logps(function_name, function):
+    if function_name != "get_batch_logps":
+        return function
+    # The raise is inside an if block inside the method, so we need
+    # to preserve the exact indentation of the raise statement.
+    old = 'raise ValueError("Logits (batch and sequence length dim) and labels must have the same shape.")'
+    new = (
+        "# Unsloth: auto-truncate to shorter sequence length (model may have truncated input_ids)\n"
+        "            _min_len = min(logits.shape[1], labels.shape[1])\n"
+        "            logits = logits[:, :_min_len, :]\n"
+        "            labels = labels[:, :_min_len]"
+    )
+    function = function.replace(old, new)
+    return function
+
+
+RL_FUNCTIONS["kto_trainer"].append(kto_trainer_get_batch_logps)
+
+
 # https://github.com/huggingface/trl/blob/main/trl/trainer/grpo_trainer.py#L356
 # TRL warns if batch size is not a multiple of num_generations -> fix this.
 def grpo_trainer_fix_batch_size(RLTrainer_source, RLConfig_source):
@@ -1267,7 +1290,7 @@ def openenv_vllm_reload_weights():
     try:
         import trl.experimental.openenv.utils as openenv_utils
         import trl.experimental.openenv as openenv
-    except ImportError as e:
+    except (ImportError, NameError, Exception) as e:
         logger.info(f"Unsloth: Failed to import trl openenv: {e}")
         logger.info(
             "Unsloth: trl.experimental.openenv not available — skipping RL openenv patches."
