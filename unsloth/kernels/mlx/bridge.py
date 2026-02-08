@@ -13,7 +13,7 @@
 # limitations under the License.
 
 """
-PyTorch ↔ MLX Tensor Bridge.
+PyTorch <-> MLX Tensor Bridge.
 
 This module provides zero-copy (where possible) tensor conversion between
 PyTorch and MLX using DLPack. This enables seamless interop for running
