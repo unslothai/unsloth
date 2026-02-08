@@ -59,10 +59,9 @@ def is_metal_geglu_available() -> bool:
 
 
 # -----------------------------------------------------------------------------
-# Optimized Metal Shaders (Scalar operations - valid Metal code)
+# Optimized Metal Shaders
 # -----------------------------------------------------------------------------
 
-# Note: Metal does NOT support half8/float8, only up to half4/float4.
 # We use scalar processing for correctness.
 
 GEGLU_EXACT_FORWARD_BODY = """
