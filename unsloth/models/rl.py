@@ -932,14 +932,15 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     # Edit dataset_num_proc
     if "dataset_num_proc" in call_args:
         num_proc_check = (
-            "if dataset_num_proc is None:\n"
+            "import multiprocessing as _mp\n"
+            "if _mp.get_start_method() != 'fork':\n"
+            "    dataset_num_proc = None\n"
+            "elif dataset_num_proc is None:\n"
             "    import psutil\n"
             "    dataset_num_proc = min(max((psutil.cpu_count() or 1)+4, 2), 64)\n"
             "    memory_gb_left = psutil.virtual_memory().available / (1024**3)\n"
-            "    if   memory_gb_left <=  4: dataset_num_proc = 1 # Too risky, so set to 1\n"
-            "    elif memory_gb_left <=  6: dataset_num_proc = min(2, dataset_num_proc)\n"
-            "    elif memory_gb_left <= 10: dataset_num_proc = min(4, dataset_num_proc)\n"
-            "    elif memory_gb_left <= 14: dataset_num_proc = min(6, dataset_num_proc)\n"
+            "    if memory_gb_left <= 2: dataset_num_proc = 1\n"
+            "    else: dataset_num_proc = min(dataset_num_proc, int(memory_gb_left))\n"
         )
         extra_args += num_proc_check
 
