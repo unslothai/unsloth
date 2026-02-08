@@ -1966,6 +1966,12 @@ def unsloth_compile_transformers(
         return model_types, False
 
     supports_sdpa = [True]
+
+    # Run patches BEFORE compiler so class replacements (e.g. GptOssTopKRouter,
+    # GptOssExperts) are in place before the compiler caches references to them.
+    for temporary_patch in TEMPORARY_PATCHES:
+        temporary_patch()
+
     for model_type in model_types:
         _unsloth_compile_transformers(
             model_type,
