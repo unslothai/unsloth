@@ -3004,7 +3004,11 @@ class FastLlamaModel:
         # PEFT API compatibility: only pass kwargs supported by the installed peft version.
         try:
             import inspect as _inspect
-            if "ensure_weight_tying" not in _inspect.signature(LoraConfig.__init__).parameters:
+
+            if (
+                "ensure_weight_tying"
+                not in _inspect.signature(LoraConfig.__init__).parameters
+            ):
                 arguments.pop("ensure_weight_tying", None)
         except Exception:
             arguments.pop("ensure_weight_tying", None)

@@ -23,6 +23,7 @@ from unsloth_zoo.llama_cpp import (
     check_llama_cpp,
     _download_convert_hf_to_gguf,
 )
+
 try:
     from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
 except Exception:
@@ -65,7 +66,9 @@ except:
 from pathlib import Path
 from peft import PeftModelForCausalLM, PeftModel
 
-_MERGE_LORA_LINEAR_TYPES = tuple(t for t in (Bnb_Linear4bit, Peft_Linear4bit, Peft_Linear) if t is not None)
+_MERGE_LORA_LINEAR_TYPES = tuple(
+    t for t in (Bnb_Linear4bit, Peft_Linear4bit, Peft_Linear) if t is not None
+)
 
 __all__ = [
     "print_quantization_methods",
