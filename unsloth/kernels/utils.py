@@ -110,6 +110,7 @@ def calculate_settings(
 HAS_CUDA_STREAM = False
 try:
     import bitsandbytes as bnb
+
     # https://github.com/bitsandbytes-foundation/bitsandbytes/pull/1330/files
     HAS_CUDA_STREAM = Version(bnb.__version__) > Version("0.43.3")
     get_ptr = bnb.functional.get_ptr
@@ -197,15 +198,18 @@ if bnb is not None:
         cgemm_4bit_inference_naive_fp16 = bnb.functional.lib.cgemv_4bit_inference_fp16
         cgemm_4bit_inference_naive_bf16 = bnb.functional.lib.cgemv_4bit_inference_bf16
     else:
-        cgemm_4bit_inference_naive_fp16 = bnb.functional.lib.cgemm_4bit_inference_naive_fp16
-        cgemm_4bit_inference_naive_bf16 = bnb.functional.lib.cgemm_4bit_inference_naive_bf16
+        cgemm_4bit_inference_naive_fp16 = (
+            bnb.functional.lib.cgemm_4bit_inference_naive_fp16
+        )
+        cgemm_4bit_inference_naive_bf16 = (
+            bnb.functional.lib.cgemm_4bit_inference_naive_bf16
+        )
 else:
     cdequantize_blockwise_fp32 = None
     cdequantize_blockwise_fp16_nf4 = None
     cdequantize_blockwise_bf16_nf4 = None
     cgemm_4bit_inference_naive_fp16 = None
     cgemm_4bit_inference_naive_bf16 = None
-
 
 
 torch_device_stream = (
