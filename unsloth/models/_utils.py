@@ -1914,7 +1914,10 @@ def patch_fast_lora():
     try:
         import peft.tuners.lora.bnb
     except Exception as e:
-        print("Unsloth: bitsandbytes/peft bnb not available - skipping 4bit LoRA patch.", repr(e))
+        print(
+            "Unsloth: bitsandbytes/peft bnb not available - skipping 4bit LoRA patch.",
+            repr(e),
+        )
         return
 
     peft.tuners.lora.bnb.Linear4bit.forward = fast_lora_forward
