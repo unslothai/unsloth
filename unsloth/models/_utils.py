@@ -78,6 +78,7 @@ __all__ = [
     "is_moe_model",
     "get_moe_target_parameters",
     "make_fast_generate_wrapper",
+    "make_vllm_fast_generate_wrapper",
 ]
 
 import torch
@@ -2669,3 +2670,99 @@ def make_fast_generate_wrapper(original_generate):
         return original_generate(*args, **kwargs)
 
     return _fast_generate_wrapper
+
+
+def make_vllm_fast_generate_wrapper(model, vllm_generate):
+    """
+    Wraps vLLM generate to optionally fall back to HF generate on failure.
+    Keeps vLLM for training; fallback only when model.training is False.
+    """
+
+    @functools.wraps(vllm_generate)
+    def _vllm_fast_generate_wrapper(*args, **kwargs):
+        if (not model.training) and (
+            getattr(model, "_unsloth_disable_vllm_inference", False)
+            or os.environ.get("UNSLOTH_VLLM_DISABLE_INFERENCE", "0") == "1"
+        ):
+            return _vllm_fallback_to_hf_generate(model, args, kwargs)
+        if getattr(model, "_unsloth_vllm_failed", False):
+            return _vllm_fallback_to_hf_generate(model, args, kwargs)
+        try:
+            return vllm_generate(*args, **kwargs)
+        except Exception:
+            if model.training:
+                raise
+            if os.environ.get("UNSLOTH_VLLM_FALLBACK", "1") != "1":
+                raise
+            model._unsloth_vllm_failed = True
+            try:
+                model.fast_generate = make_fast_generate_wrapper(model.generate)
+                model.fast_generate_batches = None
+            except Exception:
+                pass
+            return _vllm_fallback_to_hf_generate(model, args, kwargs)
+
+    return _vllm_fast_generate_wrapper
+
+
+def _vllm_fallback_to_hf_generate(model, args, kwargs):
+    tokenizer = getattr(model, "_saved_temp_tokenizer", None)
+    hf_kwargs = dict(kwargs)
+    sampling_params = hf_kwargs.pop("sampling_params", None)
+    hf_kwargs.pop("lora_request", None)
+
+    if sampling_params is not None:
+        for key in ("temperature", "top_p", "top_k"):
+            value = getattr(sampling_params, key, None)
+            if value is not None and key not in hf_kwargs:
+                hf_kwargs[key] = value
+        max_tokens = getattr(sampling_params, "max_tokens", None)
+        if max_tokens is None:
+            max_tokens = getattr(sampling_params, "max_new_tokens", None)
+        if max_tokens is not None and "max_new_tokens" not in hf_kwargs:
+            hf_kwargs["max_new_tokens"] = max_tokens
+
+    if len(args) > 0:
+        first_arg = args[0]
+        if isinstance(first_arg, str) or (
+            isinstance(first_arg, (list, tuple))
+            and len(first_arg) > 0
+            and isinstance(first_arg[0], str)
+        ):
+            if tokenizer is None:
+                raise RuntimeError(
+                    "Unsloth: vLLM fast_generate failed and no tokenizer was cached for HF fallback."
+                )
+            inputs = tokenizer(
+                first_arg,
+                return_tensors = "pt",
+                padding = True,
+            )
+            device = getattr(model, "device", None) or "cuda"
+            inputs = inputs.to(device)
+            args = ()
+            hf_kwargs = {**inputs, **hf_kwargs}
+
+    outputs = model.generate(*args, **hf_kwargs)
+
+    if tokenizer is None:
+        return outputs
+
+    try:
+        texts = tokenizer.batch_decode(outputs, skip_special_tokens = True)
+    except Exception:
+        return outputs
+
+    class _FallbackOutput:
+        __slots__ = ("text",)
+
+        def __init__(self, text):
+            self.text = text
+
+    class _FallbackRequestOutput:
+        __slots__ = ("outputs",)
+
+        def __init__(self, text):
+            self.outputs = [_FallbackOutput(text)]
+
+    return [_FallbackRequestOutput(text) for text in texts]
