@@ -23,8 +23,15 @@ from unsloth_zoo.llama_cpp import (
     check_llama_cpp,
     _download_convert_hf_to_gguf,
 )
-from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
-from peft.tuners.lora import Linear4bit as Peft_Linear4bit
+try:
+    from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
+except Exception:
+    Bnb_Linear4bit = None
+
+try:
+    from peft.tuners.lora import Linear4bit as Peft_Linear4bit
+except Exception:
+    Peft_Linear4bit = None
 from peft.tuners.lora import Linear as Peft_Linear
 from typing import Optional, Callable, Union, List
 import sys
@@ -57,6 +64,8 @@ except:
         from huggingface_hub.utils._token import get_token
 from pathlib import Path
 from peft import PeftModelForCausalLM, PeftModel
+
+_MERGE_LORA_LINEAR_TYPES = tuple(t for t in (Bnb_Linear4bit, Peft_Linear4bit, Peft_Linear) if t is not None)
 
 __all__ = [
     "print_quantization_methods",
@@ -188,7 +197,7 @@ def _free_cached_model(model):
 
 def _merge_lora(layer, name):
     bias = getattr(layer, "bias", None)
-    if isinstance(layer, (Bnb_Linear4bit, Peft_Linear4bit, Peft_Linear)):
+    if _MERGE_LORA_LINEAR_TYPES and isinstance(layer, _MERGE_LORA_LINEAR_TYPES):
         # Is LoRA so we need to merge!
         W, quant_state, A, B, s, bias = get_lora_parameters_bias(layer)
         if quant_state is not None:

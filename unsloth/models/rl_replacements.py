@@ -1143,6 +1143,13 @@ def grpo_trainer_compute_loss(function_name, function):
             if x.shape[1] == 1:  # when importance_sampling_level == "sequence"
                 return x.mean()
             else:
+                # Align mask/coef lengths when left-padding adds extra tokens.
+                if x.shape[1] != completion_mask.shape[1]:
+                    min_len = min(x.shape[1], completion_mask.shape[1])
+                    x = x[:, -min_len:]
+                    cm = completion_mask[:, -min_len:]
+                    denom = cm.sum().clamp(min = 1.0)
+                    return (x * cm).sum() / denom
                 return (x * completion_mask).sum() / completion_token_count
 
         if advantages.dim() == 1:
