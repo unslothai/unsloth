@@ -435,6 +435,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         for x in dir(trainer)
         if x.endswith("Trainer")
         and x != "Trainer"
+        and not x.startswith("_")
         and trainer_file.split("_")[0] in x.lower()
     ]
     config = [
@@ -442,6 +443,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         for x in dir(trainer)
         if x.endswith("Config")
         and x != "Config"
+        and not x.startswith("_")
         and trainer_file.split("_")[0] in x.lower()
     ]
     if len(name) != 1:
@@ -449,6 +451,19 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             f"Unsloth: Could not find Trainer class in trl.trainer.{trainer_file}. Found: {name}"
         )
         return
+    if len(config) != 1:
+        # TRL 0.26+: Config may be in a separate *_config.py module
+        config_module_name = trainer_file.replace("_trainer", "_config")
+        try:
+            config_mod = eval(f"trl.trainer.{config_module_name}")
+            config = [
+                x for x in dir(config_mod)
+                if x.endswith("Config") and x != "Config"
+                and not x.startswith("_")
+                and trainer_file.split("_")[0] in x.lower()
+            ]
+        except Exception:
+            pass
     if len(config) != 1:
         logger.info(
             f"Unsloth: Could not find Config class in trl.trainer.{trainer_file}. Found: {config}"
@@ -467,11 +482,16 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         return
     try:
         RLConfig = eval(f"trl.trainer.{trainer_file}.{RLConfig_name}")
-    except Exception as e:
-        logger.info(
-            f"Unsloth: Could not load {RLConfig_name} from trl.trainer.{trainer_file}: {e}"
-        )
-        return
+    except Exception:
+        # TRL 0.26+: Config may be in a separate *_config.py module
+        try:
+            config_module_name = trainer_file.replace("_trainer", "_config")
+            RLConfig = eval(f"trl.trainer.{config_module_name}.{RLConfig_name}")
+        except Exception as e:
+            logger.info(
+                f"Unsloth: Could not load {RLConfig_name}: {e}"
+            )
+            return
 
     # Check name
     if RLTrainer.__name__.startswith("Unsloth"):
@@ -481,11 +501,40 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         print(f"Unsloth: {RLConfig.__name__} is already patched.")
         return
 
+    # TRL 0.26+: Resolve thin wrappers to their experimental parent class.
+    # Thin wrappers have very short source (<1000 chars) and only *args/**kwargs.
+    _trainer_resolved_module = None
+    try:
+        if len(inspect.getsource(RLTrainer)) < 1000:
+            for _parent in RLTrainer.__mro__[1:]:
+                if _parent is object: continue
+                try:
+                    if len(inspect.getsource(_parent)) > 1000:
+                        RLTrainer = _parent
+                        _trainer_resolved_module = inspect.getmodule(_parent)
+                        break
+                except Exception: continue
+    except Exception: pass
+
+    try:
+        if len(inspect.getsource(RLConfig)) < 1000:
+            for _parent in RLConfig.__mro__[1:]:
+                if _parent is object: continue
+                try:
+                    if len(inspect.getsource(_parent)) > 1000:
+                        RLConfig = _parent
+                        break
+                except Exception: continue
+    except Exception: pass
+
     # Get old source
     old_RLTrainer_source = inspect.getsource(RLTrainer)
     old_RLConfig_source = inspect.getsource(RLConfig)
 
-    all_imports = dir(trainer)
+    if _trainer_resolved_module is not None:
+        all_imports = dir(_trainer_resolved_module)
+    else:
+        all_imports = dir(trainer)
     # Fix _deprecate_arguments not getting imported so stop __ but not _
     imports = [x for x in all_imports if not x.startswith("__")]
 
@@ -1225,10 +1274,15 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     RLTrainer_source = re.sub(r"[\n]{3,}", "\n", RLTrainer_source)
 
     # Create new function
+    _model_location = (
+        _trainer_resolved_module.__name__
+        if _trainer_resolved_module is not None
+        else f"trl.trainer.{trainer_file}"
+    )
     created_module = create_new_function(
         f"Unsloth{RLTrainer_name}",
         RLTrainer_source,
-        f"trl.trainer.{trainer_file}",
+        _model_location,
         imports,
         overwrite = False,
     )

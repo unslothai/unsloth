@@ -115,7 +115,6 @@ global DISABLE_SDPA_MODEL_NAMES
 # Disables some SDPA modules since it's wrong
 DISABLE_SDPA_MODEL_NAMES = [
     "gemma3,",  # Add comma bc gemma3 will match gemma3n
-    "modernbert",  # SDPA backward has stride alignment issues with torch.compile
 ]
 
 

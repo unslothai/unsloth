@@ -181,18 +181,6 @@ if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") != "1":
         category = DeprecationWarning,
     )
 
-    # cuda.cudart / cuda.nvrtc module deprecation (FutureWarning)
-    warnings.filterwarnings(
-        "ignore",
-        message = r".*cuda\.cudart.*deprecated",
-        category = FutureWarning,
-    )
-    warnings.filterwarnings(
-        "ignore",
-        message = r".*cuda\.nvrtc.*deprecated",
-        category = FutureWarning,
-    )
-
     # vllm "Level is deprecated" stderr noise
     sys.stderr.add_filter("Level is deprecated")
 
