@@ -1627,12 +1627,15 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
     for function in functions:
         if not hasattr(RLTrainer, function):
             continue
-        fx = getattr(RLTrainer, function)
-        try:
-            source = inspect.getsource(fx)
-        except:
-            continue
-        original_source = source
+        if function in changed:
+            original_source, source = changed[function]
+        else:
+            fx = getattr(RLTrainer, function)
+            try:
+                source = inspect.getsource(fx)
+            except:
+                continue
+            original_source = source
 
         # Check for function
         for edit_function in edit_functions:
