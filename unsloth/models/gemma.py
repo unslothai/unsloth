@@ -258,12 +258,16 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
     ):
         super().__init__()
         # In transformers 5.0+, RotaryEmbedding(config) passes config as first positional arg (dim)
-        if config is None and dim is not None and hasattr(dim, "max_position_embeddings"):
+        if (
+            config is None
+            and dim is not None
+            and hasattr(dim, "max_position_embeddings")
+        ):
             config = dim
             dim = None
         if config is not None:
             # [TODO] Hack to pass in config - need to remove later
-            base = _get_rope_theta(config, default=base)
+            base = _get_rope_theta(config, default = base)
             partial_rotary_factor = (
                 config.partial_rotary_factor
                 if hasattr(config, "partial_rotary_factor")

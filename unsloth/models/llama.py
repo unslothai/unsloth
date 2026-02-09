@@ -1564,7 +1564,7 @@ def PeftModel_fast_forward(
         )
 
 
-def _get_rope_theta(config, default=10000.0):
+def _get_rope_theta(config, default = 10000.0):
     """Get rope_theta from config, handling both transformers 4.x and 5.x."""
     try:
         return config.rope_theta
@@ -1596,7 +1596,7 @@ class LlamaRotaryEmbedding(torch.nn.Module):
         super().__init__()
         if config is not None:
             # [TODO] Hack to pass in config - need to remove later
-            base = _get_rope_theta(config, default=base)
+            base = _get_rope_theta(config, default = base)
             partial_rotary_factor = (
                 config.partial_rotary_factor
                 if hasattr(config, "partial_rotary_factor")
@@ -1747,7 +1747,7 @@ class LlamaExtendedRotaryEmbedding(torch.nn.Module):
         super().__init__()
         if config is not None:
             # [TODO] Hack to pass in config - need to remove later
-            base = _get_rope_theta(config, default=base)
+            base = _get_rope_theta(config, default = base)
             partial_rotary_factor = (
                 config.partial_rotary_factor
                 if hasattr(config, "partial_rotary_factor")
@@ -1883,7 +1883,7 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
 
         if config is not None:
             # [TODO] Hack to pass in config - need to remove later
-            base = _get_rope_theta(config, default=base)
+            base = _get_rope_theta(config, default = base)
             partial_rotary_factor = (
                 config.partial_rotary_factor
                 if hasattr(config, "partial_rotary_factor")
