@@ -1564,6 +1564,18 @@ def PeftModel_fast_forward(
         )
 
 
+def _get_rope_theta(config, default=10000.0):
+    """Get rope_theta from config, handling both transformers 4.x and 5.x."""
+    try:
+        return config.rope_theta
+    except (AttributeError, KeyError):
+        pass
+    rp = getattr(config, "rope_parameters", None)
+    if isinstance(rp, dict):
+        return rp.get("rope_theta", default)
+    return default
+
+
 # Solves https://github.com/unslothai/unsloth/issues/168
 # Static KV Cache was introduced in 4.38.0, causing training to be much slower.
 # Inference can now be CUDAGraphed, but we shall retain the old rotary embeddings.
@@ -1584,11 +1596,7 @@ class LlamaRotaryEmbedding(torch.nn.Module):
         super().__init__()
         if config is not None:
             # [TODO] Hack to pass in config - need to remove later
-            try:
-                base = config.rope_theta
-            except:
-                base = getattr(config, "rope_parameters", {})
-                base = base["rope_theta"]
+            base = _get_rope_theta(config, default=base)
             partial_rotary_factor = (
                 config.partial_rotary_factor
                 if hasattr(config, "partial_rotary_factor")
@@ -1739,7 +1747,7 @@ class LlamaExtendedRotaryEmbedding(torch.nn.Module):
         super().__init__()
         if config is not None:
             # [TODO] Hack to pass in config - need to remove later
-            base = config.rope_theta
+            base = _get_rope_theta(config, default=base)
             partial_rotary_factor = (
                 config.partial_rotary_factor
                 if hasattr(config, "partial_rotary_factor")
@@ -1875,7 +1883,7 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
 
         if config is not None:
             # [TODO] Hack to pass in config - need to remove later
-            base = config.rope_theta
+            base = _get_rope_theta(config, default=base)
             partial_rotary_factor = (
                 config.partial_rotary_factor
                 if hasattr(config, "partial_rotary_factor")
@@ -2038,12 +2046,16 @@ def unsloth_fast_generate(
             and kwargs["input_ids"] is not None
             and "max_new_tokens" in kwargs
         ):
-            if (
-                kwargs["input_ids"].shape[-1] + kwargs["max_new_tokens"]
+            _ids = kwargs["input_ids"]
+            # Handle BatchEncoding from transformers 5.0+ (no .shape attribute)
+            if hasattr(_ids, "input_ids"):
+                _ids = _ids["input_ids"]
+            if hasattr(_ids, "shape") and (
+                _ids.shape[-1] + kwargs["max_new_tokens"]
                 > self.config.max_position_embeddings
             ):
                 raise ValueError(
-                    f"Unsloth: input length {kwargs['input_ids'].shape[-1]} + max_new_tokens {kwargs['max_new_tokens']} exceeds the maximum sequence length of {self.config.max_position_embeddings}!\n"
+                    f"Unsloth: input length {_ids.shape[-1]} + max_new_tokens {kwargs['max_new_tokens']} exceeds the maximum sequence length of {self.config.max_position_embeddings}!\n"
                     "You will need to do long context extension by increasing the `max_seq_length` in `FastLanguageModel.from_pretrained`."
                 )
 

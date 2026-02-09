@@ -217,6 +217,17 @@ def sft_trainer_compute_loss(function_name, function):
 RL_FUNCTIONS["sft_trainer"].append(sft_trainer_compute_loss)
 
 
+# Fix bare pop("push_to_hub_token") in compiled SFT/IterativeSFT trainer __init__
+# On transformers 5.0+, to_dict() no longer includes push_to_hub_token, so bare pop KeyErrors
+def sft_trainer_push_to_hub_token(function_name, function):
+    if function_name != "__init__": return function
+    return function.replace(
+        'dict_args.pop("push_to_hub_token")',
+        'dict_args.pop("push_to_hub_token", None)'
+    )
+RL_FUNCTIONS["sft_trainer"].append(sft_trainer_push_to_hub_token)
+
+
 # Autocast precision for GRPO
 def grpo_trainer__prepare_inputs(function_name, function):
     if function_name != "_prepare_inputs":
