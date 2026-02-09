@@ -15,8 +15,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { type ReactElement, useRef } from "react";
+import { type ReactElement, useEffect, useRef, useState } from "react";
 import type { LlmConfig, Score } from "../../types";
+import { AvailableVariables } from "./available-variables";
 import { NameField } from "../shared/name-field";
 
 const CODE_LANG_OPTIONS = [
@@ -55,6 +56,10 @@ export function LlmDialog({
   const outputFormatId = `${config.id}-output-format`;
   const systemPromptId = `${config.id}-system-prompt`;
   const modelAliasAnchorRef = useRef<HTMLDivElement>(null);
+  const [aliasInput, setAliasInput] = useState(config.model_alias);
+  useEffect(() => {
+    setAliasInput(config.model_alias);
+  }, [config.model_alias]);
   const scores = config.scores ?? [];
   const updateField = <K extends keyof LlmConfig>(
     key: K,
@@ -81,6 +86,7 @@ export function LlmDialog({
   };
   return (
     <div className="space-y-4">
+      <AvailableVariables configId={config.id} />
       <NameField
         value={config.name}
         onChange={(value) => onUpdate({ name: value })}
@@ -99,7 +105,7 @@ export function LlmDialog({
             filter={null}
             value={config.model_alias || null}
             onValueChange={(value) => updateField("model_alias", value ?? "")}
-            onInputValueChange={(value) => updateField("model_alias", value)}
+            onInputValueChange={setAliasInput}
             itemToStringValue={(value) => value}
             autoHighlight={true}
           >
@@ -107,6 +113,11 @@ export function LlmDialog({
               id={modelAliasId}
               className="nodrag w-full"
               placeholder="Pick model alias or type"
+              onBlur={() => {
+                if (aliasInput !== config.model_alias) {
+                  updateField("model_alias", aliasInput);
+                }
+              }}
             />
             <ComboboxContent anchor={modelAliasAnchorRef}>
               <ComboboxEmpty>No model configs found</ComboboxEmpty>
@@ -158,7 +169,7 @@ export function LlmDialog({
         </label>
         <Textarea
           id={promptId}
-          className="nodrag"
+          className="corner-squircle nodrag"
           value={config.prompt}
           onChange={(event) => updateField("prompt", event.target.value)}
         />
@@ -179,7 +190,7 @@ export function LlmDialog({
             </p>
           )}
           {scores.map((score, index) => (
-            <div key={`${config.id}-score-${index}`} className="flex items-center justify-between rounded-xl border border-border/60 px-3 py-2">
+            <div key={`${config.id}-score-${index}`} className="flex items-center justify-between rounded-xl corner-squircle border border-border/60 px-3 py-2">
               <div>
                 <p className="text-xs font-semibold text-foreground">
                   {score.name.trim() || `Scorer ${index + 1}`}
@@ -205,7 +216,7 @@ export function LlmDialog({
           </label>
           <Textarea
             id={outputFormatId}
-            className="nodrag"
+            className="corner-squircle nodrag"
             value={config.output_format ?? ""}
             onChange={(event) =>
               updateField("output_format", event.target.value)
@@ -225,7 +236,7 @@ export function LlmDialog({
         </label>
         <Textarea
           id={systemPromptId}
-          className="nodrag"
+          className="corner-squircle nodrag"
           value={config.system_prompt}
           onChange={(event) => updateField("system_prompt", event.target.value)}
         />

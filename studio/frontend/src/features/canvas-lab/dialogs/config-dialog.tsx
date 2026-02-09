@@ -37,7 +37,7 @@ export function ConfigDialog({
         position="absolute"
         overlayPosition="absolute"
         overlayClassName="bg-transparent"
-        className="sm:max-w-2xl shadow-border"
+        className="corner-squircle max-h-[650px] overflow-auto sm:max-w-2xl shadow-border"
       >
         <DialogShell />
         {!config && (
@@ -51,7 +51,7 @@ export function ConfigDialog({
             {(config.kind === "sampler" ||
               config.kind === "llm" ||
               config.kind === "expression") && (
-              <div className="flex items-center justify-between gap-3 rounded-2xl border border-border/60 px-3 py-2">
+              <div className="flex items-center corner-squircle justify-between gap-3 rounded-2xl border border-border/60 px-3 py-2">
                 <div>
                   <p className="text-sm font-semibold">Drop from final dataset</p>
                   <p className="text-xs text-muted-foreground">

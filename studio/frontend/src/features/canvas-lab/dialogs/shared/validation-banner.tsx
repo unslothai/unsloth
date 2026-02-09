@@ -12,13 +12,9 @@ export function ValidationBanner({
     return null;
   }
   return (
-    <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
-      <p className="font-semibold">Fix before run</p>
-      <ul className="mt-1 list-disc pl-4">
-        {errors.map((item) => (
-          <li key={item}>{item}</li>
-        ))}
-      </ul>
-    </div>
+    <p className="text-xs text-amber-600">
+      <span className="font-semibold">Fix before run: </span>
+      {errors.join(". ")}.
+    </p>
   );
 }

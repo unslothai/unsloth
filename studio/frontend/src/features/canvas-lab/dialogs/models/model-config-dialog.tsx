@@ -8,7 +8,7 @@ import {
   ComboboxList,
 } from "@/components/ui/combobox";
 import { Input } from "@/components/ui/input";
-import { type ReactElement, useRef } from "react";
+import { type ReactElement, useEffect, useRef, useState } from "react";
 import type { ModelConfig } from "../../types";
 import { NameField } from "../shared/name-field";
 
@@ -29,6 +29,10 @@ export function ModelConfigDialog({
   const topPId = `${config.id}-top-p`;
   const maxTokensId = `${config.id}-max-tokens`;
   const providerAnchorRef = useRef<HTMLDivElement>(null);
+  const [providerInput, setProviderInput] = useState(config.provider);
+  useEffect(() => {
+    setProviderInput(config.provider);
+  }, [config.provider]);
   const updateField = <K extends keyof ModelConfig>(
     key: K,
     value: ModelConfig[K],
@@ -71,7 +75,7 @@ export function ModelConfigDialog({
             filter={null}
             value={config.provider || null}
             onValueChange={(value) => updateField("provider", value ?? "")}
-            onInputValueChange={(value) => updateField("provider", value)}
+            onInputValueChange={setProviderInput}
             itemToStringValue={(value) => value}
             autoHighlight={true}
           >
@@ -79,6 +83,11 @@ export function ModelConfigDialog({
               id={providerId}
               className="nodrag w-full"
               placeholder="Pick provider or type name"
+              onBlur={() => {
+                if (providerInput !== config.provider) {
+                  updateField("provider", providerInput);
+                }
+              }}
             />
             <ComboboxContent anchor={providerAnchorRef}>
               <ComboboxEmpty>No providers found</ComboboxEmpty>
