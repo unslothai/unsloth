@@ -475,11 +475,16 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
                 if _parent is object:
                     continue
                 _parent_mod = inspect.getmodule(_parent)
-                if _parent_mod is None or _parent_mod.__name__ == f"trl.trainer.{trainer_file}":
+                if (
+                    _parent_mod is None
+                    or _parent_mod.__name__ == f"trl.trainer.{trainer_file}"
+                ):
                     continue
                 config = [
-                    x for x in dir(_parent_mod)
-                    if x.endswith("Config") and x != "Config"
+                    x
+                    for x in dir(_parent_mod)
+                    if x.endswith("Config")
+                    and x != "Config"
                     and not x.startswith("_")
                     and trainer_file.split("_")[0] in x.lower()
                 ]
@@ -520,7 +525,10 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
                     if _parent is object:
                         continue
                     _parent_mod = inspect.getmodule(_parent)
-                    if _parent_mod is None or _parent_mod.__name__ == f"trl.trainer.{trainer_file}":
+                    if (
+                        _parent_mod is None
+                        or _parent_mod.__name__ == f"trl.trainer.{trainer_file}"
+                    ):
                         continue
                     if hasattr(_parent_mod, RLConfig_name):
                         RLConfig = getattr(_parent_mod, RLConfig_name)
@@ -549,8 +557,13 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     try:
         _trainer_src = inspect.getsource(RLTrainer)
         _trainer_module = inspect.getmodule(RLTrainer)
-        _trainer_module_src = inspect.getsource(_trainer_module) if _trainer_module else ""
-        if "trl.experimental" in _trainer_src or "trl.experimental" in _trainer_module_src:
+        _trainer_module_src = (
+            inspect.getsource(_trainer_module) if _trainer_module else ""
+        )
+        if (
+            "trl.experimental" in _trainer_src
+            or "trl.experimental" in _trainer_module_src
+        ):
             for _parent in RLTrainer.__mro__[1:]:
                 if _parent is object:
                     continue
@@ -569,7 +582,10 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         _config_src = inspect.getsource(RLConfig)
         _config_module = inspect.getmodule(RLConfig)
         _config_module_src = inspect.getsource(_config_module) if _config_module else ""
-        if "trl.experimental" in _config_src or "trl.experimental" in _config_module_src:
+        if (
+            "trl.experimental" in _config_src
+            or "trl.experimental" in _config_module_src
+        ):
             for _parent in RLConfig.__mro__[1:]:
                 if _parent is object:
                     continue
@@ -1735,9 +1751,7 @@ def patch_trl_rl_trainers():
         try:
             _patch_trl_rl_trainers(trainer)
         except Exception as e:
-            logger.warning_once(
-                f"Unsloth: Could not patch trl.trainer.{trainer}: {e}"
-            )
+            logger.warning_once(f"Unsloth: Could not patch trl.trainer.{trainer}: {e}")
     return
 
 
