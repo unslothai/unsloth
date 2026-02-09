@@ -1276,6 +1276,22 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
                 _vlm_check_original, _vlm_check_patched
             )
 
+        # Fix TRL 0.22.x: VLM models with text-only datasets.
+        # TRL 0.22.x checks _is_vlm (model type) not _is_vision_dataset (dataset
+        # content, added in 0.25.1+). When _is_vlm=True, signature columns are
+        # vision-only ["messages","prompt","completion","images"], which have zero
+        # overlap with tokenized text columns. Fix: merge both column sets into the
+        # VLM branch. Extra columns not in the dataset are harmlessly ignored by
+        # _remove_unused_columns (it only raises when zero columns match).
+        _sig_vlm_old = (
+            'self._signature_columns = ["messages", "prompt", "completion", "images"]'
+        )
+        _sig_vlm_new = (
+            'self._signature_columns = ["messages", "prompt", "completion", "images",'
+            ' "input_ids", "labels", "attention_mask", "seq_lengths", "completion_mask", "assistant_masks"]'
+        )
+        RLTrainer_source = RLTrainer_source.replace(_sig_vlm_old, _sig_vlm_new)
+
     # Remove multiple doc strings
     if __RLConfig_doc__ != "" and RLTrainer_source.count(__RLTrainer_doc__) == 2:
         RLTrainer_source = RLTrainer_source.replace(__RLTrainer_doc__, "", 1)
