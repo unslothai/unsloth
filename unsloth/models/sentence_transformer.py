@@ -287,6 +287,7 @@ def _save_pretrained_gguf(
 
     return result
 
+
 def _push_to_hub_gguf(
     self,
     repo_id,
@@ -475,7 +476,9 @@ This sentence-transformers model was finetuned and converted to GGUF format usin
 
         if fix_bos_token:
             readme_content += "\n## Note\n"
-            readme_content += "The model's BOS token behavior was adjusted for GGUF compatibility.\n"
+            readme_content += (
+                "The model's BOS token behavior was adjusted for GGUF compatibility.\n"
+            )
 
         readme_content += (
             "\nThis was trained 2x faster with [Unsloth](https://github.com/unslothai/unsloth)\n"
@@ -510,7 +513,9 @@ This sentence-transformers model was finetuned and converted to GGUF format usin
     except:
         pass
 
-    print(f"Unsloth: Successfully uploaded GGUF to https://huggingface.co/{full_repo_id}")
+    print(
+        f"Unsloth: Successfully uploaded GGUF to https://huggingface.co/{full_repo_id}"
+    )
     return full_repo_id
 
 
@@ -1547,9 +1552,7 @@ class FastSentenceTransformer(FastModel):
                 _save_pretrained_gguf, st_model
             )
 
-            st_model.push_to_hub_gguf = types.MethodType(
-                _push_to_hub_gguf, st_model
-            )
+            st_model.push_to_hub_gguf = types.MethodType(_push_to_hub_gguf, st_model)
 
             def _push_to_hub_merged(self, repo_id, **push_kwargs):
                 hub_token = push_kwargs.get("token", None) or get_token()
@@ -1753,10 +1756,8 @@ class FastSentenceTransformer(FastModel):
             _save_pretrained_gguf, st_model
         )
 
-        st_model.push_to_hub_gguf = types.MethodType(
-            _push_to_hub_gguf, st_model
-        )
-            
+        st_model.push_to_hub_gguf = types.MethodType(_push_to_hub_gguf, st_model)
+
         def _push_to_hub_merged(self, repo_id, **kwargs):
             token = kwargs.get("token", None) or get_token()
             if token is None:
