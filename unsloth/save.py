@@ -2155,6 +2155,7 @@ def unsloth_push_to_hub_gguf(
     except Exception as e:
         if cleanup_temp:
             import shutil
+
             for d in [save_directory, f"{save_directory}_gguf"]:
                 try:
                     shutil.rmtree(d)
@@ -2345,6 +2346,7 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
         if cleanup_temp:
             print("Unsloth: Cleaning up temporary files...")
             import shutil
+
             for d in [save_directory, f"{save_directory}_gguf"]:
                 if os.path.exists(d):
                     try:
