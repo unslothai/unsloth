@@ -69,7 +69,7 @@ export function ExpressionDialog({
         </label>
         <Textarea
           id={exprId}
-          className="nodrag"
+          className="corner-squircle nodrag"
           placeholder="{{ category_1 }} - {{ subcategory_1 }}"
           value={config.expr}
           onChange={(event) => updateField("expr", event.target.value)}

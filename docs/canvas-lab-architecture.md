@@ -228,6 +228,7 @@ Current safe flow:
 - dialog passes options -> registry -> block dialogs (`LlmDialog`, `ModelConfigDialog`, `TimedeltaDialog`)
 
 No dialog component should import store directly.
+Exception: read-only derived data (e.g. `available-variables.tsx` reads `configs` for variable list).
 
 ## 9) Add New Block (exact flow)
 

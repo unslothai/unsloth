@@ -1,3 +1,4 @@
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -13,6 +14,7 @@ import { MAX_NODE_WIDTH, MIN_NODE_WIDTH } from "../constants";
 import { useCanvasLabStore } from "../stores/canvas-lab";
 import type { LayoutDirection, LlmConfig, Score, ScoreOption } from "../types";
 import { HANDLE_IDS } from "../utils/handles";
+import { getAvailableVariables } from "../utils/variables";
 import { BaseNode, BaseNodeContent, BaseNodeHeader, BaseNodeHeaderTitle } from "./rf-ui/base-node";
 
 type PromptField = "prompt" | "system_prompt";
@@ -56,6 +58,28 @@ function updateOptionAt(
   );
 }
 
+function AuxVariableBadges({ llmId }: { llmId: string }): ReactElement | null {
+  const configs = useCanvasLabStore((state) => state.configs);
+  const vars = getAvailableVariables(configs, llmId);
+  if (vars.length === 0) return null;
+  return (
+    <div className="space-y-1">
+      <p className="text-[10px] font-medium text-muted-foreground">Available references</p>
+      <div className="flex flex-wrap gap-1">
+        {vars.map((v) => (
+          <Badge
+            key={v}
+            variant="secondary"
+            className="corner-squircle h-4 px-1.5 font-mono text-[10px]"
+          >
+            {v}
+          </Badge>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function AuxNodeBase({
   data,
 }: NodeProps<CanvasAuxNodeType>): ReactElement | null {
@@ -88,9 +112,9 @@ function AuxNodeBase({
         <BaseNodeHeader className="border-b border-border/50 px-3 py-2">
           <BaseNodeHeaderTitle className="text-xs">{data.title}</BaseNodeHeaderTitle>
         </BaseNodeHeader>
-        <BaseNodeContent className="px-3 py-2">
+        <BaseNodeContent className="gap-2 px-3 py-2">
           <Textarea
-            className="nodrag max-h-40 min-h-[88px] w-full resize-none overflow-y-auto text-xs"
+            className="corner-squircle nodrag max-h-40 min-h-[88px] w-full resize-none overflow-y-auto text-xs"
             value={value}
             onChange={(event) =>
               updateConfig(data.llmId, {
@@ -98,6 +122,7 @@ function AuxNodeBase({
               } as Partial<LlmConfig>)
             }
           />
+          <AuxVariableBadges llmId={data.llmId} />
         </BaseNodeContent>
         <Handle
           id={HANDLE_IDS.llmInputOut}
@@ -178,7 +203,7 @@ function AuxNodeBase({
           onChange={(event) => updateScore({ name: event.target.value })}
         />
         <Textarea
-          className="nodrag max-h-32 min-h-[56px] w-full resize-none overflow-y-auto text-xs"
+          className="corner-squircle nodrag max-h-32 min-h-[56px] w-full resize-none overflow-y-auto text-xs"
           placeholder="Score description"
           value={score.description}
           onChange={(event) => updateScore({ description: event.target.value })}

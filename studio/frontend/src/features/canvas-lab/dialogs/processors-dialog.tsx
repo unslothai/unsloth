@@ -1,8 +1,9 @@
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogFooter } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogFooter, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { VisuallyHidden } from "radix-ui";
 import { type ReactElement, useMemo } from "react";
 import type { CanvasProcessorConfig } from "../types";
 import { buildDefaultSchemaTransform } from "../utils/processors";
@@ -65,8 +66,11 @@ export function ProcessorsDialog({
         position="absolute"
         overlayPosition="absolute"
         overlayClassName="bg-transparent"
-        className="max-h-[85vh] overflow-auto sm:max-w-2xl"
+        className="corner-squircle max-h-[650px] overflow-auto sm:max-w-2xl"
       >
+        <VisuallyHidden.Root>
+          <DialogTitle>Processors</DialogTitle>
+        </VisuallyHidden.Root>
         <div className="space-y-4">
           <div className="flex items-center justify-between gap-3 rounded-2xl border border-border/60 px-3 py-2">
             <div>
@@ -106,7 +110,7 @@ export function ProcessorsDialog({
                 </label>
                 <Textarea
                   id={templateId}
-                  className="nodrag min-h-[220px]"
+                  className="corner-squircle nodrag min-h-[220px]"
                   value={schemaProcessor.template}
                   onChange={(event) =>
                     updateSchema({ template: event.target.value })
