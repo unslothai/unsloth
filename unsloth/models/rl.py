@@ -466,6 +466,32 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             ]
         except Exception:
             pass
+    if len(config) != 1 and len(name) == 1:
+        # Thin wrapper fallback: walk the Trainer's MRO to find Config
+        # in the real implementation module (e.g., trl.experimental.bco)
+        try:
+            _temp_cls = eval(f"trl.trainer.{trainer_file}.{name[0]}")
+            for _parent in _temp_cls.__mro__[1:]:
+                if _parent is object:
+                    continue
+                _parent_mod = inspect.getmodule(_parent)
+                if (
+                    _parent_mod is None
+                    or _parent_mod.__name__ == f"trl.trainer.{trainer_file}"
+                ):
+                    continue
+                config = [
+                    x
+                    for x in dir(_parent_mod)
+                    if x.endswith("Config")
+                    and x != "Config"
+                    and not x.startswith("_")
+                    and trainer_file.split("_")[0] in x.lower()
+                ]
+                if len(config) == 1:
+                    break
+        except Exception:
+            pass
     if len(config) != 1:
         logger.info(
             f"Unsloth: Could not find Config class in trl.trainer.{trainer_file}. Found: {config}"
@@ -482,6 +508,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             f"Unsloth: Could not load {RLTrainer_name} from trl.trainer.{trainer_file}: {e}"
         )
         return
+    _config_resolved_module = None
     try:
         RLConfig = eval(f"trl.trainer.{trainer_file}.{RLConfig_name}")
     except Exception:
@@ -489,9 +516,30 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         try:
             config_module_name = trainer_file.replace("_trainer", "_config")
             RLConfig = eval(f"trl.trainer.{config_module_name}.{RLConfig_name}")
-        except Exception as e:
-            logger.info(f"Unsloth: Could not load {RLConfig_name}: {e}")
-            return
+        except Exception:
+            # Thin wrapper fallback: load Config from parent trainer's module
+            _config_loaded = False
+            try:
+                _temp_cls = eval(f"trl.trainer.{trainer_file}.{name[0]}")
+                for _parent in _temp_cls.__mro__[1:]:
+                    if _parent is object:
+                        continue
+                    _parent_mod = inspect.getmodule(_parent)
+                    if (
+                        _parent_mod is None
+                        or _parent_mod.__name__ == f"trl.trainer.{trainer_file}"
+                    ):
+                        continue
+                    if hasattr(_parent_mod, RLConfig_name):
+                        RLConfig = getattr(_parent_mod, RLConfig_name)
+                        _config_resolved_module = _parent_mod
+                        _config_loaded = True
+                        break
+            except Exception:
+                pass
+            if not _config_loaded:
+                logger.info(f"Unsloth: Could not load {RLConfig_name}")
+                return
 
     # Check name
     if RLTrainer.__name__.startswith("Unsloth"):
@@ -502,37 +550,52 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         return
 
     # TRL 0.26+: Resolve thin wrappers to their experimental parent class.
-    # Thin wrappers are deprecation shims that contain "trl.experimental" in
-    # their source and just forward *args/**kwargs to the real implementation.
+    # Thin wrappers are deprecation shims in trl.trainer that just forward
+    # *args/**kwargs to the real implementation in trl.experimental.
+    # Only resolve if a parent class actually lives in a trl.experimental module.
     _trainer_resolved_module = None
     try:
         _trainer_src = inspect.getsource(RLTrainer)
-        if "trl.experimental" in _trainer_src:
+        _trainer_module = inspect.getmodule(RLTrainer)
+        _trainer_module_src = (
+            inspect.getsource(_trainer_module) if _trainer_module else ""
+        )
+        if (
+            "trl.experimental" in _trainer_src
+            or "trl.experimental" in _trainer_module_src
+        ):
             for _parent in RLTrainer.__mro__[1:]:
                 if _parent is object:
                     continue
-                try:
-                    if "trl.experimental" not in inspect.getsource(_parent):
-                        RLTrainer = _parent
-                        _trainer_resolved_module = inspect.getmodule(_parent)
-                        break
-                except Exception:
+                _parent_mod = inspect.getmodule(_parent)
+                if _parent_mod is None:
                     continue
+                # Only resolve to a parent that lives in trl.experimental
+                if "trl.experimental" in _parent_mod.__name__:
+                    RLTrainer = _parent
+                    _trainer_resolved_module = _parent_mod
+                    break
     except Exception:
         pass
 
     try:
         _config_src = inspect.getsource(RLConfig)
-        if "trl.experimental" in _config_src:
+        _config_module = inspect.getmodule(RLConfig)
+        _config_module_src = inspect.getsource(_config_module) if _config_module else ""
+        if (
+            "trl.experimental" in _config_src
+            or "trl.experimental" in _config_module_src
+        ):
             for _parent in RLConfig.__mro__[1:]:
                 if _parent is object:
                     continue
-                try:
-                    if "trl.experimental" not in inspect.getsource(_parent):
-                        RLConfig = _parent
-                        break
-                except Exception:
+                _parent_mod = inspect.getmodule(_parent)
+                if _parent_mod is None:
                     continue
+                # Only resolve to a parent that lives in trl.experimental
+                if "trl.experimental" in _parent_mod.__name__:
+                    RLConfig = _parent
+                    break
     except Exception:
         pass
 
@@ -542,6 +605,8 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
 
     if _trainer_resolved_module is not None:
         all_imports = dir(_trainer_resolved_module)
+    elif _config_resolved_module is not None:
+        all_imports = dir(_config_resolved_module)
     else:
         all_imports = dir(trainer)
     # Fix _deprecate_arguments not getting imported so stop __ but not _
@@ -1300,9 +1365,10 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     RLTrainer_source = re.sub(r"[\n]{3,}", "\n", RLTrainer_source)
 
     # Create new function
+    _resolved_module = _trainer_resolved_module or _config_resolved_module
     _model_location = (
-        _trainer_resolved_module.__name__
-        if _trainer_resolved_module is not None
+        _resolved_module.__name__
+        if _resolved_module is not None
         else f"trl.trainer.{trainer_file}"
     )
     created_module = create_new_function(
@@ -1561,12 +1627,15 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
     for function in functions:
         if not hasattr(RLTrainer, function):
             continue
-        fx = getattr(RLTrainer, function)
-        try:
-            source = inspect.getsource(fx)
-        except:
-            continue
-        original_source = source
+        if function in changed:
+            original_source, source = changed[function]
+        else:
+            fx = getattr(RLTrainer, function)
+            try:
+                source = inspect.getsource(fx)
+            except:
+                continue
+            original_source = source
 
         # Check for function
         for edit_function in edit_functions:
@@ -1682,7 +1751,10 @@ def patch_trl_rl_trainers():
         if x.islower() and x.endswith("_trainer") and x != "base_trainer"
     ]
     for trainer in all_trainers:
-        _patch_trl_rl_trainers(trainer)
+        try:
+            _patch_trl_rl_trainers(trainer)
+        except Exception as e:
+            logger.warning_once(f"Unsloth: Could not patch trl.trainer.{trainer}: {e}")
     return
 
 
