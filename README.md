@@ -168,18 +168,16 @@ pip install unsloth
 6. Finally, install `bitsandbytes` and check it with `python -m bitsandbytes`
 
 ### Conda Installation (Optional)
-`⚠️Only use Conda if you have it. If not, use Pip`. Select either `pytorch-cuda=11.8,12.1` for CUDA 11.8 or CUDA 12.1. We support `python=3.10,3.11,3.12`.
+`⚠️Only use Conda if you have it. If not, use Pip`. We support `python=3.10,3.11,3.12,3.13`.
 ```bash
-conda create --name unsloth_env \
-    python=3.11 \
-    pytorch-cuda=12.1 \
-    pytorch cudatoolkit xformers -c pytorch -c nvidia -c xformers \
-    -y
+conda create --name unsloth_env python==3.12 -y
 conda activate unsloth_env
-
-pip install unsloth
 ```
-
+Use `nvidia-smi` to get the correct CUDA version like 13.0 which becomes `cu130`
+```bash
+pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130
+pip3 install unsloth
+```
 <details>
   <summary>If you're looking to install Conda in a Linux environment, <a href="https://docs.anaconda.com/miniconda/">read here</a>, or run the below 🔽</summary>
   
@@ -291,7 +289,7 @@ Access Jupyter Lab at `http://localhost:8888` and start fine-tuning!
 Unsloth example code to fine-tune gpt-oss-20b:
 
 ```python
-from unsloth import FastLanguageModel, FastModel
+from unsloth import FastLanguageModel, FastModel, FastVisionModel
 import torch
 from trl import SFTTrainer, SFTConfig
 from datasets import load_dataset
@@ -306,9 +304,9 @@ fourbit_models = [
 
 ] # More models at https://huggingface.co/unsloth
 
-model, tokenizer = FastModel.from_pretrained(
+model, tokenizer = FastLanguageModel.from_pretrained(
     model_name = "unsloth/gpt-oss-20b",
-    max_seq_length = 2048, # Choose any for long context!
+    max_seq_length = max_seq_length, # Choose any for long context!
     load_in_4bit = True,  # 4-bit quantization. False = 16-bit LoRA.
     load_in_8bit = False, # 8-bit quantization
     load_in_16bit = False, # 16-bit LoRA
