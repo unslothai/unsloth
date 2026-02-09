@@ -1257,6 +1257,16 @@ def save_to_gguf(
                     "Please check disk space and try again."
                 )
 
+    # Move initial GGUF files into a dedicated _gguf directory
+    gguf_directory = f"{model_directory}_gguf"
+    os.makedirs(gguf_directory, exist_ok = True)
+    moved_files = []
+    for fpath in initial_files:
+        dst = os.path.join(gguf_directory, os.path.basename(fpath))
+        shutil.move(fpath, dst)
+        moved_files.append(dst)
+    initial_files = moved_files
+
     print(f"Unsloth: Initial conversion completed! Files: {initial_files}")
 
     # Step 4: Additional quantizations using llama-quantize
@@ -1276,8 +1286,6 @@ def save_to_gguf(
                 print(
                     f"Unsloth: [2] Converting GGUF {first_conversion_dtype} into {quant_method}. This might take 10 minutes..."
                 )
-                gguf_directory = f"{model_directory}_gguf"
-                os.makedirs(gguf_directory, exist_ok = True)
                 output_location = os.path.join(
                     gguf_directory, f"{model_name}.{quant_method.upper()}.gguf"
                 )
@@ -1319,7 +1327,7 @@ def save_to_gguf(
         print("Unsloth: Model files cleanup...")
         if quants_created:
             all_saved_locations.remove(base_gguf)
-            Path(base_gguf).unlink()
+            Path(base_gguf).unlink(missing_ok = True)
 
             # flip the list to get [text_model, mmproj] order. for text models stays the same.
             all_saved_locations.reverse()
@@ -1999,6 +2007,7 @@ def unsloth_save_pretrained_gguf(
             raise RuntimeError(f"Unsloth: GGUF conversion failed: {e}")
 
     # Step 9: Create Ollama modelfile
+    gguf_directory = f"{save_directory}_gguf"
     modelfile_location = None
     ollama_success = False
     if all_file_locations:
@@ -2012,12 +2021,7 @@ def unsloth_save_pretrained_gguf(
                     os.path.basename(all_file_locations[0]),
                 )
             if modelfile is not None:
-                if is_vlm_update:
-                    modelfile_location = os.path.join(save_directory, "Modelfile")
-                else:
-                    modelfile_location = os.path.join(
-                        f"{save_directory}_gguf", "Modelfile"
-                    )
+                modelfile_location = os.path.join(gguf_directory, "Modelfile")
                 with open(modelfile_location, "w", encoding = "utf-8") as file:
                     file.write(modelfile)
                 ollama_success = True
@@ -2046,12 +2050,13 @@ def unsloth_save_pretrained_gguf(
     if ollama_success:
         print(f"Unsloth: Saved Ollama Modelfile to {modelfile_location}")
         print(
-            "Unsloth: convert model to ollama format by running - ollama create model_name -f ./Modelfile - inside save directory."
+            f"Unsloth: convert model to ollama format by running - ollama create model_name -f {modelfile_location}"
         )
 
     # Return a dict with all needed info for push_to_hub
     return {
         "save_directory": save_directory,
+        "gguf_directory": gguf_directory,
         "gguf_files": all_file_locations,
         "modelfile_location": modelfile_location,
         "want_full_precision": want_full_precision,
@@ -2150,11 +2155,11 @@ def unsloth_push_to_hub_gguf(
     except Exception as e:
         if cleanup_temp:
             import shutil
-
-            try:
-                shutil.rmtree(save_directory)
-            except:
-                pass
+            for d in [save_directory, f"{save_directory}_gguf"]:
+                try:
+                    shutil.rmtree(d)
+                except:
+                    pass
         raise RuntimeError(f"Failed to convert model to GGUF: {e}")
 
     # Step 3: Upload to HuggingFace Hub
@@ -2337,14 +2342,15 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
 
     finally:
         # Clean up temporary directory
-        if cleanup_temp and os.path.exists(save_directory):
+        if cleanup_temp:
             print("Unsloth: Cleaning up temporary files...")
             import shutil
-
-            try:
-                shutil.rmtree(save_directory)
-            except:
-                pass
+            for d in [save_directory, f"{save_directory}_gguf"]:
+                if os.path.exists(d):
+                    try:
+                        shutil.rmtree(d)
+                    except:
+                        pass
 
     return full_repo_id
 
