@@ -542,7 +542,7 @@ class FastGraniteModel(FastLlamaModel):
         return
 
     @staticmethod
-    def post_patch(model, tokenizer):
+    def post_patch(model, tokenizer, correct_dtype = None):
         # Torch.compile fails on embedding matrix??
         # Workaround randomnly fixes it for torch versions < 2.2
         model.model.embed_tokens = torch.nn.Embedding.from_pretrained(
