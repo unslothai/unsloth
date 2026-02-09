@@ -7,6 +7,7 @@ import { VisuallyHidden } from "radix-ui";
 import { type ReactElement, useMemo } from "react";
 import type { CanvasProcessorConfig } from "../types";
 import { buildDefaultSchemaTransform } from "../utils/processors";
+import { AvailableVariables } from "./shared/available-variables";
 type ProcessorsDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -72,7 +73,7 @@ export function ProcessorsDialog({
           <DialogTitle>Processors</DialogTitle>
         </VisuallyHidden.Root>
         <div className="space-y-4">
-          <div className="flex items-center justify-between gap-3 rounded-2xl border border-border/60 px-3 py-2">
+          <div className="flex items-center justify-between gap-3 corner-squircle rounded-2xl border border-border/60 px-3 py-2">
             <div>
               <p className="text-sm font-semibold">Schema transform</p>
               <p className="text-xs text-muted-foreground">
@@ -87,6 +88,7 @@ export function ProcessorsDialog({
 
           {schemaProcessor && (
             <div className="space-y-3">
+              <AvailableVariables configId="" />
               <div className="grid gap-2">
                 <label
                   className="text-xs font-semibold uppercase text-muted-foreground"
