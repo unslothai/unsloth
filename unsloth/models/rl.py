@@ -435,6 +435,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         for x in dir(trainer)
         if x.endswith("Trainer")
         and x != "Trainer"
+        and not x.startswith("_")
         and trainer_file.split("_")[0] in x.lower()
     ]
     config = [
@@ -442,6 +443,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         for x in dir(trainer)
         if x.endswith("Config")
         and x != "Config"
+        and not x.startswith("_")
         and trainer_file.split("_")[0] in x.lower()
     ]
     if len(name) != 1:
@@ -449,6 +451,21 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             f"Unsloth: Could not find Trainer class in trl.trainer.{trainer_file}. Found: {name}"
         )
         return
+    if len(config) != 1:
+        # TRL 0.26+: Config may be in a separate *_config.py module
+        config_module_name = trainer_file.replace("_trainer", "_config")
+        try:
+            config_mod = eval(f"trl.trainer.{config_module_name}")
+            config = [
+                x
+                for x in dir(config_mod)
+                if x.endswith("Config")
+                and x != "Config"
+                and not x.startswith("_")
+                and trainer_file.split("_")[0] in x.lower()
+            ]
+        except Exception:
+            pass
     if len(config) != 1:
         logger.info(
             f"Unsloth: Could not find Config class in trl.trainer.{trainer_file}. Found: {config}"
@@ -467,11 +484,14 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         return
     try:
         RLConfig = eval(f"trl.trainer.{trainer_file}.{RLConfig_name}")
-    except Exception as e:
-        logger.info(
-            f"Unsloth: Could not load {RLConfig_name} from trl.trainer.{trainer_file}: {e}"
-        )
-        return
+    except Exception:
+        # TRL 0.26+: Config may be in a separate *_config.py module
+        try:
+            config_module_name = trainer_file.replace("_trainer", "_config")
+            RLConfig = eval(f"trl.trainer.{config_module_name}.{RLConfig_name}")
+        except Exception as e:
+            logger.info(f"Unsloth: Could not load {RLConfig_name}: {e}")
+            return
 
     # Check name
     if RLTrainer.__name__.startswith("Unsloth"):
@@ -481,11 +501,49 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         print(f"Unsloth: {RLConfig.__name__} is already patched.")
         return
 
+    # TRL 0.26+: Resolve thin wrappers to their experimental parent class.
+    # Thin wrappers are deprecation shims that contain "trl.experimental" in
+    # their source and just forward *args/**kwargs to the real implementation.
+    _trainer_resolved_module = None
+    try:
+        _trainer_src = inspect.getsource(RLTrainer)
+        if "trl.experimental" in _trainer_src:
+            for _parent in RLTrainer.__mro__[1:]:
+                if _parent is object:
+                    continue
+                try:
+                    if "trl.experimental" not in inspect.getsource(_parent):
+                        RLTrainer = _parent
+                        _trainer_resolved_module = inspect.getmodule(_parent)
+                        break
+                except Exception:
+                    continue
+    except Exception:
+        pass
+
+    try:
+        _config_src = inspect.getsource(RLConfig)
+        if "trl.experimental" in _config_src:
+            for _parent in RLConfig.__mro__[1:]:
+                if _parent is object:
+                    continue
+                try:
+                    if "trl.experimental" not in inspect.getsource(_parent):
+                        RLConfig = _parent
+                        break
+                except Exception:
+                    continue
+    except Exception:
+        pass
+
     # Get old source
     old_RLTrainer_source = inspect.getsource(RLTrainer)
     old_RLConfig_source = inspect.getsource(RLConfig)
 
-    all_imports = dir(trainer)
+    if _trainer_resolved_module is not None:
+        all_imports = dir(_trainer_resolved_module)
+    else:
+        all_imports = dir(trainer)
     # Fix _deprecate_arguments not getting imported so stop __ but not _
     imports = [x for x in all_imports if not x.startswith("__")]
 
@@ -1191,13 +1249,32 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         new_text = 'self._signature_columns = ["input_ids", "attention_mask", "completion_mask","labels"]'
         RLTrainer_source = RLTrainer_source.replace(original_text, new_text)
 
-        # Temporary patch _is_vlm to False
-        # as of 0.22 it only exists in sfttrainer
-        original_is_vlm_text = "self._is_vlm = True"
-        new_is_vlm_text = "self._is_vlm = False"
-        RLTrainer_source = RLTrainer_source.replace(
-            original_is_vlm_text, new_is_vlm_text
+        # Do NOT override _is_vlm -- let TRL detect VLM models naturally.
+        # In TRL 0.27.1+, forcing _is_vlm=False causes a ValueError when
+        # vision datasets are used with VLM models.
+        #
+        # However, some notebooks pass a bare tokenizer (processor.tokenizer) as
+        # processing_class. TRL then sets _is_vlm=False even for VLM models.
+        # Add a model-architecture-based override before the validation check.
+        _vlm_check_original = (
+            '        self._is_vision_dataset = "image" in dataset_sample or "images" in dataset_sample\n'
+            "        if self._is_vision_dataset and not self._is_vlm:"
         )
+        _vlm_check_patched = (
+            '        self._is_vision_dataset = "image" in dataset_sample or "images" in dataset_sample\n'
+            "        # Unsloth: override _is_vlm for VLM models that pass a bare tokenizer\n"
+            "        if not self._is_vlm and self._is_vision_dataset:\n"
+            "            _m = model\n"
+            '            if hasattr(_m, "model"): _m = _m.model\n'
+            '            if hasattr(getattr(_m, "config", None), "vision_config") or \\\n'
+            '               _m.__class__.__name__.endswith("ForConditionalGeneration"):\n'
+            "                self._is_vlm = True\n"
+            "        if self._is_vision_dataset and not self._is_vlm:"
+        )
+        if _vlm_check_original in RLTrainer_source:
+            RLTrainer_source = RLTrainer_source.replace(
+                _vlm_check_original, _vlm_check_patched
+            )
 
     # Remove multiple doc strings
     if __RLConfig_doc__ != "" and RLTrainer_source.count(__RLTrainer_doc__) == 2:
@@ -1207,10 +1284,15 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     RLTrainer_source = re.sub(r"[\n]{3,}", "\n", RLTrainer_source)
 
     # Create new function
+    _model_location = (
+        _trainer_resolved_module.__name__
+        if _trainer_resolved_module is not None
+        else f"trl.trainer.{trainer_file}"
+    )
     created_module = create_new_function(
         f"Unsloth{RLTrainer_name}",
         RLTrainer_source,
-        f"trl.trainer.{trainer_file}",
+        _model_location,
         imports,
         overwrite = False,
     )

@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from .llama import *
+from .llama import _get_rope_theta
 from ._utils import __version__
 from unsloth_zoo.utils import _get_dtype, Version
 from unsloth_zoo.hf_utils import dtype_from_config
@@ -256,9 +257,17 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
         config = None,  # [TODO] Hack to pass in config - need to remove later
     ):
         super().__init__()
+        # In transformers 5.0+, RotaryEmbedding(config) passes config as first positional arg (dim)
+        if (
+            config is None
+            and dim is not None
+            and hasattr(dim, "max_position_embeddings")
+        ):
+            config = dim
+            dim = None
         if config is not None:
             # [TODO] Hack to pass in config - need to remove later
-            base = config.rope_theta
+            base = _get_rope_theta(config, default = base)
             partial_rotary_factor = (
                 config.partial_rotary_factor
                 if hasattr(config, "partial_rotary_factor")
