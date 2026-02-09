@@ -440,12 +440,6 @@ def _patch_sft_trainer_auto_packing(trl_module):
             )
         elif not blocked and trainer_padding_free:
             enable_padding_free_metadata(self.model, self)
-            message = (
-                "🦥 Unsloth: Padding-free auto-enabled, enabling faster training."
-                if auto_padding_free_active
-                else "🦥 Unsloth: Padding-free enabled, enabling faster training."
-            )
-            print(message)
 
     sft_trainer.__init__ = new_init
     sft_trainer._unsloth_auto_packing_wrapped = True
