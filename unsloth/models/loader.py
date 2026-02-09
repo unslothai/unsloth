@@ -37,6 +37,7 @@ from .loader_utils import (
     _offline_quantize_to_fp8,
     _tag_model_with_fp8_torchao_config,
     get_model_name,
+    prepare_device_map,
 )
 import os, contextlib, sys
 
@@ -186,6 +187,16 @@ class FastLanguageModel(FastLlamaModel):
                 bnb_compute_dtype = getattr(torch, bnb_compute_dtype, None)
             if isinstance(bnb_compute_dtype, torch.dtype):
                 dtype = bnb_compute_dtype
+
+        # Distributed-safe device placement for quantized models.
+        # In multi-GPU (torchrun), each rank must load the model on its own device
+        # to avoid Accelerate device relocation errors with quantized weights.
+        is_quantized = load_in_4bit or load_in_8bit or load_in_fp8
+        if is_quantized and isinstance(device_map, str):
+            distributed_device_map, is_dist = prepare_device_map()
+            if is_dist:
+                device_map = distributed_device_map
+
         if load_in_8bit or full_finetuning or qat_scheme is not None:
             return FastModel.from_pretrained(
                 model_name = model_name,
@@ -824,6 +835,16 @@ class FastModel(FastBaseModel):
             )
         if qat_scheme == "phone-deployment":
             qat_scheme = "int8-int4"
+
+        # Distributed-safe device placement for quantized models.
+        # In multi-GPU (torchrun), each rank must load the model on its own device
+        # to avoid Accelerate device relocation errors with quantized weights.
+        is_quantized = load_in_4bit or load_in_8bit or load_in_fp8
+        if is_quantized and isinstance(device_map, str):
+            distributed_device_map, is_dist = prepare_device_map()
+            if is_dist:
+                device_map = distributed_device_map
+
         # Check if 4bit is allowed specifically for AMD
         if not ALLOW_BITSANDBYTES and not use_exact_model_name:
             if load_in_4bit or load_in_8bit or model_name.lower().endswith("-bnb-4bit"):
