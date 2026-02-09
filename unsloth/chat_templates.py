@@ -1216,7 +1216,7 @@ gptoss_template = \
 <|start|>assistant
 {%- endif -%}"""
 
-# Ollama from https://ollama.com/library/gemma3n/blobs/e0a42594d802
+# Ollama from https://ollama.com/library/gpt-oss
 gptoss_ollama = \
 '''
 FROM {__FILE_LOCATION__}

@@ -806,7 +806,7 @@ TEMPLATE """<|system|>
 PARAMETER stop "<|system|>"
 PARAMETER stop "<|user|>"
 PARAMETER stop "<|assistant|>"
-PARAMETER "</s>"
+PARAMETER stop "</s>"
 SYSTEM """You are a helpful AI assistant."""
 '''
 
