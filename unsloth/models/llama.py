@@ -2483,7 +2483,7 @@ class FastLlamaModel:
         )
 
         model, tokenizer = patch_tokenizer(model, tokenizer)
-        model, tokenizer = model_patcher.post_patch(model, tokenizer)
+        model, tokenizer = model_patcher.post_patch(model, tokenizer, correct_dtype = dtype)
 
         # Patch up QKV / O and MLP
         for idx, layer in enumerate(model.model.layers):
@@ -2666,9 +2666,9 @@ class FastLlamaModel:
         return model, tokenizer
 
     @staticmethod
-    def post_patch(model, tokenizer):
+    def post_patch(model, tokenizer, correct_dtype = None):
         model, tokenizer = patch_model_and_tokenizer(
-            model, tokenizer, downcast_rope = True
+            model, tokenizer, downcast_rope = True, correct_dtype = correct_dtype
         )
         return model, tokenizer
 
