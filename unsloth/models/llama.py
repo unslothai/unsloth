@@ -207,14 +207,21 @@ def _fast_prepare_inputs_for_generation(
     self,
     input_ids,
     attention_mask = None,
+    inputs_embeds = None,
     **kwargs,
 ):
     past_key_values = kwargs.get("past_key_values", None)
+
+    # Handle inputs_embeds - only use on FIRST generation step (no cache)
+    # This fixes GitHub issue #3798: inputs_embeds was ignored
+    use_inputs_embeds = inputs_embeds is not None and past_key_values is None
+
     if past_key_values is not None:
         # Check for uninitialized DynamicCache
         if len(past_key_values) == 0:
             past_key_values = None
             kwargs["past_key_values"] = None
+            use_inputs_embeds = inputs_embeds is not None
         # New since 4.56
         elif (
             hasattr(past_key_values, "get_seq_length")
@@ -222,9 +229,18 @@ def _fast_prepare_inputs_for_generation(
         ):
             past_key_values = None
             kwargs["past_key_values"] = None
+            use_inputs_embeds = inputs_embeds is not None
         else:
-            bs, cache_length = input_ids.shape
-            input_ids = input_ids[:, [-1]]
+            if input_ids is not None and input_ids.numel() > 0:
+                bs, cache_length = input_ids.shape
+                input_ids = input_ids[:, [-1]]
+                device = input_ids.device
+            elif inputs_embeds is not None:
+                bs, cache_length, _ = inputs_embeds.shape
+                device = inputs_embeds.device
+            else:
+                bs, cache_length = 1, 0
+                device = "cuda" if torch.cuda.is_available() else "cpu"
 
             # Get to the base model
             base_model = self
@@ -248,7 +264,7 @@ def _fast_prepare_inputs_for_generation(
                     "target_length": cache_length,
                     "dtype": self.dtype,
                     "cache_position": torch.arange(
-                        cache_length, cache_length + 1, device = input_ids.device
+                        cache_length, cache_length + 1, device = device
                     ),
                     "batch_size": bs,
                     "config": self.config,
@@ -258,7 +274,7 @@ def _fast_prepare_inputs_for_generation(
                     if needs_device_kw(
                         base_model._prepare_4d_causal_attention_mask_with_cache_position
                     ):
-                        kwargs["device"] = input_ids.device
+                        kwargs["device"] = device
                 except:
                     print(
                         f"Unsloth: Could not inspect signature of {base_model._prepare_4d_causal_attention_mask_with_cache_position}"
@@ -271,7 +287,8 @@ def _fast_prepare_inputs_for_generation(
                     )
                 )
             else:
-                attention_mask = attention_mask[:, [-1]]
+                if attention_mask is not None:
+                    attention_mask = attention_mask[:, [-1]]
                 if transformers_version <= Version("4.52.4"):
                     logger.warning_once(
                         f"{self.__class__.__name__} has no `_prepare_4d_causal_attention_mask_with_cache_position` method "
@@ -282,11 +299,17 @@ def _fast_prepare_inputs_for_generation(
 
     if "cache_position" in kwargs:
         kwargs["position_ids"] = kwargs["cache_position"]
-    return {
-        "input_ids": input_ids,
+
+    result = {
         "attention_mask": attention_mask,
         **kwargs,
     }
+    if use_inputs_embeds:
+        result["inputs_embeds"] = inputs_embeds
+        result["input_ids"] = None
+    else:
+        result["input_ids"] = input_ids
+    return result
 
 
 def fix_prepare_inputs_for_generation(module):
