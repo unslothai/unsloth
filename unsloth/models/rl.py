@@ -1244,15 +1244,16 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
                 flags = re.DOTALL,
             )
 
-    # Fix fp16 + 4-bit/8-bit training: TRL unconditionally casts trainable params
-    # to bfloat16, which crashes GradScaler when training in float16. Make the
-    # cast respect the training dtype: float32 for fp16, bfloat16 otherwise.
-    # For GRPOTrainer the entire peft init block is already removed above, so
-    # this replace is a no-op for GRPO. For SFT and other trainers it makes
-    # the cast conditional.
+    # Remove TRL's unconditional bfloat16 cast of trainable params (added in
+    # TRL 0.26.0). TRL hardcodes bfloat16 for QLoRA per the original paper's
+    # recommendation, but this is wrong: it ignores the user's requested dtype
+    # and breaks GradScaler when training with fp16=True. Unsloth already
+    # handles adapter dtype correctly via patch_model_and_tokenizer, so the
+    # entire block is unnecessary. For GRPOTrainer the enclosing peft init
+    # block is already removed above, making this a no-op for GRPO.
     RLTrainer_source = RLTrainer_source.replace(
-        "param.data = param.data.to(torch.bfloat16)",
-        "param.data = param.data.to(torch.float32 if getattr(args, 'fp16', False) else torch.bfloat16)",
+        'if getattr(model, "is_loaded_in_4bit", False) or getattr(model, "is_loaded_in_8bit", False):',
+        "if False:",
     )
 
     if RLTrainer_name == "SFTTrainer":
