@@ -1309,6 +1309,18 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
                 flags = re.DOTALL,
             )
 
+    # Remove TRL's unconditional bfloat16 cast of trainable params (added in
+    # TRL 0.26.0). TRL hardcodes bfloat16 for QLoRA per the original paper's
+    # recommendation, but this is wrong: it ignores the user's requested dtype
+    # and breaks GradScaler when training with fp16=True. Unsloth already
+    # handles adapter dtype correctly via patch_model_and_tokenizer, so the
+    # entire block is unnecessary. For GRPOTrainer the enclosing peft init
+    # block is already removed above, making this a no-op for GRPO.
+    RLTrainer_source = RLTrainer_source.replace(
+        'if getattr(model, "is_loaded_in_4bit", False) or getattr(model, "is_loaded_in_8bit", False):',
+        "if False:",
+    )
+
     if RLTrainer_name == "SFTTrainer":
         original_text = 'self._signature_columns = ["input_ids", "attention_mask", "completion_mask"]'
         new_text = 'self._signature_columns = ["input_ids", "attention_mask", "completion_mask","labels"]'
