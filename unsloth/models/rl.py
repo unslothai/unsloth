@@ -1369,6 +1369,32 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         )
         RLTrainer_source = RLTrainer_source.replace(_sig_vlm_old, _sig_vlm_new)
 
+    # Silence TRL's noisy batch_size=1 + padding-free warning (handles both
+    # the original "anihilate" typo and the corrected "annihilate" spelling)
+    for _typo in ("anihilate", "annihilate"):
+        _idx = RLTrainer_source.find(_typo)
+        if _idx == -1:
+            continue
+        # Walk backwards to find "if args.per_device_train_batch_size"
+        _block_start = RLTrainer_source.rfind(
+            "if args.per_device_train_batch_size == 1", 0, _idx
+        )
+        if _block_start == -1:
+            continue
+        # Walk backwards to the newline before the if
+        _line_start = RLTrainer_source.rfind("\n", 0, _block_start)
+        # Walk forwards past the closing paren to the end of the block
+        _close = RLTrainer_source.find(")", _idx)
+        if _close == -1:
+            continue
+        _block_end = RLTrainer_source.find("\n", _close)
+        if _block_end == -1:
+            continue
+        RLTrainer_source = (
+            RLTrainer_source[:_line_start] + RLTrainer_source[_block_end:]
+        )
+        break
+
     # Remove multiple doc strings
     if __RLConfig_doc__ != "" and RLTrainer_source.count(__RLTrainer_doc__) == 2:
         RLTrainer_source = RLTrainer_source.replace(__RLTrainer_doc__, "", 1)
