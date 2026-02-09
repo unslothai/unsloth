@@ -178,7 +178,11 @@ class _DummyModel(torch.nn.Module):
 class _DummyTrainer:
     def __init__(self):
         self.args = SimpleNamespace(remove_unused_columns = True)
-        collator_args = {"pad_token_id": 0, "completion_only_loss": False, "return_tensors": "pt"}
+        collator_args = {
+            "pad_token_id": 0,
+            "completion_only_loss": False,
+            "return_tensors": "pt",
+        }
         optional_flags = [
             {"padding_free": True, "return_position_ids": False},
             {"padding_free": True},
@@ -186,7 +190,9 @@ class _DummyTrainer:
         ]
         for extra in optional_flags:
             try:
-                self.data_collator = DataCollatorForLanguageModeling(**collator_args, **extra)
+                self.data_collator = DataCollatorForLanguageModeling(
+                    **collator_args, **extra
+                )
                 break
             except TypeError:
                 continue
