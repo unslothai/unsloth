@@ -3073,8 +3073,12 @@ class FastLlamaModel:
                 clean_gpu_cache()
 
         import warnings as _w
+
         with _w.catch_warnings():
-            _w.filterwarnings("ignore", message=".*target_parameters.*were set but no parameter was matched.*")
+            _w.filterwarnings(
+                "ignore",
+                message = ".*target_parameters.*were set but no parameter was matched.*",
+            )
             model = _get_peft_model(model, lora_config)
         # Fix LoraConfig.auto_mapping is None
         fix_lora_auto_mapping(model)
