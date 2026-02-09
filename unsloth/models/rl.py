@@ -1244,6 +1244,17 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
                 flags = re.DOTALL,
             )
 
+    # Fix fp16 + 4-bit/8-bit training: TRL unconditionally casts trainable params
+    # to bfloat16, which crashes GradScaler when training in float16. Make the
+    # cast respect the training dtype: float32 for fp16, bfloat16 otherwise.
+    # For GRPOTrainer the entire peft init block is already removed above, so
+    # this replace is a no-op for GRPO. For SFT and other trainers it makes
+    # the cast conditional.
+    RLTrainer_source = RLTrainer_source.replace(
+        "param.data = param.data.to(torch.bfloat16)",
+        "param.data = param.data.to(torch.float32 if getattr(args, 'fp16', False) else torch.bfloat16)",
+    )
+
     if RLTrainer_name == "SFTTrainer":
         original_text = 'self._signature_columns = ["input_ids", "attention_mask", "completion_mask"]'
         new_text = 'self._signature_columns = ["input_ids", "attention_mask", "completion_mask","labels"]'
