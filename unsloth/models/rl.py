@@ -502,15 +502,17 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         return
 
     # TRL 0.26+: Resolve thin wrappers to their experimental parent class.
-    # Thin wrappers have very short source (<1000 chars) and only *args/**kwargs.
+    # Thin wrappers are deprecation shims that contain "trl.experimental" in
+    # their source and just forward *args/**kwargs to the real implementation.
     _trainer_resolved_module = None
     try:
-        if len(inspect.getsource(RLTrainer)) < 1000:
+        _trainer_src = inspect.getsource(RLTrainer)
+        if "trl.experimental" in _trainer_src:
             for _parent in RLTrainer.__mro__[1:]:
                 if _parent is object:
                     continue
                 try:
-                    if len(inspect.getsource(_parent)) > 1000:
+                    if "trl.experimental" not in inspect.getsource(_parent):
                         RLTrainer = _parent
                         _trainer_resolved_module = inspect.getmodule(_parent)
                         break
@@ -520,12 +522,13 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         pass
 
     try:
-        if len(inspect.getsource(RLConfig)) < 1000:
+        _config_src = inspect.getsource(RLConfig)
+        if "trl.experimental" in _config_src:
             for _parent in RLConfig.__mro__[1:]:
                 if _parent is object:
                     continue
                 try:
-                    if len(inspect.getsource(_parent)) > 1000:
+                    if "trl.experimental" not in inspect.getsource(_parent):
                         RLConfig = _parent
                         break
                 except Exception:
