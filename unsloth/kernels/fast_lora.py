@@ -191,14 +191,16 @@ class LoRA_MLP(torch.autograd.Function):
         # dX  = matmul_lora(df, upW.t(), upW_quant, upB, upA, upS)
         # dX += matmul_lora(de, gateW.t(), gateW_quant, gateB, gateA, gateS)
         upW = fast_dequantize(upW.t(), upW_quant)
-        if upW.dtype != dtype: upW = upW.to(dtype)
+        if upW.dtype != dtype:
+            upW = upW.to(dtype)
         dX = torch.matmul(df, upW.t(), out = X if ctx.inplace else None)
         del upW
         # dX += df @ upB.to(dtype).t() @ (upS * upA.to(dtype).t())
         dX.addmm_(df @ upB.t(), upA.t(), alpha = upS)
 
         gateW = fast_dequantize(gateW.t(), gateW_quant)
-        if gateW.dtype != dtype: gateW = gateW.to(dtype)
+        if gateW.dtype != dtype:
+            gateW = gateW.to(dtype)
         # dX += de @ gateW.t()
         dX.addmm_(de, gateW.t())
         del gateW
@@ -489,7 +491,8 @@ class LoRA_QKV(torch.autograd.Function):
         # Combine derivatives to find dX
         # dQ
         QW = fast_dequantize(QW.t(), QW_quant)
-        if QW.dtype != dtype: QW = QW.to(dtype)
+        if QW.dtype != dtype:
+            QW = QW.to(dtype)
         dX = torch.matmul(dQ, QW.t(), out = X if ctx.inplace else None)
         del QW
         # dX += (dQ @ QB.to(dtype).t() @ (QS * QA.to(dtype).t()))
@@ -497,7 +500,8 @@ class LoRA_QKV(torch.autograd.Function):
 
         # dK
         KW = fast_dequantize(KW.t(), KW_quant)
-        if KW.dtype != dtype: KW = KW.to(dtype)
+        if KW.dtype != dtype:
+            KW = KW.to(dtype)
         # dX += dK @ KW.t()
         dX.addmm_(dK, KW.t())
         del KW
@@ -506,7 +510,8 @@ class LoRA_QKV(torch.autograd.Function):
 
         # dV
         VW = fast_dequantize(VW.t(), VW_quant)
-        if VW.dtype != dtype: VW = VW.to(dtype)
+        if VW.dtype != dtype:
+            VW = VW.to(dtype)
         # dX += dV @ VW.t()
         dX.addmm_(dV, VW.t())
         del VW
