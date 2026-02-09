@@ -102,7 +102,7 @@ export function ModelProviderDialog({
         </label>
         <Textarea
           id={extraHeadersId}
-          className="nodrag"
+          className="corner-squircle nodrag"
           placeholder='{"X-Header": "value"}'
           value={config.extra_headers ?? ""}
           onChange={(event) =>
@@ -119,7 +119,7 @@ export function ModelProviderDialog({
         </label>
         <Textarea
           id={extraBodyId}
-          className="nodrag"
+          className="corner-squircle nodrag"
           placeholder='{"key": "value"}'
           value={config.extra_body ?? ""}
           onChange={(event) => updateField("extra_body", event.target.value)}

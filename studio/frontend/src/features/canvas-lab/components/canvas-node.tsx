@@ -35,6 +35,7 @@ import type {
   SamplerType,
 } from "../types";
 import { getLlmJudgeScoreHandleId, HANDLE_IDS } from "../utils/handles";
+import { InlineCategoryBadges } from "./inline/inline-category-badges";
 import { InlineExpression } from "./inline/inline-expression";
 import { InlineLlm } from "./inline/inline-llm";
 import { InlineModel } from "./inline/inline-model";
@@ -165,48 +166,33 @@ function getConfigSummary(config: NodeConfig | undefined): string {
   return "Open details for config";
 }
 
-function renderInlineEditor(
+function renderNodeBody(
   config: NodeConfig | undefined,
+  summary: string,
   updateConfig: (id: string, patch: Partial<NodeConfig>) => void,
-): ReactElement | null {
-  if (!config || !isInlineConfig(config)) {
-    return null;
+): ReactElement {
+  if (config && isInlineConfig(config)) {
+    const onUpdate = (patch: Partial<NodeConfig>) => updateConfig(config.id, patch);
+
+    if (config.kind === "sampler") {
+      return <InlineSampler config={config} onUpdate={onUpdate} />;
+    }
+    if (config.kind === "model_provider" || config.kind === "model_config") {
+      return <InlineModel config={config} onUpdate={onUpdate} />;
+    }
+    if (config.kind === "llm") {
+      return <InlineLlm config={config} onUpdate={onUpdate} />;
+    }
+    if (config.kind === "expression") {
+      return <InlineExpression config={config} onUpdate={onUpdate} />;
+    }
   }
 
-  if (config.kind === "sampler") {
-    return (
-      <InlineSampler
-        config={config}
-        onUpdate={(patch) => updateConfig(config.id, patch)}
-      />
-    );
+  if (config?.kind === "sampler" && config.sampler_type === "category") {
+    return <InlineCategoryBadges values={config.values ?? []} />;
   }
 
-  if (config.kind === "model_provider" || config.kind === "model_config") {
-    return (
-      <InlineModel
-        config={config}
-        onUpdate={(patch) => updateConfig(config.id, patch)}
-      />
-    );
-  }
-
-  if (config.kind === "llm") {
-    return (
-      <InlineLlm config={config} onUpdate={(patch) => updateConfig(config.id, patch)} />
-    );
-  }
-
-  if (config.kind === "expression") {
-    return (
-      <InlineExpression
-        config={config}
-        onUpdate={(patch) => updateConfig(config.id, patch)}
-      />
-    );
-  }
-
-  return null;
+  return <p className="text-xs text-muted-foreground">{summary}</p>;
 }
 
 type LlmInputHandleItem = {
@@ -316,8 +302,8 @@ function CanvasNodeBase({
   const semanticInPosition = isTopBottom ? Position.Left : Position.Top;
   const semanticOutPosition = isTopBottom ? Position.Right : Position.Bottom;
 
-  const inlineEditor = renderInlineEditor(config, updateConfig);
   const summary = getConfigSummary(config);
+  const nodeBody = renderNodeBody(config, summary, updateConfig);
   const llmInputHandles = getLlmInputHandleItems(config);
 
   return (
@@ -370,11 +356,7 @@ function CanvasNodeBase({
 
       <BaseNodeContent className="gap-2 px-3 py-2">
         <LlmInputHandles items={llmInputHandles} isTopBottom={isTopBottom} />
-        {inlineEditor ? (
-          inlineEditor
-        ) : (
-          <p className="text-xs text-muted-foreground">{summary}</p>
-        )}
+        {nodeBody}
       </BaseNodeContent>
 
       {showDataHandles && (

@@ -1,6 +1,3 @@
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -8,14 +5,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  type ReactElement,
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-} from "react";
+import { type ReactElement, useCallback, useEffect, useMemo } from "react";
 import type { SamplerConfig } from "../../types";
+import { ChipInput } from "../../components/chip-input";
 import { NameField } from "../shared/name-field";
 
 type SubcategoryDialogProps = {
@@ -29,7 +21,6 @@ export function SubcategoryDialog({
   categoryOptions,
   onUpdate,
 }: SubcategoryDialogProps): ReactElement {
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
   const parentSelectId = `${config.id}-parent-category`;
   const updateField = useCallback(
     <K extends keyof SamplerConfig>(key: K, value: SamplerConfig[K]) => {
@@ -72,19 +63,6 @@ export function SubcategoryDialog({
     }
   }, [ensureMapping, parent]);
 
-  const addSubValue = (categoryValue: string) => {
-    const draft = drafts[categoryValue]?.trim();
-    if (!draft) {
-      return;
-    }
-    const next = { ...mapping };
-    const list = next[categoryValue] ? [...next[categoryValue]] : [];
-    list.push(draft);
-    next[categoryValue] = list;
-    updateField("subcategory_mapping", next);
-    setDrafts((prev) => ({ ...prev, [categoryValue]: "" }));
-  };
-
   return (
     <div className="space-y-4">
       <NameField
@@ -119,15 +97,15 @@ export function SubcategoryDialog({
               ))}
             </SelectContent>
           </Select>
+          <p className="text-xs text-muted-foreground">
+            Map each parent category value to its subcategory options below.
+          </p>
         </div>
         {categoryValues.length > 0 && (
           <div className="grid gap-4">
             {categoryValues.map((value) => (
-              <div
-                key={value}
-                className="rounded-2xl border border-border/60 p-3"
-              >
-                <div className="flex items-center justify-between gap-2">
+              <div key={value}>
+                <div className="mb-2 flex items-center justify-between gap-2">
                   <p className="text-sm font-semibold text-foreground">
                     {value}
                   </p>
@@ -135,52 +113,24 @@ export function SubcategoryDialog({
                     {mapping[value]?.length ?? 0} subvalues
                   </span>
                 </div>
-                <div className="mt-3 flex gap-2">
-                  <Input
-                    className="nodrag"
-                    placeholder="Add subcategory"
-                    value={drafts[value] ?? ""}
-                    onChange={(event) =>
-                      setDrafts((prev) => ({
-                        ...prev,
-                        [value]: event.target.value,
-                      }))
-                    }
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") {
-                        event.preventDefault();
-                        addSubValue(value);
-                      }
-                    }}
-                  />
-                  <Button
-                    type="button"
-                    size="sm"
-                    onClick={() => addSubValue(value)}
-                  >
-                    Add
-                  </Button>
-                </div>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {(mapping[value] ?? []).map((item, index) => (
-                    <Badge key={`${value}-${item}`} variant="secondary">
-                      <span>{item}</span>
-                      <button
-                        type="button"
-                        className="ml-2 text-xs"
-                        onClick={() => {
-                          const next = { ...mapping };
-                          const list = [...(next[value] ?? [])];
-                          list.splice(index, 1);
-                          next[value] = list;
-                          updateField("subcategory_mapping", next);
-                        }}
-                      >
-                        ×
-                      </button>
-                    </Badge>
-                  ))}
-                </div>
+                <ChipInput
+                  values={mapping[value] ?? []}
+                  onAdd={(item) => {
+                    const next = { ...mapping };
+                    const list = next[value] ? [...next[value]] : [];
+                    list.push(item);
+                    next[value] = list;
+                    updateField("subcategory_mapping", next);
+                  }}
+                  onRemove={(index) => {
+                    const next = { ...mapping };
+                    const list = [...(next[value] ?? [])];
+                    list.splice(index, 1);
+                    next[value] = list;
+                    updateField("subcategory_mapping", next);
+                  }}
+                  placeholder="Type subcategory and press Enter"
+                />
                 {(mapping[value] ?? []).length === 0 && (
                   <p className="mt-2 text-xs text-rose-500">
                     Add at least 1 subcategory.

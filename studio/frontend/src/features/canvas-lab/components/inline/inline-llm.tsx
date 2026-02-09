@@ -1,4 +1,11 @@
-import { Input } from "@/components/ui/input";
+import {
+  Combobox,
+  ComboboxContent,
+  ComboboxEmpty,
+  ComboboxInput,
+  ComboboxItem,
+  ComboboxList,
+} from "@/components/ui/combobox";
 import {
   Select,
   SelectContent,
@@ -6,7 +13,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import type { ReactElement } from "react";
+import { type ReactElement, useEffect, useMemo, useRef, useState } from "react";
+import { useCanvasLabStore } from "../../stores/canvas-lab";
 import type { LlmConfig } from "../../types";
 import { InlineField } from "./inline-field";
 
@@ -36,21 +44,64 @@ const CODE_LANG_OPTIONS = [
 
 export function InlineLlm({ config, onUpdate }: InlineLlmProps): ReactElement {
   const isCode = config.llm_type === "code";
+  const configs = useCanvasLabStore((state) => state.configs);
+  const modelConfigAliases = useMemo(
+    () =>
+      Object.values(configs)
+        .filter((c) => c.kind === "model_config")
+        .map((c) => c.name),
+    [configs],
+  );
+  const [aliasInput, setAliasInput] = useState(config.model_alias);
+  const anchorRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setAliasInput(config.model_alias);
+  }, [config.model_alias]);
 
   return (
     <div className="space-y-3">
       <InlineField label="Model alias">
-        <Input
-          className="nodrag h-8 w-full text-xs"
-          placeholder="Model alias"
-          value={config.model_alias}
-          onChange={(event) =>
-            onUpdate({
-              // biome-ignore lint/style/useNamingConvention: api schema
-              model_alias: event.target.value,
-            })
-          }
-        />
+        <div ref={anchorRef}>
+          <Combobox
+            items={modelConfigAliases}
+            filteredItems={modelConfigAliases}
+            filter={null}
+            value={config.model_alias || null}
+            onValueChange={(value) =>
+              onUpdate({
+                // biome-ignore lint/style/useNamingConvention: api schema
+                model_alias: value ?? "",
+              })
+            }
+            onInputValueChange={setAliasInput}
+            itemToStringValue={(value) => value}
+            autoHighlight={true}
+          >
+            <ComboboxInput
+              className="nodrag h-8 w-full text-xs"
+              placeholder="Model alias"
+              onBlur={() => {
+                if (aliasInput !== config.model_alias) {
+                  onUpdate({
+                    // biome-ignore lint/style/useNamingConvention: api schema
+                    model_alias: aliasInput,
+                  });
+                }
+              }}
+            />
+            <ComboboxContent anchor={anchorRef}>
+              <ComboboxEmpty>No model configs found</ComboboxEmpty>
+              <ComboboxList>
+                {(alias: string) => (
+                  <ComboboxItem key={alias} value={alias}>
+                    {alias}
+                  </ComboboxItem>
+                )}
+              </ComboboxList>
+            </ComboboxContent>
+          </Combobox>
+        </div>
       </InlineField>
       {isCode && (
         <InlineField label="Code language">
@@ -77,7 +128,7 @@ export function InlineLlm({ config, onUpdate }: InlineLlmProps): ReactElement {
         </InlineField>
       )}
       <p className="text-[11px] text-muted-foreground">
-        Prompt/System are edited in dialog or linked input nodes.
+        Prompt/system edited on aux nodes.
       </p>
     </div>
   );
