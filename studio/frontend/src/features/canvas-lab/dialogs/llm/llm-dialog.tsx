@@ -17,7 +17,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { type ReactElement, useEffect, useRef, useState } from "react";
 import type { LlmConfig, Score } from "../../types";
-import { AvailableVariables } from "./available-variables";
+import { AvailableVariables } from "../shared/available-variables";
 import { NameField } from "../shared/name-field";
 
 const CODE_LANG_OPTIONS = [

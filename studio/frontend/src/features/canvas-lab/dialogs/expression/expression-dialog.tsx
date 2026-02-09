@@ -8,6 +8,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import type { ReactElement } from "react";
 import type { ExpressionConfig, ExpressionDtype } from "../../types";
+import { AvailableVariables } from "../shared/available-variables";
 import { NameField } from "../shared/name-field";
 
 const DTYPE_OPTIONS: ExpressionDtype[] = ["str", "int", "float", "bool"];
@@ -31,6 +32,7 @@ export function ExpressionDialog({
   };
   return (
     <div className="space-y-4">
+      <AvailableVariables configId={config.id} />
       <NameField
         value={config.name}
         onChange={(value) => onUpdate({ name: value })}
