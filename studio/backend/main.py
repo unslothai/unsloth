@@ -67,6 +67,7 @@ app.include_router(training_router, prefix="/api/train", tags=["training"])
 app.include_router(models_router, prefix="/api/models", tags=["models"])
 app.include_router(inference_router, prefix="/api/inference", tags=["inference"])
 app.include_router(datasets_router, prefix="/api/datasets", tags=["datasets"])
+app.include_router(export_router, prefix="/api/export", tags=["export"])
 
 
 # ============ Health and System Endpoints ============
