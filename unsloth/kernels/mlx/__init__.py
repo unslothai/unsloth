@@ -63,7 +63,6 @@ from .fast_ops import (
 from .merge_lora import (
     mlx_merge_lora,
     mlx_merge_lora_layer,
-    mlx_dequantize_weights,
 )
 
 __all__ = [
@@ -91,5 +90,4 @@ __all__ = [
     # LoRA merge
     "mlx_merge_lora",
     "mlx_merge_lora_layer",
-    "mlx_dequantize_weights",
 ]
