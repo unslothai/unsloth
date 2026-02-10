@@ -532,7 +532,10 @@ class RaiseUninitialized:
 
 try:
     from transfomers.trainer import logger as transformers_trainer_logger
-    transformers_trainer_logger.addFilter(HideLoggingMessage("The model is already on multiple devices."))
+
+    transformers_trainer_logger.addFilter(
+        HideLoggingMessage("The model is already on multiple devices.")
+    )
 except:
     pass
 
