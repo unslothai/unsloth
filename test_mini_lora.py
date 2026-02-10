@@ -38,10 +38,10 @@ print(f"  Training steps: {NUM_TRAIN_STEPS}")
 print("\nLoading TinyLlama model...")
 try:
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name="unsloth/tinyllama-bnb-4bit",  # Small model for testing
+        model_name="TinyLlama/TinyLlama-1.1B-Chat-v1.0",  # Standard model
         max_seq_length=MAX_SEQ_LENGTH,
         dtype=torch.bfloat16 if is_bfloat16_supported() else torch.float16,
-        load_in_4bit=True,
+        load_in_4bit=False,  # Use standard loading for compatibility
     )
     print("Model loaded successfully ✓")
 except Exception as e:
