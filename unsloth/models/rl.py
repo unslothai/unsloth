@@ -79,6 +79,7 @@ except Exception:
 # Get transformers version for feature detection
 try:
     from transformers import __version__ as _transformers_version_raw
+
     transformers_version = Version(_transformers_version_raw)
 except Exception:
     transformers_version = Version("0.0.0")
