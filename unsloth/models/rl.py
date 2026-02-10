@@ -1369,6 +1369,14 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         )
         RLTrainer_source = RLTrainer_source.replace(_sig_vlm_old, _sig_vlm_new)
 
+        # Inject model reference before _prepare_dataset for dynamic
+        # token_type_ids detection in sft_prepare_dataset
+        _prep_pattern = r"([ \t]*)train_dataset = self\._prepare_dataset\("
+        _prep_replacement = r"\1self._unsloth_model_ref = model\n\1train_dataset = self._prepare_dataset("
+        RLTrainer_source = re.sub(
+            _prep_pattern, _prep_replacement, RLTrainer_source, count = 1
+        )
+
     # Silence TRL's noisy batch_size=1 + padding-free warning (handles both
     # the original "anihilate" typo and the corrected "annihilate" spelling)
     for _typo in ("anihilate", "annihilate"):
