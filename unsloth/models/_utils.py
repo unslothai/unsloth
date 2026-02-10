@@ -1762,6 +1762,7 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
             _inner = getattr(_inner, _attr, _inner)
         if getattr(getattr(_inner, "config", None), "model_type", "") in ("gemma3",):
             import sys as _sys
+
             _mod = _sys.modules.get(type(_inner).__module__)
             _has_ccm = _mod is not None and hasattr(_mod, "create_causal_mask_mapping")
             if _has_ccm and _inner.training:
