@@ -2047,6 +2047,7 @@ def to_sharegpt(
         safe_num_proc = min(cpu_count, 4)
     except Exception:
         safe_num_proc = 1
+    import sys    
     if sys.platform.startswith("win"):
         safe_num_proc = 1
     dataset = dataset.map(
