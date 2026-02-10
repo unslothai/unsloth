@@ -1021,7 +1021,10 @@ def patch_sft_trainer_tokenizer():
         "kto_trainer.KTOTrainer",
     ):
         function_name, replacer = "train", "if resume_from_checkpoint is False:"
-        function = getsource(eval(f"trl.trainer.{path_to_trainer}.{function_name}"))
+        try:
+            function = getsource(eval(f"trl.trainer.{path_to_trainer}.{function_name}"))
+        except Exception:
+            continue
         where = function.find("def")
         function = function.split("\n")
         function = "\n".join(x[where:] for x in function)

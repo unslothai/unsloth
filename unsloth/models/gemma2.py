@@ -613,10 +613,10 @@ class FastGemma2Model(FastLlamaModel):
         return
 
     @staticmethod
-    def post_patch(model, tokenizer):
+    def post_patch(model, tokenizer, correct_dtype = None):
         # Gemma does not downcast RoPE
         model, tokenizer = patch_model_and_tokenizer(
-            model, tokenizer, downcast_rope = False
+            model, tokenizer, downcast_rope = False, correct_dtype = correct_dtype
         )
 
         # Add 1 to weight
