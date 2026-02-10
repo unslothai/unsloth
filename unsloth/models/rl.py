@@ -76,6 +76,14 @@ try:
 except Exception:
     torch_version = Version("0.0.0")
 
+# Get transformers version for feature detection
+try:
+    from transformers import __version__ as _transformers_version_raw
+
+    transformers_version = Version(_transformers_version_raw)
+except Exception:
+    transformers_version = Version("0.0.0")
+
 
 def vLLMSamplingParams(**kwargs):
     from vllm import SamplingParams
@@ -959,7 +967,6 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "per_device_train_batch_size": 4,
         "gradient_accumulation_steps": 2,
         "weight_decay": 0.01,
-        "warmup_ratio": 0.1,
         "seed": 3407,
         "optim": "adamw_8bit",
         "learning_rate": 5e-05,
@@ -986,6 +993,12 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         # "dataloader_prefetch_factor"    : 2,
         # "dataloader_num_workers"        : 2, # Default is 0 means 1
     }
+    # warmup_ratio deprecated in transformers >= 5.0; warmup_steps accepts float
+    if transformers_version >= Version("5.0.0"):
+        replacements["warmup_steps"] = 0.1
+    else:
+        replacements["warmup_ratio"] = 0.1
+
     for k, v in replacements.items():
         x = f"{k}( = [^,\n]{{1,}})?,\n"
         y = f"'{v}'" if type(v) is str else f"{v}"
