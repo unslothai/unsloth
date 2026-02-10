@@ -2040,13 +2040,22 @@ def to_sharegpt(
             for user, assistant in zip(users, assistants)
         ]
         return { "conversations" : texts, }
-
+    # Determine safe num_proc
+    safe_num_proc = 1
+    try:
+        cpu_count = os.cpu_count() or 1
+        safe_num_proc = min(cpu_count, 4)
+    except Exception:
+        safe_num_proc = 1
+    if sys.platform.startswith("win"):
+        safe_num_proc = 1
     dataset = dataset.map(
         __convert_to_sharegpt__,
         batched = True,
         desc = "Converting to ShareGPT",
         # Remove unused columns!
         remove_columns = dataset.column_names if remove_unused_columns else None,
+        num_proc=safe_num_proc,
     )
 
     # Randomnly concat conversations to create a long stream!
