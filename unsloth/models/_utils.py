@@ -2726,14 +2726,17 @@ def make_fast_generate_wrapper(original_generate):
 try:
     import re
     import transformers
-    _original_should_convert_module = transformers.quantizers.quantizers_utils.should_convert_module
+
+    _original_should_convert_module = (
+        transformers.quantizers.quantizers_utils.should_convert_module
+    )
 
     def _normalize_module_path(x):
         if not isinstance(x, str):
             return x
         x = x.replace("language_model.model.", "language_model.")
         if x.startswith("model."):
-            x = x[len("model."):]
+            x = x[len("model.") :]
         return x
 
     def _pattern_blocks(full_name: str, pat: str) -> bool:
@@ -2750,7 +2753,7 @@ try:
             or full_name.endswith(pat)
         )
 
-    def patched_should_convert_module(full_name, patterns=None):
+    def patched_should_convert_module(full_name, patterns = None):
         if patterns is None:
             return True
 
@@ -2769,13 +2772,19 @@ try:
 
         return True
 
-
-    patched_should_convert_module._original_should_convert_module = _original_should_convert_module
+    patched_should_convert_module._original_should_convert_module = (
+        _original_should_convert_module
+    )
 
     # Monkey patch
-    transformers.quantizers.quantizers_utils.should_convert_module = patched_should_convert_module
-    transformers.integrations.bitsandbytes.should_convert_module = patched_should_convert_module
+    transformers.quantizers.quantizers_utils.should_convert_module = (
+        patched_should_convert_module
+    )
+    transformers.integrations.bitsandbytes.should_convert_module = (
+        patched_should_convert_module
+    )
 
 except Exception as e:
-    logger.warning(f"Unsloth: Failed to patch should_convert_module: {e}. llm_int8_skip_modules might not work especially for VLMs")
-    pass
+    logger.warning(
+        f"Unsloth: Failed to patch should_convert_module: {e}. llm_int8_skip_modules might not work especially for VLMs"
+    )
