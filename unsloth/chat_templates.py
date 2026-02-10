@@ -2056,7 +2056,7 @@ def to_sharegpt(
         desc = "Converting to ShareGPT",
         # Remove unused columns!
         remove_columns = dataset.column_names if remove_unused_columns else None,
-        num_proc=safe_num_proc,
+        num_proc = safe_num_proc,
     )
 
     # Randomnly concat conversations to create a long stream!
