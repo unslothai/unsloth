@@ -285,7 +285,9 @@ if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") != "1":
 
         vllm_v1_executor_logger.addFilter(HideLoggingMessage("to fall asleep"))
         vllm_v1_executor_logger.addFilter(HideLoggingMessage("to wake up"))
-        vllm_v1_executor_logger.addFilter(HideLoggingMessage("Executor is not sleeping"))
+        vllm_v1_executor_logger.addFilter(
+            HideLoggingMessage("Executor is not sleeping")
+        )
         del vllm_v1_executor_logger
     except:
         pass
