@@ -268,7 +268,7 @@ class ReplaceWarningMessage:
     _installed = False
 
     @classmethod
-    def add_rule(cls, match_text, replacement, category=None):
+    def add_rule(cls, match_text, replacement, category = None):
         cls._rules.append((match_text, replacement, category))
         if not cls._installed:
             cls._install()
@@ -279,7 +279,7 @@ class ReplaceWarningMessage:
         cls._installed = True
 
         def _patched_showwarning(
-            message, category, filename, lineno, file=None, line=None
+            message, category, filename, lineno, file = None, line = None
         ):
             msg_str = str(message)
             for match_text, replacement, match_category in cls._rules:
@@ -590,12 +590,12 @@ except:
 
 # Replace PEFT target_parameters warning with Unsloth branded message for MoE models
 ReplaceWarningMessage.add_rule(
-    match_text="target_parameters",
-    replacement=(
+    match_text = "target_parameters",
+    replacement = (
         "Unsloth: PEFT set target_parameters but found no matching parameters.\n"
         "This is expected for MoE models - Unsloth handles MoE expert LoRA targeting separately."
     ),
-    category=RuntimeWarning,
+    category = RuntimeWarning,
 )
 
 # Patch get_model_param_count to record correct 4bit / 8bit
