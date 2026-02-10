@@ -1754,6 +1754,19 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
             "Using gradient accumulation will be very slightly less accurate.\n"
             "Read more on gradient accumulation issues here: https://unsloth.ai/blog/gradient"
         )
+    # Gemma3 multimodal models in transformers 5.x require token_type_ids during training.
+    # For text-only SFT, token_type_ids should be all zeros (no image tokens).
+    if "token_type_ids" not in inputs and "input_ids" in inputs:
+        _inner = model
+        for _attr in ("base_model", "model", "model"):
+            _inner = getattr(_inner, _attr, _inner)
+        if getattr(getattr(_inner, "config", None), "model_type", "") in ("gemma3",):
+            import sys as _sys
+            _mod = _sys.modules.get(type(_inner).__module__)
+            _has_ccm = _mod is not None and hasattr(_mod, "create_causal_mask_mapping")
+            if _has_ccm and _inner.training:
+                inputs["token_type_ids"] = torch.zeros_like(inputs["input_ids"])
+
     outputs = self._old_compute_loss(model, inputs, *args, **kwargs)
     return outputs
 
