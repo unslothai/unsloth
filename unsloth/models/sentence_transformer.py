@@ -2089,6 +2089,20 @@ def _patch_sentence_transformer_trainer():
         # Call original __init__
         _original_init(self, *args, **kwargs)
 
+        # Disable mixed precision when FORCE_FLOAT32 is active (matches rl.py behavior)
+        if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
+            if hasattr(self, "args") and self.args is not None:
+                if self.args.fp16 or self.args.bf16:
+                    print(
+                        "Unsloth: Switching to float32 training since model cannot work with float16"
+                    )
+                    self.args.fp16 = False
+                    self.args.bf16 = False
+                    if hasattr(self.args, "bf16_full_eval"):
+                        self.args.bf16_full_eval = False
+                    if hasattr(self.args, "fp16_full_eval"):
+                        self.args.fp16_full_eval = False
+
     SentenceTransformerTrainer.__init__ = _patched_init
     SentenceTransformerTrainer._unsloth_auto_compile_patched = True
 
