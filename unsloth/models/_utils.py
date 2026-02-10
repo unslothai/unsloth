@@ -530,6 +530,15 @@ class RaiseUninitialized:
         transformers_logger.removeHandler(self.error_handler)
 
 
+try:
+    from transformers.trainer import logger as transformers_trainer_logger
+
+    transformers_trainer_logger.addFilter(
+        HideLoggingMessage("The model is already on multiple devices.")
+    )
+except:
+    pass
+
 # Patch get_model_param_count to record correct 4bit / 8bit
 from transformers.trainer_pt_utils import is_deepspeed_zero3_enabled
 
@@ -2625,7 +2634,7 @@ def get_moe_target_parameters(model, target_modules = None) -> Optional[List[str
 
     if moe_params:
         print(
-            f"Unsloth: Detected MoE model with {num_experts} experts - enabling LoRA on: {moe_params}"
+            f"Unsloth: Detected MoE model with {num_experts = } and {target_modules = }. Enabling LoRA on MoE parameters: {moe_params}"
         )
         return moe_params
 
