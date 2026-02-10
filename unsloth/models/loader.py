@@ -275,6 +275,18 @@ class FastLanguageModel(FastLlamaModel):
                 )
             load_in_4bit = False
 
+        # AMD GPT-OSS: default to BF16 checkpoints to avoid MXFP4/prequant issues
+        if is_hip() and "gpt-oss" in model_name.lower() and not use_exact_model_name:
+            if not model_name.lower().endswith("-bf16"):
+                if "120b" in model_name.lower():
+                    model_name = "unsloth/gpt-oss-120b-BF16"
+                else:
+                    model_name = "unsloth/gpt-oss-20b-BF16"
+            load_in_4bit = False
+            load_in_8bit = False
+            load_in_fp8 = False
+            load_in_16bit = True
+
         # Find FP8, BnB 4bit, other mapped names
         old_model_name = model_name
         fp8_mode = None
