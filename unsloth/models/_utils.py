@@ -529,6 +529,11 @@ class RaiseUninitialized:
     def remove(self):
         transformers_logger.removeHandler(self.error_handler)
 
+try:
+    from transfomers.trainer import logger as transformers_trainer_logger
+    transformers_trainer_logger.addFilter(HideLoggingMessage('The model is already on multiple devices.'))
+except:
+    pass
 
 # Patch get_model_param_count to record correct 4bit / 8bit
 from transformers.trainer_pt_utils import is_deepspeed_zero3_enabled
