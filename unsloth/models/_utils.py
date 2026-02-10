@@ -103,6 +103,7 @@ from ..device_type import (
     DEVICE_COUNT,
     ALLOW_PREQUANTIZED_MODELS,
 )
+from ..import_fixes import UNSLOTH_ENABLE_LOGGING
 from unsloth_zoo.log import logger
 from unsloth_zoo.tokenizer_utils import (
     patch_tokenizer as _patch_tokenizer,
@@ -255,8 +256,45 @@ class HideLoggingMessage(logging.Filter):
         return not (self.text in x.getMessage())
 
 
+# Replace warning messages (analogous to HideLoggingMessage but for warnings.warn)
+class ReplaceWarningMessage:
+    """
+    Intercepts warnings.warn calls and replaces matching messages with Unsloth branded ones.
+    Uses a list of registered (match_text, replacement, category) rules checked in order.
+    """
+
+    _rules = []
+    _original_showwarning = None
+    _installed = False
+
+    @classmethod
+    def add_rule(cls, match_text, replacement, category = None):
+        cls._rules.append((match_text, replacement, category))
+        if not cls._installed:
+            cls._install()
+
+    @classmethod
+    def _install(cls):
+        cls._original_showwarning = warnings.showwarning
+        cls._installed = True
+
+        def _patched_showwarning(
+            message, category, filename, lineno, file = None, line = None
+        ):
+            msg_str = str(message)
+            for match_text, replacement, match_category in cls._rules:
+                if match_text in msg_str and (
+                    match_category is None or category is match_category
+                ):
+                    print(replacement)
+                    return
+            cls._original_showwarning(message, category, filename, lineno, file, line)
+
+        warnings.showwarning = _patched_showwarning
+
+
 # Stop vLLM messages
-if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") != "1":
+if not UNSLOTH_ENABLE_LOGGING:
     try:
         from vllm.worker.worker import logger as vllm_worker_logger
 
@@ -278,6 +316,17 @@ if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") != "1":
         vllm_executor_logger.addFilter(HideLoggingMessage("to wake up"))
         vllm_executor_logger.addFilter(HideLoggingMessage("Executor is not sleeping"))
         del vllm_executor_logger
+    except:
+        pass
+    try:
+        from vllm.v1.executor.abstract import logger as vllm_v1_executor_logger
+
+        vllm_v1_executor_logger.addFilter(HideLoggingMessage("to fall asleep"))
+        vllm_v1_executor_logger.addFilter(HideLoggingMessage("to wake up"))
+        vllm_v1_executor_logger.addFilter(
+            HideLoggingMessage("Executor is not sleeping")
+        )
+        del vllm_v1_executor_logger
     except:
         pass
     try:
@@ -518,6 +567,36 @@ class RaiseUninitialized:
     def remove(self):
         transformers_logger.removeHandler(self.error_handler)
 
+
+try:
+    from transformers.trainer import logger as transformers_trainer_logger
+
+    transformers_trainer_logger.addFilter(
+        HideLoggingMessage("The model is already on multiple devices.")
+    )
+except:
+    pass
+
+# Hide HF Hub unauthenticated request warnings
+try:
+    from huggingface_hub.utils._http import logger as hf_http_logger
+
+    hf_http_logger.addFilter(
+        HideLoggingMessage("You are sending unauthenticated requests")
+    )
+    del hf_http_logger
+except:
+    pass
+
+# Replace PEFT target_parameters warning with Unsloth branded message for MoE models
+ReplaceWarningMessage.add_rule(
+    match_text = "target_parameters",
+    replacement = (
+        "Unsloth: PEFT set target_parameters but found no matching parameters.\n"
+        "This is expected for MoE models - Unsloth handles MoE expert LoRA targeting separately."
+    ),
+    category = RuntimeWarning,
+)
 
 # Patch get_model_param_count to record correct 4bit / 8bit
 from transformers.trainer_pt_utils import is_deepspeed_zero3_enabled
@@ -919,7 +998,7 @@ except ModuleNotFoundError:
     xformers_attention = None
     xformers_version = None
 except Exception as e:
-    if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") != "0":
+    if UNSLOTH_ENABLE_LOGGING:
         print(
             "========\nSwitching to PyTorch attention since your Xformers is broken.\n========\n"
         )
@@ -1734,6 +1813,20 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
             "Using gradient accumulation will be very slightly less accurate.\n"
             "Read more on gradient accumulation issues here: https://unsloth.ai/blog/gradient"
         )
+    # Gemma3 multimodal models in transformers 5.x require token_type_ids during training.
+    # For text-only SFT, token_type_ids should be all zeros (no image tokens).
+    if "token_type_ids" not in inputs and "input_ids" in inputs:
+        _inner = model
+        for _attr in ("base_model", "model", "model"):
+            _inner = getattr(_inner, _attr, _inner)
+        if getattr(getattr(_inner, "config", None), "model_type", "") in ("gemma3",):
+            import sys as _sys
+
+            _mod = _sys.modules.get(type(_inner).__module__)
+            _has_ccm = _mod is not None and hasattr(_mod, "create_causal_mask_mapping")
+            if _has_ccm and _inner.training:
+                inputs["token_type_ids"] = torch.zeros_like(inputs["input_ids"])
+
     outputs = self._old_compute_loss(model, inputs, *args, **kwargs)
     return outputs
 
@@ -1966,6 +2059,12 @@ def unsloth_compile_transformers(
         return model_types, False
 
     supports_sdpa = [True]
+
+    # Run patches BEFORE compiler so class replacements (e.g. GptOssTopKRouter,
+    # GptOssExperts) are in place before the compiler caches references to them.
+    for temporary_patch in TEMPORARY_PATCHES:
+        temporary_patch()
+
     for model_type in model_types:
         _unsloth_compile_transformers(
             model_type,
@@ -2608,7 +2707,7 @@ def get_moe_target_parameters(model, target_modules = None) -> Optional[List[str
 
     if moe_params:
         print(
-            f"Unsloth: Detected MoE model with {num_experts} experts - enabling LoRA on: {moe_params}"
+            f"Unsloth: Detected MoE model with {num_experts = } and {target_modules = }. Enabling LoRA on MoE parameters: {moe_params}"
         )
         return moe_params
 
