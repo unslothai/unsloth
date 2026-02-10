@@ -103,6 +103,7 @@ from ..device_type import (
     DEVICE_COUNT,
     ALLOW_PREQUANTIZED_MODELS,
 )
+from ..import_fixes import UNSLOTH_ENABLE_LOGGING
 from unsloth_zoo.log import logger
 from unsloth_zoo.tokenizer_utils import (
     patch_tokenizer as _patch_tokenizer,
@@ -255,8 +256,45 @@ class HideLoggingMessage(logging.Filter):
         return not (self.text in x.getMessage())
 
 
+# Replace warning messages (analogous to HideLoggingMessage but for warnings.warn)
+class ReplaceWarningMessage:
+    """
+    Intercepts warnings.warn calls and replaces matching messages with Unsloth branded ones.
+    Uses a list of registered (match_text, replacement, category) rules checked in order.
+    """
+
+    _rules = []
+    _original_showwarning = None
+    _installed = False
+
+    @classmethod
+    def add_rule(cls, match_text, replacement, category = None):
+        cls._rules.append((match_text, replacement, category))
+        if not cls._installed:
+            cls._install()
+
+    @classmethod
+    def _install(cls):
+        cls._original_showwarning = warnings.showwarning
+        cls._installed = True
+
+        def _patched_showwarning(
+            message, category, filename, lineno, file = None, line = None
+        ):
+            msg_str = str(message)
+            for match_text, replacement, match_category in cls._rules:
+                if match_text in msg_str and (
+                    match_category is None or category is match_category
+                ):
+                    print(replacement)
+                    return
+            cls._original_showwarning(message, category, filename, lineno, file, line)
+
+        warnings.showwarning = _patched_showwarning
+
+
 # Stop vLLM messages
-if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") != "1":
+if not UNSLOTH_ENABLE_LOGGING:
     try:
         from vllm.worker.worker import logger as vllm_worker_logger
 
@@ -538,6 +576,27 @@ try:
     )
 except:
     pass
+
+# Hide HF Hub unauthenticated request warnings
+try:
+    from huggingface_hub.utils._http import logger as hf_http_logger
+
+    hf_http_logger.addFilter(
+        HideLoggingMessage("You are sending unauthenticated requests")
+    )
+    del hf_http_logger
+except:
+    pass
+
+# Replace PEFT target_parameters warning with Unsloth branded message for MoE models
+ReplaceWarningMessage.add_rule(
+    match_text = "target_parameters",
+    replacement = (
+        "Unsloth: PEFT set target_parameters but found no matching parameters.\n"
+        "This is expected for MoE models - Unsloth handles MoE expert LoRA targeting separately."
+    ),
+    category = RuntimeWarning,
+)
 
 # Patch get_model_param_count to record correct 4bit / 8bit
 from transformers.trainer_pt_utils import is_deepspeed_zero3_enabled
@@ -939,7 +998,7 @@ except ModuleNotFoundError:
     xformers_attention = None
     xformers_version = None
 except Exception as e:
-    if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") != "0":
+    if UNSLOTH_ENABLE_LOGGING:
         print(
             "========\nSwitching to PyTorch attention since your Xformers is broken.\n========\n"
         )
