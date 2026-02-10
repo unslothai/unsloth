@@ -3243,7 +3243,7 @@ class FastLlamaModel:
         model = prepare_model_for_kbit_training(
             model,
             use_gradient_checkpointing=use_gradient_checkpointing,
-            use_reentrant=True,
+            use_reentrant=False,
         )
 
         # Fix up config for transformers uploading PEFT
