@@ -2624,7 +2624,7 @@ def get_moe_target_parameters(model, target_modules = None) -> Optional[List[str
         moe_params.append("mlp.experts.down_proj")
 
     if moe_params:
-        logger.info(f"Unsloth: Detected MoE model with {num_experts} experts - enabling LoRA on: {moe_params}")
+        print(f"Unsloth: Selected an MoE model with {num_experts=} and {target_modules=}. Enabling LoRA on MoE parameters {moe_params}")
         return moe_params
 
     return None
