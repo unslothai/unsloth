@@ -529,9 +529,13 @@ class RaiseUninitialized:
     def remove(self):
         transformers_logger.removeHandler(self.error_handler)
 
+
 try:
     from transfomers.trainer import logger as transformers_trainer_logger
-    transformers_trainer_logger.addFilter(HideLoggingMessage('The model is already on multiple devices.'))
+
+    transformers_trainer_logger.addFilter(
+        HideLoggingMessage("The model is already on multiple devices.")
+    )
 except:
     pass
 
@@ -2629,7 +2633,9 @@ def get_moe_target_parameters(model, target_modules = None) -> Optional[List[str
         moe_params.append("mlp.experts.down_proj")
 
     if moe_params:
-        print(f"Unsloth: Selected an MoE model with {num_experts=} and {target_modules=}. Enabling LoRA on MoE parameters {moe_params}")
+        print(
+            f"Unsloth: Selected an MoE model with {num_experts = } and {target_modules = }. Enabling LoRA on MoE parameters {moe_params}"
+        )
         return moe_params
 
     return None
