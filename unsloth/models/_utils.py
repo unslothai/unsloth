@@ -1126,8 +1126,12 @@ def patch_regional_compilation():
 def prepare_model_for_kbit_training(
     model: Any,
     use_gradient_checkpointing: Optional = True,
-    use_reentrant: Optional[bool] = True,
+    use_reentrant: Optional[bool] = None,
 ) -> Any:
+    # MPS (Apple Silicon) requires use_reentrant=False for gradient checkpointing
+    # to avoid "element 0 of tensors does not require grad" error
+    if use_reentrant is None:
+        use_reentrant = DEVICE_TYPE != "mps"
     return prepare_model_for_training(
         model=model,
         use_gradient_checkpointing=use_gradient_checkpointing,
