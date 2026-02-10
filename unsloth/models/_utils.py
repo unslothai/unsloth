@@ -294,7 +294,7 @@ class ReplaceWarningMessage:
 
 
 # Stop vLLM messages
-if UNSLOTH_ENABLE_LOGGING:
+if not UNSLOTH_ENABLE_LOGGING:
     try:
         from vllm.worker.worker import logger as vllm_worker_logger
 
