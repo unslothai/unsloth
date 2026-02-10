@@ -19,6 +19,17 @@ from .auth import (
     RefreshTokenRequest,
     AuthStatusResponse,
 )
+from .export import (
+    CheckpointInfo,
+    CheckpointListResponse,
+    LoadCheckpointRequest,
+    ExportStatusResponse,
+    ExportOperationResponse,
+    ExportMergedModelRequest,
+    ExportBaseModelRequest,
+    ExportGGUFRequest,
+    ExportLoRAAdapterRequest,
+)
 from .users import Token
 from .datasets import (
     CheckFormatRequest,
@@ -55,6 +66,16 @@ __all__ = [
     "AuthLoginRequest",
     "RefreshTokenRequest",
     "AuthStatusResponse",
+    # Export schemas
+    "CheckpointInfo",
+    "CheckpointListResponse",
+    "LoadCheckpointRequest",
+    "ExportStatusResponse",
+    "ExportOperationResponse",
+    "ExportMergedModelRequest",
+    "ExportBaseModelRequest",
+    "ExportGGUFRequest",
+    "ExportLoRAAdapterRequest",
     "Token",
     # Dataset schemas
     "CheckFormatRequest",
