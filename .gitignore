@@ -35,3 +35,9 @@ Thumbs.db
 # Other
 resources/
 tmp/
+
+# Local working docs
+**/CLAUDE.md
+**/claude.md
+docs/canvas-lab-architecture.md
+studio/frontend/test/
