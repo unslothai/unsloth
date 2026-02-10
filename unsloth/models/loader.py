@@ -295,6 +295,10 @@ class FastLanguageModel(FastLlamaModel):
             else:
                 assert new_model_name is not None
                 model_name = new_model_name
+                # If mapper resolved to a pre-quantized FP8 model, disable
+                # on-the-fly quantization to avoid double quantization
+                if load_in_fp8 != False and new_model_name != old_model_name:
+                    load_in_fp8 = False
 
         # Check if pre-quantized models are allowed
         # For eg AMD Instinct GPUs need blocksize = 128, but our pre-quants are blocksize = 64
@@ -899,6 +903,10 @@ class FastModel(FastBaseModel):
             else:
                 assert new_model_name is not None
                 model_name = new_model_name
+                # If mapper resolved to a pre-quantized FP8 model, disable
+                # on-the-fly quantization to avoid double quantization
+                if load_in_fp8 != False and new_model_name != old_model_name:
+                    load_in_fp8 = False
 
         # Check if pre-quantized models are allowed
         # For eg AMD Instinct GPUs need blocksize = 128, but our pre-quants are blocksize = 64

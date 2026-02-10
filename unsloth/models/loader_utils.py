@@ -108,14 +108,6 @@ def __get_model_name(
 
     assert load_in_fp8 in (True, False, "block")
     if load_in_fp8 != False:
-        # For vllm >= 0.12.0, we can quantize the vllm model to FP8 on the fly
-        # saving an offline checkpoint and loading it back in, so we don't need
-        # a new model name. Just return the original model name in this case.
-        if importlib.util.find_spec("vllm") is not None:
-            import vllm
-
-            if Version(vllm.__version__) >= Version("0.12.0"):
-                return model_name
         if load_in_fp8 == True and (os.environ.get("UNSLOTH_HAS_FBGEMM", "0") == "1"):
             if lower_model_name in FLOAT_TO_FP8_ROW_MAPPER:
                 # Faster row scaling only works if FBGEMM works!
@@ -126,6 +118,15 @@ def __get_model_name(
         else:
             if lower_model_name in FLOAT_TO_FP8_BLOCK_MAPPER:
                 return FLOAT_TO_FP8_BLOCK_MAPPER[lower_model_name]
+        # Mapper didn't find a pre-quantized model.
+        # For vllm >= 0.12.0, we can quantize the model to FP8 on the fly,
+        # so just return the original model name. Older vllm versions will
+        # fall through to offline quantization via _offline_quantize_to_fp8.
+        if importlib.util.find_spec("vllm") is not None:
+            import vllm
+
+            if Version(vllm.__version__) >= Version("0.12.0"):
+                return model_name
         return None
 
     elif not SUPPORTS_FOURBIT and lower_model_name in INT_TO_FLOAT_MAPPER:
