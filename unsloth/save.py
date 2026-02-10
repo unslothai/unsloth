@@ -2044,7 +2044,7 @@ def unsloth_save_pretrained_gguf(
         print("Unsloth: Prompt model to describe the image")
     else:
         print(
-            f'Unsloth: example usage for text only LLMs: llama-cli --model {all_file_locations[0]} -p "why is the sky blue?"'
+            f'Unsloth: example usage for text only LLMs: ./llama.cpp/llama-cli --model {all_file_locations[0]} -p "why is the sky blue?"'
         )
 
     if ollama_success:
