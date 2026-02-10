@@ -60,6 +60,12 @@ from .fast_ops import (
     mlx_scaled_dot_product_attention,
 )
 
+from .merge_lora import (
+    mlx_merge_lora,
+    mlx_merge_lora_layer,
+    mlx_dequantize_weights,
+)
+
 __all__ = [
     # Availability checks
     "is_mlx_available",
@@ -82,4 +88,8 @@ __all__ = [
     "mlx_rope",
     "mlx_rope_qk",
     "mlx_scaled_dot_product_attention",
+    # LoRA merge
+    "mlx_merge_lora",
+    "mlx_merge_lora_layer",
+    "mlx_dequantize_weights",
 ]

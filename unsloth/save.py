@@ -204,7 +204,7 @@ def _free_cached_model(model):
             delete_strategy.execute()
 
 
-def _merge_lora(layer, name):
+def _merge_lora(layer, name, use_mlx_if_mps=True):
     bias = getattr(layer, "bias", None)
     Bnb_Linear4bit = get_bnb_linear_type()
     if Bnb_Linear4bit is not None and isinstance(layer, Bnb_Linear4bit) or isinstance(layer, (Peft_Linear4bit, Peft_Linear)):
@@ -217,8 +217,25 @@ def _merge_lora(layer, name):
             W = fast_dequantize(W, quant_state)
         else:
             dtype = W.dtype
+
+        # Check if we're on MPS and can use MLX for merging
+        is_mps = W.device.type == "mps"
+        if is_mps and use_mlx_if_mps:
+            try:
+                from unsloth.kernels.mlx.merge_lora import mlx_merge_lora_layer
+                # Use MLX-based merge on Apple Silicon - handles transposes internally
+                W, bias = mlx_merge_lora_layer(layer, quant_state, dtype)
+                return W, bias
+            except Exception as e:
+                # Fall back to CPU-based merge
+                logger.warning_once(
+                    f"Unsloth: MLX merge failed ({e}), falling back to CPU merge."
+                )
+                W = W.to("cpu")
+                A = A.to("cpu")
+                B = B.to("cpu")
+        
         W = W.to(torch.float32).t()
-        # W = W.t()
 
         if A is not None:
             # sAB = (A.t().to(torch.float32) @ (s * B.t().to(torch.float32)))
@@ -1887,18 +1904,22 @@ def unsloth_save_pretrained_gguf(
     if tokenizer is None:
         raise ValueError("Unsloth: Saving to GGUF must have a tokenizer.")
 
-    # Check for MPS - GGUF export requires CUDA for weight merging
+    # Check for MPS - GGUF export requires CUDA for weight merging, unless MLX is available
     from unsloth_zoo.device_type import DEVICE_TYPE
     if DEVICE_TYPE == "mps":
-        raise RuntimeError(
-            "Unsloth: GGUF export on Apple Silicon (MPS) is currently not supported.\n"
-            "The underlying merge operation requires CUDA.\n\n"
-            "Workarounds:\n"
-            "1. Save as LoRA weights (.save_pretrained) and merge on a CUDA machine\n"
-            "2. Use merged_16bit export (.save_pretrained_merged) for standard HF format\n"
-            "3. Wait for unsloth_zoo MPS support (tracked in GitHub issues)\n\n"
-            "For now, please use .save_pretrained() to save LoRA weights."
-        )
+        # Check if MLX-based merge is available
+        try:
+            from unsloth.kernels.mlx.merge_lora import mlx_merge_lora
+            # MLX merge is available, GGUF export is now supported on MPS
+        except ImportError:
+            raise RuntimeError(
+                "Unsloth: GGUF export on Apple Silicon (MPS) requires MLX.\n"
+                "Please install MLX: pip install mlx\n\n"
+                "Alternatively:\n"
+                "1. Save as LoRA weights (.save_pretrained) and merge on a CUDA machine\n"
+                "2. Use merged_16bit export (.save_pretrained_merged) for standard HF format\n\n"
+                "For now, please use .save_pretrained() to save LoRA weights or install MLX."
+            )
 
     try:
         base_model_name = get_model_name(self.config._name_or_path, load_in_4bit=False)
