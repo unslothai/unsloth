@@ -60,10 +60,6 @@ def test_lora_training_and_save():
     print(f"✅ LoRA adapters added")
     print(f"   Trainable parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
     
-    # Enable training mode (required for gradient checkpointing)
-    FastLanguageModel.for_training(model)
-    print(f"✅ Model set to training mode")
-    
     print("\nCreating synthetic dataset...")
     print("-" * 70)
     
