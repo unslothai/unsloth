@@ -64,6 +64,8 @@ try:
         use_gradient_checkpointing="unsloth",
         random_state=3407,
     )
+    # Enable gradients for non-quantized model training
+    model.enable_input_require_grads()
     print("LoRA adapters added successfully ✓")
 except Exception as e:
     print(f"Failed to add LoRA: {e}")
