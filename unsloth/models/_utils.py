@@ -2725,28 +2725,57 @@ def make_fast_generate_wrapper(original_generate):
 
 try:
     import re
+    import transformers
     _original_should_convert_module = transformers.quantizers.quantizers_utils.should_convert_module
 
+    def _normalize_module_path(x):
+        if not isinstance(x, str):
+            return x
+        x = x.replace("language_model.model.", "language_model.")
+        if x.startswith("model."):
+            x = x[len("model."):]
+        return x
+
+    def _pattern_blocks(full_name: str, pat: str) -> bool:
+        # glob-style wildcard support: "foo.bar.*"
+        if "*" in pat:
+            rx = "^" + re.escape(pat).replace("\\*", ".*")
+            return re.match(rx, full_name) is not None
+
+        # literal path / suffix rules
+        return (
+            full_name == pat
+            or full_name.startswith(pat + ".")
+            or full_name.endswith("." + pat)
+            or full_name.endswith(pat)
+        )
+
     def patched_should_convert_module(full_name, patterns=None):
-        # Normalize module name
-        if isinstance(full_name, str):
-            full_name = full_name.replace("language_model.model.", "language_model.")
+        if patterns is None:
+            return True
 
-        # Normalize patterns list
-        if patterns is not None:
-            patterns = [
-                p.replace("language_model.model.", "language_model.")
-                if isinstance(p, str)
-                else p
-                for p in patterns
-            ]
+        full_name = _normalize_module_path(full_name)
+        patterns = [_normalize_module_path(p) for p in patterns]
 
-        return _original_should_convert_module(full_name, patterns)
+        for p in patterns:
+            if not isinstance(p, str):
+                # allow compiled regex objects too
+                if hasattr(p, "search") and p.search(full_name):
+                    return False
+                continue
+
+            if _pattern_blocks(full_name, p):
+                return False
+
+        return True
+
+
+    patched_should_convert_module._original_should_convert_module = _original_should_convert_module
 
     # Monkey patch
     transformers.quantizers.quantizers_utils.should_convert_module = patched_should_convert_module
-    transformers.quantizers.quantizers_utils.should_convert_module._original_should_convert_module = _original_should_convert_module
+    transformers.integrations.bitsandbytes.should_convert_module = patched_should_convert_module
 
 except Exception as e:
-    logger.info(f"Unsloth: Failed to patch should_convert_module: {e}")
+    logger.warning(f"Unsloth: Failed to patch should_convert_module: {e}. llm_int8_skip_modules might not work especially for VLMs")
     pass
