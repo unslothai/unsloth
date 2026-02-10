@@ -103,6 +103,7 @@ from ..device_type import (
     DEVICE_COUNT,
     ALLOW_PREQUANTIZED_MODELS,
 )
+from ..import_fixes import UNSLOTH_ENABLE_LOGGING
 from unsloth_zoo.log import logger
 from unsloth_zoo.tokenizer_utils import (
     patch_tokenizer as _patch_tokenizer,
@@ -256,7 +257,7 @@ class HideLoggingMessage(logging.Filter):
 
 
 # Stop vLLM messages
-if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") != "1":
+if UNSLOTH_ENABLE_LOGGING:
     try:
         from vllm.worker.worker import logger as vllm_worker_logger
 
@@ -538,6 +539,17 @@ try:
     )
 except:
     pass
+
+if not UNSLOTH_ENABLE_LOGGING:
+    # Hide PEFT target_parameters warning for MoE models
+    try:
+        warnings.filterwarnings(
+            "ignore",
+            message = ".*target_parameters.*were set but no parameter was matched.*",
+            category = RuntimeWarning,
+        )
+    except:
+        pass
 
 # Patch get_model_param_count to record correct 4bit / 8bit
 from transformers.trainer_pt_utils import is_deepspeed_zero3_enabled
@@ -939,7 +951,7 @@ except ModuleNotFoundError:
     xformers_attention = None
     xformers_version = None
 except Exception as e:
-    if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") != "0":
+    if UNSLOTH_ENABLE_LOGGING:
         print(
             "========\nSwitching to PyTorch attention since your Xformers is broken.\n========\n"
         )

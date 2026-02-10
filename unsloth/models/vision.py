@@ -1209,14 +1209,7 @@ class FastBaseModel:
             model,
             use_gradient_checkpointing = use_gradient_checkpointing,
         )
-        import warnings as _w
-
-        with _w.catch_warnings():
-            _w.filterwarnings(
-                "ignore",
-                message = ".*target_parameters.*were set but no parameter was matched.*",
-            )
-            model = _get_peft_model(model, lora_config)
+        model = _get_peft_model(model, lora_config)
         # Apply QAT + LoRA if specified
         if qat_scheme is not None:
             print("Unsloth: Applying QAT to mitigate quantization degradation")
