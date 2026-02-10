@@ -99,7 +99,8 @@ from ._utils import (
 global FORCE_FLOAT32
 # Forces float32 precision since float16 goes to infinity
 FORCE_FLOAT32 = [
-    "gemma3,",  # Add comma bc gemma3 will match gemma3n
+    "gemma3,",      # Add comma bc gemma3 will match gemma3n
+    "gemma3text",   # Gemma3TextModel (EmbeddingGemma, standalone text-only Gemma3)
     "gemma3n",
     "gpt_oss",
 ]
@@ -115,7 +116,8 @@ DISABLE_COMPILE_MODEL_NAMES = [
 global DISABLE_SDPA_MODEL_NAMES
 # Disables some SDPA modules since it's wrong
 DISABLE_SDPA_MODEL_NAMES = [
-    "gemma3,",  # Add comma bc gemma3 will match gemma3n
+    "gemma3,",       # Add comma bc gemma3 will match gemma3n
+    "gemma3_text",   # Gemma3TextModel (EmbeddingGemma) - substring match, keep underscore
 ]
 
 
