@@ -2038,13 +2038,13 @@ def unsloth_save_pretrained_gguf(
     if is_vlm_update:
         print("\n")
         print(
-            f"Unsloth: example usage for Multimodal LLMs: llama-mtmd-cli -m {all_file_locations[0]} --mmproj {all_file_locations[-1]}"
+            f"Unsloth: example usage for Multimodal LLMs: llama.cpp/llama-mtmd-cli -m {all_file_locations[0]} --mmproj {all_file_locations[-1]}"
         )
         print("Unsloth: load image inside llama.cpp runner: /image test_image.jpg")
         print("Unsloth: Prompt model to describe the image")
     else:
         print(
-            f'Unsloth: example usage for text only LLMs: ./llama.cpp/llama-cli --model {all_file_locations[0]} -p "why is the sky blue?"'
+            f'Unsloth: example usage for text only LLMs: llama.cpp/llama-cli --model {all_file_locations[0]} -p "why is the sky blue?"'
         )
 
     if ollama_success:
