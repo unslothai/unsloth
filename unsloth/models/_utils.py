@@ -2707,3 +2707,32 @@ def make_fast_generate_wrapper(original_generate):
         return original_generate(*args, **kwargs)
 
     return _fast_generate_wrapper
+
+
+try:
+    import re
+    _original_should_convert_module = transformers.quantizers.quantizers_utils.should_convert_module
+
+    def patched_should_convert_module(full_name, patterns=None):
+        # Normalize module name
+        if isinstance(full_name, str):
+            full_name = full_name.replace("language_model.model.", "language_model.")
+
+        # Normalize patterns list
+        if patterns is not None:
+            patterns = [
+                p.replace("language_model.model.", "language_model.")
+                if isinstance(p, str)
+                else p
+                for p in patterns
+            ]
+
+        return _original_should_convert_module(full_name, patterns)
+
+    # Monkey patch
+    transformers.quantizers.quantizers_utils.should_convert_module = patched_should_convert_module
+    transformers.quantizers.quantizers_utils.should_convert_module._original_should_convert_module = _original_should_convert_module
+
+except Exception as e:
+    logger.info(f"Unsloth: Failed to patch should_convert_module: {e}")
+    pass
