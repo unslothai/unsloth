@@ -12,7 +12,7 @@ All internal utilities have been moved to separate modules:
 - chat_templates: apply_chat_template_to_dataset, get_tokenizer_chat_template, etc.
 - vlm_processing: generate_smart_vlm_instruction
 - data_collators: DeepSeekOCRDataCollator, VLMDataCollator
-- model_mappings: TEMPLATE_TO_MODEL_MAPPER, RESPONSE_MARKERS
+- model_mappings: TEMPLATE_TO_MODEL_MAPPER
 """
 
 # Import from modular files
@@ -37,7 +37,7 @@ from .chat_templates import (
 )
 from .vlm_processing import generate_smart_vlm_instruction
 from .data_collators import DeepSeekOCRDataCollator, VLMDataCollator
-from .model_mappings import TEMPLATE_TO_MODEL_MAPPER, RESPONSE_MARKERS
+from .model_mappings import TEMPLATE_TO_MODEL_MAPPER
 
 
 def check_dataset_format(dataset, is_vlm: bool = False) -> dict:

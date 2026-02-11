@@ -1,6 +1,9 @@
 """
 Main FastAPI application for Unsloth UI Backend
 """
+import secrets
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -10,12 +13,30 @@ from datetime import datetime
 
 # Import routers
 from routes import training_router, models_router, inference_router, datasets_router, auth_router
+from auth import storage
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Generate and print a setup token on startup if auth is not yet initialized."""
+    if not storage.is_initialized():
+        setup_token = secrets.token_urlsafe(32)
+        storage.save_setup_token(setup_token)
+        print("\n" + "=" * 60)
+        print("FIRST-TIME SETUP REQUIRED")
+        print("Use this one-time setup token to create your admin account:\n")
+        print(f"    {setup_token}\n")
+        print("This token can only be used once.")
+        print("=" * 60 + "\n")
+    yield
+
 
 # Create FastAPI app
 app = FastAPI(
     title="Unsloth UI Backend",
     version="1.0.0",
-    description="Backend API for Unsloth UI - Training and Model Management"
+    description="Backend API for Unsloth UI - Training and Model Management",
+    lifespan=lifespan,
 )
 
 # CORS middleware
