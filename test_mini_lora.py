@@ -51,13 +51,14 @@ def test_lora_training_and_save():
     model = FastLanguageModel.get_peft_model(
         model,
         r=16,
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", 
+                       "gate_proj", "up_proj", "down_proj"],  # Add MLP projections to test MPSLoRA_MLP
         lora_alpha=32,
         lora_dropout=0,
         bias="none",
         use_gradient_checkpointing="unsloth",
     )
-    print(f"✅ LoRA adapters added")
+    print(f"✅ LoRA adapters added (including MLP projections)")
     print(f"   Trainable parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
     
     print("\nCreating synthetic dataset...")
@@ -186,6 +187,8 @@ if __name__ == "__main__":
         print("=" * 70)
         print("\nResults:")
         print("  ✅ LoRA training works on Apple Silicon")
+        print("  ✅ MPSLoRA_MLP backward pass works (custom autograd)")
+        print("  ✅ Attention + MLP LoRA training successful")
         print("  ✅ LoRA weight saving works")
         print("  ✅ Merged 16-bit saving works")
         print("  ✅ GGUF export works (MLX LoRA merge enabled)")
