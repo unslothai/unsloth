@@ -16,7 +16,27 @@ from .models import (
 from .auth import (
     AuthSetupRequest,
     AuthLoginRequest,
+    RefreshTokenRequest,
     AuthStatusResponse,
+)
+from .users import Token
+from .datasets import (
+    CheckFormatRequest,
+    CheckFormatResponse,
+)
+from .inference import (
+    LoadRequest,
+    UnloadRequest,
+    GenerateRequest,
+    LoadResponse,
+    UnloadResponse,
+    InferenceStatusResponse,
+)
+from .responses import (
+    TrainingStopResponse,
+    TrainingMetricsResponse,
+    LoRABaseModelResponse,
+    VisionCheckResponse,
 )
 
 __all__ = [
@@ -33,6 +53,22 @@ __all__ = [
     # Auth schemas
     "AuthSetupRequest",
     "AuthLoginRequest",
+    "RefreshTokenRequest",
     "AuthStatusResponse",
+    "Token",
+    # Dataset schemas
+    "CheckFormatRequest",
+    "CheckFormatResponse",
+    # Inference schemas
+    "LoadRequest",
+    "UnloadRequest",
+    "GenerateRequest",
+    "LoadResponse",
+    "UnloadResponse",
+    "InferenceStatusResponse",
+    # Response schemas
+    "TrainingStopResponse",
+    "TrainingMetricsResponse",
+    "LoRABaseModelResponse",
+    "VisionCheckResponse",
 ]
-
