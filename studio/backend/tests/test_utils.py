@@ -316,6 +316,7 @@ class TestFormatErrorMessage:
 
     # --- OOM on CUDA ---
 
+    @needs_torch
     def test_cuda_oom(self):
         err = Exception("CUDA out of memory")
         with patch("utils.hardware.get_device", return_value=DeviceType.CUDA):
