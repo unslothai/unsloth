@@ -16,6 +16,7 @@ import logging
 
 from .loader import FastModel
 from ._utils import SUPPORTS_BFLOAT16
+from ..device_type import DEVICE_TYPE
 import inspect
 import json
 import os
@@ -412,7 +413,7 @@ class FastSentenceTransformer(FastModel):
                         attention_mask,
                         head_mask[i] if head_mask is not None else None,
                         position_bias,
-                        use_reentrant=True,  # fix for torch 2.9
+                        use_reentrant=(DEVICE_TYPE != "mps"),  # fix for torch 2.9, but MPS requires False
                     )
                 else:
                     # original code from here on
@@ -505,7 +506,7 @@ class FastSentenceTransformer(FastModel):
                         hidden_states,
                         attention_mask,
                         position_bias,
-                        use_reentrant=True,  # required for torch >= 2.9
+                        use_reentrant=(DEVICE_TYPE != "mps"),  # required for torch >= 2.9, but MPS requires False
                     )
                 else:
                     # original code from here on

@@ -193,17 +193,18 @@ if DEVICE_TYPE == "mps":
     # 3. Patch torch.utils.checkpoint for MPS to use use_reentrant=False
     # MPS requires use_reentrant=False for gradient checkpointing to avoid
     # "element 0 of tensors does not require grad" error
-    try:
-        import torch.utils.checkpoint as checkpoint_module
-        _original_checkpoint = checkpoint_module.checkpoint
+    if DEVICE_TYPE == "mps":
+        try:
+            import torch.utils.checkpoint as checkpoint_module
+            _original_checkpoint = checkpoint_module.checkpoint
 
-        def _mps_checkpoint(function, *args, use_reentrant=True, **kwargs):
-            """Force use_reentrant=False for MPS devices."""
-            return _original_checkpoint(function, *args, use_reentrant=False, **kwargs)
+            def _mps_checkpoint(function, *args, use_reentrant=True, **kwargs):
+                """Force use_reentrant=False for MPS devices."""
+                return _original_checkpoint(function, *args, use_reentrant=False, **kwargs)
 
-        checkpoint_module.checkpoint = _mps_checkpoint
-    except Exception:
-        pass  # If patching fails, we'll handle the error elsewhere
+            checkpoint_module.checkpoint = _mps_checkpoint
+        except Exception:
+            pass  # If patching fails, we'll handle the error elsewhere
 
 
 from unsloth_zoo.patching_utils import (
