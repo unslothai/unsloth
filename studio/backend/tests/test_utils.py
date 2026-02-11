@@ -307,7 +307,7 @@ class TestFormatErrorMessage:
 
     def test_cuda_oom(self):
         err = Exception("CUDA out of memory")
-        with patch("utils.hardware.hardware.get_device", return_value=DeviceType.CUDA):
+        with patch("utils.hardware.get_device", return_value=DeviceType.CUDA):
             msg = format_error_message(err, "big/model")
         assert "GPU" in msg
         assert "big/model" not in msg
@@ -317,7 +317,7 @@ class TestFormatErrorMessage:
 
     def test_mps_oom(self):
         err = Exception("MPS backend out of memory")
-        with patch("utils.hardware.hardware.get_device", return_value=DeviceType.MPS):
+        with patch("utils.hardware.get_device", return_value=DeviceType.MPS):
             msg = format_error_message(err, "unsloth/huge-model")
         assert "Apple Silicon" in msg
 
@@ -325,7 +325,7 @@ class TestFormatErrorMessage:
 
     def test_cpu_oom(self):
         err = Exception("not enough memory to allocate")
-        with patch("utils.hardware.hardware.get_device", return_value=DeviceType.CPU):
+        with patch("utils.hardware.get_device", return_value=DeviceType.CPU):
             msg = format_error_message(err, "any/model")
         assert "system" in msg.lower()
 
