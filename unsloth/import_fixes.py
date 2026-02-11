@@ -13,6 +13,8 @@
 # limitations under the License.
 
 import os
+import importlib.abc
+import importlib.machinery
 import importlib.util
 from pathlib import Path
 from importlib.metadata import version as importlib_version
@@ -401,26 +403,107 @@ def fix_vllm_guided_decoding_params():
 
     if importlib.util.find_spec("vllm") is None:
         return
-    # GuidedDecodingParmas is renamed to StructuredOutputsParams in vLLM
-    # https://github.com/vllm-project/vllm/pull/22772/files
-    # trl still wants to use GuidedDecodingParams. This is a temporary patch till trl updates
-    try:
-        import vllm
-    except ImportError as e:
-        _maybe_raise_vllm_transformers_mismatch(e)
-        raise
+    import sys
 
-    try:
-        from vllm.sampling_params import GuidedDecodingParams
-    except ImportError as e:
-        _maybe_raise_vllm_transformers_mismatch(e)
-        if not hasattr(vllm, "sampling_params") or not hasattr(
-            vllm.sampling_params, "StructuredOutputsParams"
-        ):
-            raise
-        vllm.sampling_params.GuidedDecodingParams = (
-            vllm.sampling_params.StructuredOutputsParams
+    def _apply_guided_decoding_alias(vllm_module = None, sampling_params_module = None):
+        # GuidedDecodingParmas is renamed to StructuredOutputsParams in vLLM
+        # https://github.com/vllm-project/vllm/pull/22772/files
+        # trl still wants to use GuidedDecodingParams. This is a temporary patch till trl updates
+        if sampling_params_module is None:
+            if (
+                vllm_module is None
+                or not hasattr(vllm_module, "sampling_params")
+            ):
+                return False
+            sampling_params_module = vllm_module.sampling_params
+
+        if hasattr(sampling_params_module, "GuidedDecodingParams"):
+            return True
+        if not hasattr(sampling_params_module, "StructuredOutputsParams"):
+            return False
+
+        sampling_params_module.GuidedDecodingParams = (
+            sampling_params_module.StructuredOutputsParams
         )
+        if (
+            vllm_module is not None
+            and hasattr(vllm_module, "sampling_params")
+            and hasattr(vllm_module.sampling_params, "StructuredOutputsParams")
+        ):
+            vllm_module.sampling_params.GuidedDecodingParams = (
+                vllm_module.sampling_params.StructuredOutputsParams
+            )
+        return True
+
+    def _install_sampling_params_hook():
+        if any(
+            getattr(x, "_unsloth_vllm_sampling_params_hook", False)
+            for x in sys.meta_path
+        ):
+            return
+
+        class _VLLMSamplingParamsHook(importlib.abc.MetaPathFinder):
+            _unsloth_vllm_sampling_params_hook = True
+
+            def find_spec(self, fullname, path = None, target = None):
+                if fullname != "vllm.sampling_params":
+                    return None
+                spec = importlib.machinery.PathFinder.find_spec(fullname, path)
+                if spec is None or spec.loader is None:
+                    return spec
+                original_loader = spec.loader
+
+                class _Loader(importlib.abc.Loader):
+                    def create_module(self, spec):
+                        if hasattr(original_loader, "create_module"):
+                            return original_loader.create_module(spec)
+                        return None
+
+                    def exec_module(self, module):
+                        try:
+                            original_loader.exec_module(module)
+                        except ImportError as e:
+                            _maybe_raise_vllm_transformers_mismatch(e)
+                            raise
+                        _apply_guided_decoding_alias(sampling_params_module = module)
+
+                spec.loader = _Loader()
+                try:
+                    sys.meta_path.remove(self)
+                except ValueError:
+                    pass
+                return spec
+
+        sys.meta_path.insert(0, _VLLMSamplingParamsHook())
+
+    if "vllm.sampling_params" in sys.modules:
+        sampling_params_module = sys.modules["vllm.sampling_params"]
+        vllm_module = sys.modules.get("vllm", None)
+        if not _apply_guided_decoding_alias(vllm_module, sampling_params_module):
+            raise ImportError(
+                "Unsloth: vLLM sampling_params lacks GuidedDecodingParams and StructuredOutputsParams."
+            )
+        return
+
+    # Avoid importing vLLM just to apply this compatibility alias.
+    # Some vLLM/CUTLASS stacks can emit architecture errors during import on
+    # unsupported GPUs. When vLLM is imported later, install the alias lazily.
+    if "vllm" not in sys.modules:
+        _install_sampling_params_hook()
+        return
+
+    # vLLM is already loaded by user code. Only patch if sampling_params
+    # module is already present to avoid importing new vLLM modules here.
+    vllm_module = sys.modules["vllm"]
+    if hasattr(vllm_module, "sampling_params"):
+        if not _apply_guided_decoding_alias(vllm_module = vllm_module):
+            raise ImportError(
+                "Unsloth: vLLM sampling_params lacks GuidedDecodingParams and StructuredOutputsParams."
+            )
+        return
+
+    # vLLM may be partially loaded. Patch sampling_params lazily when imported.
+    _install_sampling_params_hook()
 
 
 def ignore_logger_messages():
@@ -989,7 +1072,8 @@ def fix_vllm_pdl_blackwell():
 
     See: https://github.com/vllm-project/vllm/issues/30872
     """
-    if importlib.util.find_spec("vllm") is None:
+    vllm_spec = importlib.util.find_spec("vllm")
+    if vllm_spec is None:
         return
 
     # Check if any CUDA GPU is SM100 (Blackwell)
@@ -1014,17 +1098,26 @@ def fix_vllm_pdl_blackwell():
     except Exception:
         return
 
-    # Helper to check if module spec exists
-    def _spec_exists(name):
+    # Avoid find_spec("vllm.submodule"), which can import vLLM as a side effect.
+    # We only need to know whether these files exist in the installed package.
+    def _module_file_exists(relative_path):
         try:
-            return importlib.util.find_spec(name) is not None
-        except (ModuleNotFoundError, ValueError):
+            locations = []
+            if vllm_spec.submodule_search_locations:
+                locations.extend(vllm_spec.submodule_search_locations)
+            if vllm_spec.origin is not None:
+                locations.append(str(Path(vllm_spec.origin).parent))
+            for location in locations:
+                if (Path(location) / relative_path).exists():
+                    return True
+            return False
+        except Exception:
             return False
 
     # Check if vLLM has the PDL-related modules before doing internet check
-    has_utils = _spec_exists("vllm.lora.ops.triton_ops.utils")
-    has_expand_op = _spec_exists("vllm.lora.ops.triton_ops.lora_expand_op")
-    has_shrink_op = _spec_exists("vllm.lora.ops.triton_ops.lora_shrink_op")
+    has_utils = _module_file_exists("lora/ops/triton_ops/utils.py")
+    has_expand_op = _module_file_exists("lora/ops/triton_ops/lora_expand_op.py")
+    has_shrink_op = _module_file_exists("lora/ops/triton_ops/lora_shrink_op.py")
 
     if not has_utils and not has_expand_op and not has_shrink_op:
         # Old vLLM version without PDL support - nothing to patch

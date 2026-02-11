@@ -22,6 +22,7 @@ from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 import inspect
 import os
 import re
+import sys
 from unsloth_zoo.compiler import create_new_function
 from unsloth_zoo.log import logger
 from unsloth_zoo.logging_utils import PatchRLStatistics
@@ -46,9 +47,12 @@ torch_compile_options = {
 
 # vLLM compatibility shim (TRL expects GuidedDecodingParams even if vLLM doesn't provide it)
 try:
-    import vllm.sampling_params as _unsloth_vllm_sp
+    # Avoid importing vLLM during Unsloth import. Only patch if vLLM is already loaded.
+    _unsloth_vllm_sp = sys.modules.get("vllm.sampling_params", None)
 
-    if not hasattr(_unsloth_vllm_sp, "GuidedDecodingParams"):
+    if (_unsloth_vllm_sp is not None) and (
+        not hasattr(_unsloth_vllm_sp, "GuidedDecodingParams")
+    ):
 
         class GuidedDecodingParams:
             def __init__(self, **kwargs):
@@ -93,7 +97,7 @@ def vLLMSamplingParams(**kwargs):
     return sampling_params
 
 
-def PatchRL(FastLanguageModel):
+def PatchRL(FastLanguageModel, patch_trl_trainers = True):
     from trl.models.utils import unwrap_model_for_generation
     from contextlib import contextmanager
 
@@ -228,21 +232,22 @@ def PatchRL(FastLanguageModel):
 
         return (loss, logits, labels)
 
-    import trl.trainer
+    if patch_trl_trainers:
+        import trl.trainer
 
-    trainers = dir(trl.trainer)
-    trainers = [x for x in trainers if x.endswith("_trainer")]
-    unwrap = "unwrap_model_for_generation"
-    for trainer in trainers:
-        try:
-            current_trainer = getattr(trl.trainer, trainer)
-        except:
-            continue
-        if hasattr(current_trainer, unwrap):
+        trainers = dir(trl.trainer)
+        trainers = [x for x in trainers if x.endswith("_trainer")]
+        unwrap = "unwrap_model_for_generation"
+        for trainer in trainers:
             try:
-                setattr(current_trainer, unwrap, unsloth_unwrap_model_for_generation)
+                current_trainer = getattr(trl.trainer, trainer)
             except:
                 continue
+            if hasattr(current_trainer, unwrap):
+                try:
+                    setattr(current_trainer, unwrap, unsloth_unwrap_model_for_generation)
+                except:
+                    continue
     Trainer.prediction_step = unsloth_prediction_step
 
 
@@ -1825,9 +1830,22 @@ def patch_trl_openenv():
 
 
 def PatchFastRL(algorithm = None, FastLanguageModel = None):
+    normalized_algorithm = (
+        algorithm.lower()
+        if (type(algorithm) is str and len(algorithm) != 0)
+        else None
+    )
+    # Avoid eager TRL/vLLM imports during `import unsloth`.
+    # By default, patch RL trainer modules only when an algorithm is explicitly
+    # requested. Core Trainer prediction patch remains enabled.
+    should_patch_trainers = (
+        os.environ.get("UNSLOTH_EAGER_RL_PATCH", "0") == "1"
+        or (normalized_algorithm is not None)
+    )
     if FastLanguageModel is not None:
-        PatchRL(FastLanguageModel)
-    patch_trl_rl_trainers()
-    patch_trl_openenv()
-    if type(algorithm) is str and algorithm.islower():
-        PatchRLStatistics(algorithm)
+        PatchRL(FastLanguageModel, patch_trl_trainers = should_patch_trainers)
+    if should_patch_trainers:
+        patch_trl_rl_trainers()
+        patch_trl_openenv()
+    if normalized_algorithm is not None:
+        PatchRLStatistics(normalized_algorithm)

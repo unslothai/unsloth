@@ -31,11 +31,18 @@ from .mapper import (
 from transformers import __version__ as transformers_version
 from unsloth.models._utils import TorchAOConfig
 from unsloth_zoo.utils import Version
-from unsloth_zoo.vllm_utils import _get_torchao_fp8_config
 import gc
 
 transformers_version = Version(transformers_version)
 SUPPORTS_FOURBIT = transformers_version >= Version("4.37")
+
+
+def _get_torchao_fp8_config(fp8_mode):
+    # Avoid importing unsloth_zoo.vllm_utils during `import unsloth`, since that
+    # module can import vLLM eagerly when installed.
+    from unsloth_zoo.vllm_utils import _get_torchao_fp8_config as _impl
+
+    return _impl(fp8_mode)
 
 LOCAL_RANK_KEYS = ("LOCAL_RANK", "RANK")
 WORLD_SIZE_KEYS = ("WORLD_SIZE",)

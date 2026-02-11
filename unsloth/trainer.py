@@ -459,6 +459,16 @@ def _patch_trl_trainer():
     if Version(trl) <= Version("0.11.0"):
         return
 
+    # Avoid eager `import trl.trainer` at `import unsloth` time.
+    # TRL trainer modules can eagerly import vLLM when it is installed, which can
+    # trigger architecture-specific CUTLASS errors on unsupported GPUs before users
+    # even opt into RL/vLLM flows.
+    if os.environ.get("UNSLOTH_EAGER_TRL_TRAINER_PATCH", "0") != "1":
+        if not hasattr(trl, "__UNSLOTH_SFT_AUTOPACKING_PATCHED__"):
+            _patch_sft_trainer_auto_packing(trl)
+            trl.__UNSLOTH_SFT_AUTOPACKING_PATCHED__ = True
+        return
+
     import trl.trainer
 
     trl_classes = dir(trl.trainer)
