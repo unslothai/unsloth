@@ -246,10 +246,18 @@ class FastLanguageModel(FastLlamaModel):
 
         if fast_inference:
             if importlib.util.find_spec("vllm") is None:
-                raise ImportError(
-                    "Unsloth: Please install vLLM before enabling `fast_inference`!\n"
-                    "You can do this in a terminal via `pip install vllm`"
-                )
+                if DEVICE_TYPE == "hip":
+                    print(
+                        "Unsloth: vLLM not installed on AMD; falling back to native "
+                        "inference. Install vLLM or set `fast_inference=False` to "
+                        "silence this warning."
+                    )
+                    fast_inference = False
+                else:
+                    raise ImportError(
+                        "Unsloth: Please install vLLM before enabling `fast_inference`!\n"
+                        "You can do this in a terminal via `pip install vllm`"
+                    )
             if DEVICE_TYPE_TORCH == "cuda":
                 for i in range(DEVICE_COUNT):
                     # [TODO] DGX Spark vLLM breaks
@@ -264,9 +272,16 @@ class FastLanguageModel(FastLlamaModel):
         # [TODO] For now fast_inference only works with fast_inference ie vLLM
         if load_in_fp8 != False:
             if not fast_inference:
-                raise NotImplementedError(
-                    "Unsloth: set `fast_inference = True` when doing `load_in_fp8`."
-                )
+                if DEVICE_TYPE == "hip":
+                    print(
+                        "Unsloth: `load_in_fp8` requires fast inference. Disabling "
+                        "FP8 on AMD for now."
+                    )
+                    load_in_fp8 = False
+                else:
+                    raise NotImplementedError(
+                        "Unsloth: set `fast_inference = True` when doing `load_in_fp8`."
+                    )
         # Check if 4bit is allowed specifically for AMD
         if not ALLOW_BITSANDBYTES and not use_exact_model_name:
             if load_in_4bit or load_in_8bit or model_name.lower().endswith("-bnb-4bit"):
@@ -275,17 +290,29 @@ class FastLanguageModel(FastLlamaModel):
                 )
             load_in_4bit = False
 
-        # AMD GPT-OSS: default to BF16 checkpoints to avoid MXFP4/prequant issues
-        if is_hip() and "gpt-oss" in model_name.lower() and not use_exact_model_name:
-            if not model_name.lower().endswith("-bf16"):
-                if "120b" in model_name.lower():
-                    model_name = "unsloth/gpt-oss-120b-BF16"
-                else:
-                    model_name = "unsloth/gpt-oss-20b-BF16"
-            load_in_4bit = False
-            load_in_8bit = False
-            load_in_fp8 = False
-            load_in_16bit = True
+        # AMD GPT-OSS routing:
+        # - Radeon can often use prequantized bnb-4bit checkpoints.
+        # - Instinct/MI (warp=64) often cannot, so fallback to BF16.
+        if is_hip() and (
+            "gpt-oss" in model_name.lower() or "gpt_oss" in model_name.lower()
+        ) and not use_exact_model_name:
+            gpt_oss_prequant_suffix = model_name.lower().endswith(
+                ("-unsloth-bnb-4bit", "-bnb-4bit")
+            )
+            wants_prequantized = load_in_4bit or gpt_oss_prequant_suffix
+            can_use_prequantized = ALLOW_BITSANDBYTES and ALLOW_PREQUANTIZED_MODELS
+            if not (wants_prequantized and can_use_prequantized):
+                if not model_name.lower().endswith("-bf16"):
+                    if "120b" in model_name.lower():
+                        model_name = "unsloth/gpt-oss-120b-BF16"
+                    else:
+                        model_name = "unsloth/gpt-oss-20b-BF16"
+                load_in_4bit = False
+                load_in_8bit = False
+                load_in_fp8 = False
+                load_in_16bit = True
+                quantization_config = None
+                kwargs.pop("quantization_config", None)
 
         # Find FP8, BnB 4bit, other mapped names
         old_model_name = model_name
@@ -871,12 +898,44 @@ class FastModel(FastBaseModel):
                 )
             load_in_4bit = False
 
+        # AMD GPT-OSS routing:
+        # - Radeon can often use prequantized bnb-4bit checkpoints.
+        # - Instinct/MI (warp=64) often cannot, so fallback to BF16.
+        if is_hip() and (
+            "gpt-oss" in model_name.lower() or "gpt_oss" in model_name.lower()
+        ) and not use_exact_model_name:
+            gpt_oss_prequant_suffix = model_name.lower().endswith(
+                ("-unsloth-bnb-4bit", "-bnb-4bit")
+            )
+            wants_prequantized = load_in_4bit or gpt_oss_prequant_suffix
+            can_use_prequantized = ALLOW_BITSANDBYTES and ALLOW_PREQUANTIZED_MODELS
+            if not (wants_prequantized and can_use_prequantized):
+                if not model_name.lower().endswith("-bf16"):
+                    if "120b" in model_name.lower():
+                        model_name = "unsloth/gpt-oss-120b-BF16"
+                    else:
+                        model_name = "unsloth/gpt-oss-20b-BF16"
+                load_in_4bit = False
+                load_in_8bit = False
+                load_in_fp8 = False
+                load_in_16bit = True
+                quantization_config = None
+                kwargs.pop("quantization_config", None)
+
         if fast_inference:
             if importlib.util.find_spec("vllm") is None:
-                raise ImportError(
-                    "Unsloth: Please install vLLM before enabling `fast_inference`!\n"
-                    "You can do this in a terminal via `pip install vllm`"
-                )
+                if DEVICE_TYPE == "hip":
+                    print(
+                        "Unsloth: vLLM not installed on AMD; falling back to native "
+                        "inference. Install vLLM or set `fast_inference=False` to "
+                        "silence this warning."
+                    )
+                    fast_inference = False
+                else:
+                    raise ImportError(
+                        "Unsloth: Please install vLLM before enabling `fast_inference`!\n"
+                        "You can do this in a terminal via `pip install vllm`"
+                    )
             if DEVICE_TYPE_TORCH == "cuda":
                 for i in range(DEVICE_COUNT):
                     # [TODO] DGX Spark vLLM breaks
@@ -891,9 +950,16 @@ class FastModel(FastBaseModel):
         # [TODO] For now fast_inference only works with fast_inference ie vLLM
         if load_in_fp8 != False:
             if not fast_inference:
-                raise NotImplementedError(
-                    "Unsloth: set `fast_inference = True` when doing `load_in_fp8`."
-                )
+                if DEVICE_TYPE == "hip":
+                    print(
+                        "Unsloth: `load_in_fp8` requires fast inference. Disabling "
+                        "FP8 on AMD for now."
+                    )
+                    load_in_fp8 = False
+                else:
+                    raise NotImplementedError(
+                        "Unsloth: set `fast_inference = True` when doing `load_in_fp8`."
+                    )
 
         # Find FP8, BnB 4bit, other mapped names
         old_model_name = model_name
