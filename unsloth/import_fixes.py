@@ -913,6 +913,81 @@ def fix_rocm_triton_key_error():
     )
 
 
+def patch_trunc_normal_precision_issue():
+    """
+    Patch torch.nn.init.trunc_normal_ for low precision tensors to run init in fp32.
+
+    torch.nn.init.trunc_normal_ can saturate at bounds in fp16/bf16 on some versions.
+    We initialize a temporary fp32 tensor, then copy the result back.
+    """
+    try:
+        import torch
+    except (ImportError, ModuleNotFoundError):
+        return
+
+    if getattr(torch.nn.init, "_unsloth_trunc_normal_patched", False):
+        return
+
+    original_trunc_normal = torch.nn.init.trunc_normal_
+    if getattr(original_trunc_normal, "__unsloth_trunc_normal_patched__", False):
+        torch.nn.init._unsloth_trunc_normal_patched = True
+        return
+
+    low_precision_dtypes = {torch.float16, torch.bfloat16}
+
+    def _call_original(target, mean, std, a, b, generator):
+        if generator is None:
+            return original_trunc_normal(target, mean=mean, std=std, a=a, b=b)
+        try:
+            return original_trunc_normal(
+                target, mean=mean, std=std, a=a, b=b, generator=generator
+            )
+        except TypeError:
+            # Older torch versions may not accept generator.
+            return original_trunc_normal(target, mean=mean, std=std, a=a, b=b)
+
+    try:
+        from torch.distributed._tensor import DTensor
+    except Exception:
+        DTensor = None
+
+    @torch.no_grad()
+    def _patched_trunc_normal_(
+        tensor,
+        mean: float = 0.0,
+        std: float = 1.0,
+        a: float = -2.0,
+        b: float = 2.0,
+        *,
+        generator = None,
+    ):
+        if DTensor is not None and isinstance(tensor, DTensor):
+            local_tensor = getattr(tensor, "_local_tensor", None)
+            if local_tensor is None:
+                return _call_original(tensor, mean, std, a, b, generator)
+            if local_tensor.dtype in low_precision_dtypes:
+                local_fp32 = local_tensor.float()
+                _call_original(local_fp32, mean, std, a, b, generator)
+                local_tensor.copy_(local_fp32.to(dtype=local_tensor.dtype))
+                return tensor
+            return _call_original(tensor, mean, std, a, b, generator)
+
+        if tensor.dtype in low_precision_dtypes:
+            tensor_fp32 = tensor.float()
+            _call_original(tensor_fp32, mean, std, a, b, generator)
+            tensor.copy_(tensor_fp32.to(dtype=tensor.dtype))
+            return tensor
+
+        return _call_original(tensor, mean, std, a, b, generator)
+
+    _patched_trunc_normal_.__unsloth_trunc_normal_patched__ = True
+    _patched_trunc_normal_._unsloth_original = original_trunc_normal
+    torch.nn.init._unsloth_trunc_normal_original = original_trunc_normal
+    torch.nn.init.trunc_normal_ = _patched_trunc_normal_
+    torch.nn.init._unsloth_trunc_normal_patched = True
+    logger.info("Unsloth: Patched torch.nn.init.trunc_normal_ for fp16/bf16 stability.")
+
+
 def check_vllm_torch_sm100_compatibility():
     """
     Check for incompatible vLLM + torch < 2.9.0 + SM100 (Blackwell) combination.
