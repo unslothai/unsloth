@@ -6,10 +6,11 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 import jwt
 
-from .storage import load_jwt_secret
+from .storage import load_jwt_secret, save_refresh_token, verify_refresh_token
 
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
+REFRESH_TOKEN_EXPIRE_DAYS = 7
 
 # Load stable secret from SQLite (set during first-time setup)
 # This will raise RuntimeError if auth hasn't been initialized yet
@@ -38,6 +39,31 @@ def create_access_token(
     )
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def create_refresh_token(subject: str) -> str:
+    """
+    Create a random refresh token, store its hash in SQLite, and return it.
+
+    Refresh tokens are opaque (not JWTs) and expire after REFRESH_TOKEN_EXPIRE_DAYS.
+    """
+    token = secrets.token_urlsafe(48)
+    expires_at = datetime.now(UTC) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    save_refresh_token(token, subject, expires_at.isoformat())
+    return token
+
+
+def refresh_access_token(refresh_token: str) -> Optional[str]:
+    """
+    Validate a refresh token and issue a new access token.
+
+    The refresh token itself is NOT consumed — it stays valid until expiry.
+    Returns a new access_token or None if the refresh token is invalid/expired.
+    """
+    username = verify_refresh_token(refresh_token)
+    if username is None:
+        return None
+    return create_access_token(subject=username)
 
 
 def reload_secret() -> None:
@@ -77,7 +103,3 @@ async def get_current_subject(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired token",
         )
-# token = create_access_token("local-user")
-# print(token)
-
-

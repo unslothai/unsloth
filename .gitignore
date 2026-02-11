@@ -35,3 +35,4 @@ Thumbs.db
 # Other
 resources/
 tmp/
+auth.db
