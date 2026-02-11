@@ -5,8 +5,7 @@ import sys
 from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
-from typing import Optional, List
+from typing import Optional
 import json
 import logging
 
@@ -26,6 +25,15 @@ except ImportError:
     from core.inference import get_inference_backend
     from utils.models import ModelConfig
 
+from models.inference import (
+    LoadRequest,
+    UnloadRequest,
+    GenerateRequest,
+    LoadResponse,
+    UnloadResponse,
+    InferenceStatusResponse,
+)
+
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
@@ -38,57 +46,6 @@ if not logger.handlers:
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
 
-
-# ============================================
-# Request/Response Models
-# ============================================
-
-class LoadRequest(BaseModel):
-    """Request to load a model for inference"""
-    model_path: str = Field(..., description="Model identifier or local path")
-    hf_token: Optional[str] = Field(None, description="HuggingFace token for gated models")
-    max_seq_length: int = Field(2048, ge=128, le=32768, description="Maximum sequence length")
-    load_in_4bit: bool = Field(True, description="Load model in 4-bit quantization")
-    is_lora: bool = Field(False, description="Whether this is a LoRA adapter")
-
-
-class UnloadRequest(BaseModel):
-    """Request to unload a model"""
-    model_path: str = Field(..., description="Model identifier to unload")
-
-
-class GenerateRequest(BaseModel):
-    """Request for text generation"""
-    messages: List[dict] = Field(..., description="Chat messages in OpenAI format")
-    system_prompt: str = Field("You are a helpful AI assistant.", description="System prompt")
-    temperature: float = Field(0.7, ge=0.0, le=2.0, description="Sampling temperature")
-    top_p: float = Field(0.9, ge=0.0, le=1.0, description="Top-p sampling")
-    top_k: int = Field(40, ge=1, le=100, description="Top-k sampling")
-    max_new_tokens: int = Field(512, ge=1, le=4096, description="Maximum tokens to generate")
-    repetition_penalty: float = Field(1.1, ge=1.0, le=2.0, description="Repetition penalty")
-    image_base64: Optional[str] = Field(None, description="Base64 encoded image for vision models")
-
-
-class LoadResponse(BaseModel):
-    """Response after loading a model"""
-    status: str
-    model: str
-    display_name: str
-    is_vision: bool
-    is_lora: bool
-
-
-class StatusResponse(BaseModel):
-    """Current inference backend status"""
-    active_model: Optional[str]
-    is_vision: bool
-    loading: List[str]
-    loaded: List[str]
-
-
-# ============================================
-# Routes
-# ============================================
 
 @router.post("/load", response_model=LoadResponse)
 async def load_model(request: LoadRequest):
@@ -147,7 +104,7 @@ async def load_model(request: LoadRequest):
         )
 
 
-@router.post("/unload")
+@router.post("/unload", response_model=UnloadResponse)
 async def unload_model(request: UnloadRequest):
     """
     Unload a model from memory.
@@ -156,7 +113,7 @@ async def unload_model(request: UnloadRequest):
         backend = get_inference_backend()
         backend.unload_model(request.model_path)
         logger.info(f"Unloaded model: {request.model_path}")
-        return {"status": "unloaded", "model": request.model_path}
+        return UnloadResponse(status="unloaded", model=request.model_path)
         
     except Exception as e:
         logger.error(f"Error unloading model: {e}", exc_info=True)
@@ -239,7 +196,7 @@ async def generate_stream(request: GenerateRequest):
     )
 
 
-@router.get("/status", response_model=StatusResponse)
+@router.get("/status", response_model=InferenceStatusResponse)
 async def get_status():
     """
     Get current inference backend status.
@@ -252,7 +209,7 @@ async def get_status():
             model_info = backend.models.get(backend.active_model_name, {})
             is_vision = model_info.get("is_vision", False)
         
-        return StatusResponse(
+        return InferenceStatusResponse(
             active_model=backend.active_model_name,
             is_vision=is_vision,
             loading=list(getattr(backend, 'loading_models', set())),
