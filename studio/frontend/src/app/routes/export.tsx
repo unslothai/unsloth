@@ -1,5 +1,6 @@
 import { createRoute } from "@tanstack/react-router";
 import { lazy } from "react";
+import { requireAuth } from "../auth-guards";
 import { Route as rootRoute } from "./__root";
 
 const ExportPage = lazy(() =>
@@ -11,5 +12,6 @@ const ExportPage = lazy(() =>
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/export",
+  beforeLoad: () => requireAuth(),
   component: ExportPage,
 });

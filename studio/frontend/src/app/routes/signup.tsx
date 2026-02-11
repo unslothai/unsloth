@@ -1,5 +1,6 @@
 import { createRoute } from "@tanstack/react-router";
 import { lazy } from "react";
+import { requireGuest } from "../auth-guards";
 import { Route as rootRoute } from "./__root";
 
 const SignupPage = lazy(() =>
@@ -11,5 +12,6 @@ const SignupPage = lazy(() =>
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/signup",
+  beforeLoad: () => requireGuest(),
   component: SignupPage,
 });
