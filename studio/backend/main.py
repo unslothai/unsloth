@@ -16,6 +16,7 @@ from datetime import datetime
 from routes import training_router, models_router, inference_router, datasets_router, auth_router
 from auth import storage
 from utils.hardware import detect_hardware
+import utils.hardware.hardware as _hw_module
 
 UNSLOTH_CACHE_DIR = Path(__file__).parent / "unsloth_compiled_cache"
 
@@ -36,7 +37,8 @@ async def lifespan(app: FastAPI):
         print("This token can only be used once.")
         print("=" * 60 + "\n")
     yield
-    # Cleanup: remove Unsloth compiled cache on shutdown
+    # Cleanup
+    _hw_module.DEVICE = None
     shutil.rmtree(UNSLOTH_CACHE_DIR, ignore_errors=True)
 
 
