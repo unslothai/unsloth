@@ -44,6 +44,7 @@ def _get_torchao_fp8_config(fp8_mode):
 
     return _impl(fp8_mode)
 
+
 LOCAL_RANK_KEYS = ("LOCAL_RANK", "RANK")
 WORLD_SIZE_KEYS = ("WORLD_SIZE",)
 
