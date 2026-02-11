@@ -7,8 +7,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import List, Optional
 import logging
 
-from pydantic import BaseModel
-
 # Add backend directory to path
 backend_path = Path(__file__).parent.parent.parent
 if str(backend_path) not in sys.path:
@@ -46,6 +44,8 @@ from models import (
     LoRAInfo,
     ModelListResponse,
 )
+from models.responses import LoRABaseModelResponse, VisionCheckResponse
+
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
@@ -207,7 +207,7 @@ async def scan_loras(
         )
 
 
-@router.get("/loras/{lora_path:path}/base-model")
+@router.get("/loras/{lora_path:path}/base-model", response_model=LoRABaseModelResponse)
 async def get_lora_base_model(
     lora_path: str,
     current_subject: str = Depends(get_current_subject),
@@ -226,10 +226,10 @@ async def get_lora_base_model(
                 detail=f"Could not determine base model for LoRA: {lora_path}"
             )
         
-        return {
-            "lora_path": lora_path,
-            "base_model": base_model
-        }
+        return LoRABaseModelResponse(
+            lora_path=lora_path,
+            base_model=base_model,
+        )
         
     except HTTPException:
         raise
@@ -241,7 +241,7 @@ async def get_lora_base_model(
         )
 
 
-@router.get("/check-vision/{model_name:path}")
+@router.get("/check-vision/{model_name:path}", response_model=VisionCheckResponse)
 async def check_vision_model(
     model_name: str,
     current_subject: str = Depends(get_current_subject),
@@ -254,10 +254,10 @@ async def check_vision_model(
     try:
         is_vision = is_vision_model(model_name)
         
-        return {
-            "model_name": model_name,
-            "is_vision": is_vision
-        }
+        return VisionCheckResponse(
+            model_name=model_name,
+            is_vision=is_vision,
+        )
         
     except Exception as e:
         logger.error(f"Error checking vision model: {e}", exc_info=True)
