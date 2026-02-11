@@ -1,5 +1,5 @@
 """
-Tests for utils/utils.py — device detection, GPU memory, error formatting.
+Tests for utils/hardware and utils/utils — device detection, GPU memory, error formatting.
 
 These tests are designed to pass on ANY platform:
   • NVIDIA GPU  (CUDA backend)
@@ -16,14 +16,15 @@ from unittest.mock import patch, MagicMock
 import pytest
 import torch
 
-from utils.utils import (
+from utils.hardware import (
     get_device,
     is_apple_silicon,
     clear_gpu_cache,
     get_gpu_memory_info,
     log_gpu_memory,
-    format_error_message,
+    DeviceType,
 )
+from utils.utils import format_error_message
 
 
 # ========== Helpers ==========
@@ -42,31 +43,30 @@ def _actual_device() -> str:
 class TestGetDevice:
     """Tests for get_device() — should agree with the real hardware."""
 
-    def test_returns_valid_string(self):
+    def test_returns_valid_device_type(self):
         result = get_device()
-        assert result in ("cuda", "mps", "cpu")
+        assert result in (DeviceType.CUDA, DeviceType.MPS, DeviceType.CPU)
 
     def test_matches_actual_hardware(self):
-        assert get_device() == _actual_device()
+        assert get_device().value == _actual_device()
 
     # --- Mocked paths to cover all branches regardless of hardware ---
 
     def test_returns_cuda_when_cuda_available(self):
         with patch("torch.cuda.is_available", return_value=True):
-            assert get_device() == "cuda"
+            assert get_device() == DeviceType.CUDA
 
     def test_returns_mps_when_only_mps_available(self):
         mock_mps = MagicMock()
         mock_mps.is_available.return_value = True
         with patch("torch.cuda.is_available", return_value=False), \
              patch.object(torch.backends, "mps", mock_mps, create=True):
-            assert get_device() == "mps"
+            assert get_device() == DeviceType.MPS
 
     def test_returns_cpu_when_nothing_available(self):
-        # Patch out mps entirely so hasattr(..., "mps") returns False
         with patch("torch.cuda.is_available", return_value=False), \
              patch("builtins.hasattr", side_effect=lambda obj, name: False if name == "mps" else hasattr(obj, name)):
-            assert get_device() == "cpu"
+            assert get_device() == DeviceType.CPU
 
 
 # ========== is_apple_silicon() ==========
@@ -77,19 +77,22 @@ class TestIsAppleSilicon:
         assert isinstance(is_apple_silicon(), bool)
 
     def test_true_on_darwin_arm64(self):
-        with patch("platform.system", return_value="Darwin"), \
-             patch("platform.machine", return_value="arm64"):
+        with patch("utils.hardware.hardware.platform") as mock_plat:
+            mock_plat.system.return_value = "Darwin"
+            mock_plat.machine.return_value = "arm64"
             assert is_apple_silicon() is True
 
     def test_false_on_linux_x86(self):
-        with patch("platform.system", return_value="Linux"), \
-             patch("platform.machine", return_value="x86_64"):
+        with patch("utils.hardware.hardware.platform") as mock_plat:
+            mock_plat.system.return_value = "Linux"
+            mock_plat.machine.return_value = "x86_64"
             assert is_apple_silicon() is False
 
     def test_false_on_darwin_x86(self):
         """Intel Mac should return False."""
-        with patch("platform.system", return_value="Darwin"), \
-             patch("platform.machine", return_value="x86_64"):
+        with patch("utils.hardware.hardware.platform") as mock_plat:
+            mock_plat.system.return_value = "Darwin"
+            mock_plat.machine.return_value = "x86_64"
             assert is_apple_silicon() is False
 
 
@@ -103,7 +106,7 @@ class TestClearGpuCache:
         clear_gpu_cache()
 
     def test_calls_cuda_cache_when_cuda_available(self):
-        with patch("torch.cuda.is_available", return_value=True), \
+        with patch("utils.hardware.hardware.get_device", return_value=DeviceType.CUDA), \
              patch("torch.cuda.empty_cache") as mock_empty, \
              patch("torch.cuda.ipc_collect") as mock_ipc:
             clear_gpu_cache()
@@ -111,21 +114,16 @@ class TestClearGpuCache:
             mock_ipc.assert_called_once()
 
     def test_calls_mps_cache_when_mps_available(self):
-        mock_mps_backend = MagicMock()
-        mock_mps_backend.is_available.return_value = True
-
         mock_mps_module = MagicMock()
         mock_mps_module.empty_cache = MagicMock()
 
-        with patch("torch.cuda.is_available", return_value=False), \
-             patch.object(torch.backends, "mps", mock_mps_backend, create=True), \
+        with patch("utils.hardware.hardware.get_device", return_value=DeviceType.MPS), \
              patch.object(torch, "mps", mock_mps_module, create=True):
             clear_gpu_cache()
             mock_mps_module.empty_cache.assert_called_once()
 
     def test_noop_on_cpu(self):
-        with patch("torch.cuda.is_available", return_value=False), \
-             patch("builtins.hasattr", side_effect=lambda obj, name: False if name == "mps" else hasattr(obj, name)):
+        with patch("utils.hardware.hardware.get_device", return_value=DeviceType.CPU):
             # Must not raise
             clear_gpu_cache()
 
@@ -150,7 +148,7 @@ class TestGetGpuMemoryInfo:
         """The reported backend must agree with get_device()."""
         result = get_gpu_memory_info()
         device = get_device()
-        assert result["backend"] == device
+        assert result["backend"] == device.value
 
     # --- When a GPU IS available ---
 
@@ -174,7 +172,7 @@ class TestGetGpuMemoryInfo:
         mock_props.total_memory = 16 * (1024 ** 3)  # 16 GB
         mock_props.name = "NVIDIA Test GPU"
 
-        with patch("utils.utils.get_device", return_value="cuda"), \
+        with patch("utils.hardware.hardware.get_device", return_value=DeviceType.CUDA), \
              patch("torch.cuda.current_device", return_value=0), \
              patch("torch.cuda.get_device_properties", return_value=mock_props), \
              patch("torch.cuda.memory_allocated", return_value=4 * (1024 ** 3)), \
@@ -201,7 +199,7 @@ class TestGetGpuMemoryInfo:
         mock_mps = MagicMock()
         mock_mps.current_allocated_memory.return_value = 2 * (1024 ** 3)
 
-        with patch("utils.utils.get_device", return_value="mps"), \
+        with patch("utils.hardware.hardware.get_device", return_value=DeviceType.MPS), \
              patch.dict("sys.modules", {"psutil": mock_psutil}), \
              patch.object(torch, "mps", mock_mps, create=True):
             result = get_gpu_memory_info()
@@ -215,7 +213,7 @@ class TestGetGpuMemoryInfo:
     # --- CPU-only path ---
 
     def test_cpu_path_returns_unavailable(self):
-        with patch("utils.utils.get_device", return_value="cpu"):
+        with patch("utils.hardware.hardware.get_device", return_value=DeviceType.CPU):
             result = get_gpu_memory_info()
 
         assert result["available"] is False
@@ -224,7 +222,7 @@ class TestGetGpuMemoryInfo:
     # --- Error resilience ---
 
     def test_cuda_error_returns_unavailable(self):
-        with patch("utils.utils.get_device", return_value="cuda"), \
+        with patch("utils.hardware.hardware.get_device", return_value=DeviceType.CUDA), \
              patch("torch.cuda.current_device", side_effect=RuntimeError("CUDA init failed")):
             result = get_gpu_memory_info()
 
@@ -249,9 +247,9 @@ class TestLogGpuMemory:
             "utilization_pct": 12.5,
             "free_gb": 14.0,
         }
-        with patch("utils.utils.get_gpu_memory_info", return_value=fake_info):
+        with patch("utils.hardware.hardware.get_gpu_memory_info", return_value=fake_info):
             import logging
-            with caplog.at_level(logging.INFO, logger="utils.utils"):
+            with caplog.at_level(logging.INFO, logger="utils.hardware.hardware"):
                 log_gpu_memory("unit-test")
 
         assert "unit-test" in caplog.text
@@ -260,9 +258,9 @@ class TestLogGpuMemory:
 
     def test_logs_cpu_fallback_when_no_gpu(self, caplog):
         fake_info = {"available": False, "backend": "cpu"}
-        with patch("utils.utils.get_gpu_memory_info", return_value=fake_info):
+        with patch("utils.hardware.hardware.get_gpu_memory_info", return_value=fake_info):
             import logging
-            with caplog.at_level(logging.INFO, logger="utils.utils"):
+            with caplog.at_level(logging.INFO, logger="utils.hardware.hardware"):
                 log_gpu_memory("cpu-test")
 
         assert "No GPU available" in caplog.text
@@ -297,7 +295,7 @@ class TestFormatErrorMessage:
 
     def test_cuda_oom(self):
         err = Exception("CUDA out of memory")
-        with patch("utils.utils.get_device", return_value="cuda"):
+        with patch("utils.hardware.hardware.get_device", return_value=DeviceType.CUDA):
             msg = format_error_message(err, "big/model")
         assert "GPU" in msg
         assert "big/model" not in msg  # should use short name
@@ -307,7 +305,7 @@ class TestFormatErrorMessage:
 
     def test_mps_oom(self):
         err = Exception("MPS backend out of memory")
-        with patch("utils.utils.get_device", return_value="mps"):
+        with patch("utils.hardware.hardware.get_device", return_value=DeviceType.MPS):
             msg = format_error_message(err, "unsloth/huge-model")
         assert "Apple Silicon" in msg
 
@@ -315,7 +313,7 @@ class TestFormatErrorMessage:
 
     def test_cpu_oom(self):
         err = Exception("not enough memory to allocate")
-        with patch("utils.utils.get_device", return_value="cpu"):
+        with patch("utils.hardware.hardware.get_device", return_value=DeviceType.CPU):
             msg = format_error_message(err, "any/model")
         assert "system" in msg.lower()
 
