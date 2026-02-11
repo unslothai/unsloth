@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 class DeviceType(str, Enum):
     """Supported compute backends. Inherits from str so it serializes cleanly in JSON."""
     CUDA = "cuda"
-    MPS  = "mps"
+    MLX  = "mlx"
     CPU  = "cpu"
 
 
@@ -39,7 +39,24 @@ DEVICE: Optional[DeviceType] = None
 def is_apple_silicon() -> bool:
     """Check if running on Apple Silicon hardware (pure platform check, no ML imports)."""
     return platform.system() == "Darwin" and platform.machine() == "arm64"
-pass
+
+
+def _has_torch() -> bool:
+    """Check if PyTorch is importable."""
+    try:
+        import torch
+        return True
+    except ImportError:
+        return False
+
+
+def _has_mlx() -> bool:
+    """Check if MLX is importable."""
+    try:
+        import mlx.core
+        return True
+    except ImportError:
+        return False
 
 
 def detect_hardware() -> DeviceType:
@@ -51,34 +68,31 @@ def detect_hardware() -> DeviceType:
 
     Detection order:
       1. CUDA  (NVIDIA GPU, requires torch)
-      2. MPS   (Apple Silicon via PyTorch MPS backend)
+      2. MLX   (Apple Silicon via MLX framework)
       3. CPU   (fallback)
     """
     global DEVICE
 
-    # --- Try PyTorch first (covers CUDA and MPS) ---
-    try:
+    # --- CUDA: try PyTorch ---
+    if _has_torch():
         import torch
-
         if torch.cuda.is_available():
             DEVICE = DeviceType.CUDA
             device_name = torch.cuda.get_device_properties(0).name
             logger.info(f"Hardware detected: CUDA — {device_name}")
             return DEVICE
 
-        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            DEVICE = DeviceType.MPS
-            chip = platform.processor() or platform.machine()
-            logger.info(f"Hardware detected: MPS — Apple Silicon ({chip})")
-            return DEVICE
+    # --- MLX: Apple Silicon ---
+    if is_apple_silicon() and _has_mlx():
+        DEVICE = DeviceType.MLX
+        chip = platform.processor() or platform.machine()
+        logger.info(f"Hardware detected: MLX — Apple Silicon ({chip})")
+        return DEVICE
 
-    except ImportError:
-        logger.warning("PyTorch not installed — falling back to CPU")
-
+    # --- Fallback ---
     DEVICE = DeviceType.CPU
     logger.info("Hardware detected: CPU (no GPU backend available)")
     return DEVICE
-pass
 
 
 # ========== Convenience helpers ==========
@@ -92,7 +106,6 @@ def get_device() -> DeviceType:
     if DEVICE is None:
         detect_hardware()
     return DEVICE
-pass
 
 
 def clear_gpu_cache():
@@ -109,17 +122,16 @@ def clear_gpu_cache():
         import torch
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()
-    elif device == DeviceType.MPS:
-        import torch
-        if hasattr(torch.mps, "empty_cache"):
-            torch.mps.empty_cache()
-pass
+    elif device == DeviceType.MLX:
+        # MLX manages memory automatically; no explicit cache clear needed.
+        # mlx.core has no empty_cache equivalent — gc.collect() above is enough.
+        pass
 
 
 def get_gpu_memory_info() -> Dict[str, Any]:
     """
     Get GPU memory information.
-    Supports CUDA (NVIDIA), MPS (Apple Silicon), and CPU-only environments.
+    Supports CUDA (NVIDIA), MLX (Apple Silicon), and CPU-only environments.
     """
     device = get_device()
 
@@ -149,13 +161,16 @@ def get_gpu_memory_info() -> Dict[str, Any]:
             logger.error(f"Error getting CUDA GPU info: {e}")
             return {"available": False, "backend": device.value, "error": str(e)}
 
-    # ---- MPS path (Apple Silicon) ----
-    if device == DeviceType.MPS:
+    # ---- MLX path (Apple Silicon) ----
+    if device == DeviceType.MLX:
         try:
-            import torch
+            import mlx.core as mx
             import psutil
-            allocated = torch.mps.current_allocated_memory() if hasattr(torch.mps, "current_allocated_memory") else 0
+
+            # MLX uses unified memory — report system memory as the pool
             total = psutil.virtual_memory().total
+            # MLX doesn't expose per-process GPU allocation; report 0 as allocated
+            allocated = 0
 
             return {
                 "available": True,
@@ -164,17 +179,16 @@ def get_gpu_memory_info() -> Dict[str, Any]:
                 "device_name": f"Apple Silicon ({platform.processor() or platform.machine()})",
                 "total_gb": total / (1024**3),
                 "allocated_gb": allocated / (1024**3),
-                "reserved_gb": 0,  # MPS doesn't have a separate reserved pool
+                "reserved_gb": 0,
                 "free_gb": (total - allocated) / (1024**3),
                 "utilization_pct": (allocated / total) * 100 if total else 0,
             }
         except Exception as e:
-            logger.error(f"Error getting MPS GPU info: {e}")
+            logger.error(f"Error getting MLX GPU info: {e}")
             return {"available": False, "backend": device.value, "error": str(e)}
 
     # ---- CPU-only ----
     return {"available": False, "backend": "cpu"}
-pass
 
 
 def log_gpu_memory(context: str):
@@ -192,4 +206,3 @@ def log_gpu_memory(context: str):
         )
     else:
         logger.info(f"GPU Memory [{context}]: No GPU available (CPU-only)")
-pass

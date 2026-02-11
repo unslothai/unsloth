@@ -2,12 +2,12 @@
 Tests for utils/hardware and utils/utils — device detection, GPU memory, error formatting.
 
 These tests are designed to pass on ANY platform:
-  • NVIDIA GPU  (CUDA backend)
-  • Apple Silicon (MPS backend)
+  • NVIDIA GPU  (CUDA backend, requires torch)
+  • Apple Silicon (MLX backend, requires mlx)
   • CPU-only     (no GPU at all)
 
 No ML framework is imported at the top level.
-Tests that need torch internals for mocking are skipped when torch is unavailable.
+Tests that need torch/mlx internals for mocking are skipped when unavailable.
 
 Run with:
     cd studio/backend
@@ -18,14 +18,21 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-# --- Conditional torch import ---
+# --- Conditional framework imports ---
 try:
     import torch
     HAS_TORCH = True
 except ImportError:
     HAS_TORCH = False
 
+try:
+    import mlx.core as mx
+    HAS_MLX = True
+except ImportError:
+    HAS_MLX = False
+
 needs_torch = pytest.mark.skipif(not HAS_TORCH, reason="PyTorch not installed")
+needs_mlx = pytest.mark.skipif(not HAS_MLX, reason="MLX not installed")
 
 from utils.hardware import (
     get_device,
@@ -44,11 +51,10 @@ from utils.utils import format_error_message
 
 def _actual_device() -> str:
     """Return the real device string for the current machine."""
-    if HAS_TORCH:
-        if torch.cuda.is_available():
-            return "cuda"
-        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            return "mps"
+    if HAS_TORCH and torch.cuda.is_available():
+        return "cuda"
+    if is_apple_silicon() and HAS_MLX:
+        return "mlx"
     return "cpu"
 
 
@@ -64,39 +70,36 @@ class TestGetDevice:
     """Tests for get_device() — should agree with the real hardware."""
 
     def setup_method(self):
-        """Save DEVICE before each test."""
         self._saved_device = _hw_module.DEVICE
 
     def teardown_method(self):
-        """Restore DEVICE after each test so mocked tests don't poison later ones."""
         _hw_module.DEVICE = self._saved_device
 
     def test_returns_valid_device_type(self):
         result = get_device()
-        assert result in (DeviceType.CUDA, DeviceType.MPS, DeviceType.CPU)
+        assert result in (DeviceType.CUDA, DeviceType.MLX, DeviceType.CPU)
 
     def test_matches_actual_hardware(self):
         assert get_device().value == _actual_device()
 
-    # --- Mocked paths (require torch for patching) ---
+    # --- Mocked paths ---
 
     @needs_torch
     def test_returns_cuda_when_cuda_available(self):
-        with patch("torch.cuda.is_available", return_value=True):
+        with patch("utils.hardware.hardware._has_torch", return_value=True), \
+             patch("torch.cuda.is_available", return_value=True):
             assert _reset_and_detect() == DeviceType.CUDA
 
-    @needs_torch
-    def test_returns_mps_when_only_mps_available(self):
-        mock_mps = MagicMock()
-        mock_mps.is_available.return_value = True
-        with patch("torch.cuda.is_available", return_value=False), \
-             patch.object(torch.backends, "mps", mock_mps, create=True):
-            assert _reset_and_detect() == DeviceType.MPS
+    def test_returns_mlx_when_on_apple_silicon_with_mlx(self):
+        with patch("utils.hardware.hardware._has_torch", return_value=False), \
+             patch("utils.hardware.hardware.is_apple_silicon", return_value=True), \
+             patch("utils.hardware.hardware._has_mlx", return_value=True):
+            assert _reset_and_detect() == DeviceType.MLX
 
-    @needs_torch
     def test_returns_cpu_when_nothing_available(self):
-        with patch("torch.cuda.is_available", return_value=False), \
-             patch("builtins.hasattr", side_effect=lambda obj, name: False if name == "mps" else hasattr(obj, name)):
+        with patch("utils.hardware.hardware._has_torch", return_value=False), \
+             patch("utils.hardware.hardware.is_apple_silicon", return_value=False), \
+             patch("utils.hardware.hardware._has_mlx", return_value=False):
             assert _reset_and_detect() == DeviceType.CPU
 
 
@@ -144,15 +147,10 @@ class TestClearGpuCache:
             mock_empty.assert_called_once()
             mock_ipc.assert_called_once()
 
-    @needs_torch
-    def test_calls_mps_cache_when_mps(self):
-        mock_mps_module = MagicMock()
-        mock_mps_module.empty_cache = MagicMock()
-
-        with patch("utils.hardware.hardware.get_device", return_value=DeviceType.MPS), \
-             patch.object(torch, "mps", mock_mps_module, create=True):
+    def test_mlx_does_not_raise(self):
+        """MLX cache clear is a no-op — should just succeed."""
+        with patch("utils.hardware.hardware.get_device", return_value=DeviceType.MLX):
             clear_gpu_cache()
-            mock_mps_module.empty_cache.assert_called_once()
 
     def test_noop_on_cpu(self):
         with patch("utils.hardware.hardware.get_device", return_value=DeviceType.CPU):
@@ -215,29 +213,24 @@ class TestGetGpuMemoryInfo:
         assert abs(result["free_gb"] - 12.0) < 0.01
         assert abs(result["utilization_pct"] - 25.0) < 0.1
 
-    # --- MPS-specific mocked test ---
+    # --- MLX-specific mocked test ---
 
-    @needs_torch
-    def test_mps_path_returns_correct_fields(self):
+    @needs_mlx
+    def test_mlx_path_returns_correct_fields(self):
         mock_psutil_mem = MagicMock()
-        mock_psutil_mem.total = 32 * (1024 ** 3)
+        mock_psutil_mem.total = 32 * (1024 ** 3)  # 32 GB unified
 
         mock_psutil = MagicMock()
         mock_psutil.virtual_memory.return_value = mock_psutil_mem
 
-        mock_mps = MagicMock()
-        mock_mps.current_allocated_memory.return_value = 2 * (1024 ** 3)
-
-        with patch("utils.hardware.hardware.get_device", return_value=DeviceType.MPS), \
-             patch.dict("sys.modules", {"psutil": mock_psutil}), \
-             patch.object(torch, "mps", mock_mps, create=True):
+        with patch("utils.hardware.hardware.get_device", return_value=DeviceType.MLX), \
+             patch.dict("sys.modules", {"psutil": mock_psutil}):
             result = get_gpu_memory_info()
 
         assert result["available"] is True
-        assert result["backend"] == "mps"
+        assert result["backend"] == "mlx"
         assert "Apple Silicon" in result["device_name"]
         assert abs(result["total_gb"] - 32.0) < 0.01
-        assert abs(result["allocated_gb"] - 2.0) < 0.01
 
     # --- CPU-only path ---
 
@@ -329,11 +322,11 @@ class TestFormatErrorMessage:
         assert "big/model" not in msg
         assert "model" in msg
 
-    # --- OOM on MPS ---
+    # --- OOM on MLX ---
 
-    def test_mps_oom(self):
-        err = Exception("MPS backend out of memory")
-        with patch("utils.hardware.get_device", return_value=DeviceType.MPS):
+    def test_mlx_oom(self):
+        err = Exception("MLX backend out of memory")
+        with patch("utils.hardware.get_device", return_value=DeviceType.MLX):
             msg = format_error_message(err, "unsloth/huge-model")
         assert "Apple Silicon" in msg
 
