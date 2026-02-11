@@ -293,9 +293,11 @@ class FastLanguageModel(FastLlamaModel):
         # AMD GPT-OSS routing:
         # - Radeon can often use prequantized bnb-4bit checkpoints.
         # - Instinct/MI (warp=64) often cannot, so fallback to BF16.
-        if is_hip() and (
-            "gpt-oss" in model_name.lower() or "gpt_oss" in model_name.lower()
-        ) and not use_exact_model_name:
+        if (
+            is_hip()
+            and ("gpt-oss" in model_name.lower() or "gpt_oss" in model_name.lower())
+            and not use_exact_model_name
+        ):
             gpt_oss_prequant_suffix = model_name.lower().endswith(
                 ("-unsloth-bnb-4bit", "-bnb-4bit")
             )
@@ -901,9 +903,11 @@ class FastModel(FastBaseModel):
         # AMD GPT-OSS routing:
         # - Radeon can often use prequantized bnb-4bit checkpoints.
         # - Instinct/MI (warp=64) often cannot, so fallback to BF16.
-        if is_hip() and (
-            "gpt-oss" in model_name.lower() or "gpt_oss" in model_name.lower()
-        ) and not use_exact_model_name:
+        if (
+            is_hip()
+            and ("gpt-oss" in model_name.lower() or "gpt_oss" in model_name.lower())
+            and not use_exact_model_name
+        ):
             gpt_oss_prequant_suffix = model_name.lower().endswith(
                 ("-unsloth-bnb-4bit", "-bnb-4bit")
             )
