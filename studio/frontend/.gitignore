@@ -26,4 +26,4 @@ test/
 *.njsproj
 *.sln
 *.sw?
-/src/features/canvas-lab/AGENTS.md
+/src/features/recipe-studio/AGENTS.md
