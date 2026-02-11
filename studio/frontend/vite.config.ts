@@ -10,7 +10,18 @@ export default defineConfig({
     include: ["@dagrejs/dagre", "@dagrejs/graphlib"],
   },
   server: {
-    allowedHosts: ["playground.wasimhub.dev"],
+    host: "0.0.0.0",
+    allowedHosts: true,
+    proxy: {
+      "/api": {
+        target: "http://127.0.0.1:8000",
+        changeOrigin: true,
+      },
+      "/preview-api": {
+        target: "http://127.0.0.1:8004",
+        changeOrigin: true,
+      },
+    },
   },
   resolve: {
     alias: {

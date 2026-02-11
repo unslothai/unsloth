@@ -1,4 +1,4 @@
-const DEFAULT_BASE = "http://127.0.0.1:8000";
+const DEFAULT_BASE = "/preview-api";
 
 export const CANVAS_LAB_API_BASE =
   import.meta.env.VITE_DATA_DESIGNER_API ?? DEFAULT_BASE;
