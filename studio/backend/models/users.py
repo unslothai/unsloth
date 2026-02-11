@@ -1,32 +1,15 @@
-"""Pydantic models for user-related API endpoints.
+"""Pydantic models for authentication tokens.
 
-This module defines the data models used for user authentication and management
-in the FastAPI application.
+This module defines the Token response model used by auth routes.
 """
 
-from pydantic import BaseModel
-
-
-class User(BaseModel):
-    """Basic user model containing username."""
-
-    username: str
-
-
-class UserInDB(BaseModel):
-    """User model with password for database storage."""
-
-    password: str
+from pydantic import BaseModel, Field
 
 
 class Token(BaseModel):
-    """Authentication token model with access token and type."""
+    """Authentication token model with access and refresh tokens."""
 
-    access_token: str
-    token_type: str
+    access_token: str = Field(..., description="JWT access token (60 min expiry)")
+    refresh_token: str = Field(..., description="Opaque refresh token (7 day expiry)")
+    token_type: str = Field(..., description="Token type, always 'bearer'")
 
-
-class TokenData(BaseModel):
-    """Token payload model containing username."""
-
-    username: str | None = None

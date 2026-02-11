@@ -5,6 +5,7 @@ import { Suspense, lazy, useEffect, useRef, useState } from "react";
 
 import type { ConfettiRef } from "@/components/ui/confetti";
 import { STEPS } from "@/config/training";
+import { isOnboardingDone, markOnboardingDone } from "@/features/auth";
 import { useWizardStore } from "@/stores/training";
 import { SplashScreen } from "./splash-screen";
 import { WizardContent } from "./wizard-content";
@@ -22,6 +23,12 @@ export function WizardLayout() {
   const confettiRef = useRef<ConfettiRef>(null);
   const hasFiredRef = useRef(false);
   const isFinalStep = currentStep === STEPS.length;
+
+  useEffect(() => {
+    if (isOnboardingDone()) {
+      navigate({ to: "/studio" });
+    }
+  }, [navigate]);
 
   useEffect(() => {
     if (isFinalStep && !hasFiredRef.current) {
@@ -51,7 +58,10 @@ export function WizardLayout() {
       {showSplash && (
         <SplashScreen
           onStartOnboarding={() => setShowSplash(false)}
-          onGoToStudio={() => navigate({ to: "/studio" })}
+          onGoToStudio={() => {
+            markOnboardingDone();
+            navigate({ to: "/studio" });
+          }}
         />
       )}
       <Suspense fallback={null}>
