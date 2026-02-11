@@ -296,11 +296,11 @@ def dispatch_lora_mlp_swiglu(
                 gate_multiplier=gate_multiplier,
                 down_multiplier=down_multiplier,
             )
-        # Priority 2: MPS fallback (PyTorch-native, preserves autograd)
+        # Priority 2: MPS fallback with custom autograd for memory efficiency
         if USE_MPS_FALLBACK:
-            from .fast_lora import mps_apply_lora_mlp_swiglu
-            fn = _get_compiled_fn(mps_apply_lora_mlp_swiglu)
-            return fn(
+            from .fast_lora import MPSLoRA_MLP
+            from ..swiglu import swiglu_fg_kernel, swiglu_DWf_DW_dfg_kernel
+            return MPSLoRA_MLP.apply(
                 X,
                 gateW,
                 gateW_quant,
@@ -317,6 +317,8 @@ def dispatch_lora_mlp_swiglu(
                 downA,
                 downB,
                 downS,
+                swiglu_fg_kernel,
+                swiglu_DWf_DW_dfg_kernel,
             )
     # Default: CUDA/Triton path
     from ..fast_lora import LoRA_MLP, swiglu_fg_kernel, swiglu_DWf_DW_dfg_kernel
@@ -387,11 +389,11 @@ def dispatch_lora_mlp_geglu_exact(
                 gate_multiplier=gate_multiplier,
                 down_multiplier=down_multiplier,
             )
-        # Priority 2: MPS fallback (PyTorch-native, preserves autograd)
+        # Priority 2: MPS fallback with custom autograd for memory efficiency
         if USE_MPS_FALLBACK:
-            from .fast_lora import mps_apply_lora_mlp_geglu_exact
-            fn = _get_compiled_fn(mps_apply_lora_mlp_geglu_exact)
-            return fn(
+            from .fast_lora import MPSLoRA_MLP
+            from ..geglu import geglu_exact_forward_kernel, geglu_exact_backward_kernel
+            return MPSLoRA_MLP.apply(
                 X,
                 gateW,
                 gateW_quant,
@@ -408,8 +410,8 @@ def dispatch_lora_mlp_geglu_exact(
                 downA,
                 downB,
                 downS,
-                gate_multiplier=gate_multiplier,
-                down_multiplier=down_multiplier,
+                geglu_exact_forward_kernel,
+                geglu_exact_backward_kernel,
             )
     # Default: CUDA/Triton path
     from ..fast_lora import LoRA_MLP, geglu_exact_forward_kernel, geglu_exact_backward_kernel
@@ -482,12 +484,11 @@ def dispatch_lora_mlp_geglu_approx(
                 gate_multiplier=gate_multiplier,
                 down_multiplier=down_multiplier,
             )
-        # Priority 2: MPS fallback (PyTorch-native, preserves autograd)
+        # Priority 2: MPS fallback with custom autograd for memory efficiency
         if USE_MPS_FALLBACK:
-            from .fast_lora import mps_apply_lora_mlp_geglu_approx
-
-            fn = _get_compiled_fn(mps_apply_lora_mlp_geglu_approx)
-            return fn(
+            from .fast_lora import MPSLoRA_MLP
+            from ..geglu import geglu_approx_forward_kernel, geglu_approx_backward_kernel
+            return MPSLoRA_MLP.apply(
                 X,
                 gateW,
                 gateW_quant,
@@ -504,8 +505,8 @@ def dispatch_lora_mlp_geglu_approx(
                 downA,
                 downB,
                 downS,
-                gate_multiplier=gate_multiplier,
-                down_multiplier=down_multiplier,
+                geglu_approx_forward_kernel,
+                geglu_approx_backward_kernel,
             )
     # Default: CUDA/Triton path
     from ..fast_lora import (

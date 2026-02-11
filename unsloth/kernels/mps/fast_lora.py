@@ -135,6 +135,7 @@ class MPSLoRA_MLP(torch.autograd.Function):
         downB,
         downS,
         _forward_function,
+        _backward_function,
     ):
         # Forward pass using MPS-compatible operations
         e = mps_matmul_lora(X, gateW, gateW_quant, gateA, gateB, gateS)
@@ -146,6 +147,7 @@ class MPSLoRA_MLP(torch.autograd.Function):
             X, gateW, gateA, gateB, upW, upA, upB, downW, downA, downB, e, g, h
         )
         ctx.gateS, ctx.upS, ctx.downS = gateS, upS, downS
+        ctx._backward_function = _backward_function
         return i
 
     @staticmethod
@@ -154,16 +156,99 @@ class MPSLoRA_MLP(torch.autograd.Function):
             ctx.saved_tensors
         )
         gateS, upS, downS = ctx.gateS, ctx.upS, ctx.downS
+        _backward_function = ctx._backward_function
 
-        # simplified backward for now - focus on correctness
-        # In a real implementation we would match LoRA_MLP.backward exactly
-        # but for MPS fallback we can rely on autograd for these complex fused ops
-        # unless performance is critical.
-        # Actually, for Unsloth we should probably provide the manual backward to save memory.
+        # Get shapes and flatten for matmul operations
+        batch, seq_len, hd = X.shape
+        dY = dY.view(-1, dY.shape[-1])
+        X = X.view(-1, X.shape[-1])
+        e = e.view(-1, e.shape[-1])
+        g = g.view(-1, g.shape[-1])
+        dtype = X.dtype
 
-        # TODO: Implement full manual backward for LoRA_MLP on MPS
-        raise NotImplementedError(
-            "Manual backward for MPSLoRA_MLP not yet implemented. Use autograd for now."
+        # Ensure LoRA weights are correct dtype and transposed
+        gateA, gateB, upA, upB, downA, downB = (
+            gateA.to(dtype).t(),
+            gateB.to(dtype).t(),
+            upA.to(dtype).t(),
+            upB.to(dtype).t(),
+            downA.to(dtype).t(),
+            downB.to(dtype).t(),
+        )
+
+        # Compute DW = dY @ (downW + downS * downB @ downA)^T
+        # First get base projection: dY @ downW.T
+        downW_t = downW.t().to(dtype)
+        DW = torch.matmul(dY, downW_t)
+        
+        # Add LoRA contribution: dY @ (downS * downB @ downA)^T
+        # = downS * dY @ downA.T @ downB.T
+        if downA is not None and downB is not None:
+            DW.addmm_(dY @ downA.t(), downB.t(), alpha=downS)
+
+        # Apply backward function to compute h, df, de
+        # _backward_function returns (h, df, de) by modifying DW, e, g in place
+        h_out, df, de = _backward_function(DW, e, g)
+
+        # Initialize gradient buffers for LoRA weights
+        d_gateA = torch.empty_like(gateA)
+        d_gateB = torch.empty_like(gateB)
+        d_upA = torch.empty_like(upA)
+        d_upB = torch.empty_like(upB)
+        d_downA = torch.empty_like(downA)
+        d_downB = torch.empty_like(downB)
+
+        # Down projection LoRA gradients
+        # d_downA = h.T @ (dY @ downB.T) * downS
+        # d_downB = (downA.T @ h.T) @ dY * downS
+        d_downA.addmm_(h_out.t(), dY @ downB.t(), alpha=downS, beta=0)
+        d_downB.addmm_(downA.t() @ h_out.t(), dY, alpha=downS, beta=0)
+
+        # Up projection LoRA gradients
+        # d_upA = X.T @ (df @ upB.T) * upS
+        # d_upB = (upA.T @ X.T) @ df * upS
+        d_upA.addmm_(X.t(), df @ upB.t(), alpha=upS, beta=0)
+        d_upB.addmm_(upA.t() @ X.t(), df, alpha=upS, beta=0)
+
+        # Gate projection LoRA gradients
+        # d_gateA = X.T @ (de @ gateB.T) * gateS
+        # d_gateB = (gateA.T @ X.T) @ de * gateS
+        d_gateA.addmm_(X.t(), de @ gateB.t(), alpha=gateS, beta=0)
+        d_gateB.addmm_(gateA.t() @ X.t(), de, alpha=gateS, beta=0)
+
+        # Compute dX
+        # dX = df @ upW.T + de @ gateW.T + LoRA contributions
+        upW_t = upW.t().to(dtype)
+        dX = torch.matmul(df, upW_t.t())
+        del upW_t
+        
+        # Add up projection LoRA contribution: df @ upB.T @ upA.T * upS
+        dX.addmm_(df @ upB.t(), upA.t(), alpha=upS)
+
+        # Add gate projection contribution
+        gateW_t = gateW.t().to(dtype)
+        dX.addmm_(de, gateW_t.t())
+        del gateW_t
+        
+        # Add gate projection LoRA contribution: de @ gateB.T @ gateA.T * gateS
+        dX.addmm_(de @ gateB.t(), gateA.t(), alpha=gateS)
+
+        # Reshape dX back to original shape
+        dX = dX.view(batch, seq_len, hd)
+
+        # Return gradients (None for weights/quant states/scalars/_forward/_backward)
+        return (
+            dX,
+            None, None,  # gateW, gateW_quant
+            d_gateA.t(), d_gateB.t(),  # gateA, gateB
+            None,  # gateS
+            None, None,  # upW, upW_quant
+            d_upA.t(), d_upB.t(),  # upA, upB
+            None,  # upS
+            None, None,  # downW, downW_quant
+            d_downA.t(), d_downB.t(),  # downA, downB
+            None,  # downS
+            None, None,  # _forward_function, _backward_function
         )
 
 
