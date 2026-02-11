@@ -783,7 +783,10 @@ class FastBaseModel:
                 **kwargs,
             )
             try:
-                from unsloth_zoo.temporary_patches.misc import patch_deepseek_ocr_masked_scatter
+                from unsloth_zoo.temporary_patches.misc import (
+                    patch_deepseek_ocr_masked_scatter,
+                )
+
                 patch_deepseek_ocr_masked_scatter()
             except Exception:
                 pass
