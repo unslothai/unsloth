@@ -245,7 +245,9 @@ def PatchRL(FastLanguageModel, patch_trl_trainers = True):
                 continue
             if hasattr(current_trainer, unwrap):
                 try:
-                    setattr(current_trainer, unwrap, unsloth_unwrap_model_for_generation)
+                    setattr(
+                        current_trainer, unwrap, unsloth_unwrap_model_for_generation
+                    )
                 except:
                     continue
     Trainer.prediction_step = unsloth_prediction_step
@@ -1831,16 +1833,13 @@ def patch_trl_openenv():
 
 def PatchFastRL(algorithm = None, FastLanguageModel = None):
     normalized_algorithm = (
-        algorithm.lower()
-        if (type(algorithm) is str and len(algorithm) != 0)
-        else None
+        algorithm.lower() if (type(algorithm) is str and len(algorithm) != 0) else None
     )
     # Avoid eager TRL/vLLM imports during `import unsloth`.
     # By default, patch RL trainer modules only when an algorithm is explicitly
     # requested. Core Trainer prediction patch remains enabled.
-    should_patch_trainers = (
-        os.environ.get("UNSLOTH_EAGER_RL_PATCH", "0") == "1"
-        or (normalized_algorithm is not None)
+    should_patch_trainers = os.environ.get("UNSLOTH_EAGER_RL_PATCH", "0") == "1" or (
+        normalized_algorithm is not None
     )
     if FastLanguageModel is not None:
         PatchRL(FastLanguageModel, patch_trl_trainers = should_patch_trainers)

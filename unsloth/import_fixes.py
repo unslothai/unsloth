@@ -410,10 +410,7 @@ def fix_vllm_guided_decoding_params():
         # https://github.com/vllm-project/vllm/pull/22772/files
         # trl still wants to use GuidedDecodingParams. This is a temporary patch till trl updates
         if sampling_params_module is None:
-            if (
-                vllm_module is None
-                or not hasattr(vllm_module, "sampling_params")
-            ):
+            if vllm_module is None or not hasattr(vllm_module, "sampling_params"):
                 return False
             sampling_params_module = vllm_module.sampling_params
 
