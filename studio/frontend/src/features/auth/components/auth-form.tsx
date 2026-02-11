@@ -1,16 +1,19 @@
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  getPostAuthRoute,
-  hasAuthToken,
-  resetOnboardingDone,
-  storeAuthToken,
-} from "@/features/auth/session";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { Eye, EyeOff } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
+import type { ReactElement } from "react";
+import { refreshSession } from "../api";
+import {
+  getPostAuthRoute,
+  hasAuthToken,
+  hasRefreshToken,
+  resetOnboardingDone,
+  storeAuthTokens,
+} from "../session";
 
 type AuthMode = "login" | "signup";
 
@@ -20,17 +23,19 @@ type AuthStatusResponse = {
 
 type TokenResponse = {
   access_token: string;
+  refresh_token: string;
 };
 
 type AuthFormProps = {
   mode: AuthMode;
 };
 
-export function AuthForm({ mode }: AuthFormProps) {
+export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   const navigate = useNavigate();
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [username, setUsername] = useState("admin");
+  const [setupToken, setSetupToken] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -42,7 +47,16 @@ export function AuthForm({ mode }: AuthFormProps) {
     let canceled = false;
 
     async function initializeAuthForm(): Promise<void> {
+      if (hasRefreshToken()) {
+        const refreshed = await refreshSession();
+        if (refreshed) {
+          if (!canceled) setStatusLoading(false);
+          navigate({ to: getPostAuthRoute() });
+          return;
+        }
+      }
       if (hasAuthToken()) {
+        if (!canceled) setStatusLoading(false);
         navigate({ to: getPostAuthRoute() });
         return;
       }
@@ -92,34 +106,42 @@ export function AuthForm({ mode }: AuthFormProps) {
     event.preventDefault();
     setError(null);
 
-    if (mode === "signup" && password !== confirmPassword) {
+    if (!isLoginMode && password !== confirmPassword) {
       setError("Passwords not match.");
+      return;
+    }
+    if (!isLoginMode && !setupToken.trim()) {
+      setError("Setup token required.");
       return;
     }
 
     setLoading(true);
     try {
-      const endpoint = mode === "login" ? "/api/auth/login" : "/api/auth/setup";
+      const endpoint = isLoginMode ? "/api/auth/login" : "/api/auth/setup";
+      const payload: { username: string; password: string; setup_token?: string } = {
+        username: username.trim(),
+        password,
+      };
+      if (!isLoginMode) {
+        payload.setup_token = setupToken.trim();
+      }
       const response = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          username: username.trim(),
-          password,
-        }),
+        body: JSON.stringify(payload),
       });
       if (!response.ok) {
         let message = "Auth failed.";
-        try {
-          const payload = (await response.json()) as { detail?: string };
-          if (payload.detail) message = payload.detail;
-        } catch {}
+        const errorPayload = (await response
+          .json()
+          .catch(() => null)) as { detail?: string } | null;
+        if (errorPayload?.detail) message = errorPayload.detail;
         throw new Error(message);
       }
       const token = (await response.json()) as TokenResponse;
 
       if (!isLoginMode) resetOnboardingDone();
-      storeAuthToken(token.access_token);
+      storeAuthTokens(token.access_token, token.refresh_token);
       navigate({ to: getPostAuthRoute() });
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Auth failed.");
@@ -184,6 +206,20 @@ export function AuthForm({ mode }: AuthFormProps) {
             </Button>
           </div>
         </div>
+
+        {!isLoginMode && (
+          <div className="space-y-2">
+            <Label htmlFor="setup-token">Setup token</Label>
+            <Input
+              id="setup-token"
+              autoComplete="off"
+              placeholder="Paste token from backend console"
+              value={setupToken}
+              onChange={(event) => setSetupToken(event.target.value)}
+              required
+            />
+          </div>
+        )}
 
         {!isLoginMode && (
           <div className="space-y-2">
