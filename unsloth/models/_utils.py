@@ -2734,11 +2734,13 @@ def make_fast_generate_wrapper(original_generate):
                             "Unsloth: Passing text strings to `fast_generate` on AMD "
                             "requires a tokenizer attached to the model."
                         )
-                    texts = [first_arg] if isinstance(first_arg, str) else list(first_arg)
+                    texts = (
+                        [first_arg] if isinstance(first_arg, str) else list(first_arg)
+                    )
                     tokens = tokenizer(
                         texts,
-                        return_tensors="pt",
-                        padding=True,
+                        return_tensors = "pt",
+                        padding = True,
                     )
                     tokens = tokens.to(model.device)
                     return original_generate(**tokens, **kwargs)
