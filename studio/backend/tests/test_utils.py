@@ -90,6 +90,7 @@ class TestGetDevice:
              patch("torch.cuda.is_available", return_value=True):
             assert _reset_and_detect() == DeviceType.CUDA
 
+    @needs_mlx
     def test_returns_mlx_when_on_apple_silicon_with_mlx(self):
         with patch("utils.hardware.hardware._has_torch", return_value=False), \
              patch("utils.hardware.hardware.is_apple_silicon", return_value=True), \
@@ -147,6 +148,7 @@ class TestClearGpuCache:
             mock_empty.assert_called_once()
             mock_ipc.assert_called_once()
 
+    @needs_mlx
     def test_mlx_does_not_raise(self):
         """MLX cache clear is a no-op — should just succeed."""
         with patch("utils.hardware.hardware.get_device", return_value=DeviceType.MLX):
@@ -324,6 +326,7 @@ class TestFormatErrorMessage:
 
     # --- OOM on MLX ---
 
+    @needs_mlx
     def test_mlx_oom(self):
         err = Exception("MLX backend out of memory")
         with patch("utils.hardware.get_device", return_value=DeviceType.MLX):
