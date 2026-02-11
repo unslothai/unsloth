@@ -187,8 +187,12 @@ class MPSLoRA_MLP(torch.autograd.Function):
             DW.addmm_(dY @ downA.t(), downB.t(), alpha=downS)
 
         # Apply backward function to compute h, df, de
-        # _backward_function returns (h, df, de) by modifying DW, e, g in place
-        h_out, df, de = _backward_function(DW, e, g)
+        # _backward_function modifies tensors in place, so we pass copies to preserve
+        # the original saved_tensors which don't have requires_grad
+        DW_clone = DW.clone()
+        e_clone = e.clone()
+        g_clone = g.clone()
+        h_out, df, de = _backward_function(DW_clone, e_clone, g_clone)
 
         # Initialize gradient buffers for LoRA weights
         d_gateA = torch.empty_like(gateA)
