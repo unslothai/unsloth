@@ -11,7 +11,8 @@ import torch
 from typing import Optional, Generator, Tuple
 from utils.models import ModelConfig, get_base_model_from_lora
 from utils.paths import is_model_cached
-from utils.utils import format_error_message, log_gpu_memory
+from utils.utils import format_error_message
+from utils.hardware import get_device, clear_gpu_cache, log_gpu_memory
 from io import StringIO
 import logging
 
@@ -35,7 +36,7 @@ class InferenceBackend:
             "unsloth/Gemma-3-4B-it",
             "unsloth/Qwen2-VL-2B-Instruct-bnb-4bit",
         ]
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = get_device().value
 
         # Thread safety
         import threading
@@ -154,12 +155,8 @@ class InferenceBackend:
                 if self.active_model_name == model_name:
                     self.active_model_name = None
 
-                # Use garbage collection and clear CUDA cache to release memory
-                import gc
-                import torch
-                gc.collect()
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+                # Clear GPU memory cache
+                clear_gpu_cache()
 
                 logger.info(f"Model '{model_name}' successfully unloaded.")
                 return True
@@ -562,11 +559,11 @@ class InferenceBackend:
                 input_text,
                 add_special_tokens=False,
                 return_tensors="pt",
-            ).to("cuda")
+            ).to(self.device)
         else:
             # Text-only for vision model
             formatted_prompt = self.format_chat_prompt(messages, system_prompt)
-            inputs = processor.tokenizer(formatted_prompt, return_tensors="pt").to("cuda")
+            inputs = processor.tokenizer(formatted_prompt, return_tensors="pt").to(self.device)
 
         # Generate with streaming
         captured_output = StringIO()
@@ -888,11 +885,8 @@ class InferenceBackend:
             for model_name in self.models.keys():
                 self._reset_model_generation_state(model_name)
 
-            import torch
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                torch.cuda.ipc_collect()
-                logger.debug("Cleared CUDA cache and IPC resources")
+            clear_gpu_cache()
+            logger.debug("Cleared GPU cache")
 
             import gc
             gc.collect()

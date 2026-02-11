@@ -3,6 +3,7 @@ Unsloth Training Backend
 Integrates Unsloth training capabilities with the Gradio UI
 """
 import torch
+from utils.hardware import clear_gpu_cache
 torch._dynamo.config.recompile_limit = 64
 from unsloth import FastLanguageModel, FastVisionModel, is_bfloat16_supported
 from unsloth.chat_templates import get_chat_template
@@ -98,9 +99,7 @@ class UnslothTrainer:
         """Load model for training (supports both text and vision models)"""
         try:
             print("\nClearing GPU memory before training...")
-            torch.cuda.empty_cache()
-            import gc
-            gc.collect()
+            clear_gpu_cache()
 
             # Detect if this is a vision model first
             self.is_vlm = is_vision_model(model_name)
@@ -804,8 +803,7 @@ class UnslothTrainer:
             self.tokenizer = None
 
         # Clear GPU memory
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        clear_gpu_cache()
 
 
 def _ensure_deepseek_ocr_installed():
