@@ -1046,6 +1046,13 @@ class FastModel(FastBaseModel):
             # Set norms to float32 since anyways they get upcasted to float32
             # common in both gemma-3 and gemma-3n
             os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"
+            # ROCm: Gemma3 compiled forward produces NaN on RDNA GPUs (gfx11xx).
+            # Disable compilation; eager path is numerically correct.
+            # See https://github.com/unslothai/unsloth/issues/3385
+            if DEVICE_TYPE == "hip":
+                os.environ["UNSLOTH_COMPILE_DISABLE"] = "1"
+                import unsloth_zoo.compiler
+                unsloth_zoo.compiler.UNSLOTH_COMPILE_DISABLE = True
         # Cohere
         elif "cohere2" in model_types_all and transformers_version < Version(
             "4.50.0.dev0"
