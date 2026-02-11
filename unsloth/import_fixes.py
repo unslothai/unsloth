@@ -937,14 +937,14 @@ def patch_trunc_normal_precision_issue():
 
     def _call_original(target, mean, std, a, b, generator):
         if generator is None:
-            return original_trunc_normal(target, mean=mean, std=std, a=a, b=b)
+            return original_trunc_normal(target, mean = mean, std = std, a = a, b = b)
         try:
             return original_trunc_normal(
-                target, mean=mean, std=std, a=a, b=b, generator=generator
+                target, mean = mean, std = std, a = a, b = b, generator = generator
             )
         except TypeError:
             # Older torch versions may not accept generator.
-            return original_trunc_normal(target, mean=mean, std=std, a=a, b=b)
+            return original_trunc_normal(target, mean = mean, std = std, a = a, b = b)
 
     try:
         from torch.distributed._tensor import DTensor
@@ -968,14 +968,14 @@ def patch_trunc_normal_precision_issue():
             if local_tensor.dtype in low_precision_dtypes:
                 local_fp32 = local_tensor.float()
                 _call_original(local_fp32, mean, std, a, b, generator)
-                local_tensor.copy_(local_fp32.to(dtype=local_tensor.dtype))
+                local_tensor.copy_(local_fp32.to(dtype = local_tensor.dtype))
                 return tensor
             return _call_original(tensor, mean, std, a, b, generator)
 
         if tensor.dtype in low_precision_dtypes:
             tensor_fp32 = tensor.float()
             _call_original(tensor_fp32, mean, std, a, b, generator)
-            tensor.copy_(tensor_fp32.to(dtype=tensor.dtype))
+            tensor.copy_(tensor_fp32.to(dtype = tensor.dtype))
             return tensor
 
         return _call_original(tensor, mean, std, a, b, generator)
