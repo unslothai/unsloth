@@ -780,14 +780,6 @@ class FastBaseModel:
                 # attn_implementation   = attn_implementation,
                 **kwargs,
             )
-            try:
-                from unsloth_zoo.temporary_patches.misc import (
-                    patch_deepseek_ocr_masked_scatter,
-                )
-
-                patch_deepseek_ocr_masked_scatter()
-            except Exception:
-                pass
             if hasattr(model, "generate"):
                 model.fast_generate = make_fast_generate_wrapper(model.generate)
                 model.fast_generate_batches = error_out_no_vllm
