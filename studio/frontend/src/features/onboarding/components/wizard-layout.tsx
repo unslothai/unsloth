@@ -5,7 +5,7 @@ import { Suspense, lazy, useEffect, useRef, useState } from "react";
 
 import type { ConfettiRef } from "@/components/ui/confetti";
 import { STEPS } from "@/config/training";
-import { isOnboardingDone, markOnboardingDone } from "@/features/auth/session";
+import { isOnboardingDone, markOnboardingDone } from "@/features/auth";
 import { useWizardStore } from "@/stores/training";
 import { SplashScreen } from "./splash-screen";
 import { WizardContent } from "./wizard-content";
