@@ -92,7 +92,7 @@ from dataclasses import dataclass, field
 import functools
 import textwrap
 import logging
-import warnings, subprocess, inspect, psutil, os, math
+import warnings, subprocess, inspect, psutil, os, math, sys
 from unsloth_zoo.utils import Version, get_quant_type
 from importlib.metadata import version as importlib_version
 from ..device_type import (
@@ -216,6 +216,15 @@ def prefer_flex_attn_if_supported(model_class, config):
 
 
 for temporary_patch in TEMPORARY_PATCHES:
+    # transformers>=5 adds a temporary patch that imports `vllm.renderers.hf`.
+    # Keep plain `import unsloth` free from eager vLLM imports.
+    if (
+        temporary_patch.__name__ == "patch_vllm_safe_apply_chat_template"
+        and os.environ.get("UNSLOTH_EAGER_VLLM_TEMP_PATCH", "0") != "1"
+        and "vllm" not in sys.modules
+        and "vllm.renderers.hf" not in sys.modules
+    ):
+        continue
     temporary_patch()
 
 # =============================================
@@ -295,78 +304,30 @@ class ReplaceWarningMessage:
 
 # Stop vLLM messages
 if not UNSLOTH_ENABLE_LOGGING:
-    try:
-        from vllm.worker.worker import logger as vllm_worker_logger
+    # Configure filters via logger names so we don't import vLLM modules at
+    # Unsloth import-time. This keeps filtering behavior when vLLM is imported
+    # later, without triggering architecture-specific module import failures.
+    def _add_filter_for_logger(logger_name, text):
+        try:
+            logging.getLogger(logger_name).addFilter(HideLoggingMessage(text))
+        except Exception:
+            pass
 
-        vllm_worker_logger.addFilter(HideLoggingMessage("Sleep mode freed"))
-        del vllm_worker_logger
-    except:
-        pass
-    try:
-        from vllm.v1.worker.gpu_worker import logger as vllm_gpu_worker_logger
-
-        vllm_gpu_worker_logger.addFilter(HideLoggingMessage("Sleep mode freed"))
-        del vllm_gpu_worker_logger
-    except:
-        pass
-    try:
-        from vllm.executor.executor_base import logger as vllm_executor_logger
-
-        vllm_executor_logger.addFilter(HideLoggingMessage("to fall asleep"))
-        vllm_executor_logger.addFilter(HideLoggingMessage("to wake up"))
-        vllm_executor_logger.addFilter(HideLoggingMessage("Executor is not sleeping"))
-        del vllm_executor_logger
-    except:
-        pass
-    try:
-        from vllm.v1.executor.abstract import logger as vllm_v1_executor_logger
-
-        vllm_v1_executor_logger.addFilter(HideLoggingMessage("to fall asleep"))
-        vllm_v1_executor_logger.addFilter(HideLoggingMessage("to wake up"))
-        vllm_v1_executor_logger.addFilter(
-            HideLoggingMessage("Executor is not sleeping")
-        )
-        del vllm_v1_executor_logger
-    except:
-        pass
-    try:
-        from vllm.core.block.prefix_caching_block import (
-            logger as vllm_prefix_caching_logger,
-        )
-
-        vllm_prefix_caching_logger.addFilter(HideLoggingMessage("reset prefix cache"))
-        del vllm_prefix_caching_logger
-    except:
-        pass
-    try:
-        from vllm.v1.core.block_pool import logger as vllm_block_pool_logger
-
-        vllm_block_pool_logger.addFilter(HideLoggingMessage("reset prefix cache"))
-        del vllm_block_pool_logger
-    except:
-        pass
-    try:
-        from vllm.lora.models import logger as vllm_lora_model_logger
-
-        vllm_lora_model_logger.addFilter(
-            HideLoggingMessage(
-                "Regarding multimodal models, vLLM currently only supports adding"
-            )
-        )
-        del vllm_lora_model_logger
-    except:
-        pass
-    try:
-        from vllm.attention.utils.fa_utils import (
-            logger as vllm_attention_utils_fa_utils_logger,
-        )
-
-        vllm_attention_utils_fa_utils_logger.addFilter(
-            HideLoggingMessage("Cannot use FA version")
-        )
-        del vllm_attention_utils_fa_utils_logger
-    except:
-        pass
+    _add_filter_for_logger("vllm.worker.worker", "Sleep mode freed")
+    _add_filter_for_logger("vllm.v1.worker.gpu_worker", "Sleep mode freed")
+    _add_filter_for_logger("vllm.executor.executor_base", "to fall asleep")
+    _add_filter_for_logger("vllm.executor.executor_base", "to wake up")
+    _add_filter_for_logger("vllm.executor.executor_base", "Executor is not sleeping")
+    _add_filter_for_logger("vllm.v1.executor.abstract", "to fall asleep")
+    _add_filter_for_logger("vllm.v1.executor.abstract", "to wake up")
+    _add_filter_for_logger("vllm.v1.executor.abstract", "Executor is not sleeping")
+    _add_filter_for_logger("vllm.core.block.prefix_caching_block", "reset prefix cache")
+    _add_filter_for_logger("vllm.v1.core.block_pool", "reset prefix cache")
+    _add_filter_for_logger(
+        "vllm.lora.models",
+        "Regarding multimodal models, vLLM currently only supports adding",
+    )
+    _add_filter_for_logger("vllm.attention.utils.fa_utils", "Cannot use FA version")
 
 # The speedups for torchdynamo mostly come with GPU Ampere or higher and which is not detected here.
 from transformers.training_args import logger as transformers_training_args_logger
@@ -2063,6 +2024,13 @@ def unsloth_compile_transformers(
     # Run patches BEFORE compiler so class replacements (e.g. GptOssTopKRouter,
     # GptOssExperts) are in place before the compiler caches references to them.
     for temporary_patch in TEMPORARY_PATCHES:
+        if (
+            temporary_patch.__name__ == "patch_vllm_safe_apply_chat_template"
+            and os.environ.get("UNSLOTH_EAGER_VLLM_TEMP_PATCH", "0") != "1"
+            and "vllm" not in sys.modules
+            and "vllm.renderers.hf" not in sys.modules
+        ):
+            continue
         temporary_patch()
 
     for model_type in model_types:
@@ -2096,6 +2064,13 @@ def unsloth_compile_transformers(
         )
     # Redo patches which override compiler
     for temporary_patch in TEMPORARY_PATCHES:
+        if (
+            temporary_patch.__name__ == "patch_vllm_safe_apply_chat_template"
+            and os.environ.get("UNSLOTH_EAGER_VLLM_TEMP_PATCH", "0") != "1"
+            and "vllm" not in sys.modules
+            and "vllm.renderers.hf" not in sys.modules
+        ):
+            continue
         temporary_patch()
     return model_types, supports_sdpa[0]
 

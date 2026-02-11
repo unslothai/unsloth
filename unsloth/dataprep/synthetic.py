@@ -27,17 +27,19 @@ import torch
 import gc
 import time
 import re
-from unsloth_zoo.vllm_utils import (
-    load_vllm,
-    patch_vllm,
-    delete_vllm,
-)
 from unsloth_zoo.log import logger
 import numpy as np
 
 from .synthetic_configs import (
     synthetic_qa_config,
 )
+
+
+def _get_vllm_utils():
+    # Lazy import to avoid loading vLLM when users only import Unsloth.
+    from unsloth_zoo import vllm_utils
+
+    return vllm_utils
 
 
 def terminate_tree(proc: subprocess.Popen, timeout = 15):
@@ -182,8 +184,9 @@ class SyntheticDataKit:
             model_name,
             token = token,
         )
-        patch_vllm(debug = False)
-        engine_args = load_vllm(
+        _vllm_utils = _get_vllm_utils()
+        _vllm_utils.patch_vllm(debug = False)
+        engine_args = _vllm_utils.load_vllm(
             model_name = model_name,
             config = self.config,
             gpu_memory_utilization = gpu_memory_utilization,
@@ -364,7 +367,7 @@ class SyntheticDataKit:
             gc.collect()
 
         # Delete vLLM module as well
-        delete_vllm(llm = None)
+        _get_vllm_utils().delete_vllm(llm = None)
 
     def __enter__(self):
         return self
