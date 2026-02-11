@@ -917,8 +917,13 @@ def patch_trunc_normal_precision_issue():
     """
     Patch torch.nn.init.trunc_normal_ for low precision tensors to run init in fp32.
 
-    torch.nn.init.trunc_normal_ can saturate at bounds in fp16/bf16 on some versions.
-    We initialize a temporary fp32 tensor, then copy the result back.
+    torch.nn.init.trunc_normal_ can saturate at truncation bounds in fp16/bf16 on
+    some versions/backends. This was observed in TorchTitan investigations where
+    low-precision truncation produced boundary-heavy initialization behavior:
+    https://github.com/pytorch/torchtitan/pull/2342
+
+    To avoid that failure mode, initialize into a temporary fp32 tensor, then copy
+    back to the original dtype.
     """
     try:
         import torch
