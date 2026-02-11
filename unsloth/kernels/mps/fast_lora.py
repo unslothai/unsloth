@@ -107,9 +107,10 @@ def mps_matmul_lora(X, W, W_quant, A, B, s):
         if B_.dtype != dtype:
             B_ = B_.to(dtype=dtype)
 
-        out.view(-1, out.shape[-1]).addmm_(
+        # Use addmm (not addmm_) to avoid in-place ops that break gradient graph on MPS
+        out = out.view(-1, out.shape[-1]).addmm(
             XA.view(-1, XA.shape[-1]), B_, alpha=s
-        )
+        ).view(out.shape)
 
     return out
 
@@ -183,8 +184,9 @@ class MPSLoRA_MLP(torch.autograd.Function):
         
         # Add LoRA contribution: dY @ (downS * downB @ downA)^T
         # = downS * dY @ downA.T @ downB.T
+        # Use addmm (not addmm_) to avoid in-place ops
         if downA is not None and downB is not None:
-            DW.addmm_(dY @ downA.t(), downB.t(), alpha=downS)
+            DW = DW.addmm(dY @ downA.t(), downB.t(), alpha=downS)
 
         # Apply backward function to compute h, df, de
         # _backward_function modifies tensors in place, so we pass copies to preserve

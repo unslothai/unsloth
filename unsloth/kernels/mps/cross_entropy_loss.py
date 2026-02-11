@@ -79,7 +79,9 @@ class MPSCrossEntropyLoss(torch.autograd.Function):
         safe_labels = labels.clone()
         safe_labels[~mask] = 0
 
-        dlogits = probs
+        # Clone probs to avoid in-place modification of saved tensor
+        # which doesn't have requires_grad during backward
+        dlogits = probs.clone()
         dlogits.scatter_add_(
             1,
             safe_labels.unsqueeze(1),

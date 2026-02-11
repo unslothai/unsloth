@@ -49,6 +49,9 @@ __all__ = [
 
 # Global flag to control MPS fallback usage
 # Can be disabled for benchmarking or when Metal kernels are available
+# NOTE: When gradient checkpointing is enabled on MPS, this should be set to False
+# to avoid 'element 0 of tensors does not require grad' errors. The custom autograd
+# functions in the MPS fallback have compatibility issues with gradient checkpointing.
 USE_MPS_FALLBACK = True
 
 

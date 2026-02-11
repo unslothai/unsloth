@@ -2753,7 +2753,29 @@ class FastLlamaModel:
             if DEVICE_TYPE == "mps":
                 # MPS requires use_reentrant=False for gradient checkpointing
                 # to avoid "element 0 of tensors does not require grad" error
-                # Patch gradient_checkpointing_enable to use use_reentrant=False
+                # 
+                # Additionally, disable MPS custom autograd fallback kernels when
+                # gradient checkpointing is enabled. The custom kernels (MPSLoRA_MLP, etc.)
+                # have compatibility issues with gradient checkpointing on MPS because
+                # checkpointing saves tensors without requires_grad, and the custom
+                # backward functions try to perform operations on these saved tensors.
+                # This causes the "element 0 of tensors does not require grad" error.
+                #
+                # By disabling USE_MPS_FALLBACK, we force the use of standard PyTorch
+                # operations which handle gradient checkpointing correctly.
+                import unsloth.kernels.mps as mps_kernels
+                if hasattr(mps_kernels, 'USE_MPS_FALLBACK'):
+                    if isinstance(mps_kernels.USE_MPS_FALLBACK, bool):
+                        mps_kernels.USE_MPS_FALLBACK = False
+                    else:
+                        # Handle the property class case
+                        mps_kernels._USE_MPS_FALLBACK = False
+                    logger.warning_once(
+                        "Unsloth: Disabled MPS fallback kernels when using gradient checkpointing "
+                        "to avoid compatibility issues. Training will use standard PyTorch operations."
+                    )
+                
+                # Also patch gradient_checkpointing_enable to use use_reentrant=False
                 _original_gradient_checkpointing_enable = None
                 
                 def _mps_gradient_checkpointing_enable(self, **kwargs):
