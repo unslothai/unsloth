@@ -586,6 +586,24 @@ class FastLanguageModel(FastLlamaModel):
         if use_gradient_checkpointing == "unsloth":
             if DEVICE_TYPE == "mps":
                 use_gradient_checkpointing = True
+                # MPS requires use_reentrant=False for gradient checkpointing
+                # to avoid "element 0 of tensors does not require grad" error
+                # Patch gradient_checkpointing_enable to use use_reentrant=False
+                _original_gradient_checkpointing_enable = None
+                
+                def _mps_gradient_checkpointing_enable(self, **kwargs):
+                    """Enable gradient checkpointing with use_reentrant=False for MPS."""
+                    kwargs["use_reentrant"] = False
+                    if _original_gradient_checkpointing_enable is not None:
+                        return _original_gradient_checkpointing_enable(self, **kwargs)
+                    # Fallback to parent class method
+                    return super(self.__class__, self).gradient_checkpointing_enable(**kwargs)
+                
+                # Store and patch
+                import torch.nn as nn
+                if hasattr(nn.Module, 'gradient_checkpointing_enable'):
+                    _original_gradient_checkpointing_enable = nn.Module.gradient_checkpointing_enable
+                    nn.Module.gradient_checkpointing_enable = _mps_gradient_checkpointing_enable
             else:
                 patch_unsloth_smart_gradient_checkpointing(dtype=dtype)
 
