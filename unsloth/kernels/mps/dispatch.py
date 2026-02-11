@@ -320,6 +320,17 @@ def dispatch_lora_mlp_swiglu(
                 swiglu_fg_kernel,
                 swiglu_DWf_DW_dfg_kernel,
             )
+    # Priority 3: Pure PyTorch implementation for MPS (when fallback is disabled)
+    # This avoids custom autograd functions which have issues with gradient checkpointing
+    if DEVICE_TYPE == "mps":
+        from .lora_pytorch import pytorch_lora_mlp_swiglu
+        return pytorch_lora_mlp_swiglu(
+            X,
+            gateW, gateW_quant, gateA, gateB, gateS,
+            upW, upW_quant, upA, upB, upS,
+            downW, downW_quant, downA, downB, downS,
+        )
+    
     # Default: CUDA/Triton path
     from ..fast_lora import LoRA_MLP, swiglu_fg_kernel, swiglu_DWf_DW_dfg_kernel
     return LoRA_MLP.apply(
@@ -413,6 +424,17 @@ def dispatch_lora_mlp_geglu_exact(
                 geglu_exact_forward_kernel,
                 geglu_exact_backward_kernel,
             )
+    # Priority 3: Pure PyTorch implementation for MPS (when fallback is disabled)
+    # This avoids custom autograd functions which have issues with gradient checkpointing
+    if DEVICE_TYPE == "mps":
+        from .lora_pytorch import pytorch_lora_mlp_geglu_exact
+        return pytorch_lora_mlp_geglu_exact(
+            X,
+            gateW, gateW_quant, gateA, gateB, gateS,
+            upW, upW_quant, upA, upB, upS,
+            downW, downW_quant, downA, downB, downS,
+        )
+    
     # Default: CUDA/Triton path
     from ..fast_lora import LoRA_MLP, geglu_exact_forward_kernel, geglu_exact_backward_kernel
 
@@ -508,6 +530,17 @@ def dispatch_lora_mlp_geglu_approx(
                 geglu_approx_forward_kernel,
                 geglu_approx_backward_kernel,
             )
+    # Priority 3: Pure PyTorch implementation for MPS (when fallback is disabled)
+    # This avoids custom autograd functions which have issues with gradient checkpointing
+    if DEVICE_TYPE == "mps":
+        from .lora_pytorch import pytorch_lora_mlp_geglu_approx
+        return pytorch_lora_mlp_geglu_approx(
+            X,
+            gateW, gateW_quant, gateA, gateB, gateS,
+            upW, upW_quant, upA, upB, upS,
+            downW, downW_quant, downA, downB, downS,
+        )
+    
     # Default: CUDA/Triton path
     from ..fast_lora import (
         LoRA_MLP,
@@ -601,6 +634,17 @@ def dispatch_lora_qkv(
                 VB,
                 VS,
             )
+    # Priority 3: Pure PyTorch implementation for MPS (when fallback is disabled)
+    # This avoids custom autograd functions which have issues with gradient checkpointing
+    if DEVICE_TYPE == "mps":
+        from .lora_pytorch import pytorch_lora_qkv
+        return pytorch_lora_qkv(
+            X,
+            QW, QW_quant, QA, QB, QS,
+            KW, KW_quant, KA, KB, KS,
+            VW, VW_quant, VA, VB, VS,
+        )
+    
     # Default: CUDA/Triton path
     from ..fast_lora import LoRA_QKV
     return LoRA_QKV.apply(
@@ -636,6 +680,10 @@ def dispatch_lora_o(X, OW, OW_quant, OA, OB, OS):
             from .fast_lora import mps_apply_lora_o
             fn = _get_compiled_fn(mps_apply_lora_o)
             return fn(X, OW, OW_quant, OA, OB, OS)
+        # Priority 3: Pure PyTorch implementation for MPS (when fallback is disabled)
+        # This avoids custom autograd functions which have issues with gradient checkpointing
+        from .lora_pytorch import pytorch_lora_o
+        return pytorch_lora_o(X, OW, OW_quant, OA, OB, OS)
     # Default: CUDA/Triton path
     from ..fast_lora import LoRA_W
     return LoRA_W.apply(X, OW, OW_quant, OA, OB, OS)
