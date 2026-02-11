@@ -2,6 +2,7 @@
 Main FastAPI application for Unsloth UI Backend
 """
 import secrets
+import shutil
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -15,10 +16,12 @@ from datetime import datetime
 from routes import training_router, models_router, inference_router, datasets_router, auth_router
 from auth import storage
 
+UNSLOTH_CACHE_DIR = Path(__file__).parent / "unsloth_compiled_cache"
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Generate and print a setup token on startup if auth is not yet initialized."""
+    """Startup: print setup token if needed. Shutdown: clean up compiled cache."""
     if not storage.is_initialized():
         setup_token = secrets.token_urlsafe(32)
         storage.save_setup_token(setup_token)
@@ -29,6 +32,8 @@ async def lifespan(app: FastAPI):
         print("This token can only be used once.")
         print("=" * 60 + "\n")
     yield
+    # Cleanup: remove Unsloth compiled cache on shutdown
+    shutil.rmtree(UNSLOTH_CACHE_DIR, ignore_errors=True)
 
 
 # Create FastAPI app
