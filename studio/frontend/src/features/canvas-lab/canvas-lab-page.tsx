@@ -1,7 +1,6 @@
 import {
   Background,
   BackgroundVariant,
-  Controls,
   type Edge,
   type EdgeChange,
   type EdgeTypes,
@@ -26,9 +25,11 @@ import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { EyeIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { Lock, LockOpen, Maximize2, Minus, Plus } from "lucide-react";
 import { previewCanvas } from "./api";
 import { CanvasAuxNode, type CanvasAuxNodeData } from "./components/canvas-aux-node";
 import { BlockSheet } from "./components/block-sheet";
+import { CANVAS_FLOATING_ICON_BUTTON_CLASS } from "./components/floating-icon-button-class";
 import { CanvasNode } from "./components/canvas-node";
 import { CanvasSemanticEdge } from "./components/canvas-semantic-edge";
 import { DataEdge } from "./components/rf-ui/data-edge";
@@ -54,6 +55,11 @@ type LayoutControlsProps = {
   direction: "LR" | "TB";
   onLayout: () => void;
   onToggleDirection: () => void;
+};
+
+type ViewportControlsProps = {
+  interactive: boolean;
+  onToggleInteractive: () => void;
 };
 
 type InternalsSyncProps = {
@@ -120,6 +126,74 @@ function LayoutControls({
       </Button>
       <Button size="sm" className="corner-squircle" variant="outline" onClick={handleToggleDirection}>
         {direction}
+      </Button>
+    </Panel>
+  );
+}
+
+function ViewportControls({
+  interactive,
+  onToggleInteractive,
+}: ViewportControlsProps): ReactElement {
+  const { zoomIn, zoomOut, fitView } = useReactFlow();
+
+  const handleZoomIn = useCallback(() => {
+    zoomIn({ duration: 150 });
+  }, [zoomIn]);
+
+  const handleZoomOut = useCallback(() => {
+    zoomOut({ duration: 150 });
+  }, [zoomOut]);
+
+  const handleFitView = useCallback(() => {
+    fitView({ duration: 250 });
+  }, [fitView]);
+
+  return (
+    <Panel position="bottom-left" className="m-3 flex items-center gap-2">
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        className={CANVAS_FLOATING_ICON_BUTTON_CLASS}
+        onClick={handleZoomIn}
+        aria-label="Zoom in"
+      >
+        <Plus className="size-4" />
+      </Button>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        className={CANVAS_FLOATING_ICON_BUTTON_CLASS}
+        onClick={handleZoomOut}
+        aria-label="Zoom out"
+      >
+        <Minus className="size-4" />
+      </Button>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        className={CANVAS_FLOATING_ICON_BUTTON_CLASS}
+        onClick={handleFitView}
+        aria-label="Fit view"
+      >
+        <Maximize2 className="size-4" />
+      </Button>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        className={CANVAS_FLOATING_ICON_BUTTON_CLASS}
+        onClick={onToggleInteractive}
+        aria-label={interactive ? "Lock interaction" : "Unlock interaction"}
+      >
+        {interactive ? (
+          <LockOpen className="size-4" />
+        ) : (
+          <Lock className="size-4" />
+        )}
       </Button>
     </Panel>
   );
@@ -200,6 +274,7 @@ export function CanvasLabPage(): ReactElement {
   const [copied, setCopied] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [processorsOpen, setProcessorsOpen] = useState(false);
+  const [interactive, setInteractive] = useState(true);
   const [statusMessage, setStatusMessage] = useState<{
     tone: "success" | "error";
     text: string;
@@ -481,6 +556,9 @@ export function CanvasLabPage(): ReactElement {
             onConnect={onConnect}
             onNodeClick={handleNodeClick}
             isValidConnection={isValidConnection}
+            nodesDraggable={interactive}
+            nodesConnectable={interactive}
+            elementsSelectable={interactive}
             fitView={true}
             className="h-full w-full"
           >
@@ -512,7 +590,10 @@ export function CanvasLabPage(): ReactElement {
                 onImport={() => setImportOpen(true)}
               />
             </Panel>
-            <Controls position="bottom-left" />
+            <ViewportControls
+              interactive={interactive}
+              onToggleInteractive={() => setInteractive((value) => !value)}
+            />
           </ReactFlow>
         </div>
       </main>

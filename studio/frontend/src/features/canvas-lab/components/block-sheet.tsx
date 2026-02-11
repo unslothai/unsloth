@@ -18,6 +18,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactElement } from "react";
+import { CANVAS_FLOATING_ICON_BUTTON_CLASS } from "./floating-icon-button-class";
 import type { LlmType, SamplerType } from "../types";
 import { BLOCK_GROUPS, getBlocksForKind } from "../blocks/registry";
 
@@ -118,9 +119,6 @@ function BlockSheetButton({
   );
 }
 
-const FLOATING_ICON_BUTTON_CLASS =
-  "corner-squircle group h-11 w-11 rounded-xl border border-border/60 bg-transparent p-0 text-muted-foreground hover:bg-transparent hover:text-primary hover:border-primary/60";
-
 export function BlockSheet({
   container,
   view,
@@ -146,7 +144,11 @@ export function BlockSheet({
         }}
       >
         <SheetTrigger asChild={true}>
-          <Button size="icon" className={FLOATING_ICON_BUTTON_CLASS} variant="ghost">
+          <Button
+            size="icon"
+            className={CANVAS_FLOATING_ICON_BUTTON_CLASS}
+            variant="ghost"
+          >
             <HugeiconsIcon
               icon={PlusSignIcon}
               className="size-5 text-muted-foreground group-hover:text-primary"
@@ -234,7 +236,7 @@ export function BlockSheet({
         type="button"
         variant="ghost"
         size="icon"
-        className={FLOATING_ICON_BUTTON_CLASS}
+        className={CANVAS_FLOATING_ICON_BUTTON_CLASS}
         onClick={onImport}
       >
         <HugeiconsIcon
@@ -246,7 +248,7 @@ export function BlockSheet({
         type="button"
         variant="ghost"
         size="icon"
-        className={FLOATING_ICON_BUTTON_CLASS}
+        className={CANVAS_FLOATING_ICON_BUTTON_CLASS}
         onClick={onCopy}
       >
         <HugeiconsIcon
