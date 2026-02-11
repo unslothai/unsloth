@@ -121,6 +121,53 @@ DISABLE_SDPA_MODEL_NAMES = [
 ]
 
 
+def _route_hip_gpt_oss_model(
+    model_name,
+    use_exact_model_name,
+    load_in_4bit,
+    load_in_8bit,
+    load_in_fp8,
+    load_in_16bit,
+    quantization_config,
+    kwargs,
+):
+    # AMD GPT-OSS routing:
+    # - Radeon can often use prequantized bnb-4bit checkpoints.
+    # - Instinct/MI (warp=64) often cannot, so fallback to BF16.
+    lower_model_name = model_name.lower()
+    if (
+        is_hip()
+        and ("gpt-oss" in lower_model_name or "gpt_oss" in lower_model_name)
+        and not use_exact_model_name
+    ):
+        gpt_oss_prequant_suffix = lower_model_name.endswith(
+            ("-unsloth-bnb-4bit", "-bnb-4bit")
+        )
+        wants_prequantized = load_in_4bit or gpt_oss_prequant_suffix
+        can_use_prequantized = ALLOW_BITSANDBYTES and ALLOW_PREQUANTIZED_MODELS
+        if not (wants_prequantized and can_use_prequantized):
+            if not lower_model_name.endswith("-bf16"):
+                if "120b" in lower_model_name:
+                    model_name = "unsloth/gpt-oss-120b-BF16"
+                else:
+                    model_name = "unsloth/gpt-oss-20b-BF16"
+            load_in_4bit = False
+            load_in_8bit = False
+            load_in_fp8 = False
+            load_in_16bit = True
+            quantization_config = None
+            kwargs.pop("quantization_config", None)
+
+    return (
+        model_name,
+        load_in_4bit,
+        load_in_8bit,
+        load_in_fp8,
+        load_in_16bit,
+        quantization_config,
+    )
+
+
 class FastLanguageModel(FastLlamaModel):
     @staticmethod
     def from_pretrained(
@@ -275,31 +322,23 @@ class FastLanguageModel(FastLlamaModel):
                 )
             load_in_4bit = False
 
-        # AMD GPT-OSS routing:
-        # - Radeon can often use prequantized bnb-4bit checkpoints.
-        # - Instinct/MI (warp=64) often cannot, so fallback to BF16.
-        if (
-            is_hip()
-            and ("gpt-oss" in model_name.lower() or "gpt_oss" in model_name.lower())
-            and not use_exact_model_name
-        ):
-            gpt_oss_prequant_suffix = model_name.lower().endswith(
-                ("-unsloth-bnb-4bit", "-bnb-4bit")
-            )
-            wants_prequantized = load_in_4bit or gpt_oss_prequant_suffix
-            can_use_prequantized = ALLOW_BITSANDBYTES and ALLOW_PREQUANTIZED_MODELS
-            if not (wants_prequantized and can_use_prequantized):
-                if not model_name.lower().endswith("-bf16"):
-                    if "120b" in model_name.lower():
-                        model_name = "unsloth/gpt-oss-120b-BF16"
-                    else:
-                        model_name = "unsloth/gpt-oss-20b-BF16"
-                load_in_4bit = False
-                load_in_8bit = False
-                load_in_fp8 = False
-                load_in_16bit = True
-                quantization_config = None
-                kwargs.pop("quantization_config", None)
+        (
+            model_name,
+            load_in_4bit,
+            load_in_8bit,
+            load_in_fp8,
+            load_in_16bit,
+            quantization_config,
+        ) = _route_hip_gpt_oss_model(
+            model_name = model_name,
+            use_exact_model_name = use_exact_model_name,
+            load_in_4bit = load_in_4bit,
+            load_in_8bit = load_in_8bit,
+            load_in_fp8 = load_in_fp8,
+            load_in_16bit = load_in_16bit,
+            quantization_config = quantization_config,
+            kwargs = kwargs,
+        )
 
         # Find FP8, BnB 4bit, other mapped names
         old_model_name = model_name
@@ -885,31 +924,23 @@ class FastModel(FastBaseModel):
                 )
             load_in_4bit = False
 
-        # AMD GPT-OSS routing:
-        # - Radeon can often use prequantized bnb-4bit checkpoints.
-        # - Instinct/MI (warp=64) often cannot, so fallback to BF16.
-        if (
-            is_hip()
-            and ("gpt-oss" in model_name.lower() or "gpt_oss" in model_name.lower())
-            and not use_exact_model_name
-        ):
-            gpt_oss_prequant_suffix = model_name.lower().endswith(
-                ("-unsloth-bnb-4bit", "-bnb-4bit")
-            )
-            wants_prequantized = load_in_4bit or gpt_oss_prequant_suffix
-            can_use_prequantized = ALLOW_BITSANDBYTES and ALLOW_PREQUANTIZED_MODELS
-            if not (wants_prequantized and can_use_prequantized):
-                if not model_name.lower().endswith("-bf16"):
-                    if "120b" in model_name.lower():
-                        model_name = "unsloth/gpt-oss-120b-BF16"
-                    else:
-                        model_name = "unsloth/gpt-oss-20b-BF16"
-                load_in_4bit = False
-                load_in_8bit = False
-                load_in_fp8 = False
-                load_in_16bit = True
-                quantization_config = None
-                kwargs.pop("quantization_config", None)
+        (
+            model_name,
+            load_in_4bit,
+            load_in_8bit,
+            load_in_fp8,
+            load_in_16bit,
+            quantization_config,
+        ) = _route_hip_gpt_oss_model(
+            model_name = model_name,
+            use_exact_model_name = use_exact_model_name,
+            load_in_4bit = load_in_4bit,
+            load_in_8bit = load_in_8bit,
+            load_in_fp8 = load_in_fp8,
+            load_in_16bit = load_in_16bit,
+            quantization_config = quantization_config,
+            kwargs = kwargs,
+        )
 
         if fast_inference:
             if importlib.util.find_spec("vllm") is None:
