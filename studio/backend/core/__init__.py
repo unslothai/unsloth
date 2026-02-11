@@ -13,7 +13,7 @@ from utils.models import is_vision_model, ModelConfig, scan_trained_loras, load_
 
 # Utilities (from utils)
 from utils.paths import normalize_path, is_local_path, is_model_cached
-from utils.utils import without_hf_auth, format_error_message, get_gpu_memory_info, search_hf_models
+from utils.utils import without_hf_auth, format_error_message, get_gpu_memory_info, search_hf_models, get_device, is_apple_silicon, clear_gpu_cache
 from utils.datasets import format_and_template_dataset
 
 __all__ = [
@@ -45,4 +45,7 @@ __all__ = [
     'without_hf_auth',
     'format_error_message',
     'get_gpu_memory_info',
+    'get_device',
+    'is_apple_silicon',
+    'clear_gpu_cache',
 ]
