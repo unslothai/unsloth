@@ -1,6 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { STEPS } from "@/config/training";
-import { markOnboardingDone } from "@/features/auth/session";
+import { markOnboardingDone } from "@/features/auth";
 import { useWizardStore } from "@/stores/training";
 import { ArrowLeft02Icon, ArrowRight02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";

@@ -3,7 +3,7 @@ import { lazy } from "react";
 import { Route as rootRoute } from "./__root";
 
 const SignupPage = lazy(() =>
-  import("@/features/auth/signup-page").then((m) => ({
+  import("@/features/auth").then((m) => ({
     default: m.SignupPage,
   })),
 );
