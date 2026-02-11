@@ -1,6 +1,6 @@
 import { createRouter } from "@tanstack/react-router";
 import { Route as rootRoute } from "./routes/__root";
-import { Route as canvasLabRoute } from "./routes/canvas-lab";
+import { Route as dataRecipesNewRoute } from "./routes/data-recipes-new";
 import { Route as chatRoute } from "./routes/chat";
 import { Route as exportRoute } from "./routes/export";
 import { Route as gridTestRoute } from "./routes/grid-test";
@@ -19,7 +19,7 @@ const routeTree = rootRoute.addChildren([
   studioRoute,
   chatRoute,
   exportRoute,
-  canvasLabRoute,
+  dataRecipesNewRoute,
 ]);
 
 export const router = createRouter({ routeTree });
