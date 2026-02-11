@@ -11,6 +11,7 @@ from unsloth import FastLanguageModel, FastVisionModel
 from huggingface_hub import HfApi, ModelCard
 from transformers.modeling_utils import PushToHubMixin
 import torch
+from utils.hardware import clear_gpu_cache
 
 from utils.models import is_vision_model, get_base_model_from_lora
 from core.inference import get_inference_backend
@@ -69,14 +70,8 @@ class ExportBackend:
             self.current_tokenizer = None
             self.current_checkpoint = None
 
-            # Force garbage collection
-            import gc
-            gc.collect()
-
-            # Clear CUDA cache
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                torch.cuda.ipc_collect()
+            # Clear GPU memory cache (handles gc + backend-specific cleanup)
+            clear_gpu_cache()
 
             logger.info("Memory cleanup completed successfully")
             return True

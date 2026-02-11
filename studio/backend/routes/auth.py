@@ -7,11 +7,17 @@ import secrets
 from models.auth import (
     AuthSetupRequest,
     AuthLoginRequest,
+    RefreshTokenRequest,
     AuthStatusResponse,
 )
 from models.users import Token
 from auth import storage, hashing
-from auth.authentication import create_access_token, reload_secret
+from auth.authentication import (
+    create_access_token,
+    create_refresh_token,
+    refresh_access_token,
+    reload_secret,
+)
 
 router = APIRouter()
 
@@ -32,12 +38,20 @@ async def setup_auth(payload: AuthSetupRequest) -> Token:
     """
     First-time setup: create the admin user and a JWT secret.
 
+    Requires a valid setup token (printed to the server console on startup).
     Can only be called once. Subsequent calls will return 400.
     """
     if storage.is_initialized():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Auth is already initialized.",
+        )
+
+    # Validate the one-time setup token
+    if not storage.consume_setup_token(payload.setup_token):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid or expired setup token.",
         )
 
     # Generate a strong random JWT secret for this installation
@@ -59,15 +73,20 @@ async def setup_auth(payload: AuthSetupRequest) -> Token:
     # Reload JWT secret from DB (so authentication.py picks it up)
     reload_secret()
 
-    # Issue a token for the new user
+    # Issue access + refresh tokens for the new user
     access_token = create_access_token(subject=payload.username)
-    return Token(access_token=access_token, token_type="bearer")
+    refresh_token = create_refresh_token(subject=payload.username)
+    return Token(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        token_type="bearer",
+    )
 
 
 @router.post("/login", response_model=Token)
 async def login(payload: AuthLoginRequest) -> Token:
     """
-    Login with username/password and receive a JWT.
+    Login with username/password and receive access + refresh tokens.
     """
     record = storage.get_user_and_secret(payload.username)
     if record is None:
@@ -84,5 +103,31 @@ async def login(payload: AuthLoginRequest) -> Token:
         )
 
     access_token = create_access_token(subject=payload.username)
-    return Token(access_token=access_token, token_type="bearer")
+    refresh_token = create_refresh_token(subject=payload.username)
+    return Token(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        token_type="bearer",
+    )
+
+
+@router.post("/refresh", response_model=Token)
+async def refresh(payload: RefreshTokenRequest) -> Token:
+    """
+    Exchange a valid refresh token for a new access token.
+
+    The refresh token itself is reusable until it expires (7 days).
+    """
+    new_access_token = refresh_access_token(payload.refresh_token)
+    if new_access_token is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired refresh token",
+        )
+
+    return Token(
+        access_token=new_access_token,
+        refresh_token=payload.refresh_token,
+        token_type="bearer",
+    )
 

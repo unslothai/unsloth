@@ -36,6 +36,7 @@ from models import (
     TrainingStatus,
     TrainingProgress,
 )
+from models.responses import TrainingStopResponse, TrainingMetricsResponse
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -242,7 +243,7 @@ async def start_training(
         )
 
 
-@router.post("/stop")
+@router.post("/stop", response_model=TrainingStopResponse)
 async def stop_training(
     current_subject: str = Depends(get_current_subject),
 ):
@@ -253,18 +254,18 @@ async def stop_training(
         backend = get_training_backend()
         
         if not backend.is_training_active():
-            return {
-                "status": "idle",
-                "message": "No training job is currently running"
-            }
+            return TrainingStopResponse(
+                status="idle",
+                message="No training job is currently running"
+            )
         
         # Call backend stop method
         backend.stop_training()
         
-        return {
-            "status": "stopped",
-            "message": "Training job stopped successfully"
-        }
+        return TrainingStopResponse(
+            status="stopped",
+            message="Training job stopped successfully"
+        )
         
     except Exception as e:
         logger.error(f"Error stopping training: {e}", exc_info=True)
@@ -353,7 +354,7 @@ async def get_training_status(
         )
 
 
-@router.get("/metrics")
+@router.get("/metrics", response_model=TrainingMetricsResponse)
 async def get_training_metrics(
     current_subject: str = Depends(get_current_subject),
 ):
@@ -373,15 +374,14 @@ async def get_training_metrics(
         current_lr = lr_history[-1] if lr_history else None
         current_step = step_history[-1] if step_history else None
 
-        # Keep metrics as a simple JSON payload instead of a Pydantic model
-        return {
-            "loss_history": loss_history,
-            "lr_history": lr_history,
-            "step_history": step_history,
-            "current_loss": current_loss,
-            "current_lr": current_lr,
-            "current_step": current_step,
-        }
+        return TrainingMetricsResponse(
+            loss_history=loss_history,
+            lr_history=lr_history,
+            step_history=step_history,
+            current_loss=current_loss,
+            current_lr=current_lr,
+            current_step=current_step,
+        )
         
     except Exception as e:
         logger.error(f"Error getting training metrics: {e}", exc_info=True)
