@@ -33,11 +33,9 @@ type AuthFormProps = {
 export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   const navigate = useNavigate();
   const [showPassword, setShowPassword] = useState(false);
-  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [username, setUsername] = useState("admin");
   const [setupToken, setSetupToken] = useState("");
   const [password, setPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [statusLoading, setStatusLoading] = useState(true);
   const [initialized, setInitialized] = useState<boolean | null>(null);
@@ -106,10 +104,6 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
     event.preventDefault();
     setError(null);
 
-    if (!isLoginMode && password !== confirmPassword) {
-      setError("Passwords not match.");
-      return;
-    }
     if (!isLoginMode && !setupToken.trim()) {
       setError("Setup token required.");
       return;
@@ -218,37 +212,6 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
               onChange={(event) => setSetupToken(event.target.value)}
               required
             />
-          </div>
-        )}
-
-        {!isLoginMode && (
-          <div className="space-y-2">
-            <Label htmlFor="confirm-password">Confirm password</Label>
-            <div className="relative">
-              <Input
-                id="confirm-password"
-                type={showConfirmPassword ? "text" : "password"}
-                className="pr-10"
-                autoComplete="new-password"
-                value={confirmPassword}
-                onChange={(event) => setConfirmPassword(event.target.value)}
-                minLength={8}
-                required
-              />
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="absolute right-0 top-0 h-full px-3 text-muted-foreground hover:bg-transparent"
-                onClick={() => setShowConfirmPassword((prev) => !prev)}
-              >
-                {showConfirmPassword ? (
-                  <EyeOff className="h-4 w-4" />
-                ) : (
-                  <Eye className="h-4 w-4" />
-                )}
-              </Button>
-            </div>
           </div>
         )}
 
