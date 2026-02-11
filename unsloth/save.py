@@ -1998,8 +1998,7 @@ def unsloth_save_pretrained_gguf(
     except Exception as e:
         if os.environ.get("UNSLOTH_GGUF_OFFLINE", "0") == "1":
             print(
-                "Unsloth: GGUF conversion skipped due to offline mode. "
-                f"Reason: {e}"
+                "Unsloth: GGUF conversion skipped due to offline mode. " f"Reason: {e}"
             )
             all_file_locations = []
             want_full_precision = None
