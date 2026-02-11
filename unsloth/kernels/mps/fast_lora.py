@@ -205,20 +205,23 @@ class MPSLoRA_MLP(torch.autograd.Function):
         # Down projection LoRA gradients
         # d_downA = h.T @ (dY @ downB.T) * downS
         # d_downB = (downA.T @ h.T) @ dY * downS
-        d_downA.addmm_(h_out.t(), dY @ downB.t(), alpha=downS, beta=0)
-        d_downB.addmm_(downA.t() @ h_out.t(), dY, alpha=downS, beta=0)
+        # Use addmm (not addmm_) to avoid in-place ops on saved tensors
+        d_downA = d_downA.addmm(h_out.t(), dY @ downB.t(), alpha=downS, beta=0)
+        d_downB = d_downB.addmm(downA.t() @ h_out.t(), dY, alpha=downS, beta=0)
 
         # Up projection LoRA gradients
         # d_upA = X.T @ (df @ upB.T) * upS
         # d_upB = (upA.T @ X.T) @ df * upS
-        d_upA.addmm_(X.t(), df @ upB.t(), alpha=upS, beta=0)
-        d_upB.addmm_(upA.t() @ X.t(), df, alpha=upS, beta=0)
+        # Use addmm (not addmm_) to avoid in-place ops on saved tensors from ctx
+        d_upA = d_upA.addmm(X.t(), df @ upB.t(), alpha=upS, beta=0)
+        d_upB = d_upB.addmm(upA.t() @ X.t(), df, alpha=upS, beta=0)
 
         # Gate projection LoRA gradients
         # d_gateA = X.T @ (de @ gateB.T) * gateS
         # d_gateB = (gateA.T @ X.T) @ de * gateS
-        d_gateA.addmm_(X.t(), de @ gateB.t(), alpha=gateS, beta=0)
-        d_gateB.addmm_(gateA.t() @ X.t(), de, alpha=gateS, beta=0)
+        # Use addmm (not addmm_) to avoid in-place ops on saved tensors from ctx
+        d_gateA = d_gateA.addmm(X.t(), de @ gateB.t(), alpha=gateS, beta=0)
+        d_gateB = d_gateB.addmm(gateA.t() @ X.t(), de, alpha=gateS, beta=0)
 
         # Compute dX
         # dX = df @ upW.T + de @ gateW.T + LoRA contributions
@@ -227,15 +230,16 @@ class MPSLoRA_MLP(torch.autograd.Function):
         del upW_t
         
         # Add up projection LoRA contribution: df @ upB.T @ upA.T * upS
-        dX.addmm_(df @ upB.t(), upA.t(), alpha=upS)
+        # Use addmm (not addmm_) to avoid in-place ops on tensors without requires_grad
+        dX = dX.addmm(df @ upB.t(), upA.t(), alpha=upS)
 
         # Add gate projection contribution
         gateW_t = gateW.t().to(dtype)
-        dX.addmm_(de, gateW_t.t())
+        dX = dX.addmm(de, gateW_t.t())
         del gateW_t
         
         # Add gate projection LoRA contribution: de @ gateB.T @ gateA.T * gateS
-        dX.addmm_(de @ gateB.t(), gateA.t(), alpha=gateS)
+        dX = dX.addmm(de @ gateB.t(), gateA.t(), alpha=gateS)
 
         # Reshape dX back to original shape
         dX = dX.view(batch, seq_len, hd)
