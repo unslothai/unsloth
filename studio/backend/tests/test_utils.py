@@ -6,6 +6,9 @@ These tests are designed to pass on ANY platform:
   • Apple Silicon (MPS backend)
   • CPU-only     (no GPU at all)
 
+No ML framework is imported at the top level.
+Tests that need torch internals for mocking are skipped when torch is unavailable.
+
 Run with:
     cd studio/backend
     python -m pytest tests/test_utils.py -v
@@ -14,7 +17,15 @@ import platform
 from unittest.mock import patch, MagicMock
 
 import pytest
-import torch
+
+# --- Conditional torch import ---
+try:
+    import torch
+    HAS_TORCH = True
+except ImportError:
+    HAS_TORCH = False
+
+needs_torch = pytest.mark.skipif(not HAS_TORCH, reason="PyTorch not installed")
 
 from utils.hardware import (
     get_device,
@@ -31,10 +42,11 @@ from utils.utils import format_error_message
 
 def _actual_device() -> str:
     """Return the real device string for the current machine."""
-    if torch.cuda.is_available():
-        return "cuda"
-    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        return "mps"
+    if HAS_TORCH:
+        if torch.cuda.is_available():
+            return "cuda"
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            return "mps"
     return "cpu"
 
 
@@ -50,12 +62,14 @@ class TestGetDevice:
     def test_matches_actual_hardware(self):
         assert get_device().value == _actual_device()
 
-    # --- Mocked paths to cover all branches regardless of hardware ---
+    # --- Mocked paths (require torch for patching) ---
 
+    @needs_torch
     def test_returns_cuda_when_cuda_available(self):
         with patch("torch.cuda.is_available", return_value=True):
             assert get_device() == DeviceType.CUDA
 
+    @needs_torch
     def test_returns_mps_when_only_mps_available(self):
         mock_mps = MagicMock()
         mock_mps.is_available.return_value = True
@@ -63,6 +77,7 @@ class TestGetDevice:
              patch.object(torch.backends, "mps", mock_mps, create=True):
             assert get_device() == DeviceType.MPS
 
+    @needs_torch
     def test_returns_cpu_when_nothing_available(self):
         with patch("torch.cuda.is_available", return_value=False), \
              patch("builtins.hasattr", side_effect=lambda obj, name: False if name == "mps" else hasattr(obj, name)):
@@ -102,10 +117,10 @@ class TestClearGpuCache:
     """clear_gpu_cache() must never raise, regardless of platform."""
 
     def test_does_not_raise(self):
-        # Should be safe on any hardware
         clear_gpu_cache()
 
-    def test_calls_cuda_cache_when_cuda_available(self):
+    @needs_torch
+    def test_calls_cuda_cache_when_cuda(self):
         with patch("utils.hardware.hardware.get_device", return_value=DeviceType.CUDA), \
              patch("torch.cuda.empty_cache") as mock_empty, \
              patch("torch.cuda.ipc_collect") as mock_ipc:
@@ -113,7 +128,8 @@ class TestClearGpuCache:
             mock_empty.assert_called_once()
             mock_ipc.assert_called_once()
 
-    def test_calls_mps_cache_when_mps_available(self):
+    @needs_torch
+    def test_calls_mps_cache_when_mps(self):
         mock_mps_module = MagicMock()
         mock_mps_module.empty_cache = MagicMock()
 
@@ -124,7 +140,6 @@ class TestClearGpuCache:
 
     def test_noop_on_cpu(self):
         with patch("utils.hardware.hardware.get_device", return_value=DeviceType.CPU):
-            # Must not raise
             clear_gpu_cache()
 
 
@@ -137,18 +152,14 @@ class TestGetGpuMemoryInfo:
         assert isinstance(result, dict)
 
     def test_has_available_key(self):
-        result = get_gpu_memory_info()
-        assert "available" in result
+        assert "available" in get_gpu_memory_info()
 
     def test_has_backend_key(self):
-        result = get_gpu_memory_info()
-        assert "backend" in result
+        assert "backend" in get_gpu_memory_info()
 
     def test_backend_matches_device(self):
-        """The reported backend must agree with get_device()."""
         result = get_gpu_memory_info()
-        device = get_device()
-        assert result["backend"] == device.value
+        assert result["backend"] == get_device().value
 
     # --- When a GPU IS available ---
 
@@ -167,9 +178,10 @@ class TestGetGpuMemoryInfo:
 
     # --- CUDA-specific mocked test ---
 
+    @needs_torch
     def test_cuda_path_returns_correct_fields(self):
         mock_props = MagicMock()
-        mock_props.total_memory = 16 * (1024 ** 3)  # 16 GB
+        mock_props.total_memory = 16 * (1024 ** 3)
         mock_props.name = "NVIDIA Test GPU"
 
         with patch("utils.hardware.hardware.get_device", return_value=DeviceType.CUDA), \
@@ -189,9 +201,10 @@ class TestGetGpuMemoryInfo:
 
     # --- MPS-specific mocked test ---
 
+    @needs_torch
     def test_mps_path_returns_correct_fields(self):
         mock_psutil_mem = MagicMock()
-        mock_psutil_mem.total = 32 * (1024 ** 3)  # 32 GB unified
+        mock_psutil_mem.total = 32 * (1024 ** 3)
 
         mock_psutil = MagicMock()
         mock_psutil.virtual_memory.return_value = mock_psutil_mem
@@ -215,17 +228,16 @@ class TestGetGpuMemoryInfo:
     def test_cpu_path_returns_unavailable(self):
         with patch("utils.hardware.hardware.get_device", return_value=DeviceType.CPU):
             result = get_gpu_memory_info()
-
         assert result["available"] is False
         assert result["backend"] == "cpu"
 
     # --- Error resilience ---
 
+    @needs_torch
     def test_cuda_error_returns_unavailable(self):
         with patch("utils.hardware.hardware.get_device", return_value=DeviceType.CUDA), \
              patch("torch.cuda.current_device", side_effect=RuntimeError("CUDA init failed")):
             result = get_gpu_memory_info()
-
         assert result["available"] is False
         assert "error" in result
 
@@ -247,10 +259,10 @@ class TestLogGpuMemory:
             "utilization_pct": 12.5,
             "free_gb": 14.0,
         }
-        with patch("utils.hardware.hardware.get_gpu_memory_info", return_value=fake_info):
-            import logging
-            with caplog.at_level(logging.INFO, logger="utils.hardware.hardware"):
-                log_gpu_memory("unit-test")
+        import logging
+        with patch("utils.hardware.hardware.get_gpu_memory_info", return_value=fake_info), \
+             caplog.at_level(logging.INFO, logger="utils.hardware.hardware"):
+            log_gpu_memory("unit-test")
 
         assert "unit-test" in caplog.text
         assert "CUDA" in caplog.text
@@ -258,10 +270,10 @@ class TestLogGpuMemory:
 
     def test_logs_cpu_fallback_when_no_gpu(self, caplog):
         fake_info = {"available": False, "backend": "cpu"}
-        with patch("utils.hardware.hardware.get_gpu_memory_info", return_value=fake_info):
-            import logging
-            with caplog.at_level(logging.INFO, logger="utils.hardware.hardware"):
-                log_gpu_memory("cpu-test")
+        import logging
+        with patch("utils.hardware.hardware.get_gpu_memory_info", return_value=fake_info), \
+             caplog.at_level(logging.INFO, logger="utils.hardware.hardware"):
+            log_gpu_memory("cpu-test")
 
         assert "No GPU available" in caplog.text
 
@@ -298,7 +310,7 @@ class TestFormatErrorMessage:
         with patch("utils.hardware.hardware.get_device", return_value=DeviceType.CUDA):
             msg = format_error_message(err, "big/model")
         assert "GPU" in msg
-        assert "big/model" not in msg  # should use short name
+        assert "big/model" not in msg
         assert "model" in msg
 
     # --- OOM on MPS ---
