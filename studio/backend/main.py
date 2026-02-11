@@ -15,13 +15,17 @@ from datetime import datetime
 # Import routers
 from routes import training_router, models_router, inference_router, datasets_router, auth_router
 from auth import storage
+from utils.hardware import detect_hardware
 
 UNSLOTH_CACHE_DIR = Path(__file__).parent / "unsloth_compiled_cache"
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup: print setup token if needed. Shutdown: clean up compiled cache."""
+    """Startup: detect hardware, print setup token if needed. Shutdown: clean up compiled cache."""
+    # Detect hardware first — sets DEVICE global used everywhere
+    detect_hardware()
+
     if not storage.is_initialized():
         setup_token = secrets.token_urlsafe(32)
         storage.save_setup_token(setup_token)
@@ -78,23 +82,20 @@ async def health_check():
 @app.get("/api/system")
 async def get_system_info():
     """Get system information"""
-    import torch
     import platform
     import psutil
+    from utils.hardware import get_device, get_gpu_memory_info, DeviceType
 
-    # GPU Info
-    gpu_info = {"available": False, "devices": []}
-    if torch.cuda.is_available():
-        gpu_info["available"] = True
-        for i in range(torch.cuda.device_count()):
-            props = torch.cuda.get_device_properties(i)
-            gpu_info["devices"].append(
-                {
-                    "index": i,
-                    "name": props.name,
-                    "memory_total_gb": round(props.total_memory / 1e9, 2),
-                }
-            )
+    # GPU Info — uses the hardware module (works on CUDA, MPS, CPU)
+    mem_info = get_gpu_memory_info()
+    gpu_info = {"available": mem_info.get("available", False), "devices": []}
+
+    if mem_info.get("available"):
+        gpu_info["devices"].append({
+            "index": mem_info.get("device", 0),
+            "name": mem_info.get("device_name", "Unknown"),
+            "memory_total_gb": round(mem_info.get("total_gb", 0), 2),
+        })
 
     # CPU & Memory
     memory = psutil.virtual_memory()
@@ -102,6 +103,7 @@ async def get_system_info():
     return {
         "platform": platform.platform(),
         "python_version": platform.python_version(),
+        "device_backend": get_device().value,
         "cpu_count": psutil.cpu_count(),
         "memory": {
             "total_gb": round(memory.total / 1e9, 2),
