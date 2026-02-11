@@ -35,6 +35,7 @@ Thumbs.db
 # Other
 resources/
 tmp/
+auth.db
 
 # Local working docs
 **/CLAUDE.md

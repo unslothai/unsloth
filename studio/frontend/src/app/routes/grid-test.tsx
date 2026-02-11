@@ -7,11 +7,13 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { createRoute } from "@tanstack/react-router";
+import { requireAuth } from "../auth-guards";
 import { Route as rootRoute } from "./__root";
 
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/grid-test",
+  beforeLoad: () => requireAuth(),
   component: GridTestPage,
 });
 
