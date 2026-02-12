@@ -157,8 +157,8 @@ def run_attention(
     elif backend == XFORMERS:
         attn_bias = build_xformers_block_causal_mask(
             context.seq_info,
-            sliding_window = sliding_window,
-            base_mask = context.causal_mask,
+            sliding_window=sliding_window,
+            base_mask=context.causal_mask,
         )
 
         Q_t = Q.transpose(1, 2)
@@ -211,7 +211,7 @@ def run_attention(
             Q_mod,
             K_mod,
             V_mod,
-            attn_bias = attn_bias,
+            attn_bias=attn_bias,
             **xformers_kwargs,
         )
 
@@ -227,9 +227,9 @@ def run_attention(
         if context.seq_info is not None and local_mask is None:
             local_mask = build_sdpa_packed_attention_mask(
                 context.seq_info,
-                dtype = Q.dtype,
-                device = Q.device,
-                sliding_window = sliding_window,
+                dtype=Q.dtype,
+                device=Q.device,
+                sliding_window=sliding_window,
             )
         else:
             q_len_local = Q.shape[-2]
