@@ -14,6 +14,12 @@ print(f"Device: {device}")
 print(f"PyTorch: {torch.__version__}")
 print()
 
+try:
+    import unsloth
+    print(f"Unsloth Installed Path: {unsloth.__file__}")
+except ImportError:
+    print("Unsloth not installed")
+
 from unsloth import FastLanguageModel
 
 model_name = "unsloth/Llama-3.2-1B-Instruct"
