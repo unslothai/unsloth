@@ -115,22 +115,72 @@ try:
         try:
              logits_mv = torch.mv(model.model.lm_head.weight, norm_out_bf16.ravel())
              print(f"LM Head (torch.mv) output req_grad: {logits_mv.requires_grad}")
-        except Exception as e:
-             print(f"LM Head (torch.mv) failed: {e}")
-
 except Exception as e:
-    print(f"LM Head failed: {e}")
+    print(f"LM Head (torch.mv) failed: {e}")
 
 print("=" * 70)
-print("Diagnostic: Test 3b - Patched Forward Call")
+print("Diagnostic: Test 5 - Full Training Step Simulation")
 print("=" * 70)
 try:
     with torch.set_grad_enabled(True):
-        outputs = model(input_ids)
-        logits = outputs.logits
-    print(f"Patched Forward logits req_grad: {logits.requires_grad}")
+        labels = torch.randint(0, 100, (1, 5), device=device)
+        outputs = model(input_ids, labels=labels)
+        loss = outputs.loss
+        print(f"  loss = {loss.item()}")
+        print(f"  loss.requires_grad = {loss.requires_grad}")
+        print(f"  loss.grad_fn = {loss.grad_fn}")
+        
+        if loss.requires_grad:
+            loss.backward()
+            print("  ✅ Backward pass successful!")
+        else:
+            print("  ❌ Full training step loss does NOT require grad!")
+
 except Exception as e:
-    print(f"Patched Forward failed: {e}")
+    print(f"Test 5 failed: {e}")
+    import traceback
+    traceback.print_exc()
+
+print("=" * 70)
+print("Diagnostic: Test 6 - SFTTrainer Training")
+print("=" * 70)
+try:
+    from trl import SFTTrainer
+    from transformers import TrainingArguments
+    from datasets import Dataset
+
+    # Create dummy dataset
+    dataset = Dataset.from_dict({"text": ["hello world"] * 4})
+
+    training_args = TrainingArguments(
+        per_device_train_batch_size=2,
+        gradient_accumulation_steps=1,
+        warmup_steps=1,
+        max_steps=3,
+        learning_rate=2e-4,
+        fp16=False,
+        bf16=True,
+        logging_steps=1,
+        output_dir="outputs_mps_test",
+        optim="adamw_torch",
+        report_to="none",
+        use_mps_device=True,
+    )
+
+    trainer = SFTTrainer(
+        model=model,
+        train_dataset=dataset,
+        dataset_text_field="text",
+        max_seq_length=max_seq_length,
+        args=training_args,
+    )
+
+    print("Starting trainer.train()...")
+    trainer_stats = trainer.train()
+    print("✅ SFTTrainer training successful!")
+
+except Exception as e:
+    print(f"Test 6 failed: {e}")
     import traceback
     traceback.print_exc()
 
