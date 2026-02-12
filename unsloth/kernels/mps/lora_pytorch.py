@@ -24,7 +24,7 @@ import torch
 import torch.nn.functional as F
 
 
-def pytorch_lora_linear(X, W, A, B, scaling):
+def pytorch_lora_linear(X, W, A, B, scaling, W_quant=None):
     """
     Pure PyTorch LoRA linear layer: Y = X @ W^T + scaling * X @ A^T @ B^T
     
@@ -34,15 +34,24 @@ def pytorch_lora_linear(X, W, A, B, scaling):
         A: LoRA A matrix [rank, hidden_dim]
         B: LoRA B matrix [out_dim, rank]
         scaling: LoRA scaling factor (alpha / rank)
+        W_quant: Quantized weight info (ignored for non-quantized models)
     
     Returns:
         Y: Output tensor [batch, seq_len, out_dim]
     """
-    output = F.linear(X, W)
+    dtype = X.dtype
+    
+    # Base linear: X @ W^T
+    W_ = W.to(dtype) if W.dtype != dtype else W
+    output = F.linear(X, W_)
     
     if A is not None and B is not None:
-        lora_output = F.linear(F.linear(X, A), B)
-        output = output + scaling * lora_output
+        # LoRA path: scaling * X @ A^T @ B^T
+        # A is [rank, hidden], B is [out_dim, rank]
+        # F.linear(X, A) computes X @ A^T -> [batch, seq, rank]
+        # F.linear(XA, B) computes XA @ B^T -> [batch, seq, out_dim]
+        lora_out = F.linear(F.linear(X, A.to(dtype)), B.to(dtype))
+        output = output + scaling * lora_out
     
     return output
 
@@ -62,20 +71,11 @@ def pytorch_lora_mlp_swiglu(
     SwiGLU: output = swish(gate) * up
     where swish(x) = x * sigmoid(x)
     """
-    # Gate projection with LoRA
-    gate = pytorch_lora_linear(X, gateW, gateA, gateB, gateS)
-    
-    # Up projection with LoRA
-    up = pytorch_lora_linear(X, upW, upA, upB, upS)
-    
-    # SwiGLU: swish(gate) * up
-    # swish(x) = x * sigmoid(x)
+    gate = pytorch_lora_linear(X, gateW, gateA, gateB, gateS, gateW_quant)
+    up = pytorch_lora_linear(X, upW, upA, upB, upS, upW_quant)
     swish_gate = gate * torch.sigmoid(gate)
     hidden = swish_gate * up
-    
-    # Down projection with LoRA
-    output = pytorch_lora_linear(hidden, downW, downA, downB, downS)
-    
+    output = pytorch_lora_linear(hidden, downW, downA, downB, downS, downW_quant)
     return output
 
 
@@ -90,19 +90,11 @@ def pytorch_lora_mlp_geglu_exact(
     
     GeGLU: output = gelu(gate) * up
     """
-    # Gate projection with LoRA
-    gate = pytorch_lora_linear(X, gateW, gateA, gateB, gateS)
-    
-    # Up projection with LoRA
-    up = pytorch_lora_linear(X, upW, upA, upB, upS)
-    
-    # GeGLU: gelu(gate) * up
+    gate = pytorch_lora_linear(X, gateW, gateA, gateB, gateS, gateW_quant)
+    up = pytorch_lora_linear(X, upW, upA, upB, upS, upW_quant)
     gelu_gate = F.gelu(gate)
     hidden = gelu_gate * up
-    
-    # Down projection with LoRA
-    output = pytorch_lora_linear(hidden, downW, downA, downB, downS)
-    
+    output = pytorch_lora_linear(hidden, downW, downA, downB, downS, downW_quant)
     return output
 
 
@@ -117,22 +109,13 @@ def pytorch_lora_mlp_geglu_approx(
     
     Uses tanh approximation of GELU for faster computation.
     """
-    # Gate projection with LoRA
-    gate = pytorch_lora_linear(X, gateW, gateA, gateB, gateS)
-    
-    # Up projection with LoRA
-    up = pytorch_lora_linear(X, upW, upA, upB, upS)
-    
-    # Approximate GeGLU using tanh
-    # gelu_approx(x) = 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
+    gate = pytorch_lora_linear(X, gateW, gateA, gateB, gateS, gateW_quant)
+    up = pytorch_lora_linear(X, upW, upA, upB, upS, upW_quant)
     sqrt_2_over_pi = 0.7978845608028654
     cdf = 0.5 * (1.0 + torch.tanh(sqrt_2_over_pi * (gate + 0.044715 * torch.pow(gate, 3))))
     gelu_approx_gate = gate * cdf
     hidden = gelu_approx_gate * up
-    
-    # Down projection with LoRA
-    output = pytorch_lora_linear(hidden, downW, downA, downB, downS)
-    
+    output = pytorch_lora_linear(hidden, downW, downA, downB, downS, downW_quant)
     return output
 
 
@@ -147,9 +130,9 @@ def pytorch_lora_qkv(
     
     Projects X to Q, K, V with separate LoRA for each.
     """
-    Q = pytorch_lora_linear(X, QW, QA, QB, QS)
-    K = pytorch_lora_linear(X, KW, KA, KB, KS)
-    V = pytorch_lora_linear(X, VW, VA, VB, VS)
+    Q = pytorch_lora_linear(X, QW, QA, QB, QS, QW_quant)
+    K = pytorch_lora_linear(X, KW, KA, KB, KS, KW_quant)
+    V = pytorch_lora_linear(X, VW, VA, VB, VS, VW_quant)
     return Q, K, V
 
 
@@ -160,7 +143,7 @@ def pytorch_lora_o(
     """
     Pure PyTorch LoRA output projection for MPS.
     """
-    return pytorch_lora_linear(X, OW, OA, OB, OS)
+    return pytorch_lora_linear(X, OW, OA, OB, OS, OW_quant)
 
 
 def pytorch_rope_embedding_qk(Q, K, cos, sin):
