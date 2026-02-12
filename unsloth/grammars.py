@@ -28,11 +28,9 @@ JSON_ARR_GBNF = r"""
 root ::= arr
 value ::= object | array | string | number | ("true" | "false" | "null") ws
 arr ::=
-  "[
-" ws (
+  "[\n" ws (
             value
-            (",
-" ws value)*
+            (",\n" ws value)*
         )? "]"
 object ::=
   "{" ws (
@@ -45,13 +43,12 @@ array ::=
             ("," ws value)*
         )? "]" ws
 string ::=
-  """ (
-    [^"\x7F\x00-\x1F] |
-    "" (["\/bfnrt] | "u" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F]) # escapes
-  )* """ ws
+  "\"" (
+    [^"\\\\\\x7F\\x00-\\x1F] |
+    "\\\\" (["\\\\\/bfnrt] | "u" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F]) # escapes
+  )* "\"" ws
 number ::= ("-"? ([0-9] | [1-9] [0-9]*)) ("." [0-9]+)? ([eE] [-+]? [0-9]+)? ws
-ws ::= ([ 	
-] ws)?
+ws ::= ([ \\t\\n] ws)?
 """
 
 def generate_with_grammar(
@@ -136,11 +133,18 @@ def generate_with_grammar(
     except ValueError as e:
         # Some models fail if specific kwargs like 'sliding_window' or 'num_logits_to_keep' are passed
         if "model_kwargs" in str(e):
-            logger.warning("Unsloth: Generation failed with model_kwargs error. Retrying with minimal parameters...")
+            logger.warning("Unsloth: Generation failed with model_kwargs error. Retrying without extra keyword arguments...")
             minimal_kwargs = {
                 "input_ids": input_ids,
                 "max_new_tokens": max_new_tokens,
+                "do_sample": do_sample,
+                "repetition_penalty": repetition_penalty,
+                "num_return_sequences": num_return_sequences,
                 "logits_processor": [grammar_processor],
             }
+            if do_sample:
+                if temperature is not None: minimal_kwargs["temperature"] = temperature
+                if top_p is not None: minimal_kwargs["top_p"] = top_p
+                if top_k is not None: minimal_kwargs["top_k"] = top_k
             return model.generate(**minimal_kwargs)
         raise

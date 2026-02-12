@@ -1145,7 +1145,7 @@ def patch_transformers_cfg():
             # Try auto-inference as last resort
             try:
                 return Token2ByteMapping.auto_infer(hf_tokenizer)
-            except:
+            except Exception:
                 raise NotImplementedError(
                     f"Tokenizer not supported: {hf_tokenizer.__class__.__name__} "
                     f"for model: {hf_tokenizer.name_or_path}. "
