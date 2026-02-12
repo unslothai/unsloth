@@ -84,6 +84,11 @@ class TrainingStatus(BaseModel):
     message: str = Field(..., description="Human-readable status message")
     error: Optional[str] = Field(None, description="Error details if phase is 'error'")
     details: Optional[dict] = Field(None, description="Phase-specific info, e.g. {'model_size': '8B'}")
+    metric_history: Optional[dict] = Field(
+        None,
+        description="Full metric history arrays for chart recovery after SSE reconnection. "
+                    "Keys: 'steps', 'loss', 'lr' — each a list of numeric values.",
+    )
 
 
 class TrainingProgress(BaseModel):
