@@ -26,24 +26,22 @@ import torch.nn.functional as F
 
 def pytorch_lora_linear(X, W, A, B, scaling):
     """
-    Pure PyTorch LoRA linear layer: Y = X @ W^T + scaling * X @ A @ B
+    Pure PyTorch LoRA linear layer: Y = X @ W^T + scaling * X @ A^T @ B^T
     
     Args:
         X: Input tensor [batch, seq_len, hidden_dim]
         W: Base weight matrix [out_dim, hidden_dim]
-        A: LoRA A matrix [hidden_dim, rank]
-        B: LoRA B matrix [rank, out_dim]
+        A: LoRA A matrix [rank, hidden_dim]
+        B: LoRA B matrix [out_dim, rank]
         scaling: LoRA scaling factor (alpha / rank)
     
     Returns:
         Y: Output tensor [batch, seq_len, out_dim]
     """
-    # Standard linear projection
     output = F.linear(X, W)
     
-    # LoRA path: X @ A @ B
     if A is not None and B is not None:
-        lora_output = F.linear(F.linear(X, A.t()), B.t())
+        lora_output = F.linear(F.linear(X, A), B)
         output = output + scaling * lora_output
     
     return output
