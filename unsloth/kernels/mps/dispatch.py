@@ -90,10 +90,8 @@ def dispatch_rms_layernorm(X, W, eps, gemma=False):
     if DEVICE_TYPE == "mps":
         # Priority 1: Metal kernel (fused, highest performance)
         if _is_metal_available():
-            from ..metal.rms_layernorm import metal_rms_layernorm
-            # Metal returns (Y, r) but we only need Y for forward
-            Y, _ = metal_rms_layernorm(X, W, eps, gemma)
-            return Y
+            from ..metal.rms_layernorm import Metal_RMSLayerNorm
+            return Metal_RMSLayerNorm.apply(X, W, eps, gemma)
         # Priority 2: MPS fallback (PyTorch-native)
         if _use_mps_fallback():
             from .rms_layernorm import mps_rms_layernorm
