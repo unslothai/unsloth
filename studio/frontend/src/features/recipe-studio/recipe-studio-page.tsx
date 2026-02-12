@@ -19,7 +19,6 @@ import {
 } from "react";
 import { useShallow } from "zustand/react/shallow";
 import "@xyflow/react/dist/style.css";
-import { previewRecipe } from "./api";
 import { RecipeGraphAuxNode, type RecipeGraphAuxNodeData } from "./components/recipe-graph-aux-node";
 import { BlockSheet } from "./components/block-sheet";
 import { LayoutControls } from "./components/controls/layout-controls";
@@ -31,24 +30,25 @@ import { RecipeGraphSemanticEdge } from "./components/recipe-graph-semantic-edge
 import { DataEdge } from "./components/rf-ui/data-edge";
 import { ConfigDialog } from "./dialogs/config-dialog";
 import { ImportDialog } from "./dialogs/import-dialog";
+import { PreviewDialog } from "./dialogs/preview-dialog";
 import { ProcessorsDialog } from "./dialogs/processors-dialog";
+import { useRecipeStudioActions } from "./hooks/use-recipe-studio-actions";
 import { useRecipeStudioStore } from "./stores/recipe-studio";
 import type {
   RecipeNode as RecipeBuilderNode,
   RecipeNodeData,
-  SamplerConfig,
 } from "./types";
-import { isCategoryConfig } from "./utils";
 import { deriveDisplayGraph } from "./utils/graph/derive-display-graph";
-import { importRecipePayload } from "./utils/import";
 import { buildRecipePayload } from "./utils/payload";
 import type { RecipePayload } from "./utils/payload/types";
 import { buildDefaultSchemaTransform } from "./utils/processors";
+import {
+  buildDialogOptions,
+  buildPreviewSummary,
+} from "./utils/recipe-studio-view";
 
 const NODE_TYPES: NodeTypes = { builder: RecipeNode, aux: RecipeGraphAuxNode };
 const EDGE_TYPES: EdgeTypes = { canvas: DataEdge, semantic: RecipeGraphSemanticEdge };
-
-type StatusTone = "success" | "error";
 
 export type PersistRecipeInput = {
   id: string | null;
@@ -68,26 +68,6 @@ export type RecipeStudioPageProps = {
   initialSavedAt: number;
   onPersistRecipe: (input: PersistRecipeInput) => Promise<PersistRecipeResult>;
 };
-
-function buildSignature(name: string, payload: RecipePayload): string {
-  return JSON.stringify({ name, payload });
-}
-
-function normalizeWorkflowName(value: string): string {
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : "Unnamed";
-}
-
-function formatSavedLabel(savedAt: number | null): string {
-  if (!savedAt) {
-    return "Not saved yet";
-  }
-  const time = new Date(savedAt).toLocaleTimeString([], {
-    hour: "numeric",
-    minute: "2-digit",
-  });
-  return `Saved ${time}`;
-}
 
 export function RecipeStudioPage({
   recipeId,
@@ -168,15 +148,8 @@ export function RecipeStudioPage({
   const [sheetContainer, setSheetContainer] = useState<HTMLDivElement | null>(
     null,
   );
-  const [previewLoading, setPreviewLoading] = useState(false);
-  const [saveLoading, setSaveLoading] = useState(false);
-  const [copied, setCopied] = useState(false);
-  const [importOpen, setImportOpen] = useState(false);
   const [processorsOpen, setProcessorsOpen] = useState(false);
   const [interactive, setInteractive] = useState(true);
-  const [workflowName, setWorkflowName] = useState("Unnamed");
-  const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
-  const [savedSignature, setSavedSignature] = useState<string>("");
 
   const baseNodeIds = useMemo(
     () => new Set(nodes.map((node) => node.id)),
@@ -266,25 +239,12 @@ export function RecipeStudioPage({
 
   const configList = useMemo(() => Object.values(configs), [configs]);
   const config = activeConfigId ? configs[activeConfigId] : null;
-  const categoryOptions = useMemo<SamplerConfig[]>(
-    () => configList.filter(isCategoryConfig),
+  const dialogOptions = useMemo(
+    () => buildDialogOptions(configList),
     [configList],
   );
-  const modelConfigAliases = useMemo<string[]>(
-    () => configList.filter((item) => item.kind === "model_config").map((item) => item.name),
-    [configList],
-  );
-  const modelProviderOptions = useMemo<string[]>(
-    () => configList.filter((item) => item.kind === "model_provider").map((item) => item.name),
-    [configList],
-  );
-  const datetimeOptions = useMemo<string[]>(
-    () =>
-      configList
-        .filter(
-          (item) => item.kind === "sampler" && item.sampler_type === "datetime",
-        )
-        .map((item) => item.name),
+  const previewSummary = useMemo(
+    () => buildPreviewSummary(configList),
     [configList],
   );
 
@@ -300,144 +260,46 @@ export function RecipeStudioPage({
     () => buildRecipePayload(configs, nodes, edges, processors),
     [configs, edges, nodes, processors],
   );
-  const currentPayload = payloadResult.payload;
-  const normalizedWorkflowName = useMemo(
-    () => normalizeWorkflowName(workflowName),
-    [workflowName],
-  );
-  const currentSignature = useMemo(
-    () => buildSignature(normalizedWorkflowName, currentPayload),
-    [currentPayload, normalizedWorkflowName],
-  );
-  const isDirty = savedSignature.length > 0 && currentSignature !== savedSignature;
-  const saveTone: StatusTone =
-    !isDirty && Boolean(lastSavedAt) ? "success" : "error";
-  const savedAtLabel = formatSavedLabel(lastSavedAt);
-
-  useEffect(() => {
-    const nextName = normalizeWorkflowName(initialRecipeName);
-    resetRecipe();
-    setWorkflowName(nextName);
-    setLastSavedAt(initialSavedAt);
-    setCopied(false);
-
-    const parsed = importRecipePayload(JSON.stringify(initialPayload));
-    if (parsed.snapshot) {
-      loadRecipe(parsed.snapshot);
-    } else {
-      console.error("Failed to load recipe payload.", parsed.errors);
-    }
-
+  const getCurrentPayloadFromStore = useCallback((): RecipePayload => {
     const state = useRecipeStudioStore.getState();
-    const { payload } = buildRecipePayload(
+    return buildRecipePayload(
       state.configs,
       state.nodes,
       state.edges,
       state.processors,
-    );
-    setSavedSignature(buildSignature(nextName, payload));
-  }, [
-    initialPayload,
-    initialRecipeName,
-    initialSavedAt,
-    loadRecipe,
-    recipeId,
-    resetRecipe,
-  ]);
-
-  const persistRecipe = useCallback(async (): Promise<void> => {
-    if (saveLoading) {
-      return;
-    }
-    const nextName = normalizeWorkflowName(workflowName);
-    if (nextName !== workflowName) {
-      setWorkflowName(nextName);
-    }
-    setSaveLoading(true);
-    try {
-      const result = await onPersistRecipe({
-        id: recipeId,
-        name: nextName,
-        payload: currentPayload,
-      });
-      setLastSavedAt(result.updatedAt);
-      setSavedSignature(buildSignature(nextName, currentPayload));
-    } catch (error) {
-      console.error("Save recipe failed:", error);
-    } finally {
-      setSaveLoading(false);
-    }
-  }, [
-    currentPayload,
-    onPersistRecipe,
-    recipeId,
-    saveLoading,
+    ).payload;
+  }, []);
+  const {
     workflowName,
-  ]);
-
-  useEffect(() => {
-    if (!isDirty || saveLoading) {
-      return;
-    }
-    const timeoutId = window.setTimeout(() => {
-      void persistRecipe();
-    }, 800);
-    return () => window.clearTimeout(timeoutId);
-  }, [isDirty, persistRecipe, saveLoading]);
-
-  const readPayload = useCallback(
-    () => {
-      if (payloadResult.errors.length === 0) {
-        return payloadResult.payload;
-      }
-      return null;
-    },
-    [payloadResult.errors.length, payloadResult.payload],
-  );
-
-  const handlePreview = async (): Promise<void> => {
-    setPreviewLoading(true);
-    const payload = readPayload();
-    if (!payload) {
-      setPreviewLoading(false);
-      return;
-    }
-    try {
-      await previewRecipe(payload);
-    } catch (error) {
-      console.error("Preview failed:", error);
-    } finally {
-      setPreviewLoading(false);
-    }
-  };
-
-  const handleCopyRecipe = async (): Promise<void> => {
-    setCopied(false);
-    const payload = readPayload();
-    if (!payload) {
-      return;
-    }
-    if (!navigator.clipboard) {
-      console.error("Clipboard not available.");
-      return;
-    }
-    try {
-      await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1500);
-    } catch (error) {
-      console.error("Copy failed:", error);
-    }
-  };
-
-  const handleImport = (value: string): string | null => {
-    const result = importRecipePayload(value);
-    if (result.errors.length > 0 || !result.snapshot) {
-      return result.errors[0] ?? "Invalid payload.";
-    }
-    loadRecipe(result.snapshot);
-    return null;
-  };
+    setWorkflowName,
+    saveLoading,
+    saveTone,
+    savedAtLabel,
+    copied,
+    importOpen,
+    setImportOpen,
+    previewDialogOpen,
+    setPreviewDialogOpen,
+    previewRows,
+    setPreviewRows,
+    previewErrors,
+    previewLoading,
+    persistRecipe,
+    openPreviewDialog,
+    runPreview,
+    copyRecipe,
+    importRecipe,
+  } = useRecipeStudioActions({
+    recipeId,
+    initialRecipeName,
+    initialPayload,
+    initialSavedAt,
+    payloadResult,
+    onPersistRecipe,
+    resetRecipe,
+    loadRecipe,
+    getCurrentPayloadFromStore,
+  });
 
   const openProcessorsFromSheet = useCallback(() => {
     if (
@@ -464,7 +326,7 @@ export function RecipeStudioPage({
             savedAtLabel={savedAtLabel}
             workflowName={workflowName}
             onWorkflowNameChange={setWorkflowName}
-            onPreview={handlePreview}
+            onPreview={openPreviewDialog}
             onSaveRecipe={() => {
               void persistRecipe();
             }}
@@ -515,7 +377,7 @@ export function RecipeStudioPage({
                   onAddExpression={addExpressionNode}
                   onOpenProcessors={openProcessorsFromSheet}
                   copied={copied}
-                  onCopy={handleCopyRecipe}
+                  onCopy={copyRecipe}
                   onImport={() => setImportOpen(true)}
                 />
               </Panel>
@@ -531,17 +393,17 @@ export function RecipeStudioPage({
         open={dialogOpen}
         onOpenChange={setDialogOpen}
         config={config}
-        categoryOptions={categoryOptions}
-        modelConfigAliases={modelConfigAliases}
-        modelProviderOptions={modelProviderOptions}
-        datetimeOptions={datetimeOptions}
+        categoryOptions={dialogOptions.categoryOptions}
+        modelConfigAliases={dialogOptions.modelConfigAliases}
+        modelProviderOptions={dialogOptions.modelProviderOptions}
+        datetimeOptions={dialogOptions.datetimeOptions}
         onUpdate={updateConfig}
         container={sheetContainer}
       />
       <ImportDialog
         open={importOpen}
         onOpenChange={setImportOpen}
-        onImport={handleImport}
+        onImport={importRecipe}
         container={sheetContainer}
       />
       <ProcessorsDialog
@@ -549,6 +411,19 @@ export function RecipeStudioPage({
         onOpenChange={setProcessorsOpen}
         processors={processors}
         onProcessorsChange={setProcessors}
+        container={sheetContainer}
+      />
+      <PreviewDialog
+        open={previewDialogOpen}
+        onOpenChange={setPreviewDialogOpen}
+        rows={previewRows}
+        onRowsChange={setPreviewRows}
+        loading={previewLoading}
+        errors={previewErrors}
+        summary={previewSummary}
+        onPreview={() => {
+          void runPreview();
+        }}
         container={sheetContainer}
       />
     </div>

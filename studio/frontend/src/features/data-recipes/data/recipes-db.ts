@@ -22,7 +22,11 @@ function createEmptyPayload(): RecipePayload {
       // biome-ignore lint/style/useNamingConvention: api schema
       model_providers: [],
       // biome-ignore lint/style/useNamingConvention: api schema
+      mcp_providers: [],
+      // biome-ignore lint/style/useNamingConvention: api schema
       model_configs: [],
+      // biome-ignore lint/style/useNamingConvention: api schema
+      tool_configs: [],
       columns: [],
       processors: [],
     },

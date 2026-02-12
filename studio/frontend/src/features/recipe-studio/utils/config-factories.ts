@@ -202,6 +202,12 @@ export function makeLlmConfig(
     // biome-ignore lint/style/useNamingConvention: api schema
     output_format:
       llmType === "structured" ? '{\n  "field": "string"\n}' : undefined,
+    // biome-ignore lint/style/useNamingConvention: api schema
+    tool_alias: "",
+    // biome-ignore lint/style/useNamingConvention: api schema
+    tool_configs: [],
+    // biome-ignore lint/style/useNamingConvention: ui schema
+    mcp_providers: [],
     scores:
       llmType === "judge"
         ? [

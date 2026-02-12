@@ -60,6 +60,8 @@ export function parseLlm(
     code_lang: readString(column.code_lang) ?? "",
     // biome-ignore lint/style/useNamingConvention: api schema
     output_format: normalizeOutputFormat(column.output_format),
+    // biome-ignore lint/style/useNamingConvention: api schema
+    tool_alias: readString(column.tool_alias) ?? "",
     scores: llmType === "judge" ? scores : undefined,
   };
 }

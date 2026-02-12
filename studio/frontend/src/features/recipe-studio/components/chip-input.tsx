@@ -1,13 +1,14 @@
 import { Button } from "@/components/ui/button";
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type KeyboardEvent, type ReactElement, useState } from "react";
+import { type KeyboardEvent, type ReactElement, useId, useMemo, useState } from "react";
 
 type ChipInputProps = {
   values: string[];
   onAdd: (value: string) => void;
   onRemove: (index: number) => void;
   placeholder?: string;
+  suggestions?: string[];
 };
 
 export function ChipInput({
@@ -15,22 +16,43 @@ export function ChipInput({
   onAdd,
   onRemove,
   placeholder = "Type and press Enter",
+  suggestions,
 }: ChipInputProps): ReactElement {
   const [draft, setDraft] = useState("");
+  const listId = useId();
+  const suggestionSet = useMemo(
+    () => new Set((suggestions ?? []).map((value) => value.trim())),
+    [suggestions],
+  );
+
+  function addValue(rawValue: string, allowAny: boolean): void {
+    const trimmed = rawValue.trim();
+    if (!trimmed) {
+      return;
+    }
+    if (!allowAny && !suggestionSet.has(trimmed)) {
+      return;
+    }
+    onAdd(trimmed);
+    setDraft("");
+  }
 
   const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.key === "Enter") {
       event.preventDefault();
-      const trimmed = draft.trim();
-      if (trimmed) {
-        onAdd(trimmed);
-        setDraft("");
-      }
+      addValue(draft, true);
     }
     if (event.key === "Backspace" && !draft && values.length > 0) {
       onRemove(values.length - 1);
     }
   };
+
+  function handleChange(nextDraft: string): void {
+    setDraft(nextDraft);
+    if (suggestionSet.has(nextDraft.trim())) {
+      addValue(nextDraft, false);
+    }
+  }
 
   return (
     <div className="bg-input/30 border-input focus-within:border-ring focus-within:ring-ring/50 flex min-h-9 flex-wrap items-center gap-1.5 rounded-4xl border bg-clip-padding px-1.5 py-1.5 text-sm transition-colors focus-within:ring-[3px]">
@@ -59,9 +81,18 @@ export function ChipInput({
         className="nodrag min-w-16 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
         placeholder={values.length === 0 ? placeholder : ""}
         value={draft}
-        onChange={(event) => setDraft(event.target.value)}
+        list={suggestions && suggestions.length > 0 ? listId : undefined}
+        onChange={(event) => handleChange(event.target.value)}
+        onBlur={() => addValue(draft, false)}
         onKeyDown={handleKeyDown}
       />
+      {suggestions && suggestions.length > 0 && (
+        <datalist id={listId}>
+          {suggestions.map((value) => (
+            <option key={value} value={value} />
+          ))}
+        </datalist>
+      )}
     </div>
   );
 }
