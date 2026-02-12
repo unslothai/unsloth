@@ -1,60 +1,111 @@
-import type { ReactElement } from "react";
-import { EyeIcon } from "@hugeicons/core-free-icons";
+import { type KeyboardEvent, type ReactElement, useState } from "react";
+import {
+  CookBookIcon,
+  FloppyDiskIcon,
+  TestTubeIcon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Spinner } from "@/components/ui/spinner";
+import { Input } from "@/components/ui/input";
 
 type StatusTone = "success" | "error";
 
 type RecipeStudioHeaderProps = {
   previewLoading: boolean;
-  statusMessage: {
-    tone: StatusTone;
-    text: string;
-  } | null;
+  saveLoading: boolean;
+  saveTone: StatusTone;
+  savedAtLabel: string;
+  workflowName: string;
+  onWorkflowNameChange: (value: string) => void;
   onPreview: () => void;
+  onSaveRecipe: () => void;
 };
 
 const STATUS_MESSAGE_CLASS: Record<StatusTone, string> = {
-  success: "mt-2 text-xs text-emerald-600",
-  error: "mt-2 text-xs text-rose-600",
+  success: "Saved",
+  error: "Unsaved changes",
 };
 
 export function RecipeStudioHeader({
   previewLoading,
-  statusMessage,
+  saveLoading,
+  saveTone,
+  savedAtLabel,
+  workflowName,
+  onWorkflowNameChange,
   onPreview,
+  onSaveRecipe,
 }: RecipeStudioHeaderProps): ReactElement {
+  const [editingWorkflowName, setEditingWorkflowName] = useState(false);
+
+  function closeWorkflowNameEditor(): void {
+    if (workflowName.trim().length === 0) {
+      onWorkflowNameChange("Unnamed");
+    }
+    setEditingWorkflowName(false);
+  }
+
+  function handleWorkflowNameKeyDown(event: KeyboardEvent<HTMLInputElement>): void {
+    if (event.key === "Enter") {
+      closeWorkflowNameEditor();
+      return;
+    }
+    if (event.key === "Escape") {
+      setEditingWorkflowName(false);
+    }
+  }
+
   return (
-    <div className="mb-6 flex flex-col gap-4">
-      <div className="flex flex-col gap-4 lg:grid lg:grid-cols-[1fr_auto] lg:items-center">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Create Data Recipe</h1>
-          <p className="text-sm text-muted-foreground">
-            Design synthetic-data pipelines with Data Designer.
-          </p>
-          {statusMessage && (
-            <p className={STATUS_MESSAGE_CLASS[statusMessage.tone]}>
-              {statusMessage.text}
-            </p>
+    <div className="flex items-center justify-between gap-4 border-b px-4 py-3">
+      <div className="flex min-w-0 items-center gap-3">
+        <button
+          type="button"
+          className="flex size-8 items-center justify-center rounded-lg corner-squircle border border-border/70 bg-muted/20"
+          aria-label="Recipe icon"
+        >
+          <HugeiconsIcon icon={CookBookIcon} className="size-4 text-muted-foreground" />
+        </button>
+        <div className="flex min-w-0 items-center gap-2">
+          {editingWorkflowName ? (
+            <Input
+              value={workflowName}
+              onChange={(event) => onWorkflowNameChange(event.target.value)}
+              onBlur={closeWorkflowNameEditor}
+              onKeyDown={handleWorkflowNameKeyDown}
+              autoFocus={true}
+              className="h-7 w-[180px]"
+            />
+          ) : (
+            <button
+              type="button"
+              onClick={() => setEditingWorkflowName(true)}
+              className="truncate text-sm font-semibold text-foreground hover:text-primary"
+            >
+              {workflowName}
+            </button>
           )}
+          <Badge variant="secondary" className="h-6 text-[10px]">
+            {STATUS_MESSAGE_CLASS[saveTone]}
+          </Badge>
+          <span className="text-xs text-muted-foreground">{savedAtLabel}</span>
         </div>
-        <div className="flex items-center justify-start gap-2 lg:justify-end">
-          <Button
-            type="button"
-            size="sm"
-            onClick={onPreview}
-            disabled={previewLoading}
-            className="gap-2 text-xs"
-          >
-            {previewLoading ? (
-              <Spinner className="size-3.5" />
-            ) : (
-              <HugeiconsIcon icon={EyeIcon} className="size-3.5" />
-            )}
-            Preview
-          </Button>
-        </div>
+      </div>
+      <div className="flex items-center gap-2">
+        <Button type="button" size="sm" onClick={onPreview} disabled={previewLoading}>
+          <HugeiconsIcon icon={TestTubeIcon} className="size-3.5" />
+          {previewLoading ? "Previewing..." : "Preview"}
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          onClick={onSaveRecipe}
+          disabled={saveLoading}
+        >
+          <HugeiconsIcon icon={FloppyDiskIcon} className="size-3.5" />
+          {saveLoading ? "Saving..." : "Save Recipe"}
+        </Button>
       </div>
     </div>
   );

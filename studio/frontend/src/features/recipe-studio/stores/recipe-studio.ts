@@ -55,6 +55,7 @@ type RecipeStudioState = {
   setSheetView: (view: SheetView) => void;
   setProcessors: (processors: RecipeProcessorConfig[]) => void;
   setDialogOpen: (open: boolean) => void;
+  resetRecipe: () => void;
   selectConfig: (id: string) => void;
   openConfig: (id: string) => void;
   setLayoutDirection: (direction: LayoutDirection) => void;
@@ -113,6 +114,21 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
   setSheetView: (view) => set({ sheetView: view }),
   setProcessors: (processors) => set({ processors }),
   setDialogOpen: (open) => set({ dialogOpen: open }),
+  resetRecipe: () =>
+    set({
+      nodes: [],
+      edges: [],
+      auxNodePositions: {},
+      auxNodeSizes: {},
+      configs: {},
+      processors: [],
+      sheetView: "root",
+      activeConfigId: null,
+      dialogOpen: false,
+      layoutDirection: "LR",
+      nextId: 3,
+      nextY: 280,
+    }),
   selectConfig: (id) => set({ activeConfigId: id, dialogOpen: false }),
   openConfig: (id) => set({ activeConfigId: id, dialogOpen: true }),
   setLayoutDirection: (direction) =>
