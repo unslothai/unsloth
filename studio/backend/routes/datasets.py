@@ -81,9 +81,10 @@ async def check_format(request: CheckFormatRequest):
         
         logger.info(f"Format check result: requires_mapping={result['requires_manual_mapping']}, format={result['detected_format']}")
         
-        # If format is processable, generate preview samples via format_dataset
+        # Generate preview samples
         preview_samples = None
         if not result["requires_manual_mapping"]:
+            # Format detected — return processed preview
             try:
                 format_result = format_dataset(
                     preview_slice,
@@ -93,7 +94,13 @@ async def check_format(request: CheckFormatRequest):
                 processed = format_result["dataset"]
                 preview_samples = [dict(row) for row in processed]
             except Exception as e:
-                logger.warning(f"Preview generation failed (non-fatal): {e}")
+                logger.warning(f"Processed preview generation failed (non-fatal): {e}")
+                # Fall back to raw samples so frontend still has something
+                preview_samples = [dict(row) for row in preview_slice]
+        else:
+            # Format detection failed — return raw samples so user can
+            # see actual data and map columns in the frontend
+            preview_samples = [dict(row) for row in preview_slice]
         
         return CheckFormatResponse(
             requires_manual_mapping=result["requires_manual_mapping"],
