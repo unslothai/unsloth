@@ -134,7 +134,7 @@ def dispatch_rope_embedding(Q, K, cos, sin, rope_indices=None):
 
 
 def dispatch_cross_entropy_loss(logits, labels, logit_softcapping=0, logit_scaling=0, n_items=None):
-    if DEVICE_TYPE == "mps" and _use_mps_fallback():
+    if DEVICE_TYPE == "mps":
         from .cross_entropy_loss import mps_cross_entropy_loss
 
         fn = _get_compiled_fn(mps_cross_entropy_loss)
