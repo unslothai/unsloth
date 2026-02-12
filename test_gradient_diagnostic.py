@@ -111,10 +111,12 @@ try:
         lm_out_bf16 = model.model.lm_head(norm_out_bf16)
         print(f"LM Head (cast bfloat16) output req_grad: {lm_out_bf16.requires_grad}")
         
-        # Case D: torch.mv (like in llama.py optimization)
         try:
              logits_mv = torch.mv(model.model.lm_head.weight, norm_out_bf16.ravel())
              print(f"LM Head (torch.mv) output req_grad: {logits_mv.requires_grad}")
+        except Exception as e:
+             print(f"LM Head (torch.mv) failed: {e}")
+
 except Exception as e:
     print(f"LM Head failed: {e}")
 
