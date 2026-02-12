@@ -3085,9 +3085,20 @@ def patch_unsloth_zoo_saving():
              #         B = stat["B"].to("cuda", dtype = torch.float32, non_blocking = True)
              #         s = stat["s"]
              #         W += (A @ B) * s
-             #     return W
+             # Call the rest of the logic
              
-             for stat in lora_stats:
+             # DEBUG: Inspect lora_stats
+             print(f"DEBUG: lora_stats type: {type(lora_stats)}")
+             print(f"DEBUG: lora_stats dir: {dir(lora_stats)}")
+             if hasattr(lora_stats, '__dict__'):
+                 print(f"DEBUG: lora_stats dict: {lora_stats.__dict__.keys()}")
+                 
+             # Attempt to iterate if possible, otherwise we might need to access a property
+             iterable_stats = lora_stats
+             if hasattr(lora_stats, "stats"):
+                 iterable_stats = lora_stats.stats
+             
+             for stat in iterable_stats:
                 if output_key != stat["output_key"]: continue
                 # Use W.device
                 A = stat["A"].to(W.device, dtype=torch.float32, non_blocking=True)
