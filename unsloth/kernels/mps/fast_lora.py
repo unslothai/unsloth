@@ -200,6 +200,7 @@ class MPSLoRA_MLP(torch.autograd.Function):
         e_clone = e.clone()
         g_clone = g.clone()
         h_out, df, de = _backward_function(DW_clone, e_clone, g_clone)
+        h_out, df, de = h_out.to(dtype), df.to(dtype), de.to(dtype)
 
         # Initialize gradient buffers for LoRA weights
         d_gateA = torch.empty_like(gateA)
