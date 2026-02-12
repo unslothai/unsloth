@@ -445,7 +445,6 @@ def fast_cross_entropy_loss(
         losses: float
     """
     from ..device_type import DEVICE_TYPE
-    from .mps import USE_MPS_FALLBACK
 
     if DEVICE_TYPE == "mps":
         from .mps.dispatch import dispatch_cross_entropy_loss

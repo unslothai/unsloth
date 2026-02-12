@@ -1,0 +1,177 @@
+================================================================================
+SwiGLU Kernel Benchmark Suite
+================================================================================
+Platform:       macOS-15.7.3-arm64-arm-64bit
+Processor:      arm
+PyTorch:        2.10.0
+MLX:            0.30.6
+mx.synchronize: available
+
+================================================================================
+FORWARD PASS BENCHMARK
+================================================================================
+
+Timing: per-iteration sync, 100 iterations, trimmed mean (drop top/bottom 10%)
+Throughput: 3 tensors x elements x 2 bytes (read e, g; write h)
+
+--- Llama-3 8B (inference) ---
+    Shape: (1, 2048, 8192) = 16.78M elements
+
+   MLX Composed:                0.673 ms (+/- 0.050) [min=0.600 max=0.904] |  149.61 GB/s
+   MLX Compiled:                0.400 ms (+/- 0.024) [min=0.370 max=0.534] |  251.44 GB/s
+   Fused Metal (MLX):           0.729 ms (+/- 0.047) [min=0.645 max=0.895] |  138.14 GB/s  (0.92x vs composed)
+   PyTorch MPS:                 0.563 ms (+/- 0.038) [min=0.527 max=0.738] |  178.94 GB/s
+   Chained (bridge skip):       1.192 ms (+/- 0.045) [min=1.081 max=1.335] |   84.47 GB/s
+   Torch->MLX (full bridge):    3.054 ms (+/- 0.071) [min=2.875 max=3.302] |   32.96 GB/s
+
+--- Llama-3 8B (training) ---
+    Shape: (4, 512, 14336) = 29.36M elements
+
+   MLX Composed:                1.099 ms (+/- 0.019) [min=1.074 max=1.187] |  160.33 GB/s
+   MLX Compiled:                0.623 ms (+/- 0.050) [min=0.575 max=0.853] |  282.80 GB/s
+   Fused Metal (MLX):           1.105 ms (+/- 0.038) [min=1.042 max=1.259] |  159.41 GB/s  (0.99x vs composed)
+   PyTorch MPS:                 0.919 ms (+/- 0.042) [min=0.832 max=0.998] |  191.77 GB/s
+   Chained (bridge skip):       1.805 ms (+/- 0.037) [min=1.728 max=1.901] |   97.62 GB/s
+   Torch->MLX (full bridge):    4.826 ms (+/- 0.388) [min=4.712 max=8.417] |   36.51 GB/s
+
+--- Long context 8K ---
+    Shape: (1, 8192, 8192) = 67.11M elements
+
+   MLX Composed:                2.378 ms (+/- 0.043) [min=2.315 max=2.539] |  169.31 GB/s
+   MLX Compiled:                1.180 ms (+/- 0.032) [min=1.115 max=1.298] |  341.13 GB/s
+   Fused Metal (MLX):           2.218 ms (+/- 0.029) [min=2.183 max=2.373] |  181.54 GB/s  (1.07x vs composed)
+   PyTorch MPS:                 1.804 ms (+/- 0.048) [min=1.723 max=1.961] |  223.17 GB/s
+   Chained (bridge skip):       3.718 ms (+/- 0.115) [min=3.527 max=4.749] |  108.29 GB/s
+   Torch->MLX (full bridge):   25.365 ms (+/- 2.548) [min=22.719 max=32.917] |   15.87 GB/s
+
+--- Smaller model batch ---
+    Shape: (8, 2048, 4096) = 67.11M elements
+
+   MLX Composed:                2.381 ms (+/- 0.041) [min=2.308 max=2.538] |  169.14 GB/s
+   MLX Compiled:                1.183 ms (+/- 0.032) [min=1.116 max=1.302] |  340.25 GB/s
+   Fused Metal (MLX):           2.223 ms (+/- 0.018) [min=2.184 max=2.362] |  181.17 GB/s  (1.07x vs composed)
+   PyTorch MPS:                 1.794 ms (+/- 0.046) [min=1.713 max=1.971] |  224.43 GB/s
+   Chained (bridge skip):       3.708 ms (+/- 0.082) [min=3.474 max=4.287] |  108.60 GB/s
+   Torch->MLX (full bridge):   25.883 ms (+/- 2.471) [min=22.575 max=31.533] |   15.56 GB/s
+
+================================================================================
+SUMMARY — FORWARD (trimmed mean GB/s)
+================================================================================
+Config                        Composed  Compiled     Fused       MPS   Chained    Bridge
+----------------------------------------------------------------------------------------
+Llama-3 8B (inference)          149.6    251.4    138.1    178.9     84.5     33.0
+Llama-3 8B (training)           160.3    282.8    159.4    191.8     97.6     36.5
+Long context 8K                 169.3    341.1    181.5    223.2    108.3     15.9
+Smaller model batch             169.1    340.2    181.2    224.4    108.6     15.6
+
+  Llama-3 8B (inference)       Winner: MLX Compiled (251.4 GB/s)
+  Llama-3 8B (training)        Winner: MLX Compiled (282.8 GB/s)
+  Long context 8K              Winner: MLX Compiled (341.1 GB/s)
+  Smaller model batch          Winner: MLX Compiled (340.2 GB/s)
+================================================================================
+
+================================================================================
+BACKWARD PASS BENCHMARK
+================================================================================
+
+Timing: per-iteration sync, 100 iterations, trimmed mean (drop top/bottom 10%)
+Throughput: 6 tensors x elements x 2 bytes (read dw, e, g; write h, de, dg)
+
+--- Llama-3 8B (inference) ---
+    Shape: (1, 2048, 8192) = 16.78M elements
+
+   MLX Composed vjp:            2.061 ms (+/- 0.027) [min=2.012 max=2.146] |   97.71 GB/s
+   MLX Compiled vjp:            1.010 ms (+/- 0.028) [min=0.973 max=1.134] |  199.28 GB/s
+   Fused Metal bwd (MLX):       2.106 ms (+/- 0.032) [min=2.045 max=2.257] |   95.59 GB/s  (0.98x vs composed)
+   PyTorch MPS autograd:        1.349 ms (+/- 0.048) [min=1.258 max=1.464] |  149.25 GB/s
+   Chained bwd (bridge skip):   3.679 ms (+/- 0.523) [min=3.486 max=8.149] |   54.72 GB/s
+   Torch->MLX bwd (bridge):     6.713 ms (+/- 0.284) [min=6.374 max=7.537] |   29.99 GB/s
+
+--- Llama-3 8B (training) ---
+    Shape: (4, 512, 14336) = 29.36M elements
+
+   MLX Composed vjp:            3.564 ms (+/- 0.025) [min=3.534 max=3.692] |   98.87 GB/s
+   MLX Compiled vjp:            1.792 ms (+/- 0.049) [min=1.711 max=2.008] |  196.57 GB/s
+   Fused Metal bwd (MLX):       3.673 ms (+/- 0.367) [min=3.620 max=7.320] |   95.92 GB/s  (0.97x vs composed)
+   PyTorch MPS autograd:        2.175 ms (+/- 0.028) [min=2.090 max=2.296] |  162.00 GB/s
+   Chained bwd (bridge skip):   5.841 ms (+/- 0.204) [min=5.503 max=6.771] |   60.31 GB/s
+   Torch->MLX bwd (bridge):    10.549 ms (+/- 0.149) [min=10.335 max=11.025] |   33.40 GB/s
+
+--- Long context 8K ---
+    Shape: (1, 8192, 8192) = 67.11M elements
+
+   MLX Composed vjp:            8.090 ms (+/- 0.219) [min=7.928 max=8.931] |   99.55 GB/s
+   MLX Compiled vjp:            3.830 ms (+/- 0.075) [min=3.749 max=4.152] |  210.24 GB/s
+   Fused Metal bwd (MLX):       8.233 ms (+/- 0.117) [min=8.080 max=8.735] |   97.81 GB/s  (0.98x vs composed)
+   PyTorch MPS autograd:        4.607 ms (+/- 0.041) [min=4.562 max=4.791] |  174.79 GB/s
+   Chained bwd (bridge skip):  12.667 ms (+/- 0.330) [min=12.470 max=15.890] |   63.58 GB/s
+   Torch->MLX bwd (bridge):    42.080 ms (+/- 0.635) [min=41.093 max=44.729] |   19.14 GB/s
+
+--- Smaller model batch ---
+    Shape: (8, 2048, 4096) = 67.11M elements
+
+   MLX Composed vjp:            7.996 ms (+/- 0.052) [min=7.918 max=8.230] |  100.71 GB/s
+   MLX Compiled vjp:            3.810 ms (+/- 0.045) [min=3.749 max=3.988] |  211.38 GB/s
+   Fused Metal bwd (MLX):       8.131 ms (+/- 0.032) [min=8.102 max=8.277] |   99.04 GB/s  (0.98x vs composed)
+   PyTorch MPS autograd:        4.586 ms (+/- 0.030) [min=4.533 max=4.779] |  175.62 GB/s
+   Chained bwd (bridge skip):  12.732 ms (+/- 0.133) [min=12.509 max=13.773] |   63.25 GB/s
+   Torch->MLX bwd (bridge):    44.853 ms (+/- 2.681) [min=41.958 max=55.744] |   17.95 GB/s
+
+================================================================================
+SUMMARY — BACKWARD (trimmed mean GB/s)
+================================================================================
+Config                        Composed  Compiled     Fused       MPS   Chained    Bridge
+----------------------------------------------------------------------------------------
+Llama-3 8B (inference)           97.7    199.3     95.6    149.2     54.7     30.0
+Llama-3 8B (training)            98.9    196.6     95.9    162.0     60.3     33.4
+Long context 8K                  99.5    210.2     97.8    174.8     63.6     19.1
+Smaller model batch             100.7    211.4     99.0    175.6     63.3     18.0
+
+  Llama-3 8B (inference)       Winner: MLX Compiled (199.3 GB/s)
+  Llama-3 8B (training)        Winner: MLX Compiled (196.6 GB/s)
+  Long context 8K              Winner: MLX Compiled (210.2 GB/s)
+  Smaller model batch          Winner: MLX Compiled (211.4 GB/s)
+================================================================================
+
+================================================================================
+CORRECTNESS VERIFICATION
+================================================================================
+
+Testing: Small - shape (1, 128, 256)
+-----------------------------------------------------------------
+  FORWARD:
+    MLX Composed (fp32):  max=9.54e-07  mean=1.15e-08  PASS
+    MLX Compiled (fp32):  max=9.54e-07  mean=1.15e-08  PASS
+    Fused Metal  (fp16):  max=3.91e-03  mean=5.68e-05  PASS
+  BACKWARD:
+    MLX Composed vjp:     de max=9.54e-07  dg max=9.54e-07  PASS
+    MLX Compiled vjp:     de max=9.54e-07  dg max=9.54e-07  PASS
+    Fused Metal bwd:      de max=3.91e-03  dg max=3.91e-03  PASS
+
+Testing: Medium - shape (2, 512, 1024)
+-----------------------------------------------------------------
+  FORWARD:
+    MLX Composed (fp32):  max=9.54e-07  mean=1.12e-08  PASS
+    MLX Compiled (fp32):  max=9.54e-07  mean=1.12e-08  PASS
+    Fused Metal  (fp16):  max=7.81e-03  mean=5.61e-05  PASS
+  BACKWARD:
+    MLX Composed vjp:     de max=9.54e-07  dg max=9.54e-07  PASS
+    MLX Compiled vjp:     de max=9.54e-07  dg max=9.54e-07  PASS
+    Fused Metal bwd:      de max=7.81e-03  dg max=7.81e-03  PASS
+
+Testing: Large (LLM-sized) - shape (4, 2048, 4096)
+-----------------------------------------------------------------
+  FORWARD:
+    MLX Composed (fp32):  max=1.91e-06  mean=1.13e-08  PASS
+    MLX Compiled (fp32):  max=1.91e-06  mean=1.13e-08  PASS
+    Fused Metal  (fp16):  max=7.81e-03  mean=5.63e-05  PASS
+  BACKWARD:
+    MLX Composed vjp:     de max=1.91e-06  dg max=1.91e-06  PASS
+    MLX Compiled vjp:     de max=1.91e-06  dg max=1.91e-06  PASS
+    Fused Metal bwd:      de max=7.81e-03  dg max=7.81e-03  PASS
+
+================================================================================
+ALL CORRECTNESS TESTS PASSED
+================================================================================
+
+Done.

@@ -15,7 +15,18 @@
 import torch
 import functools
 from ...device_type import DEVICE_TYPE
-from . import USE_MPS_FALLBACK
+import unsloth.kernels.mps as _mps_module
+
+
+def _use_mps_fallback():
+    """Dynamically read USE_MPS_FALLBACK from the parent module.
+
+    This MUST be a function call (not a cached import) because the flag is
+    mutated at runtime by llama.py / loader.py when gradient checkpointing
+    is enabled.  A bare ``from . import USE_MPS_FALLBACK`` would snapshot
+    the immutable bool at import time and never see later mutations.
+    """
+    return getattr(_mps_module, "USE_MPS_FALLBACK", True)
 
 # Flag to try torch.compile on fallbacks
 # Require torch 2.4+ for better MPS support in inductor
@@ -81,7 +92,7 @@ def dispatch_rms_layernorm(X, W, eps, gemma=False):
             Y, _ = metal_rms_layernorm(X, W, eps, gemma)
             return Y
         # Priority 2: MPS fallback (PyTorch-native)
-        if USE_MPS_FALLBACK:
+        if _use_mps_fallback():
             from .rms_layernorm import mps_rms_layernorm
             fn = _get_compiled_fn(mps_rms_layernorm)
             return fn(X, W, eps, gemma)
@@ -91,7 +102,7 @@ def dispatch_rms_layernorm(X, W, eps, gemma=False):
 
 
 def dispatch_layernorm(X, W, b, eps):
-    if DEVICE_TYPE == "mps" and USE_MPS_FALLBACK:
+    if DEVICE_TYPE == "mps" and _use_mps_fallback():
         from .layernorm import mps_layernorm
 
         fn = _get_compiled_fn(mps_layernorm)
@@ -110,7 +121,7 @@ def dispatch_rope_embedding(Q, K, cos, sin, rope_indices=None):
             from ..mlx.fast_ops import mlx_rope_qk
             return mlx_rope_qk(Q, K, cos, sin, rope_indices)
         # Priority 2: MPS fallback (PyTorch-native)
-        if USE_MPS_FALLBACK:
+        if _use_mps_fallback():
             from .rope_embedding import mps_rope_embedding_qk
             fn = _get_compiled_fn(mps_rope_embedding_qk)
             return fn(Q, K, cos, sin)
@@ -120,7 +131,7 @@ def dispatch_rope_embedding(Q, K, cos, sin, rope_indices=None):
 
 
 def dispatch_cross_entropy_loss(logits, labels, logit_softcapping=0, logit_scaling=0, n_items=None):
-    if DEVICE_TYPE == "mps" and USE_MPS_FALLBACK:
+    if DEVICE_TYPE == "mps" and _use_mps_fallback():
         from .cross_entropy_loss import mps_cross_entropy_loss
 
         fn = _get_compiled_fn(mps_cross_entropy_loss)
@@ -138,7 +149,7 @@ def dispatch_swiglu_fg(e, g):
             from ..metal.swiglu import metal_swiglu_forward
             return metal_swiglu_forward(e, g)
         # Priority 2: MPS fallback (PyTorch-native)
-        if USE_MPS_FALLBACK:
+        if _use_mps_fallback():
             from .swiglu import mps_swiglu_forward
             fn = _get_compiled_fn(mps_swiglu_forward)
             return fn(e, g)
@@ -154,7 +165,7 @@ def dispatch_swiglu_backward(dw, e, g):
             from ..metal.swiglu import metal_swiglu_backward
             return metal_swiglu_backward(dw, e, g)
         # Priority 2: MPS fallback (PyTorch-native)
-        if USE_MPS_FALLBACK:
+        if _use_mps_fallback():
             from .swiglu import mps_swiglu_backward
             fn = _get_compiled_fn(mps_swiglu_backward)
             return fn(dw, e, g)
@@ -170,7 +181,7 @@ def dispatch_geglu_exact_forward(gate, up):
             from ..metal.geglu import metal_geglu_exact_forward
             return metal_geglu_exact_forward(gate, up)
         # Priority 2: MPS fallback (PyTorch-native)
-        if USE_MPS_FALLBACK:
+        if _use_mps_fallback():
             from .geglu import mps_geglu_exact_forward
             fn = _get_compiled_fn(mps_geglu_exact_forward)
             return fn(gate, up)
@@ -186,7 +197,7 @@ def dispatch_geglu_exact_backward(dw, e, g):
             from ..metal.geglu import metal_geglu_exact_backward
             return metal_geglu_exact_backward(dw, e, g)
         # Priority 2: MPS fallback (PyTorch-native)
-        if USE_MPS_FALLBACK:
+        if _use_mps_fallback():
             from .geglu import mps_geglu_exact_backward
             fn = _get_compiled_fn(mps_geglu_exact_backward)
             return fn(dw, e, g)
@@ -202,7 +213,7 @@ def dispatch_geglu_approx_forward(gate, up):
             from ..metal.geglu import metal_geglu_approx_forward
             return metal_geglu_approx_forward(gate, up)
         # Priority 2: MPS fallback (PyTorch-native)
-        if USE_MPS_FALLBACK:
+        if _use_mps_fallback():
             from .geglu import mps_geglu_approx_forward
             fn = _get_compiled_fn(mps_geglu_approx_forward)
             return fn(gate, up)
@@ -218,7 +229,7 @@ def dispatch_geglu_approx_backward(dw, e, g):
             from ..metal.geglu import metal_geglu_approx_backward
             return metal_geglu_approx_backward(dw, e, g)
         # Priority 2: MPS fallback (PyTorch-native)
-        if USE_MPS_FALLBACK:
+        if _use_mps_fallback():
             from .geglu import mps_geglu_approx_backward
             fn = _get_compiled_fn(mps_geglu_approx_backward)
             return fn(dw, e, g)
@@ -228,7 +239,7 @@ def dispatch_geglu_approx_backward(dw, e, g):
 
 
 def dispatch_matmul_lora(X, W, W_quant, A, B, s):
-    if DEVICE_TYPE == "mps" and USE_MPS_FALLBACK:
+    if DEVICE_TYPE == "mps" and _use_mps_fallback():
         from .fast_lora import mps_matmul_lora
 
         fn = _get_compiled_fn(mps_matmul_lora)
@@ -240,7 +251,7 @@ def dispatch_matmul_lora(X, W, W_quant, A, B, s):
 
 
 def dispatch_gemv(X, W, quant_state, out=None):
-    if DEVICE_TYPE == "mps" and USE_MPS_FALLBACK:
+    if DEVICE_TYPE == "mps" and _use_mps_fallback():
         from .linear import mps_gemv
 
         fn = _get_compiled_fn(mps_gemv)
@@ -297,7 +308,7 @@ def dispatch_lora_mlp_swiglu(
                 down_multiplier=down_multiplier,
             )
         # Priority 2: MPS fallback with custom autograd for memory efficiency
-        if USE_MPS_FALLBACK:
+        if _use_mps_fallback():
             from .fast_lora import MPSLoRA_MLP
             from ..swiglu import swiglu_fg_kernel, swiglu_DWf_DW_dfg_kernel
             return MPSLoRA_MLP.apply(
@@ -401,7 +412,7 @@ def dispatch_lora_mlp_geglu_exact(
                 down_multiplier=down_multiplier,
             )
         # Priority 2: MPS fallback with custom autograd for memory efficiency
-        if USE_MPS_FALLBACK:
+        if _use_mps_fallback():
             from .fast_lora import MPSLoRA_MLP
             from ..geglu import geglu_exact_forward_kernel, geglu_exact_backward_kernel
             return MPSLoRA_MLP.apply(
@@ -507,7 +518,7 @@ def dispatch_lora_mlp_geglu_approx(
                 down_multiplier=down_multiplier,
             )
         # Priority 2: MPS fallback with custom autograd for memory efficiency
-        if USE_MPS_FALLBACK:
+        if _use_mps_fallback():
             from .fast_lora import MPSLoRA_MLP
             from ..geglu import geglu_approx_forward_kernel, geglu_approx_backward_kernel
             return MPSLoRA_MLP.apply(
@@ -613,7 +624,7 @@ def dispatch_lora_qkv(
                 VS,
             )
         # Priority 2: MPS fallback (PyTorch-native, preserves autograd)
-        if USE_MPS_FALLBACK:
+        if _use_mps_fallback():
             from .fast_lora import mps_apply_lora_qkv
             fn = _get_compiled_fn(mps_apply_lora_qkv)
             return fn(
@@ -676,7 +687,7 @@ def dispatch_lora_o(X, OW, OW_quant, OA, OB, OS):
             from ..mlx.fast_lora import apply_lora_o
             return apply_lora_o(X, OW, OW_quant, OA, OB, OS)
         # Priority 2: MPS fallback (PyTorch-native, preserves autograd)
-        if USE_MPS_FALLBACK:
+        if _use_mps_fallback():
             from .fast_lora import mps_apply_lora_o
             fn = _get_compiled_fn(mps_apply_lora_o)
             return fn(X, OW, OW_quant, OA, OB, OS)
