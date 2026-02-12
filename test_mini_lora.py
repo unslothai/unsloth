@@ -36,6 +36,7 @@ def test_lora_training_and_save():
             max_seq_length=max_seq_length,
             load_in_4bit=False,  # No quantization for this test
             dtype=torch.bfloat16,
+            use_gradient_checkpointing=False,  # Must also disable here for MPS
         )
         print(f"✅ Model loaded successfully")
         print(f"   Device: {next(model.parameters()).device}")
@@ -56,7 +57,7 @@ def test_lora_training_and_save():
         lora_alpha=32,
         lora_dropout=0,
         bias="none",
-        use_gradient_checkpointing="unsloth",
+        use_gradient_checkpointing=False,  # Disable - incompatible with MPS LoRA MLP + bfloat16
     )
     print(f"✅ LoRA adapters added (including MLP projections)")
     print(f"   Trainable parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
