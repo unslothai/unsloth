@@ -1415,7 +1415,8 @@ def CausalLM_fast_forward(fast_forward_inference):
         else:
             RETURN_LOGITS = os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1"
             # < 1024 Normal Unsloth uses less VRAM!
-            if bsz * q_len <= 1024 and not RETURN_LOGITS:
+            # MPS has issues with torch.func based fused loss
+            if bsz * q_len <= 1024 and not RETURN_LOGITS and DEVICE_TYPE != "mps":
                 # Use unsloth_fused_ce_loss which actually calculates the best chunk size to reduce VRAM usage
                 RETURN_LOGITS = False
 
@@ -1436,26 +1437,51 @@ def CausalLM_fast_forward(fast_forward_inference):
                 #     num_items_in_batch = n_items,
                 #     logit_softcapping  = logit_softcapping,
                 # )
-                loss = unsloth_fused_ce_loss(
-                    trainer=None,
-                    hidden_states=hidden_states,
-                    lm_head_weight=lm_head,
-                    lm_head_bias=None,
-                    labels=labels,
-                    mask=None,
-                    n_items=n_items,
-                    scaling=getattr(self, "accelerator_scaler", None),
-                    target_gb=None,
-                    torch_compile=DEVICE_TYPE != "mps",
-                    logit_softcapping=logit_softcapping,
-                )
+                if DEVICE_TYPE == "mps":
+                    # MPS fallback: Standard calculation
+                    # Calculate logits first
+                    logits = self.lm_head(hidden_states.to(dtype))
+                    logits = logits.to(_get_dtype(dtype_from_config(self.config)))
+                    
+                    # Apply softcapping/scaling if needed
+                    if logit_scaling != 0:
+                        logits = logit_scaling * logits
+                    if logit_softcapping != 0:
+                        logits = (1.0 / logit_softcapping) * logits
+                        logits = torch.tanh(logits)
+                        logits = logit_softcapping * logits
+
+                    # Calculate standard loss
+                    shift_logits = logits[..., :-1, :].contiguous()
+                    shift_labels = labels[..., 1:].contiguous()
+                    loss = torch.nn.functional.cross_entropy(
+                        shift_logits.view(-1, shift_logits.size(-1)),
+                        shift_labels.view(-1),
+                        reduction="sum" if n_items is not None else "mean",
+                    )
+                    if n_items is not None:
+                        loss = loss / n_items
+                else:
+                    loss = unsloth_fused_ce_loss(
+                        trainer=None,
+                        hidden_states=hidden_states,
+                        lm_head_weight=lm_head,
+                        lm_head_bias=None,
+                        labels=labels,
+                        mask=None,
+                        n_items=n_items,
+                        scaling=getattr(self, "accelerator_scaler", None),
+                        target_gb=None,
+                        torch_compile=DEVICE_TYPE != "mps",
+                        logit_softcapping=logit_softcapping,
+                    )
                 if not return_dict:
-                    output = (logits,) + outputs[1:]
+                    output = (logits if DEVICE_TYPE == "mps" else None,) + outputs[1:]
                     return (loss,) + output if loss is not None else output
 
                 output = CausalLMOutputWithPast(
                     loss=loss,
-                    logits=EMPTY_LOGITS,
+                    logits=logits if DEVICE_TYPE == "mps" else EMPTY_LOGITS,
                     past_key_values=outputs.past_key_values,
                     hidden_states=outputs.hidden_states,
                     attentions=outputs.attentions,
