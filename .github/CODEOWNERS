@@ -1,0 +1,46 @@
+# Inspired from https://github.com/vllm-project/vllm/blob/main/.github/CODEOWNERS
+
+/unsloth/models/loader.py @danielhanchen @mmathew23
+/unsloth/models/llama.py @Datta0 @danielhanchen @mmathew23
+/unsloth/models/rl.py @Datta0 @pluesclues @danielhanchen
+/unsloth/models/rl_replacements.py @Datta0 @pluesclues @danielhanchen
+/unsloth/trainer.py @danielhanchen
+/unsloth/models/sentence_transformer.py @Etherll @danielhanchen
+/unsloth/save.py @rolandtannous @danielhanchen
+/unsloth/tokenizer_utils.py @mmathew23 @danielhanchen
+/unsloth/chat_templates.py @rolandtannous @danielhanchen
+/unsloth/ollama_template_mappers.py @rolandtannous @danielhanchen
+/unsloth/kernels/moe/*.py @Datta0
+/unsloth/import_fixes.py @danielhanchen
+/unsloth/device_type.py @danielhanchen
+/unsloth/_auto_install.py @danielhanchen
+/unsloth/dataprep/*.py @danielhanchen
+/unsloth/kernels/cross_entropy_loss.py @danielhanchen
+/unsloth/kernels/fast_lora.py @danielhanchen
+/unsloth/kernels/flex_attention.py @danielhanchen
+/unsloth/kernels/fp8.py @Datta0
+/unsloth/kernels/geglu.py @danielhanchen
+/unsloth/kernels/layernorm.py @danielhanchen
+/unsloth/kernels/rms_layernorm.py @danielhanchen
+/unsloth/kernels/rope_embedding.py @danielhanchen
+/unsloth/kernels/swiglu.py @danielhanchen
+/unsloth/kernels/utils.py @danielhanchen @Datta0
+/unsloth/models/_utils.py @danielhanchen @mmathew23
+/unsloth/models/cohere.py @danielhanchen
+/unsloth/models/dpo.py @danielhanchen
+/unsloth/models/falcon_h1.py @danielhanchen
+/unsloth/models/gemma.py @danielhanchen
+/unsloth/models/gemma2.py @danielhanchen
+/unsloth/models/glm4_moe.py @Datta0
+/unsloth/models/granite.py @danielhanchen
+/unsloth/models/llama4.py @danielhanchen
+/unsloth/models/loader_utils.py @Datta0 @danielhanchen
+/unsloth/models/mapper.py @danielhanchen
+/unsloth/models/mistral.py @danielhanchen
+/unsloth/models/qwen2.py @danielhanchen
+/unsloth/models/qwen3.py @Datta0
+/unsloth/models/qwen3_moe.py @Datta0
+/unsloth/models/vision.py @mmathew23 @danielhanchen
+/unsloth/utils/attention_dispatch.py @mmathew23
+/unsloth/utils/hf_hub.py @mmathew23
+/unsloth/utils/packing.py @mmathew23
