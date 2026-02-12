@@ -36,3 +36,4 @@ Thumbs.db
 resources/
 tmp/
 auth.db
+studio/frontend/package-lock.json
