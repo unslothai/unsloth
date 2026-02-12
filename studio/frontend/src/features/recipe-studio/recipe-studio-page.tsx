@@ -9,8 +9,6 @@ import {
   type NodeTypes,
   Panel,
   ReactFlow,
-  useReactFlow,
-  useUpdateNodeInternals,
 } from "@xyflow/react";
 import {
   type ReactElement,
@@ -21,15 +19,13 @@ import {
 } from "react";
 import { useShallow } from "zustand/react/shallow";
 import "@xyflow/react/dist/style.css";
-import { Button } from "@/components/ui/button";
-import { Spinner } from "@/components/ui/spinner";
-import { EyeIcon } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
-import { Lock, LockOpen, Maximize2, Minus, Plus } from "lucide-react";
 import { previewRecipe } from "./api";
 import { RecipeGraphAuxNode, type RecipeGraphAuxNodeData } from "./components/recipe-graph-aux-node";
 import { BlockSheet } from "./components/block-sheet";
-import { RECIPE_FLOATING_ICON_BUTTON_CLASS } from "./components/recipe-floating-icon-button-class";
+import { LayoutControls } from "./components/controls/layout-controls";
+import { ViewportControls } from "./components/controls/viewport-controls";
+import { InternalsSync } from "./components/graph/internals-sync";
+import { RecipeStudioHeader } from "./components/recipe-studio-header";
 import { RecipeNode } from "./components/recipe-graph-node";
 import { RecipeGraphSemanticEdge } from "./components/recipe-graph-semantic-edge";
 import { DataEdge } from "./components/rf-ui/data-edge";
@@ -51,164 +47,11 @@ import { buildDefaultSchemaTransform } from "./utils/processors";
 const NODE_TYPES: NodeTypes = { builder: RecipeNode, aux: RecipeGraphAuxNode };
 const EDGE_TYPES: EdgeTypes = { canvas: DataEdge, semantic: RecipeGraphSemanticEdge };
 
-type LayoutControlsProps = {
-  direction: "LR" | "TB";
-  onLayout: () => void;
-  onToggleDirection: () => void;
-};
-
-type ViewportControlsProps = {
-  interactive: boolean;
-  onToggleInteractive: () => void;
-};
-
-type InternalsSyncProps = {
-  nodeIds: string[];
-};
-
 type StatusTone = "success" | "error";
 type StatusMessage = {
   tone: StatusTone;
   text: string;
 };
-
-const STATUS_MESSAGE_CLASS: Record<StatusTone, string> = {
-  success: "mt-2 text-xs text-emerald-600",
-  error: "mt-2 text-xs text-rose-600",
-};
-
-function InternalsSync({ nodeIds }: InternalsSyncProps): null {
-  const updateNodeInternals = useUpdateNodeInternals();
-
-  useEffect(() => {
-    if (nodeIds.length === 0) {
-      return;
-    }
-    requestAnimationFrame(() => {
-      updateNodeInternals(nodeIds);
-      requestAnimationFrame(() => {
-        updateNodeInternals(nodeIds);
-      });
-    });
-  }, [nodeIds, updateNodeInternals]);
-
-  return null;
-}
-
-function LayoutControls({
-  direction,
-  onLayout,
-  onToggleDirection,
-}: LayoutControlsProps): ReactElement {
-  const { fitView, getNodes } = useReactFlow();
-  const updateNodeInternals = useUpdateNodeInternals();
-
-  const refreshNodeInternals = useCallback(() => {
-    const nodeIds = getNodes().map((node) => node.id);
-    if (nodeIds.length > 0) {
-      updateNodeInternals(nodeIds);
-    }
-  }, [getNodes, updateNodeInternals]);
-
-  const handleLayout = useCallback(() => {
-    onLayout();
-    requestAnimationFrame(() => {
-      refreshNodeInternals();
-      requestAnimationFrame(() => {
-        fitView({ duration: 250 });
-      });
-    });
-  }, [fitView, onLayout, refreshNodeInternals]);
-
-  const handleToggleDirection = useCallback(() => {
-    onToggleDirection();
-    requestAnimationFrame(() => {
-      refreshNodeInternals();
-      requestAnimationFrame(() => {
-        refreshNodeInternals();
-      });
-    });
-  }, [onToggleDirection, refreshNodeInternals]);
-
-  return (
-    <Panel position="top-left" className="m-3 flex items-center gap-2">
-      <Button size="sm" className="corner-squircle" variant="secondary" onClick={handleLayout}>
-        Auto layout
-      </Button>
-      <Button size="sm" className="corner-squircle" variant="outline" onClick={handleToggleDirection}>
-        {direction}
-      </Button>
-    </Panel>
-  );
-}
-
-function ViewportControls({
-  interactive,
-  onToggleInteractive,
-}: ViewportControlsProps): ReactElement {
-  const { zoomIn, zoomOut, fitView } = useReactFlow();
-
-  const handleZoomIn = useCallback(() => {
-    zoomIn({ duration: 150 });
-  }, [zoomIn]);
-
-  const handleZoomOut = useCallback(() => {
-    zoomOut({ duration: 150 });
-  }, [zoomOut]);
-
-  const handleFitView = useCallback(() => {
-    fitView({ duration: 250 });
-  }, [fitView]);
-
-  return (
-    <Panel position="bottom-left" className="m-3 flex items-center gap-2">
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon"
-        className={RECIPE_FLOATING_ICON_BUTTON_CLASS}
-        onClick={handleZoomIn}
-        aria-label="Zoom in"
-      >
-        <Plus className="size-4" />
-      </Button>
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon"
-        className={RECIPE_FLOATING_ICON_BUTTON_CLASS}
-        onClick={handleZoomOut}
-        aria-label="Zoom out"
-      >
-        <Minus className="size-4" />
-      </Button>
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon"
-        className={RECIPE_FLOATING_ICON_BUTTON_CLASS}
-        onClick={handleFitView}
-        aria-label="Fit view"
-      >
-        <Maximize2 className="size-4" />
-      </Button>
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon"
-        className={RECIPE_FLOATING_ICON_BUTTON_CLASS}
-        onClick={onToggleInteractive}
-        aria-label={interactive ? "Lock interaction" : "Unlock interaction"}
-      >
-        {interactive ? (
-          <LockOpen className="size-4" />
-        ) : (
-          <Lock className="size-4" />
-        )}
-      </Button>
-    </Panel>
-  );
-}
 
 export function RecipeStudioPage(): ReactElement {
   const {
@@ -495,37 +338,11 @@ export function RecipeStudioPage(): ReactElement {
   return (
     <div className="min-h-screen bg-background">
       <main className="w-full px-6 py-8">
-        <div className="mb-6 flex flex-col gap-4">
-          <div className="flex flex-col gap-4 lg:grid lg:grid-cols-[1fr_auto] lg:items-center">
-            <div>
-              <h1 className="text-2xl font-semibold tracking-tight">Create Data Recipe</h1>
-              <p className="text-sm text-muted-foreground">
-                Design synthetic-data pipelines with Data Designer.
-              </p>
-              {statusMessage && (
-                <p className={STATUS_MESSAGE_CLASS[statusMessage.tone]}>
-                  {statusMessage.text}
-                </p>
-              )}
-            </div>
-            <div className="flex items-center justify-start gap-2 lg:justify-end">
-              <Button
-                type="button"
-                size="sm"
-                onClick={handlePreview}
-                disabled={previewLoading}
-                className="gap-2 text-xs"
-              >
-                {previewLoading ? (
-                  <Spinner className="size-3.5" />
-                ) : (
-                  <HugeiconsIcon icon={EyeIcon} className="size-3.5" />
-                )}
-                Preview
-              </Button>
-            </div>
-          </div>
-        </div>
+        <RecipeStudioHeader
+          previewLoading={previewLoading}
+          statusMessage={statusMessage}
+          onPreview={handlePreview}
+        />
         <div
           className="relative h-[75vh] w-full rounded-2xl corner-squircle border "
           ref={setSheetContainer}

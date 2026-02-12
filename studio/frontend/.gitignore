@@ -27,3 +27,4 @@ test/
 *.sln
 *.sw?
 /src/features/recipe-studio/AGENTS.md
+/docs
