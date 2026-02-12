@@ -136,6 +136,7 @@ from .import_fixes import (
     fix_openenv_no_vllm,
     fix_executorch,
     patch_vllm_for_notebooks,
+    patch_transformers_cfg,
 )
 
 fix_xformers_performance_issue()
@@ -151,6 +152,7 @@ patch_enable_input_require_grads()
 fix_openenv_no_vllm()
 fix_executorch()
 patch_vllm_for_notebooks()
+patch_transformers_cfg()
 
 del fix_xformers_performance_issue
 del fix_vllm_aimv2_issue
@@ -165,6 +167,7 @@ del patch_enable_input_require_grads
 del fix_openenv_no_vllm
 del fix_executorch
 del patch_vllm_for_notebooks
+del patch_transformers_cfg
 
 # Torch 2.4 has including_emulation
 if DEVICE_TYPE == "cuda":
@@ -285,6 +288,7 @@ from .save import *
 from .chat_templates import *
 from .tokenizer_utils import *
 from .trainer import *
+from .grammars import *
 
 # Export dataprep utilities for CLI and downstream users
 from .dataprep.raw_text import RawTextDataLoader, TextPreprocessor
