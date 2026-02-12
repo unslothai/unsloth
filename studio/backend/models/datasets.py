@@ -21,3 +21,5 @@ class CheckFormatResponse(BaseModel):
     suggested_mapping: Optional[Dict[str, str]] = None
     detected_image_column: Optional[str] = None
     detected_text_column: Optional[str] = None
+    preview_samples: Optional[List[Dict]] = None
+    total_rows: Optional[int] = None

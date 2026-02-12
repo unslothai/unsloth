@@ -37,12 +37,15 @@ async def check_format(request: CheckFormatRequest):
     """
     Check if a dataset requires manual column mapping.
     
-    This is a lightweight check that only runs format detection,
-    not full processing. Use before starting training to determine
-    if the user needs to manually map columns.
+    This is a lightweight check that loads only the first 10 rows,
+    runs format detection, and (if processable) returns processed
+    preview samples. The full dataset is re-processed at training time.
     """
     try:
         from datasets import load_dataset
+        from utils.datasets import format_dataset
+        
+        PREVIEW_SIZE = 10
         
         logger.info(f"Checking format for dataset: {request.dataset_name}")
         
@@ -69,10 +72,28 @@ async def check_format(request: CheckFormatRequest):
                 load_kwargs["token"] = request.hf_token
             dataset = load_dataset(**load_kwargs)
         
-        # Run lightweight format check
-        result = check_dataset_format(dataset, is_vlm=request.is_vlm)
+        # Slice to top N rows — all detection and preview runs on this subset
+        total_rows = len(dataset)
+        preview_slice = dataset.select(range(min(PREVIEW_SIZE, total_rows)))
+        
+        # Run lightweight format check on the preview slice
+        result = check_dataset_format(preview_slice, is_vlm=request.is_vlm)
         
         logger.info(f"Format check result: requires_mapping={result['requires_manual_mapping']}, format={result['detected_format']}")
+        
+        # If format is processable, generate preview samples via format_dataset
+        preview_samples = None
+        if not result["requires_manual_mapping"]:
+            try:
+                format_result = format_dataset(
+                    preview_slice,
+                    format_type="auto",
+                    custom_format_mapping=result.get("suggested_mapping"),
+                )
+                processed = format_result["dataset"]
+                preview_samples = [dict(row) for row in processed]
+            except Exception as e:
+                logger.warning(f"Preview generation failed (non-fatal): {e}")
         
         return CheckFormatResponse(
             requires_manual_mapping=result["requires_manual_mapping"],
@@ -81,6 +102,8 @@ async def check_format(request: CheckFormatRequest):
             suggested_mapping=result.get("suggested_mapping"),
             detected_image_column=result.get("detected_image_column"),
             detected_text_column=result.get("detected_text_column"),
+            preview_samples=preview_samples,
+            total_rows=total_rows,
         )
         
     except HTTPException:
