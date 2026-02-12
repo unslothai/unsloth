@@ -3062,8 +3062,8 @@ def patch_unsloth_zoo_saving():
     original_merge_lora = unsloth_zoo.saving_utils._merge_lora
 
     def _mps_friendly_merge_lora(W, lora_stats, output_key):
-        # Check if we are on MPS
-        if W.device.type == "mps":
+        # Check if we are on MPS or if CUDA is not available (CPU fallback)
+        if W.device.type == "mps" or not torch.cuda.is_available():
              # Original code: W = W.to("cuda", dtype = torch.float32, non_blocking = True)
              # We change "cuda" to W.device
              W = W.to(W.device, dtype=torch.float32, non_blocking=True)
