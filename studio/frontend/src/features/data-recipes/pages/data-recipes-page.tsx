@@ -46,21 +46,20 @@ export function DataRecipesPage(): ReactElement {
   const recipes = useRecipes();
   const [creatingRecipe, setCreatingRecipe] = useState(false);
 
-  function openNewRecipe(): void {
+  async function openNewRecipe(): Promise<void> {
     if (creatingRecipe) {
       return;
     }
     setCreatingRecipe(true);
-    void createRecipeDraft()
-      .then((recipe) => {
-        void navigate({
-          to: "/data-recipes/$recipeId",
-          params: { recipeId: recipe.id },
-        });
-      })
-      .finally(() => {
-        setCreatingRecipe(false);
+    try {
+      const recipe = await createRecipeDraft();
+      await navigate({
+        to: "/data-recipes/$recipeId",
+        params: { recipeId: recipe.id },
       });
+    } finally {
+      setCreatingRecipe(false);
+    }
   }
 
   function openRecipe(recipeId: string): void {
@@ -84,7 +83,13 @@ export function DataRecipesPage(): ReactElement {
               Create and manage local recipe workflows.
             </p>
           </div>
-          <Button type="button" onClick={openNewRecipe} disabled={creatingRecipe}>
+          <Button
+            type="button"
+            onClick={() => {
+              void openNewRecipe();
+            }}
+            disabled={creatingRecipe}
+          >
             <HugeiconsIcon icon={PlusSignIcon} className="size-4" />
             New Recipe
           </Button>
@@ -102,7 +107,13 @@ export function DataRecipesPage(): ReactElement {
               </EmptyDescription>
             </EmptyHeader>
             <EmptyContent>
-              <Button type="button" onClick={openNewRecipe} disabled={creatingRecipe}>
+              <Button
+                type="button"
+                onClick={() => {
+                  void openNewRecipe();
+                }}
+                disabled={creatingRecipe}
+              >
                 <HugeiconsIcon icon={PlusSignIcon} className="size-4" />
                 Create Recipe
               </Button>

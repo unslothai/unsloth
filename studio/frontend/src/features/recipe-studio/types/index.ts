@@ -102,6 +102,41 @@ export type Score = {
   options: ScoreOption[];
 };
 
+export type McpProviderType = "stdio" | "streamable_http";
+
+export type McpEnvVar = {
+  key: string;
+  value: string;
+};
+
+export type LlmMcpProviderConfig = {
+  id: string;
+  name: string;
+  // biome-ignore lint/style/useNamingConvention: ui schema
+  provider_type: McpProviderType;
+  command?: string;
+  args?: string[];
+  env?: McpEnvVar[];
+  endpoint?: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  api_key?: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  api_key_env?: string;
+};
+
+export type LlmToolConfig = {
+  id: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  tool_alias: string;
+  providers: string[];
+  // biome-ignore lint/style/useNamingConvention: api schema
+  allow_tools?: string[];
+  // biome-ignore lint/style/useNamingConvention: api schema
+  max_tool_call_turns?: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  timeout_sec?: string;
+};
+
 export type LlmConfig = {
   id: string;
   kind: "llm";
@@ -118,6 +153,12 @@ export type LlmConfig = {
   code_lang?: string;
   // biome-ignore lint/style/useNamingConvention: api schema
   output_format?: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  tool_alias?: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  tool_configs?: LlmToolConfig[];
+  // biome-ignore lint/style/useNamingConvention: ui schema
+  mcp_providers?: LlmMcpProviderConfig[];
   scores?: Score[];
 };
 

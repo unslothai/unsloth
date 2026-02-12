@@ -39,7 +39,7 @@ function RecipeLoadState({
   );
 }
 
-export function EditRecipeEditorPage({ recipeId }: EditRecipePageProps): ReactElement {
+export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement {
   const navigate = useNavigate();
   const [loadState, setLoadState] = useState<LoadState>({ status: "loading" });
 
