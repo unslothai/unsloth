@@ -161,3 +161,39 @@ def pytorch_lora_o(
     Pure PyTorch LoRA output projection for MPS.
     """
     return pytorch_lora_linear(X, OW, OA, OB, OS)
+
+
+def pytorch_rope_embedding_qk(Q, K, cos, sin):
+    """
+    Pure PyTorch RoPE embedding for Q and K tensors.
+    
+    RoPE: rotate_half(x) = [-x[..., d/2:], x[..., :d/2]]
+    output = x * cos + rotate_half(x) * sin
+    
+    Args:
+        Q: Query tensor [batch, n_heads, seq_len, head_dim]
+        K: Key tensor [batch, n_heads, seq_len, head_dim]  
+        cos: Cosine values [seq_len, head_dim] or [1, seq_len, head_dim]
+        sin: Sine values [seq_len, head_dim] or [1, seq_len, head_dim]
+    
+    Returns:
+        Q_out, K_out: Rotated tensors
+    """
+    def rotate_half(x):
+        half = x.shape[-1] // 2
+        x1 = x[..., :half]
+        x2 = x[..., half:]
+        return torch.cat((-x2, x1), dim=-1)
+    
+    seq_len = Q.shape[2]
+    cos = cos[:seq_len].view(1, 1, seq_len, -1)
+    sin = sin[:seq_len].view(1, 1, seq_len, -1)
+    
+    if cos.shape[-1] * 2 == Q.shape[-1]:
+        cos = torch.cat((cos, cos), dim=-1)
+        sin = torch.cat((sin, sin), dim=-1)
+    
+    Q_out = (Q * cos) + (rotate_half(Q) * sin)
+    K_out = (K * cos) + (rotate_half(K) * sin)
+    
+    return Q_out, K_out

@@ -120,11 +120,14 @@ def dispatch_rope_embedding(Q, K, cos, sin, rope_indices=None):
         if _is_mlx_available() and not torch.is_grad_enabled():
             from ..mlx.fast_ops import mlx_rope_qk
             return mlx_rope_qk(Q, K, cos, sin, rope_indices)
-        # Priority 2: MPS fallback (PyTorch-native)
+        # Priority 2: MPS fallback (PyTorch-native with custom autograd)
         if _use_mps_fallback():
             from .rope_embedding import mps_rope_embedding_qk
             fn = _get_compiled_fn(mps_rope_embedding_qk)
             return fn(Q, K, cos, sin)
+        # Priority 3: Pure PyTorch (when fallback disabled, e.g., gradient checkpointing)
+        from .lora_pytorch import pytorch_rope_embedding_qk
+        return pytorch_rope_embedding_qk(Q, K, cos, sin)
     # Default: CUDA/Triton path
     from ..rope_embedding import fast_rope_embedding
     return fast_rope_embedding(Q, K, cos, sin, rope_indices)
