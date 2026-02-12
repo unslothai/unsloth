@@ -107,6 +107,20 @@ def test_lora_training_and_save():
     print("\nRunning training...")
     print("-" * 70)
     
+    # Diagnostic output: verify MPS dispatch state
+    try:
+        import unsloth.kernels.mps as mps_kernels
+        fallback_state = getattr(mps_kernels, 'USE_MPS_FALLBACK', 'NOT_FOUND')
+        print(f"   📊 USE_MPS_FALLBACK = {fallback_state}")
+        gc_enabled = getattr(model, 'gradient_checkpointing', 'NOT_FOUND')
+        print(f"   📊 gradient_checkpointing = {gc_enabled}")
+        if fallback_state == False:
+            print(f"   ✅ Custom autograd disabled — using pure PyTorch path")
+        elif fallback_state == True:
+            print(f"   ⚠️  Custom autograd ENABLED — may conflict with gradient checkpointing")
+    except ImportError:
+        print("   📊 (not on MPS, skipping dispatch diagnostics)")
+    
     try:
         trainer_stats = trainer.train()
         print(f"✅ Training completed successfully!")
@@ -187,7 +201,7 @@ if __name__ == "__main__":
         print("=" * 70)
         print("\nResults:")
         print("  ✅ LoRA training works on Apple Silicon")
-        print("  ✅ MPSLoRA_MLP backward pass works (custom autograd)")
+        print("  ✅ Pure PyTorch MLP path works with gradient checkpointing")
         print("  ✅ Attention + MLP LoRA training successful")
         print("  ✅ LoRA weight saving works")
         print("  ✅ Merged 16-bit saving works")

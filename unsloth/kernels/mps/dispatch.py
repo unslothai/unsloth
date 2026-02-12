@@ -32,6 +32,9 @@ def _use_mps_fallback():
 # Require torch 2.4+ for better MPS support in inductor
 _SUPPORTS_MPS_COMPILE = hasattr(torch, "compile") and torch.__version__ >= "2.4.0"
 
+# One-time diagnostic logging flag
+_LOGGED_FALLBACK_STATE = False
+
 # =============================================================================
 # Metal / MLX Kernel Priority System
 # =============================================================================
@@ -135,13 +138,26 @@ def dispatch_rope_embedding(Q, K, cos, sin, rope_indices=None):
 
 def dispatch_cross_entropy_loss(logits, labels, logit_softcapping=0, logit_scaling=0, n_items=None):
     if DEVICE_TYPE == "mps":
-        from .cross_entropy_loss import mps_cross_entropy_loss
+        # When USE_MPS_FALLBACK is disabled (gradient checkpointing active),
+        # use standard PyTorch cross-entropy to avoid custom autograd issues
+        if not _use_mps_fallback():
+            import torch.nn.functional as F
+            batch, seq_len, vocab_size = logits.shape
+            logits_flat = logits.reshape(-1, vocab_size)
+            labels_flat = labels.reshape(-1)
+            # Use standard F.cross_entropy which works with gradient checkpointing
+            loss = F.cross_entropy(logits_flat, labels_flat, ignore_index=-100, reduction='none')
+            if n_items is None:
+                n_items = torch.count_nonzero(labels != -100)
+            if n_items == 0:
+                return loss.sum() * 0.0 + logits.sum() * 0.0
+            return loss.sum() / n_items
 
+        from .cross_entropy_loss import mps_cross_entropy_loss
         fn = _get_compiled_fn(mps_cross_entropy_loss)
         return fn(logits, labels, logit_softcapping, logit_scaling, n_items)
     else:
         from ..cross_entropy_loss import fast_cross_entropy_loss
-
         return fast_cross_entropy_loss(logits, labels, logit_softcapping, logit_scaling, n_items)
 
 
@@ -156,6 +172,9 @@ def dispatch_swiglu_fg(e, g):
             from .swiglu import mps_swiglu_forward
             fn = _get_compiled_fn(mps_swiglu_forward)
             return fn(e, g)
+        # Priority 3: Pure PyTorch (when fallback disabled, e.g. gradient checkpointing)
+        # SwiGLU: f = silu(e) * g = (e * sigmoid(e)) * g
+        return torch.nn.functional.silu(e) * g
     # Default: CUDA/Triton path
     from ..swiglu import swiglu_fg_kernel
     return swiglu_fg_kernel(e, g)
@@ -172,6 +191,18 @@ def dispatch_swiglu_backward(dw, e, g):
             from .swiglu import mps_swiglu_backward
             fn = _get_compiled_fn(mps_swiglu_backward)
             return fn(dw, e, g)
+        # Priority 3: Pure PyTorch backward (when fallback disabled)
+        # SwiGLU backward: h = silu(e) * g
+        # df/de = sigmoid(e) * (1 + e * (1 - sigmoid(e)))
+        # dh/de = df/de * g, dh/dg = silu(e)
+        se = torch.sigmoid(e)
+        f = e * se
+        df = se * (1.0 + e * (1.0 - se))
+        # dw is dh (upstream gradient already multiplied)
+        # Return: (dw * g * df, dw * f)  but in the convention of the kernel:
+        # h = f * g, so DW (from downstream) comes in as dw
+        # de = dw * df * g, dg = dw * f
+        return dw * df * g, dw * f, dw * g * df
     # Default: CUDA/Triton path
     from ..swiglu import swiglu_DWf_DW_dfg_kernel
     return swiglu_DWf_DW_dfg_kernel(dw, e, g)
@@ -188,6 +219,9 @@ def dispatch_geglu_exact_forward(gate, up):
             from .geglu import mps_geglu_exact_forward
             fn = _get_compiled_fn(mps_geglu_exact_forward)
             return fn(gate, up)
+        # Priority 3: Pure PyTorch (when fallback disabled)
+        # GeGLU exact: h = gelu(gate) * up
+        return torch.nn.functional.gelu(gate) * up
     # Default: CUDA/Triton path
     from ..geglu import geglu_exact_forward_kernel
     return geglu_exact_forward_kernel(gate, up)
@@ -204,6 +238,16 @@ def dispatch_geglu_exact_backward(dw, e, g):
             from .geglu import mps_geglu_exact_backward
             fn = _get_compiled_fn(mps_geglu_exact_backward)
             return fn(dw, e, g)
+        # Priority 3: Pure PyTorch backward (when fallback disabled)
+        # GeGLU exact backward
+        import math
+        f = torch.nn.functional.gelu(e)
+        # GELU'(x) derivative via standard formula
+        sqrt_2_over_pi = math.sqrt(2.0 / math.pi)
+        cdf = 0.5 * (1.0 + torch.erf(e / math.sqrt(2.0)))
+        pdf = sqrt_2_over_pi * torch.exp(-0.5 * e * e)
+        df = cdf + e * pdf
+        return dw * df * g, dw * f, dw * g * df
     # Default: CUDA/Triton path
     from ..geglu import geglu_exact_backward_kernel
     return geglu_exact_backward_kernel(dw, e, g)
@@ -220,6 +264,9 @@ def dispatch_geglu_approx_forward(gate, up):
             from .geglu import mps_geglu_approx_forward
             fn = _get_compiled_fn(mps_geglu_approx_forward)
             return fn(gate, up)
+        # Priority 3: Pure PyTorch (when fallback disabled)
+        # GeGLU approx: h = gelu_approx(gate) * up
+        return torch.nn.functional.gelu(gate, approximate='tanh') * up
     # Default: CUDA/Triton path
     from ..geglu import geglu_approx_forward_kernel
     return geglu_approx_forward_kernel(gate, up)
@@ -236,6 +283,18 @@ def dispatch_geglu_approx_backward(dw, e, g):
             from .geglu import mps_geglu_approx_backward
             fn = _get_compiled_fn(mps_geglu_approx_backward)
             return fn(dw, e, g)
+        # Priority 3: Pure PyTorch backward (when fallback disabled)
+        # GeGLU approx backward using tanh approximation
+        import math
+        sqrt_2_over_pi = math.sqrt(2.0 / math.pi)
+        inner = sqrt_2_over_pi * (e + 0.044715 * e * e * e)
+        tanh_val = torch.tanh(inner)
+        f = 0.5 * e * (1.0 + tanh_val)
+        # Derivative of tanh-approx GELU
+        dtanh = 1.0 - tanh_val * tanh_val
+        dinner = sqrt_2_over_pi * (1.0 + 3.0 * 0.044715 * e * e)
+        df = 0.5 * (1.0 + tanh_val) + 0.5 * e * dtanh * dinner
+        return dw * df * g, dw * f, dw * g * df
     # Default: CUDA/Triton path
     from ..geglu import geglu_approx_backward_kernel
     return geglu_approx_backward_kernel(dw, e, g)
@@ -286,6 +345,21 @@ def dispatch_lora_mlp_swiglu(
     down_multiplier=None,
 ):
     if DEVICE_TYPE == "mps":
+        # One-time diagnostic logging of USE_MPS_FALLBACK state
+        global _LOGGED_FALLBACK_STATE
+        if not _LOGGED_FALLBACK_STATE:
+            _LOGGED_FALLBACK_STATE = True
+            _fallback_val = _use_mps_fallback()
+            import logging
+            _logger = logging.getLogger("unsloth")
+            _logger.warning_once(
+                f"Unsloth MPS dispatch: USE_MPS_FALLBACK={_fallback_val}, "
+                f"grad_enabled={torch.is_grad_enabled()}"
+            ) if hasattr(_logger, 'warning_once') else _logger.warning(
+                f"Unsloth MPS dispatch: USE_MPS_FALLBACK={_fallback_val}, "
+                f"grad_enabled={torch.is_grad_enabled()}"
+            )
+
         # Priority 1: MLX fast_lora (compiled graph fusion + batch-1 GEMV)
         # Only use MLX path for inference — MLX ops are outside PyTorch autograd
         if _is_mlx_available() and not torch.is_grad_enabled():
