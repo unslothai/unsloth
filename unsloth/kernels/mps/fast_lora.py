@@ -179,14 +179,18 @@ class MPSLoRA_MLP(torch.autograd.Function):
 
         # Compute DW = dY @ (downW + downS * downB @ downA)^T
         # First get base projection: dY @ downW.T
-        downW_t = downW.t().to(dtype)
+        # downW is [Out, In], so we need dY @ downW to get [B, In]
+        downW_t = downW.to(dtype)
         DW = torch.matmul(dY, downW_t)
         
         # Add LoRA contribution: dY @ (downS * downB @ downA)^T
         # = downS * dY @ downA.T @ downB.T
         # Use addmm (not addmm_) to avoid in-place ops
         if downA is not None and downB is not None:
-            DW = DW.addmm(dY @ downA.t(), downB.t(), alpha=downS)
+             # downA [In, R], downB [R, Out] (after transpose local)
+             # we want dY [B, Out] @ downB.t() [Out, R] -> [B, R]
+             # then @ downA.t() [R, In] -> [B, In]
+            DW = DW.addmm(dY @ downB.t(), downA.t(), alpha=downS)
 
         # Apply backward function to compute h, df, de
         # _backward_function modifies tensors in place, so we pass copies to preserve
