@@ -116,7 +116,7 @@ try:
              logits_mv = torch.mv(model.model.lm_head.weight, norm_out_bf16.ravel())
              print(f"LM Head (torch.mv) output req_grad: {logits_mv.requires_grad}")
 except Exception as e:
-    print(f"LM Head (torch.mv) failed: {e}")
+    print(f"LM Head failed: {e}")
 
 print("=" * 70)
 print("Diagnostic: Test 5 - Full Training Step Simulation")
