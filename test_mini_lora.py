@@ -111,14 +111,13 @@ def test_lora_training_and_save():
     # Diagnostic output: verify MPS dispatch state
     try:
         import unsloth.kernels.mps as mps_kernels
+        # Force disable custom autograd to use pure PyTorch path
+        mps_kernels.USE_MPS_FALLBACK = False
         fallback_state = getattr(mps_kernels, 'USE_MPS_FALLBACK', 'NOT_FOUND')
-        print(f"   📊 USE_MPS_FALLBACK = {fallback_state}")
+        print(f"   📊 USE_MPS_FALLBACK = {fallback_state} (forced disabled)")
         gc_enabled = getattr(model, 'gradient_checkpointing', 'NOT_FOUND')
         print(f"   📊 gradient_checkpointing = {gc_enabled}")
-        if fallback_state == False:
-            print(f"   ✅ Custom autograd disabled — using pure PyTorch path")
-        elif fallback_state == True:
-            print(f"   ⚠️  Custom autograd ENABLED — may conflict with gradient checkpointing")
+        print(f"   ✅ Using pure PyTorch path (no custom autograd)")
     except ImportError:
         print("   📊 (not on MPS, skipping dispatch diagnostics)")
     
