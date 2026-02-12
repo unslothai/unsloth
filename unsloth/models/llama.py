@@ -1420,6 +1420,10 @@ def CausalLM_fast_forward(fast_forward_inference):
                 # Use unsloth_fused_ce_loss which actually calculates the best chunk size to reduce VRAM usage
                 RETURN_LOGITS = False
 
+            if DEVICE_TYPE == "mps":
+                print(f"[DEBUG] MPS Forward: hidden_states.requires_grad={hidden_states.requires_grad}, dtype={hidden_states.dtype}, device={hidden_states.device}")
+                print(f"[DEBUG] MPS Forward: lm_head.weight.requires_grad={self.lm_head.weight.requires_grad}, dtype={self.lm_head.weight.dtype}")
+            
             if not RETURN_LOGITS and labels is not None:
                 n_items = kwargs.get("num_items_in_batch", None)
                 if n_items is None:
