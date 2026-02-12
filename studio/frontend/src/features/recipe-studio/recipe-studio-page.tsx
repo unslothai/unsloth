@@ -42,18 +42,60 @@ import { isCategoryConfig } from "./utils";
 import { deriveDisplayGraph } from "./utils/graph/derive-display-graph";
 import { importRecipePayload } from "./utils/import";
 import { buildRecipePayload } from "./utils/payload";
+import type { RecipePayload } from "./utils/payload/types";
 import { buildDefaultSchemaTransform } from "./utils/processors";
 
 const NODE_TYPES: NodeTypes = { builder: RecipeNode, aux: RecipeGraphAuxNode };
 const EDGE_TYPES: EdgeTypes = { canvas: DataEdge, semantic: RecipeGraphSemanticEdge };
 
 type StatusTone = "success" | "error";
-type StatusMessage = {
-  tone: StatusTone;
-  text: string;
+
+export type PersistRecipeInput = {
+  id: string | null;
+  name: string;
+  payload: RecipePayload;
 };
 
-export function RecipeStudioPage(): ReactElement {
+export type PersistRecipeResult = {
+  id: string;
+  updatedAt: number;
+};
+
+export type RecipeStudioPageProps = {
+  recipeId: string;
+  initialRecipeName: string;
+  initialPayload: RecipePayload;
+  initialSavedAt: number;
+  onPersistRecipe: (input: PersistRecipeInput) => Promise<PersistRecipeResult>;
+};
+
+function buildSignature(name: string, payload: RecipePayload): string {
+  return JSON.stringify({ name, payload });
+}
+
+function normalizeWorkflowName(value: string): string {
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : "Unnamed";
+}
+
+function formatSavedLabel(savedAt: number | null): string {
+  if (!savedAt) {
+    return "Not saved yet";
+  }
+  const time = new Date(savedAt).toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  return `Saved ${time}`;
+}
+
+export function RecipeStudioPage({
+  recipeId,
+  initialRecipeName,
+  initialPayload,
+  initialSavedAt,
+  onPersistRecipe,
+}: RecipeStudioPageProps): ReactElement {
   const {
     nodes,
     edges,
@@ -79,6 +121,7 @@ export function RecipeStudioPage(): ReactElement {
     setSheetView,
     setProcessors,
     setDialogOpen,
+    resetRecipe,
     loadRecipe,
     setLayoutDirection,
     applyLayout,
@@ -112,6 +155,7 @@ export function RecipeStudioPage(): ReactElement {
       setSheetView: state.setSheetView,
       setProcessors: state.setProcessors,
       setDialogOpen: state.setDialogOpen,
+      resetRecipe: state.resetRecipe,
       loadRecipe: state.loadRecipe,
       setLayoutDirection: state.setLayoutDirection,
       applyLayout: state.applyLayout,
@@ -125,11 +169,14 @@ export function RecipeStudioPage(): ReactElement {
     null,
   );
   const [previewLoading, setPreviewLoading] = useState(false);
+  const [saveLoading, setSaveLoading] = useState(false);
   const [copied, setCopied] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [processorsOpen, setProcessorsOpen] = useState(false);
   const [interactive, setInteractive] = useState(true);
-  const [statusMessage, setStatusMessage] = useState<StatusMessage | null>(null);
+  const [workflowName, setWorkflowName] = useState("Unnamed");
+  const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
+  const [savedSignature, setSavedSignature] = useState<string>("");
 
   const baseNodeIds = useMemo(
     () => new Set(nodes.map((node) => node.id)),
@@ -249,45 +296,116 @@ export function RecipeStudioPage(): ReactElement {
     setInteractive((value) => !value);
   }, []);
 
-  const setSuccessStatus = useCallback((text: string) => {
-    setStatusMessage({ tone: "success", text });
-  }, []);
-
-  const setErrorStatus = useCallback((text: string) => {
-    setStatusMessage({ tone: "error", text });
-  }, []);
-
-  const buildPayload = useCallback(
+  const payloadResult = useMemo(
     () => buildRecipePayload(configs, nodes, edges, processors),
-    [configs, nodes, edges, processors],
+    [configs, edges, nodes, processors],
   );
+  const currentPayload = payloadResult.payload;
+  const normalizedWorkflowName = useMemo(
+    () => normalizeWorkflowName(workflowName),
+    [workflowName],
+  );
+  const currentSignature = useMemo(
+    () => buildSignature(normalizedWorkflowName, currentPayload),
+    [currentPayload, normalizedWorkflowName],
+  );
+  const isDirty = savedSignature.length > 0 && currentSignature !== savedSignature;
+  const saveTone: StatusTone =
+    !isDirty && Boolean(lastSavedAt) ? "success" : "error";
+  const savedAtLabel = formatSavedLabel(lastSavedAt);
+
+  useEffect(() => {
+    const nextName = normalizeWorkflowName(initialRecipeName);
+    resetRecipe();
+    setWorkflowName(nextName);
+    setLastSavedAt(initialSavedAt);
+    setCopied(false);
+
+    const parsed = importRecipePayload(JSON.stringify(initialPayload));
+    if (parsed.snapshot) {
+      loadRecipe(parsed.snapshot);
+    } else {
+      console.error("Failed to load recipe payload.", parsed.errors);
+    }
+
+    const state = useRecipeStudioStore.getState();
+    const { payload } = buildRecipePayload(
+      state.configs,
+      state.nodes,
+      state.edges,
+      state.processors,
+    );
+    setSavedSignature(buildSignature(nextName, payload));
+  }, [
+    initialPayload,
+    initialRecipeName,
+    initialSavedAt,
+    loadRecipe,
+    recipeId,
+    resetRecipe,
+  ]);
+
+  const persistRecipe = useCallback(async (): Promise<void> => {
+    if (saveLoading) {
+      return;
+    }
+    const nextName = normalizeWorkflowName(workflowName);
+    if (nextName !== workflowName) {
+      setWorkflowName(nextName);
+    }
+    setSaveLoading(true);
+    try {
+      const result = await onPersistRecipe({
+        id: recipeId,
+        name: nextName,
+        payload: currentPayload,
+      });
+      setLastSavedAt(result.updatedAt);
+      setSavedSignature(buildSignature(nextName, currentPayload));
+    } catch (error) {
+      console.error("Save recipe failed:", error);
+    } finally {
+      setSaveLoading(false);
+    }
+  }, [
+    currentPayload,
+    onPersistRecipe,
+    recipeId,
+    saveLoading,
+    workflowName,
+  ]);
+
+  useEffect(() => {
+    if (!isDirty || saveLoading) {
+      return;
+    }
+    const timeoutId = window.setTimeout(() => {
+      void persistRecipe();
+    }, 800);
+    return () => window.clearTimeout(timeoutId);
+  }, [isDirty, persistRecipe, saveLoading]);
 
   const readPayload = useCallback(
-    (fallbackError: string) => {
-      const { payload, errors } = buildPayload();
-      if (errors.length === 0) {
-        return payload;
+    () => {
+      if (payloadResult.errors.length === 0) {
+        return payloadResult.payload;
       }
-      setErrorStatus(errors[0] ?? fallbackError);
       return null;
     },
-    [buildPayload, setErrorStatus],
+    [payloadResult.errors.length, payloadResult.payload],
   );
 
   const handlePreview = async (): Promise<void> => {
     setPreviewLoading(true);
-    setStatusMessage(null);
-    const payload = readPayload("Fix config errors before preview.");
+    const payload = readPayload();
     if (!payload) {
       setPreviewLoading(false);
       return;
     }
     try {
-      const result = await previewRecipe(payload);
-      const rows = Array.isArray(result.dataset) ? result.dataset.length : 0;
-      setSuccessStatus(`Preview ready (${rows} rows).`);
+      await previewRecipe(payload);
     } catch (error) {
-      setErrorStatus(error instanceof Error ? error.message : "Preview failed.");
+      console.error("Preview failed:", error);
     } finally {
       setPreviewLoading(false);
     }
@@ -295,22 +413,20 @@ export function RecipeStudioPage(): ReactElement {
 
   const handleCopyRecipe = async (): Promise<void> => {
     setCopied(false);
-    setStatusMessage(null);
-    const payload = readPayload("Fix config errors before copy.");
+    const payload = readPayload();
     if (!payload) {
       return;
     }
     if (!navigator.clipboard) {
-      setErrorStatus("Clipboard not available.");
+      console.error("Clipboard not available.");
       return;
     }
     try {
       await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1500);
-      setSuccessStatus("Recipe copied to clipboard.");
     } catch (error) {
-      setErrorStatus(error instanceof Error ? error.message : "Copy failed.");
+      console.error("Copy failed:", error);
     }
   };
 
@@ -320,7 +436,6 @@ export function RecipeStudioPage(): ReactElement {
       return result.errors[0] ?? "Invalid payload.";
     }
     loadRecipe(result.snapshot);
-    setSuccessStatus("Recipe imported.");
     return null;
   };
 
@@ -338,69 +453,78 @@ export function RecipeStudioPage(): ReactElement {
   return (
     <div className="min-h-screen bg-background">
       <main className="w-full px-6 py-8">
-        <RecipeStudioHeader
-          previewLoading={previewLoading}
-          statusMessage={statusMessage}
-          onPreview={handlePreview}
-        />
         <div
-          className="relative h-[75vh] w-full rounded-2xl corner-squircle border "
+          className="relative w-full overflow-hidden rounded-2xl corner-squircle border"
           ref={setSheetContainer}
         >
-          <ReactFlow
-            nodes={displayGraph.nodes}
-            edges={displayGraph.edges}
-            nodeTypes={NODE_TYPES}
-            edgeTypes={EDGE_TYPES}
-            defaultEdgeOptions={{
-              type: "canvas",
-              data: { key: "name", path: "auto" },
-              style: { strokeWidth: 1.5, stroke: "var(--border)" },
+          <RecipeStudioHeader
+            previewLoading={previewLoading}
+            saveLoading={saveLoading}
+            saveTone={saveTone}
+            savedAtLabel={savedAtLabel}
+            workflowName={workflowName}
+            onWorkflowNameChange={setWorkflowName}
+            onPreview={handlePreview}
+            onSaveRecipe={() => {
+              void persistRecipe();
             }}
-            onNodesChange={handleNodesChange}
-            onEdgesChange={handleEdgesChange}
-            onConnect={onConnect}
-            onNodeClick={handleNodeClick}
-            isValidConnection={isValidConnection}
-            nodesDraggable={interactive}
-            nodesConnectable={interactive}
-            elementsSelectable={interactive}
-            fitView={true}
-            className="h-full w-full"
-          >
-            <LayoutControls
-              direction={layoutDirection}
-              onLayout={applyLayout}
-              onToggleDirection={handleToggleDirection}
-            />
-            <InternalsSync nodeIds={displayNodeIds} />
-            <Background
-              variant={BackgroundVariant.Dots}
-              gap={18}
-              size={1}
-              color="#d4d4d8"
-            />
-            <Panel position="top-right" className="m-3">
-              <BlockSheet
-                container={sheetContainer}
-                sheetView={sheetView}
-                onViewChange={setSheetView}
-                onAddSampler={addSamplerNode}
-                onAddLlm={addLlmNode}
-                onAddModelProvider={addModelProviderNode}
-                onAddModelConfig={addModelConfigNode}
-                onAddExpression={addExpressionNode}
-                onOpenProcessors={openProcessorsFromSheet}
-                copied={copied}
-                onCopy={handleCopyRecipe}
-                onImport={() => setImportOpen(true)}
+          />
+          <div className="h-[75vh] w-full rounded-t-none">
+            <ReactFlow
+              nodes={displayGraph.nodes}
+              edges={displayGraph.edges}
+              nodeTypes={NODE_TYPES}
+              edgeTypes={EDGE_TYPES}
+              defaultEdgeOptions={{
+                type: "canvas",
+                data: { key: "name", path: "auto" },
+                style: { strokeWidth: 1.5, stroke: "var(--border)" },
+              }}
+              onNodesChange={handleNodesChange}
+              onEdgesChange={handleEdgesChange}
+              onConnect={onConnect}
+              onNodeClick={handleNodeClick}
+              isValidConnection={isValidConnection}
+              nodesDraggable={interactive}
+              nodesConnectable={interactive}
+              elementsSelectable={interactive}
+              fitView={true}
+              className="h-full w-full rounded-t-none"
+            >
+              <LayoutControls
+                direction={layoutDirection}
+                onLayout={applyLayout}
+                onToggleDirection={handleToggleDirection}
               />
-            </Panel>
-            <ViewportControls
-              interactive={interactive}
-              onToggleInteractive={toggleInteractive}
-            />
-          </ReactFlow>
+              <InternalsSync nodeIds={displayNodeIds} />
+              <Background
+                variant={BackgroundVariant.Dots}
+                gap={18}
+                size={1}
+                color="#d4d4d8"
+              />
+              <Panel position="top-right" className="m-3">
+                <BlockSheet
+                  container={sheetContainer}
+                  sheetView={sheetView}
+                  onViewChange={setSheetView}
+                  onAddSampler={addSamplerNode}
+                  onAddLlm={addLlmNode}
+                  onAddModelProvider={addModelProviderNode}
+                  onAddModelConfig={addModelConfigNode}
+                  onAddExpression={addExpressionNode}
+                  onOpenProcessors={openProcessorsFromSheet}
+                  copied={copied}
+                  onCopy={handleCopyRecipe}
+                  onImport={() => setImportOpen(true)}
+                />
+              </Panel>
+              <ViewportControls
+                interactive={interactive}
+                onToggleInteractive={toggleInteractive}
+              />
+            </ReactFlow>
+          </div>
         </div>
       </main>
       <ConfigDialog
