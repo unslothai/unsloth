@@ -44,10 +44,11 @@ def print_header():
     print("=" * 75)
     print("SwiGLU Kernel Benchmark Suite")
     print("=" * 75)
-    print(f"Platform:  {platform.platform()}")
-    print(f"Processor: {platform.processor()}")
-    print(f"PyTorch:   {torch.__version__}")
-    print(f"MLX:       {mx.__version__}")
+    print(f"Platform:       {platform.platform()}")
+    print(f"Processor:      {platform.processor()}")
+    print(f"PyTorch:        {torch.__version__}")
+    print(f"MLX:            {mx.__version__}")
+    print(f"mx.synchronize: {'available' if hasattr(mx, 'synchronize') else 'fallback (mx.eval)'}")
     print()
 
 
@@ -195,6 +196,16 @@ def run_performance_benchmark():
         t_torch = benchmark_fn(lambda: pytorch_swiglu_reference(e_torch, g_torch))
         tp_torch = calculate_throughput(elements, t_torch)
         print(f"   PyTorch MPS:        {t_torch:7.3f} ms | {tp_torch:7.2f} GB/s")
+
+        # Compiled MLX SwiGLU (mx.compile fused)
+        def compiled_fwd():
+            return metal_module.mlx_swiglu_forward_compiled(e_mlx, g_mlx)
+
+        t_compiled = benchmark_fn(compiled_fwd)
+        tp_compiled = calculate_throughput(elements, t_compiled)
+        print(
+            f"   Compiled Metal:     {t_compiled:7.3f} ms | {tp_compiled:7.2f} GB/s"
+        )
 
         # CHAINED Benchmark: RMSNorm -> SwiGLU
         # This tests if the bridge bypass is working.

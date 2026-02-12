@@ -76,12 +76,16 @@ def synchronize_mlx() -> None:
 
     MLX uses lazy evaluation - operations are not executed until
     their results are needed. This forces all pending operations.
+    Prefers mx.synchronize() (MLX >= 0.30) for lower overhead.
     """
     if not is_mlx_available():
         return
     import mlx.core as mx
 
-    mx.eval([])  # Evaluate empty list acts as a barrier
+    if hasattr(mx, "synchronize"):
+        mx.synchronize()
+    else:
+        mx.eval([])  # Evaluate empty list acts as a barrier
 
 
 # Caches for lookups to save microseconds
@@ -232,7 +236,10 @@ def mlx_context():
     finally:
         # Sync MLX before returning to PyTorch
         if not prev_state:
-            mx.eval([])
+            if hasattr(mx, "synchronize"):
+                mx.synchronize()
+            else:
+                mx.eval([])
             synchronize_mps()
         _IN_MLX_CONTEXT = prev_state
 
