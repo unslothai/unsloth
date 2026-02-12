@@ -4,6 +4,7 @@
 import logging
 import warnings
 from dataclasses import asdict
+from unsloth import DEVICE_TYPE
 
 import torch
 import triton
@@ -41,6 +42,8 @@ logger.addHandler(ch)
 # 1. GPU capability >= 9 (Hopper+)
 # 2. Triton version with TMA API (make_tensor_descriptor or _experimental_make_tensor_descriptor)
 def _check_tma_support():
+    if DEVICE_TYPE == "xpu":
+        return False
     import triton.language as tl
 
     gpu_supports_tma = torch.cuda.get_device_capability()[0] >= 9

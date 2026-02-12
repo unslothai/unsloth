@@ -164,6 +164,39 @@ if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") != "1":
         "ignore", message = r"unclosed file.*dev/null", category = ResourceWarning
     )
 
+    # torch 2.9+ pin_memory/is_pinned device arg deprecation
+    warnings.filterwarnings(
+        "ignore",
+        message = r"The `device` argument is deprecated",
+        category = DeprecationWarning,
+    )
+    warnings.filterwarnings(
+        "ignore",
+        message = r".*pin_memory.*device.*deprecated",
+        category = DeprecationWarning,
+    )
+    warnings.filterwarnings(
+        "ignore",
+        message = r".*is_pinned.*device.*deprecated",
+        category = DeprecationWarning,
+    )
+
+    # vllm "Level is deprecated" stderr noise
+    sys.stderr.add_filter("Level is deprecated")
+
+    # PydanticSerializationUnexpectedValue warning
+    warnings.filterwarnings(
+        "ignore",
+        message = r".*PydanticSerializationUnexpectedValue",
+    )
+    warnings.filterwarnings(
+        "ignore",
+        message = r"Expected.*but got.*with value.*is not.*subclass",
+    )
+
+    # Triton "df: No such file or directory" stderr noise
+    sys.stderr.add_filter("df: No such file")
+
 
 # Fix up AttributeError: 'MessageFactory' object has no attribute 'GetPrototype'
 # MUST do this at the start primarily due to tensorflow causing issues
@@ -797,6 +830,54 @@ def fix_huggingface_hub():
         huggingface_hub.is_offline_mode = (
             lambda: huggingface_hub.constants.HF_HUB_OFFLINE
         )
+
+
+def fix_triton_compiled_kernel_missing_attrs():
+    """
+    Triton 3.6.0+ removed direct `num_ctas` and `cluster_dims` attributes from
+    CompiledKernel, but torch 2.9.x Inductor still expects them in
+    torch/_inductor/runtime/triton_heuristics.py make_launcher() (line ~1757).
+
+    The scope dict eagerly evaluates:
+        binary.metadata.num_ctas, *binary.metadata.cluster_dims
+    when hasattr(binary, "metadata") is True, but metadata lacks cluster_dims.
+    This crashes before reaching the new launch path that doesn't need cta_args.
+
+    Upstream fix: pytorch/pytorch@97bd4db added hasattr guards.
+    We monkey-patch CompiledKernel.__init__ to inject the missing attributes
+    so the older hasattr(binary, "num_ctas") branch succeeds instead.
+    """
+    try:
+        import torch
+    except (ImportError, ModuleNotFoundError):
+        return
+
+    try:
+        import triton
+        import triton.compiler.compiler as triton_compiler
+    except (ImportError, ModuleNotFoundError):
+        return
+
+    # Only needed when the CompiledKernel class lacks num_ctas as a direct attr
+    # but has metadata (triton >= 3.6.0 with torch < 2.10)
+    _ck_cls = triton_compiler.CompiledKernel
+    if hasattr(_ck_cls, "num_ctas"):
+        return  # Old triton with direct attrs -- no patch needed
+
+    _orig_init = _ck_cls.__init__
+
+    def _patched_init(self, *args, **kwargs):
+        _orig_init(self, *args, **kwargs)
+        if not hasattr(self, "num_ctas"):
+            self.num_ctas = getattr(self.metadata, "num_ctas", 1)
+        if not hasattr(self, "cluster_dims") and not hasattr(self, "clusterDims"):
+            self.cluster_dims = (1, 1, 1)
+
+    _ck_cls.__init__ = _patched_init
+    logger.info(
+        "Unsloth: Patched triton CompiledKernel with num_ctas/cluster_dims "
+        "for torch.compile compatibility."
+    )
 
 
 def fix_rocm_triton_key_error():
