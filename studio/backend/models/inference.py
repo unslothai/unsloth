@@ -1,8 +1,13 @@
 """
 Pydantic schemas for Inference API
 """
+from __future__ import annotations
+
+import time
+import uuid
+from typing import Literal, Optional, List
+
 from pydantic import BaseModel, Field
-from typing import Optional, List
 
 
 class LoadRequest(BaseModel):
@@ -52,3 +57,91 @@ class InferenceStatusResponse(BaseModel):
     is_vision: bool = Field(False, description="Whether the active model is a vision model")
     loading: List[str] = Field(default_factory=list, description="Models currently being loaded")
     loaded: List[str] = Field(default_factory=list, description="Models currently loaded")
+
+
+# =====================================================================
+# OpenAI-Compatible Chat Completions Models
+# =====================================================================
+
+
+class ChatMessage(BaseModel):
+    """A single message in the conversation."""
+    role: Literal["system", "user", "assistant"] = Field(..., description="Message role")
+    content: str = Field(..., description="Message content")
+
+
+class ChatCompletionRequest(BaseModel):
+    """
+    OpenAI-compatible chat completion request.
+
+    Extensions (non-OpenAI fields) are marked with 'x-unsloth'.
+    """
+    model: str = Field("default", description="Model identifier (informational; the active model is used)")
+    messages: list[ChatMessage] = Field(..., description="Conversation messages")
+    stream: bool = Field(True, description="Whether to stream the response via SSE")
+    temperature: float = Field(0.7, ge=0.0, le=2.0)
+    top_p: float = Field(0.9, ge=0.0, le=1.0)
+    max_tokens: Optional[int] = Field(512, ge=1, le=4096, description="Maximum tokens to generate")
+
+    # ── Unsloth extensions (ignored by standard OpenAI clients) ──
+    top_k: int = Field(40, ge=1, le=100, description="[x-unsloth] Top-k sampling")
+    repetition_penalty: float = Field(1.1, ge=1.0, le=2.0, description="[x-unsloth] Repetition penalty")
+    image_base64: Optional[str] = Field(None, description="[x-unsloth] Base64-encoded image for vision models")
+
+
+# ── Streaming response chunks ────────────────────────────────────
+
+
+class ChoiceDelta(BaseModel):
+    """Delta content for a streaming chunk."""
+    role: Optional[str] = None
+    content: Optional[str] = None
+
+
+class ChunkChoice(BaseModel):
+    """A single choice in a streaming chunk."""
+    index: int = 0
+    delta: ChoiceDelta
+    finish_reason: Optional[Literal["stop", "length"]] = None
+
+
+class ChatCompletionChunk(BaseModel):
+    """A single SSE chunk in OpenAI streaming format."""
+    id: str = Field(default_factory=lambda: f"chatcmpl-{uuid.uuid4().hex[:12]}")
+    object: Literal["chat.completion.chunk"] = "chat.completion.chunk"
+    created: int = Field(default_factory=lambda: int(time.time()))
+    model: str = "default"
+    choices: list[ChunkChoice]
+
+
+# ── Non-streaming response ───────────────────────────────────────
+
+
+class CompletionMessage(BaseModel):
+    """The assistant's complete response message."""
+    role: Literal["assistant"] = "assistant"
+    content: str
+
+
+class CompletionChoice(BaseModel):
+    """A single choice in a non-streaming response."""
+    index: int = 0
+    message: CompletionMessage
+    finish_reason: Literal["stop", "length"] = "stop"
+
+
+class CompletionUsage(BaseModel):
+    """Token usage statistics (approximate)."""
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+
+
+class ChatCompletion(BaseModel):
+    """Non-streaming chat completion response."""
+    id: str = Field(default_factory=lambda: f"chatcmpl-{uuid.uuid4().hex[:12]}")
+    object: Literal["chat.completion"] = "chat.completion"
+    created: int = Field(default_factory=lambda: int(time.time()))
+    model: str = "default"
+    choices: list[CompletionChoice]
+    usage: CompletionUsage = Field(default_factory=CompletionUsage)
