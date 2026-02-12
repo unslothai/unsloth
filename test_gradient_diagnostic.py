@@ -122,5 +122,18 @@ except Exception as e:
     print(f"LM Head failed: {e}")
 
 print("=" * 70)
+print("Diagnostic: Test 3b - Patched Forward Call")
+print("=" * 70)
+try:
+    with torch.set_grad_enabled(True):
+        outputs = model(input_ids)
+        logits = outputs.logits
+    print(f"Patched Forward logits req_grad: {logits.requires_grad}")
+except Exception as e:
+    print(f"Patched Forward failed: {e}")
+    import traceback
+    traceback.print_exc()
+
+print("=" * 70)
 print("Diagnostics complete!")
 print("=" * 70)
