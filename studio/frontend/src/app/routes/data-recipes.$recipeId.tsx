@@ -4,9 +4,9 @@ import { lazy } from "react";
 import { requireAuth } from "../auth-guards";
 import { Route as rootRoute } from "./__root";
 
-const EditRecipeEditorPage = lazy(() =>
+const EditRecipePage = lazy(() =>
   import("@/features/data-recipes").then((m) => ({
-    default: m.EditRecipeEditorPage,
+    default: m.EditRecipePage,
   })),
 );
 
@@ -19,5 +19,5 @@ export const Route = createRoute({
 
 function DataRecipeEditorRoute(): ReactElement {
   const { recipeId } = Route.useParams();
-  return <EditRecipeEditorPage recipeId={recipeId} />;
+  return <EditRecipePage recipeId={recipeId} />;
 }

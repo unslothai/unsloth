@@ -9,6 +9,8 @@ import type {
 import { getConfigErrors } from "../index";
 import {
   buildExpressionColumn,
+  buildLlmMcpProvider,
+  buildLlmToolConfig,
   buildLlmColumn,
   buildModelConfig,
   buildModelProvider,
@@ -53,9 +55,14 @@ export function buildRecipePayload(
   const modelAliases = new Set<string>();
   const modelProviderNames = new Set<string>();
   const modelProviders: Record<string, unknown>[] = [];
+  const mcpProviders: Record<string, unknown>[] = [];
   const modelConfigs: Record<string, unknown>[] = [];
+  const toolConfigs: Record<string, unknown>[] = [];
   const modelProviderConfigs: ModelProviderConfig[] = [];
   const modelConfigConfigs: ModelConfig[] = [];
+  const llmToolAliasesUsed = new Set<string>();
+  const mcpProviderJsonByName = new Map<string, string>();
+  const toolConfigJsonByAlias = new Map<string, string>();
   const nameSet = new Set<string>();
   const nameToConfig = new Map<string, NodeConfig>();
 
@@ -79,8 +86,46 @@ export function buildRecipePayload(
     }
     if (config.kind === "llm") {
       columns.push(buildLlmColumn(config, errors));
+      for (const provider of config.mcp_providers ?? []) {
+        const builtProvider = buildLlmMcpProvider(provider, errors);
+        if (!builtProvider) {
+          continue;
+        }
+        const key = String(builtProvider.name);
+        const serialized = JSON.stringify(builtProvider);
+        const existing = mcpProviderJsonByName.get(key);
+        if (existing && existing !== serialized) {
+          errors.push(`MCP provider ${key}: conflicting definitions.`);
+          continue;
+        }
+        if (!existing) {
+          mcpProviderJsonByName.set(key, serialized);
+          mcpProviders.push(builtProvider);
+        }
+      }
+      for (const toolConfig of config.tool_configs ?? []) {
+        const builtToolConfig = buildLlmToolConfig(toolConfig, errors);
+        if (!builtToolConfig) {
+          continue;
+        }
+        const key = String(builtToolConfig.tool_alias);
+        const serialized = JSON.stringify(builtToolConfig);
+        const existing = toolConfigJsonByAlias.get(key);
+        if (existing && existing !== serialized) {
+          errors.push(`Tool config ${key}: conflicting definitions.`);
+          continue;
+        }
+        if (!existing) {
+          toolConfigJsonByAlias.set(key, serialized);
+          toolConfigs.push(builtToolConfig);
+        }
+      }
       if (config.model_alias) {
         modelAliases.add(config.model_alias);
+      }
+      const toolAlias = config.tool_alias?.trim();
+      if (toolAlias) {
+        llmToolAliasesUsed.add(toolAlias);
       }
       nameToConfig.set(config.name, config);
       continue;
@@ -110,6 +155,11 @@ export function buildRecipePayload(
     errors,
   );
   validateUsedProviders(modelProviderConfigs, modelConfigConfigs, errors);
+  for (const toolAlias of llmToolAliasesUsed) {
+    if (!toolConfigJsonByAlias.has(toolAlias)) {
+      errors.push(`Tool alias ${toolAlias}: missing tool config.`);
+    }
+  }
 
   const uiNodes = nodes.flatMap((node) => {
     const config = configs[node.id];
@@ -153,7 +203,11 @@ export function buildRecipePayload(
         // biome-ignore lint/style/useNamingConvention: api schema
         model_providers: modelProviders,
         // biome-ignore lint/style/useNamingConvention: api schema
+        mcp_providers: mcpProviders,
+        // biome-ignore lint/style/useNamingConvention: api schema
         model_configs: modelConfigs,
+        // biome-ignore lint/style/useNamingConvention: api schema
+        tool_configs: toolConfigs,
         columns,
         processors: recipeProcessors,
       },
