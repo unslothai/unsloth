@@ -87,7 +87,11 @@ def _load_module(name: str, path: Path):
 
 def _load_metal_modules():
     """Load metal benchmark modules without importing unsloth/__init__.py."""
-    repo_root = Path(__file__).resolve().parents[1]
+    script_dir = Path(__file__).resolve().parent
+    if (script_dir / "unsloth").exists():
+        repo_root = script_dir
+    else:
+        repo_root = script_dir.parent
     unsloth_dir = repo_root / "unsloth"
     kernels_dir = unsloth_dir / "kernels"
     mlx_dir = kernels_dir / "mlx"
