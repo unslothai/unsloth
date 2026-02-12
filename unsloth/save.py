@@ -3083,31 +3083,31 @@ def patch_unsloth_zoo_saving():
              #         if output_key != stat["output_key"]: continue
              #         A = stat["A"].to("cuda", dtype = torch.float32, non_blocking = True)
              #         B = stat["B"].to("cuda", dtype = torch.float32, non_blocking = True)
-             #         s = stat["s"]
-             #         W += (A @ B) * s
              # Call the rest of the logic
-             
-             # DEBUG: Inspect lora_stats
-             print(f"DEBUG: lora_stats type: {type(lora_stats)}")
-             print(f"DEBUG: lora_stats dir: {dir(lora_stats)}")
-             if hasattr(lora_stats, '__dict__'):
-                 print(f"DEBUG: lora_stats dict: {lora_stats.__dict__.keys()}")
-                 
+
              # Attempt to iterate if possible, otherwise we might need to access a property
              iterable_stats = lora_stats
-             if hasattr(lora_stats, "stats"):
-                 iterable_stats = lora_stats.stats
-             
+             # LoraStats is a dataclass with lora_A, lora_B, alpha attributes
+             # Not an iterable of stats dicts
+             if hasattr(lora_stats, "lora_A") and hasattr(lora_stats, "lora_B"):
+                 # Single LoraStats object - create a list with one entry
+                 iterable_stats = [{
+                     "output_key": output_key,
+                     "A": lora_stats.lora_A,
+                     "B": lora_stats.lora_B,
+                     "s": lora_stats.alpha
+                 }]
+
              for stat in iterable_stats:
-                if output_key != stat["output_key"]: continue
-                # Use W.device
-                A = stat["A"].to(W.device, dtype=torch.float32, non_blocking=True)
-                B = stat["B"].to(W.device, dtype=torch.float32, non_blocking=True)
-                s = stat["s"]
-                
-                # MPS matmul might need help if shapes are weird, but standard lora should be fine
-                # W += (A @ B) * s
-                W.addmm_(A, B, alpha=s)
+                 if output_key != stat["output_key"]: continue
+                 # Use W.device
+                 A = stat["A"].to(W.device, dtype=torch.float32, non_blocking=True)
+                 B = stat["B"].to(W.device, dtype=torch.float32, non_blocking=True)
+                 s = stat["s"]
+
+                 # MPS matmul might need help if shapes are weird, but standard lora should be fine
+                 # W += (A @ B) * s
+                 W.addmm_(A, B, alpha=s)
              return W
         else:
             return original_merge_lora(W, lora_stats, output_key)
