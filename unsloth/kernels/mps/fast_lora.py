@@ -180,6 +180,7 @@ class MPSLoRA_MLP(torch.autograd.Function):
         # Compute DW = dY @ (downW + downS * downB @ downA)^T
         # First get base projection: dY @ downW.T
         # downW is [Out, In], so we need dY @ downW to get [B, In]
+        dY = dY.to(dtype)
         downW_t = downW.to(dtype)
         DW = torch.matmul(dY, downW_t)
         
