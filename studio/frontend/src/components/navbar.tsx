@@ -9,6 +9,7 @@ import {
   Analytics01Icon,
   ArrowRight01Icon,
   Book03Icon,
+  CookBookIcon,
   PackageIcon,
   ZapIcon,
 } from "@hugeicons/core-free-icons";
@@ -19,6 +20,7 @@ import { useState } from "react";
 
 const NAV_ITEMS = [
   { label: "Studio", href: "/studio", icon: ZapIcon, enabled: true },
+  { label: "Recipes", href: "/data-recipes", icon: CookBookIcon, enabled: true },
   { label: "Evaluate", href: "/evaluate", icon: Analytics01Icon, enabled: false },
   { label: "Export", href: "/export", icon: PackageIcon, enabled: true },
   { label: "Chat", href: "/chat", icon: AiChat02Icon, enabled: true },
@@ -65,7 +67,8 @@ export function Navbar() {
         {/* Center: pill nav */}
         <nav className="flex items-center rounded-full border border-border bg-card p-1 ring-1 ring-foreground/5">
           {NAV_ITEMS.map((item) => {
-            const active = pathname === item.href;
+            const active =
+              pathname === item.href || pathname.startsWith(`${item.href}/`);
             if (!item.enabled) {
               return (
                 <span
