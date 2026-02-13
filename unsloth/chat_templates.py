@@ -2025,8 +2025,21 @@ def to_sharegpt(
             raise TypeError("Unsloth: Your dataset is probably already in ShareGPT format!")
 
     possible_columns, final_optional_prompts = _parse_combined_prompt(merged_prompt, dataset)
-    function = _create_formatter(possible_columns, final_optional_prompts, merged_column_name)
-    exec(function, globals())
+    
+    # Create the formatter function safely without using exec()
+    # Build the processor function dynamically at runtime using closures
+    def __combined_prompt_processor__(examples):
+        outputs = []
+        for idx in range(len(examples[list(examples.keys())[0]])):
+            output_parts = []
+            for col_name, optional_prompt in zip(possible_columns, final_optional_prompts):
+                if col_name in examples:
+                    value = examples[col_name][idx]
+                    if value and str(value).strip():
+                        output_parts.append(optional_prompt + str(value))
+            outputs.append(" ".join(output_parts) if output_parts else "")
+        return {merged_column_name: outputs}
+    
     dataset = dataset.map(__combined_prompt_processor__, batched = True, desc = "Merging columns")
 
     def __convert_to_sharegpt__(examples):
