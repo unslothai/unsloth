@@ -19,9 +19,9 @@ export function StudioPage(): ReactElement {
 
   return (
     <div className="min-h-screen bg-background">
-      <main className="mx-auto max-w-7xl px-6 py-8">
+      <main className="mx-auto max-w-7xl px-6 py-4">
         {/* Header */}
-        <div className="mb-8 flex flex-col gap-1">
+        <div className="mb-8 flex flex-col gap-0.5">
           <h1 className="text-2xl font-semibold tracking-tight">
             Fine-tuning Studio
           </h1>
