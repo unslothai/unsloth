@@ -21,7 +21,7 @@ import {
   ZapIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import type { ReactElement, ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 const phaseLabel: Record<TrainingPhase, string> = {
@@ -104,6 +104,8 @@ export function ProgressSection(): ReactElement {
   );
 
   const { stopTrainingRun } = useTrainingActions();
+  const localStartAtRef = useRef<number | null>(null);
+  const [, setLocalTick] = useState(0);
 
   const pct =
     runtime.totalSteps > 0
@@ -116,7 +118,31 @@ export function ProgressSection(): ReactElement {
         )
       : Math.round(runtime.progressPercent);
 
-  const elapsed = runtime.elapsedSeconds;
+  useEffect(() => {
+    if (runtime.elapsedSeconds != null && runtime.elapsedSeconds >= 0) {
+      localStartAtRef.current = Date.now() - runtime.elapsedSeconds * 1000;
+      return;
+    }
+    if (runtime.currentStep > 0 && localStartAtRef.current == null) {
+      localStartAtRef.current = Date.now();
+    }
+  }, [runtime.currentStep, runtime.elapsedSeconds]);
+
+  useEffect(() => {
+    if (!runtime.isTrainingRunning) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      setLocalTick((prev) => prev + 1);
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [runtime.isTrainingRunning]);
+
+  const elapsed =
+    runtime.elapsedSeconds ??
+    (localStartAtRef.current == null
+      ? null
+      : Math.max(0, Math.floor((Date.now() - localStartAtRef.current) / 1000)));
   const derivedEta =
     elapsed != null && pct > 0
       ? Math.round((elapsed * (100 - pct)) / Math.max(pct, 1))
@@ -284,9 +310,9 @@ export function ProgressSection(): ReactElement {
                 ? "-- steps/s"
                 : `${stepsPerSecond.toFixed(2)} steps/s`}
             </span>
-            <span>
-              Tokens: {runtime.currentNumTokens == null ? "--" : runtime.currentNumTokens}
-            </span>
+            {runtime.currentNumTokens != null && (
+              <span>Tokens: {runtime.currentNumTokens}</span>
+            )}
           </div>
         </div>
 

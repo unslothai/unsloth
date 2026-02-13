@@ -185,14 +185,15 @@ export function ChartsContent({
       return [0, 1];
     }
 
+    const minStep = allSteps[0] ?? 0;
     const endStep = allSteps[allSteps.length - 1] ?? 1;
     const startIndex = Math.max(0, allSteps.length - DEFAULT_VISIBLE_POINTS);
-    const startStep = allSteps[startIndex] ?? 0;
+    const startStep = allSteps[startIndex] ?? minStep;
     if (startStep === endStep) {
-      return [Math.max(0, startStep - 1), startStep + 4];
+      return [startStep, startStep + 4];
     }
     if (endStep - startStep < 6) {
-      return [Math.max(0, endStep - 6), endStep];
+      return [Math.max(minStep, endStep - 6), endStep];
     }
     return [startStep, endStep];
   }, [reducedGradNormData, reducedLossData, reducedLrData]);
