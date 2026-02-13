@@ -1,11 +1,12 @@
 import { authFetch } from "@/features/auth";
 import type {
   InferenceStatusResponse,
+  ListLorasResponse,
   ListModelsResponse,
   LoadModelRequest,
   LoadModelResponse,
-  OpenAIChatCompletionsRequest,
   OpenAIChatChunk,
+  OpenAIChatCompletionsRequest,
   UnloadModelRequest,
 } from "../types/api";
 
@@ -40,6 +41,12 @@ async function parseJsonOrThrow<T>(response: Response): Promise<T> {
 export async function listModels(): Promise<ListModelsResponse> {
   const response = await authFetch("/api/models/list");
   return parseJsonOrThrow<ListModelsResponse>(response);
+}
+
+export async function listLoras(outputsDir = "./outputs"): Promise<ListLorasResponse> {
+  const query = new URLSearchParams({ outputs_dir: outputsDir }).toString();
+  const response = await authFetch(`/api/models/loras?${query}`);
+  return parseJsonOrThrow<ListLorasResponse>(response);
 }
 
 export async function getInferenceStatus(): Promise<InferenceStatusResponse> {

@@ -10,6 +10,17 @@ export interface ListModelsResponse {
   default_models: string[];
 }
 
+export interface BackendLoraInfo {
+  display_name: string;
+  adapter_path: string;
+  base_model?: string | null;
+}
+
+export interface ListLorasResponse {
+  loras: BackendLoraInfo[];
+  outputs_dir: string;
+}
+
 export interface LoadModelRequest {
   model_path: string;
   hf_token: string | null;

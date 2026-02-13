@@ -25,3 +25,10 @@ export interface ChatModelSummary {
   isVision: boolean;
   isLora: boolean;
 }
+
+export interface ChatLoraSummary {
+  id: string;
+  name: string;
+  baseModel: string;
+  updatedAt?: number;
+}
