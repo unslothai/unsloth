@@ -94,16 +94,108 @@ class HidePrintMessage:
 if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") != "1":
     import sys
 
-    # Apply to stderr for FBGEMM
+    # Apply to stderr for FBGEMM and CUTLASS errors
     sys.stderr = HidePrintMessage(sys.stderr)
     # https://github.com/pytorch/FBGEMM/blob/d99cd96490ec4aabac2ee95b1e76ea4dcfcfa628/fbgemm_gpu/experimental/gemm/triton_gemm/utils.py#L43-L52
     sys.stderr.add_filter("TMA benchmarks will be running")
+    # CUTLASS/FBGEMM MMA instruction error on SM90 vs SM100 (Blackwell) GPUs
+    # https://github.com/NVIDIA/cutlass/blob/main/include/cutlass/gemm/kernel/sm90_gemm_tma_warpspecialized.hpp
+    sys.stderr.add_filter("Arch conditional MMA instruction used without targeting")
+    # CUTLASS arch conditional errors for various architectures
+    sys.stderr.add_filter("CUTE_INVALID_CONTROL_PATH")
+    # CUTLASS TMA-related errors when not targeting correct architecture
+    sys.stderr.add_filter("Trying to use tma without CUTE_ARCH_TMA")
     # Skipping import of cpp extensions due to incompatible torch version 2.9.0+cu128 for torchao version 0.15.0
     logging.getLogger("torchao").setLevel(logging.ERROR)
+    # Also filter torchao print to stderr about cpp extensions
+    sys.stderr.add_filter("Skipping import of cpp extensions")
     # SyntaxWarning: invalid escape sequence '\.'
     warnings.filterwarnings(
         "ignore", message = "invalid escape sequence", category = SyntaxWarning
     )
+    # PYTORCH_CUDA_ALLOC_CONF is deprecated warning from torch
+    warnings.filterwarnings("ignore", message = "PYTORCH_CUDA_ALLOC_CONF is deprecated")
+    # TF32 precision deprecation warning from torch
+    warnings.filterwarnings(
+        "ignore", message = "Please use the new API settings to control TF32"
+    )
+    # Deprecation warnings from torchao
+    warnings.filterwarnings("ignore", message = "`int4_weight_only` is deprecated")
+    warnings.filterwarnings("ignore", message = "`int8_weight_only` is deprecated")
+
+    # TorchAO deprecated import paths (https://github.com/pytorch/ao/issues/2752)
+    warnings.filterwarnings(
+        "ignore",
+        message = r"Importing.*from torchao\.dtypes.*is deprecated",
+        category = DeprecationWarning,
+    )
+    warnings.filterwarnings(
+        "ignore",
+        message = r"Importing BlockSparseLayout from torchao\.dtypes is deprecated",
+        category = DeprecationWarning,
+    )
+
+    # SWIG builtin type warnings (from bitsandbytes/triton SWIG bindings)
+    warnings.filterwarnings(
+        "ignore",
+        message = r"builtin type Swig.*has no __module__ attribute",
+        category = DeprecationWarning,
+    )
+
+    # Triton autotuner deprecation (https://github.com/triton-lang/triton/pull/4496)
+    warnings.filterwarnings(
+        "ignore",
+        message = r"warmup, rep, and use_cuda_graph parameters are deprecated",
+        category = DeprecationWarning,
+    )
+
+    # Python 3.12+ multiprocessing fork warning in multi-threaded processes
+    warnings.filterwarnings(
+        "ignore",
+        message = r".*multi-threaded.*use of fork\(\) may lead to deadlocks",
+        category = DeprecationWarning,
+    )
+
+    # Resource warnings from internal socket/file operations
+    warnings.filterwarnings(
+        "ignore", message = r"unclosed.*socket", category = ResourceWarning
+    )
+    warnings.filterwarnings(
+        "ignore", message = r"unclosed file.*dev/null", category = ResourceWarning
+    )
+
+    # torch 2.9+ pin_memory/is_pinned device arg deprecation
+    warnings.filterwarnings(
+        "ignore",
+        message = r"The `device` argument is deprecated",
+        category = DeprecationWarning,
+    )
+    warnings.filterwarnings(
+        "ignore",
+        message = r".*pin_memory.*device.*deprecated",
+        category = DeprecationWarning,
+    )
+    warnings.filterwarnings(
+        "ignore",
+        message = r".*is_pinned.*device.*deprecated",
+        category = DeprecationWarning,
+    )
+
+    # vllm "Level is deprecated" stderr noise
+    sys.stderr.add_filter("Level is deprecated")
+
+    # PydanticSerializationUnexpectedValue warning
+    warnings.filterwarnings(
+        "ignore",
+        message = r".*PydanticSerializationUnexpectedValue",
+    )
+    warnings.filterwarnings(
+        "ignore",
+        message = r"Expected.*but got.*with value.*is not.*subclass",
+    )
+
+    # Triton "df: No such file or directory" stderr noise
+    sys.stderr.add_filter("df: No such file")
 
 
 # Fix up AttributeError: 'MessageFactory' object has no attribute 'GetPrototype'
@@ -186,6 +278,65 @@ def fix_xformers_performance_issue():
             logger.info(f"Unsloth: Failed patching Xformers with error = {str(e)}")
 
 
+def patch_vllm_for_notebooks():
+    import sys
+
+    ipython = None
+    try:
+        from IPython import get_ipython as _get_ipython
+    except Exception:
+        _get_ipython = None
+
+    if _get_ipython is not None:
+        try:
+            ipython = _get_ipython()
+        except Exception:
+            ipython = None
+
+    if ipython is None:
+        try:
+            import builtins
+
+            _get_ipython = getattr(builtins, "get_ipython", None)
+            if callable(_get_ipython):
+                ipython = _get_ipython()
+        except Exception:
+            ipython = None
+
+    if ipython is None:
+        return
+
+    try:
+        shell = ipython.__class__.__name__
+        is_notebook = shell == "ZMQInteractiveShell" or "google.colab" in str(
+            type(ipython)
+        )
+    except Exception:
+        return
+
+    if not is_notebook:
+        return
+
+    if not hasattr(sys.stdout, "fileno"):
+        return
+
+    needs_patch = False
+    try:
+        fd = sys.stdout.fileno()
+        if not isinstance(fd, int) or fd < 0:
+            needs_patch = True
+    except Exception:
+        needs_patch = True
+
+    if not needs_patch:
+        return
+
+    logger.info(
+        "Unsloth: Notebook detected - Patching sys.stdout.fileno for newer `vllm>=0.12.0` versions"
+    )
+    sys.stdout.fileno = lambda: 1
+
+
 # ValueError: 'aimv2' is already used by a Transformers config, pick another name.
 def fix_vllm_aimv2_issue():
     spec = importlib.util.find_spec("vllm")
@@ -230,16 +381,43 @@ def fix_vllm_aimv2_issue():
 
 
 def fix_vllm_guided_decoding_params():
+    def _maybe_raise_vllm_transformers_mismatch(error):
+        error_text = str(error)
+        if (
+            "ALLOWED_LAYER_TYPES" in error_text
+            or "transformers.configuration_utils" in error_text
+        ):
+            try:
+                vllm_version = importlib_version("vllm")
+            except Exception:
+                vllm_version = "unknown"
+            raise RuntimeError(
+                "Unsloth: vLLM with version "
+                f"{vllm_version} does not yet support transformers>=5.0.0. "
+                "Please downgrade to transformers==4.57.3 via "
+                'pip install --force-reinstall "transformers==4.57.3". '
+                f"Original error: {error}"
+            ) from error
+
     if importlib.util.find_spec("vllm") is None:
         return
     # GuidedDecodingParmas is renamed to StructuredOutputsParams in vLLM
     # https://github.com/vllm-project/vllm/pull/22772/files
     # trl still wants to use GuidedDecodingParams. This is a temporary patch till trl updates
-    import vllm
+    try:
+        import vllm
+    except ImportError as e:
+        _maybe_raise_vllm_transformers_mismatch(e)
+        raise
 
     try:
         from vllm.sampling_params import GuidedDecodingParams
-    except ImportError:
+    except ImportError as e:
+        _maybe_raise_vllm_transformers_mismatch(e)
+        if not hasattr(vllm, "sampling_params") or not hasattr(
+            vllm.sampling_params, "StructuredOutputsParams"
+        ):
+            raise
         vllm.sampling_params.GuidedDecodingParams = (
             vllm.sampling_params.StructuredOutputsParams
         )
@@ -323,10 +501,14 @@ def check_fbgemm_gpu_version():
     except:
         return
     # We noticed some SegFault or bad alloc errors on lower versions of fbgemm_gpu.
+    # Instead of raising an error, disable FBGEMM and fall back to Triton kernels.
     if Version(fbgemm_gpu_version) < Version("1.4.0"):
-        raise ImportError(
-            f"Unsloth: fbgemm_gpu_genai=={fbgemm_gpu_version} detected. It might cause unexpected issues like segmentation faults. Please uninstall the current one by doing `pip uninstall fbgemm-gpu` && `pip install fbgemm-gpu` to install fbgemm-gpu 1.4.0 or newer!"
+        os.environ["UNSLOTH_HAS_FBGEMM"] = "0"
+        logger.info(
+            f"Unsloth: fbgemm_gpu_genai=={fbgemm_gpu_version} is old and may cause issues. "
+            f"Disabling FBGEMM - using Triton kernels instead."
         )
+        return
 
     logger.info(f"Unsloth: fbgemm_gpu_genai=={fbgemm_gpu_version} detected.")
 
@@ -395,45 +577,137 @@ def patch_enable_input_require_grads():
     )
 
 
+def _is_custom_torch_build(raw_version_str):
+    """Check if a raw version string indicates a custom or source build.
+    Must operate on the raw string from importlib_version(), not the parsed
+    Version object, since our custom Version() strips local identifiers.
+
+    Standard PyTorch releases use: +cu124, +rocm6.3, +cpu, +xpu
+    Source/custom builds use: +gitXXXXXXX, +HEXHASH, or other suffixes.
+    """
+    if "+" not in raw_version_str:
+        return False
+    local = raw_version_str.split("+", 1)[1]
+    if not local:
+        return False
+    # Use fullmatch so the entire local identifier must match, not just a prefix.
+    # cu/rocm require a trailing digit (e.g. cu124, rocm6.3). cpu/xpu are exact.
+    # Case-insensitive since some builds may use uppercase.
+    return not re.fullmatch(r"cu\d[\d.]*|rocm\d[\d.]*|cpu|xpu", local, re.IGNORECASE)
+
+
+def _infer_required_torchvision(torch_major, torch_minor):
+    """Infer the minimum required torchvision minor version from torch version.
+
+    The torch -> torchvision minor version mapping follows a consistent formula:
+      torch 1.x  ->  torchvision 0.(x + 1)   (verified: torch 1.7 through 1.13)
+      torch 2.x  ->  torchvision 0.(x + 15)  (verified: torch 2.0 through 2.9)
+
+    Returns (tv_major, tv_minor) or None if the major version is unrecognized.
+    """
+    if torch_major == 1 and torch_minor >= 7:
+        return (0, torch_minor + 1)
+    if torch_major == 2:
+        return (0, torch_minor + 15)
+    return None
+
+
 def torchvision_compatibility_check():
+    # Allow skipping via environment variable for custom environments
+    if os.environ.get("UNSLOTH_SKIP_TORCHVISION_CHECK", "0").lower() in ("1", "true"):
+        return
+
     if importlib.util.find_spec("torch") is None:
         raise ImportError("Unsloth: torch not found. Please install torch first.")
     if importlib.util.find_spec("torchvision") is None:
         return
-    torch_version = importlib_version("torch")
-    torchvision_version = importlib_version("torchvision")
 
-    # Torch version -> minimum required torchvision version
-    # See https://pytorch.org/get-started/previous-versions/
-    TORCH_TORCHVISION_COMPAT = [
-        ("2.9.0", "0.24.0"),
-        ("2.8.0", "0.23.0"),
-        ("2.7.0", "0.22.0"),
-        ("2.6.0", "0.21.0"),
-        ("2.5.0", "0.20.0"),
-        ("2.4.0", "0.19.0"),
-    ]
-
-    required_torchvision = None
-    for min_torch, min_torchvision in TORCH_TORCHVISION_COMPAT:
-        if Version(torch_version) >= Version(min_torch):
-            required_torchvision = min_torchvision
-            break
-
-    if required_torchvision is None:
-        # Torch version not in compatibility table, skip check
+    try:
+        torch_version_raw = importlib_version("torch")
+        torchvision_version_raw = importlib_version("torchvision")
+    except Exception:
         return
 
-    if Version(torchvision_version) < Version(required_torchvision):
-        raise ImportError(
-            f"Unsloth: torch=={torch_version} requires torchvision>={required_torchvision}, "
-            f"but found torchvision=={torchvision_version}. "
-            f"Please refer to https://pytorch.org/get-started/previous-versions/ for more information."
-        )
+    try:
+        torch_v = Version(torch_version_raw)
+        tv_v = Version(torchvision_version_raw)
+    except Exception:
+        return
 
-    logger.info(
-        f"Unsloth: torch=={torch_version} and torchvision=={torchvision_version} are compatible."
+    # Known compatibility table (ground truth, takes precedence over formula).
+    # See https://pytorch.org/get-started/previous-versions/
+    TORCH_TORCHVISION_COMPAT = {
+        (2, 9): (0, 24),
+        (2, 8): (0, 23),
+        (2, 7): (0, 22),
+        (2, 6): (0, 21),
+        (2, 5): (0, 20),
+        (2, 4): (0, 19),
+    }
+
+    # Extract major.minor from the parsed version
+    torch_release = torch_v.release
+    if len(torch_release) < 2:
+        return
+    torch_major, torch_minor = torch_release[0], torch_release[1]
+
+    # Try known table first, then fall back to formula for forward compatibility
+    required = TORCH_TORCHVISION_COMPAT.get((torch_major, torch_minor))
+    is_in_known_table = required is not None
+
+    if required is None:
+        required = _infer_required_torchvision(torch_major, torch_minor)
+
+    if required is None:
+        return
+
+    required_tv_str = f"{required[0]}.{required[1]}.0"
+
+    if tv_v >= Version(required_tv_str):
+        logger.info(
+            f"Unsloth: torch=={torch_version_raw} and "
+            f"torchvision=={torchvision_version_raw} are compatible."
+        )
+        return
+
+    # Version mismatch detected
+    message = (
+        f"Unsloth: torch=={torch_version_raw} requires "
+        f"torchvision>={required_tv_str}, "
+        f"but found torchvision=={torchvision_version_raw}. "
+        f"Please refer to https://pytorch.org/get-started/previous-versions/ "
+        f"for more information."
     )
+
+    is_custom = _is_custom_torch_build(torch_version_raw) or _is_custom_torch_build(
+        torchvision_version_raw
+    )
+
+    # Detect nightly/dev/alpha/beta/rc builds from the raw version string.
+    # These often have version mismatches that are expected.
+    _pre_tags = (".dev", "a0", "b0", "rc", "alpha", "beta", "nightly")
+    is_prerelease = any(t in torch_version_raw for t in _pre_tags) or any(
+        t in torchvision_version_raw for t in _pre_tags
+    )
+
+    # Downgrade to warning for custom/source/pre-release builds or formula-predicted
+    if is_custom or is_prerelease or not is_in_known_table:
+        reason = (
+            "custom/source build"
+            if is_custom
+            else "pre-release build"
+            if is_prerelease
+            else "newer torch version"
+        )
+        logger.warning(
+            f"{message}\n"
+            f"Detected a {reason}. "
+            f"Continuing with a warning. "
+            f"Set UNSLOTH_SKIP_TORCHVISION_CHECK=1 to silence this."
+        )
+        return
+
+    raise ImportError(message)
 
 
 # Fix TRL OpenEnv 0.26 NameError: name 'SamplingParams' is not defined
@@ -558,6 +832,153 @@ def fix_huggingface_hub():
         )
 
 
+def fix_triton_compiled_kernel_missing_attrs():
+    """
+    Triton 3.6.0+ removed direct `num_ctas` and `cluster_dims` attributes from
+    CompiledKernel, but torch 2.9.x Inductor still expects them in
+    torch/_inductor/runtime/triton_heuristics.py make_launcher() (line ~1757).
+
+    The scope dict eagerly evaluates:
+        binary.metadata.num_ctas, *binary.metadata.cluster_dims
+    when hasattr(binary, "metadata") is True, but metadata lacks cluster_dims.
+    This crashes before reaching the new launch path that doesn't need cta_args.
+
+    Upstream fix: pytorch/pytorch@97bd4db added hasattr guards.
+    We monkey-patch CompiledKernel.__init__ to inject the missing attributes
+    so the older hasattr(binary, "num_ctas") branch succeeds instead.
+    """
+    try:
+        import torch
+    except (ImportError, ModuleNotFoundError):
+        return
+
+    try:
+        import triton
+        import triton.compiler.compiler as triton_compiler
+    except (ImportError, ModuleNotFoundError):
+        return
+
+    # Only needed when the CompiledKernel class lacks num_ctas as a direct attr
+    # but has metadata (triton >= 3.6.0 with torch < 2.10)
+    _ck_cls = triton_compiler.CompiledKernel
+    if hasattr(_ck_cls, "num_ctas"):
+        return  # Old triton with direct attrs -- no patch needed
+
+    _orig_init = _ck_cls.__init__
+
+    def _patched_init(self, *args, **kwargs):
+        _orig_init(self, *args, **kwargs)
+        if not hasattr(self, "num_ctas"):
+            self.num_ctas = getattr(self.metadata, "num_ctas", 1)
+        if not hasattr(self, "cluster_dims") and not hasattr(self, "clusterDims"):
+            self.cluster_dims = (1, 1, 1)
+
+    _ck_cls.__init__ = _patched_init
+    logger.info(
+        "Unsloth: Patched triton CompiledKernel with num_ctas/cluster_dims "
+        "for torch.compile compatibility."
+    )
+
+
+def fix_rocm_triton_key_error():
+    """
+    ROCm + torch.compile can fail if Triton lacks `triton_key`.
+    Disable Inductor/compile only on ROCm when that symbol is missing.
+    """
+    try:
+        import torch
+    except (ImportError, ModuleNotFoundError):
+        return
+
+    if not getattr(torch.version, "hip", None):
+        return
+
+    try:
+        import triton
+    except (ImportError, ModuleNotFoundError):
+        return
+
+    try:
+        from triton.runtime import triton_key  # noqa: F401
+
+        return
+    except ImportError:
+        pass
+
+    os.environ.setdefault("TORCHINDUCTOR_DISABLE", "1")
+    os.environ.setdefault("TORCH_COMPILE_DISABLE", "1")
+    logger.info(
+        "Unsloth: ROCm detected and Triton lacks triton_key; "
+        "disabling torch.compile/Inductor to avoid backend crash."
+    )
+
+
+def check_vllm_torch_sm100_compatibility():
+    """
+    Check for incompatible vLLM + torch < 2.9.0 + SM100 (Blackwell) combination.
+
+    vLLM's distributed module (device_communicators) crashes with std::bad_alloc
+    when imported on SM100 GPUs (B200/B100) with torch < 2.9.0. This is due to
+    C++ code in vLLM's NCCL/distributed layer being incompatible with older
+    torch versions on the newer Blackwell architecture.
+
+    This check runs early (before vLLM import) to provide a helpful error message
+    instead of a cryptic std::bad_alloc crash.
+    """
+    # Check if vLLM is installed (without importing it)
+    if importlib.util.find_spec("vllm") is None:
+        return
+
+    # Check torch version
+    try:
+        torch_version = Version(importlib_version("torch"))
+        if torch_version >= Version("2.9.0"):
+            return  # torch >= 2.9.0 is compatible
+    except Exception:
+        return  # Can't determine torch version, skip check
+
+    # Check if any CUDA GPU is SM100 (Blackwell)
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return
+
+        has_sm100 = False
+        sm100_gpu_name = None
+        for i in range(torch.cuda.device_count()):
+            major, minor = torch.cuda.get_device_capability(i)
+            if major == 10:
+                has_sm100 = True
+                sm100_gpu_name = torch.cuda.get_device_name(i)
+                break
+
+        if not has_sm100:
+            return
+    except Exception:
+        return
+
+    # Get vLLM version for the error message
+    try:
+        vllm_version = importlib_version("vllm")
+    except Exception:
+        vllm_version = "unknown"
+
+    # Incompatible combination detected - raise helpful error
+    raise RuntimeError(
+        f"Unsloth: Incompatible configuration detected.\n\n"
+        f"  GPU: {sm100_gpu_name} (SM100 / Blackwell architecture)\n"
+        f"  torch version: {torch_version}\n"
+        f"  vLLM version: {vllm_version}\n\n"
+        f"vLLM's distributed module crashes with std::bad_alloc on SM100 GPUs "
+        f"(B200/B100/Blackwell) when using torch < 2.9.0.\n\n"
+        f"To fix this, please upgrade torch:\n"
+        f"  pip install --upgrade torch>=2.9.0\n\n"
+        f"Alternatively, if you don't need vLLM:\n"
+        f"  pip uninstall vllm"
+    )
+
+
 def fix_vllm_pdl_blackwell():
     """
     Fix vLLM PDL (Programmatic Dependent Launch) bug on Blackwell GPUs (SM100).
@@ -671,3 +1092,74 @@ def fix_vllm_pdl_blackwell():
     else:
         # Just set the env var - vLLM might be an older version without supports_pdl
         logger.info(f"Unsloth: Set TRITON_DISABLE_PDL=1 for SM100 ({sm100_gpu_name})")
+
+
+def patch_openspiel_env_async():
+    """Apply nest_asyncio for OpenEnv EnvClient async compatibility.
+
+    OpenEnv's EnvClient uses async methods (reset/step). In Jupyter notebooks
+    these work via top-level await, but converted scripts need
+    asyncio.get_event_loop().run_until_complete() wrappers. Applying nest_asyncio
+    ensures nested event loop calls work in all contexts without replacing the
+    original async methods (which would break scripts that already have their own
+    sync wrappers).
+    """
+    try:
+        import inspect
+        from openenv.core.env_client import EnvClient
+
+        if not inspect.iscoroutinefunction(EnvClient.reset):
+            return  # Already sync, nothing to do
+
+        try:
+            import nest_asyncio
+
+            nest_asyncio.apply()
+            logger.info(
+                "Unsloth: Applied nest_asyncio for OpenEnv EnvClient async compatibility"
+            )
+        except ImportError:
+            logger.info(
+                "Unsloth: nest_asyncio not installed, OpenEnv async methods may need manual wrapping"
+            )
+    except (ImportError, AttributeError):
+        pass  # openenv not installed
+
+
+def patch_torchcodec_audio_decoder():
+    """Call unsloth_zoo's AudioDecoder patch."""
+    try:
+        from unsloth_zoo.dataset_utils import patch_torchcodec_audio_decoder as _patch
+
+        _patch()
+    except (ImportError, AttributeError, RuntimeError):
+        pass
+
+
+def disable_torchcodec_if_broken():
+    """Disable torchcodec in transformers if it cannot actually load.
+
+    transformers checks if torchcodec is installed via importlib.util.find_spec(),
+    but this returns True even when torchcodec cannot load its native libraries
+    (e.g., when FFmpeg is missing). This causes runtime errors when transformers
+    tries to use torchcodec for audio loading.
+
+    This function tests if torchcodec can actually load and if not, patches
+    transformers to think torchcodec is unavailable so it falls back to librosa.
+    """
+    try:
+        import importlib.util
+
+        if importlib.util.find_spec("torchcodec") is None:
+            return  # torchcodec not installed, nothing to do
+
+        # Test if torchcodec can actually load
+        from torchcodec.decoders import AudioDecoder
+    except (ImportError, RuntimeError, OSError):
+        # torchcodec cannot load - disable it in transformers
+        try:
+            import transformers.utils.import_utils as tf_import_utils
+
+            tf_import_utils._torchcodec_available = False
+        except (ImportError, AttributeError):
+            pass

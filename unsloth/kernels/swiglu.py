@@ -128,7 +128,7 @@ def _DWf_DW_dfg_kernel(
 
 
 def swiglu_DWf_DW_dfg_kernel(DW, e, g):
-    batch_seq_len, hd = e.shape
+    batch_seq_len, hd = e.shape  # Flattened to 2D, so 1st dim is bsz * seq_len
     n_elements = e.numel()
     grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
     with torch_gpu_device(e.device):

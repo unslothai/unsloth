@@ -31,6 +31,7 @@ from ..kernels import (
 )
 from ._utils import __version__, importlib_version, _prepare_model_for_qat
 from ._utils import *
+from .loader_utils import _get_fp8_mode_and_check_settings
 from ..save import patch_saving_functions
 from ..models.loader_utils import is_distributed
 from unsloth_zoo.gradient_checkpointing import (
@@ -98,6 +99,7 @@ VLLM_SUPPORTED_VLM = [
     "gemma3",
     "mistral3",
     "qwen3_vl",
+    "qwen3_vl_moe",
 ]
 VLLM_NON_LORA_VLM = [
     "mllama",
@@ -106,7 +108,7 @@ PRE_COMPILE_INFERENCE = [
     "gpt_oss",
 ]
 
-from transformers import GenerationConfig, CompileConfig, HybridCache, AutoConfig
+from transformers import GenerationConfig, CompileConfig, AutoConfig
 
 try:
     from transformers import PreTrainedConfig
@@ -116,8 +118,6 @@ except:
     from transformers import PretrainedConfig
 
 HAS_TORCH_DTYPE = "torch_dtype" in PretrainedConfig.__doc__
-
-from transformers import GenerationConfig, CompileConfig, HybridCache
 
 _compile_config = CompileConfig(
     fullgraph = False,
@@ -318,6 +318,91 @@ def unsloth_base_fast_generate(
     return output
 
 
+def _construct_vlm_processor_fallback(
+    tokenizer_name, model_type, token, trust_remote_code
+):
+    """Construct a VLM processor manually when AutoProcessor.from_pretrained fails.
+
+    Some VLMs (e.g., LFM2.5-VL) have tokenizer_class entries that AutoTokenizer
+    cannot resolve. This function loads the image processor and tokenizer separately,
+    sets required special token attributes, and constructs the processor.
+    """
+    try:
+        from transformers import AutoImageProcessor, PreTrainedTokenizerFast, AutoConfig
+        from transformers.models.auto.processing_auto import PROCESSOR_MAPPING_NAMES
+        import json
+
+        # Load image processor
+        image_processor = AutoImageProcessor.from_pretrained(
+            tokenizer_name,
+            token = token,
+            trust_remote_code = trust_remote_code,
+        )
+        # Load tokenizer via PreTrainedTokenizerFast (bypasses tokenizer_class check)
+        tok = PreTrainedTokenizerFast.from_pretrained(
+            tokenizer_name,
+            padding_side = "left",
+            token = token,
+            trust_remote_code = trust_remote_code,
+        )
+        # Read tokenizer_config.json for model-specific special tokens
+        try:
+            from huggingface_hub import hf_hub_download
+
+            config_path = hf_hub_download(
+                tokenizer_name, "tokenizer_config.json", token = token
+            )
+            with open(config_path, "r", encoding = "utf-8") as f:
+                tok_config = json.load(f)
+            # Set model-specific special tokens and their IDs
+            for key in (
+                "image_token",
+                "image_start_token",
+                "image_end_token",
+                "image_thumbnail",
+                "video_token",
+            ):
+                if key in tok_config and not hasattr(tok, key):
+                    setattr(tok, key, tok_config[key])
+                    id_key = key + "_id" if not key.endswith("_id") else key
+                    token_id = tok.convert_tokens_to_ids(tok_config[key])
+                    if not hasattr(tok, id_key):
+                        setattr(tok, id_key, token_id)
+        except Exception:
+            pass
+
+        # Find the processor class - try model_type first, then top-level config model_type
+        proc_class_name = PROCESSOR_MAPPING_NAMES.get(model_type)
+        if proc_class_name is None:
+            # model_type might be a sub-model type (e.g. "lfm2" instead of "lfm2_vl").
+            # Try the top-level config.model_type which often has the processor mapping.
+            try:
+                config = AutoConfig.from_pretrained(
+                    tokenizer_name,
+                    token = token,
+                    trust_remote_code = trust_remote_code,
+                )
+                proc_class_name = PROCESSOR_MAPPING_NAMES.get(config.model_type)
+            except Exception:
+                pass
+
+        if proc_class_name is not None:
+            import transformers
+
+            proc_class = getattr(transformers, proc_class_name, None)
+            if proc_class is not None:
+                processor = proc_class(image_processor = image_processor, tokenizer = tok)
+                # Copy chat_template from tokenizer to processor if needed
+                if not getattr(processor, "chat_template", None) and getattr(
+                    tok, "chat_template", None
+                ):
+                    processor.chat_template = tok.chat_template
+                return processor
+    except Exception:
+        pass
+    return None
+
+
 class FastBaseModel:
     @staticmethod
     def from_pretrained(
@@ -349,6 +434,7 @@ class FastBaseModel:
         max_lora_rank = 64,
         disable_log_stats = False,
         unsloth_vllm_standby = False,
+        load_in_fp8 = False,  # fp8 LoRA (True, False, 'block')
         **kwargs,
     ):
         if unsloth_vllm_standby and os.environ.get("UNSLOTH_VLLM_STANDBY", "0") != "1":
@@ -519,9 +605,23 @@ class FastBaseModel:
                 correct_dtype = None
 
         # Stop SDPA for some archs like Pixtral / Mistral3
+        flex_attn_impl = None
+        if auto_config is None:
+            auto_config = AutoConfig.from_pretrained(
+                model_name,
+                token = token,
+                trust_remote_code = trust_remote_code,
+            )
+        try:
+            model_class = auto_model._model_mapping[auto_config.__class__]
+        except Exception:
+            model_class = None
+        flex_attn_impl = prefer_flex_attn_if_supported(model_class, auto_config)
+
+        default_attn_impl = "flex_attention" if flex_attn_impl else "sdpa"
         if not ("attn_implementation" in kwargs):
-            kwargs["attn_implementation"] = "sdpa"
-        if not supports_sdpa:
+            kwargs["attn_implementation"] = default_attn_impl
+        if not supports_sdpa and kwargs.get("attn_implementation") == "sdpa":
             if os.environ.get("UNSLOTH_ENABLE_FLEX_ATTENTION", "0") == "0":
                 print(
                     f"Unsloth: {model_type_arch.title()} does not support SDPA - switching to fast eager."
@@ -653,12 +753,19 @@ class FastBaseModel:
 
         kwargs = add_dtype_kwargs(torch_dtype, kwargs)
 
-        model_config = AutoConfig.from_pretrained(
-            model_name,
-            token = token,
-            attn_implementation = "sdpa" if supports_sdpa else "eager",
-            trust_remote_code = trust_remote_code,
-        )
+        config_attn_impl = kwargs.get("attn_implementation", None)
+        if config_attn_impl is None:
+            config_attn_impl = "sdpa" if supports_sdpa else "eager"
+        if auto_config is None:
+            auto_config = AutoConfig.from_pretrained(
+                model_name,
+                token = token,
+                trust_remote_code = trust_remote_code,
+            )
+        setattr(auto_config, "_attn_implementation", config_attn_impl)
+        if hasattr(auto_config, "attn_implementation"):
+            setattr(auto_config, "attn_implementation", config_attn_impl)
+        model_config = auto_config
         verify_fp8_support_if_applicable(model_config)
 
         raise_handler = RaiseUninitialized()
@@ -733,6 +840,17 @@ class FastBaseModel:
                     model_name, model_config
                 )
 
+            fp8_mode = None
+            if load_in_fp8 != False:
+                fp8_mode = _get_fp8_mode_and_check_settings(
+                    load_in_fp8,
+                    fast_inference,
+                    full_finetuning,
+                    load_in_4bit,
+                    load_in_8bit,
+                    load_in_16bit,
+                )
+
             allowed_args = inspect.getfullargspec(load_vllm).args
             load_vllm_kwargs = dict(
                 model_name = model_name,
@@ -747,6 +865,7 @@ class FastBaseModel:
                 use_bitsandbytes = load_in_4bit,
                 unsloth_vllm_standby = unsloth_vllm_standby,
                 is_vision_model = is_vlm,
+                fp8_mode = fp8_mode,
             )
             for allowed_arg in allowed_args:
                 if allowed_arg not in load_vllm_kwargs and allowed_arg in kwargs:
@@ -760,6 +879,7 @@ class FastBaseModel:
                 llm,
                 config = model_config,
                 is_vision_model = is_vlm,
+                load_in_fp8 = load_in_fp8,
             )
             model = convert_vllm_to_huggingface(
                 quant_state_dict,
@@ -806,14 +926,17 @@ class FastBaseModel:
         if (whisper_language and whisper_task) or auto_model.__name__.endswith(
             "ForConditionalGeneration"
         ):
-            tokenizer = auto_processor.from_pretrained(
-                tokenizer_name,
-                padding_side = "left",
-                token = token,
-                language = whisper_language,
-                task = whisper_task,
-                trust_remote_code = trust_remote_code,
-            )
+            try:
+                tokenizer = auto_processor.from_pretrained(
+                    tokenizer_name,
+                    padding_side = "left",
+                    token = token,
+                    language = whisper_language,
+                    task = whisper_task,
+                    trust_remote_code = trust_remote_code,
+                )
+            except Exception:
+                tokenizer = None
         else:
             try:
                 tokenizer = auto_processor.from_pretrained(
@@ -828,6 +951,23 @@ class FastBaseModel:
                     padding_side = "left",
                     token = token,
                     trust_remote_code = trust_remote_code,
+                )
+
+        # If processor loading failed (e.g., tokenizer class not found),
+        # try constructing the processor manually from separate components.
+        if tokenizer is None and is_vlm:
+            tokenizer = _construct_vlm_processor_fallback(
+                tokenizer_name,
+                model_type_arch,
+                token,
+                trust_remote_code,
+            )
+            if tokenizer is None:
+                import sys
+
+                print(
+                    f"Unsloth: Warning - VLM processor fallback returned None for model_type={model_type_arch}",
+                    file = sys.stderr,
                 )
         if hasattr(tokenizer, "tokenizer"):
             __tokenizer = tokenizer.tokenizer
@@ -852,7 +992,29 @@ class FastBaseModel:
             do_forced_float32 = do_forced_float32,
             correct_dtype = correct_dtype,
         )
-        model, tokenizer = patch_tokenizer(model, tokenizer)
+        try:
+            model, tokenizer = patch_tokenizer(model, tokenizer)
+        except Exception as _patch_err:
+            # Some VLM processors (e.g., ERNIE VL) may fail during tokenizer patching.
+            # Try loading tokenizer separately via AutoTokenizer as fallback.
+            try:
+                from transformers import AutoTokenizer as _AutoTokenizer
+
+                _fallback_tok = _AutoTokenizer.from_pretrained(
+                    tokenizer_name,
+                    padding_side = "left",
+                    token = token,
+                    trust_remote_code = trust_remote_code,
+                )
+                model, _fallback_tok = patch_tokenizer(model, _fallback_tok)
+                # Re-attach as processor wrapper if original was a processor
+                if hasattr(tokenizer, "image_processor"):
+                    tokenizer.tokenizer = _fallback_tok
+                else:
+                    tokenizer = _fallback_tok
+            except Exception:
+                # If fallback also fails, raise the original error
+                raise _patch_err
         model = post_patch_loss_function(model)
 
         # Log Unsloth version for future fastpaths for inference
@@ -860,10 +1022,31 @@ class FastBaseModel:
             model.config.update({"unsloth_version": __version__})
         patch_saving_functions(model, vision = True)
         if tokenizer is None:
-            del model
-            raise RuntimeError(
-                "Unsloth: The tokenizer is weirdly not loaded? Please check if there is one."
-            )
+            # Last resort: try loading tokenizer via AutoTokenizer, then PreTrainedTokenizerFast
+            try:
+                from transformers import AutoTokenizer as _AutoTokenizer
+
+                tokenizer = _AutoTokenizer.from_pretrained(
+                    tokenizer_name,
+                    padding_side = "left",
+                    token = token,
+                    trust_remote_code = trust_remote_code,
+                )
+            except Exception:
+                try:
+                    from transformers import PreTrainedTokenizerFast
+
+                    tokenizer = PreTrainedTokenizerFast.from_pretrained(
+                        tokenizer_name,
+                        padding_side = "left",
+                        token = token,
+                        trust_remote_code = trust_remote_code,
+                    )
+                except Exception:
+                    del model
+                    raise RuntimeError(
+                        "Unsloth: The tokenizer is weirdly not loaded? Please check if there is one."
+                    )
         patch_saving_functions(tokenizer, vision = True)
 
         # Fix gradient accumulation
@@ -941,6 +1124,7 @@ class FastBaseModel:
         task_type = TaskType.CAUSAL_LM,
         temporary_location = "_unsloth_temporary_saved_buffers",
         qat_scheme = None,
+        target_parameters = None,  # For MoE expert layers (nn.Parameter)
         ensure_weight_tying = False,  # [TODO] Add `ensure_weight_tying` for `modules_to_save` for vision models
         **kwargs,
     ):
@@ -1021,6 +1205,10 @@ class FastBaseModel:
         loftq_config = validate_loftq_config(
             loftq_config, lora_dropout, bias, init_lora_weights, model
         )
+
+        # Auto-detect MoE models and populate target_parameters for expert layers
+        if target_parameters is None:
+            target_parameters = get_moe_target_parameters(model, target_modules)
 
         # Get only allowed parameters for LoraConfig
         local_variables = {
@@ -1273,7 +1461,7 @@ class FastBaseModel:
         # Since transformers 4.53, must turn on explicitly
         for module in model.modules():
             if hasattr(module, "gradient_checkpointing"):
-                module.gradient_checkpointing = True
+                module.gradient_checkpointing = use_gradient_checkpointing
 
         # Also re-enable training for embeddings for NEFTune
         if hasattr(model, "get_input_embeddings"):

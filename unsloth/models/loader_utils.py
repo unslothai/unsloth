@@ -31,6 +31,7 @@ from .mapper import (
 from transformers import __version__ as transformers_version
 from unsloth.models._utils import TorchAOConfig
 from unsloth_zoo.utils import Version
+from unsloth_zoo.vllm_utils import _get_torchao_fp8_config
 import gc
 
 transformers_version = Version(transformers_version)
@@ -117,6 +118,15 @@ def __get_model_name(
         else:
             if lower_model_name in FLOAT_TO_FP8_BLOCK_MAPPER:
                 return FLOAT_TO_FP8_BLOCK_MAPPER[lower_model_name]
+        # Mapper didn't find a pre-quantized model.
+        # For vllm >= 0.12.0, we can quantize the model to FP8 on the fly,
+        # so just return the original model name. Older vllm versions will
+        # fall through to offline quantization via _offline_quantize_to_fp8.
+        if importlib.util.find_spec("vllm") is not None:
+            import vllm
+
+            if Version(vllm.__version__) >= Version("0.12.0"):
+                return model_name
         return None
 
     elif not SUPPORTS_FOURBIT and lower_model_name in INT_TO_FLOAT_MAPPER:
@@ -235,38 +245,12 @@ def get_model_name(model_name, load_in_4bit = True, load_in_fp8 = False):
     return new_model_name if new_model_name is not None else model_name
 
 
-def _get_torchao_fp8_config(fp8_mode: str):
-    """
-    Return a `torchao.quantization.Float8DynamicActivationFloat8WeightConfig`
-    to be used for `load_in_fp8=True`.
-    """
-    from torchao.quantization import (
-        Float8DynamicActivationFloat8WeightConfig,
-        PerBlock,
-        PerRow,
-    )
-
-    if fp8_mode == "row":
-        granularity = PerRow()
-    elif fp8_mode == "block":
-        granularity = (PerBlock([1, 128]), PerBlock([128, 128]))
-    else:
-        raise ValueError("Unsloth: `load_in_fp8` supports only 'row' or 'block'")
-
-    return Float8DynamicActivationFloat8WeightConfig(
-        granularity = granularity,
-        activation_value_lb = 1e-12,
-    )
-
-
 def _offline_quantize_to_fp8(model_name: str, fp8_mode: str) -> str:
     """
     Quantizes the model to fp8 using torchao and saving the quantized model to a
     temporary location. Return the path to the quantized model.
 
-    Note: Once on-the-fly quantization is added in vllm in
-    https://github.com/vllm-project/vllm/pull/26327, we should
-    dynamically quantize the model there instead:
+    Note: For vllm >= 0.12.0, we should dynamically quantize the model in vllm instead:
 
       llm = LLM(
         ...
@@ -333,11 +317,10 @@ def _tag_model_with_fp8_torchao_config(model: torch.nn.Module, fp8_mode: str):
 def _get_fp8_mode_and_check_settings(
     load_in_fp8: Union[bool, str],
     fast_inference: bool,
-    full_finetuning: bool,
-    load_in_4bit: bool,
-    load_in_8bit: bool,
-    load_in_16bit: bool,
-    use_exact_model_name: bool,
+    full_finetuning: bool = False,
+    load_in_4bit: bool = False,
+    load_in_8bit: bool = False,
+    load_in_16bit: bool = False,
 ) -> str:
     """
     Assuming `load_in_fp8` is enabled, raise appropriate errors on incompatible settings
@@ -373,8 +356,6 @@ def _get_fp8_mode_and_check_settings(
         raise ValueError(
             "Unsloth: `load_in_fp8` is not compatible with `load_in_4bit`, `load_in_8bit` or `load_in_16bit`",
         )
-    if use_exact_model_name:
-        raise ValueError("Unsloth: `load_in_fp8` requires `use_exact_model_name=False`")
 
     # Check if this is Hopper or above
     if not (
@@ -408,7 +389,7 @@ def _get_fp8_mode_and_check_settings(
     if Version(torchao.__version__) < Version("0.15.0"):
         raise ValueError(error_message)
 
-    # If fbgemm_gpu_genai is installed, check if it's >= 1.4.1
+    # If fbgemm_gpu_genai is installed and old, disable FBGEMM and use Triton instead
     if (
         importlib.util.find_spec("fbgemm_gpu") is not None
         and importlib.util.find_spec("fbgemm_gpu.experimental") is not None
@@ -416,7 +397,12 @@ def _get_fp8_mode_and_check_settings(
         import fbgemm_gpu.experimental.gen_ai
 
         if Version(fbgemm_gpu.__version__) < Version("1.4.1"):
-            raise ValueError(
-                "Unsloth: On the fly `load_in_fp8` is only compatible with fbgemm_gpu_genai 1.4.1+. Try `unsloth/Qwen3-8B` instead."
+            # Old FBGEMM version - disable and use Triton kernels instead
+            os.environ["UNSLOTH_HAS_FBGEMM"] = "0"
+            from unsloth_zoo.log import logger
+
+            logger.info(
+                f"Unsloth: fbgemm_gpu_genai=={fbgemm_gpu.__version__} is old for FP8 loading. "
+                f"Using Triton kernels instead."
             )
     return fp8_mode
