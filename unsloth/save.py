@@ -205,26 +205,39 @@ def _free_cached_model(model):
 
 
 def _merge_lora(layer, name, use_mlx_if_mps=False):
+    print(f"DEBUG: Processing layer {name}")
     bias = getattr(layer, "bias", None)
     Bnb_Linear4bit = get_bnb_linear_type()
     if Bnb_Linear4bit is not None and isinstance(layer, Bnb_Linear4bit) or isinstance(layer, (Peft_Linear4bit, Peft_Linear)):
         # Is LoRA so we need to merge!
+        print(f"DEBUG: Getting LoRA params for {name}")
         W, quant_state, A, B, s, bias = get_lora_parameters_bias(layer)
+        print(f"DEBUG: Got LoRA params. W device: {W.device}, A: {A is not None}, B: {B is not None}")
+        
         if quant_state is not None:
             dtype = (
                 quant_state.dtype if type(quant_state) is not list else quant_state[2]
             )
+            print(f"DEBUG: Dequantizing W. quant_state type: {type(quant_state)}")
             W = fast_dequantize(W, quant_state)
+            print(f"DEBUG: Dequantized W. New device: {W.device}")
         else:
             dtype = W.dtype
 
         # Force all operations on CPU to avoid trace trap crashes on MPS
         # Move weights to CPU first before any operations
+        print(f"DEBUG: Moving W to CPU. Current: {W.device}")
         W = W.to("cpu")
+        print("DEBUG: W moved to CPU")
+        
         if A is not None:
+            print(f"DEBUG: Moving A to CPU. Current: {A.device}")
             A = A.to("cpu")
+            print("DEBUG: A moved to CPU")
         if B is not None:
+            print(f"DEBUG: Moving B to CPU. Current: {B.device}")
             B = B.to("cpu")
+            print("DEBUG: B moved to CPU")
         
         # Check if we're on MPS and can use MLX for merging
         # is_mps = W.device.type == "mps"  # Removed - causes trace trap
@@ -247,11 +260,13 @@ def _merge_lora(layer, name, use_mlx_if_mps=False):
                 A = A.to("cpu")
                 B = B.to("cpu")
         
+        print(f"DEBUG: Performing merge calculation on CPU. W type: {type(W)}")
         W = W.to(torch.float32).t()
 
         if A is not None:
             # sAB = (A.t().to(torch.float32) @ (s * B.t().to(torch.float32)))
             # W += sAB
+            print("DEBUG: Executing addmm_")
             W.addmm_(A.t().to(torch.float32), B.t().to(torch.float32), alpha=s)
             # W.addmm_(A.t().to(W.dtype), B.t().to(W.dtype), alpha = s)
             # if not torch.isfinite(W).all():
@@ -260,8 +275,10 @@ def _merge_lora(layer, name, use_mlx_if_mps=False):
                 raise ValueError(
                     f"Unsloth: Merge failed.\n{name} has some elements = infinity."
                 )
+        print("DEBUG: Merge done, finalizing W")
         W = W.t().to(dtype)
     else:
+        print(f"DEBUG: Not a LoRA layer or skipped: {type(layer)}")
         W = layer.weight
     return W, bias
 
@@ -3113,26 +3130,47 @@ def patch_unsloth_zoo_saving():
     def _mps_friendly_merge_lora(W, lora_stats, output_key):
         # Check if we are on MPS or if CUDA is not available (CPU fallback)
         if W.device.type == "mps" or not torch.cuda.is_available():
+            print(f"DEBUG: _mps_friendly_merge_lora called for {output_key}")
+            print(f"DEBUG: W device: {W.device}, shape: {W.shape}, dtype: {W.dtype}")
+            
             # Force all operations on CPU to avoid trace trap crashes on MPS
             W = W.to("cpu")
+            print(f"DEBUG: W moved to CPU. New device: {W.device}")
             
             iterable_stats = lora_stats
+            # Handle the case where lora_stats is a single object (not a list)
             if hasattr(lora_stats, "lora_A") and hasattr(lora_stats, "lora_B"):
-                iterable_stats = [{
+                 iterable_stats = [{
                     "output_key": output_key,
                     "A": lora_stats.lora_A,
                     "B": lora_stats.lora_B,
                     "s": lora_stats.alpha
                 }]
+            
+            print(f"DEBUG: Processing {len(iterable_stats) if isinstance(iterable_stats, list) else 1} stats")
 
-            for stat in iterable_stats:
-                if output_key != stat["output_key"]: continue
-                A = stat["A"].to("cpu", dtype=torch.float32, non_blocking=True)
-                B = stat["B"].to("cpu", dtype=torch.float32, non_blocking=True)
-                s = stat["s"]
+            for i, stat in enumerate(iterable_stats):
+                if output_key != stat["output_key"]: 
+                    continue
+                
+                print(f"DEBUG: Processing stat {i}")
+                try:
+                    A = stat["A"].to("cpu", dtype=torch.float32, non_blocking=True)
+                    B = stat["B"].to("cpu", dtype=torch.float32, non_blocking=True)
+                    s = stat["s"]
+                    print(f"DEBUG: A shape: {A.shape}, B shape: {B.shape}, s: {s}")
 
-                W = W.to(torch.float32).t()
-                W.addmm_(A.t().to(torch.float32), B.t().to(torch.float32), alpha=s)
+                    W = W.to(torch.float32).t()
+                    print(f"DEBUG: W transposed shape: {W.shape}")
+                    
+                    print(f"DEBUG: Executing addmm_ for {output_key}")
+                    W.addmm_(A.t().to(torch.float32), B.t().to(torch.float32), alpha=s)
+                    print(f"DEBUG: addmm_ successful")
+                except Exception as e:
+                    print(f"DEBUG: Crash in loop {i}: {e}")
+                    raise e
+            
+            print(f"DEBUG: _mps_friendly_merge_lora finished for {output_key}")
             return W
         else:
             return original_merge_lora(W, lora_stats, output_key)
@@ -3146,7 +3184,10 @@ def patch_unsloth_zoo_saving():
     original_merge_and_overwrite = unsloth_zoo.saving_utils.merge_and_overwrite_lora
 
     def _mps_safe_merge_and_overwrite_lora(*args, **kwargs):
-        if not torch.cuda.is_available():
+        print("DEBUG: _mps_safe_merge_and_overwrite_lora called")
+        from unsloth.device_utils import DEVICE_TYPE
+        if not torch.cuda.is_available() or DEVICE_TYPE == "mps":
+            print("DEBUG: Applying MPS safety patches for merge_and_overwrite_lora")
             # Temporarily replace torch.cuda functions with safe no-ops
             _orig_empty_cache = torch.cuda.empty_cache
             _orig_synchronize = getattr(torch.cuda, "synchronize", None)
@@ -3162,7 +3203,12 @@ def patch_unsloth_zoo_saving():
                 torch.cuda.get_device_name = _safe_get_device_name
 
             try:
-                return original_merge_and_overwrite(*args, **kwargs)
+                ret = original_merge_and_overwrite(*args, **kwargs)
+                print("DEBUG: _mps_safe_merge_and_overwrite_lora finished successfully")
+                return ret
+            except Exception as e:
+                print(f"DEBUG: Crash in _mps_safe_merge_and_overwrite_lora: {e}")
+                raise e
             finally:
                 # Restore original functions
                 torch.cuda.empty_cache = _orig_empty_cache
