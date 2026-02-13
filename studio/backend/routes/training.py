@@ -180,14 +180,19 @@ async def start_training(
                 except Exception as e:
                     logger.error(f"Error updating progress: {e}")
 
-                # Consume the generator - this actually runs the training
-                update_count = 0
-                for _update_tuple in backend.start_training(**training_kwargs):
-                    update_count += 1
-                    if update_count % 10 == 0:
-                        logger.info(f"Training progress update #{update_count}")
+                # start_training returns bool (not generator)
+                run_result = backend.start_training(**training_kwargs)
+                logger.info(
+                    "Training job %s backend.start_training returned type=%s value=%r",
+                    job_id,
+                    type(run_result).__name__,
+                    run_result,
+                )
+                if not run_result:
+                    progress_error = backend.trainer.training_progress.error
+                    raise RuntimeError(progress_error or "Training failed to start")
 
-                logger.info(f"Training job {job_id} completed successfully")
+                logger.info(f"Training job {job_id} started successfully")
 
             except Exception as e:
                 logger.error(f"Training error in job {job_id}: {e}", exc_info=True)
@@ -653,4 +658,3 @@ async def stream_training_progress(
             "X-Accel-Buffering": "no",
         }
     )
-
