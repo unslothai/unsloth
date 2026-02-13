@@ -120,13 +120,26 @@ const ThreadScrollToBottom: FC = () => {
 };
 
 const SuggestionItem: FC = () => {
+  const aui = useAui();
+  const prompt = useAuiState(({ suggestion }) => suggestion.prompt);
+  const isDisabled = useAuiState(({ thread }) => thread.isDisabled);
+  const isRunning = useAuiState(({ thread }) => thread.isRunning);
+
   return (
-    <SuggestionPrimitive.Trigger
-      send={true}
+    <button
+      type="button"
+      onClick={() => {
+        if (!isDisabled && !isRunning) {
+          aui.thread().append(prompt);
+          aui.composer().setText("");
+          return;
+        }
+        aui.composer().setText(prompt);
+      }}
       className="fade-in slide-in-from-bottom-1 animate-in cursor-pointer corner-squircle rounded-xl border bg-background px-4 py-2.5 text-left text-sm text-foreground shadow-sm transition-colors duration-150 hover:bg-accent"
     >
       <SuggestionPrimitive.Title />
-    </SuggestionPrimitive.Trigger>
+    </button>
   );
 };
 
