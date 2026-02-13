@@ -266,7 +266,7 @@ export function ChartsContent({
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
       <Card size="sm">
         <CardHeader>
-          <CardTitle className="text-sm">Training Loss</CardTitle>
+          <CardTitle className="text-sm pl-2">Training Loss</CardTitle>
           <CardAction>
             <DropdownMenu>
               <DropdownMenuTrigger asChild={true}>
@@ -414,7 +414,7 @@ export function ChartsContent({
 
       <Card size="sm">
         <CardHeader>
-          <CardTitle className="text-sm">Gradient Norm</CardTitle>
+          <CardTitle className="text-sm pl-2">Gradient Norm</CardTitle>
         </CardHeader>
         <CardContent>
           <ChartContainer
@@ -482,7 +482,7 @@ export function ChartsContent({
 
       <Card size="sm">
         <CardHeader>
-          <CardTitle className="text-sm">Learning Rate</CardTitle>
+          <CardTitle className="text-sm pl-2">Learning Rate</CardTitle>
         </CardHeader>
         <CardContent>
           <ChartContainer config={lrConfig} className="-ml-1.5 h-[220px] w-full">
@@ -548,7 +548,7 @@ export function ChartsContent({
 
       <Card size="sm">
         <CardHeader>
-          <CardTitle className="text-sm text-muted-foreground">
+          <CardTitle className="text-sm text-muted-foreground pl-2">
             Eval Loss
           </CardTitle>
         </CardHeader>
