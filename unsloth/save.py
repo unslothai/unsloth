@@ -3130,12 +3130,12 @@ def patch_unsloth_zoo_saving():
     def _mps_friendly_merge_lora(W, lora_stats, output_key):
         # Check if we are on MPS or if CUDA is not available (CPU fallback)
         if W.device.type == "mps" or not torch.cuda.is_available():
-            print(f"DEBUG: _mps_friendly_merge_lora called for {output_key}")
-            print(f"DEBUG: W device: {W.device}, shape: {W.shape}, dtype: {W.dtype}")
-            
             # Force all operations on CPU to avoid trace trap crashes on MPS
+            # [Fix 1] Synchronize before transfer to verify computation is done
+            if hasattr(torch.cuda, "synchronize"):
+                torch.cuda.synchronize()
+            
             W = W.to("cpu")
-            print(f"DEBUG: W moved to CPU. New device: {W.device}")
             
             iterable_stats = lora_stats
             # Handle the case where lora_stats is a single object (not a list)
@@ -3146,31 +3146,23 @@ def patch_unsloth_zoo_saving():
                     "B": lora_stats.lora_B,
                     "s": lora_stats.alpha
                 }]
-            
-            print(f"DEBUG: Processing {len(iterable_stats) if isinstance(iterable_stats, list) else 1} stats")
 
             for i, stat in enumerate(iterable_stats):
                 if output_key != stat["output_key"]: 
                     continue
                 
-                print(f"DEBUG: Processing stat {i}")
+                # [Fix 2] Remove non_blocking=True to avoid race conditions causing trace traps
                 try:
-                    A = stat["A"].to("cpu", dtype=torch.float32, non_blocking=True)
-                    B = stat["B"].to("cpu", dtype=torch.float32, non_blocking=True)
+                    A = stat["A"].to("cpu", dtype=torch.float32)
+                    B = stat["B"].to("cpu", dtype=torch.float32)
                     s = stat["s"]
-                    print(f"DEBUG: A shape: {A.shape}, B shape: {B.shape}, s: {s}")
 
                     W = W.to(torch.float32).t()
-                    print(f"DEBUG: W transposed shape: {W.shape}")
                     
-                    print(f"DEBUG: Executing addmm_ for {output_key}")
                     W.addmm_(A.t().to(torch.float32), B.t().to(torch.float32), alpha=s)
-                    print(f"DEBUG: addmm_ successful")
                 except Exception as e:
-                    print(f"DEBUG: Crash in loop {i}: {e}")
                     raise e
             
-            print(f"DEBUG: _mps_friendly_merge_lora finished for {output_key}")
             return W
         else:
             return original_merge_lora(W, lora_stats, output_key)
@@ -3220,6 +3212,32 @@ def patch_unsloth_zoo_saving():
             return original_merge_and_overwrite(*args, **kwargs)
 
     unsloth_zoo.saving_utils.merge_and_overwrite_lora = _mps_safe_merge_and_overwrite_lora
+
+    # Patch 3: Bypass GGUF apt-get check on macOS
+    # unsloth_zoo.llama_cpp.do_we_need_sudo erroneously checks for apt-get on macOS
+    try:
+        import unsloth_zoo.llama_cpp
+        original_do_we_need_sudo = unsloth_zoo.llama_cpp.do_we_need_sudo
+
+        def _safe_do_we_need_sudo():
+            # If we simply return False, we skip the apt-get check.
+            # On macOS, we don't use apt-get anyway.
+            return False
+
+        unsloth_zoo.llama_cpp.do_we_need_sudo = _safe_do_we_need_sudo
+
+        # Also wrap install_llama_cpp to ensure patched function is used
+        _orig_install_llama_cpp = unsloth_zoo.llama_cpp.install_llama_cpp
+
+        def _wrapped_install_llama_cpp(*args, **kwargs):
+            # Re-patch just in case
+            unsloth_zoo.llama_cpp.do_we_need_sudo = _safe_do_we_need_sudo
+            return _orig_install_llama_cpp(*args, **kwargs)
+
+        # Also patch local bindings in this module
+        globals()["install_llama_cpp"] = _wrapped_install_llama_cpp
+    except Exception as e:
+        print(f"Warning: Could not patch GGUF apt-get check: {e}")
 
     # CRITICAL: Also update the local binding in this module (save.py).
     # Line 2620 does `from unsloth_zoo.saving_utils import merge_and_overwrite_lora`
