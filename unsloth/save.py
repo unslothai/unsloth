@@ -1975,6 +1975,7 @@ def unsloth_save_pretrained_gguf(
     del arguments["model_name"]
     del arguments["base_model_name"]
     del arguments["is_processor"]
+    del arguments["DEVICE_TYPE"]
 
     # Step 3: Fix tokenizer BOS token if needed
     if is_processor:
