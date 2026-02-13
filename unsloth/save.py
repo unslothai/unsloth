@@ -684,15 +684,22 @@ def unsloth_save_model(
     from tqdm import tqdm as ProgressBar
 
     for j, layer in enumerate(ProgressBar(internal_model.model.layers)):
+        # Move layer to CPU to avoid trace trap on MPS when accessing weights
+        layer_cpu = layer.cpu()
         for item in LLAMA_WEIGHTS:
-            proj = eval(f"layer.{item}")
+            proj = eval(f"layer_cpu.{item}")
             name = f"model.layers.{j}.{item}.weight"
 
             # [Phase 2.1] OOM protection for Apple Silicon / Unified Memory
             from unsloth.device_utils import get_available_memory, DEVICE_TYPE
             if DEVICE_TYPE == "mps":
-                in_f = getattr(proj, "in_features", proj.weight.shape[1] if len(proj.weight.shape) > 1 else 0)
-                out_f = getattr(proj, "out_features", proj.weight.shape[0])
+                # Avoid accessing proj.weight.shape directly on MPS - use eval to get shape from CPU
+                in_f = getattr(proj, "in_features", None)
+                out_f = getattr(proj, "out_features", None)
+                if in_f is None or out_f is None:
+                    # Fallback: get from base_layer which should be on CPU after _merge_lora
+                    in_f = in_f or 0
+                    out_f = out_f or 0
                 est_bytes = in_f * out_f * 2 # 16-bit estimate
                 
                 # If available memory is less than 2x the estimated size, be careful
@@ -740,7 +747,7 @@ def unsloth_save_model(
                 # Skip for Gemma 2
                 # Move to CPU first to avoid trace trap on MPS
                 state_dict[f"model.layers.{j}.{item}.weight"] = eval(
-                    f"layer.{item}.weight.data.cpu()"
+                    f"layer_cpu.{item}.weight.data.cpu()"
                 )
             except:
                 continue
