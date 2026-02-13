@@ -84,6 +84,20 @@ def create_initial_user(username: str, password: str, jwt_secret: str) -> None:
         conn.close()
 
 
+def delete_user(username: str) -> None:
+    """
+    Delete a user from the database.
+    
+    Used for rollback when setup fails after user creation.
+    """
+    conn = get_connection()
+    try:
+        conn.execute("DELETE FROM auth_user WHERE username = ?", (username,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def get_user_and_secret(username: str) -> Optional[Tuple[str, str, str]]:
     """
     Get user's password salt, hash, and JWT secret.
