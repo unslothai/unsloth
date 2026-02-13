@@ -10,7 +10,6 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   ArrowDown01Icon,
   Delete02Icon,
-  EngineIcon,
   FloppyDiskIcon,
   PencilEdit01Icon,
   Settings02Icon,
@@ -20,28 +19,13 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { AnimatePresence, motion } from "motion/react";
 import type { ReactNode } from "react";
 import { useState } from "react";
+import {
+  DEFAULT_INFERENCE_PARAMS,
+  type InferenceParams,
+} from "./types/runtime";
 
-export interface InferenceParams {
-  temperature: number;
-  topP: number;
-  topK: number;
-  repetitionPenalty: number;
-  maxTokens: number;
-  systemPrompt: string;
-  inferenceEngine: string;
-  checkpoint: string;
-}
-
-export const defaultInferenceParams: InferenceParams = {
-  temperature: 0.7,
-  topP: 0.9,
-  topK: 50,
-  repetitionPenalty: 1.1,
-  maxTokens: 512,
-  systemPrompt: "",
-  inferenceEngine: "unsloth",
-  checkpoint: "outputs/llama-3.1-8b-instruct-lora",
-};
+export const defaultInferenceParams = DEFAULT_INFERENCE_PARAMS;
+export type { InferenceParams } from "./types/runtime";
 
 export interface Preset {
   name: string;
@@ -70,11 +54,6 @@ const BUILTIN_PRESETS: Preset[] = [
       repetitionPenalty: 1.2,
     },
   },
-];
-
-const ENGINE_OPTIONS = [
-  { value: "unsloth", label: "Unsloth" },
-  { value: "llama-cpp", label: "llama.cpp (GGUF)" },
 ];
 
 function ParamSlider({
@@ -284,33 +263,6 @@ export function ChatSettingsPanel({
               rows={3}
             />
           </div>
-
-          <CollapsibleSection
-            icon={EngineIcon}
-            label="Inference Engine"
-            defaultOpen={true}
-          >
-            <div>
-              <span className="mb-1 block text-[11px] text-muted-foreground">
-                Backend
-              </span>
-              <Select
-                value={params.inferenceEngine}
-                onValueChange={set("inferenceEngine")}
-              >
-                <SelectTrigger className="h-8 w-full text-xs corner-squircle">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {ENGINE_OPTIONS.map((o) => (
-                    <SelectItem key={o.value} value={o.value}>
-                      {o.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          </CollapsibleSection>
 
           <CollapsibleSection
             icon={SlidersHorizontalIcon}

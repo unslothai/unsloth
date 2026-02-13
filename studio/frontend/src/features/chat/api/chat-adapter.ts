@@ -1,0 +1,113 @@
+import type { ChatModelAdapter } from "@assistant-ui/react";
+import { streamChatCompletions } from "./chat-api";
+import { useChatRuntimeStore } from "../stores/chat-runtime-store";
+import {
+  hasClosedThinkTag,
+  parseAssistantContent,
+} from "../utils/parse-assistant-content";
+
+type RunMessages = Parameters<ChatModelAdapter["run"]>[0]["messages"];
+type RunMessage = RunMessages[number];
+
+function collectTextParts(message: RunMessage): string[] {
+  const textParts = message.content
+    .filter((part) => part.type === "text")
+    .map((part) => part.text);
+
+  if ("attachments" in message && (message.attachments?.length ?? 0) > 0) {
+    for (const attachment of message.attachments ?? []) {
+      for (const part of attachment.content ?? []) {
+        if (part.type === "text") {
+          textParts.push(part.text);
+        }
+      }
+    }
+  }
+
+  return textParts;
+}
+
+function toOpenAIMessage(message: RunMessage): {
+  role: "system" | "user" | "assistant";
+  content: string;
+} | null {
+  if (
+    message.role !== "system" &&
+    message.role !== "user" &&
+    message.role !== "assistant"
+  ) {
+    return null;
+  }
+
+  return {
+    role: message.role,
+    content: collectTextParts(message).join("\n"),
+  };
+}
+
+export function createOpenAIStreamAdapter(): ChatModelAdapter {
+  return {
+    async *run({ messages, abortSignal }) {
+      const state = useChatRuntimeStore.getState();
+      const { params } = state;
+
+      if (!params.checkpoint) {
+        throw new Error("Load a model first.");
+      }
+
+      const outboundMessages = messages
+        .map(toOpenAIMessage)
+        .filter((message): message is NonNullable<typeof message> =>
+          Boolean(message),
+        );
+
+      if (params.systemPrompt.trim()) {
+        outboundMessages.unshift({
+          role: "system",
+          content: params.systemPrompt.trim(),
+        });
+      }
+
+      const stream = streamChatCompletions(
+        {
+          model: params.checkpoint,
+          messages: outboundMessages,
+          stream: true,
+          temperature: params.temperature,
+          top_p: params.topP,
+          max_tokens: params.maxTokens,
+          top_k: params.topK,
+          repetition_penalty: params.repetitionPenalty,
+        },
+        abortSignal,
+      );
+
+      let cumulativeText = "";
+      let reasoningStartAt: number | null = null;
+      let reasoningDuration = 0;
+
+      for await (const chunk of stream) {
+        const delta = chunk.choices?.[0]?.delta?.content;
+        if (!delta) {
+          continue;
+        }
+        cumulativeText += delta;
+        const parts = parseAssistantContent(cumulativeText);
+
+        if (parts.some((part) => part.type === "reasoning") && !reasoningStartAt) {
+          reasoningStartAt = Date.now();
+        }
+        if (hasClosedThinkTag(cumulativeText) && reasoningStartAt && !reasoningDuration) {
+          reasoningDuration = Math.round((Date.now() - reasoningStartAt) / 1000);
+        }
+
+        if (parts.length > 0) {
+          yield {
+            content: parts,
+            metadata: { custom: { reasoningDuration } },
+          };
+        }
+      }
+    },
+  };
+}
