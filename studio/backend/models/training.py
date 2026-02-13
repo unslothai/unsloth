@@ -99,7 +99,7 @@ class TrainingProgress(BaseModel):
     loss: float = Field(..., description="Current loss value")
     learning_rate: float = Field(..., description="Current learning rate")
     progress_percent: float = Field(..., description="Progress percentage (0.0 to 100.0)")
-    epoch: Optional[int] = Field(None, description="Current epoch")
+    epoch: Optional[float] = Field(None, description="Current epoch")
     elapsed_seconds: Optional[float] = Field(None, description="Time elapsed since training started")
     eta_seconds: Optional[float] = Field(None, description="Estimated time remaining")
     grad_norm: Optional[float] = Field(None, description="L2 norm of gradients, computed before gradient clipping")
