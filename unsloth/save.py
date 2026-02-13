@@ -3101,7 +3101,7 @@ def patch_unsloth_zoo_saving():
                 B = stat["B"].to("cpu", dtype=torch.float32, non_blocking=True)
                 s = stat["s"]
 
-                W = W.to(torch.float32)
+                W = W.to(torch.float32).t()
                 W.addmm_(A.t().to(torch.float32), B.t().to(torch.float32), alpha=s)
             return W
         else:
