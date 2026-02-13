@@ -204,7 +204,7 @@ def _free_cached_model(model):
             delete_strategy.execute()
 
 
-def _merge_lora(layer, name, use_mlx_if_mps=True):
+def _merge_lora(layer, name, use_mlx_if_mps=False):
     bias = getattr(layer, "bias", None)
     Bnb_Linear4bit = get_bnb_linear_type()
     if Bnb_Linear4bit is not None and isinstance(layer, Bnb_Linear4bit) or isinstance(layer, (Peft_Linear4bit, Peft_Linear)):
