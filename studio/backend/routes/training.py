@@ -436,7 +436,7 @@ async def stream_training_progress(
             loss: float,
             learning_rate: float,
             total_steps: int,
-            epoch: Optional[int] = None,
+            epoch: Optional[float] = None,
         ) -> TrainingProgress:
             total = max(total_steps, 0)
             if step < 0 or total == 0:

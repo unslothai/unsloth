@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class TrainingProgress:
     """Training progress tracking"""
-    epoch: int = 0
+    epoch: float = 0
     step: int = 0
     total_steps: int = 0
     loss: float = 0.0
