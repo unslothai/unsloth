@@ -2682,16 +2682,15 @@ def test_hf_gguf_equivalence(tokenizer, gguf_model = "./model-unsloth.F16.gguf")
 
     if tokenizer.chat_template is not None:
         prompt = tokenizer.apply_chat_template(messages, tokenize = False, add_generation_prompt = True)
-        prompt = prompt.replace("'", "") # Subprocess does not like ''
         prompt = remove_special_tokens(tokenizer, prompt)
         prompts.append(prompt)
 
     for prompt in prompts:
-        command = f"./llama.cpp/llama-cli -m {gguf_model} -n 0 --temp 0.0 --verbose-prompt "\
-            f"--check-tensors -p '{prompt}'"
+        command = ["./llama.cpp/llama-cli", "-m", gguf_model, "-n", "0", "--temp", "0.0", "--verbose-prompt", 
+                   "--check-tensors", "-p", prompt]
 
         datas = []
-        with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, bufsize = 1) as sp:
+        with subprocess.Popen(command, shell = False, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, bufsize = 1) as sp:
             for line in sp.stdout:
                 datas.append(line.decode("utf-8", errors = "replace"))
         gguf_tokens = "".join(datas)
