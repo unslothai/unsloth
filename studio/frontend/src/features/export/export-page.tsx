@@ -105,8 +105,8 @@ export function ExportPage() {
 
   return (
     <div className="min-h-screen bg-background">
-      <main className="mx-auto max-w-7xl px-6 py-8">
-        <div className="mb-8 flex flex-col gap-1">
+      <main className="mx-auto max-w-7xl px-6 py-4">
+        <div className="mb-8 flex flex-col gap-0.5">
           <h1 className="text-2xl font-semibold tracking-tight">
             Export Model
           </h1>
