@@ -3234,15 +3234,17 @@ def patch_unsloth_zoo_saving():
                 import subprocess
                 if platform.system() == "Darwin":
                     # On macOS, check what's needed
+                    # packages_to_install can be a string or list
+                    if isinstance(packages_to_install, str):
+                        packages_to_install = [packages_to_install]
                     brew_packages = []
                     for pkg in packages_to_install:
                         if pkg == "libcurl4-openssl-dev":
-                            # On macOS, libcurl is already available via system or curl formula
-                            # Try to ensure cmake is installed
+                            # On macOS, libcurl is already available via system
                             pass
                         elif pkg == "cmake":
                             brew_packages.append("cmake")
-                        else:
+                        elif pkg:
                             brew_packages.append(pkg)
                     if brew_packages:
                         print(f"Unsloth: Installing packages via brew: {brew_packages}")
