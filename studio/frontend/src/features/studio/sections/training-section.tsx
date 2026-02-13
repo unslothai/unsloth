@@ -9,7 +9,7 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
-import { useWizardStore } from "@/stores/training";
+import { useTrainingActions, useTrainingConfigStore } from "@/features/training";
 import {
   Archive04Icon,
   ArrowDown01Icon,
@@ -35,7 +35,8 @@ const placeholderData = [
 ];
 
 export function TrainingSection() {
-  const store = useWizardStore();
+  const store = useTrainingConfigStore();
+  const { isStarting, startError, startTrainingRun } = useTrainingActions();
   const [logOpen, setLogOpen] = useState(false);
 
   return (
@@ -94,11 +95,15 @@ export function TrainingSection() {
         {/* Start/Stop */}
         <Button
           className="w-full cursor-pointer bg-gradient-to-r from-emerald-500 to-teal-500 text-white hover:from-emerald-600 hover:to-teal-600"
-          onClick={() => store.setIsTraining(true)}
+          onClick={() => void startTrainingRun()}
+          disabled={isStarting}
         >
-          <HugeiconsIcon icon={Rocket01Icon} className="size-4" /> Start
-          Training
+          <HugeiconsIcon icon={Rocket01Icon} className="size-4" />
+          {isStarting ? "Starting..." : "Start Training"}
         </Button>
+        {startError && (
+          <p className="text-xs text-red-500 leading-relaxed">{startError}</p>
+        )}
 
         {/* Save / Clear */}
         <div className="grid grid-cols-2 gap-2">

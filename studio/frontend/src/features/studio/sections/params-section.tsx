@@ -21,7 +21,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { CONTEXT_LENGTHS, TARGET_MODULES } from "@/config/training";
-import { useWizardStore } from "@/stores/training";
+import { useTrainingConfigStore } from "@/features/training";
 import type { GradientCheckpointing } from "@/types/training";
 import {
   ArrowDown01Icon,
@@ -107,7 +107,7 @@ function SliderRow({
 }
 
 export function ParamsSection(): ReactElement {
-  const store = useWizardStore();
+  const store = useTrainingConfigStore();
   const isLora = store.trainingMethod !== "full";
   const isVision = store.modelType === "vision";
   const [loraOpen, setLoraOpen] = useState(false);

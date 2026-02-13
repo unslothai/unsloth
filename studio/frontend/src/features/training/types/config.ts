@@ -1,15 +1,15 @@
-export type ModelType = "vision" | "tts" | "embeddings" | "text";
-export type TrainingMethod = "qlora" | "lora" | "full";
+import type {
+  DatasetFormat,
+  DatasetSource,
+  GradientCheckpointing,
+  ModelType,
+  StepNumber,
+  TrainingMethod,
+} from "@/types/training";
 
-export function isAdapterMethod(method: TrainingMethod): boolean {
-  return method === "lora" || method === "qlora";
-}
-export type StepNumber = 1 | 2 | 3 | 4 | 5;
-export type DatasetSource = "huggingface" | "upload";
-export type DatasetFormat = "auto" | "alpaca" | "chatml" | "sharegpt";
-export type GradientCheckpointing = "none" | "true" | "unsloth";
+export type LoraVariant = "lora" | "rslora" | "loftq";
 
-export interface WizardState {
+export interface TrainingConfigState {
   currentStep: StepNumber;
   modelType: ModelType | null;
   selectedModel: string | null;
@@ -25,7 +25,7 @@ export interface WizardState {
   loraRank: number;
   loraAlpha: number;
   loraDropout: number;
-  loraVariant: "lora" | "rslora" | "loftq";
+  loraVariant: LoraVariant;
   batchSize: number;
   gradientAccumulation: number;
   weightDecay: number;
@@ -49,7 +49,7 @@ export interface WizardState {
   targetModules: string[];
 }
 
-export interface WizardActions {
+export interface TrainingConfigActions {
   setStep: (step: StepNumber) => void;
   nextStep: () => void;
   prevStep: () => void;
@@ -67,35 +67,30 @@ export interface WizardActions {
   setLoraRank: (rank: number) => void;
   setLoraAlpha: (alpha: number) => void;
   setLoraDropout: (dropout: number) => void;
-  setLoraVariant: (v: "lora" | "rslora" | "loftq") => void;
-  setBatchSize: (v: number) => void;
-  setGradientAccumulation: (v: number) => void;
-  setWeightDecay: (v: number) => void;
-  setWarmupSteps: (v: number) => void;
-  setMaxSteps: (v: number) => void;
-  setSaveSteps: (v: number) => void;
-  setPacking: (v: boolean) => void;
-  setTrainOnCompletions: (v: boolean) => void;
-  setGradientCheckpointing: (v: GradientCheckpointing) => void;
-  setRandomSeed: (v: number) => void;
-  setEnableWandb: (v: boolean) => void;
-  setWandbToken: (v: string) => void;
-  setWandbProject: (v: string) => void;
-  setEnableTensorboard: (v: boolean) => void;
-  setTensorboardDir: (v: string) => void;
-  setLogFrequency: (v: number) => void;
-  setFinetuneVisionLayers: (v: boolean) => void;
-  setFinetuneLanguageLayers: (v: boolean) => void;
-  setFinetuneAttentionModules: (v: boolean) => void;
-  setFinetuneMLPModules: (v: boolean) => void;
-  setTargetModules: (v: string[]) => void;
+  setLoraVariant: (variant: LoraVariant) => void;
+  setBatchSize: (value: number) => void;
+  setGradientAccumulation: (value: number) => void;
+  setWeightDecay: (value: number) => void;
+  setWarmupSteps: (value: number) => void;
+  setMaxSteps: (value: number) => void;
+  setSaveSteps: (value: number) => void;
+  setPacking: (value: boolean) => void;
+  setTrainOnCompletions: (value: boolean) => void;
+  setGradientCheckpointing: (value: GradientCheckpointing) => void;
+  setRandomSeed: (value: number) => void;
+  setEnableWandb: (value: boolean) => void;
+  setWandbToken: (value: string) => void;
+  setWandbProject: (value: string) => void;
+  setEnableTensorboard: (value: boolean) => void;
+  setTensorboardDir: (value: string) => void;
+  setLogFrequency: (value: number) => void;
+  setFinetuneVisionLayers: (value: boolean) => void;
+  setFinetuneLanguageLayers: (value: boolean) => void;
+  setFinetuneAttentionModules: (value: boolean) => void;
+  setFinetuneMLPModules: (value: boolean) => void;
+  setTargetModules: (value: string[]) => void;
   canProceed: () => boolean;
   reset: () => void;
 }
 
-export interface StepConfig {
-  number: StepNumber;
-  title: string;
-  subtitle: string;
-  description: string;
-}
+export type TrainingConfigStore = TrainingConfigState & TrainingConfigActions;

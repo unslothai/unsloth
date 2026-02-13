@@ -6,7 +6,7 @@ import { Suspense, lazy, useEffect, useRef, useState } from "react";
 import type { ConfettiRef } from "@/components/ui/confetti";
 import { STEPS } from "@/config/training";
 import { isOnboardingDone, markOnboardingDone } from "@/features/auth";
-import { useWizardStore } from "@/stores/training";
+import { useTrainingConfigStore } from "@/features/training";
 import { SplashScreen } from "./splash-screen";
 import { WizardContent } from "./wizard-content";
 import { WizardFooter } from "./wizard-footer";
@@ -19,7 +19,7 @@ const Confetti = lazy(() =>
 export function WizardLayout() {
   const navigate = useNavigate();
   const [showSplash, setShowSplash] = useState(true);
-  const currentStep = useWizardStore((s) => s.currentStep);
+  const currentStep = useTrainingConfigStore((s) => s.currentStep);
   const confettiRef = useRef<ConfettiRef>(null);
   const hasFiredRef = useRef(false);
   const isFinalStep = currentStep === STEPS.length;
