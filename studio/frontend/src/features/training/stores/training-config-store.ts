@@ -96,6 +96,10 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
     }),
     {
       name: "unsloth_training_config_v1",
+      partialize: (state) => {
+        const { modelType, ...rest } = state;
+        return rest;
+      },
     },
   ),
 );
