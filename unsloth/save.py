@@ -670,6 +670,12 @@ def unsloth_save_model(
         elif torch_dtype == "bfloat16":
             torch_dtype = torch.bfloat16
 
+    # Move model to CPU to avoid trace trap on MPS during weight merging
+    from unsloth.device_utils import DEVICE_TYPE
+    if DEVICE_TYPE == "mps":
+        logger.warning_once("Unsloth: Moving model to CPU for saving (MPS trace trap prevention)...")
+        internal_model = internal_model.cpu()
+
     # Check modules to save float32 dtype
     # Move to CPU first to avoid trace trap on MPS
     state_dict["model.embed_tokens.weight"] = (
@@ -684,11 +690,17 @@ def unsloth_save_model(
     from tqdm import tqdm as ProgressBar
 
     for j, layer in enumerate(ProgressBar(internal_model.model.layers)):
-        # Move layer to CPU to avoid trace trap on MPS when accessing weights
-        layer_cpu = layer.cpu()
+        # Access weights on CPU to avoid trace trap on MPS
+        # Get projection and move its weights to CPU individually
         for item in LLAMA_WEIGHTS:
-            proj = eval(f"layer_cpu.{item}")
+            proj = eval(f"layer.{item}")
             name = f"model.layers.{j}.{item}.weight"
+
+            # Move projection weights to CPU before any access to avoid MPS trace trap
+            if hasattr(proj, 'weight') and proj.weight is not None:
+                proj.weight.data = proj.weight.data.cpu()
+            if hasattr(proj, 'base_layer') and hasattr(proj.base_layer, 'weight') and proj.base_layer.weight is not None:
+                proj.base_layer.weight.data = proj.base_layer.weight.data.cpu()
 
             # [Phase 2.1] OOM protection for Apple Silicon / Unified Memory
             from unsloth.device_utils import get_available_memory, DEVICE_TYPE
@@ -747,7 +759,7 @@ def unsloth_save_model(
                 # Skip for Gemma 2
                 # Move to CPU first to avoid trace trap on MPS
                 state_dict[f"model.layers.{j}.{item}.weight"] = eval(
-                    f"layer_cpu.{item}.weight.data.cpu()"
+                    f"layer.{item}.weight.data.cpu()"
                 )
             except:
                 continue
