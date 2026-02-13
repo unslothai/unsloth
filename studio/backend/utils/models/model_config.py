@@ -526,8 +526,8 @@ def load_model_defaults(model_name: str) -> Dict[str, Any]:
     """
     try:
         # Get the script directory to locate configs
-        script_dir = Path(__file__).parent.parent
-        defaults_dir = script_dir / "configs" / "model_defaults"
+        script_dir = Path(__file__).parent.parent.parent
+        defaults_dir = script_dir / "assets" / "configs" / "model_defaults"
         
         # First, check if model is in the mapping
         if model_name in _REVERSE_MODEL_MAPPING:
