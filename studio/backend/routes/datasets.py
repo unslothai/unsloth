@@ -144,6 +144,8 @@ async def check_format(request: CheckFormatRequest):
             requires_manual_mapping=result["requires_manual_mapping"],
             detected_format=result["detected_format"],
             columns=result["columns"],
+            is_multimodal=result.get("is_multimodal", False),
+            multimodal_columns=result.get("multimodal_columns"),
             suggested_mapping=result.get("suggested_mapping"),
             detected_image_column=result.get("detected_image_column"),
             detected_text_column=result.get("detected_text_column"),

@@ -63,6 +63,11 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
     """
     columns = list(dataset.column_names) if hasattr(dataset, 'column_names') else list(next(iter(dataset)).keys())
     
+    # Auto-detect multimodal data regardless of is_vlm flag
+    multimodal_info = detect_multimodal_dataset(dataset)
+    if multimodal_info["is_multimodal"]:
+        is_vlm = True  # Route to VLM detection automatically
+    
     if is_vlm:
         vlm_structure = detect_vlm_dataset_structure(dataset)
         requires_mapping = vlm_structure["format"] == "unknown"
@@ -74,6 +79,8 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
             "suggested_mapping": None,
             "detected_image_column": vlm_structure.get("image_column"),
             "detected_text_column": vlm_structure.get("text_column"),
+            "is_multimodal": multimodal_info["is_multimodal"],
+            "multimodal_columns": multimodal_info.get("multimodal_columns"),
         }
     else:
         # LLM flow
@@ -91,6 +98,8 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
                     "suggested_mapping": heuristic_mapping,
                     "detected_image_column": None,
                     "detected_text_column": None,
+                    "is_multimodal": False,
+                    "multimodal_columns": None,
                 }
             else:
                 # Both detection and heuristic failed
@@ -101,6 +110,8 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
                     "suggested_mapping": None,
                     "detected_image_column": None,
                     "detected_text_column": None,
+                    "is_multimodal": False,
+                    "multimodal_columns": None,
                 }
         
         # Known format detected
@@ -111,6 +122,8 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
             "suggested_mapping": None,
             "detected_image_column": None,
             "detected_text_column": None,
+            "is_multimodal": False,
+            "multimodal_columns": None,
         }
 
 def _apply_user_mapping(dataset, mapping: dict, batch_size: int = 1000):
