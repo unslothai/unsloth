@@ -1075,20 +1075,22 @@ def fix_vllm_pdl_blackwell():
         "lora_shrink_op": "vllm.lora.ops.triton_ops.lora_shrink_op",
         "fused_moe_lora_op": "vllm.lora.ops.triton_ops.fused_moe_lora_op",
     }
-    
+
     # Whitelist of allowed module paths to prevent arbitrary code execution
     allowed_modules = {
         "vllm.lora.ops.triton_ops.lora_expand_op",
-        "vllm.lora.ops.triton_ops.lora_shrink_op", 
+        "vllm.lora.ops.triton_ops.lora_shrink_op",
         "vllm.lora.ops.triton_ops.fused_moe_lora_op",
     }
-    
+
     for name, path in consumer_modules.items():
         # Validate module path against whitelist before importing
         if path not in allowed_modules:
-            logger.warning(f"Unsloth: Skipping import of non-whitelisted module: {path}")
+            logger.warning(
+                f"Unsloth: Skipping import of non-whitelisted module: {path}"
+            )
             continue
-            
+
         try:
             module = importlib.import_module(path)
             if hasattr(module, "supports_pdl"):
