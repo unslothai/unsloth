@@ -87,7 +87,7 @@ run_quiet "pip upgrade" pip install --upgrade pip
 echo "   Installing unsloth-zoo + unsloth..."
 run_quiet "pip install unsloth" pip install unsloth-zoo unsloth
 echo "   Installing studio dependencies..."
-run_quiet "pip install extras" pip install typer fastapi uvicorn pydantic matplotlib pandas nest_asyncio "datasets==4.3.0" pyjwt
+run_quiet "pip install extras" pip install typer fastapi uvicorn pydantic matplotlib pandas nest_asyncio "datasets==4.3.0" pyjwt easydict addict
 echo "✅ Python dependencies installed"
 
 # ── 7. Add shell alias ──
