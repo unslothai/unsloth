@@ -57,11 +57,26 @@ def run_server(
     time.sleep(3)
 
     if not silent:
+        # Resolve actual IP when binding to 0.0.0.0
+        display_host = host
+        if host == "0.0.0.0":
+            import socket
+            try:
+                # UDP connect trick — gets the machine's outbound IP without sending data
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.connect(("8.8.8.8", 80))
+                display_host = s.getsockname()[0]
+                s.close()
+            except Exception:
+                display_host = "localhost"
+
         print("")
         print("=" * 50)
-        print(f"🦥 Unsloth UI Backend is running on port {port}")
-        print(f"   API: http://{host}:{port}/api")
-        print(f"   Health: http://{host}:{port}/api/health")
+        print(f"🦥 Unsloth Studio is running on port {port}")
+        print(f"   Local:   http://localhost:{port}")
+        print(f"   External: http://{display_host}:{port}")
+        print(f"   API:     http://{display_host}:{port}/api")
+        print(f"   Health:  http://{display_host}:{port}/api/health")
         print("=" * 50)
 
     return app
