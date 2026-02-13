@@ -1,6 +1,6 @@
 """
 Unsloth Training Backend
-Integrates Unsloth training capabilities with the Gradio UI
+Integrates Unsloth training capabilities with the FastAPI backend
 """
 import torch
 from utils.hardware import clear_gpu_cache
@@ -46,7 +46,7 @@ class TrainingProgress:
 
 class UnslothTrainer:
     """
-    Unsloth Training Backend for Gradio UI Integration
+    Unsloth Training Backend
     """
 
     def __init__(self):

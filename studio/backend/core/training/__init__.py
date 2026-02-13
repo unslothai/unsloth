@@ -2,7 +2,7 @@
 Training submodule - Training backends and trainer classes
 """
 from .trainer import UnslothTrainer, get_trainer, TrainingProgress
-from .training import TrainingBackend, get_training_backend, create_training_handlers
+from .training import TrainingBackend, get_training_backend
 
 __all__ = [
     'UnslothTrainer',
@@ -10,5 +10,4 @@ __all__ = [
     'TrainingProgress',
     'TrainingBackend',
     'get_training_backend',
-    'create_training_handlers',
 ]
