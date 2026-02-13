@@ -301,7 +301,8 @@ class UnslothTrainer:
     def load_and_format_dataset(self,
                      dataset_source: str,
                      format_type: str = "auto",
-                     local_datasets: list = None) -> Optional[Dataset]:
+                     local_datasets: list = None,
+                     custom_format_mapping: dict = None) -> Optional[Dataset]:
         """
         Load and prepare dataset for training
         """
@@ -374,6 +375,7 @@ class UnslothTrainer:
                 is_vlm=self.is_vlm,
                 format_type=format_type,  # "auto", "alpaca", "chatml", "sharegpt"
                 dataset_name=dataset_source,
+                custom_format_mapping=custom_format_mapping,
             )
 
             # Check if stopped during formatting

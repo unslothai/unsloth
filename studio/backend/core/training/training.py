@@ -90,7 +90,10 @@ class TrainingBackend:
                        wandb_token: str,
                        wandb_project: str,
                        enable_tensorboard: bool,
-                       tensorboard_dir: str) -> bool:
+                       tensorboard_dir: str,
+
+                       # Optional: user-provided column mapping
+                       custom_format_mapping: dict = None) -> bool:
         """
         Start training.
 
@@ -160,7 +163,8 @@ class TrainingBackend:
             dataset = self.trainer.load_and_format_dataset(
                 dataset_source=hf_dataset if hf_dataset.strip() else None,
                 format_type=format_type,
-                local_datasets=local_datasets if local_datasets else None
+                local_datasets=local_datasets if local_datasets else None,
+                custom_format_mapping=custom_format_mapping,
             )
 
             if dataset is None or self.trainer.should_stop:
