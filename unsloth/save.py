@@ -220,11 +220,10 @@ def _merge_lora(layer, name, use_mlx_if_mps=False):
 
         # Check if we're on MPS and can use MLX for merging
         is_mps = W.device.type == "mps"
-        # Skip MLX for non-quantized LoRA (Peft_Linear) on MPS - MLX conversion
-        # can cause trace traps on non-quantized weights. Quantized (Peft_Linear4bit)
-        # uses different code path that's more stable.
-        is_non_quantized = quant_state is None
-        if is_mps and use_mlx_if_mps and not is_non_quantized:
+        # Force disable MLX merge on MPS due to trace trap issues
+        # The MLX conversion causes crashes with both quantized and non-quantized LoRA
+        use_mlx_if_mps = False
+        if is_mps and use_mlx_if_mps:
             try:
                 from unsloth.kernels.mlx.merge_lora import mlx_merge_lora_layer
                 # Use MLX-based merge on Apple Silicon - handles transposes internally

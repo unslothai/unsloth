@@ -12,17 +12,22 @@ from tqdm import tqdm
 _MLX_AVAILABLE = False
 _MLX_VERSION = None
 
-try:
-    import mlx.core as mx
-
-    _MLX_AVAILABLE = True
-    # Try to get version
+# Skip MLX import on MPS to avoid trace trap crashes
+import torch
+if torch.backends.mps.is_available():
+    # MLX causes trace trap on MPS devices, skip import
+    _MLX_AVAILABLE = False
+else:
     try:
-        _MLX_VERSION = importlib.metadata.version("mlx")
-    except:
+        import mlx.core as mx
+
+        _MLX_AVAILABLE = True
+        try:
+            _MLX_VERSION = importlib.metadata.version("mlx")
+        except Exception:
+            pass
+    except (Exception, ImportError):
         pass
-except ImportError:
-    pass
 
 
 class UnslothMLXError(ImportError):
