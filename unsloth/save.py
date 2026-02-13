@@ -671,8 +671,9 @@ def unsloth_save_model(
             torch_dtype = torch.bfloat16
 
     # Check modules to save float32 dtype
+    # Move to CPU first to avoid trace trap on MPS
     state_dict["model.embed_tokens.weight"] = (
-        internal_model.model.embed_tokens.weight.data.to(torch_dtype)
+        internal_model.model.embed_tokens.weight.data.cpu().to(torch_dtype)
     )
 
     # Get max VRAM based on device type
@@ -737,13 +738,15 @@ def unsloth_save_model(
         for item in LLAMA_LAYERNORMS:
             try:
                 # Skip for Gemma 2
+                # Move to CPU first to avoid trace trap on MPS
                 state_dict[f"model.layers.{j}.{item}.weight"] = eval(
-                    f"layer.{item}.weight.data"
+                    f"layer.{item}.weight.data.cpu()"
                 )
             except:
                 continue
 
-    state_dict["model.norm.weight"] = internal_model.model.norm.weight.data
+    # Move to CPU first to avoid trace trap on MPS
+    state_dict["model.norm.weight"] = internal_model.model.norm.weight.data.cpu()
     # Check for modules_to_save float32 dtype
 
     # Check for tied weights
@@ -751,7 +754,8 @@ def unsloth_save_model(
         internal_model.model.embed_tokens.weight.data_ptr()
         != internal_model.lm_head.weight.data_ptr()
     ):
-        state_dict["lm_head.weight"] = internal_model.lm_head.weight.data.to(
+        # Move to CPU first to avoid trace trap on MPS
+        state_dict["lm_head.weight"] = internal_model.lm_head.weight.data.cpu().to(
             torch_dtype
         )
 
