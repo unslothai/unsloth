@@ -37,7 +37,7 @@ import {
   useInfiniteScroll,
 } from "@/hooks";
 import { formatCompact } from "@/lib/utils";
-import { useWizardStore } from "@/stores/training";
+import { useTrainingConfigStore } from "@/features/training";
 import type { TrainingMethod } from "@/types/training";
 import {
   InformationCircleIcon,
@@ -57,7 +57,7 @@ export function ModelSelectionStep() {
     setTrainingMethod,
     hfToken,
     setHfToken,
-  } = useWizardStore(
+  } = useTrainingConfigStore(
     useShallow((s) => ({
       modelType: s.modelType,
       selectedModel: s.selectedModel,

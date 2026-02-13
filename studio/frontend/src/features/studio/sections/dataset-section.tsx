@@ -28,7 +28,7 @@ import {
   useInfiniteScroll,
 } from "@/hooks";
 import { formatCompact } from "@/lib/utils";
-import { useWizardStore } from "@/stores/training";
+import { useTrainingConfigStore } from "@/features/training";
 import {
   CloudUploadIcon,
   Database02Icon,
@@ -44,7 +44,7 @@ import { DatasetPreviewDialog } from "./dataset-preview-dialog";
 
 export function DatasetSection() {
   const { dataset, setDataset, datasetFormat, setDatasetFormat, hfToken } =
-    useWizardStore(
+    useTrainingConfigStore(
       useShallow(
         ({
           dataset,

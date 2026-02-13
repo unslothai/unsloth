@@ -23,6 +23,28 @@ const EXCLUDED_TAGS = new Set([
   "ctranslate2",
 ]);
 
+function withPopularitySort(
+  input: Parameters<typeof fetch>[0],
+  init?: Parameters<typeof fetch>[1],
+): ReturnType<typeof fetch> {
+  const rawUrl =
+    typeof input === "string"
+      ? input
+      : input instanceof URL
+        ? input.toString()
+        : input.url;
+  const url = new URL(rawUrl);
+
+  if (!url.searchParams.has("sort")) {
+    url.searchParams.set("sort", "downloads");
+  }
+  if (!url.searchParams.has("direction")) {
+    url.searchParams.set("direction", "-1");
+  }
+
+  return fetch(url, init);
+}
+
 function mapModel(raw: unknown): HfModelResult | null {
   const m = raw as {
     name: string;
@@ -53,10 +75,10 @@ export function useHfModelSearch(
       listModels({
         search: {
           ...(query.trim() ? { query } : { owner: "unsloth" }),
-          tags: ["transformers"],
           ...(task ? { task } : {}),
         },
         additionalFields: ["safetensors", "tags"],
+        fetch: withPopularitySort,
         ...(accessToken ? { credentials: { accessToken } } : {}),
       }) as AsyncGenerator<unknown>,
     [query, task, accessToken],

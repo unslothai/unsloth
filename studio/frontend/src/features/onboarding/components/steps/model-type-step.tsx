@@ -8,7 +8,7 @@ import {
 } from "@/components/ui/tooltip";
 import { MODEL_TYPES } from "@/config/training";
 import { cn } from "@/lib/utils";
-import { useWizardStore } from "@/stores/training";
+import { useTrainingConfigStore } from "@/features/training";
 import type { ModelType } from "@/types/training";
 import {
   Database02Icon,
@@ -38,7 +38,7 @@ const TYPE_TOOLTIPS: Record<ModelType, string> = {
 const COMING_SOON: ModelType[] = ["tts", "embeddings"];
 
 export function ModelTypeStep(): ReactElement {
-  const { modelType, setModelType } = useWizardStore(
+  const { modelType, setModelType } = useTrainingConfigStore(
     useShallow((s) => ({
       modelType: s.modelType,
       setModelType: s.setModelType,
