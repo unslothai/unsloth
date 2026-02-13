@@ -258,9 +258,10 @@ export function ChatPage(): ReactElement {
   }, [refresh]);
 
   return (
+    <div className="h-[calc(100vh-4rem)] bg-background overflow-hidden">
     <SidebarProvider
       defaultOpen={true}
-      className="!min-h-0 h-[calc(100vh-4rem)] max-w-7xl mx-auto px-4"
+      className="!min-h-0 h-full max-w-7xl mx-auto px-4"
       style={
         {
           "--sidebar-width": "14rem",
@@ -327,5 +328,6 @@ export function ChatPage(): ReactElement {
         onParamsChange={setInferenceParams}
       />
     </SidebarProvider>
+    </div>
   );
 }
