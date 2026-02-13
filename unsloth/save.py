@@ -3217,24 +3217,51 @@ def patch_unsloth_zoo_saving():
     # unsloth_zoo.llama_cpp.do_we_need_sudo erroneously checks for apt-get on macOS
     try:
         import unsloth_zoo.llama_cpp
+        import platform
+
         original_do_we_need_sudo = unsloth_zoo.llama_cpp.do_we_need_sudo
 
         def _safe_do_we_need_sudo():
-            # If we simply return False, we skip the apt-get check.
-            # On macOS, we don't use apt-get anyway.
             return False
 
         unsloth_zoo.llama_cpp.do_we_need_sudo = _safe_do_we_need_sudo
+
+        # Also patch install_package to handle macOS properly
+        if hasattr(unsloth_zoo.llama_cpp, 'install_package'):
+            _orig_install_package = unsloth_zoo.llama_cpp.install_package
+
+            def _safe_install_package(packages_to_install, sudo=False, system_type=None):
+                import subprocess
+                if platform.system() == "Darwin":
+                    # On macOS, check what's needed
+                    brew_packages = []
+                    for pkg in packages_to_install:
+                        if pkg == "libcurl4-openssl-dev":
+                            # On macOS, libcurl is already available via system or curl formula
+                            # Try to ensure cmake is installed
+                            pass
+                        elif pkg == "cmake":
+                            brew_packages.append("cmake")
+                        else:
+                            brew_packages.append(pkg)
+                    if brew_packages:
+                        print(f"Unsloth: Installing packages via brew: {brew_packages}")
+                        for pkg in brew_packages:
+                            subprocess.run(["brew", "install", pkg], check=True)
+                    return
+                return _orig_install_package(packages_to_install, sudo, system_type)
+
+            unsloth_zoo.llama_cpp.install_package = _safe_install_package
 
         # Also wrap install_llama_cpp to ensure patched function is used
         _orig_install_llama_cpp = unsloth_zoo.llama_cpp.install_llama_cpp
 
         def _wrapped_install_llama_cpp(*args, **kwargs):
-            # Re-patch just in case
             unsloth_zoo.llama_cpp.do_we_need_sudo = _safe_do_we_need_sudo
+            if hasattr(unsloth_zoo.llama_cpp, 'install_package'):
+                unsloth_zoo.llama_cpp.install_package = _safe_install_package
             return _orig_install_llama_cpp(*args, **kwargs)
 
-        # Also patch local bindings in this module
         globals()["install_llama_cpp"] = _wrapped_install_llama_cpp
     except Exception as e:
         print(f"Warning: Could not patch GGUF apt-get check: {e}")
