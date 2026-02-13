@@ -28,6 +28,13 @@ import { createOpenAIStreamAdapter } from "./api/chat-adapter";
 import { db } from "./db";
 import type { MessageRecord, ModelType } from "./types";
 
+const DEFAULT_SUGGESTIONS = [
+  "Draw a simple flowchart of a login system using Mermaid",
+  "Solve the integral of x²·sin(x) step by step",
+  "Write a Python function that finds the longest palindrome in a string",
+  "Format a comparison of 3 databases as a markdown table with pros and cons",
+];
+
 class PDFAttachmentAdapter implements AttachmentAdapter {
   accept = "application/pdf";
 
@@ -297,14 +304,7 @@ function useRuntimeHook(): ReturnType<typeof useLocalRuntime> {
 function ThreadAutoSwitch({
   threadId,
 }: { threadId: string }): ReactElement | null {
-  const aui = useAui({
-    suggestions: Suggestions([
-      "Draw a simple flowchart of a login system using Mermaid",
-      "Solve the integral of x²·sin(x) step by step",
-      "Write a Python function that finds the longest palindrome in a string",
-      "Format a comparison of 3 databases as a markdown table with pros and cons",
-    ]),
-  });
+  const aui = useAui();
   const isLoading = useAuiState(({ threads }) => threads.isLoading);
   const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
 
@@ -353,7 +353,9 @@ export function ChatRuntimeProvider({
     },
   });
 
-  const aui = useAui();
+  const aui = useAui({
+    suggestions: Suggestions(DEFAULT_SUGGESTIONS),
+  });
 
   return (
     <AssistantRuntimeProvider runtime={runtime} aui={aui}>
