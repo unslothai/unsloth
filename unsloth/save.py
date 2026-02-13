@@ -218,12 +218,21 @@ def _merge_lora(layer, name, use_mlx_if_mps=False):
         else:
             dtype = W.dtype
 
+        # Force all operations on CPU to avoid trace trap crashes on MPS
+        # Move weights to CPU first before any operations
+        W = W.to("cpu")
+        if A is not None:
+            A = A.to("cpu")
+        if B is not None:
+            B = B.to("cpu")
+        
         # Check if we're on MPS and can use MLX for merging
-        is_mps = W.device.type == "mps"
+        # is_mps = W.device.type == "mps"  # Removed - causes trace trap
         # Force disable MLX merge on MPS due to trace trap issues
         # The MLX conversion causes crashes with both quantized and non-quantized LoRA
         use_mlx_if_mps = False
-        if is_mps and use_mlx_if_mps:
+        if use_mlx_if_mps:
+            pass  # MLX path disabled - using CPU merge instead
             try:
                 from unsloth.kernels.mlx.merge_lora import mlx_merge_lora_layer
                 # Use MLX-based merge on Apple Silicon - handles transposes internally
