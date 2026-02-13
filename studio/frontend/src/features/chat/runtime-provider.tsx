@@ -9,7 +9,6 @@ import {
   RuntimeAdapterProvider,
   SimpleImageAttachmentAdapter,
   SimpleTextAttachmentAdapter,
-  Suggestions,
   type ThreadHistoryAdapter,
   type ThreadMessage,
   type ThreadUserMessagePart,
@@ -24,7 +23,7 @@ import { createAssistantStream } from "assistant-stream";
 import mammoth from "mammoth";
 import { type ReactElement, type ReactNode, useEffect, useMemo } from "react";
 import { extractText, getDocumentProxy } from "unpdf";
-import { createStreamAdapter } from "./adapter";
+import { createOpenAIStreamAdapter } from "./api/chat-adapter";
 import { db } from "./db";
 import type { MessageRecord, ModelType } from "./types";
 
@@ -288,9 +287,11 @@ function ThreadHistoryProvider({
   );
 }
 
-const chatAdapter = createStreamAdapter();
-const useRuntimeHook = (): ReturnType<typeof useLocalRuntime> =>
-  useLocalRuntime(chatAdapter);
+const chatAdapter = createOpenAIStreamAdapter();
+
+function useRuntimeHook(): ReturnType<typeof useLocalRuntime> {
+  return useLocalRuntime(chatAdapter);
+}
 
 function ThreadAutoSwitch({
   threadId,
@@ -327,14 +328,7 @@ export function ChatRuntimeProvider({
     },
   });
 
-  const aui = useAui({
-    suggestions: Suggestions([
-      "Draw a simple flowchart of a login system using Mermaid",
-      "Solve the integral of x\u00B2\u00B7sin(x) step by step",
-      "Write a Python function that finds the longest palindrome in a string",
-      "Format a comparison of 3 databases as a markdown table with pros and cons",
-    ]),
-  });
+  const aui = useAui();
 
   return (
     <AssistantRuntimeProvider runtime={runtime} aui={aui}>

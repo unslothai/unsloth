@@ -28,16 +28,15 @@ import {
   memo,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
-import {
-  ChatSettingsPanel,
-  type InferenceParams,
-  defaultInferenceParams,
-} from "./chat-settings-sheet";
+import { ChatSettingsPanel } from "./chat-settings-sheet";
 import { db } from "./db";
+import { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
 import { ChatRuntimeProvider } from "./runtime-provider";
+import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import {
   type CompareHandle,
   CompareHandlesProvider,
@@ -46,42 +45,6 @@ import {
 } from "./shared-composer";
 import { ThreadSidebar } from "./thread-sidebar";
 import type { ChatView } from "./types";
-
-const LORA_MODELS: ModelOption[] = [
-  {
-    id: "outputs/llama-3.1-8b-instruct-lora",
-    name: "meta-llama/Llama-3.1-8B-Instruct",
-    description: "LoRA v1",
-  },
-  {
-    id: "outputs/qwen2.5-7b-lora",
-    name: "Qwen/Qwen2.5-7B-Instruct",
-    description: "LoRA v2",
-  },
-  {
-    id: "outputs/mistral-7b-v0.3-lora",
-    name: "mistralai/Mistral-7B-Instruct-v0.3",
-    description: "LoRA v1",
-  },
-];
-
-const GGUF_MODELS: ModelOption[] = [
-  {
-    id: "models/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
-    name: "Meta-Llama-3.1-8B-Instruct",
-    description: "Q4_K_M",
-  },
-  {
-    id: "models/Qwen2.5-7B-Instruct-Q5_K_M.gguf",
-    name: "Qwen2.5-7B-Instruct",
-    description: "Q5_K_M",
-  },
-  {
-    id: "models/Mistral-7B-Instruct-v0.3-Q4_K_M.gguf",
-    name: "Mistral-7B-Instruct-v0.3",
-    description: "Q4_K_M",
-  },
-];
 
 const SingleContent = memo(function SingleContent({
   threadId,
@@ -235,26 +198,40 @@ function TopBarActions({
 export function ChatPage(): ReactElement {
   const [view, setView] = useState<ChatView>({ mode: "single" });
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [inferenceParams, setInferenceParams] = useState<InferenceParams>(
-    defaultInferenceParams,
-  );
+  const inferenceParams = useChatRuntimeStore((state) => state.params);
+  const setInferenceParams = useChatRuntimeStore((state) => state.setParams);
+  const modelsFromStore = useChatRuntimeStore((state) => state.models);
+  const modelsError = useChatRuntimeStore((state) => state.modelsError);
+  const { refresh, selectModel, ejectModel } = useChatModelRuntime();
 
   const handleCheckpointChange = useCallback(
-    (v: string) => setInferenceParams((p) => ({ ...p, checkpoint: v })),
-    [],
+    (value: string) => {
+      void selectModel(value);
+    },
+    [selectModel],
   );
-  const handleEject = useCallback(
-    () => setInferenceParams((p) => ({ ...p, checkpoint: "" })),
-    [],
-  );
+  const handleEject = useCallback(() => {
+    void ejectModel();
+  }, [ejectModel]);
   const handleNewThread = useCallback(() => setView({ mode: "single" }), []);
   const handleNewCompare = useCallback(
     () => setView({ mode: "compare", pairId: crypto.randomUUID() }),
     [],
   );
 
-  const models =
-    inferenceParams.inferenceEngine === "llama-cpp" ? GGUF_MODELS : LORA_MODELS;
+  const models = useMemo<ModelOption[]>(
+    () =>
+      modelsFromStore.map((model) => ({
+        id: model.id,
+        name: model.name,
+        description: model.description,
+      })),
+    [modelsFromStore],
+  );
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
 
   return (
     <SidebarProvider
@@ -292,6 +269,11 @@ export function ChatPage(): ReactElement {
               variant="ghost"
             />
           </div>
+          {modelsError && (
+            <div className="ml-2 text-xs text-destructive truncate max-w-[28rem]">
+              {modelsError}
+            </div>
+          )}
           <div className="flex-1" />
           <button
             type="button"
