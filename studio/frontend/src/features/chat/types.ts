@@ -1,7 +1,7 @@
 export type ModelType = "base" | "lora";
 
 export type ChatView =
-  | { mode: "single"; threadId?: string }
+  | { mode: "single"; threadId?: string; newThreadNonce?: string }
   | { mode: "compare"; pairId: string };
 
 export interface ThreadRecord {
