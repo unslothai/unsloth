@@ -356,7 +356,8 @@ def unsloth_save_model(
 
     # Clean memory up first
     for _ in range(3):
-        torch.cuda.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         gc.collect()
 
     save_method = save_method.lower().replace(" ", "_")
@@ -906,11 +907,13 @@ def unsloth_save_model(
     for j, (key, value) in enumerate(state_dict.items()):
         state_dict[key] = None
         if j % 10 == 0:
-            torch.cuda.empty_cache()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
             gc.collect()
     state_dict = None
     del state_dict
-    torch.cuda.empty_cache()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     gc.collect()
 
     # Remove temporary location
@@ -919,7 +922,8 @@ def unsloth_save_model(
     shutil.rmtree(temporary_location, ignore_errors=True)
 
     for _ in range(3):
-        torch.cuda.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         gc.collect()
     return save_directory, username
 
@@ -3065,29 +3069,32 @@ def not_implemented_save(*args, **kwargs):
 
 def patch_unsloth_zoo_saving():
     """
-    Monkeypatch unsloth_zoo.saving_utils._merge_lora to support MPS.
-    The original function hardcodes 'cuda'.
+    Monkeypatch unsloth_zoo.saving_utils to support MPS (Apple Silicon).
+    
+    The original unsloth_zoo code hardcodes 'cuda' calls throughout:
+    1. _merge_lora: Does CUDA tensor operations
+    2. merge_and_overwrite_lora: Calls torch.cuda.get_device_name(0), torch.cuda.empty_cache()
+    3. _merge_and_overwrite_lora: Unguarded torch.cuda.empty_cache() and torch.cuda.synchronize()
+    
+    We patch _merge_lora for CPU-based merging, and wrap merge_and_overwrite_lora to
+    neutralize all torch.cuda calls during the merge flow on MPS.
     """
     try:
         import unsloth_zoo.saving_utils
     except ImportError:
         return
 
+    # Patch 1: Replace _merge_lora for CPU-based LoRA merging on MPS
     original_merge_lora = unsloth_zoo.saving_utils._merge_lora
 
     def _mps_friendly_merge_lora(W, lora_stats, output_key):
         # Check if we are on MPS or if CUDA is not available (CPU fallback)
         if W.device.type == "mps" or not torch.cuda.is_available():
             # Force all operations on CPU to avoid trace trap crashes on MPS
-            # Move weights to CPU first before any operations (matches _merge_lora at line 221)
             W = W.to("cpu")
             
-            # Call the rest of the logic
             iterable_stats = lora_stats
-            # LoraStats is a dataclass with lora_A, lora_B, alpha attributes
-            # Not an iterable of stats dicts
             if hasattr(lora_stats, "lora_A") and hasattr(lora_stats, "lora_B"):
-                # Single LoraStats object - create a list with one entry
                 iterable_stats = [{
                     "output_key": output_key,
                     "A": lora_stats.lora_A,
@@ -3108,6 +3115,42 @@ def patch_unsloth_zoo_saving():
             return original_merge_lora(W, lora_stats, output_key)
 
     unsloth_zoo.saving_utils._merge_lora = _mps_friendly_merge_lora
+
+    # Patch 2: Wrap merge_and_overwrite_lora to neutralize torch.cuda calls on MPS.
+    # The zoo code calls torch.cuda.get_device_name(0), torch.cuda.empty_cache(),
+    # and torch.cuda.synchronize() throughout without checking availability.
+    # On MPS these cause SIGTRAP (trace trap) crashes.
+    original_merge_and_overwrite = unsloth_zoo.saving_utils.merge_and_overwrite_lora
+
+    def _mps_safe_merge_and_overwrite_lora(*args, **kwargs):
+        if not torch.cuda.is_available():
+            # Temporarily replace torch.cuda functions with safe no-ops
+            _orig_empty_cache = torch.cuda.empty_cache
+            _orig_synchronize = getattr(torch.cuda, "synchronize", None)
+            _orig_get_device_name = getattr(torch.cuda, "get_device_name", None)
+
+            def _noop(*a, **kw): pass
+            def _safe_get_device_name(*a, **kw): return "Apple Silicon (MPS)"
+
+            torch.cuda.empty_cache = _noop
+            if _orig_synchronize is not None:
+                torch.cuda.synchronize = _noop
+            if _orig_get_device_name is not None:
+                torch.cuda.get_device_name = _safe_get_device_name
+
+            try:
+                return original_merge_and_overwrite(*args, **kwargs)
+            finally:
+                # Restore original functions
+                torch.cuda.empty_cache = _orig_empty_cache
+                if _orig_synchronize is not None:
+                    torch.cuda.synchronize = _orig_synchronize
+                if _orig_get_device_name is not None:
+                    torch.cuda.get_device_name = _orig_get_device_name
+        else:
+            return original_merge_and_overwrite(*args, **kwargs)
+
+    unsloth_zoo.saving_utils.merge_and_overwrite_lora = _mps_safe_merge_and_overwrite_lora
 
 
 def patch_saving_functions(model, vision=False):
