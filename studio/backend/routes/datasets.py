@@ -1,6 +1,8 @@
 """
 Datasets API routes
 """
+import base64
+import io
 import sys
 from pathlib import Path
 from fastapi import APIRouter, HTTPException
@@ -28,6 +30,42 @@ if not logger.handlers:
 
 
 from models.datasets import CheckFormatRequest, CheckFormatResponse
+
+
+def _serialize_preview_value(value):
+    """make it json safe for client preview ⊂(◉‿◉)つ"""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+
+    try:
+        from PIL.Image import Image as PILImage
+        if isinstance(value, PILImage):
+            buffer = io.BytesIO()
+            value.convert("RGB").save(buffer, format="JPEG", quality=85)
+            return {
+                "type": "image",
+                "mime": "image/jpeg",
+                "width": value.width,
+                "height": value.height,
+                "data": base64.b64encode(buffer.getvalue()).decode("ascii"),
+            }
+    except Exception:
+        pass
+
+    if isinstance(value, dict):
+        return {str(key): _serialize_preview_value(item) for key, item in value.items()}
+
+    if isinstance(value, (list, tuple)):
+        return [_serialize_preview_value(item) for item in value]
+
+    return str(value)
+
+
+def _serialize_preview_rows(rows):
+    return [
+        {str(key): _serialize_preview_value(value) for key, value in dict(row).items()}
+        for row in rows
+    ]
 
 
 # --- Endpoints ---
@@ -92,15 +130,15 @@ async def check_format(request: CheckFormatRequest):
                     custom_format_mapping=result.get("suggested_mapping"),
                 )
                 processed = format_result["dataset"]
-                preview_samples = [dict(row) for row in processed]
+                preview_samples = _serialize_preview_rows(processed)
             except Exception as e:
                 logger.warning(f"Processed preview generation failed (non-fatal): {e}")
                 # Fall back to raw samples so frontend still has something
-                preview_samples = [dict(row) for row in preview_slice]
+                preview_samples = _serialize_preview_rows(preview_slice)
         else:
             # Format detection failed — return raw samples so user can
             # see actual data and map columns in the frontend
-            preview_samples = [dict(row) for row in preview_slice]
+            preview_samples = _serialize_preview_rows(preview_slice)
         
         return CheckFormatResponse(
             requires_manual_mapping=result["requires_manual_mapping"],

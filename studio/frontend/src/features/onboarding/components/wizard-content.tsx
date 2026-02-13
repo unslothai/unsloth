@@ -1,5 +1,5 @@
 import { STEPS } from "@/config/training";
-import { useWizardStore } from "@/stores/training";
+import { useTrainingConfigStore } from "@/features/training";
 import type { StepNumber } from "@/types/training";
 import { DatasetStep } from "./steps/dataset-step";
 import { HyperparametersStep } from "./steps/hyperparameters-step";
@@ -24,7 +24,7 @@ const STEP_MASCOTS: Record<StepNumber, string> = {
 };
 
 export function WizardContent() {
-  const currentStep = useWizardStore((s) => s.currentStep);
+  const currentStep = useTrainingConfigStore((s) => s.currentStep);
   const stepConfig = STEPS[currentStep - 1];
   const StepComponent = STEP_COMPONENTS[currentStep];
   const mascotSrc = STEP_MASCOTS[currentStep];

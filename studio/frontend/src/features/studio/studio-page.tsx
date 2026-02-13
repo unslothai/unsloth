@@ -1,4 +1,8 @@
-import { useWizardStore } from "@/stores/training";
+import {
+  shouldShowTrainingView,
+  useTrainingRuntimeLifecycle,
+  useTrainingRuntimeStore,
+} from "@/features/training";
 import type { ReactElement } from "react";
 import { DatasetSection } from "./sections/dataset-section";
 import { ModelSection } from "./sections/model-section";
@@ -7,7 +11,11 @@ import { TrainingSection } from "./sections/training-section";
 import { TrainingView } from "./training-view";
 
 export function StudioPage(): ReactElement {
-  const isTraining = useWizardStore((s) => s.isTraining);
+  useTrainingRuntimeLifecycle();
+  const showTrainingView = useTrainingRuntimeStore(shouldShowTrainingView);
+  const runtimeMessage = useTrainingRuntimeStore((state) => state.message);
+  const isHydratingRuntime = useTrainingRuntimeStore((state) => state.isHydrating);
+  const hasHydratedRuntime = useTrainingRuntimeStore((state) => state.hasHydrated);
 
   return (
     <div className="min-h-screen bg-background">
@@ -18,13 +26,17 @@ export function StudioPage(): ReactElement {
             Fine-tuning Studio
           </h1>
           <p className="text-sm text-muted-foreground">
-            {isTraining
-              ? "Training in progress"
+            {showTrainingView
+              ? runtimeMessage || "Training in progress"
               : "Configure and start training"}
           </p>
         </div>
 
-        {isTraining ? (
+        {!hasHydratedRuntime && isHydratingRuntime ? (
+          <div className="rounded-xl border bg-card p-8 text-sm text-muted-foreground">
+            Loading training runtime...
+          </div>
+        ) : showTrainingView ? (
           <TrainingView />
         ) : (
           <div className="grid grid-cols-12 items-start gap-6">
