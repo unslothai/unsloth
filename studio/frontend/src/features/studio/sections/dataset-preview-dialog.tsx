@@ -27,6 +27,14 @@ type CheckFormatResponse = {
   total_rows?: number | null;
 };
 
+type PreviewImagePayload = {
+  type: "image";
+  mime?: string;
+  width?: number;
+  height?: number;
+  data?: string;
+};
+
 type DatasetPreviewDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -123,6 +131,36 @@ export function DatasetPreviewDialog({
       ),
       cell: ({ getValue }: { getValue: () => unknown }) => {
         const value = getValue();
+        const images = collectPreviewImages(value);
+        if (images.length > 0) {
+          return (
+            <div className="flex flex-wrap gap-2">
+              {images.slice(0, 4).map((image, index) => {
+                const mime = image.mime || "image/jpeg";
+                const src = image.data ? `data:${mime};base64,${image.data}` : "";
+                const width = image.width ?? 128;
+                const height = image.height ?? 128;
+                return (
+                  <img
+                    key={`${colName}-img-${index}`}
+                    src={src}
+                    alt={`preview-${index}`}
+                    className="h-16 w-auto max-w-40 rounded-md border object-contain bg-muted"
+                    width={width}
+                    height={height}
+                    loading="lazy"
+                  />
+                );
+              })}
+              {images.length > 4 && (
+                <span className="text-xs text-muted-foreground self-end">
+                  +{images.length - 4} more
+                </span>
+              )}
+            </div>
+          );
+        }
+
         const text = formatCell(value);
         if (!text) {
           return (
@@ -284,4 +322,42 @@ function formatCell(value: unknown): string {
   if (Array.isArray(value) || typeof value === "object")
     return JSON.stringify(value).slice(0, 500);
   return String(value);
+}
+
+function isPreviewImagePayload(value: unknown): value is PreviewImagePayload {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  return (
+    record.type === "image" &&
+    typeof record.data === "string" &&
+    record.data.length > 0
+  );
+}
+
+function collectPreviewImages(value: unknown): PreviewImagePayload[] {
+  const images: PreviewImagePayload[] = [];
+  const stack: unknown[] = [value];
+  let steps = 0;
+
+  while (stack.length > 0 && steps < 200) {
+    steps += 1;
+    const current = stack.pop();
+    if (isPreviewImagePayload(current)) {
+      images.push(current);
+      continue;
+    }
+
+    if (Array.isArray(current)) {
+      for (const item of current) stack.push(item);
+      continue;
+    }
+
+    if (current && typeof current === "object") {
+      for (const nested of Object.values(current as Record<string, unknown>)) {
+        stack.push(nested);
+      }
+    }
+  }
+
+  return images;
 }

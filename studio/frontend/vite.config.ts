@@ -6,11 +6,27 @@ import { defineConfig } from "vite";
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  optimizeDeps: {
+    include: ["@dagrejs/dagre", "@dagrejs/graphlib"],
+  },
   server: {
-    allowedHosts: ["playground.wasimhub.dev"],
+    host: "0.0.0.0",
+    allowedHosts: true,
     proxy: {
       "/api": {
         target: "http://127.0.0.1:8000",
+        changeOrigin: true,
+      },
+      "/preview": {
+        target: "http://127.0.0.1:8004",
+        changeOrigin: true,
+      },
+      "/validate": {
+        target: "http://127.0.0.1:8004",
+        changeOrigin: true,
+      },
+      "/tools": {
+        target: "http://127.0.0.1:8004",
         changeOrigin: true,
       },
     },
@@ -18,6 +34,15 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
+      "@dagrejs/dagre": path.resolve(
+        __dirname,
+        "./node_modules/@dagrejs/dagre/dist/dagre.cjs.js",
+      ),
+    },
+  },
+  build: {
+    commonjsOptions: {
+      include: [/node_modules/, /@dagrejs\/dagre/, /@dagrejs\/graphlib/],
     },
   },
 });

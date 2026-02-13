@@ -17,6 +17,8 @@
     "@assistant-ui/react-markdown": "^0.12.1",
     "@assistant-ui/react-streamdown": "^0.1.0",
     "@base-ui/react": "^1.1.0",
+    "@dagrejs/dagre": "^2.0.4",
+    "@dagrejs/graphlib": "^3.0.4",
     "@fontsource-variable/figtree": "^5.2.10",
     "@fontsource-variable/inter": "^5.2.8",
     "@fontsource-variable/space-grotesk": "^5.2.10",

@@ -1,5 +1,5 @@
 import { cn } from "@/lib/utils";
-import { useWizardStore } from "@/stores/training";
+import { useTrainingConfigStore } from "@/features/training";
 import type { StepConfig, StepNumber } from "@/types/training";
 import { useShallow } from "zustand/react/shallow";
 
@@ -8,7 +8,7 @@ interface WizardStepItemProps {
 }
 
 export function WizardStepItem({ step }: WizardStepItemProps) {
-  const { currentStep, setStep } = useWizardStore(
+  const { currentStep, setStep } = useTrainingConfigStore(
     useShallow((s) => ({ currentStep: s.currentStep, setStep: s.setStep })),
   );
   const isActive = currentStep === step.number;

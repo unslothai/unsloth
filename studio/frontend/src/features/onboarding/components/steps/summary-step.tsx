@@ -1,7 +1,7 @@
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
-import { useWizardStore } from "@/stores/training";
+import { useTrainingConfigStore } from "@/features/training";
 import { isAdapterMethod } from "@/types/training";
 import { GpuIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -30,7 +30,7 @@ export function SummaryStep() {
     loraRank,
     loraAlpha,
     loraDropout,
-  } = useWizardStore(
+  } = useTrainingConfigStore(
     useShallow(
       ({
         modelType,

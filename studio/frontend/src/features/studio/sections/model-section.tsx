@@ -32,7 +32,7 @@ import {
   useInfiniteScroll,
 } from "@/hooks";
 import { formatCompact } from "@/lib/utils";
-import { useWizardStore } from "@/stores/training";
+import { useTrainingConfigStore } from "@/features/training";
 import type { TrainingMethod } from "@/types/training";
 import {
   ChipIcon,
@@ -65,7 +65,7 @@ export function ModelSection() {
     setTrainingMethod,
     hfToken,
     setHfToken,
-  } = useWizardStore(
+  } = useTrainingConfigStore(
     useShallow(
       ({
         modelType,

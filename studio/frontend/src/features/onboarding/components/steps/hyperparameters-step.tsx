@@ -20,7 +20,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { CONTEXT_LENGTHS } from "@/config/training";
-import { useWizardStore } from "@/stores/training";
+import { useTrainingConfigStore } from "@/features/training";
 import { InformationCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useShallow } from "zustand/react/shallow";
@@ -40,7 +40,7 @@ export function HyperparametersStep() {
     setLoraAlpha,
     loraDropout,
     setLoraDropout,
-  } = useWizardStore(
+  } = useTrainingConfigStore(
     useShallow((s) => ({
       trainingMethod: s.trainingMethod,
       epochs: s.epochs,
