@@ -40,6 +40,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
+import { DatasetPreviewDialog } from "./dataset-preview-dialog";
 
 export function DatasetSection() {
   const { dataset, setDataset, datasetFormat, setDatasetFormat, hfToken } =
@@ -62,6 +63,7 @@ export function DatasetSection() {
     );
 
   const [inputValue, setInputValue] = useState("");
+  const [previewOpen, setPreviewOpen] = useState(false);
   const selectingRef = useRef(false);
   const debouncedQuery = useDebouncedValue(inputValue);
 
@@ -305,13 +307,21 @@ export function DatasetSection() {
           <Button
             variant="outline"
             size="sm"
-            className="cursor-pointer gap-1.5 text-muted-foreground"
+            className="cursor-pointer gap-1.5"
+            disabled={!dataset}
+            onClick={() => setPreviewOpen(true)}
           >
             <HugeiconsIcon icon={ViewIcon} className="size-3.5" />
-            Preview
+            View dataset
           </Button>
         </div>
       </div>
+      <DatasetPreviewDialog
+        open={previewOpen}
+        onOpenChange={setPreviewOpen}
+        datasetName={dataset}
+        hfToken={hfToken}
+      />
     </SectionCard>
   );
 }
