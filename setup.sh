@@ -3,6 +3,23 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# ── Helper: run command quietly, show output only on failure ──
+run_quiet() {
+    local label="$1"
+    shift
+    local tmplog
+    tmplog=$(mktemp)
+    if "$@" > "$tmplog" 2>&1; then
+        rm -f "$tmplog"
+    else
+        local exit_code=$?
+        echo "❌ $label failed (exit code $exit_code):"
+        cat "$tmplog"
+        rm -f "$tmplog"
+        exit $exit_code
+    fi
+}
+
 echo "╔══════════════════════════════════════╗"
 echo "║     Unsloth Studio Setup Script      ║"
 echo "╚══════════════════════════════════════╝"
@@ -25,7 +42,7 @@ fi
 if [ "$NEED_NODE" = true ]; then
     # ── 2. Install nvm ──
     echo "Installing nvm..."
-    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+    curl -so- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash > /dev/null 2>&1
 
     # Load nvm (source ~/.bashrc won't work inside a script)
     export NVM_DIR="$HOME/.nvm"
@@ -33,8 +50,8 @@ if [ "$NEED_NODE" = true ]; then
 
     # ── 3. Install Node LTS ──
     echo "Installing Node LTS..."
-    nvm install --lts
-    nvm use --lts
+    run_quiet "nvm install" nvm install --lts
+    nvm use --lts > /dev/null 2>&1
 
     # ── 4. Verify versions ──
     NODE_MAJOR=$(node -v | sed 's/v//' | cut -d. -f1)
@@ -46,7 +63,7 @@ if [ "$NEED_NODE" = true ]; then
     fi
     if [ "$NPM_MAJOR" -lt 11 ]; then
         echo "⚠️  npm version is $(npm -v), expected >= 11. Updating..."
-        npm install -g npm@latest
+        run_quiet "npm update" npm install -g npm@latest
     fi
 fi
 
@@ -56,8 +73,8 @@ echo "✅ Node $(node -v) | npm $(npm -v)"
 echo ""
 echo "Building frontend..."
 cd "$SCRIPT_DIR/studio/frontend"
-npm install
-npm run build
+run_quiet "npm install" npm install
+run_quiet "npm run build" npm run build
 cd "$SCRIPT_DIR"
 echo "✅ Frontend built to studio/frontend/dist"
 
@@ -66,9 +83,11 @@ echo ""
 echo "Setting up Python environment..."
 python3 -m venv .venv
 source .venv/bin/activate
-pip install --upgrade pip
-pip install unsloth-zoo unsloth
-pip install typer fastapi uvicorn pydantic matplotlib pandas "datasets==4.3.0"
+run_quiet "pip upgrade" pip install --upgrade pip
+echo "   Installing unsloth-zoo + unsloth..."
+run_quiet "pip install unsloth" pip install unsloth-zoo unsloth
+echo "   Installing studio dependencies..."
+run_quiet "pip install extras" pip install typer fastapi uvicorn pydantic matplotlib pandas nest_asyncio "datasets==4.3.0"
 echo "✅ Python dependencies installed"
 
 # ── 7. Add shell alias ──
