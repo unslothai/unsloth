@@ -10,7 +10,7 @@ export function AppProvider({ children }: AppProviderProps) {
   return (
     <ThemeProvider attribute="class" defaultTheme="light">
       {children}
-      <Toaster />
+      <Toaster position="top-right" />
     </ThemeProvider>
   );
 }
