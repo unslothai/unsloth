@@ -49,9 +49,14 @@ import type { ChatView } from "./types";
 
 const SingleContent = memo(function SingleContent({
   threadId,
-}: { threadId?: string }): ReactElement {
+  newThreadNonce,
+}: { threadId?: string; newThreadNonce?: string }): ReactElement {
   return (
-    <ChatRuntimeProvider modelType="base" initialThreadId={threadId}>
+    <ChatRuntimeProvider
+      modelType="base"
+      initialThreadId={threadId}
+      newThreadNonce={newThreadNonce}
+    >
       <div className="min-h-0 flex-1">
         <Thread />
       </div>
@@ -197,7 +202,10 @@ function TopBarActions({
 }
 
 export function ChatPage(): ReactElement {
-  const [view, setView] = useState<ChatView>({ mode: "single" });
+  const [view, setView] = useState<ChatView>({
+    mode: "single",
+    newThreadNonce: crypto.randomUUID(),
+  });
   const [settingsOpen, setSettingsOpen] = useState(false);
   const inferenceParams = useChatRuntimeStore((state) => state.params);
   const setInferenceParams = useChatRuntimeStore((state) => state.setParams);
@@ -215,7 +223,10 @@ export function ChatPage(): ReactElement {
   const handleEject = useCallback(() => {
     void ejectModel();
   }, [ejectModel]);
-  const handleNewThread = useCallback(() => setView({ mode: "single" }), []);
+  const handleNewThread = useCallback(
+    () => setView({ mode: "single", newThreadNonce: crypto.randomUUID() }),
+    [],
+  );
   const handleNewCompare = useCallback(
     () => setView({ mode: "compare", pairId: crypto.randomUUID() }),
     [],
@@ -300,7 +311,11 @@ export function ChatPage(): ReactElement {
         </div>
 
         {view.mode === "single" ? (
-          <SingleContent key={view.threadId ?? "new"} threadId={view.threadId} />
+          <SingleContent
+            key={view.threadId ?? view.newThreadNonce ?? "new"}
+            threadId={view.threadId}
+            newThreadNonce={view.newThreadNonce}
+          />
         ) : (
           <CompareContent key={view.pairId} pairId={view.pairId} />
         )}

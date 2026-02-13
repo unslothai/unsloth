@@ -47,7 +47,7 @@ function toOpenAIMessage(message: RunMessage): {
 
 export function createOpenAIStreamAdapter(): ChatModelAdapter {
   return {
-    async *run({ messages, abortSignal }) {
+    async *run({ messages, abortSignal, unstable_threadId }) {
       const state = useChatRuntimeStore.getState();
       const { params } = state;
 
@@ -68,44 +68,58 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         });
       }
 
-      const stream = streamChatCompletions(
-        {
-          model: params.checkpoint,
-          messages: outboundMessages,
-          stream: true,
-          temperature: params.temperature,
-          top_p: params.topP,
-          max_tokens: params.maxTokens,
-          top_k: params.topK,
-          repetition_penalty: params.repetitionPenalty,
-        },
-        abortSignal,
-      );
-
+      const threadKey = unstable_threadId || "__default";
+      let waitingFirstChunk = true;
+      useChatRuntimeStore.getState().setThreadWarming(threadKey, true);
       let cumulativeText = "";
       let reasoningStartAt: number | null = null;
       let reasoningDuration = 0;
 
-      for await (const chunk of stream) {
-        const delta = chunk.choices?.[0]?.delta?.content;
-        if (!delta) {
-          continue;
-        }
-        cumulativeText += delta;
-        const parts = parseAssistantContent(cumulativeText);
+      try {
+        const stream = streamChatCompletions(
+          {
+            model: params.checkpoint,
+            messages: outboundMessages,
+            stream: true,
+            temperature: params.temperature,
+            top_p: params.topP,
+            max_tokens: params.maxTokens,
+            top_k: params.topK,
+            repetition_penalty: params.repetitionPenalty,
+          },
+          abortSignal,
+        );
 
-        if (parts.some((part) => part.type === "reasoning") && !reasoningStartAt) {
-          reasoningStartAt = Date.now();
-        }
-        if (hasClosedThinkTag(cumulativeText) && reasoningStartAt && !reasoningDuration) {
-          reasoningDuration = Math.round((Date.now() - reasoningStartAt) / 1000);
-        }
+        for await (const chunk of stream) {
+          const delta = chunk.choices?.[0]?.delta?.content;
+          if (!delta) {
+            continue;
+          }
+          if (waitingFirstChunk) {
+            waitingFirstChunk = false;
+            useChatRuntimeStore.getState().setThreadWarming(threadKey, false);
+          }
 
-        if (parts.length > 0) {
-          yield {
-            content: parts,
-            metadata: { custom: { reasoningDuration } },
-          };
+          cumulativeText += delta;
+          const parts = parseAssistantContent(cumulativeText);
+
+          if (parts.some((part) => part.type === "reasoning") && !reasoningStartAt) {
+            reasoningStartAt = Date.now();
+          }
+          if (hasClosedThinkTag(cumulativeText) && reasoningStartAt && !reasoningDuration) {
+            reasoningDuration = Math.round((Date.now() - reasoningStartAt) / 1000);
+          }
+
+          if (parts.length > 0) {
+            yield {
+              content: parts,
+              metadata: { custom: { reasoningDuration } },
+            };
+          }
+        }
+      } finally {
+        if (waitingFirstChunk) {
+          useChatRuntimeStore.getState().setThreadWarming(threadKey, false);
         }
       }
     },
