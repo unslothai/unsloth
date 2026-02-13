@@ -3064,51 +3064,48 @@ def patch_unsloth_zoo_saving():
     def _mps_friendly_merge_lora(W, lora_stats, output_key):
         # Check if we are on MPS or if CUDA is not available (CPU fallback)
         if W.device.type == "mps" or not torch.cuda.is_available():
-             # Original code: W = W.to("cuda", dtype = torch.float32, non_blocking = True)
-             # We change "cuda" to W.device
-             W = W.to(W.device, dtype=torch.float32, non_blocking=True)
-             
-             # Call the rest of the logic, but we need to intercept internal calls?
-             # Actually, _merge_lora in saving_utils does:
-             # W = W.to("cuda", ...)
-             # it then does math.
-             # We can't easily call original_merge_lora because it has the hardcoded line.
-             # We have to reimplement it or inspect source.
-             # Reimplementing is safer for a patch.
-             
-             # From unsloth_zoo 2025.2.4 (likely version):
-             # def _merge_lora(W, lora_stats, output_key):
-             #     W = W.to("cuda", dtype = torch.float32, non_blocking = True)
-             #     for stat in lora_stats:
-             #         if output_key != stat["output_key"]: continue
-             #         A = stat["A"].to("cuda", dtype = torch.float32, non_blocking = True)
-             #         B = stat["B"].to("cuda", dtype = torch.float32, non_blocking = True)
-             # Call the rest of the logic
+            # Original code: W = W.to("cuda", dtype = torch.float32, non_blocking = True)
+            # We change "cuda" to W.device
+            W = W.to(W.device, dtype=torch.float32, non_blocking=True)
+            
+            # Call the rest of the logic, but we need to intercept internal calls?
+            # Actually, _merge_lora in saving_utils does:
+            # W = W.to("cuda", ...)
+            # it then does math.
+            # We can't easily call original_merge_lora because it has the hardcoded line.
+            # We have to reimplement it or inspect source.
+            # Reimplementing is safer for a patch.
+            
+            # From unsloth_zoo 2025.2.4 (likely version):
+            # def _merge_lora(W, lora_stats, output_key):
+            #     W = W.to("cuda", dtype = torch.float32, non_blocking = True)
+            #     for stat in lora_stats:
+            #         if output_key != stat["output_key"]: continue
+            #         A = stat["A"].to("cuda", dtype = torch.float32, non_blocking = True)
+            #         B = stat["B"].to("cuda", dtype = torch.float32, non_blocking = True)
+            # Call the rest of the logic
 
-             # Attempt to iterate if possible, otherwise we might need to access a property
-             iterable_stats = lora_stats
-             # LoraStats is a dataclass with lora_A, lora_B, alpha attributes
-             # Not an iterable of stats dicts
-             if hasattr(lora_stats, "lora_A") and hasattr(lora_stats, "lora_B"):
-                 # Single LoraStats object - create a list with one entry
-                 iterable_stats = [{
-                     "output_key": output_key,
-                     "A": lora_stats.lora_A,
-                     "B": lora_stats.lora_B,
-                     "s": lora_stats.alpha
-                 }]
+            # Attempt to iterate if possible, otherwise we might need to access a property
+            iterable_stats = lora_stats
+            # LoraStats is a dataclass with lora_A, lora_B, alpha attributes
+            # Not an iterable of stats dicts
+            if hasattr(lora_stats, "lora_A") and hasattr(lora_stats, "lora_B"):
+                # Single LoraStats object - create a list with one entry
+                iterable_stats = [{
+                    "output_key": output_key,
+                    "A": lora_stats.lora_A,
+                    "B": lora_stats.lora_B,
+                    "s": lora_stats.alpha
+                }]
 
-             for stat in iterable_stats:
-                 if output_key != stat["output_key"]: continue
-                 # Use W.device
-                 A = stat["A"].to(W.device, dtype=torch.float32, non_blocking=True)
-                 B = stat["B"].to(W.device, dtype=torch.float32, non_blocking=True)
-                 s = stat["s"]
+            for stat in iterable_stats:
+                if output_key != stat["output_key"]: continue
+                A = stat["A"].to(W.device, dtype=torch.float32, non_blocking=True)
+                B = stat["B"].to(W.device, dtype=torch.float32, non_blocking=True)
+                s = stat["s"]
 
-                 # MPS matmul might need help if shapes are weird, but standard lora should be fine
-                 # W += (A @ B) * s
-                 W.addmm_(A, B, alpha=s)
-             return W
+                W.addmm_(B, A, alpha=s)
+            return W
         else:
             return original_merge_lora(W, lora_stats, output_key)
 
