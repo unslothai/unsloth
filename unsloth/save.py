@@ -3152,6 +3152,12 @@ def patch_unsloth_zoo_saving():
 
     unsloth_zoo.saving_utils.merge_and_overwrite_lora = _mps_safe_merge_and_overwrite_lora
 
+    # CRITICAL: Also update the local binding in this module (save.py).
+    # Line 2620 does `from unsloth_zoo.saving_utils import merge_and_overwrite_lora`
+    # which creates a local reference that is NOT affected by patching the zoo module.
+    # We must update the globals() of THIS module so the call at line 2754 uses our wrapper.
+    globals()["merge_and_overwrite_lora"] = _mps_safe_merge_and_overwrite_lora
+
 
 def patch_saving_functions(model, vision=False):
     import inspect
