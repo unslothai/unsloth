@@ -7,6 +7,7 @@ import {
   type ExportedMessageRepositoryItem,
   type PendingAttachment,
   RuntimeAdapterProvider,
+  Suggestions,
   SimpleImageAttachmentAdapter,
   SimpleTextAttachmentAdapter,
   type ThreadHistoryAdapter,
@@ -296,7 +297,14 @@ function useRuntimeHook(): ReturnType<typeof useLocalRuntime> {
 function ThreadAutoSwitch({
   threadId,
 }: { threadId: string }): ReactElement | null {
-  const aui = useAui();
+  const aui = useAui({
+    suggestions: Suggestions([
+      "Draw a simple flowchart of a login system using Mermaid",
+      "Solve the integral of x²·sin(x) step by step",
+      "Write a Python function that finds the longest palindrome in a string",
+      "Format a comparison of 3 databases as a markdown table with pros and cons",
+    ]),
+  });
   const isLoading = useAuiState(({ threads }) => threads.isLoading);
   const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
 
@@ -309,16 +317,33 @@ function ThreadAutoSwitch({
   return null;
 }
 
+function ThreadNewChatSwitch({
+  nonce,
+}: { nonce: string }): ReactElement | null {
+  const aui = useAui();
+  const isLoading = useAuiState(({ threads }) => threads.isLoading);
+
+  useEffect(() => {
+    if (!isLoading) {
+      aui.threads().switchToNewThread();
+    }
+  }, [aui, isLoading, nonce]);
+
+  return null;
+}
+
 export function ChatRuntimeProvider({
   children,
   modelType = "base",
   pairId,
   initialThreadId,
+  newThreadNonce,
 }: {
   children: ReactNode;
   modelType?: ModelType;
   pairId?: string;
   initialThreadId?: string;
+  newThreadNonce?: string;
 }): ReactElement {
   const runtime = useRemoteThreadListRuntime({
     runtimeHook: useRuntimeHook,
@@ -333,6 +358,9 @@ export function ChatRuntimeProvider({
   return (
     <AssistantRuntimeProvider runtime={runtime} aui={aui}>
       {initialThreadId && <ThreadAutoSwitch threadId={initialThreadId} />}
+      {!initialThreadId && newThreadNonce && (
+        <ThreadNewChatSwitch nonce={newThreadNonce} />
+      )}
       {children}
     </AssistantRuntimeProvider>
   );
