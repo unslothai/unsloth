@@ -1,4 +1,5 @@
 import {
+  type LoraModelOption,
   type ModelOption,
   ModelSelector,
 } from "@/components/assistant-ui/model-selector";
@@ -201,12 +202,13 @@ export function ChatPage(): ReactElement {
   const inferenceParams = useChatRuntimeStore((state) => state.params);
   const setInferenceParams = useChatRuntimeStore((state) => state.setParams);
   const modelsFromStore = useChatRuntimeStore((state) => state.models);
+  const lorasFromStore = useChatRuntimeStore((state) => state.loras);
   const modelsError = useChatRuntimeStore((state) => state.modelsError);
   const { refresh, selectModel, ejectModel } = useChatModelRuntime();
 
   const handleCheckpointChange = useCallback(
-    (value: string) => {
-      void selectModel(value);
+    (value: string, meta?: { isLora: boolean }) => {
+      void selectModel({ id: value, isLora: meta?.isLora });
     },
     [selectModel],
   );
@@ -227,6 +229,17 @@ export function ChatPage(): ReactElement {
         description: model.description,
       })),
     [modelsFromStore],
+  );
+
+  const loraModels = useMemo<LoraModelOption[]>(
+    () =>
+      lorasFromStore.map((lora) => ({
+        id: lora.id,
+        name: lora.name,
+        baseModel: lora.baseModel,
+        updatedAt: lora.updatedAt,
+      })),
+    [lorasFromStore],
   );
 
   useEffect(() => {
@@ -263,6 +276,7 @@ export function ChatPage(): ReactElement {
             />
             <ModelSelector
               models={models}
+              loraModels={loraModels}
               value={inferenceParams.checkpoint}
               onValueChange={handleCheckpointChange}
               onEject={handleEject}
@@ -286,10 +300,7 @@ export function ChatPage(): ReactElement {
         </div>
 
         {view.mode === "single" ? (
-          <SingleContent
-            key={view.threadId ?? "new"}
-            threadId={view.threadId}
-          />
+          <SingleContent key={view.threadId ?? "new"} threadId={view.threadId} />
         ) : (
           <CompareContent key={view.pairId} pairId={view.pairId} />
         )}
