@@ -95,12 +95,13 @@ echo "✅ Python dependencies installed"
 # This alias hardcodes the venv python path so users don't need to activate.
 echo ""
 REPO_DIR="$SCRIPT_DIR"
-ALIAS_LINE="unsloth-ui() { ${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py ui \"\$@\" -f ${REPO_DIR}/studio/frontend/dist; }"
 
 if ! grep -qF "unsloth-ui" ~/.bashrc 2>/dev/null; then
-    echo "" >> ~/.bashrc
-    echo "# Unsloth Studio launcher" >> ~/.bashrc
-    echo "$ALIAS_LINE" >> ~/.bashrc
+    cat >> ~/.bashrc <<UNSLOTH_EOF
+
+# Unsloth Studio launcher
+unsloth-ui() { ${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py ui "\$@" -f ${REPO_DIR}/studio/frontend/dist; }
+UNSLOTH_EOF
     echo "✅ Alias 'unsloth-ui' added to ~/.bashrc"
 else
     echo "✅ Alias 'unsloth-ui' already exists in ~/.bashrc"
