@@ -526,7 +526,7 @@ class InferenceBackend:
     def _generate_vision_response(self, messages, system_prompt, image,
                                   temperature, top_p, top_k, max_new_tokens,
                                   repetition_penalty) -> Generator[str, None, None]:
-        """Handle vision model generation."""
+        """Handle vision model generation with true token-by-token streaming."""
         model_info = self.models[self.active_model_name]
         model = model_info["model"]
         processor = model_info["processor"]
@@ -565,31 +565,44 @@ class InferenceBackend:
             formatted_prompt = self.format_chat_prompt(messages, system_prompt)
             inputs = processor.tokenizer(formatted_prompt, return_tensors="pt").to(self.device)
 
-        # Generate with streaming
-        captured_output = StringIO()
-        original_stdout = sys.stdout
-
+        # Stream with TextIteratorStreamer + background thread
         try:
-            sys.stdout = captured_output
+            from transformers import TextIteratorStreamer
+            import threading
 
-            text_streamer = TextStreamer(processor.tokenizer, skip_prompt=True)
-            model.generate(
+            streamer = TextIteratorStreamer(
+                processor.tokenizer, skip_prompt=True, skip_special_tokens=True
+            )
+
+            generation_kwargs = dict(
                 **inputs,
-                streamer=text_streamer,
+                streamer=streamer,
                 max_new_tokens=max_new_tokens,
                 use_cache=True,
                 temperature=temperature,
                 top_p=top_p,
-                top_k=top_k
+                top_k=top_k,
             )
 
-            sys.stdout = original_stdout
-            generated_text = captured_output.getvalue()
-            cleaned = self._clean_generated_text(generated_text)
-            yield cleaned
+            def generate_fn():
+                try:
+                    model.generate(**generation_kwargs)
+                except Exception as e:
+                    logger.error(f"Vision generation error in thread: {e}")
+
+            thread = threading.Thread(target=generate_fn)
+            thread.start()
+
+            output = ""
+            for new_token in streamer:
+                if new_token:
+                    output += new_token
+                    cleaned = self._clean_generated_text(output)
+                    yield cleaned
+
+            thread.join()
 
         except Exception as e:
-            sys.stdout = original_stdout
             logger.error(f"Vision generation error: {e}")
             yield f"Error: {str(e)}"
     pass
