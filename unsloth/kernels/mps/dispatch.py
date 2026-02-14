@@ -15,7 +15,6 @@
 import torch
 import functools
 from ...device_type import DEVICE_TYPE
-import unsloth.kernels.mps as _mps_module
 
 
 def _use_mps_fallback():
@@ -26,6 +25,7 @@ def _use_mps_fallback():
     is enabled.  A bare ``from . import USE_MPS_FALLBACK`` would snapshot
     the immutable bool at import time and never see later mutations.
     """
+    import unsloth.kernels.mps as _mps_module
     return getattr(_mps_module, "USE_MPS_FALLBACK", True)
 
 # Flag to try torch.compile on fallbacks
