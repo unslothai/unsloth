@@ -2,7 +2,7 @@
 Pydantic schemas for Training API
 """
 from pydantic import BaseModel, Field
-from typing import Optional, List, Literal
+from typing import Optional, List, Dict, Literal
 
 
 class TrainingStartRequest(BaseModel):
@@ -18,7 +18,10 @@ class TrainingStartRequest(BaseModel):
     hf_dataset: Optional[str] = Field(None, description="HuggingFace dataset identifier")
     local_datasets: List[str] = Field(default_factory=list, description="List of local dataset paths")
     format_type: str = Field(..., description="Dataset format type")
-
+    custom_format_mapping: Optional[Dict[str, str]] = Field(
+        None,
+        description="User-provided column-to-role mapping, e.g. {'image': 'image', 'caption': 'text'} for VLM or {'instruction': 'user', 'output': 'assistant'} for LLM"
+    )
     # Training parameters
     num_epochs: int = Field(1, description="Number of training epochs")
     learning_rate: str = Field("2e-4", description="Learning rate")
@@ -84,6 +87,11 @@ class TrainingStatus(BaseModel):
     message: str = Field(..., description="Human-readable status message")
     error: Optional[str] = Field(None, description="Error details if phase is 'error'")
     details: Optional[dict] = Field(None, description="Phase-specific info, e.g. {'model_size': '8B'}")
+    metric_history: Optional[dict] = Field(
+        None,
+        description="Full metric history arrays for chart recovery after SSE reconnection. "
+                    "Keys: 'steps', 'loss', 'lr' — each a list of numeric values.",
+    )
 
 
 class TrainingProgress(BaseModel):
@@ -94,7 +102,7 @@ class TrainingProgress(BaseModel):
     loss: float = Field(..., description="Current loss value")
     learning_rate: float = Field(..., description="Current learning rate")
     progress_percent: float = Field(..., description="Progress percentage (0.0 to 100.0)")
-    epoch: Optional[int] = Field(None, description="Current epoch")
+    epoch: Optional[float] = Field(None, description="Current epoch")
     elapsed_seconds: Optional[float] = Field(None, description="Time elapsed since training started")
     eta_seconds: Optional[float] = Field(None, description="Estimated time remaining")
     grad_norm: Optional[float] = Field(None, description="L2 norm of gradients, computed before gradient clipping")

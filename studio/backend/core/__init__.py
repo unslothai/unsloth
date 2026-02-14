@@ -6,7 +6,7 @@ Unified core module for Unsloth backend
 from .inference import InferenceBackend, get_inference_backend
 
 # Training
-from .training import UnslothTrainer, get_trainer, TrainingBackend, get_training_backend, create_training_handlers, TrainingProgress
+from .training import UnslothTrainer, get_trainer, TrainingBackend, get_training_backend, TrainingProgress
 
 # Configuration (from utils)
 from utils.models import is_vision_model, ModelConfig, scan_trained_loras, load_model_defaults, get_base_model_from_lora
@@ -27,7 +27,6 @@ __all__ = [
     'get_trainer',
     'get_training_backend',
     'TrainingBackend',
-    'create_training_handlers',
     'TrainingProgress',
 
     # Config

@@ -11,10 +11,55 @@ if str(backend_dir) not in sys.path:
     sys.path.insert(0, str(backend_dir))
 
 
+def _resolve_external_ip() -> str:
+    """
+    Resolve the machine's external IP address.
+
+    Tries (in order):
+    1. GCE metadata server (instant, works on Google Cloud VMs)
+    2. ifconfig.me (works anywhere with internet)
+    3. LAN IP via UDP socket trick (fallback)
+    """
+    import urllib.request
+    import socket
+
+    # 1. Try GCE metadata server (responds in <10ms on GCE, times out fast elsewhere)
+    try:
+        req = urllib.request.Request(
+            "http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip",
+            headers={"Metadata-Flavor": "Google"},
+        )
+        with urllib.request.urlopen(req, timeout=1) as resp:
+            ip = resp.read().decode().strip()
+            if ip:
+                return ip
+    except Exception:
+        pass
+
+    # 2. Try public IP service
+    try:
+        with urllib.request.urlopen("https://ifconfig.me", timeout=3) as resp:
+            ip = resp.read().decode().strip()
+            if ip:
+                return ip
+    except Exception:
+        pass
+
+    # 3. Fallback: LAN IP via UDP socket trick
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "0.0.0.0"
+
+
 def run_server(
     host: str = "0.0.0.0",
     port: int = 8000,
-    frontend_path: Path = None,
+    frontend_path: Path = "studio/frontend/dist",
     silent: bool = False,
 ):
     """
@@ -57,11 +102,15 @@ def run_server(
     time.sleep(3)
 
     if not silent:
+        display_host = _resolve_external_ip() if host == "0.0.0.0" else host
+
         print("")
         print("=" * 50)
-        print(f"🦥 Unsloth UI Backend is running on port {port}")
-        print(f"   API: http://{host}:{port}/api")
-        print(f"   Health: http://{host}:{port}/api/health")
+        print(f"🦥 Unsloth Studio is running on port {port}")
+        print(f"   Local:    http://localhost:{port}")
+        print(f"   External: http://{display_host}:{port}")
+        print(f"   API:      http://{display_host}:{port}/api")
+        print(f"   Health:   http://{display_host}:{port}/api/health")
         print("=" * 50)
 
     return app
@@ -75,7 +124,7 @@ if __name__ == "__main__":
     parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
     parser.add_argument("--port", type=int, default=8000, help="Port to bind to")
     parser.add_argument(
-        "--frontend", type=str, default=None, help="Path to frontend build"
+        "--frontend", type=str, default="studio/frontend/dist", help="Path to frontend build"
     )
     parser.add_argument("--silent", action="store_true", help="Suppress output")
 

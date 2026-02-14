@@ -9,30 +9,7 @@ export type DatasetSource = "huggingface" | "upload";
 export type DatasetFormat = "auto" | "alpaca" | "chatml" | "sharegpt";
 export type GradientCheckpointing = "none" | "true" | "unsloth";
 
-export interface TrainingMetrics {
-  currentStep: number;
-  totalSteps: number;
-  currentEpoch: number;
-  totalEpochs: number;
-  currentLoss: number;
-  currentLR: number;
-  gradNorm: number;
-  samplesPerSecond: number;
-  lossHistory: { step: number; loss: number }[];
-  lrHistory: { step: number; lr: number }[];
-  gradNormHistory: { step: number; gradNorm: number }[];
-  gpuUtil: number;
-  gpuTemp: number;
-  gpuVramUsed: number;
-  gpuVramTotal: number;
-  gpuPower: number;
-  elapsed: number;
-  status: "training" | "warmup" | "saving";
-}
-
 export interface WizardState {
-  isTraining: boolean;
-  trainingMetrics: TrainingMetrics | null;
   currentStep: StepNumber;
   modelType: ModelType | null;
   selectedModel: string | null;
@@ -112,8 +89,6 @@ export interface WizardActions {
   setFinetuneAttentionModules: (v: boolean) => void;
   setFinetuneMLPModules: (v: boolean) => void;
   setTargetModules: (v: string[]) => void;
-  setIsTraining: (v: boolean) => void;
-  setTrainingMetrics: (v: TrainingMetrics | null) => void;
   canProceed: () => boolean;
   reset: () => void;
 }
