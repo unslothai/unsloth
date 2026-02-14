@@ -193,6 +193,8 @@ class InferenceBackend:
                 logger.info("Found lingering adapter configurations. Deleting them now...")
                 # Create a static list of keys before iterating and deleting
                 for name in list(model.peft_config.keys()):
+                    if name == "default":
+                        continue
                     logger.info(f"Deleting adapter config: '{name}'")
                     model.delete_adapter(name)
 
