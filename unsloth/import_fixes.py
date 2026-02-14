@@ -16,6 +16,7 @@ import os
 import importlib.abc
 import importlib.machinery
 import importlib.util
+import contextlib
 from pathlib import Path
 from importlib.metadata import version as importlib_version
 from packaging.version import Version as TrueVersion
@@ -1175,6 +1176,54 @@ _CAUSAL_CONV1D_PREFIX = "causal_conv1d"
 _CAUSAL_CONV1D_BLOCKER_SENTINEL = "_unsloth_causal_conv1d_blocker"
 
 
+def _is_rocm_torch_build() -> bool:
+    try:
+        return "rocm" in str(importlib_version("torch")).lower()
+    except Exception:
+        return False
+
+
+@contextlib.contextmanager
+def _suppress_stderr_fd():
+    saved_stderr_fd = None
+    devnull_fd = None
+    redirected = False
+    try:
+        saved_stderr_fd = os.dup(2)
+        devnull_fd = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull_fd, 2)
+        redirected = True
+    except Exception:
+        redirected = False
+
+    try:
+        yield
+    finally:
+        if redirected and saved_stderr_fd is not None:
+            try:
+                os.dup2(saved_stderr_fd, 2)
+            except Exception:
+                pass
+        if devnull_fd is not None:
+            try:
+                os.close(devnull_fd)
+            except Exception:
+                pass
+        if saved_stderr_fd is not None:
+            try:
+                os.close(saved_stderr_fd)
+            except Exception:
+                pass
+
+
+def _suppress_hip_libdrm_ids_noise():
+    # ROCm/libdrm can emit amdgpu.ids missing errors via low-level fd=2 writes.
+    # Python-level stderr filters cannot intercept those writes.
+    if not _is_rocm_torch_build():
+        return contextlib.nullcontext()
+    return _suppress_stderr_fd()
+
+
 def _is_causal_conv1d_name(module_name: str) -> bool:
     return module_name == _CAUSAL_CONV1D_PREFIX or module_name.startswith(
         _CAUSAL_CONV1D_PREFIX + "."
@@ -1307,7 +1356,8 @@ def disable_broken_causal_conv1d():
         return
 
     try:
-        import causal_conv1d  # noqa: F401
+        with _suppress_hip_libdrm_ids_noise():
+            import causal_conv1d  # noqa: F401
 
         return
     except Exception as error:
