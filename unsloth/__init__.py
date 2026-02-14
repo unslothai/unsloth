@@ -305,8 +305,10 @@ elif DEVICE_TYPE == "xpu":
     # TODO: check triton for intel installed properly.
     pass
 
-from .models import *
-from .models import __version__
+# Filter native fd=2 amdgpu.ids noise during model import startup.
+with _filter_rocm_amdgpu_ids_fd2_noise():
+    from .models import *
+    from .models import __version__
 from .save import *
 from .chat_templates import *
 from .tokenizer_utils import *
