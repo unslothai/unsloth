@@ -37,7 +37,7 @@ import {
   updateNodeData,
 } from "./recipe-studio-helpers";
 
-type SheetView = "root" | "sampler" | "llm" | "expression" | "processor";
+type SheetView = "root" | "sampler" | "seed" | "llm" | "expression" | "processor";
 
 type RecipeStudioState = {
   nodes: RecipeNode[];
@@ -63,6 +63,7 @@ type RecipeStudioState = {
   setLayoutDirection: (direction: LayoutDirection) => void;
   applyLayout: () => void;
   addSamplerNode: (type: SamplerType) => void;
+  addSeedNode: () => void;
   addLlmNode: (type: LlmType) => void;
   addModelProviderNode: () => void;
   addModelConfigNode: () => void;
@@ -165,6 +166,23 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
     }),
   addSamplerNode: (type) =>
     set((state) => buildAddedNodeState(state, "sampler", type)),
+  addSeedNode: () =>
+    set((state) => {
+      const existing = Object.values(state.configs).find(
+        (config) => config.kind === "seed",
+      );
+      if (!existing) {
+        return buildAddedNodeState(state, "seed", "seed");
+      }
+      return {
+        activeConfigId: existing.id,
+        dialogOpen: true,
+        nodes: state.nodes.map((node) => ({
+          ...node,
+          selected: node.id === existing.id,
+        })),
+      };
+    }),
   addLlmNode: (type) => set((state) => buildAddedNodeState(state, "llm", type)),
   addModelProviderNode: () =>
     set((state) => buildAddedNodeState(state, "llm", "model_provider")),

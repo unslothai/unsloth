@@ -22,8 +22,8 @@ import { RECIPE_FLOATING_ICON_BUTTON_CLASS } from "./recipe-floating-icon-button
 import type { LlmType, SamplerType } from "../types";
 import { BLOCK_GROUPS, getBlocksForKind } from "../blocks/registry";
 
-type SheetView = "root" | "sampler" | "llm" | "expression" | "processor";
-type SheetKind = "sampler" | "llm" | "expression";
+type SheetView = "root" | "sampler" | "seed" | "llm" | "expression" | "processor";
+type SheetKind = "sampler" | "seed" | "llm" | "expression";
 type RootSheetView = Exclude<SheetView, "root">;
 type RootGroup = {
   kind: RootSheetView;
@@ -37,6 +37,7 @@ type BlockSheetProps = {
   sheetView: SheetView;
   onViewChange: (sheetView: SheetView) => void;
   onAddSampler: (type: SamplerType) => void;
+  onAddSeed: () => void;
   onAddLlm: (type: LlmType) => void;
   onAddModelProvider: () => void;
   onAddModelConfig: () => void;
@@ -54,6 +55,9 @@ function getSheetTitle(sheetView: SheetView): string {
   if (sheetView === "sampler") {
     return "Sampler blocks";
   }
+  if (sheetView === "seed") {
+    return "Seed blocks";
+  }
   if (sheetView === "expression") {
     return "Expression blocks";
   }
@@ -66,6 +70,7 @@ function getSheetTitle(sheetView: SheetView): string {
 const VIEW_KIND: Record<SheetView, SheetKind | null> = {
   root: null,
   sampler: "sampler",
+  seed: "seed",
   llm: "llm",
   expression: "expression",
   processor: null,
@@ -124,6 +129,7 @@ export function BlockSheet({
   sheetView,
   onViewChange,
   onAddSampler,
+  onAddSeed,
   onAddLlm,
   onAddModelProvider,
   onAddModelConfig,
@@ -136,6 +142,7 @@ export function BlockSheet({
   const sheetTitle = getSheetTitle(sheetView);
   const [open, setOpen] = useState(false);
   const expressionBlocks = useMemo(() => getBlocksForKind("expression"), []);
+  const seedBlocks = useMemo(() => getBlocksForKind("seed"), []);
   return (
     <div className="flex flex-col items-end gap-2">
       <Sheet
@@ -198,6 +205,11 @@ export function BlockSheet({
                         onOpenProcessors();
                         return;
                       }
+                      if (item.kind === "seed" && seedBlocks.length === 1) {
+                        setOpen(false);
+                        onAddSeed();
+                        return;
+                      }
                       if (item.kind === "expression" && expressionBlocks.length === 1) {
                         setOpen(false);
                         onAddExpression();
@@ -229,6 +241,8 @@ export function BlockSheet({
                       onClick={() => {
                         if (item.kind === "sampler") {
                           onAddSampler(item.type as SamplerType);
+                        } else if (item.kind === "seed") {
+                          onAddSeed();
                         } else if (item.kind === "llm") {
                           if (item.type === "model_provider") {
                             onAddModelProvider();

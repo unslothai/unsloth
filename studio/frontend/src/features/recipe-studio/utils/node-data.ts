@@ -29,6 +29,16 @@ export function nodeDataFromConfig(
       layoutDirection,
     };
   }
+  if (config.kind === "seed") {
+    return {
+      title: "Seed",
+      kind: "seed",
+      subtype: "Hugging Face",
+      blockType: "seed",
+      name: config.name,
+      layoutDirection,
+    };
+  }
   if (config.kind === "model_provider") {
     return {
       title: "Model Provider",

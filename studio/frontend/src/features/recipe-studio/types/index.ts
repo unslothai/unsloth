@@ -18,15 +18,25 @@ export type ExpressionDtype = "str" | "int" | "float" | "bool";
 
 export type LayoutDirection = "LR" | "TB";
 
+export type SeedSamplingStrategy = "ordered" | "shuffle";
+export type SeedSelectionType = "none" | "index_range" | "partition_block";
+
 export type RecipeNodeData = {
   title: string;
   name: string;
-  kind: "sampler" | "llm" | "expression" | "model_provider" | "model_config";
+  kind:
+    | "sampler"
+    | "llm"
+    | "expression"
+    | "seed"
+    | "model_provider"
+    | "model_config";
   subtype: string;
   blockType:
     | SamplerType
     | LlmType
     | "expression"
+    | "seed"
     | "model_provider"
     | "model_config";
   layoutDirection?: LayoutDirection;
@@ -204,6 +214,31 @@ export type ExpressionConfig = {
   dtype: ExpressionDtype;
 };
 
+export type SeedConfig = {
+  id: string;
+  kind: "seed";
+  name: string;
+  drop?: boolean;
+  // ui-only (serialized in seed_config)
+  hf_url?: string;
+  hf_repo_id?: string;
+  hf_split?: string;
+  hf_path: string;
+  hf_token?: string;
+  hf_endpoint?: string;
+  seed_splits?: string[];
+  // ui-only
+  // biome-ignore lint/style/useNamingConvention: ui schema
+  seed_globs_by_split?: Record<string, string>;
+  seed_columns?: string[];
+  sampling_strategy: SeedSamplingStrategy;
+  selection_type: SeedSelectionType;
+  selection_start?: string;
+  selection_end?: string;
+  selection_index?: string;
+  selection_num_partitions?: string;
+};
+
 export type SchemaTransformProcessorConfig = {
   id: string;
   // biome-ignore lint/style/useNamingConvention: api schema
@@ -218,5 +253,6 @@ export type NodeConfig =
   | SamplerConfig
   | LlmConfig
   | ExpressionConfig
+  | SeedConfig
   | ModelProviderConfig
   | ModelConfig;

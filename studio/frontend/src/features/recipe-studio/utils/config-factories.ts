@@ -5,6 +5,7 @@ import type {
   ModelConfig,
   ModelProviderConfig,
   NodeConfig,
+  SeedConfig,
   SamplerConfig,
   SamplerType,
 } from "../types";
@@ -279,5 +280,32 @@ export function makeExpressionConfig(
     drop: false,
     expr: "",
     dtype: "str",
+  };
+}
+
+export function makeSeedConfig(
+  id: string,
+  existing: NodeConfig[],
+): SeedConfig {
+  return {
+    id,
+    kind: "seed",
+    name: nextName(existing, "seed"),
+    drop: false,
+    hf_url: "",
+    hf_repo_id: "",
+    hf_split: "",
+    hf_path: "",
+    hf_token: "",
+    hf_endpoint: "https://huggingface.co",
+    seed_splits: [],
+    seed_globs_by_split: {},
+    seed_columns: [],
+    sampling_strategy: "ordered",
+    selection_type: "none",
+    selection_start: "0",
+    selection_end: "10",
+    selection_index: "0",
+    selection_num_partitions: "1",
   };
 }
