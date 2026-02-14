@@ -1001,7 +1001,7 @@ def install_llama_cpp_make_non_blocking():
         METAL_FLAG = "-DGGML_METAL=ON" if platform.system() == "Darwin" else "-DGGML_CUDA=OFF"
         
         check = os.system(
-            f"cmake llama.cpp -B llama.cpp/build -DBUILD_SHARED_LIBS=OFF {METAL_FLAG} {CURL_FLAG}"
+            f"cmake -B llama.cpp/build -S llama.cpp -DBUILD_SHARED_LIBS=OFF {METAL_FLAG} {CURL_FLAG}"
         )
 
         if check != 0:
@@ -1151,6 +1151,11 @@ def install_llama_cpp_blocking(use_cuda=False):
         return
     try_execute(commands)
 
+    # Check if we're on Mac - use Metal instead of CUDA
+    import platform
+    IS_MAC = platform.system() == "Darwin"
+    METAL_FLAG = "-DGGML_METAL=ON" if IS_MAC else "-DGGML_CUDA=OFF"
+
     commands = [
         "make clean -C llama.cpp",
         # https://github.com/ggerganov/llama.cpp/issues/7062
@@ -1161,7 +1166,7 @@ def install_llama_cpp_blocking(use_cuda=False):
     if try_execute(commands) == "CMAKE":
         # Instead use CMAKE
         commands = [
-            f"cmake llama.cpp -B llama.cpp/build -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=OFF {CURL_FLAG}",
+            f"cmake -B llama.cpp/build -S llama.cpp -DBUILD_SHARED_LIBS=OFF {METAL_FLAG} {CURL_FLAG}",
             f"cmake --build llama.cpp/build --config Release -j{(psutil.cpu_count() or 1)*2} --clean-first --target {' '.join(LLAMA_CPP_TARGETS)}",
             "cp llama.cpp/build/bin/llama-* llama.cpp",
             "rm -rf llama.cpp/build",
@@ -3255,16 +3260,37 @@ def patch_unsloth_zoo_saving():
 
             unsloth_zoo.llama_cpp.install_package = _safe_install_package
 
-        # Also wrap install_llama_cpp to ensure patched function is used
+        # Patch the unsloth_zoo.llama_cpp module directly to fix broken CMake/Make handling
         _orig_install_llama_cpp = unsloth_zoo.llama_cpp.install_llama_cpp
+        _orig_check_llama_cpp = unsloth_zoo.llama_cpp.check_llama_cpp
 
         def _wrapped_install_llama_cpp(*args, **kwargs):
             unsloth_zoo.llama_cpp.do_we_need_sudo = _safe_do_we_need_sudo
             if hasattr(unsloth_zoo.llama_cpp, 'install_package'):
                 unsloth_zoo.llama_cpp.install_package = _safe_install_package
-            return _orig_install_llama_cpp(*args, **kwargs)
+            
+            # Use local install_llama_cpp_blocking instead of broken unsloth_zoo version
+            install_llama_cpp_blocking(use_cuda=False)
+            
+            # After installing, get the paths
+            return unsloth_zoo.llama_cpp.check_llama_cpp()
 
+        def _wrapped_check_llama_cpp():
+            # First try the original function
+            try:
+                return _orig_check_llama_cpp()
+            except:
+                pass
+            # If that fails, try to install and check again
+            return _wrapped_install_llama_cpp()
+        
+        # Replace functions in the unsloth_zoo.llama_cpp module directly
+        unsloth_zoo.llama_cpp.install_llama_cpp = _wrapped_install_llama_cpp
+        unsloth_zoo.llama_cpp.check_llama_cpp = _wrapped_check_llama_cpp
+        
+        # Also update this module's imports
         globals()["install_llama_cpp"] = _wrapped_install_llama_cpp
+        globals()["check_llama_cpp"] = _wrapped_check_llama_cpp
     except Exception as e:
         print(f"Warning: Could not patch GGUF apt-get check: {e}")
 
