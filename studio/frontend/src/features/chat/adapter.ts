@@ -10,8 +10,8 @@ function collectTextParts(message: RunMessage): string[] {
     .filter((c) => c.type === "text")
     .map((c) => c.text);
 
-  if ("attachments" in message && (message.attachments?.length ?? 0) > 0) {
-    for (const att of message.attachments) {
+  if ("attachments" in message) {
+    for (const att of message.attachments ?? []) {
       for (const part of att.content ?? []) {
         if (part.type === "text") {
           textParts.push(part.text);

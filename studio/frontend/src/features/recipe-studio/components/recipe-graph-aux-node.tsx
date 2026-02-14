@@ -8,14 +8,16 @@ import {
   Position,
   type Node,
   type NodeProps,
+  useUpdateNodeInternals,
 } from "@xyflow/react";
-import { memo, type ReactElement } from "react";
+import { memo, type ReactElement, useEffect } from "react";
 import { MAX_NODE_WIDTH, MIN_NODE_WIDTH } from "../constants";
 import { useRecipeStudioStore } from "../stores/recipe-studio";
 import type { LayoutDirection, LlmConfig, Score, ScoreOption } from "../types";
 import { HANDLE_IDS } from "../utils/handles";
-import { getAvailableVariables } from "../utils/variables";
+import { getAvailableRefItems, getAvailableVariables } from "../utils/variables";
 import { BaseNode, BaseNodeContent, BaseNodeHeader, BaseNodeHeaderTitle } from "./rf-ui/base-node";
+import { JinjaRefTextarea } from "./jinja/jinja-ref-autocomplete";
 
 type PromptField = "prompt" | "system_prompt";
 
@@ -81,10 +83,18 @@ function AuxVariableBadges({ llmId }: { llmId: string }): ReactElement | null {
 }
 
 function AuxNodeBase({
+  id,
   data,
 }: NodeProps<RecipeGraphAuxNodeType>): ReactElement | null {
   const config = useRecipeStudioStore((state) => state.configs[data.llmId]);
+  const configs = useRecipeStudioStore((state) => state.configs);
+  const flowMoving = useRecipeStudioStore((state) => state.flowMoving);
   const updateConfig = useRecipeStudioStore((state) => state.updateConfig);
+  const updateNodeInternals = useUpdateNodeInternals();
+
+  useEffect(() => {
+    updateNodeInternals(id);
+  }, [id, updateNodeInternals]);
 
   if (!(config && config.kind === "llm")) {
     return null;
@@ -95,6 +105,7 @@ function AuxNodeBase({
 
   if (data.kind === "llm-prompt-input") {
     const value = data.field === "prompt" ? config.prompt : config.system_prompt;
+    const items = getAvailableRefItems(configs, data.llmId);
     return (
       <BaseNode className="corner-squircle w-full min-w-0 rounded-lg border-border/60 bg-card shadow-sm">
         <NodeResizer
@@ -113,13 +124,13 @@ function AuxNodeBase({
           <BaseNodeHeaderTitle className="text-xs">{data.title}</BaseNodeHeaderTitle>
         </BaseNodeHeader>
         <BaseNodeContent className="gap-2 px-3 py-2">
-          <Textarea
+          <JinjaRefTextarea
             className="corner-squircle nodrag max-h-40 min-h-[88px] w-full resize-none overflow-y-auto text-xs"
             value={value}
-            onChange={(event) =>
-              updateConfig(data.llmId, {
-                [data.field]: event.target.value,
-              } as Partial<LlmConfig>)
+            items={items}
+            suppress={flowMoving}
+            onValueChange={(next) =>
+              updateConfig(data.llmId, { [data.field]: next } as Partial<LlmConfig>)
             }
           />
           <AuxVariableBadges llmId={data.llmId} />
@@ -128,6 +139,8 @@ function AuxNodeBase({
           id={HANDLE_IDS.llmInputOut}
           type="source"
           position={sourcePosition}
+          isConnectable={false}
+          isConnectableStart={false}
           className="!size-2 !border-border !bg-background"
         />
       </BaseNode>
@@ -249,6 +262,8 @@ function AuxNodeBase({
         id={HANDLE_IDS.llmInputOut}
         type="source"
         position={sourcePosition}
+        isConnectable={false}
+        isConnectableStart={false}
         className="!size-2 !border-border !bg-background"
       />
     </BaseNode>

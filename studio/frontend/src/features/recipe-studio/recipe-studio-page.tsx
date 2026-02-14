@@ -109,6 +109,7 @@ export function RecipeStudioPage({
     setAuxNodeSize,
     syncAuxNodePositions,
     syncAuxNodeSizes,
+    setFlowMoving,
   } = useRecipeStudioStore(
     useShallow((state) => ({
       nodes: state.nodes,
@@ -143,6 +144,7 @@ export function RecipeStudioPage({
       setAuxNodeSize: state.setAuxNodeSize,
       syncAuxNodePositions: state.syncAuxNodePositions,
       syncAuxNodeSizes: state.syncAuxNodeSizes,
+      setFlowMoving: state.setFlowMoving,
     })),
   );
   const [sheetContainer, setSheetContainer] = useState<HTMLDivElement | null>(
@@ -197,8 +199,9 @@ export function RecipeStudioPage({
         if (!("id" in change) || !change.id.startsWith("aux-")) {
           continue;
         }
-        if (change.type === "position" && change.position) {
-          setAuxNodePosition(change.id, change.position);
+        if (change.type === "position") {
+          const nextPosition = change.position ?? change.positionAbsolute;
+          if (nextPosition) setAuxNodePosition(change.id, nextPosition);
           continue;
         }
         if (
@@ -339,14 +342,17 @@ export function RecipeStudioPage({
               edgeTypes={EDGE_TYPES}
               defaultEdgeOptions={{
                 type: "canvas",
-                data: { key: "name", path: "auto" },
-                style: { strokeWidth: 1.5, stroke: "var(--border)" },
+                data: { path: "auto" },
               }}
               onNodesChange={handleNodesChange}
               onEdgesChange={handleEdgesChange}
               onConnect={onConnect}
               onNodeClick={handleNodeClick}
               isValidConnection={isValidConnection}
+              onMoveStart={() => setFlowMoving(true)}
+              onMoveEnd={() => setFlowMoving(false)}
+              onNodeDragStart={() => setFlowMoving(true)}
+              onNodeDragStop={() => setFlowMoving(false)}
               nodesDraggable={interactive}
               nodesConnectable={interactive}
               elementsSelectable={interactive}

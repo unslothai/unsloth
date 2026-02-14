@@ -1,5 +1,5 @@
 import { useUpdateNodeInternals } from "@xyflow/react";
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 
 type InternalsSyncProps = {
   nodeIds: string[];
@@ -7,18 +7,17 @@ type InternalsSyncProps = {
 
 export function InternalsSync({ nodeIds }: InternalsSyncProps): null {
   const updateNodeInternals = useUpdateNodeInternals();
+  const idsKey = useMemo(() => nodeIds.join("|"), [nodeIds]);
+  const stableNodeIds = useMemo(() => nodeIds, [idsKey]);
 
   useEffect(() => {
-    if (nodeIds.length === 0) {
+    if (!idsKey) {
       return;
     }
     requestAnimationFrame(() => {
-      updateNodeInternals(nodeIds);
-      requestAnimationFrame(() => {
-        updateNodeInternals(nodeIds);
-      });
+      updateNodeInternals(stableNodeIds);
     });
-  }, [nodeIds, updateNodeInternals]);
+  }, [idsKey, stableNodeIds, updateNodeInternals]);
 
   return null;
 }

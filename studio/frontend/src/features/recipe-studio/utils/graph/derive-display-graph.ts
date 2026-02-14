@@ -20,6 +20,35 @@ export type DisplayGraph = {
   auxDefaults: Record<string, XYPosition>;
 };
 
+function normalizeEdge(edge: Edge, configs: Record<string, NodeConfig>): Edge {
+  const baseStyle = { stroke: "var(--foreground)", strokeWidth: 2 };
+  const isAux = edge.source.startsWith("aux-") || edge.target.startsWith("aux-");
+  if (isAux) {
+    return {
+      ...edge,
+      type: "canvas",
+      style: { ...baseStyle, ...(edge.style ?? {}) },
+    };
+  }
+
+  const source = configs[edge.source];
+  const target = configs[edge.target];
+  const semantic =
+    Boolean(source && target) &&
+    ((source.kind === "model_provider" && target?.kind === "model_config") ||
+      (source.kind === "model_config" && target?.kind === "llm"));
+  const handles = semantic
+    ? { sourceHandle: HANDLE_IDS.semanticOut, targetHandle: HANDLE_IDS.semanticIn }
+    : { sourceHandle: HANDLE_IDS.dataOut, targetHandle: HANDLE_IDS.dataIn };
+
+  return {
+    ...edge,
+    type: semantic ? "semantic" : "canvas",
+    ...handles,
+    style: { ...baseStyle, ...(edge.style ?? {}) },
+  };
+}
+
 type AuxNodeItem = {
   key: string;
   targetHandle: string;
@@ -193,6 +222,8 @@ export function deriveDisplayGraph({
           type: "aux",
           data: entry.item.data,
           position,
+          width: entry.width,
+          height: entry.height,
           style: {
             width: entry.width,
             height: entry.height,
@@ -200,7 +231,7 @@ export function deriveDisplayGraph({
           draggable: true,
           selectable: true,
           focusable: true,
-          connectable: false,
+          connectable: true,
         });
 
         auxEdges.push({
@@ -213,7 +244,6 @@ export function deriveDisplayGraph({
           data: { path: "auto" },
           selectable: false,
           focusable: false,
-          style: { strokeWidth: 1.5, stroke: "var(--border)" },
         });
       }
       continue;
@@ -244,6 +274,8 @@ export function deriveDisplayGraph({
         type: "aux",
         data: entry.item.data,
         position,
+        width: entry.width,
+        height: entry.height,
         style: {
           width: entry.width,
           height: entry.height,
@@ -251,7 +283,7 @@ export function deriveDisplayGraph({
         draggable: true,
         selectable: true,
         focusable: true,
-        connectable: false,
+        connectable: true,
       });
 
       auxEdges.push({
@@ -264,14 +296,13 @@ export function deriveDisplayGraph({
         data: { path: "auto" },
         selectable: false,
         focusable: false,
-        style: { strokeWidth: 1.5, stroke: "var(--border)" },
       });
     }
   }
 
   return {
     nodes: [...displayNodes, ...auxNodes],
-    edges: [...edges, ...auxEdges],
+    edges: [...edges, ...auxEdges].map((edge) => normalizeEdge(edge, configs)),
     auxNodeIds,
     auxDefaults,
   };
