@@ -179,7 +179,6 @@ ROCM_GFX_TO_CANONICAL_NAME = {
 def resolve_hip_gpu_stats_name(gpu_stats):
     name = str(getattr(gpu_stats, "name", "") or "").strip()
     name = re.sub(r"\s*\([^)]*\)\s*$", "", name).strip()
-    name = re.sub(r"\bRyzen Al\b", "Ryzen AI", name)
     normalized_name = name.lower().strip(". ")
     if normalized_name and normalized_name not in ("amd radeon graphics",):
         return name + ". "
