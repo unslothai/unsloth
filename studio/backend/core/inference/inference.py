@@ -193,19 +193,15 @@ class InferenceBackend:
             else:
                 print(f"[DEBUG] Model is NOT a PeftModel, skipping unload.")
 
-            # Step 2: Delete any lingering adapter configurations from the object.
-            # This is the crucial step you identified.
-            if hasattr(model, 'peft_config') and model.peft_config:
-                print(f"[DEBUG] Lingering peft_config keys: {list(model.peft_config.keys())}")
-                logger.info("Found lingering adapter configurations. Deleting them now...")
-                # Create a static list of keys before iterating and deleting
-                for name in list(model.peft_config.keys()):
-                    if name == "default":
-                        continue
-                    logger.info(f"Deleting adapter config: '{name}'")
-                    model.delete_adapter(name)
+            # Step 2: Clear any lingering peft_config from the unwrapped model.
+            # After model.unload(), the base model may still carry a peft_config
+            # attribute (with 'default' key). Removing it entirely ensures
+            # load_adapter() won't warn about "multiple adapters".
+            if hasattr(model, 'peft_config'):
+                print(f"[DEBUG] Clearing lingering peft_config: {list(model.peft_config.keys())}")
+                del model.peft_config
 
-            print(f"[DEBUG] Model type FINAL: {model.__class__.__name__}. Reverted to clean base state.")
+            print(f"[DEBUG] Model type FINAL: {model.__class__.__name__}, has peft_config={hasattr(model, 'peft_config')}. Reverted to clean base state.")
             return True
 
         except Exception as e:
