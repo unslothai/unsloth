@@ -44,6 +44,26 @@ __all__ = [
     # MoE operations
     "dispatch_grouped_gemm",
     "grouped_gemm_mps",
+    # Dispatch functions
+    "_is_metal_available",
+    "_is_mlx_available",
+    "dispatch_rms_layernorm",
+    "dispatch_rope_embedding",
+    "dispatch_swiglu_fg",
+    "dispatch_layernorm",
+    "dispatch_cross_entropy_loss",
+    "dispatch_swiglu_backward",
+    "dispatch_geglu_exact_forward",
+    "dispatch_geglu_exact_backward",
+    "dispatch_geglu_approx_forward",
+    "dispatch_geglu_approx_backward",
+    "dispatch_matmul_lora",
+    "dispatch_gemv",
+    "dispatch_lora_mlp_swiglu",
+    "dispatch_lora_mlp_geglu_exact",
+    "dispatch_lora_mlp_geglu_approx",
+    "dispatch_lora_qkv",
+    "dispatch_lora_o",
 ]
 
 
@@ -355,4 +375,25 @@ from .fast_lora import (
 from .moe import (
     dispatch_grouped_gemm,
     grouped_gemm_mps,
+)
+from .dispatch import (
+    _is_metal_available,
+    _is_mlx_available,
+    dispatch_rms_layernorm,
+    dispatch_rope_embedding,
+    dispatch_swiglu_fg,
+    dispatch_layernorm,
+    dispatch_cross_entropy_loss,
+    dispatch_swiglu_backward,
+    dispatch_geglu_exact_forward,
+    dispatch_geglu_exact_backward,
+    dispatch_geglu_approx_forward,
+    dispatch_geglu_approx_backward,
+    dispatch_matmul_lora,
+    dispatch_gemv,
+    dispatch_lora_mlp_swiglu,
+    dispatch_lora_mlp_geglu_exact,
+    dispatch_lora_mlp_geglu_approx,
+    dispatch_lora_qkv,
+    dispatch_lora_o,
 )

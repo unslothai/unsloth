@@ -713,12 +713,18 @@ class MacPatcher:
             # Also patch peft.utils.other if it exists
             try:
                 import peft.utils.other
-                self._original_modules[name]["utils.other"] = {
-                    "is_bnb_available": peft.utils.other.is_bnb_available,
-                }
-                peft.utils.other.is_bnb_available = lambda: False
-                peft.utils.other.is_bnb_4bit_available = lambda: False
-                peft.utils.other.is_bnb_8bit_available = lambda: False
+                other_patches = {}
+                if hasattr(peft.utils.other, "is_bnb_available"):
+                    other_patches["is_bnb_available"] = peft.utils.other.is_bnb_available
+                    peft.utils.other.is_bnb_available = lambda: False
+                if hasattr(peft.utils.other, "is_bnb_4bit_available"):
+                    other_patches["is_bnb_4bit_available"] = peft.utils.other.is_bnb_4bit_available
+                    peft.utils.other.is_bnb_4bit_available = lambda: False
+                if hasattr(peft.utils.other, "is_bnb_8bit_available"):
+                    other_patches["is_bnb_8bit_available"] = peft.utils.other.is_bnb_8bit_available
+                    peft.utils.other.is_bnb_8bit_available = lambda: False
+                if other_patches:
+                    self._original_modules[name]["utils.other"] = other_patches
             except ImportError:
                 pass
             
