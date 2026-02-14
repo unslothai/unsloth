@@ -872,10 +872,8 @@ if DEVICE_TYPE == "cuda":
                     )
             except:
                 print(
-                    "Unsloth: Your Flash Attention 2 installation seems to be broken?\n"
-                    "A possible explanation is you have a new CUDA version which isn't\n"
-                    "yet compatible with FA2? Please file a ticket to Unsloth or FA2.\n"
-                    "We shall now use Xformers instead, which does not have any performance hits!"
+                    "Unsloth: Your Flash Attention 2 installation seems to be broken. "
+                    "Using Xformers instead. No performance changes will be seen."
                 )
 
                 # Stop Flash Attention from importing!
@@ -923,10 +921,8 @@ elif DEVICE_TYPE == "hip":
                 )
         except:
             print(
-                "Unsloth: Your Flash Attention 2 installation seems to be broken?\n"
-                "A possible explanation is you have a new CUDA version which isn't\n"
-                "yet compatible with FA2? Please file a ticket to Unsloth or FA2.\n"
-                "We shall now use Xformers instead, which does not have any performance hits!"
+                "Unsloth: Your Flash Attention 2 installation seems to be broken. "
+                "Using Xformers instead. No performance changes will be seen."
             )
 
             # Stop Flash Attention from importing!
