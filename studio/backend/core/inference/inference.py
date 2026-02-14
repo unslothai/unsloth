@@ -452,6 +452,10 @@ class InferenceBackend:
         """
         Apply adapter state before generation. Must be called under _generation_lock.
 
+        Uses revert_to_base_model() / activate_lora_adapter() which work correctly
+        for models loaded by Unsloth as complete PeftModels (via model.unload() /
+        model.load_adapter()), matching the proven pattern from the Gradio eval page.
+
         Args:
             use_adapter: None = no change, False = disable (base model),
                          True = enable current adapter, str = enable specific adapter.
@@ -466,24 +470,30 @@ class InferenceBackend:
         model_info = self.models[base]
 
         if use_adapter is False:
-            # Disable all adapters → pure base model generation
-            logger.info(f"Compare mode: disabling adapters on '{base}' (base model generation)")
-            self.disable_adapters(base)
+            # Revert to pure base model by unloading adapter weights
+            logger.info(f"Compare mode: reverting '{base}' to base model for generation")
+            self.revert_to_base_model(base)
 
         elif use_adapter is True:
-            # Enable the most recently loaded adapter
-            loaded = model_info.get("loaded_adapters", {})
-            if loaded:
-                adapter_name = list(loaded.keys())[-1]
-                logger.info(f"Compare mode: enabling adapter '{adapter_name}' on '{base}'")
-                self.set_active_adapter(base, adapter_name)
+            # Activate the LoRA adapter from the original model path
+            lora_path = model_info.get("model_path")
+            if lora_path and model_info.get("is_lora"):
+                logger.info(f"Compare mode: activating LoRA adapter from '{lora_path}' on '{base}'")
+                self.activate_lora_adapter(base, lora_path)
             else:
-                logger.warning("use_adapter=true but no adapters are loaded on the model")
+                # Fallback for dynamically attached adapters
+                loaded = model_info.get("loaded_adapters", {})
+                if loaded:
+                    adapter_name = list(loaded.keys())[-1]
+                    logger.info(f"Compare mode: enabling adapter '{adapter_name}' on '{base}'")
+                    self.set_active_adapter(base, adapter_name)
+                else:
+                    logger.warning("use_adapter=true but no adapter path/adapters on model")
 
         elif isinstance(use_adapter, str):
-            # Enable a specific named adapter
-            logger.info(f"Compare mode: enabling specific adapter '{use_adapter}' on '{base}'")
-            self.set_active_adapter(base, use_adapter)
+            # Activate a specific adapter by path
+            logger.info(f"Compare mode: activating specific adapter '{use_adapter}' on '{base}'")
+            self.activate_lora_adapter(base, use_adapter)
 
     def generate_with_adapter_control(
         self,
