@@ -845,8 +845,7 @@ if DEVICE_TYPE == "cuda":
                     "Unsloth: Your Flash Attention 2 installation seems to be broken?\n"
                     "A possible explanation is you have a new CUDA version which isn't\n"
                     "yet compatible with FA2? Please file a ticket to Unsloth or FA2.\n"
-                    "We shall now use Xformers instead, which does not have any performance hits!\n"
-                    "We found this negligible impact by benchmarking on 1x A100."
+                    "We shall now use Xformers instead, which does not have any performance hits!"
                 )
 
                 # Stop Flash Attention from importing!
@@ -897,8 +896,7 @@ elif DEVICE_TYPE == "hip":
                 "Unsloth: Your Flash Attention 2 installation seems to be broken?\n"
                 "A possible explanation is you have a new CUDA version which isn't\n"
                 "yet compatible with FA2? Please file a ticket to Unsloth or FA2.\n"
-                "We shall now use Xformers instead, which does not have any performance hits!\n"
-                "We found this negligible impact by benchmarking on 1x A100."
+                "We shall now use Xformers instead, which does not have any performance hits!"
             )
 
             # Stop Flash Attention from importing!

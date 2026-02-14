@@ -28,16 +28,19 @@ already_imported = [mod for mod in critical_modules if mod in sys.modules]
 from .import_fixes import (
     fix_message_factory_issue,
     check_fbgemm_gpu_version,
+    disable_broken_causal_conv1d,
     torchvision_compatibility_check,
     fix_diffusers_warnings,
     fix_huggingface_hub,
 )
 
+disable_broken_causal_conv1d()
 fix_message_factory_issue()
 check_fbgemm_gpu_version()
 torchvision_compatibility_check()
 fix_diffusers_warnings()
 fix_huggingface_hub()
+del disable_broken_causal_conv1d
 del fix_message_factory_issue
 del check_fbgemm_gpu_version
 del torchvision_compatibility_check
