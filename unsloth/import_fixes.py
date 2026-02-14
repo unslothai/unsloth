@@ -1292,12 +1292,16 @@ def _filter_stderr_fd(
                 pass
 
 
-def _suppress_hip_libdrm_ids_noise():
+def _filter_rocm_amdgpu_ids_fd2_noise():
     # ROCm/libdrm can emit amdgpu.ids missing errors via low-level fd=2 writes.
     # Python-level stderr filters cannot intercept those writes.
     if not _is_rocm_torch_build():
         return contextlib.nullcontext()
     return _filter_stderr_fd()
+
+
+# Backwards-compatible alias for any external imports.
+_suppress_hip_libdrm_ids_noise = _filter_rocm_amdgpu_ids_fd2_noise
 
 
 def _is_causal_conv1d_name(module_name: str) -> bool:
@@ -1432,7 +1436,8 @@ def disable_broken_causal_conv1d():
         return
 
     try:
-        with _suppress_hip_libdrm_ids_noise():
+        # Suppress only native fd=2 amdgpu.ids noise during causal_conv1d probe.
+        with _filter_rocm_amdgpu_ids_fd2_noise():
             import causal_conv1d  # noqa: F401
 
         return

@@ -29,7 +29,7 @@ from .import_fixes import (
     fix_message_factory_issue,
     check_fbgemm_gpu_version,
     disable_broken_causal_conv1d,
-    _suppress_hip_libdrm_ids_noise,
+    _filter_rocm_amdgpu_ids_fd2_noise,
     torchvision_compatibility_check,
     fix_diffusers_warnings,
     fix_huggingface_hub,
@@ -96,7 +96,8 @@ try:
         #             os.system("pip install --upgrade --no-cache-dir --no-deps --user unsloth_zoo")
         #         except:
         #             raise ImportError("Unsloth: Please update unsloth_zoo via `pip install --upgrade --no-cache-dir --no-deps unsloth_zoo`")
-    with _suppress_hip_libdrm_ids_noise():
+    # Filter native fd=2 amdgpu.ids noise during early unsloth_zoo import.
+    with _filter_rocm_amdgpu_ids_fd2_noise():
         import unsloth_zoo
 except PackageNotFoundError:
     raise ImportError(
@@ -108,7 +109,8 @@ del PackageNotFoundError, importlib_version
 
 # Try importing PyTorch and check version
 try:
-    with _suppress_hip_libdrm_ids_noise():
+    # Filter native fd=2 amdgpu.ids noise during torch import on ROCm.
+    with _filter_rocm_amdgpu_ids_fd2_noise():
         import torch
 except ModuleNotFoundError:
     raise ImportError(
@@ -118,7 +120,8 @@ except ModuleNotFoundError:
 except:
     raise
 
-with _suppress_hip_libdrm_ids_noise():
+# Filter native fd=2 amdgpu.ids noise during early device detection import.
+with _filter_rocm_amdgpu_ids_fd2_noise():
     from unsloth_zoo.device_type import (
         is_hip,
         get_device_type,
