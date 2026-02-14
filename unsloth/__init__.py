@@ -29,6 +29,7 @@ from .import_fixes import (
     fix_message_factory_issue,
     check_fbgemm_gpu_version,
     disable_broken_causal_conv1d,
+    _suppress_hip_libdrm_ids_noise,
     torchvision_compatibility_check,
     fix_diffusers_warnings,
     fix_huggingface_hub,
@@ -106,7 +107,8 @@ del PackageNotFoundError, importlib_version
 
 # Try importing PyTorch and check version
 try:
-    import torch
+    with _suppress_hip_libdrm_ids_noise():
+        import torch
 except ModuleNotFoundError:
     raise ImportError(
         "Unsloth: Pytorch is not installed. Go to https://pytorch.org/.\n"
@@ -115,14 +117,15 @@ except ModuleNotFoundError:
 except:
     raise
 
-from unsloth_zoo.device_type import (
-    is_hip,
-    get_device_type,
-    DEVICE_TYPE,
-    DEVICE_TYPE_TORCH,
-    DEVICE_COUNT,
-    ALLOW_PREQUANTIZED_MODELS,
-)
+with _suppress_hip_libdrm_ids_noise():
+    from unsloth_zoo.device_type import (
+        is_hip,
+        get_device_type,
+        DEVICE_TYPE,
+        DEVICE_TYPE_TORCH,
+        DEVICE_COUNT,
+        ALLOW_PREQUANTIZED_MODELS,
+    )
 
 # Fix other issues
 from .import_fixes import (
