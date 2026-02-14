@@ -1299,11 +1299,6 @@ def _filter_rocm_amdgpu_ids_fd2_noise():
         return contextlib.nullcontext()
     return _filter_stderr_fd()
 
-
-# Backwards-compatible alias for any external imports.
-_suppress_hip_libdrm_ids_noise = _filter_rocm_amdgpu_ids_fd2_noise
-
-
 def _is_causal_conv1d_name(module_name: str) -> bool:
     return module_name == _CAUSAL_CONV1D_PREFIX or module_name.startswith(
         _CAUSAL_CONV1D_PREFIX + "."
