@@ -1177,10 +1177,41 @@ _CAUSAL_CONV1D_BLOCKER_SENTINEL = "_unsloth_causal_conv1d_blocker"
 
 
 def _is_rocm_torch_build() -> bool:
+    # Most official ROCm wheels include a local version suffix like +rocmX.Y.
+    # Some custom/source builds do not, so we fall back to runtime hints.
     try:
-        return "rocm" in str(importlib_version("torch")).lower()
+        torch_version_raw = str(importlib_version("torch")).lower()
+        if "rocm" in torch_version_raw:
+            return True
     except Exception:
-        return False
+        pass
+
+    # Environment hints commonly present on ROCm runtimes.
+    for key in (
+        "ROCM_PATH",
+        "ROCM_HOME",
+        "HIP_PATH",
+        "HSA_PATH",
+        "HIP_VISIBLE_DEVICES",
+        "ROCR_VISIBLE_DEVICES",
+    ):
+        value = os.environ.get(key, "")
+        if isinstance(value, str) and value.strip():
+            return True
+
+    # Filesystem / driver hints for ROCm stacks.
+    for path in (
+        Path("/opt/rocm"),
+        Path("/dev/kfd"),
+        Path("/sys/module/amdgpu"),
+    ):
+        try:
+            if path.exists():
+                return True
+        except Exception:
+            continue
+
+    return False
 
 
 @contextlib.contextmanager
