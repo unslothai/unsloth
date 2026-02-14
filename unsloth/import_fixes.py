@@ -1166,6 +1166,7 @@ def disable_torchcodec_if_broken():
         except (ImportError, AttributeError):
             pass
 
+
 CAUSAL_CONV1D_BROKEN = False
 
 
@@ -1197,6 +1198,7 @@ def disable_broken_causal_conv1d():
 
     try:
         import causal_conv1d  # noqa: F401
+
         return
     except Exception as error:
         if not _is_broken_causal_conv1d_error(error):
@@ -1212,9 +1214,7 @@ def disable_broken_causal_conv1d():
     causal_conv1d_module.causal_conv1d_fn = None
     causal_conv1d_module.causal_conv1d_update = None
 
-    causal_conv1d_interface = types.ModuleType(
-        "causal_conv1d.causal_conv1d_interface"
-    )
+    causal_conv1d_interface = types.ModuleType("causal_conv1d.causal_conv1d_interface")
     causal_conv1d_interface.causal_conv1d_fwd_function = None
     causal_conv1d_interface.causal_conv1d_bwd_function = None
     causal_conv1d_interface.causal_conv1d_update_function = None

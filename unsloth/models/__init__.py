@@ -30,7 +30,6 @@ except Exception as e:  # pragma: no cover - only for optional model import
             "Unsloth: Skipping Falcon H1 support (optional, unsupported causal_conv1d setup)."
         )
     # transformers_version < 4.53.0 does not have falcon_h1 so silently skip it for now
-    pass
 from .dpo import PatchDPOTrainer, PatchKTOTrainer
 from ._utils import is_bfloat16_supported, is_vLLM_available, __version__
 from .rl import PatchFastRL, vLLMSamplingParams
