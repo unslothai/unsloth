@@ -177,26 +177,26 @@ class InferenceBackend:
             return False
 
         model = self.models[base_model_name].get("model")
-        logger.info(f"[DEBUG] revert_to_base_model called. Model type BEFORE: {model.__class__.__name__}")
-        logger.info(f"[DEBUG] Is PeftModel? {isinstance(model, (PeftModel, PeftModelForCausalLM))}")
-        logger.info(f"[DEBUG] Has peft_config? {hasattr(model, 'peft_config')}, keys={list(getattr(model, 'peft_config', {}).keys())}")
+        print(f"[DEBUG] revert_to_base_model called. Model type BEFORE: {model.__class__.__name__}")
+        print(f"[DEBUG] Is PeftModel? {isinstance(model, (PeftModel, PeftModelForCausalLM))}")
+        print(f"[DEBUG] Has peft_config? {hasattr(model, 'peft_config')}, keys={list(getattr(model, 'peft_config', {}).keys())}")
 
         try:
             # Step 1: Unload the adapter weights. This returns the base model object.
             # This step is only necessary if the model is currently a PeftModel instance.
             if isinstance(model, (PeftModel, PeftModelForCausalLM)):
-                logger.info("Model is a PeftModel. Unloading adapters...")
+                print("[DEBUG] Model IS a PeftModel. Calling model.unload()...")
                 unwrapped_base_model = model.unload()
                 self.models[base_model_name]["model"] = unwrapped_base_model
                 model = unwrapped_base_model # Continue with the unwrapped model
-                logger.info(f"[DEBUG] Model type AFTER unload: {model.__class__.__name__}")
+                print(f"[DEBUG] Model type AFTER unload: {model.__class__.__name__}")
             else:
-                logger.info(f"[DEBUG] Model is NOT a PeftModel, skipping unload.")
+                print(f"[DEBUG] Model is NOT a PeftModel, skipping unload.")
 
             # Step 2: Delete any lingering adapter configurations from the object.
             # This is the crucial step you identified.
             if hasattr(model, 'peft_config') and model.peft_config:
-                logger.info(f"[DEBUG] Lingering peft_config keys: {list(model.peft_config.keys())}")
+                print(f"[DEBUG] Lingering peft_config keys: {list(model.peft_config.keys())}")
                 logger.info("Found lingering adapter configurations. Deleting them now...")
                 # Create a static list of keys before iterating and deleting
                 for name in list(model.peft_config.keys()):
@@ -205,7 +205,7 @@ class InferenceBackend:
                     logger.info(f"Deleting adapter config: '{name}'")
                     model.delete_adapter(name)
 
-            logger.info(f"[DEBUG] Model type FINAL: {model.__class__.__name__}. Reverted to clean base state.")
+            print(f"[DEBUG] Model type FINAL: {model.__class__.__name__}. Reverted to clean base state.")
             return True
 
         except Exception as e:
