@@ -6,9 +6,7 @@ from pathlib import Path
 import pytest
 
 
-IMPORT_FIXES_PATH = (
-    Path(__file__).resolve().parents[1] / "unsloth" / "import_fixes.py"
-)
+IMPORT_FIXES_PATH = Path(__file__).resolve().parents[1] / "unsloth" / "import_fixes.py"
 
 
 def _load_import_fixes_module(module_name: str):
@@ -78,7 +76,9 @@ def test_disable_broken_causal_conv1d_blocks_imports_and_masks_find_spec(tmp_pat
 
 
 def test_disable_broken_causal_conv1d_ignores_non_symbol_errors(tmp_path):
-    _create_causal_conv1d_package(tmp_path, "causal_conv1d import failed for another reason")
+    _create_causal_conv1d_package(
+        tmp_path, "causal_conv1d import failed for another reason"
+    )
     sys.path.insert(0, str(tmp_path))
 
     import_fixes = _load_import_fixes_module("import_fixes_test_not_broken")
