@@ -130,6 +130,16 @@ class ChatCompletionRequest(BaseModel):
     top_k: int = Field(40, ge=1, le=100, description="[x-unsloth] Top-k sampling")
     repetition_penalty: float = Field(1.1, ge=1.0, le=2.0, description="[x-unsloth] Repetition penalty")
     image_base64: Optional[str] = Field(None, description="[x-unsloth] Base64-encoded image for vision models")
+    use_adapter: Optional[Union[bool, str]] = Field(
+        None,
+        description=(
+            "[x-unsloth] Adapter control for compare mode. "
+            "null = no change (default), "
+            "false = disable adapters (base model), "
+            "true = enable the current adapter, "
+            "string = enable a specific adapter by name."
+        ),
+    )
 
 
 # ── Streaming response chunks ────────────────────────────────────
