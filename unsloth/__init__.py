@@ -301,8 +301,9 @@ elif DEVICE_TYPE == "xpu":
     # TODO: check triton for intel installed properly.
     pass
 
-from .models import *
-from .models import __version__
+with _suppress_hip_libdrm_ids_noise():
+    from .models import *
+    from .models import __version__
 from .save import *
 from .chat_templates import *
 from .tokenizer_utils import *
