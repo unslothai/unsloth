@@ -69,10 +69,10 @@ async def load_model(request: LoadRequest):
         backend = get_inference_backend()
         
         # Create config using clean factory method
+        # is_lora is auto-detected from adapter_config.json on disk/HF
         config = ModelConfig.from_identifier(
             model_id=request.model_path,
             hf_token=request.hf_token,
-            is_lora=request.is_lora,
         )
         
         if not config:
