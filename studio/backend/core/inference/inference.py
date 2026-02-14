@@ -221,25 +221,32 @@ class InferenceBackend:
         """
         model = self.models[base_model_name].get("model")
         adapter_name_to_load = lora_path.split("/")[-1].replace(".", "_")
+        print(f"[DEBUG] activate_lora_adapter called. base_model_name='{base_model_name}', lora_path='{lora_path}'")
+        print(f"[DEBUG] adapter_name_to_load='{adapter_name_to_load}'")
+        print(f"[DEBUG] Model type BEFORE load_adapter: {model.__class__.__name__}")
+        print(f"[DEBUG] Has peft_config? {hasattr(model, 'peft_config')}, keys={list(getattr(model, 'peft_config', {}).keys())}")
 
         try:
             # At this point, the model should be clean thanks to revert_to_base_model.
             # We can now safely load and set the new adapter.
 
             # Step 3: Load the new adapter.
-            logger.info(f"Loading adapter '{adapter_name_to_load}' from '{lora_path}'")
+            print(f"[DEBUG] Calling model.load_adapter('{lora_path}', adapter_name='{adapter_name_to_load}')...")
             model.load_adapter(lora_path, adapter_name=adapter_name_to_load)
+            print(f"[DEBUG] Model type AFTER load_adapter: {model.__class__.__name__}")
+            print(f"[DEBUG] peft_config keys AFTER load: {list(getattr(model, 'peft_config', {}).keys())}")
 
             # Step 4: Set the new adapter as active.
-            logger.info(f"Setting '{adapter_name_to_load}' as the active adapter.")
+            print(f"[DEBUG] Calling model.set_adapter('{adapter_name_to_load}')...")
             model.set_adapter(adapter_name_to_load)
+            print(f"[DEBUG] activate_lora_adapter SUCCESS. Model type: {model.__class__.__name__}")
 
             return True, adapter_name_to_load
         except Exception as e:
             # This will catch the "already exists" error if revert_to_base_model failed.
-            logger.error(f"Failed to activate LoRA adapter '{adapter_name_to_load}': {e}")
+            print(f"[DEBUG] activate_lora_adapter FAILED: {e}")
             import traceback
-            logger.error(traceback.format_exc())
+            traceback.print_exc()
             return False, None
     pass
 
