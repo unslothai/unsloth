@@ -133,6 +133,8 @@ from unsloth_zoo.device_type import (
     ALLOW_PREQUANTIZED_MODELS,
 )
 
+from .models import FastLanguageModel
+
 # Fix other issues
 from .import_fixes import (
     fix_xformers_performance_issue,

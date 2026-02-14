@@ -34,6 +34,15 @@ if platform.system() == "Darwin":
     patch_for_mac()
 
 
+def _is_mps_available():
+    """Check if MPS is available (lazy import to avoid import errors on Linux)."""
+    try:
+        import torch
+        return hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()
+    except Exception:
+        return False
+
+
 class TestHardwareDetection(unittest.TestCase):
     """Tests for Apple Silicon hardware detection."""
 
@@ -80,6 +89,8 @@ class TestHardwareDetection(unittest.TestCase):
 class TestCoreKernels(unittest.TestCase):
     """Tests for core MPS kernels using mocked dependencies."""
 
+    @unittest.skipIf(platform.system() != "Darwin", "macOS only")
+    @unittest.skipIf(not _is_mps_available(), "MPS not available")
     def test_rms_norm_kernel(self):
         """Test RMSNorm kernel numerically."""
         import types
@@ -127,6 +138,8 @@ class TestCoreKernels(unittest.TestCase):
         Y.sum().backward()
         self.assertIsNotNone(X.grad)
 
+    @unittest.skipIf(platform.system() != "Darwin", "macOS only")
+    @unittest.skipIf(not _is_mps_available(), "MPS not available")
     def test_swiglu_kernel(self):
         """Test SwiGLU kernel numerically."""
         import types
@@ -176,6 +189,8 @@ class TestCoreKernels(unittest.TestCase):
         self.assertEqual(de.shape, e.shape)
         self.assertEqual(dg.shape, g.shape)
 
+    @unittest.skipIf(platform.system() != "Darwin", "macOS only")
+    @unittest.skipIf(not _is_mps_available(), "MPS not available")
     def test_cross_entropy_kernel(self):
         """Test CrossEntropy kernel numerically."""
         import types
@@ -225,9 +240,7 @@ class TestKernelDispatch(unittest.TestCase):
     """Tests for kernel dispatch and Metal/MLX availability."""
 
     @unittest.skipIf(platform.system() != "Darwin", "macOS only")
-    @unittest.skipIf(not hasattr(__import__('torch').backends, 'mps') or 
-                     not __import__('torch').backends.mps.is_available(), 
-                     "MPS not available")
+    @unittest.skipIf(not _is_mps_available(), "MPS not available")
     def test_kernel_dispatch_available(self):
         """Verify kernel dispatch functions are available."""
         from unsloth.kernels.mps.dispatch import (
@@ -249,9 +262,7 @@ class TestModelIntegration(unittest.TestCase):
     """Tests for various model architectures on MPS."""
 
     @unittest.skipIf(platform.system() != "Darwin", "macOS only")
-    @unittest.skipIf(not hasattr(__import__('torch').backends, 'mps') or 
-                     not __import__('torch').backends.mps.is_available(), 
-                     "MPS not available")
+    @unittest.skipIf(not _is_mps_available(), "MPS not available")
     def test_llama_forward_pass(self):
         """Test Llama model forward pass on MPS."""
         import torch
@@ -275,9 +286,7 @@ class TestModelIntegration(unittest.TestCase):
         self.assertEqual(outputs.logits.shape[0], inputs["input_ids"].shape[0])
 
     @unittest.skipIf(platform.system() != "Darwin", "macOS only")
-    @unittest.skipIf(not hasattr(__import__('torch').backends, 'mps') or 
-                     not __import__('torch').backends.mps.is_available(), 
-                     "MPS not available")
+    @unittest.skipIf(not _is_mps_available(), "MPS not available")
     def test_qwen2_forward_pass(self):
         """Test Qwen2 model forward pass on MPS."""
         import torch
@@ -299,9 +308,7 @@ class TestModelIntegration(unittest.TestCase):
         self.assertIsNotNone(outputs.logits)
 
     @unittest.skipIf(platform.system() != "Darwin", "macOS only")
-    @unittest.skipIf(not hasattr(__import__('torch').backends, 'mps') or 
-                     not __import__('torch').backends.mps.is_available(), 
-                     "MPS not available")
+    @unittest.skipIf(not _is_mps_available(), "MPS not available")
     def test_mistral_forward_pass(self):
         """Test Mistral model forward pass on MPS."""
         import torch
@@ -323,9 +330,7 @@ class TestModelIntegration(unittest.TestCase):
         self.assertIsNotNone(outputs.logits)
 
     @unittest.skipIf(platform.system() != "Darwin", "macOS only")
-    @unittest.skipIf(not hasattr(__import__('torch').backends, 'mps') or 
-                     not __import__('torch').backends.mps.is_available(), 
-                     "MPS not available")
+    @unittest.skipIf(not _is_mps_available(), "MPS not available")
     def test_gemma_forward_pass(self):
         """Test Gemma model forward pass on MPS."""
         import torch
@@ -351,9 +356,7 @@ class TestTraining(unittest.TestCase):
     """Tests for training on MPS."""
 
     @unittest.skipIf(platform.system() != "Darwin", "macOS only")
-    @unittest.skipIf(not hasattr(__import__('torch').backends, 'mps') or 
-                     not __import__('torch').backends.mps.is_available(), 
-                     "MPS not available")
+    @unittest.skipIf(not _is_mps_available(), "MPS not available")
     def test_forward_backward_pass(self):
         """Test forward and backward pass on MPS."""
         import torch
@@ -393,9 +396,7 @@ class TestTraining(unittest.TestCase):
         self.assertGreater(grad_count, 0, "No gradients computed!")
 
     @unittest.skipIf(platform.system() != "Darwin", "macOS only")
-    @unittest.skipIf(not hasattr(__import__('torch').backends, 'mps') or 
-                     not __import__('torch').backends.mps.is_available(), 
-                     "MPS not available")
+    @unittest.skipIf(not _is_mps_available(), "MPS not available")
     def test_training_loop(self):
         """Test full training loop on MPS."""
         import torch
@@ -439,9 +440,7 @@ class TestMoE(unittest.TestCase):
     """Tests for MoE (Mixture of Experts) on MPS."""
 
     @unittest.skipIf(platform.system() != "Darwin", "macOS only")
-    @unittest.skipIf(not hasattr(__import__('torch').backends, 'mps') or 
-                     not __import__('torch').backends.mps.is_available(), 
-                     "MPS not available")
+    @unittest.skipIf(not _is_mps_available(), "MPS not available")
     def test_grouped_gemm_forward(self):
         """Test MoE grouped GEMM forward pass."""
         import torch
@@ -476,9 +475,7 @@ class TestSaveLoad(unittest.TestCase):
     """Tests for save/load operations on MPS."""
 
     @unittest.skipIf(platform.system() != "Darwin", "macOS only")
-    @unittest.skipIf(not hasattr(__import__('torch').backends, 'mps') or 
-                     not __import__('torch').backends.mps.is_available(), 
-                     "MPS not available")
+    @unittest.skipIf(not _is_mps_available(), "MPS not available")
     def test_model_save_load(self):
         """Test model save and load on MPS."""
         import torch
