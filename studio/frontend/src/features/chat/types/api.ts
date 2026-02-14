@@ -62,6 +62,7 @@ export interface OpenAIChatCompletionsRequest {
   max_tokens: number;
   top_k: number;
   repetition_penalty: number;
+  image_base64?: string;
 }
 
 export interface OpenAIChatDelta {
