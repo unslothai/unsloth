@@ -28,6 +28,7 @@ __all__ = [
     "HAS_FLASH_ATTENTION_SOFTCAPPING",
     "USE_MODELSCOPE",
     "platform_system",
+    "resolve_hip_gpu_stats_name",
     "patch_tokenizer",
     "get_statistics",
     "Unsloth_Offloaded_Gradient_Checkpointer",
@@ -149,6 +150,37 @@ from unsloth_zoo.compiler import (
 from unsloth_zoo.training_utils import (
     prepare_model_for_training,
 )
+
+
+def resolve_hip_gpu_stats_name(gpu_stats):
+    name = str(getattr(gpu_stats, "name", "") or "").strip()
+    normalized_name = name.lower().strip(". ")
+    if normalized_name and normalized_name not in ("amd radeon graphics",):
+        return name + ". "
+
+    try:
+        torch_name = str(torch.cuda.get_device_name(0) or "").strip()
+    except Exception:
+        torch_name = ""
+    normalized_torch_name = torch_name.lower().strip(". ")
+    if normalized_torch_name and normalized_torch_name not in ("amd radeon graphics",):
+        return torch_name + ". "
+
+    arch_name = ""
+    for key in ("gcnArchName", "gcn_arch_name", "arch_name", "gfx_arch_name"):
+        value = getattr(gpu_stats, key, None)
+        if value is not None and str(value).strip():
+            arch_name = str(value).strip()
+            break
+
+    if arch_name:
+        # gfx942 maps to MI300X on current ROCm naming.
+        if arch_name.lower().startswith("gfx942"):
+            return f"AMD Instinct MI300X ({arch_name}). "
+        return f"AMD GPU ({arch_name}). "
+    return "AMD GPU Device. "
+
+
 from unsloth_zoo.temporary_patches import (
     TEMPORARY_PATCHES,
 )
