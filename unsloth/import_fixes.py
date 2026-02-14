@@ -1176,11 +1176,9 @@ _CAUSAL_CONV1D_PREFIX = "causal_conv1d"
 _CAUSAL_CONV1D_BLOCKER_SENTINEL = "_unsloth_causal_conv1d_blocker"
 
 
-def _is_hip_runtime() -> bool:
+def _is_rocm_torch_build() -> bool:
     try:
-        import torch
-
-        return bool(getattr(torch.version, "hip", None))
+        return "rocm" in str(importlib_version("torch")).lower()
     except Exception:
         return False
 
@@ -1221,7 +1219,7 @@ def _suppress_stderr_fd():
 def _suppress_hip_libdrm_ids_noise():
     # ROCm/libdrm can emit amdgpu.ids missing errors via low-level fd=2 writes.
     # Python-level stderr filters cannot intercept those writes.
-    if not _is_hip_runtime():
+    if not _is_rocm_torch_build():
         return contextlib.nullcontext()
     return _suppress_stderr_fd()
 
