@@ -152,9 +152,34 @@ from unsloth_zoo.training_utils import (
 )
 
 
+ROCM_GFX_TO_CANONICAL_NAME = {
+    "gfx950": "AMD Instinct MI355X",
+    "gfx942": "AMD Instinct MI300X",
+    "gfx90a": "AMD Instinct MI250X",
+    "gfx908": "AMD Instinct MI100",
+    "gfx906": "AMD Instinct MI60",
+    "gfx900": "AMD Instinct MI25",
+    "gfx803": "AMD Instinct MI8",
+    "gfx1201": "Radeon RX 9070 XT",
+    "gfx1200": "Radeon RX 9060 XT",
+    "gfx1152": "AMD Ryzen AI 7 350",
+    "gfx1151": "AMD Ryzen AI Max+ PRO 395",
+    "gfx1150": "AMD Ryzen AI 9 HX 375",
+    "gfx1103": "AMD Ryzen 7 7840U",
+    "gfx1102": "Radeon RX 7600",
+    "gfx1101": "Radeon RX 7800 XT",
+    "gfx1100": "Radeon RX 7900 XTX",
+    "gfx1032": "Radeon RX 6650 XT",
+    "gfx1031": "Radeon RX 6750 XT",
+    "gfx1030": "Radeon RX 6950 XT",
+    "gfx1012": "Radeon Pro W5500",
+}
+
+
 def resolve_hip_gpu_stats_name(gpu_stats):
     name = str(getattr(gpu_stats, "name", "") or "").strip()
     name = re.sub(r"\s*\([^)]*\)\s*$", "", name).strip()
+    name = re.sub(r"\bRyzen Al\b", "Ryzen AI", name)
     normalized_name = name.lower().strip(". ")
     if normalized_name and normalized_name not in ("amd radeon graphics",):
         return name + ". "
@@ -162,6 +187,7 @@ def resolve_hip_gpu_stats_name(gpu_stats):
     try:
         torch_name = str(torch.cuda.get_device_name(0) or "").strip()
         torch_name = re.sub(r"\s*\([^)]*\)\s*$", "", torch_name).strip()
+        torch_name = re.sub(r"\bRyzen Al\b", "Ryzen AI", torch_name)
     except Exception:
         torch_name = ""
     normalized_torch_name = torch_name.lower().strip(". ")
@@ -176,11 +202,11 @@ def resolve_hip_gpu_stats_name(gpu_stats):
             break
 
     if arch_name:
-        # gfx942 maps to MI300X on current ROCm naming.
-        if arch_name.lower().startswith("gfx942"):
-            return "AMD Instinct MI300X. "
-        return f"AMD GPU ({arch_name}). "
-    return "AMD GPU Device. "
+        arch_name = arch_name.strip()
+        arch_key = arch_name.split(":", 1)[0].lower()
+        gpu_name = ROCM_GFX_TO_CANONICAL_NAME.get(arch_key, "AMD GPU")
+        return f"{gpu_name}. "
+    return "AMD GPU. "
 
 
 from unsloth_zoo.temporary_patches import (
