@@ -124,7 +124,7 @@ if __name__ == "__main__":
     parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
     parser.add_argument("--port", type=int, default=8000, help="Port to bind to")
     parser.add_argument(
-        "--frontend", type=str, default="../frontend/dist", help="Path to frontend build"
+        "--frontend", type=str, default="studio/frontend/dist", help="Path to frontend build"
     )
     parser.add_argument("--silent", action="store_true", help="Suppress output")
 
