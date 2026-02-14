@@ -100,7 +100,7 @@ if ! grep -qF "unsloth-ui" ~/.bashrc 2>/dev/null; then
     cat >> ~/.bashrc <<UNSLOTH_EOF
 
 # Unsloth Studio launcher
-unsloth-ui() { ${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py ui "\$@" -f ${REPO_DIR}/studio/frontend/dist; }
+alias unsloth-ui='${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py ui -f ${REPO_DIR}/studio/frontend/dist'
 UNSLOTH_EOF
     echo "✅ Alias 'unsloth-ui' added to ~/.bashrc"
 else
