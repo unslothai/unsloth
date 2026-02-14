@@ -13,6 +13,8 @@
 # limitations under the License.
 
 import os
+import importlib.abc
+import importlib.machinery
 import importlib.util
 from pathlib import Path
 from importlib.metadata import version as importlib_version
@@ -21,7 +23,6 @@ import re
 import logging
 import textwrap
 import warnings
-import types
 import sys
 
 # We cannot do from unsloth_zoo.log import logger since FBGEMM might cause seg faults.
@@ -1168,15 +1169,120 @@ def disable_torchcodec_if_broken():
 
 
 CAUSAL_CONV1D_BROKEN = False
+_CAUSAL_CONV1D_PREFIX = "causal_conv1d"
+_CAUSAL_CONV1D_BLOCKER_SENTINEL = "_unsloth_causal_conv1d_blocker"
+
+
+def _is_causal_conv1d_name(module_name: str) -> bool:
+    return module_name == _CAUSAL_CONV1D_PREFIX or module_name.startswith(
+        _CAUSAL_CONV1D_PREFIX + "."
+    )
+
+
+def _resolve_module_name(module_name, package):
+    if not isinstance(module_name, str):
+        return module_name
+    if module_name.startswith("."):
+        try:
+            return importlib.util.resolve_name(module_name, package)
+        except Exception:
+            return module_name
+    return module_name
 
 
 def _is_broken_causal_conv1d_error(error) -> bool:
-    message = str(error).lower()
-    return bool(
-        ("causal_conv1d_cuda" in message and "undefined symbol" in message)
-        or ("_zn3c103hip28c10_hip_check_implementation" in message)
-        or ("causal_conv1d" in message and "undefined symbol" in message)
-    )
+    checked = set()
+    current = error
+    while current is not None and id(current) not in checked:
+        checked.add(id(current))
+        message = str(current).lower()
+        if (
+            ("causal_conv1d_cuda" in message and "undefined symbol" in message)
+            or ("_zn3c103hip28c10_hip_check_implementation" in message)
+            or ("causal_conv1d" in message and "undefined symbol" in message)
+        ):
+            return True
+        current = getattr(current, "__cause__", None) or getattr(
+            current, "__context__", None
+        )
+    return False
+
+
+class _CausalConv1dImportBlockerLoader(importlib.abc.Loader):
+    __slots__ = ("module_name",)
+
+    def __init__(self, module_name):
+        self.module_name = module_name
+
+    def create_module(self, spec):
+        return None
+
+    def exec_module(self, module):
+        raise ModuleNotFoundError(f"No module named '{self.module_name}'")
+
+
+class _CausalConv1dImportBlockerFinder(importlib.abc.MetaPathFinder):
+    __slots__ = (_CAUSAL_CONV1D_BLOCKER_SENTINEL,)
+
+    def __init__(self):
+        setattr(self, _CAUSAL_CONV1D_BLOCKER_SENTINEL, True)
+
+    def find_spec(self, fullname, path = None, target = None):
+        if not CAUSAL_CONV1D_BROKEN or not _is_causal_conv1d_name(fullname):
+            return None
+        return importlib.machinery.ModuleSpec(
+            name = fullname,
+            loader = _CausalConv1dImportBlockerLoader(fullname),
+            is_package = fullname == _CAUSAL_CONV1D_PREFIX,
+        )
+
+
+def _patch_find_spec_for_causal_conv1d():
+    current_find_spec = importlib.util.find_spec
+    if getattr(current_find_spec, "_unsloth_causal_conv1d_find_spec_patch", False):
+        return
+
+    def _blocked_find_spec(name, package = None):
+        resolved_name = _resolve_module_name(name, package)
+        if CAUSAL_CONV1D_BROKEN and isinstance(resolved_name, str):
+            if _is_causal_conv1d_name(resolved_name):
+                return None
+        return current_find_spec(name, package)
+
+    _blocked_find_spec._unsloth_causal_conv1d_find_spec_patch = True
+    _blocked_find_spec._unsloth_original_find_spec = current_find_spec
+    importlib.util.find_spec = _blocked_find_spec
+
+
+def _install_causal_conv1d_blocker():
+    _patch_find_spec_for_causal_conv1d()
+    for finder in sys.meta_path:
+        if getattr(finder, _CAUSAL_CONV1D_BLOCKER_SENTINEL, False):
+            return
+    sys.meta_path.insert(0, _CausalConv1dImportBlockerFinder())
+
+
+def _clear_causal_conv1d_modules():
+    for module_name in list(sys.modules):
+        if _is_causal_conv1d_name(module_name):
+            sys.modules.pop(module_name, None)
+
+
+def _disable_transformers_causal_conv1d():
+    try:
+        import transformers.utils.import_utils as tf_import_utils
+    except Exception:
+        return
+
+    if hasattr(tf_import_utils, "is_causal_conv1d_available"):
+        tf_import_utils.is_causal_conv1d_available = lambda: False
+
+    for attr_name in (
+        "_causal_conv1d_available",
+        "_is_causal_conv1d_available",
+    ):
+        if hasattr(tf_import_utils, attr_name):
+            setattr(tf_import_utils, attr_name, False)
 
 
 def disable_broken_causal_conv1d():
@@ -1188,6 +1294,8 @@ def disable_broken_causal_conv1d():
     """
     global CAUSAL_CONV1D_BROKEN
     if CAUSAL_CONV1D_BROKEN:
+        _install_causal_conv1d_blocker()
+        _disable_transformers_causal_conv1d()
         return
 
     try:
@@ -1204,62 +1312,10 @@ def disable_broken_causal_conv1d():
         if not _is_broken_causal_conv1d_error(error):
             return
 
-    # Clear any partially initialized entries from a failed extension import.
-    for name in list(sys.modules):
-        if name == "causal_conv1d" or name.startswith("causal_conv1d."):
-            sys.modules.pop(name, None)
-
-    causal_conv1d_module = types.ModuleType("causal_conv1d")
-    causal_conv1d_module.__path__ = []
-    causal_conv1d_module.causal_conv1d_fn = None
-    causal_conv1d_module.causal_conv1d_update = None
-
-    causal_conv1d_interface = types.ModuleType("causal_conv1d.causal_conv1d_interface")
-    causal_conv1d_interface.causal_conv1d_fwd_function = None
-    causal_conv1d_interface.causal_conv1d_bwd_function = None
-    causal_conv1d_interface.causal_conv1d_update_function = None
-    causal_conv1d_interface.__path__ = []
-
-    causal_conv1d_cpp_functions = types.ModuleType("causal_conv1d.cpp_functions")
-    causal_conv1d_cpp_functions.causal_conv1d_fwd_function = None
-    causal_conv1d_cpp_functions.causal_conv1d_bwd_function = None
-    causal_conv1d_cpp_functions.causal_conv1d_update_function = None
-
-    causal_conv1d_cuda = types.ModuleType("causal_conv1d.causal_conv1d_cuda")
-    causal_conv1d_cuda.causal_conv1d_fwd = None
-    causal_conv1d_cuda.causal_conv1d_bwd = None
-    causal_conv1d_cuda.causal_conv1d_update = None
-
-    causal_conv1d_interface.causal_conv1d_fwd_function = (
-        causal_conv1d_cpp_functions.causal_conv1d_fwd_function
-    )
-    causal_conv1d_interface.causal_conv1d_bwd_function = (
-        causal_conv1d_cpp_functions.causal_conv1d_bwd_function
-    )
-    causal_conv1d_interface.causal_conv1d_update_function = (
-        causal_conv1d_cpp_functions.causal_conv1d_update_function
-    )
-
-    causal_conv1d_module.causal_conv1d_interface = causal_conv1d_interface
-    causal_conv1d_module.__dict__["causal_conv1d_fn"] = None
-    causal_conv1d_module.__dict__["causal_conv1d_update"] = None
-    causal_conv1d_module.__dict__["cpp_functions"] = causal_conv1d_cpp_functions
-
-    sys.modules["causal_conv1d"] = causal_conv1d_module
-    sys.modules["causal_conv1d.causal_conv1d_interface"] = causal_conv1d_interface
-    sys.modules["causal_conv1d.cpp_functions"] = causal_conv1d_cpp_functions
-    sys.modules["causal_conv1d.causal_conv1d_cuda"] = causal_conv1d_cuda
-
-    try:
-        import transformers.utils.import_utils as tf_import_utils
-    except Exception:
-        tf_import_utils = None
-    if tf_import_utils is not None and hasattr(
-        tf_import_utils, "is_causal_conv1d_available"
-    ):
-        tf_import_utils.is_causal_conv1d_available = lambda: False
-
     CAUSAL_CONV1D_BROKEN = True
+    _clear_causal_conv1d_modules()
+    _install_causal_conv1d_blocker()
+    _disable_transformers_causal_conv1d()
     print(
         "Unsloth: Detected broken causal_conv1d binary; "
         "disabling causal_conv1d fast path and continuing import."
