@@ -1,6 +1,6 @@
 """
 Unsloth Training Backend
-Integrates Unsloth training capabilities with the Gradio UI
+Integrates Unsloth training capabilities with the FastAPI backend
 """
 import torch
 from utils.hardware import clear_gpu_cache
@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class TrainingProgress:
     """Training progress tracking"""
-    epoch: int = 0
+    epoch: float = 0
     step: int = 0
     total_steps: int = 0
     loss: float = 0.0
@@ -46,7 +46,7 @@ class TrainingProgress:
 
 class UnslothTrainer:
     """
-    Unsloth Training Backend for Gradio UI Integration
+    Unsloth Training Backend
     """
 
     def __init__(self):
@@ -301,7 +301,8 @@ class UnslothTrainer:
     def load_and_format_dataset(self,
                      dataset_source: str,
                      format_type: str = "auto",
-                     local_datasets: list = None) -> Optional[Dataset]:
+                     local_datasets: list = None,
+                     custom_format_mapping: dict = None) -> Optional[Dataset]:
         """
         Load and prepare dataset for training
         """
@@ -374,6 +375,7 @@ class UnslothTrainer:
                 is_vlm=self.is_vlm,
                 format_type=format_type,  # "auto", "alpaca", "chatml", "sharegpt"
                 dataset_name=dataset_source,
+                custom_format_mapping=custom_format_mapping,
             )
 
             # Check if stopped during formatting

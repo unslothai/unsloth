@@ -15,7 +15,9 @@ def ui(
     from studio.backend.run import run_server
 
     if not silent:
-        typer.echo(f"Starting Unsloth UI on http://{host}:{port}")
+        from studio.backend.run import _resolve_external_ip
+        display_host = _resolve_external_ip() if host == "0.0.0.0" else host
+        typer.echo(f"Starting Unsloth Studio on http://{display_host}:{port}")
 
     run_server(
         host=host,

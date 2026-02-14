@@ -13,7 +13,8 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { useWizardStore } from "@/stores/training";
+import { useTrainingRuntimeStore } from "@/features/training";
+import { useTrainingConfigStore } from "@/features/training";
 import { isAdapterMethod } from "@/types/training";
 import { InformationCircleIcon, PackageIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -36,36 +37,31 @@ export function ExportPage() {
     trainingMethod,
     selectedModel,
     saveSteps,
-    trainingMetrics,
     epochs,
     loraRank,
     hfToken,
     setHfToken,
-  } = useWizardStore(
+  } = useTrainingConfigStore(
     useShallow((s) => ({
       trainingMethod: s.trainingMethod,
       selectedModel: s.selectedModel,
       saveSteps: s.saveSteps,
-      trainingMetrics: s.trainingMetrics,
       epochs: s.epochs,
       loraRank: s.loraRank,
       hfToken: s.hfToken,
       setHfToken: s.setHfToken,
     })),
   );
+  const totalSteps = useTrainingRuntimeStore((state) => state.totalSteps);
   const isAdapter = isAdapterMethod(trainingMethod);
 
   const checkpoints = useMemo(() => {
     if (isAdapter) {
       const interval = saveSteps > 0 ? saveSteps : 100;
-      const total = trainingMetrics?.totalSteps ?? 500;
+      const total = totalSteps > 0 ? totalSteps : 500;
       const entries: { value: string; label: string; detail: string }[] = [];
       for (let step = interval; step <= total; step += interval) {
-        const loss = (
-          1.5 -
-          (step / total) * 0.7 +
-          Math.random() * 0.05
-        ).toFixed(2);
+        const loss = (1.5 - (step / total) * 0.7).toFixed(2);
         entries.push({
           value: `checkpoint-${step}`,
           label: `checkpoint-${step}`,
@@ -81,7 +77,7 @@ export function ExportPage() {
         detail: "Full fine-tuned weights",
       },
     ];
-  }, [isAdapter, saveSteps, trainingMetrics?.totalSteps]);
+  }, [isAdapter, saveSteps, totalSteps]);
 
   const [checkpoint, setCheckpoint] = useState<string | null>(null);
   const [exportMethod, setExportMethod] = useState<ExportMethod | null>(null);
@@ -109,8 +105,8 @@ export function ExportPage() {
 
   return (
     <div className="min-h-screen bg-background">
-      <main className="mx-auto max-w-7xl px-6 py-8">
-        <div className="mb-8 flex flex-col gap-1">
+      <main className="mx-auto max-w-7xl px-6 py-4">
+        <div className="mb-8 flex flex-col gap-0.5">
           <h1 className="text-2xl font-semibold tracking-tight">
             Export Model
           </h1>

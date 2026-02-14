@@ -2,12 +2,16 @@
 Inference API routes for model loading and text generation.
 """
 import sys
+import time
+import uuid
 from pathlib import Path
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from typing import Optional
 import json
 import logging
+
+
 
 # Add backend directory to path
 backend_path = Path(__file__).parent.parent.parent
@@ -32,6 +36,13 @@ from models.inference import (
     LoadResponse,
     UnloadResponse,
     InferenceStatusResponse,
+    ChatCompletionRequest,
+    ChatCompletionChunk,
+    ChatCompletion,
+    ChunkChoice,
+    ChoiceDelta,
+    CompletionChoice,
+    CompletionMessage,
 )
 
 router = APIRouter()
@@ -222,3 +233,228 @@ async def get_status():
             status_code=500,
             detail=f"Failed to get status: {str(e)}"
         )
+
+
+# =====================================================================
+# OpenAI-Compatible Chat Completions  (/chat/completions)
+# =====================================================================
+
+
+def _extract_content_parts(
+    messages: list,
+) -> tuple[str, list[dict], "Optional[str]"]:
+    """
+    Parse OpenAI-format messages into components the inference backend expects.
+
+    Handles both plain-string ``content`` and multimodal content-part arrays
+    (``[{type: "text", ...}, {type: "image_url", ...}]``).
+
+    Returns:
+        system_prompt:  The system message text (or a default).
+        chat_messages:  Non-system messages with content flattened to strings.
+        image_base64:   Base64 data of the *first* image found, or ``None``.
+    """
+    system_prompt = "You are a helpful AI assistant."
+    chat_messages: list[dict] = []
+    first_image_b64: Optional[str] = None
+
+    for msg in messages:
+        # ── System messages → extract as system_prompt ────────
+        if msg.role == "system":
+            if isinstance(msg.content, str):
+                system_prompt = msg.content
+            elif isinstance(msg.content, list):
+                # Unlikely but handle: join text parts
+                system_prompt = "\n".join(
+                    p.text for p in msg.content if p.type == "text"
+                )
+            continue
+
+        # ── User / assistant messages ─────────────────────────
+        if isinstance(msg.content, str):
+            # Plain string content — pass through
+            chat_messages.append({"role": msg.role, "content": msg.content})
+        elif isinstance(msg.content, list):
+            # Multimodal content parts
+            text_parts: list[str] = []
+            for part in msg.content:
+                if part.type == "text":
+                    text_parts.append(part.text)
+                elif part.type == "image_url" and first_image_b64 is None:
+                    url = part.image_url.url
+                    if url.startswith("data:"):
+                        # data:image/png;base64,<DATA> → extract <DATA>
+                        first_image_b64 = url.split(",", 1)[1] if "," in url else None
+                    else:
+                        logger.warning(
+                            f"Remote image URLs not yet supported: {url[:80]}..."
+                        )
+            combined_text = "\n".join(text_parts) if text_parts else ""
+            chat_messages.append({"role": msg.role, "content": combined_text})
+
+    return system_prompt, chat_messages, first_image_b64
+
+
+@router.post("/chat/completions")
+async def openai_chat_completions(request: ChatCompletionRequest):
+    """
+    OpenAI-compatible chat completions endpoint.
+
+    Supports multimodal messages: ``content`` may be a plain string or a
+    list of content parts (``text`` / ``image_url``).
+
+    Streaming (default):  returns SSE chunks matching OpenAI's format.
+    Non-streaming:        returns a single ChatCompletion JSON object.
+    """
+    backend = get_inference_backend()
+
+    if not backend.active_model_name:
+        raise HTTPException(
+            status_code=400,
+            detail="No model loaded. Call POST /inference/load first.",
+        )
+
+    # ── Parse messages (handles multimodal content parts) ─────
+    system_prompt, chat_messages, extracted_image_b64 = _extract_content_parts(
+        request.messages
+    )
+
+    # If no non-system messages were provided, error out
+    if not chat_messages:
+        raise HTTPException(
+            status_code=400,
+            detail="At least one non-system message is required.",
+        )
+
+    # ── Decode image (from content parts OR legacy field) ─────
+    # Content-part images take priority; fall back to legacy field
+    image_b64 = extracted_image_b64 or request.image_base64
+    image = None
+
+    if image_b64:
+        try:
+            import base64
+            from PIL import Image
+            from io import BytesIO
+
+            model_info = backend.models.get(backend.active_model_name, {})
+            if not model_info.get("is_vision"):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Image provided but current model is text-only. Load a vision model.",
+                )
+
+            image_data = base64.b64decode(image_b64)
+            image = Image.open(BytesIO(image_data))
+            image = backend.resize_image(image)
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Failed to decode image: {e}")
+
+    # ── Shared generation kwargs ──────────────────────────────
+    gen_kwargs = dict(
+        messages=chat_messages,
+        system_prompt=system_prompt,
+        image=image,
+        temperature=request.temperature,
+        top_p=request.top_p,
+        top_k=request.top_k,
+        max_new_tokens=request.max_tokens or 512,
+        repetition_penalty=request.repetition_penalty,
+    )
+
+    model_name = backend.active_model_name or request.model
+    completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+    created = int(time.time())
+
+    # ── Streaming response ────────────────────────────────────────
+    if request.stream:
+        async def stream_chunks():
+            try:
+                # First chunk: send the role
+                first_chunk = ChatCompletionChunk(
+                    id=completion_id,
+                    created=created,
+                    model=model_name,
+                    choices=[ChunkChoice(
+                        delta=ChoiceDelta(role="assistant"),
+                        finish_reason=None,
+                    )],
+                )
+                yield f"data: {first_chunk.model_dump_json(exclude_none=True)}\n\n"
+
+                # Content chunks — generate_chat_response yields cumulative
+                # text, so we diff to get incremental deltas.
+                prev_text = ""
+                for cumulative in backend.generate_chat_response(**gen_kwargs):
+                    new_text = cumulative[len(prev_text):]
+                    prev_text = cumulative
+                    if not new_text:
+                        continue
+                    chunk = ChatCompletionChunk(
+                        id=completion_id,
+                        created=created,
+                        model=model_name,
+                        choices=[ChunkChoice(
+                            delta=ChoiceDelta(content=new_text),
+                            finish_reason=None,
+                        )],
+                    )
+                    yield f"data: {chunk.model_dump_json(exclude_none=True)}\n\n"
+
+                # Final chunk: finish_reason = stop
+                final_chunk = ChatCompletionChunk(
+                    id=completion_id,
+                    created=created,
+                    model=model_name,
+                    choices=[ChunkChoice(
+                        delta=ChoiceDelta(),
+                        finish_reason="stop",
+                    )],
+                )
+                yield f"data: {final_chunk.model_dump_json(exclude_none=True)}\n\n"
+                yield "data: [DONE]\n\n"
+
+            except Exception as e:
+                backend.reset_generation_state()
+                logger.error(f"Error during OpenAI streaming: {e}", exc_info=True)
+                error_chunk = {
+                    "error": {"message": str(e), "type": "server_error"},
+                }
+                yield f"data: {json.dumps(error_chunk)}\n\n"
+
+        return StreamingResponse(
+            stream_chunks(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    # ── Non-streaming response ────────────────────────────────────
+    else:
+        try:
+            full_text = ""
+            for token in backend.generate_chat_response(**gen_kwargs):
+                full_text = token  # generate_stream yields cumulative text
+
+            response = ChatCompletion(
+                id=completion_id,
+                created=created,
+                model=model_name,
+                choices=[CompletionChoice(
+                    message=CompletionMessage(content=full_text),
+                    finish_reason="stop",
+                )],
+            )
+            return JSONResponse(content=response.model_dump())
+
+        except Exception as e:
+            backend.reset_generation_state()
+            logger.error(f"Error during OpenAI completion: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e))
+

@@ -7,9 +7,8 @@ import {
   type ExportedMessageRepositoryItem,
   type PendingAttachment,
   RuntimeAdapterProvider,
-  SimpleImageAttachmentAdapter,
-  SimpleTextAttachmentAdapter,
   Suggestions,
+  SimpleTextAttachmentAdapter,
   type ThreadHistoryAdapter,
   type ThreadMessage,
   type ThreadUserMessagePart,
@@ -24,9 +23,65 @@ import { createAssistantStream } from "assistant-stream";
 import mammoth from "mammoth";
 import { type ReactElement, type ReactNode, useEffect, useMemo } from "react";
 import { extractText, getDocumentProxy } from "unpdf";
-import { createStreamAdapter } from "./adapter";
+import { createOpenAIStreamAdapter } from "./api/chat-adapter";
 import { db } from "./db";
 import type { MessageRecord, ModelType } from "./types";
+
+const DEFAULT_SUGGESTIONS = [
+  "Draw a simple flowchart of a login system using Mermaid",
+  "Solve the integral of x²·sin(x) step by step",
+  "Write a Python function that finds the longest palindrome in a string",
+  "Format a comparison of 3 databases as a markdown table with pros and cons",
+];
+
+class VisionImageAdapter implements AttachmentAdapter {
+  accept = "image/jpeg,image/png,image/webp,image/gif";
+
+  async add({ file }: { file: File }): Promise<PendingAttachment> {
+    const maxSize = 20 * 1024 * 1024;
+    if (file.size > maxSize) {
+      throw new Error("Image size exceeds 20MB limit");
+    }
+
+    return {
+      id: crypto.randomUUID(),
+      type: "image",
+      name: file.name,
+      contentType: file.type,
+      file,
+      status: { type: "requires-action", reason: "composer-send" },
+    };
+  }
+
+  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    return {
+      id: attachment.id,
+      type: "image",
+      name: attachment.name,
+      contentType: attachment.contentType,
+      content: [
+        {
+          type: "image",
+          image: await this.fileToBase64DataURL(attachment.file),
+        },
+      ],
+      status: { type: "complete" },
+    };
+  }
+
+  async remove(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  private async fileToBase64DataURL(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = () => reject(new Error("Failed to read image file"));
+      reader.readAsDataURL(file);
+    });
+  }
+}
 
 class PDFAttachmentAdapter implements AttachmentAdapter {
   accept = "application/pdf";
@@ -269,7 +324,7 @@ function ThreadHistoryProvider({
   const attachments = useMemo(
     () =>
       new CompositeAttachmentAdapter([
-        new SimpleImageAttachmentAdapter(),
+        new VisionImageAdapter(),
         new SimpleTextAttachmentAdapter(),
         new PDFAttachmentAdapter(),
         new DocxAttachmentAdapter(),
@@ -288,9 +343,11 @@ function ThreadHistoryProvider({
   );
 }
 
-const chatAdapter = createStreamAdapter();
-const useRuntimeHook = (): ReturnType<typeof useLocalRuntime> =>
-  useLocalRuntime(chatAdapter);
+const chatAdapter = createOpenAIStreamAdapter();
+
+function useRuntimeHook(): ReturnType<typeof useLocalRuntime> {
+  return useLocalRuntime(chatAdapter);
+}
 
 function ThreadAutoSwitch({
   threadId,
@@ -308,16 +365,33 @@ function ThreadAutoSwitch({
   return null;
 }
 
+function ThreadNewChatSwitch({
+  nonce,
+}: { nonce: string }): ReactElement | null {
+  const aui = useAui();
+  const isLoading = useAuiState(({ threads }) => threads.isLoading);
+
+  useEffect(() => {
+    if (!isLoading) {
+      aui.threads().switchToNewThread();
+    }
+  }, [aui, isLoading, nonce]);
+
+  return null;
+}
+
 export function ChatRuntimeProvider({
   children,
   modelType = "base",
   pairId,
   initialThreadId,
+  newThreadNonce,
 }: {
   children: ReactNode;
   modelType?: ModelType;
   pairId?: string;
   initialThreadId?: string;
+  newThreadNonce?: string;
 }): ReactElement {
   const runtime = useRemoteThreadListRuntime({
     runtimeHook: useRuntimeHook,
@@ -328,17 +402,15 @@ export function ChatRuntimeProvider({
   });
 
   const aui = useAui({
-    suggestions: Suggestions([
-      "Draw a simple flowchart of a login system using Mermaid",
-      "Solve the integral of x\u00B2\u00B7sin(x) step by step",
-      "Write a Python function that finds the longest palindrome in a string",
-      "Format a comparison of 3 databases as a markdown table with pros and cons",
-    ]),
+    suggestions: Suggestions(DEFAULT_SUGGESTIONS),
   });
 
   return (
     <AssistantRuntimeProvider runtime={runtime} aui={aui}>
       {initialThreadId && <ThreadAutoSwitch threadId={initialThreadId} />}
+      {!initialThreadId && newThreadNonce && (
+        <ThreadNewChatSwitch nonce={newThreadNonce} />
+      )}
       {children}
     </AssistantRuntimeProvider>
   );

@@ -57,25 +57,29 @@ async def setup_auth(payload: AuthSetupRequest) -> Token:
     # Generate a strong random JWT secret for this installation
     jwt_secret = secrets.token_urlsafe(64)
 
-    # Save username/password hash and secret in SQLite
+    # Create user + generate tokens atomically — rollback if anything fails
     try:
         storage.create_initial_user(
             username=payload.username,
             password=payload.password,
             jwt_secret=jwt_secret,
         )
+
+        # Reload JWT secret from DB (so authentication.py picks it up)
+        reload_secret()
+
+        # Issue access + refresh tokens for the new user
+        access_token = create_access_token(subject=payload.username)
+        refresh_token = create_refresh_token(subject=payload.username)
+
     except Exception as e:
+        # Rollback: remove the user row so setup can be retried
+        storage.delete_user(payload.username)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create user: {str(e)}",
+            detail=f"Setup failed (rolled back): {str(e)}",
         )
 
-    # Reload JWT secret from DB (so authentication.py picks it up)
-    reload_secret()
-
-    # Issue access + refresh tokens for the new user
-    access_token = create_access_token(subject=payload.username)
-    refresh_token = create_refresh_token(subject=payload.username)
     return Token(
         access_token=access_token,
         refresh_token=refresh_token,

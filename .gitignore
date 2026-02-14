@@ -36,6 +36,7 @@ Thumbs.db
 resources/
 tmp/
 auth.db
+studio/frontend/package-lock.json
 
 # Local working docs
 **/CLAUDE.md

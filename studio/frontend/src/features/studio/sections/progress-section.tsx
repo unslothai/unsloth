@@ -5,7 +5,12 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { useWizardStore } from "@/stores/training";
+import {
+  useTrainingConfigStore,
+  useTrainingActions,
+  useTrainingRuntimeStore,
+  type TrainingPhase,
+} from "@/features/training";
 import {
   ChartAverageIcon,
   DashboardSpeed01Icon,
@@ -16,66 +21,160 @@ import {
   ZapIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import type { ReactElement, ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
+import { useShallow } from "zustand/react/shallow";
 
-export function ProgressSection(): ReactElement | null {
-  const store = useWizardStore();
-  const metrics = store.trainingMetrics;
-  if (!metrics) {
-    return null;
+const phaseLabel: Record<TrainingPhase, string> = {
+  idle: "Idle",
+  loading_model: "Loading model",
+  loading_dataset: "Loading dataset",
+  configuring: "Configuring",
+  training: "Training",
+  completed: "Completed",
+  error: "Error",
+  stopped: "Stopped",
+};
+
+const phaseColors: Record<TrainingPhase, string> = {
+  idle: "bg-muted text-muted-foreground",
+  loading_model: "bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300",
+  loading_dataset:
+    "bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300",
+  configuring: "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300",
+  training:
+    "bg-emerald-100 text-emerald-700 dark:bg-emerald-900 dark:text-emerald-300",
+  completed:
+    "bg-emerald-100 text-emerald-700 dark:bg-emerald-900 dark:text-emerald-300",
+  error: "bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300",
+  stopped: "bg-muted text-muted-foreground",
+};
+
+function formatDuration(seconds: number | null): string {
+  if (seconds == null || seconds < 0) {
+    return "--";
   }
+  const total = Math.floor(seconds);
+  const min = Math.floor(total / 60);
+  const sec = total % 60;
+  return `${min}m ${sec}s`;
+}
 
-  const pct = Math.round((metrics.currentStep / metrics.totalSteps) * 100);
-  const etaSec =
-    metrics.totalSteps > 0
-      ? Math.round(
-          ((metrics.totalSteps - metrics.currentStep) /
-            Math.max(metrics.currentStep, 1)) *
-            metrics.elapsed,
+function formatNumber(value: number | null | undefined, digits: number): string {
+  if (value == null || !Number.isFinite(value)) {
+    return "--";
+  }
+  return value.toFixed(digits);
+}
+
+export function ProgressSection(): ReactElement {
+  const runtime = useTrainingRuntimeStore(
+    useShallow((state) => ({
+      phase: state.phase,
+      message: state.message,
+      error: state.error,
+      currentStep: state.currentStep,
+      totalSteps: state.totalSteps,
+      currentEpoch: state.currentEpoch,
+      currentLoss: state.currentLoss,
+      currentLearningRate: state.currentLearningRate,
+      currentGradNorm: state.currentGradNorm,
+      progressPercent: state.progressPercent,
+      elapsedSeconds: state.elapsedSeconds,
+      etaSeconds: state.etaSeconds,
+      currentNumTokens: state.currentNumTokens,
+      isTrainingRunning: state.isTrainingRunning,
+    })),
+  );
+
+  const config = useTrainingConfigStore(
+    useShallow((state) => ({
+      selectedModel: state.selectedModel,
+      trainingMethod: state.trainingMethod,
+      epochs: state.epochs,
+      batchSize: state.batchSize,
+      learningRate: state.learningRate,
+      maxSteps: state.maxSteps,
+      contextLength: state.contextLength,
+      warmupSteps: state.warmupSteps,
+      loraRank: state.loraRank,
+      loraAlpha: state.loraAlpha,
+      loraDropout: state.loraDropout,
+      loraVariant: state.loraVariant,
+    })),
+  );
+
+  const { stopTrainingRun } = useTrainingActions();
+  const localStartAtRef = useRef<number | null>(null);
+  const [, setLocalTick] = useState(0);
+
+  const pct =
+    runtime.totalSteps > 0
+      ? Math.min(
+          100,
+          Math.max(
+            0,
+            Math.round((runtime.currentStep / runtime.totalSteps) * 100),
+          ),
         )
-      : 0;
-  const fmtTime = (s: number) => {
-    const m = Math.floor(s / 60);
-    const sec = s % 60;
-    return `${m}m ${sec}s`;
-  };
+      : Math.round(runtime.progressPercent);
 
-  const statusColors = {
-    training:
-      "bg-emerald-100 text-emerald-700 dark:bg-emerald-900 dark:text-emerald-300",
-    warmup: "bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300",
-    saving:
-      "bg-emerald-100 text-emerald-700 dark:bg-emerald-900 dark:text-emerald-300",
-  };
-  const statusLabels = {
-    training: "Training",
-    warmup: "Warming up",
-    saving: "Saving checkpoint",
-  };
+  useEffect(() => {
+    if (runtime.elapsedSeconds != null && runtime.elapsedSeconds >= 0) {
+      localStartAtRef.current = Date.now() - runtime.elapsedSeconds * 1000;
+      return;
+    }
+    if (runtime.currentStep > 0 && localStartAtRef.current == null) {
+      localStartAtRef.current = Date.now();
+    }
+  }, [runtime.currentStep, runtime.elapsedSeconds]);
 
-  const modelName = store.selectedModel ?? "—";
+  useEffect(() => {
+    if (!runtime.isTrainingRunning) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      setLocalTick((prev) => prev + 1);
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [runtime.isTrainingRunning]);
+
+  const elapsed =
+    runtime.elapsedSeconds ??
+    (localStartAtRef.current == null
+      ? null
+      : Math.max(0, Math.floor((Date.now() - localStartAtRef.current) / 1000)));
+  const derivedEta =
+    elapsed != null && pct > 0
+      ? Math.round((elapsed * (100 - pct)) / Math.max(pct, 1))
+      : null;
+  const eta = runtime.etaSeconds ?? derivedEta;
+
+  const stepsPerSecond =
+    elapsed != null && elapsed > 0
+      ? runtime.currentStep / elapsed
+      : null;
 
   const configItems = [
     {
       section: "Hyperparams",
       rows: [
-        ["Epochs", store.epochs],
-        ["Batch size", store.batchSize],
-        ["Learning rate", store.learningRate],
-        ["Max steps", store.maxSteps],
-        ["Context length", store.contextLength],
-        ["Warmup steps", store.warmupSteps],
+        ["Epochs", config.epochs],
+        ["Batch size", config.batchSize],
+        ["Learning rate", config.learningRate],
+        ["Max steps", config.maxSteps],
+        ["Context length", config.contextLength],
+        ["Warmup steps", config.warmupSteps],
       ],
     },
-    ...(store.trainingMethod !== "full"
+    ...(config.trainingMethod !== "full"
       ? [
           {
             section: "LoRA",
             rows: [
-              ["Rank", store.loraRank],
-              ["Alpha", store.loraAlpha],
-              ["Dropout", store.loraDropout],
-              ["Variant", store.loraVariant],
+              ["Rank", config.loraRank],
+              ["Alpha", config.loraAlpha],
+              ["Dropout", config.loraDropout],
+              ["Variant", config.loraVariant],
             ],
           },
         ]
@@ -86,7 +185,7 @@ export function ProgressSection(): ReactElement | null {
     <SectionCard
       icon={<HugeiconsIcon icon={ChartAverageIcon} className="size-5" />}
       title="Training Progress"
-      description="Live training metrics"
+      description={runtime.message || "Live training metrics"}
       accent="emerald"
       className="shadow-border ring-1 ring-border"
       headerAction={
@@ -130,7 +229,8 @@ export function ProgressSection(): ReactElement | null {
             variant="destructive"
             size="sm"
             className="h-7 cursor-pointer px-3 text-xs"
-            onClick={() => store.setIsTraining(false)}
+            onClick={() => void stopTrainingRun()}
+            disabled={!runtime.isTrainingRunning}
           >
             <HugeiconsIcon icon={StopIcon} className="size-3" /> Stop
           </Button>
@@ -138,24 +238,22 @@ export function ProgressSection(): ReactElement | null {
       }
     >
       <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
-        {/* Left: Progress */}
         <div className="flex flex-col gap-4">
           <div className="flex items-center gap-2">
             <span
-              className={`rounded-full px-2.5 py-0.5 text-[10px] font-semibold ${statusColors[metrics.status]}`}
+              className={`rounded-full px-2.5 py-0.5 text-[10px] font-semibold ${phaseColors[runtime.phase]}`}
             >
-              {statusLabels[metrics.status]}
+              {phaseLabel[runtime.phase]}
             </span>
             <span className="text-[10px] tabular-nums text-muted-foreground">
-              Epoch {metrics.currentEpoch.toFixed(2)} / {metrics.totalEpochs}
+              Epoch {runtime.currentEpoch.toFixed(2)}
             </span>
           </div>
 
-          {/* Progress bar */}
           <div className="flex flex-col gap-1.5">
             <div className="flex justify-between text-xs text-muted-foreground">
               <span>
-                Step {metrics.currentStep} / {metrics.totalSteps}
+                Step {runtime.currentStep} / {runtime.totalSteps || "--"}
               </span>
               <span>{pct}%</span>
             </div>
@@ -167,51 +265,59 @@ export function ProgressSection(): ReactElement | null {
             </div>
           </div>
 
-          {/* Metrics */}
-          <div className="flex items-baseline gap-4">
+          {runtime.error && (
+            <p className="text-xs text-red-500 leading-relaxed">{runtime.error}</p>
+          )}
+
+          <div className="flex flex-wrap items-baseline gap-4">
             <div>
               <p className="text-xs text-muted-foreground">Loss</p>
               <p className="text-3xl font-bold tabular-nums tracking-tight">
-                {metrics.currentLoss.toFixed(4)}
+                {runtime.currentLoss.toFixed(4)}
               </p>
             </div>
             <div>
               <p className="text-xs text-muted-foreground">LR</p>
               <p className="text-lg font-semibold tabular-nums">
-                {metrics.currentLR.toExponential(2)}
+                {runtime.currentLearningRate.toExponential(2)}
               </p>
             </div>
             <div>
               <p className="text-xs text-muted-foreground">Grad Norm</p>
               <p className="text-lg font-semibold tabular-nums">
-                {metrics.gradNorm.toFixed(3)}
+                {formatNumber(runtime.currentGradNorm, 3)}
               </p>
             </div>
             <div>
               <p className="text-xs text-muted-foreground">Model</p>
               <p className="text-lg font-semibold truncate max-w-[140px]">
-                {modelName}
+                {config.selectedModel ?? "--"}
               </p>
             </div>
             <div>
               <p className="text-xs text-muted-foreground">Method</p>
-              <p className="text-lg font-semibold">{store.trainingMethod}</p>
+              <p className="text-lg font-semibold">
+                {config.trainingMethod.toUpperCase()}
+              </p>
             </div>
           </div>
 
-          {/* Timings */}
-          <div className="flex gap-4 text-xs text-muted-foreground">
-            <span>Elapsed: {fmtTime(metrics.elapsed)}</span>
-            <span>ETA: {fmtTime(etaSec)}</span>
-            <span>{metrics.samplesPerSecond} samples/s</span>
+          <div className="flex flex-wrap gap-4 text-xs text-muted-foreground">
+            <span>Elapsed: {formatDuration(elapsed)}</span>
+            <span>ETA: {formatDuration(eta)}</span>
+            <span>
+              {stepsPerSecond == null
+                ? "-- steps/s"
+                : `${stepsPerSecond.toFixed(2)} steps/s`}
+            </span>
+            {runtime.currentNumTokens != null && (
+              <span>Tokens: {runtime.currentNumTokens}</span>
+            )}
           </div>
         </div>
 
-        {/* Right: GPU */}
         <div className="flex flex-col gap-3">
-          <p className="text-xs font-medium text-muted-foreground">
-            GPU Monitor
-          </p>
+          <p className="text-xs font-medium text-muted-foreground">GPU Monitor</p>
           <div className="grid grid-cols-2 gap-3">
             <GpuStat
               label="Utilization"
@@ -221,29 +327,27 @@ export function ProgressSection(): ReactElement | null {
                   className="size-3.5"
                 />
               }
-              value={`${metrics.gpuUtil}%`}
-              pct={metrics.gpuUtil}
+              value="--"
+              pct={0}
             />
             <GpuStat
               label="Temperature"
-              icon={
-                <HugeiconsIcon icon={TemperatureIcon} className="size-3.5" />
-              }
-              value={`${metrics.gpuTemp}°C`}
-              pct={metrics.gpuTemp}
+              icon={<HugeiconsIcon icon={TemperatureIcon} className="size-3.5" />}
+              value="--"
+              pct={0}
               max={100}
             />
             <GpuStat
               label="VRAM"
               icon={<HugeiconsIcon icon={RamMemoryIcon} className="size-3.5" />}
-              value={`${metrics.gpuVramUsed.toFixed(1)} / ${metrics.gpuVramTotal}GB`}
-              pct={(metrics.gpuVramUsed / metrics.gpuVramTotal) * 100}
+              value="--"
+              pct={0}
             />
             <GpuStat
               label="Power"
               icon={<HugeiconsIcon icon={ZapIcon} className="size-3.5" />}
-              value={`${metrics.gpuPower}W`}
-              pct={(metrics.gpuPower / 350) * 100}
+              value="--"
+              pct={0}
             />
           </div>
         </div>
@@ -272,6 +376,7 @@ function GpuStat({
   } else if (clamped < 95) {
     barColor = "bg-amber-500";
   }
+
   return (
     <div className="flex flex-col gap-1.5 rounded-xl bg-muted/50 p-3">
       <div className="flex items-center justify-between text-xs">

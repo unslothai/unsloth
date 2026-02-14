@@ -526,8 +526,8 @@ def load_model_defaults(model_name: str) -> Dict[str, Any]:
     """
     try:
         # Get the script directory to locate configs
-        script_dir = Path(__file__).parent.parent
-        defaults_dir = script_dir / "configs" / "model_defaults"
+        script_dir = Path(__file__).parent.parent.parent
+        defaults_dir = script_dir / "assets" / "configs" / "model_defaults"
         
         # First, check if model is in the mapping
         if model_name in _REVERSE_MODEL_MAPPING:
@@ -661,10 +661,44 @@ class ModelConfig:
             identifier = f"unsloth/{identifier}"
             path = identifier
         
+        # Auto-detect LoRA for local paths (check adapter_config.json on disk)
+        if not is_lora and is_local:
+            detected_base = get_base_model_from_lora(path)
+            if detected_base:
+                is_lora = True
+                logger.info(f"Auto-detected local LoRA adapter at '{path}' (base: {detected_base})")
+        
+        # Auto-detect LoRA for remote HF models (check repo file listing)
+        if not is_lora and not is_local:
+            try:
+                from huggingface_hub import model_info as hf_model_info
+                info = hf_model_info(identifier, token=hf_token)
+                repo_files = [s.rfilename for s in info.siblings]
+                if "adapter_config.json" in repo_files:
+                    is_lora = True
+                    logger.info(f"Auto-detected remote LoRA adapter: '{identifier}'")
+            except Exception as e:
+                logger.debug(f"Could not check remote LoRA status for '{identifier}': {e}")
+        
         # Handle LoRA adapters
         base_model = None
         if is_lora:
-            base_model = get_base_model_from_lora(path)
+            if is_local:
+                # Local LoRA: read adapter_config.json from disk
+                base_model = get_base_model_from_lora(path)
+            else:
+                # Remote LoRA: download adapter_config.json from HF
+                try:
+                    from huggingface_hub import hf_hub_download
+                    config_path = hf_hub_download(identifier, "adapter_config.json", token=hf_token)
+                    with open(config_path, 'r') as f:
+                        adapter_config = json.load(f)
+                    base_model = adapter_config.get("base_model_name_or_path")
+                    if base_model:
+                        logger.info(f"Resolved remote LoRA base model: '{base_model}'")
+                except Exception as e:
+                    logger.warning(f"Could not download adapter_config.json for '{identifier}': {e}")
+            
             if not base_model:
                 logger.warning(f"Could not determine base model for LoRA '{path}'")
                 return None
