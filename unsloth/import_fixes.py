@@ -26,6 +26,7 @@ import textwrap
 import warnings
 import sys
 import functools
+import tempfile
 
 # We cannot do from unsloth_zoo.log import logger since FBGEMM might cause seg faults.
 UNSLOTH_ENABLE_LOGGING = os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") in (
@@ -1229,14 +1230,20 @@ def _is_rocm_torch_build() -> bool:
 
 
 @contextlib.contextmanager
-def _suppress_stderr_fd():
+def _filter_stderr_fd(
+    suppressed_substrings = ("amdgpu.ids: No such file or directory",),
+):
+    """
+    Capture low-level fd=2 writes, drop only known noisy substrings, and replay
+    everything else after the protected block.
+    """
     saved_stderr_fd = None
-    devnull_fd = None
+    temp_file = None
     redirected = False
     try:
         saved_stderr_fd = os.dup(2)
-        devnull_fd = os.open(os.devnull, os.O_WRONLY)
-        os.dup2(devnull_fd, 2)
+        temp_file = tempfile.TemporaryFile(mode = "w+b")
+        os.dup2(temp_file.fileno(), 2)
         redirected = True
     except Exception:
         redirected = False
@@ -1244,14 +1251,31 @@ def _suppress_stderr_fd():
     try:
         yield
     finally:
+        captured = b""
+        if redirected and temp_file is not None:
+            try:
+                temp_file.flush()
+                temp_file.seek(0)
+                captured = temp_file.read()
+            except Exception:
+                captured = b""
         if redirected and saved_stderr_fd is not None:
             try:
                 os.dup2(saved_stderr_fd, 2)
             except Exception:
                 pass
-        if devnull_fd is not None:
+        if captured and saved_stderr_fd is not None:
             try:
-                os.close(devnull_fd)
+                for raw_line in captured.splitlines(keepends = True):
+                    line = raw_line.decode("utf-8", errors = "ignore")
+                    if any(s in line for s in suppressed_substrings):
+                        continue
+                    os.write(saved_stderr_fd, raw_line)
+            except Exception:
+                pass
+        if temp_file is not None:
+            try:
+                temp_file.close()
             except Exception:
                 pass
         if saved_stderr_fd is not None:
@@ -1266,7 +1290,7 @@ def _suppress_hip_libdrm_ids_noise():
     # Python-level stderr filters cannot intercept those writes.
     if not _is_rocm_torch_build():
         return contextlib.nullcontext()
-    return _suppress_stderr_fd()
+    return _filter_stderr_fd()
 
 
 def _is_causal_conv1d_name(module_name: str) -> bool:
