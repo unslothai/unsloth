@@ -83,14 +83,7 @@ if SUPPORTS_GEMMA:
 if SUPPORTS_GEMMA2:
     from .gemma2 import FastGemma2Model
 if SUPPORTS_FALCON_H1:
-    try:
-        from .falcon_h1 import FastFalconH1Model
-    except Exception as e:
-        print(
-            "Unsloth: Could not import Falcon H1 support."
-            " This support is optional and import will continue without it."
-            f"\n  Cause: {type(e).__name__}: {e}"
-        )
+    from .falcon_h1 import FastFalconH1Model
 import torch
 from ._utils import (
     patch_compiling_bitsandbytes,

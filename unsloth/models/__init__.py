@@ -20,16 +20,7 @@ from .qwen3 import FastQwen3Model
 from .qwen3_moe import FastQwen3MoeModel
 from .granite import FastGraniteModel
 from .sentence_transformer import FastSentenceTransformer
-
-try:
-    from .falcon_h1 import FastFalconH1Model
-except Exception as e:  # pragma: no cover - only for optional model import
-    message = str(e).lower()
-    if "causal_conv1d" in message:
-        print(
-            "Unsloth: Skipping Falcon H1 support (optional, unsupported causal_conv1d setup)."
-        )
-    # transformers_version < 4.53.0 does not have falcon_h1 so silently skip it for now
+from .falcon_h1 import FastFalconH1Model
 from .dpo import PatchDPOTrainer, PatchKTOTrainer
 from ._utils import is_bfloat16_supported, is_vLLM_available, __version__
 from .rl import PatchFastRL, vLLMSamplingParams
