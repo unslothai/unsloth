@@ -177,31 +177,23 @@ class InferenceBackend:
             return False
 
         model = self.models[base_model_name].get("model")
-        print(f"[DEBUG] revert_to_base_model called. Model type BEFORE: {model.__class__.__name__}")
-        print(f"[DEBUG] Is PeftModel? {isinstance(model, (PeftModel, PeftModelForCausalLM))}")
-        print(f"[DEBUG] Has peft_config? {hasattr(model, 'peft_config')}, keys={list(getattr(model, 'peft_config', {}).keys())}")
 
         try:
-            # Step 1: Unload the adapter weights. This returns the base model object.
-            # This step is only necessary if the model is currently a PeftModel instance.
+            # Step 1: Unload the adapter weights if model is a PeftModel.
             if isinstance(model, (PeftModel, PeftModelForCausalLM)):
-                print("[DEBUG] Model IS a PeftModel. Calling model.unload()...")
+                logger.info(f"Unloading LoRA adapters from '{base_model_name}'...")
                 unwrapped_base_model = model.unload()
                 self.models[base_model_name]["model"] = unwrapped_base_model
-                model = unwrapped_base_model # Continue with the unwrapped model
-                print(f"[DEBUG] Model type AFTER unload: {model.__class__.__name__}")
-            else:
-                print(f"[DEBUG] Model is NOT a PeftModel, skipping unload.")
+                model = unwrapped_base_model
 
             # Step 2: Clear any lingering peft_config from the unwrapped model.
             # After model.unload(), the base model may still carry a peft_config
-            # attribute (with 'default' key). Removing it entirely ensures
-            # load_adapter() won't warn about "multiple adapters".
+            # attribute. Removing it ensures PeftModel.from_pretrained() gets
+            # a clean base model without "multiple adapters" warnings.
             if hasattr(model, 'peft_config'):
-                print(f"[DEBUG] Clearing lingering peft_config: {list(model.peft_config.keys())}")
                 del model.peft_config
 
-            print(f"[DEBUG] Model type FINAL: {model.__class__.__name__}, has peft_config={hasattr(model, 'peft_config')}. Reverted to clean base state.")
+            logger.info(f"Model '{base_model_name}' reverted to clean base state.")
             return True
 
         except Exception as e:
@@ -209,7 +201,6 @@ class InferenceBackend:
             import traceback
             logger.error(traceback.format_exc())
             return False
-    pass
 
     def activate_lora_adapter(self, base_model_name: str, lora_path: str) -> Tuple[bool, Optional[str]]:
         """
@@ -218,24 +209,20 @@ class InferenceBackend:
         """
         model = self.models[base_model_name].get("model")
         adapter_name_to_load = lora_path.split("/")[-1].replace(".", "_")
-        print(f"[DEBUG] activate_lora_adapter called. base_model_name='{base_model_name}', lora_path='{lora_path}'")
-        print(f"[DEBUG] adapter_name_to_load='{adapter_name_to_load}'")
-        print(f"[DEBUG] Model type BEFORE: {model.__class__.__name__}")
 
         try:
             # Use PeftModel.from_pretrained to wrap the clean base model with the adapter.
             # This is the correct approach after model.unload() + del peft_config.
-            print(f"[DEBUG] Calling PeftModel.from_pretrained(model, '{lora_path}', adapter_name='{adapter_name_to_load}')...")
+            logger.info(f"Loading LoRA adapter '{adapter_name_to_load}' from '{lora_path}'...")
             model = PeftModel.from_pretrained(model, lora_path, adapter_name=adapter_name_to_load)
             self.models[base_model_name]["model"] = model
-            print(f"[DEBUG] Model type AFTER: {model.__class__.__name__}")
-            print(f"[DEBUG] activate_lora_adapter SUCCESS.")
+            logger.info(f"LoRA adapter '{adapter_name_to_load}' activated successfully.")
 
             return True, adapter_name_to_load
         except Exception as e:
-            print(f"[DEBUG] activate_lora_adapter FAILED: {e}")
+            logger.error(f"Failed to activate LoRA adapter '{adapter_name_to_load}': {e}")
             import traceback
-            traceback.print_exc()
+            logger.error(traceback.format_exc())
             return False, None
 
     def load_adapter(self, base_model_name: str, adapter_path: str, adapter_name: str = None) -> bool:
