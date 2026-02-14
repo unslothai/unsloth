@@ -1,5 +1,5 @@
-import { useWizardStore } from "@/stores/training";
-import { type ReactElement, Suspense, lazy } from "react";
+import { useTrainingRuntimeStore } from "@/features/training";
+import { type ReactElement, Suspense, lazy, useMemo } from "react";
 
 const ChartsContent = lazy(() =>
   import("./charts-content").then((module) => ({
@@ -14,9 +14,39 @@ const SKELETON_KEYS = [
 ];
 
 export function ChartsSection(): ReactElement | null {
-  const metrics = useWizardStore((s) => s.trainingMetrics);
+  const currentStep = useTrainingRuntimeStore((state) => state.currentStep);
+  const totalSteps = useTrainingRuntimeStore((state) => state.totalSteps);
+  const lossHistoryRaw = useTrainingRuntimeStore((state) => state.lossHistory);
+  const lrHistoryRaw = useTrainingRuntimeStore((state) => state.lrHistory);
+  const gradNormHistoryRaw = useTrainingRuntimeStore(
+    (state) => state.gradNormHistory,
+  );
 
-  if (!metrics) {
+  const series = useMemo(
+    () => ({
+      currentStep,
+      totalSteps,
+      lossHistory: lossHistoryRaw.map((point) => ({
+        step: point.step,
+        loss: point.value,
+      })),
+      lrHistory: lrHistoryRaw.map((point) => ({
+        step: point.step,
+        lr: point.value,
+      })),
+      gradNormHistory: gradNormHistoryRaw.map((point) => ({
+        step: point.step,
+        gradNorm: point.value,
+      })),
+    }),
+    [currentStep, gradNormHistoryRaw, lossHistoryRaw, lrHistoryRaw, totalSteps],
+  );
+
+  if (
+    series.lossHistory.length === 0 &&
+    series.lrHistory.length === 0 &&
+    series.gradNormHistory.length === 0
+  ) {
     return null;
   }
 
@@ -33,7 +63,7 @@ export function ChartsSection(): ReactElement | null {
         </div>
       }
     >
-      <ChartsContent metrics={metrics} />
+      <ChartsContent metrics={series} />
     </Suspense>
   );
 }

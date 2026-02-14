@@ -7,7 +7,9 @@ import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { Reasoning, ReasoningGroup } from "@/components/assistant-ui/reasoning";
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
+import { AnimatedShinyText } from "@/components/ui/animated-shiny-text";
 import { Button } from "@/components/ui/button";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { cn } from "@/lib/utils";
 import {
   ActionBarMorePrimitive,
@@ -20,6 +22,8 @@ import {
   SuggestionPrimitive,
   ThreadPrimitive,
   useAui,
+  useAuiEvent,
+  useAuiState,
 } from "@assistant-ui/react";
 import { motion } from "framer-motion";
 import {
@@ -36,7 +40,7 @@ import {
   RefreshCwIcon,
   SquareIcon,
 } from "lucide-react";
-import type { FC } from "react";
+import { type FC, useRef } from "react";
 
 export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
   hideComposer,
@@ -69,12 +73,35 @@ export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
 
         <ThreadPrimitive.ViewportFooter className="aui-thread-viewport-footer sticky bottom-0 mt-auto flex w-full flex-col gap-4 overflow-visible bg-background pb-4 md:pb-4 before:pointer-events-none before:absolute before:inset-x-0 before:bottom-full before:h-20 before:bg-gradient-to-t before:from-background before:to-transparent">
           <ThreadScrollToBottom />
+          <WarmupIndicator />
           <AuiIf condition={({ thread }) => !thread.isEmpty}>
             {!hideComposer && <ComposerAnimated />}
           </AuiIf>
         </ThreadPrimitive.ViewportFooter>
       </ThreadPrimitive.Viewport>
     </ThreadPrimitive.Root>
+  );
+};
+
+const WarmupIndicator: FC = () => {
+  const threadId = useAuiState(({ threads }) => threads.mainThreadId);
+  const isRunning = useAuiState(({ thread }) => thread.isRunning);
+  const isWarmingUp = useChatRuntimeStore((state) =>
+    Boolean(state.warmingByThreadId[threadId ?? "__default"]),
+  );
+
+  if (!isRunning || !isWarmingUp) {
+    return null;
+  }
+
+  return (
+    <div className="mx-auto -mb-2 w-full max-w-(--thread-max-width) px-2">
+      <div className="inline-flex items-center rounded-full border border-border/60 bg-background/90 px-3 py-1.5 text-xs text-muted-foreground shadow-sm">
+        <AnimatedShinyText className="text-xs">
+          Warming up model...
+        </AnimatedShinyText>
+      </div>
+    </div>
   );
 };
 
@@ -93,13 +120,26 @@ const ThreadScrollToBottom: FC = () => {
 };
 
 const SuggestionItem: FC = () => {
+  const aui = useAui();
+  const prompt = useAuiState(({ suggestion }) => suggestion.prompt);
+  const isDisabled = useAuiState(({ thread }) => thread.isDisabled);
+  const isRunning = useAuiState(({ thread }) => thread.isRunning);
+
   return (
-    <SuggestionPrimitive.Trigger
-      send={true}
+    <button
+      type="button"
+      onClick={() => {
+        if (!isDisabled && !isRunning) {
+          aui.thread().append(prompt);
+          aui.composer().setText("");
+          return;
+        }
+        aui.composer().setText(prompt);
+      }}
       className="fade-in slide-in-from-bottom-1 animate-in cursor-pointer corner-squircle rounded-xl border bg-background px-4 py-2.5 text-left text-sm text-foreground shadow-sm transition-colors duration-150 hover:bg-accent"
     >
       <SuggestionPrimitive.Title />
-    </SuggestionPrimitive.Trigger>
+    </button>
   );
 };
 
@@ -358,6 +398,15 @@ const UserActionBar: FC = () => {
 
 const EditComposer: FC = () => {
   const aui = useAui();
+  const resendAfterCancelRef = useRef(false);
+
+  useAuiEvent("thread.runEnd", () => {
+    if (!resendAfterCancelRef.current) {
+      return;
+    }
+    resendAfterCancelRef.current = false;
+    aui.composer().send();
+  });
 
   return (
     <MessagePrimitive.Root className="aui-edit-composer-wrapper mx-auto flex w-full max-w-(--thread-max-width) flex-col px-2 py-3">
@@ -384,7 +433,9 @@ const EditComposer: FC = () => {
               }
 
               if (aui.thread().getState().isRunning) {
+                resendAfterCancelRef.current = true;
                 aui.thread().cancelRun();
+                return;
               }
               aui.composer().send();
             }}

@@ -38,7 +38,7 @@ import {
   useInfiniteScroll,
 } from "@/hooks";
 import { cn, formatCompact } from "@/lib/utils";
-import { useWizardStore } from "@/stores/training";
+import { useTrainingConfigStore } from "@/features/training";
 import type { DatasetFormat } from "@/types/training";
 import {
   InformationCircleIcon,
@@ -69,7 +69,7 @@ export function DatasetStep() {
     setDataset,
     uploadedFile,
     setUploadedFile,
-  } = useWizardStore(
+  } = useTrainingConfigStore(
     useShallow((s) => ({
       hfToken: s.hfToken,
       setHfToken: s.setHfToken,

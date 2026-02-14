@@ -3,7 +3,7 @@ Training API routes
 """
 import sys
 from pathlib import Path
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from typing import Dict, Optional
 import logging
@@ -124,6 +124,7 @@ async def start_training(
             "hf_dataset": request.hf_dataset or "",
             "local_datasets": request.local_datasets,
             "format_type": request.format_type,
+            "custom_format_mapping": request.custom_format_mapping,
             "num_epochs": request.num_epochs,
             "learning_rate": request.learning_rate,
             "batch_size": request.batch_size,
@@ -180,14 +181,19 @@ async def start_training(
                 except Exception as e:
                     logger.error(f"Error updating progress: {e}")
 
-                # Consume the generator - this actually runs the training
-                update_count = 0
-                for _update_tuple in backend.start_training(**training_kwargs):
-                    update_count += 1
-                    if update_count % 10 == 0:
-                        logger.info(f"Training progress update #{update_count}")
+                # start_training returns bool (not generator)
+                run_result = backend.start_training(**training_kwargs)
+                logger.info(
+                    "Training job %s backend.start_training returned type=%s value=%r",
+                    job_id,
+                    type(run_result).__name__,
+                    run_result,
+                )
+                if not run_result:
+                    progress_error = backend.trainer.training_progress.error
+                    raise RuntimeError(progress_error or "Training failed to start")
 
-                logger.info(f"Training job {job_id} completed successfully")
+                logger.info(f"Training job {job_id} started successfully")
 
             except Exception as e:
                 logger.error(f"Training error in job {job_id}: {e}", exc_info=True)
@@ -337,6 +343,15 @@ async def get_training_status(
                 "learning_rate": getattr(progress, "learning_rate", 0.0),
             }
 
+        # Build metric history for chart recovery after SSE reconnection
+        metric_history = None
+        if backend.step_history:
+            metric_history = {
+                "steps": list(backend.step_history),
+                "loss": list(backend.loss_history),
+                "lr": list(backend.lr_history),
+            }
+
         return TrainingStatus(
             job_id=job_id,
             phase=phase,
@@ -344,6 +359,7 @@ async def get_training_status(
             message=status_message,
             error=error_message,
             details=details,
+            metric_history=metric_history,
         )
             
     except Exception as e:
@@ -393,24 +409,40 @@ async def get_training_metrics(
 
 @router.get("/progress")
 async def stream_training_progress(
+    request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
     """
     Stream training progress updates using Server-Sent Events (SSE).
-    
+
     This endpoint provides real-time updates on training progress.
+    Supports reconnection via the SSE spec:
+      - Sends `id:` with each event so the browser tracks position.
+      - Sends `retry:` to control reconnection interval.
+      - Sends named `event:` types (progress, heartbeat, complete, error).
+      - Reads `Last-Event-ID` header on reconnect to replay missed steps.
     """
+    # Read Last-Event-ID header for reconnection resume
+    last_event_id = request.headers.get("last-event-id")
+    resume_from_step: Optional[int] = None
+    if last_event_id is not None:
+        try:
+            resume_from_step = int(last_event_id)
+            logger.info(f"SSE reconnect: resuming from step {resume_from_step}")
+        except ValueError:
+            logger.warning(f"Invalid Last-Event-ID: {last_event_id}")
+
     async def event_generator():
         backend = get_training_backend()
         job_id: str = getattr(backend, "current_job_id", "")
 
-        # Helper to build a TrainingProgress payload from raw values
+        # ── Helpers ──────────────────────────────────────────────
         def build_progress(
             step: int,
             loss: float,
             learning_rate: float,
             total_steps: int,
-            epoch: Optional[int] = None,
+            epoch: Optional[float] = None,
         ) -> TrainingProgress:
             total = max(total_steps, 0)
             if step < 0 or total == 0:
@@ -434,45 +466,86 @@ async def stream_training_progress(
                 num_tokens=None,
             )
 
-        # Send initial status
-        is_active = backend.is_training_active()
-        tp = getattr(getattr(backend, "trainer", None), "training_progress", None)
-        initial_total_steps = getattr(tp, "total_steps", 0) if tp else 0
-        initial_epoch = getattr(tp, "epoch", None) if tp else None
+        def format_sse(
+            data: str,
+            event: str = "progress",
+            event_id: Optional[int] = None,
+        ) -> str:
+            """Format a single SSE message with id/event/data fields."""
+            lines = []
+            if event_id is not None:
+                lines.append(f"id: {event_id}")
+            lines.append(f"event: {event}")
+            lines.append(f"data: {data}")
+            lines.append("")  # trailing blank line
+            lines.append("")  # double newline terminates the event
+            return "\n".join(lines)
 
-        initial_progress = build_progress(
-            step=0,
-            loss=0.0,
-            learning_rate=0.0,
-            total_steps=initial_total_steps,
-            epoch=initial_epoch,
-        )
-        yield f"data: {initial_progress.model_dump_json()}\n\n"
+        # ── Retry directive ──────────────────────────────────────
+        # Tell the browser to reconnect after 3 seconds if the connection drops
+        yield "retry: 3000\n\n"
 
-        # If not active, check if there's any history
-        if not is_active:
-            if backend.step_history:
-                # Training completed - send final metrics
-                final_step = backend.step_history[-1]
-                final_loss = backend.loss_history[-1] if backend.loss_history else 0.0
-                final_lr = backend.lr_history[-1] if backend.lr_history else 0.0
-                final_total_steps = (
-                    getattr(tp, "total_steps", final_step) if tp else final_step
-                )
-                final_epoch = getattr(tp, "epoch", None) if tp else None
-                yield f"data: {build_progress(final_step, final_loss, final_lr, final_total_steps, final_epoch).model_dump_json()}\n\n"
-            else:
-                yield f"data: {build_progress(-1, 0.0, 0.0, 0).model_dump_json()}\n\n"
-            return
-        
-        # Poll for updates while training is active
-        last_step = -1
+        # ── Replay missed steps on reconnect ─────────────────────
+        if resume_from_step is not None and backend.step_history:
+            replayed = 0
+            for i, step_val in enumerate(backend.step_history):
+                if step_val > resume_from_step:
+                    loss_val = backend.loss_history[i] if i < len(backend.loss_history) else 0.0
+                    lr_val = backend.lr_history[i] if i < len(backend.lr_history) else 0.0
+                    tp_replay = getattr(
+                        getattr(backend, "trainer", None), "training_progress", None
+                    )
+                    total_replay = getattr(tp_replay, "total_steps", step_val) if tp_replay else step_val
+                    epoch_replay = getattr(tp_replay, "epoch", None) if tp_replay else None
+                    payload = build_progress(step_val, loss_val, lr_val, total_replay, epoch_replay)
+                    yield format_sse(payload.model_dump_json(), event="progress", event_id=step_val)
+                    replayed += 1
+            if replayed:
+                logger.info(f"SSE reconnect: replayed {replayed} missed steps")
+
+        # ── Initial status (only on fresh connections) ───────────
+        if resume_from_step is None:
+            is_active = backend.is_training_active()
+            tp = getattr(getattr(backend, "trainer", None), "training_progress", None)
+            initial_total_steps = getattr(tp, "total_steps", 0) if tp else 0
+            initial_epoch = getattr(tp, "epoch", None) if tp else None
+
+            initial_progress = build_progress(
+                step=0,
+                loss=0.0,
+                learning_rate=0.0,
+                total_steps=initial_total_steps,
+                epoch=initial_epoch,
+            )
+            yield format_sse(initial_progress.model_dump_json(), event="progress", event_id=0)
+
+            # If not active, send final state and exit
+            if not is_active:
+                if backend.step_history:
+                    final_step = backend.step_history[-1]
+                    final_loss = backend.loss_history[-1] if backend.loss_history else 0.0
+                    final_lr = backend.lr_history[-1] if backend.lr_history else 0.0
+                    final_total_steps = (
+                        getattr(tp, "total_steps", final_step) if tp else final_step
+                    )
+                    final_epoch = getattr(tp, "epoch", None) if tp else None
+                    payload = build_progress(final_step, final_loss, final_lr, final_total_steps, final_epoch)
+                    yield format_sse(payload.model_dump_json(), event="complete", event_id=final_step)
+                else:
+                    yield format_sse(
+                        build_progress(-1, 0.0, 0.0, 0).model_dump_json(),
+                        event="complete",
+                        event_id=0,
+                    )
+                return
+
+        # ── Live polling loop ────────────────────────────────────
+        last_step = resume_from_step if resume_from_step is not None else -1
         no_update_count = 0
-        max_no_updates = 300  # Timeout after 5 minutes
-        
+        max_no_updates = 1800  # Timeout after 30 minutes (large models need time for compilation)
+
         while backend.is_training_active():
             try:
-                # Get current metrics
                 if backend.step_history:
                     current_step = backend.step_history[-1]
                     current_loss = backend.loss_history[-1] if backend.loss_history else 0.0
@@ -496,7 +569,11 @@ async def stream_training_progress(
                             current_total_steps,
                             current_epoch,
                         )
-                        yield f"data: {progress_payload.model_dump_json()}\n\n"
+                        yield format_sse(
+                            progress_payload.model_dump_json(),
+                            event="progress",
+                            event_id=current_step,
+                        )
                         last_step = current_step
                         no_update_count = 0
                     else:
@@ -510,30 +587,58 @@ async def stream_training_progress(
                                 current_total_steps,
                                 current_epoch,
                             )
-                            yield f"data: {heartbeat_payload.model_dump_json()}\n\n"
+                            yield format_sse(
+                                heartbeat_payload.model_dump_json(),
+                                event="heartbeat",
+                                event_id=current_step,
+                            )
                 else:
-                    # No steps yet, but training is active
+                    # No steps yet, but training is active (model loading, etc.)
                     no_update_count += 1
                     if no_update_count % 5 == 0:
-                        preparing_payload = build_progress(0, 0.0, 0.0, 0)
-                        yield f"data: {preparing_payload.model_dump_json()}\n\n"
-                
+                        # Pull total_steps and status from trainer so
+                        # the frontend can show "Tokenizing…" etc.
+                        tp_prep = getattr(
+                            getattr(backend, "trainer", None),
+                            "training_progress", None,
+                        )
+                        prep_total = (
+                            getattr(tp_prep, "total_steps", 0)
+                            if tp_prep else 0
+                        )
+                        preparing_payload = build_progress(
+                            0, 0.0, 0.0, prep_total,
+                        )
+                        yield format_sse(
+                            preparing_payload.model_dump_json(),
+                            event="heartbeat",
+                            event_id=0,
+                        )
+
                 # Timeout check
                 if no_update_count > max_no_updates:
                     logger.warning("Progress stream timeout - no updates received")
                     timeout_payload = build_progress(last_step, 0.0, 0.0, 0)
-                    yield f"data: {timeout_payload.model_dump_json()}\n\n"
+                    yield format_sse(
+                        timeout_payload.model_dump_json(),
+                        event="error",
+                        event_id=last_step if last_step >= 0 else 0,
+                    )
                     break
-                
+
                 await asyncio.sleep(1)  # Poll every second
-                
+
             except Exception as e:
                 logger.error(f"Error in progress stream: {e}", exc_info=True)
                 error_payload = build_progress(0, 0.0, 0.0, 0)
-                yield f"data: {error_payload.model_dump_json()}\n\n"
+                yield format_sse(
+                    error_payload.model_dump_json(),
+                    event="error",
+                    event_id=last_step if last_step >= 0 else 0,
+                )
                 break
 
-        # Send final status
+        # ── Final "complete" event ───────────────────────────────
         final_step = backend.step_history[-1] if backend.step_history else last_step
         final_loss = backend.loss_history[-1] if backend.loss_history else 0.0
         final_lr = backend.lr_history[-1] if backend.lr_history else 0.0
@@ -551,14 +656,18 @@ async def stream_training_progress(
             final_total_steps,
             final_epoch,
         )
-        yield f"data: {final_payload.model_dump_json()}\n\n"
-    
+        yield format_sse(
+            final_payload.model_dump_json(),
+            event="complete",
+            event_id=final_step if final_step >= 0 else 0,
+        )
+
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
         }
     )
-

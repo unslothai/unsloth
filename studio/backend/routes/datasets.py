@@ -1,6 +1,8 @@
 """
 Datasets API routes
 """
+import base64
+import io
 import sys
 from pathlib import Path
 from fastapi import APIRouter, HTTPException
@@ -30,6 +32,42 @@ if not logger.handlers:
 from models.datasets import CheckFormatRequest, CheckFormatResponse
 
 
+def _serialize_preview_value(value):
+    """make it json safe for client preview ⊂(◉‿◉)つ"""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+
+    try:
+        from PIL.Image import Image as PILImage
+        if isinstance(value, PILImage):
+            buffer = io.BytesIO()
+            value.convert("RGB").save(buffer, format="JPEG", quality=85)
+            return {
+                "type": "image",
+                "mime": "image/jpeg",
+                "width": value.width,
+                "height": value.height,
+                "data": base64.b64encode(buffer.getvalue()).decode("ascii"),
+            }
+    except Exception:
+        pass
+
+    if isinstance(value, dict):
+        return {str(key): _serialize_preview_value(item) for key, item in value.items()}
+
+    if isinstance(value, (list, tuple)):
+        return [_serialize_preview_value(item) for item in value]
+
+    return str(value)
+
+
+def _serialize_preview_rows(rows):
+    return [
+        {str(key): _serialize_preview_value(value) for key, value in dict(row).items()}
+        for row in rows
+    ]
+
+
 # --- Endpoints ---
 
 @router.post("/check-format", response_model=CheckFormatResponse)
@@ -37,12 +75,15 @@ async def check_format(request: CheckFormatRequest):
     """
     Check if a dataset requires manual column mapping.
     
-    This is a lightweight check that only runs format detection,
-    not full processing. Use before starting training to determine
-    if the user needs to manually map columns.
+    This is a lightweight check that loads only the first 10 rows,
+    runs format detection, and (if processable) returns processed
+    preview samples. The full dataset is re-processed at training time.
     """
     try:
         from datasets import load_dataset
+        from utils.datasets import format_dataset
+        
+        PREVIEW_SIZE = 10
         
         logger.info(f"Checking format for dataset: {request.dataset_name}")
         
@@ -69,18 +110,47 @@ async def check_format(request: CheckFormatRequest):
                 load_kwargs["token"] = request.hf_token
             dataset = load_dataset(**load_kwargs)
         
-        # Run lightweight format check
-        result = check_dataset_format(dataset, is_vlm=request.is_vlm)
+        # Slice to top N rows — all detection and preview runs on this subset
+        total_rows = len(dataset)
+        preview_slice = dataset.select(range(min(PREVIEW_SIZE, total_rows)))
+        
+        # Run lightweight format check on the preview slice
+        result = check_dataset_format(preview_slice, is_vlm=request.is_vlm)
         
         logger.info(f"Format check result: requires_mapping={result['requires_manual_mapping']}, format={result['detected_format']}")
+        
+        # Generate preview samples
+        preview_samples = None
+        if not result["requires_manual_mapping"]:
+            # Format detected — return processed preview
+            try:
+                format_result = format_dataset(
+                    preview_slice,
+                    format_type="auto",
+                    custom_format_mapping=result.get("suggested_mapping"),
+                )
+                processed = format_result["dataset"]
+                preview_samples = _serialize_preview_rows(processed)
+            except Exception as e:
+                logger.warning(f"Processed preview generation failed (non-fatal): {e}")
+                # Fall back to raw samples so frontend still has something
+                preview_samples = _serialize_preview_rows(preview_slice)
+        else:
+            # Format detection failed — return raw samples so user can
+            # see actual data and map columns in the frontend
+            preview_samples = _serialize_preview_rows(preview_slice)
         
         return CheckFormatResponse(
             requires_manual_mapping=result["requires_manual_mapping"],
             detected_format=result["detected_format"],
             columns=result["columns"],
+            is_multimodal=result.get("is_multimodal", False),
+            multimodal_columns=result.get("multimodal_columns"),
             suggested_mapping=result.get("suggested_mapping"),
             detected_image_column=result.get("detected_image_column"),
             detected_text_column=result.get("detected_text_column"),
+            preview_samples=preview_samples,
+            total_rows=total_rows,
         )
         
     except HTTPException:

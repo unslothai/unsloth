@@ -1,10 +1,10 @@
 import { Progress } from "@/components/ui/progress";
 import { STEPS } from "@/config/training";
-import { useWizardStore } from "@/stores/training";
+import { useTrainingConfigStore } from "@/features/training";
 import { WizardStepItem } from "./wizard-step-item";
 
 export function WizardSidebar() {
-  const currentStep = useWizardStore((s) => s.currentStep);
+  const currentStep = useTrainingConfigStore((s) => s.currentStep);
   const progress = ((currentStep - 1) / (STEPS.length - 1)) * 100;
 
   return (

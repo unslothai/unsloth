@@ -99,11 +99,11 @@ export function ThreadSidebar({
 
   return (
     <>
-      <SidebarHeader>
-        <span className="text-sm font-semibold">Playground</span>
+      <SidebarHeader className="px-4 py-3">
+        <span className="text-base font-semibold tracking-tight">Playground</span>
       </SidebarHeader>
       <SidebarContent>
-        <SidebarGroup>
+        <SidebarGroup className="px-4 pt-1">
           <SidebarGroupContent>
             <SidebarMenu>
               <SidebarMenuItem>
@@ -121,8 +121,8 @@ export function ThreadSidebar({
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
-        <SidebarGroup className="flex-1">
-          <SidebarGroupLabel>Your Chats</SidebarGroupLabel>
+        <SidebarGroup className="flex-1 px-4">
+          <SidebarGroupLabel className="text-xs font-medium text-muted-foreground/80">Your Chats</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
               {items.map((item) => (
@@ -144,7 +144,7 @@ export function ThreadSidebar({
               ))}
             </SidebarMenu>
             {items.length === 0 && (
-              <p className="px-2 py-4 text-center text-xs text-muted-foreground">
+              <p className="px-2 py-6 text-center text-xs text-muted-foreground">
                 No threads yet
               </p>
             )}
