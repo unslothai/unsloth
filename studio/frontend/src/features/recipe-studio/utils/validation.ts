@@ -1,36 +1,5 @@
 import type { NodeConfig } from "../types";
-
-function parseNumber(value?: string): number | null {
-  if (!value) {
-    return null;
-  }
-  const num = Number(value);
-  return Number.isFinite(num) ? num : null;
-}
-
-function parseIntNumber(value?: string): number | null {
-  const num = parseNumber(value);
-  if (num === null || !Number.isInteger(num)) {
-    return null;
-  }
-  return num;
-}
-
-function parseAgeRange(value?: string): [number, number] | null {
-  if (!value) {
-    return null;
-  }
-  const parts = value.split(/[^0-9.]+/).filter(Boolean);
-  if (parts.length !== 2) {
-    return null;
-  }
-  const min = Number(parts[0]);
-  const max = Number(parts[1]);
-  if (!Number.isFinite(min) || !Number.isFinite(max)) {
-    return null;
-  }
-  return [min, max];
-}
+import { isValidSex, parseAgeRange, parseIntNumber, parseNumber } from "./parse";
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: validation rules
 export function getConfigErrors(config: NodeConfig | null): string[] {
@@ -142,7 +111,7 @@ export function getConfigErrors(config: NodeConfig | null): string[] {
     if (config.sampler_type === "person") {
       if (config.person_sex?.trim()) {
         const normalized = config.person_sex.trim();
-        if (!(normalized === "Male" || normalized === "Female")) {
+        if (!isValidSex(normalized)) {
           errors.push("Person sex must be Male or Female.");
         }
       }

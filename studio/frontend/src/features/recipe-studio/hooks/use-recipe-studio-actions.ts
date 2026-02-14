@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toastError, toastSuccess } from "@/shared/toast";
+import { normalizeNonEmptyName } from "@/utils";
 import { previewRecipe, validateRecipe } from "../api";
 import { importRecipePayload, type RecipeSnapshot } from "../utils/import";
 import type { RecipePayload, RecipePayloadResult } from "../utils/payload/types";
@@ -51,11 +52,6 @@ type UseRecipeStudioActionsResult = {
 
 function buildSignature(name: string, payload: RecipePayload): string {
   return JSON.stringify({ name, payload });
-}
-
-function normalizeWorkflowName(value: string): string {
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : "Unnamed";
 }
 
 function formatSavedLabel(savedAt: number | null): string {
@@ -126,7 +122,7 @@ export function useRecipeStudioActions({
   const [previewLoading, setPreviewLoading] = useState(false);
 
   const normalizedWorkflowName = useMemo(
-    () => normalizeWorkflowName(workflowName),
+    () => normalizeNonEmptyName(workflowName, "Unnamed"),
     [workflowName],
   );
   const currentPayload = payloadResult.payload;
@@ -140,7 +136,7 @@ export function useRecipeStudioActions({
   const payloadErrorMessage = payloadResult.errors[0] ?? "Invalid payload.";
 
   useEffect(() => {
-    const nextName = normalizeWorkflowName(initialRecipeName);
+    const nextName = normalizeNonEmptyName(initialRecipeName, "Unnamed");
     resetRecipe();
     setWorkflowName(nextName);
     setLastSavedAt(initialSavedAt);
@@ -171,7 +167,7 @@ export function useRecipeStudioActions({
     if (saveLoading) {
       return;
     }
-    const nextName = normalizeWorkflowName(workflowName);
+    const nextName = normalizeNonEmptyName(workflowName, "Unnamed");
     if (nextName !== workflowName) {
       setWorkflowName(nextName);
     }
