@@ -25,6 +25,7 @@ import logging
 import textwrap
 import warnings
 import sys
+import functools
 
 # We cannot do from unsloth_zoo.log import logger since FBGEMM might cause seg faults.
 UNSLOTH_ENABLE_LOGGING = os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") in (
@@ -1176,11 +1177,55 @@ _CAUSAL_CONV1D_PREFIX = "causal_conv1d"
 _CAUSAL_CONV1D_BLOCKER_SENTINEL = "_unsloth_causal_conv1d_blocker"
 
 
+@functools.lru_cache(1)
 def _is_rocm_torch_build() -> bool:
+    # Most official ROCm wheels include a local version suffix like +rocmX.Y.
+    # Some custom/source builds do not, so we fall back to runtime hints.
     try:
-        return "rocm" in str(importlib_version("torch")).lower()
+        torch_version_raw = str(importlib_version("torch")).lower()
+        if "rocm" in torch_version_raw:
+            if UNSLOTH_ENABLE_LOGGING:
+                logger.info(
+                    "Unsloth: ROCm detection matched torch version tag (+rocm)."
+                )
+            return True
     except Exception:
-        return False
+        pass
+
+    # Environment hints commonly present on ROCm runtimes.
+    for key in (
+        "ROCM_PATH",
+        "ROCM_HOME",
+        "HIP_PATH",
+        "HSA_PATH",
+        "HIP_VISIBLE_DEVICES",
+        "ROCR_VISIBLE_DEVICES",
+    ):
+        value = os.environ.get(key, "")
+        if isinstance(value, str) and value.strip():
+            if UNSLOTH_ENABLE_LOGGING:
+                logger.info(f"Unsloth: ROCm detection matched environment key `{key}`.")
+            return True
+
+    # Filesystem / driver hints for ROCm stacks.
+    for path in (
+        Path("/opt/rocm"),
+        Path("/dev/kfd"),
+        Path("/sys/module/amdgpu"),
+    ):
+        try:
+            if path.exists():
+                if UNSLOTH_ENABLE_LOGGING:
+                    logger.info(
+                        f"Unsloth: ROCm detection matched filesystem hint `{path}`."
+                    )
+                return True
+        except Exception:
+            continue
+
+    if UNSLOTH_ENABLE_LOGGING:
+        logger.info("Unsloth: ROCm detection did not match any known hints.")
+    return False
 
 
 @contextlib.contextmanager
