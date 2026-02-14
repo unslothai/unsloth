@@ -179,6 +179,8 @@ def resolve_hip_gpu_stats_name(gpu_stats):
             return f"AMD Instinct MI300X ({arch_name}). "
         return f"AMD GPU ({arch_name}). "
     return "AMD GPU Device. "
+
+
 from unsloth_zoo.temporary_patches import (
     TEMPORARY_PATCHES,
 )
