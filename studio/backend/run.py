@@ -59,7 +59,7 @@ def _resolve_external_ip() -> str:
 def run_server(
     host: str = "0.0.0.0",
     port: int = 8000,
-    frontend_path: Path = "../frontend/dist",
+    frontend_path: Path = "studio/frontend/dist",
     silent: bool = False,
 ):
     """
