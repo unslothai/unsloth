@@ -35,7 +35,7 @@ class TrainingBackend:
 
     def _on_progress_update(self, progress: TrainingProgress):
         """Callback for progress updates"""
-        if progress.step > 0 and progress.loss > 0:
+        if progress.step >= 0 and progress.loss > 0:
             self.loss_history.append(progress.loss)
             self.lr_history.append(progress.learning_rate)
             self.step_history.append(progress.step)
