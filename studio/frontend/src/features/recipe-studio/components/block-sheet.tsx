@@ -17,7 +17,7 @@ import {
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import type { ReactElement } from "react";
+import { type ReactElement, useMemo, useState } from "react";
 import { RECIPE_FLOATING_ICON_BUTTON_CLASS } from "./recipe-floating-icon-button-class";
 import type { LlmType, SamplerType } from "../types";
 import { BLOCK_GROUPS, getBlocksForKind } from "../blocks/registry";
@@ -134,10 +134,14 @@ export function BlockSheet({
   onImport,
 }: BlockSheetProps): ReactElement {
   const sheetTitle = getSheetTitle(sheetView);
+  const [open, setOpen] = useState(false);
+  const expressionBlocks = useMemo(() => getBlocksForKind("expression"), []);
   return (
     <div className="flex flex-col items-end gap-2">
       <Sheet
+        open={open}
         onOpenChange={(open) => {
+          setOpen(open);
           if (open) {
             onViewChange("root");
           }
@@ -188,7 +192,19 @@ export function BlockSheet({
                     title={item.title}
                     description={item.description}
                     isActive={index === 0}
-                    onClick={() => onViewChange(item.kind)}
+                    onClick={() => {
+                      if (item.kind === "processor") {
+                        setOpen(false);
+                        onOpenProcessors();
+                        return;
+                      }
+                      if (item.kind === "expression" && expressionBlocks.length === 1) {
+                        setOpen(false);
+                        onAddExpression();
+                        return;
+                      }
+                      onViewChange(item.kind);
+                    }}
                   />
                 ))}
               {sheetView === "processor" && (

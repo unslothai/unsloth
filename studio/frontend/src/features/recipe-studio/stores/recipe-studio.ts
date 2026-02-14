@@ -46,12 +46,14 @@ type RecipeStudioState = {
   auxNodeSizes: Record<string, { width: number; height: number }>;
   configs: Record<string, NodeConfig>;
   processors: RecipeProcessorConfig[];
+  flowMoving: boolean;
   sheetView: SheetView;
   activeConfigId: string | null;
   dialogOpen: boolean;
   layoutDirection: LayoutDirection;
   nextId: number;
   nextY: number;
+  setFlowMoving: (moving: boolean) => void;
   setSheetView: (view: SheetView) => void;
   setProcessors: (processors: RecipeProcessorConfig[]) => void;
   setDialogOpen: (open: boolean) => void;
@@ -105,12 +107,14 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
   auxNodeSizes: {},
   configs: {},
   processors: [],
+  flowMoving: false,
   sheetView: "root",
   activeConfigId: null,
   dialogOpen: false,
   layoutDirection: "LR",
   nextId: 3,
   nextY: 280,
+  setFlowMoving: (moving) => set({ flowMoving: moving }),
   setSheetView: (view) => set({ sheetView: view }),
   setProcessors: (processors) => set({ processors }),
   setDialogOpen: (open) => set({ dialogOpen: open }),
@@ -122,6 +126,7 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
       auxNodeSizes: {},
       configs: {},
       processors: [],
+      flowMoving: false,
       sheetView: "root",
       activeConfigId: null,
       dialogOpen: false,
@@ -183,6 +188,7 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
       auxNodeSizes: {},
       activeConfigId: null,
       dialogOpen: false,
+      flowMoving: false,
       sheetView: "root",
     })),
   setAuxNodePosition: (id, position) =>
