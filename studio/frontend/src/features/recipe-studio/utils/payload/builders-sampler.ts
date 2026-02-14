@@ -1,6 +1,15 @@
 import type { CategoryConditionalParams, SamplerConfig } from "../../types";
 import { isValidSex, parseAgeRange, parseNumber } from "./parse";
 
+const DATETIME_UNIT_MAP: Record<string, "Y" | "M" | "D" | "h" | "m" | "s"> = {
+  year: "Y",
+  month: "M",
+  day: "D",
+  hour: "h",
+  minute: "m",
+  second: "s",
+};
+
 function buildCategoryConditionalParams(
   config: SamplerConfig,
   errors: string[],
@@ -81,7 +90,8 @@ function buildSamplerParams(
   if (config.sampler_type === "gaussian") {
     return {
       mean: parseNumber(config.mean),
-      std: parseNumber(config.std),
+      // data_designer expects `stddev`
+      stddev: parseNumber(config.std),
     };
   }
   if (config.sampler_type === "bernoulli") {
@@ -90,10 +100,19 @@ function buildSamplerParams(
     };
   }
   if (config.sampler_type === "datetime") {
+    const rawUnit = config.datetime_unit?.trim();
+    let unit: string | undefined = rawUnit || undefined;
+    if (rawUnit && DATETIME_UNIT_MAP[rawUnit]) {
+      unit = DATETIME_UNIT_MAP[rawUnit];
+    }
+    if (rawUnit === "week") {
+      errors.push(`Datetime ${config.name}: unit 'week' not supported.`);
+      unit = undefined;
+    }
     return {
       start: config.datetime_start ?? undefined,
       end: config.datetime_end ?? undefined,
-      unit: config.datetime_unit ?? undefined,
+      unit,
     };
   }
   if (config.sampler_type === "timedelta") {
@@ -108,8 +127,26 @@ function buildSamplerParams(
     };
   }
   if (config.sampler_type === "uuid") {
+    const raw = config.uuid_format?.trim();
+    if (!raw) {
+      return {};
+    }
+    // UI historically used "uuid4" as a "format". data_designer uuid sampler is always uuid4.
+    if (raw.toLowerCase() === "uuid4") {
+      return {};
+    }
+    if (raw.toLowerCase() === "short" || raw.toLowerCase() === "short_form") {
+      // biome-ignore lint/style/useNamingConvention: api schema
+      return { short_form: true };
+    }
+    if (raw.toLowerCase() === "upper" || raw.toLowerCase() === "uppercase") {
+      return { uppercase: true };
+    }
+    if (raw.toLowerCase().startsWith("prefix:")) {
+      return { prefix: raw.slice("prefix:".length).trim() || undefined };
+    }
     return {
-      format: config.uuid_format ?? undefined,
+      prefix: raw,
     };
   }
   const params: Record<string, unknown> = {};
