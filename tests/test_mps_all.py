@@ -43,6 +43,7 @@ def _is_mps_available():
         return False
 
 
+@unittest.skipIf(platform.system() != "Darwin", "macOS only")
 class TestHardwareDetection(unittest.TestCase):
     """Tests for Apple Silicon hardware detection."""
 
@@ -89,6 +90,7 @@ class TestHardwareDetection(unittest.TestCase):
             self.assertIn("usable_memory_gb", info)
 
 
+@unittest.skipIf(platform.system() != "Darwin", "macOS only")
 class TestCoreKernels(unittest.TestCase):
     """Tests for core MPS kernels using mocked dependencies."""
 
@@ -239,6 +241,7 @@ class TestCoreKernels(unittest.TestCase):
         self.assertIsNotNone(logits.grad)
 
 
+@unittest.skipIf(platform.system() != "Darwin", "macOS only")
 class TestKernelDispatch(unittest.TestCase):
     """Tests for kernel dispatch and Metal/MLX availability."""
 
@@ -263,6 +266,7 @@ class TestKernelDispatch(unittest.TestCase):
         self.assertIsInstance(mlx_available, bool)
 
 
+@unittest.skipIf(platform.system() != "Darwin", "macOS only")
 class TestModelIntegration(unittest.TestCase):
     """Tests for various model architectures on MPS."""
 
@@ -365,6 +369,7 @@ class TestModelIntegration(unittest.TestCase):
         self.assertIsNotNone(outputs.logits)
 
 
+@unittest.skipIf(platform.system() != "Darwin", "macOS only")
 class TestTraining(unittest.TestCase):
     """Tests for training on MPS."""
 
@@ -453,6 +458,7 @@ class TestTraining(unittest.TestCase):
         self.assertTrue(all(l is not None for l in losses))
 
 
+@unittest.skipIf(platform.system() != "Darwin", "macOS only")
 class TestMoE(unittest.TestCase):
     """Tests for MoE (Mixture of Experts) on MPS."""
 
@@ -488,6 +494,7 @@ class TestMoE(unittest.TestCase):
         self.assertEqual(Y.shape, (num_tokens * topk, N))
 
 
+@unittest.skipIf(platform.system() != "Darwin", "macOS only")
 class TestSaveLoad(unittest.TestCase):
     """Tests for save/load operations on MPS."""
 
