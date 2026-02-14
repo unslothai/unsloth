@@ -96,7 +96,8 @@ try:
         #             os.system("pip install --upgrade --no-cache-dir --no-deps --user unsloth_zoo")
         #         except:
         #             raise ImportError("Unsloth: Please update unsloth_zoo via `pip install --upgrade --no-cache-dir --no-deps unsloth_zoo`")
-    import unsloth_zoo
+    with _suppress_hip_libdrm_ids_noise():
+        import unsloth_zoo
 except PackageNotFoundError:
     raise ImportError(
         f"Unsloth: Please install unsloth_zoo via `pip install unsloth_zoo` then retry!"
