@@ -2019,8 +2019,23 @@ def patch_gradient_accumulation_fix(Trainer):
                 'if hasattr(unwrapped_model, "accepts_loss_kwargs") and False:',
                 init_function,
             )
-            exec(init_function, globals())
-            Trainer.__init__ = _unsloth___init__
+            local_scope = {}
+            try:
+                exec(init_function, globals(), local_scope)
+            except Exception as _patch_error:
+                print(
+                    "Unsloth: gradient accumulation init patch skipped due to "
+                    f"source patch error: {_patch_error}"
+                )
+                local_scope = {}
+            _patched_init = local_scope.get("_unsloth___init__")
+            if _patched_init is None:
+                print(
+                    "Unsloth: gradient accumulation init patch skipped because "
+                    "_unsloth___init__ was not generated."
+                )
+            else:
+                Trainer.__init__ = _patched_init
 
 
 def patch_tokenizer(model, tokenizer):
@@ -2499,7 +2514,14 @@ def _prepare_model_for_qat(
             except ImportError:
                 raise ImportError(TORCHAO_MSG)
             group_size = 128
-            base_config = Int4WeightOnlyConfig(group_size = group_size)
+            try:
+                base_config = Int4WeightOnlyConfig(
+                    group_size = group_size,
+                    version = 2,
+                )
+            except TypeError:
+                # Older TorchAO versions do not support the version argument.
+                base_config = Int4WeightOnlyConfig(group_size = group_size)
             filter_fn = (
                 lambda m, _: isinstance(m, torch.nn.Linear)
                 and m.in_features >= group_size
