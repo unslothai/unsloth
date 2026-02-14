@@ -154,12 +154,14 @@ from unsloth_zoo.training_utils import (
 
 def resolve_hip_gpu_stats_name(gpu_stats):
     name = str(getattr(gpu_stats, "name", "") or "").strip()
+    name = re.sub(r"\s*\([^)]*\)\s*$", "", name).strip()
     normalized_name = name.lower().strip(". ")
     if normalized_name and normalized_name not in ("amd radeon graphics",):
         return name + ". "
 
     try:
         torch_name = str(torch.cuda.get_device_name(0) or "").strip()
+        torch_name = re.sub(r"\s*\([^)]*\)\s*$", "", torch_name).strip()
     except Exception:
         torch_name = ""
     normalized_torch_name = torch_name.lower().strip(". ")
