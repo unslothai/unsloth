@@ -152,74 +152,6 @@ from unsloth_zoo.training_utils import (
 )
 
 
-# Source: https://rocm.docs.amd.com/en/latest/reference/gpu-arch-specs.html
-ROCM_GFX_TO_KNOWN_NAMES = {
-    "gfx950": ("AMD Instinct MI355X", "AMD Instinct MI350X"),
-    "gfx942": ("AMD Instinct MI300X", "AMD Instinct MI325X", "AMD Instinct MI300A"),
-    "gfx90a": ("AMD Instinct MI250X", "AMD Instinct MI250", "AMD Instinct MI210"),
-    "gfx908": ("AMD Instinct MI100",),
-    "gfx906": (
-        "AMD Instinct MI60",
-        "AMD Instinct MI50 32GB",
-        "AMD Instinct MI50 16GB",
-        "Radeon Pro VII",
-        "Radeon VII",
-    ),
-    "gfx900": ("AMD Instinct MI25",),
-    "gfx803": ("AMD Instinct MI8", "AMD Instinct MI6"),
-    "gfx1201": (
-        "Radeon RX 9070 XT",
-        "Radeon RX 9070 GRE",
-        "Radeon RX 9070",
-        "Radeon AI PRO R9700",
-        "Radeon AI PRO R9600D",
-    ),
-    "gfx1200": ("Radeon RX 9060 XT", "Radeon RX 9060 XT LP", "Radeon RX 9060"),
-    # ROCm table currently spells this "Al"; we normalize it to "AI".
-    "gfx1152": ("AMD Ryzen AI 7 350",),
-    "gfx1151": ("AMD Ryzen AI Max+ PRO 395",),
-    "gfx1150": ("AMD Ryzen AI 9 HX 375",),
-    "gfx1103": ("AMD Ryzen 7 7840U", "AMD Ryzen 9 270"),
-    "gfx1102": ("Radeon RX 7600",),
-    "gfx1101": (
-        "Radeon RX 7800 XT",
-        "Radeon RX 7700 XT",
-        "Radeon RX 7700",
-        "Radeon PRO W7700",
-        "Radeon PRO V710",
-    ),
-    "gfx1100": (
-        "Radeon RX 7900 XTX",
-        "Radeon RX 7900 XT",
-        "Radeon RX 7900 GRE",
-        "Radeon PRO W7900",
-        "Radeon PRO W7900 Dual Slot",
-        "Radeon PRO W7800 48GB",
-        "Radeon PRO W7800",
-    ),
-    "gfx1032": (
-        "Radeon RX 6650 XT",
-        "Radeon RX 6600 XT",
-        "Radeon RX 6600",
-        "Radeon PRO W6600",
-    ),
-    "gfx1031": ("Radeon RX 6750 XT", "Radeon RX 6700 XT", "Radeon RX 6700"),
-    "gfx1030": (
-        "Radeon RX 6950 XT",
-        "Radeon RX 6900 XT",
-        "Radeon RX 6800 XT",
-        "Radeon RX 6800",
-        "Radeon PRO W6800",
-        "Radeon PRO V620",
-    ),
-    "gfx1012": ("Radeon Pro W5500",),
-}
-
-ROCM_GFX_TO_CANONICAL_NAME = {
-    arch: names[0] for arch, names in ROCM_GFX_TO_KNOWN_NAMES.items()
-}
-
-
 def resolve_hip_gpu_stats_name(gpu_stats):
     name = str(getattr(gpu_stats, "name", "") or "").strip()
     name = re.sub(r"\s*\([^)]*\)\s*$", "", name).strip()
@@ -246,9 +178,9 @@ def resolve_hip_gpu_stats_name(gpu_stats):
 
     if arch_name:
         arch_name = arch_name.strip()
-        arch_key = arch_name.split(":", 1)[0].lower()
-        gpu_name = ROCM_GFX_TO_CANONICAL_NAME.get(arch_key, "AMD GPU")
-        return f"{gpu_name}. "
+        match = re.search(r"(gfx[0-9a-z]+)", arch_name, flags = re.I)
+        if match:
+            return f"AMD {match.group(1).lower()} GPU. "
     return "AMD GPU. "
 
 
