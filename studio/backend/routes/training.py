@@ -542,7 +542,7 @@ async def stream_training_progress(
         # ── Live polling loop ────────────────────────────────────
         last_step = resume_from_step if resume_from_step is not None else -1
         no_update_count = 0
-        max_no_updates = 300  # Timeout after 5 minutes
+        max_no_updates = 1800  # Timeout after 30 minutes (large models need time for compilation)
 
         while backend.is_training_active():
             try:
@@ -596,7 +596,19 @@ async def stream_training_progress(
                     # No steps yet, but training is active (model loading, etc.)
                     no_update_count += 1
                     if no_update_count % 5 == 0:
-                        preparing_payload = build_progress(0, 0.0, 0.0, 0)
+                        # Pull total_steps and status from trainer so
+                        # the frontend can show "Tokenizing…" etc.
+                        tp_prep = getattr(
+                            getattr(backend, "trainer", None),
+                            "training_progress", None,
+                        )
+                        prep_total = (
+                            getattr(tp_prep, "total_steps", 0)
+                            if tp_prep else 0
+                        )
+                        preparing_payload = build_progress(
+                            0, 0.0, 0.0, prep_total,
+                        )
                         yield format_sse(
                             preparing_payload.model_dump_json(),
                             event="heartbeat",
