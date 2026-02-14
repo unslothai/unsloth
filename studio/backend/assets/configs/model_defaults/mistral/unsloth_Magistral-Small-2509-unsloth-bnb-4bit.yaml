@@ -1,6 +1,7 @@
 # Model defaults for unsloth/Magistral-Small-2509
 # Based on Magistral_(24B)-Reasoning-Conversational.ipynb
 # Also applies to: mistralai/Magistral-Small-2509, unsloth/Magistral-Small-2509-bnb-4bit
+# added inference parameters from unsloth guides
 
 training:
   max_seq_length: 2048
@@ -44,4 +45,9 @@ logging:
   enable_tensorboard: false
   tensorboard_dir: "runs"
   log_frequency: 10
+
+inference:
+  temperature: 0.7
+  min_p: 0.01
+  top_p: 0.95
 
