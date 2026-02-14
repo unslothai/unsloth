@@ -14,6 +14,7 @@
 
 from unsloth_zoo.utils import Version
 from unsloth.device_utils import clean_gpu_cache
+import gc
 from importlib.metadata import version as importlib_version
 from unsloth_zoo.hf_utils import dtype_from_config, HAS_TORCH_DTYPE
 from unsloth_zoo.llama_cpp import (
