@@ -27,12 +27,8 @@ import torch
 import gc
 import time
 import re
-from unsloth_zoo.vllm_utils import (
-    load_vllm,
-    patch_vllm,
-    delete_vllm,
-)
 from unsloth.device_utils import clean_gpu_cache
+from unsloth_zoo.vllm_utils import (
     load_vllm,
     patch_vllm,
     delete_vllm,

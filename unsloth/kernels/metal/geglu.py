@@ -21,7 +21,6 @@ __all__ = [
     "mlx_geglu_exact_forward",
     "mlx_geglu_exact_backward",
     "mlx_geglu_approx_forward",
-    "mlx_geglu_approx_backward",
     "is_metal_geglu_available",
 ]
 
@@ -291,6 +290,11 @@ def mlx_geglu_approx_forward(e_mlx, g_mlx):
     return _mlx_geglu_forward(e_mlx, g_mlx, _get_approx_forward())
 
 
+def mlx_geglu_approx_backward(dw_mlx, e_mlx, g_mlx):
+    """Fused GEGLU approx backward using Metal kernel."""
+    return _mlx_geglu_backward(dw_mlx, e_mlx, g_mlx, _get_approx_backward())
+
+
 # =============================================================================
 # PyTorch wrappers (for integration with main Unsloth dispatch)
 # =============================================================================
@@ -420,7 +424,7 @@ class Metal_GEGLU_Approx(torch.autograd.Function):
             g_mlx = getattr(g, "_mlx_cache", None)
             if g_mlx is None: g_mlx = torch_to_mlx(g)
             
-            h_mlx, df_mlx, de_mlx = mlx_geglu_approx_backward(dw_mlx, e_mlx, g_mlx)
+            h_mlx, df_mlx, de_mlx = mlx_geglu_exact_backward(dw_mlx, e_mlx, g_mlx)
             
             df = mlx_to_torch(df_mlx)
             de = mlx_to_torch(de_mlx)
@@ -447,4 +451,4 @@ def metal_geglu_approx_forward(e, g):
 
 
 def metal_geglu_approx_backward(dw, e, g):
-    return _metal_geglu_backward(dw, e, g, mlx_geglu_approx_backward)
+    return _metal_geglu_backward(dw, e, g, mlx_geglu_exact_backward)
