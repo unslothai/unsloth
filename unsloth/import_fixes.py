@@ -199,6 +199,8 @@ if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") != "1":
 
     # Triton "df: No such file or directory" stderr noise
     sys.stderr.add_filter("df: No such file")
+    # ROCm/libdrm missing ids table stderr noise on some AMD setups
+    sys.stderr.add_filter("amdgpu.ids: No such file or directory")
 
 
 # Fix up AttributeError: 'MessageFactory' object has no attribute 'GetPrototype'
