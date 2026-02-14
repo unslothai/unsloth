@@ -5,9 +5,9 @@ from __future__ import annotations
 
 import time
 import uuid
-from typing import Literal, Optional, List
+from typing import Annotated, Literal, Optional, List, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Discriminator, Field, Tag
 
 
 class LoadRequest(BaseModel):
@@ -25,7 +25,7 @@ class UnloadRequest(BaseModel):
 
 
 class GenerateRequest(BaseModel):
-    """Request for text generation"""
+    """Request for text generation (legacy /generate/stream endpoint)"""
     messages: List[dict] = Field(..., description="Chat messages in OpenAI format")
     system_prompt: str = Field("You are a helpful AI assistant.", description="System prompt")
     temperature: float = Field(0.7, ge=0.0, le=2.0, description="Sampling temperature")
@@ -64,10 +64,53 @@ class InferenceStatusResponse(BaseModel):
 # =====================================================================
 
 
+# ── Multimodal content parts (OpenAI vision format) ──────────────
+
+class TextContentPart(BaseModel):
+    """Text content part in a multimodal message."""
+    type: Literal["text"]
+    text: str
+
+
+class ImageUrl(BaseModel):
+    """Image URL object — supports data URIs and remote URLs."""
+    url: str = Field(..., description="data:image/png;base64,... or https://...")
+    detail: Optional[Literal["auto", "low", "high"]] = "auto"
+
+
+class ImageContentPart(BaseModel):
+    """Image content part in a multimodal message."""
+    type: Literal["image_url"]
+    image_url: ImageUrl
+
+
+def _content_part_discriminator(v):
+    if isinstance(v, dict):
+        return v.get("type")
+    return getattr(v, "type", None)
+
+
+ContentPart = Annotated[
+    Union[
+        Annotated[TextContentPart, Tag("text")],
+        Annotated[ImageContentPart, Tag("image_url")],
+    ],
+    Discriminator(_content_part_discriminator),
+]
+"""Union type for multimodal content parts, discriminated by the 'type' field."""
+
+
+# ── Messages ─────────────────────────────────────────────────────
+
 class ChatMessage(BaseModel):
-    """A single message in the conversation."""
+    """
+    A single message in the conversation.
+
+    ``content`` may be a plain string (text-only) or a list of
+    content parts for multimodal messages (OpenAI vision format).
+    """
     role: Literal["system", "user", "assistant"] = Field(..., description="Message role")
-    content: str = Field(..., description="Message content")
+    content: Union[str, list[ContentPart]] = Field(..., description="Message content (string or multimodal parts)")
 
 
 class ChatCompletionRequest(BaseModel):
