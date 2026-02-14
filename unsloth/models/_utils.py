@@ -154,12 +154,14 @@ from unsloth_zoo.training_utils import (
 
 def resolve_hip_gpu_stats_name(gpu_stats):
     name = str(getattr(gpu_stats, "name", "") or "").strip()
+    name = re.sub(r"\s*\([^)]*\)\s*$", "", name).strip()
     normalized_name = name.lower().strip(". ")
     if normalized_name and normalized_name not in ("amd radeon graphics",):
         return name + ". "
 
     try:
         torch_name = str(torch.cuda.get_device_name(0) or "").strip()
+        torch_name = re.sub(r"\s*\([^)]*\)\s*$", "", torch_name).strip()
     except Exception:
         torch_name = ""
     normalized_torch_name = torch_name.lower().strip(". ")
@@ -174,11 +176,11 @@ def resolve_hip_gpu_stats_name(gpu_stats):
             break
 
     if arch_name:
-        # gfx942 maps to MI300X on current ROCm naming.
-        if arch_name.lower().startswith("gfx942"):
-            return f"AMD Instinct MI300X ({arch_name}). "
-        return f"AMD GPU ({arch_name}). "
-    return "AMD GPU Device. "
+        arch_name = arch_name.strip()
+        match = re.search(r"(gfx[0-9a-z]+)", arch_name, flags = re.I)
+        if match:
+            return f"AMD {match.group(1).lower()} GPU. "
+    return "AMD GPU. "
 
 
 from unsloth_zoo.temporary_patches import (
@@ -874,10 +876,8 @@ if DEVICE_TYPE == "cuda":
                     )
             except:
                 print(
-                    "Unsloth: Your Flash Attention 2 installation seems to be broken?\n"
-                    "A possible explanation is you have a new CUDA version which isn't\n"
-                    "yet compatible with FA2? Please file a ticket to Unsloth or FA2.\n"
-                    "We shall now use Xformers instead, which does not have any performance hits!"
+                    "Unsloth: Your Flash Attention 2 installation seems to be broken. "
+                    "Using Xformers instead. No performance changes will be seen."
                 )
 
                 # Stop Flash Attention from importing!
@@ -925,10 +925,8 @@ elif DEVICE_TYPE == "hip":
                 )
         except:
             print(
-                "Unsloth: Your Flash Attention 2 installation seems to be broken?\n"
-                "A possible explanation is you have a new CUDA version which isn't\n"
-                "yet compatible with FA2? Please file a ticket to Unsloth or FA2.\n"
-                "We shall now use Xformers instead, which does not have any performance hits!"
+                "Unsloth: Your Flash Attention 2 installation seems to be broken. "
+                "Using Xformers instead. No performance changes will be seen."
             )
 
             # Stop Flash Attention from importing!
