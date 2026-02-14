@@ -43,3 +43,5 @@ studio/frontend/package-lock.json
 **/claude.md
 docs/canvas-lab-architecture.md
 studio/frontend/test/
+studio/tests/
+studio/backend/tests/
