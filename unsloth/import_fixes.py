@@ -21,6 +21,8 @@ import re
 import logging
 import textwrap
 import warnings
+import types
+import sys
 
 # We cannot do from unsloth_zoo.log import logger since FBGEMM might cause seg faults.
 UNSLOTH_ENABLE_LOGGING = os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") in (
@@ -1163,3 +1165,102 @@ def disable_torchcodec_if_broken():
             tf_import_utils._torchcodec_available = False
         except (ImportError, AttributeError):
             pass
+
+CAUSAL_CONV1D_BROKEN = False
+
+
+def _is_broken_causal_conv1d_error(error) -> bool:
+    message = str(error).lower()
+    return bool(
+        ("causal_conv1d_cuda" in message and "undefined symbol" in message)
+        or ("_zn3c103hip28c10_hip_check_implementation" in message)
+        or ("causal_conv1d" in message and "undefined symbol" in message)
+    )
+
+
+def disable_broken_causal_conv1d():
+    """Disable causal_conv1d dynamically when its shared library is ABI-broken.
+
+    This mirrors Unsloth's FlashAttention fallback behavior: if importing causal_conv1d
+    fails with a known binary symbol error, we disable it at startup so model imports do
+    not hard-fail.
+    """
+    global CAUSAL_CONV1D_BROKEN
+    if CAUSAL_CONV1D_BROKEN:
+        return
+
+    try:
+        if importlib.util.find_spec("causal_conv1d") is None:
+            return
+    except Exception:
+        return
+
+    try:
+        import causal_conv1d  # noqa: F401
+        return
+    except Exception as error:
+        if not _is_broken_causal_conv1d_error(error):
+            return
+
+    # Clear any partially initialized entries from a failed extension import.
+    for name in list(sys.modules):
+        if name == "causal_conv1d" or name.startswith("causal_conv1d."):
+            sys.modules.pop(name, None)
+
+    causal_conv1d_module = types.ModuleType("causal_conv1d")
+    causal_conv1d_module.__path__ = []
+    causal_conv1d_module.causal_conv1d_fn = None
+    causal_conv1d_module.causal_conv1d_update = None
+
+    causal_conv1d_interface = types.ModuleType(
+        "causal_conv1d.causal_conv1d_interface"
+    )
+    causal_conv1d_interface.causal_conv1d_fwd_function = None
+    causal_conv1d_interface.causal_conv1d_bwd_function = None
+    causal_conv1d_interface.causal_conv1d_update_function = None
+    causal_conv1d_interface.__path__ = []
+
+    causal_conv1d_cpp_functions = types.ModuleType("causal_conv1d.cpp_functions")
+    causal_conv1d_cpp_functions.causal_conv1d_fwd_function = None
+    causal_conv1d_cpp_functions.causal_conv1d_bwd_function = None
+    causal_conv1d_cpp_functions.causal_conv1d_update_function = None
+
+    causal_conv1d_cuda = types.ModuleType("causal_conv1d.causal_conv1d_cuda")
+    causal_conv1d_cuda.causal_conv1d_fwd = None
+    causal_conv1d_cuda.causal_conv1d_bwd = None
+    causal_conv1d_cuda.causal_conv1d_update = None
+
+    causal_conv1d_interface.causal_conv1d_fwd_function = (
+        causal_conv1d_cpp_functions.causal_conv1d_fwd_function
+    )
+    causal_conv1d_interface.causal_conv1d_bwd_function = (
+        causal_conv1d_cpp_functions.causal_conv1d_bwd_function
+    )
+    causal_conv1d_interface.causal_conv1d_update_function = (
+        causal_conv1d_cpp_functions.causal_conv1d_update_function
+    )
+
+    causal_conv1d_module.causal_conv1d_interface = causal_conv1d_interface
+    causal_conv1d_module.__dict__["causal_conv1d_fn"] = None
+    causal_conv1d_module.__dict__["causal_conv1d_update"] = None
+    causal_conv1d_module.__dict__["cpp_functions"] = causal_conv1d_cpp_functions
+
+    sys.modules["causal_conv1d"] = causal_conv1d_module
+    sys.modules["causal_conv1d.causal_conv1d_interface"] = causal_conv1d_interface
+    sys.modules["causal_conv1d.cpp_functions"] = causal_conv1d_cpp_functions
+    sys.modules["causal_conv1d.causal_conv1d_cuda"] = causal_conv1d_cuda
+
+    try:
+        import transformers.utils.import_utils as tf_import_utils
+    except Exception:
+        tf_import_utils = None
+    if tf_import_utils is not None and hasattr(
+        tf_import_utils, "is_causal_conv1d_available"
+    ):
+        tf_import_utils.is_causal_conv1d_available = lambda: False
+
+    CAUSAL_CONV1D_BROKEN = True
+    print(
+        "Unsloth: Detected broken causal_conv1d binary; "
+        "disabling causal_conv1d fast path and continuing import."
+    )

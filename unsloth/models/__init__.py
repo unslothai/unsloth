@@ -23,7 +23,12 @@ from .sentence_transformer import FastSentenceTransformer
 
 try:
     from .falcon_h1 import FastFalconH1Model
-except:
+except Exception as e:  # pragma: no cover - only for optional model import
+    message = str(e).lower()
+    if "causal_conv1d" in message:
+        print(
+            "Unsloth: Skipping Falcon H1 support (optional, unsupported causal_conv1d setup)."
+        )
     # transformers_version < 4.53.0 does not have falcon_h1 so silently skip it for now
     pass
 from .dpo import PatchDPOTrainer, PatchKTOTrainer
