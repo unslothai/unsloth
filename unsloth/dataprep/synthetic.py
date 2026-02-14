@@ -32,6 +32,11 @@ from unsloth_zoo.vllm_utils import (
     patch_vllm,
     delete_vllm,
 )
+from unsloth.device_utils import clean_gpu_cache
+    load_vllm,
+    patch_vllm,
+    delete_vllm,
+)
 from unsloth_zoo.log import logger
 import numpy as np
 
@@ -360,7 +365,7 @@ class SyntheticDataKit:
             except Exception as kill_e:
                 print(f"Error during forceful kill: {kill_e}")
         for _ in range(10):
-            torch.cuda.empty_cache()
+            clean_gpu_cache()
             gc.collect()
 
         # Delete vLLM module as well

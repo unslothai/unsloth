@@ -32,6 +32,9 @@ __all__ = [
     "get_available_memory",
     "get_memory_allocated",
     "get_current_memory_usage",
+    "clean_gpu_cache",
+    "synchronize_device",
+    "get_current_device",
 ]
 
 
@@ -157,3 +160,45 @@ def get_memory_allocated() -> int:
 def get_current_memory_usage() -> int:
     """Alias for get_memory_allocated() for easier migration."""
     return get_memory_allocated()
+
+
+def clean_gpu_cache() -> None:
+    """
+    Clear GPU memory cache for the current backend.
+    Works with CUDA, MPS, XPU, and is a no-op on CPU.
+    """
+    if DEVICE_TYPE == "cuda":
+        torch.cuda.empty_cache()
+    elif DEVICE_TYPE == "mps":
+        torch.mps.empty_cache()
+    elif DEVICE_TYPE == "xpu":
+        torch.xpu.empty_cache()
+    # CPU has no cache to empty
+
+
+def synchronize_device() -> None:
+    """
+    Synchronize the current device to ensure all GPU operations complete.
+    Works with CUDA, MPS, XPU, and is a no-op on CPU.
+    """
+    if DEVICE_TYPE == "cuda":
+        torch.cuda.synchronize()
+    elif DEVICE_TYPE == "mps":
+        torch.mps.synchronize()
+    elif DEVICE_TYPE == "xpu":
+        torch.xpu.synchronize()
+    # CPU is already synchronous
+
+
+def get_current_device() -> int:
+    """
+    Get the current device index.
+    Returns 0 for MPS (no multi-device support), or device index for CUDA/XPU.
+    """
+    if DEVICE_TYPE == "cuda":
+        return torch.cuda.current_device()
+    elif DEVICE_TYPE == "mps":
+        return 0  # MPS only supports device 0
+    elif DEVICE_TYPE == "xpu":
+        return torch.xpu.current_device()
+    return 0

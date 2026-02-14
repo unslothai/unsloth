@@ -30,6 +30,7 @@ from .mapper import (
 # https://github.com/huggingface/transformers/pull/26037 allows 4 bit loading!
 from transformers import __version__ as transformers_version
 from unsloth.models._utils import TorchAOConfig
+from unsloth.device_utils import clean_gpu_cache
 from unsloth_zoo.utils import Version
 import gc
 
@@ -310,7 +311,7 @@ def _offline_quantize_to_fp8(model_name: str, fp8_mode: str) -> str:
         model.save_pretrained(new_model_name, safe_serialization=False)
         del model
         for _ in range(2):
-            torch.cuda.empty_cache()
+            clean_gpu_cache()
             gc.collect()
         tokenizer.save_pretrained(new_model_name)
     return new_model_name

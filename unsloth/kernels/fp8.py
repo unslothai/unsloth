@@ -15,6 +15,7 @@ import os
 import torch
 import torch.nn as nn
 from ..device_type import DEVICE_TYPE
+from ..device_utils import clean_gpu_cache
 if DEVICE_TYPE != "mps":
     import triton
     import triton.language as tl
@@ -574,7 +575,7 @@ def test_has_fbgemm():
             )
         has_fbgemm = False
     del block_scale, xq
-    torch.cuda.empty_cache()
+    clean_gpu_cache()
     return has_fbgemm
 
 

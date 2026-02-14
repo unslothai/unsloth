@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from unsloth_zoo.utils import Version
+from unsloth.device_utils import clean_gpu_cache
 from importlib.metadata import version as importlib_version
 from unsloth_zoo.hf_utils import dtype_from_config, HAS_TORCH_DTYPE
 from unsloth_zoo.llama_cpp import (
@@ -62,6 +63,7 @@ from .tokenizer_utils import fix_sentencepiece_gguf
 from .models.loader_utils import get_model_name
 from .models._utils import _convert_torchao_model
 from .ollama_template_mappers import OLLAMA_TEMPLATES, MODEL_TO_OLLAMA_TEMPLATE_MAPPER
+from .device_utils import clean_gpu_cache
 from transformers import ProcessorMixin
 from huggingface_hub import HfApi
 
@@ -373,8 +375,7 @@ def unsloth_save_model(
 
     # Clean memory up first
     for _ in range(3):
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        clean_gpu_cache()
         gc.collect()
 
     save_method = save_method.lower().replace(" ", "_")
@@ -947,13 +948,11 @@ def unsloth_save_model(
     for j, (key, value) in enumerate(state_dict.items()):
         state_dict[key] = None
         if j % 10 == 0:
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            clean_gpu_cache()
             gc.collect()
     state_dict = None
     del state_dict
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    clean_gpu_cache()
     gc.collect()
 
     # Remove temporary location
@@ -962,8 +961,7 @@ def unsloth_save_model(
     shutil.rmtree(temporary_location, ignore_errors=True)
 
     for _ in range(3):
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        clean_gpu_cache()
         gc.collect()
     return save_directory, username
 
@@ -2068,8 +2066,7 @@ def unsloth_save_pretrained_gguf(
         import gc
 
         gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        clean_gpu_cache()
 
     # Step 7: Get model dtype and type
     try:

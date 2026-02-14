@@ -48,10 +48,10 @@ from unsloth_zoo.peft_utils import SKIP_QUANTIZATION_MODULES
 from ..device_type import (
     is_hip,
     get_device_type,
-    DEVICE_TYPE,
-    DEVICE_TYPE_TORCH,
-    DEVICE_COUNT,
-    ALLOW_PREQUANTIZED_MODELS,
+)
+from ..device_utils import (
+    clean_gpu_cache,
+    get_current_device,
 )
 
 transformers_version = Version(transformers_version)
@@ -118,16 +118,6 @@ HAS_XFORMERS = xformers is not None
 BlockDiagonalCausalMask = (
     xformers.attn_bias.BlockDiagonalCausalMask if HAS_XFORMERS else None
 )
-
-if DEVICE_TYPE == "xpu":
-    clean_gpu_cache = torch.xpu.empty_cache
-    get_current_device = torch.xpu.current_device
-elif DEVICE_TYPE == "mps":
-    clean_gpu_cache = torch.mps.empty_cache
-    get_current_device = lambda: 0
-else:
-    clean_gpu_cache = torch.cuda.empty_cache
-    get_current_device = torch.cuda.current_device
 
 
 def original_apply_qkv(self, X):
