@@ -17,8 +17,8 @@ export function InlineCategoryBadges({
 
     const badges = Array.from(container.children) as HTMLElement[];
     if (badges.length === 0) {
-      setVisibleCount(0);
-      return;
+      const id = requestAnimationFrame(() => setVisibleCount(0));
+      return () => cancelAnimationFrame(id);
     }
 
     const containerWidth = container.clientWidth;
@@ -39,7 +39,8 @@ export function InlineCategoryBadges({
       count++;
     }
 
-    setVisibleCount(count || 1);
+    const id = requestAnimationFrame(() => setVisibleCount(count || 1));
+    return () => cancelAnimationFrame(id);
   }, [values]);
 
   if (values.length === 0) {

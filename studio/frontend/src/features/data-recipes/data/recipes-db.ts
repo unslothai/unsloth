@@ -1,5 +1,6 @@
 import Dexie, { type EntityTable, liveQuery } from "dexie";
-import type { RecipePayload } from "@/features/recipe-studio";
+import { createEmptyRecipePayload } from "@/features/recipe-studio";
+import { normalizeNonEmptyName } from "@/utils";
 import { useEffect, useState } from "react";
 import type { RecipeRecord, SaveRecipeInput } from "../types";
 
@@ -10,38 +11,6 @@ const db = new Dexie("unsloth-data-recipes") as Dexie & {
 db.version(1).stores({
   recipes: "id, name, updatedAt, createdAt",
 });
-
-function normalizeRecipeName(name: string): string {
-  const trimmed = name.trim();
-  return trimmed.length > 0 ? trimmed : "Unnamed";
-}
-
-function createEmptyPayload(): RecipePayload {
-  return {
-    recipe: {
-      // biome-ignore lint/style/useNamingConvention: api schema
-      model_providers: [],
-      // biome-ignore lint/style/useNamingConvention: api schema
-      mcp_providers: [],
-      // biome-ignore lint/style/useNamingConvention: api schema
-      model_configs: [],
-      // biome-ignore lint/style/useNamingConvention: api schema
-      tool_configs: [],
-      columns: [],
-      processors: [],
-    },
-    run: {
-      rows: 5,
-      preview: true,
-      // biome-ignore lint/style/useNamingConvention: api schema
-      output_formats: ["jsonl"],
-    },
-    ui: {
-      nodes: [],
-      edges: [],
-    },
-  };
-}
 
 export async function listRecipes(): Promise<RecipeRecord[]> {
   return db.recipes.orderBy("updatedAt").reverse().toArray();
@@ -57,7 +26,7 @@ export async function saveRecipe(input: SaveRecipeInput): Promise<RecipeRecord> 
   const existing = input.id ? await db.recipes.get(input.id) : undefined;
   const record: RecipeRecord = {
     id,
-    name: normalizeRecipeName(input.name),
+    name: normalizeNonEmptyName(input.name),
     payload: input.payload,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
@@ -73,7 +42,7 @@ export async function deleteRecipe(id: string): Promise<void> {
 export async function createRecipeDraft(): Promise<RecipeRecord> {
   return saveRecipe({
     name: "Unnamed",
-    payload: createEmptyPayload(),
+    payload: createEmptyRecipePayload(),
   });
 }
 

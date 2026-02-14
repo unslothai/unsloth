@@ -13,7 +13,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { type ReactElement, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactElement, useMemo, useRef } from "react";
 import { useRecipeStudioStore } from "../../stores/recipe-studio";
 import type { LlmConfig } from "../../types";
 import { InlineField } from "./inline-field";
@@ -52,12 +52,13 @@ export function InlineLlm({ config, onUpdate }: InlineLlmProps): ReactElement {
         .map((c) => c.name),
     [configs],
   );
-  const [aliasInput, setAliasInput] = useState(config.model_alias);
+  const aliasInputRef = useRef(config.model_alias);
+  const lastAliasRef = useRef(config.model_alias);
   const anchorRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    setAliasInput(config.model_alias);
-  }, [config.model_alias]);
+  if (lastAliasRef.current !== config.model_alias) {
+    lastAliasRef.current = config.model_alias;
+    aliasInputRef.current = config.model_alias;
+  }
 
   return (
     <div className="space-y-3">
@@ -74,7 +75,9 @@ export function InlineLlm({ config, onUpdate }: InlineLlmProps): ReactElement {
                 model_alias: value ?? "",
               })
             }
-            onInputValueChange={setAliasInput}
+            onInputValueChange={(value) => {
+              aliasInputRef.current = value;
+            }}
             itemToStringValue={(value) => value}
             autoHighlight={true}
           >
@@ -82,10 +85,11 @@ export function InlineLlm({ config, onUpdate }: InlineLlmProps): ReactElement {
               className="nodrag h-8 w-full text-xs"
               placeholder="Model alias"
               onBlur={() => {
-                if (aliasInput !== config.model_alias) {
+                const next = aliasInputRef.current;
+                if (next !== config.model_alias) {
                   onUpdate({
                     // biome-ignore lint/style/useNamingConvention: api schema
-                    model_alias: aliasInput,
+                    model_alias: next,
                   });
                 }
               }}

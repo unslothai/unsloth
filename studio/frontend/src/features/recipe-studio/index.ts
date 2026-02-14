@@ -5,3 +5,4 @@ export type {
   RecipeStudioPageProps,
 } from "./recipe-studio-page";
 export type { RecipePayload } from "./utils/payload/types";
+export { createEmptyRecipePayload } from "./utils/payload/empty";
