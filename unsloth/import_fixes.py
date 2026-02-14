@@ -46,6 +46,8 @@ else:
     )
     logger.setLevel(logging.WARNING)
 
+_AMDGPU_IDS_MISSING_TEXT = "amdgpu.ids: No such file or directory"
+
 
 def Version(version):
     try:
@@ -203,7 +205,7 @@ if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") != "1":
     # Triton "df: No such file or directory" stderr noise
     sys.stderr.add_filter("df: No such file")
     # ROCm/libdrm missing ids table stderr noise on some AMD setups
-    sys.stderr.add_filter("amdgpu.ids: No such file or directory")
+    sys.stderr.add_filter(_AMDGPU_IDS_MISSING_TEXT)
 
 
 # Fix up AttributeError: 'MessageFactory' object has no attribute 'GetPrototype'
@@ -1176,6 +1178,24 @@ def disable_torchcodec_if_broken():
 CAUSAL_CONV1D_BROKEN = False
 _CAUSAL_CONV1D_PREFIX = "causal_conv1d"
 _CAUSAL_CONV1D_BLOCKER_SENTINEL = "_unsloth_causal_conv1d_blocker"
+_ROCM_ENV_HINT_KEYS = (
+    "ROCM_PATH",
+    "ROCM_HOME",
+    "HIP_PATH",
+    "HSA_PATH",
+    "HIP_VISIBLE_DEVICES",
+    "ROCR_VISIBLE_DEVICES",
+)
+_ROCM_PATH_HINTS = (
+    Path("/opt/rocm"),
+    Path("/dev/kfd"),
+    Path("/sys/module/amdgpu"),
+)
+
+
+def _log_rocm_detection(message):
+    if UNSLOTH_ENABLE_LOGGING:
+        logger.info(message)
 
 
 @functools.lru_cache(1)
@@ -1185,53 +1205,40 @@ def _is_rocm_torch_build() -> bool:
     try:
         torch_version_raw = str(importlib_version("torch")).lower()
         if "rocm" in torch_version_raw:
-            if UNSLOTH_ENABLE_LOGGING:
-                logger.info(
-                    "Unsloth: ROCm detection matched torch version tag (+rocm)."
-                )
+            _log_rocm_detection(
+                "Unsloth: ROCm detection matched torch version tag (+rocm)."
+            )
             return True
     except Exception:
         pass
 
     # Environment hints commonly present on ROCm runtimes.
-    for key in (
-        "ROCM_PATH",
-        "ROCM_HOME",
-        "HIP_PATH",
-        "HSA_PATH",
-        "HIP_VISIBLE_DEVICES",
-        "ROCR_VISIBLE_DEVICES",
-    ):
+    for key in _ROCM_ENV_HINT_KEYS:
         value = os.environ.get(key, "")
         if isinstance(value, str) and value.strip():
-            if UNSLOTH_ENABLE_LOGGING:
-                logger.info(f"Unsloth: ROCm detection matched environment key `{key}`.")
+            _log_rocm_detection(
+                f"Unsloth: ROCm detection matched environment key `{key}`."
+            )
             return True
 
     # Filesystem / driver hints for ROCm stacks.
-    for path in (
-        Path("/opt/rocm"),
-        Path("/dev/kfd"),
-        Path("/sys/module/amdgpu"),
-    ):
+    for path in _ROCM_PATH_HINTS:
         try:
             if path.exists():
-                if UNSLOTH_ENABLE_LOGGING:
-                    logger.info(
-                        f"Unsloth: ROCm detection matched filesystem hint `{path}`."
-                    )
+                _log_rocm_detection(
+                    f"Unsloth: ROCm detection matched filesystem hint `{path}`."
+                )
                 return True
         except Exception:
             continue
 
-    if UNSLOTH_ENABLE_LOGGING:
-        logger.info("Unsloth: ROCm detection did not match any known hints.")
+    _log_rocm_detection("Unsloth: ROCm detection did not match any known hints.")
     return False
 
 
 @contextlib.contextmanager
 def _filter_stderr_fd(
-    suppressed_substrings = ("amdgpu.ids: No such file or directory",),
+    suppressed_substrings = (_AMDGPU_IDS_MISSING_TEXT,),
 ):
     """
     Capture low-level fd=2 writes, drop only known noisy substrings, and replay
@@ -1285,7 +1292,7 @@ def _filter_stderr_fd(
                 pass
 
 
-def _suppress_hip_libdrm_ids_noise():
+def _filter_rocm_amdgpu_ids_fd2_noise():
     # ROCm/libdrm can emit amdgpu.ids missing errors via low-level fd=2 writes.
     # Python-level stderr filters cannot intercept those writes.
     if not _is_rocm_torch_build():
@@ -1425,7 +1432,8 @@ def disable_broken_causal_conv1d():
         return
 
     try:
-        with _suppress_hip_libdrm_ids_noise():
+        # Suppress only native fd=2 amdgpu.ids noise during causal_conv1d probe.
+        with _filter_rocm_amdgpu_ids_fd2_noise():
             import causal_conv1d  # noqa: F401
 
         return
