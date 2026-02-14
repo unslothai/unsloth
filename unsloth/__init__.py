@@ -149,6 +149,7 @@ from .import_fixes import (
     patch_openspiel_env_async,
     fix_executorch,
     patch_vllm_for_notebooks,
+    patch_transformers_cfg,
     patch_torchcodec_audio_decoder,
     disable_torchcodec_if_broken,
 )
@@ -170,6 +171,7 @@ fix_openenv_no_vllm()
 patch_openspiel_env_async()
 fix_executorch()
 patch_vllm_for_notebooks()
+patch_transformers_cfg()
 patch_torchcodec_audio_decoder()
 disable_torchcodec_if_broken()
 
@@ -189,6 +191,7 @@ del fix_openenv_no_vllm
 del patch_openspiel_env_async
 del fix_executorch
 del patch_vllm_for_notebooks
+del patch_transformers_cfg
 del patch_torchcodec_audio_decoder
 del disable_torchcodec_if_broken
 
@@ -313,6 +316,7 @@ from .save import *
 from .chat_templates import *
 from .tokenizer_utils import *
 from .trainer import *
+from .grammars import *
 
 # Export dataprep utilities for CLI and downstream users
 from .dataprep.raw_text import RawTextDataLoader, TextPreprocessor
