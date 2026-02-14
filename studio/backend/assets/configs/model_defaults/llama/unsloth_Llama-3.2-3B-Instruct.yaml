@@ -1,6 +1,7 @@
 # Model defaults for unsloth/Llama-3.2-3B-Instruct
 # Based on Llama3.2_(1B_and_3B)-Conversational.ipynb
 # Also applies to: unsloth/Llama-3.2-3B-Instruct-unsloth-bnb-4bit, meta-llama/Llama-3.2-3B-Instruct, unsloth/Llama-3.2-3B-Instruct-bnb-4bit, RedHatAI/Llama-3.2-3B-Instruct-FP8, unsloth/Llama-3.2-3B-Instruct-FP8-Block, unsloth/Llama-3.2-3B-Instruct-FP8-Dynamic
+# added inference parameters from unsloth notebook
 
 training:
   max_seq_length: 2048
@@ -44,4 +45,8 @@ logging:
   enable_tensorboard: false
   tensorboard_dir: "runs"
   log_frequency: 10
+
+inference:
+  temperature: 1.5
+  min_p: 0.1
 
