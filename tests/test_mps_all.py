@@ -49,6 +49,8 @@ class TestHardwareDetection(unittest.TestCase):
     @unittest.skipIf(platform.system() != "Darwin", "macOS only")
     def test_apple_hardware_info(self):
         """Verify hardware info is correctly detected."""
+        if platform.system() != "Darwin":
+            self.skipTest("macOS only")
         from unsloth.kernels.mps import get_apple_hardware_info
 
         info = get_apple_hardware_info()
@@ -66,6 +68,8 @@ class TestHardwareDetection(unittest.TestCase):
     @unittest.skipIf(platform.system() != "Darwin", "macOS only")
     def test_mps_device_info(self):
         """Verify MPS device info is available."""
+        if platform.system() != "Darwin":
+            self.skipTest("macOS only")
         from unsloth.kernels.mps import get_mps_device_info
 
         info = get_mps_device_info()
@@ -77,6 +81,8 @@ class TestHardwareDetection(unittest.TestCase):
     @unittest.skipIf(platform.system() != "Darwin", "macOS only")
     def test_mps_memory_info(self):
         """Verify MPS memory info is available."""
+        if platform.system() != "Darwin":
+            self.skipTest("macOS only")
         from unsloth.kernels.mps import get_mps_memory_info
 
         info = get_mps_memory_info()
@@ -243,6 +249,8 @@ class TestKernelDispatch(unittest.TestCase):
     @unittest.skipIf(not _is_mps_available(), "MPS not available")
     def test_kernel_dispatch_available(self):
         """Verify kernel dispatch functions are available."""
+        if platform.system() != "Darwin":
+            self.skipTest("macOS only")
         from unsloth.kernels.mps.dispatch import (
             _is_metal_available,
             _is_mlx_available,
@@ -265,6 +273,8 @@ class TestModelIntegration(unittest.TestCase):
     @unittest.skipIf(not _is_mps_available(), "MPS not available")
     def test_llama_forward_pass(self):
         """Test Llama model forward pass on MPS."""
+        if platform.system() != "Darwin":
+            self.skipTest("macOS only")
         import torch
         from unsloth import FastLanguageModel
 
@@ -289,6 +299,8 @@ class TestModelIntegration(unittest.TestCase):
     @unittest.skipIf(not _is_mps_available(), "MPS not available")
     def test_qwen2_forward_pass(self):
         """Test Qwen2 model forward pass on MPS."""
+        if platform.system() != "Darwin":
+            self.skipTest("macOS only")
         import torch
         from unsloth import FastLanguageModel
 
@@ -311,6 +323,8 @@ class TestModelIntegration(unittest.TestCase):
     @unittest.skipIf(not _is_mps_available(), "MPS not available")
     def test_mistral_forward_pass(self):
         """Test Mistral model forward pass on MPS."""
+        if platform.system() != "Darwin":
+            self.skipTest("macOS only")
         import torch
         from unsloth import FastLanguageModel
 
@@ -333,6 +347,8 @@ class TestModelIntegration(unittest.TestCase):
     @unittest.skipIf(not _is_mps_available(), "MPS not available")
     def test_gemma_forward_pass(self):
         """Test Gemma model forward pass on MPS."""
+        if platform.system() != "Darwin":
+            self.skipTest("macOS only")
         import torch
         from unsloth import FastLanguageModel
 
@@ -359,6 +375,8 @@ class TestTraining(unittest.TestCase):
     @unittest.skipIf(not _is_mps_available(), "MPS not available")
     def test_forward_backward_pass(self):
         """Test forward and backward pass on MPS."""
+        if platform.system() != "Darwin":
+            self.skipTest("macOS only")
         import torch
         from unsloth import FastLanguageModel
 
@@ -399,6 +417,8 @@ class TestTraining(unittest.TestCase):
     @unittest.skipIf(not _is_mps_available(), "MPS not available")
     def test_training_loop(self):
         """Test full training loop on MPS."""
+        if platform.system() != "Darwin":
+            self.skipTest("macOS only")
         import torch
         from unsloth import FastLanguageModel
 
@@ -478,6 +498,8 @@ class TestSaveLoad(unittest.TestCase):
     @unittest.skipIf(not _is_mps_available(), "MPS not available")
     def test_model_save_load(self):
         """Test model save and load on MPS."""
+        if platform.system() != "Darwin":
+            self.skipTest("macOS only")
         import torch
         import tempfile
         import os
