@@ -12,6 +12,7 @@ import {
   parseModelConfig,
   parseModelProvider,
 } from "./parsers";
+import { parseSeedConfig } from "./parsers/seed-config-parser";
 import { buildNodes, parseUi } from "./ui";
 import type { ImportResult } from "./types";
 
@@ -22,6 +23,7 @@ type RecipeInput = {
   mcp_providers?: unknown;
   tool_configs?: unknown;
   processors?: unknown;
+  seed_config?: unknown;
 };
 
 type UiInput = {
@@ -217,6 +219,15 @@ export function importRecipePayload(input: string): ImportResult {
   const nameToId = new Map<string, string>();
 
   let nextId = 1;
+
+  if (recipe.seed_config) {
+    const id = `n${nextId}`;
+    nextId += 1;
+    const seedConfig = parseSeedConfig(recipe.seed_config, id);
+    if (seedConfig) {
+      configs.push(seedConfig);
+    }
+  }
 
   if (Array.isArray(recipe.model_providers)) {
     recipe.model_providers.forEach((provider, index) => {

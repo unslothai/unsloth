@@ -15,6 +15,7 @@ import {
   FunctionIcon,
   Parabola02Icon,
   PencilEdit02Icon,
+  Plant01Icon,
   Tag01Icon,
   TagsIcon,
   UserAccountIcon,
@@ -76,6 +77,7 @@ function getJinjaContext(
 
 function getItemIcon(item: AvailableRefItem) {
   if (item.kind === "expression") return FunctionIcon;
+  if (item.kind === "seed") return Plant01Icon;
   if (item.kind === "llm") {
     if (item.subtype === "structured") return CodeIcon;
     if (item.subtype === "code") return CodeSimpleIcon;

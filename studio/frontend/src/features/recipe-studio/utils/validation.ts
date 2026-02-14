@@ -8,6 +8,14 @@ function parseNumber(value?: string): number | null {
   return Number.isFinite(num) ? num : null;
 }
 
+function parseIntNumber(value?: string): number | null {
+  const num = parseNumber(value);
+  if (num === null || !Number.isInteger(num)) {
+    return null;
+  }
+  return num;
+}
+
 function parseAgeRange(value?: string): [number, number] | null {
   if (!value) {
     return null;
@@ -205,6 +213,45 @@ export function getConfigErrors(config: NodeConfig | null): string[] {
   if (config.kind === "expression") {
     if (!config.expr.trim()) {
       errors.push("Expression is required.");
+    }
+  }
+  if (config.kind === "seed") {
+    if (!config.hf_path.trim()) {
+      errors.push("HF dataset path is required.");
+    }
+    if (config.hf_endpoint?.trim() && !config.hf_endpoint.trim().startsWith("http")) {
+      errors.push("HF endpoint must start with http.");
+    }
+    if (config.drop && (config.seed_columns?.length ?? 0) === 0) {
+      errors.push("Seed drop needs loaded columns (open Seed Preview).");
+    }
+
+    if (config.selection_type === "index_range") {
+      const start = parseIntNumber(config.selection_start);
+      const end = parseIntNumber(config.selection_end);
+      if (start === null || end === null) {
+        errors.push("Index range start/end must be integers.");
+      } else {
+        if (start < 0 || end < 0) {
+          errors.push("Index range start/end must be >= 0.");
+        }
+        if (end < start) {
+          errors.push("Index range end must be >= start.");
+        }
+      }
+    }
+    if (config.selection_type === "partition_block") {
+      const index = parseIntNumber(config.selection_index);
+      const parts = parseIntNumber(config.selection_num_partitions);
+      if (index === null || parts === null) {
+        errors.push("Partition index/num_partitions must be integers.");
+      } else {
+        if (index < 0) errors.push("Partition index must be >= 0.");
+        if (parts < 1) errors.push("Partition num_partitions must be >= 1.");
+        if (parts >= 1 && index >= parts) {
+          errors.push("Partition index must be < num_partitions.");
+        }
+      }
     }
   }
   return errors;

@@ -91,6 +91,7 @@ export function RecipeStudioPage({
     onEdgesChange,
     onConnect,
     addSamplerNode,
+    addSeedNode,
     addLlmNode,
     addModelProviderNode,
     addModelConfigNode,
@@ -126,6 +127,7 @@ export function RecipeStudioPage({
       onEdgesChange: state.onEdgesChange,
       onConnect: state.onConnect,
       addSamplerNode: state.addSamplerNode,
+      addSeedNode: state.addSeedNode,
       addLlmNode: state.addLlmNode,
       addModelProviderNode: state.addModelProviderNode,
       addModelConfigNode: state.addModelConfigNode,
@@ -377,6 +379,7 @@ export function RecipeStudioPage({
                   sheetView={sheetView}
                   onViewChange={setSheetView}
                   onAddSampler={addSamplerNode}
+                  onAddSeed={addSeedNode}
                   onAddLlm={addLlmNode}
                   onAddModelProvider={addModelProviderNode}
                   onAddModelConfig={addModelConfigNode}
