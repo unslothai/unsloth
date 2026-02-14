@@ -4,6 +4,7 @@ export {
   makeModelConfig,
   makeModelProviderConfig,
   makeSamplerConfig,
+  makeSeedConfig,
 } from "./config-factories";
 export {
   labelForExpression,

@@ -16,6 +16,9 @@ import {
   buildModelProvider,
   buildProcessors,
   buildSamplerColumn,
+  buildSeedConfig,
+  buildSeedDropProcessor,
+  pickFirstSeedConfig,
 } from "./builders";
 import type { RecipePayloadResult } from "./types";
 import {
@@ -65,6 +68,7 @@ export function buildRecipePayload(
   const toolConfigJsonByAlias = new Map<string, string>();
   const nameSet = new Set<string>();
   const nameToConfig = new Map<string, NodeConfig>();
+  const firstSeed = pickFirstSeedConfig(configs);
 
   for (const node of nodes) {
     const config = configs[node.id];
@@ -74,10 +78,12 @@ export function buildRecipePayload(
     for (const error of getConfigErrors(config)) {
       errors.push(`${config.name}: ${error}`);
     }
-    if (nameSet.has(config.name)) {
-      errors.push(`Duplicate node name: ${config.name}.`);
+    if (config.kind !== "seed") {
+      if (nameSet.has(config.name)) {
+        errors.push(`Duplicate node name: ${config.name}.`);
+      }
+      nameSet.add(config.name);
     }
-    nameSet.add(config.name);
 
     if (config.kind === "sampler") {
       nameToConfig.set(config.name, config);
@@ -135,6 +141,10 @@ export function buildRecipePayload(
       nameToConfig.set(config.name, config);
       continue;
     }
+    if (config.kind === "seed") {
+      // SeedConfig is global config (seed_config); seed-dataset columns are added by DataDesigner.
+      continue;
+    }
     if (config.kind === "model_provider") {
       modelProviderNames.add(config.name);
       modelProviders.push(buildModelProvider(config, errors));
@@ -166,6 +176,9 @@ export function buildRecipePayload(
     if (!config) {
       return [];
     }
+    if (config.kind === "seed") {
+      return [];
+    }
     const width = getNodeWidth(node);
     return [
       {
@@ -195,6 +208,13 @@ export function buildRecipePayload(
     ];
   });
   const recipeProcessors = buildProcessors(processors, errors);
+  const seedConfig = firstSeed ? buildSeedConfig(firstSeed, errors) : undefined;
+  const seedDropProcessor = firstSeed
+    ? buildSeedDropProcessor(firstSeed, errors)
+    : null;
+  if (seedDropProcessor) {
+    recipeProcessors.push(seedDropProcessor);
+  }
 
   return {
     errors,
@@ -206,6 +226,8 @@ export function buildRecipePayload(
         mcp_providers: mcpProviders,
         // biome-ignore lint/style/useNamingConvention: api schema
         model_configs: modelConfigs,
+        // biome-ignore lint/style/useNamingConvention: api schema
+        seed_config: seedConfig,
         // biome-ignore lint/style/useNamingConvention: api schema
         tool_configs: toolConfigs,
         columns,

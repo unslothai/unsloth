@@ -7,6 +7,8 @@ export type RecipePayload = {
     // biome-ignore lint/style/useNamingConvention: api schema
     model_configs: Record<string, unknown>[];
     // biome-ignore lint/style/useNamingConvention: api schema
+    seed_config?: Record<string, unknown>;
+    // biome-ignore lint/style/useNamingConvention: api schema
     tool_configs: Record<string, unknown>[];
     columns: Record<string, unknown>[];
     processors: Record<string, unknown>[];

@@ -23,11 +23,13 @@ import {
   makeModelConfig,
   makeModelProviderConfig,
   makeSamplerConfig,
+  makeSeedConfig,
 } from "../utils";
 import { ExpressionDialog } from "../dialogs/expression/expression-dialog";
 import { LlmDialog } from "../dialogs/llm/llm-dialog";
 import { ModelConfigDialog } from "../dialogs/models/model-config-dialog";
 import { ModelProviderDialog } from "../dialogs/models/model-provider-dialog";
+import { SeedDialog } from "../dialogs/seed/seed-dialog";
 import { CategoryDialog } from "../dialogs/samplers/category-dialog";
 import { DatetimeDialog } from "../dialogs/samplers/datetime-dialog";
 import { BernoulliDialog } from "../dialogs/samplers/bernoulli-dialog";
@@ -38,11 +40,12 @@ import { TimedeltaDialog } from "../dialogs/samplers/timedelta-dialog";
 import { UniformDialog } from "../dialogs/samplers/uniform-dialog";
 import { UuidDialog } from "../dialogs/samplers/uuid-dialog";
 
-export type BlockKind = "sampler" | "llm" | "expression";
+export type BlockKind = "sampler" | "llm" | "expression" | "seed";
 export type BlockType =
   | SamplerType
   | LlmType
   | "expression"
+  | "seed"
   | "model_provider"
   | "model_config";
 
@@ -82,6 +85,12 @@ export const BLOCK_GROUPS: BlockGroup[] = [
     icon: DiceFaces03Icon,
   },
   {
+    kind: "seed",
+    title: "Seed",
+    description: "Columns from a seed dataset.",
+    icon: Plant01Icon,
+  },
+  {
     kind: "llm",
     title: "LLM",
     description: "Text + structured blocks.",
@@ -96,6 +105,21 @@ export const BLOCK_GROUPS: BlockGroup[] = [
 ];
 
 const BLOCK_DEFINITIONS: BlockDefinition[] = [
+  {
+    kind: "seed",
+    type: "seed",
+    title: "Seed (Hugging Face)",
+    description: "Configure a HF seed dataset.",
+    icon: Plant01Icon,
+    createConfig: (id, existing) => makeSeedConfig(id, existing),
+    renderDialog: ({ config, onUpdate }) =>
+      config.kind === "seed" ? (
+        <SeedDialog
+          config={config}
+          onUpdate={(patch) => onUpdate(config.id, patch)}
+        />
+      ) : null,
+  },
   {
     kind: "sampler",
     type: "category",
@@ -371,6 +395,9 @@ export function getBlockDefinitionForConfig(
 ): BlockDefinition | null {
   if (!config) {
     return null;
+  }
+  if (config.kind === "seed") {
+    return getBlockDefinition("seed", "seed");
   }
   if (config.kind === "sampler") {
     const samplerType =

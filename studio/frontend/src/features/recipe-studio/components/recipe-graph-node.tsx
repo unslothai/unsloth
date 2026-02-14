@@ -61,6 +61,9 @@ const NODE_META = {
   expression: {
     tone: "bg-indigo-50 text-indigo-600 border-indigo-100",
   },
+  seed: {
+    tone: "bg-lime-50 text-lime-700 border-lime-100",
+  },
   model_provider: {
     tone: "bg-amber-50 text-amber-600 border-amber-100",
   },
@@ -106,6 +109,9 @@ function resolveNodeIcon(
     return Shield02Icon;
   }
   if (kind === "model_config") {
+    return Plant01Icon;
+  }
+  if (kind === "seed") {
     return Plant01Icon;
   }
   return DiceFaces03Icon;
@@ -161,6 +167,13 @@ function getConfigSummary(config: NodeConfig | undefined): string {
       return `${scoreCount} scorers`;
     }
     return "Prompt/system via linked input nodes";
+  }
+
+  if (config.kind === "seed") {
+    if (config.hf_path.trim()) {
+      return config.hf_path.trim();
+    }
+    return "Set HF dataset path";
   }
 
   return "Open details for config";
@@ -292,7 +305,9 @@ function RecipeGraphNodeBase({
   }, [id, layoutDirection, config, updateNodeInternals]);
 
   const showDataHandles =
-    data.kind === "llm" || data.kind === "expression" || data.kind === "sampler";
+    data.kind === "llm" ||
+    data.kind === "expression" ||
+    data.kind === "sampler";
   const showSemanticIn = data.kind === "llm" || data.kind === "model_config";
   const showSemanticOut = data.kind === "model_config" || data.kind === "model_provider";
   const isTopBottom = layoutDirection === "TB";
