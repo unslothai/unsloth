@@ -377,7 +377,7 @@ def unsloth_save_model(
     # Clean memory up first
     for _ in range(3):
         clean_gpu_cache()
-        gc.collect()
+        gc.collect()  # noqa: F823
 
     save_method = save_method.lower().replace(" ", "_")
     if (
