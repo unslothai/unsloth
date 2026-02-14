@@ -43,6 +43,11 @@ import { buildRecipePayload } from "./utils/payload";
 import type { RecipePayload } from "./utils/payload/types";
 import { buildDefaultSchemaTransform } from "./utils/processors";
 import {
+  applyAuxNodeChanges,
+  filterEdgeChangesByIds,
+  filterNodeChangesByIds,
+} from "./utils/reactflow-changes";
+import {
   buildDialogOptions,
   buildPreviewSummary,
 } from "./utils/recipe-studio-view";
@@ -197,32 +202,12 @@ export function RecipeStudioPage({
 
   const handleNodesChange = useCallback(
     (changes: NodeChange<Node<RecipeNodeData | RecipeGraphAuxNodeData>>[]) => {
-      for (const change of changes) {
-        if (!("id" in change) || !change.id.startsWith("aux-")) {
-          continue;
-        }
-        if (change.type === "position") {
-          const nextPosition = change.position ?? change.positionAbsolute;
-          if (nextPosition) setAuxNodePosition(change.id, nextPosition);
-          continue;
-        }
-        if (
-          change.type === "dimensions" &&
-          change.dimensions &&
-          change.dimensions.width > 0 &&
-          change.dimensions.height > 0
-        ) {
-          setAuxNodeSize(change.id, {
-            width: change.dimensions.width,
-            height: change.dimensions.height,
-          });
-        }
-      }
-      const next = changes.filter(
-        (change): change is NodeChange<RecipeBuilderNode> =>
-          "id" in change && baseNodeIds.has(change.id),
+      applyAuxNodeChanges(changes, { setAuxNodePosition, setAuxNodeSize });
+      const next = filterNodeChangesByIds(
+        changes as NodeChange<RecipeBuilderNode>[],
+        baseNodeIds,
       );
-      if (next.length > 0) {
+      if (next.length) {
         onNodesChange(next);
       }
     },
@@ -231,11 +216,8 @@ export function RecipeStudioPage({
 
   const handleEdgesChange = useCallback(
     (changes: EdgeChange<Edge>[]) => {
-      const next = changes.filter(
-        (change): change is EdgeChange<Edge> =>
-          "id" in change && baseEdgeIds.has(change.id),
-      );
-      if (next.length > 0) {
+      const next = filterEdgeChangesByIds(changes, baseEdgeIds);
+      if (next.length) {
         onEdgesChange(next);
       }
     },

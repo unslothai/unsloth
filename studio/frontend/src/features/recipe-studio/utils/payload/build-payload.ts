@@ -7,6 +7,8 @@ import type {
   NodeConfig,
 } from "../../types";
 import { getConfigErrors } from "../index";
+import { isSemanticRelation } from "../graph/relations";
+import { readNodeWidth } from "../rf-node-dimensions";
 import {
   buildExpressionColumn,
   buildLlmMcpProvider,
@@ -22,7 +24,6 @@ import {
 } from "./builders";
 import type { RecipePayloadResult } from "./types";
 import {
-  isSemanticRelation,
   validateModelAliasLinks,
   validateModelConfigProviders,
   validateSubcategoryConfigs,
@@ -30,20 +31,24 @@ import {
   validateUsedProviders,
 } from "./validate";
 
-function getNodeWidth(node: RecipeNode): number | null {
-  if (typeof node.width === "number" && Number.isFinite(node.width)) {
-    return node.width;
+function pushUniqueJson(
+  label: string,
+  key: string,
+  item: Record<string, unknown>,
+  seen: Map<string, string>,
+  out: Record<string, unknown>[],
+  errors: string[],
+): void {
+  const serialized = JSON.stringify(item);
+  const existing = seen.get(key);
+  if (existing && existing !== serialized) {
+    errors.push(`${label} ${key}: conflicting definitions.`);
+    return;
   }
-  if (typeof node.style?.width === "number" && Number.isFinite(node.style.width)) {
-    return node.style.width;
+  if (!existing) {
+    seen.set(key, serialized);
+    out.push(item);
   }
-  if (typeof node.style?.width === "string") {
-    const parsed = Number.parseFloat(node.style.width);
-    if (Number.isFinite(parsed)) {
-      return parsed;
-    }
-  }
-  return null;
 }
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: payload build
@@ -97,34 +102,28 @@ export function buildRecipePayload(
         if (!builtProvider) {
           continue;
         }
-        const key = String(builtProvider.name);
-        const serialized = JSON.stringify(builtProvider);
-        const existing = mcpProviderJsonByName.get(key);
-        if (existing && existing !== serialized) {
-          errors.push(`MCP provider ${key}: conflicting definitions.`);
-          continue;
-        }
-        if (!existing) {
-          mcpProviderJsonByName.set(key, serialized);
-          mcpProviders.push(builtProvider);
-        }
+        pushUniqueJson(
+          "MCP provider",
+          String(builtProvider.name),
+          builtProvider,
+          mcpProviderJsonByName,
+          mcpProviders,
+          errors,
+        );
       }
       for (const toolConfig of config.tool_configs ?? []) {
         const builtToolConfig = buildLlmToolConfig(toolConfig, errors);
         if (!builtToolConfig) {
           continue;
         }
-        const key = String(builtToolConfig.tool_alias);
-        const serialized = JSON.stringify(builtToolConfig);
-        const existing = toolConfigJsonByAlias.get(key);
-        if (existing && existing !== serialized) {
-          errors.push(`Tool config ${key}: conflicting definitions.`);
-          continue;
-        }
-        if (!existing) {
-          toolConfigJsonByAlias.set(key, serialized);
-          toolConfigs.push(builtToolConfig);
-        }
+        pushUniqueJson(
+          "Tool config",
+          String(builtToolConfig.tool_alias),
+          builtToolConfig,
+          toolConfigJsonByAlias,
+          toolConfigs,
+          errors,
+        );
       }
       if (config.model_alias) {
         modelAliases.add(config.model_alias);
@@ -179,7 +178,7 @@ export function buildRecipePayload(
     if (config.kind === "seed") {
       return [];
     }
-    const width = getNodeWidth(node);
+    const width = readNodeWidth(node);
     return [
       {
         id: config.name,

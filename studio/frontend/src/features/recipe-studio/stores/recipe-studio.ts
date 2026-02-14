@@ -22,13 +22,12 @@ import {
   type BlockKind,
   type BlockType,
 } from "../blocks/registry";
-import { isCategoryConfig, isSubcategoryConfig } from "../utils";
 import { applyRecipeConnection, isValidRecipeConnection } from "../utils/graph";
 import type { RecipeSnapshot } from "../utils/import";
 import { getLayoutedElements } from "../utils/layout";
+import { syncPositionsRecord, syncSizesRecord } from "./helpers/aux-sync";
+import { applyEdgeRemovals, applyNodeRemovals } from "./helpers/removals";
 import {
-  applyRemovalToConfig,
-  applyRemovalToConfigs,
   applyRenameToConfigs,
   applyLayoutDirectionToNodes,
   buildNodeUpdate,
@@ -86,6 +85,37 @@ type RecipeStudioState = {
   isValidConnection: IsValidConnection;
 };
 
+const INITIAL_STATE = {
+  nodes: [],
+  edges: [],
+  auxNodePositions: {},
+  auxNodeSizes: {},
+  configs: {},
+  processors: [],
+  flowMoving: false,
+  sheetView: "root",
+  activeConfigId: null,
+  dialogOpen: false,
+  layoutDirection: "LR",
+  nextId: 3,
+  nextY: 280,
+} satisfies Pick<
+  RecipeStudioState,
+  | "nodes"
+  | "edges"
+  | "auxNodePositions"
+  | "auxNodeSizes"
+  | "configs"
+  | "processors"
+  | "flowMoving"
+  | "sheetView"
+  | "activeConfigId"
+  | "dialogOpen"
+  | "layoutDirection"
+  | "nextId"
+  | "nextY"
+>;
+
 function buildAddedNodeState(
   state: RecipeStudioState,
   kind: BlockKind,
@@ -102,39 +132,12 @@ function buildAddedNodeState(
 }
 
 export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
-  nodes: [],
-  edges: [],
-  auxNodePositions: {},
-  auxNodeSizes: {},
-  configs: {},
-  processors: [],
-  flowMoving: false,
-  sheetView: "root",
-  activeConfigId: null,
-  dialogOpen: false,
-  layoutDirection: "LR",
-  nextId: 3,
-  nextY: 280,
+  ...INITIAL_STATE,
   setFlowMoving: (moving) => set({ flowMoving: moving }),
   setSheetView: (view) => set({ sheetView: view }),
   setProcessors: (processors) => set({ processors }),
   setDialogOpen: (open) => set({ dialogOpen: open }),
-  resetRecipe: () =>
-    set({
-      nodes: [],
-      edges: [],
-      auxNodePositions: {},
-      auxNodeSizes: {},
-      configs: {},
-      processors: [],
-      flowMoving: false,
-      sheetView: "root",
-      activeConfigId: null,
-      dialogOpen: false,
-      layoutDirection: "LR",
-      nextId: 3,
-      nextY: 280,
-    }),
+  resetRecipe: () => set(INITIAL_STATE),
   selectConfig: (id) => set({ activeConfigId: id, dialogOpen: false }),
   openConfig: (id) => set({ activeConfigId: id, dialogOpen: true }),
   setLayoutDirection: (direction) =>
@@ -239,54 +242,13 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
     }),
   syncAuxNodePositions: (activeIds, defaults) =>
     set((state) => {
-      const nextPositions: Record<string, XYPosition> = {};
-      for (const id of activeIds) {
-        const existing = state.auxNodePositions[id];
-        if (existing) {
-          nextPositions[id] = existing;
-          continue;
-        }
-        const fallback = defaults[id];
-        if (fallback) {
-          nextPositions[id] = fallback;
-        }
-      }
-      const prevIds = Object.keys(state.auxNodePositions);
-      const nextIds = Object.keys(nextPositions);
-      if (prevIds.length !== nextIds.length) {
-        return { auxNodePositions: nextPositions };
-      }
-      for (const id of nextIds) {
-        const prev = state.auxNodePositions[id];
-        const next = nextPositions[id];
-        if (!(prev && prev.x === next.x && prev.y === next.y)) {
-          return { auxNodePositions: nextPositions };
-        }
-      }
-      return state;
+      const next = syncPositionsRecord(state.auxNodePositions, activeIds, defaults);
+      return next === state.auxNodePositions ? state : { auxNodePositions: next };
     }),
   syncAuxNodeSizes: (activeIds) =>
     set((state) => {
-      const activeSet = new Set(activeIds);
-      const nextSizes: Record<string, { width: number; height: number }> = {};
-      for (const [id, size] of Object.entries(state.auxNodeSizes)) {
-        if (activeSet.has(id)) {
-          nextSizes[id] = size;
-        }
-      }
-      const prevIds = Object.keys(state.auxNodeSizes);
-      const nextIds = Object.keys(nextSizes);
-      if (prevIds.length !== nextIds.length) {
-        return { auxNodeSizes: nextSizes };
-      }
-      for (const id of nextIds) {
-        const prev = state.auxNodeSizes[id];
-        const next = nextSizes[id];
-        if (!(prev && prev.width === next.width && prev.height === next.height)) {
-          return { auxNodeSizes: nextSizes };
-        }
-      }
-      return state;
+      const next = syncSizesRecord(state.auxNodeSizes, activeIds);
+      return next === state.auxNodeSizes ? state : { auxNodeSizes: next };
     }),
   updateConfig: (id, patch) => {
     const applyUpdate = (state: RecipeStudioState) => {
@@ -327,56 +289,17 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
     set(applyUpdate);
   },
   onNodesChange: (changes) => {
-    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: store update
     const applyNodesChange = (state: RecipeStudioState) => {
       const removedIds = changes
         .filter((change) => change.type === "remove")
         .map((change) => change.id);
 
-      let edges = state.edges;
-      let configs = state.configs;
-      if (removedIds.length > 0) {
-        const removedNames: string[] = [];
-        edges = edges.filter(
-          (edge) =>
-            !(
-              removedIds.includes(edge.source) ||
-              removedIds.includes(edge.target)
-            ),
-        );
-        configs = { ...configs };
-        for (const id of removedIds) {
-          const removed = configs[id];
-          delete configs[id];
-          if (removed?.name) {
-            removedNames.push(removed.name);
-          }
-          if (isCategoryConfig(removed)) {
-            const removedName = removed.name;
-            for (const config of Object.values(configs)) {
-              if (!isSubcategoryConfig(config)) {
-                continue;
-              }
-              if (config.subcategory_parent !== removedName) {
-                continue;
-              }
-              configs[config.id] = {
-                ...config,
-                // biome-ignore lint/style/useNamingConvention: api schema
-                subcategory_parent: "",
-                // biome-ignore lint/style/useNamingConvention: api schema
-                subcategory_mapping: {},
-              };
-            }
-          }
-        }
-        for (const name of removedNames) {
-          configs = applyRemovalToConfigs(configs, name);
-        }
-      }
-
+      const removed = applyNodeRemovals(
+        { edges: state.edges, configs: state.configs },
+        removedIds,
+      );
       const nodes = applyNodeChanges<RecipeNode>(changes, state.nodes);
-      return { nodes, edges, configs };
+      return { nodes, edges: removed.edges, configs: removed.configs };
     };
     set(applyNodesChange);
   },
@@ -387,23 +310,7 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
         .map((change) => state.edges.find((edge) => edge.id === change.id))
         .filter((edge): edge is Edge => Boolean(edge));
 
-      let configs = state.configs;
-      if (removedEdges.length > 0) {
-        for (const edge of removedEdges) {
-          const source = configs[edge.source];
-          const target = configs[edge.target];
-          if (!(source && target)) {
-            continue;
-          }
-          const updated = applyRemovalToConfig(target, source.name);
-          if (updated !== target) {
-            if (configs === state.configs) {
-              configs = { ...configs };
-            }
-            configs[target.id] = updated;
-          }
-        }
-      }
+      const configs = applyEdgeRemovals(state.configs, removedEdges);
 
       const edges = applyEdgeChanges(changes, state.edges);
       return configs === state.configs ? { edges } : { edges, configs };

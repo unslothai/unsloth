@@ -1,6 +1,7 @@
 import { type Connection, type Edge, addEdge } from "@xyflow/react";
 import type { NodeConfig, SamplerConfig } from "../../types";
 import { HANDLE_IDS } from "../handles";
+import { isSemanticRelation } from "./relations";
 import {
   isCategoryConfig,
   isExpressionConfig,
@@ -44,13 +45,6 @@ function syncSubcategoryMapping(
     // biome-ignore lint/style/useNamingConvention: api schema
     subcategory_mapping: nextMapping,
   };
-}
-
-function isSemanticRelation(source: NodeConfig, target: NodeConfig): boolean {
-  if (source.kind === "model_provider" && target.kind === "model_config") {
-    return true;
-  }
-  return source.kind === "model_config" && target.kind === "llm";
 }
 
 function isModelInfraNode(config: NodeConfig): boolean {

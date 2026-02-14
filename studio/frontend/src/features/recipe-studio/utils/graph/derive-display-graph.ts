@@ -3,6 +3,8 @@ import type { RecipeGraphAuxNodeData } from "../../components/recipe-graph-aux-n
 import { DEFAULT_NODE_HEIGHT, DEFAULT_NODE_WIDTH } from "../../constants";
 import type { RecipeNode, LayoutDirection, NodeConfig } from "../../types";
 import { getLlmJudgeScoreHandleId, HANDLE_IDS } from "../handles";
+import { readNodeHeight, readNodeWidth } from "../rf-node-dimensions";
+import { isSemanticRelation } from "./relations";
 
 type DisplayGraphInput = {
   nodes: RecipeNode[];
@@ -33,10 +35,7 @@ function normalizeEdge(edge: Edge, configs: Record<string, NodeConfig>): Edge {
 
   const source = configs[edge.source];
   const target = configs[edge.target];
-  const semantic =
-    Boolean(source && target) &&
-    ((source.kind === "model_provider" && target?.kind === "model_config") ||
-      (source.kind === "model_config" && target?.kind === "llm"));
+  const semantic = Boolean(source && target) && isSemanticRelation(source, target);
   const handles = semantic
     ? { sourceHandle: HANDLE_IDS.semanticOut, targetHandle: HANDLE_IDS.semanticIn }
     : { sourceHandle: HANDLE_IDS.dataOut, targetHandle: HANDLE_IDS.dataIn };
@@ -54,50 +53,6 @@ type AuxNodeItem = {
   targetHandle: string;
   data: RecipeGraphAuxNodeData;
 };
-
-function getNodeWidth(node: Node): number {
-  if (typeof node.width === "number" && Number.isFinite(node.width)) {
-    return node.width;
-  }
-  if (typeof node.style?.width === "number" && Number.isFinite(node.style.width)) {
-    return node.style.width;
-  }
-  if (typeof node.style?.width === "string") {
-    const parsed = Number.parseFloat(node.style.width);
-    if (Number.isFinite(parsed)) {
-      return parsed;
-    }
-  }
-  if (
-    typeof node.measured?.width === "number" &&
-    Number.isFinite(node.measured.width)
-  ) {
-    return node.measured.width;
-  }
-  return DEFAULT_NODE_WIDTH;
-}
-
-function getNodeHeight(node: Node): number {
-  if (typeof node.height === "number" && Number.isFinite(node.height)) {
-    return node.height;
-  }
-  if (typeof node.style?.height === "number" && Number.isFinite(node.style.height)) {
-    return node.style.height;
-  }
-  if (typeof node.style?.height === "string") {
-    const parsed = Number.parseFloat(node.style.height);
-    if (Number.isFinite(parsed)) {
-      return parsed;
-    }
-  }
-  if (
-    typeof node.measured?.height === "number" &&
-    Number.isFinite(node.measured.height)
-  ) {
-    return node.measured.height;
-  }
-  return DEFAULT_NODE_HEIGHT;
-}
 
 export function deriveDisplayGraph({
   nodes,
@@ -181,8 +136,8 @@ export function deriveDisplayGraph({
       continue;
     }
 
-    const parentWidth = getNodeWidth(node);
-    const parentHeight = getNodeHeight(node);
+    const parentWidth = readNodeWidth(node) ?? DEFAULT_NODE_WIDTH;
+    const parentHeight = readNodeHeight(node) ?? DEFAULT_NODE_HEIGHT;
     const itemsWithLayout = items.map((item) => {
       const auxId = `aux-${node.id}-${item.key}`;
       const savedSize = auxNodeSizes[auxId];
