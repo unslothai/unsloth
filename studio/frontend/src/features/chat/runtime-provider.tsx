@@ -8,7 +8,6 @@ import {
   type PendingAttachment,
   RuntimeAdapterProvider,
   Suggestions,
-  SimpleImageAttachmentAdapter,
   SimpleTextAttachmentAdapter,
   type ThreadHistoryAdapter,
   type ThreadMessage,
@@ -34,6 +33,55 @@ const DEFAULT_SUGGESTIONS = [
   "Write a Python function that finds the longest palindrome in a string",
   "Format a comparison of 3 databases as a markdown table with pros and cons",
 ];
+
+class VisionImageAdapter implements AttachmentAdapter {
+  accept = "image/jpeg,image/png,image/webp,image/gif";
+
+  async add({ file }: { file: File }): Promise<PendingAttachment> {
+    const maxSize = 20 * 1024 * 1024;
+    if (file.size > maxSize) {
+      throw new Error("Image size exceeds 20MB limit");
+    }
+
+    return {
+      id: crypto.randomUUID(),
+      type: "image",
+      name: file.name,
+      contentType: file.type,
+      file,
+      status: { type: "requires-action", reason: "composer-send" },
+    };
+  }
+
+  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    return {
+      id: attachment.id,
+      type: "image",
+      name: attachment.name,
+      contentType: attachment.contentType,
+      content: [
+        {
+          type: "image",
+          image: await this.fileToBase64DataURL(attachment.file),
+        },
+      ],
+      status: { type: "complete" },
+    };
+  }
+
+  async remove(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  private async fileToBase64DataURL(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = () => reject(new Error("Failed to read image file"));
+      reader.readAsDataURL(file);
+    });
+  }
+}
 
 class PDFAttachmentAdapter implements AttachmentAdapter {
   accept = "application/pdf";
@@ -276,7 +324,7 @@ function ThreadHistoryProvider({
   const attachments = useMemo(
     () =>
       new CompositeAttachmentAdapter([
-        new SimpleImageAttachmentAdapter(),
+        new VisionImageAdapter(),
         new SimpleTextAttachmentAdapter(),
         new PDFAttachmentAdapter(),
         new DocxAttachmentAdapter(),
