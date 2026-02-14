@@ -33,6 +33,9 @@ if platform.system() == "Darwin":
     from patcher import patch_for_mac
     patch_for_mac()
 
+# Import unsloth first to initialize patches (required for MPS module imports)
+import unsloth
+
 
 def _is_mps_available():
     """Check if MPS is available (lazy import to avoid import errors on Linux)."""
