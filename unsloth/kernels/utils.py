@@ -82,6 +82,7 @@ def is_cdna():
         "gfx940",
         "gfx941",
         "gfx942",
+        "gfx950",  # CDNA4 (MI350/MI355X)
     )
 
 
