@@ -1,19 +1,15 @@
-import { useMemo, type ReactElement } from "react";
+import type { ReactElement } from "react";
 import {
   BaseEdge,
-  EdgeLabelRenderer,
   getBezierPath,
   getSmoothStepPath,
   getStraightPath,
   Position,
-  useStore,
   type Edge,
   type EdgeProps,
-  type Node,
 } from "@xyflow/react";
 
-export type DataEdge<T extends Node = Node> = Edge<{
-  key?: keyof T["data"];
+export type DataEdge = Edge<{
   path?: "auto" | "bezier" | "smoothstep" | "step" | "straight";
 }>;
 
@@ -21,7 +17,6 @@ export function DataEdge({
   data = { path: "auto" },
   id,
   markerEnd,
-  source,
   sourcePosition,
   sourceX,
   sourceY,
@@ -30,7 +25,6 @@ export function DataEdge({
   targetX,
   targetY,
 }: EdgeProps<DataEdge>): ReactElement {
-  const nodeData = useStore((state) => state.nodeLookup.get(source)?.data);
   const resolvedPathType = resolvePathType({
     type: data.path ?? "auto",
     sourceX,
@@ -40,7 +34,7 @@ export function DataEdge({
     sourcePosition,
     targetPosition,
   });
-  const [edgePath, labelX, labelY] = getPath({
+  const [edgePath] = getPath({
     type: resolvedPathType,
     sourceX,
     sourceY,
@@ -50,35 +44,8 @@ export function DataEdge({
     targetPosition,
   });
 
-  const label = useMemo(() => {
-    if (data.key && nodeData) {
-      const value = nodeData[data.key];
-      if (typeof value === "string" || typeof value === "number") {
-        return value;
-      }
-      if (typeof value === "object") {
-        return JSON.stringify(value);
-      }
-    }
-    return "";
-  }, [data, nodeData]);
-
-  const transform = `translate(${labelX}px,${labelY}px) translate(-50%, -50%)`;
-
   return (
-    <>
-      <BaseEdge id={id} path={edgePath} markerEnd={markerEnd} style={style} />
-      {data.key && (
-        <EdgeLabelRenderer>
-          <div
-            className="absolute rounded border bg-background px-1 text-foreground"
-            style={{ transform }}
-          >
-            <pre className="text-xs">{label}</pre>
-          </div>
-        </EdgeLabelRenderer>
-      )}
-    </>
+    <BaseEdge id={id} path={edgePath} markerEnd={markerEnd} style={style} />
   );
 }
 

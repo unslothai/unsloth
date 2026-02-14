@@ -5,9 +5,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Textarea } from "@/components/ui/textarea";
 import type { ReactElement } from "react";
 import type { ExpressionConfig, ExpressionDtype } from "../../types";
+import { useRecipeStudioStore } from "../../stores/recipe-studio";
+import { getAvailableRefItems } from "../../utils/variables";
+import { JinjaRefTextarea } from "../../components/jinja/jinja-ref-autocomplete";
 import { AvailableVariables } from "../shared/available-variables";
 import { NameField } from "../shared/name-field";
 
@@ -22,6 +24,8 @@ export function ExpressionDialog({
   config,
   onUpdate,
 }: ExpressionDialogProps): ReactElement {
+  const configs = useRecipeStudioStore((state) => state.configs);
+  const items = getAvailableRefItems(configs, config.id);
   const dtypeId = `${config.id}-dtype`;
   const exprId = `${config.id}-expr`;
   const updateField = <K extends keyof ExpressionConfig>(
@@ -69,12 +73,13 @@ export function ExpressionDialog({
         >
           Expression (Jinja2)
         </label>
-        <Textarea
+        <JinjaRefTextarea
           id={exprId}
           className="corner-squircle nodrag"
           placeholder="{{ category_1 }} - {{ subcategory_1 }}"
           value={config.expr}
-          onChange={(event) => updateField("expr", event.target.value)}
+          items={items}
+          onValueChange={(value) => updateField("expr", value)}
         />
         <p className="text-xs text-muted-foreground">
           Use Jinja2. Reference columns like {"{{ column_name }}"}.

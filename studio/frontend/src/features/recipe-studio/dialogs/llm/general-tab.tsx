@@ -16,6 +16,9 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { type ReactElement, type RefObject } from "react";
 import type { LlmConfig } from "../../types";
+import { useRecipeStudioStore } from "../../stores/recipe-studio";
+import { getAvailableRefItems } from "../../utils/variables";
+import { JinjaRefTextarea } from "../../components/jinja/jinja-ref-autocomplete";
 import { AvailableVariables } from "../shared/available-variables";
 import { NameField } from "../shared/name-field";
 
@@ -51,6 +54,8 @@ export function LlmGeneralTab({
   modelAliasAnchorRef,
   onUpdate,
 }: LlmGeneralTabProps): ReactElement {
+  const configs = useRecipeStudioStore((state) => state.configs);
+  const items = getAvailableRefItems(configs, config.id);
   const modelAliasId = `${config.id}-model-alias`;
   const codeLangId = `${config.id}-code-lang`;
   const promptId = `${config.id}-prompt`;
@@ -134,11 +139,12 @@ export function LlmGeneralTab({
         >
           Prompt
         </label>
-        <Textarea
+        <JinjaRefTextarea
           id={promptId}
           className="corner-squircle nodrag"
           value={config.prompt}
-          onChange={(event) => onUpdate({ prompt: event.target.value })}
+          items={items}
+          onValueChange={(value) => onUpdate({ prompt: value })}
         />
       </div>
       {config.llm_type === "structured" && (
@@ -166,11 +172,12 @@ export function LlmGeneralTab({
         >
           System prompt (optional)
         </label>
-        <Textarea
+        <JinjaRefTextarea
           id={systemPromptId}
           className="corner-squircle nodrag"
           value={config.system_prompt}
-          onChange={(event) => onUpdate({ system_prompt: event.target.value })}
+          items={items}
+          onValueChange={(value) => onUpdate({ system_prompt: value })}
         />
       </div>
     </div>
