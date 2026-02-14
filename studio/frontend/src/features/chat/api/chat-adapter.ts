@@ -45,6 +45,42 @@ function toOpenAIMessage(message: RunMessage): {
   };
 }
 
+function extractImageBase64(input: string): string | undefined {
+  if (!input) {
+    return undefined;
+  }
+  if (input.startsWith("data:")) {
+    const commaIndex = input.indexOf(",");
+    return commaIndex >= 0 ? input.slice(commaIndex + 1) : undefined;
+  }
+  return input;
+}
+
+function findLatestUserImageBase64(messages: RunMessages): string | undefined {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (!message || message.role !== "user") {
+      continue;
+    }
+
+    if ("attachments" in message && (message.attachments?.length ?? 0) > 0) {
+      for (const attachment of message.attachments ?? []) {
+        for (const part of attachment.content ?? []) {
+          if (part.type !== "image") {
+            continue;
+          }
+          const encoded = extractImageBase64(part.image);
+          if (encoded) {
+            return encoded;
+          }
+        }
+      }
+    }
+  }
+
+  return undefined;
+}
+
 export function createOpenAIStreamAdapter(): ChatModelAdapter {
   return {
     async *run({ messages, abortSignal, unstable_threadId }) {
@@ -67,6 +103,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           content: params.systemPrompt.trim(),
         });
       }
+      const imageBase64 = findLatestUserImageBase64(messages);
 
       const threadKey = unstable_threadId || "__default";
       let waitingFirstChunk = true;
@@ -86,6 +123,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             max_tokens: params.maxTokens,
             top_k: params.topK,
             repetition_penalty: params.repetitionPenalty,
+            image_base64: imageBase64,
           },
           abortSignal,
         );
