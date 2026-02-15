@@ -81,34 +81,13 @@ echo "✅ Frontend built to studio/frontend/dist"
 # ── 6. Python venv + deps ──
 echo ""
 echo "Setting up Python environment..."
-DESIRED_PY="${UNSLOTH_PYTHON:-3.12}"
-
-if [ -x "$SCRIPT_DIR/.venv/bin/python" ]; then
-    VENV_VER="$("$SCRIPT_DIR/.venv/bin/python" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || true)"
-    if ! "$SCRIPT_DIR/.venv/bin/python" -c 'import pip' >/dev/null 2>&1; then
-        VENV_VER="${VENV_VER:-unknown}"
-        mv "$SCRIPT_DIR/.venv" "$SCRIPT_DIR/.venv.bak-nopip-py${VENV_VER}-$(date +%Y%m%d%H%M%S)"
-    elif [ "$VENV_VER" != "$DESIRED_PY" ]; then
-        mv "$SCRIPT_DIR/.venv" "$SCRIPT_DIR/.venv.bak-py${VENV_VER:-unknown}-$(date +%Y%m%d%H%M%S)"
-    fi
-fi
-
-if [ ! -d "$SCRIPT_DIR/.venv" ]; then
-    if command -v uv >/dev/null 2>&1; then
-        run_quiet "uv python install" uv python install "$DESIRED_PY"
-        run_quiet "uv venv" uv venv --seed -p "$DESIRED_PY" "$SCRIPT_DIR/.venv"
-    else
-        python3 -m venv "$SCRIPT_DIR/.venv"
-    fi
-fi
-
-# Avoid shell-specific activation; call venv python directly.
-VENV_PY="$SCRIPT_DIR/.venv/bin/python"
-run_quiet "pip upgrade" "$VENV_PY" -m pip install --upgrade pip
+python3 -m venv .venv
+source .venv/bin/activate
+run_quiet "pip upgrade" pip install --upgrade pip
 echo "   Installing unsloth-zoo + unsloth..."
-run_quiet "pip install unsloth" "$VENV_PY" -m pip install unsloth-zoo unsloth
+run_quiet "pip install unsloth" pip install unsloth-zoo unsloth
 echo "   Installing studio dependencies..."
-run_quiet "pip install extras" "$VENV_PY" -m pip install typer fastapi uvicorn pydantic matplotlib pandas nest_asyncio "datasets==4.3.0" pyjwt easydict addict
+run_quiet "pip install extras" pip install typer fastapi uvicorn pydantic matplotlib pandas nest_asyncio "datasets==4.3.0" pyjwt easydict addict
 echo "✅ Python dependencies installed"
 
 # ── 7. Add shell alias ──
@@ -116,56 +95,22 @@ echo "✅ Python dependencies installed"
 # This alias hardcodes the venv python path so users don't need to activate.
 echo ""
 REPO_DIR="$SCRIPT_DIR"
-ALIAS_CMD="${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py ui -f ${REPO_DIR}/studio/frontend/dist"
+ALIAS_LINE="unsloth-ui() { ${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py ui -f ${REPO_DIR}/studio/frontend/dist \"\$@\"; }"
 
-SHELL_RC_HINT="source ~/.bashrc"
-if [[ "${SHELL:-}" == *fish ]]; then
-    FISH_RC="$HOME/.config/fish/config.fish"
-    mkdir -p "$(dirname "$FISH_RC")"
-    if ! grep -qF "unsloth-ui" "$FISH_RC" 2>/dev/null; then
-        cat >> "$FISH_RC" <<UNSLOTH_EOF
-
-# Unsloth Studio launcher
-alias unsloth-ui='${ALIAS_CMD}'
-UNSLOTH_EOF
-        echo "✅ Alias 'unsloth-ui' added to $FISH_RC"
-    else
-        echo "✅ Alias 'unsloth-ui' already exists in $FISH_RC"
-    fi
-    SHELL_RC_HINT="source $FISH_RC"
-elif [[ "${SHELL:-}" == *zsh ]]; then
-    ZSH_RC="$HOME/.zshrc"
-    if ! grep -qF "unsloth-ui" "$ZSH_RC" 2>/dev/null; then
-        cat >> "$ZSH_RC" <<UNSLOTH_EOF
-
-# Unsloth Studio launcher
-alias unsloth-ui='${ALIAS_CMD}'
-UNSLOTH_EOF
-        echo "✅ Alias 'unsloth-ui' added to $ZSH_RC"
-    else
-        echo "✅ Alias 'unsloth-ui' already exists in $ZSH_RC"
-    fi
-    SHELL_RC_HINT="source $ZSH_RC"
+if ! grep -qF "unsloth-ui" ~/.bashrc 2>/dev/null; then
+    echo "" >> ~/.bashrc
+    echo "# Unsloth Studio launcher" >> ~/.bashrc
+    echo "$ALIAS_LINE" >> ~/.bashrc
+    echo "✅ Alias 'unsloth-ui' added to ~/.bashrc"
 else
-    BASH_RC="$HOME/.bashrc"
-    if ! grep -qF "unsloth-ui" "$BASH_RC" 2>/dev/null; then
-        cat >> "$BASH_RC" <<UNSLOTH_EOF
-
-# Unsloth Studio launcher
-alias unsloth-ui='${ALIAS_CMD}'
-UNSLOTH_EOF
-        echo "✅ Alias 'unsloth-ui' added to $BASH_RC"
-    else
-        echo "✅ Alias 'unsloth-ui' already exists in $BASH_RC"
-    fi
-    SHELL_RC_HINT="source $BASH_RC"
+    echo "✅ Alias 'unsloth-ui' already exists in ~/.bashrc"
 fi
 
 echo ""
 echo "╔══════════════════════════════════════╗"
 echo "║           Setup Complete!            ║"
 echo "╠══════════════════════════════════════╣"
-echo "║ Run '$SHELL_RC_HINT' or open a     ║"
+echo "║ Run 'source ~/.bashrc' or open a    ║"
 echo "║ new terminal, then launch with:     ║"
 echo "║                                      ║"
 echo "║ unsloth-ui -H 0.0.0.0 -p 8000       ║"
