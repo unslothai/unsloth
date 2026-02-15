@@ -40,14 +40,15 @@ export function TrainingSection() {
   const [logOpen, setLogOpen] = useState(false);
 
   return (
-    <SectionCard
-      icon={<HugeiconsIcon icon={ChartAverageIcon} className="size-5" />}
-      title="Training"
-      description="Monitor and control training"
-      accent="blue"
-      className="lg:col-span-4 min-h-[450px]"
-    >
-      <div className="flex flex-col gap-4">
+    <div data-tour="studio-training" className="lg:col-span-4">
+      <SectionCard
+        icon={<HugeiconsIcon icon={ChartAverageIcon} className="size-5" />}
+        title="Training"
+        description="Monitor and control training"
+        accent="blue"
+        className="min-h-[450px]"
+      >
+        <div className="flex flex-col gap-4">
         {/* Loss chart */}
         <div className="relative  ">
           <ChartContainer
@@ -94,6 +95,7 @@ export function TrainingSection() {
 
         {/* Start/Stop */}
         <Button
+          data-tour="studio-start"
           className="w-full cursor-pointer bg-gradient-to-r from-emerald-500 to-teal-500 text-white hover:from-emerald-600 hover:to-teal-600"
           onClick={() => void startTrainingRun()}
           disabled={isStarting}
@@ -107,7 +109,12 @@ export function TrainingSection() {
 
         {/* Save / Clear */}
         <div className="grid grid-cols-2 gap-2">
-          <Button variant="outline" size="sm" className="cursor-pointer">
+          <Button
+            data-tour="studio-save"
+            variant="outline"
+            size="sm"
+            className="cursor-pointer"
+          >
             <HugeiconsIcon icon={Archive04Icon} className="size-3.5" /> Save
             Config
           </Button>
@@ -194,7 +201,8 @@ export function TrainingSection() {
             )}
           </CollapsibleContent>
         </Collapsible>
-      </div>
-    </SectionCard>
+        </div>
+      </SectionCard>
+    </div>
   );
 }
