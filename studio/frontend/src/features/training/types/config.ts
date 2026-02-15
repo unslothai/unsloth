@@ -18,6 +18,8 @@ export interface TrainingConfigState {
   datasetSource: DatasetSource;
   datasetFormat: DatasetFormat;
   dataset: string | null;
+  datasetSubset: string | null;
+  datasetSplit: string | null;
   uploadedFile: string | null;
   epochs: number;
   contextLength: number;
@@ -60,6 +62,8 @@ export interface TrainingConfigActions {
   setDatasetSource: (source: DatasetSource) => void;
   setDatasetFormat: (format: DatasetFormat) => void;
   setDataset: (dataset: string | null) => void;
+  setDatasetSubset: (subset: string | null) => void;
+  setDatasetSplit: (split: string | null) => void;
   setUploadedFile: (file: string | null) => void;
   setEpochs: (epochs: number) => void;
   setContextLength: (length: number) => void;
