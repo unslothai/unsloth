@@ -205,6 +205,7 @@ export function ChatPage(): ReactElement {
   });
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
   const viewBeforeCompareRef = useRef<ChatView | null>(null);
   const inferenceParams = useChatRuntimeStore((state) => state.params);
   const setInferenceParams = useChatRuntimeStore((state) => state.setParams);
@@ -242,6 +243,7 @@ export function ChatPage(): ReactElement {
   const closeModelSelector = useCallback(() => setModelSelectorOpen(false), []);
   const openSettings = useCallback(() => setSettingsOpen(true), []);
   const closeSettings = useCallback(() => setSettingsOpen(false), []);
+  const openSidebar = useCallback(() => setSidebarOpen(true), []);
 
   const enterCompare = useCallback(() => {
     if (viewBeforeCompareRef.current == null) {
@@ -290,6 +292,7 @@ export function ChatPage(): ReactElement {
         closeModelSelector,
         openSettings,
         closeSettings,
+        openSidebar,
         enterCompare,
         exitCompare,
       }),
@@ -301,6 +304,7 @@ export function ChatPage(): ReactElement {
       exitCompare,
       openModelSelector,
       openSettings,
+      openSidebar,
     ],
   );
 
@@ -314,6 +318,8 @@ export function ChatPage(): ReactElement {
     <GuidedTour {...tour.tourProps} />
     <SidebarProvider
       defaultOpen={true}
+      open={sidebarOpen}
+      onOpenChange={setSidebarOpen}
       className="!min-h-0 h-full max-w-7xl mx-auto px-4"
       style={
         {

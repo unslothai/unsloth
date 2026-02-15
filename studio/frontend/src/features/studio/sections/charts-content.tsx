@@ -264,7 +264,7 @@ export function ChartsContent({
 
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-      <Card size="sm">
+      <Card data-tour="studio-training-loss" size="sm">
         <CardHeader>
           <CardTitle className="text-sm pl-2">Training Loss</CardTitle>
           <CardAction>
@@ -546,7 +546,7 @@ export function ChartsContent({
         </CardContent>
       </Card>
 
-      <Card size="sm">
+      <Card data-tour="studio-eval-loss" size="sm">
         <CardHeader>
           <CardTitle className="text-sm text-muted-foreground pl-2">
             Eval Loss
