@@ -35,11 +35,10 @@ import {
 import {
   useDebouncedValue,
   useHfDatasetSearch,
-  useHfDatasetSplits,
   useInfiniteScroll,
 } from "@/hooks";
 import { cn, formatCompact } from "@/lib/utils";
-import { useTrainingConfigStore } from "@/features/training";
+import { HfDatasetConfigSplitSelectors, useTrainingConfigStore } from "@/features/training";
 import type { DatasetFormat } from "@/types/training";
 import {
   InformationCircleIcon,
@@ -48,7 +47,7 @@ import {
   Upload04Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 const FORMAT_OPTIONS: { value: DatasetFormat; label: string }[] = [
@@ -112,39 +111,6 @@ export function DatasetStep() {
     fetchMore,
     hfResults.length,
   );
-
-  // Fetch configs & splits from HF datasets-server API
-  const {
-    configs: hfConfigs,
-    splits: hfSplits,
-    hasMultipleConfigs,
-    hasMultipleSplits,
-    isLoading: splitsLoading,
-    error: splitsError,
-  } = useHfDatasetSplits(
-    datasetSource === "huggingface" ? dataset : null,
-    datasetConfig,
-    { accessToken: hfToken || undefined },
-  );
-
-  // Auto-select config when there is only one
-  useEffect(() => {
-    if (hfConfigs.length === 1 && datasetConfig !== hfConfigs[0]) {
-      setDatasetConfig(hfConfigs[0]);
-    }
-  }, [hfConfigs, datasetConfig, setDatasetConfig]);
-
-  // Auto-select split when there is only one, or default to "train"
-  useEffect(() => {
-    if (hfSplits.length === 0) return;
-    if (hfSplits.length === 1 && datasetSplit !== hfSplits[0]) {
-      setDatasetSplit(hfSplits[0]);
-    } else if (!datasetSplit && hfSplits.includes("train")) {
-      setDatasetSplit("train");
-    } else if (!datasetSplit) {
-      setDatasetSplit(hfSplits[0]);
-    }
-  }, [hfSplits, datasetSplit, setDatasetSplit]);
 
   const handleFileUpload = () => {
     setUploadedFile("my_dataset.jsonl");
@@ -304,98 +270,16 @@ export function DatasetStep() {
             </div>
           </Field>
 
-          {/* Config & Split selectors */}
-          {dataset && splitsLoading && (
-            <div className="flex items-center gap-2 text-xs text-muted-foreground py-1">
-              <Spinner className="size-3.5" />
-              Loading dataset configs and splits...
-            </div>
-          )}
-
-          {dataset && splitsError && (
-            <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-400">
-              Could not fetch dataset splits: {splitsError}
-            </div>
-          )}
-
-          {dataset && !splitsLoading && !splitsError && hasMultipleConfigs && (
-            <Field>
-              <FieldLabel className="flex items-center gap-1.5">
-                Subset (Config)
-                <Tooltip>
-                  <TooltipTrigger asChild={true}>
-                    <button
-                      type="button"
-                      className="text-muted-foreground/50 hover:text-muted-foreground"
-                    >
-                      <HugeiconsIcon
-                        icon={InformationCircleIcon}
-                        className="size-3.5"
-                      />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent className="max-w-xs">
-                    This dataset has multiple subsets (configurations).
-                    Select which one to use for training.
-                  </TooltipContent>
-                </Tooltip>
-              </FieldLabel>
-              <Select
-                value={datasetConfig ?? ""}
-                onValueChange={(v) => setDatasetConfig(v || null)}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue placeholder="Select a subset..." />
-                </SelectTrigger>
-                <SelectContent>
-                  {hfConfigs.map((cfg) => (
-                    <SelectItem key={cfg} value={cfg}>
-                      {cfg}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </Field>
-          )}
-
-          {dataset && !splitsLoading && !splitsError && hasMultipleSplits && (
-            <Field>
-              <FieldLabel className="flex items-center gap-1.5">
-                Split
-                <Tooltip>
-                  <TooltipTrigger asChild={true}>
-                    <button
-                      type="button"
-                      className="text-muted-foreground/50 hover:text-muted-foreground"
-                    >
-                      <HugeiconsIcon
-                        icon={InformationCircleIcon}
-                        className="size-3.5"
-                      />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent className="max-w-xs">
-                    Select which split of the dataset to use for training.
-                  </TooltipContent>
-                </Tooltip>
-              </FieldLabel>
-              <Select
-                value={datasetSplit ?? ""}
-                onValueChange={(v) => setDatasetSplit(v || null)}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue placeholder="Select a split..." />
-                </SelectTrigger>
-                <SelectContent>
-                  {hfSplits.map((split) => (
-                    <SelectItem key={split} value={split}>
-                      {split}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </Field>
-          )}
+          <HfDatasetConfigSplitSelectors
+            variant="wizard"
+            enabled={datasetSource === "huggingface"}
+            datasetName={dataset}
+            accessToken={hfToken || undefined}
+            datasetConfig={datasetConfig}
+            setDatasetConfig={setDatasetConfig}
+            datasetSplit={datasetSplit}
+            setDatasetSplit={setDatasetSplit}
+          />
         </>
       ) : (
         <>

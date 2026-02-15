@@ -117,10 +117,14 @@ export function useHfDatasetSplits(
   // Derive unique configs
   const configs = Array.from(new Set(entries.map((e) => e.config)));
 
-  // Derive splits for the selected config (or all splits if no config selected)
-  const filteredEntries = selectedConfig
-    ? entries.filter((e) => e.config === selectedConfig)
-    : entries;
+  // Derive splits for the active config.
+  // If dataset has >1 config and none is selected yet, return no splits so UI
+  // doesn't auto-pick/show a split before config is chosen.
+  const activeConfig =
+    selectedConfig ?? (configs.length === 1 ? configs[0] : null);
+  const filteredEntries = activeConfig
+    ? entries.filter((e) => e.config === activeConfig)
+    : [];
   const splits = Array.from(new Set(filteredEntries.map((e) => e.split)));
 
   return {
@@ -128,7 +132,7 @@ export function useHfDatasetSplits(
     splits,
     entries,
     hasMultipleConfigs: configs.length > 1,
-    hasMultipleSplits: splits.length > 1,
+    hasMultipleSplits: activeConfig ? splits.length > 1 : false,
     isLoading,
     error,
   };
