@@ -37,6 +37,11 @@ from models import (
     TrainingProgress,
 )
 from models.responses import TrainingStopResponse, TrainingMetricsResponse
+from pydantic import BaseModel as PydanticBaseModel
+
+
+class TrainingStopRequest(PydanticBaseModel):
+    save: bool = True
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -251,10 +256,14 @@ async def start_training(
 
 @router.post("/stop", response_model=TrainingStopResponse)
 async def stop_training(
+    body: TrainingStopRequest = TrainingStopRequest(),
     current_subject: str = Depends(get_current_subject),
 ):
     """
     Stop the currently running training job.
+
+    Body:
+        save (bool): If True (default), save the model at the current checkpoint.
     """
     try:
         backend = get_training_backend()
@@ -266,7 +275,7 @@ async def stop_training(
             )
         
         # Call backend stop method
-        backend.stop_training()
+        backend.stop_training(save=body.save)
         
         return TrainingStopResponse(
             status="stopped",
@@ -278,6 +287,29 @@ async def stop_training(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to stop training: {str(e)}"
+        )
+
+
+@router.post("/reset")
+async def reset_training(
+    current_subject: str = Depends(get_current_subject),
+):
+    """
+    Reset training state so the user can return to configuration.
+    """
+    try:
+        backend = get_training_backend()
+        backend.trainer.should_stop = False
+        backend.trainer.training_progress = backend.trainer.training_progress.__class__()
+        backend.loss_history = []
+        backend.lr_history = []
+        backend.step_history = []
+        return {"status": "ok"}
+    except Exception as e:
+        logger.error(f"Error resetting training: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to reset training: {str(e)}",
         )
 
 
@@ -313,6 +345,9 @@ async def get_training_status(
         ) or "Ready to train"
         error_message = getattr(progress, "error", None) if progress else None
 
+        # Check if training was stopped by user
+        trainer_stopped = getattr(backend.trainer, "should_stop", False)
+
         # Derive high-level phase
         if error_message:
             phase = "error"
@@ -326,6 +361,8 @@ async def get_training_status(
                 phase = "configuring"
             else:
                 phase = "training"
+        elif trainer_stopped:
+            phase = "stopped"
         elif progress and getattr(progress, "is_completed", False):
             phase = "completed"
         elif has_thread:

@@ -103,6 +103,7 @@ class TrainingBackend:
         try:
             # Reset stop flag and clear history
             self.trainer.should_stop = False
+            self.trainer.save_on_stop = True
             self.loss_history = []
             self.lr_history = []
             self.step_history = []
@@ -224,16 +225,19 @@ class TrainingBackend:
             )
             return False
 
-    def stop_training(self) -> bool:
+    def stop_training(self, save: bool = True) -> bool:
         """
         Stop ongoing training.
+
+        Args:
+            save: If True, save the model at the current checkpoint.
 
         Returns:
             True if training was successfully stopped.
         """
         try:
-            logger.info("Stopping training...")
-            self.trainer.stop_training()
+            logger.info(f"Stopping training (save={save})...")
+            self.trainer.stop_training(save=save)
             return True
         except Exception as e:
             logger.error(f"Error stopping training: {e}")
@@ -293,6 +297,10 @@ class TrainingBackend:
             True if training is in progress, False otherwise
         """
         try:
+            # If user requested stop, training is no longer considered active
+            if self.trainer.should_stop:
+                return False
+
             progress = self.trainer.get_training_progress()
             # Training is active if is_training is True
             # Also check if we're in loading/preparation phase (status_message indicates activity)

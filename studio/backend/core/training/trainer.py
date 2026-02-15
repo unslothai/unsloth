@@ -58,6 +58,7 @@ class UnslothTrainer:
         self.progress_callbacks = []
         self.is_training = False
         self.should_stop = False
+        self.save_on_stop = True
 
         # Model state tracking
         self.is_vlm = False
@@ -756,16 +757,32 @@ class UnslothTrainer:
             self.trainer.train()
 
             # ========== SAVE MODEL ==========
-            self.trainer.save_model()
-            self.tokenizer.save_pretrained(output_dir)
-            print(f"\nTraining completed! Model saved to {output_dir}\n")
-
-            self._update_progress(
-                is_training=False,
-                is_completed=True,
-                #status_message=status_msg
-                status_message=f"Training completed! Model saved to {output_dir}",
-            )
+            if self.should_stop and self.save_on_stop:
+                # Stopped by user — save model at current checkpoint
+                self.trainer.save_model()
+                self.tokenizer.save_pretrained(output_dir)
+                print(f"\nTraining stopped. Model saved to {output_dir}\n")
+                self._update_progress(
+                    is_training=False,
+                    status_message=f"Training stopped. Model saved to {output_dir}",
+                )
+            elif self.should_stop:
+                # Cancelled by user — don't save
+                print("\nTraining cancelled.\n")
+                self._update_progress(
+                    is_training=False,
+                    status_message="Training cancelled.",
+                )
+            else:
+                # Normal completion
+                self.trainer.save_model()
+                self.tokenizer.save_pretrained(output_dir)
+                print(f"\nTraining completed! Model saved to {output_dir}\n")
+                self._update_progress(
+                    is_training=False,
+                    is_completed=True,
+                    status_message=f"Training completed! Model saved to {output_dir}",
+                )
 
         except Exception as e:
             logger.error(f"Training error: {e}")
@@ -774,10 +791,11 @@ class UnslothTrainer:
         finally:
             self.is_training = False
 
-    def stop_training(self):
+    def stop_training(self, save: bool = True):
         """Stop ongoing training"""
-        print("\nStopping training...")
+        print(f"\nStopping training (save={save})...")
         self.should_stop = True
+        self.save_on_stop = save
         self.is_training = False
         # Clear the status message so timer doesn't show stale status
         self._update_progress(is_training=False, status_message="")
