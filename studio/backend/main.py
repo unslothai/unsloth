@@ -14,12 +14,13 @@ from datetime import datetime
 
 # Import routers
 from routes import (
-    training_router,
-    models_router,
-    inference_router,
-    datasets_router,
     auth_router,
     data_recipe_router,
+    datasets_router,
+    export_router,
+    inference_router,
+    models_router,
+    training_router,
 )
 from auth import storage
 from utils.hardware import detect_hardware
@@ -75,6 +76,7 @@ app.include_router(models_router, prefix="/api/models", tags=["models"])
 app.include_router(inference_router, prefix="/api/inference", tags=["inference"])
 app.include_router(datasets_router, prefix="/api/datasets", tags=["datasets"])
 app.include_router(data_recipe_router, prefix="/api/data-recipe", tags=["data-recipe"])
+app.include_router(export_router, prefix="/api/export", tags=["export"])
 
 
 # ============ Health and System Endpoints ============
@@ -136,7 +138,7 @@ def setup_frontend(app: FastAPI, build_path: Path):
 
         @app.get("/")
         async def serve_root():
-            return FileResponse(build_path / "index.html")
+            return FileResponse(build_path / "index.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
         @app.get("/{full_path:path}")
         async def serve_frontend(full_path: str):
@@ -147,7 +149,7 @@ def setup_frontend(app: FastAPI, build_path: Path):
             if file_path.is_file():
                 return FileResponse(file_path)
 
-            return FileResponse(build_path / "index.html")
+            return FileResponse(build_path / "index.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
         return True
     return False

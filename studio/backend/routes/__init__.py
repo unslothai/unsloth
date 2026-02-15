@@ -8,6 +8,7 @@ from routes.inference import router as inference_router
 from routes.datasets import router as datasets_router
 from routes.auth import router as auth_router
 from routes.data_recipe import router as data_recipe_router
+from routes.export import router as export_router
 
 __all__ = [
     "training_router",
@@ -16,4 +17,5 @@ __all__ = [
     "datasets_router",
     "auth_router",
     "data_recipe_router",
+    "export_router",
 ]

@@ -1,6 +1,7 @@
 # Model defaults for OuteAI/Llama-OuteTTS-1.0-1B
 # Based on Oute_TTS_(1B).ipynb
 # Also applies to: OuteAI/Llama-OuteTTS-1.0-1B
+# added inference parameters from unsloth notebook
 
 training:
   max_seq_length: 2048
@@ -39,4 +40,10 @@ logging:
   enable_tensorboard: false
   tensorboard_dir: "runs"
   log_frequency: 10
+
+inference:
+  temperature: 0.4
+  top_k: 40
+  top_p: 0.9
+  min_p: 0.05
 

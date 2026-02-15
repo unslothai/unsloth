@@ -223,7 +223,7 @@ export function DatasetSection() {
 
         <div className="flex flex-col gap-2">
           <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-            Dataset Format
+            Target Format
             <Tooltip>
               <TooltipTrigger asChild={true}>
                 <button
@@ -258,7 +258,7 @@ export function DatasetSection() {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="auto">Auto-detect</SelectItem>
+              <SelectItem value="auto">Auto</SelectItem>
               <SelectItem value="alpaca">Alpaca</SelectItem>
               <SelectItem value="chatml">ChatML</SelectItem>
               <SelectItem value="sharegpt">ShareGPT</SelectItem>
