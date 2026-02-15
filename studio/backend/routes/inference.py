@@ -22,12 +22,14 @@ if str(backend_path) not in sys.path:
 try:
     from core.inference import get_inference_backend
     from utils.models import ModelConfig
+    from utils.inference import load_inference_config
 except ImportError:
     parent_backend = backend_path.parent / "backend"
     if str(parent_backend) not in sys.path:
         sys.path.insert(0, str(parent_backend))
     from core.inference import get_inference_backend
     from utils.models import ModelConfig
+    from utils.inference import load_inference_config
 
 from models.inference import (
     LoadRequest,
@@ -64,6 +66,8 @@ async def load_model(request: LoadRequest):
     Load a model for inference.
     
     The model_path should be a clean identifier from GET /models/list.
+    Returns inference configuration parameters (temperature, top_p, top_k, min_p)
+    from the model's YAML config, falling back to default.yaml for missing values.
     """
     try:
         backend = get_inference_backend()
@@ -97,12 +101,16 @@ async def load_model(request: LoadRequest):
         
         logger.info(f"Loaded model: {config.identifier}")
         
+        # Load inference configuration parameters
+        inference_config = load_inference_config(config.identifier)
+        
         return LoadResponse(
             status="loaded",
             model=config.identifier,
             display_name=config.display_name,
             is_vision=config.is_vision,
             is_lora=config.is_lora,
+            inference=inference_config,
         )
         
     except HTTPException:
