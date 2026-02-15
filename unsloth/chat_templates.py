@@ -1959,41 +1959,61 @@ def _parse_combined_prompt(combined_prompt, dataset):
 
 
 def _create_formatter(possible_columns, final_optional_prompts, user_column_name):
-    # Start final prompt!
-    function = ["def __combined_prompt_processor__(examples):"]
-    columns = list(set(possible_columns))
-    for column in columns:
-        function.append(f"{' '*4}{column}__ = examples['{column}']")
-    function.append(f"{' '*4}texts = []")
-    function.append(f"{' '*4}for ({', '.join(columns)}) in zip({', '.join(f'{x}__' for x in columns)}):")
-
-    # Add optional tags as well!
-    final_prompt = ""
-    formatter = []
+    columns = list(dict.fromkeys(possible_columns))
+    merged_prompt_parts = []
+    formatter_templates = []
 
     for j, optional_prompt in enumerate(final_optional_prompts):
         if type(optional_prompt) is str:
-            columns = re.findall(r"\{(.+?)\}", optional_prompt)
-            formatter += columns
-            # Must escape \n \r
-            final_prompt += optional_prompt.encode("unicode-escape").decode("utf-8").replace("'", "\\'").replace('"', '\\"')
-        else:
-            where, prompt = optional_prompt
-            # Strip [[...]]
-            # Must escape \n \r
-            prompt = prompt[2:-2].encode("unicode-escape").decode("utf-8").replace("'", "\\'").replace('"', '\\"')
-            columns = re.findall(r"\{(.+?)\}", prompt)
-            x = f"__optional_{j}__"
-            prompt = f"{' '*8}{x} = '{prompt}'.format({', '.join(f'{x} = {x}' for x in columns)}) if {columns[0]} else ''"
-            function.append(prompt)
-            formatter.append(x)
-            final_prompt += "{" + x + "}"
+            needed_columns = re.findall(r"\{(.+?)\}", optional_prompt)
+            formatter_templates.append(("required", optional_prompt, needed_columns))
+            merged_prompt_parts.append(optional_prompt)
+            continue
 
-    function.insert(1, f"{' '*4}__combined_prompt__ = '{final_prompt}'")
-    function.append(f"{' '*8}texts.append("\
-                    f"__combined_prompt__.format({', '.join(f'{x} = {x}' for x in formatter)}))")
-    function.append(f"{' '*4}return " + "{ " + f"'{user_column_name}' : texts" + " }")
-    return "\n".join(function)
+        _, prompt = optional_prompt
+        prompt = prompt[2:-2]
+        needed_columns = re.findall(r"\{(.+?)\}", prompt)
+        if len(needed_columns) == 0:
+            raise IndexError("Unsloth: Optional [[...]] blocks must contain at least 1 {column}.")
+        optional_name = f"__optional_{j}__"
+        formatter_templates.append(("optional", optional_name, prompt, needed_columns))
+        merged_prompt_parts.append("{" + optional_name + "}")
+
+    merged_prompt = "".join(merged_prompt_parts)
+
+    def __combined_prompt_processor__(examples):
+        if len(examples) == 0:
+            return {user_column_name: []}
+
+        first_key = next(iter(examples.keys()), None)
+        if first_key is None:
+            return {user_column_name: []}
+        n_rows = len(examples[first_key])
+
+        texts = []
+        for row_idx in range(n_rows):
+            row_values = {column: examples[column][row_idx] for column in columns}
+            formatter_values = {}
+
+            for formatter_template in formatter_templates:
+                if formatter_template[0] == "required":
+                    _, _, needed_columns = formatter_template
+                    for column in needed_columns:
+                        formatter_values[column] = row_values[column]
+                    continue
+
+                _, optional_name, prompt, needed_columns = formatter_template
+                if row_values[needed_columns[0]] not in (None, ""):
+                    prompt_values = {column: row_values[column] for column in needed_columns}
+                    formatter_values[optional_name] = prompt.format(**prompt_values)
+                else:
+                    formatter_values[optional_name] = ""
+
+            texts.append(merged_prompt.format(**formatter_values))
+
+        return {user_column_name: texts}
+
+    return __combined_prompt_processor__
 
 
 def to_sharegpt(
@@ -2025,13 +2045,17 @@ def to_sharegpt(
             raise TypeError("Unsloth: Your dataset is probably already in ShareGPT format!")
 
     possible_columns, final_optional_prompts = _parse_combined_prompt(merged_prompt, dataset)
-    function = _create_formatter(possible_columns, final_optional_prompts, merged_column_name)
-    exec(function, globals())
-    dataset = dataset.map(__combined_prompt_processor__, batched = True, desc = "Merging columns")
+    formatter = _create_formatter(possible_columns, final_optional_prompts, merged_column_name)
+    dataset = dataset.map(formatter, batched = True, desc = "Merging columns")
 
     def __convert_to_sharegpt__(examples):
         users      = examples[merged_column_name]
         assistants = examples[output_column_name]
+        if len(users) != len(assistants):
+            raise ValueError(
+                "Unsloth: Input and output columns must have matching batch lengths. "
+                f"Got {len(users)} {merged_column_name} rows and {len(assistants)} {output_column_name} rows."
+            )
         texts = [
             [
                 {"from" : "human", "value" : str(user)     },
@@ -2062,19 +2086,18 @@ def to_sharegpt(
     dataset = concatenate_datasets(all_shuffled, axis = 1)
 
     # Combine them into 1
-    function = "def __combine_conversations__(examples):\n"
     n_extensions += 1
-    for j in range(n_extensions):
-        function += f"{' '*4}conversations{j}__ = examples['conversations{j}']\n"
-    function += f"{' '*4}convos = []\n"
-    function += f"{' '*4}for ({', '.join(f'conversations{j}' for j in range(n_extensions))}) "\
-                f"in zip({', '.join(f'conversations{j}__' for j in range(n_extensions))}):\n"
-    function += f"{' '*8}convos.append("\
-                f"{'+'.join(f'conversations{j}' for j in range(n_extensions))})\n"
-    function += f"{' '*4}return " + "{ " + "'conversations' : convos" + " }"
+    conversation_columns = [f"conversations{j}" for j in range(n_extensions)]
+    def __combine_conversations__(examples):
+        columns = [examples[column] for column in conversation_columns]
+        convos = []
+        for conversations in zip(*columns):
+            merged_conversation = []
+            for conversation in conversations:
+                merged_conversation.extend(conversation)
+            convos.append(merged_conversation)
+        return {"conversations" : convos}
 
-    # Map function
-    exec(function, globals())
     dataset = dataset.map(
         __combine_conversations__,
         batched = True,
@@ -2682,16 +2705,23 @@ def test_hf_gguf_equivalence(tokenizer, gguf_model = "./model-unsloth.F16.gguf")
 
     if tokenizer.chat_template is not None:
         prompt = tokenizer.apply_chat_template(messages, tokenize = False, add_generation_prompt = True)
-        prompt = prompt.replace("'", "") # Subprocess does not like ''
         prompt = remove_special_tokens(tokenizer, prompt)
         prompts.append(prompt)
 
     for prompt in prompts:
-        command = f"./llama.cpp/llama-cli -m {gguf_model} -n 0 --temp 0.0 --verbose-prompt "\
-            f"--check-tensors -p '{prompt}'"
+        # Use a list of args with shell=False so prompt content is passed literally.
+        command = [
+            "./llama.cpp/llama-cli",
+            "-m", gguf_model,
+            "-n", "0",
+            "--temp", "0.0",
+            "--verbose-prompt",
+            "--check-tensors",
+            "-p", prompt,
+        ]
 
         datas = []
-        with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, bufsize = 1) as sp:
+        with subprocess.Popen(command, shell = False, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, bufsize = 1) as sp:
             for line in sp.stdout:
                 datas.append(line.decode("utf-8", errors = "replace"))
         gguf_tokens = "".join(datas)
