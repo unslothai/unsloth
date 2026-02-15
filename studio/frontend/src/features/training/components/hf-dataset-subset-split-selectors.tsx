@@ -25,42 +25,42 @@ type Props = {
   enabled: boolean;
   datasetName: string | null;
   accessToken?: string;
-  datasetConfig: string | null;
-  setDatasetConfig: (v: string | null) => void;
+  datasetSubset: string | null;
+  setDatasetSubset: (v: string | null) => void;
   datasetSplit: string | null;
   setDatasetSplit: (v: string | null) => void;
 };
 
-export function HfDatasetConfigSplitSelectors({
+export function HfDatasetSubsetSplitSelectors({
   variant,
   enabled,
   datasetName,
   accessToken,
-  datasetConfig,
-  setDatasetConfig,
+  datasetSubset,
+  setDatasetSubset,
   datasetSplit,
   setDatasetSplit,
 }: Props) {
   const {
-    configs: hfConfigs,
+    subsets: hfSubsets,
     splits: hfSplits,
-    hasMultipleConfigs,
+    hasMultipleSubsets,
     hasMultipleSplits,
     isLoading,
     error,
-  } = useHfDatasetSplits(enabled ? datasetName : null, datasetConfig, {
+  } = useHfDatasetSplits(enabled ? datasetName : null, datasetSubset, {
     accessToken,
   });
 
   useEffect(() => {
-    if (hfConfigs.length === 1 && datasetConfig !== hfConfigs[0]) {
-      setDatasetConfig(hfConfigs[0]);
+    if (hfSubsets.length === 1 && datasetSubset !== hfSubsets[0]) {
+      setDatasetSubset(hfSubsets[0]);
     }
-  }, [hfConfigs, datasetConfig, setDatasetConfig]);
+  }, [hfSubsets, datasetSubset, setDatasetSubset]);
 
   useEffect(() => {
     if (hfSplits.length === 0) return;
-    if (hasMultipleConfigs && !datasetConfig) return;
+    if (hasMultipleSubsets && !datasetSubset) return;
     if (hfSplits.length === 1 && datasetSplit !== hfSplits[0]) {
       setDatasetSplit(hfSplits[0]);
     } else if (!datasetSplit && hfSplits.includes("train")) {
@@ -70,8 +70,8 @@ export function HfDatasetConfigSplitSelectors({
     }
   }, [
     hfSplits,
-    hasMultipleConfigs,
-    datasetConfig,
+    hasMultipleSubsets,
+    datasetSubset,
     datasetSplit,
     setDatasetSplit,
   ]);
@@ -105,12 +105,12 @@ export function HfDatasetConfigSplitSelectors({
         </div>
       )}
 
-      {!isLoading && !error && hasMultipleConfigs && (
+      {!isLoading && !error && hasMultipleSubsets && (
         <>
           {variant === "wizard" ? (
             <Field>
               <FieldLabel className="flex items-center gap-1.5">
-                Subset (Config)
+                Subset
                 <Tooltip>
                   <TooltipTrigger asChild={true}>
                     <button
@@ -124,22 +124,22 @@ export function HfDatasetConfigSplitSelectors({
                     </button>
                   </TooltipTrigger>
                   <TooltipContent className="max-w-xs">
-                    This dataset has multiple subsets (configurations). Select
-                    which one to use for training.
+                    This dataset has multiple subsets. Select which one to use
+                    for training.
                   </TooltipContent>
                 </Tooltip>
               </FieldLabel>
               <Select
-                value={datasetConfig ?? ""}
-                onValueChange={(v) => setDatasetConfig(v || null)}
+                value={datasetSubset ?? ""}
+                onValueChange={(v) => setDatasetSubset(v || null)}
               >
                 <SelectTrigger className="w-full">
                   <SelectValue placeholder="Select a subset..." />
                 </SelectTrigger>
                 <SelectContent>
-                  {hfConfigs.map((cfg) => (
-                    <SelectItem key={cfg} value={cfg}>
-                      {cfg}
+                  {hfSubsets.map((subset) => (
+                    <SelectItem key={subset} value={subset}>
+                      {subset}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -148,7 +148,7 @@ export function HfDatasetConfigSplitSelectors({
           ) : (
             <div className="flex flex-col gap-1.5">
               <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                Subset (Config)
+                Subset
                 <Tooltip>
                   <TooltipTrigger asChild={true}>
                     <button
@@ -162,22 +162,22 @@ export function HfDatasetConfigSplitSelectors({
                     </button>
                   </TooltipTrigger>
                   <TooltipContent>
-                    This dataset has multiple subsets (configurations). Select
-                    which one to use for training.
+                    This dataset has multiple subsets. Select which one to use
+                    for training.
                   </TooltipContent>
                 </Tooltip>
               </span>
               <Select
-                value={datasetConfig ?? ""}
-                onValueChange={(v) => setDatasetConfig(v || null)}
+                value={datasetSubset ?? ""}
+                onValueChange={(v) => setDatasetSubset(v || null)}
               >
                 <SelectTrigger className="w-full">
                   <SelectValue placeholder="Select a subset..." />
                 </SelectTrigger>
                 <SelectContent>
-                  {hfConfigs.map((cfg) => (
-                    <SelectItem key={cfg} value={cfg}>
-                      {cfg}
+                  {hfSubsets.map((subset) => (
+                    <SelectItem key={subset} value={subset}>
+                      {subset}
                     </SelectItem>
                   ))}
                 </SelectContent>

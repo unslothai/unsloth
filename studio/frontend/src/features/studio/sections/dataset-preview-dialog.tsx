@@ -40,7 +40,7 @@ type DatasetPreviewDialogProps = {
   onOpenChange: (open: boolean) => void;
   datasetName: string | null;
   hfToken: string | null;
-  datasetConfig?: string | null;
+  datasetSubset?: string | null;
   datasetSplit?: string | null;
 };
 
@@ -53,7 +53,7 @@ type DatasetPreviewDialogProps = {
 async function fetchCheckFormat(
   datasetName: string,
   hfToken: string | null,
-  config?: string | null,
+  subset?: string | null,
   split?: string | null,
 ): Promise<CheckFormatResponse> {
   const res = await fetch("/api/datasets/check-format", {
@@ -62,7 +62,7 @@ async function fetchCheckFormat(
     body: JSON.stringify({
       dataset_name: datasetName,
       hf_token: hfToken || undefined,
-      config: config || undefined,
+      config: subset || undefined,
       split: split || "train",
     }),
   });
@@ -82,7 +82,7 @@ export function DatasetPreviewDialog({
   onOpenChange,
   datasetName,
   hfToken,
-  datasetConfig,
+  datasetSubset,
   datasetSplit,
 }: DatasetPreviewDialogProps) {
   const [data, setData] = useState<CheckFormatResponse | null>(null);
@@ -99,7 +99,7 @@ export function DatasetPreviewDialog({
     setLoading(true);
     setError(null);
 
-    fetchCheckFormat(datasetName, hfToken, datasetConfig, datasetSplit)
+    fetchCheckFormat(datasetName, hfToken, datasetSubset, datasetSplit)
       .then((res) => {
         if (!cancelled) {
           setData(res);
@@ -116,7 +116,7 @@ export function DatasetPreviewDialog({
     return () => {
       cancelled = true;
     };
-  }, [open, datasetName, hfToken, datasetConfig, datasetSplit]);
+  }, [open, datasetName, hfToken, datasetSubset, datasetSplit]);
 
   const rows = data?.preview_samples ?? [];
   const columns = data?.columns ?? [];
@@ -126,13 +126,13 @@ export function DatasetPreviewDialog({
     if (!datasetName) return "";
     if (datasetName.includes("/")) {
       let label = `Hugging Face (${datasetName}`;
-      if (datasetConfig) label += ` / ${datasetConfig}`;
+      if (datasetSubset) label += ` / ${datasetSubset}`;
       if (datasetSplit) label += ` / ${datasetSplit}`;
       label += ")";
       return label;
     }
     return `Local Files (${datasetName})`;
-  }, [datasetName, datasetConfig, datasetSplit]);
+  }, [datasetName, datasetSubset, datasetSplit]);
 
   // Build TanStack Table columns from the column names
   const tableColumns = useMemo<ColumnDef<Record<string, unknown>>[]>(() => {

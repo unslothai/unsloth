@@ -23,7 +23,7 @@ export function SummaryStep() {
     datasetSource,
     datasetFormat,
     dataset,
-    datasetConfig,
+    datasetSubset,
     datasetSplit,
     uploadedFile,
     epochs,
@@ -41,7 +41,7 @@ export function SummaryStep() {
         datasetSource,
         datasetFormat,
         dataset,
-        datasetConfig,
+        datasetSubset,
         datasetSplit,
         uploadedFile,
         epochs,
@@ -57,7 +57,7 @@ export function SummaryStep() {
         datasetSource,
         datasetFormat,
         dataset,
-        datasetConfig,
+        datasetSubset,
         datasetSplit,
         uploadedFile,
         epochs,
@@ -153,10 +153,10 @@ export function SummaryStep() {
             <span className="text-muted-foreground">Source</span>
             <span className="capitalize">{datasetSource}</span>
           </div>
-          {datasetConfig && (
+          {datasetSubset && (
             <div className="flex items-center justify-between text-sm">
               <span className="text-muted-foreground">Subset</span>
-              <span className="font-mono text-xs">{datasetConfig}</span>
+              <span className="font-mono text-xs">{datasetSubset}</span>
             </div>
           )}
           {datasetSplit && (
