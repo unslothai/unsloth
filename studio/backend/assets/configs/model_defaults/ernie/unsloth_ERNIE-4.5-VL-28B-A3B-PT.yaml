@@ -1,6 +1,7 @@
 # Model defaults for unsloth/ERNIE-4.5-VL-28B-A3B-PT
 # Based on ERNIE_4_5_VL_28B_A3B_PT_Vision.ipynb
 # Also applies to: unsloth/ERNIE-4.5-VL-28B-A3B-PT
+# added inference parameters from unsloth notebook
 
 training:
   max_seq_length: 2048
@@ -44,4 +45,8 @@ logging:
   enable_tensorboard: false
   tensorboard_dir: "runs"
   log_frequency: 10
+
+inference:
+  temperature: 1.5
+  min_p: 0.1
 

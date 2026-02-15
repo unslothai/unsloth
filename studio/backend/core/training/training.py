@@ -6,6 +6,7 @@ from typing import Any, Generator, Tuple
 import logging
 
 from .trainer import get_trainer, TrainingProgress
+from utils.hardware import clear_gpu_cache
 
 logger = logging.getLogger(__name__)
 
@@ -101,8 +102,34 @@ class TrainingBackend:
             True if training started successfully, False otherwise.
         """
         try:
+            # Wait for any previous training thread to finish
+            old_thread = getattr(self.trainer, "training_thread", None)
+            if old_thread and old_thread.is_alive():
+                logger.info("Waiting for previous training thread to finish...")
+                old_thread.join(timeout=30)
+
+            # Explicitly free old SFTTrainer and CUDA resources before loading new model.
+            # Without this, forked multiprocessing workers (num_proc tokenization) inherit
+            # stale CUDA state from the previous run, causing extreme slowdowns or crashes.
+            if self.trainer.trainer is not None:
+                logger.info("Cleaning up previous SFTTrainer...")
+                self.trainer.trainer = None
+            if self.trainer.model is not None:
+                self.trainer.model = None
+            if self.trainer.tokenizer is not None:
+                self.trainer.tokenizer = None
+            # Flush all pending async CUDA ops so forked tokenization processes
+            # don't inherit stale async state that causes pool join to hang.
+            import torch as _torch
+            if _torch.cuda.is_available():
+                _torch.cuda.synchronize()
+            import gc
+            gc.collect()
+            clear_gpu_cache()
+
             # Reset stop flag and clear history
             self.trainer.should_stop = False
+            self.trainer.save_on_stop = True
             self.loss_history = []
             self.lr_history = []
             self.step_history = []
@@ -224,16 +251,19 @@ class TrainingBackend:
             )
             return False
 
-    def stop_training(self) -> bool:
+    def stop_training(self, save: bool = True) -> bool:
         """
         Stop ongoing training.
+
+        Args:
+            save: If True, save the model at the current checkpoint.
 
         Returns:
             True if training was successfully stopped.
         """
         try:
-            logger.info("Stopping training...")
-            self.trainer.stop_training()
+            logger.info(f"Stopping training (save={save})...")
+            self.trainer.stop_training(save=save)
             return True
         except Exception as e:
             logger.error(f"Error stopping training: {e}")
@@ -293,6 +323,10 @@ class TrainingBackend:
             True if training is in progress, False otherwise
         """
         try:
+            # If user requested stop, training is no longer considered active
+            if self.trainer.should_stop:
+                return False
+
             progress = self.trainer.get_training_progress()
             # Training is active if is_training is True
             # Also check if we're in loading/preparation phase (status_message indicates activity)

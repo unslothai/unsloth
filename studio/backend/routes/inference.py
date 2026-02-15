@@ -22,12 +22,14 @@ if str(backend_path) not in sys.path:
 try:
     from core.inference import get_inference_backend
     from utils.models import ModelConfig
+    from utils.inference import load_inference_config
 except ImportError:
     parent_backend = backend_path.parent / "backend"
     if str(parent_backend) not in sys.path:
         sys.path.insert(0, str(parent_backend))
     from core.inference import get_inference_backend
     from utils.models import ModelConfig
+    from utils.inference import load_inference_config
 
 from models.inference import (
     LoadRequest,
@@ -64,15 +66,17 @@ async def load_model(request: LoadRequest):
     Load a model for inference.
     
     The model_path should be a clean identifier from GET /models/list.
+    Returns inference configuration parameters (temperature, top_p, top_k, min_p)
+    from the model's YAML config, falling back to default.yaml for missing values.
     """
     try:
         backend = get_inference_backend()
         
         # Create config using clean factory method
+        # is_lora is auto-detected from adapter_config.json on disk/HF
         config = ModelConfig.from_identifier(
             model_id=request.model_path,
             hf_token=request.hf_token,
-            is_lora=request.is_lora,
         )
         
         if not config:
@@ -97,12 +101,16 @@ async def load_model(request: LoadRequest):
         
         logger.info(f"Loaded model: {config.identifier}")
         
+        # Load inference configuration parameters
+        inference_config = load_inference_config(config.identifier)
+        
         return LoadResponse(
             status="loaded",
             model=config.identifier,
             display_name=config.display_name,
             is_vision=config.is_vision,
             is_lora=config.is_lora,
+            inference=inference_config,
         )
         
     except HTTPException:
@@ -365,6 +373,18 @@ async def openai_chat_completions(request: ChatCompletionRequest):
         repetition_penalty=request.repetition_penalty,
     )
 
+    # ── Choose generation path (adapter-controlled or standard) ──
+    if request.use_adapter is not None:
+        # Compare mode: toggle adapter state atomically with generation
+        def generate():
+            return backend.generate_with_adapter_control(
+                use_adapter=request.use_adapter, **gen_kwargs
+            )
+    else:
+        # Standard path: no adapter toggling
+        def generate():
+            return backend.generate_chat_response(**gen_kwargs)
+
     model_name = backend.active_model_name or request.model
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     created = int(time.time())
@@ -388,7 +408,7 @@ async def openai_chat_completions(request: ChatCompletionRequest):
                 # Content chunks — generate_chat_response yields cumulative
                 # text, so we diff to get incremental deltas.
                 prev_text = ""
-                for cumulative in backend.generate_chat_response(**gen_kwargs):
+                for cumulative in generate():
                     new_text = cumulative[len(prev_text):]
                     prev_text = cumulative
                     if not new_text:
@@ -439,7 +459,7 @@ async def openai_chat_completions(request: ChatCompletionRequest):
     else:
         try:
             full_text = ""
-            for token in backend.generate_chat_response(**gen_kwargs):
+            for token in generate():
                 full_text = token  # generate_stream yields cumulative text
 
             response = ChatCompletion(

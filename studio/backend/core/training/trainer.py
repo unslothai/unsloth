@@ -2,13 +2,16 @@
 Unsloth Training Backend
 Integrates Unsloth training capabilities with the FastAPI backend
 """
+import os
+# Prevent tokenizer parallelism deadlocks when datasets uses multiprocessing fork
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 import torch
 from utils.hardware import clear_gpu_cache
 torch._dynamo.config.recompile_limit = 64
 from unsloth import FastLanguageModel, FastVisionModel, is_bfloat16_supported
 from unsloth.chat_templates import get_chat_template
 
-import os
 import json
 import threading
 import math
@@ -58,6 +61,7 @@ class UnslothTrainer:
         self.progress_callbacks = []
         self.is_training = False
         self.should_stop = False
+        self.save_on_stop = True
 
         # Model state tracking
         self.is_vlm = False
@@ -558,6 +562,12 @@ class UnslothTrainer:
                 config_args["warmup_steps"] = 5
                 print(f"Using default warmup_steps: 5\n")
 
+            # Add save_steps if specified
+            save_steps_val = training_args.get('save_steps', 0)
+            if save_steps_val and save_steps_val > 0:
+                config_args["save_steps"] = save_steps_val
+                config_args["save_strategy"] = "steps"
+
             #  If max_steps is specified, use it instead of epochs
             max_steps_val = training_args.get('max_steps', 0)
             if max_steps_val and max_steps_val > 0:
@@ -756,16 +766,32 @@ class UnslothTrainer:
             self.trainer.train()
 
             # ========== SAVE MODEL ==========
-            self.trainer.save_model()
-            self.tokenizer.save_pretrained(output_dir)
-            print(f"\nTraining completed! Model saved to {output_dir}\n")
-
-            self._update_progress(
-                is_training=False,
-                is_completed=True,
-                #status_message=status_msg
-                status_message=f"Training completed! Model saved to {output_dir}",
-            )
+            if self.should_stop and self.save_on_stop:
+                # Stopped by user — save model at current checkpoint
+                self.trainer.save_model()
+                self.tokenizer.save_pretrained(output_dir)
+                print(f"\nTraining stopped. Model saved to {output_dir}\n")
+                self._update_progress(
+                    is_training=False,
+                    status_message=f"Training stopped. Model saved to {output_dir}",
+                )
+            elif self.should_stop:
+                # Cancelled by user — don't save
+                print("\nTraining cancelled.\n")
+                self._update_progress(
+                    is_training=False,
+                    status_message="Training cancelled.",
+                )
+            else:
+                # Normal completion
+                self.trainer.save_model()
+                self.tokenizer.save_pretrained(output_dir)
+                print(f"\nTraining completed! Model saved to {output_dir}\n")
+                self._update_progress(
+                    is_training=False,
+                    is_completed=True,
+                    status_message=f"Training completed! Model saved to {output_dir}",
+                )
 
         except Exception as e:
             logger.error(f"Training error: {e}")
@@ -774,10 +800,11 @@ class UnslothTrainer:
         finally:
             self.is_training = False
 
-    def stop_training(self):
+    def stop_training(self, save: bool = True):
         """Stop ongoing training"""
-        print("\nStopping training...")
+        print(f"\nStopping training (save={save})...")
         self.should_stop = True
+        self.save_on_stop = save
         self.is_training = False
         # Clear the status message so timer doesn't show stale status
         self._update_progress(is_training=False, status_message="")
