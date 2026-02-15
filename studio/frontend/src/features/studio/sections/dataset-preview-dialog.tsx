@@ -40,15 +40,21 @@ type DatasetPreviewDialogProps = {
   onOpenChange: (open: boolean) => void;
   datasetName: string | null;
   hfToken: string | null;
+  datasetConfig?: string | null;
+  datasetSplit?: string | null;
 };
 
 // ---------------------------------------------------------------------------
 // API -- uses existing /check-format endpoint
 // ---------------------------------------------------------------------------
 
+// TODO(backend): Needs to accept `config` and `split` fields (see #37).
+// The frontend already sends them in the request below.
 async function fetchCheckFormat(
   datasetName: string,
   hfToken: string | null,
+  config?: string | null,
+  split?: string | null,
 ): Promise<CheckFormatResponse> {
   const res = await fetch("/api/datasets/check-format", {
     method: "POST",
@@ -56,7 +62,8 @@ async function fetchCheckFormat(
     body: JSON.stringify({
       dataset_name: datasetName,
       hf_token: hfToken || undefined,
-      split: "train",
+      config: config || undefined,
+      split: split || "train",
     }),
   });
   if (!res.ok) {
@@ -75,6 +82,8 @@ export function DatasetPreviewDialog({
   onOpenChange,
   datasetName,
   hfToken,
+  datasetConfig,
+  datasetSplit,
 }: DatasetPreviewDialogProps) {
   const [data, setData] = useState<CheckFormatResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -90,7 +99,7 @@ export function DatasetPreviewDialog({
     setLoading(true);
     setError(null);
 
-    fetchCheckFormat(datasetName, hfToken)
+    fetchCheckFormat(datasetName, hfToken, datasetConfig, datasetSplit)
       .then((res) => {
         if (!cancelled) {
           setData(res);
@@ -107,7 +116,7 @@ export function DatasetPreviewDialog({
     return () => {
       cancelled = true;
     };
-  }, [open, datasetName, hfToken]);
+  }, [open, datasetName, hfToken, datasetConfig, datasetSplit]);
 
   const rows = data?.preview_samples ?? [];
   const columns = data?.columns ?? [];
@@ -115,9 +124,15 @@ export function DatasetPreviewDialog({
   // Determine source label
   const sourceLabel = useMemo(() => {
     if (!datasetName) return "";
-    if (datasetName.includes("/")) return `Hugging Face (${datasetName})`;
+    if (datasetName.includes("/")) {
+      let label = `Hugging Face (${datasetName}`;
+      if (datasetConfig) label += ` / ${datasetConfig}`;
+      if (datasetSplit) label += ` / ${datasetSplit}`;
+      label += ")";
+      return label;
+    }
     return `Local Files (${datasetName})`;
-  }, [datasetName]);
+  }, [datasetName, datasetConfig, datasetSplit]);
 
   // Build TanStack Table columns from the column names
   const tableColumns = useMemo<ColumnDef<Record<string, unknown>>[]>(() => {
