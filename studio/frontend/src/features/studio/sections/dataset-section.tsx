@@ -25,11 +25,10 @@ import {
 import {
   useDebouncedValue,
   useHfDatasetSearch,
-  useHfDatasetSplits,
   useInfiniteScroll,
 } from "@/hooks";
 import { formatCompact } from "@/lib/utils";
-import { useTrainingConfigStore } from "@/features/training";
+import { HfDatasetConfigSplitSelectors, useTrainingConfigStore } from "@/features/training";
 import {
   CloudUploadIcon,
   Database02Icon,
@@ -39,9 +38,19 @@ import {
   ViewIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { DatasetPreviewDialog } from "./dataset-preview-dialog";
+
+function isLikelyLocalDatasetRef(value: string) {
+  return (
+    value.startsWith("/") ||
+    value.startsWith("./") ||
+    value.startsWith("../") ||
+    value.includes("\\") ||
+    /\.(jsonl|json|csv|parquet)$/i.test(value)
+  );
+}
 
 export function DatasetSection() {
   const {
@@ -101,37 +110,6 @@ export function DatasetSection() {
     }
     return ids;
   }, [hfResults, dataset]);
-
-  // Fetch configs & splits from HF datasets-server API
-  const {
-    configs: hfConfigs,
-    splits: hfSplits,
-    hasMultipleConfigs,
-    hasMultipleSplits,
-    isLoading: splitsLoading,
-    error: splitsError,
-  } = useHfDatasetSplits(dataset, datasetConfig, {
-    accessToken: hfToken || undefined,
-  });
-
-  // Auto-select config when there is only one
-  useEffect(() => {
-    if (hfConfigs.length === 1 && datasetConfig !== hfConfigs[0]) {
-      setDatasetConfig(hfConfigs[0]);
-    }
-  }, [hfConfigs, datasetConfig, setDatasetConfig]);
-
-  // Auto-select split when there is only one, or default to "train" if available
-  useEffect(() => {
-    if (hfSplits.length === 0) return;
-    if (hfSplits.length === 1 && datasetSplit !== hfSplits[0]) {
-      setDatasetSplit(hfSplits[0]);
-    } else if (!datasetSplit && hfSplits.includes("train")) {
-      setDatasetSplit("train");
-    } else if (!datasetSplit) {
-      setDatasetSplit(hfSplits[0]);
-    }
-  }, [hfSplits, datasetSplit, setDatasetSplit]);
 
   const comboboxAnchorRef = useRef<HTMLDivElement>(null);
   const { scrollRef, sentinelRef } = useInfiniteScroll(
@@ -258,104 +236,16 @@ export function DatasetSection() {
           </div>
         </div>
 
-        {/* Config & Split selectors - shown after dataset is selected */}
-        {dataset && !splitsLoading && !splitsError && (hasMultipleConfigs || hasMultipleSplits) && (
-          <div className="flex flex-col gap-3 rounded-lg border bg-muted/20 px-3.5 py-3">
-            {hasMultipleConfigs && (
-              <div className="flex flex-col gap-1.5">
-                <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                  Subset (Config)
-                  <Tooltip>
-                    <TooltipTrigger asChild={true}>
-                      <button
-                        type="button"
-                        className="text-foreground/70 hover:text-foreground"
-                      >
-                        <HugeiconsIcon
-                          icon={InformationCircleIcon}
-                          className="size-3"
-                        />
-                      </button>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      This dataset has multiple subsets (configurations).
-                      Select which one to use for training.
-                    </TooltipContent>
-                  </Tooltip>
-                </span>
-                <Select
-                  value={datasetConfig ?? ""}
-                  onValueChange={(v) => setDatasetConfig(v || null)}
-                >
-                  <SelectTrigger className="w-full">
-                    <SelectValue placeholder="Select a subset..." />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {hfConfigs.map((cfg) => (
-                      <SelectItem key={cfg} value={cfg}>
-                        {cfg}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
-
-            {hasMultipleSplits && (
-              <div className="flex flex-col gap-1.5">
-                <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                  Split
-                  <Tooltip>
-                    <TooltipTrigger asChild={true}>
-                      <button
-                        type="button"
-                        className="text-foreground/70 hover:text-foreground"
-                      >
-                        <HugeiconsIcon
-                          icon={InformationCircleIcon}
-                          className="size-3"
-                        />
-                      </button>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      Select which split of the dataset to use for training.
-                    </TooltipContent>
-                  </Tooltip>
-                </span>
-                <Select
-                  value={datasetSplit ?? ""}
-                  onValueChange={(v) => setDatasetSplit(v || null)}
-                >
-                  <SelectTrigger className="w-full">
-                    <SelectValue placeholder="Select a split..." />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {hfSplits.map((split) => (
-                      <SelectItem key={split} value={split}>
-                        {split}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Loading indicator for splits */}
-        {dataset && splitsLoading && (
-          <div className="flex items-center gap-2 rounded-lg border bg-muted/20 px-3.5 py-3 text-xs text-muted-foreground">
-            <Spinner className="size-3.5" />
-            Loading dataset configs and splits...
-          </div>
-        )}
-
-        {/* Error fetching splits */}
-        {dataset && splitsError && (
-          <div className="rounded-lg border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-700 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-400">
-            Could not fetch dataset splits: {splitsError}
-          </div>
-        )}
+        <HfDatasetConfigSplitSelectors
+          variant="studio"
+          enabled={!!dataset && !isLikelyLocalDatasetRef(dataset)}
+          datasetName={dataset}
+          accessToken={hfToken || undefined}
+          datasetConfig={datasetConfig}
+          setDatasetConfig={setDatasetConfig}
+          datasetSplit={datasetSplit}
+          setDatasetSplit={setDatasetSplit}
+        />
 
         <div className="flex flex-col gap-2">
           <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
