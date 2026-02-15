@@ -36,14 +36,12 @@ type ChatRuntimeStore = {
   params: InferenceParams;
   models: ChatModelSummary[];
   loras: ChatLoraSummary[];
-  warmingByThreadId: Record<string, boolean>;
   runningByThreadId: Record<string, boolean>;
   autoTitle: boolean;
   modelsError: string | null;
   setParams: (params: InferenceParams) => void;
   setModels: (models: ChatModelSummary[]) => void;
   setLoras: (loras: ChatLoraSummary[]) => void;
-  setThreadWarming: (threadId: string, warming: boolean) => void;
   setThreadRunning: (threadId: string, running: boolean) => void;
   setAutoTitle: (enabled: boolean) => void;
   setModelsError: (error: string | null) => void;
@@ -55,23 +53,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   params: DEFAULT_INFERENCE_PARAMS,
   models: [],
   loras: [],
-  warmingByThreadId: {},
   runningByThreadId: {},
   autoTitle: loadBool(AUTO_TITLE_KEY, false),
   modelsError: null,
   setParams: (params) => set({ params }),
   setModels: (models) => set({ models }),
   setLoras: (loras) => set({ loras }),
-  setThreadWarming: (threadId, warming) =>
-    set((state) => {
-      const next = { ...state.warmingByThreadId };
-      if (warming) {
-        next[threadId] = true;
-      } else {
-        delete next[threadId];
-      }
-      return { warmingByThreadId: next };
-    }),
   setThreadRunning: (threadId, running) =>
     set((state) => {
       const next = { ...state.runningByThreadId };
