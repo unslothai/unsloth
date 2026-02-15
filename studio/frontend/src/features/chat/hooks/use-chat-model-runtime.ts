@@ -105,6 +105,9 @@ export function useChatModelRuntime() {
       const message =
         error instanceof Error ? error.message : "Failed to load models";
       setModelsError(message);
+      toast.error("Failed to refresh models", {
+        description: message,
+      });
     }
   }, [setCheckpoint, setLoras, setModels, setModelsError]);
 
@@ -122,30 +125,38 @@ export function useChatModelRuntime() {
       const isLora =
         explicitIsLora ?? model?.isLora ?? (lora ? true : false);
       const displayName = model?.name || lora?.name || modelId;
-      const loadingToastId = toast.loading(`Loading ${displayName}...`);
 
       setModelsError(null);
       try {
-        if (params.checkpoint) {
-          await unloadModel({ model_path: params.checkpoint });
-        }
+        await toast.promise(
+          (async () => {
+            if (params.checkpoint) {
+              await unloadModel({ model_path: params.checkpoint });
+            }
 
-        await loadModel({
-          model_path: modelId,
-          hf_token: null,
-          max_seq_length: DEFAULT_MODEL_MAX_SEQ_LENGTH,
-          load_in_4bit: true,
-          is_lora: isLora,
-        });
+            await loadModel({
+              model_path: modelId,
+              hf_token: null,
+              max_seq_length: DEFAULT_MODEL_MAX_SEQ_LENGTH,
+              load_in_4bit: true,
+              is_lora: isLora,
+            });
 
-        setCheckpoint(modelId);
-        await refresh();
-        toast.success(`${displayName} loaded`, { id: loadingToastId });
+            setCheckpoint(modelId);
+            await refresh();
+          })(),
+          {
+            loading: `Loading ${displayName}`,
+            success: `${displayName} loaded`,
+            error: (err) =>
+              err instanceof Error ? err.message : "Failed to load model",
+            description: isLora ? "Fine-tuned (LoRA) selected." : "Base model selected.",
+          },
+        );
       } catch (error) {
         const message =
           error instanceof Error ? error.message : "Failed to load model";
         setModelsError(message);
-        toast.error(message, { id: loadingToastId });
       }
     },
     [loras, models, params.checkpoint, refresh, setCheckpoint, setModelsError],
@@ -157,9 +168,20 @@ export function useChatModelRuntime() {
     }
     setModelsError(null);
     try {
-      await unloadModel({ model_path: params.checkpoint });
-      clearCheckpoint();
-      await refresh();
+      await toast.promise(
+        (async () => {
+          await unloadModel({ model_path: params.checkpoint });
+          clearCheckpoint();
+          await refresh();
+        })(),
+        {
+          loading: "Unloading model",
+          success: "Model unloaded",
+          error: (err) =>
+            err instanceof Error ? err.message : "Failed to unload model",
+          description: "Releases VRAM and resets inference state.",
+        },
+      );
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Failed to unload model";
