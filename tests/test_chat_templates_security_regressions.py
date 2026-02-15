@@ -17,7 +17,9 @@ def _load_chat_template_functions(*function_names):
     loaded_names = {node.name for node in selected}
     missing = [name for name in function_names if name not in loaded_names]
     if missing:
-        raise RuntimeError(f"Missing expected functions in chat_templates.py: {missing}")
+        raise RuntimeError(
+            f"Missing expected functions in chat_templates.py: {missing}"
+        )
 
     module_ast = ast.Module(body = selected, type_ignores = [])
     namespace = {"re": re}
@@ -35,7 +37,9 @@ def test_create_formatter_preserves_optional_prompt_behavior():
         column_names = ["instruction", "input", "output"]
 
     merged_prompt = "{instruction}[[ - {input}: {output}]]"
-    possible_columns, optional_prompts = parse_combined_prompt(merged_prompt, DummyDataset())
+    possible_columns, optional_prompts = parse_combined_prompt(
+        merged_prompt, DummyDataset()
+    )
     formatter = create_formatter(possible_columns, optional_prompts, "merged")
 
     examples = {
@@ -62,7 +66,9 @@ def test_create_formatter_keeps_optional_block_for_zero_value():
         column_names = ["instruction", "step", "comment"]
 
     merged_prompt = "{instruction}[[ Step {step}: {comment}]]"
-    possible_columns, optional_prompts = parse_combined_prompt(merged_prompt, DummyDataset())
+    possible_columns, optional_prompts = parse_combined_prompt(
+        merged_prompt, DummyDataset()
+    )
     formatter = create_formatter(possible_columns, optional_prompts, "merged")
 
     examples = {
@@ -87,7 +93,9 @@ def test_create_formatter_rejects_optional_without_column():
     class DummyDataset:
         column_names = ["instruction"]
 
-    possible_columns, optional_prompts = parse_combined_prompt("[[constant]]", DummyDataset())
+    possible_columns, optional_prompts = parse_combined_prompt(
+        "[[constant]]", DummyDataset()
+    )
     with pytest.raises(IndexError, match = "Optional"):
         create_formatter(possible_columns, optional_prompts, "merged")
 
@@ -97,7 +105,9 @@ def test_hf_gguf_equivalence_uses_shell_false_and_preserves_quotes(monkeypatch):
         "remove_special_tokens",
         "test_hf_gguf_equivalence",
     )
-    test_hf_gguf_equivalence.__globals__["remove_special_tokens"] = remove_special_tokens
+    test_hf_gguf_equivalence.__globals__["remove_special_tokens"] = (
+        remove_special_tokens
+    )
 
     captured_commands = []
 
@@ -121,7 +131,9 @@ def test_hf_gguf_equivalence_uses_shell_false_and_preserves_quotes(monkeypatch):
         bos_token = "<s>"
         chat_template = "dummy"
 
-        def apply_chat_template(self, messages, tokenize = False, add_generation_prompt = True):
+        def apply_chat_template(
+            self, messages, tokenize = False, add_generation_prompt = True
+        ):
             del messages, tokenize, add_generation_prompt
             return "<s>I can't be shell-escaped"
 
@@ -172,4 +184,9 @@ def test_to_sharegpt_conversation_extension_two():
     assert len(converted) == 2
     for conversation in converted["conversations"]:
         assert len(conversation) == 4
-        assert [turn["from"] for turn in conversation] == ["human", "gpt", "human", "gpt"]
+        assert [turn["from"] for turn in conversation] == [
+            "human",
+            "gpt",
+            "human",
+            "gpt",
+        ]
