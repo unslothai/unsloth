@@ -103,8 +103,8 @@ async function resolveUseAdapter(
 export function createOpenAIStreamAdapter(): ChatModelAdapter {
   return {
     async *run({ messages, abortSignal, unstable_threadId }) {
-      const state = useChatRuntimeStore.getState();
-      const { params } = state;
+      const runtime = useChatRuntimeStore.getState();
+      const { params } = runtime;
 
       if (!params.checkpoint) {
         toast.error("No model loaded", {
@@ -130,19 +130,33 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
 
       const threadKey = unstable_threadId || "__default";
       let waitingFirstChunk = true;
-      let hasResolvedFirstToken = false;
-      let resolveFirstToken: (() => void) | undefined;
-      let rejectFirstToken: ((err: unknown) => void) | undefined;
+      let firstTokenSettled = false;
+      let resolveFirstToken: (() => void) | null = null;
+      let rejectFirstToken: ((err: unknown) => void) | null = null;
       const firstTokenPromise = new Promise<void>((resolve, reject) => {
         resolveFirstToken = resolve;
         rejectFirstToken = reject;
       });
       // Avoid unhandled rejections if toast.promise never attached.
       void firstTokenPromise.catch(() => {});
+
+      function settleFirstTokenOk(): void {
+        if (firstTokenSettled) return;
+        firstTokenSettled = true;
+        resolveFirstToken?.();
+      }
+
+      function settleFirstTokenErr(err: unknown): void {
+        if (firstTokenSettled) return;
+        firstTokenSettled = true;
+        rejectFirstToken?.(err);
+      }
+
       let warmupToastShown = false;
       const warmupDelayMs = 450;
       const warmupTimer = setTimeout(() => {
-        if (!waitingFirstChunk || abortSignal.aborted) return;
+        if (!waitingFirstChunk) return;
+        if (abortSignal.aborted) return;
         warmupToastShown = true;
         toast.promise(firstTokenPromise, {
           loading: "Warming up model",
@@ -153,8 +167,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           duration: 900,
         });
       }, warmupDelayMs);
-      useChatRuntimeStore.getState().setThreadWarming(threadKey, true);
-      useChatRuntimeStore.getState().setThreadRunning(threadKey, true);
+      runtime.setThreadRunning(threadKey, true);
       let cumulativeText = "";
       let reasoningStartAt: number | null = null;
       let reasoningDuration = 0;
@@ -183,11 +196,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           }
           if (waitingFirstChunk) {
             waitingFirstChunk = false;
-            useChatRuntimeStore.getState().setThreadWarming(threadKey, false);
-            if (!hasResolvedFirstToken) {
-              hasResolvedFirstToken = true;
-              resolveFirstToken?.();
-            }
+            settleFirstTokenOk();
           }
 
           cumulativeText += delta;
@@ -207,17 +216,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             };
           }
         }
-        if (!hasResolvedFirstToken) {
-          hasResolvedFirstToken = true;
-          resolveFirstToken?.();
-        }
+        settleFirstTokenOk();
       } catch (err) {
-        if (!hasResolvedFirstToken) {
-          hasResolvedFirstToken = true;
-          rejectFirstToken?.(
-            err instanceof Error ? err : new Error("Generation failed"),
-          );
-        }
+        settleFirstTokenErr(err instanceof Error ? err : new Error("Generation failed"));
         const isEarly = waitingFirstChunk;
         if (!abortSignal.aborted && !(warmupToastShown && isEarly)) {
           toast.error("Generation failed", {
@@ -228,20 +229,17 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       } finally {
         clearTimeout(warmupTimer);
         if (waitingFirstChunk) {
-          useChatRuntimeStore.getState().setThreadWarming(threadKey, false);
-          if (warmupToastShown && !hasResolvedFirstToken) {
-            hasResolvedFirstToken = true;
-            rejectFirstToken?.(
-              abortSignal.aborted
-                ? new Error("Cancelled")
-                : new Error("No tokens received"),
-            );
-          } else if (!hasResolvedFirstToken) {
-            hasResolvedFirstToken = true;
-            resolveFirstToken?.();
+          if (warmupToastShown && !firstTokenSettled) {
+            if (abortSignal.aborted) {
+              settleFirstTokenErr(new Error("Cancelled"));
+            } else {
+              settleFirstTokenErr(new Error("No tokens received"));
+            }
+          } else {
+            settleFirstTokenOk();
           }
         }
-        useChatRuntimeStore.getState().setThreadRunning(threadKey, false);
+        runtime.setThreadRunning(threadKey, false);
       }
     },
   };
