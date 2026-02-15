@@ -128,7 +128,7 @@ def setup_frontend(app: FastAPI, build_path: Path):
 
         @app.get("/")
         async def serve_root():
-            return FileResponse(build_path / "index.html")
+            return FileResponse(build_path / "index.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
         @app.get("/{full_path:path}")
         async def serve_frontend(full_path: str):
@@ -139,7 +139,7 @@ def setup_frontend(app: FastAPI, build_path: Path):
             if file_path.is_file():
                 return FileResponse(file_path)
 
-            return FileResponse(build_path / "index.html")
+            return FileResponse(build_path / "index.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
         return True
     return False
