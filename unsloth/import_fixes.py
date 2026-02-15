@@ -950,9 +950,7 @@ def patch_trunc_normal_precision_issue():
         except TypeError as exc:
             # Older torch versions may not accept generator.
             if "generator" in str(exc):
-                return original_trunc_normal(
-                    target, mean = mean, std = std, a = a, b = b
-                )
+                return original_trunc_normal(target, mean = mean, std = std, a = a, b = b)
             raise
 
     try:
