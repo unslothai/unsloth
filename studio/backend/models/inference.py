@@ -43,6 +43,7 @@ class LoadResponse(BaseModel):
     display_name: str = Field(..., description="Display name of the model")
     is_vision: bool = Field(False, description="Whether model is a vision model")
     is_lora: bool = Field(False, description="Whether model is a LoRA adapter")
+    inference: dict = Field(..., description="Inference parameters (temperature, top_p, top_k, min_p)")
 
 
 class UnloadResponse(BaseModel):
