@@ -1,0 +1,425 @@
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+import { HugeiconsIcon } from "@hugeicons/react";
+import {
+  ArrowLeft01Icon,
+  ArrowRight01Icon,
+  Cancel01Icon,
+  CheckmarkCircle01Icon,
+} from "@hugeicons/core-free-icons";
+import { Dialog as DialogPrimitive } from "radix-ui";
+import { AnimatePresence, motion } from "motion/react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+
+export type TourStep = {
+  id: string;
+  target: string; // data-tour="<target>"
+  title: string;
+  body: string;
+};
+
+type Rect = { x: number; y: number; w: number; h: number };
+type Placement = "right" | "left" | "top" | "bottom";
+
+function clamp(n: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, n));
+}
+
+function cssEscape(value: string) {
+  if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
+    return CSS.escape(value);
+  }
+  return value.replace(/"/g, '\\"');
+}
+
+function toRect(domRect: DOMRect): Rect {
+  return { x: domRect.left, y: domRect.top, w: domRect.width, h: domRect.height };
+}
+
+function padded(r: Rect, pad: number, vw: number, vh: number): Rect {
+  const x = clamp(r.x - pad, 8, vw - 8);
+  const y = clamp(r.y - pad, 8, vh - 8);
+  const w = clamp(r.w + pad * 2, 24, vw - x - 8);
+  const h = clamp(r.h + pad * 2, 24, vh - y - 8);
+  return { x, y, w, h };
+}
+
+function pickPlacement(
+  target: Rect,
+  card: { w: number; h: number },
+  vw: number,
+  vh: number,
+  gap: number,
+): Placement {
+  const canRight = target.x + target.w + gap + card.w <= vw - 12;
+  const canLeft = target.x - gap - card.w >= 12;
+  const canBottom = target.y + target.h + gap + card.h <= vh - 12;
+  const canTop = target.y - gap - card.h >= 12;
+
+  if (canRight) return "right";
+  if (canLeft) return "left";
+  if (canBottom) return "bottom";
+  if (canTop) return "top";
+  return "bottom";
+}
+
+function computeCardPos(
+  placement: Placement,
+  target: Rect,
+  card: { w: number; h: number },
+  vw: number,
+  vh: number,
+  gap: number,
+) {
+  let left = 12;
+  let top = 12;
+
+  if (placement === "right") {
+    left = target.x + target.w + gap;
+    top = target.y + target.h / 2 - card.h / 2;
+  }
+  if (placement === "left") {
+    left = target.x - gap - card.w;
+    top = target.y + target.h / 2 - card.h / 2;
+  }
+  if (placement === "bottom") {
+    left = target.x + target.w / 2 - card.w / 2;
+    top = target.y + target.h + gap;
+  }
+  if (placement === "top") {
+    left = target.x + target.w / 2 - card.w / 2;
+    top = target.y - gap - card.h;
+  }
+
+  left = clamp(left, 12, vw - card.w - 12);
+  top = clamp(top, 12, vh - card.h - 12);
+  return { left, top };
+}
+
+function SpotlightOverlay({
+  rect,
+  vw,
+  vh,
+  maskId,
+}: {
+  rect: Rect | null;
+  vw: number;
+  vh: number;
+  maskId: string;
+}) {
+  const hole = rect ?? { x: vw / 2 - 140, y: vh / 2 - 90, w: 280, h: 180 };
+  const r = 22;
+
+  return (
+    <svg
+      className="absolute inset-0 size-full"
+      viewBox={`0 0 ${vw} ${vh}`}
+      preserveAspectRatio="none"
+      aria-hidden={true}
+    >
+      <defs>
+        <radialGradient id={`${maskId}-v`} cx="50%" cy="45%" r="80%">
+          <stop offset="0%" stopColor="rgba(6, 9, 15, 0.35)" />
+          <stop offset="55%" stopColor="rgba(6, 9, 15, 0.65)" />
+          <stop offset="100%" stopColor="rgba(6, 9, 15, 0.88)" />
+        </radialGradient>
+        <mask id={maskId}>
+          <rect x="0" y="0" width={vw} height={vh} fill="white" />
+          <motion.rect
+            x={hole.x}
+            y={hole.y}
+            width={hole.w}
+            height={hole.h}
+            rx={r}
+            fill="black"
+            transition={{ type: "spring", stiffness: 260, damping: 30 }}
+          />
+        </mask>
+      </defs>
+      <rect
+        x="0"
+        y="0"
+        width={vw}
+        height={vh}
+        fill={`url(#${maskId}-v)`}
+        mask={`url(#${maskId})`}
+      />
+    </svg>
+  );
+}
+
+export function GuidedTour({
+  open,
+  onOpenChange,
+  steps,
+  onSkip,
+  onComplete,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  steps: TourStep[];
+  onSkip: () => void;
+  onComplete: () => void;
+}) {
+  const maskId = `${useId()}-tour-mask`;
+  const [idx, setIdx] = useState(0);
+  const [vw, setVw] = useState(0);
+  const [vh, setVh] = useState(0);
+  const [targetRect, setTargetRect] = useState<Rect | null>(null);
+  const [placement, setPlacement] = useState<Placement>("right");
+  const [cardPos, setCardPos] = useState<{ left: number; top: number }>({
+    left: 12,
+    top: 12,
+  });
+  const cardRef = useRef<HTMLDivElement>(null);
+  const closeLockRef = useRef(false);
+
+  const step = steps[idx] ?? null;
+  const total = steps.length;
+  const isLast = idx === total - 1;
+
+  const spotlightRect = useMemo(() => {
+    if (!targetRect || !vw || !vh) return null;
+    return padded(targetRect, 14, vw, vh);
+  }, [targetRect, vw, vh]);
+
+  useEffect(() => {
+    if (!open) return;
+    setIdx(0);
+    closeLockRef.current = false;
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    function onResize() {
+      setVw(window.innerWidth);
+      setVh(window.innerHeight);
+    }
+    onResize();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open || !step) return;
+
+    const sel = `[data-tour="${cssEscape(step.target)}"]`;
+    const el = document.querySelector(sel) as HTMLElement | null;
+    if (!el) {
+      setTargetRect(null);
+      return;
+    }
+
+    el.scrollIntoView({ block: "center", inline: "center", behavior: "smooth" });
+
+    let raf = 0;
+    let t = 0;
+    const update = () => {
+      const r = el.getBoundingClientRect();
+      setTargetRect(toRect(r));
+    };
+
+    raf = window.requestAnimationFrame(update);
+    t = window.setTimeout(update, 240);
+
+    const ro = new ResizeObserver(() => update());
+    ro.observe(el);
+    window.addEventListener("scroll", update, { capture: true, passive: true });
+
+    return () => {
+      window.cancelAnimationFrame(raf);
+      window.clearTimeout(t);
+      ro.disconnect();
+      window.removeEventListener("scroll", update, true);
+    };
+  }, [open, step]);
+
+  useLayoutEffect(() => {
+    if (!open || !spotlightRect || !vw || !vh) return;
+    const card = cardRef.current?.getBoundingClientRect();
+    if (!card) return;
+
+    const gap = 14;
+    const picked = pickPlacement(spotlightRect, { w: card.width, h: card.height }, vw, vh, gap);
+    setPlacement(picked);
+    setCardPos(computeCardPos(picked, spotlightRect, { w: card.width, h: card.height }, vw, vh, gap));
+  }, [open, spotlightRect, vw, vh, idx]);
+
+  function requestClose(reason: "skip" | "complete") {
+    if (closeLockRef.current) return;
+    closeLockRef.current = true;
+    if (reason === "skip") onSkip();
+    else onComplete();
+    onOpenChange(false);
+  }
+
+  return (
+    <DialogPrimitive.Root
+      open={open}
+      onOpenChange={(v) => {
+        if (v) onOpenChange(true);
+        else requestClose("skip");
+      }}
+      modal={true}
+    >
+      <DialogPrimitive.Portal>
+        <AnimatePresence>
+          {open && (
+            <>
+              <DialogPrimitive.Overlay asChild>
+                <motion.div
+                  className="fixed inset-0 z-50"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.18 }}
+                >
+                  <SpotlightOverlay rect={spotlightRect} vw={vw} vh={vh} maskId={maskId} />
+                  {spotlightRect && (
+                    <motion.div
+                      className="fixed z-[51] pointer-events-none rounded-[22px] ring-1 ring-white/10"
+                      initial={false}
+                      animate={{
+                        left: spotlightRect.x,
+                        top: spotlightRect.y,
+                        width: spotlightRect.w,
+                        height: spotlightRect.h,
+                        boxShadow:
+                          "0 0 0 1px rgba(34, 211, 238, 0.12), 0 0 0 6px rgba(16, 185, 129, 0.08), 0 18px 90px rgba(0,0,0,0.55)",
+                      }}
+                      transition={{ type: "spring", stiffness: 260, damping: 30 }}
+                    />
+                  )}
+                </motion.div>
+              </DialogPrimitive.Overlay>
+
+              <DialogPrimitive.Content
+                onPointerDownOutside={(e) => e.preventDefault()}
+                onInteractOutside={(e) => e.preventDefault()}
+                className={cn(
+                  "fixed z-[52] outline-none",
+                  "w-[min(420px,calc(100vw-1.5rem))]",
+                )}
+                style={{
+                  left: cardPos.left,
+                  top: cardPos.top,
+                }}
+              >
+                <motion.div
+                  ref={cardRef}
+                  initial={{ opacity: 0, scale: 0.985, y: 8 }}
+                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.99, y: 10 }}
+                  transition={{ duration: 0.22, ease: [0.165, 0.84, 0.44, 1] }}
+                  className={cn(
+                    "relative overflow-hidden rounded-[28px] corner-squircle",
+                    "bg-[#0b0f16]/95 text-white ring-1 ring-white/10",
+                    "shadow-[0_30px_120px_rgba(0,0,0,0.65)]",
+                  )}
+                  style={{
+                    fontFamily: "'Figtree Variable', ui-sans-serif, sans-serif",
+                  }}
+                >
+                  <div
+                    className={cn(
+                      "absolute z-10 size-3 rotate-45 rounded-[3px] bg-[#0b0f16]/95 ring-1 ring-white/10",
+                      placement === "right" &&
+                        "-left-1 top-1/2 -translate-y-1/2",
+                      placement === "left" &&
+                        "-right-1 top-1/2 -translate-y-1/2",
+                      placement === "bottom" &&
+                        "left-1/2 -top-1 -translate-x-1/2",
+                      placement === "top" &&
+                        "left-1/2 -bottom-1 -translate-x-1/2",
+                    )}
+                    aria-hidden={true}
+                  />
+                  <div className="absolute inset-x-0 top-0 h-20 bg-gradient-to-b from-emerald-400/18 via-cyan-300/6 to-transparent" />
+                  <div className="absolute -left-14 -top-16 size-44 rounded-full bg-emerald-400/10 blur-2xl" />
+                  <div className="absolute -right-14 -bottom-16 size-44 rounded-full bg-cyan-300/10 blur-2xl" />
+
+                  <div className="relative p-5">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="inline-flex items-center gap-2 rounded-full bg-white/6 px-2.5 py-1 text-[10px] font-mono text-white/70 ring-1 ring-white/10">
+                          {idx + 1}/{total}
+                          <span className="size-1 rounded-full bg-emerald-300/70" />
+                          guided tour
+                        </div>
+                        <DialogPrimitive.Title
+                          className="mt-2 text-[18px] leading-tight"
+                          style={{ fontFamily: "var(--font-serif)" }}
+                        >
+                          {step?.title ?? "Quick tour"}
+                        </DialogPrimitive.Title>
+                        <DialogPrimitive.Description className="mt-1.5 text-sm leading-relaxed text-white/72">
+                          {step?.body ?? "Let’s get you oriented."}
+                        </DialogPrimitive.Description>
+                      </div>
+
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        className="text-white/70 hover:text-white hover:bg-white/8"
+                        onClick={() => requestClose("skip")}
+                        aria-label="Skip tour"
+                      >
+                        <HugeiconsIcon icon={Cancel01Icon} className="size-4" />
+                      </Button>
+                    </div>
+
+                    <div className="mt-5 flex items-center justify-between gap-3">
+                      <Button
+                        variant="ghost"
+                        className="text-white/70 hover:text-white hover:bg-white/8"
+                        onClick={() => requestClose("skip")}
+                      >
+                        Skip
+                      </Button>
+
+                      <div className="flex items-center gap-2">
+                        <Button
+                          variant="outline"
+                          className="border-white/12 bg-white/6 text-white hover:bg-white/10 hover:text-white"
+                          disabled={idx === 0}
+                          onClick={() => setIdx((i) => Math.max(0, i - 1))}
+                        >
+                          <HugeiconsIcon icon={ArrowLeft01Icon} className="size-4" />
+                          Back
+                        </Button>
+                        {isLast ? (
+                          <Button
+                            variant="dark"
+                            className="bg-gradient-to-r from-emerald-300 to-cyan-200 text-black hover:from-emerald-200 hover:to-cyan-100"
+                            onClick={() => requestClose("complete")}
+                          >
+                            <HugeiconsIcon icon={CheckmarkCircle01Icon} className="size-4" />
+                            Done
+                          </Button>
+                        ) : (
+                          <Button
+                            variant="dark"
+                            className="bg-gradient-to-r from-emerald-300 to-cyan-200 text-black hover:from-emerald-200 hover:to-cyan-100"
+                            onClick={() => setIdx((i) => Math.min(total - 1, i + 1))}
+                          >
+                            Next
+                            <HugeiconsIcon icon={ArrowRight01Icon} className="size-4" />
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="h-px bg-gradient-to-r from-transparent via-white/12 to-transparent" />
+                  <div className="px-5 py-3 text-[11px] text-white/55">
+                    Tip: `Esc` skips. Tour blocks clicks so you can read.
+                  </div>
+                </motion.div>
+              </DialogPrimitive.Content>
+            </>
+          )}
+        </AnimatePresence>
+      </DialogPrimitive.Portal>
+    </DialogPrimitive.Root>
+  );
+}
