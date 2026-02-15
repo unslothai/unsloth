@@ -562,6 +562,12 @@ class UnslothTrainer:
                 config_args["warmup_steps"] = 5
                 print(f"Using default warmup_steps: 5\n")
 
+            # Add save_steps if specified
+            save_steps_val = training_args.get('save_steps', 0)
+            if save_steps_val and save_steps_val > 0:
+                config_args["save_steps"] = save_steps_val
+                config_args["save_strategy"] = "steps"
+
             #  If max_steps is specified, use it instead of epochs
             max_steps_val = training_args.get('max_steps', 0)
             if max_steps_val and max_steps_val > 0:
