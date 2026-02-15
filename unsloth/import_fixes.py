@@ -16,7 +16,6 @@ import os
 import importlib.abc
 import importlib.machinery
 import importlib.util
-import contextlib
 from pathlib import Path
 from importlib.metadata import version as importlib_version
 from packaging.version import Version as TrueVersion
@@ -26,7 +25,6 @@ import textwrap
 import warnings
 import sys
 import functools
-import tempfile
 
 # We cannot do from unsloth_zoo.log import logger since FBGEMM might cause seg faults.
 UNSLOTH_ENABLE_LOGGING = os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") in (
@@ -1309,70 +1307,6 @@ def configure_amdgpu_asic_id_table_path():
     return None
 
 
-@contextlib.contextmanager
-def _filter_stderr_fd(
-    suppressed_substrings = (_AMDGPU_IDS_MISSING_TEXT,),
-):
-    """
-    Capture low-level fd=2 writes, drop only known noisy substrings, and replay
-    everything else after the protected block.
-    """
-    saved_stderr_fd = None
-    temp_file = None
-    redirected = False
-    try:
-        saved_stderr_fd = os.dup(2)
-        temp_file = tempfile.TemporaryFile(mode = "w+b")
-        os.dup2(temp_file.fileno(), 2)
-        redirected = True
-    except Exception:
-        redirected = False
-
-    try:
-        yield
-    finally:
-        captured = b""
-        if redirected and temp_file is not None:
-            try:
-                temp_file.flush()
-                temp_file.seek(0)
-                captured = temp_file.read()
-            except Exception:
-                captured = b""
-        if redirected and saved_stderr_fd is not None:
-            try:
-                os.dup2(saved_stderr_fd, 2)
-            except Exception:
-                pass
-        if captured and saved_stderr_fd is not None:
-            try:
-                for raw_line in captured.splitlines(keepends = True):
-                    line = raw_line.decode("utf-8", errors = "ignore")
-                    if any(s in line for s in suppressed_substrings):
-                        continue
-                    os.write(saved_stderr_fd, raw_line)
-            except Exception:
-                pass
-        if temp_file is not None:
-            try:
-                temp_file.close()
-            except Exception:
-                pass
-        if saved_stderr_fd is not None:
-            try:
-                os.close(saved_stderr_fd)
-            except Exception:
-                pass
-
-
-def _filter_rocm_amdgpu_ids_fd2_noise():
-    # ROCm/libdrm can emit amdgpu.ids missing errors via low-level fd=2 writes.
-    # Python-level stderr filters cannot intercept those writes.
-    if not _is_rocm_torch_build():
-        return contextlib.nullcontext()
-    return _filter_stderr_fd()
-
-
 def _is_causal_conv1d_name(module_name: str) -> bool:
     return module_name == _CAUSAL_CONV1D_PREFIX or module_name.startswith(
         _CAUSAL_CONV1D_PREFIX + "."
@@ -1505,10 +1439,7 @@ def disable_broken_causal_conv1d():
         return
 
     try:
-        # Suppress only native fd=2 amdgpu.ids noise during causal_conv1d probe.
-        with _filter_rocm_amdgpu_ids_fd2_noise():
-            import causal_conv1d  # noqa: F401
-
+        import causal_conv1d  # noqa: F401
         return
     except Exception as error:
         if not _is_broken_causal_conv1d_error(error):
