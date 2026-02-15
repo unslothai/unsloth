@@ -5,10 +5,10 @@ import {
   useTrainingRuntimeLifecycle,
   useTrainingRuntimeStore,
 } from "@/features/training";
-import { GuidedTour, type TourStep } from "@/features/tour";
+import { GuidedTour, studioTourSteps } from "@/features/tour";
 import { ArrowLeft01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactElement, useEffect, useMemo, useState } from "react";
+import { type ReactElement, useEffect, useState } from "react";
 import { DatasetSection } from "./sections/dataset-section";
 import { ModelSection } from "./sections/model-section";
 import { ParamsSection } from "./sections/params-section";
@@ -30,60 +30,6 @@ export function StudioPage(): ReactElement {
   const tourEnabled = hasHydratedRuntime && !isHydratingRuntime && !showTrainingView;
   const [tourOpen, setTourOpen] = useState(false);
 
-  const tourSteps = useMemo<TourStep[]>(
-    () => [
-      {
-        id: "nav",
-        target: "navbar",
-        title: "Quick orientation",
-        body: "Studio is where you fine-tune. Export ships results. Chat is for poking at models. This tour is Studio-only (for now).",
-      },
-      {
-        id: "local-model",
-        target: "studio-local-model",
-        title: "Local model path",
-        body: "Point to a local folder (`./models/...`) or a custom HF repo. Use this when you already downloaded weights.",
-      },
-      {
-        id: "base-model",
-        target: "studio-base-model",
-        title: "Base model from Hugging Face",
-        body: "Search Hub here. Paste `org/model` too. Pick something close to your target domain to save compute.",
-      },
-      {
-        id: "method",
-        target: "studio-method",
-        title: "Method: QLoRA vs LoRA vs Full",
-        body: "QLoRA: lowest VRAM (4-bit). LoRA: fast + solid (16-bit adapters). Full: slowest, highest cost, updates all weights.",
-      },
-      {
-        id: "dataset",
-        target: "studio-dataset",
-        title: "Dataset",
-        body: "Search Hub or paste `user/dataset`. Preview a few rows before you burn hours of compute.",
-      },
-      {
-        id: "params",
-        target: "studio-params",
-        title: "Dial hyperparams",
-        body: "Epochs + context length + LR. Keep it boring: small changes, one at a time.",
-      },
-      {
-        id: "start",
-        target: "studio-start",
-        title: "Start training",
-        body: "One click. If it fails, the error text is the first place to look (token, path, config).",
-      },
-      {
-        id: "save",
-        target: "studio-save",
-        title: "Save config",
-        body: "Save good runs. Repeatability beats vibe. You can iterate from a known baseline.",
-      },
-    ],
-    [],
-  );
-
   useEffect(() => {
     if (!tourEnabled) return;
     if (localStorage.getItem(STUDIO_TOUR_KEY)) return;
@@ -96,7 +42,7 @@ export function StudioPage(): ReactElement {
         <GuidedTour
           open={tourOpen}
           onOpenChange={setTourOpen}
-          steps={tourSteps}
+          steps={studioTourSteps}
           onSkip={() => localStorage.setItem(STUDIO_TOUR_KEY, "skipped")}
           onComplete={() => localStorage.setItem(STUDIO_TOUR_KEY, "done")}
         />
