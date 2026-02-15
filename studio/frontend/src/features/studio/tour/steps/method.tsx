@@ -6,8 +6,10 @@ export const studioMethodStep: TourStep = {
   title: "Method: QLoRA vs LoRA vs Full",
   body: (
     <>
-      QLoRA: lowest VRAM (4-bit). LoRA: fast + solid (16-bit adapters). Full:
-      slowest, highest cost, updates all weights. <ReadMore />
+      LoRA: trains small adapter weights (fast, common default). QLoRA: LoRA on
+      4-bit base weights (much lower VRAM). Full: updates all weights (highest
+      cost, usually needs more data to be worth it).{" "}
+      <ReadMore href="https://docs.unsloth.ai/basics/lora-hyperparameters-guide" />
     </>
   ),
 };

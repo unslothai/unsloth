@@ -6,9 +6,10 @@ export const studioLocalModelStep: TourStep = {
   title: "Local model path",
   body: (
     <>
-      Point to a local folder (<span className="font-mono">./models/...</span>)
-      or a custom HF repo. Use this when you already downloaded weights.{" "}
-      <ReadMore />
+      Use this if you already downloaded weights locally (eg{" "}
+      <span className="font-mono">./models/...</span>) to avoid re-downloading.
+      Folder should look like a Hugging Face model (config + tokenizer + weights).{" "}
+      <ReadMore href="https://docs.unsloth.ai/basics/fine-tuning-llms-guide" />
     </>
   ),
 };
