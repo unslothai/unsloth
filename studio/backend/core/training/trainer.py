@@ -2,13 +2,16 @@
 Unsloth Training Backend
 Integrates Unsloth training capabilities with the FastAPI backend
 """
+import os
+# Prevent tokenizer parallelism deadlocks when datasets uses multiprocessing fork
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 import torch
 from utils.hardware import clear_gpu_cache
 torch._dynamo.config.recompile_limit = 64
 from unsloth import FastLanguageModel, FastVisionModel, is_bfloat16_supported
 from unsloth.chat_templates import get_chat_template
 
-import os
 import json
 import threading
 import math
