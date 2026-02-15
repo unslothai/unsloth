@@ -225,6 +225,14 @@ async function generateTitleWithModel(payload: {
 
 const inflightTitleByKey = new Set<string>();
 
+function fallbackTitleFromUserText(userText: string): string {
+  const firstLine = (userText || "").split(/\r?\n/, 1)[0] ?? "";
+  const cleaned = firstLine.replace(/\s+/g, " ").trim();
+  const max = 48;
+  if (!cleaned) return "New Chat";
+  return cleaned.slice(0, max) + (cleaned.length > max ? "..." : "");
+}
+
 function toThreadMessage(m: MessageRecord): ThreadMessage {
   const base = {
     id: m.id,
@@ -342,7 +350,7 @@ function createDexieAdapter(
       const userText = extractTextParts(firstUser) || "New Chat";
 
       if (!autoTitle) {
-        const title = userText.slice(0, 60) + (userText.length > 60 ? "..." : "");
+        const title = fallbackTitleFromUserText(userText);
         await db.threads.update(remoteId, { title });
         if (pairId) {
           const paired = await db.threads
@@ -394,7 +402,7 @@ function createDexieAdapter(
           (await generateTitleWithModel({
             userText,
           })) ||
-          (userText.slice(0, 60) + (userText.length > 60 ? "..." : ""));
+          fallbackTitleFromUserText(userText);
 
         await db.threads.update(remoteId, { title });
         if (pairId) {

@@ -57,7 +57,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   loras: [],
   warmingByThreadId: {},
   runningByThreadId: {},
-  autoTitle: loadBool(AUTO_TITLE_KEY, true),
+  autoTitle: loadBool(AUTO_TITLE_KEY, false),
   modelsError: null,
   setParams: (params) => set({ params }),
   setModels: (models) => set({ models }),
