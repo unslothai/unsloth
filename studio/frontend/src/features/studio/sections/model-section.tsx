@@ -140,9 +140,9 @@ export function ModelSection() {
         className="shadow-border ring-1 ring-border"
       >
         <div className="grid gap-4 lg:grid-cols-4">
-        <div className="flex flex-col gap-2">
-          <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-            Local Model
+          <div data-tour="studio-local-model" className="flex flex-col gap-2">
+            <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+              Local Model
             <Tooltip>
               <TooltipTrigger asChild={true}>
                 <button
@@ -168,7 +168,7 @@ export function ModelSection() {
           </InputGroup>
         </div>
 
-        <div className="flex flex-col gap-2">
+          <div data-tour="studio-base-model" className="flex flex-col gap-2">
           <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
             Base Model
             <Tooltip>
@@ -272,7 +272,7 @@ export function ModelSection() {
           </div>
         </div>
 
-        <div className="flex flex-col gap-2">
+          <div data-tour="studio-method" className="flex flex-col gap-2">
           <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
             Method
             <Tooltip>
