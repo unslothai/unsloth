@@ -37,22 +37,21 @@ def run_job_process(
     Subprocess entrypoint.
     Sends events to `event_queue`.
     """
-    handler = _QueueLogHandler(event_queue)
-    handler.setLevel(logging.INFO)
-
-    # Attach once to root. data_designer.* loggers should propagate to root.
-    root = logging.getLogger()
-    root.addHandler(handler)
-    root.setLevel(logging.INFO)
-    dd = logging.getLogger("data_designer")
-    dd.setLevel(logging.INFO)
-    dd.propagate = True
-
     event_queue.put({"type": "job.started", "ts": time.time()})
 
     try:
-        # lazy import so backend can boot even if data-designer isn't installed yet
+        # Importing data_designer.interface.* triggers DataDesigner logging setup (it clears root handlers),
+        # so attach our queue handler after that import.
         from data_designer.config.run_config import RunConfig
+
+        import data_designer.interface.data_designer  # noqa: F401
+
+        handler = _QueueLogHandler(event_queue)
+        handler.setLevel(logging.INFO)
+        root = logging.getLogger()
+        root.addHandler(handler)
+        root.setLevel(logging.INFO)
+        logging.getLogger("data_designer").setLevel(logging.INFO)
 
         rows = int(run.get("rows") or 1000)
         dataset_name = str(run.get("dataset_name") or "dataset")
@@ -86,4 +85,3 @@ def run_job_process(
                 "stack": traceback.format_exc(limit=20),
             }
         )
-

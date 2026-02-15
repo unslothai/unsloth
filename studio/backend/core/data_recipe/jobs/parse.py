@@ -30,21 +30,21 @@ class ParsedUpdate:
 # welp, best effort to parse the logs and convert them to structured information so we can access it and read it properly on the client
 # i couldnt find what datadesigner do for progress tracking besides the logs so il probably raise a pr in their repo to add some sort of progress monitoring
 _RE_SAMPLERS = re.compile(
-    r"Preparing samplers to generate (?P<rows>\\d+) records across (?P<cols>\\d+) columns"
+    r"Preparing samplers to generate (?P<rows>\d+) records across (?P<cols>\d+) columns"
 )
 _RE_COLCFG = re.compile(r"model config for column '(?P<col>[^']+)'")
 _RE_PROCESSING_COL = re.compile(r"Processing .* column '(?P<col>[^']+)'")
 _RE_PROGRESS = re.compile(
-    r"progress: (?P<done>\\d+)/(?P<total>\\d+) \\((?P<pct>\\d+)%\\) complete, "
-    r"(?P<ok>\\d+) ok, (?P<failed>\\d+) failed, (?P<rate>[0-9.]+) rec/s, eta (?P<eta>[0-9.]+)s"
+    r"progress: (?P<done>\d+)/(?P<total>\d+) \((?P<pct>\d+)%\) complete, "
+    r"(?P<ok>\d+) ok, (?P<failed>\d+) failed, (?P<rate>[0-9.]+) rec/s, eta (?P<eta>[0-9.]+)s"
 )
-_RE_BATCH = re.compile(r"Processing batch (?P<idx>\\d+) of (?P<total>\\d+)")
-_RE_USAGE_MODEL = re.compile(r"model:\\s*(?P<model>.+)$")
+_RE_BATCH = re.compile(r"Processing batch (?P<idx>\d+) of (?P<total>\d+)")
+_RE_USAGE_MODEL = re.compile(r"model:\s*(?P<model>.+)$")
 _RE_USAGE_TOKENS = re.compile(
-    r"tokens:\\s*input=(?P<input>\\d+),\\s*output=(?P<output>\\d+),\\s*total=(?P<total>\\d+),\\s*tps=(?P<tps>[0-9.]+)"
+    r"tokens:\s*input=(?P<input>\d+),\s*output=(?P<output>\d+),\s*total=(?P<total>\d+),\s*tps=(?P<tps>[0-9.]+)"
 )
 _RE_USAGE_REQUESTS = re.compile(
-    r"requests:\\s*success=(?P<success>\\d+),\\s*failed=(?P<failed>\\d+),\\s*total=(?P<total>\\d+),\\s*rpm=(?P<rpm>[0-9.]+)"
+    r"requests:\s*success=(?P<success>\d+),\s*failed=(?P<failed>\d+),\s*total=(?P<total>\d+),\s*rpm=(?P<rpm>[0-9.]+)"
 )
 
 
@@ -197,4 +197,3 @@ def apply_update(job: Job, update: ParsedUpdate) -> None:
 def coerce_event(obj: Any) -> dict:
     # worker sends dict already
     return obj if isinstance(obj, dict) else {"type": "log", "message": str(obj)}
-
