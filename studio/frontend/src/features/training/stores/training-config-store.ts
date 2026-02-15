@@ -16,6 +16,8 @@ const initialState: TrainingConfigState = {
   datasetSource: "huggingface",
   datasetFormat: "auto",
   dataset: null,
+  datasetConfig: null,
+  datasetSplit: null,
   uploadedFile: null,
   ...DEFAULT_HYPERPARAMS,
 };
@@ -55,7 +57,11 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
       setHfToken: (hfToken) => set({ hfToken }),
       setDatasetSource: (datasetSource) => set({ datasetSource }),
       setDatasetFormat: (datasetFormat) => set({ datasetFormat }),
-      setDataset: (dataset) => set({ dataset }),
+      setDataset: (dataset) =>
+        set({ dataset, datasetConfig: null, datasetSplit: null }),
+      setDatasetConfig: (datasetConfig) =>
+        set({ datasetConfig, datasetSplit: null }),
+      setDatasetSplit: (datasetSplit) => set({ datasetSplit }),
       setUploadedFile: (uploadedFile) => set({ uploadedFile }),
       setEpochs: (epochs) => set({ epochs }),
       setContextLength: (contextLength) => set({ contextLength }),
