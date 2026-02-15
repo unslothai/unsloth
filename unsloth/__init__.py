@@ -29,18 +29,21 @@ from .import_fixes import (
     fix_message_factory_issue,
     check_fbgemm_gpu_version,
     disable_broken_causal_conv1d,
-    _filter_rocm_amdgpu_ids_fd2_noise,
+    configure_amdgpu_asic_id_table_path,
     torchvision_compatibility_check,
     fix_diffusers_warnings,
     fix_huggingface_hub,
 )
 
+# Configure libdrm ids table path early so ROCm can resolve AMD GPU names.
+configure_amdgpu_asic_id_table_path()
 disable_broken_causal_conv1d()
 fix_message_factory_issue()
 check_fbgemm_gpu_version()
 torchvision_compatibility_check()
 fix_diffusers_warnings()
 fix_huggingface_hub()
+del configure_amdgpu_asic_id_table_path
 del disable_broken_causal_conv1d
 del fix_message_factory_issue
 del check_fbgemm_gpu_version
@@ -96,9 +99,7 @@ try:
         #             os.system("pip install --upgrade --no-cache-dir --no-deps --user unsloth_zoo")
         #         except:
         #             raise ImportError("Unsloth: Please update unsloth_zoo via `pip install --upgrade --no-cache-dir --no-deps unsloth_zoo`")
-    # Filter native fd=2 amdgpu.ids noise during early unsloth_zoo import.
-    with _filter_rocm_amdgpu_ids_fd2_noise():
-        import unsloth_zoo
+    import unsloth_zoo
 except PackageNotFoundError:
     raise ImportError(
         f"Unsloth: Please install unsloth_zoo via `pip install unsloth_zoo` then retry!"
@@ -109,9 +110,7 @@ del PackageNotFoundError, importlib_version
 
 # Try importing PyTorch and check version
 try:
-    # Filter native fd=2 amdgpu.ids noise during torch import on ROCm.
-    with _filter_rocm_amdgpu_ids_fd2_noise():
-        import torch
+    import torch
 except ModuleNotFoundError:
     raise ImportError(
         "Unsloth: Pytorch is not installed. Go to https://pytorch.org/.\n"
@@ -120,16 +119,14 @@ except ModuleNotFoundError:
 except:
     raise
 
-# Filter native fd=2 amdgpu.ids noise during early device detection import.
-with _filter_rocm_amdgpu_ids_fd2_noise():
-    from unsloth_zoo.device_type import (
-        is_hip,
-        get_device_type,
-        DEVICE_TYPE,
-        DEVICE_TYPE_TORCH,
-        DEVICE_COUNT,
-        ALLOW_PREQUANTIZED_MODELS,
-    )
+from unsloth_zoo.device_type import (
+    is_hip,
+    get_device_type,
+    DEVICE_TYPE,
+    DEVICE_TYPE_TORCH,
+    DEVICE_COUNT,
+    ALLOW_PREQUANTIZED_MODELS,
+)
 
 # Fix other issues
 from .import_fixes import (
@@ -305,10 +302,8 @@ elif DEVICE_TYPE == "xpu":
     # TODO: check triton for intel installed properly.
     pass
 
-# Filter native fd=2 amdgpu.ids noise during model import startup.
-with _filter_rocm_amdgpu_ids_fd2_noise():
-    from .models import *
-    from .models import __version__
+from .models import *
+from .models import __version__
 from .save import *
 from .chat_templates import *
 from .tokenizer_utils import *
