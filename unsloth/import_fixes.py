@@ -97,7 +97,7 @@ class HidePrintMessage:
         return getattr(self._original_stream, name)
 
 
-if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") != "1":
+if not UNSLOTH_ENABLE_LOGGING:
     import sys
 
     # Apply to stderr for FBGEMM and CUTLASS errors
@@ -204,6 +204,13 @@ if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") != "1":
     sys.stderr.add_filter("df: No such file")
     # ROCm/libdrm missing ids table stderr noise on some AMD setups
     sys.stderr.add_filter(_AMDGPU_IDS_MISSING_TEXT)
+    # Apex ROCm fused RoPE backend selection warning when Aiter is enabled.
+    warnings.filterwarnings(
+        "ignore",
+        message = r"^Aiter backend is selected for fused RoPE\.?",
+        category = UserWarning,
+        module = r"^apex\.transformer\.functional\.fused_rope$",
+    )
 
 
 # Fix up AttributeError: 'MessageFactory' object has no attribute 'GetPrototype'
