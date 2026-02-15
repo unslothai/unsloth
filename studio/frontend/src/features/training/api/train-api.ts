@@ -41,9 +41,20 @@ export async function startTraining(
   return parseJson<TrainingStartResponse>(response);
 }
 
-export async function stopTraining(): Promise<TrainingStopResponse> {
-  const response = await authFetch("/api/train/stop", { method: "POST" });
+export async function stopTraining(save = true): Promise<TrainingStopResponse> {
+  const response = await authFetch("/api/train/stop", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ save }),
+  });
   return parseJson<TrainingStopResponse>(response);
+}
+
+export async function resetTraining(): Promise<void> {
+  const response = await authFetch("/api/train/reset", { method: "POST" });
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
 }
 
 export async function getTrainingStatus(): Promise<TrainingStatusResponse> {

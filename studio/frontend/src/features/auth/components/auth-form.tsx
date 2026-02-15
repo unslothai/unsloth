@@ -63,7 +63,18 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
         const response = await fetch("/api/auth/status");
         if (!response.ok) throw new Error("Failed to load auth status.");
         const result = (await response.json()) as AuthStatusResponse;
-        if (!canceled) setInitialized(result.initialized);
+        if (!canceled) {
+          setInitialized(result.initialized);
+          // Auto-redirect to the correct page based on init state
+          if (mode === "login" && result.initialized === false) {
+            navigate({ to: "/signup" });
+            return;
+          }
+          if (mode === "signup" && result.initialized === true) {
+            navigate({ to: "/login" });
+            return;
+          }
+        }
       } catch (err: unknown) {
         if (!canceled) {
           setError(err instanceof Error ? err.message : "Failed to load.");
@@ -199,6 +210,9 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
               )}
             </Button>
           </div>
+          {!isLoginMode && (
+            <p className="text-xs text-muted-foreground">Must be at least 8 characters</p>
+          )}
         </div>
 
         {!isLoginMode && (
@@ -223,7 +237,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
         <Button
           type="submit"
           className="w-full"
-          disabled={loading || statusLoading || blockedByState}
+          disabled={loading || statusLoading || blockedByState || (!isLoginMode && password.length < 8)}
         >
           {loading ? "Please wait..." : submitLabel}
         </Button>

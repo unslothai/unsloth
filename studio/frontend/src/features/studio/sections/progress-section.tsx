@@ -1,4 +1,14 @@
 import { SectionCard } from "@/components/section-card";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import {
   Popover,
@@ -104,6 +114,7 @@ export function ProgressSection(): ReactElement {
   );
 
   const { stopTrainingRun } = useTrainingActions();
+  const [stopDialogOpen, setStopDialogOpen] = useState(false);
   const localStartAtRef = useRef<number | null>(null);
   const [, setLocalTick] = useState(0);
 
@@ -225,15 +236,39 @@ export function ProgressSection(): ReactElement {
               </div>
             </PopoverContent>
           </Popover>
-          <Button
-            variant="destructive"
-            size="sm"
-            className="h-7 cursor-pointer px-3 text-xs"
-            onClick={() => void stopTrainingRun()}
-            disabled={!runtime.isTrainingRunning}
-          >
-            <HugeiconsIcon icon={StopIcon} className="size-3" /> Stop
-          </Button>
+          <AlertDialog open={stopDialogOpen} onOpenChange={setStopDialogOpen}>
+            <Button
+              variant="destructive"
+              size="sm"
+              className="h-7 cursor-pointer px-3 text-xs"
+              onClick={() => setStopDialogOpen(true)}
+              disabled={!runtime.isTrainingRunning}
+            >
+              <HugeiconsIcon icon={StopIcon} className="size-3" /> Stop
+            </Button>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Stop Training</AlertDialogTitle>
+                <AlertDialogDescription>
+                  Choose how you want to stop the current training run.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Continue Training</AlertDialogCancel>
+                <AlertDialogAction
+                  variant="destructive"
+                  onClick={() => void stopTrainingRun(false)}
+                >
+                  Cancel Training
+                </AlertDialogAction>
+                <AlertDialogAction
+                  onClick={() => void stopTrainingRun(true)}
+                >
+                  Stop and Save
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         </div>
       }
     >
