@@ -287,10 +287,19 @@ function ThreadHistoryProvider({
         if (!remoteId) {
           return { messages: [] };
         }
-        const msgs = await db.messages
-          .where("threadId")
-          .equals(remoteId)
-          .sortBy("createdAt");
+        const roleOrder: Record<string, number> = {
+          system: 0,
+          user: 1,
+          assistant: 2,
+        };
+        const msgs = await db.messages.where("threadId").equals(remoteId).toArray();
+        msgs.sort((a, b) => {
+          if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
+          const aOrder = roleOrder[a.role] ?? 99;
+          const bOrder = roleOrder[b.role] ?? 99;
+          if (aOrder !== bOrder) return aOrder - bOrder;
+          return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+        });
 
         return ExportedMessageRepository.fromArray(msgs.map(toThreadMessage));
       },
@@ -301,13 +310,18 @@ function ThreadHistoryProvider({
           ? JSON.parse(JSON.stringify(message.content))
           : [];
         const custom = message.metadata?.custom;
+        const existing = await db.messages.get(message.id);
+        const createdAt =
+          existing?.createdAt ??
+          message.createdAt?.getTime?.() ??
+          Date.now();
         await db.messages.put({
           id: message.id,
           threadId: remoteId,
           role: message.role,
           content,
           ...(custom && Object.keys(custom).length > 0 && { metadata: custom }),
-          createdAt: message.createdAt?.getTime() ?? Date.now(),
+          createdAt,
         });
       },
     }),
