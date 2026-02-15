@@ -28,7 +28,10 @@ import {
   useInfiniteScroll,
 } from "@/hooks";
 import { formatCompact } from "@/lib/utils";
-import { useTrainingConfigStore } from "@/features/training";
+import {
+  HfDatasetSubsetSplitSelectors,
+  useTrainingConfigStore,
+} from "@/features/training";
 import {
   CloudUploadIcon,
   Database02Icon,
@@ -42,25 +45,40 @@ import { useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { DatasetPreviewDialog } from "./dataset-preview-dialog";
 
+function isLikelyLocalDatasetRef(value: string) {
+  return (
+    value.startsWith("/") ||
+    value.startsWith("./") ||
+    value.startsWith("../") ||
+    value.includes("\\") ||
+    /\.(jsonl|json|csv|parquet)$/i.test(value)
+  );
+}
+
 export function DatasetSection() {
-  const { dataset, setDataset, datasetFormat, setDatasetFormat, hfToken } =
-    useTrainingConfigStore(
-      useShallow(
-        ({
-          dataset,
-          setDataset,
-          datasetFormat,
-          setDatasetFormat,
-          hfToken,
-        }) => ({
-          dataset,
-          setDataset,
-          datasetFormat,
-          setDatasetFormat,
-          hfToken,
-        }),
-      ),
-    );
+  const {
+    dataset,
+    setDataset,
+    datasetFormat,
+    setDatasetFormat,
+    datasetSubset,
+    setDatasetSubset,
+    datasetSplit,
+    setDatasetSplit,
+    hfToken,
+  } = useTrainingConfigStore(
+    useShallow((s) => ({
+      dataset: s.dataset,
+      setDataset: s.setDataset,
+      datasetFormat: s.datasetFormat,
+      setDatasetFormat: s.setDatasetFormat,
+      datasetSubset: s.datasetSubset,
+      setDatasetSubset: s.setDatasetSubset,
+      datasetSplit: s.datasetSplit,
+      setDatasetSplit: s.setDatasetSplit,
+      hfToken: s.hfToken,
+    })),
+  );
 
   const [inputValue, setInputValue] = useState("");
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -221,6 +239,17 @@ export function DatasetSection() {
           </div>
         </div>
 
+        <HfDatasetSubsetSplitSelectors
+          variant="studio"
+          enabled={!!dataset && !isLikelyLocalDatasetRef(dataset)}
+          datasetName={dataset}
+          accessToken={hfToken || undefined}
+          datasetSubset={datasetSubset}
+          setDatasetSubset={setDatasetSubset}
+          datasetSplit={datasetSplit}
+          setDatasetSplit={setDatasetSplit}
+        />
+
         <div className="flex flex-col gap-2">
           <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
             Target Format
@@ -280,6 +309,8 @@ export function DatasetSection() {
               </p>
               <p className="text-[10px] text-muted-foreground">
                 Hugging Face Dataset
+                {datasetSubset && ` / ${datasetSubset}`}
+                {datasetSplit && ` / ${datasetSplit}`}
               </p>
             </div>
           </div>
@@ -321,6 +352,8 @@ export function DatasetSection() {
         onOpenChange={setPreviewOpen}
         datasetName={dataset}
         hfToken={hfToken}
+        datasetSubset={datasetSubset}
+        datasetSplit={datasetSplit}
       />
     </SectionCard>
   );

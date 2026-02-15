@@ -38,7 +38,10 @@ import {
   useInfiniteScroll,
 } from "@/hooks";
 import { cn, formatCompact } from "@/lib/utils";
-import { useTrainingConfigStore } from "@/features/training";
+import {
+  HfDatasetSubsetSplitSelectors,
+  useTrainingConfigStore,
+} from "@/features/training";
 import type { DatasetFormat } from "@/types/training";
 import {
   InformationCircleIcon,
@@ -67,6 +70,10 @@ export function DatasetStep() {
     setDatasetFormat,
     dataset,
     setDataset,
+    datasetSubset,
+    setDatasetSubset,
+    datasetSplit,
+    setDatasetSplit,
     uploadedFile,
     setUploadedFile,
   } = useTrainingConfigStore(
@@ -79,6 +86,10 @@ export function DatasetStep() {
       setDatasetFormat: s.setDatasetFormat,
       dataset: s.dataset,
       setDataset: s.setDataset,
+      datasetSubset: s.datasetSubset,
+      setDatasetSubset: s.setDatasetSubset,
+      datasetSplit: s.datasetSplit,
+      setDatasetSplit: s.setDatasetSplit,
       uploadedFile: s.uploadedFile,
       setUploadedFile: s.setUploadedFile,
     })),
@@ -261,6 +272,17 @@ export function DatasetStep() {
               </Combobox>
             </div>
           </Field>
+
+          <HfDatasetSubsetSplitSelectors
+            variant="wizard"
+            enabled={datasetSource === "huggingface"}
+            datasetName={dataset}
+            accessToken={hfToken || undefined}
+            datasetSubset={datasetSubset}
+            setDatasetSubset={setDatasetSubset}
+            datasetSplit={datasetSplit}
+            setDatasetSplit={setDatasetSplit}
+          />
         </>
       ) : (
         <>

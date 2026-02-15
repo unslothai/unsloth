@@ -16,6 +16,8 @@ const initialState: TrainingConfigState = {
   datasetSource: "huggingface",
   datasetFormat: "auto",
   dataset: null,
+  datasetSubset: null,
+  datasetSplit: null,
   uploadedFile: null,
   ...DEFAULT_HYPERPARAMS,
 };
@@ -55,7 +57,11 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
       setHfToken: (hfToken) => set({ hfToken }),
       setDatasetSource: (datasetSource) => set({ datasetSource }),
       setDatasetFormat: (datasetFormat) => set({ datasetFormat }),
-      setDataset: (dataset) => set({ dataset }),
+      setDataset: (dataset) =>
+        set({ dataset, datasetSubset: null, datasetSplit: null }),
+      setDatasetSubset: (datasetSubset) =>
+        set({ datasetSubset, datasetSplit: null }),
+      setDatasetSplit: (datasetSplit) => set({ datasetSplit }),
       setUploadedFile: (uploadedFile) => set({ uploadedFile }),
       setEpochs: (epochs) => set({ epochs }),
       setContextLength: (contextLength) => set({ contextLength }),
@@ -96,6 +102,16 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
     }),
     {
       name: "unsloth_training_config_v1",
+      version: 2,
+      migrate: (persisted, version) => {
+        const s = persisted as Record<string, unknown>;
+        if (version >= 2) return s as unknown as TrainingConfigStore;
+        if (s.datasetSubset == null && s.datasetConfig != null) {
+          s.datasetSubset = s.datasetConfig;
+        }
+        delete s.datasetConfig;
+        return s as unknown as TrainingConfigStore;
+      },
       partialize: (state) => {
         const { modelType, ...rest } = state;
         return rest;
