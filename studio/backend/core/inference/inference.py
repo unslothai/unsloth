@@ -489,6 +489,7 @@ class InferenceBackend:
     def generate_with_adapter_control(
         self,
         use_adapter: Optional[Union[bool, str]] = None,
+        cancel_event=None,
         **gen_kwargs,
     ) -> Generator[str, None, None]:
         """
@@ -505,7 +506,7 @@ class InferenceBackend:
         with self._generation_lock:
             self._apply_adapter_state(use_adapter)
             # Delegate to the lock-free generation path
-            yield from self._generate_chat_response_inner(**gen_kwargs)
+            yield from self._generate_chat_response_inner(cancel_event=cancel_event, **gen_kwargs)
 
     def generate_chat_response(self,
                           messages: list,
@@ -515,7 +516,8 @@ class InferenceBackend:
                           top_p: float = 0.9,
                           top_k: int = 40,
                           max_new_tokens: int = 256,
-                          repetition_penalty: float = 1.1) -> Generator[str, None, None]:
+                          repetition_penalty: float = 1.1,
+                          cancel_event=None) -> Generator[str, None, None]:
         """
         Generate response for text or vision models.
         Acquires the generation lock. For adapter-controlled generation,
@@ -531,6 +533,7 @@ class InferenceBackend:
                 top_k=top_k,
                 max_new_tokens=max_new_tokens,
                 repetition_penalty=repetition_penalty,
+                cancel_event=cancel_event,
             )
 
     def _generate_chat_response_inner(self,
@@ -541,7 +544,8 @@ class InferenceBackend:
                           top_p: float = 0.9,
                           top_k: int = 40,
                           max_new_tokens: int = 256,
-                          repetition_penalty: float = 1.1) -> Generator[str, None, None]:
+                          repetition_penalty: float = 1.1,
+                          cancel_event=None) -> Generator[str, None, None]:
         """
         Inner generation logic (no lock). Called by both generate_chat_response
         and generate_with_adapter_control.
@@ -558,7 +562,8 @@ class InferenceBackend:
             # Vision model generation
             yield from self._generate_vision_response(
                 messages, system_prompt, image,
-                temperature, top_p, top_k, max_new_tokens, repetition_penalty
+                temperature, top_p, top_k, max_new_tokens, repetition_penalty,
+                cancel_event=cancel_event,
             )
         else:
             # Text model: Use training pipeline approach
@@ -600,12 +605,13 @@ class InferenceBackend:
 
             # Step 3: Generate
             yield from self.generate_stream(
-                formatted_prompt, temperature, top_p, top_k, max_new_tokens, repetition_penalty
+                formatted_prompt, temperature, top_p, top_k, max_new_tokens, repetition_penalty,
+                cancel_event=cancel_event,
             )
 
     def _generate_vision_response(self, messages, system_prompt, image,
                                   temperature, top_p, top_k, max_new_tokens,
-                                  repetition_penalty) -> Generator[str, None, None]:
+                                  repetition_penalty, cancel_event=None) -> Generator[str, None, None]:
         """Handle vision model generation with true token-by-token streaming."""
         model_info = self.models[self.active_model_name]
         model = model_info["model"]
@@ -651,7 +657,10 @@ class InferenceBackend:
             import threading
 
             streamer = TextIteratorStreamer(
-                processor.tokenizer, skip_prompt=True, skip_special_tokens=True
+                processor.tokenizer,
+                skip_prompt=True,
+                skip_special_tokens=True,
+                timeout=0.2,
             )
 
             generation_kwargs = dict(
@@ -664,23 +673,50 @@ class InferenceBackend:
                 top_k=top_k,
             )
 
+            err: dict[str, str] = {}
+
             def generate_fn():
                 try:
                     model.generate(**generation_kwargs)
                 except Exception as e:
+                    err["msg"] = str(e)
                     logger.error(f"Vision generation error in thread: {e}")
+                finally:
+                    try:
+                        streamer.end()
+                    except Exception:
+                        pass
 
             thread = threading.Thread(target=generate_fn)
             thread.start()
 
             output = ""
-            for new_token in streamer:
-                if new_token:
-                    output += new_token
-                    cleaned = self._clean_generated_text(output)
-                    yield cleaned
+            from queue import Empty
+            try:
+                while True:
+                    if cancel_event is not None and cancel_event.is_set():
+                        break
+                    try:
+                        new_token = next(streamer)
+                    except StopIteration:
+                        break
+                    except Empty:
+                        if not thread.is_alive():
+                            break
+                        continue
+                    if new_token:
+                        output += new_token
+                        cleaned = self._clean_generated_text(output)
+                        yield cleaned
+            finally:
+                if cancel_event is not None:
+                    cancel_event.set()
+                thread.join(timeout=10)
+                if thread.is_alive():
+                    logger.warning("Vision generation thread did not exit after cancel/join timeout")
 
-            thread.join()
+            if err.get("msg"):
+                yield f"Error: {err['msg']}"
 
         except Exception as e:
             logger.error(f"Vision generation error: {e}")
@@ -693,7 +729,8 @@ class InferenceBackend:
                        top_p: float = 0.9,
                        top_k: int = 40,
                        max_new_tokens: int = 256,
-                       repetition_penalty: float = 1.1) -> Generator[str, None, None]:
+                       repetition_penalty: float = 1.1,
+                       cancel_event=None) -> Generator[str, None, None]:
         """Generate streaming text response (text models only)."""
         if not self.active_model_name:
             yield "Error: No active model"
@@ -709,7 +746,12 @@ class InferenceBackend:
             from transformers import TextIteratorStreamer
             import threading
 
-            streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
+            streamer = TextIteratorStreamer(
+                tokenizer,
+                skip_prompt=True,
+                skip_special_tokens=True,
+                timeout=0.2,
+            )
 
             generation_kwargs = dict(
                 **inputs,
@@ -723,24 +765,66 @@ class InferenceBackend:
                 eos_token_id=tokenizer.eos_token_id,
                 pad_token_id=tokenizer.eos_token_id if tokenizer.pad_token_id is None else tokenizer.pad_token_id,
             )
+            if cancel_event is not None:
+                from transformers.generation.stopping_criteria import (
+                    StoppingCriteria,
+                    StoppingCriteriaList,
+                )
+
+                class _CancelCriteria(StoppingCriteria):
+                    def __init__(self, ev):
+                        self.ev = ev
+
+                    def __call__(self, input_ids, scores, **kwargs):
+                        return self.ev.is_set()
+
+                generation_kwargs["stopping_criteria"] = StoppingCriteriaList(
+                    [_CancelCriteria(cancel_event)]
+                )
 
             def generate_fn():
                 try:
                     model.generate(**generation_kwargs)
                 except Exception as e:
+                    err["msg"] = str(e)
                     logger.error(f"Generation error: {e}")
+                finally:
+                    try:
+                        streamer.end()
+                    except Exception:
+                        pass
 
+            err: dict[str, str] = {}
             thread = threading.Thread(target=generate_fn)
             thread.start()
 
             output = ""
-            for new_token in streamer:
-                if new_token:
-                    output += new_token
-                    cleaned = self._clean_generated_text(output)
-                    yield cleaned
+            from queue import Empty
+            try:
+                while True:
+                    if cancel_event is not None and cancel_event.is_set():
+                        break
+                    try:
+                        new_token = next(streamer)
+                    except StopIteration:
+                        break
+                    except Empty:
+                        if not thread.is_alive():
+                            break
+                        continue
+                    if new_token:
+                        output += new_token
+                        cleaned = self._clean_generated_text(output)
+                        yield cleaned
+            finally:
+                if cancel_event is not None:
+                    cancel_event.set()
+                thread.join(timeout=10)
+                if thread.is_alive():
+                    logger.warning("Generation thread did not exit after cancel/join timeout")
 
-            thread.join()
+            if err.get("msg"):
+                yield f"Error: {err['msg']}"
 
         except Exception as e:
             logger.error(f"Error during generation: {e}")

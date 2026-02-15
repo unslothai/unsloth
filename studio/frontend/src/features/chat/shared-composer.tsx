@@ -52,7 +52,9 @@ export function RegisterCompareHandle({
     }
     const currentHandles = handlesRef.current;
     currentHandles[name] = {
-      append: (content) => aui.thread().append({ role: "user", content }),
+      // fixes occasional reorder on reload.
+      append: (content) =>
+        aui.thread().append({ role: "user", content, createdAt: new Date() } as never),
       cancel: () => aui.thread().cancelRun(),
       isRunning: () => aui.thread().getState().isRunning,
     };
