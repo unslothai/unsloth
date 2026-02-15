@@ -1,5 +1,4 @@
 import { Button } from "@/components/ui/button";
-import { ShineBorder } from "@/components/ui/shine-border";
 import { cn } from "@/lib/utils";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -174,6 +173,8 @@ export function GuidedTour({
   });
   const cardRef = useRef<HTMLDivElement>(null);
   const closeLockRef = useRef(false);
+  const rafRef = useRef<number | null>(null);
+  const lastRectRef = useRef<Rect | null>(null);
 
   const step = steps[idx] ?? null;
   const total = steps.length;
@@ -181,8 +182,9 @@ export function GuidedTour({
 
   const spotlightRect = useMemo(() => {
     if (!targetRect || !vw || !vh) return null;
-    return padded(targetRect, 14, vw, vh);
-  }, [targetRect, vw, vh]);
+    const pad = step?.target === "navbar" ? 8 : 14;
+    return padded(targetRect, pad, vw, vh);
+  }, [step?.target, targetRect, vw, vh]);
 
   useEffect(() => {
     if (!open) return;
@@ -215,23 +217,45 @@ export function GuidedTour({
 
     let raf = 0;
     let t = 0;
-    const update = () => {
+    const read = () => {
       const r = el.getBoundingClientRect();
-      setTargetRect(toRect(r));
+      const next = toRect(r);
+      const prev = lastRectRef.current;
+      if (
+        !prev ||
+        Math.abs(prev.x - next.x) > 0.5 ||
+        Math.abs(prev.y - next.y) > 0.5 ||
+        Math.abs(prev.w - next.w) > 0.5 ||
+        Math.abs(prev.h - next.h) > 0.5
+      ) {
+        lastRectRef.current = next;
+        setTargetRect(next);
+      }
+    };
+    const schedule = () => {
+      if (rafRef.current != null) return;
+      rafRef.current = window.requestAnimationFrame(() => {
+        rafRef.current = null;
+        read();
+      });
     };
 
-    raf = window.requestAnimationFrame(update);
-    t = window.setTimeout(update, 240);
+    raf = window.requestAnimationFrame(read);
+    t = window.setTimeout(schedule, 240);
 
-    const ro = new ResizeObserver(() => update());
+    const ro = new ResizeObserver(() => schedule());
     ro.observe(el);
-    window.addEventListener("scroll", update, { capture: true, passive: true });
+    window.addEventListener("scroll", schedule, { capture: true, passive: true });
 
     return () => {
       window.cancelAnimationFrame(raf);
       window.clearTimeout(t);
       ro.disconnect();
-      window.removeEventListener("scroll", update, true);
+      window.removeEventListener("scroll", schedule, true);
+      if (rafRef.current != null) {
+        window.cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
     };
   }, [open, step]);
 
@@ -321,15 +345,6 @@ export function GuidedTour({
                     fontFamily: "'Figtree Variable', ui-sans-serif, sans-serif",
                   }}
                 >
-                  <ShineBorder
-                    borderWidth={1}
-                    duration={12}
-                    shineColor={[
-                      "rgba(16,185,129,0.65)",
-                      "rgba(34,211,238,0.65)",
-                      "rgba(16,185,129,0.35)",
-                    ]}
-                  />
                   <div
                     className={cn(
                       "absolute z-10 size-3 rotate-45 rounded-[3px] bg-white/95 ring-1 ring-black/10",
