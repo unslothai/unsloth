@@ -34,6 +34,7 @@ const initialState: TrainingRuntimeState = {
   lossHistory: [],
   lrHistory: [],
   gradNormHistory: [],
+  resetGeneration: 0,
 };
 
 function sortSeries(points: TrainingSeriesPoint[]): TrainingSeriesPoint[] {
@@ -95,12 +96,13 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
   setLastEventId: (value) => set({ lastEventId: value }),
 
   resetRuntime: () =>
-    set({
+    set((state) => ({
       ...initialState,
       lossHistory: [],
       lrHistory: [],
       gradNormHistory: [],
-    }),
+      resetGeneration: state.resetGeneration + 1,
+    })),
 
   setStartQueued: (jobId, message) =>
     set({

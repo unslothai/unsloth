@@ -1,7 +1,7 @@
 import { useCallback } from "react";
 import { useTrainingConfigStore } from "../stores/training-config-store";
 import { useTrainingRuntimeStore } from "../stores/training-runtime-store";
-import { startTraining, stopTraining } from "../api/train-api";
+import { startTraining, stopTraining, resetTraining } from "../api/train-api";
 import { buildTrainingStartPayload } from "../api/mappers";
 import { syncTrainingRuntimeFromBackend } from "../lib/sync-runtime";
 import { validateTrainingConfig } from "../lib/validation";
@@ -45,12 +45,12 @@ export function useTrainingActions() {
     }
   }, []);
 
-  const stopTrainingRun = useCallback(async (): Promise<boolean> => {
+  const stopTrainingRun = useCallback(async (save = true): Promise<boolean> => {
     const runtimeStore = useTrainingRuntimeStore.getState();
     runtimeStore.setStartError(null);
 
     try {
-      await stopTraining();
+      await stopTraining(save);
       await syncTrainingRuntimeFromBackend();
       return true;
     } catch (error) {
@@ -61,10 +61,20 @@ export function useTrainingActions() {
     }
   }, []);
 
+  const dismissTrainingRun = useCallback(async (): Promise<void> => {
+    useTrainingRuntimeStore.getState().resetRuntime();
+    try {
+      await resetTraining();
+    } catch {
+      // Frontend already reset; backend will catch up on next poll
+    }
+  }, []);
+
   return {
     isStarting,
     startError,
     startTrainingRun,
     stopTrainingRun,
+    dismissTrainingRun,
   };
 }
