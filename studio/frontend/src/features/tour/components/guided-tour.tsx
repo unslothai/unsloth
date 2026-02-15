@@ -10,7 +10,6 @@ import {
 import { Dialog as DialogPrimitive } from "radix-ui";
 import { AnimatePresence, motion } from "motion/react";
 import {
-  type ReactNode,
   useEffect,
   useId,
   useLayoutEffect,
@@ -18,91 +17,11 @@ import {
   useRef,
   useState,
 } from "react";
+import { cssEscape, toRect } from "../lib/dom";
+import { computeCardPos, padded, pickPlacement } from "../lib/layout";
+import type { Placement, Rect, TourStep } from "../types";
 
-export type TourStep = {
-  id: string;
-  target: string; // data-tour="<target>"
-  title: string;
-  body: ReactNode;
-};
-
-type Rect = { x: number; y: number; w: number; h: number };
-type Placement = "right" | "left" | "top" | "bottom";
-
-function clamp(n: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, n));
-}
-
-function cssEscape(value: string): string {
-  if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
-    return CSS.escape(value);
-  }
-  return value.replace(/"/g, '\\"');
-}
-
-function toRect(domRect: DOMRect): Rect {
-  return { x: domRect.left, y: domRect.top, w: domRect.width, h: domRect.height };
-}
-
-function padded(r: Rect, pad: number, vw: number, vh: number): Rect {
-  const x = clamp(r.x - pad, 8, vw - 8);
-  const y = clamp(r.y - pad, 8, vh - 8);
-  const w = clamp(r.w + pad * 2, 24, vw - x - 8);
-  const h = clamp(r.h + pad * 2, 24, vh - y - 8);
-  return { x, y, w, h };
-}
-
-function pickPlacement(
-  target: Rect,
-  card: { w: number; h: number },
-  vw: number,
-  vh: number,
-  gap: number,
-): Placement {
-  const canRight = target.x + target.w + gap + card.w <= vw - 12;
-  const canLeft = target.x - gap - card.w >= 12;
-  const canBottom = target.y + target.h + gap + card.h <= vh - 12;
-  const canTop = target.y - gap - card.h >= 12;
-
-  if (canRight) return "right";
-  if (canLeft) return "left";
-  if (canBottom) return "bottom";
-  if (canTop) return "top";
-  return "bottom";
-}
-
-function computeCardPos(
-  placement: Placement,
-  target: Rect,
-  card: { w: number; h: number },
-  vw: number,
-  vh: number,
-  gap: number,
-): { left: number; top: number } {
-  let left = 12;
-  let top = 12;
-
-  if (placement === "right") {
-    left = target.x + target.w + gap;
-    top = target.y + target.h / 2 - card.h / 2;
-  }
-  if (placement === "left") {
-    left = target.x - gap - card.w;
-    top = target.y + target.h / 2 - card.h / 2;
-  }
-  if (placement === "bottom") {
-    left = target.x + target.w / 2 - card.w / 2;
-    top = target.y + target.h + gap;
-  }
-  if (placement === "top") {
-    left = target.x + target.w / 2 - card.w / 2;
-    top = target.y - gap - card.h;
-  }
-
-  left = clamp(left, 12, vw - card.w - 12);
-  top = clamp(top, 12, vh - card.h - 12);
-  return { left, top };
-}
+// (types + layout/dom helpers live in ../types and ../lib)
 
 function SpotlightOverlay({
   rect,
@@ -190,7 +109,7 @@ export function GuidedTour({
 
   const spotlightRect = useMemo(() => {
     if (!targetRect || !vw || !vh) return null;
-    const pad = step?.target === "navbar" ? 6 : 14;
+    const pad = step?.target === "navbar" ? 4 : 14;
     return padded(targetRect, pad, vw, vh);
   }, [step?.target, targetRect, vw, vh]);
 
@@ -215,38 +134,49 @@ export function GuidedTour({
     if (!open || !step) return;
 
     const sel = `[data-tour="${cssEscape(step.target)}"]`;
-    const el = document.querySelector(sel) as HTMLElement | null;
-    if (!el) {
+    const found = document.querySelector(sel);
+    if (!(found instanceof HTMLElement)) {
       setTargetRect(null);
       return;
     }
+    const el = found;
 
-    el.scrollIntoView({ block: "center", inline: "center", behavior: "smooth" });
+    el.scrollIntoView({
+      block: "center",
+      inline: "center",
+      behavior: "smooth",
+    });
 
     let raf = 0;
     let t = 0;
-    const read = () => {
+
+    function rectChanged(a: Rect | null, b: Rect): boolean {
+      if (!a) return true;
+      return (
+        Math.abs(a.x - b.x) > 0.5 ||
+        Math.abs(a.y - b.y) > 0.5 ||
+        Math.abs(a.w - b.w) > 0.5 ||
+        Math.abs(a.h - b.h) > 0.5
+      );
+    }
+
+    function read() {
       const r = el.getBoundingClientRect();
       const next = toRect(r);
       const prev = lastRectRef.current;
-      if (
-        !prev ||
-        Math.abs(prev.x - next.x) > 0.5 ||
-        Math.abs(prev.y - next.y) > 0.5 ||
-        Math.abs(prev.w - next.w) > 0.5 ||
-        Math.abs(prev.h - next.h) > 0.5
-      ) {
+      if (rectChanged(prev, next)) {
         lastRectRef.current = next;
         setTargetRect(next);
       }
-    };
-    const schedule = () => {
+    }
+
+    function schedule() {
       if (rafRef.current != null) return;
       rafRef.current = window.requestAnimationFrame(() => {
         rafRef.current = null;
         read();
       });
-    };
+    }
 
     raf = window.requestAnimationFrame(read);
     t = window.setTimeout(schedule, 240);
