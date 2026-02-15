@@ -23,17 +23,19 @@ import type { Placement, Rect, TourStep } from "../types";
 
 // (types + layout/dom helpers live in ../types and ../lib)
 
+type SpotlightOverlayProps = {
+  rect: Rect | null;
+  vw: number;
+  vh: number;
+  maskId: string;
+};
+
 function SpotlightOverlay({
   rect,
   vw,
   vh,
   maskId,
-}: {
-  rect: Rect | null;
-  vw: number;
-  vh: number;
-  maskId: string;
-}) {
+}: SpotlightOverlayProps) {
   const hole = rect ?? { x: vw / 2 - 140, y: vh / 2 - 90, w: 280, h: 180 };
   const r = 22;
 
@@ -75,19 +77,21 @@ function SpotlightOverlay({
   );
 }
 
+type GuidedTourProps = {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  steps: TourStep[];
+  onSkip: () => void;
+  onComplete: () => void;
+};
+
 export function GuidedTour({
   open,
   onOpenChange,
   steps,
   onSkip,
   onComplete,
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  steps: TourStep[];
-  onSkip: () => void;
-  onComplete: () => void;
-}) {
+}: GuidedTourProps) {
   const maskId = `${useId()}-tour-mask`;
   const [idx, setIdx] = useState(0);
   const [vw, setVw] = useState(0);
@@ -116,7 +120,9 @@ export function GuidedTour({
   useEffect(() => {
     if (!open) return;
     setIdx(0);
+    setTargetRect(null);
     closeLockRef.current = false;
+    lastRectRef.current = null;
   }, [open]);
 
   useEffect(() => {
@@ -141,11 +147,13 @@ export function GuidedTour({
     }
     const el = found;
 
-    el.scrollIntoView({
-      block: "center",
-      inline: "center",
-      behavior: "smooth",
-    });
+    if (step.target !== "navbar") {
+      el.scrollIntoView({
+        block: "center",
+        inline: "center",
+        behavior: "smooth",
+      });
+    }
 
     let raf = 0;
     let t = 0;
@@ -207,7 +215,16 @@ export function GuidedTour({
     const gap = 14;
     const picked = pickPlacement(spotlightRect, { w: card.width, h: card.height }, vw, vh, gap);
     setPlacement(picked);
-    setCardPos(computeCardPos(picked, spotlightRect, { w: card.width, h: card.height }, vw, vh, gap));
+    setCardPos(
+      computeCardPos(
+        picked,
+        spotlightRect,
+        { w: card.width, h: card.height },
+        vw,
+        vh,
+        gap,
+      ),
+    );
   }, [open, spotlightRect, vw, vh, idx]);
 
   function requestClose(reason: "skip" | "complete") {
