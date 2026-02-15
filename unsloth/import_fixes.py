@@ -947,9 +947,13 @@ def patch_trunc_normal_precision_issue():
             return original_trunc_normal(
                 target, mean = mean, std = std, a = a, b = b, generator = generator
             )
-        except TypeError:
+        except TypeError as exc:
             # Older torch versions may not accept generator.
-            return original_trunc_normal(target, mean = mean, std = std, a = a, b = b)
+            if "generator" in str(exc):
+                return original_trunc_normal(
+                    target, mean = mean, std = std, a = a, b = b
+                )
+            raise
 
     try:
         from torch.distributed._tensor import DTensor
@@ -963,7 +967,6 @@ def patch_trunc_normal_precision_issue():
         std: float = 1.0,
         a: float = -2.0,
         b: float = 2.0,
-        *,
         generator = None,
     ):
         if DTensor is not None and isinstance(tensor, DTensor):
