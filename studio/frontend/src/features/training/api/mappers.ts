@@ -22,7 +22,7 @@ export function buildTrainingStartPayload(
     load_in_4bit: adapterMethod ? isQlorMethod : false,
     max_seq_length: config.contextLength,
     hf_dataset: hfDataset,
-    hf_dataset_config: hfDataset ? config.datasetConfig : null,
+    hf_dataset_config: hfDataset ? config.datasetSubset : null,
     hf_dataset_split: hfDataset ? config.datasetSplit : null,
     local_datasets: [],
     format_type: config.datasetFormat,

@@ -28,7 +28,10 @@ import {
   useInfiniteScroll,
 } from "@/hooks";
 import { formatCompact } from "@/lib/utils";
-import { HfDatasetConfigSplitSelectors, useTrainingConfigStore } from "@/features/training";
+import {
+  HfDatasetSubsetSplitSelectors,
+  useTrainingConfigStore,
+} from "@/features/training";
 import {
   CloudUploadIcon,
   Database02Icon,
@@ -58,8 +61,8 @@ export function DatasetSection() {
     setDataset,
     datasetFormat,
     setDatasetFormat,
-    datasetConfig,
-    setDatasetConfig,
+    datasetSubset,
+    setDatasetSubset,
     datasetSplit,
     setDatasetSplit,
     hfToken,
@@ -69,8 +72,8 @@ export function DatasetSection() {
       setDataset: s.setDataset,
       datasetFormat: s.datasetFormat,
       setDatasetFormat: s.setDatasetFormat,
-      datasetConfig: s.datasetConfig,
-      setDatasetConfig: s.setDatasetConfig,
+      datasetSubset: s.datasetSubset,
+      setDatasetSubset: s.setDatasetSubset,
       datasetSplit: s.datasetSplit,
       setDatasetSplit: s.setDatasetSplit,
       hfToken: s.hfToken,
@@ -236,13 +239,13 @@ export function DatasetSection() {
           </div>
         </div>
 
-        <HfDatasetConfigSplitSelectors
+        <HfDatasetSubsetSplitSelectors
           variant="studio"
           enabled={!!dataset && !isLikelyLocalDatasetRef(dataset)}
           datasetName={dataset}
           accessToken={hfToken || undefined}
-          datasetConfig={datasetConfig}
-          setDatasetConfig={setDatasetConfig}
+          datasetSubset={datasetSubset}
+          setDatasetSubset={setDatasetSubset}
           datasetSplit={datasetSplit}
           setDatasetSplit={setDatasetSplit}
         />
@@ -306,7 +309,7 @@ export function DatasetSection() {
               </p>
               <p className="text-[10px] text-muted-foreground">
                 Hugging Face Dataset
-                {datasetConfig && ` / ${datasetConfig}`}
+                {datasetSubset && ` / ${datasetSubset}`}
                 {datasetSplit && ` / ${datasetSplit}`}
               </p>
             </div>
@@ -349,7 +352,7 @@ export function DatasetSection() {
         onOpenChange={setPreviewOpen}
         datasetName={dataset}
         hfToken={hfToken}
-        datasetConfig={datasetConfig}
+        datasetSubset={datasetSubset}
         datasetSplit={datasetSplit}
       />
     </SectionCard>

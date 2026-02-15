@@ -17,15 +17,15 @@ export interface HfSplitsResponse {
 }
 
 export interface HfDatasetSplitsResult {
-  /** All unique config (subset) names found in the dataset */
-  configs: string[];
-  /** All split names available for the currently selected config */
+  /** All unique subset names found in the dataset */
+  subsets: string[];
+  /** All split names available for the currently selected subset */
   splits: string[];
   /** Raw split entries from the API */
   entries: HfSplitEntry[];
-  /** Whether the dataset has more than one config */
-  hasMultipleConfigs: boolean;
-  /** Whether the selected config has more than one split */
+  /** Whether the dataset has more than one subset */
+  hasMultipleSubsets: boolean;
+  /** Whether the selected subset has more than one split */
   hasMultipleSplits: boolean;
   /** True while the request is in-flight */
   isLoading: boolean;
@@ -44,12 +44,12 @@ const HF_SPLITS_API = "https://datasets-server.huggingface.co/splits";
  * using the datasets-server API.
  *
  * @param datasetName - HF dataset id (e.g. "ibm/duorc"), or null to skip.
- * @param selectedConfig - Currently selected config, used to filter splits.
+ * @param selectedSubset - Currently selected subset, used to filter splits.
  * @param options.accessToken - Optional HF access token for gated datasets.
  */
 export function useHfDatasetSplits(
   datasetName: string | null,
-  selectedConfig: string | null,
+  selectedSubset: string | null,
   options?: { accessToken?: string },
 ): HfDatasetSplitsResult {
   const [entries, setEntries] = useState<HfSplitEntry[]>([]);
@@ -114,25 +114,25 @@ export function useHfDatasetSplits(
     return () => controller.abort();
   }, [datasetName, fetchSplits]);
 
-  // Derive unique configs
-  const configs = Array.from(new Set(entries.map((e) => e.config)));
+  // Derive unique subsets
+  const subsets = Array.from(new Set(entries.map((e) => e.config)));
 
-  // Derive splits for the active config.
-  // If dataset has >1 config and none is selected yet, return no splits so UI
-  // doesn't auto-pick/show a split before config is chosen.
-  const activeConfig =
-    selectedConfig ?? (configs.length === 1 ? configs[0] : null);
-  const filteredEntries = activeConfig
-    ? entries.filter((e) => e.config === activeConfig)
+  // Derive splits for the active subset.
+  // If dataset has >1 subset and none is selected yet, return no splits so UI
+  // doesn't auto-pick/show a split before subset is chosen.
+  const activeSubset =
+    selectedSubset ?? (subsets.length === 1 ? subsets[0] : null);
+  const filteredEntries = activeSubset
+    ? entries.filter((e) => e.config === activeSubset)
     : [];
   const splits = Array.from(new Set(filteredEntries.map((e) => e.split)));
 
   return {
-    configs,
+    subsets,
     splits,
     entries,
-    hasMultipleConfigs: configs.length > 1,
-    hasMultipleSplits: activeConfig ? splits.length > 1 : false,
+    hasMultipleSubsets: subsets.length > 1,
+    hasMultipleSplits: activeSubset ? splits.length > 1 : false,
     isLoading,
     error,
   };
