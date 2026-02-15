@@ -29,18 +29,22 @@ from .import_fixes import (
     fix_message_factory_issue,
     check_fbgemm_gpu_version,
     disable_broken_causal_conv1d,
+    configure_amdgpu_asic_id_table_path,
     _filter_rocm_amdgpu_ids_fd2_noise,
     torchvision_compatibility_check,
     fix_diffusers_warnings,
     fix_huggingface_hub,
 )
 
+# Configure libdrm ids table path early so ROCm can resolve AMD GPU names.
+configure_amdgpu_asic_id_table_path()
 disable_broken_causal_conv1d()
 fix_message_factory_issue()
 check_fbgemm_gpu_version()
 torchvision_compatibility_check()
 fix_diffusers_warnings()
 fix_huggingface_hub()
+del configure_amdgpu_asic_id_table_path
 del disable_broken_causal_conv1d
 del fix_message_factory_issue
 del check_fbgemm_gpu_version

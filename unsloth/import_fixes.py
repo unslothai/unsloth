@@ -1191,6 +1191,13 @@ _ROCM_PATH_HINTS = (
     Path("/dev/kfd"),
     Path("/sys/module/amdgpu"),
 )
+_AMDGPU_ASIC_ID_TABLE_PATH_ENV = "AMDGPU_ASIC_ID_TABLE_PATH"
+_AMDGPU_ASIC_ID_CANDIDATE_PATHS = (
+    Path("/usr/share/libdrm/amdgpu.ids"),
+    Path("/usr/local/share/libdrm/amdgpu.ids"),
+    Path("/opt/rocm/share/libdrm/amdgpu.ids"),
+    Path("/opt/amdgpu/share/libdrm/amdgpu.ids"),
+)
 
 
 def _log_rocm_detection(message):
@@ -1234,6 +1241,72 @@ def _is_rocm_torch_build() -> bool:
 
     _log_rocm_detection("Unsloth: ROCm detection did not match any known hints.")
     return False
+
+
+def _iter_amdgpu_asic_id_table_candidates():
+    # Try torch-adjacent ids table paths first without importing torch.
+    try:
+        torch_spec = importlib.util.find_spec("torch")
+    except Exception:
+        torch_spec = None
+
+    roots = []
+    if torch_spec is not None:
+        if torch_spec.origin:
+            roots.append(Path(torch_spec.origin).resolve().parent)
+        if torch_spec.submodule_search_locations:
+            for location in torch_spec.submodule_search_locations:
+                roots.append(Path(location).resolve())
+
+    seen = set()
+    for root in roots:
+        for candidate in (
+            root / "share" / "libdrm" / "amdgpu.ids",
+            root.parent / "share" / "libdrm" / "amdgpu.ids",
+            root.parent.parent / "share" / "libdrm" / "amdgpu.ids",
+        ):
+            candidate_str = str(candidate)
+            if candidate_str in seen:
+                continue
+            seen.add(candidate_str)
+            yield candidate
+
+    for candidate in _AMDGPU_ASIC_ID_CANDIDATE_PATHS:
+        candidate_str = str(candidate)
+        if candidate_str in seen:
+            continue
+        seen.add(candidate_str)
+        yield candidate
+
+
+def configure_amdgpu_asic_id_table_path():
+    # Honor an existing valid user-provided path.
+    configured = os.environ.get(_AMDGPU_ASIC_ID_TABLE_PATH_ENV, "").strip()
+    if configured:
+        configured_path = Path(configured)
+        try:
+            if configured_path.is_file():
+                return str(configured_path)
+        except Exception:
+            pass
+
+    # Only attempt this on ROCm-like environments.
+    if not _is_rocm_torch_build():
+        return None
+
+    for candidate in _iter_amdgpu_asic_id_table_candidates():
+        try:
+            if candidate.is_file():
+                os.environ[_AMDGPU_ASIC_ID_TABLE_PATH_ENV] = str(candidate)
+                if UNSLOTH_ENABLE_LOGGING:
+                    logger.info(
+                        f"Unsloth: Set {_AMDGPU_ASIC_ID_TABLE_PATH_ENV}={candidate}"
+                    )
+                return str(candidate)
+        except Exception:
+            continue
+
+    return None
 
 
 @contextlib.contextmanager
