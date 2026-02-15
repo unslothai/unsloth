@@ -132,7 +132,24 @@ def job_analysis(job_id: str):
 @router.get("/jobs/{job_id}/events")
 async def job_events(request: Request, job_id: str):
     mgr = get_job_manager()
-    sub = mgr.subscribe(job_id)
+    last_id = request.headers.get("last-event-id")
+    after_seq: int | None = None
+    if last_id:
+        try:
+            after_seq = int(str(last_id).strip())
+        except Exception:
+            after_seq = None
+
+    # EventSource can't set custom headers on first connect after a full page refresh,
+    # so allow resume via query param too: /events?after=<seq>
+    after_q = request.query_params.get("after")
+    if after_q:
+        try:
+            after_seq = int(str(after_q).strip())
+        except Exception:
+            pass
+
+    sub = mgr.subscribe(job_id, after_seq=after_seq)
     if sub is None:
         raise HTTPException(status_code=404, detail="job not found")
 
@@ -152,4 +169,3 @@ async def job_events(request: Request, job_id: str):
             mgr.unsubscribe(sub)
 
     return StreamingResponse(gen(), media_type="text/event-stream")
-

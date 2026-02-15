@@ -35,11 +35,14 @@ class Subscription:
 
     def format_sse(self, event: dict) -> bytes:
         """Turn event dict into SSE bytes (id/event/data)."""
-        self._next_id += 1
+        event_id = event.get("seq")
+        if event_id is None:
+            self._next_id += 1
+            event_id = self._next_id
         body = json.dumps(event, separators=(",", ":"), ensure_ascii=False)
         event_type = event.get("type") or "message"
         return (
-            f"id: {self._next_id}\n"
+            f"id: {event_id}\n"
             f"event: {event_type}\n"
             f"data: {body}\n\n"
         ).encode("utf-8")
@@ -55,6 +58,7 @@ class JobManager:
         self._events: deque[dict] = deque(maxlen=5000)
         self._subs: list[queue.Queue] = []
         self._pump_thread: threading.Thread | None = None
+        self._seq: int = 0
 
     def start(self, *, recipe: dict, run: dict) -> str:
         """Spawn the job subprocess (one at a time, no cap)."""
@@ -65,6 +69,7 @@ class JobManager:
             job_id = uuid.uuid4().hex
             self._job = Job(job_id=job_id, status="pending", started_at=time.time())
             self._events.clear()
+            self._seq = 0
 
             mp_q = _CTX.Queue()
             proc = _CTX.Process(
@@ -162,14 +167,18 @@ class JobManager:
                 return None
             return self._job.analysis
 
-    def subscribe(self, job_id: str) -> Subscription | None:
+    def subscribe(self, job_id: str, *, after_seq: int | None = None) -> Subscription | None:
         """SSE subscribe: get replay buffer + live events stream."""
         with self._lock:
             if self._job is None or self._job.job_id != job_id:
                 return None
             q: queue.Queue = queue.Queue(maxsize=2000)
             self._subs.append(q)
-            return Subscription(replay=list(self._events), _q=q)
+            if after_seq is None:
+                replay = list(self._events)
+            else:
+                replay = [e for e in self._events if int(e.get("seq") or 0) > after_seq]
+            return Subscription(replay=replay, _q=q)
 
     def unsubscribe(self, sub: Subscription) -> None:
         """Drop SSE subscriber (client disconnected)."""
@@ -178,6 +187,8 @@ class JobManager:
 
     def _emit(self, event: dict) -> None:
         """Broadcast event to replay buffer + all subscribers."""
+        self._seq += 1
+        event["seq"] = self._seq
         self._events.append(event)
         stale: list[queue.Queue] = []
         for q in self._subs:
@@ -290,4 +301,3 @@ def get_job_manager() -> JobManager:
     if _JOB_MANAGER is None:
         _JOB_MANAGER = JobManager()
     return _JOB_MANAGER
-
