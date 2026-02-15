@@ -9,23 +9,31 @@ import {
 } from "@hugeicons/core-free-icons";
 import { Dialog as DialogPrimitive } from "radix-ui";
 import { AnimatePresence, motion } from "motion/react";
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  type ReactNode,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 export type TourStep = {
   id: string;
   target: string; // data-tour="<target>"
   title: string;
-  body: string;
+  body: ReactNode;
 };
 
 type Rect = { x: number; y: number; w: number; h: number };
 type Placement = "right" | "left" | "top" | "bottom";
 
-function clamp(n: number, min: number, max: number) {
+function clamp(n: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, n));
 }
 
-function cssEscape(value: string) {
+function cssEscape(value: string): string {
   if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
     return CSS.escape(value);
   }
@@ -70,7 +78,7 @@ function computeCardPos(
   vw: number,
   vh: number,
   gap: number,
-) {
+): { left: number; top: number } {
   let left = 12;
   let top = 12;
 
@@ -182,7 +190,7 @@ export function GuidedTour({
 
   const spotlightRect = useMemo(() => {
     if (!targetRect || !vw || !vh) return null;
-    const pad = step?.target === "navbar" ? 8 : 14;
+    const pad = step?.target === "navbar" ? 6 : 14;
     return padded(targetRect, pad, vw, vh);
   }, [step?.target, targetRect, vw, vh]);
 
@@ -246,12 +254,14 @@ export function GuidedTour({
     const ro = new ResizeObserver(() => schedule());
     ro.observe(el);
     window.addEventListener("scroll", schedule, { capture: true, passive: true });
+    window.addEventListener("resize", schedule, { passive: true });
 
     return () => {
       window.cancelAnimationFrame(raf);
       window.clearTimeout(t);
       ro.disconnect();
       window.removeEventListener("scroll", schedule, true);
+      window.removeEventListener("resize", schedule);
       if (rafRef.current != null) {
         window.cancelAnimationFrame(rafRef.current);
         rafRef.current = null;
