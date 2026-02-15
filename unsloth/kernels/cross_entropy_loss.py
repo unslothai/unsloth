@@ -447,8 +447,8 @@ def fast_cross_entropy_loss(
     )
     if n_items is None:
         n_items = torch.count_nonzero(labels != -100)
-    loss = loss.to(device)
-    n_items = n_items.to(device)
+    if torch.is_tensor(n_items):
+        n_items = n_items.to(device)
     return loss.sum() / n_items
 
 
