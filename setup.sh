@@ -81,8 +81,25 @@ echo "✅ Frontend built to studio/frontend/dist"
 # ── 6. Python venv + deps ──
 echo ""
 echo "Setting up Python environment..."
+DESIRED_PY="${UNSLOTH_PYTHON:-3.12}"
+
+if [ -x "$SCRIPT_DIR/.venv/bin/python" ]; then
+    VENV_VER="$("$SCRIPT_DIR/.venv/bin/python" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || true)"
+    if ! "$SCRIPT_DIR/.venv/bin/python" -c 'import pip' >/dev/null 2>&1; then
+        VENV_VER="${VENV_VER:-unknown}"
+        mv "$SCRIPT_DIR/.venv" "$SCRIPT_DIR/.venv.bak-nopip-py${VENV_VER}-$(date +%Y%m%d%H%M%S)"
+    elif [ "$VENV_VER" != "$DESIRED_PY" ]; then
+        mv "$SCRIPT_DIR/.venv" "$SCRIPT_DIR/.venv.bak-py${VENV_VER:-unknown}-$(date +%Y%m%d%H%M%S)"
+    fi
+fi
+
 if [ ! -d "$SCRIPT_DIR/.venv" ]; then
-    python3 -m venv "$SCRIPT_DIR/.venv"
+    if command -v uv >/dev/null 2>&1; then
+        run_quiet "uv python install" uv python install "$DESIRED_PY"
+        run_quiet "uv venv" uv venv --seed -p "$DESIRED_PY" "$SCRIPT_DIR/.venv"
+    else
+        python3 -m venv "$SCRIPT_DIR/.venv"
+    fi
 fi
 
 # Avoid shell-specific activation; call venv python directly.
