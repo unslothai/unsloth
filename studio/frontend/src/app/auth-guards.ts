@@ -12,9 +12,21 @@ async function hasActiveSession(): Promise<boolean> {
   return refreshSession();
 }
 
+async function checkAuthInitialized(): Promise<boolean> {
+  try {
+    const res = await fetch("/api/auth/status");
+    if (!res.ok) return true; // fallback to login on error
+    const data = (await res.json()) as { initialized: boolean };
+    return data.initialized;
+  } catch {
+    return true; // fallback to login on error
+  }
+}
+
 export async function requireAuth(): Promise<void> {
   if (await hasActiveSession()) return;
-  throw redirect({ to: "/login" });
+  const initialized = await checkAuthInitialized();
+  throw redirect({ to: initialized ? "/login" : "/signup" });
 }
 
 export async function requireGuest(): Promise<void> {
