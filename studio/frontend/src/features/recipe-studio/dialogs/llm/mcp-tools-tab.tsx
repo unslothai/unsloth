@@ -6,14 +6,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { listRecipeTools } from "../../api";
 import type {
   LlmConfig,
   LlmMcpProviderConfig,
   LlmToolConfig,
   McpEnvVar,
 } from "../../types";
-import { toastError, toastSuccess } from "@/shared/toast";
+import { toastError } from "@/shared/toast";
 import { McpProvidersSection } from "./mcp-tools/mcp-providers-section";
 import {
   createMcpProviderId,
@@ -197,11 +196,11 @@ export function LlmMcpToolsTab({
   }
 
   async function loadToolNames(): Promise<void> {
+    // tools endpoint removed from harness; keep UI but disable fetch.
     const apiProviders = providers
       .filter(isProviderReadyForToolFetch)
       .map(toApiProvider)
       .filter((provider) => Boolean(provider.name));
-
     if (apiProviders.length === 0) {
       toastError(
         "No MCP servers configured",
@@ -209,29 +208,10 @@ export function LlmMcpToolsTab({
       );
       return;
     }
-
     setLoadingTools(true);
     try {
-      const response = await listRecipeTools({
-        recipe: {
-          // biome-ignore lint/style/useNamingConvention: api schema
-          model_providers: [],
-          // biome-ignore lint/style/useNamingConvention: api schema
-          mcp_providers: apiProviders,
-          // biome-ignore lint/style/useNamingConvention: api schema
-          model_configs: [],
-          // biome-ignore lint/style/useNamingConvention: api schema
-          tool_configs: [],
-          columns: [],
-          processors: [],
-        },
-      });
-      // biome-ignore lint/style/useNamingConvention: api schema
-      setToolsByProvider(response.tools_by_provider ?? {});
-      toastSuccess("Fetched MCP tools");
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Tool fetch failed.";
-      toastError("Failed to fetch tools", message);
+      toastError("Tool fetch disabled", "Backend /tools endpoint removed.");
+      setToolsByProvider({});
     } finally {
       setLoadingTools(false);
     }
