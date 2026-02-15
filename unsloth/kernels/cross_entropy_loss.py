@@ -438,6 +438,7 @@ def fast_cross_entropy_loss(
     batch, seq_len, d = logits.shape
     assert labels.shape == (batch, seq_len)
 
+    device = logits.device
     loss = Fast_CrossEntropyLoss.apply(
         logits.view(batch * seq_len, d),
         labels.view(-1),
@@ -446,6 +447,8 @@ def fast_cross_entropy_loss(
     )
     if n_items is None:
         n_items = torch.count_nonzero(labels != -100)
+    if torch.is_tensor(n_items):
+        n_items = n_items.to(device)
     return loss.sum() / n_items
 
 
