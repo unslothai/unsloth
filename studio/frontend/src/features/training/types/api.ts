@@ -5,6 +5,8 @@ export interface TrainingStartRequest {
   load_in_4bit: boolean;
   max_seq_length: number;
   hf_dataset: string | null;
+  hf_dataset_config: string | null;
+  hf_dataset_split: string | null;
   local_datasets: string[];
   format_type: string;
   num_epochs: number;

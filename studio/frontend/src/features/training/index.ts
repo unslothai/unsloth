@@ -5,4 +5,5 @@ export {
 } from "./stores/training-runtime-store";
 export { useTrainingActions } from "./hooks/use-training-actions";
 export { useTrainingRuntimeLifecycle } from "./hooks/use-training-runtime-lifecycle";
+export { HfDatasetSubsetSplitSelectors } from "./components/hf-dataset-subset-split-selectors";
 export type { TrainingPhase } from "./types/runtime";
