@@ -5,14 +5,18 @@ import {
   useTrainingRuntimeLifecycle,
   useTrainingRuntimeStore,
 } from "@/features/training";
+import { GuidedTour } from "@/features/tour";
+import { studioTourSteps } from "@/features/studio/tour";
 import { ArrowLeft01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import type { ReactElement } from "react";
+import { type ReactElement, useEffect, useState } from "react";
 import { DatasetSection } from "./sections/dataset-section";
 import { ModelSection } from "./sections/model-section";
 import { ParamsSection } from "./sections/params-section";
 import { TrainingSection } from "./sections/training-section";
 import { TrainingView } from "./training-view";
+
+const STUDIO_TOUR_KEY = "tour:studio:v1";
 
 export function StudioPage(): ReactElement {
   useTrainingRuntimeLifecycle();
@@ -24,10 +28,26 @@ export function StudioPage(): ReactElement {
   const { dismissTrainingRun } = useTrainingActions();
 
   const canGoBack = runtimePhase === "stopped" || runtimePhase === "error";
+  const tourEnabled = hasHydratedRuntime && !isHydratingRuntime && !showTrainingView;
+  const [tourOpen, setTourOpen] = useState(false);
+
+  useEffect(() => {
+    if (!tourEnabled) return;
+    if (localStorage.getItem(STUDIO_TOUR_KEY)) return;
+    setTourOpen(true);
+  }, [tourEnabled]);
 
   return (
     <div className="min-h-screen bg-background">
       <main className="mx-auto max-w-7xl px-6 py-4">
+        <GuidedTour
+          open={tourOpen}
+          onOpenChange={setTourOpen}
+          steps={studioTourSteps}
+          onSkip={() => localStorage.setItem(STUDIO_TOUR_KEY, "skipped")}
+          onComplete={() => localStorage.setItem(STUDIO_TOUR_KEY, "done")}
+        />
+
         {canGoBack && (
           <Button
             variant="ghost"

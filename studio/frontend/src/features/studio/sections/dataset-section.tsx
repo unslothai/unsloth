@@ -121,14 +121,15 @@ export function DatasetSection() {
   );
 
   return (
-    <SectionCard
-      icon={<HugeiconsIcon icon={Database02Icon} className="size-5" />}
-      title="Dataset"
-      description="Select or upload training data"
-      accent="indigo"
-      className="lg:col-span-4 min-h-[450px]"
-    >
-      <div className="flex flex-col gap-4">
+    <div data-tour="studio-dataset" className="lg:col-span-4">
+      <SectionCard
+        icon={<HugeiconsIcon icon={Database02Icon} className="size-5" />}
+        title="Dataset"
+        description="Select or upload training data"
+        accent="indigo"
+        className="min-h-[450px]"
+      >
+        <div className="flex flex-col gap-4">
         <div className="flex flex-col gap-2">
           <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
             Load from Hub
@@ -347,6 +348,7 @@ export function DatasetSection() {
           </Button>
         </div>
       </div>
+      </SectionCard>
       <DatasetPreviewDialog
         open={previewOpen}
         onOpenChange={setPreviewOpen}
@@ -355,6 +357,6 @@ export function DatasetSection() {
         datasetSubset={datasetSubset}
         datasetSplit={datasetSplit}
       />
-    </SectionCard>
+    </div>
   );
 }
