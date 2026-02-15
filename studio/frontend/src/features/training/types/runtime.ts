@@ -82,6 +82,7 @@ export interface TrainingRuntimeState {
   lossHistory: TrainingSeriesPoint[];
   lrHistory: TrainingSeriesPoint[];
   gradNormHistory: TrainingSeriesPoint[];
+  resetGeneration: number;
 }
 
 export interface TrainingRuntimeActions {
