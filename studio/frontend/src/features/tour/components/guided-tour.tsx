@@ -20,63 +20,8 @@ import {
 import { cssEscape, toRect } from "../lib/dom";
 import { fireConfettiFireworks } from "../lib/confetti-fireworks";
 import { computeCardPos, padded, pickPlacement } from "../lib/layout";
+import { SpotlightOverlay } from "./spotlight-overlay";
 import type { Placement, Rect, TourStep } from "../types";
-
-// (types + layout/dom helpers live in ../types and ../lib)
-
-type SpotlightOverlayProps = {
-  rect: Rect | null;
-  vw: number;
-  vh: number;
-  maskId: string;
-};
-
-function SpotlightOverlay({
-  rect,
-  vw,
-  vh,
-  maskId,
-}: SpotlightOverlayProps) {
-  const hole = rect ?? { x: vw / 2 - 140, y: vh / 2 - 90, w: 280, h: 180 };
-  const r = 22;
-
-  return (
-    <svg
-      className="absolute inset-0 size-full"
-      viewBox={`0 0 ${vw} ${vh}`}
-      preserveAspectRatio="none"
-      aria-hidden={true}
-    >
-      <defs>
-        <radialGradient id={`${maskId}-v`} cx="50%" cy="45%" r="80%">
-          <stop offset="0%" stopColor="rgba(6, 9, 15, 0.35)" />
-          <stop offset="55%" stopColor="rgba(6, 9, 15, 0.65)" />
-          <stop offset="100%" stopColor="rgba(6, 9, 15, 0.88)" />
-        </radialGradient>
-        <mask id={maskId}>
-          <rect x="0" y="0" width={vw} height={vh} fill="white" />
-          <motion.rect
-            x={hole.x}
-            y={hole.y}
-            width={hole.w}
-            height={hole.h}
-            rx={r}
-            fill="black"
-            transition={{ type: "spring", stiffness: 260, damping: 30 }}
-          />
-        </mask>
-      </defs>
-      <rect
-        x="0"
-        y="0"
-        width={vw}
-        height={vh}
-        fill={`url(#${maskId}-v)`}
-        mask={`url(#${maskId})`}
-      />
-    </svg>
-  );
-}
 
 type GuidedTourProps = {
   open: boolean;
@@ -107,6 +52,7 @@ export function GuidedTour({
   const closeLockRef = useRef(false);
   const rafRef = useRef<number | null>(null);
   const lastRectRef = useRef<Rect | null>(null);
+  const activeStepRef = useRef<TourStep | null>(null);
 
   const step = steps[idx] ?? null;
   const total = steps.length;
@@ -117,6 +63,27 @@ export function GuidedTour({
     const pad = step?.target === "navbar" ? 4 : 14;
     return padded(targetRect, pad, vw, vh);
   }, [step?.target, targetRect, vw, vh]);
+
+  useEffect(() => {
+    if (!open) return;
+    const prev = activeStepRef.current;
+    if (prev && prev.id !== step?.id) {
+      void prev.onExit?.();
+    }
+    activeStepRef.current = step;
+    if (step) {
+      void step.onEnter?.();
+    }
+  }, [open, step?.id]); // run before target lookup effect below
+
+  useEffect(() => {
+    if (open) return;
+    const prev = activeStepRef.current;
+    activeStepRef.current = null;
+    if (prev) {
+      void prev.onExit?.();
+    }
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
