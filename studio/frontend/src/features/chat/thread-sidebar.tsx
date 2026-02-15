@@ -62,11 +62,13 @@ export function ThreadSidebar({
   onSelect,
   onNewThread,
   onNewCompare,
+  showCompare,
 }: {
   view: ChatView;
   onSelect: (view: ChatView) => void;
   onNewThread: () => void;
   onNewCompare: () => void;
+  showCompare: boolean;
 }) {
   const allThreads = useLiveQuery(
     () => db.threads.orderBy("createdAt").reverse().toArray(),
@@ -112,12 +114,14 @@ export function ThreadSidebar({
                   <span>New Chat</span>
                 </SidebarMenuButton>
               </SidebarMenuItem>
-              <SidebarMenuItem>
-                <SidebarMenuButton onClick={onNewCompare}>
-                  <HugeiconsIcon icon={ColumnInsertIcon} />
-                  <span>Compare</span>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
+              {showCompare ? (
+                <SidebarMenuItem>
+                  <SidebarMenuButton onClick={onNewCompare}>
+                    <HugeiconsIcon icon={ColumnInsertIcon} />
+                    <span>Compare</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              ) : null}
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>

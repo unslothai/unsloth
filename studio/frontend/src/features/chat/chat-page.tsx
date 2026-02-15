@@ -174,7 +174,8 @@ function InlineSidebar({
 function TopBarActions({
   onNewThread,
   onNewCompare,
-}: { onNewThread: () => void; onNewCompare: () => void }) {
+  showCompare,
+}: { onNewThread: () => void; onNewCompare: () => void; showCompare: boolean }) {
   const { state } = useSidebar();
   if (state !== "collapsed") {
     return null;
@@ -189,14 +190,16 @@ function TopBarActions({
         </TooltipTrigger>
         <TooltipContent side="bottom">New Chat</TooltipContent>
       </Tooltip>
-      <Tooltip>
-        <TooltipTrigger asChild={true}>
-          <Button variant="ghost" size="icon-sm" onClick={onNewCompare}>
-            <HugeiconsIcon icon={ColumnInsertIcon} strokeWidth={2} />
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent side="bottom">Compare</TooltipContent>
-      </Tooltip>
+      {showCompare ? (
+        <Tooltip>
+          <TooltipTrigger asChild={true}>
+            <Button variant="ghost" size="icon-sm" onClick={onNewCompare}>
+              <HugeiconsIcon icon={ColumnInsertIcon} strokeWidth={2} />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">Compare</TooltipContent>
+        </Tooltip>
+      ) : null}
     </>
   );
 }
@@ -209,10 +212,17 @@ export function ChatPage(): ReactElement {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const inferenceParams = useChatRuntimeStore((state) => state.params);
   const setInferenceParams = useChatRuntimeStore((state) => state.setParams);
+  const autoTitle = useChatRuntimeStore((state) => state.autoTitle);
+  const setAutoTitle = useChatRuntimeStore((state) => state.setAutoTitle);
   const modelsFromStore = useChatRuntimeStore((state) => state.models);
   const lorasFromStore = useChatRuntimeStore((state) => state.loras);
   const modelsError = useChatRuntimeStore((state) => state.modelsError);
   const { refresh, selectModel, ejectModel } = useChatModelRuntime();
+  const canCompare = useMemo(() => {
+    const selected = inferenceParams.checkpoint;
+    if (!selected) return false;
+    return lorasFromStore.some((lora) => lora.id === selected);
+  }, [inferenceParams.checkpoint, lorasFromStore]);
 
   const handleCheckpointChange = useCallback(
     (value: string, meta?: { isLora: boolean }) => {
@@ -275,6 +285,7 @@ export function ChatPage(): ReactElement {
           onSelect={setView}
           onNewThread={handleNewThread}
           onNewCompare={handleNewCompare}
+          showCompare={canCompare}
         />
       </InlineSidebar>
 
@@ -285,6 +296,7 @@ export function ChatPage(): ReactElement {
             <TopBarActions
               onNewThread={handleNewThread}
               onNewCompare={handleNewCompare}
+              showCompare={canCompare}
             />
             <ModelSelector
               models={models}
@@ -326,6 +338,8 @@ export function ChatPage(): ReactElement {
         open={settingsOpen}
         params={inferenceParams}
         onParamsChange={setInferenceParams}
+        autoTitle={autoTitle}
+        onAutoTitleChange={setAutoTitle}
       />
     </SidebarProvider>
     </div>
