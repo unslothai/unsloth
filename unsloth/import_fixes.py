@@ -16,7 +16,6 @@ import os
 import importlib.abc
 import importlib.machinery
 import importlib.util
-import contextlib
 from pathlib import Path
 from importlib.metadata import version as importlib_version
 from packaging.version import Version as TrueVersion
@@ -26,7 +25,6 @@ import textwrap
 import warnings
 import sys
 import functools
-import tempfile
 
 # We cannot do from unsloth_zoo.log import logger since FBGEMM might cause seg faults.
 UNSLOTH_ENABLE_LOGGING = os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") in (
@@ -1191,6 +1189,13 @@ _ROCM_PATH_HINTS = (
     Path("/dev/kfd"),
     Path("/sys/module/amdgpu"),
 )
+_AMDGPU_ASIC_ID_TABLE_PATH_ENV = "AMDGPU_ASIC_ID_TABLE_PATH"
+_AMDGPU_ASIC_ID_CANDIDATE_PATHS = (
+    Path("/usr/share/libdrm/amdgpu.ids"),
+    Path("/usr/local/share/libdrm/amdgpu.ids"),
+    Path("/opt/rocm/share/libdrm/amdgpu.ids"),
+    Path("/opt/amdgpu/share/libdrm/amdgpu.ids"),
+)
 
 
 def _log_rocm_detection(message):
@@ -1236,68 +1241,70 @@ def _is_rocm_torch_build() -> bool:
     return False
 
 
-@contextlib.contextmanager
-def _filter_stderr_fd(
-    suppressed_substrings = (_AMDGPU_IDS_MISSING_TEXT,),
-):
-    """
-    Capture low-level fd=2 writes, drop only known noisy substrings, and replay
-    everything else after the protected block.
-    """
-    saved_stderr_fd = None
-    temp_file = None
-    redirected = False
+def _iter_amdgpu_asic_id_table_candidates():
+    # Try torch-adjacent ids table paths first without importing torch.
     try:
-        saved_stderr_fd = os.dup(2)
-        temp_file = tempfile.TemporaryFile(mode = "w+b")
-        os.dup2(temp_file.fileno(), 2)
-        redirected = True
+        torch_spec = importlib.util.find_spec("torch")
     except Exception:
-        redirected = False
+        torch_spec = None
 
-    try:
-        yield
-    finally:
-        captured = b""
-        if redirected and temp_file is not None:
-            try:
-                temp_file.flush()
-                temp_file.seek(0)
-                captured = temp_file.read()
-            except Exception:
-                captured = b""
-        if redirected and saved_stderr_fd is not None:
-            try:
-                os.dup2(saved_stderr_fd, 2)
-            except Exception:
-                pass
-        if captured and saved_stderr_fd is not None:
-            try:
-                for raw_line in captured.splitlines(keepends = True):
-                    line = raw_line.decode("utf-8", errors = "ignore")
-                    if any(s in line for s in suppressed_substrings):
-                        continue
-                    os.write(saved_stderr_fd, raw_line)
-            except Exception:
-                pass
-        if temp_file is not None:
-            try:
-                temp_file.close()
-            except Exception:
-                pass
-        if saved_stderr_fd is not None:
-            try:
-                os.close(saved_stderr_fd)
-            except Exception:
-                pass
+    roots = []
+    if torch_spec is not None:
+        if torch_spec.origin:
+            roots.append(Path(torch_spec.origin).resolve().parent)
+        if torch_spec.submodule_search_locations:
+            for location in torch_spec.submodule_search_locations:
+                roots.append(Path(location).resolve())
+
+    seen = set()
+    for root in roots:
+        for candidate in (
+            root / "share" / "libdrm" / "amdgpu.ids",
+            root.parent / "share" / "libdrm" / "amdgpu.ids",
+            root.parent.parent / "share" / "libdrm" / "amdgpu.ids",
+        ):
+            candidate_str = str(candidate)
+            if candidate_str in seen:
+                continue
+            seen.add(candidate_str)
+            yield candidate
+
+    for candidate in _AMDGPU_ASIC_ID_CANDIDATE_PATHS:
+        candidate_str = str(candidate)
+        if candidate_str in seen:
+            continue
+        seen.add(candidate_str)
+        yield candidate
 
 
-def _filter_rocm_amdgpu_ids_fd2_noise():
-    # ROCm/libdrm can emit amdgpu.ids missing errors via low-level fd=2 writes.
-    # Python-level stderr filters cannot intercept those writes.
+def configure_amdgpu_asic_id_table_path():
+    # Honor an existing valid user-provided path.
+    configured = os.environ.get(_AMDGPU_ASIC_ID_TABLE_PATH_ENV, "").strip()
+    if configured:
+        configured_path = Path(configured)
+        try:
+            if configured_path.is_file():
+                return str(configured_path)
+        except Exception:
+            pass
+
+    # Only attempt this on ROCm-like environments.
     if not _is_rocm_torch_build():
-        return contextlib.nullcontext()
-    return _filter_stderr_fd()
+        return None
+
+    for candidate in _iter_amdgpu_asic_id_table_candidates():
+        try:
+            if candidate.is_file():
+                os.environ[_AMDGPU_ASIC_ID_TABLE_PATH_ENV] = str(candidate)
+                if UNSLOTH_ENABLE_LOGGING:
+                    logger.info(
+                        f"Unsloth: Set {_AMDGPU_ASIC_ID_TABLE_PATH_ENV}={candidate}"
+                    )
+                return str(candidate)
+        except Exception:
+            continue
+
+    return None
 
 
 def _is_causal_conv1d_name(module_name: str) -> bool:
@@ -1432,9 +1439,7 @@ def disable_broken_causal_conv1d():
         return
 
     try:
-        # Suppress only native fd=2 amdgpu.ids noise during causal_conv1d probe.
-        with _filter_rocm_amdgpu_ids_fd2_noise():
-            import causal_conv1d  # noqa: F401
+        import causal_conv1d  # noqa: F401
 
         return
     except Exception as error:
