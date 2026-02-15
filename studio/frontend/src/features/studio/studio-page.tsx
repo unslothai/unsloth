@@ -5,7 +5,8 @@ import {
   useTrainingRuntimeLifecycle,
   useTrainingRuntimeStore,
 } from "@/features/training";
-import { GuidedTour, studioTourSteps } from "@/features/tour";
+import { GuidedTour } from "@/features/tour";
+import { studioTourSteps } from "@/features/studio/tour";
 import { ArrowLeft01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useEffect, useState } from "react";

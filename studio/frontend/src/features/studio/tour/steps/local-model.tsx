@@ -1,5 +1,4 @@
-import type { TourStep } from "@/features/tour";
-import { ReadMore } from "../read-more";
+import { ReadMore, type TourStep } from "@/features/tour";
 
 export const studioLocalModelStep: TourStep = {
   id: "local-model",
@@ -13,4 +12,3 @@ export const studioLocalModelStep: TourStep = {
     </>
   ),
 };
-
