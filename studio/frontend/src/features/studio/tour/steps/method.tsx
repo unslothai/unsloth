@@ -1,5 +1,4 @@
-import type { TourStep } from "@/features/tour";
-import { ReadMore } from "../read-more";
+import { ReadMore, type TourStep } from "@/features/tour";
 
 export const studioMethodStep: TourStep = {
   id: "method",
@@ -12,4 +11,3 @@ export const studioMethodStep: TourStep = {
     </>
   ),
 };
-
