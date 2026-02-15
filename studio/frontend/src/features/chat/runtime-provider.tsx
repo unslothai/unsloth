@@ -11,7 +11,6 @@ import {
   SimpleTextAttachmentAdapter,
   type ThreadHistoryAdapter,
   type ThreadMessage,
-  type ThreadUserMessagePart,
   WebSpeechDictationAdapter,
   type unstable_RemoteThreadListAdapter,
   useAui,
@@ -23,8 +22,10 @@ import { createAssistantStream } from "assistant-stream";
 import mammoth from "mammoth";
 import { type ReactElement, type ReactNode, useEffect, useMemo } from "react";
 import { extractText, getDocumentProxy } from "unpdf";
+import { authFetch } from "@/features/auth";
 import { createOpenAIStreamAdapter } from "./api/chat-adapter";
 import { db } from "./db";
+import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import type { MessageRecord, ModelType } from "./types";
 
 const DEFAULT_SUGGESTIONS = [
@@ -149,6 +150,81 @@ class DocxAttachmentAdapter implements AttachmentAdapter {
   }
 }
 
+function clip(input: string, maxLen: number): string {
+  const text = input.replace(/\s+/g, " ").trim();
+  if (text.length <= maxLen) return text;
+  return text.slice(0, maxLen).trimEnd();
+}
+
+function extractTextParts(m: ThreadMessage | undefined): string {
+  if (!m) return "";
+  const content = Array.isArray(m.content) ? m.content : [];
+  return content
+    .filter((p): p is Extract<typeof p, { type: "text" }> => p.type === "text")
+    .map((p) => p.text)
+    .join("")
+    .trim();
+}
+
+async function generateTitleWithModel(payload: {
+  userText: string;
+}): Promise<string | null> {
+  const params = useChatRuntimeStore.getState().params;
+  if (!params.checkpoint) return null;
+
+  const user = clip(payload.userText, 256);
+  const parts: string[] = [user];
+
+  function normalizeTitle(raw: string): string | null {
+    let title = raw.split(/\r?\n/, 1)[0] ?? "";
+    title = title.replace(/^\s*title\s*:\s*/i, "");
+    title = title.replace(/[^\x20-\x7E]+/g, " ");
+    title = title.replace(/["'`]+/g, "");
+    title = title.replace(/[.!?:;,]+/g, " ");
+    title = title.replace(/\s+/g, " ").trim();
+
+    // Model echo fail-safe.
+    if (/\b(user|base|lora|assistant)\s*:/i.test(title)) {
+      return null;
+    }
+
+    const words = title.split(" ").filter(Boolean).slice(0, 6);
+    const joined = words.join(" ").trim();
+    if (!joined) return null;
+    return joined.length > 60 ? joined.slice(0, 60).trimEnd() : joined;
+  }
+
+  const response = await authFetch("/api/inference/chat/completions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: params.checkpoint,
+      stream: false,
+      temperature: 0.2,
+      top_p: 0.9,
+      max_tokens: 24,
+      top_k: 40,
+      repetition_penalty: 1.05,
+      messages: [
+        {
+          role: "system",
+          content:
+            "Write 1 concise chat title for the user's message. Rules: 2-6 words, no quotes, no punctuation, ASCII only, do not echo input. Output title only.",
+        },
+        { role: "user", content: parts.join("\n") },
+      ],
+    }),
+  });
+
+  const body = (await response.json().catch(() => null)) as any;
+  if (!response.ok) return null;
+  const raw: string | undefined = body?.choices?.[0]?.message?.content;
+  if (!raw) return null;
+  return normalizeTitle(raw);
+}
+
+const inflightTitleByKey = new Set<string>();
+
 function toThreadMessage(m: MessageRecord): ThreadMessage {
   const base = {
     id: m.id,
@@ -245,32 +321,98 @@ function createDexieAdapter(
     },
 
     async generateTitle(remoteId: string, messages: readonly ThreadMessage[]) {
+      const autoTitle = useChatRuntimeStore.getState().autoTitle;
+      const thread = await db.threads.get(remoteId);
+      if (!thread) {
+        return createAssistantStream((c) => {
+          c.appendText("New Chat");
+          c.close();
+        });
+      }
+
+      // Only generate once per thread/pair.
+      if (thread.title && thread.title !== "New Chat") {
+        return createAssistantStream((c) => {
+          c.appendText(thread.title);
+          c.close();
+        });
+      }
+
       const firstUser = messages.find((m) => m.role === "user");
-      const textParts =
-        firstUser?.content.filter(
-          (part): part is Extract<ThreadUserMessagePart, { type: "text" }> =>
-            part.type === "text",
-        ) ?? [];
-      const text = textParts.map((part) => part.text).join("") || "New Chat";
-      const title = text.slice(0, 60) + (text.length > 60 ? "..." : "");
+      const userText = extractTextParts(firstUser) || "New Chat";
 
-      await db.threads.update(remoteId, { title });
+      if (!autoTitle) {
+        const title = userText.slice(0, 60) + (userText.length > 60 ? "..." : "");
+        await db.threads.update(remoteId, { title });
+        if (pairId) {
+          const paired = await db.threads
+            .where("pairId")
+            .equals(pairId)
+            .filter((t) => t.id !== remoteId)
+            .first();
+          if (paired) await db.threads.update(paired.id, { title });
+        }
+        return createAssistantStream((c) => {
+          c.appendText(title);
+          c.close();
+        });
+      }
 
+      const key = pairId ? `pair:${pairId}` : `thread:${remoteId}`;
+      if (inflightTitleByKey.has(key)) {
+        return createAssistantStream((c) => {
+          c.appendText(thread.title || "New Chat");
+          c.close();
+        });
+      }
+
+      // Compare: wait until both threads done.
       if (pairId) {
         const paired = await db.threads
           .where("pairId")
           .equals(pairId)
           .filter((t) => t.id !== remoteId)
           .first();
+
         if (paired) {
-          await db.threads.update(paired.id, { title });
+          const running = useChatRuntimeStore.getState().runningByThreadId;
+          if (running[paired.id]) {
+            setTimeout(() => {
+              void createDexieAdapter(modelType, pairId).generateTitle(remoteId, messages);
+            }, 600);
+            return createAssistantStream((c) => {
+              c.appendText(thread.title || "New Chat");
+              c.close();
+            });
+          }
         }
       }
 
-      return createAssistantStream((controller) => {
-        controller.appendText(title);
-        controller.close();
-      });
+      inflightTitleByKey.add(key);
+      try {
+        const title =
+          (await generateTitleWithModel({
+            userText,
+          })) ||
+          (userText.slice(0, 60) + (userText.length > 60 ? "..." : ""));
+
+        await db.threads.update(remoteId, { title });
+        if (pairId) {
+          const paired = await db.threads
+            .where("pairId")
+            .equals(pairId)
+            .filter((t) => t.id !== remoteId)
+            .first();
+          if (paired) await db.threads.update(paired.id, { title });
+        }
+
+        return createAssistantStream((c) => {
+          c.appendText(title);
+          c.close();
+        });
+      } finally {
+        inflightTitleByKey.delete(key);
+      }
     },
   };
 }

@@ -209,6 +209,8 @@ export function ChatPage(): ReactElement {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const inferenceParams = useChatRuntimeStore((state) => state.params);
   const setInferenceParams = useChatRuntimeStore((state) => state.setParams);
+  const autoTitle = useChatRuntimeStore((state) => state.autoTitle);
+  const setAutoTitle = useChatRuntimeStore((state) => state.setAutoTitle);
   const modelsFromStore = useChatRuntimeStore((state) => state.models);
   const lorasFromStore = useChatRuntimeStore((state) => state.loras);
   const modelsError = useChatRuntimeStore((state) => state.modelsError);
@@ -326,6 +328,8 @@ export function ChatPage(): ReactElement {
         open={settingsOpen}
         params={inferenceParams}
         onParamsChange={setInferenceParams}
+        autoTitle={autoTitle}
+        onAutoTitleChange={setAutoTitle}
       />
     </SidebarProvider>
     </div>
