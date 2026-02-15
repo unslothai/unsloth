@@ -28,10 +28,17 @@ import {
 import { MODEL_TYPE_TO_HF_TASK } from "@/config/training";
 import {
   useDebouncedValue,
+  useGpuInfo,
   useHfModelSearch,
   useInfiniteScroll,
 } from "@/hooks";
 import { formatCompact } from "@/lib/utils";
+import {
+  type TrainingMethod as VramTrainingMethod,
+  type VramFitStatus,
+  checkVramFit,
+  estimateLoadingVram,
+} from "@/lib/vram";
 import { useTrainingConfigStore } from "@/features/training";
 import type { TrainingMethod } from "@/types/training";
 import {
@@ -57,6 +64,8 @@ const DARK_CONTENT =
   "bg-foreground text-background shadow-xl border-background/10 [--accent:rgba(255,255,255,0.1)] [--accent-foreground:white] [&_[data-slot=select-item]]:text-white/70 [&_[data-slot=select-scroll-up-button]]:bg-foreground [&_[data-slot=select-scroll-down-button]]:bg-foreground";
 
 export function ModelSection() {
+  const gpu = useGpuInfo();
+
   const {
     modelType,
     selectedModel,
@@ -121,6 +130,37 @@ export function ModelSection() {
     }
     return ids;
   }, [hfResults, selectedModel]);
+
+  // Pre-compute VRAM fit status for every model in the current result set.
+  // Keyed by model id so the render callback is a simple O(1) lookup.
+  //
+  // Pre-compute VRAM fit status for every model in the current result set.
+  // Keyed by model id so the render callback is a simple O(1) lookup.
+  // Re-computes when the training method changes (QLoRA=4-bit vs LoRA/Full=fp16).
+  const vramMap = useMemo(() => {
+    const method = trainingMethod as VramTrainingMethod;
+    const map = new Map<
+      string,
+      { est: number; status: VramFitStatus | null; detail: string | null }
+    >();
+    for (const r of hfResults) {
+      const detail = r.totalParams
+        ? formatCompact(r.totalParams)
+        : r.downloads != null
+          ? `\u2193${formatCompact(r.downloads)}`
+          : null;
+      if (r.totalParams) {
+        const est = estimateLoadingVram(r.totalParams, method);
+        const status = gpu.available
+          ? checkVramFit(est, gpu.memoryTotalGb)
+          : null;
+        map.set(r.id, { est, status, detail });
+      } else {
+        map.set(r.id, { est: 0, status: null, detail });
+      }
+    }
+    return map;
+  }, [hfResults, gpu, trainingMethod]);
 
   const comboboxAnchorRef = useRef<HTMLDivElement>(null);
   const { scrollRef, sentinelRef } = useInfiniteScroll(
@@ -225,21 +265,21 @@ export function ModelSection() {
                 >
                   <ComboboxList className="p-1 !max-h-none !overflow-visible">
                     {(id: string) => {
-                      const r = hfResults.find((m) => m.id === id);
-                      const detail = r?.totalParams
-                        ? formatCompact(r.totalParams)
-                        : r?.downloads != null
-                          ? `↓${formatCompact(r.downloads)}`
-                          : null;
+                      const entry = vramMap.get(id);
+                      const detail = entry?.detail ?? null;
+                      const fitStatus = entry?.status ?? null;
+                      const vramEst = entry?.est ?? null;
+                      const exceeds = fitStatus === "exceeds";
+
                       return (
                         <ComboboxItem
                           key={id}
                           value={id}
-                          className="justify-between"
+                          className={`justify-between ${exceeds ? "opacity-50" : ""}`}
                         >
                           <Tooltip>
                             <TooltipTrigger asChild={true}>
-                              <span className="min-w-0 flex-1 truncate">
+                              <span className={`min-w-0 flex-1 truncate ${exceeds ? "line-through decoration-muted-foreground/50" : ""}`}>
                                 {id}
                               </span>
                             </TooltipTrigger>
@@ -248,13 +288,34 @@ export function ModelSection() {
                               className="max-w-xs break-all"
                             >
                               {id}
+                              {vramEst != null && vramEst > 0 && gpu.available && (
+                                <span className="block text-[10px] mt-1">
+                                  {exceeds
+                                    ? `Needs ~${vramEst}GB VRAM (GPU: ${gpu.memoryTotalGb}GB)`
+                                    : fitStatus === "tight"
+                                      ? `~${vramEst}GB VRAM (tight fit on ${gpu.memoryTotalGb}GB)`
+                                      : `~${vramEst}GB VRAM`}
+                                </span>
+                              )}
                             </TooltipContent>
                           </Tooltip>
-                          {detail && (
-                            <span className="text-[10px] text-muted-foreground shrink-0">
-                              {detail}
-                            </span>
-                          )}
+                          <span className="flex items-center gap-1.5 shrink-0">
+                            {fitStatus === "exceeds" && (
+                              <span className="text-[9px] font-medium text-red-400">
+                                OOM
+                              </span>
+                            )}
+                            {fitStatus === "tight" && (
+                              <span className="text-[9px] font-medium text-amber-400">
+                                TIGHT
+                              </span>
+                            )}
+                            {detail && (
+                              <span className="text-[10px] text-muted-foreground">
+                                {detail}
+                              </span>
+                            )}
+                          </span>
                         </ComboboxItem>
                       );
                     }}
