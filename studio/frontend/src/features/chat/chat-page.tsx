@@ -5,16 +5,8 @@ import {
 } from "@/components/assistant-ui/model-selector";
 import { Thread } from "@/components/assistant-ui/thread";
 import { Button } from "@/components/ui/button";
-import {
-  SidebarProvider,
-  SidebarTrigger,
-  useSidebar,
-} from "@/components/ui/sidebar";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
+import { SidebarProvider, SidebarTrigger, useSidebar } from "@/components/ui/sidebar";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import {
   ColumnInsertIcon,
@@ -33,6 +25,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { ChatSettingsPanel } from "./chat-settings-sheet";
 import { db } from "./db";
 import { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
@@ -46,6 +39,7 @@ import {
 } from "./shared-composer";
 import { ThreadSidebar } from "./thread-sidebar";
 import type { ChatView } from "./types";
+import { buildChatTourSteps } from "./tour";
 
 const SingleContent = memo(function SingleContent({
   threadId,
@@ -92,7 +86,7 @@ const CompareContent = memo(function CompareContent({
   return (
     <CompareHandlesProvider handlesRef={handlesRef}>
       <div className="flex min-h-0 flex-1 flex-col">
-        <div className="grid min-h-0 flex-1 grid-cols-2 px-0">
+        <div data-tour="chat-compare-view" className="grid min-h-0 flex-1 grid-cols-2 px-0">
           <div className="flex min-h-0 flex-col">
             <div className="px-3 py-1.5">
               <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
@@ -210,6 +204,8 @@ export function ChatPage(): ReactElement {
     newThreadNonce: crypto.randomUUID(),
   });
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
+  const viewBeforeCompareRef = useRef<ChatView | null>(null);
   const inferenceParams = useChatRuntimeStore((state) => state.params);
   const setInferenceParams = useChatRuntimeStore((state) => state.setParams);
   const autoTitle = useChatRuntimeStore((state) => state.autoTitle);
@@ -242,6 +238,25 @@ export function ChatPage(): ReactElement {
     [],
   );
 
+  const openModelSelector = useCallback(() => setModelSelectorOpen(true), []);
+  const closeModelSelector = useCallback(() => setModelSelectorOpen(false), []);
+  const openSettings = useCallback(() => setSettingsOpen(true), []);
+  const closeSettings = useCallback(() => setSettingsOpen(false), []);
+
+  const enterCompare = useCallback(() => {
+    if (viewBeforeCompareRef.current == null) {
+      viewBeforeCompareRef.current = view;
+    }
+    setView({ mode: "compare", pairId: crypto.randomUUID() });
+  }, [view]);
+
+  const exitCompare = useCallback(() => {
+    const prev = viewBeforeCompareRef.current;
+    if (!prev) return;
+    viewBeforeCompareRef.current = null;
+    setView(prev);
+  }, []);
+
   const models = useMemo<ModelOption[]>(
     () =>
       modelsFromStore.map((model) => ({
@@ -267,8 +282,36 @@ export function ChatPage(): ReactElement {
     void refresh();
   }, [refresh]);
 
+  const tourSteps = useMemo(
+    () =>
+      buildChatTourSteps({
+        canCompare,
+        openModelSelector,
+        closeModelSelector,
+        openSettings,
+        closeSettings,
+        enterCompare,
+        exitCompare,
+      }),
+    [
+      canCompare,
+      closeModelSelector,
+      closeSettings,
+      enterCompare,
+      exitCompare,
+      openModelSelector,
+      openSettings,
+    ],
+  );
+
+  const tour = useGuidedTourController({
+    id: "chat",
+    steps: tourSteps,
+  });
+
   return (
     <div className="h-[calc(100vh-4rem)] bg-background overflow-hidden">
+    <GuidedTour {...tour.tourProps} />
     <SidebarProvider
       defaultOpen={true}
       className="!min-h-0 h-full max-w-7xl mx-auto px-4"
@@ -305,6 +348,10 @@ export function ChatPage(): ReactElement {
               onValueChange={handleCheckpointChange}
               onEject={handleEject}
               variant="ghost"
+              open={modelSelectorOpen}
+              onOpenChange={setModelSelectorOpen}
+              triggerDataTour="chat-model-selector"
+              contentDataTour="chat-model-selector-popover"
             />
           </div>
           {modelsError && (
@@ -318,6 +365,7 @@ export function ChatPage(): ReactElement {
             onClick={() => setSettingsOpen((o) => !o)}
             className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
             title="Inference settings"
+            data-tour="chat-settings"
           >
             <HugeiconsIcon icon={Settings04Icon} className="size-5" />
           </button>
