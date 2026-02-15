@@ -18,6 +18,7 @@ import {
   useState,
 } from "react";
 import { cssEscape, toRect } from "../lib/dom";
+import { fireConfettiFireworks } from "../lib/confetti-fireworks";
 import { computeCardPos, padded, pickPlacement } from "../lib/layout";
 import type { Placement, Rect, TourStep } from "../types";
 
@@ -230,6 +231,7 @@ export function GuidedTour({
   function requestClose(reason: "skip" | "complete") {
     if (closeLockRef.current) return;
     closeLockRef.current = true;
+    void fireConfettiFireworks();
     if (reason === "skip") onSkip();
     else onComplete();
     onOpenChange(false);
