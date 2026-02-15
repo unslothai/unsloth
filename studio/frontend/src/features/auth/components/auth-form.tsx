@@ -199,6 +199,9 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
               )}
             </Button>
           </div>
+          {!isLoginMode && (
+            <p className="text-xs text-muted-foreground">Must be at least 8 characters</p>
+          )}
         </div>
 
         {!isLoginMode && (
@@ -223,7 +226,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
         <Button
           type="submit"
           className="w-full"
-          disabled={loading || statusLoading || blockedByState}
+          disabled={loading || statusLoading || blockedByState || (!isLoginMode && password.length < 8)}
         >
           {loading ? "Please wait..." : submitLabel}
         </Button>
