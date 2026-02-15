@@ -1,5 +1,6 @@
 import type { ChatModelAdapter } from "@assistant-ui/react";
 import { streamChatCompletions } from "./chat-api";
+import { db } from "../db";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import {
   hasClosedThinkTag,
@@ -81,6 +82,23 @@ function findLatestUserImageBase64(messages: RunMessages): string | undefined {
   return undefined;
 }
 
+async function resolveUseAdapter(
+  threadId: string | undefined,
+): Promise<boolean | undefined> {
+  if (!threadId) {
+    return undefined;
+  }
+  try {
+    const thread = await db.threads.get(threadId);
+    if (!thread?.pairId) {
+      return undefined;
+    }
+    return thread.modelType === "lora";
+  } catch {
+    return undefined;
+  }
+}
+
 export function createOpenAIStreamAdapter(): ChatModelAdapter {
   return {
     async *run({ messages, abortSignal, unstable_threadId }) {
@@ -104,6 +122,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         });
       }
       const imageBase64 = findLatestUserImageBase64(messages);
+      const useAdapter = await resolveUseAdapter(unstable_threadId);
 
       const threadKey = unstable_threadId || "__default";
       let waitingFirstChunk = true;
@@ -124,6 +143,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             top_k: params.topK,
             repetition_penalty: params.repetitionPenalty,
             image_base64: imageBase64,
+            ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
           },
           abortSignal,
         );
