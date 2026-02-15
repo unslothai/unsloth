@@ -2433,7 +2433,13 @@ def unsloth_convert_lora_to_ggml_and_push_to_hub(
     )
     print(f"The output file will be {output_file}")
 
-    command = ["python3", "llama.cpp/convert-lora-to-ggml.py", lora_directory_push, output_file, "llama"]
+    command = [
+        "python3",
+        "llama.cpp/convert-lora-to-ggml.py",
+        lora_directory_push,
+        output_file,
+        "llama",
+    ]
 
     try:
         with subprocess.Popen(
@@ -2511,7 +2517,13 @@ def unsloth_convert_lora_to_ggml_and_save_locally(
     )
     print(f"The output file will be {output_file}")
 
-    command = ["python3", "llama.cpp/convert-lora-to-ggml.py", save_directory, output_file, "llama"]
+    command = [
+        "python3",
+        "llama.cpp/convert-lora-to-ggml.py",
+        save_directory,
+        output_file,
+        "llama",
+    ]
 
     try:
         with subprocess.Popen(
