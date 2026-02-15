@@ -18,7 +18,7 @@ export interface WizardState {
   datasetSource: DatasetSource;
   datasetFormat: DatasetFormat;
   dataset: string | null;
-  datasetConfig: string | null;
+  datasetSubset: string | null;
   datasetSplit: string | null;
   uploadedFile: string | null;
   epochs: number;
@@ -62,7 +62,7 @@ export interface WizardActions {
   setDatasetSource: (source: DatasetSource) => void;
   setDatasetFormat: (format: DatasetFormat) => void;
   setDataset: (dataset: string | null) => void;
-  setDatasetConfig: (config: string | null) => void;
+  setDatasetSubset: (subset: string | null) => void;
   setDatasetSplit: (split: string | null) => void;
   setUploadedFile: (file: string | null) => void;
   setEpochs: (epochs: number) => void;

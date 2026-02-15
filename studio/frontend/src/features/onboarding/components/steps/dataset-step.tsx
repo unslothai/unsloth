@@ -38,7 +38,10 @@ import {
   useInfiniteScroll,
 } from "@/hooks";
 import { cn, formatCompact } from "@/lib/utils";
-import { HfDatasetConfigSplitSelectors, useTrainingConfigStore } from "@/features/training";
+import {
+  HfDatasetSubsetSplitSelectors,
+  useTrainingConfigStore,
+} from "@/features/training";
 import type { DatasetFormat } from "@/types/training";
 import {
   InformationCircleIcon,
@@ -67,8 +70,8 @@ export function DatasetStep() {
     setDatasetFormat,
     dataset,
     setDataset,
-    datasetConfig,
-    setDatasetConfig,
+    datasetSubset,
+    setDatasetSubset,
     datasetSplit,
     setDatasetSplit,
     uploadedFile,
@@ -83,8 +86,8 @@ export function DatasetStep() {
       setDatasetFormat: s.setDatasetFormat,
       dataset: s.dataset,
       setDataset: s.setDataset,
-      datasetConfig: s.datasetConfig,
-      setDatasetConfig: s.setDatasetConfig,
+      datasetSubset: s.datasetSubset,
+      setDatasetSubset: s.setDatasetSubset,
       datasetSplit: s.datasetSplit,
       setDatasetSplit: s.setDatasetSplit,
       uploadedFile: s.uploadedFile,
@@ -270,13 +273,13 @@ export function DatasetStep() {
             </div>
           </Field>
 
-          <HfDatasetConfigSplitSelectors
+          <HfDatasetSubsetSplitSelectors
             variant="wizard"
             enabled={datasetSource === "huggingface"}
             datasetName={dataset}
             accessToken={hfToken || undefined}
-            datasetConfig={datasetConfig}
-            setDatasetConfig={setDatasetConfig}
+            datasetSubset={datasetSubset}
+            setDatasetSubset={setDatasetSubset}
             datasetSplit={datasetSplit}
             setDatasetSplit={setDatasetSplit}
           />
