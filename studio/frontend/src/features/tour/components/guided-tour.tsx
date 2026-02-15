@@ -1,35 +1,17 @@
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { HugeiconsIcon } from "@hugeicons/react";
-import {
-  ArrowLeft01Icon,
-  ArrowRight01Icon,
-  Cancel01Icon,
-  CheckmarkCircle01Icon,
-} from "@hugeicons/core-free-icons";
+import { ArrowLeft01Icon, ArrowRight01Icon, Cancel01Icon, CheckmarkCircle01Icon } from "@hugeicons/core-free-icons";
 import { Dialog as DialogPrimitive } from "radix-ui";
 import { AnimatePresence, motion } from "motion/react";
-import {
-  useEffect,
-  useId,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { cssEscape, toRect } from "../lib/dom";
 import { fireConfettiFireworks } from "../lib/confetti-fireworks";
 import { computeCardPos, padded, pickPlacement } from "../lib/layout";
 import { SpotlightOverlay } from "./spotlight-overlay";
 import type { Placement, Rect, TourStep } from "../types";
 
-type GuidedTourProps = {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  steps: TourStep[];
-  onSkip: () => void;
-  onComplete: () => void;
-};
+type GuidedTourProps = { open: boolean; onOpenChange: (open: boolean) => void; steps: TourStep[]; onSkip: () => void; onComplete: () => void };
 
 export function GuidedTour({
   open,
@@ -108,23 +90,24 @@ export function GuidedTour({
     if (!open || !step) return;
 
     const sel = `[data-tour="${cssEscape(step.target)}"]`;
-    const found = document.querySelector(sel);
-    if (!(found instanceof HTMLElement)) {
-      setTargetRect(null);
-      return;
-    }
-    const el = found;
-
-    if (step.target !== "navbar") {
-      el.scrollIntoView({
-        block: "center",
-        inline: "center",
-        behavior: "smooth",
-      });
-    }
+    let el: HTMLElement | null = null;
+    let ro: ResizeObserver | null = null;
+    let retryTimer = 0;
+    let retries = 0;
 
     let raf = 0;
     let t = 0;
+
+    function findTarget(): HTMLElement | null {
+      const found = document.querySelector(sel);
+      if (!(found instanceof HTMLElement)) return null;
+      return found;
+    }
+
+    function isUsableTarget(candidate: HTMLElement): boolean {
+      const r = candidate.getBoundingClientRect();
+      return r.width >= 6 && r.height >= 6;
+    }
 
     function rectChanged(a: Rect | null, b: Rect): boolean {
       if (!a) return true;
@@ -136,8 +119,8 @@ export function GuidedTour({
       );
     }
 
-    function read() {
-      const r = el.getBoundingClientRect();
+    function read(candidate: HTMLElement) {
+      const r = candidate.getBoundingClientRect();
       const next = toRect(r);
       const prev = lastRectRef.current;
       if (rectChanged(prev, next)) {
@@ -150,22 +133,53 @@ export function GuidedTour({
       if (rafRef.current != null) return;
       rafRef.current = window.requestAnimationFrame(() => {
         rafRef.current = null;
-        read();
+        if (el) read(el);
       });
     }
 
-    raf = window.requestAnimationFrame(read);
-    t = window.setTimeout(schedule, 240);
+    function attach(candidate: HTMLElement) {
+      el = candidate;
 
-    const ro = new ResizeObserver(() => schedule());
-    ro.observe(el);
-    window.addEventListener("scroll", schedule, { capture: true, passive: true });
-    window.addEventListener("resize", schedule, { passive: true });
+      if (step.target !== "navbar") {
+        el.scrollIntoView({
+          block: "center",
+          inline: "center",
+          behavior: "smooth",
+        });
+      }
+
+      raf = window.requestAnimationFrame(() => read(el!));
+      t = window.setTimeout(schedule, 240);
+
+      ro = new ResizeObserver(() => schedule());
+      ro.observe(el);
+      window.addEventListener("scroll", schedule, { capture: true, passive: true });
+      window.addEventListener("resize", schedule, { passive: true });
+    }
+
+    function tryAttach(): boolean {
+      const candidate = findTarget();
+      if (!candidate) return false;
+      if (!isUsableTarget(candidate)) return false;
+      attach(candidate);
+      return true;
+    }
+
+    if (!tryAttach()) {
+      setTargetRect(null);
+      retryTimer = window.setInterval(() => {
+        retries += 1;
+        if (tryAttach() || retries > 40) {
+          window.clearInterval(retryTimer);
+        }
+      }, 50);
+    }
 
     return () => {
       window.cancelAnimationFrame(raf);
       window.clearTimeout(t);
-      ro.disconnect();
+      if (retryTimer) window.clearInterval(retryTimer);
+      ro?.disconnect();
       window.removeEventListener("scroll", schedule, true);
       window.removeEventListener("resize", schedule);
       if (rafRef.current != null) {
@@ -173,7 +187,7 @@ export function GuidedTour({
         rafRef.current = null;
       }
     };
-  }, [open, step]);
+  }, [open, step?.id]);
 
   useLayoutEffect(() => {
     if (!open || !spotlightRect || !vw || !vh) return;
