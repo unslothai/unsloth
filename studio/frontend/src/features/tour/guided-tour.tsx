@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { ShineBorder } from "@/components/ui/shine-border";
 import { cn } from "@/lib/utils";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -313,16 +314,25 @@ export function GuidedTour({
                   transition={{ duration: 0.22, ease: [0.165, 0.84, 0.44, 1] }}
                   className={cn(
                     "relative overflow-hidden rounded-[28px] corner-squircle",
-                    "bg-[#0b0f16]/95 text-white ring-1 ring-white/10",
-                    "shadow-[0_30px_120px_rgba(0,0,0,0.65)]",
+                    "bg-white/95 text-foreground ring-1 ring-black/10",
+                    "shadow-[0_30px_120px_rgba(0,0,0,0.35)]",
                   )}
                   style={{
                     fontFamily: "'Figtree Variable', ui-sans-serif, sans-serif",
                   }}
                 >
+                  <ShineBorder
+                    borderWidth={1}
+                    duration={12}
+                    shineColor={[
+                      "rgba(16,185,129,0.65)",
+                      "rgba(34,211,238,0.65)",
+                      "rgba(16,185,129,0.35)",
+                    ]}
+                  />
                   <div
                     className={cn(
-                      "absolute z-10 size-3 rotate-45 rounded-[3px] bg-[#0b0f16]/95 ring-1 ring-white/10",
+                      "absolute z-10 size-3 rotate-45 rounded-[3px] bg-white/95 ring-1 ring-black/10",
                       placement === "right" &&
                         "-left-1 top-1/2 -translate-y-1/2",
                       placement === "left" &&
@@ -335,15 +345,15 @@ export function GuidedTour({
                     aria-hidden={true}
                   />
                   <div className="absolute inset-x-0 top-0 h-20 bg-gradient-to-b from-emerald-400/18 via-cyan-300/6 to-transparent" />
-                  <div className="absolute -left-14 -top-16 size-44 rounded-full bg-emerald-400/10 blur-2xl" />
-                  <div className="absolute -right-14 -bottom-16 size-44 rounded-full bg-cyan-300/10 blur-2xl" />
+                  <div className="absolute -left-14 -top-16 size-44 rounded-full bg-emerald-400/20 blur-2xl" />
+                  <div className="absolute -right-14 -bottom-16 size-44 rounded-full bg-cyan-300/18 blur-2xl" />
 
                   <div className="relative p-5">
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
-                        <div className="inline-flex items-center gap-2 rounded-full bg-white/6 px-2.5 py-1 text-[10px] font-mono text-white/70 ring-1 ring-white/10">
+                        <div className="inline-flex items-center gap-2 rounded-full bg-black/[0.04] px-2.5 py-1 text-[10px] font-mono text-foreground/60 ring-1 ring-black/10">
                           {idx + 1}/{total}
-                          <span className="size-1 rounded-full bg-emerald-300/70" />
+                          <span className="size-1 rounded-full bg-emerald-500/70" />
                           guided tour
                         </div>
                         <DialogPrimitive.Title
@@ -352,7 +362,7 @@ export function GuidedTour({
                         >
                           {step?.title ?? "Quick tour"}
                         </DialogPrimitive.Title>
-                        <DialogPrimitive.Description className="mt-1.5 text-sm leading-relaxed text-white/72">
+                        <DialogPrimitive.Description className="mt-1.5 text-sm leading-relaxed text-foreground/70">
                           {step?.body ?? "Let’s get you oriented."}
                         </DialogPrimitive.Description>
                       </div>
@@ -360,7 +370,7 @@ export function GuidedTour({
                       <Button
                         variant="ghost"
                         size="icon-sm"
-                        className="text-white/70 hover:text-white hover:bg-white/8"
+                        className="text-foreground/60 hover:text-foreground hover:bg-black/[0.05]"
                         onClick={() => requestClose("skip")}
                         aria-label="Skip tour"
                       >
@@ -371,7 +381,7 @@ export function GuidedTour({
                     <div className="mt-5 flex items-center justify-between gap-3">
                       <Button
                         variant="ghost"
-                        className="text-white/70 hover:text-white hover:bg-white/8"
+                        className="text-foreground/60 hover:text-foreground hover:bg-black/[0.05]"
                         onClick={() => requestClose("skip")}
                       >
                         Skip
@@ -380,7 +390,7 @@ export function GuidedTour({
                       <div className="flex items-center gap-2">
                         <Button
                           variant="outline"
-                          className="border-white/12 bg-white/6 text-white hover:bg-white/10 hover:text-white"
+                          className="border-black/10 bg-white/70 text-foreground hover:bg-white hover:text-foreground"
                           disabled={idx === 0}
                           onClick={() => setIdx((i) => Math.max(0, i - 1))}
                         >
@@ -390,7 +400,7 @@ export function GuidedTour({
                         {isLast ? (
                           <Button
                             variant="dark"
-                            className="bg-gradient-to-r from-emerald-300 to-cyan-200 text-black hover:from-emerald-200 hover:to-cyan-100"
+                            className="bg-gradient-to-r from-emerald-500 to-cyan-400 text-white hover:from-emerald-600 hover:to-cyan-500"
                             onClick={() => requestClose("complete")}
                           >
                             <HugeiconsIcon icon={CheckmarkCircle01Icon} className="size-4" />
@@ -399,7 +409,7 @@ export function GuidedTour({
                         ) : (
                           <Button
                             variant="dark"
-                            className="bg-gradient-to-r from-emerald-300 to-cyan-200 text-black hover:from-emerald-200 hover:to-cyan-100"
+                            className="bg-gradient-to-r from-emerald-500 to-cyan-400 text-white hover:from-emerald-600 hover:to-cyan-500"
                             onClick={() => setIdx((i) => Math.min(total - 1, i + 1))}
                           >
                             Next
@@ -410,8 +420,8 @@ export function GuidedTour({
                     </div>
                   </div>
 
-                  <div className="h-px bg-gradient-to-r from-transparent via-white/12 to-transparent" />
-                  <div className="px-5 py-3 text-[11px] text-white/55">
+                  <div className="h-px bg-gradient-to-r from-transparent via-black/10 to-transparent" />
+                  <div className="px-5 py-3 text-[11px] text-foreground/55">
                     Tip: `Esc` skips. Tour blocks clicks so you can read.
                   </div>
                 </motion.div>

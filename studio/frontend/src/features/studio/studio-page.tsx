@@ -33,22 +33,34 @@ export function StudioPage(): ReactElement {
   const tourSteps = useMemo<TourStep[]>(
     () => [
       {
-        id: "header",
-        target: "studio-header",
-        title: "This page is a pipeline",
-        body: "Pick a base model, attach data, tune params, then launch training. We’ll hit the 5 things that matter.",
+        id: "nav",
+        target: "navbar",
+        title: "Quick orientation",
+        body: "Studio is where you fine-tune. Export ships results. Chat is for poking at models. This tour is Studio-only (for now).",
       },
       {
-        id: "model",
-        target: "studio-model",
-        title: "Choose model + method",
-        body: "Base model sets your ceiling. Method sets speed vs quality. Start here, then everything else follows.",
+        id: "local-model",
+        target: "studio-local-model",
+        title: "Local model path",
+        body: "Point to a local folder (`./models/...`) or a custom HF repo. Use this when you already downloaded weights.",
+      },
+      {
+        id: "base-model",
+        target: "studio-base-model",
+        title: "Base model from Hugging Face",
+        body: "Search Hub here. Paste `org/model` too. Pick something close to your target domain to save compute.",
+      },
+      {
+        id: "method",
+        target: "studio-method",
+        title: "Method: QLoRA vs LoRA vs Full",
+        body: "QLoRA: lowest VRAM (4-bit). LoRA: fast + solid (16-bit adapters). Full: slowest, highest cost, updates all weights.",
       },
       {
         id: "dataset",
         target: "studio-dataset",
-        title: "Bring a dataset",
-        body: "Search Hub or paste `user/dataset`. Preview a few rows before you commit hours of compute.",
+        title: "Dataset",
+        body: "Search Hub or paste `user/dataset`. Preview a few rows before you burn hours of compute.",
       },
       {
         id: "params",
@@ -102,7 +114,7 @@ export function StudioPage(): ReactElement {
         )}
 
         {/* Header */}
-        <div data-tour="studio-header" className="mb-8 flex flex-col gap-0.5">
+        <div className="mb-8 flex flex-col gap-0.5">
           <h1 className="text-2xl font-semibold tracking-tight">
             Fine-tuning Studio
           </h1>
