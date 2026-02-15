@@ -22,25 +22,6 @@ export type ValidateResponse = {
   raw_detail?: string | null;
 };
 
-export type ToolsResponse = {
-  // biome-ignore lint/style/useNamingConvention: api schema
-  tools_by_provider: Record<string, string[]>;
-  tools: string[];
-};
-
-export type SeedInspectResponse = {
-  // biome-ignore lint/style/useNamingConvention: api schema
-  repo_id: string;
-  splits: string[];
-  // biome-ignore lint/style/useNamingConvention: api schema
-  globs_by_split: Record<string, string>;
-  columns: string[];
-};
-
-export type SeedPreviewResponse = {
-  rows: Record<string, unknown>[];
-};
-
 async function parseErrorResponse(response: Response): Promise<string> {
   const text = (await response.text()).trim();
   if (!text) {
@@ -90,14 +71,4 @@ export async function validateRecipe(
   return postJson<ValidateResponse>("/validate", payload);
 }
 
-export async function listRecipeTools(payload: unknown): Promise<ToolsResponse> {
-  return postJson<ToolsResponse>("/tools", payload);
-}
-
-export async function inspectSeedDataset(payload: unknown): Promise<SeedInspectResponse> {
-  return postJson<SeedInspectResponse>("/seed/inspect", payload);
-}
-
-export async function previewSeedDataset(payload: unknown): Promise<SeedPreviewResponse> {
-  return postJson<SeedPreviewResponse>("/seed/preview", payload);
-}
+// NOTE: tools + seed inspect/preview endpoints removed from harness.
