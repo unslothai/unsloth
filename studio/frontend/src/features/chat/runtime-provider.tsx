@@ -331,47 +331,47 @@ function createDexieAdapter(
     async generateTitle(remoteId: string, messages: readonly ThreadMessage[]) {
       const autoTitle = useChatRuntimeStore.getState().autoTitle;
       const thread = await db.threads.get(remoteId);
-      if (!thread) {
-        return createAssistantStream((c) => {
-          c.appendText("New Chat");
-          c.close();
-        });
-      }
+      const defaultTitle = "New Chat";
 
-      // Only generate once per thread/pair.
-      if (thread.title && thread.title !== "New Chat") {
-        return createAssistantStream((c) => {
-          c.appendText(thread.title);
-          c.close();
-        });
-      }
-
-      const firstUser = messages.find((m) => m.role === "user");
-      const userText = extractTextParts(firstUser) || "New Chat";
-
-      if (!autoTitle) {
-        const title = fallbackTitleFromUserText(userText);
-        await db.threads.update(remoteId, { title });
-        if (pairId) {
-          const paired = await db.threads
-            .where("pairId")
-            .equals(pairId)
-            .filter((t) => t.id !== remoteId)
-            .first();
-          if (paired) await db.threads.update(paired.id, { title });
-        }
+      function streamTitle(title: string) {
         return createAssistantStream((c) => {
           c.appendText(title);
           c.close();
         });
       }
 
+      async function persistTitle(title: string): Promise<void> {
+        await db.threads.update(remoteId, { title });
+        if (!pairId) return;
+        const paired = await db.threads
+          .where("pairId")
+          .equals(pairId)
+          .filter((t) => t.id !== remoteId)
+          .first();
+        if (paired) await db.threads.update(paired.id, { title });
+      }
+
+      if (!thread) {
+        return streamTitle(defaultTitle);
+      }
+
+      // Only generate once per thread/pair.
+      if (thread.title && thread.title !== "New Chat") {
+        return streamTitle(thread.title);
+      }
+
+      const firstUser = messages.find((m) => m.role === "user");
+      const userText = extractTextParts(firstUser) || defaultTitle;
+
+      if (!autoTitle) {
+        const title = fallbackTitleFromUserText(userText);
+        await persistTitle(title);
+        return streamTitle(title);
+      }
+
       const key = pairId ? `pair:${pairId}` : `thread:${remoteId}`;
       if (inflightTitleByKey.has(key)) {
-        return createAssistantStream((c) => {
-          c.appendText(thread.title || "New Chat");
-          c.close();
-        });
+        return streamTitle(thread.title || defaultTitle);
       }
 
       // Compare: wait until both threads done.
@@ -388,10 +388,7 @@ function createDexieAdapter(
             setTimeout(() => {
               void createDexieAdapter(modelType, pairId).generateTitle(remoteId, messages);
             }, 600);
-            return createAssistantStream((c) => {
-              c.appendText(thread.title || "New Chat");
-              c.close();
-            });
+            return streamTitle(thread.title || defaultTitle);
           }
         }
       }
@@ -404,20 +401,8 @@ function createDexieAdapter(
           })) ||
           fallbackTitleFromUserText(userText);
 
-        await db.threads.update(remoteId, { title });
-        if (pairId) {
-          const paired = await db.threads
-            .where("pairId")
-            .equals(pairId)
-            .filter((t) => t.id !== remoteId)
-            .first();
-          if (paired) await db.threads.update(paired.id, { title });
-        }
-
-        return createAssistantStream((c) => {
-          c.appendText(title);
-          c.close();
-        });
+        await persistTitle(title);
+        return streamTitle(title);
       } finally {
         inflightTitleByKey.delete(key);
       }
