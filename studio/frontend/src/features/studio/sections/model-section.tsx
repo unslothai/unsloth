@@ -169,19 +169,20 @@ export function ModelSection() {
   );
 
   return (
-    <SectionCard
-      icon={<HugeiconsIcon icon={ChipIcon} className="size-5" />}
-      title="Model"
-      description="Select base model and training method"
-      accent="emerald"
-      featured={true}
-      badge="2x Faster Training"
-      className="col-span-12 shadow-border ring-1 ring-border"
-    >
-      <div className="grid gap-4 lg:grid-cols-4">
-        <div className="flex flex-col gap-2">
-          <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-            Local Model
+    <div data-tour="studio-model" className="col-span-12">
+      <SectionCard
+        icon={<HugeiconsIcon icon={ChipIcon} className="size-5" />}
+        title="Model"
+        description="Select base model and training method"
+        accent="emerald"
+        featured={true}
+        badge="2x Faster Training"
+        className="shadow-border ring-1 ring-border"
+      >
+        <div className="grid gap-4 lg:grid-cols-4">
+          <div data-tour="studio-local-model" className="flex flex-col gap-2">
+            <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+              Local Model
             <Tooltip>
               <TooltipTrigger asChild={true}>
                 <button
@@ -207,7 +208,7 @@ export function ModelSection() {
           </InputGroup>
         </div>
 
-        <div className="flex flex-col gap-2">
+          <div data-tour="studio-base-model" className="flex flex-col gap-2">
           <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
             Base Model
             <Tooltip>
@@ -332,7 +333,7 @@ export function ModelSection() {
           </div>
         </div>
 
-        <div className="flex flex-col gap-2">
+          <div data-tour="studio-method" className="flex flex-col gap-2">
           <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
             Method
             <Tooltip>
@@ -416,7 +417,8 @@ export function ModelSection() {
             />
           </InputGroup>
         </div>
-      </div>
-    </SectionCard>
+        </div>
+      </SectionCard>
+    </div>
   );
 }

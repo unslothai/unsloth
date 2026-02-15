@@ -114,14 +114,15 @@ export function ParamsSection(): ReactElement {
   const [hyperOpen, setHyperOpen] = useState(false);
 
   return (
-    <SectionCard
-      icon={<HugeiconsIcon icon={Settings04Icon} className="size-5" />}
-      title="Parameters"
-      description="Configure training hyperparameters"
-      accent="orange"
-      className="lg:col-span-4 min-h-[450px]"
-    >
-      <div className="flex flex-col gap-4">
+    <div data-tour="studio-params" className="lg:col-span-4">
+      <SectionCard
+        icon={<HugeiconsIcon icon={Settings04Icon} className="size-5" />}
+        title="Parameters"
+        description="Configure training hyperparameters"
+        accent="orange"
+        className="min-h-[450px]"
+      >
+        <div className="flex flex-col gap-4">
         {/* Epochs */}
         <div className="flex flex-col gap-2">
           <div className="flex items-center justify-between">
@@ -724,7 +725,8 @@ export function ParamsSection(): ReactElement {
             </Tabs>
           </CollapsibleContent>
         </Collapsible>
-      </div>
-    </SectionCard>
+        </div>
+      </SectionCard>
+    </div>
   );
 }
