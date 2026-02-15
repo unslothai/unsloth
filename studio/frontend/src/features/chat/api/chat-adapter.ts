@@ -1,4 +1,5 @@
 import type { ChatModelAdapter } from "@assistant-ui/react";
+import { toast } from "sonner";
 import { streamChatCompletions } from "./chat-api";
 import { db } from "../db";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
@@ -106,6 +107,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       const { params } = state;
 
       if (!params.checkpoint) {
+        toast.error("No model loaded", {
+          description: "Pick model in top bar, then retry.",
+        });
         throw new Error("Load a model first.");
       }
 
@@ -126,6 +130,29 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
 
       const threadKey = unstable_threadId || "__default";
       let waitingFirstChunk = true;
+      let hasResolvedFirstToken = false;
+      let resolveFirstToken: (() => void) | undefined;
+      let rejectFirstToken: ((err: unknown) => void) | undefined;
+      const firstTokenPromise = new Promise<void>((resolve, reject) => {
+        resolveFirstToken = resolve;
+        rejectFirstToken = reject;
+      });
+      // Avoid unhandled rejections if toast.promise never attached.
+      void firstTokenPromise.catch(() => {});
+      let warmupToastShown = false;
+      const warmupDelayMs = 450;
+      const warmupTimer = setTimeout(() => {
+        if (!waitingFirstChunk || abortSignal.aborted) return;
+        warmupToastShown = true;
+        toast.promise(firstTokenPromise, {
+          loading: "Warming up model",
+          success: "Generating",
+          error: (err) =>
+            err instanceof Error && err.message ? err.message : "Generation failed",
+          description: "Waiting for first token.",
+          duration: 900,
+        });
+      }, warmupDelayMs);
       useChatRuntimeStore.getState().setThreadWarming(threadKey, true);
       useChatRuntimeStore.getState().setThreadRunning(threadKey, true);
       let cumulativeText = "";
@@ -157,6 +184,10 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           if (waitingFirstChunk) {
             waitingFirstChunk = false;
             useChatRuntimeStore.getState().setThreadWarming(threadKey, false);
+            if (!hasResolvedFirstToken) {
+              hasResolvedFirstToken = true;
+              resolveFirstToken?.();
+            }
           }
 
           cumulativeText += delta;
@@ -176,9 +207,39 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             };
           }
         }
+        if (!hasResolvedFirstToken) {
+          hasResolvedFirstToken = true;
+          resolveFirstToken?.();
+        }
+      } catch (err) {
+        if (!hasResolvedFirstToken) {
+          hasResolvedFirstToken = true;
+          rejectFirstToken?.(
+            err instanceof Error ? err : new Error("Generation failed"),
+          );
+        }
+        const isEarly = waitingFirstChunk;
+        if (!abortSignal.aborted && !(warmupToastShown && isEarly)) {
+          toast.error("Generation failed", {
+            description: err instanceof Error ? err.message : "Unknown error",
+          });
+        }
+        throw err;
       } finally {
+        clearTimeout(warmupTimer);
         if (waitingFirstChunk) {
           useChatRuntimeStore.getState().setThreadWarming(threadKey, false);
+          if (warmupToastShown && !hasResolvedFirstToken) {
+            hasResolvedFirstToken = true;
+            rejectFirstToken?.(
+              abortSignal.aborted
+                ? new Error("Cancelled")
+                : new Error("No tokens received"),
+            );
+          } else if (!hasResolvedFirstToken) {
+            hasResolvedFirstToken = true;
+            resolveFirstToken?.();
+          }
         }
         useChatRuntimeStore.getState().setThreadRunning(threadKey, false);
       }
