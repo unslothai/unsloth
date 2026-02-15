@@ -209,7 +209,7 @@ if not UNSLOTH_ENABLE_LOGGING:
     # Apex ROCm fused RoPE backend selection warning when Aiter is enabled.
     warnings.filterwarnings(
         "ignore",
-        message = r"^Aiter backend is selected for fused RoPE\.",
+        message = r"^Aiter backend is selected for fused RoPE\.?",
         category = UserWarning,
         module = r"^apex\.transformer\.functional\.fused_rope$",
     )
