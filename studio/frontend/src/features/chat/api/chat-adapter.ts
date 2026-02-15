@@ -127,6 +127,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       const threadKey = unstable_threadId || "__default";
       let waitingFirstChunk = true;
       useChatRuntimeStore.getState().setThreadWarming(threadKey, true);
+      useChatRuntimeStore.getState().setThreadRunning(threadKey, true);
       let cumulativeText = "";
       let reasoningStartAt: number | null = null;
       let reasoningDuration = 0;
@@ -179,6 +180,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         if (waitingFirstChunk) {
           useChatRuntimeStore.getState().setThreadWarming(threadKey, false);
         }
+        useChatRuntimeStore.getState().setThreadRunning(threadKey, false);
       }
     },
   };
