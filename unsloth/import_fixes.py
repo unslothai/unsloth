@@ -1440,6 +1440,7 @@ def disable_broken_causal_conv1d():
 
     try:
         import causal_conv1d  # noqa: F401
+
         return
     except Exception as error:
         if not _is_broken_causal_conv1d_error(error):
