@@ -273,7 +273,7 @@ export function ChatSettingsPanel({
           <CollapsibleSection
             icon={SlidersHorizontalIcon}
             label="Sampling"
-            defaultOpen={true}
+            defaultOpen={false}
           >
             <div className="flex flex-col gap-5">
               <ParamSlider
