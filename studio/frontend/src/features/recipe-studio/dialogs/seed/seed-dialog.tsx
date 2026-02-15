@@ -14,7 +14,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Spinner } from "@/components/ui/spinner";
 import {
   Table,
   TableBody,
@@ -30,7 +29,6 @@ import {
   TabsTrigger,
 } from "@/components/ui/tabs";
 import { type ReactElement, useMemo, useState } from "react";
-import { inspectSeedDataset, previewSeedDataset } from "../../api";
 import type {
   SeedConfig,
   SeedSamplingStrategy,
@@ -84,17 +82,8 @@ function stringifyCell(value: unknown): string {
   }
 }
 
-function parseOptionalInt(value: string | undefined): number | null {
-  const trimmed = value?.trim();
-  if (!trimmed) return null;
-  const num = Number(trimmed);
-  return Number.isFinite(num) ? num : null;
-}
-
 export function SeedDialog({ config, onUpdate }: SeedDialogProps): ReactElement {
-  const [inspectLoading, setInspectLoading] = useState(false);
   const [inspectError, setInspectError] = useState<string | null>(null);
-  const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [previewRows, setPreviewRows] = useState<Record<string, unknown>[]>([]);
 
@@ -111,84 +100,12 @@ export function SeedDialog({ config, onUpdate }: SeedDialogProps): ReactElement 
   const selectionId = `${config.id}-selection`;
 
   async function onInspect(): Promise<void> {
-    setInspectError(null);
-    const repo_id = repoId;
-    if (!repo_id) {
-      setInspectError("Invalid HF dataset URL (need /datasets/org/repo).");
-      return;
-    }
-    setInspectLoading(true);
-    try {
-      const res = await inspectSeedDataset({
-        // biome-ignore lint/style/useNamingConvention: api schema
-        repo_id,
-        // biome-ignore lint/style/useNamingConvention: api schema
-        hf_token: config.hf_token?.trim() || null,
-        split: config.hf_split?.trim() || null,
-      });
-      const splits = res.splits ?? [];
-      const globs = res.globs_by_split ?? {};
-      let nextSplit = "";
-      if (config.hf_split && splits.includes(config.hf_split)) {
-        nextSplit = config.hf_split;
-      } else if (splits[0]) {
-        nextSplit = splits[0];
-      }
-
-      const nextPath = nextSplit ? (globs[nextSplit] ?? "") : "";
-      onUpdate({
-        hf_repo_id: res.repo_id,
-        seed_splits: splits,
-        seed_globs_by_split: globs,
-        seed_columns: res.columns ?? [],
-        hf_split: nextSplit,
-        hf_path: nextPath || config.hf_path,
-      });
-    } catch (err) {
-      setInspectError(err instanceof Error ? err.message : "Inspect failed.");
-    } finally {
-      setInspectLoading(false);
-    }
+    setInspectError("Seed inspect disabled (backend /seed/inspect removed).");
   }
 
   async function onPreview(): Promise<void> {
-    setPreviewError(null);
-    const hf_path = config.hf_path.trim();
-    if (!hf_path) {
-      setPreviewError("HF path missing (Load first).");
-      return;
-    }
-    setPreviewLoading(true);
-    try {
-      const res = await previewSeedDataset({
-        // biome-ignore lint/style/useNamingConvention: api schema
-        hf_path,
-        // biome-ignore lint/style/useNamingConvention: api schema
-        hf_token: config.hf_token?.trim() || null,
-        // biome-ignore lint/style/useNamingConvention: api schema
-        sampling_strategy: config.sampling_strategy,
-        // biome-ignore lint/style/useNamingConvention: api schema
-        selection_type: config.selection_type,
-        // biome-ignore lint/style/useNamingConvention: api schema
-        selection_start: parseOptionalInt(config.selection_start),
-        // biome-ignore lint/style/useNamingConvention: api schema
-        selection_end: parseOptionalInt(config.selection_end),
-        // biome-ignore lint/style/useNamingConvention: api schema
-        selection_index: parseOptionalInt(config.selection_index),
-        // biome-ignore lint/style/useNamingConvention: api schema
-        selection_num_partitions: parseOptionalInt(config.selection_num_partitions),
-        limit: 10,
-      });
-      const rows = res.rows ?? [];
-      setPreviewRows(rows);
-      if ((config.seed_columns?.length ?? 0) === 0 && rows[0]) {
-        onUpdate({ seed_columns: Object.keys(rows[0]) });
-      }
-    } catch (err) {
-      setPreviewError(err instanceof Error ? err.message : "Preview failed.");
-    } finally {
-      setPreviewLoading(false);
-    }
+    setPreviewError("Seed preview disabled (backend /seed/preview removed).");
+    setPreviewRows([]);
   }
 
   const previewColumns = useMemo(() => {
@@ -227,11 +144,10 @@ export function SeedDialog({ config, onUpdate }: SeedDialogProps): ReactElement 
                 variant="outline"
                 className="nodrag"
                 onClick={() => void onInspect()}
-                disabled={inspectLoading}
+                disabled
               >
-                {inspectLoading ? "Loading..." : "Load"}
+                Load (disabled)
               </Button>
-              {inspectLoading && <Spinner />}
             </div>
             <p className="text-xs text-muted-foreground">
               Repo: {repoId ?? "-"}
@@ -433,9 +349,9 @@ export function SeedDialog({ config, onUpdate }: SeedDialogProps): ReactElement 
                     variant="outline"
                     className="nodrag"
                     onClick={() => void onPreview()}
-                    disabled={previewLoading}
+                    disabled
                   >
-                    {previewLoading ? "Loading..." : "Load 10 rows"}
+                    Load 10 rows (disabled)
                   </Button>
                 </EmptyContent>
               </Empty>
@@ -448,11 +364,10 @@ export function SeedDialog({ config, onUpdate }: SeedDialogProps): ReactElement 
                   variant="outline"
                   className="nodrag"
                   onClick={() => void onPreview()}
-                  disabled={previewLoading}
+                  disabled
                 >
-                  {previewLoading ? "Loading..." : "Reload 10 rows"}
+                  Reload 10 rows (disabled)
                 </Button>
-                {previewLoading && <Spinner />}
               </div>
               <Table className="border border-border/60 rounded-xl">
                 <TableHeader>
