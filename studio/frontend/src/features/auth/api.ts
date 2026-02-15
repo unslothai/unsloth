@@ -10,6 +10,26 @@ type RefreshResponse = {
   refresh_token: string;
 };
 
+let isRedirecting = false;
+
+async function redirectToAuth(): Promise<void> {
+  if (isRedirecting) return;
+  isRedirecting = true;
+
+  let target = "/login";
+  try {
+    const res = await fetch("/api/auth/status");
+    if (res.ok) {
+      const data = (await res.json()) as { initialized: boolean };
+      if (!data.initialized) target = "/signup";
+    }
+  } catch {
+    // Fall through to /login on error
+  }
+
+  window.location.href = target;
+}
+
 export async function refreshSession(): Promise<boolean> {
   const refreshToken = getRefreshToken();
   if (!refreshToken) return false;
@@ -48,7 +68,11 @@ export async function authFetch(
   if (response.status !== 401) return response;
 
   const refreshed = await refreshSession();
-  if (!refreshed) return response;
+  if (!refreshed) {
+    clearAuthTokens();
+    void redirectToAuth();
+    return response;
+  }
 
   const retryHeaders = new Headers(init?.headers);
   const newToken = getAuthToken();

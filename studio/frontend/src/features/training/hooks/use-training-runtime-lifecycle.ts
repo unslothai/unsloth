@@ -1,3 +1,4 @@
+import { hasAuthToken } from "@/features/auth";
 import { useEffect } from "react";
 import {
   getTrainingMetrics,
@@ -48,6 +49,7 @@ export function useTrainingRuntimeLifecycle(): void {
     };
 
     const pollMetrics = async () => {
+      if (!hasAuthToken()) return;
       const gen = runtimeStore.getState().resetGeneration;
       try {
         const metrics = await getTrainingMetrics();
@@ -56,13 +58,14 @@ export function useTrainingRuntimeLifecycle(): void {
         }
         runtimeStore.getState().applyMetrics(metrics);
       } catch (error) {
-        if (!isAbortError(error) && !disposed) {
+        if (!isAbortError(error) && !disposed && hasAuthToken()) {
           runtimeStore.getState().setSseConnected(false);
         }
       }
     };
 
     const pollStatus = async () => {
+      if (!hasAuthToken()) return;
       const gen = runtimeStore.getState().resetGeneration;
       try {
         const status = await getTrainingStatus();
@@ -79,7 +82,7 @@ export function useTrainingRuntimeLifecycle(): void {
           stopStream();
         }
       } catch (error) {
-        if (!isAbortError(error) && !disposed) {
+        if (!isAbortError(error) && !disposed && hasAuthToken()) {
           runtimeStore.getState().setSseConnected(false);
         }
       }
