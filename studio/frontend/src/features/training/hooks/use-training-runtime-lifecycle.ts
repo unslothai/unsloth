@@ -48,9 +48,10 @@ export function useTrainingRuntimeLifecycle(): void {
     };
 
     const pollMetrics = async () => {
+      const gen = runtimeStore.getState().resetGeneration;
       try {
         const metrics = await getTrainingMetrics();
-        if (disposed) {
+        if (disposed || runtimeStore.getState().resetGeneration !== gen) {
           return;
         }
         runtimeStore.getState().applyMetrics(metrics);
@@ -62,9 +63,10 @@ export function useTrainingRuntimeLifecycle(): void {
     };
 
     const pollStatus = async () => {
+      const gen = runtimeStore.getState().resetGeneration;
       try {
         const status = await getTrainingStatus();
-        if (disposed) {
+        if (disposed || runtimeStore.getState().resetGeneration !== gen) {
           return;
         }
 
