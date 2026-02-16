@@ -646,20 +646,6 @@ class MacPatcher:
             
             return self._create_patch_result(name, PatchStatus.SUCCESS, "bitsandbytes mocked")
             
-            # Also patch unsloth_zoo.patching_utils to handle None Bnb_Linear4bit
-            try:
-                import unsloth_zoo.patching_utils
-                if not hasattr(unsloth_zoo.patching_utils, '_mps_patched'):
-                    class _DummyBnbLinear:
-                        pass
-                    if unsloth_zoo.patching_utils.Bnb_Linear4bit is None:
-                        unsloth_zoo.patching_utils.Bnb_Linear4bit = _DummyBnbLinear
-                    if unsloth_zoo.patching_utils.Peft_Linear4bit is None:
-                        unsloth_zoo.patching_utils.Peft_Linear4bit = _DummyBnbLinear
-                    unsloth_zoo.patching_utils._mps_patched = True
-            except ImportError:
-                pass
-            
         except Exception as e:
             return self._create_patch_result(name, PatchStatus.FAILED, str(e), e)
     

@@ -2695,6 +2695,13 @@ class FastLlamaModel:
 
     @staticmethod
     def post_patch(model, tokenizer):
+        from unsloth_zoo import patching_utils
+        if patching_utils.Bnb_Linear4bit is None:
+            class _DummyBnbLinear:
+                pass
+            patching_utils.Bnb_Linear4bit = _DummyBnbLinear
+            patching_utils.Peft_Linear4bit = _DummyBnbLinear
+        
         model, tokenizer = patch_model_and_tokenizer(
             model, tokenizer, downcast_rope=True
         )
