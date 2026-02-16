@@ -55,6 +55,7 @@ export function buildTrainingStartPayload(
     finetune_language_layers: config.finetuneLanguageLayers,
     finetune_attention_modules: config.finetuneAttentionModules,
     finetune_mlp_modules: config.finetuneMLPModules,
+    is_dataset_multimodal: !!config.isDatasetMultimodal,
     enable_wandb: config.enableWandb,
     wandb_token: config.enableWandb ? config.wandbToken.trim() || null : null,
     wandb_project: config.enableWandb
@@ -73,7 +74,7 @@ function buildCustomFormatMapping(
   const { input, output } = config.datasetManualMapping;
   if (!input || !output) return undefined;
 
-  if (config.modelType === "vision") {
+  if (config.isVisionModel && config.isDatasetMultimodal) {
     return { [input]: "image", [output]: "text" };
   }
 

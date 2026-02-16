@@ -111,17 +111,21 @@ class UnslothTrainer:
                    model_name: str,
                    max_seq_length: int = 2048,
                    load_in_4bit: bool = True,
-                   hf_token: Optional[str] = None) -> bool:
+                   hf_token: Optional[str] = None,
+                   is_dataset_multimodal: bool = False) -> bool:
         """Load model for training (supports both text and vision models)"""
         try:
             print("\nClearing GPU memory before training...")
             clear_gpu_cache()
 
-            # Detect if this is a vision model first
-            self.is_vlm = is_vision_model(model_name)
+            # Detect if this is a vision model AND dataset is multimodal
+            # A vision-capable model with a text-only dataset should use FastLanguageModel
+            self.is_vlm = is_vision_model(model_name) and is_dataset_multimodal
             self.model_name = model_name
 
-            logger.info(f"Model type detected: {'Vision' if self.is_vlm else 'Text'}")
+            logger.info(f"Model architecture is vision: {is_vision_model(model_name)}")
+            logger.info(f"Dataset is multimodal: {is_dataset_multimodal}")
+            logger.info(f"Using VLM path: {self.is_vlm}")
 
             # Reset training state for new run
             self._update_progress(

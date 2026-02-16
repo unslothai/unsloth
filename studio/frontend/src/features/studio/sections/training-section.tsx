@@ -38,6 +38,9 @@ export function TrainingSection() {
   const store = useTrainingConfigStore();
   const { isStarting, startError, startTrainingRun } = useTrainingActions();
   const [logOpen, setLogOpen] = useState(false);
+  const isIncompatible =
+    !store.isVisionModel && store.isDatasetMultimodal === true;
+
 
   return (
     <div data-tour="studio-training" className="lg:col-span-4">
@@ -98,13 +101,18 @@ export function TrainingSection() {
           data-tour="studio-start"
           className="w-full cursor-pointer bg-gradient-to-r from-emerald-500 to-teal-500 text-white hover:from-emerald-600 hover:to-teal-600"
           onClick={() => void startTrainingRun()}
-          disabled={isStarting}
+          disabled={isStarting || isIncompatible}
         >
           <HugeiconsIcon icon={Rocket01Icon} className="size-4" />
           {isStarting ? "Starting..." : "Start Training"}
         </Button>
         {startError && (
           <p className="text-xs text-red-500 leading-relaxed">{startError}</p>
+        )}
+        {isIncompatible && (
+          <p className="text-xs text-red-500 leading-relaxed">
+            Text model is not compatible with a multimodal dataset. Switch to a vision model or choose a text-only dataset.
+          </p>
         )}
 
         {/* Save / Clear */}
