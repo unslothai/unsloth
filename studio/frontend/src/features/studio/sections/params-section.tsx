@@ -648,6 +648,20 @@ export function ParamsSection(): ReactElement {
                     className="w-28 font-mono"
                   />
                 </Row>
+                <Row
+                  label="Eval Steps"
+                  tooltip="Fraction of total training steps between evaluations. E.g. 0.01 = evaluate every 1% of steps."
+                >
+                  <Input
+                    type="number"
+                    step="0.01"
+                    min="0.001"
+                    max="1"
+                    value={store.evalSteps}
+                    onChange={(e) => store.setEvalSteps(Number(e.target.value))}
+                    className="w-28 font-mono"
+                  />
+                </Row>
                 <Row label="Seed" tooltip="Random seed for reproducibility.">
                   <Input
                     type="number"

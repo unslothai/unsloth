@@ -12,6 +12,7 @@ export interface TrainingStatusResponse {
   job_id: string;
   phase: TrainingPhase;
   is_training_running: boolean;
+  eval_enabled: boolean;
   message: string;
   error: string | null;
   details?: {
@@ -25,6 +26,8 @@ export interface TrainingStatusResponse {
     steps?: number[];
     loss?: number[];
     lr?: number[];
+    eval_loss?: number[];
+    eval_steps?: number[];
   } | null;
 }
 
@@ -49,6 +52,7 @@ export interface TrainingProgressPayload {
   eta_seconds: number | null;
   grad_norm: number | null;
   num_tokens: number | null;
+  eval_loss: number | null;
 }
 
 export interface TrainingSeriesPoint {
@@ -60,6 +64,7 @@ export interface TrainingRuntimeState {
   jobId: string | null;
   phase: TrainingPhase;
   isTrainingRunning: boolean;
+  evalEnabled: boolean;
   message: string;
   error: string | null;
   isHydrating: boolean;
@@ -82,6 +87,7 @@ export interface TrainingRuntimeState {
   lossHistory: TrainingSeriesPoint[];
   lrHistory: TrainingSeriesPoint[];
   gradNormHistory: TrainingSeriesPoint[];
+  evalLossHistory: TrainingSeriesPoint[];
   resetGeneration: number;
 }
 

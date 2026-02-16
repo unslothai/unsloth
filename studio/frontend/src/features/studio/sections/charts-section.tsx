@@ -16,10 +16,15 @@ const SKELETON_KEYS = [
 export function ChartsSection(): ReactElement | null {
   const currentStep = useTrainingRuntimeStore((state) => state.currentStep);
   const totalSteps = useTrainingRuntimeStore((state) => state.totalSteps);
+  const isTraining = useTrainingRuntimeStore((state) => state.isTrainingRunning);
+  const evalEnabled = useTrainingRuntimeStore((state) => state.evalEnabled);
   const lossHistoryRaw = useTrainingRuntimeStore((state) => state.lossHistory);
   const lrHistoryRaw = useTrainingRuntimeStore((state) => state.lrHistory);
   const gradNormHistoryRaw = useTrainingRuntimeStore(
     (state) => state.gradNormHistory,
+  );
+  const evalLossHistoryRaw = useTrainingRuntimeStore(
+    (state) => state.evalLossHistory,
   );
 
   const series = useMemo(
@@ -38,8 +43,12 @@ export function ChartsSection(): ReactElement | null {
         step: point.step,
         gradNorm: point.value,
       })),
+      evalLossHistory: evalLossHistoryRaw.map((point) => ({
+        step: point.step,
+        loss: point.value,
+      })),
     }),
-    [currentStep, gradNormHistoryRaw, lossHistoryRaw, lrHistoryRaw, totalSteps],
+    [currentStep, evalLossHistoryRaw, gradNormHistoryRaw, lossHistoryRaw, lrHistoryRaw, totalSteps],
   );
 
   if (
@@ -63,7 +72,7 @@ export function ChartsSection(): ReactElement | null {
         </div>
       }
     >
-      <ChartsContent metrics={series} />
+      <ChartsContent metrics={series} isTraining={isTraining} evalEnabled={evalEnabled} />
     </Suspense>
   );
 }
