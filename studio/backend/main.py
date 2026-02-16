@@ -117,6 +117,17 @@ async def get_system_info():
     }
 
 
+@app.get("/api/system/hardware")
+async def get_hardware_info():
+    """Return GPU name, total VRAM, and key ML package versions."""
+    from utils.hardware import get_gpu_summary, get_package_versions
+
+    return {
+        "gpu": get_gpu_summary(),
+        "versions": get_package_versions(),
+    }
+
+
 # ============ Serve Frontend (Optional) ============
 
 def setup_frontend(app: FastAPI, build_path: Path):
