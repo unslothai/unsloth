@@ -5,6 +5,33 @@ from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 
 
+class CheckpointInfo(BaseModel):
+    """Information about a discovered checkpoint directory."""
+
+    display_name: str = Field(..., description="User-friendly checkpoint name (folder name)")
+    path: str = Field(..., description="Full path to the checkpoint directory")
+
+
+class ModelCheckpoints(BaseModel):
+    """A training run and its associated checkpoints."""
+
+    name: str = Field(..., description="Training run folder name")
+    checkpoints: List[CheckpointInfo] = Field(
+        default_factory=list,
+        description="List of checkpoints for this training run (final + intermediate)",
+    )
+
+
+class CheckpointListResponse(BaseModel):
+    """Response for listing available checkpoints in an outputs directory."""
+
+    outputs_dir: str = Field(..., description="Directory that was scanned")
+    models: List[ModelCheckpoints] = Field(
+        default_factory=list,
+        description="List of training runs with their checkpoints",
+    )
+
+
 class ModelDetails(BaseModel):
     """Detailed model configuration and metadata - can be used for both list and detail views"""
     id: str = Field(..., description="Model identifier")
