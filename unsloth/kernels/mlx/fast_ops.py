@@ -560,8 +560,10 @@ class MLXRoPE(torch.autograd.Function):
 
         Q_mlx = torch_to_mlx(Q.contiguous())
         K_mlx = torch_to_mlx(K.contiguous()) if K is not None else None
-        cos_mlx = torch_to_mlx(cos)
-        sin_mlx = torch_to_mlx(sin)
+        
+        seq_len = Q.shape[2] if Q.ndim == 4 else Q.shape[1]
+        cos_mlx = torch_to_mlx(cos[:seq_len])
+        sin_mlx = torch_to_mlx(sin[:seq_len])
 
         half = Q_mlx.shape[-1] // 2
         cos1 = cos_mlx[..., :half]
