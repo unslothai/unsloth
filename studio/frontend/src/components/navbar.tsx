@@ -9,7 +9,7 @@ import {
   Analytics01Icon,
   ArrowRight01Icon,
   Book03Icon,
-  InformationCircleIcon,
+  CursorInfo02Icon,
   PackageIcon,
   ZapIcon,
 } from "@hugeicons/core-free-icons";
@@ -185,7 +185,7 @@ export function Navbar() {
               className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
               title="Tour"
             >
-              <HugeiconsIcon icon={InformationCircleIcon} className="size-4" />
+              <HugeiconsIcon icon={CursorInfo02Icon} className="size-4" />
             </button>
           ) : null}
         </div>
