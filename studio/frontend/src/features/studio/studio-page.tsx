@@ -36,7 +36,7 @@ export function StudioPage(): ReactElement {
   const dialogInitial = useDatasetPreviewDialogStore((s) => s.initialData);
   const closeDialog = useDatasetPreviewDialogStore((s) => s.close);
 
-  const canGoBack = runtimePhase === "stopped" || runtimePhase === "error";
+  const canGoBack = runtimePhase === "stopped" || runtimePhase === "error" || runtimePhase === "completed";
   const tourEnabled = hasHydratedRuntime && !isHydratingRuntime;
   const isConfigTour = !showTrainingView;
   const tourSteps = showTrainingView ? studioTrainingTourSteps : studioTourSteps;
@@ -70,7 +70,7 @@ export function StudioPage(): ReactElement {
           datasetSplit={config.datasetSplit}
           mode={dialogMode}
           initialData={dialogInitial}
-          isVlm={config.modelType === "vision"}
+          isVlm={config.isVisionModel && config.isDatasetMultimodal === true}
         />
 
         {canGoBack && (
