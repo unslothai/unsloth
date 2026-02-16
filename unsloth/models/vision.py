@@ -126,11 +126,6 @@ _compile_config = CompileConfig(
 )
 _compile_config.disable = True  # Must set manually
 
-from unsloth_zoo.vllm_utils import (
-    convert_lora_modules,
-    return_lora_modules,
-)
-
 try:
     torch_compiler_set_stance = torch.compiler.set_stance
 except:
