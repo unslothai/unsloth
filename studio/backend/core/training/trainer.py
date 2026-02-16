@@ -306,7 +306,9 @@ class UnslothTrainer:
                      dataset_source: str,
                      format_type: str = "auto",
                      local_datasets: list = None,
-                     custom_format_mapping: dict = None) -> Optional[Dataset]:
+                     custom_format_mapping: dict = None,
+                     subset: str = None,
+                     split: str = "train") -> Optional[Dataset]:
         """
         Load and prepare dataset for training
         """
@@ -350,7 +352,10 @@ class UnslothTrainer:
 
             elif dataset_source:
                 # Load from Hugging Face
-                dataset = load_dataset(dataset_source, split="train")
+                load_kwargs = {"path": dataset_source, "split": split or "train"}
+                if subset:
+                    load_kwargs["name"] = subset
+                dataset = load_dataset(**load_kwargs)
 
                 # Check if stopped during dataset loading
                 if self.should_stop:
