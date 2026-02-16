@@ -10,6 +10,7 @@ to enable MPS support by intercepting the device type detection.
 """
 
 import sys
+import os
 import platform
 import logging
 from types import ModuleType
@@ -62,8 +63,14 @@ def patch_unsloth_zoo_for_mps() -> bool:
         return True
 
     # Skip if unsloth_zoo.device_type already imported (too late to patch)
+    # But allow mocks we set up in sys.modules (e.g., from conftest.py during testing)
     if "unsloth_zoo.device_type" in sys.modules:
-        return False
+        existing = sys.modules["unsloth_zoo.device_type"]
+        # If it's a real module with a real file, skip patching
+        # Mocks from conftest typically have fake __file__ paths
+        module_file = getattr(existing, '__file__', '')
+        if module_file and os.path.isfile(module_file):
+            return False
 
     # Create mock device_type module
     mock_device_type = ModuleType("unsloth_zoo.device_type")
