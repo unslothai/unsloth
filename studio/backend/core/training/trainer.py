@@ -325,6 +325,9 @@ class UnslothTrainer:
         """
         Load and prepare dataset for training.
 
+        Strategy: format first, then split — ensures both train and eval
+        portions are properly formatted and templated.
+
         Returns:
             Tuple of (dataset_info, eval_dataset) or None on error.
             eval_dataset may be None if no eval split is available.
@@ -332,6 +335,7 @@ class UnslothTrainer:
         try:
             dataset = None
             eval_dataset = None
+            has_separate_eval_source = False  # True if eval comes from a separate HF split
 
             if local_datasets:
                 # Load local datasets
@@ -368,9 +372,6 @@ class UnslothTrainer:
                     self._update_progress(status_message=f"Loaded {len(all_data)} samples from local files")
                     print(f"Loaded {len(all_data)} samples from local files\n")
 
-                    # For local datasets, use train_test_split if dataset is large enough
-                    eval_dataset = self._resolve_eval_split_from_dataset(dataset)
-
             elif dataset_source:
                 # Load from Hugging Face
                 load_kwargs = {"path": dataset_source, "split": train_split or "train"}
@@ -386,7 +387,7 @@ class UnslothTrainer:
                 self._update_progress(status_message=f"Loaded dataset from HuggingFace: {dataset_source}")
                 print(f"Loaded dataset from Hugging Face: {dataset_source}\n")
 
-                # Resolve eval split
+                # Resolve eval split from a separate HF split (explicit or auto-detected)
                 if eval_split:
                     # Explicit eval split provided - load it directly
                     print(f"Loading explicit eval split: '{eval_split}'\n")
@@ -394,14 +395,16 @@ class UnslothTrainer:
                     if subset:
                         eval_load_kwargs["name"] = subset
                     eval_dataset = load_dataset(**eval_load_kwargs)
+                    has_separate_eval_source = True
                     print(f"Loaded eval split '{eval_split}' with {len(eval_dataset)} rows\n")
                 else:
-                    # Auto-detect eval split
-                    eval_dataset = self._auto_detect_eval_split(
+                    # Auto-detect eval split from HF (returns a separate dataset, or None)
+                    eval_dataset = self._auto_detect_eval_split_from_hf(
                         dataset_source=dataset_source,
                         subset=subset,
-                        train_dataset=dataset,
                     )
+                    if eval_dataset is not None:
+                        has_separate_eval_source = True
 
             if dataset is None:
                 raise ValueError("No dataset provided")
@@ -411,20 +414,15 @@ class UnslothTrainer:
                 print("Stopped before applying chat template\n")
                 return None
 
-            # If we auto-split, use only the train portion for formatting
-            if hasattr(self, '_split_train_dataset') and self._split_train_dataset is not None:
-                dataset = self._split_train_dataset
-                self._split_train_dataset = None  # Clear after use
-
-            # NEW: Use unified format_and_template_dataset
+            # ========== FORMAT FIRST ==========
             print(f"Formatting dataset with format_type='{format_type}'...\n")
 
             dataset_info = format_and_template_dataset(
                 dataset,
                 model_name=self.model_name,
-                tokenizer=self.tokenizer,  # Works for both text and vision models
+                tokenizer=self.tokenizer,
                 is_vlm=self.is_vlm,
-                format_type=format_type,  # "auto", "alpaca", "chatml", "sharegpt"
+                format_type=format_type,
                 dataset_name=dataset_source,
                 custom_format_mapping=custom_format_mapping,
             )
@@ -436,6 +434,30 @@ class UnslothTrainer:
 
             self._update_progress(status_message=f"Dataset formatted and ready for training")
             print(f"Dataset formatted successfully\n")
+
+            # ========== THEN SPLIT ==========
+            if has_separate_eval_source and eval_dataset is not None:
+                # Eval came from a separate HF split — format it too
+                print(f"Formatting eval dataset ({len(eval_dataset)} rows)...\n")
+                eval_info = format_and_template_dataset(
+                    eval_dataset,
+                    model_name=self.model_name,
+                    tokenizer=self.tokenizer,
+                    is_vlm=self.is_vlm,
+                    format_type=format_type,
+                    dataset_name=dataset_source,
+                    custom_format_mapping=custom_format_mapping,
+                )
+                eval_dataset = eval_info["dataset"]
+                print(f"Eval dataset formatted successfully\n")
+            elif not has_separate_eval_source:
+                # No separate eval source — split the already-formatted dataset
+                formatted_dataset = dataset_info["dataset"]
+                split_result = self._resolve_eval_split_from_dataset(formatted_dataset)
+                if split_result is not None:
+                    train_portion, eval_dataset = split_result
+                    dataset_info["dataset"] = train_portion
+
             return (dataset_info, eval_dataset)
 
         except Exception as e:
@@ -443,9 +465,9 @@ class UnslothTrainer:
             self._update_progress(error=str(e))
             return None
 
-    def _auto_detect_eval_split(self, dataset_source: str, subset: str,
-                                train_dataset: Dataset) -> Optional[Dataset]:
-        """Auto-detect an eval split from HF dataset, or split the train set."""
+    def _auto_detect_eval_split_from_hf(self, dataset_source: str,
+                                         subset: str) -> Optional[Dataset]:
+        """Auto-detect an eval split from HF dataset (separate named split only)."""
         try:
             from datasets import get_dataset_split_names
             load_kwargs = {"path": dataset_source}
@@ -470,28 +492,31 @@ class UnslothTrainer:
         except Exception as e:
             logger.warning(f"Could not check dataset splits: {e}")
 
-        # Fallback: split the train set
-        return self._resolve_eval_split_from_dataset(train_dataset)
+        # No separate HF eval split found — caller will handle programmatic splitting
+        return None
 
-    def _resolve_eval_split_from_dataset(self, dataset: Dataset) -> Optional[Dataset]:
-        """Split the training dataset to create an eval set."""
+    def _resolve_eval_split_from_dataset(self, dataset) -> Optional[tuple]:
+        """Split a dataset into train and eval portions.
+
+        Returns:
+            Tuple of (train_dataset, eval_dataset), or None if dataset too small.
+        """
         MIN_EVAL_ROWS = 16
         MIN_TOTAL_ROWS = 32  # Need at least 16 train + 16 eval
 
-        if len(dataset) < MIN_TOTAL_ROWS:
-            print(f"Dataset too small ({len(dataset)} rows) for eval split, skipping eval\n")
+        n = len(dataset)
+        if n < MIN_TOTAL_ROWS:
+            print(f"Dataset too small ({n} rows) for eval split, skipping eval\n")
             return None
 
-        eval_size = max(MIN_EVAL_ROWS, min(128, int(0.05 * len(dataset))))
+        eval_size = max(MIN_EVAL_ROWS, min(128, int(0.05 * n)))
         # Ensure we don't take more than half the dataset
-        eval_size = min(eval_size, len(dataset) // 2)
+        eval_size = min(eval_size, n // 2)
 
-        print(f"Auto-splitting: {eval_size} rows for eval from {len(dataset)} total\n")
+        print(f"Auto-splitting: {eval_size} rows for eval from {n} total\n")
         split_result = dataset.train_test_split(test_size=eval_size, seed=3407)
         print(f"Split complete: {len(split_result['train'])} train, {len(split_result['test'])} eval\n")
-        # Store the train portion so the caller can use it instead of the original full dataset
-        self._split_train_dataset = split_result['train']
-        return split_result['test']
+        return (split_result['train'], split_result['test'])
 
     def start_training(self,
                        dataset: Dataset,
@@ -550,6 +575,8 @@ class UnslothTrainer:
                 'wandb_token': wandb_token,
                 'enable_tensorboard': enable_tensorboard,
                 'tensorboard_dir': tensorboard_dir,
+                'eval_dataset': eval_dataset,
+                'eval_steps': eval_steps,
                 **kwargs
             }
         )
