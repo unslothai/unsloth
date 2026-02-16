@@ -21,6 +21,9 @@ export function ChartsSection(): ReactElement | null {
   const gradNormHistoryRaw = useTrainingRuntimeStore(
     (state) => state.gradNormHistory,
   );
+  const evalLossHistoryRaw = useTrainingRuntimeStore(
+    (state) => state.evalLossHistory,
+  );
 
   const series = useMemo(
     () => ({
@@ -38,8 +41,12 @@ export function ChartsSection(): ReactElement | null {
         step: point.step,
         gradNorm: point.value,
       })),
+      evalLossHistory: evalLossHistoryRaw.map((point) => ({
+        step: point.step,
+        loss: point.value,
+      })),
     }),
-    [currentStep, gradNormHistoryRaw, lossHistoryRaw, lrHistoryRaw, totalSteps],
+    [currentStep, evalLossHistoryRaw, gradNormHistoryRaw, lossHistoryRaw, lrHistoryRaw, totalSteps],
   );
 
   if (
