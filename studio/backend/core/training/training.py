@@ -96,7 +96,8 @@ class TrainingBackend:
                        # Optional parameters
                        custom_format_mapping: dict = None,
                        subset: str = None,
-                       split: str = "train") -> bool:
+                       split: str = "train",
+                       is_dataset_multimodal: bool = False) -> bool:
         """
         Start training.
 
@@ -150,7 +151,8 @@ class TrainingBackend:
                 model_name=model_name,
                 max_seq_length=max_seq_length,
                 load_in_4bit=load_in_4bit if use_lora_actual else False,  # Only 4bit for LoRA
-                hf_token=hf_token if hf_token.strip() else None
+                hf_token=hf_token if hf_token.strip() else None,
+                is_dataset_multimodal=is_dataset_multimodal,
             )
 
             if not success or self.trainer.should_stop:

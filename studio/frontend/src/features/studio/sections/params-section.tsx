@@ -109,7 +109,7 @@ function SliderRow({
 export function ParamsSection(): ReactElement {
   const store = useTrainingConfigStore();
   const isLora = store.trainingMethod !== "full";
-  const isVision = store.modelType === "vision";
+  const showVisionLora = store.isVisionModel && store.isDatasetMultimodal === true;
   const [loraOpen, setLoraOpen] = useState(false);
   const [hyperOpen, setHyperOpen] = useState(false);
 
@@ -350,7 +350,7 @@ export function ParamsSection(): ReactElement {
               />
 
               {/* Vision checkboxes */}
-              {isVision && (
+              {showVisionLora && (
                 <div className="flex flex-col gap-2 pt-1">
                   {(
                     [
@@ -400,7 +400,7 @@ export function ParamsSection(): ReactElement {
               )}
 
               {/* Text target modules */}
-              {!isVision && (
+              {!showVisionLora && (
                 <div className="flex flex-col gap-2 pt-1">
                   <span className="text-xs font-medium text-muted-foreground">
                     Target Modules
@@ -693,7 +693,7 @@ export function ParamsSection(): ReactElement {
                     </SelectContent>
                   </Select>
                 </Row>
-                {store.modelType !== "vision" && (
+                {!showVisionLora && (
                   <div className="flex items-center gap-2">
                     <Checkbox
                       id="packing"
