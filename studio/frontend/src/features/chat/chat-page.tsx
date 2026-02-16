@@ -205,6 +205,7 @@ export function ChatPage(): ReactElement {
   });
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
+  const [modelSelectorLocked, setModelSelectorLocked] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const viewBeforeCompareRef = useRef<ChatView | null>(null);
   const inferenceParams = useChatRuntimeStore((state) => state.params);
@@ -239,8 +240,23 @@ export function ChatPage(): ReactElement {
     [],
   );
 
-  const openModelSelector = useCallback(() => setModelSelectorOpen(true), []);
-  const closeModelSelector = useCallback(() => setModelSelectorOpen(false), []);
+  const openModelSelector = useCallback(() => {
+    setModelSelectorLocked(true);
+    setModelSelectorOpen(true);
+  }, []);
+
+  const closeModelSelector = useCallback(() => {
+    setModelSelectorLocked(false);
+    setModelSelectorOpen(false);
+  }, []);
+
+  const handleModelSelectorOpenChange = useCallback(
+    (open: boolean) => {
+      if (!open && modelSelectorLocked) return;
+      setModelSelectorOpen(open);
+    },
+    [modelSelectorLocked],
+  );
   const openSettings = useCallback(() => setSettingsOpen(true), []);
   const closeSettings = useCallback(() => setSettingsOpen(false), []);
   const openSidebar = useCallback(() => setSidebarOpen(true), []);
@@ -313,6 +329,13 @@ export function ChatPage(): ReactElement {
     steps: tourSteps,
   });
 
+  useEffect(() => {
+    if (tour.open) return;
+    if (!modelSelectorLocked) return;
+    setModelSelectorLocked(false);
+    setModelSelectorOpen(false);
+  }, [modelSelectorLocked, tour.open]);
+
   return (
     <div className="h-[calc(100vh-4rem)] bg-background overflow-hidden">
     <GuidedTour {...tour.tourProps} />
@@ -355,7 +378,7 @@ export function ChatPage(): ReactElement {
               onEject={handleEject}
               variant="ghost"
               open={modelSelectorOpen}
-              onOpenChange={setModelSelectorOpen}
+              onOpenChange={handleModelSelectorOpenChange}
               triggerDataTour="chat-model-selector"
               contentDataTour="chat-model-selector-popover"
             />

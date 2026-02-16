@@ -55,7 +55,7 @@ export function StudioPage(): ReactElement {
   return (
     <div className="min-h-screen bg-background">
       <main className="mx-auto max-w-7xl px-6 py-4">
-        <GuidedTour {...tour.tourProps} celebrate={true} />
+        <GuidedTour {...tour.tourProps} celebrate={isConfigTour} />
 
         <DatasetPreviewDialog
           open={dialogOpen}
@@ -114,4 +114,3 @@ export function StudioPage(): ReactElement {
     </div>
   );
 }
-
