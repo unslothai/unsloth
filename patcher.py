@@ -767,6 +767,29 @@ class MacPatcher:
         else:
             return self._create_patch_result(name, PatchStatus.SKIPPED, "no CUDA functions found")
     
+    def patch_patching_utils(self) -> PatchResult:
+        """
+        Patch unsloth_zoo.patching_utils to handle missing Bnb_Linear4bit on MPS.
+        """
+        name = "patching_utils"
+        
+        try:
+            import unsloth_zoo.patching_utils as patching_utils
+            
+            class _DummyBnbLinear:
+                pass
+            
+            if not hasattr(patching_utils, "Bnb_Linear4bit"):
+                patching_utils.Bnb_Linear4bit = _DummyBnbLinear
+            if not hasattr(patching_utils, "Peft_Linear4bit"):
+                patching_utils.Peft_Linear4bit = _DummyBnbLinear
+            
+            return self._create_patch_result(name, PatchStatus.SUCCESS, "Bnb_Linear4bit patched")
+        except ImportError:
+            return self._create_patch_result(name, PatchStatus.SKIPPED, "module not yet imported")
+        except Exception as e:
+            return self._create_patch_result(name, PatchStatus.FAILED, str(e))
+    
     def apply(self) -> List[PatchResult]:
         """
         Apply all Mac compatibility patches.
@@ -800,6 +823,7 @@ class MacPatcher:
         results.append(self.patch_torch_cuda())
         results.append(self.patch_triton())
         results.append(self.patch_bitsandbytes())
+        results.append(self.patch_patching_utils())
         
         # These can be applied after import
         results.append(self.patch_fused_losses())

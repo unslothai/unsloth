@@ -2695,19 +2695,6 @@ class FastLlamaModel:
 
     @staticmethod
     def post_patch(model, tokenizer):
-        from unsloth.device_type import DEVICE_TYPE
-        
-        if DEVICE_TYPE == "mps":
-            from unsloth_zoo import patching_utils
-            try:
-                if not hasattr(patching_utils, "Bnb_Linear4bit") or patching_utils.Bnb_Linear4bit is None:
-                    class _DummyBnbLinear:
-                        pass
-                    patching_utils.Bnb_Linear4bit = _DummyBnbLinear
-                    patching_utils.Peft_Linear4bit = _DummyBnbLinear
-            except ImportError:
-                pass
-        
         model, tokenizer = patch_model_and_tokenizer(
             model, tokenizer, downcast_rope=True
         )
