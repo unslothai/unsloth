@@ -1,4 +1,9 @@
-[build-system]
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
 requires = ["setuptools==80.9.0", "setuptools-scm==9.2.0"]
 build-backend = "setuptools.build_meta"
 
