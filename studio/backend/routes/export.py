@@ -28,6 +28,7 @@ except ImportError:
 from models import (
     CheckpointInfo,
     CheckpointListResponse,
+    ModelCheckpoints,
     LoadCheckpointRequest,
     ExportStatusResponse,
     ExportOperationResponse,
@@ -65,16 +66,22 @@ async def list_checkpoints(
     """
     try:
         backend = get_export_backend()
-        raw_checkpoints = backend.scan_checkpoints(outputs_dir=outputs_dir)
+        raw_models = backend.scan_checkpoints(outputs_dir=outputs_dir)
 
-        checkpoints = [
-            CheckpointInfo(display_name=display_name, path=path)
-            for display_name, path in raw_checkpoints
+        models = [
+            ModelCheckpoints(
+                name=model_name,
+                checkpoints=[
+                    CheckpointInfo(display_name=display_name, path=path)
+                    for display_name, path in checkpoints
+                ],
+            )
+            for model_name, checkpoints in raw_models
         ]
 
         return CheckpointListResponse(
             outputs_dir=outputs_dir,
-            checkpoints=checkpoints,
+            models=models,
         )
     except Exception as e:
         logger.error(f"Error listing checkpoints: {e}", exc_info=True)
