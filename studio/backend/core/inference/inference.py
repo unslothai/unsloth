@@ -45,6 +45,11 @@ class InferenceBackend:
 
         logger.info(f"InferenceBackend initialized on {self.device}")
 
+    @staticmethod
+    def _normalize_top_k(top_k: int) -> int:
+        # API supports -1 as "disable top-k"; transformers expects 0 to disable.
+        return 0 if top_k < 0 else top_k
+
     def load_model(self,
                    config: ModelConfig,
                    max_seq_length: int = 2048,
@@ -560,6 +565,7 @@ class InferenceBackend:
         model_info = self.models[self.active_model_name]
         is_vision = model_info.get("is_vision", False)
         tokenizer = model_info.get("tokenizer") or model_info.get("processor")
+        top_k = self._normalize_top_k(top_k)
 
         if is_vision:
             # Vision model generation

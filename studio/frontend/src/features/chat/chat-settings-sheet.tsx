@@ -295,7 +295,7 @@ export function ChatSettingsPanel({
               <ParamSlider
                 label="Top K"
                 value={params.topK}
-                min={0}
+                min={-1}
                 max={100}
                 step={1}
                 onChange={set("topK")}
