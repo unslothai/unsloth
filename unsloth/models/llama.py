@@ -49,6 +49,7 @@ from ..device_type import (
     is_hip,
     get_device_type,
     DEVICE_COUNT,
+    DEVICE_TYPE_TORCH,
 )
 from ..device_utils import (
     clean_gpu_cache,
