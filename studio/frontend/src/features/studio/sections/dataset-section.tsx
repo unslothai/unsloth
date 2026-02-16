@@ -30,6 +30,7 @@ import {
 import { formatCompact } from "@/lib/utils";
 import {
   HfDatasetSubsetSplitSelectors,
+  useDatasetPreviewDialogStore,
   useTrainingConfigStore,
 } from "@/features/training";
 import {
@@ -43,7 +44,6 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
-import { DatasetPreviewDialog } from "./dataset-preview-dialog";
 
 function isLikelyLocalDatasetRef(value: string) {
   return (
@@ -81,7 +81,7 @@ export function DatasetSection() {
   );
 
   const [inputValue, setInputValue] = useState("");
-  const [previewOpen, setPreviewOpen] = useState(false);
+  const openPreview = useDatasetPreviewDialogStore((s) => s.openPreview);
   const selectingRef = useRef(false);
   const debouncedQuery = useDebouncedValue(inputValue);
 
@@ -341,7 +341,7 @@ export function DatasetSection() {
             size="sm"
             className="cursor-pointer gap-1.5"
             disabled={!dataset}
-            onClick={() => setPreviewOpen(true)}
+            onClick={() => openPreview()}
           >
             <HugeiconsIcon icon={ViewIcon} className="size-3.5" />
             View dataset
@@ -349,14 +349,6 @@ export function DatasetSection() {
         </div>
       </div>
       </SectionCard>
-      <DatasetPreviewDialog
-        open={previewOpen}
-        onOpenChange={setPreviewOpen}
-        datasetName={dataset}
-        hfToken={hfToken}
-        datasetSubset={datasetSubset}
-        datasetSplit={datasetSplit}
-      />
     </div>
   );
 }

@@ -2,6 +2,8 @@ import { Button } from "@/components/ui/button";
 import {
   shouldShowTrainingView,
   useTrainingActions,
+  useDatasetPreviewDialogStore,
+  useTrainingConfigStore,
   useTrainingRuntimeLifecycle,
   useTrainingRuntimeStore,
 } from "@/features/training";
@@ -10,6 +12,7 @@ import { studioTourSteps } from "@/features/studio/tour";
 import { ArrowLeft01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useEffect, useState } from "react";
+import { DatasetPreviewDialog } from "./sections/dataset-preview-dialog";
 import { DatasetSection } from "./sections/dataset-section";
 import { ModelSection } from "./sections/model-section";
 import { ParamsSection } from "./sections/params-section";
@@ -26,6 +29,11 @@ export function StudioPage(): ReactElement {
   const isHydratingRuntime = useTrainingRuntimeStore((state) => state.isHydrating);
   const hasHydratedRuntime = useTrainingRuntimeStore((state) => state.hasHydrated);
   const { dismissTrainingRun } = useTrainingActions();
+  const config = useTrainingConfigStore();
+  const dialogOpen = useDatasetPreviewDialogStore((s) => s.open);
+  const dialogMode = useDatasetPreviewDialogStore((s) => s.mode);
+  const dialogInitial = useDatasetPreviewDialogStore((s) => s.initialData);
+  const closeDialog = useDatasetPreviewDialogStore((s) => s.close);
 
   const canGoBack = runtimePhase === "stopped" || runtimePhase === "error";
   const tourEnabled = hasHydratedRuntime && !isHydratingRuntime && !showTrainingView;
@@ -46,6 +54,22 @@ export function StudioPage(): ReactElement {
           steps={studioTourSteps}
           onSkip={() => localStorage.setItem(STUDIO_TOUR_KEY, "skipped")}
           onComplete={() => localStorage.setItem(STUDIO_TOUR_KEY, "done")}
+        />
+
+        <DatasetPreviewDialog
+          open={dialogOpen}
+          onOpenChange={(open) => {
+            if (!open) closeDialog();
+          }}
+          datasetName={
+            config.datasetSource === "huggingface" ? config.dataset : config.uploadedFile
+          }
+          hfToken={config.hfToken.trim() || null}
+          datasetSubset={config.datasetSubset}
+          datasetSplit={config.datasetSplit}
+          mode={dialogMode}
+          initialData={dialogInitial}
+          isVlm={config.modelType === "vision"}
         />
 
         {canGoBack && (

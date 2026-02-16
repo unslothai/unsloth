@@ -18,6 +18,7 @@ const initialState: TrainingConfigState = {
   dataset: null,
   datasetSubset: null,
   datasetSplit: null,
+  datasetManualMapping: { input: null, output: null },
   uploadedFile: null,
   ...DEFAULT_HYPERPARAMS,
 };
@@ -58,10 +59,22 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
       setDatasetSource: (datasetSource) => set({ datasetSource }),
       setDatasetFormat: (datasetFormat) => set({ datasetFormat }),
       setDataset: (dataset) =>
-        set({ dataset, datasetSubset: null, datasetSplit: null }),
+        set({
+          dataset,
+          datasetSubset: null,
+          datasetSplit: null,
+          datasetManualMapping: { input: null, output: null },
+        }),
       setDatasetSubset: (datasetSubset) =>
-        set({ datasetSubset, datasetSplit: null }),
-      setDatasetSplit: (datasetSplit) => set({ datasetSplit }),
+        set({
+          datasetSubset,
+          datasetSplit: null,
+          datasetManualMapping: { input: null, output: null },
+        }),
+      setDatasetSplit: (datasetSplit) =>
+        set({ datasetSplit, datasetManualMapping: { input: null, output: null } }),
+      setDatasetManualMapping: (datasetManualMapping) =>
+        set({ datasetManualMapping }),
       setUploadedFile: (uploadedFile) => set({ uploadedFile }),
       setEpochs: (epochs) => set({ epochs }),
       setContextLength: (contextLength) => set({ contextLength }),

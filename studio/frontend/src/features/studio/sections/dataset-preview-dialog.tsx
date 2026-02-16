@@ -11,29 +11,20 @@ import { Spinner } from "@/components/ui/spinner";
 import { Database02Icon, AlertCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { useTrainingActions, useTrainingConfigStore } from "@/features/training";
+import { checkDatasetFormat } from "@/features/training/api/datasets-api";
+import type { CheckFormatResponse } from "@/features/training/types/datasets";
+import { collectPreviewImages, formatCell } from "./dataset-preview-dialog-utils";
+import {
+  DatasetMappingCard,
+  DatasetMappingFooter,
+  HeaderPick,
+  deriveDefaultMapping,
+} from "./dataset-preview-dialog-mapping";
 
 // ---------------------------------------------------------------------------
-// Types (matches CheckFormatResponse from backend)
+// Types
 // ---------------------------------------------------------------------------
-
-type CheckFormatResponse = {
-  requires_manual_mapping: boolean;
-  detected_format: string;
-  columns: string[];
-  suggested_mapping?: Record<string, string> | null;
-  detected_image_column?: string | null;
-  detected_text_column?: string | null;
-  preview_samples?: Record<string, unknown>[] | null;
-  total_rows?: number | null;
-};
-
-type PreviewImagePayload = {
-  type: "image";
-  mime?: string;
-  width?: number;
-  height?: number;
-  data?: string;
-};
 
 type DatasetPreviewDialogProps = {
   open: boolean;
@@ -42,36 +33,10 @@ type DatasetPreviewDialogProps = {
   hfToken: string | null;
   datasetSubset?: string | null;
   datasetSplit?: string | null;
+  mode?: "preview" | "mapping";
+  initialData?: CheckFormatResponse | null;
+  isVlm?: boolean;
 };
-
-// ---------------------------------------------------------------------------
-// API -- uses existing /check-format endpoint
-// ---------------------------------------------------------------------------
-
-// TODO(backend): Needs to accept `config` and `split` fields (see #37).
-// The frontend already sends them in the request below.
-async function fetchCheckFormat(
-  datasetName: string,
-  hfToken: string | null,
-  subset?: string | null,
-  split?: string | null,
-): Promise<CheckFormatResponse> {
-  const res = await fetch("/api/datasets/check-format", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      dataset_name: datasetName,
-      hf_token: hfToken || undefined,
-      config: subset || undefined,
-      split: split || "train",
-    }),
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(body?.detail || `Request failed (${res.status})`);
-  }
-  return res.json();
-}
 
 // ---------------------------------------------------------------------------
 // Component
@@ -84,10 +49,23 @@ export function DatasetPreviewDialog({
   hfToken,
   datasetSubset,
   datasetSplit,
+  mode = "preview",
+  initialData,
+  isVlm = false,
 }: DatasetPreviewDialogProps) {
   const [data, setData] = useState<CheckFormatResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const manualMapping = useTrainingConfigStore((s) => s.datasetManualMapping);
+  const setManualMapping = useTrainingConfigStore((s) => s.setDatasetManualMapping);
+  const { isStarting, startError, startTrainingRun } = useTrainingActions();
+
+  const mappingEnabled = !!data?.requires_manual_mapping;
+  const showMappingFooter = mode === "mapping" && mappingEnabled;
+  const mappingOk = !!manualMapping.input && !!manualMapping.output;
+  const leftLabel = isVlm ? "Image" : "Input";
+  const rightLabel = isVlm ? "Text" : "Output";
 
   useEffect(() => {
     if (!open || !datasetName) {
@@ -95,11 +73,23 @@ export function DatasetPreviewDialog({
       setError(null);
       return;
     }
+    if (initialData) {
+      setData(initialData);
+      setError(null);
+      setLoading(false);
+      return;
+    }
     let cancelled = false;
     setLoading(true);
     setError(null);
 
-    fetchCheckFormat(datasetName, hfToken, datasetSubset, datasetSplit)
+    checkDatasetFormat({
+      datasetName,
+      hfToken,
+      subset: datasetSubset,
+      split: datasetSplit,
+      isVlm,
+    })
       .then((res) => {
         if (!cancelled) {
           setData(res);
@@ -116,7 +106,24 @@ export function DatasetPreviewDialog({
     return () => {
       cancelled = true;
     };
-  }, [open, datasetName, hfToken, datasetSubset, datasetSplit]);
+  }, [open, datasetName, hfToken, datasetSubset, datasetSplit, isVlm, initialData]);
+
+  useEffect(() => {
+    if (!open || !datasetName || !data?.requires_manual_mapping) return;
+    if (manualMapping.input || manualMapping.output) return;
+    const derived = deriveDefaultMapping(data, isVlm);
+    if (!derived.input && !derived.output) return;
+    setManualMapping(derived);
+  }, [
+    open,
+    datasetName,
+    data?.requires_manual_mapping,
+    isVlm,
+    manualMapping.input,
+    manualMapping.output,
+    setManualMapping,
+    data,
+  ]);
 
   const rows = data?.preview_samples ?? [];
   const columns = data?.columns ?? [];
@@ -140,9 +147,39 @@ export function DatasetPreviewDialog({
     return columns.map((colName) => ({
       accessorKey: colName,
       header: () => (
-        <span className="font-heading text-[13px] font-semibold tracking-tight text-foreground">
-          {colName}
-        </span>
+        <div className="flex flex-col gap-2">
+          <span className="font-heading text-[13px] font-semibold tracking-tight text-foreground">
+            {colName}
+          </span>
+          {mappingEnabled && (
+            <div className="flex items-center gap-3">
+              {(manualMapping.input == null || manualMapping.input === colName) && (
+                <HeaderPick
+                  label={leftLabel}
+                  checked={manualMapping.input === colName}
+                  onCheckedChange={(checked) => {
+                    setManualMapping({
+                      input: checked ? colName : null,
+                      output: manualMapping.output,
+                    });
+                  }}
+                />
+              )}
+              {(manualMapping.output == null || manualMapping.output === colName) && (
+                <HeaderPick
+                  label={rightLabel}
+                  checked={manualMapping.output === colName}
+                  onCheckedChange={(checked) => {
+                    setManualMapping({
+                      input: manualMapping.input,
+                      output: checked ? colName : null,
+                    });
+                  }}
+                />
+              )}
+            </div>
+          )}
+        </div>
       ),
       cell: ({ getValue }: { getValue: () => unknown }) => {
         const value = getValue();
@@ -196,7 +233,15 @@ export function DatasetPreviewDialog({
         );
       },
     }));
-  }, [columns]);
+  }, [
+    columns,
+    manualMapping.input,
+    manualMapping.output,
+    setManualMapping,
+    mappingEnabled,
+    leftLabel,
+    rightLabel,
+  ]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -266,10 +311,10 @@ export function DatasetPreviewDialog({
                       : "--"
                   }
                 />
-                <MetaRow
-                  label="Columns"
-                  value={
-                    <span className="flex items-center gap-1.5 flex-wrap">
+              <MetaRow
+                label="Columns"
+                value={
+                  <span className="flex items-center gap-1.5 flex-wrap">
                       {columns.map((col) => (
                         <Badge
                           key={col}
@@ -284,18 +329,51 @@ export function DatasetPreviewDialog({
                 />
               </div>
 
+              {mappingEnabled && (
+                <DatasetMappingCard
+                  leftLabel={leftLabel}
+                  rightLabel={rightLabel}
+                  mappingOk={mappingOk}
+                  input={manualMapping.input}
+                  output={manualMapping.output}
+                />
+              )}
+
               {/* Data table */}
               <div className="flex-1 min-h-0 rounded-xl corner-squircle ring-1 ring-border/60 overflow-auto">
                 <DataTable columns={tableColumns} data={rows} />
               </div>
 
               {/* Footer */}
-              <p className="text-[11px] text-muted-foreground/60 mt-3 text-center tabular-nums">
-                Showing {rows.length}
-                {data.total_rows != null &&
-                  ` of ${data.total_rows.toLocaleString()}`}{" "}
-                rows
-              </p>
+              <div className="mt-3">
+                <p className="text-[11px] text-muted-foreground/60 text-center tabular-nums">
+                  Showing {rows.length}
+                  {data.total_rows != null &&
+                    ` of ${data.total_rows.toLocaleString()}`}{" "}
+                  rows
+                </p>
+
+                {mode === "preview" && mappingEnabled && (
+                  <p className="mt-2 text-[11px] text-muted-foreground/70 text-center">
+                    Mapping is saved automatically. You can start training anytime.
+                  </p>
+                )}
+
+                {showMappingFooter && (
+                  <DatasetMappingFooter
+                    leftLabel={leftLabel}
+                    rightLabel={rightLabel}
+                    mappingOk={mappingOk}
+                    isStarting={isStarting}
+                    startError={startError}
+                    onCancel={() => onOpenChange(false)}
+                    onStartTraining={async () => {
+                      const ok = await startTrainingRun();
+                      if (ok) onOpenChange(false);
+                    }}
+                  />
+                )}
+              </div>
             </>
           )}
         </div>
@@ -325,54 +403,4 @@ function MetaRow({
   );
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function formatCell(value: unknown): string {
-  if (value == null) return "";
-  if (typeof value === "string") return value;
-  if (typeof value === "number" || typeof value === "boolean")
-    return String(value);
-  if (Array.isArray(value) || typeof value === "object")
-    return JSON.stringify(value).slice(0, 500);
-  return String(value);
-}
-
-function isPreviewImagePayload(value: unknown): value is PreviewImagePayload {
-  if (!value || typeof value !== "object") return false;
-  const record = value as Record<string, unknown>;
-  return (
-    record.type === "image" &&
-    typeof record.data === "string" &&
-    record.data.length > 0
-  );
-}
-
-function collectPreviewImages(value: unknown): PreviewImagePayload[] {
-  const images: PreviewImagePayload[] = [];
-  const stack: unknown[] = [value];
-  let steps = 0;
-
-  while (stack.length > 0 && steps < 200) {
-    steps += 1;
-    const current = stack.pop();
-    if (isPreviewImagePayload(current)) {
-      images.push(current);
-      continue;
-    }
-
-    if (Array.isArray(current)) {
-      for (const item of current) stack.push(item);
-      continue;
-    }
-
-    if (current && typeof current === "object") {
-      for (const nested of Object.values(current as Record<string, unknown>)) {
-        stack.push(nested);
-      }
-    }
-  }
-
-  return images;
-}
+// mapping UI extracted to ./dataset-preview-dialog-mapping.tsx

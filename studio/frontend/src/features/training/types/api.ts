@@ -9,6 +9,7 @@ export interface TrainingStartRequest {
   hf_dataset_split: string | null;
   local_datasets: string[];
   format_type: string;
+  custom_format_mapping?: Record<string, string> | null;
   num_epochs: number;
   learning_rate: string;
   batch_size: number;
