@@ -60,7 +60,24 @@ def get_tokenizer_chat_template(tokenizer, model_name):
             print(f"⚠️ Failed to apply Unsloth template '{matched_template}': {e}")
             print(f"   Falling back to tokenizer's default chat template")
     else:
-        print(f"📝 Using tokenizer's default chat template (no Unsloth template match)")
+        # Check if tokenizer actually has a chat_template set
+        has_chat_template = (
+            hasattr(tokenizer, 'chat_template')
+            and tokenizer.chat_template is not None
+        )
+        if has_chat_template:
+            print(f"📝 Using tokenizer's own chat template (no Unsloth template match)")
+        else:
+            # Base model with no chat template — apply default ChatML
+            print(f"📝 No chat template found — applying default ChatML template (base model)")
+            try:
+                tokenizer = get_chat_template(
+                    tokenizer,
+                    chat_template="chatml",
+                )
+            except Exception as e:
+                print(f"⚠️ Failed to apply default ChatML template: {e}")
+                print(f"   Falling back to tokenizer as-is")
 
     return tokenizer
 
@@ -226,6 +243,16 @@ def apply_chat_template_to_dataset(
 
     # ALPACA FORMAT
     if final_format == "alpaca":
+
+        # Set alpaca chat template on tokenizer for saving (if not already set)
+        # This ensures the template is saved with the model for inference
+        if not (hasattr(tokenizer, 'chat_template') and tokenizer.chat_template):
+            try:
+                from unsloth.chat_templates import get_chat_template
+                tokenizer = get_chat_template(tokenizer, chat_template="alpaca")
+                print(f"📝 Set alpaca chat template on tokenizer for model saving")
+            except Exception as e:
+                print(f"⚠️ Could not set alpaca template on tokenizer: {e}")
 
         # Use custom template if provided
         def _format_alpaca_custom(examples):
