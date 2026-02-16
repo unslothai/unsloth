@@ -1,90 +1,17 @@
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { HugeiconsIcon } from "@hugeicons/react";
-import {
-  ArrowLeft01Icon,
-  ArrowRight01Icon,
-  Cancel01Icon,
-  CheckmarkCircle01Icon,
-} from "@hugeicons/core-free-icons";
+import { ArrowLeft01Icon, ArrowRight01Icon, Cancel01Icon, CheckmarkCircle01Icon } from "@hugeicons/core-free-icons";
 import { Dialog as DialogPrimitive } from "radix-ui";
 import { AnimatePresence, motion } from "motion/react";
-import {
-  useEffect,
-  useId,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { cssEscape, toRect } from "../lib/dom";
 import { fireConfettiFireworks } from "../lib/confetti-fireworks";
 import { computeCardPos, padded, pickPlacement } from "../lib/layout";
+import { SpotlightOverlay } from "./spotlight-overlay";
 import type { Placement, Rect, TourStep } from "../types";
 
-// (types + layout/dom helpers live in ../types and ../lib)
-
-type SpotlightOverlayProps = {
-  rect: Rect | null;
-  vw: number;
-  vh: number;
-  maskId: string;
-};
-
-function SpotlightOverlay({
-  rect,
-  vw,
-  vh,
-  maskId,
-}: SpotlightOverlayProps) {
-  const hole = rect ?? { x: vw / 2 - 140, y: vh / 2 - 90, w: 280, h: 180 };
-  const r = 22;
-
-  return (
-    <svg
-      className="absolute inset-0 size-full"
-      viewBox={`0 0 ${vw} ${vh}`}
-      preserveAspectRatio="none"
-      aria-hidden={true}
-    >
-      <defs>
-        <radialGradient id={`${maskId}-v`} cx="50%" cy="45%" r="80%">
-          <stop offset="0%" stopColor="rgba(6, 9, 15, 0.35)" />
-          <stop offset="55%" stopColor="rgba(6, 9, 15, 0.65)" />
-          <stop offset="100%" stopColor="rgba(6, 9, 15, 0.88)" />
-        </radialGradient>
-        <mask id={maskId}>
-          <rect x="0" y="0" width={vw} height={vh} fill="white" />
-          <motion.rect
-            x={hole.x}
-            y={hole.y}
-            width={hole.w}
-            height={hole.h}
-            rx={r}
-            fill="black"
-            transition={{ type: "spring", stiffness: 260, damping: 30 }}
-          />
-        </mask>
-      </defs>
-      <rect
-        x="0"
-        y="0"
-        width={vw}
-        height={vh}
-        fill={`url(#${maskId}-v)`}
-        mask={`url(#${maskId})`}
-      />
-    </svg>
-  );
-}
-
-type GuidedTourProps = {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  steps: TourStep[];
-  onSkip: () => void;
-  onComplete: () => void;
-};
+type GuidedTourProps = { open: boolean; onOpenChange: (open: boolean) => void; steps: TourStep[]; onSkip: () => void; onComplete: () => void; celebrate?: boolean }; // confetti on complete only
 
 export function GuidedTour({
   open,
@@ -92,6 +19,7 @@ export function GuidedTour({
   steps,
   onSkip,
   onComplete,
+  celebrate = false,
 }: GuidedTourProps) {
   const maskId = `${useId()}-tour-mask`;
   const [idx, setIdx] = useState(0);
@@ -107,6 +35,7 @@ export function GuidedTour({
   const closeLockRef = useRef(false);
   const rafRef = useRef<number | null>(null);
   const lastRectRef = useRef<Rect | null>(null);
+  const activeStepRef = useRef<TourStep | null>(null);
 
   const step = steps[idx] ?? null;
   const total = steps.length;
@@ -117,6 +46,27 @@ export function GuidedTour({
     const pad = step?.target === "navbar" ? 4 : 14;
     return padded(targetRect, pad, vw, vh);
   }, [step?.target, targetRect, vw, vh]);
+
+  useEffect(() => {
+    if (!open) return;
+    const prev = activeStepRef.current;
+    if (prev && prev.id !== step?.id) {
+      void prev.onExit?.();
+    }
+    activeStepRef.current = step;
+    if (step) {
+      void step.onEnter?.();
+    }
+  }, [open, step?.id]); // run before target lookup effect below
+
+  useEffect(() => {
+    if (open) return;
+    const prev = activeStepRef.current;
+    activeStepRef.current = null;
+    if (prev) {
+      void prev.onExit?.();
+    }
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -141,23 +91,24 @@ export function GuidedTour({
     if (!open || !step) return;
 
     const sel = `[data-tour="${cssEscape(step.target)}"]`;
-    const found = document.querySelector(sel);
-    if (!(found instanceof HTMLElement)) {
-      setTargetRect(null);
-      return;
-    }
-    const el = found;
-
-    if (step.target !== "navbar") {
-      el.scrollIntoView({
-        block: "center",
-        inline: "center",
-        behavior: "smooth",
-      });
-    }
+    let el: HTMLElement | null = null;
+    let ro: ResizeObserver | null = null;
+    let retryTimer = 0;
+    let retries = 0;
 
     let raf = 0;
     let t = 0;
+
+    function findTarget(): HTMLElement | null {
+      const found = document.querySelector(sel);
+      if (!(found instanceof HTMLElement)) return null;
+      return found;
+    }
+
+    function isUsableTarget(candidate: HTMLElement): boolean {
+      const r = candidate.getBoundingClientRect();
+      return r.width >= 6 && r.height >= 6;
+    }
 
     function rectChanged(a: Rect | null, b: Rect): boolean {
       if (!a) return true;
@@ -169,8 +120,8 @@ export function GuidedTour({
       );
     }
 
-    function read() {
-      const r = el.getBoundingClientRect();
+    function read(candidate: HTMLElement) {
+      const r = candidate.getBoundingClientRect();
       const next = toRect(r);
       const prev = lastRectRef.current;
       if (rectChanged(prev, next)) {
@@ -183,22 +134,53 @@ export function GuidedTour({
       if (rafRef.current != null) return;
       rafRef.current = window.requestAnimationFrame(() => {
         rafRef.current = null;
-        read();
+        if (el) read(el);
       });
     }
 
-    raf = window.requestAnimationFrame(read);
-    t = window.setTimeout(schedule, 240);
+    function attach(candidate: HTMLElement) {
+      el = candidate;
 
-    const ro = new ResizeObserver(() => schedule());
-    ro.observe(el);
-    window.addEventListener("scroll", schedule, { capture: true, passive: true });
-    window.addEventListener("resize", schedule, { passive: true });
+      if (step.target !== "navbar") {
+        el.scrollIntoView({
+          block: "center",
+          inline: "center",
+          behavior: "smooth",
+        });
+      }
+
+      raf = window.requestAnimationFrame(() => read(el!));
+      t = window.setTimeout(schedule, 240);
+
+      ro = new ResizeObserver(() => schedule());
+      ro.observe(el);
+      window.addEventListener("scroll", schedule, { capture: true, passive: true });
+      window.addEventListener("resize", schedule, { passive: true });
+    }
+
+    function tryAttach(): boolean {
+      const candidate = findTarget();
+      if (!candidate) return false;
+      if (!isUsableTarget(candidate)) return false;
+      attach(candidate);
+      return true;
+    }
+
+    if (!tryAttach()) {
+      setTargetRect(null);
+      retryTimer = window.setInterval(() => {
+        retries += 1;
+        if (tryAttach() || retries > 40) {
+          window.clearInterval(retryTimer);
+        }
+      }, 50);
+    }
 
     return () => {
       window.cancelAnimationFrame(raf);
       window.clearTimeout(t);
-      ro.disconnect();
+      if (retryTimer) window.clearInterval(retryTimer);
+      ro?.disconnect();
       window.removeEventListener("scroll", schedule, true);
       window.removeEventListener("resize", schedule);
       if (rafRef.current != null) {
@@ -206,7 +188,7 @@ export function GuidedTour({
         rafRef.current = null;
       }
     };
-  }, [open, step]);
+  }, [open, step?.id]);
 
   useLayoutEffect(() => {
     if (!open || !spotlightRect || !vw || !vh) return;
@@ -231,9 +213,12 @@ export function GuidedTour({
   function requestClose(reason: "skip" | "complete") {
     if (closeLockRef.current) return;
     closeLockRef.current = true;
-    void fireConfettiFireworks();
-    if (reason === "skip") onSkip();
-    else onComplete();
+    if (reason === "skip") {
+      onSkip();
+    } else {
+      if (celebrate) void fireConfettiFireworks();
+      onComplete();
+    }
     onOpenChange(false);
   }
 

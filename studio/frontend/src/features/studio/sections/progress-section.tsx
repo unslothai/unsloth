@@ -19,7 +19,6 @@ import {
   useTrainingConfigStore,
   useTrainingActions,
   useTrainingRuntimeStore,
-  type TrainingPhase,
 } from "@/features/training";
 import {
   ChartAverageIcon,
@@ -33,48 +32,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { useShallow } from "zustand/react/shallow";
-
-const phaseLabel: Record<TrainingPhase, string> = {
-  idle: "Idle",
-  loading_model: "Loading model",
-  loading_dataset: "Loading dataset",
-  configuring: "Configuring",
-  training: "Training",
-  completed: "Completed",
-  error: "Error",
-  stopped: "Stopped",
-};
-
-const phaseColors: Record<TrainingPhase, string> = {
-  idle: "bg-muted text-muted-foreground",
-  loading_model: "bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300",
-  loading_dataset:
-    "bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300",
-  configuring: "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300",
-  training:
-    "bg-emerald-100 text-emerald-700 dark:bg-emerald-900 dark:text-emerald-300",
-  completed:
-    "bg-emerald-100 text-emerald-700 dark:bg-emerald-900 dark:text-emerald-300",
-  error: "bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300",
-  stopped: "bg-muted text-muted-foreground",
-};
-
-function formatDuration(seconds: number | null): string {
-  if (seconds == null || seconds < 0) {
-    return "--";
-  }
-  const total = Math.floor(seconds);
-  const min = Math.floor(total / 60);
-  const sec = total % 60;
-  return `${min}m ${sec}s`;
-}
-
-function formatNumber(value: number | null | undefined, digits: number): string {
-  if (value == null || !Number.isFinite(value)) {
-    return "--";
-  }
-  return value.toFixed(digits);
-}
+import { formatDuration, formatNumber, phaseColors, phaseLabel } from "./progress-section-lib";
 
 export function ProgressSection(): ReactElement {
   const runtime = useTrainingRuntimeStore(
@@ -238,6 +196,7 @@ export function ProgressSection(): ReactElement {
           </Popover>
           <AlertDialog open={stopDialogOpen} onOpenChange={setStopDialogOpen}>
             <Button
+              data-tour="studio-training-stop"
               variant="destructive"
               size="sm"
               className="h-7 cursor-pointer px-3 text-xs"

@@ -19,7 +19,7 @@ interface MethodPickerProps {
 
 export function MethodPicker({ value, onChange }: MethodPickerProps) {
   return (
-    <div className="flex flex-col gap-3">
+    <div data-tour="export-method" className="flex flex-col gap-3">
       <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
         Export Method
         <Tooltip>

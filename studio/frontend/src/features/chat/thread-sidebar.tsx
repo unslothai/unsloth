@@ -116,7 +116,7 @@ export function ThreadSidebar({
               </SidebarMenuItem>
               {showCompare ? (
                 <SidebarMenuItem>
-                  <SidebarMenuButton onClick={onNewCompare}>
+                  <SidebarMenuButton data-tour="chat-compare" onClick={onNewCompare}>
                     <HugeiconsIcon icon={ColumnInsertIcon} />
                     <span>Compare</span>
                   </SidebarMenuButton>

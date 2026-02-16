@@ -9,6 +9,7 @@ import {
   Analytics01Icon,
   ArrowRight01Icon,
   Book03Icon,
+  CursorInfo02Icon,
   PackageIcon,
   ZapIcon,
 } from "@hugeicons/core-free-icons";
@@ -16,6 +17,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { Link, useRouterState } from "@tanstack/react-router";
 import { AnimatePresence, motion } from "motion/react";
 import { useState } from "react";
+import { TOUR_OPEN_EVENT } from "@/features/tour";
 
 const NAV_ITEMS = [
   { label: "Studio", href: "/studio", icon: ZapIcon, enabled: true },
@@ -27,6 +29,15 @@ const NAV_ITEMS = [
 export function Navbar() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const [logoHovered, setLogoHovered] = useState(false);
+
+  const tourId =
+    pathname === "/studio"
+      ? "studio"
+      : pathname === "/chat"
+        ? "chat"
+        : pathname === "/export"
+          ? "export"
+          : null;
 
   return (
     <header className="top-0 z-40 h-16 w-full">
@@ -128,39 +139,56 @@ export function Navbar() {
         </nav>
 
         {/* Right: docs link */}
-        <HoverCard openDelay={200} closeDelay={100}>
-          <HoverCardTrigger asChild={true}>
-            <a
-              href="https://unsloth.ai/docs"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-1.5 text-sm font-medium text-emerald-600 hover:text-emerald-700 transition-colors"
+        <div className="flex items-center gap-2">
+          <HoverCard openDelay={200} closeDelay={100}>
+            <HoverCardTrigger asChild={true}>
+              <a
+                href="https://unsloth.ai/docs"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-1.5 text-sm font-medium text-emerald-600 hover:text-emerald-700 transition-colors"
+              >
+                <HugeiconsIcon icon={Book03Icon} className="size-4" />
+                Learn more
+              </a>
+            </HoverCardTrigger>
+            <HoverCardContent align="end" className="w-80 p-0">
+              <a
+                href="https://unsloth.ai/docs"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="group/card flex flex-col gap-1 p-4 no-underline"
+              >
+                <p className="text-sm font-semibold font-heading">
+                  Unsloth Documentation
+                </p>
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  Guides on fine-tuning LLMs 2x faster with 70% less memory.
+                  Covers LoRA, QLoRA, data formatting, and deployment.
+                </p>
+                <span className="mt-1 flex items-center gap-1 text-xs font-medium text-emerald-600 group-hover/card:underline">
+                  Visit docs
+                  <HugeiconsIcon icon={ArrowRight01Icon} className="size-3" />
+                </span>
+              </a>
+            </HoverCardContent>
+          </HoverCard>
+
+          {tourId ? (
+            <button
+              type="button"
+              onClick={() => {
+                window.dispatchEvent(
+                  new CustomEvent(TOUR_OPEN_EVENT, { detail: { id: tourId } }),
+                );
+              }}
+              className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              title="Tour"
             >
-              <HugeiconsIcon icon={Book03Icon} className="size-4" />
-              Learn more
-            </a>
-          </HoverCardTrigger>
-          <HoverCardContent align="end" className="w-80 p-0">
-            <a
-              href="https://unsloth.ai/docs"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="group/card flex flex-col gap-1 p-4 no-underline"
-            >
-              <p className="text-sm font-semibold font-heading">
-                Unsloth Documentation
-              </p>
-              <p className="text-xs text-muted-foreground leading-relaxed">
-                Guides on fine-tuning LLMs 2x faster with 70% less memory.
-                Covers LoRA, QLoRA, data formatting, and deployment.
-              </p>
-              <span className="mt-1 flex items-center gap-1 text-xs font-medium text-emerald-600 group-hover/card:underline">
-                Visit docs
-                <HugeiconsIcon icon={ArrowRight01Icon} className="size-3" />
-              </span>
-            </a>
-          </HoverCardContent>
-        </HoverCard>
+              <HugeiconsIcon icon={CursorInfo02Icon} className="size-4" />
+            </button>
+          ) : null}
+        </div>
       </div>
     </header>
   );
