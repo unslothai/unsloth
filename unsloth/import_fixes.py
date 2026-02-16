@@ -414,6 +414,24 @@ def fix_vllm_guided_decoding_params():
                 f"Original error: {error}"
             ) from error
 
+    def _is_broken_vllm_extension(error):
+        error_text = str(error)
+        return (
+            "vllm/_C" in error_text
+            or "vllm._C" in error_text
+            or "undefined symbol" in error_text
+            or ".so:" in error_text
+            or "cannot open shared object file" in error_text
+        )
+
+    def _warn_and_skip(error):
+        logger.warning(
+            "Unsloth: vLLM appears installed but failed to import due to a broken native "
+            "extension. Skipping GuidedDecodingParams compatibility patch so Unsloth can "
+            "still import. If you need vLLM, reinstall a compatible build for your current "
+            f"torch/CUDA setup. Original error: {error}"
+        )
+
     if importlib.util.find_spec("vllm") is None:
         return
     # GuidedDecodingParmas is renamed to StructuredOutputsParams in vLLM
@@ -421,14 +439,20 @@ def fix_vllm_guided_decoding_params():
     # trl still wants to use GuidedDecodingParams. This is a temporary patch till trl updates
     try:
         import vllm
-    except ImportError as e:
+    except (ImportError, OSError) as e:
         _maybe_raise_vllm_transformers_mismatch(e)
+        if _is_broken_vllm_extension(e):
+            _warn_and_skip(e)
+            return
         raise
 
     try:
         from vllm.sampling_params import GuidedDecodingParams
-    except ImportError as e:
+    except (ImportError, OSError) as e:
         _maybe_raise_vllm_transformers_mismatch(e)
+        if _is_broken_vllm_extension(e):
+            _warn_and_skip(e)
+            return
         if not hasattr(vllm, "sampling_params") or not hasattr(
             vllm.sampling_params, "StructuredOutputsParams"
         ):
@@ -1028,7 +1052,7 @@ def fix_vllm_pdl_blackwell():
     def _spec_exists(name):
         try:
             return importlib.util.find_spec(name) is not None
-        except (ModuleNotFoundError, ValueError):
+        except (ImportError, OSError, ModuleNotFoundError, ValueError):
             return False
 
     # Check if vLLM has the PDL-related modules before doing internet check
