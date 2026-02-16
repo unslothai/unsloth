@@ -689,6 +689,7 @@ def torchvision_compatibility_check():
         f"Unsloth: torch=={torch_version_raw} requires "
         f"torchvision>={required_tv_str}, "
         f"but found torchvision=={torchvision_version_raw}. "
+        f'Try updating torchvision via `pip install --upgrade "torchvision>={required_tv_str}"`. '
         f"Please refer to https://pytorch.org/get-started/previous-versions/ "
         f"for more information."
     )
