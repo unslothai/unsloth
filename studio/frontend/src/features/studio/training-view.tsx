@@ -33,7 +33,9 @@ export function TrainingView(): ReactElement {
       <div
         className={cn("flex flex-col gap-6 transition-[filter]", showOverlay && "blur")}
       >
-        <ProgressSection />
+        <div data-tour="studio-training-progress">
+          <ProgressSection />
+        </div>
         <ChartsSection />
       </div>
       {showOverlay ? (

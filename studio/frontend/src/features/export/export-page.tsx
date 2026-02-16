@@ -31,6 +31,8 @@ import {
   METHOD_LABELS,
   getEstimatedSize,
 } from "./constants";
+import { GuidedTour, useGuidedTourController } from "@/features/tour";
+import { exportTourSteps } from "./tour";
 
 export function ExportPage() {
   const {
@@ -89,6 +91,11 @@ export function ExportPage() {
   const [modelName, setModelName] = useState("");
   const [privateRepo, setPrivateRepo] = useState(false);
 
+  const tour = useGuidedTourController({
+    id: "export",
+    steps: exportTourSteps,
+  });
+
   const handleMethodChange = (method: ExportMethod) => {
     setExportMethod(method);
     if (method !== "gguf") {
@@ -106,6 +113,8 @@ export function ExportPage() {
   return (
     <div className="min-h-screen bg-background">
       <main className="mx-auto max-w-7xl px-6 py-4">
+        <GuidedTour {...tour.tourProps} />
+
         <div className="mb-8 flex flex-col gap-0.5">
           <h1 className="text-2xl font-semibold tracking-tight">
             Export Model
@@ -156,7 +165,7 @@ export function ExportPage() {
                   </Tooltip>
                 </label>
                 <Select value={checkpoint ?? ""} onValueChange={setCheckpoint}>
-                  <SelectTrigger className="w-full">
+                  <SelectTrigger data-tour="export-checkpoint" className="w-full">
                     <SelectValue
                       placeholder={
                         isAdapter ? "Select a checkpoint…" : "Select model…"
@@ -250,7 +259,11 @@ export function ExportPage() {
               />
               <span>Est. size: {estimatedSize} · Free disk space: 120 GB</span>
             </div>
-            <Button disabled={!canExport} onClick={() => setDialogOpen(true)}>
+            <Button
+              data-tour="export-cta"
+              disabled={!canExport}
+              onClick={() => setDialogOpen(true)}
+            >
               Export Model
             </Button>
           </div>

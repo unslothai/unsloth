@@ -6,8 +6,10 @@ export const studioBaseModelStep: TourStep = {
   title: "Base model from Hugging Face",
   body: (
     <>
-      Search Hub here. Paste <span className="font-mono">org/model</span> too.
-      Pick something close to your domain to save compute. <ReadMore />
+      Paste <span className="font-mono">org/model</span> or search. Pick a base
+      model close to your task (chat/instruct vs base). Smaller models iterate
+      faster; scale up once prompts + data look good.{" "}
+      <ReadMore href="https://docs.unsloth.ai/basics/fine-tuning-llms-guide" />
     </>
   ),
 };

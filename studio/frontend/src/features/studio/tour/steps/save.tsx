@@ -6,9 +6,8 @@ export const studioSaveStep: TourStep = {
   title: "Save config",
   body: (
     <>
-      Save good runs. Repeatability beats vibe. You can iterate from a known
-      baseline.
+      Save configs that worked. Re-running the same baseline makes it obvious
+      if a change helped (or if you just got lucky).
     </>
   ),
 };
-
