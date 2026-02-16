@@ -32,6 +32,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { useShallow } from "zustand/react/shallow";
+import { useGpuUtilization } from "@/hooks";
 import { formatDuration, formatNumber, phaseColors, phaseLabel } from "./progress-section-lib";
 
 export function ProgressSection(): ReactElement {
@@ -72,6 +73,7 @@ export function ProgressSection(): ReactElement {
   );
 
   const { stopTrainingRun } = useTrainingActions();
+  const gpu = useGpuUtilization(runtime.isTrainingRunning);
   const [stopDialogOpen, setStopDialogOpen] = useState(false);
   const localStartAtRef = useRef<number | null>(null);
   const [, setLocalTick] = useState(0);
@@ -79,12 +81,12 @@ export function ProgressSection(): ReactElement {
   const pct =
     runtime.totalSteps > 0
       ? Math.min(
-          100,
-          Math.max(
-            0,
-            Math.round((runtime.currentStep / runtime.totalSteps) * 100),
-          ),
-        )
+        100,
+        Math.max(
+          0,
+          Math.round((runtime.currentStep / runtime.totalSteps) * 100),
+        ),
+      )
       : Math.round(runtime.progressPercent);
 
   useEffect(() => {
@@ -137,16 +139,16 @@ export function ProgressSection(): ReactElement {
     },
     ...(config.trainingMethod !== "full"
       ? [
-          {
-            section: "LoRA",
-            rows: [
-              ["Rank", config.loraRank],
-              ["Alpha", config.loraAlpha],
-              ["Dropout", config.loraDropout],
-              ["Variant", config.loraVariant],
-            ],
-          },
-        ]
+        {
+          section: "LoRA",
+          rows: [
+            ["Rank", config.loraRank],
+            ["Alpha", config.loraAlpha],
+            ["Dropout", config.loraDropout],
+            ["Variant", config.loraVariant],
+          ],
+        },
+      ]
       : []),
   ];
 
@@ -321,27 +323,27 @@ export function ProgressSection(): ReactElement {
                   className="size-3.5"
                 />
               }
-              value="--"
-              pct={0}
+              value={gpu.gpu_utilization_pct != null ? `${gpu.gpu_utilization_pct}%` : "--"}
+              pct={gpu.gpu_utilization_pct ?? 0}
             />
             <GpuStat
               label="Temperature"
               icon={<HugeiconsIcon icon={TemperatureIcon} className="size-3.5" />}
-              value="--"
-              pct={0}
+              value={gpu.temperature_c != null ? `${gpu.temperature_c}°C` : "--"}
+              pct={gpu.temperature_c ?? 0}
               max={100}
             />
             <GpuStat
               label="VRAM"
               icon={<HugeiconsIcon icon={RamMemoryIcon} className="size-3.5" />}
-              value="--"
-              pct={0}
+              value={gpu.vram_used_gb != null && gpu.vram_total_gb != null ? `${gpu.vram_used_gb} / ${gpu.vram_total_gb} GB` : "--"}
+              pct={gpu.vram_utilization_pct ?? 0}
             />
             <GpuStat
               label="Power"
               icon={<HugeiconsIcon icon={ZapIcon} className="size-3.5" />}
-              value="--"
-              pct={0}
+              value={gpu.power_draw_w != null ? (gpu.power_limit_w != null ? `${gpu.power_draw_w} / ${gpu.power_limit_w} W` : `${gpu.power_draw_w} W`) : "--"}
+              pct={gpu.power_utilization_pct ?? 0}
             />
           </div>
         </div>
