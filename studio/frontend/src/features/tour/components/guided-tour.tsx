@@ -11,7 +11,7 @@ import { computeCardPos, padded, pickPlacement } from "../lib/layout";
 import { SpotlightOverlay } from "./spotlight-overlay";
 import type { Placement, Rect, TourStep } from "../types";
 
-type GuidedTourProps = { open: boolean; onOpenChange: (open: boolean) => void; steps: TourStep[]; onSkip: () => void; onComplete: () => void };
+type GuidedTourProps = { open: boolean; onOpenChange: (open: boolean) => void; steps: TourStep[]; onSkip: () => void; onComplete: () => void; celebrate?: boolean }; // confetti on complete only
 
 export function GuidedTour({
   open,
@@ -19,6 +19,7 @@ export function GuidedTour({
   steps,
   onSkip,
   onComplete,
+  celebrate = false,
 }: GuidedTourProps) {
   const maskId = `${useId()}-tour-mask`;
   const [idx, setIdx] = useState(0);
@@ -212,9 +213,12 @@ export function GuidedTour({
   function requestClose(reason: "skip" | "complete") {
     if (closeLockRef.current) return;
     closeLockRef.current = true;
-    void fireConfettiFireworks();
-    if (reason === "skip") onSkip();
-    else onComplete();
+    if (reason === "skip") {
+      onSkip();
+    } else {
+      if (celebrate) void fireConfettiFireworks();
+      onComplete();
+    }
     onOpenChange(false);
   }
 
