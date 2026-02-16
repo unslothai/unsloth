@@ -29,7 +29,7 @@ export function useTrainingActions() {
 
     try {
       const datasetName = getDatasetName(config);
-      const isVlm = config.modelType === "vision";
+      const isVlm = config.isVisionModel && config.isDatasetMultimodal === true;
 
       if (datasetName) {
         const check = await checkDatasetFormat({

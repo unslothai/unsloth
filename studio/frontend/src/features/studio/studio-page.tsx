@@ -70,7 +70,7 @@ export function StudioPage(): ReactElement {
           datasetSplit={config.datasetSplit}
           mode={dialogMode}
           initialData={dialogInitial}
-          isVlm={config.modelType === "vision"}
+          isVlm={config.isVisionModel && config.isDatasetMultimodal === true}
         />
 
         {canGoBack && (
