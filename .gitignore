@@ -28,6 +28,9 @@ outputs/
 *.swp
 *.swo
 
+# oh-my-codex
+.omx/
+
 # OS
 .DS_Store
 Thumbs.db
