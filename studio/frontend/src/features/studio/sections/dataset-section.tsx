@@ -190,20 +190,21 @@ export function DatasetSection() {
                   ref={scrollRef}
                   className="max-h-64 overflow-y-auto overscroll-contain [scrollbar-width:thin]"
                 >
-                  <ComboboxList className="p-1 !max-h-none !overflow-visible">
-                    {(id: string) => {
-                      const r = hfResults.find((ds) => ds.id === id);
-                      const detail = r?.totalExamples
-                        ? `${formatCompact(r.totalExamples)} rows`
-                        : r?.sizeCategory
-                          ? r.sizeCategory
-                          : r?.downloads != null
-                            ? `↓${formatCompact(r.downloads)}`
-                            : null;
-                      return (
-                        <ComboboxItem
-                          key={id}
-                          value={id}
+                    <ComboboxList className="p-1 !max-h-none !overflow-visible">
+                      {(id: string) => {
+                        const r = hfResults.find((ds) => ds.id === id);
+                        let detail: string | null = null;
+                        if (r?.totalExamples) {
+                          detail = `${formatCompact(r.totalExamples)} rows`;
+                        } else if (r?.sizeCategory) {
+                          detail = r.sizeCategory;
+                        } else if (r?.downloads != null) {
+                          detail = `↓${formatCompact(r.downloads)}`;
+                        }
+                        return (
+                          <ComboboxItem
+                            key={id}
+                            value={id}
                           className="justify-between"
                         >
                           <Tooltip>

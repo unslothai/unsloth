@@ -1,3 +1,4 @@
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import {
   Dialog,
@@ -8,12 +9,12 @@ import {
 import { DataTable } from "@/components/ui/data-table";
 import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
-import { Database02Icon, AlertCircleIcon } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { useTrainingActions, useTrainingConfigStore } from "@/features/training";
 import { checkDatasetFormat } from "@/features/training/api/datasets-api";
 import type { CheckFormatResponse } from "@/features/training/types/datasets";
+import { Database02Icon, AlertCircleIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { useShallow } from "zustand/react/shallow";
 import { collectPreviewImages, formatCell } from "./dataset-preview-dialog-utils";
 import {
   DatasetMappingCard,
@@ -21,10 +22,6 @@ import {
   HeaderPick,
   deriveDefaultMapping,
 } from "./dataset-preview-dialog-mapping";
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
 
 type DatasetPreviewDialogProps = {
   open: boolean;
@@ -37,10 +34,6 @@ type DatasetPreviewDialogProps = {
   initialData?: CheckFormatResponse | null;
   isVlm?: boolean;
 };
-
-// ---------------------------------------------------------------------------
-// Component
-// ---------------------------------------------------------------------------
 
 export function DatasetPreviewDialog({
   open,
@@ -57,8 +50,12 @@ export function DatasetPreviewDialog({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const manualMapping = useTrainingConfigStore((s) => s.datasetManualMapping);
-  const setManualMapping = useTrainingConfigStore((s) => s.setDatasetManualMapping);
+  const { manualMapping, setManualMapping } = useTrainingConfigStore(
+    useShallow((s) => ({
+      manualMapping: s.datasetManualMapping,
+      setManualMapping: s.setDatasetManualMapping,
+    })),
+  );
   const { isStarting, startError, startTrainingRun } = useTrainingActions();
 
   const mappingEnabled = !!data?.requires_manual_mapping;
@@ -79,12 +76,14 @@ export function DatasetPreviewDialog({
       setError(null);
       return;
     }
+
     if (initialData) {
       setData(initialData);
       setError(null);
       setLoading(false);
       return;
     }
+
     let cancelled = false;
     setLoading(true);
     setError(null);
@@ -115,21 +114,13 @@ export function DatasetPreviewDialog({
   }, [open, datasetName, hfToken, datasetSubset, datasetSplit, isVlm, initialData]);
 
   useEffect(() => {
-    if (!open || !datasetName || !data?.requires_manual_mapping) return;
+    if (!open || !datasetName) return;
+    if (!data?.requires_manual_mapping) return;
     if (manualMapping.input || manualMapping.output) return;
     const derived = deriveDefaultMapping(data, isVlm);
     if (!derived.input && !derived.output) return;
     setManualMapping(derived);
-  }, [
-    open,
-    datasetName,
-    data?.requires_manual_mapping,
-    isVlm,
-    manualMapping.input,
-    manualMapping.output,
-    setManualMapping,
-    data,
-  ]);
+  }, [open, datasetName, data, isVlm, manualMapping.input, manualMapping.output, setManualMapping]);
 
   const rows = data?.preview_samples ?? [];
   const columns = data?.columns ?? [];
@@ -159,38 +150,30 @@ export function DatasetPreviewDialog({
           </span>
           {mappingEnabled && (
             <div className="flex items-center gap-3">
-              {(manualMapping.output == null || manualMapping.output !== colName) &&
-                (manualMapping.input == null || manualMapping.input === colName) && (
-                  <HeaderPick
-                    label={leftLabel}
-                    checked={manualMapping.input === colName}
-                    onCheckedChange={(checked) => {
-                      setManualMapping({
-                        input: checked ? colName : null,
-                        output:
-                          checked && manualMapping.output === colName
-                            ? null
-                            : manualMapping.output,
-                      });
-                    }}
-                  />
-                )}
-              {(manualMapping.input == null || manualMapping.input !== colName) &&
-                (manualMapping.output == null || manualMapping.output === colName) && (
-                  <HeaderPick
-                    label={rightLabel}
-                    checked={manualMapping.output === colName}
-                    onCheckedChange={(checked) => {
-                      setManualMapping({
-                        input:
-                          checked && manualMapping.input === colName
-                            ? null
-                            : manualMapping.input,
-                        output: checked ? colName : null,
-                      });
-                    }}
-                  />
-                )}
+              {canShowInputPicker(colName, manualMapping) && (
+                <HeaderPick
+                  label={leftLabel}
+                  checked={manualMapping.input === colName}
+                  onCheckedChange={(checked) => {
+                    setManualMapping({
+                      input: checked ? colName : null,
+                      output: manualMapping.output,
+                    });
+                  }}
+                />
+              )}
+              {canShowOutputPicker(colName, manualMapping) && (
+                <HeaderPick
+                  label={rightLabel}
+                  checked={manualMapping.output === colName}
+                  onCheckedChange={(checked) => {
+                    setManualMapping({
+                      input: manualMapping.input,
+                      output: checked ? colName : null,
+                    });
+                  }}
+                />
+              )}
             </div>
           )}
         </div>
@@ -235,8 +218,7 @@ export function DatasetPreviewDialog({
             </span>
           );
         }
-        const full =
-          typeof value === "string" ? value : JSON.stringify(value);
+        const full = typeof value === "string" ? value : JSON.stringify(value);
         return (
           <p
             className="text-[13px] leading-relaxed line-clamp-6"
@@ -325,10 +307,10 @@ export function DatasetPreviewDialog({
                       : "--"
                   }
                 />
-              <MetaRow
-                label="Columns"
-                value={
-                  <span className="flex items-center gap-1.5 flex-wrap">
+                <MetaRow
+                  label="Columns"
+                  value={
+                    <span className="flex items-center gap-1.5 flex-wrap">
                       {columns.map((col) => (
                         <Badge
                           key={col}
@@ -417,4 +399,18 @@ function MetaRow({
   );
 }
 
-// mapping UI extracted to ./dataset-preview-dialog-mapping.tsx
+function canShowInputPicker(
+  colName: string,
+  mapping: { input: string | null; output: string | null },
+): boolean {
+  if (mapping.output === colName) return false;
+  return mapping.input == null || mapping.input === colName;
+}
+
+function canShowOutputPicker(
+  colName: string,
+  mapping: { input: string | null; output: string | null },
+): boolean {
+  if (mapping.input === colName) return false;
+  return mapping.output == null || mapping.output === colName;
+}

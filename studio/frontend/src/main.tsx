@@ -1,28 +1,28 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
-const globalCrypto = globalThis.crypto as Crypto | undefined;
-const hasUuid =
-  globalCrypto && typeof (globalCrypto as Crypto).randomUUID === "function";
+import "./index.css";
+import { App } from "./app/app";
 
-if (globalCrypto && !hasUuid) {
+const globalCrypto = globalThis.crypto as Crypto | undefined;
+
+if (globalCrypto && typeof globalCrypto.randomUUID !== "function") {
   // Some envs ship `crypto` but no `randomUUID()` (or a non-function stub).
   // Provide a best-effort v4 UUID using `getRandomValues` when available.
-  const getRandomByte = () => {
-    if (typeof globalCrypto.getRandomValues === "function") {
-      return globalCrypto.getRandomValues(new Uint8Array(1))[0];
+  const cryptoRef = globalCrypto;
+
+  function getRandomByte(): number {
+    if (typeof cryptoRef.getRandomValues === "function") {
+      return cryptoRef.getRandomValues(new Uint8Array(1))[0];
     }
     return Math.floor(Math.random() * 256);
-  };
+  }
 
-  (globalCrypto as Crypto).randomUUID = (() =>
+  cryptoRef.randomUUID = (() =>
     "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) =>
       (+c ^ (getRandomByte() & (15 >> (+c / 4)))).toString(16),
     )) as Crypto["randomUUID"];
 }
-
-import "./index.css";
-import { App } from "./app/app";
 
 const rootElement = document.getElementById("root");
 if (!rootElement) {
