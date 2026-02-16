@@ -11,6 +11,7 @@ from .model_config import (
     MODEL_NAME_MAPPING,
     UI_STATUS_INDICATORS,
 )
+from .checkpoints import scan_checkpoints
 
 __all__ = [
     'ModelConfig',
@@ -21,4 +22,5 @@ __all__ = [
     'load_model_config',
     'MODEL_NAME_MAPPING',
     'UI_STATUS_INDICATORS',
+    'scan_checkpoints',
 ]
