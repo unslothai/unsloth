@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2026.1.2"
+__version__ = "2026.2.1"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -28,6 +28,7 @@ __all__ = [
     "HAS_FLASH_ATTENTION_SOFTCAPPING",
     "USE_MODELSCOPE",
     "platform_system",
+    "resolve_hip_gpu_stats_name",
     "patch_tokenizer",
     "get_statistics",
     "Unsloth_Offloaded_Gradient_Checkpointer",
@@ -59,9 +60,11 @@ __all__ = [
     "unsloth_fused_ce_loss",
     "patch_unsloth_smart_gradient_checkpointing",
     "unpatch_unsloth_smart_gradient_checkpointing",
+    "apply_unsloth_gradient_checkpointing",
     "patch_compiled_autograd",
     "process_vision_info",
     "unsloth_compile_transformers",
+    "prefer_flex_attn_if_supported",
     "patch_fast_lora",
     "validate_loftq_config",
     "RaiseUninitialized",
@@ -73,6 +76,8 @@ __all__ = [
     "verify_fp8_support_if_applicable",
     "_get_inference_mode_context_manager",
     "hf_login",
+    "is_moe_model",
+    "get_moe_target_parameters",
     "make_fast_generate_wrapper",
 ]
 
@@ -99,6 +104,7 @@ from ..device_type import (
     DEVICE_COUNT,
     ALLOW_PREQUANTIZED_MODELS,
 )
+from ..import_fixes import UNSLOTH_ENABLE_LOGGING
 from unsloth_zoo.log import logger
 from unsloth_zoo.tokenizer_utils import (
     patch_tokenizer as _patch_tokenizer,
@@ -144,9 +150,104 @@ from unsloth_zoo.compiler import (
 from unsloth_zoo.training_utils import (
     prepare_model_for_training,
 )
+
+
+def resolve_hip_gpu_stats_name(gpu_stats):
+    name = str(getattr(gpu_stats, "name", "") or "").strip()
+    name = re.sub(r"\s*\([^)]*\)\s*$", "", name).strip()
+    normalized_name = name.lower().strip(". ")
+    if normalized_name and normalized_name not in ("amd radeon graphics",):
+        return name + ". "
+
+    try:
+        torch_name = str(torch.cuda.get_device_name(0) or "").strip()
+        torch_name = re.sub(r"\s*\([^)]*\)\s*$", "", torch_name).strip()
+    except Exception:
+        torch_name = ""
+    normalized_torch_name = torch_name.lower().strip(". ")
+    if normalized_torch_name and normalized_torch_name not in ("amd radeon graphics",):
+        return torch_name + ". "
+
+    arch_name = ""
+    for key in ("gcnArchName", "gcn_arch_name", "arch_name", "gfx_arch_name"):
+        value = getattr(gpu_stats, key, None)
+        if value is not None and str(value).strip():
+            arch_name = str(value).strip()
+            break
+
+    if arch_name:
+        arch_name = arch_name.strip()
+        match = re.search(r"(gfx[0-9a-z]+)", arch_name, flags = re.I)
+        if match:
+            return f"AMD {match.group(1).lower()} GPU. "
+    return "AMD GPU. "
+
+
 from unsloth_zoo.temporary_patches import (
     TEMPORARY_PATCHES,
 )
+
+
+def apply_unsloth_gradient_checkpointing(
+    use_gradient_checkpointing, max_seq_length, dtype
+):
+    """
+    Apply gradient checkpointing with smart heuristics.
+
+    For seq < 512, the overhead of gradient offloading in gc="unsloth" mode
+    is not worth it. Benchmarks show standard gc is faster for small sequences.
+
+    Args:
+        use_gradient_checkpointing: "unsloth", True, False, or None
+        max_seq_length: The maximum sequence length
+        dtype: The model dtype for patching
+
+    Returns:
+        The effective use_gradient_checkpointing value (may change from "unsloth" to True)
+    """
+    if use_gradient_checkpointing == "unsloth":
+        # Gradient offloading overhead is not worth it for small sequences.
+        # Benchmarks show crossover point is around seq_len 384-512.
+        # For seq < 512, standard gradient checkpointing is faster.
+        if max_seq_length < 512:
+            unpatch_unsloth_smart_gradient_checkpointing()
+            return True
+        else:
+            patch_unsloth_smart_gradient_checkpointing(dtype = dtype)
+            return "unsloth"
+    elif use_gradient_checkpointing in (True, False):
+        # User explicitly set True or False - unpatch any previous "unsloth" patching
+        unpatch_unsloth_smart_gradient_checkpointing()
+        return use_gradient_checkpointing
+    return use_gradient_checkpointing
+
+
+def prefer_flex_attn_if_supported(model_class, config):
+    if os.environ.get("UNSLOTH_ENABLE_FLEX_ATTENTION", "1") == "0":
+        return None
+    try:
+        from transformers.utils.import_utils import is_torch_flex_attn_available
+
+        if not is_torch_flex_attn_available():
+            return None
+        if model_class is None or not getattr(
+            model_class, "_supports_flex_attn", False
+        ):
+            return None
+        # GPT-OSS uses eager attention during inference since flex attention
+        # returns incorrect results (likely due to left padding issues).
+        # Skip setting flex_attention to avoid BlockMask type errors.
+        model_type = getattr(config, "model_type", "") if config else ""
+        if model_type == "gpt_oss":
+            return None
+        if config is not None:
+            setattr(config, "_attn_implementation", "flex_attention")
+            if hasattr(config, "attn_implementation"):
+                setattr(config, "attn_implementation", "flex_attention")
+        return "flex_attention"
+    except Exception:
+        return None
+
 
 for temporary_patch in TEMPORARY_PATCHES:
     temporary_patch()
@@ -175,6 +276,8 @@ warnings.filterwarnings(action = "ignore", category = UserWarning, module = "bit
 # Stop "Special tokens have been added in the vocabulary, ..."
 logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.CRITICAL + 1)
 
+TORCHAO_MSG = "Error: torchao not found, please install with `pip install torchao`"
+
 
 # Ignore logging messages
 class HideLoggingMessage(logging.Filter):
@@ -187,8 +290,45 @@ class HideLoggingMessage(logging.Filter):
         return not (self.text in x.getMessage())
 
 
+# Replace warning messages (analogous to HideLoggingMessage but for warnings.warn)
+class ReplaceWarningMessage:
+    """
+    Intercepts warnings.warn calls and replaces matching messages with Unsloth branded ones.
+    Uses a list of registered (match_text, replacement, category) rules checked in order.
+    """
+
+    _rules = []
+    _original_showwarning = None
+    _installed = False
+
+    @classmethod
+    def add_rule(cls, match_text, replacement, category = None):
+        cls._rules.append((match_text, replacement, category))
+        if not cls._installed:
+            cls._install()
+
+    @classmethod
+    def _install(cls):
+        cls._original_showwarning = warnings.showwarning
+        cls._installed = True
+
+        def _patched_showwarning(
+            message, category, filename, lineno, file = None, line = None
+        ):
+            msg_str = str(message)
+            for match_text, replacement, match_category in cls._rules:
+                if match_text in msg_str and (
+                    match_category is None or category is match_category
+                ):
+                    print(replacement)
+                    return
+            cls._original_showwarning(message, category, filename, lineno, file, line)
+
+        warnings.showwarning = _patched_showwarning
+
+
 # Stop vLLM messages
-if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") != "1":
+if not UNSLOTH_ENABLE_LOGGING:
     try:
         from vllm.worker.worker import logger as vllm_worker_logger
 
@@ -210,6 +350,17 @@ if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") != "1":
         vllm_executor_logger.addFilter(HideLoggingMessage("to wake up"))
         vllm_executor_logger.addFilter(HideLoggingMessage("Executor is not sleeping"))
         del vllm_executor_logger
+    except:
+        pass
+    try:
+        from vllm.v1.executor.abstract import logger as vllm_v1_executor_logger
+
+        vllm_v1_executor_logger.addFilter(HideLoggingMessage("to fall asleep"))
+        vllm_v1_executor_logger.addFilter(HideLoggingMessage("to wake up"))
+        vllm_v1_executor_logger.addFilter(
+            HideLoggingMessage("Executor is not sleeping")
+        )
+        del vllm_v1_executor_logger
     except:
         pass
     try:
@@ -451,6 +602,36 @@ class RaiseUninitialized:
         transformers_logger.removeHandler(self.error_handler)
 
 
+try:
+    from transformers.trainer import logger as transformers_trainer_logger
+
+    transformers_trainer_logger.addFilter(
+        HideLoggingMessage("The model is already on multiple devices.")
+    )
+except:
+    pass
+
+# Hide HF Hub unauthenticated request warnings
+try:
+    from huggingface_hub.utils._http import logger as hf_http_logger
+
+    hf_http_logger.addFilter(
+        HideLoggingMessage("You are sending unauthenticated requests")
+    )
+    del hf_http_logger
+except:
+    pass
+
+# Replace PEFT target_parameters warning with Unsloth branded message for MoE models
+ReplaceWarningMessage.add_rule(
+    match_text = "target_parameters",
+    replacement = (
+        "Unsloth: PEFT set target_parameters but found no matching parameters.\n"
+        "This is expected for MoE models - Unsloth handles MoE expert LoRA targeting separately."
+    ),
+    category = RuntimeWarning,
+)
+
 # Patch get_model_param_count to record correct 4bit / 8bit
 from transformers.trainer_pt_utils import is_deepspeed_zero3_enabled
 
@@ -531,6 +712,12 @@ try:
     # Some Config files use layer_type_validation
     # for eg Gemma-2, so we must import it to stop errors.
     from transformers.configuration_utils import layer_type_validation
+except:
+    pass
+
+try:
+    # Transformers 5.0+ uses RotaryEmbeddingConfigMixin as a base class for configs
+    from transformers.modeling_rope_utils import RotaryEmbeddingConfigMixin
 except:
     pass
 from transformers import __version__ as transformers_version
@@ -689,11 +876,8 @@ if DEVICE_TYPE == "cuda":
                     )
             except:
                 print(
-                    "Unsloth: Your Flash Attention 2 installation seems to be broken?\n"
-                    "A possible explanation is you have a new CUDA version which isn't\n"
-                    "yet compatible with FA2? Please file a ticket to Unsloth or FA2.\n"
-                    "We shall now use Xformers instead, which does not have any performance hits!\n"
-                    "We found this negligible impact by benchmarking on 1x A100."
+                    "Unsloth: Your Flash Attention 2 installation seems to be broken. "
+                    "Using Xformers instead. No performance changes will be seen."
                 )
 
                 # Stop Flash Attention from importing!
@@ -741,11 +925,8 @@ elif DEVICE_TYPE == "hip":
                 )
         except:
             print(
-                "Unsloth: Your Flash Attention 2 installation seems to be broken?\n"
-                "A possible explanation is you have a new CUDA version which isn't\n"
-                "yet compatible with FA2? Please file a ticket to Unsloth or FA2.\n"
-                "We shall now use Xformers instead, which does not have any performance hits!\n"
-                "We found this negligible impact by benchmarking on 1x A100."
+                "Unsloth: Your Flash Attention 2 installation seems to be broken. "
+                "Using Xformers instead. No performance changes will be seen."
             )
 
             # Stop Flash Attention from importing!
@@ -845,7 +1026,7 @@ except ModuleNotFoundError:
     xformers_attention = None
     xformers_version = None
 except Exception as e:
-    if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") != "0":
+    if UNSLOTH_ENABLE_LOGGING:
         print(
             "========\nSwitching to PyTorch attention since your Xformers is broken.\n========\n"
         )
@@ -1086,8 +1267,12 @@ def has_internet(host = "8.8.8.8", port = 53, timeout = 3):
         return False
     try:
         socket.setdefaulttimeout(timeout)
-        socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect((host, port))
-        return True
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.connect((host, port))
+            return True
+        finally:
+            sock.close()
     except socket.error as ex:
         return False
 
@@ -1656,6 +1841,20 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
             "Using gradient accumulation will be very slightly less accurate.\n"
             "Read more on gradient accumulation issues here: https://unsloth.ai/blog/gradient"
         )
+    # Gemma3 multimodal models in transformers 5.x require token_type_ids during training.
+    # For text-only SFT, token_type_ids should be all zeros (no image tokens).
+    if "token_type_ids" not in inputs and "input_ids" in inputs:
+        _inner = model
+        for _attr in ("base_model", "model", "model"):
+            _inner = getattr(_inner, _attr, _inner)
+        if getattr(getattr(_inner, "config", None), "model_type", "") in ("gemma3",):
+            import sys as _sys
+
+            _mod = _sys.modules.get(type(_inner).__module__)
+            _has_ccm = _mod is not None and hasattr(_mod, "create_causal_mask_mapping")
+            if _has_ccm and _inner.training:
+                inputs["token_type_ids"] = torch.zeros_like(inputs["input_ids"])
+
     outputs = self._old_compute_loss(model, inputs, *args, **kwargs)
     return outputs
 
@@ -1888,6 +2087,12 @@ def unsloth_compile_transformers(
         return model_types, False
 
     supports_sdpa = [True]
+
+    # Run patches BEFORE compiler so class replacements (e.g. GptOssTopKRouter,
+    # GptOssExperts) are in place before the compiler caches references to them.
+    for temporary_patch in TEMPORARY_PATCHES:
+        temporary_patch()
+
     for model_type in model_types:
         _unsloth_compile_transformers(
             model_type,
@@ -2211,9 +2416,12 @@ def _prepare_model_for_qat(
     QAT can be optionally combined with LoRA fine-tuning to for additional throughput improvement.
     For more details: https://dev-discuss.pytorch.org/t/speeding-up-qat-by-1-89x-with-lora/2700
     """
-    from torchao.quantization import PerRow, quantize_
-    from torchao.quantization.granularity import PerGroup, PerAxis
-    from torchao.quantization.qat import QATConfig
+    try:
+        from torchao.quantization import PerRow, quantize_
+        from torchao.quantization.granularity import PerGroup, PerAxis
+        from torchao.quantization.qat import QATConfig
+    except ImportError:
+        raise ImportError(TORCHAO_MSG)
 
     # Gemma3 models have issues with int8 embedding quantization due to their
     # large vocabulary size (262144). Auto-switch to int4 weight-only instead.
@@ -2230,8 +2438,10 @@ def _prepare_model_for_qat(
     if not isinstance(qat_scheme, TorchAOConfig):
         torchao_config: Optional[TorchAOConfig] = None
         if qat_scheme == "fp8-int4":
-            from torchao.quantization import Float8DynamicActivationInt4WeightConfig
-
+            try:
+                from torchao.quantization import Float8DynamicActivationInt4WeightConfig
+            except ImportError:
+                raise ImportError(TORCHAO_MSG)
             group_size = 128
             base_config = Float8DynamicActivationInt4WeightConfig()
             filter_fn = (
@@ -2243,8 +2453,12 @@ def _prepare_model_for_qat(
                 base_config_and_filter_fns = [(base_config, filter_fn)],
             )
         elif qat_scheme == "fp8-fp8":
-            from torchao.quantization import Float8DynamicActivationFloat8WeightConfig
-
+            try:
+                from torchao.quantization import (
+                    Float8DynamicActivationFloat8WeightConfig,
+                )
+            except ImportError:
+                raise ImportError(TORCHAO_MSG)
             base_config = Float8DynamicActivationFloat8WeightConfig(
                 granularity = PerRow()
             )
@@ -2252,11 +2466,13 @@ def _prepare_model_for_qat(
                 qat_scheme = qat_scheme, base_config_and_filter_fns = [(base_config, None)]
             )
         elif qat_scheme == "int8-int4":
-            from torchao.quantization import (
-                Int8DynamicActivationIntxWeightConfig,
-                IntxWeightOnlyConfig,
-            )
-
+            try:
+                from torchao.quantization import (
+                    Int8DynamicActivationIntxWeightConfig,
+                    IntxWeightOnlyConfig,
+                )
+            except ImportError:
+                raise ImportError(TORCHAO_MSG)
             torchao_config = TorchAOConfig(
                 qat_scheme = qat_scheme,
                 base_config_and_filter_fns = [
@@ -2276,14 +2492,32 @@ def _prepare_model_for_qat(
                 prequantization_transform = _untie_input_output_embeddings,
             )
         elif qat_scheme == "int4":
-            from torchao.quantization import Int4WeightOnlyConfig
-
+            try:
+                from torchao.quantization import Int4WeightOnlyConfig
+            except ImportError:
+                raise ImportError(TORCHAO_MSG)
             group_size = 128
             base_config = Int4WeightOnlyConfig(group_size = group_size)
             filter_fn = (
                 lambda m, _: isinstance(m, torch.nn.Linear)
                 and m.in_features >= group_size
             )
+            torchao_config = TorchAOConfig(
+                qat_scheme = qat_scheme,
+                base_config_and_filter_fns = [(base_config, filter_fn)],
+            )
+        elif qat_scheme == "int8":
+            try:
+                from torchao.quantization import IntxWeightOnlyConfig
+                from torchao.quantization.granularity import PerAxis
+            except ImportError:
+                raise ImportError(TORCHAO_MSG)
+
+            base_config = IntxWeightOnlyConfig(
+                weight_dtype = torch.int8,
+                granularity = PerAxis(0),
+            )
+            filter_fn = lambda m, _: isinstance(m, torch.nn.Linear)
             torchao_config = TorchAOConfig(
                 qat_scheme = qat_scheme,
                 base_config_and_filter_fns = [(base_config, filter_fn)],
@@ -2403,6 +2637,117 @@ def hf_login(token: Optional[str] = None) -> Optional[str]:
     except Exception as e:
         logger.info(f"Failed to login to huggingface using token with error: {e}")
     return token
+
+
+# =============================================
+# MoE (Mixture of Experts) Detection and LoRA Utilities
+
+
+def is_moe_model(model) -> bool:
+    """
+    Detect if a model is a Mixture of Experts (MoE) model.
+
+    Args:
+        model: The model to check (can be HF model or config)
+
+    Returns:
+        True if the model is an MoE model, False otherwise
+    """
+    config = getattr(model, "config", model)
+
+    # Different MoE models use different config attribute names:
+    # - Qwen3-MoE: num_experts
+    # - GLM4-MoE: n_routed_experts, num_local_experts
+    # - Mixtral: num_local_experts
+    num_experts = None
+    for attr in ("num_experts", "n_routed_experts", "num_local_experts"):
+        num_experts = getattr(config, attr, None)
+        if num_experts is not None:
+            break
+
+    # Check text_config for VL models
+    if num_experts is None and hasattr(config, "text_config"):
+        for attr in ("num_experts", "n_routed_experts", "num_local_experts"):
+            num_experts = getattr(config.text_config, attr, None)
+            if num_experts is not None:
+                break
+
+    return num_experts is not None and num_experts > 0
+
+
+def get_moe_target_parameters(model, target_modules = None) -> Optional[List[str]]:
+    """
+    Get the target_parameters for MoE expert layers if applicable.
+
+    For MoE models, returns the parameter paths for expert weights
+    (gate_up_proj, down_proj) that should be targeted by PEFT's
+    target_parameters for LoRA on nn.Parameter.
+
+    Only includes MoE parameters that match what's in target_modules:
+    - If "down_proj" is in target_modules -> includes "mlp.experts.down_proj"
+    - If "gate_proj" or "up_proj" is in target_modules -> includes "mlp.experts.gate_up_proj"
+
+    Args:
+        model: The model to get target parameters for
+        target_modules: List/tuple of target module names to match against
+
+    Returns:
+        List of parameter paths for MoE experts, or None if not an MoE model
+    """
+    if not is_moe_model(model):
+        return None
+
+    config = getattr(model, "config", model)
+    # Get num_experts from various possible config attributes
+    num_experts = None
+    for attr in ("num_experts", "n_routed_experts", "num_local_experts"):
+        num_experts = getattr(config, attr, None)
+        if num_experts is not None:
+            break
+    if num_experts is None and hasattr(config, "text_config"):
+        for attr in ("num_experts", "n_routed_experts", "num_local_experts"):
+            num_experts = getattr(config.text_config, attr, None)
+            if num_experts is not None:
+                break
+    if num_experts is None:
+        num_experts = 0
+
+    # Determine which MoE parameters to include based on target_modules
+    moe_params = []
+
+    # Normalize target_modules to a set for efficient lookup
+    if target_modules is None:
+        # If no target_modules specified, include all MoE params
+        target_set = {"gate_proj", "up_proj", "down_proj", "gate_up_proj"}
+    elif isinstance(target_modules, str):
+        target_set = {target_modules}
+        # Heuristic for regex matching MLPs
+        if "proj" in target_modules and (
+            "mlp" in target_modules or "ffn" in target_modules
+        ):
+            target_set.update({"gate_proj", "up_proj", "down_proj", "gate_up_proj"})
+    else:
+        target_set = set(target_modules) if target_modules else set()
+
+    # gate_up_proj combines both gate_proj and up_proj in MoE
+    # Also match "gate_up_proj" directly since users may specify the fused name
+    if (
+        "gate_proj" in target_set
+        or "up_proj" in target_set
+        or "gate_up_proj" in target_set
+    ):
+        moe_params.append("mlp.experts.gate_up_proj")
+
+    if "down_proj" in target_set:
+        moe_params.append("mlp.experts.down_proj")
+
+    if moe_params:
+        print(
+            f"Unsloth: Detected MoE model with {num_experts = } and {target_modules = }. Enabling LoRA on MoE parameters: {moe_params}"
+        )
+        return moe_params
+
+    return None
 
 
 def make_fast_generate_wrapper(original_generate):

@@ -28,16 +28,23 @@ already_imported = [mod for mod in critical_modules if mod in sys.modules]
 from .import_fixes import (
     fix_message_factory_issue,
     check_fbgemm_gpu_version,
+    disable_broken_causal_conv1d,
+    configure_amdgpu_asic_id_table_path,
     torchvision_compatibility_check,
     fix_diffusers_warnings,
     fix_huggingface_hub,
 )
 
+# Configure libdrm ids table path early so ROCm can resolve AMD GPU names.
+configure_amdgpu_asic_id_table_path()
+disable_broken_causal_conv1d()
 fix_message_factory_issue()
 check_fbgemm_gpu_version()
 torchvision_compatibility_check()
 fix_diffusers_warnings()
 fix_huggingface_hub()
+del configure_amdgpu_asic_id_table_path
+del disable_broken_causal_conv1d
 del fix_message_factory_issue
 del check_fbgemm_gpu_version
 del torchvision_compatibility_check
@@ -79,7 +86,7 @@ from importlib.metadata import PackageNotFoundError
 # Check for unsloth_zoo
 try:
     unsloth_zoo_version = importlib_version("unsloth_zoo")
-    if Version(unsloth_zoo_version) < Version("2026.1.2"):
+    if Version(unsloth_zoo_version) < Version("2026.2.1"):
         print(
             "Unsloth: Please update Unsloth and Unsloth-Zoo to the latest version!\n"
             "Do this via `pip install --upgrade --force-reinstall --no-cache-dir --no-deps unsloth unsloth_zoo`"
@@ -125,40 +132,62 @@ from unsloth_zoo.device_type import (
 from .import_fixes import (
     fix_xformers_performance_issue,
     fix_vllm_aimv2_issue,
+    check_vllm_torch_sm100_compatibility,
     fix_vllm_guided_decoding_params,
     fix_vllm_pdl_blackwell,
+    fix_triton_compiled_kernel_missing_attrs,
+    fix_rocm_triton_key_error,
     ignore_logger_messages,
     patch_ipykernel_hf_xet,
     patch_trackio,
     patch_datasets,
     patch_enable_input_require_grads,
     fix_openenv_no_vllm,
+    patch_openspiel_env_async,
     fix_executorch,
+    patch_vllm_for_notebooks,
+    patch_torchcodec_audio_decoder,
+    disable_torchcodec_if_broken,
 )
 
 fix_xformers_performance_issue()
 fix_vllm_aimv2_issue()
+# Check vLLM + torch < 2.9.0 + SM100 compatibility BEFORE importing vLLM
+check_vllm_torch_sm100_compatibility()
 fix_vllm_guided_decoding_params()
 fix_vllm_pdl_blackwell()
+fix_triton_compiled_kernel_missing_attrs()
+fix_rocm_triton_key_error()
 ignore_logger_messages()
 patch_ipykernel_hf_xet()
 patch_trackio()
 patch_datasets()
 patch_enable_input_require_grads()
 fix_openenv_no_vllm()
+patch_openspiel_env_async()
 fix_executorch()
+patch_vllm_for_notebooks()
+patch_torchcodec_audio_decoder()
+disable_torchcodec_if_broken()
 
 del fix_xformers_performance_issue
 del fix_vllm_aimv2_issue
+del check_vllm_torch_sm100_compatibility
 del fix_vllm_guided_decoding_params
 del fix_vllm_pdl_blackwell
+del fix_triton_compiled_kernel_missing_attrs
+del fix_rocm_triton_key_error
 del ignore_logger_messages
 del patch_ipykernel_hf_xet
 del patch_trackio
 del patch_datasets
 del patch_enable_input_require_grads
 del fix_openenv_no_vllm
+del patch_openspiel_env_async
 del fix_executorch
+del patch_vllm_for_notebooks
+del patch_torchcodec_audio_decoder
+del disable_torchcodec_if_broken
 
 # Torch 2.4 has including_emulation
 if DEVICE_TYPE == "cuda":

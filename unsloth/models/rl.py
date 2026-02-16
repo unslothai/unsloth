@@ -26,6 +26,7 @@ from unsloth_zoo.compiler import create_new_function
 from unsloth_zoo.log import logger
 from unsloth_zoo.logging_utils import PatchRLStatistics
 from unsloth_zoo.rl_replacements import RL_REPLACEMENTS
+from ..device_type import DEVICE_TYPE
 from .rl_replacements import (
     RL_EXTRA_ARGS,
     RL_FUNCTIONS,
@@ -68,6 +69,20 @@ except Exception:
         trl_version = Version(importlib_version("trl"))
     except Exception:
         trl_version = Version("0.0.0")
+
+# Get PyTorch version for feature detection
+try:
+    torch_version = Version(torch.__version__.split("+")[0].split("a")[0].split("b")[0])
+except Exception:
+    torch_version = Version("0.0.0")
+
+# Get transformers version for feature detection
+try:
+    from transformers import __version__ as _transformers_version_raw
+
+    transformers_version = Version(_transformers_version_raw)
+except Exception:
+    transformers_version = Version("0.0.0")
 
 
 def vLLMSamplingParams(**kwargs):
@@ -231,11 +246,13 @@ def PatchRL(FastLanguageModel):
     Trainer.prediction_step = unsloth_prediction_step
 
 
+grpo_selective_log_softmax = RL_REPLACEMENTS["grpo_selective_log_softmax"]
 selective_log_softmax = RL_REPLACEMENTS["selective_log_softmax"]
 calculate_pad_tokens_in_prompt = RL_REPLACEMENTS["calculate_pad_tokens_in_prompt"]
 create_completion_attention_mask = RL_REPLACEMENTS["create_completion_attention_mask"]
 left_pack_padding = RL_REPLACEMENTS["left_pack_padding"]
 align_logprobs_with_mask = RL_REPLACEMENTS["align_logprobs_with_mask"]
+autotune_batch_and_chunks = RL_REPLACEMENTS["grpo_autotune_batch_and_chunks"]
 
 RLTrainer_replacement = '''
 import os
@@ -247,9 +264,9 @@ import numpy as np
 from contextlib import nullcontext
 from torch.nn import functional as F
 import inspect
-import psutil
 from transformers import DataCollatorForSeq2Seq, DataCollatorForLanguageModeling as TransformersDataCollatorForLanguageModeling
 from transformers.training_args import ParallelMode
+from unsloth_zoo.device_type import DEVICE_TYPE, device_synchronize
 
 # Wrap trainer with padding to right and enable training mode
 # Also patches W&B since multiple runs must use wandb.finish()
@@ -264,17 +281,19 @@ def prepare_for_training_mode(f):
     def wrapper(self, *args, **kwargs):
         # Enable training mode
         _was_training = None
+        # Get gradient checkpointing setting from training arguments
+        use_gc = getattr(self.args, 'gradient_checkpointing', True)
         if hasattr(self, 'model') and hasattr(self.model, "training"):
             _was_training = self.model.training
         if hasattr(self, 'model') and hasattr(self.model, "for_training"):
-            self.model.for_training()
+            self.model.for_training(use_gradient_checkpointing=use_gc)
         output = f(self, *args, **kwargs)
         # Restore previous mode when possible
         if hasattr(self, 'model') and hasattr(self.model, "for_inference"):
             if _was_training is False:
                 self.model.for_inference()
             elif _was_training is True and hasattr(self.model, "for_training"):
-                self.model.for_training()
+                self.model.for_training(use_gradient_checkpointing=use_gc)
         # Reset gradient checkpointing buffers to free memory while staying ready for next run
         try:
             reset_unsloth_gradient_checkpointing_buffers()
@@ -298,11 +317,13 @@ torch_compile_options = {{
     "triton.cudagraphs" : False,
 }}
 
+{grpo_selective_log_softmax_code}
 {selective_log_softmax_code}
 {calculate_pad_tokens_in_prompt_code}
 {create_completion_attention_mask_code}
 {left_pack_padding_code}
 {align_logprobs_with_mask_code}
+{autotune_batch_and_chunks_code}
 
 {RL_pre}
 
@@ -319,10 +340,20 @@ class Unsloth{RLConfig_name}({RLConfig_name}):
         default = -1,
         metadata = {{'help': 'Chunk size to reduce memory usage. -1 is most efficient.'}},
     )
+    unsloth_logit_chunk_multiplier : Optional[int] = field(
+            default = None,
+            metadata = {{'help': 'Multiplier for chunked logit computations.'}},
+        )
+    unsloth_grpo_mini_batch : Optional[int] = field(
+        default = None,
+        metadata = {{'help': 'Mini batch size for GRPO hidden state accumulation. Default is None unless user defines it.'}},
+    )
     {max_seq_length_pre}
     def __init__({RLConfig_arguments},
         vllm_sampling_params = None,
         unsloth_num_chunks = -1,
+        unsloth_logit_chunk_multiplier = None, 
+        unsloth_grpo_mini_batch = None, 
         {max_seq_length_call}
         **kwargs,
     ):
@@ -330,7 +361,17 @@ class Unsloth{RLConfig_name}({RLConfig_name}):
         super().__init__({RLConfig_call_args}{RLConfig_kwargs})
         self.vllm_sampling_params = vllm_sampling_params
         self.unsloth_num_chunks = unsloth_num_chunks
+        if unsloth_grpo_mini_batch is not None:
+            if self.generation_batch_size >= unsloth_grpo_mini_batch:
+                self.unsloth_grpo_mini_batch = unsloth_grpo_mini_batch
+            else:
+                raise ValueError(
+                    f"Unsloth GRPO mini batch size needs to be less than or equal to the effective generation batch size, "
+                    f"which is self.per_device_train_batch_size * gradient_accumulation_steps."
+                )
+        self.unsloth_logit_chunk_multiplier = unsloth_logit_chunk_multiplier
         {max_seq_length_post}
+{RLConfig_post}
 pass
 
 {RLTrainer_extras}
@@ -393,7 +434,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     try:
         trainer = eval(f"trl.trainer.{trainer_file}")
     except Exception as error:
-        print(f"Unsloth: Could not import trl.trainer.{trainer_file}: {error}")
+        logger.info(f"Unsloth: Could not import trl.trainer.{trainer_file}: {error}")
         return
 
     # Get SFTTrainer and SFTConfig names
@@ -402,6 +443,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         for x in dir(trainer)
         if x.endswith("Trainer")
         and x != "Trainer"
+        and not x.startswith("_")
         and trainer_file.split("_")[0] in x.lower()
     ]
     config = [
@@ -409,6 +451,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         for x in dir(trainer)
         if x.endswith("Config")
         and x != "Config"
+        and not x.startswith("_")
         and trainer_file.split("_")[0] in x.lower()
     ]
     if len(name) != 1:
@@ -416,6 +459,47 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             f"Unsloth: Could not find Trainer class in trl.trainer.{trainer_file}. Found: {name}"
         )
         return
+    if len(config) != 1:
+        # TRL 0.26+: Config may be in a separate *_config.py module
+        config_module_name = trainer_file.replace("_trainer", "_config")
+        try:
+            config_mod = eval(f"trl.trainer.{config_module_name}")
+            config = [
+                x
+                for x in dir(config_mod)
+                if x.endswith("Config")
+                and x != "Config"
+                and not x.startswith("_")
+                and trainer_file.split("_")[0] in x.lower()
+            ]
+        except Exception:
+            pass
+    if len(config) != 1 and len(name) == 1:
+        # Thin wrapper fallback: walk the Trainer's MRO to find Config
+        # in the real implementation module (e.g., trl.experimental.bco)
+        try:
+            _temp_cls = eval(f"trl.trainer.{trainer_file}.{name[0]}")
+            for _parent in _temp_cls.__mro__[1:]:
+                if _parent is object:
+                    continue
+                _parent_mod = inspect.getmodule(_parent)
+                if (
+                    _parent_mod is None
+                    or _parent_mod.__name__ == f"trl.trainer.{trainer_file}"
+                ):
+                    continue
+                config = [
+                    x
+                    for x in dir(_parent_mod)
+                    if x.endswith("Config")
+                    and x != "Config"
+                    and not x.startswith("_")
+                    and trainer_file.split("_")[0] in x.lower()
+                ]
+                if len(config) == 1:
+                    break
+        except Exception:
+            pass
     if len(config) != 1:
         logger.info(
             f"Unsloth: Could not find Config class in trl.trainer.{trainer_file}. Found: {config}"
@@ -432,13 +516,38 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             f"Unsloth: Could not load {RLTrainer_name} from trl.trainer.{trainer_file}: {e}"
         )
         return
+    _config_resolved_module = None
     try:
         RLConfig = eval(f"trl.trainer.{trainer_file}.{RLConfig_name}")
-    except Exception as e:
-        logger.info(
-            f"Unsloth: Could not load {RLConfig_name} from trl.trainer.{trainer_file}: {e}"
-        )
-        return
+    except Exception:
+        # TRL 0.26+: Config may be in a separate *_config.py module
+        try:
+            config_module_name = trainer_file.replace("_trainer", "_config")
+            RLConfig = eval(f"trl.trainer.{config_module_name}.{RLConfig_name}")
+        except Exception:
+            # Thin wrapper fallback: load Config from parent trainer's module
+            _config_loaded = False
+            try:
+                _temp_cls = eval(f"trl.trainer.{trainer_file}.{name[0]}")
+                for _parent in _temp_cls.__mro__[1:]:
+                    if _parent is object:
+                        continue
+                    _parent_mod = inspect.getmodule(_parent)
+                    if (
+                        _parent_mod is None
+                        or _parent_mod.__name__ == f"trl.trainer.{trainer_file}"
+                    ):
+                        continue
+                    if hasattr(_parent_mod, RLConfig_name):
+                        RLConfig = getattr(_parent_mod, RLConfig_name)
+                        _config_resolved_module = _parent_mod
+                        _config_loaded = True
+                        break
+            except Exception:
+                pass
+            if not _config_loaded:
+                logger.info(f"Unsloth: Could not load {RLConfig_name}")
+                return
 
     # Check name
     if RLTrainer.__name__.startswith("Unsloth"):
@@ -448,11 +557,66 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         print(f"Unsloth: {RLConfig.__name__} is already patched.")
         return
 
+    # TRL 0.26+: Resolve thin wrappers to their experimental parent class.
+    # Thin wrappers are deprecation shims in trl.trainer that just forward
+    # *args/**kwargs to the real implementation in trl.experimental.
+    # Only resolve if a parent class actually lives in a trl.experimental module.
+    _trainer_resolved_module = None
+    try:
+        _trainer_src = inspect.getsource(RLTrainer)
+        _trainer_module = inspect.getmodule(RLTrainer)
+        _trainer_module_src = (
+            inspect.getsource(_trainer_module) if _trainer_module else ""
+        )
+        if (
+            "trl.experimental" in _trainer_src
+            or "trl.experimental" in _trainer_module_src
+        ):
+            for _parent in RLTrainer.__mro__[1:]:
+                if _parent is object:
+                    continue
+                _parent_mod = inspect.getmodule(_parent)
+                if _parent_mod is None:
+                    continue
+                # Only resolve to a parent that lives in trl.experimental
+                if "trl.experimental" in _parent_mod.__name__:
+                    RLTrainer = _parent
+                    _trainer_resolved_module = _parent_mod
+                    break
+    except Exception:
+        pass
+
+    try:
+        _config_src = inspect.getsource(RLConfig)
+        _config_module = inspect.getmodule(RLConfig)
+        _config_module_src = inspect.getsource(_config_module) if _config_module else ""
+        if (
+            "trl.experimental" in _config_src
+            or "trl.experimental" in _config_module_src
+        ):
+            for _parent in RLConfig.__mro__[1:]:
+                if _parent is object:
+                    continue
+                _parent_mod = inspect.getmodule(_parent)
+                if _parent_mod is None:
+                    continue
+                # Only resolve to a parent that lives in trl.experimental
+                if "trl.experimental" in _parent_mod.__name__:
+                    RLConfig = _parent
+                    break
+    except Exception:
+        pass
+
     # Get old source
     old_RLTrainer_source = inspect.getsource(RLTrainer)
     old_RLConfig_source = inspect.getsource(RLConfig)
 
-    all_imports = dir(trainer)
+    if _trainer_resolved_module is not None:
+        all_imports = dir(_trainer_resolved_module)
+    elif _config_resolved_module is not None:
+        all_imports = dir(_config_resolved_module)
+    else:
+        all_imports = dir(trainer)
     # Fix _deprecate_arguments not getting imported so stop __ but not _
     imports = [x for x in all_imports if not x.startswith("__")]
 
@@ -803,7 +967,6 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "per_device_train_batch_size": 4,
         "gradient_accumulation_steps": 2,
         "weight_decay": 0.01,
-        "warmup_ratio": 0.1,
         "seed": 3407,
         "optim": "adamw_8bit",
         "learning_rate": 5e-05,
@@ -830,6 +993,12 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         # "dataloader_prefetch_factor"    : 2,
         # "dataloader_num_workers"        : 2, # Default is 0 means 1
     }
+    # warmup_ratio deprecated in transformers >= 5.0; warmup_steps accepts float
+    if transformers_version >= Version("5.0.0"):
+        replacements["warmup_steps"] = 0.1
+    else:
+        replacements["warmup_ratio"] = 0.1
+
     for k, v in replacements.items():
         x = f"{k}( = [^,\n]{{1,}})?,\n"
         y = f"'{v}'" if type(v) is str else f"{v}"
@@ -864,6 +1033,15 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         )
         extra_args += learning_rate_check
 
+    # Fix num_train_epochs = None causing TypeError in Trainer.__init__
+    # Trainer does `args.num_train_epochs > 0` which fails when None
+    if "num_train_epochs" in call_args:
+        num_train_epochs_check = (
+            "if num_train_epochs is None:\n"
+            "    num_train_epochs = 3.0  # Default to 3 epochs if None, max_steps will override\n"
+        )
+        extra_args += num_train_epochs_check
+
     # Check if max_seq_length is NOT defined (max_length is now default)
     if "max_seq_length" not in call_args and "max_length" in call_args:
         max_seq_length_pre = """max_seq_length : Optional[int] = field(
@@ -890,14 +1068,15 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     # Edit dataset_num_proc
     if "dataset_num_proc" in call_args:
         num_proc_check = (
-            "if dataset_num_proc is None:\n"
+            "import multiprocessing as _mp\n"
+            "if _mp.get_start_method() != 'fork':\n"
+            "    dataset_num_proc = None\n"
+            "elif dataset_num_proc is None:\n"
             "    import psutil\n"
             "    dataset_num_proc = min(max((psutil.cpu_count() or 1)+4, 2), 64)\n"
             "    memory_gb_left = psutil.virtual_memory().available / (1024**3)\n"
-            "    if   memory_gb_left <=  4: dataset_num_proc = 1 # Too risky, so set to 1\n"
-            "    elif memory_gb_left <=  6: dataset_num_proc = min(2, dataset_num_proc)\n"
-            "    elif memory_gb_left <= 10: dataset_num_proc = min(4, dataset_num_proc)\n"
-            "    elif memory_gb_left <= 14: dataset_num_proc = min(6, dataset_num_proc)\n"
+            "    if memory_gb_left <= 2: dataset_num_proc = 1\n"
+            "    else: dataset_num_proc = min(dataset_num_proc, int(memory_gb_left))\n"
         )
         extra_args += num_proc_check
 
@@ -999,6 +1178,18 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     RLConfig_extra_args = extra_args
     RLConfig_call_args = call_args
 
+    # TRL 0.27.0+ forces use_reentrant=False in gradient_checkpointing_kwargs.
+    # Unsloth gradient checkpointing requires use_reentrant=True, so we remove
+    # the setting after super().__init__() when it gets auto-applied.
+    RLConfig_post = ""
+    if trl_version >= Version("0.27.0") and RLConfig_name == "GRPOConfig":
+        RLConfig_post = (
+            "        # Unsloth: Remove use_reentrant=False forced by TRL 0.27.0+\n"
+            "        if getattr(self, 'gradient_checkpointing_kwargs', None) is not None:\n"
+            "            if 'use_reentrant' in self.gradient_checkpointing_kwargs:\n"
+            "                del self.gradient_checkpointing_kwargs['use_reentrant']\n"
+        )
+
     # Patch vLLM and other functions
     RLTrainer_extras = patch_functions(
         RLTrainer, trainer_file, RLTrainer_name, all_imports, imports
@@ -1027,6 +1218,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
 
     # Selective log softmax and other functions
     selective_log_softmax_code = inspect.getsource(selective_log_softmax)
+    grpo_selective_log_softmax_code = inspect.getsource(grpo_selective_log_softmax)
     calculate_pad_tokens_in_prompt_code = inspect.getsource(
         calculate_pad_tokens_in_prompt
     )
@@ -1035,6 +1227,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     )
     left_pack_padding_code = inspect.getsource(left_pack_padding)
     align_logprobs_with_mask_code = inspect.getsource(align_logprobs_with_mask)
+    autotune_batch_and_chunks_code = inspect.getsource(autotune_batch_and_chunks)
     # Get final source code
     RLTrainer_source = RLTrainer_replacement.format(
         RLTrainer_name = RLTrainer_name,
@@ -1049,6 +1242,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         RLConfig_extra_args = RLConfig_extra_args,
         RLConfig_call_args = RLConfig_call_args,
         RLConfig_kwargs = ",**kwargs"[1 if RLConfig_call_args.endswith(",") else 0 :],
+        RLConfig_post = RLConfig_post,
         RLTrainer_extras = RLTrainer_extras,
         RLTrainer_post = RLTrainer_post,
         RL_pre = RL_pre,
@@ -1056,10 +1250,88 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         max_seq_length_call = max_seq_length_call,
         max_seq_length_post = max_seq_length_post,
         selective_log_softmax_code = selective_log_softmax_code,
+        grpo_selective_log_softmax_code = grpo_selective_log_softmax_code,
         calculate_pad_tokens_in_prompt_code = calculate_pad_tokens_in_prompt_code,
         create_completion_attention_mask_code = create_completion_attention_mask_code,
+        autotune_batch_and_chunks_code = autotune_batch_and_chunks_code,
         left_pack_padding_code = left_pack_padding_code,
         align_logprobs_with_mask_code = align_logprobs_with_mask_code,
+    )
+
+    if RLTrainer_name == "GRPOTrainer":
+        # Base torch_compile_options shared by all device types
+        base_options = """torch_compile_options = {
+            "epilogue_fusion"   : True,
+            "max_autotune"      : False,
+            "shape_padding"     : True,
+            "trace.enabled"     : False,"""
+
+        # Generate torch_compile_options based on device type
+        if DEVICE_TYPE == "cuda":
+            # CUDA-specific options (added to base options)
+            cuda_options = """
+            "triton.enable_persistent_tma_matmul": torch.cuda.get_device_capability()[0] >= 9,"""
+            # cutlass options were added in PyTorch 2.8.0
+            if torch_version >= Version("2.8.0"):
+                cuda_options += """
+            "cuda.cutlass_epilogue_fusion_enabled": torch.cuda.get_device_capability()[0] >= 9,
+            "cuda.cutlass_tma_only": torch.cuda.get_device_capability()[0] >= 9,"""
+            cuda_options += """
+            "cuda.compile_opt_level"              : "-O2",
+            "cuda.enable_cuda_lto"                : True,
+        }"""
+            new_options = base_options + cuda_options
+        else:
+            # XPU, HIP, and other device types use base options only
+            new_options = (
+                base_options
+                + """
+        }"""
+            )
+
+        pattern = r"torch_compile_options\s*=\s*\{[^}]*\}"
+
+        RLTrainer_source = re.sub(
+            pattern, new_options, RLTrainer_source, flags = re.DOTALL
+        )
+
+        if trl_version >= Version("0.27.0"):
+            peft_pattern = (
+                r"\s*if is_peft_available\(\) and is_peft_model\(model\) and args\.beta != 0\.0:"
+                r".*?"
+                r"param\.data = param\.data\.to\(torch\.bfloat16\)"
+            )
+
+            replacement_comment = "\n        # PEFT initialization logic removed via script for trl >= 0.27.0\n"
+
+            RLTrainer_source = re.sub(
+                peft_pattern, replacement_comment, RLTrainer_source, flags = re.DOTALL
+            )
+
+        elif trl_version >= Version("0.26.0"):
+            peft_block_pattern = (
+                r"\s*if is_peft_available\(\) and isinstance\(model, PeftModel\) and peft_config is not None:"
+                r".*?"
+                r"param\.data = param\.data\.to\(torch\.bfloat16\)"
+            )
+
+            RLTrainer_source = re.sub(
+                peft_block_pattern,
+                "\n        # TRL PEFT 0.26.0 initialization logic removed on unsloth side.\n",
+                RLTrainer_source,
+                flags = re.DOTALL,
+            )
+
+    # Remove TRL's unconditional bfloat16 cast of trainable params (added in
+    # TRL 0.26.0). TRL hardcodes bfloat16 for QLoRA per the original paper's
+    # recommendation, but this is wrong: it ignores the user's requested dtype
+    # and breaks GradScaler when training with fp16=True. Unsloth already
+    # handles adapter dtype correctly via patch_model_and_tokenizer, so the
+    # entire block is unnecessary. For GRPOTrainer the enclosing peft init
+    # block is already removed above, making this a no-op for GRPO.
+    RLTrainer_source = RLTrainer_source.replace(
+        'if getattr(model, "is_loaded_in_4bit", False) or getattr(model, "is_loaded_in_8bit", False):',
+        "if False:",
     )
 
     if RLTrainer_name == "SFTTrainer":
@@ -1067,13 +1339,82 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         new_text = 'self._signature_columns = ["input_ids", "attention_mask", "completion_mask","labels"]'
         RLTrainer_source = RLTrainer_source.replace(original_text, new_text)
 
-        # Temporary patch _is_vlm to False
-        # as of 0.22 it only exists in sfttrainer
-        original_is_vlm_text = "self._is_vlm = True"
-        new_is_vlm_text = "self._is_vlm = False"
-        RLTrainer_source = RLTrainer_source.replace(
-            original_is_vlm_text, new_is_vlm_text
+        # Do NOT override _is_vlm -- let TRL detect VLM models naturally.
+        # In TRL 0.27.1+, forcing _is_vlm=False causes a ValueError when
+        # vision datasets are used with VLM models.
+        #
+        # However, some notebooks pass a bare tokenizer (processor.tokenizer) as
+        # processing_class. TRL then sets _is_vlm=False even for VLM models.
+        # Add a model-architecture-based override before the validation check.
+        _vlm_check_original = (
+            '        self._is_vision_dataset = "image" in dataset_sample or "images" in dataset_sample\n'
+            "        if self._is_vision_dataset and not self._is_vlm:"
         )
+        _vlm_check_patched = (
+            '        self._is_vision_dataset = "image" in dataset_sample or "images" in dataset_sample\n'
+            "        # Unsloth: override _is_vlm for VLM models that pass a bare tokenizer\n"
+            "        if not self._is_vlm and self._is_vision_dataset:\n"
+            "            _m = model\n"
+            '            if hasattr(_m, "model"): _m = _m.model\n'
+            '            if hasattr(getattr(_m, "config", None), "vision_config") or \\\n'
+            '               _m.__class__.__name__.endswith("ForConditionalGeneration"):\n'
+            "                self._is_vlm = True\n"
+            "        if self._is_vision_dataset and not self._is_vlm:"
+        )
+        if _vlm_check_original in RLTrainer_source:
+            RLTrainer_source = RLTrainer_source.replace(
+                _vlm_check_original, _vlm_check_patched
+            )
+
+        # Fix TRL 0.22.x: VLM models with text-only datasets.
+        # TRL 0.22.x checks _is_vlm (model type) not _is_vision_dataset (dataset
+        # content, added in 0.25.1+). When _is_vlm=True, signature columns are
+        # vision-only ["messages","prompt","completion","images"], which have zero
+        # overlap with tokenized text columns. Fix: merge both column sets into the
+        # VLM branch. Extra columns not in the dataset are harmlessly ignored by
+        # _remove_unused_columns (it only raises when zero columns match).
+        _sig_vlm_old = (
+            'self._signature_columns = ["messages", "prompt", "completion", "images"]'
+        )
+        _sig_vlm_new = (
+            'self._signature_columns = ["messages", "prompt", "completion", "images",'
+            ' "input_ids", "labels", "attention_mask", "seq_lengths", "completion_mask", "assistant_masks"]'
+        )
+        RLTrainer_source = RLTrainer_source.replace(_sig_vlm_old, _sig_vlm_new)
+
+        # Inject model reference before _prepare_dataset for dynamic
+        # token_type_ids detection in sft_prepare_dataset
+        _prep_pattern = r"([ \t]*)train_dataset = self\._prepare_dataset\("
+        _prep_replacement = r"\1self._unsloth_model_ref = model\n\1train_dataset = self._prepare_dataset("
+        RLTrainer_source = re.sub(
+            _prep_pattern, _prep_replacement, RLTrainer_source, count = 1
+        )
+
+    # Silence TRL's noisy batch_size=1 + padding-free warning (handles both
+    # the original "anihilate" typo and the corrected "annihilate" spelling)
+    for _typo in ("anihilate", "annihilate"):
+        _idx = RLTrainer_source.find(_typo)
+        if _idx == -1:
+            continue
+        # Walk backwards to find "if args.per_device_train_batch_size"
+        _block_start = RLTrainer_source.rfind(
+            "if args.per_device_train_batch_size == 1", 0, _idx
+        )
+        if _block_start == -1:
+            continue
+        # Walk backwards to the newline before the if
+        _line_start = RLTrainer_source.rfind("\n", 0, _block_start)
+        # Walk forwards past the closing paren to the end of the block
+        _close = RLTrainer_source.find(")", _idx)
+        if _close == -1:
+            continue
+        _block_end = RLTrainer_source.find("\n", _close)
+        if _block_end == -1:
+            continue
+        RLTrainer_source = (
+            RLTrainer_source[:_line_start] + RLTrainer_source[_block_end:]
+        )
+        break
 
     # Remove multiple doc strings
     if __RLConfig_doc__ != "" and RLTrainer_source.count(__RLTrainer_doc__) == 2:
@@ -1083,10 +1424,16 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     RLTrainer_source = re.sub(r"[\n]{3,}", "\n", RLTrainer_source)
 
     # Create new function
+    _resolved_module = _trainer_resolved_module or _config_resolved_module
+    _model_location = (
+        _resolved_module.__name__
+        if _resolved_module is not None
+        else f"trl.trainer.{trainer_file}"
+    )
     created_module = create_new_function(
         f"Unsloth{RLTrainer_name}",
         RLTrainer_source,
-        f"trl.trainer.{trainer_file}",
+        _model_location,
         imports,
         overwrite = False,
     )
@@ -1165,6 +1512,43 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
     init = init.replace(
         "model = self._prepare_peft_model(model, peft_config, args)\n", "pass\n"
     )
+    # TRL 0.22.0+ uses prepare_peft_model as a standalone function
+    init = init.replace("model = prepare_peft_model(model, peft_config, args)", "pass")
+
+    # Skip add_adapter("ref") for reference model computation
+    # Unsloth: We comment out the "ref" adapter creation because:
+    # 1. We want to use the original BASE MODEL as the reference model, not the SFT/LoRA model
+    # 2. PEFT doesn't allow multiple adapters when target_parameters is used (MoE models)
+    # When "ref" is not in peft_config, GRPO/RLOO fallback uses disable_adapter()
+    # which gives the base model logits - exactly what we want
+    add_adapter_block_pattern = (
+        r"([ \t]*)"  # Capture leading indentation
+        r"if\s+is_peft_available\(\)\s+and\s+is_peft_model\(model\)\s+and\s+args\.beta\s*!=\s*0\.0\s*:"
+        r"(.*?)"  # Match the entire block until ref_param.data.copy_
+        r"ref_param\.data\.copy_\(param\.data\)"
+    )
+
+    def comment_out_block(match):
+        """Comment out each line in the matched block, preserving indentation."""
+        full_match = match.group(0)
+        indent = match.group(1)
+        lines = full_match.split("\n")
+        commented_lines = []
+        # Add explanation comment first
+        commented_lines.append(
+            f"{indent}# Unsloth: Commented out - use base model as reference, not SFT/LoRA model"
+        )
+        # Comment out each line - insert # after leading whitespace to preserve indentation
+        for line in lines:
+            if line.strip():
+                stripped = line.lstrip()
+                leading_ws = line[: len(line) - len(stripped)]
+                commented_lines.append(f"{leading_ws}# {stripped}")
+            else:
+                commented_lines.append(line)
+        return "\n".join(commented_lines)
+
+    init = re.sub(add_adapter_block_pattern, comment_out_block, init, flags = re.DOTALL)
 
     # Set use_vllm if not set
     if "args.use_vllm" in init and "model" in init and "args" in init:
@@ -1302,12 +1686,15 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
     for function in functions:
         if not hasattr(RLTrainer, function):
             continue
-        fx = getattr(RLTrainer, function)
-        try:
-            source = inspect.getsource(fx)
-        except:
-            continue
-        original_source = source
+        if function in changed:
+            original_source, source = changed[function]
+        else:
+            fx = getattr(RLTrainer, function)
+            try:
+                source = inspect.getsource(fx)
+            except:
+                continue
+            original_source = source
 
         # Check for function
         for edit_function in edit_functions:
@@ -1423,7 +1810,10 @@ def patch_trl_rl_trainers():
         if x.islower() and x.endswith("_trainer") and x != "base_trainer"
     ]
     for trainer in all_trainers:
-        _patch_trl_rl_trainers(trainer)
+        try:
+            _patch_trl_rl_trainers(trainer)
+        except Exception as e:
+            logger.warning_once(f"Unsloth: Could not patch trl.trainer.{trainer}: {e}")
     return
 
 
