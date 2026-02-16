@@ -1,12 +1,18 @@
 # Apply Mac compatibility patches BEFORE importing unsloth
 import platform
 if platform.system() == "Darwin":
-    from patcher import patch_for_mac
-    patch_for_mac()
+    from patcher import MacPatcher
+    patcher = MacPatcher()
+    patcher.apply()
 
 import os
 import torch
 from unsloth import FastLanguageModel
+
+# Apply late patches AFTER importing unsloth
+if platform.system() == "Darwin":
+    patcher.patch_patching_utils_late()
+
 import mlx.core as mx
 from unsloth.kernels.mlx.quantization import MLXQuantizedWeight
 

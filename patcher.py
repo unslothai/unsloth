@@ -769,9 +769,18 @@ class MacPatcher:
     
     def patch_patching_utils(self) -> PatchResult:
         """
-        Patch unsloth_zoo.patching_utils to add dummy Bnb_Linear4bit classes for MPS.
+        Placeholder for patching_utils - must be called AFTER unsloth import.
+        See patch_patching_utils_late() for the actual patching.
         """
         name = "patching_utils"
+        return self._create_patch_result(name, PatchStatus.SKIPPED, "deferred to late patch")
+    
+    def patch_patching_utils_late(self) -> PatchResult:
+        """
+        Patch unsloth_zoo.patching_utils to add dummy Bnb_Linear4bit classes for MPS.
+        Must be called AFTER unsloth is imported.
+        """
+        name = "patching_utils_late"
         
         class _DummyBnbLinear:
             pass
@@ -785,10 +794,6 @@ class MacPatcher:
                 patching_utils.Peft_Linear4bit = _DummyBnbLinear
             
             return self._create_patch_result(name, PatchStatus.SUCCESS, "Bnb_Linear4bit patched")
-        except ImportError as e:
-            if "Please install Unsloth" in str(e):
-                return self._create_patch_result(name, PatchStatus.FAILED, "Please install Unsloth via pip!")
-            return self._create_patch_result(name, PatchStatus.SKIPPED, "module not yet imported")
         except Exception as e:
             return self._create_patch_result(name, PatchStatus.FAILED, str(e))
     
@@ -831,6 +836,7 @@ class MacPatcher:
         results.append(self.patch_fused_losses())
         results.append(self.patch_peft())
         results.append(self.patch_compilers())
+        results.append(self.patch_patching_utils_late())
         
         self._applied = True
         
