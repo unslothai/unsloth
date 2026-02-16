@@ -6,9 +6,9 @@ export const studioNavStep: TourStep = {
   title: "Quick orientation",
   body: (
     <>
-      Studio is where you fine-tune. Export ships results. Chat is for poking at
-      models. This tour is Studio-only (for now).
+      Studio: pick base model, dataset, hyperparams, then start training. After
+      you start, you’ll see a Training view with live loss/metrics. Chat is for
+      testing base vs LoRA adapters. Export packages checkpoints for deployment.
     </>
   ),
 };
-
