@@ -770,23 +770,28 @@ class MacPatcher:
     def patch_patching_utils(self) -> PatchResult:
         """
         Patch unsloth_zoo.patching_utils to handle missing Bnb_Linear4bit on MPS.
+        Pre-injects dummy classes into sys.modules before unsloth imports them.
         """
         name = "patching_utils"
         
+        class _DummyBnbLinear:
+            pass
+        
         try:
-            import unsloth_zoo.patching_utils as patching_utils
-            
-            class _DummyBnbLinear:
-                pass
-            
-            if not hasattr(patching_utils, "Bnb_Linear4bit"):
-                patching_utils.Bnb_Linear4bit = _DummyBnbLinear
-            if not hasattr(patching_utils, "Peft_Linear4bit"):
-                patching_utils.Peft_Linear4bit = _DummyBnbLinear
+            if "unsloth_zoo.patching_utils" in sys.modules:
+                patching_utils = sys.modules["unsloth_zoo.patching_utils"]
+                if not hasattr(patching_utils, "Bnb_Linear4bit"):
+                    patching_utils.Bnb_Linear4bit = _DummyBnbLinear
+                if not hasattr(patching_utils, "Peft_Linear4bit"):
+                    patching_utils.Peft_Linear4bit = _DummyBnbLinear
+            else:
+                from types import ModuleType
+                mock_module = ModuleType("unsloth_zoo.patching_utils")
+                mock_module.Bnb_Linear4bit = _DummyBnbLinear
+                mock_module.Peft_Linear4bit = _DummyBnbLinear
+                sys.modules["unsloth_zoo.patching_utils"] = mock_module
             
             return self._create_patch_result(name, PatchStatus.SUCCESS, "Bnb_Linear4bit patched")
-        except ImportError:
-            return self._create_patch_result(name, PatchStatus.SKIPPED, "module not yet imported")
         except Exception as e:
             return self._create_patch_result(name, PatchStatus.FAILED, str(e))
     
