@@ -1,9 +1,10 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import type { CheckFormatResponse } from "@/features/training/types/datasets";
+import { cn } from "@/lib/utils";
 import { AlertCircleIcon, CheckmarkCircle02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import type { CheckFormatResponse } from "@/features/training/types/datasets";
 
 export function HeaderPick({
   label,
@@ -40,30 +41,30 @@ export function DatasetMappingCard({
   input: string | null;
   output: string | null;
 }) {
-  const tone = mappingOk ? "ok" : "warn";
   return (
     <div
-      className={
-        tone === "ok"
-          ? "rounded-xl corner-squircle ring-1 ring-emerald-200/70 bg-emerald-50/70 px-5 py-4 mb-4 text-emerald-950 dark:ring-emerald-900/50 dark:bg-emerald-950/30 dark:text-emerald-50"
-          : "rounded-xl corner-squircle ring-1 ring-amber-200/70 bg-amber-50/70 px-5 py-4 mb-4 text-amber-950 dark:ring-amber-900/50 dark:bg-amber-950/30 dark:text-amber-50"
-      }
+      className={cn(
+        "rounded-xl corner-squircle ring-1 px-5 py-4 mb-4",
+        mappingOk
+          ? "ring-emerald-200/70 bg-emerald-50/70 text-emerald-950 dark:ring-emerald-900/50 dark:bg-emerald-950/30 dark:text-emerald-50"
+          : "ring-amber-200/70 bg-amber-50/70 text-amber-950 dark:ring-amber-900/50 dark:bg-amber-950/30 dark:text-amber-50",
+      )}
     >
       <div className="flex items-start gap-3">
         <div
-          className={
-            tone === "ok"
-              ? "rounded-xl corner-squircle bg-emerald-500/15 p-2 shrink-0"
-              : "rounded-xl corner-squircle bg-amber-500/15 p-2 shrink-0"
-          }
+          className={cn(
+            "rounded-xl corner-squircle p-2 shrink-0",
+            mappingOk ? "bg-emerald-500/15" : "bg-amber-500/15",
+          )}
         >
           <HugeiconsIcon
             icon={mappingOk ? CheckmarkCircle02Icon : AlertCircleIcon}
-            className={
-              tone === "ok"
-                ? "size-4 text-emerald-700 dark:text-emerald-300"
-                : "size-4 text-amber-700 dark:text-amber-300"
-            }
+            className={cn(
+              "size-4",
+              mappingOk
+                ? "text-emerald-700 dark:text-emerald-300"
+                : "text-amber-700 dark:text-amber-300",
+            )}
           />
         </div>
         <div className="min-w-0">
@@ -71,11 +72,12 @@ export function DatasetMappingCard({
             {mappingOk ? "Mapping ready" : "Map dataset columns"}
           </p>
           <p
-            className={
-              tone === "ok"
-                ? "text-xs text-emerald-800/80 dark:text-emerald-200/80 mt-0.5"
-                : "text-xs text-amber-800/80 dark:text-amber-200/80 mt-0.5"
-            }
+            className={cn(
+              "text-xs mt-0.5",
+              mappingOk
+                ? "text-emerald-800/80 dark:text-emerald-200/80"
+                : "text-amber-800/80 dark:text-amber-200/80",
+            )}
           >
             {mappingOk
               ? "Looks good. We'll convert this dataset automatically."
@@ -163,17 +165,17 @@ export function deriveDefaultMapping(
   data: CheckFormatResponse,
   isVlm: boolean,
 ): { input: string | null; output: string | null } {
-  if (isVlm) {
-    const input =
-      data.detected_image_column ?? pickRole(data.suggested_mapping, "image");
-    const output =
-      data.detected_text_column ?? pickRole(data.suggested_mapping, "text");
-    if (input && output && input === output) return { input, output: null };
-    return { input: input ?? null, output: output ?? null };
+  const input = isVlm
+    ? data.detected_image_column ?? pickRole(data.suggested_mapping, "image")
+    : pickRole(data.suggested_mapping, "user");
+  const output = isVlm
+    ? data.detected_text_column ?? pickRole(data.suggested_mapping, "text")
+    : pickRole(data.suggested_mapping, "assistant");
+
+  if (input && output && input === output) {
+    return { input, output: null };
   }
-  const input = pickRole(data.suggested_mapping, "user");
-  const output = pickRole(data.suggested_mapping, "assistant");
-  if (input && output && input === output) return { input, output: null };
+
   return { input: input ?? null, output: output ?? null };
 }
 

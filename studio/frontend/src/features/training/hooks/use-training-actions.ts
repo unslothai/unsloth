@@ -1,12 +1,13 @@
 import { useCallback } from "react";
-import { useTrainingConfigStore } from "../stores/training-config-store";
-import { useTrainingRuntimeStore } from "../stores/training-runtime-store";
-import { useDatasetPreviewDialogStore } from "../stores/dataset-preview-dialog-store";
-import { startTraining, stopTraining, resetTraining } from "../api/train-api";
-import { buildTrainingStartPayload } from "../api/mappers";
 import { checkDatasetFormat } from "../api/datasets-api";
+import { buildTrainingStartPayload } from "../api/mappers";
+import { startTraining, stopTraining, resetTraining } from "../api/train-api";
 import { syncTrainingRuntimeFromBackend } from "../lib/sync-runtime";
 import { validateTrainingConfig } from "../lib/validation";
+import { useDatasetPreviewDialogStore } from "../stores/dataset-preview-dialog-store";
+import { useTrainingConfigStore } from "../stores/training-config-store";
+import { useTrainingRuntimeStore } from "../stores/training-runtime-store";
+import type { TrainingConfigState } from "../types/config";
 
 export function useTrainingActions() {
   const isStarting = useTrainingRuntimeStore((state) => state.isStarting);
@@ -27,8 +28,7 @@ export function useTrainingActions() {
     runtimeStore.setStarting(true);
 
     try {
-      const datasetName =
-        config.datasetSource === "huggingface" ? config.dataset : config.uploadedFile;
+      const datasetName = getDatasetName(config);
       const isVlm = config.modelType === "vision";
 
       if (datasetName) {
@@ -40,29 +40,24 @@ export function useTrainingActions() {
           isVlm,
         });
 
-        if (check.requires_manual_mapping) {
-          const existing = useTrainingConfigStore.getState().datasetManualMapping;
-          const hasMapping = !!existing.input && !!existing.output;
+        if (check.requires_manual_mapping && !hasManualMapping(config)) {
+          const hintInput = isVlm
+            ? check.detected_image_column
+            : pickRoleColumn(check.suggested_mapping, "user");
+          const hintOutput = isVlm
+            ? check.detected_text_column
+            : pickRoleColumn(check.suggested_mapping, "assistant");
 
-          if (!hasMapping) {
-            const hintInput = isVlm
-              ? check.detected_image_column
-              : pickRoleColumn(check.suggested_mapping, "user");
-            const hintOutput = isVlm
-              ? check.detected_text_column
-              : pickRoleColumn(check.suggested_mapping, "assistant");
-
-            if (hintInput || hintOutput) {
-              useTrainingConfigStore.getState().setDatasetManualMapping({
-                input: hintInput ?? null,
-                output: hintOutput ?? null,
-              });
-            }
-
-            runtimeStore.setStarting(false);
-            dialogStore.openMapping(check);
-            return false;
+          if (hintInput || hintOutput) {
+            useTrainingConfigStore.getState().setDatasetManualMapping({
+              input: hintInput ?? null,
+              output: hintOutput ?? null,
+            });
           }
+
+          runtimeStore.setStarting(false);
+          dialogStore.openMapping(check);
+          return false;
         }
       }
 
@@ -119,6 +114,18 @@ export function useTrainingActions() {
     stopTrainingRun,
     dismissTrainingRun,
   };
+}
+
+function getDatasetName(config: TrainingConfigState): string | null {
+  return config.datasetSource === "huggingface"
+    ? config.dataset
+    : config.uploadedFile;
+}
+
+function hasManualMapping(config: TrainingConfigState): boolean {
+  return (
+    !!config.datasetManualMapping.input && !!config.datasetManualMapping.output
+  );
 }
 
 function pickRoleColumn(
