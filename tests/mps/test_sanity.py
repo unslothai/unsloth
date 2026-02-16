@@ -17,3 +17,13 @@ def test_imports():
     from unsloth.kernels.mps.rms_layernorm import mps_rms_layernorm
 
     assert mps_rms_layernorm is not None
+
+
+if __name__ == "__main__":
+    test_device_type()
+    print("✓ test_device_type passed")
+    
+    test_imports()
+    print("✓ test_imports passed")
+    
+    print("\n✅ All tests passed!")
