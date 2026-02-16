@@ -794,6 +794,111 @@ class MacPatcher:
         name = "patching_utils"
         return self._create_patch_result(name, PatchStatus.SKIPPED, "deferred to late patch")
     
+    def patch_unsloth_zoo(self) -> PatchResult:
+        """
+        Patch unsloth_zoo modules to add missing exports for MPS development.
+        This creates mock modules with necessary exports.
+        """
+        import sys
+        from types import ModuleType
+        from importlib.abc import Loader
+        from importlib.machinery import ModuleSpec
+        
+        name = "unsloth_zoo"
+        
+        try:
+            patched = []
+            
+            # Mock unsloth_zoo.utils
+            if "unsloth_zoo.utils" not in sys.modules:
+                utils_mod = ModuleType("unsloth_zoo.utils")
+                
+                class Version:
+                    def __init__(self, v):
+                        self.v = v
+                    def __str__(self):
+                        return self.v
+                    def __ge__(self, other):
+                        return True
+                
+                def _get_dtype(dtype_str):
+                    import torch
+                    return getattr(torch, dtype_str, torch.float32)
+                
+                def get_quant_type(module):
+                    return "unknown"
+                
+                utils_mod.Version = Version
+                utils_mod._get_dtype = _get_dtype
+                utils_mod.get_quant_type = get_quant_type
+                sys.modules["unsloth_zoo.utils"] = utils_mod
+                patched.append("utils")
+            
+            # Mock unsloth_zoo.log
+            if "unsloth_zoo.log" not in sys.modules:
+                import logging
+                log_mod = ModuleType("unsloth_zoo.log")
+                logger = logging.getLogger("unsloth_zoo")
+                logger.setLevel(logging.INFO)
+                if not logger.handlers:
+                    handler = logging.StreamHandler()
+                    handler.setFormatter(logging.Formatter("%(name)s - %(levelname)s - %(message)s"))
+                    logger.addHandler(handler)
+                log_mod.logger = logger
+                sys.modules["unsloth_zoo.log"] = log_mod
+                patched.append("log")
+            
+            # Mock unsloth_zoo.hf_utils
+            if "unsloth_zoo.hf_utils" not in sys.modules:
+                hf_mod = ModuleType("unsloth_zoo.hf_utils")
+                hf_mod.HAS_TORCH_DTYPE = True
+                hf_mod.dtype_from_config = lambda cfg, key: cfg.get(key, "float32")
+                sys.modules["unsloth_zoo.hf_utils"] = hf_mod
+                patched.append("hf_utils")
+            
+            # Mock unsloth_zoo.peft_utils
+            if "unsloth_zoo.peft_utils" not in sys.modules:
+                peft_mod = ModuleType("unsloth_zoo.peft_utils")
+                peft_mod.SKIP_QUANTIZATION_MODULES = []
+                sys.modules["unsloth_zoo.peft_utils"] = peft_mod
+                patched.append("peft_utils")
+            
+            # Mock unsloth_zoo.tokenizer_utils
+            if "unsloth_zoo.tokenizer_utils" not in sys.modules:
+                tok_mod = ModuleType("unsloth_zoo.tokenizer_utils")
+                sys.modules["unsloth_zoo.tokenizer_utils"] = tok_mod
+                patched.append("tokenizer_utils")
+            
+            # Mock unsloth_zoo.training_utils
+            if "unsloth_zoo.training_utils" not in sys.modules:
+                train_mod = ModuleType("unsloth_zoo.training_utils")
+                train_mod.prepare_model_for_training = lambda model: model
+                sys.modules["unsloth_zoo.training_utils"] = train_mod
+                patched.append("training_utils")
+            
+            # Mock unsloth_zoo.device_type
+            if "unsloth_zoo.device_type" not in sys.modules:
+                device_mod = ModuleType("unsloth_zoo.device_type")
+                device_mod.DEVICE_TYPE = "mps"
+                sys.modules["unsloth_zoo.device_type"] = device_mod
+                patched.append("device_type")
+            
+            # Mock other commonly used modules
+            for mod_name in ["gradient_checkpointing", "loss_utils", "vision_utils", 
+                           "compiler", "temporary_patches", "vllm_utils", "rl_environments",
+                           "saving_utils", "llama_cpp", "dataset_utils", "rl_replacements",
+                           "logging_utils", "flex_attention"]:
+                full_name = f"unsloth_zoo.{mod_name}"
+                if full_name not in sys.modules:
+                    mod = ModuleType(full_name)
+                    sys.modules[full_name] = mod
+                    patched.append(mod_name)
+            
+            return self._create_patch_result(name, PatchStatus.SUCCESS, f"mocked: {', '.join(patched)}")
+            
+        except Exception as e:
+            return self._create_patch_result(name, PatchStatus.FAILED, str(e), e)
+    
     def patch_patching_utils_late(self) -> PatchResult:
         """
         Patch unsloth_zoo.patching_utils to add dummy Bnb_Linear4bit classes for MPS.
@@ -856,6 +961,7 @@ class MacPatcher:
         results.append(self.patch_peft())
         results.append(self.patch_compilers())
         results.append(self.patch_patching_utils_late())
+        results.append(self.patch_unsloth_zoo())
         
         self._applied = True
         
