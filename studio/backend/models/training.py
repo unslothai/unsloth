@@ -55,6 +55,7 @@ class TrainingStartRequest(BaseModel):
     finetune_language_layers: bool = Field(False, description="Finetune language layers")
     finetune_attention_modules: bool = Field(False, description="Finetune attention modules")
     finetune_mlp_modules: bool = Field(False, description="Finetune MLP modules")
+    is_dataset_multimodal: bool = Field(False, description="Whether the dataset contains multimodal (image) data")
 
     # Logging parameters
     enable_wandb: bool = Field(False, description="Enable Weights & Biases logging")

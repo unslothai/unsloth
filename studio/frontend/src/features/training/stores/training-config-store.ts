@@ -4,6 +4,7 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { TrainingConfigState, TrainingConfigStore } from "../types/config";
 import { checkVisionModel } from "../api/models-api";
+import { checkDatasetFormat } from "../api/datasets-api";
 
 const MIN_STEP: StepNumber = 1;
 const MAX_STEP: StepNumber = STEPS.length as StepNumber;
@@ -27,12 +28,17 @@ const initialState: TrainingConfigState = {
   uploadedFile: null,
   isCheckingVision: false,
   isVisionModel: false,
+  isCheckingDataset: false,
+  isDatasetMultimodal: null,
   ...DEFAULT_HYPERPARAMS,
 };
 
 // AbortController for in-flight vision checks so rapid model changes
 // cancel stale requests.
 let _visionCheckController: AbortController | null = null;
+
+// AbortController for in-flight dataset multimodal checks.
+let _datasetCheckController: AbortController | null = null;
 
 function clampStep(step: number): StepNumber {
   return Math.min(MAX_STEP, Math.max(MIN_STEP, step)) as StepNumber;
@@ -100,21 +106,68 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
       setHfToken: (hfToken) => set({ hfToken }),
       setDatasetSource: (datasetSource) => set({ datasetSource }),
       setDatasetFormat: (datasetFormat) => set({ datasetFormat }),
-      setDataset: (dataset) =>
+      setDataset: (dataset) => {
+        // Cancel any in-flight dataset check
+        _datasetCheckController?.abort();
+        _datasetCheckController = null;
         set({
           dataset,
           datasetSubset: null,
           datasetSplit: null,
           datasetManualMapping: emptyManualMapping(),
-        }),
-      setDatasetSubset: (datasetSubset) =>
+          isDatasetMultimodal: null,
+          isCheckingDataset: false,
+        });
+      },
+      setDatasetSubset: (datasetSubset) => {
+        _datasetCheckController?.abort();
+        _datasetCheckController = null;
         set({
           datasetSubset,
           datasetSplit: null,
           datasetManualMapping: emptyManualMapping(),
-        }),
-      setDatasetSplit: (datasetSplit) =>
-        set({ datasetSplit, datasetManualMapping: emptyManualMapping() }),
+          isDatasetMultimodal: null,
+          isCheckingDataset: false,
+        });
+      },
+      setDatasetSplit: (datasetSplit) => {
+        _datasetCheckController?.abort();
+        _datasetCheckController = null;
+        set({
+          datasetSplit,
+          datasetManualMapping: emptyManualMapping(),
+          isDatasetMultimodal: null,
+          isCheckingDataset: false,
+        });
+        // Trigger async dataset multimodal check
+        const state = get();
+        const datasetName = state.datasetSource === "huggingface"
+          ? state.dataset
+          : state.uploadedFile;
+        if (!datasetName) return;
+
+        const controller = new AbortController();
+        _datasetCheckController = controller;
+        set({ isCheckingDataset: true });
+
+        checkDatasetFormat({
+          datasetName,
+          hfToken: state.hfToken.trim() || null,
+          subset: state.datasetSubset,
+          split: datasetSplit || "train",
+        })
+          .then((res) => {
+            if (controller.signal.aborted) return;
+            set({
+              isDatasetMultimodal: !!res.is_multimodal,
+              isCheckingDataset: false,
+            });
+          })
+          .catch(() => {
+            if (controller.signal.aborted) return;
+            set({ isDatasetMultimodal: null, isCheckingDataset: false });
+          });
+      },
       setDatasetManualMapping: (datasetManualMapping) =>
         set({ datasetManualMapping }),
       setUploadedFile: (uploadedFile) => set({ uploadedFile }),
@@ -168,7 +221,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         return s as unknown as TrainingConfigStore;
       },
       partialize: (state) => {
-        const { modelType, isCheckingVision, isVisionModel, ...rest } = state;
+        const { modelType, isCheckingVision, isVisionModel, isCheckingDataset, isDatasetMultimodal, ...rest } = state;
         return rest;
       },
     },
