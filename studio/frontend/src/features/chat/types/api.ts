@@ -61,6 +61,7 @@ export interface OpenAIChatCompletionsRequest {
   top_p: number;
   max_tokens: number;
   top_k: number;
+  min_p: number;
   repetition_penalty: number;
   image_base64?: string;
   use_adapter?: boolean | string | null;
