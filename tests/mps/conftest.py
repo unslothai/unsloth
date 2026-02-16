@@ -42,8 +42,59 @@ zoo_dt.is_mps = lambda: True
 zoo_dt.get_device_type = lambda: "mps"
 zoo_dt.ALLOW_PREQUANTIZED_MODELS = False
 
+# Mock unsloth_zoo.utils
+zoo_utils = create_mock_module("unsloth_zoo.utils")
+
+class Version:
+    def __init__(self, v):
+        self.v = v
+
+    def __lt__(self, other):
+        return False
+
+    def __le__(self, other):
+        return True
+
+    def __gt__(self, other):
+        return False
+
+    def __ge__(self, other):
+        return True
+
+def _get_dtype(dtype_str):
+    return getattr(torch, dtype_str, torch.float32)
+
+def get_quant_type(module):
+    return "unknown"
+
+zoo_utils.Version = Version
+zoo_utils._get_dtype = _get_dtype
+zoo_utils.get_quant_type = get_quant_type
+
 sys.modules["unsloth_zoo"] = zoo
 sys.modules["unsloth_zoo.device_type"] = zoo_dt
+sys.modules["unsloth_zoo.utils"] = zoo_utils
+
+# Mock unsloth_zoo.log
+zoo_log = create_mock_module("unsloth_zoo.log")
+import logging
+zoo_log.logger = logging.getLogger("unsloth_zoo")
+sys.modules["unsloth_zoo.log"] = zoo_log
+
+# Mock unsloth_zoo.tokenizer_utils
+zoo_tokenizer = create_mock_module("unsloth_zoo.tokenizer_utils")
+zoo_tokenizer.patch_tokenizer = lambda x: x
+sys.modules["unsloth_zoo.tokenizer_utils"] = zoo_tokenizer
+
+# Mock unsloth_zoo.rl_environments
+zoo_rl = create_mock_module("unsloth_zoo.rl_environments")
+zoo_rl.check_python_modules = lambda: True
+zoo_rl.create_locked_down_function = lambda fn: fn
+zoo_rl.execute_with_time_limit = lambda timeout, fn, *args, **kwargs: fn(*args, **kwargs)
+class MockBenchmarker:
+    pass
+zoo_rl.Benchmarker = MockBenchmarker
+sys.modules["unsloth_zoo.rl_environments"] = zoo_rl
 
 # Mocking other unsloth requirements
 sys.modules["datasets"] = create_mock_module("datasets")
