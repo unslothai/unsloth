@@ -129,6 +129,7 @@ class ChatCompletionRequest(BaseModel):
 
     # ── Unsloth extensions (ignored by standard OpenAI clients) ──
     top_k: int = Field(40, ge=1, le=100, description="[x-unsloth] Top-k sampling")
+    min_p: float = Field(0.0, ge=0.0, le=1.0, description="[x-unsloth] Min-p sampling threshold")
     repetition_penalty: float = Field(1.1, ge=1.0, le=2.0, description="[x-unsloth] Repetition penalty")
     image_base64: Optional[str] = Field(None, description="[x-unsloth] Base64-encoded image for vision models")
     use_adapter: Optional[Union[bool, str]] = Field(
