@@ -206,3 +206,53 @@ def log_gpu_memory(context: str):
         )
     else:
         logger.info(f"GPU Memory [{context}]: No GPU available (CPU-only)")
+
+
+# ========== GPU Summary & Package Versions ==========
+
+def get_gpu_summary() -> Dict[str, Any]:
+    """
+    Return a compact summary of the primary GPU.
+
+    Returns dict with keys:
+        gpu_name      – e.g. "NVIDIA L4" (or None)
+        vram_total_gb – e.g. 22.17       (or None)
+    """
+    mem = get_gpu_memory_info()
+    if mem.get("available"):
+        return {
+            "gpu_name": mem.get("device_name"),
+            "vram_total_gb": round(mem.get("total_gb", 0), 2),
+        }
+    return {"gpu_name": None, "vram_total_gb": None}
+
+
+def get_package_versions() -> Dict[str, Optional[str]]:
+    """
+    Return the installed versions of key ML packages.
+
+    Uses importlib.metadata (stdlib) so no subprocess is needed.
+    CUDA version comes from torch.version.cuda.
+
+    Returns dict with keys: unsloth, torch, transformers, cuda.
+    Missing packages yield None.
+    """
+    from importlib.metadata import version as pkg_version, PackageNotFoundError
+
+    packages = ("unsloth", "torch", "transformers")
+    versions: Dict[str, Optional[str]] = {}
+
+    for name in packages:
+        try:
+            versions[name] = pkg_version(name)
+        except PackageNotFoundError:
+            versions[name] = None
+
+    # CUDA toolkit version bundled with torch
+    try:
+        import torch
+        versions["cuda"] = getattr(torch.version, "cuda", None)
+    except Exception:
+        versions["cuda"] = None
+
+    return versions
