@@ -668,7 +668,6 @@ def torchvision_compatibility_check():
 
     # Try known table first, then fall back to formula for forward compatibility
     required = TORCH_TORCHVISION_COMPAT.get((torch_major, torch_minor))
-    is_in_known_table = required is not None
 
     if required is None:
         required = _infer_required_torchvision(torch_major, torch_minor)
@@ -705,15 +704,10 @@ def torchvision_compatibility_check():
         t in torchvision_version_raw for t in _pre_tags
     )
 
-    # Downgrade to warning for custom/source/pre-release builds or formula-predicted
-    if is_custom or is_prerelease or not is_in_known_table:
-        reason = (
-            "custom/source build"
-            if is_custom
-            else "pre-release build"
-            if is_prerelease
-            else "newer torch version"
-        )
+    # Only downgrade to warning for custom/source or prerelease builds.
+    # Stable mismatches should fail fast to prevent runtime operator errors.
+    if is_custom or is_prerelease:
+        reason = "custom/source build" if is_custom else "pre-release build"
         logger.warning(
             f"{message}\n"
             f"Detected a {reason}. "
