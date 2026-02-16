@@ -414,24 +414,6 @@ def fix_vllm_guided_decoding_params():
                 f"Original error: {error}"
             ) from error
 
-    def _is_broken_vllm_extension(error):
-        error_text = str(error)
-        return (
-            "vllm/_C" in error_text
-            or "vllm._C" in error_text
-            or "undefined symbol" in error_text
-            or ".so:" in error_text
-            or "cannot open shared object file" in error_text
-        )
-
-    def _warn_and_skip(error):
-        logger.warning(
-            "Unsloth: vLLM appears installed but failed to import due to a broken native "
-            "extension. Skipping GuidedDecodingParams compatibility patch so Unsloth can "
-            "still import. If you need vLLM, reinstall a compatible build for your current "
-            f"torch/CUDA setup. Original error: {error}"
-        )
-
     if importlib.util.find_spec("vllm") is None:
         return
     # GuidedDecodingParmas is renamed to StructuredOutputsParams in vLLM
@@ -441,8 +423,7 @@ def fix_vllm_guided_decoding_params():
         import vllm
     except (ImportError, OSError) as e:
         _maybe_raise_vllm_transformers_mismatch(e)
-        if _is_broken_vllm_extension(e):
-            _warn_and_skip(e)
+        if disable_broken_vllm(e):
             return
         raise
 
@@ -450,8 +431,7 @@ def fix_vllm_guided_decoding_params():
         from vllm.sampling_params import GuidedDecodingParams
     except (ImportError, OSError) as e:
         _maybe_raise_vllm_transformers_mismatch(e)
-        if _is_broken_vllm_extension(e):
-            _warn_and_skip(e)
+        if disable_broken_vllm(e):
             return
         if not hasattr(vllm, "sampling_params") or not hasattr(
             vllm.sampling_params, "StructuredOutputsParams"
@@ -1202,6 +1182,9 @@ def disable_torchcodec_if_broken():
 CAUSAL_CONV1D_BROKEN = False
 _CAUSAL_CONV1D_PREFIX = "causal_conv1d"
 _CAUSAL_CONV1D_BLOCKER_SENTINEL = "_unsloth_causal_conv1d_blocker"
+VLLM_BROKEN = False
+_VLLM_PREFIX = "vllm"
+_VLLM_BLOCKER_SENTINEL = "_unsloth_vllm_blocker"
 _ROCM_ENV_HINT_KEYS = (
     "ROCM_PATH",
     "ROCM_HOME",
@@ -1339,6 +1322,10 @@ def _is_causal_conv1d_name(module_name: str) -> bool:
     )
 
 
+def _is_vllm_name(module_name: str) -> bool:
+    return module_name == _VLLM_PREFIX or module_name.startswith(_VLLM_PREFIX + ".")
+
+
 def _resolve_module_name(module_name, package):
     if not isinstance(module_name, str):
         return module_name
@@ -1361,6 +1348,27 @@ def _is_broken_causal_conv1d_error(error) -> bool:
             or ("_zn3c103hip28c10_hip_check_implementation" in message)
             or ("causal_conv1d" in message and "undefined symbol" in message)
         ):
+            return True
+        current = getattr(current, "__cause__", None) or getattr(
+            current, "__context__", None
+        )
+    return False
+
+
+def _is_broken_vllm_error(error) -> bool:
+    checked = set()
+    current = error
+    while current is not None and id(current) not in checked:
+        checked.add(id(current))
+        message = str(current).lower()
+        if (
+            ("vllm/_c" in message or "vllm._c" in message)
+            and (
+                "undefined symbol" in message
+                or "cannot open shared object file" in message
+                or ".so:" in message
+            )
+        ) or ("vllm" in message and "undefined symbol" in message):
             return True
         current = getattr(current, "__cause__", None) or getattr(
             current, "__context__", None
@@ -1397,6 +1405,35 @@ class _CausalConv1dImportBlockerFinder(importlib.abc.MetaPathFinder):
         )
 
 
+class _VllmImportBlockerLoader(importlib.abc.Loader):
+    __slots__ = ("module_name",)
+
+    def __init__(self, module_name):
+        self.module_name = module_name
+
+    def create_module(self, spec):
+        return None
+
+    def exec_module(self, module):
+        raise ModuleNotFoundError(f"No module named '{self.module_name}'")
+
+
+class _VllmImportBlockerFinder(importlib.abc.MetaPathFinder):
+    __slots__ = (_VLLM_BLOCKER_SENTINEL,)
+
+    def __init__(self):
+        setattr(self, _VLLM_BLOCKER_SENTINEL, True)
+
+    def find_spec(self, fullname, path = None, target = None):
+        if not VLLM_BROKEN or not _is_vllm_name(fullname):
+            return None
+        return importlib.machinery.ModuleSpec(
+            name = fullname,
+            loader = _VllmImportBlockerLoader(fullname),
+            is_package = fullname == _VLLM_PREFIX,
+        )
+
+
 def _patch_find_spec_for_causal_conv1d():
     current_find_spec = importlib.util.find_spec
     if getattr(current_find_spec, "_unsloth_causal_conv1d_find_spec_patch", False):
@@ -1414,6 +1451,23 @@ def _patch_find_spec_for_causal_conv1d():
     importlib.util.find_spec = _blocked_find_spec
 
 
+def _patch_find_spec_for_vllm():
+    current_find_spec = importlib.util.find_spec
+    if getattr(current_find_spec, "_unsloth_vllm_find_spec_patch", False):
+        return
+
+    def _blocked_find_spec(name, package = None):
+        resolved_name = _resolve_module_name(name, package)
+        if VLLM_BROKEN and isinstance(resolved_name, str):
+            if _is_vllm_name(resolved_name):
+                return None
+        return current_find_spec(name, package)
+
+    _blocked_find_spec._unsloth_vllm_find_spec_patch = True
+    _blocked_find_spec._unsloth_original_find_spec = current_find_spec
+    importlib.util.find_spec = _blocked_find_spec
+
+
 def _install_causal_conv1d_blocker():
     _patch_find_spec_for_causal_conv1d()
     for finder in sys.meta_path:
@@ -1422,10 +1476,59 @@ def _install_causal_conv1d_blocker():
     sys.meta_path.insert(0, _CausalConv1dImportBlockerFinder())
 
 
+def _install_vllm_blocker():
+    _patch_find_spec_for_vllm()
+    for finder in sys.meta_path:
+        if getattr(finder, _VLLM_BLOCKER_SENTINEL, False):
+            return
+    sys.meta_path.insert(0, _VllmImportBlockerFinder())
+
+
 def _clear_causal_conv1d_modules():
     for module_name in list(sys.modules):
         if _is_causal_conv1d_name(module_name):
             sys.modules.pop(module_name, None)
+
+
+def _clear_vllm_modules():
+    for module_name in list(sys.modules):
+        if _is_vllm_name(module_name):
+            sys.modules.pop(module_name, None)
+
+
+def disable_broken_vllm(error = None):
+    """Disable vLLM dynamically when its shared library is ABI-broken."""
+    global VLLM_BROKEN
+    if VLLM_BROKEN:
+        _install_vllm_blocker()
+        return True
+
+    failure = error
+    if failure is None:
+        try:
+            if importlib.util.find_spec("vllm") is None:
+                return False
+        except Exception:
+            return False
+
+        try:
+            import vllm  # noqa: F401
+
+            return False
+        except Exception as import_error:
+            failure = import_error
+
+    if not _is_broken_vllm_error(failure):
+        return False
+
+    VLLM_BROKEN = True
+    _clear_vllm_modules()
+    _install_vllm_blocker()
+    logger.warning(
+        "Unsloth: Detected broken vLLM binary extension; "
+        "disabling vLLM imports and continuing import."
+    )
+    return True
 
 
 def _disable_transformers_causal_conv1d():
