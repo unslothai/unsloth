@@ -129,6 +129,8 @@ async def start_training(
             "hf_dataset": request.hf_dataset or "",
             "local_datasets": request.local_datasets,
             "format_type": request.format_type,
+            "subset": request.subset,
+            "split": request.split,
             "custom_format_mapping": request.custom_format_mapping,
             "num_epochs": request.num_epochs,
             "learning_rate": request.learning_rate,

@@ -93,8 +93,10 @@ class TrainingBackend:
                        enable_tensorboard: bool,
                        tensorboard_dir: str,
 
-                       # Optional: user-provided column mapping
-                       custom_format_mapping: dict = None) -> bool:
+                       # Optional parameters
+                       custom_format_mapping: dict = None,
+                       subset: str = None,
+                       split: str = "train") -> bool:
         """
         Start training.
 
@@ -192,6 +194,8 @@ class TrainingBackend:
                 format_type=format_type,
                 local_datasets=local_datasets if local_datasets else None,
                 custom_format_mapping=custom_format_mapping,
+                subset=subset,
+                split=split,
             )
 
             if dataset is None or self.trainer.should_stop:

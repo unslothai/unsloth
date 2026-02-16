@@ -10,6 +10,7 @@ class CheckFormatRequest(BaseModel):
     dataset_name: str  # HuggingFace dataset name or local path
     is_vlm: bool = False
     hf_token: Optional[str] = None
+    subset: Optional[str] = None
     split: Optional[str] = "train"
 
 
