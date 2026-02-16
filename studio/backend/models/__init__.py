@@ -21,6 +21,7 @@ from .auth import (
 )
 from .export import (
     CheckpointInfo,
+    ModelCheckpoints,
     CheckpointListResponse,
     LoadCheckpointRequest,
     ExportStatusResponse,
@@ -68,6 +69,7 @@ __all__ = [
     "AuthStatusResponse",
     # Export schemas
     "CheckpointInfo",
+    "ModelCheckpoints",
     "CheckpointListResponse",
     "LoadCheckpointRequest",
     "ExportStatusResponse",
