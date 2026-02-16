@@ -3,6 +3,7 @@ import type { StepNumber } from "@/types/training";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { TrainingConfigState, TrainingConfigStore } from "../types/config";
+import { checkVisionModel } from "../api/models-api";
 
 const MIN_STEP: StepNumber = 1;
 const MAX_STEP: StepNumber = STEPS.length as StepNumber;
@@ -24,8 +25,14 @@ const initialState: TrainingConfigState = {
   datasetSplit: null,
   datasetManualMapping: emptyManualMapping(),
   uploadedFile: null,
+  isCheckingVision: false,
+  isVisionModel: false,
   ...DEFAULT_HYPERPARAMS,
 };
+
+// AbortController for in-flight vision checks so rapid model changes
+// cancel stale requests.
+let _visionCheckController: AbortController | null = null;
 
 function clampStep(step: number): StepNumber {
   return Math.min(MAX_STEP, Math.max(MIN_STEP, step)) as StepNumber;
@@ -57,7 +64,38 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
       nextStep: () => set({ currentStep: clampStep(get().currentStep + 1) }),
       prevStep: () => set({ currentStep: clampStep(get().currentStep - 1) }),
       setModelType: (modelType) => set({ modelType, selectedModel: null }),
-      setSelectedModel: (selectedModel) => set({ selectedModel }),
+      setSelectedModel: (selectedModel) => {
+        set({ selectedModel });
+
+        // Cancel any in-flight vision check
+        _visionCheckController?.abort();
+        _visionCheckController = null;
+
+        if (!selectedModel) {
+          set({ isCheckingVision: false });
+          return;
+        }
+
+        // Fire async backend check to determine if model is vision
+        const controller = new AbortController();
+        _visionCheckController = controller;
+        set({ isCheckingVision: true });
+
+        checkVisionModel(selectedModel)
+          .then((isVision) => {
+            // Only apply if this is still the active check
+            if (controller.signal.aborted) return;
+            set({
+              isVisionModel: isVision,
+              isCheckingVision: false,
+            });
+          })
+          .catch(() => {
+            if (controller.signal.aborted) return;
+            // On error, default to text and stop loading
+            set({ isCheckingVision: false });
+          });
+      },
       setTrainingMethod: (trainingMethod) => set({ trainingMethod }),
       setHfToken: (hfToken) => set({ hfToken }),
       setDatasetSource: (datasetSource) => set({ datasetSource }),
@@ -130,7 +168,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         return s as unknown as TrainingConfigStore;
       },
       partialize: (state) => {
-        const { modelType, ...rest } = state;
+        const { modelType, isCheckingVision, isVisionModel, ...rest } = state;
         return rest;
       },
     },
