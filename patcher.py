@@ -769,8 +769,7 @@ class MacPatcher:
     
     def patch_patching_utils(self) -> PatchResult:
         """
-        Patch unsloth_zoo.patching_utils to handle missing Bnb_Linear4bit on MPS.
-        Uses import hook to wrap the real module and add dummy classes.
+        Patch unsloth_zoo.patching_utils to add dummy Bnb_Linear4bit classes for MPS.
         """
         name = "patching_utils"
         
@@ -778,41 +777,18 @@ class MacPatcher:
             pass
         
         try:
-            from importlib.machinery import ModuleSpec
-            from importlib.abc import MetaPathFinder, Loader
+            import unsloth_zoo.patching_utils as patching_utils
             
-            class PatchingUtilsFinder(MetaPathFinder):
-                def find_spec(self, fullname, path, target=None):
-                    if fullname == "unsloth_zoo.patching_utils":
-                        return ModuleSpec(fullname, PatchingUtilsLoader(), origin="unsloth_zoo")
-                    return None
-            
-            class PatchingUtilsLoader(Loader):
-                def create_module(self, spec):
-                    return None
-                
-                def exec_module(self, module):
-                    import sys
-                    real_module_name = "unsloth_zoo.patching_utils"
-                    
-                    if real_module_name in sys.modules:
-                        real_mod = sys.modules[real_module_name]
-                        for attr in dir(real_mod):
-                            if not attr.startswith("_"):
-                                setattr(module, attr, getattr(real_mod, attr))
-                    
-                    if not hasattr(module, "Bnb_Linear4bit"):
-                        module.Bnb_Linear4bit = _DummyBnbLinear
-                    if not hasattr(module, "Peft_Linear4bit"):
-                        module.Peft_Linear4bit = _DummyBnbLinear
-            
-            finder = PatchingUtilsFinder()
-            sys.meta_path.insert(0, finder)
-            self._mock_finders.append(finder)
-            
-            import unsloth_zoo.patching_utils  # noqa: F401
+            if not hasattr(patching_utils, "Bnb_Linear4bit"):
+                patching_utils.Bnb_Linear4bit = _DummyBnbLinear
+            if not hasattr(patching_utils, "Peft_Linear4bit"):
+                patching_utils.Peft_Linear4bit = _DummyBnbLinear
             
             return self._create_patch_result(name, PatchStatus.SUCCESS, "Bnb_Linear4bit patched")
+        except ImportError as e:
+            if "Please install Unsloth" in str(e):
+                return self._create_patch_result(name, PatchStatus.FAILED, "Please install Unsloth via pip!")
+            return self._create_patch_result(name, PatchStatus.SKIPPED, "module not yet imported")
         except Exception as e:
             return self._create_patch_result(name, PatchStatus.FAILED, str(e))
     
