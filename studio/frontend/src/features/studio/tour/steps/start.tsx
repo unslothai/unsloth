@@ -6,9 +6,9 @@ export const studioStartStep: TourStep = {
   title: "Start training",
   body: (
     <>
-      One click. If it fails, the error text is the first place to look (token,
-      path, config).
+      Kick off training. If it errors immediately, check HF token / local paths
+      / dataset access first. Start with a small run to sanity-check loss + sample
+      outputs before burning hours.
     </>
   ),
 };
-
