@@ -148,7 +148,9 @@ function ema(data: LossHistoryItem[], alpha: number): SmoothedLossItem[] {
 
 export function ChartsContent({
   metrics,
-}: { metrics: TrainingChartSeries }): ReactElement {
+  isTraining,
+  evalEnabled,
+}: { metrics: TrainingChartSeries; isTraining: boolean; evalEnabled: boolean }): ReactElement {
   const [smoothing, setSmoothing] = useState(0.75);
   const [showRaw, setShowRaw] = useState(true);
   const [showSmoothed, setShowSmoothed] = useState(true);
@@ -674,10 +676,10 @@ export function ChartsContent({
                   className="size-5 text-muted-foreground/50"
                 />
                 <p className="text-sm font-medium text-muted-foreground">
-                  Evaluation not configured
+                  {isTraining && evalEnabled ? "Waiting for first evaluation step…" : "Evaluation not configured"}
                 </p>
                 <p className="text-xs text-muted-foreground/60">
-                  Set eval dataset & eval_steps to track eval loss
+                  {isTraining && evalEnabled ? "Chart will appear once eval_steps is reached" : "Set eval dataset & eval_steps to track eval loss"}
                 </p>
               </div>
             </div>

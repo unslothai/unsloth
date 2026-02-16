@@ -415,6 +415,7 @@ async def get_training_status(
             job_id=job_id,
             phase=phase,
             is_training_running=is_active,
+            eval_enabled=backend.eval_enabled,
             message=status_message,
             error=error_message,
             details=details,

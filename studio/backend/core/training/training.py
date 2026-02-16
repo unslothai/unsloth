@@ -30,6 +30,7 @@ class TrainingBackend:
         self.step_history = []
         self.eval_loss_history = []
         self.eval_step_history = []
+        self.eval_enabled = False
         self.current_theme = "light"
 
         self.trainer.add_progress_callback(self._on_progress_update)
@@ -144,6 +145,7 @@ class TrainingBackend:
             self.step_history = []
             self.eval_loss_history = []
             self.eval_step_history = []
+            self.eval_enabled = False
             import time
             output_dir = f"./outputs/{model_name.replace('/', '_')}_{int(time.time())}"
 
@@ -214,6 +216,13 @@ class TrainingBackend:
             else:
                 dataset = dataset_result
                 eval_dataset = None
+
+            # If user set eval_steps to 0, disable evaluation entirely
+            if eval_steps is not None and float(eval_steps) <= 0:
+                eval_dataset = None
+
+            # Track whether eval is enabled for status reporting
+            self.eval_enabled = eval_dataset is not None
 
             if dataset is None or self.trainer.should_stop:
                 logger.error("Failed to load dataset or stopped by user")

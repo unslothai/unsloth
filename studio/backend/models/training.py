@@ -96,6 +96,7 @@ class TrainingStatus(BaseModel):
         "stopped"
     ] = Field(..., description="Current phase of training pipeline")
     is_training_running: bool = Field(..., description="True if training loop is actively running")
+    eval_enabled: bool = Field(False, description="True if evaluation dataset is configured for this training run")
     message: str = Field(..., description="Human-readable status message")
     error: Optional[str] = Field(None, description="Error details if phase is 'error'")
     details: Optional[dict] = Field(None, description="Phase-specific info, e.g. {'model_size': '8B'}")

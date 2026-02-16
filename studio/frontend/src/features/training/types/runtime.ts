@@ -12,6 +12,7 @@ export interface TrainingStatusResponse {
   job_id: string;
   phase: TrainingPhase;
   is_training_running: boolean;
+  eval_enabled: boolean;
   message: string;
   error: string | null;
   details?: {
@@ -63,6 +64,7 @@ export interface TrainingRuntimeState {
   jobId: string | null;
   phase: TrainingPhase;
   isTrainingRunning: boolean;
+  evalEnabled: boolean;
   message: string;
   error: string | null;
   isHydrating: boolean;
