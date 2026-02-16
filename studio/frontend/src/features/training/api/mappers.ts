@@ -14,6 +14,15 @@ export function buildTrainingStartPayload(
   const adapterMethod = config.trainingMethod !== "full";
   const isQlorMethod = config.trainingMethod === "qlora";
   const hfDataset = config.datasetSource === "huggingface" ? config.dataset : null;
+  const manual = config.datasetManualMapping;
+  const isVlm = config.modelType === "vision";
+  const customFormatMapping =
+    manual.input && manual.output
+      ? {
+          [manual.input]: isVlm ? "image" : "user",
+          [manual.output]: isVlm ? "text" : "assistant",
+        }
+      : undefined;
 
   return {
     model_name: config.selectedModel ?? "",
@@ -26,6 +35,7 @@ export function buildTrainingStartPayload(
     hf_dataset_split: hfDataset ? config.datasetSplit : null,
     local_datasets: [],
     format_type: config.datasetFormat,
+    custom_format_mapping: customFormatMapping,
     num_epochs: config.epochs,
     learning_rate: String(config.learningRate),
     batch_size: config.batchSize,
