@@ -1,8 +1,8 @@
 """
 Pydantic schemas for Training API
 """
-from pydantic import BaseModel, Field
-from typing import Optional, List, Dict, Literal
+from pydantic import BaseModel, Field, model_validator
+from typing import Any, Optional, List, Dict, Literal
 
 
 class TrainingStartRequest(BaseModel):
@@ -19,7 +19,17 @@ class TrainingStartRequest(BaseModel):
     local_datasets: List[str] = Field(default_factory=list, description="List of local dataset paths")
     format_type: str = Field(..., description="Dataset format type")
     subset: Optional[str] = None
-    split: Optional[str] = "train"
+    train_split: Optional[str] = Field("train", description="Training split name")
+    eval_split: Optional[str] = Field(None, description="Eval split name. None = auto-detect")
+    eval_steps: float = Field(0.01, description="Fraction of total steps between evals (0-1)")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _compat_split(cls, values: Any) -> Any:
+        """Accept legacy 'split' field as alias for 'train_split'."""
+        if isinstance(values, dict) and "split" in values:
+            values.setdefault("train_split", values.pop("split"))
+        return values
     custom_format_mapping: Optional[Dict[str, str]] = Field(
         None,
         description="User-provided column-to-role mapping, e.g. {'image': 'image', 'caption': 'text'} for VLM or {'instruction': 'user', 'output': 'assistant'} for LLM"
@@ -87,6 +97,7 @@ class TrainingStatus(BaseModel):
         "stopped"
     ] = Field(..., description="Current phase of training pipeline")
     is_training_running: bool = Field(..., description="True if training loop is actively running")
+    eval_enabled: bool = Field(False, description="True if evaluation dataset is configured for this training run")
     message: str = Field(..., description="Human-readable status message")
     error: Optional[str] = Field(None, description="Error details if phase is 'error'")
     details: Optional[dict] = Field(None, description="Phase-specific info, e.g. {'model_size': '8B'}")
@@ -110,4 +121,5 @@ class TrainingProgress(BaseModel):
     eta_seconds: Optional[float] = Field(None, description="Estimated time remaining")
     grad_norm: Optional[float] = Field(None, description="L2 norm of gradients, computed before gradient clipping")
     num_tokens: Optional[int] = Field(None, description="Total number of tokens processed so far")
+    eval_loss: Optional[float] = Field(None, description="Eval loss from the most recent evaluation step")
 

@@ -18,6 +18,7 @@ export interface TrainingStartRequest {
   warmup_ratio: number | null;
   max_steps: number | null;
   save_steps: number;
+  eval_steps: number;
   weight_decay: number;
   random_seed: number;
   packing: boolean;

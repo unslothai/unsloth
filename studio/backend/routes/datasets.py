@@ -93,11 +93,11 @@ async def check_format(request: CheckFormatRequest):
         if dataset_path.exists():
             # Local dataset
             if dataset_path.suffix in ['.json', '.jsonl']:
-                dataset = load_dataset('json', data_files=str(dataset_path), split=request.split)
+                dataset = load_dataset('json', data_files=str(dataset_path), split=request.train_split)
             elif dataset_path.suffix == '.csv':
-                dataset = load_dataset('csv', data_files=str(dataset_path), split=request.split)
+                dataset = load_dataset('csv', data_files=str(dataset_path), split=request.train_split)
             elif dataset_path.suffix == '.parquet':
-                dataset = load_dataset('parquet', data_files=str(dataset_path), split=request.split)
+                dataset = load_dataset('parquet', data_files=str(dataset_path), split=request.train_split)
             else:
                 raise HTTPException(
                     status_code=400,
@@ -105,7 +105,7 @@ async def check_format(request: CheckFormatRequest):
                 )
         else:
             # HuggingFace dataset
-            load_kwargs = {"path": request.dataset_name, "split": request.split}
+            load_kwargs = {"path": request.dataset_name, "split": request.train_split}
             if request.subset:
                 load_kwargs["name"] = request.subset
             if request.hf_token:

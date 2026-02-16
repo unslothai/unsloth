@@ -39,27 +39,27 @@ export const MODEL_TYPES: ReadonlyArray<{
   label: string;
   description: string;
 }> = [
-  {
-    value: "vision",
-    label: "Vision",
-    description: "Image understanding models",
-  },
-  {
-    value: "tts",
-    label: "TTS",
-    description: "Text-to-speech models",
-  },
-  {
-    value: "embeddings",
-    label: "Embeddings",
-    description: "Text embedding models",
-  },
-  {
-    value: "text",
-    label: "Text",
-    description: "Language models",
-  },
-];
+    {
+      value: "vision",
+      label: "Vision",
+      description: "Image understanding models",
+    },
+    {
+      value: "tts",
+      label: "TTS",
+      description: "Text-to-speech models",
+    },
+    {
+      value: "embeddings",
+      label: "Embeddings",
+      description: "Text embedding models",
+    },
+    {
+      value: "text",
+      label: "Text",
+      description: "Language models",
+    },
+  ];
 
 export const CONTEXT_LENGTHS = [512, 1024, 2048, 4096, 8192, 16384, 32768];
 
@@ -87,6 +87,7 @@ export const DEFAULT_HYPERPARAMS = {
   warmupSteps: 5,
   maxSteps: 0,
   saveSteps: 0,
+  evalSteps: 0.01,
   packing: false,
   trainOnCompletions: false,
   gradientCheckpointing: "unsloth" as const,

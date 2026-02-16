@@ -36,6 +36,7 @@ export function buildTrainingStartPayload(
     warmup_ratio: null,
     max_steps: config.maxSteps,
     save_steps: config.saveSteps,
+    eval_steps: config.evalSteps,
     weight_decay: config.weightDecay,
     random_seed: config.randomSeed,
     packing: config.packing,
