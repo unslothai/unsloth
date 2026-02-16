@@ -11,6 +11,7 @@ to enable MPS support by intercepting the device type detection.
 
 import sys
 import platform
+import logging
 from types import ModuleType
 from typing import Optional
 
@@ -88,6 +89,131 @@ def patch_unsloth_zoo_for_mps() -> bool:
 
     # Inject into sys.modules before unsloth_zoo import
     sys.modules["unsloth_zoo.device_type"] = mock_device_type
+
+    # Mock unsloth_zoo.utils for MPS compatibility
+    mock_utils = ModuleType("unsloth_zoo.utils")
+
+    class Version:
+        def __init__(self, v):
+            self.v = v
+
+        def __lt__(self, other):
+            return False
+
+        def __le__(self, other):
+            return True
+
+        def __gt__(self, other):
+            return False
+
+        def __ge__(self, other):
+            return True
+
+    import torch
+
+    def _get_dtype(dtype_str):
+        return getattr(torch, dtype_str, torch.float32)
+
+    def get_quant_type(module):
+        return "unknown"
+
+    mock_utils.Version = Version
+    mock_utils._get_dtype = _get_dtype
+    mock_utils.get_quant_type = get_quant_type
+    sys.modules["unsloth_zoo.utils"] = mock_utils
+
+    # Mock unsloth_zoo.vision_utils for MPS compatibility
+    mock_vision_utils = ModuleType("unsloth_zoo.vision_utils")
+    mock_vision_utils.HAS_VISION = False
+    sys.modules["unsloth_zoo.vision_utils"] = mock_vision_utils
+
+    # Mock unsloth_zoo.log for MPS compatibility
+    mock_log = ModuleType("unsloth_zoo.log")
+    mock_log.logger = logging.getLogger("unsloth_zoo")
+    sys.modules["unsloth_zoo.log"] = mock_log
+
+    # Mock unsloth_zoo.tokenizer_utils for MPS compatibility
+    mock_tokenizer = ModuleType("unsloth_zoo.tokenizer_utils")
+    mock_tokenizer.patch_tokenizer = lambda x: x
+    sys.modules["unsloth_zoo.tokenizer_utils"] = mock_tokenizer
+
+    # Mock unsloth_zoo.rl_environments for MPS compatibility
+    mock_rl = ModuleType("unsloth_zoo.rl_environments")
+    mock_rl.check_python_modules = lambda: True
+    mock_rl.create_locked_down_function = lambda fn: fn
+    mock_rl.execute_with_time_limit = lambda timeout, fn, *args, **kwargs: fn(*args, **kwargs)
+
+    class MockBenchmarker:
+        pass
+
+    mock_rl.Benchmarker = MockBenchmarker
+    sys.modules["unsloth_zoo.rl_environments"] = mock_rl
+
+    # Mock unsloth_zoo.patching_utils for MPS compatibility
+    mock_patching = ModuleType("unsloth_zoo.patching_utils")
+    mock_patching.patch_compiling_bitsandbytes = lambda: None
+    mock_patching.patch_layernorm = lambda: None
+    mock_patching.patch_torch_compile = lambda: None
+    mock_patching.patch_model_and_tokenizer = lambda model, tokenizer: (model, tokenizer)
+    mock_patching.patch_compiled_autograd = lambda: None
+    sys.modules["unsloth_zoo.patching_utils"] = mock_patching
+
+    # Mock unsloth_zoo.gradient_checkpointing for MPS compatibility
+    mock_gc = ModuleType("unsloth_zoo.gradient_checkpointing")
+
+    class MockOffloadedGC:
+        pass
+
+    class MockGC:
+        pass
+
+    mock_gc.Unsloth_Offloaded_Gradient_Checkpointer = MockOffloadedGC
+    mock_gc.unsloth_offloaded_gradient_checkpoint = lambda module, *args, **kwargs: module.forward
+    mock_gc.patch_unsloth_gradient_checkpointing = lambda: None
+    mock_gc.unpatch_unsloth_gradient_checkpointing = lambda: None
+    mock_gc.Unsloth_Gradient_Checkpointer = MockGC
+    mock_gc.unsloth_gradient_checkpoint = lambda module, *args, **kwargs: module.forward
+    mock_gc.patch_gradient_checkpointing = lambda: None
+    mock_gc.unpatch_gradient_checkpointing = lambda: None
+    mock_gc.patch_unsloth_smart_gradient_checkpointing = lambda: None
+    mock_gc.unpatch_unsloth_smart_gradient_checkpointing = lambda: None
+    sys.modules["unsloth_zoo.gradient_checkpointing"] = mock_gc
+
+    # Mock unsloth_zoo.loss_utils for MPS compatibility
+    mock_loss = ModuleType("unsloth_zoo.loss_utils")
+    mock_loss.HAS_CUT_CROSS_ENTROPY = False
+    mock_loss.fused_linear_cross_entropy = lambda *args, **kwargs: 0.0
+    mock_loss._unsloth_get_batch_samples = lambda *args, **kwargs: None
+    mock_loss.unsloth_fused_ce_loss = lambda *args, **kwargs: 0.0
+    sys.modules["unsloth_zoo.loss_utils"] = mock_loss
+
+    # Mock unsloth_zoo.compiler for MPS compatibility
+    mock_compiler = ModuleType("unsloth_zoo.compiler")
+    mock_compiler.create_new_function = lambda fn: fn
+    sys.modules["unsloth_zoo.compiler"] = mock_compiler
+
+    # Mock unsloth_zoo.training_utils for MPS compatibility
+    mock_training = ModuleType("unsloth_zoo.training_utils")
+    mock_training.prepare_model_for_training = lambda model, *args, **kwargs: model
+    sys.modules["unsloth_zoo.training_utils"] = mock_training
+
+    # Mock unsloth_zoo.hf_utils for MPS compatibility
+    mock_hf = ModuleType("unsloth_zoo.hf_utils")
+    mock_hf.dtype_from_config = lambda config: None
+    sys.modules["unsloth_zoo.hf_utils"] = mock_hf
+
+    # Mock unsloth_zoo.peft_utils for MPS compatibility
+    mock_peft = ModuleType("unsloth_zoo.peft_utils")
+    mock_peft.SKIP_QUANTIZATION_MODULES = []
+    sys.modules["unsloth_zoo.peft_utils"] = mock_peft
+
+    # Mock unsloth_zoo.vllm_utils for MPS compatibility
+    mock_vllm = ModuleType("unsloth_zoo.vllm_utils")
+    sys.modules["unsloth_zoo.vllm_utils"] = mock_vllm
+
+    # Mock unsloth_zoo.temporary_patches for MPS compatibility
+    mock_temp = ModuleType("unsloth_zoo.temporary_patches")
+    sys.modules["unsloth_zoo.temporary_patches"] = mock_temp
 
     # --- EXTENDED MOCKING FOR TORCH.CUDA ---
     # Many parts of unsloth_zoo/trl assume CUDA exists and call memory functions.

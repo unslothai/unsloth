@@ -131,6 +131,82 @@ zoo_loss._unsloth_get_batch_samples = lambda *args, **kwargs: None
 zoo_loss.unsloth_fused_ce_loss = lambda *args, **kwargs: 0.0
 sys.modules["unsloth_zoo.loss_utils"] = zoo_loss
 
+# Mock unsloth_zoo.vision_utils
+zoo_vision = create_mock_module("unsloth_zoo.vision_utils")
+zoo_vision.HAS_VISION = False
+zoo_vision.process_vision_info = lambda *args, **kwargs: None
+
+
+class MockVisionDataCollator:
+    pass
+
+
+zoo_vision.UnslothVisionDataCollator = MockVisionDataCollator
+sys.modules["unsloth_zoo.vision_utils"] = zoo_vision
+
+# Mock unsloth_zoo.compiler
+zoo_compiler = create_mock_module("unsloth_zoo.compiler")
+zoo_compiler.get_transformers_model_type = lambda *args, **kwargs: "llama"
+zoo_compiler.unsloth_compile_transformers = lambda *args, **kwargs: None
+sys.modules["unsloth_zoo.compiler"] = zoo_compiler
+
+# Mock unsloth_zoo.training_utils
+zoo_training = create_mock_module("unsloth_zoo.training_utils")
+zoo_training.prepare_model_for_training = lambda model, *args, **kwargs: model
+zoo_training.unsloth_train = lambda *args, **kwargs: None
+sys.modules["unsloth_zoo.training_utils"] = zoo_training
+
+# Mock unsloth_zoo.temporary_patches
+zoo_temp_patches = create_mock_module("unsloth_zoo.temporary_patches")
+zoo_temp_patches.TEMPORARY_PATCHES = {}
+sys.modules["unsloth_zoo.temporary_patches"] = zoo_temp_patches
+
+# Mock unsloth_zoo.hf_utils
+zoo_hf = create_mock_module("unsloth_zoo.hf_utils")
+zoo_hf.dtype_from_config = lambda *args, **kwargs: None
+zoo_hf.HAS_TORCH_DTYPE = False
+sys.modules["unsloth_zoo.hf_utils"] = zoo_hf
+
+# Mock unsloth_zoo.peft_utils
+zoo_peft = create_mock_module("unsloth_zoo.peft_utils")
+zoo_peft.SKIP_QUANTIZATION_MODULES = set()
+sys.modules["unsloth_zoo.peft_utils"] = zoo_peft
+
+# Mock unsloth_zoo.vllm_utils
+zoo_vllm = create_mock_module("unsloth_zoo.vllm_utils")
+sys.modules["unsloth_zoo.vllm_utils"] = zoo_vllm
+
+# Mock unsloth_zoo.saving_utils
+zoo_saving = create_mock_module("unsloth_zoo.saving_utils")
+sys.modules["unsloth_zoo.saving_utils"] = zoo_saving
+
+# Mock unsloth_zoo.llama_cpp
+zoo_llama_cpp = create_mock_module("unsloth_zoo.llama_cpp")
+sys.modules["unsloth_zoo.llama_cpp"] = zoo_llama_cpp
+
+# Mock unsloth_zoo.dataset_utils
+zoo_dataset = create_mock_module("unsloth_zoo.dataset_utils")
+sys.modules["unsloth_zoo.dataset_utils"] = zoo_dataset
+
+# Mock unsloth_zoo.rl_replacements
+zoo_rl_replace = create_mock_module("unsloth_zoo.rl_replacements")
+zoo_rl_replace.RL_REPLACEMENTS = {}
+sys.modules["unsloth_zoo.rl_replacements"] = zoo_rl_replace
+
+# Mock unsloth_zoo.logging_utils
+zoo_logging = create_mock_module("unsloth_zoo.logging_utils")
+sys.modules["unsloth_zoo.logging_utils"] = zoo_logging
+
+# Mock unsloth_zoo.flex_attention
+zoo_flex = create_mock_module("unsloth_zoo.flex_attention")
+zoo_flex.HAS_FLEX_ATTENTION = False
+sys.modules["unsloth_zoo.flex_attention"] = zoo_flex
+
+# Mock unsloth_zoo.tiled_mlp
+zoo_tiled_mlp = create_mock_module("unsloth_zoo.tiled_mlp")
+zoo_tiled_mlp.patch_tiled_mlp = lambda: None
+sys.modules["unsloth_zoo.tiled_mlp"] = zoo_tiled_mlp
+
 # Mocking other unsloth requirements
 sys.modules["datasets"] = create_mock_module("datasets")
 sys.modules["datasets"].__version__ = "2.14.0"
