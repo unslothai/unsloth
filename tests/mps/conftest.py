@@ -103,3 +103,43 @@ sys.modules["trl"] = create_mock_module("trl")
 sys.modules["peft"] = create_mock_module("peft")
 sys.modules["xformers"] = create_mock_module("xformers")
 sys.modules["xformers.ops"] = create_mock_module("xformers.ops")
+
+# Mock unsloth_zoo.patching_utils
+zoo_patching = create_mock_module("unsloth_zoo.patching_utils")
+zoo_patching.patch_compiling_bitsandbytes = lambda: None
+zoo_patching.patch_layernorm = lambda: None
+zoo_patching.patch_torch_compile = lambda: None
+zoo_patching.patch_model_and_tokenizer = lambda model, tokenizer: (model, tokenizer)
+zoo_patching.patch_compiled_autograd = lambda: None
+sys.modules["unsloth_zoo.patching_utils"] = zoo_patching
+
+# Mock unsloth_zoo.gradient_checkpointing
+zoo_gc = create_mock_module("unsloth_zoo.gradient_checkpointing")
+class MockOffloadedGC:
+    pass
+class MockGC:
+    pass
+zoo_gc.Unsloth_Offloaded_Gradient_Checkpointer = MockOffloadedGC
+zoo_gc.unsloth_offloaded_gradient_checkpoint = lambda module, *args, **kwargs: module.forward
+zoo_gc.patch_unsloth_gradient_checkpointing = lambda: None
+zoo_gc.unpatch_unsloth_gradient_checkpointing = lambda: None
+zoo_gc.Unsloth_Gradient_Checkpointer = MockGC
+zoo_gc.unsloth_gradient_checkpoint = lambda module, *args, **kwargs: module.forward
+zoo_gc.patch_gradient_checkpointing = lambda: None
+zoo_gc.unpatch_gradient_checkpointing = lambda: None
+zoo_gc.patch_unsloth_smart_gradient_checkpointing = lambda: None
+zoo_gc.unpatch_unsloth_smart_gradient_checkpointing = lambda: None
+sys.modules["unsloth_zoo.gradient_checkpointing"] = zoo_gc
+
+# Mock unsloth_zoo.loss_utils
+zoo_loss = create_mock_module("unsloth_zoo.loss_utils")
+zoo_loss.HAS_CUT_CROSS_ENTROPY = False
+zoo_loss.fused_linear_cross_entropy = lambda *args, **kwargs: 0.0
+zoo_loss._unsloth_get_batch_samples = lambda *args, **kwargs: None
+zoo_loss.unsloth_fused_ce_loss = lambda *args, **kwargs: 0.0
+sys.modules["unsloth_zoo.loss_utils"] = zoo_loss
+
+# Mock unsloth_zoo.vision_utils
+zoo_vision = create_mock_module("unsloth_zoo.vision_utils")
+zoo_vision.HAS_VISION = False
+sys.modules["unsloth_zoo.vision_utils"] = zoo_vision
