@@ -72,7 +72,7 @@ function buildCustomFormatMapping(
   const { input, output } = config.datasetManualMapping;
   if (!input || !output) return undefined;
 
-  if (config.modelType === "vision") {
+  if (config.isVisionModel) {
     return { [input]: "image", [output]: "text" };
   }
 
