@@ -770,7 +770,7 @@ class MacPatcher:
     def patch_patching_utils(self) -> PatchResult:
         """
         Patch unsloth_zoo.patching_utils to handle missing Bnb_Linear4bit on MPS.
-        Pre-injects dummy classes into sys.modules before unsloth imports them.
+        Uses import hook to wrap the real module and add dummy classes.
         """
         name = "patching_utils"
         
@@ -778,18 +778,39 @@ class MacPatcher:
             pass
         
         try:
-            if "unsloth_zoo.patching_utils" in sys.modules:
-                patching_utils = sys.modules["unsloth_zoo.patching_utils"]
-                if not hasattr(patching_utils, "Bnb_Linear4bit"):
-                    patching_utils.Bnb_Linear4bit = _DummyBnbLinear
-                if not hasattr(patching_utils, "Peft_Linear4bit"):
-                    patching_utils.Peft_Linear4bit = _DummyBnbLinear
-            else:
-                from types import ModuleType
-                mock_module = ModuleType("unsloth_zoo.patching_utils")
-                mock_module.Bnb_Linear4bit = _DummyBnbLinear
-                mock_module.Peft_Linear4bit = _DummyBnbLinear
-                sys.modules["unsloth_zoo.patching_utils"] = mock_module
+            from importlib.machinery import ModuleSpec
+            from importlib.abc import MetaPathFinder, Loader
+            
+            class PatchingUtilsFinder(MetaPathFinder):
+                def find_spec(self, fullname, path, target=None):
+                    if fullname == "unsloth_zoo.patching_utils":
+                        return ModuleSpec(fullname, PatchingUtilsLoader(), origin="unsloth_zoo")
+                    return None
+            
+            class PatchingUtilsLoader(Loader):
+                def create_module(self, spec):
+                    return None
+                
+                def exec_module(self, module):
+                    import sys
+                    real_module_name = "unsloth_zoo.patching_utils"
+                    
+                    if real_module_name in sys.modules:
+                        real_mod = sys.modules[real_module_name]
+                        for attr in dir(real_mod):
+                            if not attr.startswith("_"):
+                                setattr(module, attr, getattr(real_mod, attr))
+                    
+                    if not hasattr(module, "Bnb_Linear4bit"):
+                        module.Bnb_Linear4bit = _DummyBnbLinear
+                    if not hasattr(module, "Peft_Linear4bit"):
+                        module.Peft_Linear4bit = _DummyBnbLinear
+            
+            finder = PatchingUtilsFinder()
+            sys.meta_path.insert(0, finder)
+            self._mock_finders.append(finder)
+            
+            import unsloth_zoo.patching_utils  # noqa: F401
             
             return self._create_patch_result(name, PatchStatus.SUCCESS, "Bnb_Linear4bit patched")
         except Exception as e:
