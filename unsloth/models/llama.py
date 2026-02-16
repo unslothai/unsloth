@@ -48,6 +48,7 @@ from unsloth_zoo.peft_utils import SKIP_QUANTIZATION_MODULES
 from ..device_type import (
     is_hip,
     get_device_type,
+    DEVICE_COUNT,
 )
 from ..device_utils import (
     clean_gpu_cache,
