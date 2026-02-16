@@ -1526,7 +1526,9 @@ def disable_broken_vllm(error = None):
     _install_vllm_blocker()
     logger.warning(
         "Unsloth: Detected broken vLLM binary extension; "
-        "disabling vLLM imports and continuing import."
+        "disabling vLLM imports and continuing import. "
+        "Please reinstall via `uv pip install unsloth vllm torchvision torchaudio "
+        "--torch-backend=auto`."
     )
     return True
 
