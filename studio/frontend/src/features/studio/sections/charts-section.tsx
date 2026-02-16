@@ -16,6 +16,8 @@ const SKELETON_KEYS = [
 export function ChartsSection(): ReactElement | null {
   const currentStep = useTrainingRuntimeStore((state) => state.currentStep);
   const totalSteps = useTrainingRuntimeStore((state) => state.totalSteps);
+  const isTraining = useTrainingRuntimeStore((state) => state.isTrainingRunning);
+  const evalEnabled = useTrainingRuntimeStore((state) => state.evalEnabled);
   const lossHistoryRaw = useTrainingRuntimeStore((state) => state.lossHistory);
   const lrHistoryRaw = useTrainingRuntimeStore((state) => state.lrHistory);
   const gradNormHistoryRaw = useTrainingRuntimeStore(
@@ -70,7 +72,7 @@ export function ChartsSection(): ReactElement | null {
         </div>
       }
     >
-      <ChartsContent metrics={series} />
+      <ChartsContent metrics={series} isTraining={isTraining} evalEnabled={evalEnabled} />
     </Suspense>
   );
 }
