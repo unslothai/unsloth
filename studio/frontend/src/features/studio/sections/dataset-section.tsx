@@ -30,6 +30,7 @@ import {
 import { formatCompact } from "@/lib/utils";
 import {
   HfDatasetSubsetSplitSelectors,
+  useDatasetPreviewDialogStore,
   useTrainingConfigStore,
 } from "@/features/training";
 import {
@@ -43,7 +44,6 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
-import { DatasetPreviewDialog } from "./dataset-preview-dialog";
 
 function isLikelyLocalDatasetRef(value: string) {
   return (
@@ -81,7 +81,7 @@ export function DatasetSection() {
   );
 
   const [inputValue, setInputValue] = useState("");
-  const [previewOpen, setPreviewOpen] = useState(false);
+  const openPreview = useDatasetPreviewDialogStore((s) => s.openPreview);
   const selectingRef = useRef(false);
   const debouncedQuery = useDebouncedValue(inputValue);
 
@@ -190,20 +190,21 @@ export function DatasetSection() {
                   ref={scrollRef}
                   className="max-h-64 overflow-y-auto overscroll-contain [scrollbar-width:thin]"
                 >
-                  <ComboboxList className="p-1 !max-h-none !overflow-visible">
-                    {(id: string) => {
-                      const r = hfResults.find((ds) => ds.id === id);
-                      const detail = r?.totalExamples
-                        ? `${formatCompact(r.totalExamples)} rows`
-                        : r?.sizeCategory
-                          ? r.sizeCategory
-                          : r?.downloads != null
-                            ? `↓${formatCompact(r.downloads)}`
-                            : null;
-                      return (
-                        <ComboboxItem
-                          key={id}
-                          value={id}
+                    <ComboboxList className="p-1 !max-h-none !overflow-visible">
+                      {(id: string) => {
+                        const r = hfResults.find((ds) => ds.id === id);
+                        let detail: string | null = null;
+                        if (r?.totalExamples) {
+                          detail = `${formatCompact(r.totalExamples)} rows`;
+                        } else if (r?.sizeCategory) {
+                          detail = r.sizeCategory;
+                        } else if (r?.downloads != null) {
+                          detail = `↓${formatCompact(r.downloads)}`;
+                        }
+                        return (
+                          <ComboboxItem
+                            key={id}
+                            value={id}
                           className="justify-between"
                         >
                           <Tooltip>
@@ -341,7 +342,7 @@ export function DatasetSection() {
             size="sm"
             className="cursor-pointer gap-1.5"
             disabled={!dataset}
-            onClick={() => setPreviewOpen(true)}
+            onClick={() => openPreview()}
           >
             <HugeiconsIcon icon={ViewIcon} className="size-3.5" />
             View dataset
@@ -349,14 +350,6 @@ export function DatasetSection() {
         </div>
       </div>
       </SectionCard>
-      <DatasetPreviewDialog
-        open={previewOpen}
-        onOpenChange={setPreviewOpen}
-        datasetName={dataset}
-        hfToken={hfToken}
-        datasetSubset={datasetSubset}
-        datasetSplit={datasetSplit}
-      />
     </div>
   );
 }

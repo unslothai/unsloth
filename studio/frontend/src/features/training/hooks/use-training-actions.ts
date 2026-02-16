@@ -1,10 +1,13 @@
 import { useCallback } from "react";
-import { useTrainingConfigStore } from "../stores/training-config-store";
-import { useTrainingRuntimeStore } from "../stores/training-runtime-store";
-import { startTraining, stopTraining, resetTraining } from "../api/train-api";
+import { checkDatasetFormat } from "../api/datasets-api";
 import { buildTrainingStartPayload } from "../api/mappers";
+import { startTraining, stopTraining, resetTraining } from "../api/train-api";
 import { syncTrainingRuntimeFromBackend } from "../lib/sync-runtime";
 import { validateTrainingConfig } from "../lib/validation";
+import { useDatasetPreviewDialogStore } from "../stores/dataset-preview-dialog-store";
+import { useTrainingConfigStore } from "../stores/training-config-store";
+import { useTrainingRuntimeStore } from "../stores/training-runtime-store";
+import type { TrainingConfigState } from "../types/config";
 
 export function useTrainingActions() {
   const isStarting = useTrainingRuntimeStore((state) => state.isStarting);
@@ -13,6 +16,7 @@ export function useTrainingActions() {
   const startTrainingRun = useCallback(async (): Promise<boolean> => {
     const config = useTrainingConfigStore.getState();
     const runtimeStore = useTrainingRuntimeStore.getState();
+    const dialogStore = useDatasetPreviewDialogStore.getState();
 
     runtimeStore.setStartError(null);
     const validation = validateTrainingConfig(config);
@@ -24,6 +28,39 @@ export function useTrainingActions() {
     runtimeStore.setStarting(true);
 
     try {
+      const datasetName = getDatasetName(config);
+      const isVlm = config.modelType === "vision";
+
+      if (datasetName) {
+        const check = await checkDatasetFormat({
+          datasetName,
+          hfToken: config.hfToken.trim() || null,
+          subset: config.datasetSubset,
+          split: config.datasetSplit,
+          isVlm,
+        });
+
+        if (check.requires_manual_mapping && !hasManualMapping(config)) {
+          const hintInput = isVlm
+            ? check.detected_image_column
+            : pickRoleColumn(check.suggested_mapping, "user");
+          const hintOutput = isVlm
+            ? check.detected_text_column
+            : pickRoleColumn(check.suggested_mapping, "assistant");
+
+          if (hintInput || hintOutput) {
+            useTrainingConfigStore.getState().setDatasetManualMapping({
+              input: hintInput ?? null,
+              output: hintOutput ?? null,
+            });
+          }
+
+          runtimeStore.setStarting(false);
+          dialogStore.openMapping(check);
+          return false;
+        }
+      }
+
       const payload = buildTrainingStartPayload(config);
       const response = await startTraining(payload);
 
@@ -77,4 +114,27 @@ export function useTrainingActions() {
     stopTrainingRun,
     dismissTrainingRun,
   };
+}
+
+function getDatasetName(config: TrainingConfigState): string | null {
+  return config.datasetSource === "huggingface"
+    ? config.dataset
+    : config.uploadedFile;
+}
+
+function hasManualMapping(config: TrainingConfigState): boolean {
+  return (
+    !!config.datasetManualMapping.input && !!config.datasetManualMapping.output
+  );
+}
+
+function pickRoleColumn(
+  mapping: Record<string, string> | null | undefined,
+  role: string,
+): string | null {
+  if (!mapping) return null;
+  for (const [col, mappedRole] of Object.entries(mapping)) {
+    if (mappedRole === role) return col;
+  }
+  return null;
 }
