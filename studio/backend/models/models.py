@@ -21,6 +21,18 @@ class ModelCheckpoints(BaseModel):
         default_factory=list,
         description="List of checkpoints for this training run (final + intermediate)",
     )
+    base_model: Optional[str] = Field(
+        None,
+        description="Base model name from adapter_config.json or config.json",
+    )
+    peft_type: Optional[str] = Field(
+        None,
+        description="PEFT type (e.g. LORA) if adapter training, None for full fine-tune",
+    )
+    lora_rank: Optional[int] = Field(
+        None,
+        description="LoRA rank (r) if applicable",
+    )
 
 
 class CheckpointListResponse(BaseModel):

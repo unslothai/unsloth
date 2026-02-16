@@ -236,7 +236,8 @@ class ExportBackend:
                          push_to_hub: bool = False,
                          repo_id: Optional[str] = None,
                          hf_token: Optional[str] = None,
-                         private: bool = False) -> Tuple[bool, str]:
+                         private: bool = False,
+                         base_model_id: Optional[str] = None) -> Tuple[bool, str]:
         """
         Export base model (for non-PEFT models).
 
@@ -266,8 +267,8 @@ class ExportBackend:
 
                 logger.info(f"Pushing base model to Hub: {repo_id}")
 
-                # Get base model name
-                base_model = self.current_model.config._name_or_path
+                # Get base model name from request or model config
+                base_model = base_model_id or self.current_model.config._name_or_path or "unknown"
 
                 # Create repo
                 hf_api = HfApi(token=hf_token)
