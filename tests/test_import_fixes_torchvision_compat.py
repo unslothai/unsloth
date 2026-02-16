@@ -28,12 +28,14 @@ def _patch_versions(monkeypatch, torch_version, torchvision_version):
         return version_map[package_name]
 
     monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
-    monkeypatch.setattr(import_fixes_module, "importlib_version", fake_importlib_version)
+    monkeypatch.setattr(
+        import_fixes_module, "importlib_version", fake_importlib_version
+    )
     monkeypatch.setattr(import_fixes_module, "_is_custom_torch_build", lambda _: False)
 
 
 def test_torchvision_mismatch_raises_for_stable_newer_torch(monkeypatch):
-    monkeypatch.delenv("UNSLOTH_SKIP_TORCHVISION_CHECK", raising=False)
+    monkeypatch.delenv("UNSLOTH_SKIP_TORCHVISION_CHECK", raising = False)
     _patch_versions(monkeypatch, "2.10.0+cu130", "0.24.1")
 
     with pytest.raises(ImportError) as excinfo:
@@ -50,10 +52,10 @@ def test_torchvision_check_respects_skip_env(monkeypatch):
 
 
 def test_torchvision_prerelease_mismatch_warns(monkeypatch, caplog):
-    monkeypatch.delenv("UNSLOTH_SKIP_TORCHVISION_CHECK", raising=False)
+    monkeypatch.delenv("UNSLOTH_SKIP_TORCHVISION_CHECK", raising = False)
     _patch_versions(monkeypatch, "2.11.0a0", "0.25.1")
 
-    caplog.set_level(logging.WARNING, logger=import_fixes_module.__name__)
+    caplog.set_level(logging.WARNING, logger = import_fixes_module.__name__)
     import_fixes_module.torchvision_compatibility_check()
 
     warning_messages = [record.message for record in caplog.records]
