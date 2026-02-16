@@ -40,6 +40,7 @@ export interface TrainingConfigState {
   warmupSteps: number;
   maxSteps: number;
   saveSteps: number;
+  evalSteps: number;
   packing: boolean;
   trainOnCompletions: boolean;
   gradientCheckpointing: GradientCheckpointing;
@@ -85,6 +86,7 @@ export interface TrainingConfigActions {
   setWarmupSteps: (value: number) => void;
   setMaxSteps: (value: number) => void;
   setSaveSteps: (value: number) => void;
+  setEvalSteps: (value: number) => void;
   setPacking: (value: boolean) => void;
   setTrainOnCompletions: (value: boolean) => void;
   setGradientCheckpointing: (value: GradientCheckpointing) => void;

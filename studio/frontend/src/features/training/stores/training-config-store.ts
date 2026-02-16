@@ -94,6 +94,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
       setWarmupSteps: (warmupSteps) => set({ warmupSteps }),
       setMaxSteps: (maxSteps) => set({ maxSteps }),
       setSaveSteps: (saveSteps) => set({ saveSteps }),
+      setEvalSteps: (evalSteps) => set({ evalSteps }),
       setPacking: (packing) => set({ packing }),
       setTrainOnCompletions: (trainOnCompletions) =>
         set({ trainOnCompletions }),

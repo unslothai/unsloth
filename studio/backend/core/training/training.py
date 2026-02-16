@@ -28,6 +28,8 @@ class TrainingBackend:
         self.loss_history = []
         self.lr_history = []
         self.step_history = []
+        self.eval_loss_history = []
+        self.eval_step_history = []
         self.current_theme = "light"
 
         self.trainer.add_progress_callback(self._on_progress_update)
@@ -40,6 +42,9 @@ class TrainingBackend:
             self.loss_history.append(progress.loss)
             self.lr_history.append(progress.learning_rate)
             self.step_history.append(progress.step)
+        if progress.eval_loss is not None:
+            self.eval_loss_history.append(progress.eval_loss)
+            self.eval_step_history.append(progress.step)
 
     def start_training(self,
                        # Model parameters
@@ -96,7 +101,9 @@ class TrainingBackend:
                        # Optional parameters
                        custom_format_mapping: dict = None,
                        subset: str = None,
-                       split: str = "train") -> bool:
+                       train_split: str = "train",
+                       eval_split: str = None,
+                       eval_steps: float = 0.01) -> bool:
         """
         Start training.
 
@@ -135,6 +142,8 @@ class TrainingBackend:
             self.loss_history = []
             self.lr_history = []
             self.step_history = []
+            self.eval_loss_history = []
+            self.eval_step_history = []
             import time
             output_dir = f"./outputs/{model_name.replace('/', '_')}_{int(time.time())}"
 
@@ -189,14 +198,22 @@ class TrainingBackend:
             # ========== LOAD DATASET ==========
             logger.info("Loading dataset...")
             #breakpoint()
-            dataset = self.trainer.load_and_format_dataset(
+            dataset_result = self.trainer.load_and_format_dataset(
                 dataset_source=hf_dataset if hf_dataset.strip() else None,
                 format_type=format_type,
                 local_datasets=local_datasets if local_datasets else None,
                 custom_format_mapping=custom_format_mapping,
                 subset=subset,
-                split=split,
+                train_split=train_split,
+                eval_split=eval_split,
             )
+
+            # Unpack: load_and_format_dataset returns (dataset, eval_dataset)
+            if isinstance(dataset_result, tuple):
+                dataset, eval_dataset = dataset_result
+            else:
+                dataset = dataset_result
+                eval_dataset = None
 
             if dataset is None or self.trainer.should_stop:
                 logger.error("Failed to load dataset or stopped by user")
@@ -217,7 +234,8 @@ class TrainingBackend:
             logger.info("Starting training worker thread...")
             success = self.trainer.start_training(
                 dataset=dataset,
-                #output_dir=f"./outputs/{model_name.replace('/', '_')}_{int(__import__('time').time())}",
+                eval_dataset=eval_dataset,
+                eval_steps=eval_steps,
                 output_dir=output_dir,
                 num_epochs=num_epochs,
                 learning_rate=lr_value,
@@ -236,7 +254,7 @@ class TrainingBackend:
                 wandb_token=wandb_token if wandb_token.strip() else None,
                 enable_tensorboard=enable_tensorboard,
                 tensorboard_dir=tensorboard_dir,
-                max_seq_length=max_seq_length,  # Pass through for config
+                max_seq_length=max_seq_length,
                 optim=optim,
                 lr_scheduler_type=lr_scheduler_type,
             )

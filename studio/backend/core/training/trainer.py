@@ -51,6 +51,7 @@ class TrainingProgress:
     eta_seconds: Optional[float] = None
     grad_norm: Optional[float] = None
     num_tokens: Optional[int] = None
+    eval_loss: Optional[float] = None
 
 class UnslothTrainer:
     """
@@ -319,12 +320,18 @@ class UnslothTrainer:
                      local_datasets: list = None,
                      custom_format_mapping: dict = None,
                      subset: str = None,
-                     split: str = "train") -> Optional[Dataset]:
+                     train_split: str = "train",
+                     eval_split: str = None) -> Optional[tuple]:
         """
-        Load and prepare dataset for training
+        Load and prepare dataset for training.
+
+        Returns:
+            Tuple of (dataset_info, eval_dataset) or None on error.
+            eval_dataset may be None if no eval split is available.
         """
         try:
             dataset = None
+            eval_dataset = None
 
             if local_datasets:
                 # Load local datasets
@@ -361,9 +368,12 @@ class UnslothTrainer:
                     self._update_progress(status_message=f"Loaded {len(all_data)} samples from local files")
                     print(f"Loaded {len(all_data)} samples from local files\n")
 
+                    # For local datasets, use train_test_split if dataset is large enough
+                    eval_dataset = self._resolve_eval_split_from_dataset(dataset)
+
             elif dataset_source:
                 # Load from Hugging Face
-                load_kwargs = {"path": dataset_source, "split": split or "train"}
+                load_kwargs = {"path": dataset_source, "split": train_split or "train"}
                 if subset:
                     load_kwargs["name"] = subset
                 dataset = load_dataset(**load_kwargs)
@@ -376,6 +386,23 @@ class UnslothTrainer:
                 self._update_progress(status_message=f"Loaded dataset from HuggingFace: {dataset_source}")
                 print(f"Loaded dataset from Hugging Face: {dataset_source}\n")
 
+                # Resolve eval split
+                if eval_split:
+                    # Explicit eval split provided - load it directly
+                    print(f"Loading explicit eval split: '{eval_split}'\n")
+                    eval_load_kwargs = {"path": dataset_source, "split": eval_split}
+                    if subset:
+                        eval_load_kwargs["name"] = subset
+                    eval_dataset = load_dataset(**eval_load_kwargs)
+                    print(f"Loaded eval split '{eval_split}' with {len(eval_dataset)} rows\n")
+                else:
+                    # Auto-detect eval split
+                    eval_dataset = self._auto_detect_eval_split(
+                        dataset_source=dataset_source,
+                        subset=subset,
+                        train_dataset=dataset,
+                    )
+
             if dataset is None:
                 raise ValueError("No dataset provided")
 
@@ -384,10 +411,14 @@ class UnslothTrainer:
                 print("Stopped before applying chat template\n")
                 return None
 
+            # If we auto-split, use only the train portion for formatting
+            if hasattr(self, '_split_train_dataset') and self._split_train_dataset is not None:
+                dataset = self._split_train_dataset
+                self._split_train_dataset = None  # Clear after use
+
             # NEW: Use unified format_and_template_dataset
             print(f"Formatting dataset with format_type='{format_type}'...\n")
 
-            #breakpoint()
             dataset_info = format_and_template_dataset(
                 dataset,
                 model_name=self.model_name,
@@ -405,15 +436,67 @@ class UnslothTrainer:
 
             self._update_progress(status_message=f"Dataset formatted and ready for training")
             print(f"Dataset formatted successfully\n")
-            return dataset_info
+            return (dataset_info, eval_dataset)
 
         except Exception as e:
             logger.error(f"Error loading dataset: {e}")
             self._update_progress(error=str(e))
             return None
 
+    def _auto_detect_eval_split(self, dataset_source: str, subset: str,
+                                train_dataset: Dataset) -> Optional[Dataset]:
+        """Auto-detect an eval split from HF dataset, or split the train set."""
+        try:
+            from datasets import get_dataset_split_names
+            load_kwargs = {"path": dataset_source}
+            if subset:
+                load_kwargs["name"] = subset
+            available_splits = get_dataset_split_names(**load_kwargs)
+            print(f"Available splits: {available_splits}\n")
+
+            # Check for common eval split names
+            for candidate in ["eval", "validation", "valid", "val", "test"]:
+                if candidate in available_splits:
+                    eval_load_kwargs = {"path": dataset_source, "split": candidate}
+                    if subset:
+                        eval_load_kwargs["name"] = subset
+                    candidate_ds = load_dataset(**eval_load_kwargs)
+                    if len(candidate_ds) >= 16:
+                        print(f"Auto-detected eval split '{candidate}' with {len(candidate_ds)} rows\n")
+                        return candidate_ds
+                    else:
+                        print(f"Found eval split '{candidate}' but only {len(candidate_ds)} rows (< 16), skipping\n")
+
+        except Exception as e:
+            logger.warning(f"Could not check dataset splits: {e}")
+
+        # Fallback: split the train set
+        return self._resolve_eval_split_from_dataset(train_dataset)
+
+    def _resolve_eval_split_from_dataset(self, dataset: Dataset) -> Optional[Dataset]:
+        """Split the training dataset to create an eval set."""
+        MIN_EVAL_ROWS = 16
+        MIN_TOTAL_ROWS = 32  # Need at least 16 train + 16 eval
+
+        if len(dataset) < MIN_TOTAL_ROWS:
+            print(f"Dataset too small ({len(dataset)} rows) for eval split, skipping eval\n")
+            return None
+
+        eval_size = max(MIN_EVAL_ROWS, min(128, int(0.05 * len(dataset))))
+        # Ensure we don't take more than half the dataset
+        eval_size = min(eval_size, len(dataset) // 2)
+
+        print(f"Auto-splitting: {eval_size} rows for eval from {len(dataset)} total\n")
+        split_result = dataset.train_test_split(test_size=eval_size, seed=3407)
+        print(f"Split complete: {len(split_result['train'])} train, {len(split_result['test'])} eval\n")
+        # Store the train portion so the caller can use it instead of the original full dataset
+        self._split_train_dataset = split_result['train']
+        return split_result['test']
+
     def start_training(self,
                        dataset: Dataset,
+                       eval_dataset: Dataset = None,
+                       eval_steps: float = 0.01,
                        output_dir: str = "./outputs",
                        num_epochs: int = 3,
                        learning_rate: float = 5e-5,
@@ -602,6 +685,17 @@ class UnslothTrainer:
             else:
                 print(f"Training for {config_args['num_train_epochs']} epochs\n")
 
+            # ========== EVAL CONFIGURATION ==========
+            eval_dataset = training_args.get('eval_dataset', None)
+            eval_steps_val = training_args.get('eval_steps', 0.01)
+            if eval_dataset is not None:
+                config_args["eval_strategy"] = "steps"
+                config_args["eval_steps"] = eval_steps_val
+                print(f"Evaluation enabled: eval_steps={eval_steps_val} (fraction of total steps)\n")
+                print(f"Eval dataset: {len(eval_dataset)} rows\n")
+            else:
+                print("No eval dataset — evaluation disabled\n")
+
             # Add model-specific parameters
             # Use optim and lr_scheduler_type from training_args if provided, otherwise use defaults
             optim_value = training_args.get('optim', "adamw_8bit")
@@ -643,21 +737,27 @@ class UnslothTrainer:
             print("Training configuration prepared\n")
             # ========== TRAINER INITIALIZATION ==========
             if self.is_vlm:
-                self.trainer = SFTTrainer(
-                    model=self.model,
-                    train_dataset=dataset['dataset'],
-                    processing_class = self.tokenizer.tokenizer,
-                    data_collator=data_collator,
-                    args=SFTConfig(**config_args),
-                )
+                trainer_kwargs = {
+                    "model": self.model,
+                    "train_dataset": dataset['dataset'],
+                    "processing_class": self.tokenizer.tokenizer,
+                    "data_collator": data_collator,
+                    "args": SFTConfig(**config_args),
+                }
+                if eval_dataset is not None:
+                    trainer_kwargs["eval_dataset"] = eval_dataset
+                self.trainer = SFTTrainer(**trainer_kwargs)
             else:
-                self.trainer = SFTTrainer(
-                    model=self.model,
-                    tokenizer=self.tokenizer,
-                    train_dataset=dataset['dataset'],
-                    data_collator=data_collator,
-                    args=SFTConfig(**config_args),
-                )
+                trainer_kwargs = {
+                    "model": self.model,
+                    "tokenizer": self.tokenizer,
+                    "train_dataset": dataset['dataset'],
+                    "data_collator": data_collator,
+                    "args": SFTConfig(**config_args),
+                }
+                if eval_dataset is not None:
+                    trainer_kwargs["eval_dataset"] = eval_dataset
+                self.trainer = SFTTrainer(**trainer_kwargs)
             print("Trainer initialized\n")
 
             # ========== TRAIN ON RESPONSES ONLY ==========
@@ -757,14 +857,15 @@ class UnslothTrainer:
                         
                         self.trainer_instance._update_progress(
                             step=current_step,
-                            epoch=round(state.epoch, 2) if state.epoch else 0,  # Round epoch to 2 decimals
+                            epoch=round(state.epoch, 2) if state.epoch else 0,
                             loss=loss_value,
                             learning_rate=logs.get('learning_rate', 0.0),
                             elapsed_seconds=elapsed_seconds,
                             eta_seconds=eta_seconds,
                             grad_norm=grad_norm,
                             num_tokens=num_tokens,
-                            status_message=""  # Clear status message so metrics show
+                            eval_loss=logs.get('eval_loss', None),
+                            status_message=""
                         )
 
                 def on_epoch_end(self, args, state, control, **kwargs):
