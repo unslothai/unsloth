@@ -1045,10 +1045,10 @@ def fix_vllm_pdl_blackwell():
         return
 
     # Check if vLLM version includes the fix
-    VLLM_PDL_FIX_VERSION = "0.13.2"
+    VLLM_PDL_FIX_VERSION = "0.15.0"
     try:
         vllm_version = Version(importlib_version("vllm"))
-        if vllm_version > Version(VLLM_PDL_FIX_VERSION):
+        if vllm_version >= Version(VLLM_PDL_FIX_VERSION):
             logger.info(
                 f"Unsloth: SM100 ({sm100_gpu_name}) detected but vLLM {vllm_version} "
                 f"should include PDL fix - skipping workaround"
@@ -1066,6 +1066,12 @@ def fix_vllm_pdl_blackwell():
         return False
 
     patched = []
+    patched_names = set()
+
+    def _record_patch(name):
+        if name not in patched_names:
+            patched.append(name)
+            patched_names.add(name)
 
     # First, patch the source module (utils.py) where supports_pdl is defined.
     # This is critical because supports_pdl uses @lru_cache - we must clear the
@@ -1077,7 +1083,7 @@ def fix_vllm_pdl_blackwell():
             if hasattr(original_fn, "cache_clear"):
                 original_fn.cache_clear()
             utils_module.supports_pdl = fake_supports_pdl
-            patched.append("utils")
+            _record_patch("utils")
     except (ImportError, ModuleNotFoundError, AttributeError):
         pass
 
@@ -1094,9 +1100,18 @@ def fix_vllm_pdl_blackwell():
             module = importlib.import_module(path)
             if hasattr(module, "supports_pdl"):
                 module.supports_pdl = fake_supports_pdl
-                patched.append(name)
+                _record_patch(name)
         except (ImportError, ModuleNotFoundError, AttributeError):
             pass
+
+    # Patch any additional already-loaded triton ops consumers that expose supports_pdl.
+    for module_name, module in tuple(sys.modules.items()):
+        if not module_name.startswith("vllm.lora.ops.triton_ops."):
+            continue
+        if module is None or not hasattr(module, "supports_pdl"):
+            continue
+        module.supports_pdl = fake_supports_pdl
+        _record_patch(module_name.rsplit(".", 1)[-1])
 
     if patched:
         logger.info(
