@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from typing import Dict, Optional
+from typing import Dict, Optional, Any
 import logging
 import asyncio
 from datetime import datetime
@@ -482,6 +482,7 @@ async def stream_training_progress(
             learning_rate: float,
             total_steps: int,
             epoch: Optional[float] = None,
+            progress: Optional[Any] = None,
         ) -> TrainingProgress:
             total = max(total_steps, 0)
             if step < 0 or total == 0:
@@ -491,6 +492,12 @@ async def stream_training_progress(
                     float(step) / float(total) * 100.0 if total > 0 else 0.0
                 )
 
+            # Get actual values from progress object if available
+            elapsed_seconds = getattr(progress, 'elapsed_seconds', None) if progress else None
+            eta_seconds = getattr(progress, 'eta_seconds', None) if progress else None
+            grad_norm = getattr(progress, 'grad_norm', None) if progress else None
+            num_tokens = getattr(progress, 'num_tokens', None) if progress else None
+
             return TrainingProgress(
                 job_id=job_id,
                 step=step,
@@ -499,10 +506,10 @@ async def stream_training_progress(
                 learning_rate=learning_rate,
                 progress_percent=progress_percent,
                 epoch=epoch,
-                elapsed_seconds=None,
-                eta_seconds=None,
-                grad_norm=None,
-                num_tokens=None,
+                elapsed_seconds=elapsed_seconds,
+                eta_seconds=eta_seconds,
+                grad_norm=grad_norm,
+                num_tokens=num_tokens,
             )
 
         def format_sse(
@@ -536,7 +543,7 @@ async def stream_training_progress(
                     )
                     total_replay = getattr(tp_replay, "total_steps", step_val) if tp_replay else step_val
                     epoch_replay = getattr(tp_replay, "epoch", None) if tp_replay else None
-                    payload = build_progress(step_val, loss_val, lr_val, total_replay, epoch_replay)
+                    payload = build_progress(step_val, loss_val, lr_val, total_replay, epoch_replay, progress=tp_replay)
                     yield format_sse(payload.model_dump_json(), event="progress", event_id=step_val)
                     replayed += 1
             if replayed:
@@ -555,6 +562,7 @@ async def stream_training_progress(
                 learning_rate=0.0,
                 total_steps=initial_total_steps,
                 epoch=initial_epoch,
+                progress=tp,
             )
             yield format_sse(initial_progress.model_dump_json(), event="progress", event_id=0)
 
@@ -568,11 +576,11 @@ async def stream_training_progress(
                         getattr(tp, "total_steps", final_step) if tp else final_step
                     )
                     final_epoch = getattr(tp, "epoch", None) if tp else None
-                    payload = build_progress(final_step, final_loss, final_lr, final_total_steps, final_epoch)
+                    payload = build_progress(final_step, final_loss, final_lr, final_total_steps, final_epoch, progress=tp)
                     yield format_sse(payload.model_dump_json(), event="complete", event_id=final_step)
                 else:
                     yield format_sse(
-                        build_progress(-1, 0.0, 0.0, 0).model_dump_json(),
+                        build_progress(-1, 0.0, 0.0, 0, progress=tp).model_dump_json(),
                         event="complete",
                         event_id=0,
                     )
@@ -607,6 +615,7 @@ async def stream_training_progress(
                             current_lr,
                             current_total_steps,
                             current_epoch,
+                            progress=tp_inner,
                         )
                         yield format_sse(
                             progress_payload.model_dump_json(),
@@ -625,6 +634,7 @@ async def stream_training_progress(
                                 current_lr,
                                 current_total_steps,
                                 current_epoch,
+                                progress=tp_inner,
                             )
                             yield format_sse(
                                 heartbeat_payload.model_dump_json(),
@@ -646,7 +656,7 @@ async def stream_training_progress(
                             if tp_prep else 0
                         )
                         preparing_payload = build_progress(
-                            0, 0.0, 0.0, prep_total,
+                            0, 0.0, 0.0, prep_total, progress=tp_prep,
                         )
                         yield format_sse(
                             preparing_payload.model_dump_json(),
@@ -657,7 +667,8 @@ async def stream_training_progress(
                 # Timeout check
                 if no_update_count > max_no_updates:
                     logger.warning("Progress stream timeout - no updates received")
-                    timeout_payload = build_progress(last_step, 0.0, 0.0, 0)
+                    tp_timeout = getattr(getattr(backend, "trainer", None), "training_progress", None)
+                    timeout_payload = build_progress(last_step, 0.0, 0.0, 0, progress=tp_timeout)
                     yield format_sse(
                         timeout_payload.model_dump_json(),
                         event="error",
@@ -669,7 +680,8 @@ async def stream_training_progress(
 
             except Exception as e:
                 logger.error(f"Error in progress stream: {e}", exc_info=True)
-                error_payload = build_progress(0, 0.0, 0.0, 0)
+                tp_error = getattr(getattr(backend, "trainer", None), "training_progress", None)
+                error_payload = build_progress(0, 0.0, 0.0, 0, progress=tp_error)
                 yield format_sse(
                     error_payload.model_dump_json(),
                     event="error",
@@ -694,6 +706,7 @@ async def stream_training_progress(
             final_lr,
             final_total_steps,
             final_epoch,
+            progress=final_tp,
         )
         yield format_sse(
             final_payload.model_dump_json(),

@@ -16,6 +16,7 @@ import json
 import threading
 import math
 import logging
+import time
 from typing import Optional, Callable
 from dataclasses import dataclass
 import pandas as pd
@@ -46,6 +47,10 @@ class TrainingProgress:
     is_completed: bool = False
     error: Optional[str] = None
     status_message: str = "Ready to train"  # Current stage message
+    elapsed_seconds: Optional[float] = None
+    eta_seconds: Optional[float] = None
+    grad_norm: Optional[float] = None
+    num_tokens: Optional[int] = None
 
 class UnslothTrainer:
     """
@@ -66,6 +71,12 @@ class UnslothTrainer:
         # Model state tracking
         self.is_vlm = False
         self.model_name = None
+
+        # Training metrics tracking
+        self.training_start_time: Optional[float] = None
+        self.batch_size: Optional[int] = None
+        self.max_seq_length: Optional[int] = None
+        self.gradient_accumulation_steps: Optional[int] = None
 
         # Thread safety
         self._lock = threading.Lock()
@@ -467,6 +478,14 @@ class UnslothTrainer:
     def _train_worker(self, dataset: Dataset, **training_args):
         """Worker function for training (runs in separate thread)"""
         try:
+            # Store training parameters for metrics calculation
+            self.batch_size = training_args.get('batch_size', 2)
+            self.max_seq_length = training_args.get('max_seq_length', 2048)
+            self.gradient_accumulation_steps = training_args.get('gradient_accumulation_steps', 4)
+            
+            # Set training start time
+            self.training_start_time = time.time()
+            
             self._update_progress(is_training=True, error=None)
 
             # Setup logging
@@ -553,6 +572,7 @@ class UnslothTrainer:
                 "seed": training_args.get('random_seed', 3407),
                 "output_dir": output_dir,
                 "report_to": ["wandb"] if training_args.get('enable_wandb', False) else "none",
+                "include_num_input_tokens_seen": True,  # Enable token counting
             }
             
             # Add warmup parameter - use warmup_ratio if provided, otherwise warmup_steps
@@ -711,11 +731,39 @@ class UnslothTrainer:
                     if logs:
                         # Get loss from either 'loss' or 'train_loss' key
                         loss_value = logs.get('loss', logs.get('train_loss', 0.0))
+                        current_step = state.global_step
+                        
+                        # Extract grad_norm from logs (available when gradient clipping is enabled)
+                        grad_norm = logs.get('grad_norm', None)
+                        
+                        # Calculate elapsed_seconds
+                        elapsed_seconds = None
+                        if self.trainer_instance.training_start_time is not None:
+                            elapsed_seconds = time.time() - self.trainer_instance.training_start_time
+                        
+                        # Calculate eta_seconds
+                        eta_seconds = None
+                        if elapsed_seconds is not None and current_step > 0:
+                            total_steps = self.trainer_instance.training_progress.total_steps
+                            if total_steps > 0:
+                                steps_remaining = total_steps - current_step
+                                if steps_remaining > 0:
+                                    time_per_step = elapsed_seconds / current_step
+                                    eta_seconds = time_per_step * steps_remaining
+                        
+                        # Extract num_tokens from TRL SFTTrainer state (real counter)
+                        # Requires include_num_input_tokens_seen=True in SFTConfig
+                        num_tokens = getattr(state, "num_input_tokens_seen", None)
+                        
                         self.trainer_instance._update_progress(
-                            step=state.global_step,
+                            step=current_step,
                             epoch=round(state.epoch, 2) if state.epoch else 0,  # Round epoch to 2 decimals
                             loss=loss_value,
                             learning_rate=logs.get('learning_rate', 0.0),
+                            elapsed_seconds=elapsed_seconds,
+                            eta_seconds=eta_seconds,
+                            grad_norm=grad_norm,
+                            num_tokens=num_tokens,
                             status_message=""  # Clear status message so metrics show
                         )
 
