@@ -567,6 +567,7 @@ class UnslothTrainer:
                 "seed": training_args.get('random_seed', 3407),
                 "output_dir": output_dir,
                 "report_to": ["wandb"] if training_args.get('enable_wandb', False) else "none",
+                "include_num_input_tokens_seen": True,  # Enable token counting
             }
             
             # Add warmup parameter - use warmup_ratio if provided, otherwise warmup_steps
@@ -739,20 +740,9 @@ class UnslothTrainer:
                                     time_per_step = elapsed_seconds / current_step
                                     eta_seconds = time_per_step * steps_remaining
                         
-                        # Calculate num_tokens
-                        num_tokens = None
-                        if (self.trainer_instance.batch_size is not None and 
-                            self.trainer_instance.max_seq_length is not None and
-                            self.trainer_instance.gradient_accumulation_steps is not None):
-                            # Approximate: batch_size * gradient_accumulation_steps * max_seq_length * steps
-                            # Note: This is an approximation as actual sequences may be shorter
-                            # Gradient accumulation means each step processes batch_size * gradient_accumulation_steps samples
-                            num_tokens = (
-                                self.trainer_instance.batch_size * 
-                                self.trainer_instance.gradient_accumulation_steps *
-                                self.trainer_instance.max_seq_length * 
-                                current_step
-                            )
+                        # Extract num_tokens from TRL SFTTrainer state (real counter)
+                        # Requires include_num_input_tokens_seen=True in SFTConfig
+                        num_tokens = getattr(state, "num_input_tokens_seen", None)
                         
                         self.trainer_instance._update_progress(
                             step=current_step,
