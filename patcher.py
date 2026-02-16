@@ -823,9 +823,9 @@ class MacPatcher:
         results.append(self.patch_torch_cuda())
         results.append(self.patch_triton())
         results.append(self.patch_bitsandbytes())
-        results.append(self.patch_patching_utils())
         
         # These can be applied after import
+        results.append(self.patch_patching_utils())
         results.append(self.patch_fused_losses())
         results.append(self.patch_peft())
         results.append(self.patch_compilers())
