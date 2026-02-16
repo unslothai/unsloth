@@ -56,6 +56,22 @@ if not logger.handlers:
     logger.setLevel(logging.INFO)
 
 
+@router.get("/hardware")
+async def get_hardware_utilization(
+    current_subject: str = Depends(get_current_subject),
+):
+    """
+    Get a live snapshot of GPU hardware utilization.
+
+    Designed to be polled by the frontend during training.
+    Returns GPU utilization %, temperature, VRAM usage, and power draw
+    via nvidia-smi for maximum accuracy.
+    """
+    from utils.hardware import get_gpu_utilization
+
+    return get_gpu_utilization()
+
+
 @router.post("/start")
 async def start_training(
     request: TrainingStartRequest,
