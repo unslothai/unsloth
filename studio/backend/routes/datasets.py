@@ -106,6 +106,8 @@ async def check_format(request: CheckFormatRequest):
         else:
             # HuggingFace dataset
             load_kwargs = {"path": request.dataset_name, "split": request.split}
+            if request.subset:
+                load_kwargs["name"] = request.subset
             if request.hf_token:
                 load_kwargs["token"] = request.hf_token
             dataset = load_dataset(**load_kwargs)
