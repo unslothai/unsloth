@@ -12,10 +12,11 @@ Uses mx.fast.* operations which are highly optimized by Apple:
 
 from __future__ import annotations
 
+import torch
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
-    import torch
+    pass
 
 import mlx.core as mx
 _MLX_FAST_AVAILABLE: Optional[bool] = None
