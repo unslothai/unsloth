@@ -291,8 +291,8 @@ async def list_checkpoints(
             ModelCheckpoints(
                 name=model_name,
                 checkpoints=[
-                    CheckpointInfo(display_name=display_name, path=path)
-                    for display_name, path in checkpoints
+                    CheckpointInfo(display_name=display_name, path=path, loss=loss)
+                    for display_name, path, loss in checkpoints
                 ],
             )
             for model_name, checkpoints in raw_models

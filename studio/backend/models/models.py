@@ -10,6 +10,7 @@ class CheckpointInfo(BaseModel):
 
     display_name: str = Field(..., description="User-friendly checkpoint name (folder name)")
     path: str = Field(..., description="Full path to the checkpoint directory")
+    loss: Optional[float] = Field(None, description="Training loss at this checkpoint")
 
 
 class ModelCheckpoints(BaseModel):
