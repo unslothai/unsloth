@@ -812,7 +812,11 @@ class MacPatcher:
             # Mock unsloth_zoo.utils
             if "unsloth_zoo.utils" not in sys.modules:
                 utils_mod = ModuleType("unsloth_zoo.utils")
+            else:
+                utils_mod = sys.modules["unsloth_zoo.utils"]
                 
+            has_get_quant_type = hasattr(utils_mod, 'get_quant_type') and callable(utils_mod.get_quant_type)
+            if not has_get_quant_type:
                 class Version:
                     def __init__(self, v):
                         self.v = v
@@ -831,10 +835,12 @@ class MacPatcher:
                 utils_mod.Version = Version
                 utils_mod._get_dtype = _get_dtype
                 utils_mod.get_quant_type = get_quant_type
-                sys.modules["unsloth_zoo.utils"] = utils_mod
+                
+                if "unsloth_zoo.utils" not in sys.modules:
+                    sys.modules["unsloth_zoo.utils"] = utils_mod
                 patched.append("utils")
             
-            # Mock unsloth_zoo.log
+            # Mock unsloth_zoo.log - always ensure logger exists
             if "unsloth_zoo.log" not in sys.modules:
                 import logging
                 log_mod = ModuleType("unsloth_zoo.log")
@@ -847,33 +853,59 @@ class MacPatcher:
                 log_mod.logger = logger
                 sys.modules["unsloth_zoo.log"] = log_mod
                 patched.append("log")
+            else:
+                # Ensure logger exists on existing module
+                log_mod = sys.modules["unsloth_zoo.log"]
+                if not hasattr(log_mod, 'logger'):
+                    import logging
+                    log_mod.logger = logging.getLogger("unsloth_zoo")
             
-            # Mock unsloth_zoo.hf_utils
+            # Mock unsloth_zoo.hf_utils - always ensure functions exist
             if "unsloth_zoo.hf_utils" not in sys.modules:
                 hf_mod = ModuleType("unsloth_zoo.hf_utils")
-                hf_mod.HAS_TORCH_DTYPE = True
-                hf_mod.dtype_from_config = lambda cfg, key: cfg.get(key, "float32")
                 sys.modules["unsloth_zoo.hf_utils"] = hf_mod
+            else:
+                hf_mod = sys.modules["unsloth_zoo.hf_utils"]
+            hf_mod.HAS_TORCH_DTYPE = True
+            hf_mod.dtype_from_config = lambda cfg, key: cfg.get(key, "float32")
+            if "unsloth_zoo.hf_utils" not in sys.modules:
+                sys.modules["unsloth_zoo.hf_utils"] = hf_mod
+            if "hf_utils" not in patched:
                 patched.append("hf_utils")
             
             # Mock unsloth_zoo.peft_utils
             if "unsloth_zoo.peft_utils" not in sys.modules:
                 peft_mod = ModuleType("unsloth_zoo.peft_utils")
-                peft_mod.SKIP_QUANTIZATION_MODULES = []
                 sys.modules["unsloth_zoo.peft_utils"] = peft_mod
+            else:
+                peft_mod = sys.modules["unsloth_zoo.peft_utils"]
+            peft_mod.SKIP_QUANTIZATION_MODULES = []
+            if "unsloth_zoo.peft_utils" not in sys.modules:
+                sys.modules["unsloth_zoo.peft_utils"] = peft_mod
+            if "peft_utils" not in patched:
                 patched.append("peft_utils")
             
             # Mock unsloth_zoo.tokenizer_utils
             if "unsloth_zoo.tokenizer_utils" not in sys.modules:
                 tok_mod = ModuleType("unsloth_zoo.tokenizer_utils")
                 sys.modules["unsloth_zoo.tokenizer_utils"] = tok_mod
+            else:
+                tok_mod = sys.modules["unsloth_zoo.tokenizer_utils"]
+            if "unsloth_zoo.tokenizer_utils" not in sys.modules:
+                sys.modules["unsloth_zoo.tokenizer_utils"] = tok_mod
+            if "tokenizer_utils" not in patched:
                 patched.append("tokenizer_utils")
             
             # Mock unsloth_zoo.training_utils
             if "unsloth_zoo.training_utils" not in sys.modules:
                 train_mod = ModuleType("unsloth_zoo.training_utils")
-                train_mod.prepare_model_for_training = lambda model: model
                 sys.modules["unsloth_zoo.training_utils"] = train_mod
+            else:
+                train_mod = sys.modules["unsloth_zoo.training_utils"]
+            train_mod.prepare_model_for_training = lambda model: model
+            if "unsloth_zoo.training_utils" not in sys.modules:
+                sys.modules["unsloth_zoo.training_utils"] = train_mod
+            if "training_utils" not in patched:
                 patched.append("training_utils")
             
             # Mock unsloth_zoo.device_type
@@ -882,6 +914,10 @@ class MacPatcher:
                 device_mod.DEVICE_TYPE = "mps"
                 sys.modules["unsloth_zoo.device_type"] = device_mod
                 patched.append("device_type")
+            else:
+                device_mod = sys.modules["unsloth_zoo.device_type"]
+                if not hasattr(device_mod, 'DEVICE_TYPE'):
+                    device_mod.DEVICE_TYPE = "mps"
             
             # Mock other commonly used modules
             for mod_name in ["gradient_checkpointing", "loss_utils", "vision_utils", 
