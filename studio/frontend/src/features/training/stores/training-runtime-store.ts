@@ -12,6 +12,7 @@ const initialState: TrainingRuntimeState = {
   jobId: null,
   phase: "idle",
   isTrainingRunning: false,
+  evalEnabled: false,
   message: "Ready to train",
   error: null,
   isHydrating: false,
@@ -34,6 +35,7 @@ const initialState: TrainingRuntimeState = {
   lossHistory: [],
   lrHistory: [],
   gradNormHistory: [],
+  evalLossHistory: [],
   resetGeneration: 0,
 };
 
@@ -72,17 +74,22 @@ function upsertPoint(
 function applyMetricHistoryFromStatus(payload: TrainingStatusResponse): {
   lossHistory: TrainingSeriesPoint[] | null;
   lrHistory: TrainingSeriesPoint[] | null;
+  evalLossHistory: TrainingSeriesPoint[] | null;
 } {
   const history = payload.metric_history;
   if (!history || !history.steps?.length) {
-    return { lossHistory: null, lrHistory: null };
+    return { lossHistory: null, lrHistory: null, evalLossHistory: null };
   }
 
   const steps = history.steps;
   const lossHistory = history.loss ? toSeries(steps, history.loss) : null;
   const lrHistory = history.lr ? toSeries(steps, history.lr) : null;
+  const evalLossHistory =
+    history.eval_loss && history.eval_steps
+      ? toSeries(history.eval_steps, history.eval_loss)
+      : null;
 
-  return { lossHistory, lrHistory };
+  return { lossHistory, lrHistory, evalLossHistory };
 }
 
 export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => ({
@@ -101,6 +108,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
       lossHistory: [],
       lrHistory: [],
       gradNormHistory: [],
+      evalLossHistory: [],
       resetGeneration: state.resetGeneration + 1,
     })),
 
@@ -137,6 +145,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
         jobId: payload.job_id || state.jobId,
         phase: payload.phase,
         isTrainingRunning: payload.is_training_running,
+        evalEnabled: payload.eval_enabled ?? state.evalEnabled,
         message: payload.message,
         error: payload.error,
         startError: null,
@@ -154,6 +163,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
           typeof detailEpoch === "number" ? detailEpoch : state.currentEpoch,
         lossHistory: metricHistory.lossHistory ?? state.lossHistory,
         lrHistory: metricHistory.lrHistory ?? state.lrHistory,
+        evalLossHistory: metricHistory.evalLossHistory ?? state.evalLossHistory,
       };
     }),
 
@@ -216,6 +226,10 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
           step > 0 && typeof payload.grad_norm === "number"
             ? upsertPoint(state.gradNormHistory, step, payload.grad_norm)
             : state.gradNormHistory,
+        evalLossHistory:
+          step > 0 && typeof payload.eval_loss === "number"
+            ? upsertPoint(state.evalLossHistory, step, payload.eval_loss)
+            : state.evalLossHistory,
       };
     }),
 }));

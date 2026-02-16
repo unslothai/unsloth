@@ -146,7 +146,9 @@ async def start_training(
             "local_datasets": request.local_datasets,
             "format_type": request.format_type,
             "subset": request.subset,
-            "split": request.split,
+            "train_split": request.train_split,
+            "eval_split": request.eval_split,
+            "eval_steps": request.eval_steps,
             "custom_format_mapping": request.custom_format_mapping,
             "num_epochs": request.num_epochs,
             "learning_rate": request.learning_rate,
@@ -406,12 +408,15 @@ async def get_training_status(
                 "steps": list(backend.step_history),
                 "loss": list(backend.loss_history),
                 "lr": list(backend.lr_history),
+                "eval_loss": list(backend.eval_loss_history),
+                "eval_steps": list(backend.eval_step_history),
             }
 
         return TrainingStatus(
             job_id=job_id,
             phase=phase,
             is_training_running=is_active,
+            eval_enabled=backend.eval_enabled,
             message=status_message,
             error=error_message,
             details=details,
@@ -514,6 +519,7 @@ async def stream_training_progress(
             eta_seconds = getattr(progress, 'eta_seconds', None) if progress else None
             grad_norm = getattr(progress, 'grad_norm', None) if progress else None
             num_tokens = getattr(progress, 'num_tokens', None) if progress else None
+            eval_loss = getattr(progress, 'eval_loss', None) if progress else None
 
             return TrainingProgress(
                 job_id=job_id,
@@ -527,6 +533,7 @@ async def stream_training_progress(
                 eta_seconds=eta_seconds,
                 grad_norm=grad_norm,
                 num_tokens=num_tokens,
+                eval_loss=eval_loss,
             )
 
         def format_sse(
