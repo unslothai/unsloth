@@ -19,6 +19,7 @@ import importlib.util
 import inspect
 from pathlib import Path
 
+import pytest
 import torch
 
 
@@ -77,6 +78,36 @@ def test_trunc_normal_patch_accepts_positional_generator():
 
         init_mod.trunc_normal_(tensor, 0.0, 1.0, -2.0, 2.0, gen)
         init_mod.trunc_normal_(tensor, mean = 0.0, std = 1.0, a = -2.0, b = 2.0, generator = gen)
+    finally:
+        init_mod.trunc_normal_ = old_fn
+        _restore_attr(init_mod, "_unsloth_trunc_normal_patched", old_patched)
+        _restore_attr(init_mod, "_unsloth_trunc_normal_original", old_original)
+
+
+def test_trunc_normal_patch_rejects_invalid_generator():
+    import_fixes = _load_import_fixes_module()
+    patch_fn = import_fixes.patch_trunc_normal_precision_issue
+
+    init_mod = torch.nn.init
+    old_fn = init_mod.trunc_normal_
+    old_patched = _getattr_or_missing(init_mod, "_unsloth_trunc_normal_patched")
+    old_original = _getattr_or_missing(init_mod, "_unsloth_trunc_normal_original")
+    try:
+        if old_original is not _MISSING:
+            init_mod.trunc_normal_ = old_original
+        if hasattr(init_mod, "_unsloth_trunc_normal_patched"):
+            delattr(init_mod, "_unsloth_trunc_normal_patched")
+        if hasattr(init_mod, "_unsloth_trunc_normal_original"):
+            delattr(init_mod, "_unsloth_trunc_normal_original")
+
+        patch_fn()
+        sig = inspect.signature(init_mod.trunc_normal_)
+        if "generator" not in sig.parameters:
+            pytest.skip("torch.nn.init.trunc_normal_ lacks a generator parameter")
+
+        tensor = torch.empty(16, dtype = torch.float32)
+        with pytest.raises(TypeError):
+            init_mod.trunc_normal_(tensor, generator = 123)
     finally:
         init_mod.trunc_normal_ = old_fn
         _restore_attr(init_mod, "_unsloth_trunc_normal_patched", old_patched)

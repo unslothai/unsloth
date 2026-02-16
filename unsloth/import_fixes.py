@@ -948,8 +948,9 @@ def patch_trunc_normal_precision_issue():
                 target, mean = mean, std = std, a = a, b = b, generator = generator
             )
         except TypeError as exc:
-            # Older torch versions may not accept generator.
-            if "generator" in str(exc):
+            # Older torch versions may not accept a generator keyword argument.
+            msg = str(exc).lower()
+            if "unexpected keyword argument" in msg and "generator" in msg:
                 return original_trunc_normal(target, mean = mean, std = std, a = a, b = b)
             raise
 
