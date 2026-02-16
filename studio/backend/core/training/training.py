@@ -104,7 +104,8 @@ class TrainingBackend:
                        subset: str = None,
                        train_split: str = "train",
                        eval_split: str = None,
-                       eval_steps: float = 0.01) -> bool:
+                       eval_steps: float = 0.01,
+                       is_dataset_multimodal: bool = False) -> bool:
         """
         Start training.
 
@@ -161,7 +162,8 @@ class TrainingBackend:
                 model_name=model_name,
                 max_seq_length=max_seq_length,
                 load_in_4bit=load_in_4bit if use_lora_actual else False,  # Only 4bit for LoRA
-                hf_token=hf_token if hf_token.strip() else None
+                hf_token=hf_token if hf_token.strip() else None,
+                is_dataset_multimodal=is_dataset_multimodal,
             )
 
             if not success or self.trainer.should_stop:
