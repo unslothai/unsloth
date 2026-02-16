@@ -7,6 +7,10 @@ import type { TrainingConfigState, TrainingConfigStore } from "../types/config";
 const MIN_STEP: StepNumber = 1;
 const MAX_STEP: StepNumber = STEPS.length as StepNumber;
 
+function emptyManualMapping(): TrainingConfigState["datasetManualMapping"] {
+  return { input: null, output: null };
+}
+
 const initialState: TrainingConfigState = {
   currentStep: MIN_STEP,
   modelType: null,
@@ -18,6 +22,7 @@ const initialState: TrainingConfigState = {
   dataset: null,
   datasetSubset: null,
   datasetSplit: null,
+  datasetManualMapping: emptyManualMapping(),
   uploadedFile: null,
   ...DEFAULT_HYPERPARAMS,
 };
@@ -58,10 +63,22 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
       setDatasetSource: (datasetSource) => set({ datasetSource }),
       setDatasetFormat: (datasetFormat) => set({ datasetFormat }),
       setDataset: (dataset) =>
-        set({ dataset, datasetSubset: null, datasetSplit: null }),
+        set({
+          dataset,
+          datasetSubset: null,
+          datasetSplit: null,
+          datasetManualMapping: emptyManualMapping(),
+        }),
       setDatasetSubset: (datasetSubset) =>
-        set({ datasetSubset, datasetSplit: null }),
-      setDatasetSplit: (datasetSplit) => set({ datasetSplit }),
+        set({
+          datasetSubset,
+          datasetSplit: null,
+          datasetManualMapping: emptyManualMapping(),
+        }),
+      setDatasetSplit: (datasetSplit) =>
+        set({ datasetSplit, datasetManualMapping: emptyManualMapping() }),
+      setDatasetManualMapping: (datasetManualMapping) =>
+        set({ datasetManualMapping }),
       setUploadedFile: (uploadedFile) => set({ uploadedFile }),
       setEpochs: (epochs) => set({ epochs }),
       setContextLength: (contextLength) => set({ contextLength }),
