@@ -68,6 +68,12 @@ export function DatasetPreviewDialog({
   const rightLabel = isVlm ? "Text" : "Output";
 
   useEffect(() => {
+    if (!manualMapping.input || !manualMapping.output) return;
+    if (manualMapping.input !== manualMapping.output) return;
+    setManualMapping({ input: manualMapping.input, output: null });
+  }, [manualMapping.input, manualMapping.output, setManualMapping]);
+
+  useEffect(() => {
     if (!open || !datasetName) {
       setData(null);
       setError(null);
@@ -153,30 +159,38 @@ export function DatasetPreviewDialog({
           </span>
           {mappingEnabled && (
             <div className="flex items-center gap-3">
-              {(manualMapping.input == null || manualMapping.input === colName) && (
-                <HeaderPick
-                  label={leftLabel}
-                  checked={manualMapping.input === colName}
-                  onCheckedChange={(checked) => {
-                    setManualMapping({
-                      input: checked ? colName : null,
-                      output: manualMapping.output,
-                    });
-                  }}
-                />
-              )}
-              {(manualMapping.output == null || manualMapping.output === colName) && (
-                <HeaderPick
-                  label={rightLabel}
-                  checked={manualMapping.output === colName}
-                  onCheckedChange={(checked) => {
-                    setManualMapping({
-                      input: manualMapping.input,
-                      output: checked ? colName : null,
-                    });
-                  }}
-                />
-              )}
+              {(manualMapping.output == null || manualMapping.output !== colName) &&
+                (manualMapping.input == null || manualMapping.input === colName) && (
+                  <HeaderPick
+                    label={leftLabel}
+                    checked={manualMapping.input === colName}
+                    onCheckedChange={(checked) => {
+                      setManualMapping({
+                        input: checked ? colName : null,
+                        output:
+                          checked && manualMapping.output === colName
+                            ? null
+                            : manualMapping.output,
+                      });
+                    }}
+                  />
+                )}
+              {(manualMapping.input == null || manualMapping.input !== colName) &&
+                (manualMapping.output == null || manualMapping.output === colName) && (
+                  <HeaderPick
+                    label={rightLabel}
+                    checked={manualMapping.output === colName}
+                    onCheckedChange={(checked) => {
+                      setManualMapping({
+                        input:
+                          checked && manualMapping.input === colName
+                            ? null
+                            : manualMapping.input,
+                        output: checked ? colName : null,
+                      });
+                    }}
+                  />
+                )}
             </div>
           )}
         </div>

@@ -1,7 +1,7 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { AlertCircleIcon } from "@hugeicons/core-free-icons";
+import { AlertCircleIcon, CheckmarkCircle02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { CheckFormatResponse } from "@/features/training/types/datasets";
 
@@ -40,21 +40,46 @@ export function DatasetMappingCard({
   input: string | null;
   output: string | null;
 }) {
+  const tone = mappingOk ? "ok" : "warn";
   return (
-    <div className="rounded-xl corner-squircle ring-1 ring-amber-200/70 bg-amber-50/70 px-5 py-4 mb-4 text-amber-950 dark:ring-amber-900/50 dark:bg-amber-950/30 dark:text-amber-50">
+    <div
+      className={
+        tone === "ok"
+          ? "rounded-xl corner-squircle ring-1 ring-emerald-200/70 bg-emerald-50/70 px-5 py-4 mb-4 text-emerald-950 dark:ring-emerald-900/50 dark:bg-emerald-950/30 dark:text-emerald-50"
+          : "rounded-xl corner-squircle ring-1 ring-amber-200/70 bg-amber-50/70 px-5 py-4 mb-4 text-amber-950 dark:ring-amber-900/50 dark:bg-amber-950/30 dark:text-amber-50"
+      }
+    >
       <div className="flex items-start gap-3">
-        <div className="rounded-xl corner-squircle bg-amber-500/15 p-2 shrink-0">
+        <div
+          className={
+            tone === "ok"
+              ? "rounded-xl corner-squircle bg-emerald-500/15 p-2 shrink-0"
+              : "rounded-xl corner-squircle bg-amber-500/15 p-2 shrink-0"
+          }
+        >
           <HugeiconsIcon
-            icon={AlertCircleIcon}
-            className="size-4 text-amber-700 dark:text-amber-300"
+            icon={mappingOk ? CheckmarkCircle02Icon : AlertCircleIcon}
+            className={
+              tone === "ok"
+                ? "size-4 text-emerald-700 dark:text-emerald-300"
+                : "size-4 text-amber-700 dark:text-amber-300"
+            }
           />
         </div>
         <div className="min-w-0">
-          <p className="text-sm font-semibold tracking-tight">Map dataset columns</p>
-          <p className="text-xs text-amber-800/80 dark:text-amber-200/80 mt-0.5">
-            We couldn&apos;t auto-detect the format. Pick the{" "}
-            {leftLabel.toLowerCase()} column and the {rightLabel.toLowerCase()}{" "}
-            column. We&apos;ll convert it to a supported format automatically.
+          <p className="text-sm font-semibold tracking-tight">
+            {mappingOk ? "Mapping ready" : "Map dataset columns"}
+          </p>
+          <p
+            className={
+              tone === "ok"
+                ? "text-xs text-emerald-800/80 dark:text-emerald-200/80 mt-0.5"
+                : "text-xs text-amber-800/80 dark:text-amber-200/80 mt-0.5"
+            }
+          >
+            {mappingOk
+              ? "Looks good. We'll convert this dataset automatically."
+              : `We couldn't auto-detect the format. Pick the ${leftLabel.toLowerCase()} column and the ${rightLabel.toLowerCase()} column. We'll convert it to a supported format automatically.`}
           </p>
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <Badge
@@ -143,10 +168,12 @@ export function deriveDefaultMapping(
       data.detected_image_column ?? pickRole(data.suggested_mapping, "image");
     const output =
       data.detected_text_column ?? pickRole(data.suggested_mapping, "text");
+    if (input && output && input === output) return { input, output: null };
     return { input: input ?? null, output: output ?? null };
   }
   const input = pickRole(data.suggested_mapping, "user");
   const output = pickRole(data.suggested_mapping, "assistant");
+  if (input && output && input === output) return { input, output: null };
   return { input: input ?? null, output: output ?? null };
 }
 
