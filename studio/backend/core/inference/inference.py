@@ -515,6 +515,7 @@ class InferenceBackend:
                           temperature: float = 0.7,
                           top_p: float = 0.9,
                           top_k: int = 40,
+                          min_p: float = 0.0,
                           max_new_tokens: int = 256,
                           repetition_penalty: float = 1.1,
                           cancel_event=None) -> Generator[str, None, None]:
@@ -531,6 +532,7 @@ class InferenceBackend:
                 temperature=temperature,
                 top_p=top_p,
                 top_k=top_k,
+                min_p=min_p,
                 max_new_tokens=max_new_tokens,
                 repetition_penalty=repetition_penalty,
                 cancel_event=cancel_event,
@@ -543,6 +545,7 @@ class InferenceBackend:
                           temperature: float = 0.7,
                           top_p: float = 0.9,
                           top_k: int = 40,
+                          min_p: float = 0.0,
                           max_new_tokens: int = 256,
                           repetition_penalty: float = 1.1,
                           cancel_event=None) -> Generator[str, None, None]:
@@ -562,7 +565,7 @@ class InferenceBackend:
             # Vision model generation
             yield from self._generate_vision_response(
                 messages, system_prompt, image,
-                temperature, top_p, top_k, max_new_tokens, repetition_penalty,
+                temperature, top_p, top_k, min_p, max_new_tokens, repetition_penalty,
                 cancel_event=cancel_event,
             )
         else:
@@ -605,12 +608,12 @@ class InferenceBackend:
 
             # Step 3: Generate
             yield from self.generate_stream(
-                formatted_prompt, temperature, top_p, top_k, max_new_tokens, repetition_penalty,
+                formatted_prompt, temperature, top_p, top_k, min_p, max_new_tokens, repetition_penalty,
                 cancel_event=cancel_event,
             )
 
     def _generate_vision_response(self, messages, system_prompt, image,
-                                  temperature, top_p, top_k, max_new_tokens,
+                                  temperature, top_p, top_k, min_p, max_new_tokens,
                                   repetition_penalty, cancel_event=None) -> Generator[str, None, None]:
         """Handle vision model generation with true token-by-token streaming."""
         model_info = self.models[self.active_model_name]
@@ -671,6 +674,7 @@ class InferenceBackend:
                 temperature=temperature,
                 top_p=top_p,
                 top_k=top_k,
+                min_p=min_p,
             )
 
             err: dict[str, str] = {}
@@ -728,6 +732,7 @@ class InferenceBackend:
                        temperature: float = 0.7,
                        top_p: float = 0.9,
                        top_k: int = 40,
+                       min_p: float = 0.0,
                        max_new_tokens: int = 256,
                        repetition_penalty: float = 1.1,
                        cancel_event=None) -> Generator[str, None, None]:
@@ -760,6 +765,7 @@ class InferenceBackend:
                 temperature=temperature,
                 top_p=top_p,
                 top_k=top_k,
+                min_p=min_p,
                 repetition_penalty=repetition_penalty,
                 do_sample=True,
                 eos_token_id=tokenizer.eos_token_id,
