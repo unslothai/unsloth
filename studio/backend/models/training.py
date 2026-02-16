@@ -18,6 +18,8 @@ class TrainingStartRequest(BaseModel):
     hf_dataset: Optional[str] = Field(None, description="HuggingFace dataset identifier")
     local_datasets: List[str] = Field(default_factory=list, description="List of local dataset paths")
     format_type: str = Field(..., description="Dataset format type")
+    subset: Optional[str] = None
+    split: Optional[str] = "train"
     custom_format_mapping: Optional[Dict[str, str]] = Field(
         None,
         description="User-provided column-to-role mapping, e.g. {'image': 'image', 'caption': 'text'} for VLM or {'instruction': 'user', 'output': 'assistant'} for LLM"
