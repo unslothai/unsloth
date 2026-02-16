@@ -45,7 +45,9 @@ def test_fix_vllm_guided_decoding_params_skips_broken_binary_import(
             logged_messages.append(("warning", message))
 
     fix_vllm_guided_decoding_params.__globals__["logger"] = Logger()
-    fix_vllm_guided_decoding_params.__globals__["importlib_version"] = lambda _: "0.13.1"
+    fix_vllm_guided_decoding_params.__globals__["importlib_version"] = (
+        lambda _: "0.13.1"
+    )
 
     original_find_spec = importlib.util.find_spec
 
@@ -75,7 +77,9 @@ def test_fix_vllm_guided_decoding_params_skips_broken_binary_import(
     # Should not raise: broken vLLM extension import must be downgraded to warning.
     fix_vllm_guided_decoding_params()
 
-    warning_messages = [message for level, message in logged_messages if level == "warning"]
+    warning_messages = [
+        message for level, message in logged_messages if level == "warning"
+    ]
     assert any("broken native extension" in message for message in warning_messages)
 
 
@@ -89,7 +93,9 @@ def test_fix_vllm_guided_decoding_params_keeps_transformers_mismatch_raise(
             del message
 
     fix_vllm_guided_decoding_params.__globals__["logger"] = Logger()
-    fix_vllm_guided_decoding_params.__globals__["importlib_version"] = lambda _: "0.13.1"
+    fix_vllm_guided_decoding_params.__globals__["importlib_version"] = (
+        lambda _: "0.13.1"
+    )
 
     original_find_spec = importlib.util.find_spec
 
@@ -152,7 +158,7 @@ def test_fix_vllm_pdl_blackwell_handles_broken_vllm_spec_checks(monkeypatch):
         return original_find_spec(name, *args, **kwargs)
 
     monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
-    monkeypatch.delenv("TRITON_DISABLE_PDL", raising=False)
+    monkeypatch.delenv("TRITON_DISABLE_PDL", raising = False)
 
     # Should not raise when vLLM submodule spec checks fail due broken extension.
     fix_vllm_pdl_blackwell()
