@@ -35,6 +35,12 @@ export interface LoadModelResponse {
   display_name: string;
   is_vision: boolean;
   is_lora: boolean;
+  inference?: {
+    temperature?: number;
+    top_p?: number;
+    top_k?: number;
+    min_p?: number;
+  };
 }
 
 export interface UnloadModelRequest {

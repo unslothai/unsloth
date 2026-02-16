@@ -8,7 +8,12 @@ import {
   unloadModel,
 } from "../api/chat-api";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
-import type { ChatLoraSummary, ChatModelSummary } from "../types/runtime";
+import type { LoadModelResponse } from "../types/api";
+import type {
+  ChatLoraSummary,
+  ChatModelSummary,
+  InferenceParams,
+} from "../types/runtime";
 
 const DEFAULT_MODEL_MAX_SEQ_LENGTH = 2048;
 
@@ -76,12 +81,37 @@ function toLoraSummary(lora: {
   };
 }
 
+function toFiniteNumber(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return undefined;
+  }
+  return value;
+}
+
+function mergeRecommendedInference(
+  current: InferenceParams,
+  response: LoadModelResponse,
+  modelId: string,
+): InferenceParams {
+  const inference = response.inference;
+  return {
+    ...current,
+    checkpoint: modelId,
+    temperature:
+      toFiniteNumber(inference?.temperature) ?? current.temperature,
+    topP: toFiniteNumber(inference?.top_p) ?? current.topP,
+    topK: toFiniteNumber(inference?.top_k) ?? current.topK,
+    minP: toFiniteNumber(inference?.min_p) ?? current.minP,
+  };
+}
+
 export function useChatModelRuntime() {
   const params = useChatRuntimeStore((state) => state.params);
   const models = useChatRuntimeStore((state) => state.models);
   const loras = useChatRuntimeStore((state) => state.loras);
   const setModels = useChatRuntimeStore((state) => state.setModels);
   const setLoras = useChatRuntimeStore((state) => state.setLoras);
+  const setParams = useChatRuntimeStore((state) => state.setParams);
   const setModelsError = useChatRuntimeStore((state) => state.setModelsError);
   const setCheckpoint = useChatRuntimeStore((state) => state.setCheckpoint);
   const clearCheckpoint = useChatRuntimeStore((state) => state.clearCheckpoint);
@@ -133,7 +163,7 @@ export function useChatModelRuntime() {
             await unloadModel({ model_path: params.checkpoint });
           }
 
-          await loadModel({
+          const loadResponse = await loadModel({
             model_path: modelId,
             hf_token: null,
             max_seq_length: DEFAULT_MODEL_MAX_SEQ_LENGTH,
@@ -141,7 +171,8 @@ export function useChatModelRuntime() {
             is_lora: isLora,
           });
 
-          setCheckpoint(modelId);
+          const currentParams = useChatRuntimeStore.getState().params;
+          setParams(mergeRecommendedInference(currentParams, loadResponse, modelId));
           await refresh();
         }
 
@@ -163,7 +194,7 @@ export function useChatModelRuntime() {
         setModelsError(message);
       }
     },
-    [loras, models, params.checkpoint, refresh, setCheckpoint, setModelsError],
+    [loras, models, params.checkpoint, refresh, setModelsError, setParams],
   );
 
   const ejectModel = useCallback(async () => {
