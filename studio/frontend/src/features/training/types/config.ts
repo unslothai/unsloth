@@ -9,6 +9,11 @@ import type {
 
 export type LoraVariant = "lora" | "rslora" | "loftq";
 
+export type DatasetManualMapping = {
+  input: string | null;
+  output: string | null;
+};
+
 export interface TrainingConfigState {
   currentStep: StepNumber;
   modelType: ModelType | null;
@@ -20,6 +25,7 @@ export interface TrainingConfigState {
   dataset: string | null;
   datasetSubset: string | null;
   datasetSplit: string | null;
+  datasetManualMapping: DatasetManualMapping;
   uploadedFile: string | null;
   epochs: number;
   contextLength: number;
@@ -64,6 +70,7 @@ export interface TrainingConfigActions {
   setDataset: (dataset: string | null) => void;
   setDatasetSubset: (subset: string | null) => void;
   setDatasetSplit: (split: string | null) => void;
+  setDatasetManualMapping: (mapping: DatasetManualMapping) => void;
   setUploadedFile: (file: string | null) => void;
   setEpochs: (epochs: number) => void;
   setContextLength: (length: number) => void;
