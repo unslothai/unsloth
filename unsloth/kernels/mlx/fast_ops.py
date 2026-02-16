@@ -396,15 +396,416 @@ def mlx_scaled_dot_product_attention(
     return mlx_to_torch(Y_mlx, device=Q.device, dtype=Q.dtype)
 
 
+class MLXRMSLayerNorm(torch.autograd.Function):
+    """MLX-accelerated RMSNorm with custom autograd for training support."""
+
+    @staticmethod
+    def forward(ctx, X: "torch.Tensor", W: "torch.Tensor", eps: float, gemma: bool = False):
+        import mlx.core as mx
+        from .bridge import torch_to_mlx, mlx_to_torch, synchronize_mps
+
+        synchronize_mps()
+
+        shape = X.shape
+        dim = shape[-1]
+        X_2d = X.reshape(-1, dim).contiguous()
+
+        X_mlx = torch_to_mlx(X_2d)
+        W_mlx = torch_to_mlx(W)
+
+        if gemma:
+            W_mlx = W_mlx + 1.0
+
+        Y_mlx = mx.fast.rms_norm(X_mlx, W_mlx, eps)
+        mx.eval(Y_mlx)
+
+        Y = mlx_to_torch(Y_mlx, device=X.device, dtype=X.dtype)
+        Y = Y.view(*shape)
+
+        ctx.save_for_backward(X, W)
+        ctx.eps = eps
+        ctx.gemma = gemma
+        return Y
+
+    @staticmethod
+    def backward(ctx, dY: "torch.Tensor"):
+        import torch
+
+        shape = dY.shape
+        dim = shape[-1]
+        dY = dY.reshape(-1, dim)
+
+        X, W = ctx.saved_tensors
+        eps = ctx.eps
+        gemma = ctx.gemma
+
+        X_f32 = X.reshape(-1, dim).to(torch.float32)
+        dY_f32 = dY.to(torch.float32)
+
+        if gemma:
+            W_effective = W.to(torch.float32) + 1.0
+        else:
+            W_effective = W.to(torch.float32)
+
+        variance = X_f32.pow(2).mean(-1, keepdim=True)
+        rms_inv = torch.rsqrt(variance + eps)
+        X_norm = X_f32 * rms_inv
+
+        dX_norm = dY_f32 * W_effective
+        dW = (dY_f32 * X_norm).sum(dim=0)
+
+        N = dim
+        rowsum_dY_normed = (dX_norm * X_norm).sum(-1, keepdim=True)
+        dX = rms_inv * (dX_norm - (X_norm / N) * rowsum_dY_normed)
+
+        return dX.reshape(*shape).to(X.dtype), dW.to(W.dtype), None, None
+
+
+class MLXLayerNorm(torch.autograd.Function):
+    """MLX-accelerated LayerNorm with custom autograd for training support."""
+
+    @staticmethod
+    def forward(ctx, X: "torch.Tensor", W: "torch.Tensor", b: "torch.Tensor", eps: float):
+        import mlx.core as mx
+        from .bridge import torch_to_mlx, mlx_to_torch, synchronize_mps
+
+        synchronize_mps()
+
+        shape = X.shape
+        dim = shape[-1]
+        X_2d = X.reshape(-1, dim).contiguous()
+
+        X_mlx = torch_to_mlx(X_2d)
+        W_mlx = torch_to_mlx(W)
+        b_mlx = torch_to_mlx(b)
+
+        Y_mlx = mx.fast.layer_norm(X_mlx, W_mlx, b_mlx, eps)
+        mx.eval(Y_mlx)
+
+        Y = mlx_to_torch(Y_mlx, device=X.device, dtype=X.dtype)
+        Y = Y.view(*shape)
+
+        ctx.save_for_backward(X, W, b)
+        ctx.eps = eps
+        return Y
+
+    @staticmethod
+    def backward(ctx, dY: "torch.Tensor"):
+        import torch
+
+        shape = dY.shape
+        dim = shape[-1]
+        dY = dY.reshape(-1, dim)
+
+        X, W, b = ctx.saved_tensors
+        eps = ctx.eps
+
+        X_f32 = X.reshape(-1, dim).to(torch.float32)
+        dY_f32 = dY.to(torch.float32)
+
+        mean = X_f32.mean(-1, keepdim=True)
+        X_centered = X_f32 - mean
+        variance = X_f32.var(-1, keepdim=True, unbiased=False)
+        inv_std = torch.rsqrt(variance + eps)
+        X_norm = X_centered * inv_std
+
+        dW = (dY_f32 * X_norm).sum(0)
+        db = dY_f32.sum(0)
+
+        dX_norm = dY_f32 * W.to(torch.float32)
+
+        N = dim
+        sum_dX_norm = dX_norm.sum(-1, keepdim=True)
+        sum_dX_norm_X_norm = (dX_norm * X_norm).sum(-1, keepdim=True)
+
+        dX = inv_std * (
+            dX_norm
+            - (sum_dX_norm / N)
+            - X_norm * (sum_dX_norm_X_norm / N)
+        )
+
+        return dX.reshape(*shape).to(X.dtype), dW.to(W.dtype), db.to(b.dtype), None
+
+
+def mlx_rms_norm_autograd(
+    X: "torch.Tensor",
+    W: "torch.Tensor",
+    eps: float,
+    gemma: bool = False,
+) -> "torch.Tensor":
+    """RMSNorm using MLX with autograd support for training."""
+    return MLXRMSLayerNorm.apply(X, W, eps, gemma)
+
+
+def mlx_layer_norm_autograd(
+    X: "torch.Tensor",
+    W: "torch.Tensor",
+    b: "torch.Tensor",
+    eps: float,
+) -> "torch.Tensor":
+    """LayerNorm using MLX with autograd support for training."""
+    return MLXLayerNorm.apply(X, W, b, eps)
+
+
+class MLXRoPE(torch.autograd.Function):
+    """MLX-accelerated RoPE with custom autograd for training support."""
+
+    @staticmethod
+    def forward(ctx, Q: "torch.Tensor", K: "torch.Tensor", cos: "torch.Tensor", sin: "torch.Tensor"):
+        import mlx.core as mx
+        from .bridge import torch_to_mlx, mlx_to_torch, synchronize_mps
+
+        synchronize_mps()
+
+        Q_mlx = torch_to_mlx(Q.contiguous())
+        K_mlx = torch_to_mlx(K.contiguous()) if K is not None else None
+        cos_mlx = torch_to_mlx(cos)
+        sin_mlx = torch_to_mlx(sin)
+
+        half = Q_mlx.shape[-1] // 2
+        cos1 = cos_mlx[..., :half]
+        cos2 = cos_mlx[..., half:]
+        sin1 = sin_mlx[..., :half]
+        sin2 = sin_mlx[..., half:]
+
+        if Q_mlx.ndim == 4 and Q_mlx.shape[2] == cos_mlx.shape[-2]:
+            cos1 = cos1.reshape(1, 1, cos1.shape[-2], cos1.shape[-1])
+            cos2 = cos2.reshape(1, 1, cos2.shape[-2], cos2.shape[-1])
+            sin1 = sin1.reshape(1, 1, sin1.shape[-2], sin1.shape[-1])
+            sin2 = sin2.reshape(1, 1, sin2.shape[-2], sin2.shape[-1])
+
+        Q1 = Q_mlx[..., :half]
+        Q2 = Q_mlx[..., half:]
+        Q_out1 = Q1 * cos1 - Q2 * sin1
+        Q_out2 = Q2 * cos2 + Q1 * sin2
+        Q_out = mx.concatenate([Q_out1, Q_out2], axis=-1)
+
+        if K_mlx is not None:
+            K1 = K_mlx[..., :half]
+            K2 = K_mlx[..., half:]
+            K_out1 = K1 * cos1 - K2 * sin1
+            K_out2 = K2 * cos2 + K1 * sin2
+            K_out = mx.concatenate([K_out1, K_out2], axis=-1)
+            mx.eval(Q_out, K_out)
+            ctx.save_for_backward(Q, K, cos, sin)
+            return mlx_to_torch(Q_out, device=Q.device, dtype=Q.dtype), mlx_to_torch(K_out, device=K.device, dtype=K.dtype)
+
+        mx.eval(Q_out)
+        ctx.save_for_backward(Q, K, cos, sin)
+        return mlx_to_torch(Q_out, device=Q.device, dtype=Q.dtype), None
+
+    @staticmethod
+    def backward(ctx, dQ_out: "torch.Tensor", dK_out: "torch.Tensor"):
+        import torch
+
+        Q, K, cos, sin = ctx.saved_tensors
+
+        half = Q.shape[-1] // 2
+        cos1 = cos[..., :half]
+        cos2 = cos[..., half:]
+        sin1 = sin[..., :half]
+        sin2 = sin[..., half:]
+
+        if Q.ndim == 4 and Q.shape[2] == cos.shape[-2]:
+            cos1 = cos1.reshape(1, 1, cos1.shape[-2], cos1.shape[-1])
+            cos2 = cos2.reshape(1, 1, cos2.shape[-2], cos2.shape[-1])
+            sin1 = sin1.reshape(1, 1, sin1.shape[-2], sin1.shape[-1])
+            sin2 = sin2.reshape(1, 1, sin2.shape[-2], sin2.shape[-1])
+
+        dQ = dQ_out
+        dQ1 = dQ[..., :half]
+        dQ2 = dQ[..., half:]
+        dQ_out1 = dQ1 * cos1 + dQ2 * sin2
+        dQ_out2 = dQ2 * cos2 - dQ1 * sin1
+
+        dQ_final = torch.concatenate([dQ_out1, dQ_out2], dim=-1)
+
+        dK_final = None
+        if dK_out is not None and K is not None:
+            dK = dK_out
+            dK1 = dK[..., :half]
+            dK2 = dK[..., half:]
+            dK_out1 = dK1 * cos1 + dK2 * sin2
+            dK_out2 = dK2 * cos2 - dK1 * sin1
+            dK_final = torch.concatenate([dK_out1, dK_out2], dim=-1)
+
+        return dQ_final, dK_final, None, None
+
+
+class MLXSwiGLU(torch.autograd.Function):
+    """MLX-accelerated SwiGLU with custom autograd for training support."""
+
+    @staticmethod
+    def forward(ctx, e: "torch.Tensor", g: "torch.Tensor"):
+        import mlx.core as mx
+        from .bridge import torch_to_mlx, mlx_to_torch, synchronize_mps
+
+        synchronize_mps()
+
+        e_mlx = torch_to_mlx(e.contiguous())
+        g_mlx = torch_to_mlx(g.contiguous())
+
+        h_mlx = (e_mlx * mx.sigmoid(e_mlx)) * g_mlx
+        mx.eval(h_mlx)
+
+        h = mlx_to_torch(h_mlx, device=e.device, dtype=e.dtype)
+        ctx.save_for_backward(e, g)
+        return h
+
+    @staticmethod
+    def backward(ctx, dh: "torch.Tensor"):
+        import torch
+
+        e, g = ctx.saved_tensors
+        e_f32 = e.to(torch.float32)
+        g_f32 = g.to(torch.float32)
+        dh_f32 = dh.to(torch.float32)
+
+        sigmoid_e = torch.sigmoid(e_f32)
+        silu_e = e_f32 * sigmoid_e
+        dsilu = sigmoid_e * (1.0 + e_f32 * (1.0 - sigmoid_e))
+
+        de = dh_f32 * g_f32 * dsilu
+        dg = dh_f32 * silu_e
+
+        return de.to(e.dtype), dg.to(g.dtype)
+
+
+class MLXGeGLUExact(torch.autograd.Function):
+    """MLX-accelerated GeGLU exact with custom autograd for training support."""
+
+    @staticmethod
+    def forward(ctx, gate: "torch.Tensor", up: "torch.Tensor"):
+        import mlx.core as mx
+        from .bridge import torch_to_mlx, mlx_to_torch, synchronize_mps
+
+        synchronize_mps()
+
+        gate_mlx = torch_to_mlx(gate.contiguous())
+        up_mlx = torch_to_mlx(up.contiguous())
+
+        h_mlx = (0.5 * gate_mlx * (1 + mx.erf(gate_mlx / 1.4142135623730951))) * up_mlx
+        mx.eval(h_mlx)
+
+        h = mlx_to_torch(h_mlx, device=gate.device, dtype=gate.dtype)
+        ctx.save_for_backward(gate, up)
+        return h
+
+    @staticmethod
+    def backward(ctx, dh: "torch.Tensor"):
+        import torch
+        import math
+
+        gate, up = ctx.saved_tensors
+        gate_f32 = gate.to(torch.float32)
+        up_f32 = up.to(torch.float32)
+        dh_f32 = dh.to(torch.float32)
+
+        sqrt_2_over_pi = math.sqrt(2.0 / math.pi)
+        cdf = 0.5 * (1.0 + torch.erf(gate_f32 / math.sqrt(2.0)))
+        pdf = sqrt_2_over_pi * torch.exp(-0.5 * gate_f32 * gate_f32)
+        dgelu = cdf + gate_f32 * pdf
+
+        dh_up = dh_f32 * torch.nn.functional.gelu(gate_f32)
+        dh_gate = dh_f32 * up_f32 * dgelu
+
+        return dh_gate.to(gate.dtype), dh_up.to(up.dtype)
+
+
+class MLXGeGLUApprox(torch.autograd.Function):
+    """MLX-accelerated GeGLU approx with custom autograd for training support."""
+
+    @staticmethod
+    def forward(ctx, gate: "torch.Tensor", up: "torch.Tensor"):
+        import mlx.core as mx
+        from .bridge import torch_to_mlx, mlx_to_torch, synchronize_mps
+
+        synchronize_mps()
+
+        gate_mlx = torch_to_mlx(gate.contiguous())
+        up_mlx = torch_to_mlx(up.contiguous())
+
+        s = 0.7978845608028654
+        h_mlx = (0.5 * gate_mlx * (1 + mx.tanh(s * (gate_mlx + 0.044715 * gate_mlx * gate_mlx * gate_mlx)))) * up_mlx
+        mx.eval(h_mlx)
+
+        h = mlx_to_torch(h_mlx, device=gate.device, dtype=gate.dtype)
+        ctx.save_for_backward(gate, up)
+        return h
+
+    @staticmethod
+    def backward(ctx, dh: "torch.Tensor"):
+        import torch
+        import math
+
+        gate, up = ctx.saved_tensors
+        gate_f32 = gate.to(torch.float32)
+        up_f32 = up.to(torch.float32)
+        dh_f32 = dh.to(torch.float32)
+
+        sqrt_2_over_pi = math.sqrt(2.0 / math.pi)
+        inner = sqrt_2_over_pi * (gate_f32 + 0.044715 * gate_f32 * gate_f32 * gate_f32)
+        tanh_val = torch.tanh(inner)
+        f = 0.5 * gate_f32 * (1.0 + tanh_val)
+        dtanh = 1.0 - tanh_val * tanh_val
+        dinner = sqrt_2_over_pi * (1.0 + 3.0 * 0.044715 * gate_f32 * gate_f32)
+        dgelu = 0.5 * (1.0 + tanh_val) + 0.5 * gate_f32 * dtanh * dinner
+
+        dh_up = dh_f32 * f
+        dh_gate = dh_f32 * up_f32 * dgelu
+
+        return dh_gate.to(gate.dtype), dh_up.to(up.dtype)
+
+
+def mlx_rope_autograd(
+    Q: "torch.Tensor",
+    K: "torch.Tensor",
+    cos: "torch.Tensor",
+    sin: "torch.Tensor",
+) -> tuple["torch.Tensor", "torch.Tensor"]:
+    """RoPE using MLX with autograd support for training."""
+    return MLXRoPE.apply(Q, K, cos, sin)
+
+
+def mlx_swiglu_autograd(
+    e: "torch.Tensor",
+    g: "torch.Tensor",
+) -> "torch.Tensor":
+    """SwiGLU using MLX with autograd support for training."""
+    return MLXSwiGLU.apply(e, g)
+
+
+def mlx_geglu_exact_autograd(
+    gate: "torch.Tensor",
+    up: "torch.Tensor",
+) -> "torch.Tensor":
+    """GeGLU exact using MLX with autograd support for training."""
+    return MLXGeGLUExact.apply(gate, up)
+
+
+def mlx_geglu_approx_autograd(
+    gate: "torch.Tensor",
+    up: "torch.Tensor",
+) -> "torch.Tensor":
+    """GeGLU approx using MLX with autograd support for training."""
+    return MLXGeGLUApprox.apply(gate, up)
+
+
 __all__ = [
     "is_mlx_fast_available",
     "USE_MLX_FAST",
     "mlx_layer_norm",
     "mlx_rms_norm",
+    "mlx_rms_norm_autograd",
+    "mlx_layer_norm_autograd",
     "mlx_rope",
     "mlx_rope_qk",
+    "mlx_rope_autograd",
     "mlx_swiglu",
+    "mlx_swiglu_autograd",
     "mlx_geglu_exact",
+    "mlx_geglu_exact_autograd",
     "mlx_geglu_approx",
+    "mlx_geglu_approx_autograd",
     "mlx_scaled_dot_product_attention",
 ]

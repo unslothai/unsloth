@@ -88,11 +88,15 @@ def _get_compiled_fn(fn):
 
 def dispatch_rms_layernorm(X, W, eps, gemma=False):
     if DEVICE_TYPE == "mps":
-        # Priority 1: Metal kernel (fused, highest performance)
+        # Priority 1: MLX RMSNorm (mx.fast.rms_norm - fastest for both train/inference)
+        if _is_mlx_available():
+            from ..mlx.fast_ops import mlx_rms_norm_autograd
+            return mlx_rms_norm_autograd(X, W, eps, gemma)
+        # Priority 2: Metal kernel (fused, highest performance)
         if _is_metal_available():
             from ..metal.rms_layernorm import Metal_RMSLayerNorm
             return Metal_RMSLayerNorm.apply(X, W, eps, gemma)
-        # Priority 2: MPS fallback (PyTorch-native)
+        # Priority 3: MPS fallback (PyTorch-native)
         if _use_mps_fallback():
             from .rms_layernorm import mps_rms_layernorm
             fn = _get_compiled_fn(mps_rms_layernorm)
@@ -103,24 +107,27 @@ def dispatch_rms_layernorm(X, W, eps, gemma=False):
 
 
 def dispatch_layernorm(X, W, b, eps):
-    if DEVICE_TYPE == "mps" and _use_mps_fallback():
-        from .layernorm import mps_layernorm
-
-        fn = _get_compiled_fn(mps_layernorm)
-        return fn(X, W, b, eps)
-    else:
-        from ..layernorm import Fast_Layernorm
-
-        return Fast_Layernorm.apply(X, W, b, eps)
+    if DEVICE_TYPE == "mps":
+        # Priority 1: MLX LayerNorm (mx.fast.layer_norm - fastest for both train/inference)
+        if _is_mlx_available():
+            from ..mlx.fast_ops import mlx_layer_norm_autograd
+            return mlx_layer_norm_autograd(X, W, b, eps)
+        # Priority 2: MPS fallback (PyTorch-native)
+        if _use_mps_fallback():
+            from .layernorm import mps_layernorm
+            fn = _get_compiled_fn(mps_layernorm)
+            return fn(X, W, b, eps)
+    # Default: CUDA/Triton path
+    from ..layernorm import Fast_Layernorm
+    return Fast_Layernorm.apply(X, W, b, eps)
 
 
 def dispatch_rope_embedding(Q, K, cos, sin, rope_indices=None):
     if DEVICE_TYPE == "mps":
         # Priority 1: MLX RoPE (uses mx.fast.rope or optimized MLX arithmetic)
-        # Only use MLX path for inference — MLX ops are outside PyTorch autograd
-        if _is_mlx_available() and not torch.is_grad_enabled():
-            from ..mlx.fast_ops import mlx_rope_qk
-            return mlx_rope_qk(Q, K, cos, sin, rope_indices)
+        if _is_mlx_available():
+            from ..mlx.fast_ops import mlx_rope_autograd
+            return mlx_rope_autograd(Q, K, cos, sin)
         # Priority 2: MPS fallback (PyTorch-native with custom autograd)
         if _use_mps_fallback():
             from .rope_embedding import mps_rope_embedding_qk
@@ -161,16 +168,20 @@ def dispatch_cross_entropy_loss(logits, labels, logit_softcapping=0, logit_scali
 
 def dispatch_swiglu_fg(e, g):
     if DEVICE_TYPE == "mps":
-        # Priority 1: Metal kernel (fused SwiGLU)
+        # Priority 1: MLX SwiGLU (fastest for both train/inference)
+        if _is_mlx_available():
+            from ..mlx.fast_ops import mlx_swiglu_autograd
+            return mlx_swiglu_autograd(e, g)
+        # Priority 2: Metal kernel (fused SwiGLU)
         if _is_metal_available():
             from ..metal.swiglu import metal_swiglu_forward
             return metal_swiglu_forward(e, g)
-        # Priority 2: MPS fallback (PyTorch-native)
+        # Priority 3: MPS fallback (PyTorch-native)
         if _use_mps_fallback():
             from .swiglu import mps_swiglu_forward
             fn = _get_compiled_fn(mps_swiglu_forward)
             return fn(e, g)
-        # Priority 3: Pure PyTorch (when fallback disabled, e.g. gradient checkpointing)
+        # Priority 4: Pure PyTorch (when fallback disabled, e.g. gradient checkpointing)
         # SwiGLU: f = silu(e) * g = (e * sigmoid(e)) * g
         return torch.nn.functional.silu(e) * g
     # Default: CUDA/Triton path
@@ -208,16 +219,20 @@ def dispatch_swiglu_backward(dw, e, g):
 
 def dispatch_geglu_exact_forward(gate, up):
     if DEVICE_TYPE == "mps":
-        # Priority 1: Metal kernel (fused GEGLU exact)
+        # Priority 1: MLX GeGLU exact (fastest for both train/inference)
+        if _is_mlx_available():
+            from ..mlx.fast_ops import mlx_geglu_exact_autograd
+            return mlx_geglu_exact_autograd(gate, up)
+        # Priority 2: Metal kernel (fused GEGLU exact)
         if _is_metal_available():
             from ..metal.geglu import metal_geglu_exact_forward
             return metal_geglu_exact_forward(gate, up)
-        # Priority 2: MPS fallback (PyTorch-native)
+        # Priority 3: MPS fallback (PyTorch-native)
         if _use_mps_fallback():
             from .geglu import mps_geglu_exact_forward
             fn = _get_compiled_fn(mps_geglu_exact_forward)
             return fn(gate, up)
-        # Priority 3: Pure PyTorch (when fallback disabled)
+        # Priority 4: Pure PyTorch (when fallback disabled)
         # GeGLU exact: h = gelu(gate) * up
         return torch.nn.functional.gelu(gate) * up
     # Default: CUDA/Triton path
@@ -253,16 +268,20 @@ def dispatch_geglu_exact_backward(dw, e, g):
 
 def dispatch_geglu_approx_forward(gate, up):
     if DEVICE_TYPE == "mps":
-        # Priority 1: Metal kernel (fused GEGLU approx)
+        # Priority 1: MLX GeGLU approx (fastest for both train/inference)
+        if _is_mlx_available():
+            from ..mlx.fast_ops import mlx_geglu_approx_autograd
+            return mlx_geglu_approx_autograd(gate, up)
+        # Priority 2: Metal kernel (fused GEGLU approx)
         if _is_metal_available():
             from ..metal.geglu import metal_geglu_approx_forward
             return metal_geglu_approx_forward(gate, up)
-        # Priority 2: MPS fallback (PyTorch-native)
+        # Priority 3: MPS fallback (PyTorch-native)
         if _use_mps_fallback():
             from .geglu import mps_geglu_approx_forward
             fn = _get_compiled_fn(mps_geglu_approx_forward)
             return fn(gate, up)
-        # Priority 3: Pure PyTorch (when fallback disabled)
+        # Priority 4: Pure PyTorch (when fallback disabled)
         # GeGLU approx: h = gelu_approx(gate) * up
         return torch.nn.functional.gelu(gate, approximate='tanh') * up
     # Default: CUDA/Triton path
