@@ -182,6 +182,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             top_p: params.topP,
             max_tokens: params.maxTokens,
             top_k: params.topK,
+            min_p: params.minP,
             repetition_penalty: params.repetitionPenalty,
             image_base64: imageBase64,
             ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),

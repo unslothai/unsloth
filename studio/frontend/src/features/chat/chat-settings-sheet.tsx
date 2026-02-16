@@ -301,6 +301,14 @@ export function ChatSettingsPanel({
                 onChange={set("topK")}
               />
               <ParamSlider
+                label="Min P"
+                value={params.minP}
+                min={0}
+                max={1}
+                step={0.01}
+                onChange={set("minP")}
+              />
+              <ParamSlider
                 label="Repetition Penalty"
                 value={params.repetitionPenalty}
                 min={1}
