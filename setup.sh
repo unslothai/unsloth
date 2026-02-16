@@ -81,7 +81,58 @@ echo "✅ Frontend built to studio/frontend/dist"
 # ── 6. Python venv + deps ──
 echo ""
 echo "Setting up Python environment..."
-python3 -m venv .venv
+
+# ── 6a. Discover best Python <= 3.12.x ──
+BEST_PY=""
+BEST_MAJOR=0
+BEST_MINOR=0
+
+# Collect candidate python3 binaries (python3, python3.9, python3.10, …)
+for candidate in $(compgen -c python3 2>/dev/null | grep -E '^python3(\.[0-9]+)?$' | sort -u); do
+    if ! command -v "$candidate" &>/dev/null; then
+        continue
+    fi
+    # Get version string, e.g. "Python 3.11.5"
+    ver_str=$("$candidate" --version 2>&1 | awk '{print $2}')
+    py_major=$(echo "$ver_str" | cut -d. -f1)
+    py_minor=$(echo "$ver_str" | cut -d. -f2)
+
+    # Skip anything that isn't Python 3
+    if [ "$py_major" -ne 3 ] 2>/dev/null; then
+        continue
+    fi
+
+    # Skip versions above 3.12
+    if [ "$py_minor" -gt 12 ] 2>/dev/null; then
+        continue
+    fi
+
+    # Keep the highest qualifying version
+    if [ "$py_minor" -gt "$BEST_MINOR" ]; then
+        BEST_PY="$candidate"
+        BEST_MAJOR="$py_major"
+        BEST_MINOR="$py_minor"
+    fi
+done
+
+if [ -z "$BEST_PY" ]; then
+    echo "❌ ERROR: No Python version <= 3.12.x found on this system."
+    echo "   Detected Python 3 installations:"
+    for candidate in $(compgen -c python3 2>/dev/null | grep -E '^python3(\.[0-9]+)?$' | sort -u); do
+        if command -v "$candidate" &>/dev/null; then
+            echo "     - $candidate ($($candidate --version 2>&1))"
+        fi
+    done
+    echo ""
+    echo "   Please install Python <= 3.12.x for maximum compatibility."
+    echo "   For example:  sudo apt install python3.12 python3.12-venv"
+    exit 1
+fi
+
+BEST_VER=$("$BEST_PY" --version 2>&1 | awk '{print $2}')
+echo "✅ Using $BEST_PY ($BEST_VER) — compatible (≤ 3.12.x)"
+
+"$BEST_PY" -m venv .venv
 source .venv/bin/activate
 run_quiet "pip upgrade" pip install --upgrade pip
 echo "   Installing unsloth-zoo + unsloth..."
@@ -96,23 +147,55 @@ echo "✅ Python dependencies installed"
 echo ""
 REPO_DIR="$SCRIPT_DIR"
 
-if ! grep -qF "unsloth-ui" ~/.bashrc 2>/dev/null; then
-    cat >> ~/.bashrc <<UNSLOTH_EOF
+# Detect the user's default shell and pick the right rc file
+USER_SHELL="$(basename "${SHELL:-/bin/bash}")"
+case "$USER_SHELL" in
+    zsh)
+        SHELL_RC="$HOME/.zshrc"
+        ALIAS_BLOCK="alias unsloth-ui='${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py ui -f ${REPO_DIR}/studio/frontend/dist'"
+        ;;
+    fish)
+        SHELL_RC="$HOME/.config/fish/config.fish"
+        # fish uses 'abbr' or 'function'; a simple alias works via 'alias' in config.fish
+        ALIAS_BLOCK="alias unsloth-ui '${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py ui -f ${REPO_DIR}/studio/frontend/dist'"
+        ;;
+    ksh)
+        SHELL_RC="$HOME/.kshrc"
+        ALIAS_BLOCK="alias unsloth-ui='${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py ui -f ${REPO_DIR}/studio/frontend/dist'"
+        ;;
+    *)
+        # Default to bash for bash and any other POSIX-compatible shell
+        SHELL_RC="$HOME/.bashrc"
+        ALIAS_BLOCK="alias unsloth-ui='${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py ui -f ${REPO_DIR}/studio/frontend/dist'"
+        ;;
+esac
+
+echo "   Detected shell: $USER_SHELL → $SHELL_RC"
+
+ALIAS_ADDED=false
+if ! grep -qF "unsloth-ui" "$SHELL_RC" 2>/dev/null; then
+    mkdir -p "$(dirname "$SHELL_RC")"   # needed for fish's nested config path
+    cat >> "$SHELL_RC" <<UNSLOTH_EOF
 
 # Unsloth Studio launcher
-alias unsloth-ui='${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py ui -f ${REPO_DIR}/studio/frontend/dist'
+$ALIAS_BLOCK
 UNSLOTH_EOF
-    echo "✅ Alias 'unsloth-ui' added to ~/.bashrc"
+    echo "✅ Alias 'unsloth-ui' added to $SHELL_RC"
+    ALIAS_ADDED=true
 else
-    echo "✅ Alias 'unsloth-ui' already exists in ~/.bashrc"
+    echo "✅ Alias 'unsloth-ui' already exists in $SHELL_RC"
 fi
 
 echo ""
 echo "╔══════════════════════════════════════╗"
 echo "║           Setup Complete!            ║"
 echo "╠══════════════════════════════════════╣"
-echo "║ Run 'source ~/.bashrc' or open a    ║"
-echo "║ new terminal, then launch with:     ║"
+if [ "$ALIAS_ADDED" = true ]; then
+    echo "║ Run 'source $SHELL_RC'"
+    echo "║ or open a new terminal, then:       ║"
+else
+    echo "║ Launch with:                         ║"
+fi
 echo "║                                      ║"
 echo "║ unsloth-ui -H 0.0.0.0 -p 8000       ║"
 echo "╚══════════════════════════════════════╝"
