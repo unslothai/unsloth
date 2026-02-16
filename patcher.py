@@ -588,6 +588,14 @@ class MacPatcher:
             class FakeBnB(ModuleType):
                 """Comprehensive mock bitsandbytes module."""
                 
+                class Linear4bit:
+                    """Mock for bitsandbytes.nn.Linear4bit."""
+                    pass
+                
+                class Linear8bit:
+                    """Mock for bitsandbytes.nn.Linear8bit."""
+                    pass
+                
                 def __init__(self, name: str):
                     super().__init__(str(name))
                     self.__path__ = []
@@ -619,6 +627,17 @@ class MacPatcher:
                 @staticmethod
                 def is_bnb_4bit_available() -> bool:
                     return False
+                
+                class nn:
+                    """Mock for bitsandbytes.nn submodule."""
+                    
+                    class Linear4bit:
+                        """Mock for bitsandbytes.nn.Linear4bit."""
+                        pass
+                    
+                    class Linear8bit:
+                        """Mock for bitsandbytes.nn.Linear8bit."""
+                        pass
             
             class BnBMockLoader(Loader):
                 def create_module(self, spec):
