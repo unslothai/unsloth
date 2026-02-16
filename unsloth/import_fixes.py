@@ -1046,7 +1046,7 @@ def fix_vllm_pdl_blackwell():
         return
 
     # Check if vLLM version includes the fix
-    VLLM_PDL_FIX_VERSION = "0.13.2"
+    VLLM_PDL_FIX_VERSION = "0.15.0"
     try:
         vllm_version = Version(importlib_version("vllm"))
         if vllm_version >= Version(VLLM_PDL_FIX_VERSION):
