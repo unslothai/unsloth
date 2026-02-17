@@ -217,6 +217,9 @@ def _fast_prepare_inputs_for_generation(
     # This fixes GitHub issue #3798: inputs_embeds was ignored
     use_inputs_embeds = inputs_embeds is not None and past_key_values is None
 
+    # Save 2D attention mask for position_ids computation (before potential 4D conversion)
+    attention_mask_2d = attention_mask
+
     if past_key_values is not None:
         # Check for uninitialized DynamicCache
         if len(past_key_values) == 0:
@@ -299,7 +302,18 @@ def _fast_prepare_inputs_for_generation(
                     )
 
     if "cache_position" in kwargs:
-        kwargs["position_ids"] = kwargs["cache_position"]
+        if attention_mask_2d is not None and attention_mask_2d.dim() == 2:
+            # Compute per-row position_ids from attention_mask for left-padded batches.
+            # cache_position is 1D and shared across the batch, but with left-padding
+            # each sequence needs distinct position_ids for correct RoPE indexing.
+            position_ids = attention_mask_2d.long().cumsum(-1) - 1
+            position_ids.masked_fill_(attention_mask_2d == 0, 1)
+            # During decode step, only take the last position for each sequence
+            if past_key_values is not None:
+                position_ids = position_ids[:, -1:]
+            kwargs["position_ids"] = position_ids
+        else:
+            kwargs["position_ids"] = kwargs["cache_position"]
 
     result = {
         "attention_mask": attention_mask,
