@@ -228,6 +228,11 @@ def patch_unsloth_zoo_for_mps() -> bool:
     mock_temp.TEMPORARY_PATCHES = []
     sys.modules["unsloth_zoo.temporary_patches"] = mock_temp
 
+    # Mock unsloth_zoo.temporary_patches.common submodule
+    mock_temp_common = ModuleType("unsloth_zoo.temporary_patches.common")
+    mock_temp_common.torch_compile = lambda *args, **kwargs: (lambda f: f)
+    sys.modules["unsloth_zoo.temporary_patches.common"] = mock_temp_common
+
     # --- EXTENDED MOCKING FOR TORCH.CUDA ---
     # Many parts of unsloth_zoo/trl assume CUDA exists and call memory functions.
     import torch

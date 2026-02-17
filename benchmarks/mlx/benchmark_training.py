@@ -8,6 +8,7 @@ from typing import Callable, Optional
 
 import psutil
 import mlx.core as mx
+import mlx.optimizers as optim
 
 
 def get_memory_mb() -> float:
@@ -292,7 +293,7 @@ def benchmark_finetune_training(iters=100, warmup=10):
     ln_beta = mx.zeros(shape=(H))
 
     params = [w_q, w_k, w_v, w_o, w1, w3, w2, ln_gamma, ln_beta]
-    optimizers = [mx.optimizers.SGD(learning_rate=0.01) for _ in params]
+    optimizers = [optim.SGD(learning_rate=0.01) for _ in params]
     for opt, p in zip(optimizers, params):
         opt.init(p)
 
