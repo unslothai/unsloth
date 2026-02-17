@@ -19,6 +19,8 @@ class TrainingMetricsResponse(BaseModel):
     loss_history: List[float] = Field(default_factory=list, description="Loss values per step")
     lr_history: List[float] = Field(default_factory=list, description="Learning rate per step")
     step_history: List[int] = Field(default_factory=list, description="Step numbers")
+    grad_norm_history: List[float] = Field(default_factory=list, description="Gradient norm values")
+    grad_norm_step_history: List[int] = Field(default_factory=list, description="Step numbers for gradient norm values")
     current_loss: Optional[float] = Field(None, description="Most recent loss value")
     current_lr: Optional[float] = Field(None, description="Most recent learning rate")
     current_step: Optional[int] = Field(None, description="Most recent step number")
