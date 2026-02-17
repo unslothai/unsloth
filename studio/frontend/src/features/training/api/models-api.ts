@@ -58,6 +58,21 @@ export interface ModelConfigResponse {
   base_model?: string | null;
 }
 
+export interface LocalModelInfo {
+  id: string;
+  display_name: string;
+  path: string;
+  source: "models_dir" | "hf_cache";
+  model_id?: string | null;
+  updated_at?: number | null;
+}
+
+interface LocalModelListResponse {
+  models_dir: string;
+  hf_cache_dir?: string | null;
+  models: LocalModelInfo[];
+}
+
 /**
  * Check whether a model is a vision model by asking the backend.
  * Calls GET /api/models/check-vision/{model_name}.
@@ -83,4 +98,15 @@ export async function getModelConfig(
     throw new Error(`Failed to fetch model config (${response.status})`);
   }
   return (await response.json()) as ModelConfigResponse;
+}
+
+export async function listLocalModels(
+  signal?: AbortSignal,
+): Promise<LocalModelInfo[]> {
+  const response = await authFetch("/api/models/local", { signal });
+  if (!response.ok) {
+    throw new Error(`Failed to fetch local models (${response.status})`);
+  }
+  const data = (await response.json()) as LocalModelListResponse;
+  return data.models;
 }
