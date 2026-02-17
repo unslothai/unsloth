@@ -210,6 +210,8 @@ def patch_unsloth_zoo_for_mps() -> bool:
     # Mock unsloth_zoo.hf_utils for MPS compatibility
     mock_hf = ModuleType("unsloth_zoo.hf_utils")
     mock_hf.dtype_from_config = lambda config: None
+    mock_hf.add_dtype_kwargs = lambda *args, **kwargs: {}
+    mock_hf.fix_lora_auto_mapping = lambda *args, **kwargs: None
     sys.modules["unsloth_zoo.hf_utils"] = mock_hf
 
     # Mock unsloth_zoo.peft_utils for MPS compatibility
