@@ -285,7 +285,7 @@ def apply_chat_template_to_dataset(
             if not isinstance(dataset, IterableDataset):
                 from multiprocessing import cpu_count
                 if num_proc is None or type(num_proc) is not int:
-                    num_proc = cpu_count()
+                    num_proc = min(cpu_count(), 8)
                 dataset_map_kwargs['num_proc'] = num_proc
                 dataset_map_kwargs['desc'] = "Applying template to Alpaca format"
 
@@ -349,7 +349,7 @@ def apply_chat_template_to_dataset(
             if not isinstance(dataset, IterableDataset):
                 from multiprocessing import cpu_count
                 if num_proc is None or type(num_proc) is not int:
-                    num_proc = cpu_count()
+                    num_proc = min(cpu_count(), 8)
                 dataset_map_kwargs['num_proc'] = num_proc
                 dataset_map_kwargs['desc'] = f"Applying chat template to {final_format}"
 
