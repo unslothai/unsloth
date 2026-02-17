@@ -63,17 +63,18 @@ def print_result(name: str, time_ms: float, memory_mb: Optional[float] = None, b
         print(f"  {name:<30} {time_ms:>8.3f} ms  {mem_str}")
 
 
-def benchmark_layer_norm_training(B: int = 4, S: int = 2048, H: int = 4096, iters: int = 100, warmup: int = 10):
+def benchmark_layer_norm_training(B: int = 16, S: int = 1024, H: int = 4096, iters: int = 50, warmup: int = 10):
     """Benchmark LayerNorm forward + backward training."""
     print(f"\n{'='*60}")
-    print(f" LayerNorm Training [B={B}, S={S}, H={H}]")
+    print(f" LayerNorm Training [B={B}, S={S}, H={H}] (float16)")
     print(f"{'='*60}")
     print(f"  {'Implementation':<30} {'Time':>10}  {'Peak RAM':>15}  {'Speedup'}")
     print("-" * 75)
 
-    x = mx.random.normal(shape=(B, S, H))
-    weight = mx.random.normal(shape=(H,))
-    bias = mx.random.normal(shape=(H,))
+    dtype = mx.float16
+    x = mx.random.normal(shape=(B, S, H), dtype=dtype)
+    weight = mx.random.normal(shape=(H,), dtype=dtype)
+    bias = mx.random.normal(shape=(H,), dtype=dtype)
     eps = 1e-5
 
     def eager_layer_norm():
@@ -110,16 +111,17 @@ def benchmark_layer_norm_training(B: int = 4, S: int = 2048, H: int = 4096, iter
         print(f"  mx.fast.layer_norm not available: {e}")
 
 
-def benchmark_rmsnorm_training(B: int = 4, S: int = 2048, H: int = 4096, iters: int = 100, warmup: int = 10):
+def benchmark_rmsnorm_training(B: int = 16, S: int = 1024, H: int = 4096, iters: int = 50, warmup: int = 10):
     """Benchmark RMSNorm forward + backward training."""
     print(f"\n{'='*60}")
-    print(f" RMSNorm Training [B={B}, S={S}, H={H}]")
+    print(f" RMSNorm Training [B={B}, S={S}, H={H}] (float16)")
     print(f"{'='*60}")
     print(f"  {'Implementation':<30} {'Time':>10}  {'Peak RAM':>15}  {'Speedup'}")
     print("-" * 75)
 
-    x = mx.random.normal(shape=(B, S, H))
-    weight = mx.random.normal(shape=(H,))
+    dtype = mx.float16
+    x = mx.random.normal(shape=(B, S, H), dtype=dtype)
+    weight = mx.random.normal(shape=(H,), dtype=dtype)
     eps = 1e-5
 
     def eager_rms_norm():
@@ -149,18 +151,19 @@ def benchmark_rmsnorm_training(B: int = 4, S: int = 2048, H: int = 4096, iters: 
         print(f"  mx.fast.rms_norm not available: {e}")
 
 
-def benchmark_swiglu_training(B: int = 4, S: int = 2048, H: int = 4096, hidden: int = 11008, iters: int = 100, warmup: int = 10):
+def benchmark_swiglu_training(B: int = 16, S: int = 1024, H: int = 4096, hidden: int = 11008, iters: int = 50, warmup: int = 10):
     """Benchmark SwiGLU forward + backward training."""
     print(f"\n{'='*60}")
-    print(f" SwiGLU Training [B={B}, S={S}, H={H}, hidden={hidden}]")
+    print(f" SwiGLU Training [B={B}, S={S}, H={H}, hidden={hidden}] (float16)")
     print(f"{'='*60}")
     print(f"  {'Implementation':<30} {'Time':>10}  {'Peak RAM':>15}  {'Speedup'}")
     print("-" * 75)
 
-    x = mx.random.normal(shape=(B, S, H))
-    w1 = mx.random.normal(shape=(H, hidden))
-    w3 = mx.random.normal(shape=(H, hidden))
-    w2 = mx.random.normal(shape=(hidden, H))
+    dtype = mx.float16
+    x = mx.random.normal(shape=(B, S, H), dtype=dtype)
+    w1 = mx.random.normal(shape=(H, hidden), dtype=dtype)
+    w3 = mx.random.normal(shape=(H, hidden), dtype=dtype)
+    w2 = mx.random.normal(shape=(hidden, H), dtype=dtype)
 
     def eager_swiglu(x, w1, w3, w2):
         gate = x @ w1
@@ -179,17 +182,18 @@ def benchmark_swiglu_training(B: int = 4, S: int = 2048, H: int = 4096, hidden: 
     print_result("mx.compile", time_compiled, mem_compiled, baseline_time)
 
 
-def benchmark_attention_training(B: int = 4, H: int = 32, S: int = 1024, D: int = 128, iters: int = 100, warmup: int = 10):
+def benchmark_attention_training(B: int = 16, H: int = 32, S: int = 1024, D: int = 128, iters: int = 50, warmup: int = 10):
     """Benchmark Attention forward + backward training."""
     print(f"\n{'='*60}")
-    print(f" Attention Training [B={B}, H={H}, S={S}, D={D}]")
+    print(f" Attention Training [B={B}, H={H}, S={S}, D={D}] (float16)")
     print(f"{'='*60}")
     print(f"  {'Implementation':<30} {'Time':>10}  {'Peak RAM':>15}  {'Speedup'}")
     print("-" * 75)
 
-    Q = mx.random.normal(shape=(B, H, S, D))
-    K = mx.random.normal(shape=(B, H, S, D))
-    V = mx.random.normal(shape=(B, H, S, D))
+    dtype = mx.float16
+    Q = mx.random.normal(shape=(B, H, S, D), dtype=dtype)
+    K = mx.random.normal(shape=(B, H, S, D), dtype=dtype)
+    V = mx.random.normal(shape=(B, H, S, D), dtype=dtype)
     scale = 1.0 / (D ** 0.5)
 
     def eager_attention(q, k, v):
@@ -229,7 +233,7 @@ def run_all_benchmarks(args):
     print(f"Iterations: {args.iters}, Warmup: {args.warmup}")
     print(f"Device: {mx.default_device()}")
 
-    # Higher defaults for M4
+    # Tune defaults
     b, s = args.batch_size, args.seq_len
 
     if args.benchmark == "all" or args.benchmark == "layernorm":
@@ -254,7 +258,7 @@ def main():
     parser.add_argument("-i", "--iters", type=int, default=50, help="Number of iterations")
     parser.add_argument("-w", "--warmup", type=int, default=10, help="Warmup iterations")
     parser.add_argument("--batch-size", type=int, default=16, help="Batch size")
-    parser.add_argument("--seq-len", type=int, default=2048, help="Sequence length")
+    parser.add_argument("--seq-len", type=int, default=1024, help="Sequence length")
     args = parser.parse_args()
 
     print(f"[OK] MLX version: {mx.__version__}")
