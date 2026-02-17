@@ -161,7 +161,7 @@ def patch_unsloth_zoo_for_mps() -> bool:
     mock_patching = ModuleType("unsloth_zoo.patching_utils")
     mock_patching.patch_compiling_bitsandbytes = lambda: None
     mock_patching.patch_layernorm = lambda: None
-    mock_patching.patch_torch_compile = lambda: None
+    mock_patching.patch_torch_compile = lambda *args, **kwargs: None
     mock_patching.patch_model_and_tokenizer = lambda model, tokenizer: (model, tokenizer)
     mock_patching.patch_compiled_autograd = lambda: None
     sys.modules["unsloth_zoo.patching_utils"] = mock_patching
