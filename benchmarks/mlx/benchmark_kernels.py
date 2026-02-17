@@ -169,6 +169,27 @@ def benchmark_rope(
     Q = mx.random.normal(shape=(B, H, S, D))
     cos = mx.random.normal(shape=(S, D))
     sin = mx.random.normal(shape=(S, D))
+    cos = mx.concatenate([cos, cos], axis=-1)
+    sin = mx.concatenate([sin, sin], axis=-1)
+    
+    @mx.compile
+    def custom_rope_kernel(q, cos, sin):
+        half = q.shape[-1] // 2
+        q1 = q[..., :half]
+        q2 = q[..., half:]
+        cos1 = cos[..., :half]
+        cos2 = cos[..., half:]
+        sin1 = sin[..., :half]
+        sin2 = sin[..., half:]
+        out1 = q1 * cos1 - q2 * sin1
+        out2 = q2 * cos2 + q1 * sin2
+        return mx.concatenate([out1, out2], axis=-1)
+    
+    custom_time = benchmark_function(
+        lambda: custom_rope_kernel(Q, cos, sin),
+        name="Custom Kernel", iters=iters
+    )
+    print_result("Custom (unsloth)", custom_time)
     
     @mx.compile
     def compiled_rope(q, cos, sin):
@@ -187,7 +208,7 @@ def benchmark_rope(
         lambda: compiled_rope(Q, cos, sin),
         name="Compiled RoPE", iters=iters
     )
-    print_result("mx.compile", compiled_time)
+    print_result("mx.compile", compiled_time, custom_time)
     
     def eager_rope(q, cos, sin):
         half = q.shape[-1] // 2
@@ -203,9 +224,9 @@ def benchmark_rope(
     
     eager_time = benchmark_function(
         lambda: eager_rope(Q, cos, sin),
-        name="Eager RoPE", iters=iters
+        name="Eager (no compile)", iters=iters
     )
-    print_result("Eager (no compile)", eager_time, compiled_time)
+    print_result("Eager (no compile)", eager_time, custom_time)
 
 
 def benchmark_swiglu(
@@ -221,23 +242,33 @@ def benchmark_swiglu(
     up = mx.random.normal(shape=(B, S, hidden))
     
     @mx.compile
+    def custom_swiglu_kernel(e, g):
+        return (e * mx.sigmoid(e)) * g
+    
+    custom_time = benchmark_function(
+        lambda: custom_swiglu_kernel(gate, up),
+        name="Custom SwiGLU", iters=iters
+    )
+    print_result("Custom (unsloth)", custom_time)
+    
+    @mx.compile
     def compiled_swiglu(gate, up):
         return (gate * mx.sigmoid(gate)) * up
     
     compiled_time = benchmark_function(
         lambda: compiled_swiglu(gate, up),
-        name="Compiled SwiGLU", iters=iters
+        name="mx.compile", iters=iters
     )
-    print_result("mx.compile", compiled_time)
+    print_result("mx.compile", compiled_time, custom_time)
     
     def eager_swiglu(gate, up):
         return (gate * mx.sigmoid(gate)) * up
     
     eager_time = benchmark_function(
         lambda: eager_swiglu(gate, up),
-        name="Eager SwiGLU", iters=iters
+        name="Eager (no compile)", iters=iters
     )
-    print_result("Eager (no compile)", eager_time, compiled_time)
+    print_result("Eager (no compile)", eager_time, custom_time)
 
 
 def benchmark_swiglu_mlp(
