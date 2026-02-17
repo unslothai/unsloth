@@ -102,18 +102,19 @@ export function ProgressSection(): ReactElement {
       ? runtime.currentStep / elapsed
       : null;
 
-  const stoppedLoss =
-    !runtime.isTrainingRunning
-      ? lastNonZeroValue(runtime.lossHistory) ?? runtime.currentLoss
-      : runtime.currentLoss;
-  const stoppedLr =
-    !runtime.isTrainingRunning
-      ? lastNonZeroValue(runtime.lrHistory) ?? runtime.currentLearningRate
-      : runtime.currentLearningRate;
-  const stoppedGradNorm =
-    !runtime.isTrainingRunning
-      ? lastNonZeroValue(runtime.gradNormHistory) ?? runtime.currentGradNorm
-      : runtime.currentGradNorm;
+  const stoppedLoss = getDisplayMetric(
+    runtime.isTrainingRunning,
+    runtime.currentLoss,
+    runtime.lossHistory,
+  );
+  const stoppedLr = getDisplayMetric(
+    runtime.isTrainingRunning,
+    runtime.currentLearningRate,
+    runtime.lrHistory,
+  );
+  const stoppedGradNorm = runtime.isTrainingRunning
+    ? runtime.currentGradNorm
+    : lastNonZeroValue(runtime.gradNormHistory) ?? runtime.currentGradNorm;
 
   const configItems = [
     {
@@ -350,6 +351,17 @@ function lastNonZeroValue(points: { value: number }[]): number | null {
     }
   }
   return null;
+}
+
+function getDisplayMetric(
+  isTrainingRunning: boolean,
+  currentValue: number,
+  history: { value: number }[],
+): number {
+  if (isTrainingRunning) {
+    return currentValue;
+  }
+  return lastNonZeroValue(history) ?? currentValue;
 }
 
 function GpuStat({
