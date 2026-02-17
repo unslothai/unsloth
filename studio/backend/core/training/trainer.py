@@ -586,8 +586,14 @@ class UnslothTrainer:
         )
 
         self.should_stop = False
-        self.training_thread.start()
-        return True
+        self.is_training = True
+        try:
+            self.training_thread.start()
+            return True
+        except Exception as e:
+            self.is_training = False
+            logger.error(f"Failed to start training thread: {e}")
+            return False
 
     def _train_worker(self, dataset: Dataset, **training_args):
         """Worker function for training (runs in separate thread)"""
@@ -990,9 +996,12 @@ class UnslothTrainer:
         print(f"\nStopping training (save={save})...")
         self.should_stop = True
         self.save_on_stop = save
-        self.is_training = False
-        # Clear the status message so timer doesn't show stale status
-        self._update_progress(is_training=False, status_message="")
+        stop_msg = (
+            "Stopping training and saving checkpoint..."
+            if save
+            else "Cancelling training..."
+        )
+        self._update_progress(status_message=stop_msg)
 
         # If trainer exists, try to stop it gracefully
         if self.trainer:
