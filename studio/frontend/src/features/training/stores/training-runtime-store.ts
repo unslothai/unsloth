@@ -56,6 +56,11 @@ function toSeries(steps: number[], values: number[]): TrainingSeriesPoint[] {
   return sortSeries(points);
 }
 
+function toFiniteNumber(value: unknown): number | null {
+  if (typeof value !== "number") return null;
+  return Number.isFinite(value) ? value : null;
+}
+
 function upsertPoint(
   points: TrainingSeriesPoint[],
   step: number,
@@ -74,22 +79,32 @@ function upsertPoint(
 function applyMetricHistoryFromStatus(payload: TrainingStatusResponse): {
   lossHistory: TrainingSeriesPoint[] | null;
   lrHistory: TrainingSeriesPoint[] | null;
+  gradNormHistory: TrainingSeriesPoint[] | null;
   evalLossHistory: TrainingSeriesPoint[] | null;
 } {
   const history = payload.metric_history;
   if (!history || !history.steps?.length) {
-    return { lossHistory: null, lrHistory: null, evalLossHistory: null };
+    return {
+      lossHistory: null,
+      lrHistory: null,
+      gradNormHistory: null,
+      evalLossHistory: null,
+    };
   }
 
   const steps = history.steps;
   const lossHistory = history.loss ? toSeries(steps, history.loss) : null;
   const lrHistory = history.lr ? toSeries(steps, history.lr) : null;
+  const gradNormHistory =
+    history.grad_norm && history.grad_norm_steps
+      ? toSeries(history.grad_norm_steps, history.grad_norm)
+      : null;
   const evalLossHistory =
     history.eval_loss && history.eval_steps
       ? toSeries(history.eval_steps, history.eval_loss)
       : null;
 
-  return { lossHistory, lrHistory, evalLossHistory };
+  return { lossHistory, lrHistory, gradNormHistory, evalLossHistory };
 }
 
 export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => ({
@@ -163,6 +178,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
           typeof detailEpoch === "number" ? detailEpoch : state.currentEpoch,
         lossHistory: metricHistory.lossHistory ?? state.lossHistory,
         lrHistory: metricHistory.lrHistory ?? state.lrHistory,
+        gradNormHistory: metricHistory.gradNormHistory ?? state.gradNormHistory,
         evalLossHistory: metricHistory.evalLossHistory ?? state.evalLossHistory,
       };
     }),
@@ -171,6 +187,10 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
     set((state) => {
       const lossHistory = toSeries(payload.step_history, payload.loss_history);
       const lrHistory = toSeries(payload.step_history, payload.lr_history);
+      const gradNormHistory = toSeries(
+        payload.grad_norm_step_history,
+        payload.grad_norm_history,
+      );
       const latestStep =
         payload.current_step ??
         (payload.step_history.length > 0
@@ -181,6 +201,8 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
         ...state,
         lossHistory: lossHistory.length > 0 ? lossHistory : state.lossHistory,
         lrHistory: lrHistory.length > 0 ? lrHistory : state.lrHistory,
+        gradNormHistory:
+          gradNormHistory.length > 0 ? gradNormHistory : state.gradNormHistory,
         currentStep:
           typeof latestStep === "number"
             ? Math.max(latestStep, state.currentStep)
@@ -199,36 +221,41 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
   applyProgress: (payload: TrainingProgressPayload, eventId?: number) =>
     set((state) => {
       const step = Math.max(payload.step, 0);
+      const currentLoss = toFiniteNumber(payload.loss);
+      const currentLearningRate = toFiniteNumber(payload.learning_rate);
+      const currentGradNorm = toFiniteNumber(payload.grad_norm);
+      const evalLoss = toFiniteNumber(payload.eval_loss);
+
       return {
         ...state,
         jobId: payload.job_id || state.jobId,
         currentStep: step,
         totalSteps: Math.max(payload.total_steps, state.totalSteps),
-        currentLoss: payload.loss,
-        currentLearningRate: payload.learning_rate,
+        currentLoss: currentLoss ?? state.currentLoss,
+        currentLearningRate: currentLearningRate ?? state.currentLearningRate,
         progressPercent: payload.progress_percent,
         currentEpoch: payload.epoch ?? state.currentEpoch,
         elapsedSeconds: payload.elapsed_seconds,
         etaSeconds: payload.eta_seconds,
-        currentGradNorm: payload.grad_norm,
+        currentGradNorm,
         currentNumTokens: payload.num_tokens,
         firstStepReceived: state.firstStepReceived || step > 0,
         lastEventId: typeof eventId === "number" ? eventId : state.lastEventId,
         lossHistory:
-          step > 0
-            ? upsertPoint(state.lossHistory, step, payload.loss)
+          step > 0 && currentLoss !== null
+            ? upsertPoint(state.lossHistory, step, currentLoss)
             : state.lossHistory,
         lrHistory:
-          step > 0
-            ? upsertPoint(state.lrHistory, step, payload.learning_rate)
+          step > 0 && currentLearningRate !== null
+            ? upsertPoint(state.lrHistory, step, currentLearningRate)
             : state.lrHistory,
         gradNormHistory:
-          step > 0 && typeof payload.grad_norm === "number"
-            ? upsertPoint(state.gradNormHistory, step, payload.grad_norm)
+          step > 0 && currentGradNorm !== null
+            ? upsertPoint(state.gradNormHistory, step, currentGradNorm)
             : state.gradNormHistory,
         evalLossHistory:
-          step > 0 && typeof payload.eval_loss === "number"
-            ? upsertPoint(state.evalLossHistory, step, payload.eval_loss)
+          step > 0 && evalLoss !== null
+            ? upsertPoint(state.evalLossHistory, step, evalLoss)
             : state.evalLossHistory,
       };
     }),

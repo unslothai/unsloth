@@ -104,7 +104,7 @@ class TrainingStatus(BaseModel):
     metric_history: Optional[dict] = Field(
         None,
         description="Full metric history arrays for chart recovery after SSE reconnection. "
-                    "Keys: 'steps', 'loss', 'lr' — each a list of numeric values.",
+                    "Keys: 'steps', 'loss', 'lr', 'grad_norm', 'grad_norm_steps' — each a list of numeric values.",
     )
 
 
@@ -122,4 +122,3 @@ class TrainingProgress(BaseModel):
     grad_norm: Optional[float] = Field(None, description="L2 norm of gradients, computed before gradient clipping")
     num_tokens: Optional[int] = Field(None, description="Total number of tokens processed so far")
     eval_loss: Optional[float] = Field(None, description="Eval loss from the most recent evaluation step")
-

@@ -4,6 +4,7 @@ Training backend for FastAPI integration
 import matplotlib.pyplot as plt
 from typing import Any, Generator, Tuple
 import logging
+import math
 
 from .trainer import get_trainer, TrainingProgress
 from utils.hardware import clear_gpu_cache
@@ -28,6 +29,8 @@ class TrainingBackend:
         self.loss_history = []
         self.lr_history = []
         self.step_history = []
+        self.grad_norm_history = []
+        self.grad_norm_step_history = []
         self.eval_loss_history = []
         self.eval_step_history = []
         self.eval_enabled = False
@@ -43,6 +46,14 @@ class TrainingBackend:
             self.loss_history.append(progress.loss)
             self.lr_history.append(progress.learning_rate)
             self.step_history.append(progress.step)
+        if progress.step >= 0 and progress.grad_norm is not None:
+            try:
+                grad_norm = float(progress.grad_norm)
+            except (TypeError, ValueError):
+                grad_norm = None
+            if grad_norm is not None and math.isfinite(grad_norm):
+                self.grad_norm_history.append(grad_norm)
+                self.grad_norm_step_history.append(progress.step)
         if progress.eval_loss is not None:
             self.eval_loss_history.append(progress.eval_loss)
             self.eval_step_history.append(progress.step)
@@ -144,6 +155,8 @@ class TrainingBackend:
             self.loss_history = []
             self.lr_history = []
             self.step_history = []
+            self.grad_norm_history = []
+            self.grad_norm_step_history = []
             self.eval_loss_history = []
             self.eval_step_history = []
             self.eval_enabled = False
