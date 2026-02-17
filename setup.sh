@@ -24,6 +24,13 @@ echo "╔═══════════════════════�
 echo "║     Unsloth Studio Setup Script      ║"
 echo "╚══════════════════════════════════════╝"
 
+# ── Detect Colab (like unsloth does) ──
+IS_COLAB=false
+keynames=$'\n'$(printenv | cut -d= -f1)
+if [[ "$keynames" == *$'\nCOLAB_'* ]]; then
+    IS_COLAB=true
+fi
+
 # ── 1. Check existing Node/npm versions ──
 NEED_NODE=true
 if command -v node &>/dev/null && command -v npm &>/dev/null; then
@@ -33,7 +40,17 @@ if command -v node &>/dev/null && command -v npm &>/dev/null; then
         echo "✅ Node $(node -v) and npm $(npm -v) already meet requirements. Skipping nvm install."
         NEED_NODE=false
     else
-        echo "⚠️  Node $(node -v) / npm $(npm -v) too old. Installing via nvm..."
+        if [ "$IS_COLAB" = true ]; then
+            echo "✅ Node $(node -v) and npm $(npm -v) detected in Colab."
+            # In Colab, just upgrade npm directly - nvm doesn't work well
+            if [ "$NPM_MAJOR" -lt 11 ]; then
+                echo "   Upgrading npm to latest..."
+                npm install -g npm@latest > /dev/null 2>&1
+            fi
+            NEED_NODE=false
+        else
+            echo "⚠️  Node $(node -v) / npm $(npm -v) too old. Installing via nvm..."
+        fi
     fi
 else
     echo "⚠️  Node/npm not found. Installing via nvm..."
