@@ -908,6 +908,10 @@ class MacPatcher:
             sys.meta_path.insert(0, finder)
             self._mock_finders.append(finder)
             
+            if "unsloth_zoo" not in sys.modules:
+                sys.modules["unsloth_zoo"] = self._create_unsloth_zoo_mock_module("unsloth_zoo", loader)
+                print("[MLX MOCK] pre-populated: unsloth_zoo")
+            
             patched = ["device_type", "utils", "log", "hf_utils", "peft_utils", 
                       "tokenizer_utils", "training_utils", "vision_utils", "temporary_patches",
                       "patching_utils", "gradient_checkpointing", "loss_utils", "compiler",
