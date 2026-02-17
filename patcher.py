@@ -794,13 +794,13 @@ class MacPatcher:
         name = "patching_utils"
         return self._create_patch_result(name, PatchStatus.SKIPPED, "deferred to late patch")
     
-    def _create_unsloth_zoo_mock_module(self, fullname: str):
+    def _create_unsloth_zoo_mock_module(self, fullname: str, loader=None):
         from types import ModuleType
         from importlib.machinery import ModuleSpec
         
         mod = ModuleType(fullname)
         mod.__path__ = []
-        mod.__spec__ = ModuleSpec(fullname, UnslothZooMockLoader(), origin="mocked")
+        mod.__spec__ = ModuleSpec(fullname, loader, origin="mocked")
         
         if fullname == "unsloth_zoo":
             mod.__version__ = "999.0.0"
@@ -875,16 +875,21 @@ class MacPatcher:
             patcher_self = self
             
             class UnslothZooMockLoader(Loader):
+                def __init__(self):
+                    pass
+                
                 def create_module(self, spec):
-                    return patcher_self._create_unsloth_zoo_mock_module(spec.name)
+                    return patcher_self._create_unsloth_zoo_mock_module(spec.name, self)
                 
                 def exec_module(self, module):
                     pass
             
+            loader = UnslothZooMockLoader()
+            
             class UnslothZooMockFinder(MetaPathFinder):
                 def find_spec(self, fullname, path, target=None):
                     if fullname == "unsloth_zoo" or fullname.startswith("unsloth_zoo."):
-                        return ModuleSpec(fullname, UnslothZooMockLoader(), origin="mocked")
+                        return ModuleSpec(fullname, loader, origin="mocked")
                     return None
             
             finder = UnslothZooMockFinder()
