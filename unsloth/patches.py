@@ -193,6 +193,8 @@ def patch_unsloth_zoo_for_mps() -> bool:
     mock_loss.fused_linear_cross_entropy = lambda *args, **kwargs: 0.0
     mock_loss._unsloth_get_batch_samples = lambda *args, **kwargs: None
     mock_loss.unsloth_fused_ce_loss = lambda *args, **kwargs: 0.0
+    mock_loss.patch_loss_functions = lambda *args, **kwargs: None
+    mock_loss.post_patch_loss_function = lambda *args, **kwargs: None
     sys.modules["unsloth_zoo.loss_utils"] = mock_loss
 
     # Mock unsloth_zoo.compiler for MPS compatibility

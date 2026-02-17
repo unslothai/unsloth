@@ -8,7 +8,6 @@ from typing import Callable, Optional
 
 import psutil
 import mlx.core as mx
-import mlx.optimizers as optim
 
 
 def get_memory_mb() -> float:
@@ -293,9 +292,7 @@ def benchmark_finetune_training(iters=100, warmup=10):
     ln_beta = mx.zeros(shape=(H))
 
     params = [w_q, w_k, w_v, w_o, w1, w3, w2, ln_gamma, ln_beta]
-    optimizers = [optim.SGD(learning_rate=0.01) for _ in params]
-    for opt, p in zip(optimizers, params):
-        opt.init(p)
+    lr = 0.01
 
     def forward_backward():
         nonlocal x, target
@@ -327,8 +324,9 @@ def benchmark_finetune_training(iters=100, warmup=10):
 
         grads = mx.grad(lambda x: ((x - target) ** 2).mean())(x)
 
-        for opt, p in zip(optimizers, params):
-            opt.update(p, p - 0.01 * p)
+        for i, p in enumerate(params):
+            grad = mx.grad(lambda p: ((x - target) ** 2).mean())(p)
+            params[i] = p - lr * grad
 
         mx.eval(x)
         return loss
