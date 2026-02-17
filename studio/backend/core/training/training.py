@@ -369,8 +369,13 @@ class TrainingBackend:
             True if training is in progress, False otherwise
         """
         try:
-            # If user requested stop, training is no longer considered active
-            if self.trainer.should_stop:
+            training_thread = getattr(self.trainer, "training_thread", None)
+            if training_thread and training_thread.is_alive():
+                return True
+
+            # Stop requested and worker already exited => inactive.
+            # This allows UI to show stopped state + "Back to configuration".
+            if getattr(self.trainer, "should_stop", False):
                 return False
 
             progress = self.trainer.get_training_progress()
@@ -381,7 +386,23 @@ class TrainingBackend:
             # but haven't completed or errored yet
             if not is_active and not progress.is_completed and not progress.error:
                 status = progress.status_message or ""
-                if any(keyword in status.lower() for keyword in ["loading", "preparing", "training"]):
+                status_lower = status.lower()
+                if any(
+                    keyword in status_lower
+                    for keyword in ["cancelled", "canceled", "stopped", "completed", "ready to train"]
+                ):
+                    return False
+                if any(
+                    keyword in status_lower
+                    for keyword in [
+                        "loading",
+                        "preparing",
+                        "training",
+                        "configuring",
+                        "tokenizing",
+                        "starting",
+                    ]
+                ):
                     is_active = True
             return is_active
         except Exception as e:

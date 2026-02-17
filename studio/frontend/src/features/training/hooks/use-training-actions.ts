@@ -8,6 +8,7 @@ import { useDatasetPreviewDialogStore } from "../stores/dataset-preview-dialog-s
 import { useTrainingConfigStore } from "../stores/training-config-store";
 import { useTrainingRuntimeStore } from "../stores/training-runtime-store";
 import type { TrainingConfigState } from "../types/config";
+import { toast } from "sonner";
 
 export function useTrainingActions() {
   const isStarting = useTrainingRuntimeStore((state) => state.isStarting);
@@ -99,11 +100,18 @@ export function useTrainingActions() {
   }, []);
 
   const dismissTrainingRun = useCallback(async (): Promise<void> => {
-    useTrainingRuntimeStore.getState().resetRuntime();
     try {
       await resetTraining();
-    } catch {
-      // Frontend already reset; backend will catch up on next poll
+      useTrainingRuntimeStore.getState().resetRuntime();
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Stop training first, then return to configuration.";
+      toast.error("Training still active", {
+        description: message,
+      });
+      await syncTrainingRuntimeFromBackend();
     }
   }, []);
 
