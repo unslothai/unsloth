@@ -17,6 +17,8 @@ export function SharedChartSettings({
   outlierMode: OutlierMode;
   setOutlierMode: (value: OutlierMode) => void;
 }): ReactElement {
+  const showingAll = view.allStepsLength > 0 && view.effectiveWindowSize >= view.allStepsLength;
+
   return (
     <>
       <DropdownMenuSeparator />
@@ -25,7 +27,7 @@ export function SharedChartSettings({
         <div className="flex items-center justify-between">
           <Label className="text-xs">Window (steps)</Label>
           <span className="text-xs tabular-nums text-muted-foreground">
-            {view.effectiveWindowSize}
+            {showingAll ? "All" : view.effectiveWindowSize}
           </span>
         </div>
         <Slider
@@ -35,21 +37,9 @@ export function SharedChartSettings({
           max={Math.max(view.minWindow, view.allStepsLength)}
           step={1}
         />
-      </div>
-      <div className="flex flex-col gap-1.5 px-2 py-1.5">
-        <div className="flex items-center justify-between">
-          <Label className="text-xs">Pan</Label>
-          <span className="text-xs tabular-nums text-muted-foreground">
-            {view.effectivePanOffset}
-          </span>
-        </div>
-        <Slider
-          value={[view.effectivePanOffset]}
-          onValueChange={([v]) => view.setPanOffset(Math.max(0, Math.round(v)))}
-          min={0}
-          max={Math.max(0, view.maxPanOffset)}
-          step={1}
-        />
+        <span className="text-[10px] text-muted-foreground">
+          Always follows latest steps
+        </span>
       </div>
       <DropdownMenuSeparator />
       <DropdownMenuLabel className="text-xs">Y Scale</DropdownMenuLabel>

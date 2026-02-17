@@ -10,6 +10,7 @@ import {
   applyOutlierCap,
   buildStepTicks,
   buildYDomain,
+  clamp,
   compressSeries,
   ema,
   toLog1p,
@@ -24,8 +25,9 @@ export function ChartsContent({
   const [showRaw, setShowRaw] = useState(true);
   const [showSmoothed, setShowSmoothed] = useState(true);
   const [showAvgLine, setShowAvgLine] = useState(true);
-  const [windowSize, setWindowSize] = useState(DEFAULT_VISIBLE_POINTS);
-  const [panOffset, setPanOffset] = useState(0);
+  const [windowSize, setWindowSize] = useState<number | null>(
+    Math.max(24, Math.floor(DEFAULT_VISIBLE_POINTS / 2)),
+  );
 
   const [lossScale, setLossScale] = useState<ScaleMode>("linear");
   const [lrScale, setLrScale] = useState<ScaleMode>("linear");
@@ -65,19 +67,18 @@ export function ChartsContent({
     return Array.from(set).sort((a, b) => a - b);
   }, [reducedGradNormData, reducedLossData, reducedLrData]);
 
-  const effectiveWindowSize = Math.min(
-    Math.max(1, Math.round(windowSize)),
-    Math.max(1, allSteps.length),
-  );
-  const maxPanOffset = Math.max(0, allSteps.length - effectiveWindowSize);
-  const effectivePanOffset = Math.min(Math.max(0, Math.round(panOffset)), maxPanOffset);
+  const stepCount = Math.max(1, allSteps.length);
+  const effectiveWindowSize =
+    windowSize == null
+      ? stepCount
+      : clamp(Math.round(windowSize), 1, stepCount);
 
   const visibleStepDomain = useMemo<[number, number]>(() => {
     if (allSteps.length === 0) {
       return [0, 1];
     }
 
-    const endIndex = Math.max(0, allSteps.length - 1 - effectivePanOffset);
+    const endIndex = allSteps.length - 1;
     const startIndex = Math.max(0, endIndex - effectiveWindowSize + 1);
     const minStep = allSteps[0] ?? 0;
     const startStep = allSteps[startIndex] ?? minStep;
@@ -90,7 +91,7 @@ export function ChartsContent({
       return [Math.max(minStep, endStep - 6), endStep];
     }
     return [startStep, endStep];
-  }, [allSteps, effectivePanOffset, effectiveWindowSize]);
+  }, [allSteps, effectiveWindowSize]);
 
   const xAxisTicks = useMemo(
     () => buildStepTicks(visibleStepDomain[0], visibleStepDomain[1]),
@@ -222,10 +223,14 @@ export function ChartsContent({
     effectiveWindowSize,
     minWindow,
     allStepsLength: allSteps.length,
-    effectivePanOffset,
-    maxPanOffset,
-    setWindowSize: (value) => setWindowSize(value),
-    setPanOffset: (value) => setPanOffset(value),
+    setWindowSize: (value) => {
+      const clampedWindow = clamp(Math.round(value), 1, Math.max(1, allSteps.length));
+      if (clampedWindow >= allSteps.length) {
+        setWindowSize(null);
+        return;
+      }
+      setWindowSize(clampedWindow);
+    },
   };
 
   return (
