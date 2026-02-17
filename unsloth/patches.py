@@ -198,6 +198,8 @@ def patch_unsloth_zoo_for_mps() -> bool:
     # Mock unsloth_zoo.compiler for MPS compatibility
     mock_compiler = ModuleType("unsloth_zoo.compiler")
     mock_compiler.create_new_function = lambda fn: fn
+    mock_compiler.get_transformers_model_type = lambda *args, **kwargs: "llama"
+    mock_compiler.unsloth_compile_transformers = lambda *args, **kwargs: None
     sys.modules["unsloth_zoo.compiler"] = mock_compiler
 
     # Mock unsloth_zoo.training_utils for MPS compatibility
