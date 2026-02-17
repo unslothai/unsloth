@@ -26,6 +26,8 @@ export interface TrainingStatusResponse {
     steps?: number[];
     loss?: number[];
     lr?: number[];
+    grad_norm?: number[];
+    grad_norm_steps?: number[];
     eval_loss?: number[];
     eval_steps?: number[];
   } | null;
@@ -35,6 +37,8 @@ export interface TrainingMetricsResponse {
   loss_history: number[];
   lr_history: number[];
   step_history: number[];
+  grad_norm_history: number[];
+  grad_norm_step_history: number[];
   current_loss: number | null;
   current_lr: number | null;
   current_step: number | null;
