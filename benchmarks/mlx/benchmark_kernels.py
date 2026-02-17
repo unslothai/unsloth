@@ -349,8 +349,8 @@ def benchmark_grouped_gemm(
     def compiled_grouped_gemm(x, W, m_cumsum, num_experts, expert_dim):
         Y = mx.zeros((x.shape[0], expert_dim), dtype=x.dtype)
         for i in range(num_experts):
-            m_start = m_cumsum[i]
-            m_end = m_cumsum[i + 1]
+            m_start = int(m_cumsum[i])
+            m_end = int(m_cumsum[i + 1])
             W_exp = W[i * expert_dim:(i + 1) * expert_dim]
             X_exp = x[m_start:m_end]
             Y_exp = X_exp @ W_exp.T
@@ -366,8 +366,8 @@ def benchmark_grouped_gemm(
     def eager_grouped_gemm(x, W, m_cumsum, num_experts, expert_dim):
         Y = mx.zeros((x.shape[0], expert_dim), dtype=x.dtype)
         for i in range(num_experts):
-            m_start = m_cumsum[i]
-            m_end = m_cumsum[i + 1]
+            m_start = int(m_cumsum[i])
+            m_end = int(m_cumsum[i + 1])
             W_exp = W[i * expert_dim:(i + 1) * expert_dim]
             X_exp = x[m_start:m_end]
             Y_exp = X_exp @ W_exp.T
