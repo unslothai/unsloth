@@ -37,15 +37,32 @@ const initialState: TrainingConfigState = {
   ...DEFAULT_HYPERPARAMS,
 };
 
-// AbortController for in-flight vision checks so rapid model changes
-// cancel stale requests.
-let _visionCheckController: AbortController | null = null;
-
 // AbortController for in-flight dataset multimodal checks.
 let _datasetCheckController: AbortController | null = null;
 
 // AbortController for in-flight model default loads.
 let _modelConfigController: AbortController | null = null;
+
+const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> = new Set([
+  "modelType",
+  "isCheckingVision",
+  "isVisionModel",
+  "isLoadingModelDefaults",
+  "modelDefaultsError",
+  "isCheckingDataset",
+  "isDatasetMultimodal",
+]);
+
+function partializePersistedState(
+  state: TrainingConfigStore,
+): Partial<TrainingConfigStore> {
+  return Object.fromEntries(
+    Object.entries(state).filter(([key]) => {
+      const stateKey = key as keyof TrainingConfigState;
+      return !NON_PERSISTED_STATE_KEYS.has(stateKey);
+    }),
+  ) as Partial<TrainingConfigStore>;
+}
 
 function clampStep(step: number): StepNumber {
   return Math.min(MAX_STEP, Math.max(MIN_STEP, step)) as StepNumber;
@@ -78,6 +95,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         _modelConfigController = controller;
         set({
           isLoadingModelDefaults: true,
+          isCheckingVision: true,
           modelDefaultsError: null,
         });
 
@@ -90,6 +108,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               ...mapBackendModelConfigToTrainingPatch(modelDetails.config),
               isVisionModel: modelDetails.is_vision,
               isLoadingModelDefaults: false,
+              isCheckingVision: false,
               modelDefaultsError: null,
               modelDefaultsAppliedFor: modelName,
             });
@@ -105,6 +124,20 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                   ? error.message
                   : "Failed to load model defaults",
             });
+
+            // Fallback vision check if config endpoint fails.
+            void checkVisionModel(modelName)
+              .then((isVision) => {
+                if (get().selectedModel !== modelName) return;
+                set({
+                  isVisionModel: isVision,
+                  isCheckingVision: false,
+                });
+              })
+              .catch(() => {
+                if (get().selectedModel !== modelName) return;
+                set({ isCheckingVision: false });
+              });
           });
       };
 
@@ -114,8 +147,6 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         nextStep: () => set({ currentStep: clampStep(get().currentStep + 1) }),
         prevStep: () => set({ currentStep: clampStep(get().currentStep - 1) }),
         setModelType: (modelType) => {
-          _visionCheckController?.abort();
-          _visionCheckController = null;
           _modelConfigController?.abort();
           _modelConfigController = null;
 
@@ -123,6 +154,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             modelType,
             selectedModel: null,
             isCheckingVision: false,
+            isVisionModel: false,
             isLoadingModelDefaults: false,
             modelDefaultsError: null,
             modelDefaultsAppliedFor: null,
@@ -132,14 +164,12 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           const previousModel = get().selectedModel;
           set({ selectedModel, modelDefaultsError: null });
 
-          _visionCheckController?.abort();
-          _visionCheckController = null;
-
           if (!selectedModel) {
             _modelConfigController?.abort();
             _modelConfigController = null;
             set({
               isCheckingVision: false,
+              isVisionModel: false,
               isLoadingModelDefaults: false,
               modelDefaultsError: null,
               modelDefaultsAppliedFor: null,
@@ -153,24 +183,6 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           if (shouldLoadDefaults) {
             void loadAndApplyModelDefaults(selectedModel);
           }
-
-          // Fire async backend check to determine if model is vision
-          const controller = new AbortController();
-          _visionCheckController = controller;
-          set({ isCheckingVision: true });
-
-          checkVisionModel(selectedModel)
-            .then((isVision) => {
-              if (controller.signal.aborted) return;
-              set({
-                isVisionModel: isVision,
-                isCheckingVision: false,
-              });
-            })
-            .catch(() => {
-              if (controller.signal.aborted) return;
-              set({ isCheckingVision: false });
-            });
         },
         ensureModelDefaultsLoaded: () => {
           const state = get();
@@ -302,26 +314,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         }
         return s as unknown as TrainingConfigStore;
       },
-      partialize: (state) => {
-        const {
-          modelType,
-          isCheckingVision,
-          isVisionModel,
-          isLoadingModelDefaults,
-          modelDefaultsError,
-          isCheckingDataset,
-          isDatasetMultimodal,
-          ...rest
-        } = state;
-        void modelType;
-        void isCheckingVision;
-        void isVisionModel;
-        void isLoadingModelDefaults;
-        void modelDefaultsError;
-        void isCheckingDataset;
-        void isDatasetMultimodal;
-        return rest;
-      },
+      partialize: partializePersistedState,
     },
   ),
 );
