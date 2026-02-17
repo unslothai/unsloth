@@ -43,13 +43,13 @@ export function TrainingSection() {
 
 
   return (
-    <div data-tour="studio-training" className="lg:col-span-4">
+    <div data-tour="studio-training" className="col-span-1 xl:col-span-4">
       <SectionCard
         icon={<HugeiconsIcon icon={ChartAverageIcon} className="size-5" />}
         title="Training"
         description="Monitor and control training"
         accent="blue"
-        className="min-h-[450px]"
+        className="md:min-h-[450px]"
       >
         <div className="flex flex-col gap-4">
         {/* Loss chart */}

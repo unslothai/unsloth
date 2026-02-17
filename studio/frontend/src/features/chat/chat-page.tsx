@@ -6,6 +6,13 @@ import {
 import { Thread } from "@/components/assistant-ui/thread";
 import { Button } from "@/components/ui/button";
 import { SidebarProvider, SidebarTrigger, useSidebar } from "@/components/ui/sidebar";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import {
@@ -127,7 +134,10 @@ const CompareContent = memo(function CompareContent({
   return (
     <CompareHandlesProvider handlesRef={handlesRef}>
       <div className="flex min-h-0 flex-1 flex-col">
-        <div data-tour="chat-compare-view" className="grid min-h-0 flex-1 grid-cols-2 px-0">
+        <div
+          data-tour="chat-compare-view"
+          className="grid min-h-0 flex-1 grid-cols-1 px-0 md:grid-cols-2"
+        >
           <div className="flex min-h-0 flex-col">
             <div className="px-3 py-1.5">
               <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
@@ -145,8 +155,8 @@ const CompareContent = memo(function CompareContent({
               </ChatRuntimeProvider>
             </div>
           </div>
-          <div className="flex min-h-0 flex-col">
-            <div className="text-end px-3 py-1.5">
+          <div className="flex min-h-0 flex-col border-t border-border/60 md:border-t-0 md:border-l">
+            <div className="px-3 py-1.5 text-start md:text-end">
               <span className="text-[10px] font-semibold uppercase tracking-wider text-primary">
                 Fine-tuned (LoRA)
               </span>
@@ -178,8 +188,23 @@ function InlineSidebar({
   children: ReactNode;
   side?: "left" | "right";
 }) {
-  const { state } = useSidebar();
+  const { state, isMobile, openMobile, setOpenMobile } = useSidebar();
   const collapsed = state === "collapsed";
+
+  if (isMobile) {
+    return (
+      <Sheet open={openMobile} onOpenChange={setOpenMobile}>
+        <SheetContent side={side} className="w-[18rem] p-0">
+          <SheetHeader className="sr-only">
+            <SheetTitle>Chat sidebar</SheetTitle>
+            <SheetDescription>Chat threads and actions</SheetDescription>
+          </SheetHeader>
+          <div className="h-full overflow-auto">{children}</div>
+        </SheetContent>
+      </Sheet>
+    );
+  }
+
   return (
     <div
       className="group shrink-0 h-full"
@@ -447,13 +472,13 @@ export function ChatPage(): ReactElement {
   }, [modelSelectorLocked, tour.open]);
 
   return (
-    <div className="h-[calc(100vh-4rem)] bg-background overflow-hidden">
+    <div className="h-[calc(100dvh-4rem)] bg-background overflow-hidden">
     <GuidedTour {...tour.tourProps} />
     <SidebarProvider
       defaultOpen={true}
       open={sidebarOpen}
       onOpenChange={setSidebarOpen}
-      className="!min-h-0 h-full max-w-7xl mx-auto px-4"
+      className="!min-h-0 h-full w-full max-w-7xl mx-auto px-2 sm:px-4"
       style={
         {
           "--sidebar-width": "14rem",
@@ -472,7 +497,7 @@ export function ChatPage(): ReactElement {
       </InlineSidebar>
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <div className="flex h-11 shrink-0 items-center px-2">
+        <div className="flex h-11 shrink-0 items-center px-1.5 sm:px-2">
           <div className="flex items-center gap-1">
             <SidebarTrigger />
             <TopBarActions
@@ -491,6 +516,7 @@ export function ChatPage(): ReactElement {
               onOpenChange={handleModelSelectorOpenChange}
               triggerDataTour="chat-model-selector"
               contentDataTour="chat-model-selector-popover"
+              className="max-w-[62vw] sm:max-w-none"
             />
           </div>
           {modelsError && (

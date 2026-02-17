@@ -116,13 +116,13 @@ export function ParamsSection(): ReactElement {
   const epochsSliderMax = Math.max(20, store.epochs, 1);
 
   return (
-    <div data-tour="studio-params" className="lg:col-span-4">
+    <div data-tour="studio-params" className="col-span-1 xl:col-span-4">
       <SectionCard
         icon={<HugeiconsIcon icon={Settings04Icon} className="size-5" />}
         title="Parameters"
         description="Configure training hyperparameters"
         accent="orange"
-        className="min-h-[450px]"
+        className="md:min-h-[450px]"
       >
         <div className="flex flex-col gap-4">
         {/* Max Steps */}
