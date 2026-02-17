@@ -45,7 +45,7 @@ import {
   Search01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 export function ModelSelectionStep() {
@@ -53,6 +53,7 @@ export function ModelSelectionStep() {
     modelType,
     selectedModel,
     setSelectedModel,
+    ensureModelDefaultsLoaded,
     trainingMethod,
     setTrainingMethod,
     hfToken,
@@ -62,6 +63,7 @@ export function ModelSelectionStep() {
       modelType: s.modelType,
       selectedModel: s.selectedModel,
       setSelectedModel: s.setSelectedModel,
+      ensureModelDefaultsLoaded: s.ensureModelDefaultsLoaded,
       trainingMethod: s.trainingMethod,
       setTrainingMethod: s.setTrainingMethod,
       hfToken: s.hfToken,
@@ -90,6 +92,10 @@ export function ModelSelectionStep() {
     fetchMore,
     hfResults.length,
   );
+
+  useEffect(() => {
+    ensureModelDefaultsLoaded();
+  }, [selectedModel, ensureModelDefaultsLoaded]);
 
   return (
     <FieldGroup>
