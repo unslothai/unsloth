@@ -29,6 +29,10 @@ import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { ChatSettingsPanel } from "./chat-settings-sheet";
 import { db } from "./db";
 import { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
+import {
+  clearTrainingCompareHandoff,
+  getTrainingCompareHandoff,
+} from "./lib/training-compare-handoff";
 import { ChatRuntimeProvider } from "./runtime-provider";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import {
@@ -40,6 +44,43 @@ import {
 import { ThreadSidebar } from "./thread-sidebar";
 import type { ChatView } from "./types";
 import { buildChatTourSteps } from "./tour";
+
+type LoraCandidate = {
+  id: string;
+  baseModel: string;
+  updatedAt?: number;
+};
+
+function normalizeModelRef(value: string | null | undefined): string {
+  return value?.trim().toLowerCase() ?? "";
+}
+
+function pickBestLoraForBase(
+  loras: LoraCandidate[],
+  baseModel: string | null,
+): LoraCandidate | null {
+  if (loras.length === 0) return null;
+  const sorted = [...loras].sort(
+    (a, b) => (b.updatedAt ?? -1) - (a.updatedAt ?? -1),
+  );
+  const normalizedBase = normalizeModelRef(baseModel);
+  if (!normalizedBase) return sorted[0];
+
+  const exact = sorted.find(
+    (lora) => normalizeModelRef(lora.baseModel) === normalizedBase,
+  );
+  if (exact) return exact;
+
+  const partial = sorted.find((lora) => {
+    const normalizedLoraBase = normalizeModelRef(lora.baseModel);
+    if (!normalizedLoraBase) return false;
+    return (
+      normalizedLoraBase.includes(normalizedBase) ||
+      normalizedBase.includes(normalizedLoraBase)
+    );
+  });
+  return partial ?? sorted[0];
+}
 
 const SingleContent = memo(function SingleContent({
   threadId,
@@ -207,7 +248,9 @@ export function ChatPage(): ReactElement {
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
   const [modelSelectorLocked, setModelSelectorLocked] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const viewBeforeCompareRef = useRef<ChatView | null>(null);
+  const [viewBeforeCompare, setViewBeforeCompare] = useState<ChatView | null>(
+    null,
+  );
   const inferenceParams = useChatRuntimeStore((state) => state.params);
   const setInferenceParams = useChatRuntimeStore((state) => state.setParams);
   const autoTitle = useChatRuntimeStore((state) => state.autoTitle);
@@ -216,6 +259,13 @@ export function ChatPage(): ReactElement {
   const lorasFromStore = useChatRuntimeStore((state) => state.loras);
   const modelsError = useChatRuntimeStore((state) => state.modelsError);
   const { refresh, selectModel, ejectModel } = useChatModelRuntime();
+  const refreshRef = useRef(refresh);
+  const selectModelRef = useRef(selectModel);
+
+  useEffect(() => {
+    refreshRef.current = refresh;
+    selectModelRef.current = selectModel;
+  }, [refresh, selectModel]);
   const canCompare = useMemo(() => {
     const selected = inferenceParams.checkpoint;
     if (!selected) return false;
@@ -262,18 +312,15 @@ export function ChatPage(): ReactElement {
   const openSidebar = useCallback(() => setSidebarOpen(true), []);
 
   const enterCompare = useCallback(() => {
-    if (viewBeforeCompareRef.current == null) {
-      viewBeforeCompareRef.current = view;
-    }
+    setViewBeforeCompare((prev) => prev ?? view);
     setView({ mode: "compare", pairId: crypto.randomUUID() });
   }, [view]);
 
   const exitCompare = useCallback(() => {
-    const prev = viewBeforeCompareRef.current;
-    if (!prev) return;
-    viewBeforeCompareRef.current = null;
-    setView(prev);
-  }, []);
+    if (!viewBeforeCompare) return;
+    setView(viewBeforeCompare);
+    setViewBeforeCompare(null);
+  }, [viewBeforeCompare]);
 
   const models = useMemo<ModelOption[]>(
     () =>
@@ -297,8 +344,68 @@ export function ChatPage(): ReactElement {
   );
 
   useEffect(() => {
+    if (getTrainingCompareHandoff()) return;
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    const handoff = getTrainingCompareHandoff();
+    if (!handoff) return;
+    console.info("[chat-handoff] received", handoff);
+    function clearHandoff(): void {
+      clearTrainingCompareHandoff();
+    }
+
+    let canceled = false;
+    void (async () => {
+      try {
+        console.info("[chat-handoff] refreshing models+loras");
+        await refreshRef.current();
+        if (canceled) return;
+
+        const state = useChatRuntimeStore.getState();
+        const targetLora = pickBestLoraForBase(state.loras, handoff.baseModel);
+        if (targetLora) {
+          console.info("[chat-handoff] loading lora", {
+            id: targetLora.id,
+            baseModel: targetLora.baseModel,
+          });
+          await selectModelRef.current({ id: targetLora.id, isLora: true });
+          if (canceled) return;
+          setView({ mode: "compare", pairId: crypto.randomUUID() });
+          clearHandoff();
+          console.info("[chat-handoff] loaded lora + opened compare");
+          return;
+        }
+
+        if (
+          handoff.baseModel &&
+          state.models.some((model) => model.id === handoff.baseModel)
+        ) {
+          console.info("[chat-handoff] no lora match, loading base", {
+            id: handoff.baseModel,
+          });
+          await selectModelRef.current({ id: handoff.baseModel, isLora: false });
+          if (canceled) return;
+        } else {
+          console.warn("[chat-handoff] no lora/base match found", {
+            requestedBaseModel: handoff.baseModel,
+            loraCount: state.loras.length,
+            modelCount: state.models.length,
+          });
+        }
+        clearHandoff();
+        console.info("[chat-handoff] completed");
+      } catch (error) {
+        console.error("[chat-handoff] failed", error);
+        clearHandoff();
+      }
+    })();
+
+    return () => {
+      canceled = true;
+    };
+  }, []);
 
   const tourSteps = useMemo(
     () =>
@@ -332,8 +439,11 @@ export function ChatPage(): ReactElement {
   useEffect(() => {
     if (tour.open) return;
     if (!modelSelectorLocked) return;
-    setModelSelectorLocked(false);
-    setModelSelectorOpen(false);
+    const timeoutId = window.setTimeout(() => {
+      setModelSelectorLocked(false);
+      setModelSelectorOpen(false);
+    }, 0);
+    return () => window.clearTimeout(timeoutId);
   }, [modelSelectorLocked, tour.open]);
 
   return (

@@ -31,12 +31,14 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useState, type ReactElement, type ReactNode } from "react";
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { useShallow } from "zustand/react/shallow";
 import { useGpuUtilization } from "@/hooks";
+import { setTrainingCompareHandoff } from "@/features/chat";
 import { formatDuration, formatNumber, phaseColors, phaseLabel } from "./progress-section-lib";
 
 export function ProgressSection(): ReactElement {
+  const navigate = useNavigate();
   const runtime = useTrainingRuntimeStore(
     useShallow((state) => ({
       phase: state.phase,
@@ -105,6 +107,10 @@ export function ProgressSection(): ReactElement {
   const showHalfwayHint =
     runtime.phase === "training" && pct >= 50 && pct < 100;
   const showCompletedHint = runtime.phase === "completed";
+  const handleCompareInChat = () => {
+    setTrainingCompareHandoff(config.selectedModel);
+    void navigate({ to: "/chat" });
+  };
 
   const stoppedLoss = getDisplayMetric(
     runtime.isTrainingRunning,
@@ -265,8 +271,8 @@ export function ProgressSection(): ReactElement {
               </p>
               {showCompletedHint && (
                 <div className="mt-2 flex flex-wrap gap-2">
-                  <Button asChild={true} size="xs">
-                    <Link to="/chat">Compare in Chat</Link>
+                  <Button size="xs" onClick={handleCompareInChat}>
+                    Compare in Chat
                   </Button>
                   <Button asChild={true} size="xs" variant="outline">
                     <Link to="/export">Export Model</Link>
