@@ -18,7 +18,7 @@ Requirements:
 import sys
 import time
 import argparse
-from typing import Callable, Any
+from typing import Callable, Any, Optional
 
 import mlx.core as mx
 
@@ -47,6 +47,7 @@ def benchmark_function(
     mx.eval(func(*args, **kwargs))
     
     start = time.perf_counter()
+    out = None
     for _ in range(iters):
         out = func(*args, **kwargs)
     mx.eval(out)
@@ -61,7 +62,7 @@ def print_benchmark_header(title: str):
     print("=" * 70)
 
 
-def print_result(name: str, time_ms: float, baseline: float = None):
+def print_result(name: str, time_ms: float, baseline: Optional[float] = None):
     speedup = f"{baseline/time_ms:.2f}x" if baseline else ""
     print(f"  {name:<30} {time_ms:>8.3f} ms  {speedup}")
 
@@ -166,13 +167,14 @@ def benchmark_rope(
     print(f"  {'Implementation':<30} {'Time':>12}  {'Speedup'}")
     print("-" * 52)
     
+    half = D // 2
+    
     Q = mx.random.normal(shape=(B, H, S, D))
     cos = mx.broadcast_to(mx.random.normal(shape=(1, 1, S, D)), (B, H, S, D))
     sin = mx.broadcast_to(mx.random.normal(shape=(1, 1, S, D)), (B, H, S, D))
     
     @mx.compile
     def custom_rope_kernel(q, cos, sin):
-        half = q.shape[-1] // 2
         q1 = q[..., :half]
         q2 = q[..., half:]
         cos1 = cos[..., :half]
@@ -191,7 +193,6 @@ def benchmark_rope(
     
     @mx.compile
     def compiled_rope(q, cos, sin):
-        half = q.shape[-1] // 2
         q1 = q[..., :half]
         q2 = q[..., half:]
         cos1 = cos[..., :half]
@@ -204,12 +205,11 @@ def benchmark_rope(
     
     compiled_time = benchmark_function(
         lambda: compiled_rope(Q, cos, sin),
-        name="Compiled RoPE", iters=iters
+        name="mx.compile", iters=iters
     )
     print_result("mx.compile", compiled_time, custom_time)
     
     def eager_rope(q, cos, sin):
-        half = q.shape[-1] // 2
         q1 = q[..., :half]
         q2 = q[..., half:]
         cos1 = cos[..., :half]
