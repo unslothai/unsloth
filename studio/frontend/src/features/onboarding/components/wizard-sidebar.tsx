@@ -8,8 +8,8 @@ export function WizardSidebar() {
   const progress = ((currentStep - 1) / (STEPS.length - 1)) * 100;
 
   return (
-    <aside className="w-64 flex flex-col gap-4 p-6 shrink-0 bg-muted/70">
-      <div className="flex items-center gap-3 py-2">
+    <aside className="w-full shrink-0 bg-muted/70 p-4 md:w-64 md:p-6">
+      <div className="flex items-center gap-3 py-1 md:py-2">
         <img
           src="https://unsloth.ai/cgi/image/unsloth_sticker_no_shadow_ldN4V4iydw00qSIIWDCUv.png?width=96&quality=80&format=auto"
           alt="Unsloth"
@@ -20,8 +20,13 @@ export function WizardSidebar() {
           <span className="text-xs text-muted-foreground">Studio</span>
         </div>
       </div>
-      <Progress value={progress} className="h-1.5" />
-      <nav className="flex flex-col gap-1">
+      <div className="mt-3 md:mt-0">
+        <Progress value={progress} className="h-1.5" />
+      </div>
+      <p className="mt-2 text-xs text-muted-foreground md:hidden">
+        Step {currentStep} of {STEPS.length}
+      </p>
+      <nav className="mt-3 hidden flex-col gap-1 md:flex">
         {STEPS.map((step) => (
           <WizardStepItem key={step.number} step={step} />
         ))}
