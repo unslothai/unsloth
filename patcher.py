@@ -909,7 +909,14 @@ class MacPatcher:
                       "tokenizer_utils", "training_utils", "vision_utils", "temporary_patches",
                       "patching_utils", "gradient_checkpointing", "loss_utils", "compiler",
                       "vllm_utils", "rl_environments", "saving_utils", "llama_cpp",
-                      "dataset_utils", "rl_replacements", "logging_utils", "flex_attention"]
+                      "dataset_utils", "rl_replacements", "logging_utils", "flex_attention",
+                      "fused_losses", "fused_losses.cross_entropy_loss"]
+            
+            for submodule in patched:
+                full_name = f"unsloth_zoo.{submodule}" if "." not in submodule or not submodule.startswith("unsloth_zoo") else submodule
+                if full_name not in sys.modules:
+                    sys.modules[full_name] = self._create_unsloth_zoo_mock_module(full_name, loader)
+                    print(f"[MLX MOCK] pre-populated: {full_name}")
             
             return self._create_patch_result(name, PatchStatus.SUCCESS, f"mocked: {', '.join(patched)}")
             
