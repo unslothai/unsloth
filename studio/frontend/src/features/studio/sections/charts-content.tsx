@@ -117,12 +117,13 @@ function buildStepTicks(min: number, max: number, targetCount = 6): number[] {
 }
 
 function buildYDomain(values: number[]): [number, number] {
-  if (values.length === 0) {
+  const finiteValues = values.filter((value) => Number.isFinite(value));
+  if (finiteValues.length === 0) {
     return [0, 1];
   }
 
-  const min = Math.min(...values);
-  const max = Math.max(...values);
+  const min = Math.min(...finiteValues);
+  const max = Math.max(...finiteValues);
 
   if (min === max) {
     const base = Math.abs(min);
@@ -240,7 +241,8 @@ export function ChartsContent({
           (point) =>
             point.step >= visibleStepDomain[0] && point.step <= visibleStepDomain[1],
         )
-        .map((point) => point.gradNorm),
+        .map((point) => point.gradNorm)
+        .filter((value) => Number.isFinite(value)),
     [reducedGradNormData, visibleStepDomain],
   );
 
@@ -251,7 +253,8 @@ export function ChartsContent({
           (point) =>
             point.step >= visibleStepDomain[0] && point.step <= visibleStepDomain[1],
         )
-        .map((point) => point.lr),
+        .map((point) => point.lr)
+        .filter((value) => Number.isFinite(value)),
     [reducedLrData, visibleStepDomain],
   );
 
@@ -345,6 +348,7 @@ export function ChartsContent({
             <LineChart
               data={reducedLossData}
               syncId={CHART_SYNC_ID}
+              syncMethod="value"
               accessibilityLayer={true}
               margin={{ left: 0, right: 8 }}
             >
@@ -444,6 +448,7 @@ export function ChartsContent({
             <LineChart
               data={reducedGradNormData}
               syncId={CHART_SYNC_ID}
+              syncMethod="value"
               accessibilityLayer={true}
               margin={{ left: 0, right: 8 }}
             >
@@ -509,6 +514,7 @@ export function ChartsContent({
             <LineChart
               data={reducedLrData}
               syncId={CHART_SYNC_ID}
+              syncMethod="value"
               accessibilityLayer={true}
               margin={{ left: 0, right: 8 }}
             >
@@ -536,7 +542,10 @@ export function ChartsContent({
                 tickMargin={4}
                 fontSize={10}
                 width={52}
-                tickFormatter={(value) => Number(value).toExponential(0)}
+                tickFormatter={(value) => {
+                  const num = Number(value);
+                  return Number.isFinite(num) ? num.toExponential(0) : "0e+0";
+                }}
               />
               <ChartTooltip
                 content={
@@ -544,7 +553,10 @@ export function ChartsContent({
                     labelFormatter={(_value, payload) =>
                       `Step ${payload?.[0]?.payload?.step ?? ""}`
                     }
-                    formatter={(value) => [Number(value).toExponential(3), "LR"]}
+                    formatter={(value) => {
+                      const num = Number(value);
+                      return [Number.isFinite(num) ? num.toExponential(3) : "0e+0", "LR"];
+                    }}
                   />
                 }
               />
