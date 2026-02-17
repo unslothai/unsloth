@@ -1,0 +1,13 @@
+# Audio extras (installed with --no-deps --no-cache-dir)
+descript-audio-codec
+descript-audiotools
+julius
+torchcodec
+snac
+
+# TRL and related packages
+trl==0.23.1
+git+https://github.com/meta-pytorch/OpenEnv.git
+executorch==1.0.1
+torch-c-dlpack-ext
+sentence_transformers==5.2.0

@@ -2,6 +2,17 @@ import type { TourStep } from "@/features/tour";
 
 export const exportTourSteps: TourStep[] = [
   {
+    id: "training-run",
+    target: "export-training-run",
+    title: "Pick training run",
+    body: (
+      <>
+        Start by selecting the training run. Each run groups the checkpoints
+        produced by that specific fine-tuning job.
+      </>
+    ),
+  },
+  {
     id: "checkpoint",
     target: "export-checkpoint",
     title: "Pick checkpoint",

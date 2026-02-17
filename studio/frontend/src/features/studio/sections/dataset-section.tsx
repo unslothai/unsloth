@@ -121,13 +121,13 @@ export function DatasetSection() {
   );
 
   return (
-    <div data-tour="studio-dataset" className="lg:col-span-4">
+    <div data-tour="studio-dataset" className="col-span-1 xl:col-span-4">
       <SectionCard
         icon={<HugeiconsIcon icon={Database02Icon} className="size-5" />}
         title="Dataset"
         description="Select or upload training data"
         accent="indigo"
-        className="min-h-[450px]"
+        className="md:min-h-[450px]"
       >
         <div className="flex flex-col gap-4">
         <div className="flex flex-col gap-2">

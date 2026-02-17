@@ -39,7 +39,11 @@ import {
   checkVramFit,
   estimateLoadingVram,
 } from "@/lib/vram";
-import { useTrainingConfigStore } from "@/features/training";
+import {
+  listLocalModels,
+  type LocalModelInfo,
+  useTrainingConfigStore,
+} from "@/features/training";
 import type { TrainingMethod } from "@/types/training";
 import {
   ChipIcon,
@@ -49,7 +53,7 @@ import {
   Search01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 const METHOD_DOTS: Record<string, string> = {
@@ -97,6 +101,10 @@ export function ModelSection() {
   );
 
   const [inputValue, setInputValue] = useState("");
+  const [localModelInput, setLocalModelInput] = useState("");
+  const [localModels, setLocalModels] = useState<LocalModelInfo[]>([]);
+  const [isLoadingLocalModels, setIsLoadingLocalModels] = useState(true);
+  const [localModelsError, setLocalModelsError] = useState<string | null>(null);
   const selectingRef = useRef(false);
   const debouncedQuery = useDebouncedValue(inputValue);
 
@@ -112,6 +120,32 @@ export function ModelSection() {
     }
     setInputValue(val);
   }
+
+  function applyLocalModel(value: string) {
+    const next = value.trim();
+    if (!next) return;
+    setSelectedModel(next);
+  }
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void listLocalModels(controller.signal)
+      .then((models) => {
+        if (controller.signal.aborted) return;
+        setLocalModels(models);
+      })
+      .catch((error) => {
+        if (controller.signal.aborted) return;
+        setLocalModelsError(
+          error instanceof Error ? error.message : "Failed to load local models",
+        );
+      })
+      .finally(() => {
+        if (controller.signal.aborted) return;
+        setIsLoadingLocalModels(false);
+      });
+    return () => controller.abort();
+  }, []);
   const task = modelType ? MODEL_TYPE_TO_HF_TASK[modelType] : undefined;
   const {
     results: hfResults,
@@ -130,6 +164,33 @@ export function ModelSection() {
     }
     return ids;
   }, [hfResults, selectedModel]);
+
+  const localMetaById = useMemo(() => {
+    const map = new Map<string, LocalModelInfo>();
+    for (const model of localModels) map.set(model.id, model);
+    return map;
+  }, [localModels]);
+
+  const localResultIds = useMemo(() => {
+    const ids = localModels.map((model) => model.id);
+    const manual = localModelInput.trim();
+    if (manual && !ids.includes(manual)) {
+      ids.unshift(manual);
+    }
+    return ids;
+  }, [localModelInput, localModels]);
+
+  const localFilteredIds = useMemo(() => {
+    const q = localModelInput.trim().toLowerCase();
+    if (!q) return localResultIds;
+    return localResultIds.filter((id) => {
+      const meta = localMetaById.get(id);
+      if (id.toLowerCase().includes(q)) return true;
+      if (meta?.display_name.toLowerCase().includes(q)) return true;
+      if (meta?.path.toLowerCase().includes(q)) return true;
+      return false;
+    });
+  }, [localMetaById, localModelInput, localResultIds]);
 
   // Pre-compute VRAM fit status for every model in the current result set.
   // Keyed by model id so the render callback is a simple O(1) lookup.
@@ -163,13 +224,14 @@ export function ModelSection() {
   }, [hfResults, gpu, trainingMethod]);
 
   const comboboxAnchorRef = useRef<HTMLDivElement>(null);
+  const localComboboxAnchorRef = useRef<HTMLDivElement>(null);
   const { scrollRef, sentinelRef } = useInfiniteScroll(
     fetchMore,
     hfResults.length,
   );
 
   return (
-    <div data-tour="studio-model" className="col-span-12">
+    <div data-tour="studio-model" className="col-span-1 md:col-span-2 xl:col-span-12">
       <SectionCard
         icon={<HugeiconsIcon icon={ChipIcon} className="size-5" />}
         title="Model"
@@ -179,7 +241,7 @@ export function ModelSection() {
         badge="2x Faster Training"
         className="shadow-border ring-1 ring-border"
       >
-        <div className="grid gap-4 lg:grid-cols-4">
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           <div data-tour="studio-local-model" className="flex flex-col gap-2">
             <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
               Local Model
@@ -200,12 +262,89 @@ export function ModelSection() {
               </TooltipContent>
             </Tooltip>
           </span>
-          <InputGroup className="bg-foreground text-background [&_input]:text-background [&_input]:placeholder:text-background/40 [&_svg]:text-background/50 hover:bg-foreground/90">
-            <InputGroupAddon>
-              <HugeiconsIcon icon={FolderSearchIcon} className="size-4" />
-            </InputGroupAddon>
-            <InputGroupInput placeholder="./models/my-model" />
-          </InputGroup>
+          <div ref={localComboboxAnchorRef}>
+            <Combobox
+              items={localResultIds}
+              filteredItems={localFilteredIds}
+              filter={null}
+              value={localModelInput || null}
+              onValueChange={(id) => {
+                const next = id ?? "";
+                setLocalModelInput(next);
+                if (next) setSelectedModel(next);
+              }}
+              onInputValueChange={setLocalModelInput}
+              itemToStringValue={(id) => id}
+              autoHighlight={true}
+            >
+              <ComboboxInput
+                placeholder={
+                  isLoadingLocalModels
+                    ? "Scanning local and cached models..."
+                    : "./models/my-model"
+                }
+                className="w-full bg-foreground text-background [&_input]:text-background [&_input]:placeholder:text-background/40 [&_svg]:text-background/50 hover:bg-foreground/90"
+                onBlur={() => applyLocalModel(localModelInput)}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter") return;
+                  event.preventDefault();
+                  applyLocalModel(localModelInput);
+                }}
+              >
+                <InputGroupAddon>
+                  <HugeiconsIcon icon={FolderSearchIcon} className="size-4" />
+                </InputGroupAddon>
+              </ComboboxInput>
+              <ComboboxContent anchor={localComboboxAnchorRef}>
+                {isLoadingLocalModels ? (
+                  <div className="flex items-center justify-center gap-2 py-4 text-xs text-muted-foreground">
+                    <Spinner className="size-4" /> Scanning...
+                  </div>
+                ) : localModelsError ? (
+                  <div className="px-3 py-2 text-xs text-red-500">
+                    {localModelsError}
+                  </div>
+                ) : (
+                  <ComboboxEmpty>No local models found</ComboboxEmpty>
+                )}
+                <ComboboxList className="p-1">
+                  {(id: string) => {
+                    const model = localMetaById.get(id);
+                    const source =
+                      model?.source === "hf_cache" ? "HF cache" : "Local dir";
+                    return (
+                      <ComboboxItem key={id} value={id} className="justify-between">
+                        <Tooltip>
+                          <TooltipTrigger asChild={true}>
+                            <span className="min-w-0 flex-1 truncate">
+                              {model?.display_name ?? id}
+                            </span>
+                          </TooltipTrigger>
+                          <TooltipContent side="left" className="max-w-xs break-all">
+                            {model?.path ?? id}
+                          </TooltipContent>
+                        </Tooltip>
+                        <span className="shrink-0 text-[10px] text-muted-foreground">
+                          {source}
+                        </span>
+                      </ComboboxItem>
+                    );
+                  }}
+                </ComboboxList>
+              </ComboboxContent>
+            </Combobox>
+          </div>
+          {isLoadingLocalModels ? (
+            <p className="text-[10px] text-muted-foreground">Scanning local models...</p>
+          ) : localModelsError ? (
+            <p className="text-[10px] text-red-500">{localModelsError}</p>
+          ) : (
+            <p className="text-[10px] text-muted-foreground">
+              {localModels.length > 0
+                ? `${localModels.length} local/cached models found`
+                : "No local models found. Enter path manually."}
+            </p>
+          )}
         </div>
 
           <div data-tour="studio-base-model" className="flex flex-col gap-2">

@@ -112,7 +112,10 @@ function ModelSelectorContent({
     <PopoverContent
       align="start"
       data-tour={dataTour}
-      className={cn("w-[440px] min-w-[440px] gap-0 p-2", className)}
+      className={cn(
+        "w-[min(440px,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] min-w-0 gap-0 p-2",
+        className,
+      )}
     >
       <Tabs defaultValue="hub" className="w-full">
         <TabsList className="mb-2 w-full">
