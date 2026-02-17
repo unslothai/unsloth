@@ -25,6 +25,20 @@ def pytest_configure(config):
     )
 
 
+def pytest_configure__before_run():
+    """Apply Mac patches BEFORE any tests run to avoid import errors."""
+    if sys.platform == "darwin":
+        try:
+            from patcher import patch_for_mac
+            patch_for_mac(verbose=False)
+        except Exception:
+            pass
+
+
+# Apply patches at module import time (before any test imports unsloth)
+pytest_configure__before_run()
+
+
 def pytest_collection_modifyitems(config, items):
     """Skip MLX-only tests on non-Mac platforms."""
     if sys.platform != "darwin":
