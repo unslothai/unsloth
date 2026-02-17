@@ -1,20 +1,18 @@
 import sys
 import types
 from unittest.mock import MagicMock
+from importlib.machinery import ModuleSpec
 import torch
 
 
-# Create a more realistic mock for modules that transformers/unsloth expect
 def create_mock_module(name):
-    mock = MagicMock(spec=types.ModuleType)
-    mock.__name__ = name
-    mock.__file__ = f"{name}.py"
-    mock.__path__ = []
-    # Set a dummy spec
-    from importlib.machinery import ModuleSpec
-
-    mock.__spec__ = ModuleSpec(name, None)
-    return mock
+    """Create a mock module that properly supports 'from X import Y' syntax."""
+    module = types.ModuleType(name)
+    module.__file__ = f"{name}.py"
+    module.__path__ = []
+    module.__spec__ = ModuleSpec(name, None)
+    module.__package__ = name.rsplit(".", 1)[0] if "." in name else name
+    return module
 
 
 # Mocking triton
