@@ -228,7 +228,7 @@ def benchmark_attention_training(B: int = 1, H: int = 32, S: int = 512, D: int =
     try:
         time_fast, mem_fast = benchmark_training_step(
             "mx.fast.sdpa",
-            lambda: mx.fast.scaled_dot_product_attention(Q, K, V),
+            lambda: mx.fast.scaled_dot_product_attention(Q, K, V, scale=scale),
             iters
         )
         print_result("mx.fast.sdpa", time_fast, mem_fast, baseline_time)
