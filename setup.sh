@@ -149,18 +149,30 @@ fi
 BEST_VER=$("$BEST_PY" --version 2>&1 | awk '{print $2}')
 echo "✅ Using $BEST_PY ($BEST_VER) — compatible (≤ 3.12.x)"
 
-"$BEST_PY" -m venv .venv
-source .venv/bin/activate
-run_quiet "pip upgrade" pip install --upgrade pip
-echo "   Installing unsloth-zoo + unsloth..."
-run_quiet "pip install unsloth" pip install unsloth-zoo unsloth
-echo "   Installing studio dependencies..."
-run_quiet "pip install extras" pip install typer fastapi uvicorn pydantic matplotlib pandas nest_asyncio "datasets==4.3.0" pyjwt easydict addict
-echo "✅ Python dependencies installed"
+if [ "$IS_COLAB" = true ]; then
+    # Colab: install packages directly without venv
+    run_quiet "pip upgrade" pip install --upgrade pip
+    echo "   Installing unsloth-zoo + unsloth..."
+    run_quiet "pip install unsloth" pip install unsloth-zoo unsloth
+    echo "   Installing studio dependencies..."
+    run_quiet "pip install extras" pip install typer fastapi uvicorn pydantic matplotlib pandas nest_asyncio "datasets==4.3.0" pyjwt easydict addict
+    echo "✅ Python dependencies installed"
+else
+    # Local: create venv
+    "$BEST_PY" -m venv .venv
+    source .venv/bin/activate
+    run_quiet "pip upgrade" pip install --upgrade pip
+    echo "   Installing unsloth-zoo + unsloth..."
+    run_quiet "pip install unsloth" pip install unsloth-zoo unsloth
+    echo "   Installing studio dependencies..."
+    run_quiet "pip install extras" pip install typer fastapi uvicorn pydantic matplotlib pandas nest_asyncio "datasets==4.3.0" pyjwt easydict addict
+    echo "✅ Python dependencies installed"
+fi
 
-# ── 7. Add shell alias ──
+# ── 7. Add shell alias (skip in Colab) ──
 # Note: venv activation does NOT persist across terminal sessions.
 # This alias hardcodes the venv python path so users don't need to activate.
+if [ "$IS_COLAB" = false ]; then
 echo ""
 REPO_DIR="$SCRIPT_DIR"
 
@@ -203,16 +215,27 @@ else
     echo "✅ Alias 'unsloth-ui' already exists in $SHELL_RC"
 fi
 
+fi  # End of "if not Colab" for shell alias setup
+
 echo ""
-echo "╔══════════════════════════════════════╗"
-echo "║           Setup Complete!            ║"
-echo "╠══════════════════════════════════════╣"
-if [ "$ALIAS_ADDED" = true ]; then
-    echo "║ Run 'source $SHELL_RC'"
-    echo "║ or open a new terminal, then:       ║"
+if [ "$IS_COLAB" = true ]; then
+    echo "╔══════════════════════════════════════╗"
+    echo "║           Setup Complete!            ║"
+    echo "╠══════════════════════════════════════╣"
+    echo "║ Unsloth Studio is ready to start    ║"
+    echo "║ in your Colab notebook!              ║"
+    echo "╚══════════════════════════════════════╝"
 else
-    echo "║ Launch with:                         ║"
+    echo "╔══════════════════════════════════════╗"
+    echo "║           Setup Complete!            ║"
+    echo "╠══════════════════════════════════════╣"
+    if [ "$ALIAS_ADDED" = true ]; then
+        echo "║ Run 'source $SHELL_RC'"
+        echo "║ or open a new terminal, then:       ║"
+    else
+        echo "║ Launch with:                         ║"
+    fi
+    echo "║                                      ║"
+    echo "║ unsloth-ui -H 0.0.0.0 -p 8000       ║"
+    echo "╚══════════════════════════════════════╝"
 fi
-echo "║                                      ║"
-echo "║ unsloth-ui -H 0.0.0.0 -p 8000       ║"
-echo "╚══════════════════════════════════════╝"
