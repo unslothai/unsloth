@@ -271,7 +271,7 @@ def run_all_benchmarks(args):
     print(" Forward + Backward Pass + Memory")
     print("=" * 60)
     print(f"Iterations: {args.iters}, Warmup: {args.warmup}")
-    print(f"Device: {mx.Device.default().device_type}")
+    print(f"Device: {mx.default_device()}")
 
     if args.benchmark == "all" or args.benchmark == "layernorm":
         benchmark_layer_norm_training(iters=args.iters, warmup=args.warmup)
