@@ -31,6 +31,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useState, type ReactElement, type ReactNode } from "react";
+import { Link } from "@tanstack/react-router";
 import { useShallow } from "zustand/react/shallow";
 import { useGpuUtilization } from "@/hooks";
 import { formatDuration, formatNumber, phaseColors, phaseLabel } from "./progress-section-lib";
@@ -101,6 +102,9 @@ export function ProgressSection(): ReactElement {
     elapsed != null && elapsed > 0
       ? runtime.currentStep / elapsed
       : null;
+  const showHalfwayHint =
+    runtime.phase === "training" && pct >= 50 && pct < 100;
+  const showCompletedHint = runtime.phase === "completed";
 
   const stoppedLoss = getDisplayMetric(
     runtime.isTrainingRunning,
@@ -198,7 +202,7 @@ export function ProgressSection(): ReactElement {
             >
               <HugeiconsIcon icon={StopIcon} className="size-3" /> Stop
             </Button>
-            <AlertDialogContent>
+            <AlertDialogContent overlayClassName="bg-background/40 supports-backdrop-filter:backdrop-blur-[1px]">
               <AlertDialogHeader>
                 <AlertDialogTitle>Stop Training</AlertDialogTitle>
                 <AlertDialogDescription>
@@ -251,6 +255,26 @@ export function ProgressSection(): ReactElement {
               />
             </div>
           </div>
+
+          {(showHalfwayHint || showCompletedHint) && (
+            <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/8 p-3">
+              <p className="text-xs font-medium text-emerald-900 dark:text-emerald-200">
+                {showCompletedHint
+                  ? "Training done. Next step: compare base vs fine-tuned outputs."
+                  : "Halfway done. Training is past 50%."}
+              </p>
+              {showCompletedHint && (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <Button asChild={true} size="xs">
+                    <Link to="/chat">Compare in Chat</Link>
+                  </Button>
+                  <Button asChild={true} size="xs" variant="outline">
+                    <Link to="/export">Export Model</Link>
+                  </Button>
+                </div>
+              )}
+            </div>
+          )}
 
           {runtime.error && (
             <p className="text-xs text-red-500 leading-relaxed">{runtime.error}</p>
