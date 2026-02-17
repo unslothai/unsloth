@@ -54,7 +54,7 @@ export function ExportDialog({
   checkpoint,
   exportMethod,
   quantLevels,
-  estimatedSize,
+  estimatedSize: _estimatedSize,
   baseModelName,
   isAdapter,
   destination,
@@ -101,176 +101,176 @@ export function ExportDialog({
             </DialogFooter>
           </>
         ) : (
-        <>
-        <DialogHeader>
-          <DialogTitle>Export Model</DialogTitle>
-          <DialogDescription>
-            Choose where to save your exported model.
-          </DialogDescription>
-        </DialogHeader>
+          <>
+            <DialogHeader>
+              <DialogTitle>Export Model</DialogTitle>
+              <DialogDescription>
+                Choose where to save your exported model.
+              </DialogDescription>
+            </DialogHeader>
 
-        <div className="flex gap-2">
-          <Button
-            variant={destination === "local" ? "dark" : "outline"}
-            onClick={() => onDestinationChange("local")}
-            disabled={exporting}
-            className="flex-1"
-          >
-            Save Locally
-          </Button>
-          <Button
-            variant={destination === "hub" ? "dark" : "outline"}
-            onClick={() => onDestinationChange("hub")}
-            disabled={exporting}
-            className="flex-1"
-          >
-            Push to Hub
-          </Button>
-        </div>
-
-        <AnimatePresence>
-          {destination === "hub" && (
-            <motion.div {...collapseAnim} className="overflow-hidden">
-              <div className="flex flex-col gap-4 px-0.5">
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="flex flex-col gap-1.5">
-                    <label className="text-xs font-medium text-muted-foreground">
-                      Username / Org
-                    </label>
-                    <Input
-                      placeholder="your-username"
-                      value={hfUsername}
-                      onChange={(e) => onHfUsernameChange(e.target.value)}
-                      disabled={exporting}
-                    />
-                  </div>
-                  <div className="flex flex-col gap-1.5">
-                    <label className="text-xs font-medium text-muted-foreground">
-                      Model Name
-                    </label>
-                    <Input
-                      placeholder="my-model-gguf"
-                      value={modelName}
-                      onChange={(e) => onModelNameChange(e.target.value)}
-                      disabled={exporting}
-                    />
-                  </div>
-                </div>
-
-                <div className="flex flex-col gap-1.5">
-                  <div className="flex items-center justify-between">
-                    <label className="text-xs font-medium text-muted-foreground">
-                      HF Write Token
-                    </label>
-                    <a
-                      href="https://huggingface.co/settings/tokens"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex items-center gap-1 text-[11px] text-emerald-600 hover:text-emerald-700 transition-colors"
-                    >
-                      Get token
-                      <HugeiconsIcon
-                        icon={ArrowRight01Icon}
-                        className="size-3"
-                      />
-                    </a>
-                  </div>
-                  <InputGroup>
-                    <InputGroupAddon>
-                      <HugeiconsIcon icon={Key01Icon} className="size-4" />
-                    </InputGroupAddon>
-                    <InputGroupInput
-                      type="password"
-                      placeholder="hf_..."
-                      value={hfToken}
-                      onChange={(e) => onHfTokenChange(e.target.value)}
-                      disabled={exporting}
-                    />
-                  </InputGroup>
-                  <p className="text-[11px] text-muted-foreground/70">
-                    Leave empty if already logged in via CLI.
-                  </p>
-                </div>
-
-                <div className="flex items-center gap-3">
-                  <Switch
-                    id="private-repo"
-                    size="sm"
-                    checked={privateRepo}
-                    onCheckedChange={onPrivateRepoChange}
-                    disabled={exporting}
-                  />
-                  <label
-                    htmlFor="private-repo"
-                    className="text-xs font-medium cursor-pointer"
-                  >
-                    Private Repository
-                  </label>
-                </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* Error banner */}
-        {exportError && (
-          <div className="flex items-start gap-2 rounded-lg bg-destructive/10 p-3 text-sm text-destructive">
-            <HugeiconsIcon icon={AlertCircleIcon} className="size-4 mt-0.5 shrink-0" />
-            <span>{exportError}</span>
-          </div>
-        )}
-
-        {/* Summary */}
-        <div className="rounded-xl bg-muted/50 p-3 text-xs text-muted-foreground flex flex-col gap-1">
-          <div className="flex justify-between">
-            <span>Base Model</span>
-            <span className="font-medium text-foreground">{baseModelName}</span>
-          </div>
-          <div className="flex justify-between">
-            <span>{isAdapter ? "Checkpoint" : "Model"}</span>
-            <span className="font-medium text-foreground">{checkpoint}</span>
-          </div>
-          <div className="flex justify-between">
-            <span>Export Method</span>
-            <span className="font-medium text-foreground">
-              {EXPORT_METHODS.find((m) => m.value === exportMethod)?.title}
-            </span>
-          </div>
-          {exportMethod === "gguf" && quantLevels.length > 0 && (
-            <div className="flex justify-between">
-              <span>Quantizations</span>
-              <span className="font-medium text-foreground">
-                {quantLevels.join(", ")}
-              </span>
+            <div className="flex gap-2">
+              <Button
+                variant={destination === "local" ? "dark" : "outline"}
+                onClick={() => onDestinationChange("local")}
+                disabled={exporting}
+                className="flex-1"
+              >
+                Save Locally
+              </Button>
+              <Button
+                variant={destination === "hub" ? "dark" : "outline"}
+                onClick={() => onDestinationChange("hub")}
+                disabled={exporting}
+                className="flex-1"
+              >
+                Push to Hub
+              </Button>
             </div>
-          )}
-          {/* TODO: unhide once estimated size comes from the backend API */}
-          {/* <div className="flex justify-between">
+
+            <AnimatePresence>
+              {destination === "hub" && (
+                <motion.div {...collapseAnim} className="overflow-hidden">
+                  <div className="flex flex-col gap-4 px-0.5">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="flex flex-col gap-1.5">
+                        <label className="text-xs font-medium text-muted-foreground">
+                          Username / Org
+                        </label>
+                        <Input
+                          placeholder="your-username"
+                          value={hfUsername}
+                          onChange={(e) => onHfUsernameChange(e.target.value)}
+                          disabled={exporting}
+                        />
+                      </div>
+                      <div className="flex flex-col gap-1.5">
+                        <label className="text-xs font-medium text-muted-foreground">
+                          Model Name
+                        </label>
+                        <Input
+                          placeholder="my-model-gguf"
+                          value={modelName}
+                          onChange={(e) => onModelNameChange(e.target.value)}
+                          disabled={exporting}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col gap-1.5">
+                      <div className="flex items-center justify-between">
+                        <label className="text-xs font-medium text-muted-foreground">
+                          HF Write Token
+                        </label>
+                        <a
+                          href="https://huggingface.co/settings/tokens"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex items-center gap-1 text-[11px] text-emerald-600 hover:text-emerald-700 transition-colors"
+                        >
+                          Get token
+                          <HugeiconsIcon
+                            icon={ArrowRight01Icon}
+                            className="size-3"
+                          />
+                        </a>
+                      </div>
+                      <InputGroup>
+                        <InputGroupAddon>
+                          <HugeiconsIcon icon={Key01Icon} className="size-4" />
+                        </InputGroupAddon>
+                        <InputGroupInput
+                          type="password"
+                          placeholder="hf_..."
+                          value={hfToken}
+                          onChange={(e) => onHfTokenChange(e.target.value)}
+                          disabled={exporting}
+                        />
+                      </InputGroup>
+                      <p className="text-[11px] text-muted-foreground/70">
+                        Leave empty if already logged in via CLI.
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-3">
+                      <Switch
+                        id="private-repo"
+                        size="sm"
+                        checked={privateRepo}
+                        onCheckedChange={onPrivateRepoChange}
+                        disabled={exporting}
+                      />
+                      <label
+                        htmlFor="private-repo"
+                        className="text-xs font-medium cursor-pointer"
+                      >
+                        Private Repository
+                      </label>
+                    </div>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {/* Error banner */}
+            {exportError && (
+              <div className="flex items-start gap-2 rounded-lg bg-destructive/10 p-3 text-sm text-destructive">
+                <HugeiconsIcon icon={AlertCircleIcon} className="size-4 mt-0.5 shrink-0" />
+                <span>{exportError}</span>
+              </div>
+            )}
+
+            {/* Summary */}
+            <div className="rounded-xl bg-muted/50 p-3 text-xs text-muted-foreground flex flex-col gap-1">
+              <div className="flex justify-between">
+                <span>Base Model</span>
+                <span className="font-medium text-foreground">{baseModelName}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>{isAdapter ? "Checkpoint" : "Model"}</span>
+                <span className="font-medium text-foreground">{checkpoint}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Export Method</span>
+                <span className="font-medium text-foreground">
+                  {EXPORT_METHODS.find((m) => m.value === exportMethod)?.title}
+                </span>
+              </div>
+              {exportMethod === "gguf" && quantLevels.length > 0 && (
+                <div className="flex justify-between">
+                  <span>Quantizations</span>
+                  <span className="font-medium text-foreground">
+                    {quantLevels.join(", ")}
+                  </span>
+                </div>
+              )}
+              {/* TODO: unhide once estimated size comes from the backend API */}
+              {/* <div className="flex justify-between">
             <span>Est. size</span>
             <span className="font-medium text-foreground">{estimatedSize}</span>
           </div> */}
-        </div>
+            </div>
 
-        <DialogFooter>
-          <Button
-            variant="outline"
-            onClick={() => onOpenChange(false)}
-            disabled={exporting}
-          >
-            Cancel
-          </Button>
-          <Button onClick={onExport} disabled={exporting}>
-            {exporting ? (
-              <span className="flex items-center gap-2">
-                <Spinner className="size-4" />
-                Exporting…
-              </span>
-            ) : (
-              "Start Export"
-            )}
-          </Button>
-        </DialogFooter>
-        </>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => onOpenChange(false)}
+                disabled={exporting}
+              >
+                Cancel
+              </Button>
+              <Button onClick={onExport} disabled={exporting}>
+                {exporting ? (
+                  <span className="flex items-center gap-2">
+                    <Spinner className="size-4" />
+                    Exporting…
+                  </span>
+                ) : (
+                  "Start Export"
+                )}
+              </Button>
+            </DialogFooter>
+          </>
         )}
       </DialogContent>
     </Dialog>
