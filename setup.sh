@@ -146,7 +146,7 @@ run_quiet "pip install torchao+transformers" pip install --force-reinstall --no-
 run_quiet "pip install triton_kernels" pip install --no-deps -r "$SCRIPT_DIR/requirements/triton-kernels.txt"
 # Patch: override llama_cpp.py with fix from unsloth-zoo branch
 LLAMA_CPP_DST="$(pip show unsloth-zoo | grep -i '^Location:' | awk '{print $2}')/unsloth_zoo/llama_cpp.py"
-curl -sSL "https://raw.githubusercontent.com/rolandtannous/unsloth-zoo/fix/use-sys-executable-for-pip-and-python/unsloth_zoo/llama_cpp.py" \
+curl -sSL "https://raw.githubusercontent.com/unslothai/unsloth-zoo/refs/heads/main/unsloth_zoo/llama_cpp.py" \
     -o "$LLAMA_CPP_DST"
 echo "   Installing studio dependencies..."
 run_quiet "pip install studio" pip install -r "$SCRIPT_DIR/requirements/studio.txt"
