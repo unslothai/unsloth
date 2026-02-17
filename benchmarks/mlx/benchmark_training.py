@@ -11,9 +11,8 @@ import mlx.core as mx
 
 def get_vram_mb() -> float:
     """Get peak VRAM usage in MB using MLX."""
-    # Reset peak memory to get the peak of the current batch
-    mx.metal.reset_peak_memory()
-    return mx.metal.get_peak_memory() / (1024 * 1024)
+    # Use non-deprecated API
+    return mx.get_peak_memory() / (1024 * 1024)
 
 
 def benchmark_training_step(
@@ -30,15 +29,18 @@ def benchmark_training_step(
     mx.eval()
     gc.collect()
 
-    # Reset peak and measure
-    mx.metal.reset_peak_memory()
+    # Reset peak (using non-deprecated API) and measure
+    mx.reset_peak_memory()
+    
     start = time.perf_counter()
     for _ in range(iters):
         _ = forward_backward_fn()
+    # Explicitly evaluate and synchronize for timing precision
     mx.eval()
+    mx.synchronize() 
     end = time.perf_counter()
     
-    peak_vram = mx.metal.get_peak_memory() / (1024 * 1024)
+    peak_vram = mx.get_peak_memory() / (1024 * 1024)
     avg_time = (end - start) / iters * 1000
     
     return avg_time, peak_vram
@@ -248,7 +250,7 @@ def main():
                         help="Which benchmark to run")
     parser.add_argument("-i", "--iters", type=int, default=50, help="Number of iterations")
     parser.add_argument("-w", "--warmup", type=int, default=10, help="Warmup iterations")
-    parser.add_argument("--batch-size", type=int, default=4, help="Batch size")
+    parser.add_argument("--batch-size", type=int, default=16, help="Batch size")
     parser.add_argument("--seq-len", type=int, default=2048, help="Sequence length")
     args = parser.parse_args()
 
