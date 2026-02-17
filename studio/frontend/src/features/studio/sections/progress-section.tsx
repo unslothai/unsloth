@@ -30,7 +30,7 @@ import {
   ZapIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
+import { useState, type ReactElement, type ReactNode } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useGpuUtilization } from "@/hooks";
 import { formatDuration, formatNumber, phaseColors, phaseLabel } from "./progress-section-lib";
@@ -52,6 +52,9 @@ export function ProgressSection(): ReactElement {
       etaSeconds: state.etaSeconds,
       currentNumTokens: state.currentNumTokens,
       isTrainingRunning: state.isTrainingRunning,
+      lossHistory: state.lossHistory,
+      lrHistory: state.lrHistory,
+      gradNormHistory: state.gradNormHistory,
     })),
   );
 
@@ -75,8 +78,6 @@ export function ProgressSection(): ReactElement {
   const { stopTrainingRun } = useTrainingActions();
   const gpu = useGpuUtilization(runtime.isTrainingRunning);
   const [stopDialogOpen, setStopDialogOpen] = useState(false);
-  const localStartAtRef = useRef<number | null>(null);
-  const [, setLocalTick] = useState(0);
 
   const pct =
     runtime.totalSteps > 0
@@ -89,31 +90,7 @@ export function ProgressSection(): ReactElement {
       )
       : Math.round(runtime.progressPercent);
 
-  useEffect(() => {
-    if (runtime.elapsedSeconds != null && runtime.elapsedSeconds >= 0) {
-      localStartAtRef.current = Date.now() - runtime.elapsedSeconds * 1000;
-      return;
-    }
-    if (runtime.currentStep > 0 && localStartAtRef.current == null) {
-      localStartAtRef.current = Date.now();
-    }
-  }, [runtime.currentStep, runtime.elapsedSeconds]);
-
-  useEffect(() => {
-    if (!runtime.isTrainingRunning) {
-      return;
-    }
-    const timer = window.setInterval(() => {
-      setLocalTick((prev) => prev + 1);
-    }, 1000);
-    return () => window.clearInterval(timer);
-  }, [runtime.isTrainingRunning]);
-
-  const elapsed =
-    runtime.elapsedSeconds ??
-    (localStartAtRef.current == null
-      ? null
-      : Math.max(0, Math.floor((Date.now() - localStartAtRef.current) / 1000)));
+  const elapsed = runtime.elapsedSeconds;
   const derivedEta =
     elapsed != null && pct > 0
       ? Math.round((elapsed * (100 - pct)) / Math.max(pct, 1))
@@ -124,6 +101,20 @@ export function ProgressSection(): ReactElement {
     elapsed != null && elapsed > 0
       ? runtime.currentStep / elapsed
       : null;
+
+  const stoppedLoss = getDisplayMetric(
+    runtime.isTrainingRunning,
+    runtime.currentLoss,
+    runtime.lossHistory,
+  );
+  const stoppedLr = getDisplayMetric(
+    runtime.isTrainingRunning,
+    runtime.currentLearningRate,
+    runtime.lrHistory,
+  );
+  const stoppedGradNorm = runtime.isTrainingRunning
+    ? runtime.currentGradNorm
+    : lastNonZeroValue(runtime.gradNormHistory) ?? runtime.currentGradNorm;
 
   const configItems = [
     {
@@ -269,19 +260,19 @@ export function ProgressSection(): ReactElement {
             <div>
               <p className="text-xs text-muted-foreground">Loss</p>
               <p className="text-3xl font-bold tabular-nums tracking-tight">
-                {runtime.currentLoss.toFixed(4)}
+                {stoppedLoss.toFixed(4)}
               </p>
             </div>
             <div>
               <p className="text-xs text-muted-foreground">LR</p>
               <p className="text-lg font-semibold tabular-nums">
-                {runtime.currentLearningRate.toExponential(2)}
+                {stoppedLr.toExponential(2)}
               </p>
             </div>
             <div>
               <p className="text-xs text-muted-foreground">Grad Norm</p>
               <p className="text-lg font-semibold tabular-nums">
-                {formatNumber(runtime.currentGradNorm, 3)}
+                {formatNumber(stoppedGradNorm, 3)}
               </p>
             </div>
             <div>
@@ -350,6 +341,27 @@ export function ProgressSection(): ReactElement {
       </div>
     </SectionCard>
   );
+}
+
+function lastNonZeroValue(points: { value: number }[]): number | null {
+  for (let i = points.length - 1; i >= 0; i -= 1) {
+    const value = points[i]?.value;
+    if (Number.isFinite(value) && value !== 0) {
+      return value;
+    }
+  }
+  return null;
+}
+
+function getDisplayMetric(
+  isTrainingRunning: boolean,
+  currentValue: number,
+  history: { value: number }[],
+): number {
+  if (isTrainingRunning) {
+    return currentValue;
+  }
+  return lastNonZeroValue(history) ?? currentValue;
 }
 
 function GpuStat({
