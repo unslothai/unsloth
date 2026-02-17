@@ -31,12 +31,13 @@ def _read_checkpoint_loss(checkpoint_path: Path) -> Optional[float]:
 
 def scan_checkpoints(
     outputs_dir: str = "./outputs",
-) -> List[Tuple[str, List[Tuple[str, str, Optional[float]]]]]:
+) -> List[Tuple[str, List[Tuple[str, str, Optional[float]]], dict]]:
     """
     Scan outputs folder for training runs and their checkpoints.
 
     Returns:
-        List of tuples: [(model_name, [(display_name, checkpoint_path, loss), ...]), ...]
+        List of tuples: [(model_name, [(display_name, checkpoint_path, loss), ...], metadata), ...]
+        metadata keys: base_model, peft_type, lora_rank (all optional)
         The first entry in each checkpoint list is the main adapter; its loss is
         set to the loss of the last (highest-step) intermediate checkpoint.
     """
@@ -57,6 +58,32 @@ def scan_checkpoints(
 
             if not (config_file.exists() or adapter_config.exists()):
                 continue
+
+            # Extract training metadata from adapter_config.json / config.json
+            metadata: dict = {}
+            try:
+                if adapter_config.exists():
+                    cfg = json.loads(adapter_config.read_text())
+                    metadata["base_model"] = cfg.get("base_model_name_or_path")
+                    metadata["peft_type"] = cfg.get("peft_type")
+                    metadata["lora_rank"] = cfg.get("r")
+                elif config_file.exists():
+                    cfg = json.loads(config_file.read_text())
+                    metadata["base_model"] = cfg.get("_name_or_path")
+            except Exception:
+                pass
+
+            # Fallback: extract base model name from folder name
+            # e.g. "unsloth_Llama-3.2-3B-Instruct_1771227800" → "unsloth/Llama-3.2-3B-Instruct"
+            if not metadata.get("base_model"):
+                parts = item.name.rsplit("_", 1)
+                if len(parts) == 2 and parts[1].isdigit():
+                    name_part = parts[0]
+                    idx = name_part.find("_")
+                    if idx > 0:
+                        metadata["base_model"] = name_part[:idx] + "/" + name_part[idx + 1:]
+                    else:
+                        metadata["base_model"] = name_part
 
             # This is a valid training run
             checkpoints = []
@@ -79,7 +106,7 @@ def scan_checkpoints(
                 last_checkpoint_loss = checkpoints[-1][2]
                 checkpoints[0] = (checkpoints[0][0], checkpoints[0][1], last_checkpoint_loss)
 
-            models.append((item.name, checkpoints))
+            models.append((item.name, checkpoints, metadata))
             logger.debug(f"Found model: {item.name} with {len(checkpoints)} checkpoint(s)")
 
         # Sort by modification time (newest first)
