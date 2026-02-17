@@ -254,7 +254,8 @@ def benchmark_mlp_training(B: int = 1, S: int = 128, H: int = 4096, iters: int =
     grad_output = mx.random.normal(shape=(B, S, H))
 
     def eager_mlp_training():
-        h = mx.nn.silu(x @ w1 + b1) * (x @ w3)
+        h_pre = x @ w1 + b1
+        h = h_pre * (1 / (1 + mx.exp(-h_pre))) * (x @ w3)
         return h @ w2 + b2
 
     time_eager, mem_eager = benchmark_training_step("Eager (no compile)", eager_mlp_training, iters)

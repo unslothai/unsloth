@@ -223,6 +223,7 @@ def patch_unsloth_zoo_for_mps() -> bool:
 
     # Mock unsloth_zoo.temporary_patches for MPS compatibility
     mock_temp = ModuleType("unsloth_zoo.temporary_patches")
+    mock_temp.TEMPORARY_PATCHES = []
     sys.modules["unsloth_zoo.temporary_patches"] = mock_temp
 
     # --- EXTENDED MOCKING FOR TORCH.CUDA ---
