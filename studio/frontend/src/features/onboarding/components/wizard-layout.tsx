@@ -81,7 +81,7 @@ export function WizardLayout() {
             ease: [0.165, 0.84, 0.44, 1],
           }}
         >
-          <Card className="relative z-10 w-full !gap-0 h-[640px] flex flex-row overflow-hidden !p-0 !m-0 shadow-border ring-1 ring-border">
+          <Card className="relative z-10 h-[660px] w-full !gap-0 !m-0 !p-0 flex flex-row overflow-hidden shadow-border ring-1 ring-border">
             <WizardSidebar />
             <div className="flex-1 flex flex-col">
               <WizardContent />
