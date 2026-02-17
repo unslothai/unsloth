@@ -6,12 +6,14 @@ import gc
 import time
 from typing import Callable, Optional
 
+import psutil
 import mlx.core as mx
 
 
 def get_memory_mb() -> float:
-    """Get current memory usage in MB."""
-    return mx.get_memory_usage() / (1024 * 1024)
+    """Get current memory usage in MB using psutil."""
+    process = psutil.Process()
+    return process.memory_info().rss / (1024 * 1024)
 
 
 def benchmark_function(func: Callable, name: str, iters: int = 100, warmup: int = 10):
