@@ -21,7 +21,7 @@ export async function checkDatasetFormat({
     body: JSON.stringify({
       dataset_name: datasetName,
       hf_token: hfToken || undefined,
-      config: subset || undefined, // backend currently ignores, safe to send
+      subset: subset || undefined,
       split: split || "train",
       is_vlm: !!isVlm,
     }),
