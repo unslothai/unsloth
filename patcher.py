@@ -883,7 +883,11 @@ class MacPatcher:
                     pass
                 
                 def create_module(self, spec):
-                    return patcher_self._create_unsloth_zoo_mock_module(spec.name, self)
+                    print(f"[MLX MOCK] create_module: {spec.name}")
+                    mod = patcher_self._create_unsloth_zoo_mock_module(spec.name, self)
+                    if spec.name == "unsloth_zoo.vision_utils":
+                        print(f"[MLX MOCK] vision_utils attrs: {dir(mod)}")
+                    return mod
                 
                 def exec_module(self, module):
                     pass
