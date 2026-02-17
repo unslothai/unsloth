@@ -893,7 +893,7 @@ class MacPatcher:
             class UnslothZooMockFinder(MetaPathFinder):
                 def find_spec(self, fullname, path, target=None):
                     if fullname == "unsloth_zoo" or fullname.startswith("unsloth_zoo."):
-                        patcher_self._log(logging.DEBUG, f"Mock intercepting: {fullname}")
+                        print(f"[MLX MOCK] find_spec: {fullname}")
                         return ModuleSpec(fullname, loader, origin="mocked")
                     return None
             

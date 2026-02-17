@@ -89,7 +89,7 @@ def benchmark_layer_norm(
     @mx.compile
     def compiled_layer_norm(x, w, b, eps):
         mean = mx.mean(x, axis=-1, keepdims=True)
-        var = mx.var(x, axis=-1, keepdims=False)
+        var = mx.var(x, axis=-1, keepdims=True)
         x_centered = x - mean
         norm = x_centered / mx.sqrt(var + eps)
         return w * norm + b
@@ -102,7 +102,7 @@ def benchmark_layer_norm(
     
     def eager_layer_norm(x, w, b, eps):
         mean = mx.mean(x, axis=-1, keepdims=True)
-        var = mx.var(x, axis=-1, keepdims=False)
+        var = mx.var(x, axis=-1, keepdims=True)
         x_centered = x - mean
         norm = x_centered / mx.sqrt(var + eps)
         return w * norm + b
