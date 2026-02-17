@@ -167,10 +167,8 @@ def benchmark_rope(
     print("-" * 52)
     
     Q = mx.random.normal(shape=(B, H, S, D))
-    cos = mx.random.normal(shape=(S, D))
-    sin = mx.random.normal(shape=(S, D))
-    cos = mx.concatenate([cos, cos], axis=-1)
-    sin = mx.concatenate([sin, sin], axis=-1)
+    cos = mx.broadcast_to(mx.random.normal(shape=(1, 1, S, D)), (B, H, S, D))
+    sin = mx.broadcast_to(mx.random.normal(shape=(1, 1, S, D)), (B, H, S, D))
     
     @mx.compile
     def custom_rope_kernel(q, cos, sin):
