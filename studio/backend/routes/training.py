@@ -288,21 +288,31 @@ async def stop_training(
     """
     try:
         backend = get_training_backend()
-        
-        if not backend.is_training_active():
+        trainer_thread = getattr(getattr(backend, "trainer", None), "training_thread", None)
+        thread_alive = bool(trainer_thread and trainer_thread.is_alive())
+        is_active = backend.is_training_active()
+        logger.info(
+            "Stop requested: save=%s is_active=%s thread_alive=%s should_stop=%s",
+            body.save,
+            is_active,
+            thread_alive,
+            getattr(getattr(backend, "trainer", None), "should_stop", None),
+        )
+
+        if not is_active and not thread_alive:
             return TrainingStopResponse(
                 status="idle",
                 message="No training job is currently running"
             )
-        
+
         # Call backend stop method
         backend.stop_training(save=body.save)
-        
+
         return TrainingStopResponse(
             status="stopped",
-            message="Training job stopped successfully"
+            message="Stop requested. Training will stop at the next safe step."
         )
-        
+
     except Exception as e:
         logger.error(f"Error stopping training: {e}", exc_info=True)
         raise HTTPException(
@@ -320,6 +330,23 @@ async def reset_training(
     """
     try:
         backend = get_training_backend()
+        trainer_thread = getattr(getattr(backend, "trainer", None), "training_thread", None)
+        thread_alive = bool(trainer_thread and trainer_thread.is_alive())
+        is_active = backend.is_training_active()
+
+        if is_active or thread_alive:
+            logger.warning(
+                "Rejected reset while training active: is_active=%s thread_alive=%s should_stop=%s",
+                is_active,
+                thread_alive,
+                getattr(getattr(backend, "trainer", None), "should_stop", None),
+            )
+            raise HTTPException(
+                status_code=409,
+                detail="Training is still running. Stop training and wait for it to finish before resetting.",
+            )
+
+        logger.info("Reset training state: clearing runtime + metric history")
         backend.trainer.should_stop = False
         backend.trainer.training_progress = backend.trainer.training_progress.__class__()
         backend.loss_history = []
@@ -328,6 +355,8 @@ async def reset_training(
         backend.grad_norm_history = []
         backend.grad_norm_step_history = []
         return {"status": "ok"}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error resetting training: {e}", exc_info=True)
         raise HTTPException(
