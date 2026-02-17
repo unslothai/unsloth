@@ -13,8 +13,9 @@ import {
   InputGroupAddon,
   InputGroupInput,
 } from "@/components/ui/input-group";
+import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
-import { ArrowRight01Icon, Key01Icon } from "@hugeicons/core-free-icons";
+import { AlertCircleIcon, ArrowRight01Icon, CheckmarkCircle02Icon, Key01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { collapseAnim } from "../anim";
@@ -41,6 +42,10 @@ interface ExportDialogProps {
   onHfTokenChange: (v: string) => void;
   privateRepo: boolean;
   onPrivateRepoChange: (v: boolean) => void;
+  onExport: () => void;
+  exporting: boolean;
+  exportError: string | null;
+  exportSuccess: boolean;
 }
 
 export function ExportDialog({
@@ -62,10 +67,41 @@ export function ExportDialog({
   onHfTokenChange,
   privateRepo,
   onPrivateRepoChange,
+  onExport,
+  exporting,
+  exportError,
+  exportSuccess,
 }: ExportDialogProps) {
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
+    <Dialog
+      open={open}
+      onOpenChange={(v) => {
+        if (exporting) return;
+        onOpenChange(v);
+      }}
+    >
+      <DialogContent className="sm:max-w-lg" onInteractOutside={(e) => { if (exporting) e.preventDefault(); }}>
+        {exportSuccess ? (
+          <>
+            <div className="flex flex-col items-center gap-3 py-6">
+              <div className="flex size-12 items-center justify-center rounded-full bg-emerald-500/10">
+                <HugeiconsIcon icon={CheckmarkCircle02Icon} className="size-6 text-emerald-500" />
+              </div>
+              <div className="text-center">
+                <h3 className="text-lg font-semibold">Export Complete</h3>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  {destination === "hub"
+                    ? "Model successfully pushed to Hugging Face Hub."
+                    : "Model saved locally."}
+                </p>
+              </div>
+            </div>
+            <DialogFooter>
+              <Button onClick={() => onOpenChange(false)}>Done</Button>
+            </DialogFooter>
+          </>
+        ) : (
+        <>
         <DialogHeader>
           <DialogTitle>Export Model</DialogTitle>
           <DialogDescription>
@@ -77,6 +113,7 @@ export function ExportDialog({
           <Button
             variant={destination === "local" ? "dark" : "outline"}
             onClick={() => onDestinationChange("local")}
+            disabled={exporting}
             className="flex-1"
           >
             Save Locally
@@ -84,6 +121,7 @@ export function ExportDialog({
           <Button
             variant={destination === "hub" ? "dark" : "outline"}
             onClick={() => onDestinationChange("hub")}
+            disabled={exporting}
             className="flex-1"
           >
             Push to Hub
@@ -103,6 +141,7 @@ export function ExportDialog({
                       placeholder="your-username"
                       value={hfUsername}
                       onChange={(e) => onHfUsernameChange(e.target.value)}
+                      disabled={exporting}
                     />
                   </div>
                   <div className="flex flex-col gap-1.5">
@@ -113,6 +152,7 @@ export function ExportDialog({
                       placeholder="my-model-gguf"
                       value={modelName}
                       onChange={(e) => onModelNameChange(e.target.value)}
+                      disabled={exporting}
                     />
                   </div>
                 </div>
@@ -144,6 +184,7 @@ export function ExportDialog({
                       placeholder="hf_..."
                       value={hfToken}
                       onChange={(e) => onHfTokenChange(e.target.value)}
+                      disabled={exporting}
                     />
                   </InputGroup>
                   <p className="text-[11px] text-muted-foreground/70">
@@ -157,6 +198,7 @@ export function ExportDialog({
                     size="sm"
                     checked={privateRepo}
                     onCheckedChange={onPrivateRepoChange}
+                    disabled={exporting}
                   />
                   <label
                     htmlFor="private-repo"
@@ -169,6 +211,14 @@ export function ExportDialog({
             </motion.div>
           )}
         </AnimatePresence>
+
+        {/* Error banner */}
+        {exportError && (
+          <div className="flex items-start gap-2 rounded-lg bg-destructive/10 p-3 text-sm text-destructive">
+            <HugeiconsIcon icon={AlertCircleIcon} className="size-4 mt-0.5 shrink-0" />
+            <span>{exportError}</span>
+          </div>
+        )}
 
         {/* Summary */}
         <div className="rounded-xl bg-muted/50 p-3 text-xs text-muted-foreground flex flex-col gap-1">
@@ -194,18 +244,34 @@ export function ExportDialog({
               </span>
             </div>
           )}
-          <div className="flex justify-between">
+          {/* TODO: unhide once estimated size comes from the backend API */}
+          {/* <div className="flex justify-between">
             <span>Est. size</span>
             <span className="font-medium text-foreground">{estimatedSize}</span>
-          </div>
+          </div> */}
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
+          <Button
+            variant="outline"
+            onClick={() => onOpenChange(false)}
+            disabled={exporting}
+          >
             Cancel
           </Button>
-          <Button onClick={() => onOpenChange(false)}>Start Export</Button>
+          <Button onClick={onExport} disabled={exporting}>
+            {exporting ? (
+              <span className="flex items-center gap-2">
+                <Spinner className="size-4" />
+                Exporting…
+              </span>
+            ) : (
+              "Start Export"
+            )}
+          </Button>
         </DialogFooter>
+        </>
+        )}
       </DialogContent>
     </Dialog>
   );
