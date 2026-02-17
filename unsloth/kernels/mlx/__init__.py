@@ -74,6 +74,18 @@ from .merge_lora import (
     mlx_merge_lora_layer,
 )
 
+from .models import (
+    MLXModelConfig,
+    LoRAConfig,
+    MLXLinear,
+    MLXEmbedding,
+    MLXRMSNorm,
+    MLXLayerNorm,
+    MLXLlamaForCausalLM,
+    MLXLlamaModel,
+    create_llama_model,
+)
+
 __all__ = [
     # Availability checks
     "is_mlx_available",
@@ -108,4 +120,14 @@ __all__ = [
     # LoRA merge
     "mlx_merge_lora",
     "mlx_merge_lora_layer",
+    # Pure MLX models
+    "MLXModelConfig",
+    "LoRAConfig",
+    "MLXLinear",
+    "MLXEmbedding",
+    "MLXRMSNorm",
+    "MLXLayerNorm",
+    "MLXLlamaForCausalLM",
+    "MLXLlamaModel",
+    "create_llama_model",
 ]
