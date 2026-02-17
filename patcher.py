@@ -823,6 +823,7 @@ class MacPatcher:
             mod.USABLE_MEMORY_GB = hw_info.get("usable_memory_gb", 12.0)
         elif fullname == "unsloth_zoo.temporary_patches":
             mod.encode_conversations_with_harmony = lambda *a, **k: (a[0] if a else None)
+            mod.TEMPORARY_PATCHES = []
         elif fullname == "unsloth_zoo.utils":
             class Version:
                 def __init__(self, v): self.v = v
@@ -849,6 +850,9 @@ class MacPatcher:
             mod.prepare_model_for_training = lambda model: model
         elif fullname == "unsloth_zoo.vision_utils":
             mod.process_vision_info = lambda *a, **k: None
+        elif fullname == "unsloth_zoo.compiler":
+            mod.get_transformers_model_type = lambda model_config: "llama"
+            mod.unsloth_compile_transformers = lambda *a, **k: None
         elif fullname == "unsloth_zoo.patching_utils":
             class _DummyBnbLinear: pass
             mod.Bnb_Linear4bit = _DummyBnbLinear
