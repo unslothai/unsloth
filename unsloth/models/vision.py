@@ -1295,12 +1295,12 @@ class FastBaseModel:
 
                 def _pack(x):
                     if isinstance(x, torch.Tensor) and x.is_cuda:
-                        return ("cpu", x.device, x.to("cpu", non_blocking=True))
+                        return ("cpu", x.device, x.to("cpu", non_blocking = True))
                     return ("pass", x)
 
                 def _unpack(packed):
                     if packed[0] == "cpu":
-                        return packed[2].to(packed[1], non_blocking=True)
+                        return packed[2].to(packed[1], non_blocking = True)
                     return packed[1]
 
                 with torch.autograd.graph.saved_tensors_hooks(_pack, _unpack):
@@ -1314,7 +1314,9 @@ class FastBaseModel:
             # to use functional torch.autograd.grad() for all but the last chunk,
             # then .backward() for the final chunk (fires DDP hooks exactly once).
             from unsloth_zoo.tiled_mlp import TiledMLP, torch_amp_custom_bwd
-            from unsloth_zoo.gradient_checkpointing import set_device_states as _set_dev_states
+            from unsloth_zoo.gradient_checkpointing import (
+                set_device_states as _set_dev_states,
+            )
 
             @staticmethod
             @torch_amp_custom_bwd
@@ -1325,23 +1327,27 @@ class FastBaseModel:
                 if ctx.preserve_rng_state and ctx.had_device_in_fwd:
                     rng_devices = ctx.fwd_devices
                 with torch.random.fork_rng(
-                    devices=rng_devices, enabled=ctx.preserve_rng_state,
-                    device_type=ctx.device_type,
+                    devices = rng_devices,
+                    enabled = ctx.preserve_rng_state,
+                    device_type = ctx.device_type,
                 ):
                     if ctx.preserve_rng_state:
                         torch.set_rng_state(ctx.fwd_cpu_state)
                         if ctx.had_device_in_fwd:
                             _set_dev_states(
-                                ctx.fwd_devices, ctx.fwd_device_states,
-                                device_type=ctx.device_type,
+                                ctx.fwd_devices,
+                                ctx.fwd_device_states,
+                                device_type = ctx.device_type,
                             )
 
                     mlp_params = [
                         p for p in ctx.mlp_module.parameters() if p.requires_grad
                     ]
-                    x_gradients = torch.zeros_like(x, memory_format=torch.preserve_format)
+                    x_gradients = torch.zeros_like(
+                        x, memory_format = torch.preserve_format
+                    )
                     x_flat = x.view(-1, H)
-                    x_splits = torch.split(x_flat, ctx.split_sizes, dim=0)
+                    x_splits = torch.split(x_flat, ctx.split_sizes, dim = 0)
                     start_idx = 0
                     extra_outputs = []
                     n_chunks = len(x_splits)
@@ -1349,24 +1355,39 @@ class FastBaseModel:
                     for i, x_split in enumerate(x_splits):
                         x_split = x_split.unsqueeze(0)
                         split_size = x_split.numel()
-                        x_grad_slice = x_gradients.view(-1).narrow(
-                            dim=0, start=start_idx, length=split_size,
-                        ).view_as(x_split)
-                        grad_shard = grad_output.view(-1).narrow(
-                            dim=0, start=start_idx, length=split_size,
-                        ).view_as(x_split)
+                        x_grad_slice = (
+                            x_gradients.view(-1)
+                            .narrow(
+                                dim = 0,
+                                start = start_idx,
+                                length = split_size,
+                            )
+                            .view_as(x_split)
+                        )
+                        grad_shard = (
+                            grad_output.view(-1)
+                            .narrow(
+                                dim = 0,
+                                start = start_idx,
+                                length = split_size,
+                            )
+                            .view_as(x_split)
+                        )
 
                         x_split.requires_grad_(True)
                         with torch.enable_grad():
                             outputs = TiledMLP.handle_output(
-                                ctx.mlp_forward(x_split), extra_outputs,
+                                ctx.mlp_forward(x_split),
+                                extra_outputs,
                             )
 
                         if i < n_chunks - 1:
                             # Functional grad: no DDP hooks fired
                             grads = torch.autograd.grad(
-                                outputs, [x_split] + mlp_params, grad_shard,
-                                allow_unused=True,
+                                outputs,
+                                [x_split] + mlp_params,
+                                grad_shard,
+                                allow_unused = True,
                             )
                             x_grad_slice.copy_(grads[0])
                             for p, g in zip(mlp_params, grads[1:]):
