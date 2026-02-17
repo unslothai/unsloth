@@ -54,7 +54,7 @@ def benchmark_training_step(
     return avg_time, avg_memory
 
 
-def print_result(name: str, time_ms: float, memory_mb: Optional[float] = None, baseline_time: float = None):
+def print_result(name: str, time_ms: float, memory_mb: Optional[float] = None, baseline_time: Optional[float] = None):
     """Print a benchmark result."""
     if memory_mb is not None:
         mem_str = f"{memory_mb:>8.1f} MB"
@@ -68,7 +68,7 @@ def print_result(name: str, time_ms: float, memory_mb: Optional[float] = None, b
         print(f"  {name:<30} {time_ms:>8.2f} ms  {mem_str}")
 
 
-def benchmark_layer_norm_training(B: int = 1, S: int = 512, H: int = 4096, iters: int = 100):
+def benchmark_layer_norm_training(B: int = 1, S: int = 512, H: int = 4096, iters: int = 100, warmup: int = 10):
     """Benchmark LayerNorm forward + backward training."""
     print(f"\n{'='*60}")
     print(f" LayerNorm Training [B={B}, S={S}, H={H}]")
@@ -111,12 +111,14 @@ def benchmark_layer_norm_training(B: int = 1, S: int = 512, H: int = 4096, iters
     print_result("mx.compile", time_compiled, mem_compiled, baseline_time)
 
     try:
-        fast_ln = mx.fast.layer_norm(x, weight, bias, eps)
-        fast_out = fast_ln * grad_output
-        fast_out.sum().backward()
+        def fast_layer_norm_training():
+            out = mx.fast.layer_norm(x, weight, bias, eps)
+            return out
+        
+        grad_fn = mx.grad(lambda x, w, b: mx.fast.layer_norm(x, w, b, eps).sum(), argnums=[0, 1, 2])
         time_fast, mem_fast = benchmark_training_step(
             "mx.fast.layer_norm",
-            lambda: mx.fast.layer_norm(x, weight, bias, eps),
+            lambda: grad_fn(x, weight, bias),
             iters
         )
         print_result("mx.fast.layer_norm", time_fast, mem_fast, baseline_time)
@@ -124,7 +126,7 @@ def benchmark_layer_norm_training(B: int = 1, S: int = 512, H: int = 4096, iters
         print(f"  mx.fast.layer_norm not available: {e}")
 
 
-def benchmark_rmsnorm_training(B: int = 1, S: int = 512, H: int = 4096, iters: int = 100):
+def benchmark_rmsnorm_training(B: int = 1, S: int = 512, H: int = 4096, iters: int = 100, warmup: int = 10):
     """Benchmark RMSNorm forward + backward training."""
     print(f"\n{'='*60}")
     print(f" RMSNorm Training [B={B}, S={S}, H={H}]")
@@ -163,7 +165,7 @@ def benchmark_rmsnorm_training(B: int = 1, S: int = 512, H: int = 4096, iters: i
         print(f"  mx.fast.rms_norm not available: {e}")
 
 
-def benchmark_swiglu_training(B: int = 1, S: int = 512, H: int = 4096, hidden: int = 11008, iters: int = 100):
+def benchmark_swiglu_training(B: int = 1, S: int = 512, H: int = 4096, hidden: int = 11008, iters: int = 100, warmup: int = 10):
     """Benchmark SwiGLU forward + backward training."""
     print(f"\n{'='*60}")
     print(f" SwiGLU Training [B={B}, S={S}, H={H}, hidden={hidden}]")
@@ -193,7 +195,7 @@ def benchmark_swiglu_training(B: int = 1, S: int = 512, H: int = 4096, hidden: i
     print_result("mx.compile", time_compiled, mem_compiled, baseline_time)
 
 
-def benchmark_attention_training(B: int = 1, H: int = 32, S: int = 512, D: int = 128, iters: int = 100):
+def benchmark_attention_training(B: int = 1, H: int = 32, S: int = 512, D: int = 128, iters: int = 100, warmup: int = 10):
     """Benchmark Attention forward + backward training."""
     print(f"\n{'='*60}")
     print(f" Attention Training [B={B}, H={H}, S={S}, D={D}]")
@@ -232,7 +234,7 @@ def benchmark_attention_training(B: int = 1, H: int = 32, S: int = 512, D: int =
         print(f"  mx.fast.sdpa not available: {e}")
 
 
-def benchmark_mlp_training(B: int = 1, S: int = 128, H: int = 4096, iters: int = 100):
+def benchmark_mlp_training(B: int = 1, S: int = 128, H: int = 4096, iters: int = 100, warmup: int = 10):
     """Benchmark full MLP training step."""
     print(f"\n{'='*60}")
     print(f" MLP Training [B={B}, S={S}, H={H}]")

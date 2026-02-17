@@ -170,8 +170,8 @@ def benchmark_rope(
     half = D // 2
     
     Q = mx.random.normal(shape=(B, H, S, D))
-    cos = mx.broadcast_to(mx.random.normal(shape=(1, 1, S, D)), (B, H, S, D))
-    sin = mx.broadcast_to(mx.random.normal(shape=(1, 1, S, D)), (B, H, S, D))
+    cos = mx.random.normal(shape=(B, H, S, D))
+    sin = mx.random.normal(shape=(B, H, S, D))
     
     @mx.compile
     def custom_rope_kernel(q, cos, sin):
