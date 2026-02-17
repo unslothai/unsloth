@@ -132,6 +132,7 @@ def patch_unsloth_zoo_for_mps() -> bool:
     # Mock unsloth_zoo.vision_utils for MPS compatibility
     mock_vision_utils = ModuleType("unsloth_zoo.vision_utils")
     mock_vision_utils.HAS_VISION = False
+    mock_vision_utils.process_vision_info = lambda *args, **kwargs: (None, None)
     sys.modules["unsloth_zoo.vision_utils"] = mock_vision_utils
 
     # Mock unsloth_zoo.log for MPS compatibility

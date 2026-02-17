@@ -184,7 +184,7 @@ def benchmark_swiglu_training(B: int = 1, S: int = 512, H: int = 4096, hidden: i
     def eager_swiglu_training():
         gate = x @ w1
         up = x @ w3
-        hidden = mx.nn.silu(gate) * up
+        hidden = gate * mx.nn.sigmoid(gate) * up  # SiLU: x * sigmoid(x)
         output = hidden @ w2
         return output
 
