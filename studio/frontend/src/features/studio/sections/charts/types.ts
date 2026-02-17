@@ -15,8 +15,5 @@ export interface ViewSettingsState {
   effectiveWindowSize: number;
   minWindow: number;
   allStepsLength: number;
-  effectivePanOffset: number;
-  maxPanOffset: number;
   setWindowSize: (value: number) => void;
-  setPanOffset: (value: number) => void;
 }

@@ -50,6 +50,20 @@ export function compressSeries<T>(data: T[], maxPoints: number): T[] {
   );
 }
 
+export function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+export function getDefaultWindowSize(totalSteps: number): number {
+  if (totalSteps <= 1) {
+    return Math.max(totalSteps, 1);
+  }
+  if (totalSteps <= DEFAULT_VISIBLE_POINTS) {
+    return clamp(Math.floor(totalSteps * 0.6), 1, totalSteps);
+  }
+  return DEFAULT_VISIBLE_POINTS;
+}
+
 export function buildStepTicks(min: number, max: number, targetCount = 6): number[] {
   if (!Number.isFinite(min) || !Number.isFinite(max)) {
     return [0, 1];
