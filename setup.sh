@@ -132,14 +132,26 @@ fi
 BEST_VER=$("$BEST_PY" --version 2>&1 | awk '{print $2}')
 echo "✅ Using $BEST_PY ($BEST_VER) — compatible (≤ 3.12.x)"
 
+# Always start fresh to preserve correct install order
+rm -rf .venv
 "$BEST_PY" -m venv .venv
 source .venv/bin/activate
 run_quiet "pip upgrade" pip install --upgrade pip
 echo "   Installing unsloth-zoo + unsloth..."
-run_quiet "pip install unsloth" pip install unsloth-zoo unsloth
+run_quiet "pip install unsloth" pip install -r "$SCRIPT_DIR/requirements/base.txt"
+echo "   Installing additional unsloth dependencies..."
+run_quiet "pip install extras" pip install --no-cache-dir -r "$SCRIPT_DIR/requirements/extras.txt"
+run_quiet "pip install extras" pip install --no-deps --no-cache-dir -r "$SCRIPT_DIR/requirements/extras-no-deps.txt"
+run_quiet "pip install torchao+transformers" pip install --force-reinstall --no-cache-dir -r "$SCRIPT_DIR/requirements/overrides.txt"
+run_quiet "pip install triton_kernels" pip install --no-deps -r "$SCRIPT_DIR/requirements/triton-kernels.txt"
+# Patch: override llama_cpp.py with fix from unsloth-zoo branch
+LLAMA_CPP_DST="$(pip show unsloth-zoo | grep -i '^Location:' | awk '{print $2}')/unsloth_zoo/llama_cpp.py"
+curl -sSL "https://raw.githubusercontent.com/unslothai/unsloth-zoo/refs/heads/main/unsloth_zoo/llama_cpp.py" \
+    -o "$LLAMA_CPP_DST"
 echo "   Installing studio dependencies..."
-run_quiet "pip install extras" pip install typer fastapi uvicorn pydantic matplotlib pandas nest_asyncio "datasets==4.3.0" pyjwt easydict addict
+run_quiet "pip install studio" pip install -r "$SCRIPT_DIR/requirements/studio.txt"
 echo "✅ Python dependencies installed"
+
 
 # ── 7. Add shell alias ──
 # Note: venv activation does NOT persist across terminal sessions.
