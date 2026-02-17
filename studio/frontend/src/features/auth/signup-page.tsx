@@ -1,4 +1,5 @@
 import { LightRays } from "@/components/ui/light-rays";
+import { Card } from "@/components/ui/card";
 import { AuthForm } from "./components/auth-form";
 
 export function SignupPage() {
@@ -12,9 +13,9 @@ export function SignupPage() {
         length="70vh"
         style={{ opacity: 0.4 }}
       />
-      <div className="relative z-10 w-full max-w-sm">
+      <Card className="relative z-10 w-full max-w-sm px-6 py-8 shadow-border ring-1 ring-border">
         <AuthForm mode="signup" />
-      </div>
+      </Card>
     </div>
   );
 }

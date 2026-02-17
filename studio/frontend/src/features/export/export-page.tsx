@@ -278,7 +278,7 @@ export function ExportPage() {
               <div className="grid grid-cols-2 gap-8">
                 <div className="flex flex-col gap-4">
                   {/* Training run dropdown */}
-                  <div className="flex flex-col gap-2">
+                  <div data-tour="export-training-run" className="flex flex-col gap-2">
                     <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                       Training Run
                       <Tooltip>
@@ -344,7 +344,7 @@ export function ExportPage() {
                   </div>
 
                   {/* Checkpoint dropdown */}
-                  <div className="flex flex-col gap-2">
+                  <div data-tour="export-checkpoint" className="flex flex-col gap-2">
                     <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                       Checkpoint
                       <Tooltip>
@@ -378,7 +378,7 @@ export function ExportPage() {
                       onValueChange={setCheckpoint}
                       disabled={!selectedModelIdx}
                     >
-                      <SelectTrigger data-tour="export-checkpoint" className="w-full">
+                      <SelectTrigger className="w-full">
                         <SelectValue
                           placeholder={
                             !selectedModelIdx
