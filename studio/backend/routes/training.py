@@ -325,6 +325,8 @@ async def reset_training(
         backend.loss_history = []
         backend.lr_history = []
         backend.step_history = []
+        backend.grad_norm_history = []
+        backend.grad_norm_step_history = []
         return {"status": "ok"}
     except Exception as e:
         logger.error(f"Error resetting training: {e}", exc_info=True)
@@ -408,6 +410,8 @@ async def get_training_status(
                 "steps": list(backend.step_history),
                 "loss": list(backend.loss_history),
                 "lr": list(backend.lr_history),
+                "grad_norm": list(getattr(backend, "grad_norm_history", [])),
+                "grad_norm_steps": list(getattr(backend, "grad_norm_step_history", [])),
                 "eval_loss": list(backend.eval_loss_history),
                 "eval_steps": list(backend.eval_step_history),
             }
@@ -445,6 +449,8 @@ async def get_training_metrics(
         loss_history = backend.loss_history
         lr_history = backend.lr_history
         step_history = backend.step_history
+        grad_norm_history = getattr(backend, "grad_norm_history", [])
+        grad_norm_step_history = getattr(backend, "grad_norm_step_history", [])
 
         # Get current values
         current_loss = loss_history[-1] if loss_history else None
@@ -455,6 +461,8 @@ async def get_training_metrics(
             loss_history=loss_history,
             lr_history=lr_history,
             step_history=step_history,
+            grad_norm_history=grad_norm_history,
+            grad_norm_step_history=grad_norm_step_history,
             current_loss=current_loss,
             current_lr=current_lr,
             current_step=current_step,
@@ -505,6 +513,8 @@ async def stream_training_progress(
             total_steps: int,
             epoch: Optional[float] = None,
             progress: Optional[Any] = None,
+            grad_norm_override: Optional[float] = None,
+            eval_loss_override: Optional[float] = None,
         ) -> TrainingProgress:
             total = max(total_steps, 0)
             if step < 0 or total == 0:
@@ -517,9 +527,13 @@ async def stream_training_progress(
             # Get actual values from progress object if available
             elapsed_seconds = getattr(progress, 'elapsed_seconds', None) if progress else None
             eta_seconds = getattr(progress, 'eta_seconds', None) if progress else None
-            grad_norm = getattr(progress, 'grad_norm', None) if progress else None
+            grad_norm = grad_norm_override
+            if grad_norm is None and progress:
+                grad_norm = getattr(progress, 'grad_norm', None)
             num_tokens = getattr(progress, 'num_tokens', None) if progress else None
-            eval_loss = getattr(progress, 'eval_loss', None) if progress else None
+            eval_loss = eval_loss_override
+            if eval_loss is None and progress:
+                eval_loss = getattr(progress, 'eval_loss', None)
 
             return TrainingProgress(
                 job_id=job_id,
@@ -558,6 +572,13 @@ async def stream_training_progress(
         # ── Replay missed steps on reconnect ─────────────────────
         if resume_from_step is not None and backend.step_history:
             replayed = 0
+            grad_norm_by_step = {
+                step_val: grad_val
+                for step_val, grad_val in zip(
+                    getattr(backend, "grad_norm_step_history", []),
+                    getattr(backend, "grad_norm_history", []),
+                )
+            }
             for i, step_val in enumerate(backend.step_history):
                 if step_val > resume_from_step:
                     loss_val = backend.loss_history[i] if i < len(backend.loss_history) else 0.0
@@ -567,7 +588,15 @@ async def stream_training_progress(
                     )
                     total_replay = getattr(tp_replay, "total_steps", step_val) if tp_replay else step_val
                     epoch_replay = getattr(tp_replay, "epoch", None) if tp_replay else None
-                    payload = build_progress(step_val, loss_val, lr_val, total_replay, epoch_replay, progress=tp_replay)
+                    payload = build_progress(
+                        step_val,
+                        loss_val,
+                        lr_val,
+                        total_replay,
+                        epoch_replay,
+                        progress=tp_replay,
+                        grad_norm_override=grad_norm_by_step.get(step_val),
+                    )
                     yield format_sse(payload.model_dump_json(), event="progress", event_id=step_val)
                     replayed += 1
             if replayed:
