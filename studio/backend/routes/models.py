@@ -294,8 +294,11 @@ async def list_checkpoints(
                     CheckpointInfo(display_name=display_name, path=path, loss=loss)
                     for display_name, path, loss in checkpoints
                 ],
+                base_model=metadata.get("base_model"),
+                peft_type=metadata.get("peft_type"),
+                lora_rank=metadata.get("lora_rank"),
             )
-            for model_name, checkpoints in raw_models
+            for model_name, checkpoints, metadata in raw_models
         ]
 
         return CheckpointListResponse(

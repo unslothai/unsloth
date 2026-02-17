@@ -190,6 +190,7 @@ async def export_base_model(
             repo_id=request.repo_id,
             hf_token=request.hf_token,
             private=request.private,
+            base_model_id=request.base_model_id,
         )
 
         if not success:
