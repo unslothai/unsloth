@@ -339,44 +339,43 @@ def benchmark_grouped_gemm(
     print(f"  {'Implementation':<30} {'Time':>12}  {'Speedup'}")
     print("-" * 52)
     
+    tokens_per_expert = num_tokens // num_experts
     total_selected = num_tokens * topk
     X = mx.random.normal(shape=(total_selected, hidden_dim))
-    W = mx.random.normal(shape=(num_experts * expert_dim, hidden_dim))
-    m_sizes = mx.array([num_tokens // num_experts] * num_experts)
-    m_cumsum = mx.concatenate([mx.array([0], dtype=mx.int32), mx.cumsum(m_sizes)])
+    W = mx.random.normal(shape=(num_experts, expert_dim, hidden_dim))
     
     @mx.compile
-    def compiled_grouped_gemm(x, W, m_cumsum, num_experts, expert_dim):
-        Y = mx.zeros((x.shape[0], expert_dim), dtype=x.dtype)
+    def compiled_grouped_gemm(x, W):
+        outputs = []
         for i in range(num_experts):
-            m_start = int(m_cumsum[i])
-            m_end = int(m_cumsum[i + 1])
-            W_exp = W[i * expert_dim:(i + 1) * expert_dim]
-            X_exp = x[m_start:m_end]
+            start_idx = i * tokens_per_expert * topk
+            end_idx = (i + 1) * tokens_per_expert * topk
+            X_exp = x[start_idx:end_idx]
+            W_exp = W[i]
             Y_exp = X_exp @ W_exp.T
-            Y = mx.index_update(Y, mx.s_[m_start:m_end], Y_exp)
-        return Y
+            outputs.append(Y_exp)
+        return mx.concatenate(outputs, axis=0)
     
     compiled_time = benchmark_function(
-        lambda: compiled_grouped_gemm(X, W, m_cumsum, num_experts, expert_dim),
-        name="Compiled Grouped GEMM", iters=iters
+        lambda: compiled_grouped_gemm(X, W),
+        name="mx.compile", iters=iters
     )
     print_result("mx.compile", compiled_time)
     
-    def eager_grouped_gemm(x, W, m_cumsum, num_experts, expert_dim):
-        Y = mx.zeros((x.shape[0], expert_dim), dtype=x.dtype)
+    def eager_grouped_gemm(x, W):
+        outputs = []
         for i in range(num_experts):
-            m_start = int(m_cumsum[i])
-            m_end = int(m_cumsum[i + 1])
-            W_exp = W[i * expert_dim:(i + 1) * expert_dim]
-            X_exp = x[m_start:m_end]
+            start_idx = i * tokens_per_expert * topk
+            end_idx = (i + 1) * tokens_per_expert * topk
+            X_exp = x[start_idx:end_idx]
+            W_exp = W[i]
             Y_exp = X_exp @ W_exp.T
-            Y = mx.index_update(Y, mx.s_[m_start:m_end], Y_exp)
-        return Y
+            outputs.append(Y_exp)
+        return mx.concatenate(outputs, axis=0)
     
     eager_time = benchmark_function(
-        lambda: eager_grouped_gemm(X, W, m_cumsum, num_experts, expert_dim),
-        name="Eager Grouped GEMM", iters=iters
+        lambda: eager_grouped_gemm(X, W),
+        name="Eager (no compile)", iters=iters
     )
     print_result("Eager (no compile)", eager_time, compiled_time)
 
