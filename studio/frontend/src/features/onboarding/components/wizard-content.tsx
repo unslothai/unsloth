@@ -31,19 +31,19 @@ export function WizardContent() {
 
   return (
     <main className="flex-1 flex flex-col overflow-y-auto">
-      <header className="flex items-center gap-4 p-6 pb-4">
-        <img src={mascotSrc} alt="Unsloth mascot" className="size-14" />
+      <header className="flex flex-wrap items-start gap-3 p-4 pb-3 sm:p-6 sm:pb-4">
+        <img src={mascotSrc} alt="Unsloth mascot" className="size-12 sm:size-14" />
         <div className="flex flex-col min-w-0">
-          <h1 className="text-xl font-semibold">{stepConfig.title}</h1>
+          <h1 className="text-lg font-semibold sm:text-xl">{stepConfig.title}</h1>
           <p className="text-sm text-muted-foreground">
             {stepConfig.description}
           </p>
         </div>
-        <p className="ml-auto shrink-0 text-xs text-muted-foreground uppercase tracking-wider">
+        <p className="ml-auto hidden shrink-0 text-xs text-muted-foreground uppercase tracking-wider md:block">
           Step {currentStep} of {STEPS.length}
         </p>
       </header>
-      <div className="flex-1 p-6 pt-2">
+      <div className="flex-1 p-4 pt-1.5 sm:p-6 sm:pt-2">
         <StepComponent />
       </div>
     </main>

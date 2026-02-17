@@ -237,7 +237,7 @@ export function ExportPage() {
   // ---- Render ----
   return (
     <div className="min-h-screen bg-background">
-      <main className="mx-auto max-w-7xl px-6 py-4">
+      <main className="mx-auto max-w-7xl px-4 py-4 sm:px-6">
         <GuidedTour {...tour.tourProps} />
 
         <div className="mb-8 flex flex-col gap-0.5">
@@ -275,7 +275,7 @@ export function ExportPage() {
           {!loadingCheckpoints && !checkpointError && (
             <>
               {/* Top row: Dropdowns + metadata | Guide */}
-              <div className="grid grid-cols-2 gap-8">
+              <div className="grid grid-cols-1 gap-6 md:grid-cols-2 md:gap-8">
                 <div className="flex flex-col gap-4">
                   {/* Training run dropdown */}
                   <div data-tour="export-training-run" className="flex flex-col gap-2">
@@ -410,7 +410,7 @@ export function ExportPage() {
                     <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
                       Training Info
                     </span>
-                    <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-xs">
+                    <div className="grid grid-cols-1 gap-x-6 gap-y-1.5 text-xs sm:grid-cols-2">
                       <div className="flex justify-between">
                         <span className="text-muted-foreground">Base Model</span>
                         <span className="font-medium">{baseModelName}</span>
