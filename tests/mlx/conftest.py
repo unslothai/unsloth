@@ -25,7 +25,7 @@ def pytest_configure(config):
     )
 
 
-def pytest_configure__before_run():
+def _apply_mac_patches():
     """Apply Mac patches BEFORE any tests run to avoid import errors."""
     if sys.platform == "darwin":
         try:
@@ -36,7 +36,7 @@ def pytest_configure__before_run():
 
 
 # Apply patches at module import time (before any test imports unsloth)
-pytest_configure__before_run()
+_apply_mac_patches()
 
 
 def pytest_collection_modifyitems(config, items):
