@@ -1,4 +1,5 @@
 import { cn } from "@/lib/utils";
+import { LightRays } from "@/components/ui/light-rays";
 import { useTrainingRuntimeStore } from "@/features/training";
 import type { ReactElement } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -30,8 +31,19 @@ export function TrainingView(): ReactElement {
 
   return (
     <div className={cn("relative", showOverlay && "min-h-[72vh]")}>
+      <LightRays
+        count={4}
+        color="rgba(16, 185, 129, 0.13)"
+        blur={28}
+        speed={20}
+        length="52vh"
+        style={{ opacity: 0.35 }}
+      />
       <div
-        className={cn("flex flex-col gap-6 transition-[filter]", showOverlay && "blur")}
+        className={cn(
+          "relative z-10 flex flex-col gap-6 transition-[filter]",
+          showOverlay && "blur",
+        )}
       >
         <div data-tour="studio-training-progress">
           <ProgressSection />
