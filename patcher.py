@@ -919,8 +919,24 @@ class MacPatcher:
                 if not hasattr(device_mod, 'DEVICE_TYPE'):
                     device_mod.DEVICE_TYPE = "mps"
             
+            # Mock vision_utils with process_vision_info function
+            vision_mod_name = "unsloth_zoo.vision_utils"
+            if vision_mod_name not in sys.modules:
+                vision_mod = ModuleType(vision_mod_name)
+            else:
+                vision_mod = sys.modules[vision_mod_name]
+            
+            # Add process_vision_info - needed by unsloth/models/_utils.py
+            def process_vision_info(*args, **kwargs):
+                """Mock process_vision_info for MPS/MLX. Returns None as vision not fully supported."""
+                return None
+            
+            vision_mod.process_vision_info = process_vision_info
+            sys.modules[vision_mod_name] = vision_mod
+            patched.append("vision_utils")
+            
             # Mock other commonly used modules
-            for mod_name in ["gradient_checkpointing", "loss_utils", "vision_utils", 
+            for mod_name in ["gradient_checkpointing", "loss_utils", 
                            "compiler", "temporary_patches", "vllm_utils", "rl_environments",
                            "saving_utils", "llama_cpp", "dataset_utils", "rl_replacements",
                            "logging_utils", "flex_attention"]:
