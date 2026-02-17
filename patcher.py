@@ -935,9 +935,24 @@ class MacPatcher:
             sys.modules[vision_mod_name] = vision_mod
             patched.append("vision_utils")
             
+            # Mock unsloth_zoo.temporary_patches with required exports
+            temp_patches_name = "unsloth_zoo.temporary_patches"
+            if temp_patches_name not in sys.modules:
+                temp_patches_mod = ModuleType(temp_patches_name)
+            else:
+                temp_patches_mod = sys.modules[temp_patches_name]
+            
+            def encode_conversations_with_harmony(*args, **kwargs):
+                return args[0] if args else None
+            
+            temp_patches_mod.encode_conversations_with_harmony = encode_conversations_with_harmony
+            sys.modules[temp_patches_name] = temp_patches_mod
+            if "temporary_patches" not in patched:
+                patched.append("temporary_patches")
+            
             # Mock other commonly used modules
             for mod_name in ["gradient_checkpointing", "loss_utils", 
-                           "compiler", "temporary_patches", "vllm_utils", "rl_environments",
+                           "compiler", "vllm_utils", "rl_environments",
                            "saving_utils", "llama_cpp", "dataset_utils", "rl_replacements",
                            "logging_utils", "flex_attention"]:
                 full_name = f"unsloth_zoo.{mod_name}"
