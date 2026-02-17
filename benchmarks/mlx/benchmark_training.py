@@ -77,15 +77,15 @@ def benchmark_layer_norm_training(B: int = 16, S: int = 1024, H: int = 4096, ite
     bias = mx.random.normal(shape=(H,), dtype=dtype)
     eps = 1e-5
 
-    def eager_layer_norm():
+    def eager_layer_norm(x, w, b):
         x_centered = x - x.mean(axis=-1, keepdims=True)
         var = x_centered.square().mean(axis=-1, keepdims=True)
         inv_std = 1 / mx.sqrt(var + eps)
-        output = (x_centered * inv_std) * weight + bias
+        output = (x_centered * inv_std) * w + b
         return output
 
     # Full backward pass benchmark
-    grad_fn_eager = mx.grad(lambda x, w, b: eager_layer_norm().sum(), argnums=[0, 1, 2])
+    grad_fn_eager = mx.grad(lambda x, w, b: eager_layer_norm(x, w, b).sum(), argnums=[0, 1, 2])
     
     time_eager, mem_eager = benchmark_training_step("Eager (no compile)", lambda: grad_fn_eager(x, weight, bias), iters, warmup)
     print_result("Eager (no compile)", time_eager, mem_eager)
@@ -124,11 +124,11 @@ def benchmark_rmsnorm_training(B: int = 16, S: int = 1024, H: int = 4096, iters:
     weight = mx.random.normal(shape=(H,), dtype=dtype)
     eps = 1e-5
 
-    def eager_rms_norm():
+    def eager_rms_norm(x, w):
         rms = mx.sqrt(x.square().mean(axis=-1, keepdims=True) + eps)
-        return (x / rms) * weight
+        return (x / rms) * w
 
-    grad_fn = mx.grad(lambda x, w: eager_rms_norm().sum(), argnums=[0, 1])
+    grad_fn = mx.grad(lambda x, w: eager_rms_norm(x, w).sum(), argnums=[0, 1])
 
     time_eager, mem_eager = benchmark_training_step("Eager (no compile)", lambda: grad_fn(x, weight), iters, warmup)
     print_result("Eager (no compile)", time_eager, mem_eager)
