@@ -1,0 +1,56 @@
+# OpenEnv dependencies
+tomli
+tomli-w
+
+# ExecuTorch dependencies
+ruamel.yaml
+coremltools
+expecttest
+flatbuffers
+hydra-core
+hypothesis
+kgb
+parameterized
+pytest<9.0
+pytest-json-report
+pytest-rerunfailures==15.1
+pytest-xdist
+# Also needed by sentence_transformers
+scikit-learn==1.7.1
+
+# Additional extras
+pybind11
+langid
+jiwer
+omegaconf
+einx
+pyloudnorm
+openai-whisper
+uroman
+MeCab
+loguru
+flatten_dict
+ffmpy
+randomname
+argbind
+tiktoken
+ftfy
+importlib-resources
+librosa
+markdown2
+matplotlib
+pystoi
+soundfile
+tensorboard
+torch-stoi
+evaluate
+timm
+transformers-cfg
+open_spiel
+addict
+easydict
+einops
+tabulate
+fastmcp>=2.0.0
+openai>=2.7.2
+websockets>=13.0,<14
