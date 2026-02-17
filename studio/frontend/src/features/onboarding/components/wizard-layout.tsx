@@ -54,7 +54,7 @@ export function WizardLayout() {
   }, [isFinalStep]);
 
   return (
-    <div className="relative min-h-screen flex items-center justify-center p-8 bg-gradient-to-br from-primary/5 via-background to-primary/3 overflow-hidden">
+    <div className="relative min-h-screen flex items-center justify-center overflow-hidden bg-gradient-to-br from-primary/5 via-background to-primary/3 p-4 sm:p-6 md:p-8">
       {showSplash && (
         <SplashScreen
           onStartOnboarding={() => setShowSplash(false)}
@@ -81,7 +81,7 @@ export function WizardLayout() {
             ease: [0.165, 0.84, 0.44, 1],
           }}
         >
-          <Card className="relative z-10 h-[660px] w-full !gap-0 !m-0 !p-0 flex flex-row overflow-hidden shadow-border ring-1 ring-border">
+          <Card className="relative z-10 w-full !gap-0 !m-0 !p-0 flex min-h-[560px] flex-col overflow-hidden shadow-border ring-1 ring-border md:min-h-[620px] md:flex-row lg:h-[660px]">
             <WizardSidebar />
             <div className="flex-1 flex flex-col">
               <WizardContent />
