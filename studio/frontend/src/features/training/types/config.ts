@@ -53,6 +53,9 @@ export interface TrainingConfigState {
   logFrequency: number;
   isCheckingVision: boolean;
   isVisionModel: boolean;
+  isLoadingModelDefaults: boolean;
+  modelDefaultsError: string | null;
+  modelDefaultsAppliedFor: string | null;
   isCheckingDataset: boolean;
   isDatasetMultimodal: boolean | null;
   finetuneVisionLayers: boolean;
@@ -68,6 +71,7 @@ export interface TrainingConfigActions {
   prevStep: () => void;
   setModelType: (type: ModelType) => void;
   setSelectedModel: (model: string | null) => void;
+  ensureModelDefaultsLoaded: () => void;
   setTrainingMethod: (method: TrainingMethod) => void;
   setHfToken: (token: string) => void;
   setDatasetSource: (source: DatasetSource) => void;
