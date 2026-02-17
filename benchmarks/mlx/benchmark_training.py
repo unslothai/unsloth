@@ -34,9 +34,8 @@ def benchmark_training_step(
     
     start = time.perf_counter()
     for _ in range(iters):
-        _ = forward_backward_fn()
-    # Explicitly evaluate and synchronize for timing precision
-    mx.eval()
+        res = forward_backward_fn()
+        mx.eval(res) # CRITICAL: Evaluate each step to ensure it's actually computed
     mx.synchronize() 
     end = time.perf_counter()
     
