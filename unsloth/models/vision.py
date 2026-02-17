@@ -1295,12 +1295,12 @@ class FastBaseModel:
 
                 def _pack(x):
                     if isinstance(x, torch.Tensor) and x.device.type != "cpu":
-                        return ("offload", x.device, x.to("cpu", non_blocking=True))
+                        return ("offload", x.device, x.to("cpu", non_blocking = True))
                     return ("pass", x)
 
                 def _unpack(packed):
                     if packed[0] == "offload":
-                        return packed[2].to(packed[1], non_blocking=True)
+                        return packed[2].to(packed[1], non_blocking = True)
                     return packed[1]
 
                 with torch.autograd.graph.saved_tensors_hooks(_pack, _unpack):
