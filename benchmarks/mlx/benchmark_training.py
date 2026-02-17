@@ -23,21 +23,25 @@ def benchmark_training_step(
 ) -> tuple[float, float]:
     """Benchmark a training step (forward + backward) and return average time and peak VRAM."""
     
+    print(f"  > {name:<20} Warmup...", end="", flush=True)
     # Warmup - compile and cache everything
-    for _ in range(warmup):
-        _ = forward_backward_fn()
-    mx.eval()
+    for i in range(warmup):
+        res = forward_backward_fn()
+        mx.eval(res) 
+    mx.synchronize()
+    print(" Done. Benchmarking...", end="", flush=True)
     gc.collect()
 
     # Reset peak (using non-deprecated API) and measure
     mx.reset_peak_memory()
     
     start = time.perf_counter()
-    for _ in range(iters):
+    for i in range(iters):
         res = forward_backward_fn()
-        mx.eval(res) # CRITICAL: Evaluate each step to ensure it's actually computed
+        mx.eval(res) 
     mx.synchronize() 
     end = time.perf_counter()
+    print(" Done.")
     
     peak_vram = mx.get_peak_memory() / (1024 * 1024)
     avg_time = (end - start) / iters * 1000
