@@ -43,6 +43,8 @@ except ImportError:
 from models import (
     CheckpointInfo,
     CheckpointListResponse,
+    LocalModelInfo,
+    LocalModelListResponse,
     ModelCheckpoints,
     ModelDetails,
     LoRAScanResponse,
@@ -62,6 +64,116 @@ if not logger.handlers:
     handler.setFormatter(formatter)
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
+
+
+def _resolve_hf_cache_dir() -> Path:
+    """Resolve local HF cache root used by hub downloads."""
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+        return Path(HF_HUB_CACHE)
+    except Exception:
+        return Path.home() / ".cache" / "huggingface" / "hub"
+
+
+def _scan_models_dir(models_dir: Path) -> List[LocalModelInfo]:
+    if not models_dir.exists() or not models_dir.is_dir():
+        return []
+
+    found: List[LocalModelInfo] = []
+    for child in models_dir.iterdir():
+        if not child.is_dir():
+            continue
+        has_model_files = (
+            (child / "config.json").exists()
+            or (child / "adapter_config.json").exists()
+            or any(child.glob("*.safetensors"))
+            or any(child.glob("*.bin"))
+        )
+        if not has_model_files:
+            continue
+        try:
+            updated_at = child.stat().st_mtime
+        except OSError:
+            updated_at = None
+        found.append(
+            LocalModelInfo(
+                id=str(child),
+                display_name=child.name,
+                path=str(child),
+                source="models_dir",
+                updated_at=updated_at,
+            ),
+        )
+    return found
+
+
+def _scan_hf_cache(cache_dir: Path) -> List[LocalModelInfo]:
+    if not cache_dir.exists() or not cache_dir.is_dir():
+        return []
+
+    found: List[LocalModelInfo] = []
+    for repo_dir in cache_dir.glob("models--*"):
+        if not repo_dir.is_dir():
+            continue
+
+        repo_name = repo_dir.name[len("models--"):]
+        if not repo_name:
+            continue
+        model_id = repo_name.replace("--", "/")
+
+        try:
+            updated_at = repo_dir.stat().st_mtime
+        except OSError:
+            updated_at = None
+
+        found.append(
+            LocalModelInfo(
+                id=model_id,
+                model_id=model_id,
+                display_name=model_id.split("/")[-1],
+                path=str(repo_dir),
+                source="hf_cache",
+                updated_at=updated_at,
+            ),
+        )
+    return found
+
+
+@router.get("/local", response_model=LocalModelListResponse)
+async def list_local_models(
+    models_dir: str = Query(default="./models", description="Directory to scan for local model folders"),
+    current_subject: str = Depends(get_current_subject),
+):
+    """
+    List local model candidates from custom models dir and HF cache.
+    """
+    try:
+        models_root = Path(models_dir).expanduser().resolve()
+        hf_cache_dir = _resolve_hf_cache_dir()
+        local_models = _scan_models_dir(models_root) + _scan_hf_cache(hf_cache_dir)
+
+        deduped: dict[str, LocalModelInfo] = {}
+        for model in local_models:
+            if model.id not in deduped:
+                deduped[model.id] = model
+
+        models = sorted(
+            deduped.values(),
+            key=lambda item: (item.updated_at or 0),
+            reverse=True,
+        )
+
+        return LocalModelListResponse(
+            models_dir=str(models_root),
+            hf_cache_dir=str(hf_cache_dir),
+            models=models,
+        )
+    except Exception as e:
+        logger.error(f"Error listing local models: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to list local models: {str(e)}",
+        )
 
 
 
@@ -294,8 +406,11 @@ async def list_checkpoints(
                     CheckpointInfo(display_name=display_name, path=path, loss=loss)
                     for display_name, path, loss in checkpoints
                 ],
+                base_model=metadata.get("base_model"),
+                peft_type=metadata.get("peft_type"),
+                lora_rank=metadata.get("lora_rank"),
             )
-            for model_name, checkpoints in raw_models
+            for model_name, checkpoints, metadata in raw_models
         ]
 
         return CheckpointListResponse(

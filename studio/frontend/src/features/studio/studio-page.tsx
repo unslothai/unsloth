@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { LightRays } from "@/components/ui/light-rays";
 import {
   shouldShowTrainingView,
   useDatasetPreviewDialogStore,
@@ -8,7 +9,7 @@ import {
   useTrainingRuntimeStore,
 } from "@/features/training";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
-import { studioTourSteps, studioTrainingTourSteps } from "@/features/studio/tour";
+import { studioTourSteps, studioTrainingTourSteps } from "./tour";
 import { ArrowLeft01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useEffect } from "react";
@@ -31,6 +32,10 @@ export function StudioPage(): ReactElement {
   const { dismissTrainingRun } = useTrainingActions();
 
   const config = useTrainingConfigStore();
+  const selectedModel = useTrainingConfigStore((s) => s.selectedModel);
+  const ensureModelDefaultsLoaded = useTrainingConfigStore(
+    (s) => s.ensureModelDefaultsLoaded,
+  );
   const dialogOpen = useDatasetPreviewDialogStore((s) => s.open);
   const dialogMode = useDatasetPreviewDialogStore((s) => s.mode);
   const dialogInitial = useDatasetPreviewDialogStore((s) => s.initialData);
@@ -48,13 +53,26 @@ export function StudioPage(): ReactElement {
     autoWhen: isConfigTour,
   });
 
+  const setTourOpen = tour.setOpen;
   useEffect(() => {
-    tour.setOpen(false);
-  }, [showTrainingView, tour.setOpen]);
+    setTourOpen(false);
+  }, [showTrainingView, setTourOpen]);
+
+  useEffect(() => {
+    ensureModelDefaultsLoaded();
+  }, [selectedModel, ensureModelDefaultsLoaded]);
 
   return (
-    <div className="min-h-screen bg-background">
-      <main className="mx-auto max-w-7xl px-6 py-4">
+    <div className="relative min-h-screen overflow-hidden bg-background">
+      <LightRays
+        count={6}
+        color="rgba(34, 197, 94, 0.14)"
+        blur={30}
+        speed={18}
+        length="62vh"
+        style={{ opacity: 0.45 }}
+      />
+      <main className="relative z-10 mx-auto max-w-7xl px-4 py-4 sm:px-6">
         <GuidedTour {...tour.tourProps} celebrate={isConfigTour} />
 
         <DatasetPreviewDialog
@@ -85,7 +103,7 @@ export function StudioPage(): ReactElement {
           </Button>
         )}
 
-        <div className="mb-8 flex flex-col gap-0.5">
+        <div className="mb-6 flex flex-col gap-0.5 sm:mb-8">
           <h1 className="text-2xl font-semibold tracking-tight">
             Fine-tuning Studio
           </h1>
@@ -103,7 +121,7 @@ export function StudioPage(): ReactElement {
         ) : showTrainingView ? (
           <TrainingView />
         ) : (
-          <div className="grid grid-cols-12 items-start gap-6">
+          <div className="grid grid-cols-1 items-start gap-4 md:grid-cols-2 md:gap-6 xl:grid-cols-12">
             <ModelSection />
             <DatasetSection />
             <ParamsSection />

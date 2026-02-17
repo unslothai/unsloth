@@ -12,6 +12,8 @@ from .models import (
     ModelCheckpoints,
     CheckpointListResponse,
     ModelDetails,
+    LocalModelInfo,
+    LocalModelListResponse,
     LoRAInfo,
     LoRAScanResponse,
     ModelListResponse,
@@ -59,6 +61,8 @@ __all__ = [
     "TrainingProgress",
     # Model management schemas
     "ModelDetails",
+    "LocalModelInfo",
+    "LocalModelListResponse",
     "LoRAInfo",
     "LoRAScanResponse",
     "ModelListResponse",
