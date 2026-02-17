@@ -1519,7 +1519,15 @@ def create_huggingface_repo(
             card.data.datasets = datasets
         card.push_to_hub(save_directory, token = token)
     except:
-        pass
+        # Repo already exists — update datasets metadata separately
+        if datasets:
+            try:
+                from huggingface_hub import metadata_update
+                metadata_update(save_directory, {"datasets": datasets}, overwrite=True, token=token)
+            except Exception as e:
+                logger.warning_once(
+                    f"Unsloth: Could not update datasets metadata for {save_directory}: {e}"
+                )
     hf_api = HfApi(token = token)
     return save_directory, hf_api
 
@@ -1564,7 +1572,15 @@ def upload_to_huggingface(
             card.data.datasets = datasets
         card.push_to_hub(save_directory, token = token)
     except:
-        pass
+        # Repo already exists — update datasets metadata separately
+        if datasets:
+            try:
+                from huggingface_hub import metadata_update
+                metadata_update(save_directory, {"datasets": datasets}, overwrite=True, token=token)
+            except Exception as e:
+                logger.warning_once(
+                    f"Unsloth: Could not update datasets metadata for {save_directory}: {e}"
+                )
 
     if file_location is not None:
         # Now upload file
@@ -2355,9 +2371,11 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
         if datasets:
             try:
                 from huggingface_hub import metadata_update
-                metadata_update(full_repo_id, {"datasets": datasets}, overwrite=True)
-            except:
-                pass
+                metadata_update(full_repo_id, {"datasets": datasets}, overwrite=True, token=token)
+            except Exception as e:
+                logger.warning_once(
+                    f"Unsloth: Could not update datasets metadata for {full_repo_id}: {e}"
+                )
 
     except Exception as e:
         raise RuntimeError(f"Failed to upload to Hugging Face Hub: {e}")
@@ -2699,9 +2717,11 @@ def unsloth_generic_save(
         try:
             from huggingface_hub import metadata_update
             save_dir, _ = _determine_username(save_directory, "", token)
-            metadata_update(save_dir, {"datasets": datasets}, overwrite=True)
-        except:
-            pass
+            metadata_update(save_dir, {"datasets": datasets}, overwrite=True, token=token)
+        except Exception as e:
+            logger.warning_once(
+                f"Unsloth: Could not update datasets metadata for {save_directory}: {e}"
+            )
 
     return
 
