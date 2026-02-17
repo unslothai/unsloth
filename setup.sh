@@ -152,8 +152,19 @@ echo "   Installing studio dependencies..."
 run_quiet "pip install studio" pip install -r "$SCRIPT_DIR/studio/backend/requirements/studio.txt"
 echo "✅ Python dependencies installed"
 
+# ── 7. WSL: pre-install GGUF build dependencies ──
+# On WSL, sudo requires a password and can't be entered during GGUF export
+# (runs in a non-interactive subprocess). Install build deps here instead.
+if grep -qi microsoft /proc/version 2>/dev/null; then
+    echo ""
+    echo "⚠️  WSL detected — installing build dependencies for GGUF export..."
+    echo "   You may be prompted for your password."
+    sudo apt-get update -y
+    sudo apt-get install -y build-essential cmake curl git libcurl4-openssl-dev
+    echo "✅ GGUF build dependencies installed"
+fi
 
-# ── 7. Add shell alias ──
+# ── 8. Add shell alias ──
 # Note: venv activation does NOT persist across terminal sessions.
 # This alias hardcodes the venv python path so users don't need to activate.
 echo ""
