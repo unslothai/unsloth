@@ -371,7 +371,7 @@ def run_all_benchmarks(args):
 def main():
     parser = argparse.ArgumentParser(description="MLX Training Kernel Benchmark")
     parser.add_argument("-b", "--benchmark", default="all", 
-                        choices=["all", "layernorm", "rmsnorm", "swiglu", "attention", "mlp"],
+                        choices=["all", "layernorm", "rmsnorm", "swiglu", "attention", "mlp", "finetune"],
                         help="Which benchmark to run")
     parser.add_argument("-i", "--iters", type=int, default=100, help="Number of iterations")
     parser.add_argument("-w", "--warmup", type=int, default=10, help="Warmup iterations")
