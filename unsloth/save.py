@@ -1523,7 +1523,10 @@ def create_huggingface_repo(
         if datasets:
             try:
                 from huggingface_hub import metadata_update
-                metadata_update(save_directory, {"datasets": datasets}, overwrite=True, token=token)
+
+                metadata_update(
+                    save_directory, {"datasets": datasets}, overwrite = True, token = token
+                )
             except Exception as e:
                 logger.warning_once(
                     f"Unsloth: Could not update datasets metadata for {save_directory}: {e}"
@@ -1576,7 +1579,10 @@ def upload_to_huggingface(
         if datasets:
             try:
                 from huggingface_hub import metadata_update
-                metadata_update(save_directory, {"datasets": datasets}, overwrite=True, token=token)
+
+                metadata_update(
+                    save_directory, {"datasets": datasets}, overwrite = True, token = token
+                )
             except Exception as e:
                 logger.warning_once(
                     f"Unsloth: Could not update datasets metadata for {save_directory}: {e}"
@@ -2371,7 +2377,10 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
         if datasets:
             try:
                 from huggingface_hub import metadata_update
-                metadata_update(full_repo_id, {"datasets": datasets}, overwrite=True, token=token)
+
+                metadata_update(
+                    full_repo_id, {"datasets": datasets}, overwrite = True, token = token
+                )
             except Exception as e:
                 logger.warning_once(
                     f"Unsloth: Could not update datasets metadata for {full_repo_id}: {e}"
@@ -2716,8 +2725,11 @@ def unsloth_generic_save(
     if push_to_hub and datasets:
         try:
             from huggingface_hub import metadata_update
+
             save_dir, _ = _determine_username(save_directory, "", token)
-            metadata_update(save_dir, {"datasets": datasets}, overwrite=True, token=token)
+            metadata_update(
+                save_dir, {"datasets": datasets}, overwrite = True, token = token
+            )
         except Exception as e:
             logger.warning_once(
                 f"Unsloth: Could not update datasets metadata for {save_directory}: {e}"
