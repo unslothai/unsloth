@@ -75,12 +75,16 @@ async def check_format(request: CheckFormatRequest):
     """
     Check if a dataset requires manual column mapping.
     
-    This is a lightweight check that loads only the first 10 rows,
+    This is a lightweight check that streams only the first N rows,
     runs format detection, and (if processable) returns processed
     preview samples. The full dataset is re-processed at training time.
+    
+    For HuggingFace datasets we use streaming mode so we never download
+    the entire dataset — only the rows we actually need are fetched.
     """
     try:
-        from datasets import load_dataset
+        from itertools import islice
+        from datasets import Dataset, load_dataset
         from utils.datasets import format_dataset
         
         PREVIEW_SIZE = 10
@@ -89,9 +93,10 @@ async def check_format(request: CheckFormatRequest):
         
         # Load dataset
         dataset_path = Path(request.dataset_name)
+        total_rows = None
         
         if dataset_path.exists():
-            # Local dataset
+            # Local dataset — direct load is fine (files are local)
             if dataset_path.suffix in ['.json', '.jsonl']:
                 dataset = load_dataset('json', data_files=str(dataset_path), split=request.train_split)
             elif dataset_path.suffix == '.csv':
@@ -103,18 +108,30 @@ async def check_format(request: CheckFormatRequest):
                     status_code=400,
                     detail=f"Unsupported file format: {dataset_path.suffix}"
                 )
+            total_rows = len(dataset)
+            preview_slice = dataset.select(range(min(PREVIEW_SIZE, total_rows)))
         else:
-            # HuggingFace dataset
-            load_kwargs = {"path": request.dataset_name, "split": request.train_split}
+            # HuggingFace dataset — use STREAMING to avoid downloading everything
+            load_kwargs = {"path": request.dataset_name, "split": request.train_split, "streaming": True}
             if request.subset:
                 load_kwargs["name"] = request.subset
             if request.hf_token:
                 load_kwargs["token"] = request.hf_token
-            dataset = load_dataset(**load_kwargs)
-        
-        # Slice to top N rows — all detection and preview runs on this subset
-        total_rows = len(dataset)
-        preview_slice = dataset.select(range(min(PREVIEW_SIZE, total_rows)))
+            
+            streamed_ds = load_dataset(**load_kwargs)
+            
+            # Take only the first PREVIEW_SIZE rows from the stream
+            rows = list(islice(streamed_ds, PREVIEW_SIZE))
+            if not rows:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Dataset appears to be empty or could not be streamed"
+                )
+            
+            # Convert list-of-dicts into a proper Dataset for downstream compat
+            preview_slice = Dataset.from_list(rows)
+            # total_rows unknown in streaming mode
+            total_rows = None
         
         # Run lightweight format check on the preview slice
         result = check_dataset_format(preview_slice, is_vlm=request.is_vlm)

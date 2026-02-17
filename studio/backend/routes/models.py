@@ -248,6 +248,7 @@ async def get_model_config(
     This endpoint wraps the backend load_model_defaults function.
     """
     try:
+        logger.info(f"Getting model config for: {model_name}")
         # Load model defaults from backend
         config_dict = load_model_defaults(model_name)
         
@@ -267,6 +268,7 @@ async def get_model_config(
             # If ModelConfig creation fails, use defaults
             pass
         
+        logger.info(f"Model config result for {model_name}: is_vision={is_vision}, is_lora={is_lora}, base_model={base_model}")
         return ModelDetails(
             id=model_name,
             model_name=model_name,
@@ -369,8 +371,10 @@ async def check_vision_model(
     This endpoint wraps the backend is_vision_model function.
     """
     try:
+        logger.info(f"Checking if vision model: {model_name}")
         is_vision = is_vision_model(model_name)
         
+        logger.info(f"Vision check result for {model_name}: is_vision={is_vision}")
         return VisionCheckResponse(
             model_name=model_name,
             is_vision=is_vision,
