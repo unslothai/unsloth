@@ -72,6 +72,10 @@ class ExportCommonOptions(BaseModel):
         False,
         description="If True, create a private repository on the Hub (where applicable)",
     )
+    base_model_id: Optional[str] = Field(
+        None,
+        description="HuggingFace model ID of the base model (for model card metadata)",
+    )
 
 
 class ExportMergedModelRequest(ExportCommonOptions):
