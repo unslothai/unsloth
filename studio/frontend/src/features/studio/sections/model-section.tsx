@@ -169,7 +169,7 @@ export function ModelSection() {
   );
 
   return (
-    <div data-tour="studio-model" className="col-span-12">
+    <div data-tour="studio-model" className="col-span-1 md:col-span-2 xl:col-span-12">
       <SectionCard
         icon={<HugeiconsIcon icon={ChipIcon} className="size-5" />}
         title="Model"
@@ -179,7 +179,7 @@ export function ModelSection() {
         badge="2x Faster Training"
         className="shadow-border ring-1 ring-border"
       >
-        <div className="grid gap-4 lg:grid-cols-4">
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           <div data-tour="studio-local-model" className="flex flex-col gap-2">
             <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
               Local Model
