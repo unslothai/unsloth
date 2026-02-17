@@ -925,6 +925,10 @@ class MacPatcher:
                     sys.modules[full_name] = self._create_unsloth_zoo_mock_module(full_name, loader)
                     print(f"[MLX MOCK] pre-populated: {full_name}")
             
+            # Verify vision_utils has the attribute
+            vu = sys.modules.get("unsloth_zoo.vision_utils")
+            print(f"[MLX MOCK] vision_utils type: {type(vu)}, has process_vision_info: {hasattr(vu, 'process_vision_info') if vu else 'N/A'}")
+            
             return self._create_patch_result(name, PatchStatus.SUCCESS, f"mocked: {', '.join(patched)}")
             
         except Exception as e:
