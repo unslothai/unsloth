@@ -794,172 +794,108 @@ class MacPatcher:
         name = "patching_utils"
         return self._create_patch_result(name, PatchStatus.SKIPPED, "deferred to late patch")
     
+    def _create_unsloth_zoo_mock_module(self, fullname: str):
+        from types import ModuleType
+        from importlib.machinery import ModuleSpec
+        
+        mod = ModuleType(fullname)
+        mod.__path__ = []
+        mod.__spec__ = ModuleSpec(fullname, UnslothZooMockLoader(), origin="mocked")
+        
+        if fullname == "unsloth_zoo":
+            mod.__version__ = "999.0.0"
+        elif fullname == "unsloth_zoo.device_type":
+            hw_info = self.get_apple_hardware_info()
+            mod.get_device_type = lambda: "mps"
+            mod.is_hip = lambda: False
+            mod.is_mps = lambda: True
+            mod.get_device_count = lambda: 1
+            mod.DEVICE_TYPE = "mps"
+            mod.DEVICE_TYPE_TORCH = "mps"
+            mod.DEVICE_COUNT = 1
+            mod.ALLOW_PREQUANTIZED_MODELS = True
+            mod.ALLOW_BITSANDBYTES = False
+            mod.HAS_CUDA = False
+            mod.HAS_MPS = True
+            mod.HAS_HIP = False
+            mod.HAS_XPU = False
+            mod.TOTAL_MEMORY_GB = hw_info.get("total_memory_gb", 16.0)
+            mod.USABLE_MEMORY_GB = hw_info.get("usable_memory_gb", 12.0)
+        elif fullname == "unsloth_zoo.temporary_patches":
+            mod.encode_conversations_with_harmony = lambda *a, **k: (a[0] if a else None)
+        elif fullname == "unsloth_zoo.utils":
+            class Version:
+                def __init__(self, v): self.v = v
+                def __str__(self): return self.v
+                def __ge__(self, other): return True
+            mod.Version = Version
+            mod._get_dtype = lambda dtype_str: __import__('torch', fromlist=[dtype_str]).float32
+            mod.get_quant_type = lambda module: "unknown"
+        elif fullname == "unsloth_zoo.log":
+            import logging
+            logger = logging.getLogger("unsloth_zoo")
+            logger.setLevel(logging.INFO)
+            if not logger.handlers:
+                handler = logging.StreamHandler()
+                handler.setFormatter(logging.Formatter("%(name)s - %(levelname)s - %(message)s"))
+                logger.addHandler(handler)
+            mod.logger = logger
+        elif fullname == "unsloth_zoo.hf_utils":
+            mod.HAS_TORCH_DTYPE = True
+            mod.dtype_from_config = lambda cfg, key: cfg.get(key, "float32")
+        elif fullname == "unsloth_zoo.peft_utils":
+            mod.SKIP_QUANTIZATION_MODULES = []
+        elif fullname == "unsloth_zoo.training_utils":
+            mod.prepare_model_for_training = lambda model: model
+        elif fullname == "unsloth_zoo.vision_utils":
+            mod.process_vision_info = lambda *a, **k: None
+        elif fullname == "unsloth_zoo.patching_utils":
+            class _DummyBnbLinear: pass
+            mod.Bnb_Linear4bit = _DummyBnbLinear
+            mod.Peft_Linear4bit = _DummyBnbLinear
+        elif fullname == "unsloth_zoo.fused_losses":
+            mod.cross_entropy_loss = ModuleType("unsloth_zoo.fused_losses.cross_entropy_loss")
+        
+        return mod
+    
     def patch_unsloth_zoo(self) -> PatchResult:
         """
-        Patch unsloth_zoo modules to add missing exports for MPS development.
-        This creates mock modules with necessary exports.
+        Patch unsloth_zoo modules using MetaPathFinder to intercept all imports.
+        This completely replaces the real unsloth_zoo with mocks for MPS.
         """
-        import sys
-        from types import ModuleType
-        from importlib.abc import Loader
+        from importlib.abc import MetaPathFinder, Loader
         from importlib.machinery import ModuleSpec
         
         name = "unsloth_zoo"
         
+        if name in sys.modules:
+            return self._create_patch_result(name, PatchStatus.SKIPPED, "already imported - too late")
+        
         try:
-            patched = []
+            patcher_self = self
             
-            # Mock unsloth_zoo.utils
-            if "unsloth_zoo.utils" not in sys.modules:
-                utils_mod = ModuleType("unsloth_zoo.utils")
-            else:
-                utils_mod = sys.modules["unsloth_zoo.utils"]
+            class UnslothZooMockLoader(Loader):
+                def create_module(self, spec):
+                    return patcher_self._create_unsloth_zoo_mock_module(spec.name)
                 
-            has_get_quant_type = hasattr(utils_mod, 'get_quant_type') and callable(utils_mod.get_quant_type)
-            if not has_get_quant_type:
-                class Version:
-                    def __init__(self, v):
-                        self.v = v
-                    def __str__(self):
-                        return self.v
-                    def __ge__(self, other):
-                        return True
-                
-                def _get_dtype(dtype_str):
-                    import torch
-                    return getattr(torch, dtype_str, torch.float32)
-                
-                def get_quant_type(module):
-                    return "unknown"
-                
-                utils_mod.Version = Version
-                utils_mod._get_dtype = _get_dtype
-                utils_mod.get_quant_type = get_quant_type
-                
-                if "unsloth_zoo.utils" not in sys.modules:
-                    sys.modules["unsloth_zoo.utils"] = utils_mod
-                patched.append("utils")
+                def exec_module(self, module):
+                    pass
             
-            # Mock unsloth_zoo.log - always ensure logger exists
-            if "unsloth_zoo.log" not in sys.modules:
-                import logging
-                log_mod = ModuleType("unsloth_zoo.log")
-                logger = logging.getLogger("unsloth_zoo")
-                logger.setLevel(logging.INFO)
-                if not logger.handlers:
-                    handler = logging.StreamHandler()
-                    handler.setFormatter(logging.Formatter("%(name)s - %(levelname)s - %(message)s"))
-                    logger.addHandler(handler)
-                log_mod.logger = logger
-                sys.modules["unsloth_zoo.log"] = log_mod
-                patched.append("log")
-            else:
-                # Ensure logger exists on existing module
-                log_mod = sys.modules["unsloth_zoo.log"]
-                if not hasattr(log_mod, 'logger'):
-                    import logging
-                    log_mod.logger = logging.getLogger("unsloth_zoo")
+            class UnslothZooMockFinder(MetaPathFinder):
+                def find_spec(self, fullname, path, target=None):
+                    if fullname == "unsloth_zoo" or fullname.startswith("unsloth_zoo."):
+                        return ModuleSpec(fullname, UnslothZooMockLoader(), origin="mocked")
+                    return None
             
-            # Mock unsloth_zoo.hf_utils - always ensure functions exist
-            if "unsloth_zoo.hf_utils" not in sys.modules:
-                hf_mod = ModuleType("unsloth_zoo.hf_utils")
-                sys.modules["unsloth_zoo.hf_utils"] = hf_mod
-            else:
-                hf_mod = sys.modules["unsloth_zoo.hf_utils"]
-            hf_mod.HAS_TORCH_DTYPE = True
-            hf_mod.dtype_from_config = lambda cfg, key: cfg.get(key, "float32")
-            if "unsloth_zoo.hf_utils" not in sys.modules:
-                sys.modules["unsloth_zoo.hf_utils"] = hf_mod
-            if "hf_utils" not in patched:
-                patched.append("hf_utils")
+            finder = UnslothZooMockFinder()
+            sys.meta_path.insert(0, finder)
+            self._mock_finders.append(finder)
             
-            # Mock unsloth_zoo.peft_utils
-            if "unsloth_zoo.peft_utils" not in sys.modules:
-                peft_mod = ModuleType("unsloth_zoo.peft_utils")
-                sys.modules["unsloth_zoo.peft_utils"] = peft_mod
-            else:
-                peft_mod = sys.modules["unsloth_zoo.peft_utils"]
-            peft_mod.SKIP_QUANTIZATION_MODULES = []
-            if "unsloth_zoo.peft_utils" not in sys.modules:
-                sys.modules["unsloth_zoo.peft_utils"] = peft_mod
-            if "peft_utils" not in patched:
-                patched.append("peft_utils")
-            
-            # Mock unsloth_zoo.tokenizer_utils
-            if "unsloth_zoo.tokenizer_utils" not in sys.modules:
-                tok_mod = ModuleType("unsloth_zoo.tokenizer_utils")
-                sys.modules["unsloth_zoo.tokenizer_utils"] = tok_mod
-            else:
-                tok_mod = sys.modules["unsloth_zoo.tokenizer_utils"]
-            if "unsloth_zoo.tokenizer_utils" not in sys.modules:
-                sys.modules["unsloth_zoo.tokenizer_utils"] = tok_mod
-            if "tokenizer_utils" not in patched:
-                patched.append("tokenizer_utils")
-            
-            # Mock unsloth_zoo.training_utils
-            if "unsloth_zoo.training_utils" not in sys.modules:
-                train_mod = ModuleType("unsloth_zoo.training_utils")
-                sys.modules["unsloth_zoo.training_utils"] = train_mod
-            else:
-                train_mod = sys.modules["unsloth_zoo.training_utils"]
-            train_mod.prepare_model_for_training = lambda model: model
-            if "unsloth_zoo.training_utils" not in sys.modules:
-                sys.modules["unsloth_zoo.training_utils"] = train_mod
-            if "training_utils" not in patched:
-                patched.append("training_utils")
-            
-            # Mock unsloth_zoo.device_type
-            if "unsloth_zoo.device_type" not in sys.modules:
-                device_mod = ModuleType("unsloth_zoo.device_type")
-                device_mod.DEVICE_TYPE = "mps"
-                sys.modules["unsloth_zoo.device_type"] = device_mod
-                patched.append("device_type")
-            else:
-                device_mod = sys.modules["unsloth_zoo.device_type"]
-                if not hasattr(device_mod, 'DEVICE_TYPE'):
-                    device_mod.DEVICE_TYPE = "mps"
-            
-            # Mock vision_utils with process_vision_info function
-            vision_mod_name = "unsloth_zoo.vision_utils"
-            if vision_mod_name not in sys.modules:
-                vision_mod = ModuleType(vision_mod_name)
-            else:
-                vision_mod = sys.modules[vision_mod_name]
-            
-            # Add process_vision_info - needed by unsloth/models/_utils.py
-            def process_vision_info(*args, **kwargs):
-                """Mock process_vision_info for MPS/MLX. Returns None as vision not fully supported."""
-                return None
-            
-            vision_mod.process_vision_info = process_vision_info
-            sys.modules[vision_mod_name] = vision_mod
-            patched.append("vision_utils")
-            
-            # Mock unsloth_zoo.temporary_patches with required exports
-            temp_patches_name = "unsloth_zoo.temporary_patches"
-            if temp_patches_name not in sys.modules:
-                temp_patches_mod = ModuleType(temp_patches_name)
-            else:
-                temp_patches_mod = sys.modules[temp_patches_name]
-            
-            def encode_conversations_with_harmony(*args, **kwargs):
-                return args[0] if args else None
-            
-            temp_patches_mod.encode_conversations_with_harmony = encode_conversations_with_harmony
-            sys.modules[temp_patches_name] = temp_patches_mod
-            if "temporary_patches" not in patched:
-                patched.append("temporary_patches")
-            
-            # Mock other commonly used modules
-            for mod_name in ["gradient_checkpointing", "loss_utils", 
-                           "compiler", "vllm_utils", "rl_environments",
-                           "saving_utils", "llama_cpp", "dataset_utils", "rl_replacements",
-                           "logging_utils", "flex_attention"]:
-                full_name = f"unsloth_zoo.{mod_name}"
-                if full_name not in sys.modules:
-                    mod = ModuleType(full_name)
-                    sys.modules[full_name] = mod
-                    patched.append(mod_name)
+            patched = ["device_type", "utils", "log", "hf_utils", "peft_utils", 
+                      "tokenizer_utils", "training_utils", "vision_utils", "temporary_patches",
+                      "patching_utils", "gradient_checkpointing", "loss_utils", "compiler",
+                      "vllm_utils", "rl_environments", "saving_utils", "llama_cpp",
+                      "dataset_utils", "rl_replacements", "logging_utils", "flex_attention"]
             
             return self._create_patch_result(name, PatchStatus.SUCCESS, f"mocked: {', '.join(patched)}")
             
