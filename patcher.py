@@ -897,6 +897,9 @@ class MacPatcher:
             class UnslothZooMockFinder(MetaPathFinder):
                 def find_spec(self, fullname, path, target=None):
                     if fullname == "unsloth_zoo" or fullname.startswith("unsloth_zoo."):
+                        if fullname in sys.modules:
+                            print(f"[MLX MOCK] find_spec: {fullname} - already in sys.modules, skipping")
+                            return None
                         print(f"[MLX MOCK] find_spec: {fullname}")
                         return ModuleSpec(fullname, loader, origin="mocked")
                     return None
