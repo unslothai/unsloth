@@ -34,7 +34,7 @@ async def lifespan(app: FastAPI):
         props = torch.cuda.get_device_properties(0)
         sm_version = props.major * 10 + props.minor
         if sm_version >= 120:
-            os.environ["UNSLOTH_FLEX_ATTENTION"] = "0"
+            os.environ["UNSLOTH_ENABLE_FLEX_ATTENTION"] = "0"
             import logging
             logging.getLogger(__name__).info(
                 f"GPU sm_{sm_version} detected — setting UNSLOTH_FLEX_ATTENTION=0"
