@@ -886,6 +886,9 @@ class MacPatcher:
                 
                 def create_module(self, spec):
                     print(f"[MLX MOCK] create_module: {spec.name}")
+                    # Return existing module if already in sys.modules
+                    if spec.name in sys.modules:
+                        return sys.modules[spec.name]
                     mod = patcher_self._create_unsloth_zoo_mock_module(spec.name, self)
                     if spec.name == "unsloth_zoo.vision_utils":
                         print(f"[MLX MOCK] vision_utils attrs: {dir(mod)}")
