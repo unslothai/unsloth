@@ -2,12 +2,14 @@
 """Real training benchmark for MLX kernels - forward + backward + memory."""
 
 import sys
+import os
 import argparse
 import gc
 import time
 from typing import Callable, Optional
 
-# Run patcher first to mock unsloth_zoo modules
+# Add root dir to path for patcher
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 import patcher  # noqa: F401
 
 import mlx.core as mx
