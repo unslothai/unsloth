@@ -8,6 +8,32 @@ from typing import Callable, Optional
 
 import mlx.core as mx
 
+# Try to import unsloth custom kernels
+# MLX wrappers (use mx.fast internally)
+try:
+    from unsloth.kernels.mlx.fast_ops import (
+        mlx_layer_norm,
+        mlx_rms_norm,
+        mlx_rope,
+        mlx_swiglu,
+        mlx_scaled_dot_product_attention,
+    )
+    UNSLOTH_MLX_AVAILABLE = True
+except Exception:
+    UNSLOTH_MLX_AVAILABLE = False
+
+# Custom Metal kernels (use mx.fast.metal_kernel)
+try:
+    from unsloth.kernels.metal import (
+        is_metal_available,
+        metal_swiglu_forward,
+        metal_swiglu_backward,
+        metal_rms_layernorm,
+    )
+    UNSLOTH_METAL_AVAILABLE = is_metal_available()
+except Exception:
+    UNSLOTH_METAL_AVAILABLE = False
+
 
 def get_vram_mb() -> float:
     """Get peak VRAM usage in MB using MLX."""
@@ -289,6 +315,117 @@ def benchmark_finetune_training(B=1, S=128, iters=50, warmup=10):
     compiled_fn = mx.compile(forward_backward)
     time_compiled, mem_compiled = benchmark_training_step("mx.compile", compiled_fn, iters)
     print_result("mx.compile", time_compiled, mem_compiled, baseline_time)
+
+    def forward_backward_fast():
+        """Using mx.fast layer norm and attention."""
+        nonlocal x, target
+        x = mx.random.normal(shape=(B, S, H))
+        target = mx.random.normal(shape=(B, S, H))
+
+        x = mx.fast.layer_norm(x, ln_gamma, ln_beta, eps=1e-5)
+
+        q = x @ w_q
+        k = x @ w_k
+        v = x @ w_v
+        q = q.reshape(B, S, heads, D).transpose(0, 2, 1, 3)
+        k = k.reshape(B, S, heads, D).transpose(0, 2, 1, 3)
+        v = v.reshape(B, S, heads, D).transpose(0, 2, 1, 3)
+        attn = mx.fast.scaled_dot_product_attention(q, k, v, scale=1.0 / (D ** 0.5))
+        attn = attn.transpose(0, 2, 1, 3).reshape(B, S, H)
+        x = attn @ w_o
+
+        gate = (x @ w1)
+        gate = gate * mx.sigmoid(gate)
+        up = x @ w3
+        ff = gate * up
+        x = ff @ w2
+
+        loss = ((x - target) ** 2).mean()
+        mx.eval(x)
+        return loss
+
+    time_fast, mem_fast = benchmark_training_step("mx.fast ops", forward_backward_fast, iters)
+    print_result("mx.fast ops", time_fast, mem_fast, baseline_time)
+
+    compiled_fast = mx.compile(forward_backward_fast)
+    time_compiled_fast, mem_compiled_fast = benchmark_training_step("mx.compile+fast", compiled_fast, iters)
+    print_result("mx.compile+fast", time_compiled_fast, mem_compiled_fast, baseline_time)
+
+    # Unsloth MLX wrappers (our wrappers around mx.fast)
+    if UNSLOTH_MLX_AVAILABLE:
+        def forward_backward_unsloth():
+            """Using unsloth MLX wrappers."""
+            nonlocal x, target
+            x = mx.random.normal(shape=(B, S, H))
+            target = mx.random.normal(shape=(B, S, H))
+
+            x = mlx_layer_norm(x, ln_gamma, ln_beta, eps=1e-5)
+
+            q = x @ w_q
+            k = x @ w_k
+            v = x @ w_v
+            q = q.reshape(B, S, heads, D).transpose(0, 2, 1, 3)
+            k = k.reshape(B, S, heads, D).transpose(0, 2, 1, 3)
+            v = v.reshape(B, S, heads, D).transpose(0, 2, 1, 3)
+            attn = mlx_scaled_dot_product_attention(q, k, v, scale=1.0 / (D ** 0.5))
+            attn = attn.transpose(0, 2, 1, 3).reshape(B, S, H)
+            x = attn @ w_o
+
+            gate = (x @ w1)
+            gate = gate * mx.sigmoid(gate)
+            up = x @ w3
+            ff = gate * up
+            x = ff @ w2
+
+            loss = ((x - target) ** 2).mean()
+            mx.eval(x)
+            return loss
+
+        time_unsloth, mem_unsloth = benchmark_training_step("Unsloth MLX", forward_backward_unsloth, iters)
+        print_result("Unsloth MLX", time_unsloth, mem_unsloth, baseline_time)
+
+        compiled_unsloth = mx.compile(forward_backward_unsloth)
+        time_compiled_unsloth, mem_compiled_unsloth = benchmark_training_step("Unsloth MLX+compile", compiled_unsloth, iters)
+        print_result("Unsloth MLX+compile", time_compiled_unsloth, mem_compiled_unsloth, baseline_time)
+
+    # Custom Metal kernels (our mx.fast.metal_kernel implementations)
+    if UNSLOTH_METAL_AVAILABLE:
+        def forward_backward_metal():
+            """Using unsloth custom Metal kernels."""
+            nonlocal x, target
+            x = mx.random.normal(shape=(B, S, H))
+            target = mx.random.normal(shape=(B, S, H))
+
+            # Use custom Metal RMSNorm kernel
+            x = metal_rms_layernorm(x, ln_gamma, eps=1e-5)
+
+            q = x @ w_q
+            k = x @ w_k
+            v = x @ w_v
+            q = q.reshape(B, S, heads, D).transpose(0, 2, 1, 3)
+            k = k.reshape(B, S, heads, D).transpose(0, 2, 1, 3)
+            v = v.reshape(B, S, heads, D).transpose(0, 2, 1, 3)
+            attn = mx.fast.scaled_dot_product_attention(q, k, v, scale=1.0 / (D ** 0.5))
+            attn = attn.transpose(0, 2, 1, 3).reshape(B, S, H)
+            x = attn @ w_o
+
+            # Use custom Metal SwiGLU kernel
+            gate = x @ w1
+            up = x @ w3
+            x = metal_swiglu_forward(gate, up)
+
+            x = x @ w2
+
+            loss = ((x - target) ** 2).mean()
+            mx.eval(x)
+            return loss
+
+        time_metal, mem_metal = benchmark_training_step("Unsloth Metal", forward_backward_metal, iters)
+        print_result("Unsloth Metal", time_metal, mem_metal, baseline_time)
+
+        compiled_metal = mx.compile(forward_backward_metal)
+        time_compiled_metal, mem_compiled_metal = benchmark_training_step("Unsloth Metal+compile", compiled_metal, iters)
+        print_result("Unsloth Metal+compile", time_compiled_metal, mem_compiled_metal, baseline_time)
 
 
 def run_all_benchmarks(args):

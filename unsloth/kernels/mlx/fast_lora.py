@@ -105,15 +105,18 @@ def _gelu_approx(x):
 
 @mx.compile
 def _compiled_mlp_geglu(
-    X, gateW, gateA, gateB, gateS, upW, upA, upB, upS, downW, downA, downB, downS
+    X, gateW, gateA, gateB, gateS, upW, upA, upB, upS, downW, downA, downB, downS,
+    gate_multiplier=None, down_multiplier=None
 ):
-    # Use quantized_matmul directly - MLX will optimize this if weights are quantized trees
     gate = quantized_matmul(X, gateW) + (X @ gateA.T) @ gateB.T * gateS
+    if gate_multiplier is not None:
+        gate = gate * gate_multiplier
     up = quantized_matmul(X, upW) + (X @ upA.T) @ upB.T * upS
 
-    # GEGLU: gelu(gate) * up
     act = _gelu_approx(gate) * up
     out = quantized_matmul(act, downW) + (act @ downA.T) @ downB.T * downS
+    if down_multiplier is not None:
+        out = out * down_multiplier
 
     return out
 
