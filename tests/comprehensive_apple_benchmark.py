@@ -495,7 +495,7 @@ class ComprehensiveBenchmark:
                     results = []
             mx.eval(*results)
             fused_lat = (time.time() - start) * 1000 / actual_iters
-            speedup = pytorch_lat / fused_lat  # Speedup vs real PyTorch
+            speedup = torch_lat / fused_lat  # Speedup vs real PyTorch
             log_result("Unsloth Fused Metal", fused_lat, extra=f"({speedup:.2f}x vs PyTorch)", mem=get_mem_stats())
 
         
