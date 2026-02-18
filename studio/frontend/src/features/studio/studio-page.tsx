@@ -25,6 +25,7 @@ const STUDIO_TOUR_KEY = "tour:studio:v1";
 export function StudioPage(): ReactElement {
   useTrainingRuntimeLifecycle();
   const showTrainingView = useTrainingRuntimeStore(shouldShowTrainingView);
+  const isTrainingRunning = useTrainingRuntimeStore((state) => state.isTrainingRunning);
   const runtimeMessage = useTrainingRuntimeStore((state) => state.message);
   const runtimePhase = useTrainingRuntimeStore((state) => state.phase);
   const isHydratingRuntime = useTrainingRuntimeStore((state) => state.isHydrating);
@@ -41,7 +42,11 @@ export function StudioPage(): ReactElement {
   const dialogInitial = useDatasetPreviewDialogStore((s) => s.initialData);
   const closeDialog = useDatasetPreviewDialogStore((s) => s.close);
 
-  const canGoBack = runtimePhase === "stopped" || runtimePhase === "error" || runtimePhase === "completed";
+  const canGoBack =
+    showTrainingView &&
+    !isTrainingRunning &&
+    !isHydratingRuntime &&
+    (runtimePhase === "stopped" || runtimePhase === "error" || runtimePhase === "completed" || runtimePhase === "idle");
   const tourEnabled = hasHydratedRuntime && !isHydratingRuntime;
   const isConfigTour = !showTrainingView;
   const tourSteps = showTrainingView ? studioTrainingTourSteps : studioTourSteps;

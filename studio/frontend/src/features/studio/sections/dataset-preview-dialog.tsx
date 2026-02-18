@@ -283,7 +283,7 @@ export function DatasetPreviewDialog({
               <div className="text-center space-y-1">
                 <p className="text-sm font-medium text-destructive">{error}</p>
                 <p className="text-xs text-muted-foreground">
-                  Make sure the backend is running on port 8000.
+                  Make sure the backend is running and reachable.
                 </p>
               </div>
             </div>
