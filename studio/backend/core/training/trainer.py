@@ -115,6 +115,14 @@ class UnslothTrainer:
                    is_dataset_multimodal: bool = False) -> bool:
         """Load model for training (supports both text and vision models)"""
         try:
+            if self.model is not None:
+                del self.model
+            if self.tokenizer is not None:
+                del self.tokenizer
+
+            if self.trainer is not None:
+                del self.trainer
+
             print("\nClearing GPU memory before training...")
             clear_gpu_cache()
 
@@ -214,7 +222,13 @@ class UnslothTrainer:
                 return True
 
             # LoRA/QLoRA mode - apply PEFT
-            if target_modules is None or (isinstance(target_modules, list) and len(target_modules) == 0):
+            # "all-linear" is a PEFT keyword that targets every linear layer
+            if isinstance(target_modules, list) and "all-linear" in target_modules:
+                if len(target_modules) == 1:
+                    target_modules = "all-linear"
+                else:
+                    target_modules = [m for m in target_modules if m != "all-linear"]
+            elif target_modules is None or (isinstance(target_modules, list) and len(target_modules) == 0):
                 target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
                                 "gate_proj", "up_proj", "down_proj"]
 
@@ -586,8 +600,14 @@ class UnslothTrainer:
         )
 
         self.should_stop = False
-        self.training_thread.start()
-        return True
+        self.is_training = True
+        try:
+            self.training_thread.start()
+            return True
+        except Exception as e:
+            self.is_training = False
+            logger.error(f"Failed to start training thread: {e}")
+            return False
 
     def _train_worker(self, dataset: Dataset, **training_args):
         """Worker function for training (runs in separate thread)"""
@@ -687,6 +707,7 @@ class UnslothTrainer:
                 "output_dir": output_dir,
                 "report_to": ["wandb"] if training_args.get('enable_wandb', False) else "none",
                 "include_num_input_tokens_seen": True,  # Enable token counting
+                "dataset_num_proc": max(1, os.cpu_count() // 3),
             }
             
             # Add warmup parameter - use warmup_ratio if provided, otherwise warmup_steps
@@ -990,9 +1011,12 @@ class UnslothTrainer:
         print(f"\nStopping training (save={save})...")
         self.should_stop = True
         self.save_on_stop = save
-        self.is_training = False
-        # Clear the status message so timer doesn't show stale status
-        self._update_progress(is_training=False, status_message="")
+        stop_msg = (
+            "Stopping training and saving checkpoint..."
+            if save
+            else "Cancelling training..."
+        )
+        self._update_progress(status_message=stop_msg)
 
         # If trainer exists, try to stop it gracefully
         if self.trainer:

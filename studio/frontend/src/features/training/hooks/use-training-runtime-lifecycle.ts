@@ -14,13 +14,7 @@ const METRICS_POLL_INTERVAL_MS = 5000;
 const STREAM_RECONNECT_DELAY_MS = 1500;
 
 function shouldUseLiveSync(state: TrainingRuntimeStore): boolean {
-  return (
-    state.isTrainingRunning ||
-    state.phase === "loading_model" ||
-    state.phase === "loading_dataset" ||
-    state.phase === "configuring" ||
-    state.phase === "training"
-  );
+  return state.isTrainingRunning || state.phase === "training";
 }
 
 export function useTrainingRuntimeLifecycle(): void {
