@@ -406,8 +406,8 @@ def benchmark_finetune_training(B=1, S=128, iters=50, warmup=10):
             x = mx.random.normal(shape=(B, S, H))
             target = mx.random.normal(shape=(B, S, H))
 
-            # Use custom Metal RMSNorm kernel
-            x = metal_rms_layernorm(x, ln_gamma, eps=1e-5)
+            # Use custom Metal kernel (returns tuple: output, rms_cache)
+            x, _ = metal_rms_layernorm(x, ln_gamma, eps=1e-5)
 
             q = x @ w_q
             k = x @ w_k
