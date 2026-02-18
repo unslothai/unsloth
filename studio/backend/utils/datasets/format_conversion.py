@@ -8,43 +8,6 @@ This module contains functions for converting between dataset formats
 from datasets import IterableDataset
 
 
-def get_expected_chat_column(model):
-    """
-    Inspect the model's forward() signature to determine if it expects
-    'messages' or 'conversations' as a column name.
-
-    Returns:
-        str or None: 'messages', 'conversations', or None if neither found.
-    """
-    import inspect
-    try:
-        sig = inspect.signature(model.forward)
-        params = list(sig.parameters.keys())
-
-        if "messages" in params:
-            return "messages"
-        elif "conversations" in params:
-            return "conversations"
-    except (ValueError, TypeError):
-        pass
-    return None
-
-
-def rename_chat_column_in_list(data, from_col, to_col):
-    """
-    Rename a chat column key in a list of dicts (for VLM data).
-    """
-    if from_col == to_col:
-        return data
-    renamed = []
-    for item in data:
-        new_item = {}
-        for k, v in item.items():
-            new_item[to_col if k == from_col else k] = v
-        renamed.append(new_item)
-    return renamed
-
-
 def standardize_chat_format(
     dataset,
     tokenizer=None,
