@@ -11,6 +11,8 @@ from typing import Callable, Optional
 # Add root dir to path for patcher
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 import patcher  # noqa: F401
+from patcher import patch_for_mac
+patch_for_mac()  # Apply patches
 
 import mlx.core as mx
 
