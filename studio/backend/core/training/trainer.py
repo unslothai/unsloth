@@ -254,6 +254,12 @@ class UnslothTrainer:
             print(f"Configuring LoRA adapters (r={lora_r}, alpha={lora_alpha})...\n")
             print(f"Gradient checkpointing: {use_gradient_checkpointing} (type: {type(use_gradient_checkpointing).__name__})\n")
 
+            # Normalize ["all-linear"] (list from frontend/YAML) → "all-linear" (string)
+            # Unsloth/PEFT expect the string form for this shorthand
+            if target_modules == ["all-linear"]:
+                target_modules = "all-linear"
+                print(f"  Normalized target_modules from list to string: '{target_modules}'")
+
             # Branch based on vision vs text
             if self.is_vlm:
                 # Vision model LoRA
