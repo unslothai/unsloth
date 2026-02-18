@@ -31,18 +31,8 @@ except Exception as e:
     UNSLOTH_MLX_AVAILABLE = False
     print(f"[DEBUG] UNSLOTH_MLX_AVAILABLE = False: {e}")
 
-# Custom Metal kernels (use mx.fast.metal_kernel)
-try:
-    from unsloth.kernels.metal import (
-        is_metal_available,
-        metal_swiglu_forward,
-        metal_swiglu_backward,
-        metal_rms_layernorm,
-    )
-    UNSLOTH_METAL_AVAILABLE = is_metal_available()
-except Exception as e:
-    UNSLOTH_METAL_AVAILABLE = False
-    print(f"[DEBUG] UNSLOTH_METAL_AVAILABLE = False: {e}")
+# Note: Custom Metal kernels require PyTorch - not useful for pure MLX
+# Our mlx.fast_ops is just a wrapper around mx.fast
 
 
 def get_vram_mb() -> float:
@@ -398,47 +388,7 @@ def benchmark_finetune_training(B=1, S=128, iters=50, warmup=10):
         time_compiled_unsloth, mem_compiled_unsloth = benchmark_training_step("Unsloth MLX+compile", compiled_unsloth, iters)
         print_result("Unsloth MLX+compile", time_compiled_unsloth, mem_compiled_unsloth, baseline_time)
 
-    # Custom Metal kernels (our mx.fast.metal_kernel implementations)
-    if UNSLOTH_METAL_AVAILABLE:
-        try:
-            def forward_backward_metal():
-                """Using unsloth custom Metal kernels."""
-                nonlocal x, target
-                x = mx.random.normal(shape=(B, S, H))
-                target = mx.random.normal(shape=(B, S, H))
 
-                # Use custom Metal kernel (returns tuple: output, rms_cache)
-                x, _ = metal_rms_layernorm(x, ln_gamma, eps=1e-5)
-
-                q = x @ w_q
-                k = x @ w_k
-                v = x @ w_v
-                q = q.reshape(B, S, heads, D).transpose(0, 2, 1, 3)
-                k = k.reshape(B, S, heads, D).transpose(0, 2, 1, 3)
-                v = v.reshape(B, S, heads, D).transpose(0, 2, 1, 3)
-                attn = mx.fast.scaled_dot_product_attention(q, k, v, scale=1.0 / (D ** 0.5))
-                attn = attn.transpose(0, 2, 1, 3).reshape(B, S, H)
-                x = attn @ w_o
-
-                # Use custom Metal SwiGLU kernel
-                gate = x @ w1
-                up = x @ w3
-                x = metal_swiglu_forward(gate, up)
-
-                x = x @ w2
-
-                loss = ((x - target) ** 2).mean()
-                mx.eval(x)
-                return loss
-
-            time_metal, mem_metal = benchmark_training_step("Unsloth Metal", forward_backward_metal, iters)
-            print_result("Unsloth Metal", time_metal, mem_metal, baseline_time)
-
-            compiled_metal = mx.compile(forward_backward_metal)
-            time_compiled_metal, mem_compiled_metal = benchmark_training_step("Unsloth Metal+compile", compiled_metal, iters)
-            print_result("Unsloth Metal+compile", time_compiled_metal, mem_compiled_metal, baseline_time)
-        except Exception as e:
-            print(f"  > Unsloth Metal        SKIPPED: {type(e).__name__}: {str(e)[:60]}")
 
 
 def run_all_benchmarks(args):
