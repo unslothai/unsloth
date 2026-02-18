@@ -19,8 +19,9 @@ try:
         mlx_scaled_dot_product_attention,
     )
     UNSLOTH_MLX_AVAILABLE = True
-except Exception:
+except Exception as e:
     UNSLOTH_MLX_AVAILABLE = False
+    print(f"[DEBUG] UNSLOTH_MLX_AVAILABLE = False: {e}")
 
 # Custom Metal kernels (use mx.fast.metal_kernel)
 try:
@@ -31,8 +32,9 @@ try:
         metal_rms_layernorm,
     )
     UNSLOTH_METAL_AVAILABLE = is_metal_available()
-except Exception:
+except Exception as e:
     UNSLOTH_METAL_AVAILABLE = False
+    print(f"[DEBUG] UNSLOTH_METAL_AVAILABLE = False: {e}")
 
 
 def get_vram_mb() -> float:
