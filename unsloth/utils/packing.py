@@ -36,6 +36,15 @@ except Exception:
 _XFORMERS_MASK_CACHE_MAXSIZE = 32
 _XFORMERS_MASK_CACHE: OrderedDict[Tuple[Tuple[int, ...], int], Any] = OrderedDict()
 
+# Cache for get_packed_info_from_kwargs to avoid repeated D2H sync across layers
+_PACKED_INFO_CACHE: dict = {"seq_lengths": None, "result": None}
+
+# Cache for build_sdpa_packed_attention_mask to avoid repeated D2H sync across layers
+_SDPA_MASK_CACHE: dict = {"seq_lengths": None, "params": None, "mask": None}
+
+# Cache for build_xformers_block_causal_mask to avoid repeated D2H sync across layers
+_XFORMERS_BLOCK_MASK_CACHE: dict = {"seq_lengths": None, "params": None, "mask": None}
+
 
 def _window_cache_key(sliding_window: Optional[int]) -> int:
     if sliding_window is None or sliding_window <= 0:
@@ -224,13 +233,18 @@ def get_packed_info_from_kwargs(
     if seq_lengths is None:
         return None
 
+    if _PACKED_INFO_CACHE["seq_lengths"] is seq_lengths:
+        return _PACKED_INFO_CACHE["result"]
+
     lengths = seq_lengths.to(device = device, dtype = torch.int32, non_blocking = True)
-    cu_seqlens = torch.empty(lengths.numel() + 1, dtype = torch.int32, device = device)
-    cu_seqlens[0] = 0
+    cu_seqlens = torch.zeros(lengths.numel() + 1, dtype = torch.int32, device = device)
     torch.cumsum(lengths, dim = 0, dtype = torch.int32, out = cu_seqlens[1:])
 
     max_seqlen = int(lengths.max().item())
-    return lengths, cu_seqlens, max_seqlen
+    result = (lengths, cu_seqlens, max_seqlen)
+    _PACKED_INFO_CACHE["seq_lengths"] = seq_lengths
+    _PACKED_INFO_CACHE["result"] = result
+    return result
 
 
 def build_xformers_block_causal_mask(
@@ -243,11 +257,23 @@ def build_xformers_block_causal_mask(
         return None
     if seq_info is not None:
         seq_lengths, _, _ = seq_info
+        # Cache the mask to avoid repeated D2H sync across layers
+        params = (sliding_window,)
+        if (
+            _XFORMERS_BLOCK_MASK_CACHE["seq_lengths"] is seq_lengths
+            and _XFORMERS_BLOCK_MASK_CACHE["params"] == params
+        ):
+            return _XFORMERS_BLOCK_MASK_CACHE["mask"]
+        
         lengths_tensor = seq_lengths.to("cpu", torch.int32)
         if lengths_tensor.numel() == 0:
             return None
         lengths = tuple(int(x) for x in lengths_tensor.tolist())
         mask = _get_cached_block_mask(lengths, sliding_window)
+
+        _XFORMERS_BLOCK_MASK_CACHE["seq_lengths"] = seq_lengths
+        _XFORMERS_BLOCK_MASK_CACHE["params"] = params
+        _XFORMERS_BLOCK_MASK_CACHE["mask"] = mask
     else:
         mask = base_mask
 
@@ -269,6 +295,11 @@ def build_sdpa_packed_attention_mask(
     sliding_window: Optional[int] = None,
 ) -> torch.Tensor:
     seq_lengths, _, _ = seq_info
+
+    params = (dtype, device, sliding_window)
+    if _SDPA_MASK_CACHE["seq_lengths"] is seq_lengths and _SDPA_MASK_CACHE["params"] == params:
+        return _SDPA_MASK_CACHE["mask"]
+
     total_tokens = int(seq_lengths.sum().item())
     mask = torch.full(
         (total_tokens, total_tokens),
@@ -297,7 +328,12 @@ def build_sdpa_packed_attention_mask(
             block = block.masked_fill(window_mask, float("-inf"))
         mask[offset : offset + length, offset : offset + length] = block
         offset += length
-    return mask.unsqueeze(0).unsqueeze(0)
+    
+    result = mask.unsqueeze(0).unsqueeze(0)
+    _SDPA_MASK_CACHE["seq_lengths"] = seq_lengths
+    _SDPA_MASK_CACHE["params"] = params
+    _SDPA_MASK_CACHE["mask"] = result
+    return result
 
 
 def _normalize_packed_lengths(
