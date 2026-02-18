@@ -495,8 +495,8 @@ class ComprehensiveBenchmark:
                     results = []
             mx.eval(*results)
             fused_lat = (time.time() - start) * 1000 / actual_iters
-            speedup = mlx_lat / fused_lat
-            log_result("Unsloth Fused Metal", fused_lat, extra=f"({speedup:.2f}x Speedup)", mem=get_mem_stats())
+            speedup = pytorch_lat / fused_lat  # Speedup vs real PyTorch
+            log_result("Unsloth Fused Metal", fused_lat, extra=f"({speedup:.2f}x vs PyTorch)", mem=get_mem_stats())
 
         
     def run_rope_benchmark(self, batch_size=1, seq_len=1, dim=4096, n_heads=32):
@@ -631,7 +631,8 @@ class ComprehensiveBenchmark:
                     results = []
             mx.eval(*results)
             fused_lat = (time.time() - start) * 1000 / actual_iters
-            log_result("Unsloth Fused Metal", fused_lat, mem=get_mem_stats())
+            speedup = torch_lat / fused_lat
+            log_result("Unsloth Fused Metal", fused_lat, extra=f"({speedup:.2f}x vs PyTorch)", mem=get_mem_stats())
 
     def run_rms_benchmark(self, batch_size=1, seq_len=1, dim=4096):
         log_header(f"RMS Norm Benchmark: B={batch_size}, S={seq_len}, D={dim}")
@@ -676,7 +677,8 @@ class ComprehensiveBenchmark:
                 res = mlx_fused()
             mx.eval(res)
             fused_lat = (time.time() - start) * 1000 / actual_iters
-            log_result("Unsloth Fused Metal", fused_lat, mem=get_mem_stats())
+            speedup = torch_lat / fused_lat
+            log_result("Unsloth Fused Metal", fused_lat, extra=f"({speedup:.2f}x vs PyTorch)", mem=get_mem_stats())
 
 
     def diagnose(self):
