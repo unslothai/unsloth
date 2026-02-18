@@ -780,6 +780,51 @@ class UnslothTrainer:
             print(f"The configuration is: {config_args}")
 
             print("Training configuration prepared\n")
+
+            # ========== DEBUG: Dataset & Model Routing Info ==========
+            print("=" * 60)
+            print("DEBUG: Pre-Training Diagnostics")
+            print("=" * 60)
+            print(f"  Route taken:        {'VLM' if self.is_vlm else 'LLM (text)'}")
+            print(f"  Model name:         {self.model_name}")
+            print(f"  Model class:        {type(self.model).__name__}")
+            print(f"  is_vlm flag:        {self.is_vlm}")
+
+            # Dataset info
+            train_ds = dataset['dataset']
+            if hasattr(train_ds, 'column_names'):
+                print(f"  Dataset columns:    {train_ds.column_names}")
+                print(f"  Dataset size:       {len(train_ds)} rows")
+                # Print first sample
+                try:
+                    sample = train_ds[0]
+                    print(f"  First sample keys:  {list(sample.keys())}")
+                    for key, val in sample.items():
+                        val_str = str(val)
+                        if len(val_str) > 200:
+                            val_str = val_str[:200] + "..."
+                        print(f"    {key}: {val_str}")
+                except Exception as e:
+                    print(f"  Could not read first sample: {e}")
+            elif isinstance(train_ds, list):
+                print(f"  Dataset type:       list ({len(train_ds)} items)")
+                if train_ds:
+                    print(f"  First sample keys:  {list(train_ds[0].keys()) if isinstance(train_ds[0], dict) else 'N/A'}")
+                    sample_str = str(train_ds[0])
+                    if len(sample_str) > 300:
+                        sample_str = sample_str[:300] + "..."
+                    print(f"  First sample:       {sample_str}")
+
+            # Model forward signature
+            try:
+                import inspect
+                sig = inspect.signature(self.model.forward)
+                fwd_params = list(sig.parameters.keys())
+                print(f"  model.forward() params: {fwd_params}")
+            except Exception as e:
+                print(f"  Could not inspect model.forward(): {e}")
+
+            print("=" * 60)
             # ========== TRAINER INITIALIZATION ==========
             if self.is_vlm:
                 trainer_kwargs = {
