@@ -115,6 +115,14 @@ class UnslothTrainer:
                    is_dataset_multimodal: bool = False) -> bool:
         """Load model for training (supports both text and vision models)"""
         try:
+            if self.model is not None:
+                del self.model
+            if self.tokenizer is not None:
+                del self.tokenizer
+
+            if self.trainer is not None:
+                del self.trainer
+
             print("\nClearing GPU memory before training...")
             clear_gpu_cache()
 
