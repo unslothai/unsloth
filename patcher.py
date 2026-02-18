@@ -846,6 +846,8 @@ class MacPatcher:
             mod.dtype_from_config = lambda cfg, key: cfg.get(key, "float32")
         elif fullname == "unsloth_zoo.peft_utils":
             mod.SKIP_QUANTIZATION_MODULES = []
+            mod.get_peft_regex = lambda *a, **k: None
+            mod.requires_grad_for_gradient_checkpointing = lambda *a, **k: None
         elif fullname == "unsloth_zoo.training_utils":
             mod.prepare_model_for_training = lambda model: model
         elif fullname == "unsloth_zoo.vision_utils":
