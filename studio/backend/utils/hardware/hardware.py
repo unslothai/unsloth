@@ -120,6 +120,7 @@ def clear_gpu_cache():
 
     if device == DeviceType.CUDA:
         import torch
+        torch.cuda.synchronize()
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()
     elif device == DeviceType.MLX:

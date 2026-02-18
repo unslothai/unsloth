@@ -12,6 +12,7 @@ __pycache__/
 .venv/
 venv/
 env/
+environment.yaml
 
 # Unsloth cache
 unsloth_compiled_cache/
@@ -41,3 +42,5 @@ resources/
 tmp/
 auth.db
 studio/frontend/package-lock.json
+log_rtx.txt
+log.txt

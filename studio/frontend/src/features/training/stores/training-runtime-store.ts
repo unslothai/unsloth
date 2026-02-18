@@ -128,14 +128,33 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
     })),
 
   setStartQueued: (jobId, message) =>
-    set({
+    set((state) => ({
+      ...state,
       jobId,
       message,
       error: null,
       startError: null,
       phase: "configuring",
       isStarting: false,
-    }),
+      sseConnected: false,
+      firstStepReceived: false,
+      lastEventId: null,
+      currentStep: 0,
+      totalSteps: 0,
+      currentEpoch: 0,
+      currentLoss: 0,
+      currentLearningRate: 0,
+      progressPercent: 0,
+      elapsedSeconds: null,
+      etaSeconds: null,
+      currentGradNorm: null,
+      currentNumTokens: null,
+      lossHistory: [],
+      lrHistory: [],
+      gradNormHistory: [],
+      evalLossHistory: [],
+      resetGeneration: state.resetGeneration + 1,
+    })),
 
   setRuntimeError: (message) =>
     set({
