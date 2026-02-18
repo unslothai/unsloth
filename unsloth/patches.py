@@ -217,6 +217,7 @@ def patch_unsloth_zoo_for_mps() -> bool:
     mock_hf = ModuleType("unsloth_zoo.hf_utils")
     mock_hf.dtype_from_config = lambda config: None
     mock_hf.add_dtype_kwargs = lambda *args, **kwargs: {}
+    mock_hf.HAS_TORCH_DTYPE = False
     mock_hf.fix_lora_auto_mapping = lambda *args, **kwargs: None
     sys.modules["unsloth_zoo.hf_utils"] = mock_hf
 
