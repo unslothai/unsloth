@@ -115,6 +115,14 @@ class UnslothTrainer:
                    is_dataset_multimodal: bool = False) -> bool:
         """Load model for training (supports both text and vision models)"""
         try:
+            if self.model is not None:
+                del self.model
+            if self.tokenizer is not None:
+                del self.tokenizer
+
+            if self.trainer is not None:
+                del self.trainer
+
             print("\nClearing GPU memory before training...")
             clear_gpu_cache()
 
@@ -214,7 +222,13 @@ class UnslothTrainer:
                 return True
 
             # LoRA/QLoRA mode - apply PEFT
-            if target_modules is None or (isinstance(target_modules, list) and len(target_modules) == 0):
+            # "all-linear" is a PEFT keyword that targets every linear layer
+            if isinstance(target_modules, list) and "all-linear" in target_modules:
+                if len(target_modules) == 1:
+                    target_modules = "all-linear"
+                else:
+                    target_modules = [m for m in target_modules if m != "all-linear"]
+            elif target_modules is None or (isinstance(target_modules, list) and len(target_modules) == 0):
                 target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
                                 "gate_proj", "up_proj", "down_proj"]
 
@@ -701,6 +715,7 @@ class UnslothTrainer:
                 "output_dir": output_dir,
                 "report_to": ["wandb"] if training_args.get('enable_wandb', False) else "none",
                 "include_num_input_tokens_seen": True,  # Enable token counting
+                "dataset_num_proc": max(1, os.cpu_count() // 3),
             }
             
             # Add warmup parameter - use warmup_ratio if provided, otherwise warmup_steps

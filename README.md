@@ -45,11 +45,13 @@ This script will:
 ### Launch the studio
 
 ```bash
-# After setup, open a new terminal (or source ~/.bashrc), then:
+# After setup, open a new terminal (or source ~/.bashrc), then inside your working directory:
 unsloth-ui -H 0.0.0.0 -p 8000
 ```
 
 On **first launch**, a one-time setup token is printed to the console. Use it in the browser to create your admin account.
+
+As this repo is in continuous development, please make sure to run the setup.sh file everytime you pull new changes from the repo.
 
 ## API Reference
 

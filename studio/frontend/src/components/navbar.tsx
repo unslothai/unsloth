@@ -21,6 +21,7 @@ import {
   ZapIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { useTrainingRuntimeStore } from "@/features/training";
 import { Link, useRouterState } from "@tanstack/react-router";
 import { AnimatePresence, motion } from "motion/react";
 import { useState } from "react";
@@ -35,6 +36,7 @@ const NAV_ITEMS = [
 
 export function Navbar() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const isTrainingRunning = useTrainingRuntimeStore((s) => s.isTrainingRunning);
   const [logoHovered, setLogoHovered] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
 
@@ -95,7 +97,9 @@ export function Navbar() {
         >
           {NAV_ITEMS.map((item) => {
             const active = pathname === item.href;
-            if (!item.enabled) {
+            const disabledByTraining =
+              isTrainingRunning && item.href !== "/studio";
+            if (!item.enabled || disabledByTraining) {
               return (
                 <span
                   key={item.href}
@@ -230,6 +234,18 @@ export function Navbar() {
               <div className="mt-6 flex flex-col gap-2">
                 {NAV_ITEMS.filter((item) => item.enabled).map((item) => {
                   const active = pathname === item.href;
+                  const disabledByTraining =
+                    isTrainingRunning && item.href !== "/studio";
+                  if (disabledByTraining) {
+                    return (
+                      <span
+                        key={item.href}
+                        className="rounded-md border border-border px-3 py-2 text-sm font-medium text-muted-foreground/40 cursor-not-allowed"
+                      >
+                        {item.label}
+                      </span>
+                    );
+                  }
                   return (
                     <Link
                       key={item.href}
