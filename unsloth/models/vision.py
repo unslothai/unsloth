@@ -484,8 +484,13 @@ class FastBaseModel:
         # Instead, use data-parallel approach where each GPU gets a full model copy.
         from .loader_utils import prepare_device_map, is_distributed
 
-        if (is_distributed() or DEVICE_COUNT > 1) and device_map in ("auto", "balanced", "balanced_low_0"):
+        if (is_distributed() or DEVICE_COUNT > 1) and device_map in (
+            "auto",
+            "balanced",
+            "balanced_low_0",
+        ):
             import warnings
+
             if is_distributed():
                 raise ValueError(
                     f"Unsloth: You are in a distributed training environment (multi-GPU) but used device_map='{device_map}'.\n"
@@ -503,7 +508,7 @@ class FastBaseModel:
                     f"To use both GPUs for training, please use `accelerate launch` or `torchrun` and set `device_map=None` for Data Parallelism.",
                     stacklevel = 2,
                 )
-                device_map = {"" : "cuda:0"}
+                device_map = {"": "cuda:0"}
 
         SUPPORTS_BFLOAT16 = is_bfloat16_supported()
 

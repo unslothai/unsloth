@@ -848,8 +848,13 @@ class FastModel(FastBaseModel):
         is_quantized = load_in_4bit or load_in_8bit or load_in_fp8
         if isinstance(device_map, str):
             distributed_device_map, is_dist = prepare_device_map()
-            if (is_dist or DEVICE_COUNT > 1) and device_map in ("auto", "balanced", "balanced_low_0"):
+            if (is_dist or DEVICE_COUNT > 1) and device_map in (
+                "auto",
+                "balanced",
+                "balanced_low_0",
+            ):
                 import warnings
+
                 if is_dist:
                     raise ValueError(
                         f"Unsloth: You are in a distributed training environment (multi-GPU) but used device_map='{device_map}'.\n"
@@ -867,7 +872,7 @@ class FastModel(FastBaseModel):
                         f"To use both GPUs for training, please use `accelerate launch` or `torchrun` and set `device_map=None` for Data Parallelism.",
                         stacklevel = 2,
                     )
-                    device_map = {"" : "cuda:0"}
+                    device_map = {"": "cuda:0"}
             elif is_dist and is_quantized:
                 device_map = distributed_device_map
 
