@@ -214,7 +214,13 @@ class UnslothTrainer:
                 return True
 
             # LoRA/QLoRA mode - apply PEFT
-            if target_modules is None or (isinstance(target_modules, list) and len(target_modules) == 0):
+            # "all-linear" is a PEFT keyword that targets every linear layer
+            if isinstance(target_modules, list) and "all-linear" in target_modules:
+                if len(target_modules) == 1:
+                    target_modules = "all-linear"
+                else:
+                    target_modules = [m for m in target_modules if m != "all-linear"]
+            elif target_modules is None or (isinstance(target_modules, list) and len(target_modules) == 0):
                 target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
                                 "gate_proj", "up_proj", "down_proj"]
 
