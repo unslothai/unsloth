@@ -846,9 +846,29 @@ class FastModel(FastBaseModel):
         # In multi-GPU (torchrun), each rank must load the model on its own device
         # to avoid Accelerate device relocation errors with quantized weights.
         is_quantized = load_in_4bit or load_in_8bit or load_in_fp8
-        if is_quantized and isinstance(device_map, str):
+        if isinstance(device_map, str):
             distributed_device_map, is_dist = prepare_device_map()
-            if is_dist:
+            if (is_dist or DEVICE_COUNT > 1) and device_map in ("auto", "balanced", "balanced_low_0"):
+                import warnings
+                if is_dist:
+                    raise ValueError(
+                        f"Unsloth: You are in a distributed training environment (multi-GPU) but used device_map='{device_map}'.\n"
+                        f"Model splitting across GPUs is not supported as it causes gradient device mismatches with Unsloth's fused kernels.\n"
+                        f"Please set `device_map = None` to enable standard Data Parallelism.\n"
+                        f"Note: This will load a full copy of the model on each GPU.\n"
+                        f"This uses more VRAM per GPU but provides equivalent training to single GPU."
+                    )
+                else:
+                    # Non-distributed multi-GPU case
+                    warnings.warn(
+                        f"Unsloth: You have {DEVICE_COUNT} GPUs but used device_map='{device_map}'.\n"
+                        f"Model splitting across GPUs is not yet supported with Unsloth's fused kernels.\n"
+                        f"We will override this to use only the first GPU to prevent crashes.\n"
+                        f"To use both GPUs for training, please use `accelerate launch` or `torchrun` and set `device_map=None` for Data Parallelism.",
+                        stacklevel = 2,
+                    )
+                    device_map = {"" : "cuda:0"}
+            elif is_dist and is_quantized:
                 device_map = distributed_device_map
 
         # Check if 4bit is allowed specifically for AMD

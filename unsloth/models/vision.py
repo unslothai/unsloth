@@ -477,6 +477,34 @@ class FastBaseModel:
                 "Are you certain you want to do remote code execution?"
             )
         token = hf_login(token)
+
+        # Fix for multi-GPU distributed training
+        # When using distributed training (e.g., 2x T4 on Kaggle), device_map="auto"/"balanced"
+        # splits the model across GPUs which can cause gradient device mismatch errors.
+        # Instead, use data-parallel approach where each GPU gets a full model copy.
+        from .loader_utils import prepare_device_map, is_distributed
+
+        if (is_distributed() or DEVICE_COUNT > 1) and device_map in ("auto", "balanced", "balanced_low_0"):
+            import warnings
+            if is_distributed():
+                raise ValueError(
+                    f"Unsloth: You are in a distributed training environment (multi-GPU) but used device_map='{device_map}'.\n"
+                    f"Model splitting across GPUs is not supported for Vision Models as it causes gradient device mismatches with Unsloth's fused kernels.\n"
+                    f"Please set `device_map = None` to enable standard Data Parallelism.\n"
+                    f"Note: This will load a full copy of the model on each GPU.\n"
+                    f"This uses more VRAM per GPU but provides equivalent training to single GPU."
+                )
+            else:
+                # Non-distributed multi-GPU case
+                warnings.warn(
+                    f"Unsloth: You have {DEVICE_COUNT} GPUs but used device_map='{device_map}'.\n"
+                    f"Model splitting across GPUs is not yet supported for Vision Models with Unsloth's fused kernels.\n"
+                    f"We will override this to use only the first GPU to prevent crashes.\n"
+                    f"To use both GPUs for training, please use `accelerate launch` or `torchrun` and set `device_map=None` for Data Parallelism.",
+                    stacklevel = 2,
+                )
+                device_map = {"" : "cuda:0"}
+
         SUPPORTS_BFLOAT16 = is_bfloat16_supported()
 
         if DEVICE_TYPE == "cuda":
