@@ -46,7 +46,9 @@ export function buildTrainingStartPayload(
     lora_r: config.loraRank,
     lora_alpha: config.loraAlpha,
     lora_dropout: config.loraDropout,
-    target_modules: adapterMethod ? config.targetModules : [],
+    target_modules: adapterMethod
+      ? config.targetModules.filter((m) => m !== "all-linear")
+      : [],
     gradient_checkpointing: config.gradientCheckpointing,
     use_rslora: config.loraVariant === "rslora",
     use_loftq: config.loraVariant === "loftq",
