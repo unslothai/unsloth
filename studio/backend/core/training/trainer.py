@@ -707,7 +707,7 @@ class UnslothTrainer:
                 "output_dir": output_dir,
                 "report_to": ["wandb"] if training_args.get('enable_wandb', False) else "none",
                 "include_num_input_tokens_seen": True,  # Enable token counting
-                "dataset_num_proc": max(1, os.cpu_count() // 3),
+                "dataset_num_proc": max(1, os.cpu_count() // 4),
             }
             
             # Add warmup parameter - use warmup_ratio if provided, otherwise warmup_steps
