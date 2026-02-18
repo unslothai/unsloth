@@ -24,6 +24,13 @@ echo "╔═══════════════════════�
 echo "║     Unsloth Studio Setup Script      ║"
 echo "╚══════════════════════════════════════╝"
 
+# ── Detect Colab (like unsloth does) ──
+IS_COLAB=false
+keynames=$'\n'$(printenv | cut -d= -f1)
+if [[ "$keynames" == *$'\nCOLAB_'* ]]; then
+    IS_COLAB=true
+fi
+
 # ── 1. Check existing Node/npm versions ──
 NEED_NODE=true
 if command -v node &>/dev/null && command -v npm &>/dev/null; then
@@ -33,7 +40,17 @@ if command -v node &>/dev/null && command -v npm &>/dev/null; then
         echo "✅ Node $(node -v) and npm $(npm -v) already meet requirements. Skipping nvm install."
         NEED_NODE=false
     else
-        echo "⚠️  Node $(node -v) / npm $(npm -v) too old. Installing via nvm..."
+        if [ "$IS_COLAB" = true ]; then
+            echo "✅ Node $(node -v) and npm $(npm -v) detected in Colab."
+            # In Colab, just upgrade npm directly - nvm doesn't work well
+            if [ "$NPM_MAJOR" -lt 11 ]; then
+                echo "   Upgrading npm to latest..."
+                npm install -g npm@latest > /dev/null 2>&1
+            fi
+            NEED_NODE=false
+        else
+            echo "⚠️  Node $(node -v) / npm $(npm -v) too old. Installing via nvm..."
+        fi
     fi
 else
     echo "⚠️  Node/npm not found. Installing via nvm..."
@@ -132,41 +149,61 @@ fi
 BEST_VER=$("$BEST_PY" --version 2>&1 | awk '{print $2}')
 echo "✅ Using $BEST_PY ($BEST_VER) — compatible (≤ 3.12.x)"
 
-# Always start fresh to preserve correct install order
-rm -rf .venv
-"$BEST_PY" -m venv .venv
-source .venv/bin/activate
-run_quiet "pip upgrade" pip install --upgrade pip
-echo "   Installing unsloth-zoo + unsloth..."
-run_quiet "pip install unsloth" pip install -r "$SCRIPT_DIR/studio/backend/requirements/base.txt"
-echo "   Installing additional unsloth dependencies..."
-run_quiet "pip install extras" pip install --no-cache-dir -r "$SCRIPT_DIR/studio/backend/requirements/extras.txt"
-run_quiet "pip install extras" pip install --no-deps --no-cache-dir -r "$SCRIPT_DIR/studio/backend/requirements/extras-no-deps.txt"
-run_quiet "pip install torchao+transformers" pip install --force-reinstall --no-cache-dir -r "$SCRIPT_DIR/studio/backend/requirements/overrides.txt"
-run_quiet "pip install triton_kernels" pip install --no-deps -r "$SCRIPT_DIR/studio/backend/requirements/triton-kernels.txt"
-# Patch: override llama_cpp.py with fix from unsloth-zoo branch
-LLAMA_CPP_DST="$(pip show unsloth-zoo | grep -i '^Location:' | awk '{print $2}')/unsloth_zoo/llama_cpp.py"
-curl -sSL "https://raw.githubusercontent.com/unslothai/unsloth-zoo/refs/heads/main/unsloth_zoo/llama_cpp.py" \
-    -o "$LLAMA_CPP_DST"
-echo "   Installing studio dependencies..."
-run_quiet "pip install studio" pip install -r "$SCRIPT_DIR/studio/backend/requirements/studio.txt"
-echo "✅ Python dependencies installed"
-
-# ── 7. WSL: pre-install GGUF build dependencies ──
-# On WSL, sudo requires a password and can't be entered during GGUF export
-# (runs in a non-interactive subprocess). Install build deps here instead.
-if grep -qi microsoft /proc/version 2>/dev/null; then
-    echo ""
-    echo "⚠️  WSL detected — installing build dependencies for GGUF export..."
-    echo "   You may be prompted for your password."
-    sudo apt-get update -y
-    sudo apt-get install -y build-essential cmake curl git libcurl4-openssl-dev
-    echo "✅ GGUF build dependencies installed"
+if [ "$IS_COLAB" = true ]; then
+    # Colab: install packages directly without venv
+    run_quiet "pip upgrade" pip install --upgrade pip
+    echo "   Installing unsloth-zoo + unsloth..."
+    run_quiet "pip install unsloth" pip install -r "$SCRIPT_DIR/studio/backend/requirements/base.txt"
+    echo "   Installing additional unsloth dependencies..."
+    run_quiet "pip install extras" pip install --no-cache-dir -r "$SCRIPT_DIR/studio/backend/requirements/extras.txt"
+    run_quiet "pip install extras" pip install --no-deps --no-cache-dir -r "$SCRIPT_DIR/studio/backend/requirements/extras-no-deps.txt"
+    run_quiet "pip install torchao+transformers" pip install --force-reinstall --no-cache-dir -r "$SCRIPT_DIR/studio/backend/requirements/overrides.txt"
+    run_quiet "pip install triton_kernels" pip install --no-deps -r "$SCRIPT_DIR/studio/backend/requirements/triton-kernels.txt"
+    # Patch: override llama_cpp.py with fix from unsloth-zoo branch
+    LLAMA_CPP_DST="$(pip show unsloth-zoo | grep -i '^Location:' | awk '{print $2}')/unsloth_zoo/llama_cpp.py"
+    curl -sSL "https://raw.githubusercontent.com/unslothai/unsloth-zoo/refs/heads/main/unsloth_zoo/llama_cpp.py" \
+        -o "$LLAMA_CPP_DST"
+    echo "   Installing studio dependencies..."
+    run_quiet "pip install studio" pip install -r "$SCRIPT_DIR/studio/backend/requirements/studio.txt"
+    echo "✅ Python dependencies installed"
+else
+    # Local: create venv (always start fresh to preserve correct install order)
+    rm -rf .venv
+    "$BEST_PY" -m venv .venv
+    source .venv/bin/activate
+    run_quiet "pip upgrade" pip install --upgrade pip
+    echo "   Installing unsloth-zoo + unsloth..."
+    run_quiet "pip install unsloth" pip install -r "$SCRIPT_DIR/studio/backend/requirements/base.txt"
+    echo "   Installing additional unsloth dependencies..."
+    run_quiet "pip install extras" pip install --no-cache-dir -r "$SCRIPT_DIR/studio/backend/requirements/extras.txt"
+    run_quiet "pip install extras" pip install --no-deps --no-cache-dir -r "$SCRIPT_DIR/studio/backend/requirements/extras-no-deps.txt"
+    run_quiet "pip install torchao+transformers" pip install --force-reinstall --no-cache-dir -r "$SCRIPT_DIR/studio/backend/requirements/overrides.txt"
+    run_quiet "pip install triton_kernels" pip install --no-deps -r "$SCRIPT_DIR/studio/backend/requirements/triton-kernels.txt"
+    # Patch: override llama_cpp.py with fix from unsloth-zoo branch
+    LLAMA_CPP_DST="$(pip show unsloth-zoo | grep -i '^Location:' | awk '{print $2}')/unsloth_zoo/llama_cpp.py"
+    curl -sSL "https://raw.githubusercontent.com/unslothai/unsloth-zoo/refs/heads/main/unsloth_zoo/llama_cpp.py" \
+        -o "$LLAMA_CPP_DST"
+    echo "   Installing studio dependencies..."
+    run_quiet "pip install studio" pip install -r "$SCRIPT_DIR/studio/backend/requirements/studio.txt"
+    echo "✅ Python dependencies installed"
+    
+    # ── 7. WSL: pre-install GGUF build dependencies ──
+    # On WSL, sudo requires a password and can't be entered during GGUF export
+    # (runs in a non-interactive subprocess). Install build deps here instead.
+    if grep -qi microsoft /proc/version 2>/dev/null; then
+        echo ""
+        echo "⚠️  WSL detected — installing build dependencies for GGUF export..."
+        echo "   You may be prompted for your password."
+        sudo apt-get update -y
+        sudo apt-get install -y build-essential cmake curl git libcurl4-openssl-dev
+        echo "✅ GGUF build dependencies installed"
+    fi
 fi
 
-# ── 8. Add shell alias ──
+# ── 8. Add shell alias (skip in Colab) ──
 # Note: venv activation does NOT persist across terminal sessions.
 # This alias hardcodes the venv python path so users don't need to activate.
+if [ "$IS_COLAB" = false ]; then
 echo ""
 REPO_DIR="$SCRIPT_DIR"
 
@@ -209,16 +246,27 @@ else
     echo "✅ Alias 'unsloth-ui' already exists in $SHELL_RC"
 fi
 
+fi  # End of "if not Colab" for shell alias setup
+
 echo ""
-echo "╔══════════════════════════════════════╗"
-echo "║           Setup Complete!            ║"
-echo "╠══════════════════════════════════════╣"
-if [ "$ALIAS_ADDED" = true ]; then
-    echo "║ Run 'source $SHELL_RC'"
-    echo "║ or open a new terminal, then:       ║"
+if [ "$IS_COLAB" = true ]; then
+    echo "╔══════════════════════════════════════╗"
+    echo "║           Setup Complete!            ║"
+    echo "╠══════════════════════════════════════╣"
+    echo "║ Unsloth Studio is ready to start    ║"
+    echo "║ in your Colab notebook!              ║"
+    echo "╚══════════════════════════════════════╝"
 else
-    echo "║ Launch with:                         ║"
+    echo "╔══════════════════════════════════════╗"
+    echo "║           Setup Complete!            ║"
+    echo "╠══════════════════════════════════════╣"
+    if [ "$ALIAS_ADDED" = true ]; then
+        echo "║ Run 'source $SHELL_RC'"
+        echo "║ or open a new terminal, then:       ║"
+    else
+        echo "║ Launch with:                         ║"
+    fi
+    echo "║                                      ║"
+    echo "║ unsloth-ui -H 0.0.0.0 -p 8000       ║"
+    echo "╚══════════════════════════════════════╝"
 fi
-echo "║                                      ║"
-echo "║ unsloth-ui -H 0.0.0.0 -p 8000       ║"
-echo "╚══════════════════════════════════════╝"
