@@ -800,9 +800,20 @@ class UnslothTrainer:
                     trainer_kwargs["eval_dataset"] = eval_dataset
                 self.trainer = SFTTrainer(**trainer_kwargs)
             else:
+                # For text-only training, if the tokenizer is actually a Processor
+                # (e.g., Gemma-3 returns a ProcessorMixin even for text), we must
+                # unwrap to the raw tokenizer. Otherwise Unsloth's SFTTrainer detects
+                # ProcessorMixin → sets _is_vlm=True → skips _prepare_dataset entirely,
+                # and the 'text' column never gets tokenized to 'input_ids'.
+                from transformers import ProcessorMixin
+                sft_tokenizer = self.tokenizer
+                if isinstance(self.tokenizer, ProcessorMixin) and hasattr(self.tokenizer, 'tokenizer'):
+                    print(f"  ⚠️ Unwrapping Processor → raw tokenizer for text-only SFTTrainer")
+                    sft_tokenizer = self.tokenizer.tokenizer
+
                 trainer_kwargs = {
                     "model": self.model,
-                    "tokenizer": self.tokenizer,
+                    "tokenizer": sft_tokenizer,
                     "train_dataset": dataset['dataset'],
                     "data_collator": data_collator,
                     "args": SFTConfig(**config_args),
