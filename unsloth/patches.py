@@ -143,6 +143,9 @@ def patch_unsloth_zoo_for_mps() -> bool:
     # Mock unsloth_zoo.tokenizer_utils for MPS compatibility
     mock_tokenizer = ModuleType("unsloth_zoo.tokenizer_utils")
     mock_tokenizer.patch_tokenizer = lambda x: x
+    mock_tokenizer.mean_of_trained_tokens = lambda *a, **k: None
+    mock_tokenizer.add_new_tokens = lambda *a, **k: None
+    mock_tokenizer.fix_untrained_tokens = lambda *a, **k: None
     sys.modules["unsloth_zoo.tokenizer_utils"] = mock_tokenizer
 
     # Mock unsloth_zoo.rl_environments for MPS compatibility
