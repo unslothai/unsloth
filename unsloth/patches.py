@@ -224,6 +224,7 @@ def patch_unsloth_zoo_for_mps() -> bool:
     # Mock unsloth_zoo.peft_utils for MPS compatibility
     mock_peft = ModuleType("unsloth_zoo.peft_utils")
     mock_peft.SKIP_QUANTIZATION_MODULES = []
+    mock_peft.get_peft_regex = lambda *a, **k: None
     sys.modules["unsloth_zoo.peft_utils"] = mock_peft
 
     # Mock unsloth_zoo.vllm_utils for MPS compatibility
