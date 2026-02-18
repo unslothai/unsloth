@@ -20,6 +20,7 @@ unsloth_compiled_cache/
 # ML artifacts (large files)
 outputs/
 exports/
+unsloth_training_checkpoints/
 *.gguf
 *.safetensors
 
