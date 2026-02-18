@@ -28,8 +28,6 @@ from .format_conversion import (
     convert_alpaca_to_chatml,
     convert_to_vlm_format,
     convert_llava_to_vlm_format,
-    get_expected_chat_column,
-    rename_chat_column_in_list,
 )
 from .chat_templates import (
     apply_chat_template_to_dataset,
@@ -549,7 +547,6 @@ def format_and_template_dataset(
     dataset,
     model_name,
     tokenizer,
-    model=None,
     is_vlm = False,
     format_type="auto",
     # VLM-specific parameters
@@ -738,30 +735,12 @@ def format_and_template_dataset(
             dataset = [sample for sample in dataset]
             warnings.append("Dataset already in standard VLM messages format")
 
-        # Defensive: rename chat column if model expects a different name
-        expected_col = get_expected_chat_column(model) if model is not None else None
-        # VLM data is a list of dicts — check what key the first item uses
-        current_col = "messages"  # default from our converters
-        if isinstance(dataset, list) and len(dataset) > 0:
-            sample_keys = dataset[0].keys()
-            if "conversations" in sample_keys:
-                current_col = "conversations"
-            elif "messages" in sample_keys:
-                current_col = "messages"
-
-        if expected_col and expected_col != current_col:
-            warnings.append(
-                f"Model expects '{expected_col}' but dataset has '{current_col}' — renaming."
-            )
-            dataset = rename_chat_column_in_list(dataset, current_col, expected_col)
-            current_col = expected_col
-
         # Return as list
         return {
             "dataset": dataset,
             "detected_format": vlm_structure["format"],
             "final_format": "vlm_messages",
-            "chat_column": current_col,
+            "chat_column": "messages",
             "is_vlm": True,
             "is_multimodal": multimodal_info["is_multimodal"],
             "multimodal_info": multimodal_info,
