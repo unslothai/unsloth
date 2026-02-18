@@ -2726,7 +2726,7 @@ def unsloth_generic_save(
         try:
             from huggingface_hub import metadata_update
 
-            save_dir, _ = _determine_username(save_directory, "", token)
+            save_dir, _ = _determine_username(save_directory, None, token)
             metadata_update(
                 save_dir, {"datasets": datasets}, overwrite = True, token = token
             )
