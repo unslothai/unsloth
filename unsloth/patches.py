@@ -210,6 +210,7 @@ def patch_unsloth_zoo_for_mps() -> bool:
     # Mock unsloth_zoo.training_utils for MPS compatibility
     mock_training = ModuleType("unsloth_zoo.training_utils")
     mock_training.prepare_model_for_training = lambda model, *args, **kwargs: model
+    mock_training.fix_zero_training_loss = lambda *args, **kwargs: None
     sys.modules["unsloth_zoo.training_utils"] = mock_training
 
     # Mock unsloth_zoo.hf_utils for MPS compatibility
