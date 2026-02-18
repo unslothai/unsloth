@@ -115,6 +115,14 @@ class UnslothTrainer:
                    is_dataset_multimodal: bool = False) -> bool:
         """Load model for training (supports both text and vision models)"""
         try:
+            if self.model is not None:
+                del self.model
+            if self.tokenizer is not None:
+                del self.tokenizer
+
+            if self.trainer is not None:
+                del self.trainer
+
             print("\nClearing GPU memory before training...")
             clear_gpu_cache()
 
@@ -699,6 +707,7 @@ class UnslothTrainer:
                 "output_dir": output_dir,
                 "report_to": ["wandb"] if training_args.get('enable_wandb', False) else "none",
                 "include_num_input_tokens_seen": True,  # Enable token counting
+                "dataset_num_proc": max(1, os.cpu_count() // 3),
             }
             
             # Add warmup parameter - use warmup_ratio if provided, otherwise warmup_steps
