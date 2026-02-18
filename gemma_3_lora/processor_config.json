@@ -1,4 +1,0 @@
-{
-  "image_seq_length": 256,
-  "processor_class": "_Unsloth_Patched_Gemma3Processor"
-}
