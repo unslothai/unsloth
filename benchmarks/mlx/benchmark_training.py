@@ -224,6 +224,73 @@ def benchmark_attention_training(B: int = 16, H: int = 32, S: int = 1024, D: int
         print(f"  mx.fast.sdpa not available: {e}")
 
 
+def benchmark_finetune_training(B=1, S=128, iters=50, warmup=10):
+    """Full fine-tuning loop with a small Llama-style model."""
+    print("\n" + "=" * 60)
+    print(" Full Fine-tuning [Small Llama-style Model]")
+    print("=" * 60)
+    print(f"  {'Implementation':<30} {'Time':>10}  {'Peak RAM':>10}  {'Speedup'}")
+    print("-" * 62)
+
+    H, hidden, heads = 256, 512, 4
+    D = H // heads
+    lr = 0.01
+
+    x = mx.random.normal(shape=(B, S, H))
+    target = mx.random.normal(shape=(B, S, H))
+
+    w_q = mx.random.normal(shape=(H, H))
+    w_k = mx.random.normal(shape=(H, H))
+    w_v = mx.random.normal(shape=(H, H))
+    w_o = mx.random.normal(shape=(H, H))
+    w1 = mx.random.normal(shape=(H, hidden))
+    w3 = mx.random.normal(shape=(H, hidden))
+    w2 = mx.random.normal(shape=(hidden, H))
+    ln_gamma = mx.ones(shape=(H))
+    ln_beta = mx.zeros(shape=(H))
+
+    params = [w_q, w_k, w_v, w_o, w1, w3, w2, ln_gamma, ln_beta]
+
+    def forward_backward():
+        nonlocal x, target, params
+        x = mx.random.normal(shape=(B, S, H))
+        target = mx.random.normal(shape=(B, S, H))
+
+        x_mean = x.mean(axis=2, keepdims=True)
+        x_var = x.var(axis=2, keepdims=True)
+        x_norm = (x - x_mean) / mx.sqrt(x_var + 1e-5)
+        x = x_norm * ln_gamma + ln_beta
+
+        q = x @ w_q
+        k = x @ w_k
+        v = x @ w_v
+        q = q.reshape(B, S, heads, D).transpose(0, 2, 1, 3)
+        k = k.reshape(B, S, heads, D).transpose(0, 2, 1, 3)
+        v = v.reshape(B, S, heads, D).transpose(0, 2, 1, 3)
+        attn = mx.fast.scaled_dot_product_attention(q, k, v, scale=1.0 / (D ** 0.5))
+        attn = attn.transpose(0, 2, 1, 3).reshape(B, S, H)
+        x = attn @ w_o
+
+        gate = (x @ w1)
+        gate = gate * mx.sigmoid(gate)
+        up = x @ w3
+        ff = gate * up
+        x = ff @ w2
+
+        loss = ((x - target) ** 2).mean()
+
+        mx.eval(x)
+        return loss
+
+    time_eager, mem_eager = benchmark_training_step("Eager (no compile)", forward_backward, iters)
+    print_result("Eager (no compile)", time_eager, mem_eager)
+    baseline_time = time_eager
+
+    compiled_fn = mx.compile(forward_backward)
+    time_compiled, mem_compiled = benchmark_training_step("mx.compile", compiled_fn, iters)
+    print_result("mx.compile", time_compiled, mem_compiled, baseline_time)
+
+
 def run_all_benchmarks(args):
     """Run all training benchmarks."""
     print("=" * 60)
@@ -244,6 +311,8 @@ def run_all_benchmarks(args):
         benchmark_swiglu_training(B=b, S=s, iters=args.iters, warmup=args.warmup)
     if args.benchmark == "all" or args.benchmark == "attention":
         benchmark_attention_training(B=b, S=s if s <= 2048 else 2048, iters=args.iters, warmup=args.warmup)
+    if args.benchmark == "all" or args.benchmark == "finetune":
+        benchmark_finetune_training(B=b, S=s, iters=args.iters, warmup=args.warmup)
 
     print("\n" + "=" * 60)
     print(" Benchmark Complete")
