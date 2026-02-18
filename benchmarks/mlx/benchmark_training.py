@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """Real training benchmark for MLX kernels - forward + backward + memory."""
 
+import sys
 import argparse
 import gc
 import time
 from typing import Callable, Optional
+
+# Run patcher first to mock unsloth_zoo modules
+import patcher  # noqa: F401
 
 import mlx.core as mx
 
