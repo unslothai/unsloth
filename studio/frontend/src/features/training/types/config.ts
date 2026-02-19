@@ -72,6 +72,7 @@ export interface TrainingConfigActions {
   setModelType: (type: ModelType) => void;
   setSelectedModel: (model: string | null) => void;
   ensureModelDefaultsLoaded: () => void;
+  ensureDatasetChecked: () => void;
   setTrainingMethod: (method: TrainingMethod) => void;
   setHfToken: (token: string) => void;
   setDatasetSource: (source: DatasetSource) => void;
