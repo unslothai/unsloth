@@ -55,41 +55,36 @@ mlx_geglu_exact_backward = geglu_module.mlx_geglu_exact_backward
 class BenchmarkResult:
     """Stores benchmark results for a single variant."""
     def __init__(self, name: str, latency_ms: float, error: Optional[str] = None, 
-                 vram_mb: Optional[float] = None, notes: str = ""):
+                 vram_active_mb: Optional[float] = None, vram_peak_mb: Optional[float] = None, notes: str = ""):
         self.name = name
         self.latency_ms = latency_ms
         self.error = error
-        self.vram_mb = vram_mb
+        self.vram_active_mb = vram_active_mb
+        self.vram_peak_mb = vram_peak_mb
         self.notes = notes
 
 
 def get_memory_usage() -> Tuple[float, float]:
-    """Get current memory usage in MB for MPS, MLX and system.
-    Returns: (gpu_memory_mb, system_memory_mb)
+    """Get current memory usage in MB for MPS and MLX.
+    Returns: (active_memory_mb, peak_memory_mb)
     """
-    gpu_mb = 0.0
-    system_mb = 0.0
+    active_mb = 0.0
+    peak_mb = 0.0
     
     try:
         if torch.backends.mps.is_available():
             torch.mps.synchronize()
-            gpu_mb += torch.mps.current_allocated_memory() / (1024 * 1024)
-    except Exception:
-        pass
-    
-    # Use peak memory for MLX to get accurate per-operation measurements
-    try:
-        gpu_mb += mx.get_peak_memory() / (1024 * 1024)
+            active_mb += torch.mps.current_allocated_memory() / (1024 * 1024)
     except Exception:
         pass
     
     try:
-        import resource
-        system_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+        active_mb += mx.get_active_memory() / (1024 * 1024)
+        peak_mb = mx.get_peak_memory() / (1024 * 1024)
     except Exception:
         pass
     
-    return gpu_mb, system_mb
+    return active_mb, peak_mb
 
 
 def clear_mlx_cache():
@@ -124,12 +119,12 @@ class StandardizedBenchmark:
         self.benchmark_iters = benchmark_iters
         self.device = torch.device("mps")
         
-    def _benchmark_mps(self, fn, *args, **kwargs) -> Tuple[float, float]:
-        """Benchmark PyTorch MPS implementation."""
+    def _benchmark_mps(self, fn, *args, **kwargs) -> Tuple[float, float, float]:
+        """Benchmark PyTorch MPS implementation. Returns (latency_ms, active_mb, peak_mb)."""
         mx.synchronize()
         torch.mps.synchronize()
         
-        mps_before, _ = get_memory_usage()
+        active_before, _ = get_memory_usage()
         
         # Warmup
         for _ in range(self.warmup_iters):
@@ -144,32 +139,29 @@ class StandardizedBenchmark:
         end = time.perf_counter()
         
         torch.mps.synchronize()
-        mps_after, _ = get_memory_usage()
+        active_after, peak_after = get_memory_usage()
         
         latency_ms = (end - start) / self.benchmark_iters * 1000
-        memory_mb = max(0, mps_after - mps_before)
-        return latency_ms, memory_mb
+        active_mb = max(0, active_after - active_before)
+        return latency_ms, active_mb, peak_after
     
-    def _benchmark_metal(self, fn, *args, **kwargs) -> Tuple[float, float]:
-        """Benchmark Metal fused kernel."""
+    def _benchmark_metal(self, fn, *args, **kwargs) -> Tuple[float, float, float]:
+        """Benchmark Metal fused kernel. Returns (latency_ms, active_mb, peak_mb)."""
         mx.synchronize()
         
-        # Clear cache and reset peak memory counter for accurate measurement
         clear_mlx_cache()
         try:
             mx.reset_peak_memory()
         except Exception:
             pass
         
-        mps_before, _ = get_memory_usage()
+        active_before, _ = get_memory_usage()
         
-        # Warmup - need to evaluate to force execution
         for _ in range(self.warmup_iters):
             result = fn(*args, **kwargs)
             mx.eval(result)
             mx.synchronize()
         
-        # Benchmark
         start = time.perf_counter()
         for _ in range(self.benchmark_iters):
             result = fn(*args, **kwargs)
@@ -178,32 +170,29 @@ class StandardizedBenchmark:
         end = time.perf_counter()
         
         mx.synchronize()
-        mps_after, _ = get_memory_usage()
+        active_after, peak_after = get_memory_usage()
         
         latency_ms = (end - start) / self.benchmark_iters * 1000
-        memory_mb = max(0, mps_after - mps_before)
-        return latency_ms, memory_mb
+        active_mb = max(0, active_after - active_before)
+        return latency_ms, active_mb, peak_after
     
-    def _benchmark_mlx_fast(self, fn, *args, **kwargs) -> Tuple[float, float]:
-        """Benchmark MLX.fast operations."""
+    def _benchmark_mlx_fast(self, fn, *args, **kwargs) -> Tuple[float, float, float]:
+        """Benchmark MLX.fast operations. Returns (latency_ms, active_mb, peak_mb)."""
         mx.synchronize()
         
-        # Clear cache and reset peak memory counter for accurate measurement
         clear_mlx_cache()
         try:
             mx.reset_peak_memory()
         except Exception:
             pass
         
-        mps_before, _ = get_memory_usage()
+        active_before, _ = get_memory_usage()
         
-        # Warmup - need to evaluate to force execution
         for _ in range(self.warmup_iters):
             result = fn(*args, **kwargs)
             mx.eval(result)
             mx.synchronize()
         
-        # Benchmark
         start = time.perf_counter()
         for _ in range(self.benchmark_iters):
             result = fn(*args, **kwargs)
@@ -212,32 +201,29 @@ class StandardizedBenchmark:
         end = time.perf_counter()
         
         mx.synchronize()
-        mps_after, _ = get_memory_usage()
+        active_after, peak_after = get_memory_usage()
         
         latency_ms = (end - start) / self.benchmark_iters * 1000
-        memory_mb = max(0, mps_after - mps_before)
-        return latency_ms, memory_mb
+        active_mb = max(0, active_after - active_before)
+        return latency_ms, active_mb, peak_after
     
-    def _benchmark_mlx_composed(self, fn, *args, **kwargs) -> Tuple[float, float]:
-        """Benchmark MLX composed operations (no compile)."""
+    def _benchmark_mlx_composed(self, fn, *args, **kwargs) -> Tuple[float, float, float]:
+        """Benchmark MLX composed operations (no compile). Returns (latency_ms, active_mb, peak_mb)."""
         mx.synchronize()
         
-        # Clear cache and reset peak memory counter for accurate measurement
         clear_mlx_cache()
         try:
             mx.reset_peak_memory()
         except Exception:
             pass
         
-        mps_before, _ = get_memory_usage()
+        active_before, _ = get_memory_usage()
         
-        # Warmup - need to evaluate to force execution
         for _ in range(self.warmup_iters):
             result = fn(*args, **kwargs)
             mx.eval(result)
             mx.synchronize()
         
-        # Benchmark
         start = time.perf_counter()
         for _ in range(self.benchmark_iters):
             result = fn(*args, **kwargs)
@@ -246,32 +232,29 @@ class StandardizedBenchmark:
         end = time.perf_counter()
         
         mx.synchronize()
-        mps_after, _ = get_memory_usage()
+        active_after, peak_after = get_memory_usage()
         
         latency_ms = (end - start) / self.benchmark_iters * 1000
-        memory_mb = max(0, mps_after - mps_before)
-        return latency_ms, memory_mb
+        active_mb = max(0, active_after - active_before)
+        return latency_ms, active_mb, peak_after
     
-    def _benchmark_mlx_compiled(self, compiled_fn, *args, **kwargs) -> Tuple[float, float]:
-        """Benchmark MLX compiled operations."""
+    def _benchmark_mlx_compiled(self, compiled_fn, *args, **kwargs) -> Tuple[float, float, float]:
+        """Benchmark MLX compiled operations. Returns (latency_ms, active_mb, peak_mb)."""
         mx.synchronize()
         
-        # Clear cache and reset peak memory counter for accurate measurement
         clear_mlx_cache()
         try:
             mx.reset_peak_memory()
         except Exception:
             pass
         
-        mps_before, _ = get_memory_usage()
+        active_before, _ = get_memory_usage()
         
-        # Warmup (compilation happens here) - need to evaluate
         for _ in range(self.warmup_iters):
             result = compiled_fn(*args, **kwargs)
             mx.eval(result)
             mx.synchronize()
         
-        # Benchmark
         start = time.perf_counter()
         for _ in range(self.benchmark_iters):
             result = compiled_fn(*args, **kwargs)
@@ -280,11 +263,11 @@ class StandardizedBenchmark:
         end = time.perf_counter()
         
         mx.synchronize()
-        mps_after, _ = get_memory_usage()
+        active_after, peak_after = get_memory_usage()
         
         latency_ms = (end - start) / self.benchmark_iters * 1000
-        memory_mb = max(0, mps_after - mps_before)
-        return latency_ms, memory_mb
+        active_mb = max(0, active_after - active_before)
+        return latency_ms, active_mb, peak_after
     
     def benchmark_swiglu(self, batch_size: int, seq_len: int, hidden_dim: int) -> Dict[str, BenchmarkResult]:
         """Benchmark SwiGLU activation - all 5 variants."""
@@ -306,17 +289,17 @@ class StandardizedBenchmark:
             return torch.nn.functional.silu(g) * u
         
         try:
-            lat, mem = self._benchmark_mps(mps_swiglu, torch_gate, torch_up)
-            results['MPS'] = BenchmarkResult('MPS', lat, vram_mb=mem)
-            print(f" MPS (PyTorch)           | {lat:8.3f} ms | {mem:7.2f} MB")
+            lat, active, peak = self._benchmark_mps(mps_swiglu, torch_gate, torch_up)
+            results['MPS'] = BenchmarkResult('MPS', lat, vram_active_mb=active, vram_peak_mb=peak)
+            print(f" MPS (PyTorch)           | {lat:8.3f} ms | {active:5.1f}/{peak:5.1f} MB")
         except Exception as e:
             print(f" MPS (PyTorch)           | FAILED: {e}")
         
         # 2. Metal Fused
         try:
-            lat, mem = self._benchmark_metal(swiglu_forward, mlx_gate, mlx_up)
-            results['Metal Fused'] = BenchmarkResult('Metal Fused', lat, vram_mb=mem)
-            print(f" Metal Fused             | {lat:8.3f} ms | {mem:7.2f} MB")
+            lat, active, peak = self._benchmark_metal(swiglu_forward, mlx_gate, mlx_up)
+            results['Metal Fused'] = BenchmarkResult('Metal Fused', lat, vram_active_mb=active, vram_peak_mb=peak)
+            print(f" Metal Fused             | {lat:8.3f} ms | {active:5.1f}/{peak:5.1f} MB")
         except Exception as e:
             print(f" Metal Fused             | FAILED: {e}")
         
@@ -324,9 +307,9 @@ class StandardizedBenchmark:
         try:
             def mlx_fast_swiglu(g, u):
                 return nn.silu(g) * u  # Optimized SiLU * up
-            lat, mem = self._benchmark_mlx_fast(mlx_fast_swiglu, mlx_gate, mlx_up)
-            results['MLX.fast'] = BenchmarkResult('MLX.fast', lat, vram_mb=mem)
-            print(f" MLX.fast                | {lat:8.3f} ms | {mem:7.2f} MB")
+            lat, active, peak = self._benchmark_mlx_fast(mlx_fast_swiglu, mlx_gate, mlx_up)
+            results['MLX.fast'] = BenchmarkResult('MLX.fast', lat, vram_active_mb=active, vram_peak_mb=peak)
+            print(f" MLX.fast                | {lat:8.3f} ms | {active:5.1f}/{peak:5.1f} MB")
         except Exception as e:
             print(f" MLX.fast                | FAILED: {e}")
         
@@ -334,9 +317,9 @@ class StandardizedBenchmark:
         try:
             def mlx_composed_swiglu(g, u):
                 return mx.multiply(mx.multiply(g, mx.sigmoid(g)), u)
-            lat, mem = self._benchmark_mlx_composed(mlx_composed_swiglu, mlx_gate, mlx_up)
-            results['MLX Composed'] = BenchmarkResult('MLX Composed', lat, vram_mb=mem)
-            print(f" MLX Composed            | {lat:8.3f} ms | {mem:7.2f} MB")
+            lat, active, peak = self._benchmark_mlx_composed(mlx_composed_swiglu, mlx_gate, mlx_up)
+            results['MLX Composed'] = BenchmarkResult('MLX Composed', lat, vram_active_mb=active, vram_peak_mb=peak)
+            print(f" MLX Composed            | {lat:8.3f} ms | {active:5.1f}/{peak:5.1f} MB")
         except Exception as e:
             print(f" MLX Composed            | FAILED: {e}")
         
@@ -345,9 +328,9 @@ class StandardizedBenchmark:
             def mlx_composed_swiglu(g, u):
                 return mx.multiply(mx.multiply(g, mx.sigmoid(g)), u)
             compiled_swiglu = mx.compile(mlx_composed_swiglu)
-            lat, mem = self._benchmark_mlx_compiled(compiled_swiglu, mlx_gate, mlx_up)
-            results['MX.compile'] = BenchmarkResult('MX.compile', lat, vram_mb=mem)
-            print(f" MX.compile              | {lat:8.3f} ms | {mem:7.2f} MB")
+            lat, active, peak = self._benchmark_mlx_compiled(compiled_swiglu, mlx_gate, mlx_up)
+            results['MX.compile'] = BenchmarkResult('MX.compile', lat, vram_active_mb=active, vram_peak_mb=peak)
+            print(f" MX.compile              | {lat:8.3f} ms | {active:5.1f}/{peak:5.1f} MB")
         except Exception as e:
             print(f" MX.compile              | FAILED: {e}")
         
@@ -385,17 +368,17 @@ class StandardizedBenchmark:
             return weight * x_norm
         
         try:
-            lat, mem = self._benchmark_mps(mps_rmsnorm, torch_x, torch_weight)
-            results['MPS'] = BenchmarkResult('MPS', lat, vram_mb=mem)
-            print(f" MPS (PyTorch)           | {lat:8.3f} ms | {mem:7.2f} MB")
+            lat, active, peak = self._benchmark_mps(mps_rmsnorm, torch_x, torch_weight)
+            results['MPS'] = BenchmarkResult('MPS', lat, vram_active_mb=active, vram_peak_mb=peak)
+            print(f" MPS (PyTorch)           | {lat:8.3f} ms | {active:5.1f}/{peak:5.1f} MB")
         except Exception as e:
             print(f" MPS (PyTorch)           | FAILED: {e}")
         
         # 2. Metal Fused
         try:
-            lat, mem = self._benchmark_metal(mlx_rms_layernorm_forward, mlx_x, mlx_weight, eps)
-            results['Metal Fused'] = BenchmarkResult('Metal Fused', lat, vram_mb=mem)
-            print(f" Metal Fused             | {lat:8.3f} ms | {mem:7.2f} MB")
+            lat, active, peak = self._benchmark_metal(mlx_rms_layernorm_forward, mlx_x, mlx_weight, eps)
+            results['Metal Fused'] = BenchmarkResult('Metal Fused', lat, vram_active_mb=active, vram_peak_mb=peak)
+            print(f" Metal Fused             | {lat:8.3f} ms | {active:5.1f}/{peak:5.1f} MB")
         except Exception as e:
             print(f" Metal Fused             | FAILED: {e}")
         
@@ -403,9 +386,9 @@ class StandardizedBenchmark:
         try:
             def mlx_fast_rmsnorm(x, weight):
                 return mx.fast.rms_norm(x, weight, eps)
-            lat, mem = self._benchmark_mlx_fast(mlx_fast_rmsnorm, mlx_x, mlx_weight)
-            results['MLX.fast'] = BenchmarkResult('MLX.fast', lat, vram_mb=mem)
-            print(f" MLX.fast                | {lat:8.3f} ms | {mem:7.2f} MB")
+            lat, active, peak = self._benchmark_mlx_fast(mlx_fast_rmsnorm, mlx_x, mlx_weight)
+            results['MLX.fast'] = BenchmarkResult('MLX.fast', lat, vram_active_mb=active, vram_peak_mb=peak)
+            print(f" MLX.fast                | {lat:8.3f} ms | {active:5.1f}/{peak:5.1f} MB")
         except Exception as e:
             print(f" MLX.fast                | FAILED: {e}")
         
@@ -414,9 +397,9 @@ class StandardizedBenchmark:
             def mlx_composed_rmsnorm(x, weight):
                 var = mx.mean(mx.square(x), axis=-1, keepdims=True)
                 return x * weight / mx.sqrt(var + eps)
-            lat, mem = self._benchmark_mlx_composed(mlx_composed_rmsnorm, mlx_x, mlx_weight)
-            results['MLX Composed'] = BenchmarkResult('MLX Composed', lat, vram_mb=mem)
-            print(f" MLX Composed            | {lat:8.3f} ms | {mem:7.2f} MB")
+            lat, active, peak = self._benchmark_mlx_composed(mlx_composed_rmsnorm, mlx_x, mlx_weight)
+            results['MLX Composed'] = BenchmarkResult('MLX Composed', lat, vram_active_mb=active, vram_peak_mb=peak)
+            print(f" MLX Composed            | {lat:8.3f} ms | {active:5.1f}/{peak:5.1f} MB")
         except Exception as e:
             print(f" MLX Composed            | FAILED: {e}")
         
@@ -426,9 +409,9 @@ class StandardizedBenchmark:
                 var = mx.mean(mx.square(x), axis=-1, keepdims=True)
                 return x * weight / mx.sqrt(var + eps)
             compiled_rmsnorm = mx.compile(mlx_composed_rmsnorm)
-            lat, mem = self._benchmark_mlx_compiled(compiled_rmsnorm, mlx_x, mlx_weight)
-            results['MX.compile'] = BenchmarkResult('MX.compile', lat, vram_mb=mem)
-            print(f" MX.compile              | {lat:8.3f} ms | {mem:7.2f} MB")
+            lat, active, peak = self._benchmark_mlx_compiled(compiled_rmsnorm, mlx_x, mlx_weight)
+            results['MX.compile'] = BenchmarkResult('MX.compile', lat, vram_active_mb=active, vram_peak_mb=peak)
+            print(f" MX.compile              | {lat:8.3f} ms | {active:5.1f}/{peak:5.1f} MB")
         except Exception as e:
             print(f" MX.compile              | FAILED: {e}")
         
@@ -470,9 +453,9 @@ class StandardizedBenchmark:
             return torch.matmul(act, down)
         
         try:
-            lat, mem = self._benchmark_mps(mps_mlp, torch_x, torch_gate, torch_up, torch_down)
-            results['MPS'] = BenchmarkResult('MPS', lat, vram_mb=mem)
-            print(f" MPS (PyTorch)           | {lat:8.3f} ms | {mem:7.2f} MB")
+            lat, active, peak = self._benchmark_mps(mps_mlp, torch_x, torch_gate, torch_up, torch_down)
+            results['MPS'] = BenchmarkResult('MPS', lat, vram_active_mb=active, vram_peak_mb=peak)
+            print(f" MPS (PyTorch)           | {lat:8.3f} ms | {active:5.1f}/{peak:5.1f} MB")
         except Exception as e:
             print(f" MPS (PyTorch)           | FAILED: {e}")
         
@@ -483,9 +466,9 @@ class StandardizedBenchmark:
                 u = x @ up
                 act = swiglu_forward(g, u)
                 return act @ down
-            lat, mem = self._benchmark_metal(metal_mlp, mlx_x, mlx_gate, mlx_up, mlx_down)
-            results['Metal Fused'] = BenchmarkResult('Metal Fused', lat, vram_mb=mem)
-            print(f" Metal Fused             | {lat:8.3f} ms | {mem:7.2f} MB")
+            lat, active, peak = self._benchmark_metal(metal_mlp, mlx_x, mlx_gate, mlx_up, mlx_down)
+            results['Metal Fused'] = BenchmarkResult('Metal Fused', lat, vram_active_mb=active, vram_peak_mb=peak)
+            print(f" Metal Fused             | {lat:8.3f} ms | {active:5.1f}/{peak:5.1f} MB")
         except Exception as e:
             print(f" Metal Fused             | FAILED: {e}")
         
@@ -496,9 +479,9 @@ class StandardizedBenchmark:
                 u = x @ up
                 act = nn.silu(g) * u  # Optimized SiLU
                 return act @ down
-            lat, mem = self._benchmark_mlx_fast(mlx_fast_mlp, mlx_x, mlx_gate, mlx_up, mlx_down)
-            results['MLX.fast'] = BenchmarkResult('MLX.fast', lat, vram_mb=mem)
-            print(f" MLX.fast                | {lat:8.3f} ms | {mem:7.2f} MB")
+            lat, active, peak = self._benchmark_mlx_fast(mlx_fast_mlp, mlx_x, mlx_gate, mlx_up, mlx_down)
+            results['MLX.fast'] = BenchmarkResult('MLX.fast', lat, vram_active_mb=active, vram_peak_mb=peak)
+            print(f" MLX.fast                | {lat:8.3f} ms | {active:5.1f}/{peak:5.1f} MB")
         except Exception as e:
             print(f" MLX.fast                | FAILED: {e}")
         
@@ -509,9 +492,9 @@ class StandardizedBenchmark:
                 u = x @ up
                 act = mx.multiply(mx.multiply(g, mx.sigmoid(g)), u)
                 return act @ down
-            lat, mem = self._benchmark_mlx_composed(mlx_composed_mlp, mlx_x, mlx_gate, mlx_up, mlx_down)
-            results['MLX Composed'] = BenchmarkResult('MLX Composed', lat, vram_mb=mem)
-            print(f" MLX Composed            | {lat:8.3f} ms | {mem:7.2f} MB")
+            lat, active, peak = self._benchmark_mlx_composed(mlx_composed_mlp, mlx_x, mlx_gate, mlx_up, mlx_down)
+            results['MLX Composed'] = BenchmarkResult('MLX Composed', lat, vram_active_mb=active, vram_peak_mb=peak)
+            print(f" MLX Composed            | {lat:8.3f} ms | {active:5.1f}/{peak:5.1f} MB")
         except Exception as e:
             print(f" MLX Composed            | FAILED: {e}")
         
@@ -523,9 +506,9 @@ class StandardizedBenchmark:
                 act = mx.multiply(mx.multiply(g, mx.sigmoid(g)), u)
                 return act @ down
             compiled_mlp = mx.compile(mlx_composed_mlp)
-            lat, mem = self._benchmark_mlx_compiled(compiled_mlp, mlx_x, mlx_gate, mlx_up, mlx_down)
-            results['MX.compile'] = BenchmarkResult('MX.compile', lat, vram_mb=mem)
-            print(f" MX.compile              | {lat:8.3f} ms | {mem:7.2f} MB")
+            lat, active, peak = self._benchmark_mlx_compiled(compiled_mlp, mlx_x, mlx_gate, mlx_up, mlx_down)
+            results['MX.compile'] = BenchmarkResult('MX.compile', lat, vram_active_mb=active, vram_peak_mb=peak)
+            print(f" MX.compile              | {lat:8.3f} ms | {active:5.1f}/{peak:5.1f} MB")
         except Exception as e:
             print(f" MX.compile              | FAILED: {e}")
         
@@ -565,9 +548,9 @@ class StandardizedBenchmark:
             return torch.nn.functional.gelu(g) * u
         
         try:
-            lat, mem = self._benchmark_mps(mps_geglu, torch_x, torch_gate, torch_up)
-            results['MPS'] = BenchmarkResult('MPS', lat, vram_mb=mem)
-            print(f" MPS (PyTorch)           | {lat:8.3f} ms | {mem:7.2f} MB")
+            lat, active, peak = self._benchmark_mps(mps_geglu, torch_x, torch_gate, torch_up)
+            results['MPS'] = BenchmarkResult('MPS', lat, vram_active_mb=active, vram_peak_mb=peak)
+            print(f" MPS (PyTorch)           | {lat:8.3f} ms | {active:5.1f}/{peak:5.1f} MB")
         except Exception as e:
             print(f" MPS (PyTorch)           | FAILED: {e}")
         
@@ -577,9 +560,9 @@ class StandardizedBenchmark:
                 g = x @ gate
                 u = x @ up
                 return mlx_geglu_exact_forward(g, u)
-            lat, mem = self._benchmark_metal(metal_geglu, mlx_x, mlx_gate, mlx_up)
-            results['Metal Fused'] = BenchmarkResult('Metal Fused', lat, vram_mb=mem)
-            print(f" Metal Fused             | {lat:8.3f} ms | {mem:7.2f} MB")
+            lat, active, peak = self._benchmark_metal(metal_geglu, mlx_x, mlx_gate, mlx_up)
+            results['Metal Fused'] = BenchmarkResult('Metal Fused', lat, vram_active_mb=active, vram_peak_mb=peak)
+            print(f" Metal Fused             | {lat:8.3f} ms | {active:5.1f}/{peak:5.1f} MB")
         except Exception as e:
             print(f" Metal Fused             | FAILED: {e}")
         
@@ -589,9 +572,9 @@ class StandardizedBenchmark:
                 g = x @ gate
                 u = x @ up
                 return nn.gelu(g) * u  # Optimized GELU
-            lat, mem = self._benchmark_mlx_fast(mlx_fast_geglu, mlx_x, mlx_gate, mlx_up)
-            results['MLX.fast'] = BenchmarkResult('MLX.fast', lat, vram_mb=mem)
-            print(f" MLX.fast                | {lat:8.3f} ms | {mem:7.2f} MB")
+            lat, active, peak = self._benchmark_mlx_fast(mlx_fast_geglu, mlx_x, mlx_gate, mlx_up)
+            results['MLX.fast'] = BenchmarkResult('MLX.fast', lat, vram_active_mb=active, vram_peak_mb=peak)
+            print(f" MLX.fast                | {lat:8.3f} ms | {active:5.1f}/{peak:5.1f} MB")
         except Exception as e:
             print(f" MLX.fast                | FAILED: {e}")
         
@@ -601,9 +584,9 @@ class StandardizedBenchmark:
                 g = x @ gate
                 u = x @ up
                 return nn.gelu(g) * u
-            lat, mem = self._benchmark_mlx_composed(mlx_composed_geglu, mlx_x, mlx_gate, mlx_up)
-            results['MLX Composed'] = BenchmarkResult('MLX Composed', lat, vram_mb=mem)
-            print(f" MLX Composed            | {lat:8.3f} ms | {mem:7.2f} MB")
+            lat, active, peak = self._benchmark_mlx_composed(mlx_composed_geglu, mlx_x, mlx_gate, mlx_up)
+            results['MLX Composed'] = BenchmarkResult('MLX Composed', lat, vram_active_mb=active, vram_peak_mb=peak)
+            print(f" MLX Composed            | {lat:8.3f} ms | {active:5.1f}/{peak:5.1f} MB")
         except Exception as e:
             print(f" MLX Composed            | FAILED: {e}")
         
@@ -614,9 +597,9 @@ class StandardizedBenchmark:
                 u = x @ up
                 return nn.gelu(g) * u
             compiled_geglu = mx.compile(mlx_composed_geglu)
-            lat, mem = self._benchmark_mlx_compiled(compiled_geglu, mlx_x, mlx_gate, mlx_up)
-            results['MX.compile'] = BenchmarkResult('MX.compile', lat, vram_mb=mem)
-            print(f" MX.compile              | {lat:8.3f} ms | {mem:7.2f} MB")
+            lat, active, peak = self._benchmark_mlx_compiled(compiled_geglu, mlx_x, mlx_gate, mlx_up)
+            results['MX.compile'] = BenchmarkResult('MX.compile', lat, vram_active_mb=active, vram_peak_mb=peak)
+            print(f" MX.compile              | {lat:8.3f} ms | {active:5.1f}/{peak:5.1f} MB")
         except Exception as e:
             print(f" MX.compile              | FAILED: {e}")
         
@@ -663,9 +646,9 @@ class StandardizedBenchmark:
             return x * cos_emb + rotated * sin_emb
         
         try:
-            lat, mem = self._benchmark_mps(mps_rope, torch_x)
-            results['MPS'] = BenchmarkResult('MPS', lat, vram_mb=mem)
-            print(f" MPS (PyTorch)           | {lat:8.3f} ms | {mem:7.2f} MB")
+            lat, active, peak = self._benchmark_mps(mps_rope, torch_x)
+            results['MPS'] = BenchmarkResult('MPS', lat, vram_active_mb=active, vram_peak_mb=peak)
+            print(f" MPS (PyTorch)           | {lat:8.3f} ms | {active:5.1f}/{peak:5.1f} MB")
         except Exception as e:
             print(f" MPS (PyTorch)           | FAILED: {e}")
         
@@ -677,9 +660,9 @@ class StandardizedBenchmark:
             if hasattr(mx.fast, 'rope'):
                 def metal_rope(x_mlx):
                     return mx.fast.rope(x_mlx, head_dim, traditional=True, base=10000.0, scale=1.0, offset=0)
-                lat, mem = self._benchmark_metal(metal_rope, mlx_x)
-                results['Metal Fused'] = BenchmarkResult('Metal Fused', lat, vram_mb=mem)
-                print(f" Metal Fused             | {lat:8.3f} ms | {mem:7.2f} MB")
+                lat, active, peak = self._benchmark_metal(metal_rope, mlx_x)
+                results['Metal Fused'] = BenchmarkResult('Metal Fused', lat, vram_active_mb=active, vram_peak_mb=peak)
+                print(f" Metal Fused             | {lat:8.3f} ms | {active:5.1f}/{peak:5.1f} MB")
             else:
                 print(f" Metal Fused             | SKIPPED: mx.fast.rope not available")
         except Exception as e:
@@ -700,9 +683,9 @@ class StandardizedBenchmark:
                 x2 = x[..., 1::2]
                 rotated = mx.concatenate([-x2, x1], axis=-1)
                 return x * cos_emb + rotated * sin_emb
-            lat, mem = self._benchmark_mlx_fast(mlx_fast_rope, mlx_x)
-            results['MLX.fast'] = BenchmarkResult('MLX.fast', lat, vram_mb=mem)
-            print(f" MLX.fast                | {lat:8.3f} ms | {mem:7.2f} MB")
+            lat, active, peak = self._benchmark_mlx_fast(mlx_fast_rope, mlx_x)
+            results['MLX.fast'] = BenchmarkResult('MLX.fast', lat, vram_active_mb=active, vram_peak_mb=peak)
+            print(f" MLX.fast                | {lat:8.3f} ms | {active:5.1f}/{peak:5.1f} MB")
         except Exception as e:
             print(f" MLX.fast                | FAILED: {e}")
         
@@ -720,9 +703,9 @@ class StandardizedBenchmark:
                 x2 = x[..., 1::2]
                 rotated = mx.concatenate([-x2, x1], axis=-1)
                 return x * cos_emb + rotated * sin_emb
-            lat, mem = self._benchmark_mlx_composed(mlx_composed_rope, mlx_x)
-            results['MLX Composed'] = BenchmarkResult('MLX Composed', lat, vram_mb=mem)
-            print(f" MLX Composed            | {lat:8.3f} ms | {mem:7.2f} MB")
+            lat, active, peak = self._benchmark_mlx_composed(mlx_composed_rope, mlx_x)
+            results['MLX Composed'] = BenchmarkResult('MLX Composed', lat, vram_active_mb=active, vram_peak_mb=peak)
+            print(f" MLX Composed            | {lat:8.3f} ms | {active:5.1f}/{peak:5.1f} MB")
         except Exception as e:
             print(f" MLX Composed            | FAILED: {e}")
         
@@ -741,9 +724,9 @@ class StandardizedBenchmark:
                 rotated = mx.concatenate([-x2, x1], axis=-1)
                 return x * cos_emb + rotated * sin_emb
             compiled_rope = mx.compile(mlx_composed_rope)
-            lat, mem = self._benchmark_mlx_compiled(compiled_rope, mlx_x)
-            results['MX.compile'] = BenchmarkResult('MX.compile', lat, vram_mb=mem)
-            print(f" MX.compile              | {lat:8.3f} ms | {mem:7.2f} MB")
+            lat, active, peak = self._benchmark_mlx_compiled(compiled_rope, mlx_x)
+            results['MX.compile'] = BenchmarkResult('MX.compile', lat, vram_active_mb=active, vram_peak_mb=peak)
+            print(f" MX.compile              | {lat:8.3f} ms | {active:5.1f}/{peak:5.1f} MB")
         except Exception as e:
             print(f" MX.compile              | FAILED: {e}")
         
@@ -813,7 +796,10 @@ def main():
             baseline = results['MPS'].latency_ms
             for variant, result in results.items():
                 speedup = baseline / result.latency_ms if result.latency_ms > 0 else 0
-                mem_str = f"{result.vram_mb:7.2f} MB" if result.vram_mb is not None else "   N/A"
+                if result.vram_active_mb is not None and result.vram_peak_mb is not None:
+                    mem_str = f"{result.vram_active_mb:5.1f}/{result.vram_peak_mb:5.1f} MB"
+                else:
+                    mem_str = "     N/A"
                 print(f"  {variant:20s}: {result.latency_ms:7.3f} ms | {mem_str} ({speedup:5.2f}x vs MPS)")
 
 
