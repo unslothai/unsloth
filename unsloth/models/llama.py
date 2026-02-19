@@ -217,6 +217,17 @@ def _fast_prepare_inputs_for_generation(
     # This fixes GitHub issue #3798: inputs_embeds was ignored
     use_inputs_embeds = inputs_embeds is not None and past_key_values is None
 
+    # Only keep a 2D mask copy for true batched generation where per-row
+    # offsets can differ. For single-row generation, shared cache_position is
+    # sufficient and we avoid carrying extra state.
+    attention_mask_2d = None
+    if (
+        attention_mask is not None
+        and attention_mask.dim() == 2
+        and attention_mask.shape[0] > 1
+    ):
+        attention_mask_2d = attention_mask
+
     if past_key_values is not None:
         # Check for uninitialized DynamicCache
         if len(past_key_values) == 0:
@@ -288,8 +299,8 @@ def _fast_prepare_inputs_for_generation(
                     )
                 )
             else:
-                if attention_mask is not None:
-                    attention_mask = attention_mask[:, [-1]]
+                # Keep full 2D mask for decode; trimming to [:, -1:] loses
+                # padding/history context for batched generation.
                 if transformers_version <= Version("4.52.4"):
                     logger.warning_once(
                         f"{self.__class__.__name__} has no `_prepare_4d_causal_attention_mask_with_cache_position` method "
@@ -299,7 +310,19 @@ def _fast_prepare_inputs_for_generation(
                     )
 
     if "cache_position" in kwargs:
-        kwargs["position_ids"] = kwargs["cache_position"]
+        if attention_mask_2d is not None and attention_mask_2d.dim() == 2:
+            # Compute position_ids per row for padded batches; shared
+            # cache_position is 1D and cannot represent per-row offsets.
+            position_ids = attention_mask_2d.long().cumsum(-1) - 1
+            position_ids.masked_fill_(attention_mask_2d == 0, 1)
+            if past_key_values is not None:
+                current_input_length = (
+                    input_ids.shape[1] if input_ids is not None else 1
+                )
+                position_ids = position_ids[:, -current_input_length:]
+            kwargs["position_ids"] = position_ids
+        else:
+            kwargs["position_ids"] = kwargs["cache_position"]
 
     result = {
         "attention_mask": attention_mask,
@@ -681,7 +704,10 @@ def LlamaAttention_fast_forward(
 
     # Attention module
     use_varlen = seq_info is not None and past_key_value is None
-    backend = select_attention_backend(use_varlen)
+    # If a dense padding mask is provided (e.g. left-padded batched decode),
+    # force SDPA since this fast path does not thread that mask through
+    # flash/xFormers kernels.
+    backend = "sdpa" if attention_mask is not None else select_attention_backend(use_varlen)
     config = AttentionConfig(
         backend = backend,
         n_kv_heads = n_kv_heads,
@@ -966,18 +992,21 @@ def LlamaModel_fast_forward(
         attention_mask = None
         padding_mask = None
     else:
-        # if 0 in attention_mask:
-        #     padding_mask = attention_mask
-        # else:
-        padding_mask = None
-
-        attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
-            attention_mask,
-            (batch_size, seq_length),
-            inputs_embeds,
-            past_key_values_length,
-            sliding_window = getattr(self.config, "sliding_window", None),
-        )
+        # Keep fast causal kernels for fully unpadded inputs. Only materialize
+        # a 4D mask when padding actually exists.
+        has_padding = bool(torch.any(attention_mask == 0))
+        if has_padding:
+            padding_mask = attention_mask
+            attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
+                attention_mask,
+                (batch_size, seq_length),
+                inputs_embeds,
+                past_key_values_length,
+                sliding_window = getattr(self.config, "sliding_window", None),
+            )
+        else:
+            padding_mask = None
+            attention_mask = None
         # Must NOT convert to bool - weirdly this causes stuff to error out!
         # if attention_mask is not None:
         #     attention_mask = attention_mask.to(torch.bool)
