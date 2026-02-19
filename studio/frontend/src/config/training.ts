@@ -73,10 +73,20 @@ export const TARGET_MODULES = [
   "down_proj",
 ];
 
+export const OPTIMIZER_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
+  { value: "adamw_8bit", label: "AdamW 8-bit" },
+  { value: "paged_adamw_8bit", label: "Paged AdamW 8-bit" },
+  { value: "adamw_bnb_8bit", label: "AdamW BNB 8-bit" },
+  { value: "paged_adamw_32bit", label: "Paged AdamW 32-bit" },
+  { value: "adamw_torch", label: "AdamW (PyTorch)" },
+  { value: "adamw_torch_fused", label: "AdamW (PyTorch Fused)" },
+];
+
 export const DEFAULT_HYPERPARAMS = {
   epochs: 3,
   contextLength: 2048,
   learningRate: 2e-4,
+  optimizerType: "adamw_8bit",
   loraRank: 16,
   loraAlpha: 32,
   loraDropout: 0.05,

@@ -40,7 +40,7 @@ export function buildTrainingStartPayload(
     weight_decay: config.weightDecay,
     random_seed: config.randomSeed,
     packing: config.packing,
-    optim: "adamw_8bit",
+    optim: config.optimizerType,
     lr_scheduler_type: "linear",
     use_lora: adapterMethod,
     lora_r: config.loraRank,
