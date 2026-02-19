@@ -4,6 +4,11 @@ Test pure MLX Metal kernels without PyTorch conversion overhead.
 Run this on Apple Silicon to verify Chunk 1 implementation.
 """
 
+# Import patcher first to set up mocks
+import sys
+sys.path.insert(0, '/mnt/c/Users/wrc02/Desktop/UNSLOTH_WORK')
+import patcher  # noqa: F401
+
 import mlx.core as mx
 import time
 
