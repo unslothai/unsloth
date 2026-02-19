@@ -204,7 +204,7 @@ class ComprehensiveBenchmark:
             def compiled_mlp(x, gateW, upW, downW, A, B, S):
                 g = x @ gateW.T + (x @ A.T) @ B.T * S
                 u = x @ upW.T + (x @ A.T) @ B.T * S
-                act = mx.silu(g) * u
+                act = mx.sigmoid(g) * g * u
                 return act @ downW + (act @ B) @ A * S
             
             # Warmup
