@@ -43,12 +43,19 @@ let _datasetCheckController: AbortController | null = null;
 // AbortController for in-flight model default loads.
 let _modelConfigController: AbortController | null = null;
 
+// Track whether the user has manually toggled trainOnCompletions
+// since the last auto-set (model load or dataset change).
+let _trainOnCompletionsManuallySet = false;
+
 const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> = new Set([
   "modelType",
   "isCheckingVision",
   "isLoadingModelDefaults",
   "modelDefaultsError",
+  "modelDefaultsAppliedFor",
   "isCheckingDataset",
+  "isDatasetMultimodal",
+  "trainOnCompletions",
 ]);
 
 function partializePersistedState(
@@ -102,8 +109,17 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             if (controller.signal.aborted) return;
             if (get().selectedModel !== modelName) return;
 
+            _trainOnCompletionsManuallySet = false;
+            const patch = mapBackendModelConfigToTrainingPatch(modelDetails.config);
+
+            // If vision model + multimodal dataset already known, override
+            // trainOnCompletions to false regardless of backend default.
+            if (modelDetails.is_vision && get().isDatasetMultimodal === true) {
+              patch.trainOnCompletions = false;
+            }
+
             set({
-              ...mapBackendModelConfigToTrainingPatch(modelDetails.config),
+              ...patch,
               isVisionModel: modelDetails.is_vision,
               isLoadingModelDefaults: false,
               isCheckingVision: false,
@@ -136,6 +152,40 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                 if (get().selectedModel !== modelName) return;
                 set({ isCheckingVision: false });
               });
+          });
+      };
+
+      const runDatasetCheck = (datasetName: string, split: string) => {
+        _datasetCheckController?.abort();
+        const controller = new AbortController();
+        _datasetCheckController = controller;
+        set({ isCheckingDataset: true });
+
+        const state = get();
+        checkDatasetFormat({
+          datasetName,
+          hfToken: state.hfToken.trim() || null,
+          subset: state.datasetSubset,
+          split,
+        })
+          .then((res) => {
+            if (controller.signal.aborted) return;
+            const isMultimodal = !!res.is_multimodal;
+            const updates: Record<string, unknown> = {
+              isDatasetMultimodal: isMultimodal,
+              isCheckingDataset: false,
+            };
+            if (!_trainOnCompletionsManuallySet) {
+              const { isVisionModel } = get();
+              if (isVisionModel && isMultimodal) {
+                updates.trainOnCompletions = false;
+              }
+            }
+            set(updates);
+          })
+          .catch(() => {
+            if (controller.signal.aborted) return;
+            set({ isDatasetMultimodal: null, isCheckingDataset: false });
           });
       };
 
@@ -196,6 +246,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         setDataset: (dataset) => {
           _datasetCheckController?.abort();
           _datasetCheckController = null;
+          _trainOnCompletionsManuallySet = false;
           set({
             dataset,
             datasetSubset: null,
@@ -208,6 +259,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         setDatasetSubset: (datasetSubset) => {
           _datasetCheckController?.abort();
           _datasetCheckController = null;
+          _trainOnCompletionsManuallySet = false;
           set({
             datasetSubset,
             datasetSplit: null,
@@ -217,8 +269,6 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           });
         },
         setDatasetSplit: (datasetSplit) => {
-          _datasetCheckController?.abort();
-          _datasetCheckController = null;
           set({
             datasetSplit,
             datasetManualMapping: emptyManualMapping(),
@@ -233,27 +283,21 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               : state.uploadedFile;
           if (!datasetName) return;
 
-          const controller = new AbortController();
-          _datasetCheckController = controller;
-          set({ isCheckingDataset: true });
+          runDatasetCheck(datasetName, datasetSplit || "train");
+        },
+        ensureDatasetChecked: () => {
+          const state = get();
+          if (state.isCheckingDataset) return;
+          if (state.isDatasetMultimodal !== null) return;
 
-          checkDatasetFormat({
-            datasetName,
-            hfToken: state.hfToken.trim() || null,
-            subset: state.datasetSubset,
-            split: datasetSplit || "train",
-          })
-            .then((res) => {
-              if (controller.signal.aborted) return;
-              set({
-                isDatasetMultimodal: !!res.is_multimodal,
-                isCheckingDataset: false,
-              });
-            })
-            .catch(() => {
-              if (controller.signal.aborted) return;
-              set({ isDatasetMultimodal: null, isCheckingDataset: false });
-            });
+          const datasetName =
+            state.datasetSource === "huggingface"
+              ? state.dataset
+              : state.uploadedFile;
+          if (!datasetName) return;
+
+          const split = state.datasetSplit || "train";
+          runDatasetCheck(datasetName, split);
         },
         setDatasetManualMapping: (datasetManualMapping) =>
           set({ datasetManualMapping }),
@@ -274,8 +318,10 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         setSaveSteps: (saveSteps) => set({ saveSteps }),
         setEvalSteps: (evalSteps) => set({ evalSteps }),
         setPacking: (packing) => set({ packing }),
-        setTrainOnCompletions: (trainOnCompletions) =>
-          set({ trainOnCompletions }),
+        setTrainOnCompletions: (trainOnCompletions) => {
+          _trainOnCompletionsManuallySet = true;
+          set({ trainOnCompletions });
+        },
         setGradientCheckpointing: (gradientCheckpointing) =>
           set({ gradientCheckpointing }),
         setRandomSeed: (randomSeed) => set({ randomSeed }),
