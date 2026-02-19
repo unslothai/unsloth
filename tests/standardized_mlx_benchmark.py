@@ -12,18 +12,42 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import patcher  # noqa: F401 - Must be first
+# Import patcher first to set up mocks
+import importlib.util
+import os
+patcher_path = Path(__file__).parent.parent / "patcher.py"
+spec = importlib.util.spec_from_file_location("patcher", patcher_path)
+patcher = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(patcher)
 
 import mlx.core as mx
 import torch
 import time
 import numpy as np
 from typing import Optional, Tuple, Dict, List
+import importlib.util
 
-# Import Unsloth MLX modules
-from unsloth.kernels.metal.swiglu_mlx import swiglu_forward, swiglu_backward
-from unsloth.kernels.metal.rms_layernorm_mlx import mlx_rms_layernorm_forward, mlx_rms_layernorm_backward
-from unsloth.kernels.metal.geglu_mlx import mlx_geglu_exact_forward, mlx_geglu_exact_backward
+# Import Unsloth MLX modules directly (avoid unsloth_zoo)
+kernels_dir = Path(__file__).parent.parent / "unsloth" / "kernels" / "metal"
+
+def load_module_directly(module_name: str, file_path: Path):
+    """Load a Python module directly from file path."""
+    spec = importlib.util.spec_from_file_location(module_name, file_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+# Load pure MLX modules directly
+swiglu_module = load_module_directly("swiglu_mlx", kernels_dir / "swiglu_mlx.py")
+rms_module = load_module_directly("rms_layernorm_mlx", kernels_dir / "rms_layernorm_mlx.py")
+geglu_module = load_module_directly("geglu_mlx", kernels_dir / "geglu_mlx.py")
+
+swiglu_forward = swiglu_module.swiglu_forward
+swiglu_backward = swiglu_module.swiglu_backward
+mlx_rms_layernorm_forward = rms_module.mlx_rms_layernorm_forward
+mlx_rms_layernorm_backward = rms_module.mlx_rms_layernorm_backward
+mlx_geglu_exact_forward = geglu_module.mlx_geglu_exact_forward
+mlx_geglu_exact_backward = geglu_module.mlx_geglu_exact_backward
 
 class BenchmarkResult:
     """Stores benchmark results for a single variant."""
