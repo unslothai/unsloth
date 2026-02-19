@@ -77,8 +77,9 @@ def get_memory_usage() -> Tuple[float, float]:
     except Exception:
         pass
     
+    # Use peak memory for MLX to get accurate per-operation measurements
     try:
-        gpu_mb += mx.metal.get_active_memory() / (1024 * 1024)
+        gpu_mb += mx.get_peak_memory() / (1024 * 1024)
     except Exception:
         pass
     
@@ -89,6 +90,14 @@ def get_memory_usage() -> Tuple[float, float]:
         pass
     
     return gpu_mb, system_mb
+
+
+def clear_mlx_cache():
+    """Clear MLX memory cache to get accurate per-operation memory measurements."""
+    try:
+        mx.metal.clear_cache()
+    except Exception:
+        pass
 
 
 def estimate_tensor_memory(shape: tuple, dtype) -> float:
@@ -145,6 +154,13 @@ class StandardizedBenchmark:
         """Benchmark Metal fused kernel."""
         mx.synchronize()
         
+        # Clear cache and reset peak memory counter for accurate measurement
+        clear_mlx_cache()
+        try:
+            mx.reset_peak_memory()
+        except Exception:
+            pass
+        
         mps_before, _ = get_memory_usage()
         
         # Warmup - need to evaluate to force execution
@@ -171,6 +187,13 @@ class StandardizedBenchmark:
     def _benchmark_mlx_fast(self, fn, *args, **kwargs) -> Tuple[float, float]:
         """Benchmark MLX.fast operations."""
         mx.synchronize()
+        
+        # Clear cache and reset peak memory counter for accurate measurement
+        clear_mlx_cache()
+        try:
+            mx.reset_peak_memory()
+        except Exception:
+            pass
         
         mps_before, _ = get_memory_usage()
         
@@ -199,6 +222,13 @@ class StandardizedBenchmark:
         """Benchmark MLX composed operations (no compile)."""
         mx.synchronize()
         
+        # Clear cache and reset peak memory counter for accurate measurement
+        clear_mlx_cache()
+        try:
+            mx.reset_peak_memory()
+        except Exception:
+            pass
+        
         mps_before, _ = get_memory_usage()
         
         # Warmup - need to evaluate to force execution
@@ -225,6 +255,13 @@ class StandardizedBenchmark:
     def _benchmark_mlx_compiled(self, compiled_fn, *args, **kwargs) -> Tuple[float, float]:
         """Benchmark MLX compiled operations."""
         mx.synchronize()
+        
+        # Clear cache and reset peak memory counter for accurate measurement
+        clear_mlx_cache()
+        try:
+            mx.reset_peak_memory()
+        except Exception:
+            pass
         
         mps_before, _ = get_memory_usage()
         
