@@ -54,8 +54,8 @@ try:
     # Backward
     grad_output = mx.random.normal((B, S, hidden_dim))
     start = time.time()
-    grad_gate, grad_up = swiglu_backward(grad_output, gate, up)
-    mx.eval([grad_gate, grad_up])
+    h_out, grad_gate, grad_up = swiglu_backward(grad_output, gate, up)
+    mx.eval([h_out, grad_gate, grad_up])
     bwd_time = (time.time() - start) * 1000
     
     print(f"   ✓ SwiGLU backward: {bwd_time:.2f}ms")
@@ -76,8 +76,8 @@ try:
     )
     rms_module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(rms_module)
-    rms_layernorm_forward = rms_module.rms_layernorm_forward
-    rms_layernorm_backward = rms_module.rms_layernorm_backward
+    rms_layernorm_forward = rms_module.mlx_rms_layernorm_forward
+    rms_layernorm_backward = rms_module.mlx_rms_layernorm_backward
     
     # Create test tensors
     B, S, D = 2, 512, 4096
@@ -118,8 +118,8 @@ try:
     )
     geglu_module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(geglu_module)
-    geglu_forward = geglu_module.geglu_forward
-    geglu_backward = geglu_module.geglu_backward
+    geglu_forward = geglu_module.mlx_geglu_exact_forward
+    geglu_backward = geglu_module.mlx_geglu_exact_backward
     
     # Create test tensors
     B, S, D = 2, 512, 4096
