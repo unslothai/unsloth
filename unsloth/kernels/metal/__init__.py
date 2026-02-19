@@ -64,9 +64,30 @@ from .geglu import (
 # Import RMSNorm functions
 from .rms_layernorm import metal_rms_layernorm
 
+# Import pure MLX/Metal functions (no PyTorch dependency)
+from .swiglu_mlx import (
+    mlx_swiglu_forward,
+    mlx_swiglu_backward,
+    is_mlx_swiglu_available,
+)
+
+from .geglu_mlx import (
+    mlx_geglu_exact_forward,
+    mlx_geglu_exact_backward,
+    mlx_geglu_approx_forward,
+    mlx_geglu_approx_backward,
+    is_mlx_geglu_available,
+)
+
+from .rms_layernorm_mlx import (
+    mlx_rms_layernorm,
+    is_mlx_rms_layernorm_available,
+)
+
 __all__ = [
     "is_metal_available",
     "USE_METAL_KERNEL",
+    # PyTorch-wrapped Metal kernels
     "metal_swiglu_forward",
     "metal_swiglu_backward",
     "is_metal_swiglu_available",
@@ -76,4 +97,15 @@ __all__ = [
     "metal_geglu_approx_backward",
     "is_metal_geglu_available",
     "metal_rms_layernorm",
+    # Pure MLX/Metal kernels (no PyTorch)
+    "mlx_swiglu_forward",
+    "mlx_swiglu_backward",
+    "is_mlx_swiglu_available",
+    "mlx_geglu_exact_forward",
+    "mlx_geglu_exact_backward",
+    "mlx_geglu_approx_forward",
+    "mlx_geglu_approx_backward",
+    "is_mlx_geglu_available",
+    "mlx_rms_layernorm",
+    "is_mlx_rms_layernorm_available",
 ]
