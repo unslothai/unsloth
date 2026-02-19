@@ -568,6 +568,19 @@ class ComprehensiveBenchmark:
             fused_lat = (time.time() - start) * 1000 / actual_iters
             speedup = torch_lat / fused_lat  # Speedup vs real PyTorch
             log_result("Unsloth Fused Metal", fused_lat, extra=f"({speedup:.2f}x vs PyTorch)", mem=get_mem_stats())
+            
+            # Unsloth Fused + Compiled (test if compile helps single kernels)
+            fused_compiled = mx.compile(mlx_fused)
+            start = time.time()
+            results = []
+            for _ in range(actual_iters):
+                results.append(fused_compiled())
+                if len(results) >= 20:
+                    mx.eval(*results)
+                    results = []
+            mx.eval(*results)
+            fused_compiled_lat = (time.time() - start) * 1000 / actual_iters
+            log_result("Unsloth Fused + Compiled", fused_compiled_lat)
 
         
     def run_rope_benchmark(self, batch_size=1, seq_len=1, dim=4096, n_heads=32):
