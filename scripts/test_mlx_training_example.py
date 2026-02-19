@@ -51,17 +51,14 @@ except ImportError:
     print("Error: MLX not available. Install with: pip install mlx")
     exit(1)
 
-from unsloth.kernels.mlx import (
-    AdamW,
-    SGD,
-    LinearWarmupCosineDecay,
-    cross_entropy_loss,
-    LoRALinear,
-    LoRAConfig,
-    mark_only_lora_as_trainable,
-    get_peft_model,
-    clip_grad_norm,
-)
+# Import MLX modules directly to avoid unsloth_zoo dependency issues
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from unsloth.kernels.mlx.optimizers import AdamW, SGD, LinearWarmupCosineDecay, clip_grad_norm
+from unsloth.kernels.mlx.losses import cross_entropy_loss
+from unsloth.kernels.mlx.lora import LoRALinear, LoRAConfig, mark_only_lora_as_trainable, get_peft_model
 from unsloth.kernels.mlx.models import MLXLinear, create_llama_model, MLXModelConfig
 
 
