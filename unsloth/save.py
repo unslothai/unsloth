@@ -1491,7 +1491,7 @@ def create_huggingface_repo(
 ):
     if token is None:
         token = get_token()
-    save_directory, username = _determine_username(save_directory, "", token)
+    save_directory, username = _determine_username(save_directory, None, token)
 
     from huggingface_hub import create_repo
 
