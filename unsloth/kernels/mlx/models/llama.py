@@ -135,7 +135,8 @@ class MLXAttention:
             if "v_proj" in target_modules:
                 self.lora_v = MLXLinear(self.hidden_size, r, bias=False, dtype=mx.float32)
             if "o_proj" in target_modules:
-                self.lora_o = MLXLinear(r, self.hidden_size, bias=False, dtype=mx.float32)
+                self.lora_o_A = MLXLinear(self.hidden_size, r, bias=False, dtype=mx.float32)
+                self.lora_o_B = MLXLinear(r, self.hidden_size, bias=False, dtype=mx.float32)
 
             self.lora_scaling = alpha / r
 
@@ -201,10 +202,11 @@ class MLXAttention:
         attn_output = attn_output.transpose(0, 2, 1, 3).reshape(bsz, q_len, self.hidden_size)
         attn_output = self.o_proj(attn_output)
 
-        if self.use_lora and self.lora_o is not None:
+        if self.use_lora and hasattr(self, 'lora_o_A') and self.lora_o_A is not None:
+            attn_before_proj = attn_output
             attn_output = attn_output + self.lora_scaling * mx.matmul(
-                mx.matmul(hidden_states, self.lora_q.weight.T) @ self.lora_o.weight.T,
-                mx.ones((1, 1, self.hidden_size), dtype=mx.float32)
+                mx.matmul(attn_before_proj, self.lora_o_A.weight.T),
+                self.lora_o_B.weight.T
             )
 
         if not output_attentions:
@@ -255,7 +257,8 @@ class MLXMLP:
             if "up_proj" in target_modules:
                 self.lora_up = MLXLinear(self.intermediate_size, r, bias=False, dtype=mx.float32)
             if "down_proj" in target_modules:
-                self.lora_down = MLXLinear(r, self.hidden_size, bias=False, dtype=mx.float32)
+                self.lora_down_A = MLXLinear(self.hidden_size, r, bias=False, dtype=mx.float32)
+                self.lora_down_B = MLXLinear(r, self.hidden_size, bias=False, dtype=mx.float32)
 
     def __call__(self, x: mx.array) -> mx.array:
         gate = self.gate_proj(x)
@@ -270,10 +273,10 @@ class MLXMLP:
         gate = silu(gate)
         down = self.down_proj(gate * up)
 
-        if self.use_lora and self.lora_down is not None:
+        if self.use_lora and hasattr(self, 'lora_down_A') and self.lora_down_A is not None:
             lora_out = self.lora_scaling * mx.matmul(
-                mx.matmul(x, self.lora_up.weight.T) @ self.lora_down.weight.T,
-                mx.ones((1, 1, self.hidden_size), dtype=mx.float32)
+                mx.matmul(x, self.lora_down_A.weight.T),
+                self.lora_down_B.weight.T
             )
             down = down + lora_out
 

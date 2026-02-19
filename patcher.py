@@ -848,7 +848,6 @@ class MacPatcher:
             mod.SKIP_QUANTIZATION_MODULES = []
             mod.get_peft_regex = lambda *a, **k: None
             mod.requires_grad_for_gradient_checkpointing = lambda *a, **k: None
-            print(f"[MLX MOCK] peft_utils attrs after creation: {dir(mod)}")
         elif fullname == "unsloth_zoo.training_utils":
             mod.prepare_model_for_training = lambda model: model
         elif fullname == "unsloth_zoo.vision_utils":
