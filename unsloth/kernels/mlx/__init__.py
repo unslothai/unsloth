@@ -76,7 +76,7 @@ from .merge_lora import (
 
 from .models import (
     MLXModelConfig,
-    LoRAConfig,
+    LoRAConfig as MLXModelLoRAConfig,
     MLXLinear,
     MLXEmbedding,
     MLXRMSNorm,
@@ -84,6 +84,47 @@ from .models import (
     MLXLlamaForCausalLM,
     MLXLlamaModel,
     create_llama_model,
+)
+
+from .optimizers import (
+    Optimizer,
+    AdamW,
+    SGD,
+    LearningRateScheduler,
+    LinearWarmupCosineDecay,
+    CosineDecay,
+    LinearDecay,
+    StepDecay,
+    clip_grad_norm,
+    clip_grad_value_,
+)
+
+from .losses import (
+    cross_entropy_loss,
+    cross_entropy_loss_with_z_loss,
+    fused_cross_entropy_loss,
+    mse_loss,
+    kl_div_loss,
+    binary_cross_entropy,
+    contrastive_loss,
+    LossFunction,
+    LanguageModelingLoss,
+)
+
+from .trainer import (
+    MLXTrainer,
+    TrainingConfig,
+)
+
+from .lora import (
+    LoRALinear,
+    LoRAEmbedding,
+    LoRAConfig,
+    GradientCheckpointing,
+    QuantizedLoRALinear,
+    mark_only_lora_as_trainable,
+    get_peft_model,
+    get_lora_state_dict,
 )
 
 __all__ = [
@@ -122,7 +163,7 @@ __all__ = [
     "mlx_merge_lora_layer",
     # Pure MLX models
     "MLXModelConfig",
-    "LoRAConfig",
+    "MLXModelLoRAConfig",
     "MLXLinear",
     "MLXEmbedding",
     "MLXRMSNorm",
@@ -130,4 +171,37 @@ __all__ = [
     "MLXLlamaForCausalLM",
     "MLXLlamaModel",
     "create_llama_model",
+    # Optimizers
+    "Optimizer",
+    "AdamW",
+    "SGD",
+    "LearningRateScheduler",
+    "LinearWarmupCosineDecay",
+    "CosineDecay",
+    "LinearDecay",
+    "StepDecay",
+    "clip_grad_norm",
+    "clip_grad_value_",
+    # Loss functions
+    "cross_entropy_loss",
+    "cross_entropy_loss_with_z_loss",
+    "fused_cross_entropy_loss",
+    "mse_loss",
+    "kl_div_loss",
+    "binary_cross_entropy",
+    "contrastive_loss",
+    "LossFunction",
+    "LanguageModelingLoss",
+    # Trainer
+    "MLXTrainer",
+    "TrainingConfig",
+    # LoRA
+    "LoRALinear",
+    "LoRAEmbedding",
+    "LoRAConfig",
+    "GradientCheckpointing",
+    "QuantizedLoRALinear",
+    "mark_only_lora_as_trainable",
+    "get_peft_model",
+    "get_lora_state_dict",
 ]
