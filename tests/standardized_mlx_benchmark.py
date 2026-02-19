@@ -92,15 +92,17 @@ class StandardizedBenchmark:
         """Benchmark Metal fused kernel."""
         mx.synchronize()
         
-        # Warmup
+        # Warmup - need to evaluate to force execution
         for _ in range(self.warmup_iters):
-            _ = fn(*args, **kwargs)
+            result = fn(*args, **kwargs)
+            mx.eval(result)
             mx.synchronize()
         
         # Benchmark
         start = time.perf_counter()
         for _ in range(self.benchmark_iters):
-            _ = fn(*args, **kwargs)
+            result = fn(*args, **kwargs)
+            mx.eval(result)
             mx.synchronize()
         end = time.perf_counter()
         
@@ -111,15 +113,17 @@ class StandardizedBenchmark:
         """Benchmark MLX.fast operations."""
         mx.synchronize()
         
-        # Warmup
+        # Warmup - need to evaluate to force execution
         for _ in range(self.warmup_iters):
-            _ = fn(*args, **kwargs)
+            result = fn(*args, **kwargs)
+            mx.eval(result)
             mx.synchronize()
         
         # Benchmark
         start = time.perf_counter()
         for _ in range(self.benchmark_iters):
-            _ = fn(*args, **kwargs)
+            result = fn(*args, **kwargs)
+            mx.eval(result)
             mx.synchronize()
         end = time.perf_counter()
         
@@ -130,15 +134,17 @@ class StandardizedBenchmark:
         """Benchmark MLX composed operations (no compile)."""
         mx.synchronize()
         
-        # Warmup
+        # Warmup - need to evaluate to force execution
         for _ in range(self.warmup_iters):
-            _ = fn(*args, **kwargs)
+            result = fn(*args, **kwargs)
+            mx.eval(result)
             mx.synchronize()
         
         # Benchmark
         start = time.perf_counter()
         for _ in range(self.benchmark_iters):
-            _ = fn(*args, **kwargs)
+            result = fn(*args, **kwargs)
+            mx.eval(result)
             mx.synchronize()
         end = time.perf_counter()
         
@@ -149,15 +155,17 @@ class StandardizedBenchmark:
         """Benchmark MLX compiled operations."""
         mx.synchronize()
         
-        # Warmup (compilation happens here)
+        # Warmup (compilation happens here) - need to evaluate
         for _ in range(self.warmup_iters):
-            _ = compiled_fn(*args, **kwargs)
+            result = compiled_fn(*args, **kwargs)
+            mx.eval(result)
             mx.synchronize()
         
         # Benchmark
         start = time.perf_counter()
         for _ in range(self.benchmark_iters):
-            _ = compiled_fn(*args, **kwargs)
+            result = compiled_fn(*args, **kwargs)
+            mx.eval(result)
             mx.synchronize()
         end = time.perf_counter()
         
@@ -201,7 +209,7 @@ class StandardizedBenchmark:
         # 3. MLX.fast (SiLU is available)
         try:
             def mlx_fast_swiglu(g, u):
-                return mx.multiply(mx.sigmoid(g), g, u)  # SiLU * up
+                return mx.multiply(mx.multiply(mx.sigmoid(g), g), u)  # SiLU * up
             lat, _ = self._benchmark_mlx_fast(mlx_fast_swiglu, mlx_gate, mlx_up)
             results['MLX.fast'] = BenchmarkResult('MLX.fast', lat)
             print(f" MLX.fast                | {lat:8.3f} ms")
@@ -372,7 +380,7 @@ class StandardizedBenchmark:
             def mlx_fast_mlp(x, gate, up, down):
                 g = x @ gate
                 u = x @ up
-                act = mx.multiply(mx.sigmoid(g), g, u)
+                act = mx.multiply(mx.multiply(mx.sigmoid(g), g), u)
                 return act @ down
             lat, _ = self._benchmark_mlx_fast(mlx_fast_mlp, mlx_x, mlx_gate, mlx_up, mlx_down)
             results['MLX.fast'] = BenchmarkResult('MLX.fast', lat)
@@ -461,12 +469,13 @@ class StandardizedBenchmark:
         except Exception as e:
             print(f" Metal Fused             | FAILED: {e}")
         
-        # 3. MLX.fast (if GELU available)
+        # 3. MLX.fast (using GELU approximation)
         try:
             def mlx_fast_geglu(x, gate, up):
                 g = x @ gate
                 u = x @ up
-                return mx.multiply(mx.gelu(g), u)
+                # GELU approximation: x * sigmoid(1.702 * x)
+                return mx.multiply(g * mx.sigmoid(1.702 * g), u)
             lat, _ = self._benchmark_mlx_fast(mlx_fast_geglu, mlx_x, mlx_gate, mlx_up)
             results['MLX.fast'] = BenchmarkResult('MLX.fast', lat)
             print(f" MLX.fast                | {lat:8.3f} ms")
@@ -550,9 +559,16 @@ class StandardizedBenchmark:
         
         # 2. Metal Fused (using our RoPE implementation)
         try:
-            from unsloth.kernels.metal.rope import mlx_rope_forward
+            from unsloth.kernels.mlx.fast_ops import mlx_rope
+            # Create cos/sin for RoPE
+            t = mx.arange(seq_len)
+            freqs = mx.outer(t, inv_freq)
+            emb = mx.concatenate([freqs, freqs], axis=-1)
+            cos_mlx = mx.cos(emb)
+            sin_mlx = mx.sin(emb)
+            
             def metal_rope(x):
-                return mlx_rope_forward(x, inv_freq)
+                return mlx_rope(x, cos_mlx, sin_mlx)
             lat, _ = self._benchmark_metal(metal_rope, mlx_x)
             results['Metal Fused'] = BenchmarkResult('Metal Fused', lat)
             print(f" Metal Fused             | {lat:8.3f} ms")
