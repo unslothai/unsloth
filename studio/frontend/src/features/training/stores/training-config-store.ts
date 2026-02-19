@@ -43,11 +43,16 @@ let _datasetCheckController: AbortController | null = null;
 // AbortController for in-flight model default loads.
 let _modelConfigController: AbortController | null = null;
 
+// Track whether the user has manually toggled trainOnCompletions
+// since the last auto-set (model load or dataset change).
+let _trainOnCompletionsManuallySet = false;
+
 const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> = new Set([
   "modelType",
   "isCheckingVision",
   "isLoadingModelDefaults",
   "modelDefaultsError",
+  "modelDefaultsAppliedFor",
   "isCheckingDataset",
 ]);
 
@@ -102,6 +107,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             if (controller.signal.aborted) return;
             if (get().selectedModel !== modelName) return;
 
+            _trainOnCompletionsManuallySet = false;
             set({
               ...mapBackendModelConfigToTrainingPatch(modelDetails.config),
               isVisionModel: modelDetails.is_vision,
@@ -196,6 +202,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         setDataset: (dataset) => {
           _datasetCheckController?.abort();
           _datasetCheckController = null;
+          _trainOnCompletionsManuallySet = false;
           set({
             dataset,
             datasetSubset: null,
@@ -208,6 +215,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         setDatasetSubset: (datasetSubset) => {
           _datasetCheckController?.abort();
           _datasetCheckController = null;
+          _trainOnCompletionsManuallySet = false;
           set({
             datasetSubset,
             datasetSplit: null,
@@ -245,10 +253,21 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           })
             .then((res) => {
               if (controller.signal.aborted) return;
-              set({
-                isDatasetMultimodal: !!res.is_multimodal,
+              const isMultimodal = !!res.is_multimodal;
+              const updates: Record<string, unknown> = {
+                isDatasetMultimodal: isMultimodal,
                 isCheckingDataset: false,
-              });
+              };
+              // Auto-set trainOnCompletions unless the user manually toggled it.
+              if (!_trainOnCompletionsManuallySet) {
+                const { isVisionModel } = get();
+                if (isVisionModel && isMultimodal) {
+                  updates.trainOnCompletions = false;
+                }
+                // For non-vision or vision+text, keep the backend default
+                // (already applied on model load).
+              }
+              set(updates);
             })
             .catch(() => {
               if (controller.signal.aborted) return;
@@ -274,8 +293,10 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         setSaveSteps: (saveSteps) => set({ saveSteps }),
         setEvalSteps: (evalSteps) => set({ evalSteps }),
         setPacking: (packing) => set({ packing }),
-        setTrainOnCompletions: (trainOnCompletions) =>
-          set({ trainOnCompletions }),
+        setTrainOnCompletions: (trainOnCompletions) => {
+          _trainOnCompletionsManuallySet = true;
+          set({ trainOnCompletions });
+        },
         setGradientCheckpointing: (gradientCheckpointing) =>
           set({ gradientCheckpointing }),
         setRandomSeed: (randomSeed) => set({ randomSeed }),
