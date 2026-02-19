@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Test pure MLX Metal kernels without PyTorch conversion overhead.
-Run this on Apple Silicon to verify Chunk 1 implementation.
+Run this on Apple Silicon to verify implementation.
 """
 
 # Import patcher first to set up mocks
@@ -152,7 +152,7 @@ except Exception as e:
     traceback.print_exc()
 
 print("\n" + "=" * 70)
-print("Chunk 1 Complete: Pure MLX Metal Kernels")
+print("Pure MLX Metal Kernels Test Complete")
 print("=" * 70)
 print("""
 Key achievements:
@@ -160,10 +160,4 @@ Key achievements:
   • Direct mx.array input/output
   • Metal kernels compiled for Apple Silicon
   • Forward + backward pass support
-
-Next: Chunk 2 - Training Infrastructure
-  • MLX optimizers (AdamW, SGD)
-  • MLX losses (cross-entropy)
-  • MLX training loop with mx.grad
-  • MLX LoRA layers
 """)
