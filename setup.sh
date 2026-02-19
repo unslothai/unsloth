@@ -212,38 +212,38 @@ USER_SHELL="$(basename "${SHELL:-/bin/bash}")"
 case "$USER_SHELL" in
     zsh)
         SHELL_RC="$HOME/.zshrc"
-        ALIAS_BLOCK="alias unsloth-ui='${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py ui -f ${REPO_DIR}/studio/frontend/dist'"
+        ALIAS_BLOCK="alias unsloth-studio='${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py studio -f ${REPO_DIR}/studio/frontend/dist'"
         ;;
     fish)
         SHELL_RC="$HOME/.config/fish/config.fish"
         # fish uses 'abbr' or 'function'; a simple alias works via 'alias' in config.fish
-        ALIAS_BLOCK="alias unsloth-ui '${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py ui -f ${REPO_DIR}/studio/frontend/dist'"
+        ALIAS_BLOCK="alias unsloth-studio '${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py studio -f ${REPO_DIR}/studio/frontend/dist'"
         ;;
     ksh)
         SHELL_RC="$HOME/.kshrc"
-        ALIAS_BLOCK="alias unsloth-ui='${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py ui -f ${REPO_DIR}/studio/frontend/dist'"
+        ALIAS_BLOCK="alias unsloth-studio='${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py studio -f ${REPO_DIR}/studio/frontend/dist'"
         ;;
     *)
         # Default to bash for bash and any other POSIX-compatible shell
         SHELL_RC="$HOME/.bashrc"
-        ALIAS_BLOCK="alias unsloth-ui='${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py ui -f ${REPO_DIR}/studio/frontend/dist'"
+        ALIAS_BLOCK="alias unsloth-studio='${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py studio -f ${REPO_DIR}/studio/frontend/dist'"
         ;;
 esac
 
 echo "   Detected shell: $USER_SHELL → $SHELL_RC"
 
 ALIAS_ADDED=false
-if ! grep -qF "unsloth-ui" "$SHELL_RC" 2>/dev/null; then
+if ! grep -qF "unsloth-studio" "$SHELL_RC" 2>/dev/null; then
     mkdir -p "$(dirname "$SHELL_RC")"   # needed for fish's nested config path
     cat >> "$SHELL_RC" <<UNSLOTH_EOF
 
 # Unsloth Studio launcher
 $ALIAS_BLOCK
 UNSLOTH_EOF
-    echo "✅ Alias 'unsloth-ui' added to $SHELL_RC"
+    echo "✅ Alias 'unsloth-studio' added to $SHELL_RC"
     ALIAS_ADDED=true
 else
-    echo "✅ Alias 'unsloth-ui' already exists in $SHELL_RC"
+    echo "✅ Alias 'unsloth-studio' already exists in $SHELL_RC"
 fi
 
 fi  # End of "if not Colab" for shell alias setup
@@ -267,6 +267,6 @@ else
         echo "║ Launch with:                         ║"
     fi
     echo "║                                      ║"
-    echo "║ unsloth-ui -H 0.0.0.0 -p 8000       ║"
+    echo "║ unsloth-studio -H 0.0.0.0 -p 8000   ║"
     echo "╚══════════════════════════════════════╝"
 fi
