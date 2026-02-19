@@ -199,6 +199,36 @@ class ComprehensiveBenchmark:
                 "MLX 16-Bit (Cached)", mlx_16_latency, error, mem=get_mem_stats()
             )
 
+            # 2b. MLX 16-Bit with mx.compile
+            @mx.compile
+            def compiled_mlp(x, gateW, upW, downW, A, B, S):
+                g = x @ gateW.T + (x @ A.T) @ B.T * S
+                u = x @ upW.T + (x @ A.T) @ B.T * S
+                act = mx.nn.silu(g) * u
+                return act @ downW + (act @ B) @ A * S
+            
+            # Warmup
+            res = compiled_mlp(X_mlx, gateW._mlx_cache, upW._mlx_cache, downW._mlx_cache, 
+                              A._mlx_cache, B._mlx_cache, S)
+            mx.eval(res)
+            
+            start = time.time()
+            results = []
+            for _ in range(actual_iters):
+                res = compiled_mlp(X_mlx, gateW._mlx_cache, upW._mlx_cache, downW._mlx_cache,
+                                   A._mlx_cache, B._mlx_cache, S)
+                results.append(res)
+                if len(results) >= 10:
+                    mx.eval(*results)
+                    results = []
+            mx.eval(*results)
+            mlx_compiled_latency = (time.time() - start) * 1000 / actual_iters
+            
+            error = (y_ref - y_mlx).abs().max().item()
+            log_result(
+                "MLX 16-Bit (Compiled)", mlx_compiled_latency, error, mem=get_mem_stats()
+            )
+
             # 3. MLX 4-Bit
             # Cache quantized weights
             gateW._mlx_cache = quantize_4bit(gateW)
@@ -427,6 +457,26 @@ class ComprehensiveBenchmark:
             error = (q_ref - q_mlx).abs().max().item()
             log_result("MLX Optimized", mlx_latency, error, mem=get_mem_stats())
 
+            # MLX Compiled
+            compiled_qkv = mx.compile(apply_lora_qkv)
+            
+            start = time.time()
+            for _ in range(actual_iters):
+                res = compiled_qkv(
+                    X_mlx, QW, None, QA, QB, QS, KW, None, QA, QB, QS, VW, None, QA, QB, QS
+                )
+                if isinstance(res, tuple):
+                    results.extend(list(res))
+                else:
+                    results.append(res)
+                if len(results) >= 20:
+                    mx.eval(*results)
+                    results = []
+            mx.eval(*results)
+            mlx_compiled_latency = (time.time() - start) * 1000 / actual_iters
+            
+            log_result("MLX Compiled", mlx_compiled_latency, error, mem=get_mem_stats())
+
     def run_llama3_benchmark(self, batch_size=1, seq_len=1):
         # Llama-3-8B Scale: D=4096, H=14336
         log_header(f"Llama-3-8B Scale Benchmark (B={batch_size}, S={seq_len})")
@@ -481,6 +531,20 @@ class ComprehensiveBenchmark:
             mx.eval(*results)
             mlx_lat = (time.time() - start) * 1000 / actual_iters
             log_result("MLX Composed", mlx_lat)
+
+            # MLX Compiled
+            compiled_swiglu = mx.compile(lambda x, y: mx.sigmoid(x) * x * y)
+            
+            start = time.time()
+            results = []
+            for _ in range(actual_iters):
+                results.append(compiled_swiglu(e_mlx, g_mlx))
+                if len(results) >= 20:
+                    mx.eval(*results)
+                    results = []
+            mx.eval(*results)
+            mlx_compiled_latency = (time.time() - start) * 1000 / actual_iters
+            log_result("MLX Compiled", mlx_compiled_latency)
             
             # Unsloth Fused
             def mlx_fused():
@@ -582,6 +646,22 @@ class ComprehensiveBenchmark:
             err_q = (q_ref - q_res_torch).abs().max().item()
             
             log_result("MLX Optimized", mlx_latency, err_q, mem=get_mem_stats())
+
+            # MLX Compiled
+            compiled_rope = mx.compile(mlx_rope_qk)
+            
+            start = time.time()
+            results = []
+            for _ in range(actual_iters):
+                 res = compiled_rope(Q_mlx, K_mlx, cos_mlx, sin_mlx)
+                 results.extend(list(res))
+                 if len(results) >= 20:
+                     mx.eval(*results)
+                     results = []
+            mx.eval(*results)
+            mlx_compiled_latency = (time.time() - start) * 1000 / actual_iters
+            
+            log_result("MLX Compiled", mlx_compiled_latency, err_q, mem=get_mem_stats())
 
     def run_geglu_benchmark(self, batch_size=1, seq_len=1, dim=4096):
         log_header(f"GEGLU Benchmark: B={batch_size}, S={seq_len}, D={dim}")
