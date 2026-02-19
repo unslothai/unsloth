@@ -463,7 +463,9 @@ class ComprehensiveBenchmark:
             start = time.time()
             for _ in range(actual_iters):
                 res = compiled_qkv(
-                    X_mlx, QW, None, QA, QB, QS, KW, None, QA, QB, QS, VW, None, QA, QB, QS
+                    X_mlx, QW._mlx_cache, None, QA._mlx_cache, QB._mlx_cache, QS, 
+                    KW._mlx_cache, None, QA._mlx_cache, QB._mlx_cache, QS, 
+                    VW._mlx_cache, None, QA._mlx_cache, QB._mlx_cache, QS
                 )
                 if isinstance(res, tuple):
                     results.extend(list(res))
