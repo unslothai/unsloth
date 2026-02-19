@@ -559,17 +559,12 @@ class StandardizedBenchmark:
         
         # 2. Metal Fused - use mx.fast.rope if available
         try:
-            # Create cos/sin for RoPE
-            t = mx.arange(seq_len)
-            freqs = mx.outer(t, inv_freq)
-            emb = mx.concatenate([freqs, freqs], axis=-1)
-            cos_mlx = mx.cos(emb)
-            sin_mlx = mx.sin(emb)
+            # mx.fast.rope signature: rope(a, dims, *, traditional, base, scale, offset, freqs)
+            # dims is the number of dimensions to rotate (head_dim)
             
-            # Use mx.fast.rope if available, otherwise skip
             if hasattr(mx.fast, 'rope'):
-                def metal_rope(x):
-                    return mx.fast.rope(x, None, cos_mlx, sin_mlx)
+                def metal_rope(x_mlx):
+                    return mx.fast.rope(x_mlx, head_dim, traditional=True, base=10000.0, scale=1.0, offset=0)
                 lat, _ = self._benchmark_metal(metal_rope, mlx_x)
                 results['Metal Fused'] = BenchmarkResult('Metal Fused', lat)
                 print(f" Metal Fused             | {lat:8.3f} ms")
