@@ -87,8 +87,8 @@ try:
     
     # Forward
     start = time.time()
-    output = rms_layernorm_forward(x, weight, eps=1e-5)
-    mx.eval(output)
+    output, r = rms_layernorm_forward(x, weight, eps=1e-5)
+    mx.eval([output, r])
     fwd_time = (time.time() - start) * 1000
     
     print(f"   ✓ RMSNorm forward: {output.shape}, {fwd_time:.2f}ms")
@@ -96,7 +96,7 @@ try:
     # Backward
     grad_output = mx.random.normal((B, S, D))
     start = time.time()
-    grad_x, grad_weight = rms_layernorm_backward(grad_output, x, weight, eps=1e-5)
+    grad_x, grad_weight = rms_layernorm_backward(grad_output, x, weight, r)
     mx.eval([grad_x, grad_weight])
     bwd_time = (time.time() - start) * 1000
     
@@ -139,8 +139,8 @@ try:
     # Backward
     grad_output = mx.random.normal((B, S, hidden_dim))
     start = time.time()
-    grad_gate, grad_up = geglu_backward(grad_output, gate, up)
-    mx.eval([grad_gate, grad_up])
+    h_out, grad_gate, grad_up = geglu_backward(grad_output, gate, up)
+    mx.eval([h_out, grad_gate, grad_up])
     bwd_time = (time.time() - start) * 1000
     
     print(f"   ✓ GEGLU backward: {bwd_time:.2f}ms")
