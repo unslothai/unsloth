@@ -557,9 +557,8 @@ class StandardizedBenchmark:
         except Exception as e:
             print(f" MPS (PyTorch)           | FAILED: {e}")
         
-        # 2. Metal Fused (using our RoPE implementation)
+        # 2. Metal Fused - use mx.fast.rope if available
         try:
-            from unsloth.kernels.mlx.fast_ops import mlx_rope
             # Create cos/sin for RoPE
             t = mx.arange(seq_len)
             freqs = mx.outer(t, inv_freq)
@@ -567,11 +566,15 @@ class StandardizedBenchmark:
             cos_mlx = mx.cos(emb)
             sin_mlx = mx.sin(emb)
             
-            def metal_rope(x):
-                return mlx_rope(x, cos_mlx, sin_mlx)
-            lat, _ = self._benchmark_metal(metal_rope, mlx_x)
-            results['Metal Fused'] = BenchmarkResult('Metal Fused', lat)
-            print(f" Metal Fused             | {lat:8.3f} ms")
+            # Use mx.fast.rope if available, otherwise skip
+            if hasattr(mx.fast, 'rope'):
+                def metal_rope(x):
+                    return mx.fast.rope(x, None, cos_mlx, sin_mlx)
+                lat, _ = self._benchmark_metal(metal_rope, mlx_x)
+                results['Metal Fused'] = BenchmarkResult('Metal Fused', lat)
+                print(f" Metal Fused             | {lat:8.3f} ms")
+            else:
+                print(f" Metal Fused             | SKIPPED: mx.fast.rope not available")
         except Exception as e:
             print(f" Metal Fused             | FAILED: {e}")
         
