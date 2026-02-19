@@ -1,5 +1,7 @@
 export type TrainingPhase =
   | "idle"
+  | "downloading_model"
+  | "downloading_dataset"
   | "loading_model"
   | "loading_dataset"
   | "configuring"
