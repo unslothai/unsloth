@@ -22,6 +22,7 @@ sys.modules["patcher"] = patcher  # Register in sys.modules before exec
 spec.loader.exec_module(patcher)
 
 import mlx.core as mx
+import mlx.nn as nn
 import torch
 import time
 import numpy as np
@@ -206,10 +207,10 @@ class StandardizedBenchmark:
         except Exception as e:
             print(f" Metal Fused             | FAILED: {e}")
         
-        # 3. MLX.fast (use mx.nn.silu if available)
+        # 3. MLX.fast (use nn.silu if available)
         try:
             def mlx_fast_swiglu(g, u):
-                return mx.nn.silu(g) * u  # Optimized SiLU * up
+                return nn.silu(g) * u  # Optimized SiLU * up
             lat, _ = self._benchmark_mlx_fast(mlx_fast_swiglu, mlx_gate, mlx_up)
             results['MLX.fast'] = BenchmarkResult('MLX.fast', lat)
             print(f" MLX.fast                | {lat:8.3f} ms")
@@ -375,12 +376,12 @@ class StandardizedBenchmark:
         except Exception as e:
             print(f" Metal Fused             | FAILED: {e}")
         
-        # 3. MLX.fast (use mx.nn.silu)
+        # 3. MLX.fast (use nn.silu)
         try:
             def mlx_fast_mlp(x, gate, up, down):
                 g = x @ gate
                 u = x @ up
-                act = mx.nn.silu(g) * u  # Optimized SiLU
+                act = nn.silu(g) * u  # Optimized SiLU
                 return act @ down
             lat, _ = self._benchmark_mlx_fast(mlx_fast_mlp, mlx_x, mlx_gate, mlx_up, mlx_down)
             results['MLX.fast'] = BenchmarkResult('MLX.fast', lat)
@@ -469,12 +470,12 @@ class StandardizedBenchmark:
         except Exception as e:
             print(f" Metal Fused             | FAILED: {e}")
         
-        # 3. MLX.fast (use mx.nn.gelu)
+        # 3. MLX.fast (use nn.gelu)
         try:
             def mlx_fast_geglu(x, gate, up):
                 g = x @ gate
                 u = x @ up
-                return mx.nn.gelu(g) * u  # Optimized GELU
+                return nn.gelu(g) * u  # Optimized GELU
             lat, _ = self._benchmark_mlx_fast(mlx_fast_geglu, mlx_x, mlx_gate, mlx_up)
             results['MLX.fast'] = BenchmarkResult('MLX.fast', lat)
             print(f" MLX.fast                | {lat:8.3f} ms")
@@ -486,7 +487,7 @@ class StandardizedBenchmark:
             def mlx_composed_geglu(x, gate, up):
                 g = x @ gate
                 u = x @ up
-                return mx.nn.gelu(g) * u
+                return nn.gelu(g) * u
             lat, _ = self._benchmark_mlx_composed(mlx_composed_geglu, mlx_x, mlx_gate, mlx_up)
             results['MLX Composed'] = BenchmarkResult('MLX Composed', lat)
             print(f" MLX Composed            | {lat:8.3f} ms")
@@ -498,7 +499,7 @@ class StandardizedBenchmark:
             def mlx_composed_geglu(x, gate, up):
                 g = x @ gate
                 u = x @ up
-                return mx.nn.gelu(g) * u
+                return nn.gelu(g) * u
             compiled_geglu = mx.compile(mlx_composed_geglu)
             lat, _ = self._benchmark_mlx_compiled(compiled_geglu, mlx_x, mlx_gate, mlx_up)
             results['MX.compile'] = BenchmarkResult('MX.compile', lat)
