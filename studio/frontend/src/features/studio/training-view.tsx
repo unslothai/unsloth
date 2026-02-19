@@ -19,6 +19,8 @@ export function TrainingView(): ReactElement {
   );
 
   const isPreparingPhase =
+    runtime.phase === "downloading_model" ||
+    runtime.phase === "downloading_dataset" ||
     runtime.phase === "loading_model" ||
     runtime.phase === "loading_dataset" ||
     runtime.phase === "configuring";
