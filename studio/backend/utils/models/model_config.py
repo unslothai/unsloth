@@ -369,7 +369,7 @@ pass
 
 def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     """
-    Detect vision models by checking architecture in config.
+    Detect vision-language models (VLMs) by checking architecture in config.
     Works for fine-tuned models since they inherit the base architecture.
 
     Args:
@@ -377,22 +377,42 @@ def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
         hf_token: Optional HF token for accessing gated/private models
     """
     try:
-        config = load_model_config(model_name, token=hf_token)
+        config = load_model_config(model_name, use_auth=True, token=hf_token)
 
-        # Check vision arch
+        # Check 1: Architecture class name patterns
         if hasattr(config, 'architectures'):
             is_vlm = any(
                 x.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
                 for x in config.architectures
             )
             if is_vlm:
-                logger.info(f"Model {model_name} detected as vision model: architecture {config.architectures}")
+                logger.info(f"Model {model_name} detected as VLM: architecture {config.architectures}")
                 return True
 
-        # Quick check for vision config as backup
+        # Check 2: Has vision_config (most VLMs: LLaVA, Gemma-3, Qwen2-VL, etc.)
         if hasattr(config, 'vision_config'):
-            logger.info(f"Model {model_name} detected as vision model: has vision_config")
+            logger.info(f"Model {model_name} detected as VLM: has vision_config")
             return True
+
+        # Check 3: Has img_processor (Phi-3.5 Vision uses this instead of vision_config)
+        if hasattr(config, 'img_processor'):
+            logger.info(f"Model {model_name} detected as VLM: has img_processor")
+            return True
+
+        # Check 4: Has image_token_index (common in VLMs for image placeholder tokens)
+        if hasattr(config, 'image_token_index'):
+            logger.info(f"Model {model_name} detected as VLM: has image_token_index")
+            return True
+
+        # Check 5: Known VLM model_type values that may not match above checks
+        if hasattr(config, 'model_type'):
+            vlm_model_types = {
+                'phi3_v', 'llava', 'llava_next', 'llava_onevision',
+                'internvl_chat', 'cogvlm2', 'minicpmv',
+            }
+            if config.model_type in vlm_model_types:
+                logger.info(f"Model {model_name} detected as VLM: model_type={config.model_type}")
+                return True
 
         return False
 
