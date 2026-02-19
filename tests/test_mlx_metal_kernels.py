@@ -6,7 +6,8 @@ Run this on Apple Silicon to verify Chunk 1 implementation.
 
 # Import patcher first to set up mocks
 import sys
-sys.path.insert(0, '/mnt/c/Users/wrc02/Desktop/UNSLOTH_WORK')
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 import patcher  # noqa: F401
 
 import mlx.core as mx
