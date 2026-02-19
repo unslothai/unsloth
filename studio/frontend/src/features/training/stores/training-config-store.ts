@@ -104,8 +104,21 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             if (controller.signal.aborted) return;
             if (get().selectedModel !== modelName) return;
 
+            const patch = mapBackendModelConfigToTrainingPatch(modelDetails.config);
+
+            // train_on_responses_only: true for LLMs, true for VLM+text dataset, false for VLM+vision dataset
+            if (!modelDetails.is_vision) {
+              patch.trainOnCompletions = true;
+            } else {
+              const datasetMultimodal = get().isDatasetMultimodal;
+              if (datasetMultimodal !== null) {
+                patch.trainOnCompletions = !datasetMultimodal;
+              }
+              // if dataset not yet checked, leave YAML default
+            }
+
             set({
-              ...mapBackendModelConfigToTrainingPatch(modelDetails.config),
+              ...patch,
               isVisionModel: modelDetails.is_vision,
               isLoadingModelDefaults: false,
               isCheckingVision: false,
@@ -129,10 +142,20 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             void checkVisionModel(modelName)
               .then((isVision) => {
                 if (get().selectedModel !== modelName) return;
-                set({
+                const updates: Record<string, unknown> = {
                   isVisionModel: isVision,
                   isCheckingVision: false,
-                });
+                };
+                // train_on_responses_only default
+                if (!isVision) {
+                  updates.trainOnCompletions = true;
+                } else {
+                  const datasetMultimodal = get().isDatasetMultimodal;
+                  if (datasetMultimodal !== null) {
+                    updates.trainOnCompletions = !datasetMultimodal;
+                  }
+                }
+                set(updates as Partial<TrainingConfigState>);
               })
               .catch(() => {
                 if (get().selectedModel !== modelName) return;
@@ -247,10 +270,16 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           })
             .then((res) => {
               if (controller.signal.aborted) return;
-              set({
-                isDatasetMultimodal: !!res.is_multimodal,
+              const isMultimodal = !!res.is_multimodal;
+              const updates: Record<string, unknown> = {
+                isDatasetMultimodal: isMultimodal,
                 isCheckingDataset: false,
-              });
+              };
+              // train_on_responses_only: for VLMs, true if text dataset, false if vision dataset
+              if (get().isVisionModel) {
+                updates.trainOnCompletions = !isMultimodal;
+              }
+              set(updates as Partial<TrainingConfigState>);
             })
             .catch(() => {
               if (controller.signal.aborted) return;
