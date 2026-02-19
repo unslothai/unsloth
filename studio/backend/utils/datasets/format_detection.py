@@ -328,6 +328,11 @@ def detect_multimodal_dataset(dataset):
     """
     Detects if dataset contains multimodal data (images/vision).
 
+    Two-pass approach:
+      1. Column-name heuristic (fast): checks for keywords like 'image', 'img', 'pixel'.
+      2. Value-type inspection (reliable): checks if actual values are PIL Images,
+         bytes with image headers, or HF Image-feature dicts.
+
     Returns:
         dict: {
             "is_multimodal": bool,
@@ -339,11 +344,16 @@ def detect_multimodal_dataset(dataset):
     column_names = list(sample.keys())
 
     # Keywords that indicate multimodal/image data
-    multimodal_keywords = ['image', 'img', 'pixel']
+    multimodal_keywords = [
+        'image', 'img', 'pixel',
+        'jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif', 'tiff', 'svg',
+        'photo', 'pic', 'picture', 'visual',
+    ]
 
     multimodal_columns = []
     modality_types = set()
 
+    # ── Pass 1: column-name heuristic ───────────────────────
     for col_name in column_names:
         col_lower = col_name.lower()
 
@@ -353,11 +363,70 @@ def detect_multimodal_dataset(dataset):
                 modality_types.add(keyword)
                 break  # Don't check other keywords for this column
 
+    # ── Pass 2: inspect actual values ───────────────────────
+    # Catches columns with non-obvious names (e.g. "jpg", "photo", "pic")
+    already_detected = set(multimodal_columns)
+    for col_name in column_names:
+        if col_name in already_detected:
+            continue
+        value = sample[col_name]
+        if _is_image_value(value):
+            multimodal_columns.append(col_name)
+            modality_types.add("image")
+
     return {
         "is_multimodal": len(multimodal_columns) > 0,
         "multimodal_columns": multimodal_columns,
         "modality_types": list(modality_types)
     }
+
+
+def _is_image_value(value) -> bool:
+    """Check if a single sample value looks like image data."""
+    if value is None:
+        return False
+
+    # PIL Image instance
+    try:
+        from PIL.Image import Image as PILImage
+        if isinstance(value, PILImage):
+            return True
+    except ImportError:
+        pass
+
+    # HF datasets Image feature stores decoded images as PIL or dicts with
+    # {"bytes": b"...", "path": "..."} when not yet decoded
+    if isinstance(value, dict):
+        if "bytes" in value and "path" in value:
+            return True
+
+    # Raw bytes with a known image magic header
+    if isinstance(value, (bytes, bytearray)):
+        return _has_image_header(value)
+
+    return False
+
+
+def _has_image_header(data: bytes) -> bool:
+    """Quick magic-byte check for common image formats."""
+    if len(data) < 4:
+        return False
+    # JPEG
+    if data[:2] == b'\xff\xd8':
+        return True
+    # PNG
+    if data[:4] == b'\x89PNG':
+        return True
+    # GIF
+    if data[:3] == b'GIF':
+        return True
+    # WebP
+    if data[:4] == b'RIFF' and len(data) >= 12 and data[8:12] == b'WEBP':
+        return True
+    # BMP
+    if data[:2] == b'BM':
+        return True
+    return False
 
 
 def detect_vlm_dataset_structure(dataset):
