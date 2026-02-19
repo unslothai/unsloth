@@ -458,14 +458,19 @@ class ComprehensiveBenchmark:
             log_result("MLX Optimized", mlx_latency, error, mem=get_mem_stats())
 
             # MLX Compiled
-            compiled_qkv = mx.compile(apply_lora_qkv)
+            def compiled_qkv_fn(x, QW, KW, VW, QA, QB, QS):
+                q = mx.matmul(x, QW.T) + (mx.matmul(x, QA.T) @ QB.T) * QS
+                k = mx.matmul(x, KW.T) + (mx.matmul(x, QA.T) @ QB.T) * QS
+                v = mx.matmul(x, VW.T) + (mx.matmul(x, QA.T) @ QB.T) * QS
+                return q, k, v
+            
+            compiled_qkv = mx.compile(compiled_qkv_fn)
             
             start = time.time()
             for _ in range(actual_iters):
                 res = compiled_qkv(
-                    X_mlx, QW._mlx_cache, None, QA._mlx_cache, QB._mlx_cache, QS, 
-                    KW._mlx_cache, None, QA._mlx_cache, QB._mlx_cache, QS, 
-                    VW._mlx_cache, None, QA._mlx_cache, QB._mlx_cache, QS
+                    X_mlx, QW._mlx_cache, KW._mlx_cache, VW._mlx_cache, 
+                    QA._mlx_cache, QB._mlx_cache, QS
                 )
                 if isinstance(res, tuple):
                     results.extend(list(res))
