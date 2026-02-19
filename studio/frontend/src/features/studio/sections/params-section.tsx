@@ -20,7 +20,11 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { CONTEXT_LENGTHS, TARGET_MODULES } from "@/config/training";
+import {
+  CONTEXT_LENGTHS,
+  OPTIMIZER_OPTIONS,
+  TARGET_MODULES,
+} from "@/config/training";
 import { useTrainingConfigStore } from "@/features/training";
 import type { GradientCheckpointing } from "@/types/training";
 import {
@@ -508,6 +512,43 @@ export function ParamsSection(): ReactElement {
                 value="optimization"
                 className="mt-3 flex flex-col gap-3"
               >
+                <Row
+                  label="Optimizer"
+                  tooltip={
+                    <>
+                      Optimization algorithm. 8-bit variants reduce memory usage.
+                      Fused is recommended for vision models.{" "}
+                      <a
+                        href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-primary underline"
+                      >
+                        Read more
+                      </a>
+                    </>
+                  }
+                >
+                  <Select
+                    value={store.optimizerType}
+                    onValueChange={(v) => store.setOptimizerType(v)}
+                  >
+                    <SelectTrigger className="w-48 font-mono">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {OPTIMIZER_OPTIONS.map((opt) => (
+                        <SelectItem
+                          key={opt.value}
+                          value={opt.value}
+                          className="font-mono"
+                        >
+                          {opt.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </Row>
                 <SliderRow
                   label="Batch Size"
                   tooltip={
