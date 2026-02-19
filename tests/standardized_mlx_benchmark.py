@@ -64,16 +64,21 @@ class BenchmarkResult:
 
 
 def get_memory_usage() -> Tuple[float, float]:
-    """Get current memory usage in MB for MPS and system.
-    Returns: (mps_memory_mb, system_memory_mb)
+    """Get current memory usage in MB for MPS, MLX and system.
+    Returns: (gpu_memory_mb, system_memory_mb)
     """
-    mps_mb = 0.0
+    gpu_mb = 0.0
     system_mb = 0.0
     
     try:
         if torch.backends.mps.is_available():
             torch.mps.synchronize()
-            mps_mb = torch.mps.current_allocated_memory() / (1024 * 1024)
+            gpu_mb += torch.mps.current_allocated_memory() / (1024 * 1024)
+    except Exception:
+        pass
+    
+    try:
+        gpu_mb += mx.metal.get_active_memory() / (1024 * 1024)
     except Exception:
         pass
     
@@ -83,7 +88,7 @@ def get_memory_usage() -> Tuple[float, float]:
     except Exception:
         pass
     
-    return mps_mb, system_mb
+    return gpu_mb, system_mb
 
 
 def estimate_tensor_memory(shape: tuple, dtype) -> float:
@@ -771,7 +776,7 @@ def main():
             baseline = results['MPS'].latency_ms
             for variant, result in results.items():
                 speedup = baseline / result.latency_ms if result.latency_ms > 0 else 0
-                mem_str = f"{result.vram_mb:7.2f} MB" if result.vram_mb > 0 else "   N/A"
+                mem_str = f"{result.vram_mb:7.2f} MB" if result.vram_mb is not None else "   N/A"
                 print(f"  {variant:20s}: {result.latency_ms:7.3f} ms | {mem_str} ({speedup:5.2f}x vs MPS)")
 
 
