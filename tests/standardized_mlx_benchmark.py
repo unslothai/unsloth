@@ -18,6 +18,7 @@ import os
 patcher_path = Path(__file__).parent.parent / "patcher.py"
 spec = importlib.util.spec_from_file_location("patcher", patcher_path)
 patcher = importlib.util.module_from_spec(spec)
+sys.modules["patcher"] = patcher  # Register in sys.modules before exec
 spec.loader.exec_module(patcher)
 
 import mlx.core as mx
