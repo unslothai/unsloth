@@ -205,7 +205,7 @@ class ComprehensiveBenchmark:
                 g = x @ gateW.T + (x @ A.T) @ B.T * S
                 u = x @ upW.T + (x @ A.T) @ B.T * S
                 act = mx.sigmoid(g) * g * u
-                return act @ downW.T + (act @ B.T) @ A.T * S
+                return act @ downW.T + (act @ B) @ A * S
             
             # Warmup
             res = compiled_mlp(X_mlx, gateW._mlx_cache, upW._mlx_cache, downW._mlx_cache, 
