@@ -46,11 +46,9 @@ let _modelConfigController: AbortController | null = null;
 const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> = new Set([
   "modelType",
   "isCheckingVision",
-  "isVisionModel",
   "isLoadingModelDefaults",
   "modelDefaultsError",
   "isCheckingDataset",
-  "isDatasetMultimodal",
 ]);
 
 function partializePersistedState(
