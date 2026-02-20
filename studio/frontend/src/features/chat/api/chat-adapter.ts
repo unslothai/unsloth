@@ -159,7 +159,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         if (abortSignal.aborted) return;
         warmupToastShown = true;
         toast.promise(firstTokenPromise, {
-          loading: "Warming up model",
+          loading: "Generating",
           success: "Generating",
           error: (err) =>
             err instanceof Error && err.message ? err.message : "Generation failed",
