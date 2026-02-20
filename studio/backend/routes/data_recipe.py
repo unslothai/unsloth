@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 # same thing as other files do
@@ -127,6 +127,15 @@ def job_analysis(job_id: str):
     if analysis is None:
         raise HTTPException(status_code=404, detail="analysis not ready")
     return analysis
+
+
+@router.get("/jobs/{job_id}/dataset")
+def job_dataset(job_id: str, limit: int = Query(default=20, ge=1, le=500)):
+    mgr = get_job_manager()
+    dataset = mgr.get_dataset(job_id, limit=limit)
+    if dataset is None:
+        raise HTTPException(status_code=404, detail="dataset not ready")
+    return {"dataset": dataset}
 
 
 @router.get("/jobs/{job_id}/events")

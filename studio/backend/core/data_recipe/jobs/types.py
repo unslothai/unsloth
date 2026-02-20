@@ -61,7 +61,8 @@ class Job:
 
     analysis: dict[str, Any] | None = None
     artifact_path: str | None = None
+    dataset: list[dict[str, Any]] | None = None
+    processor_artifacts: dict[str, Any] | None = None
     model_usage: dict[str, ModelUsage] = field(default_factory=dict)
     _current_usage_model: str | None = None
     _in_usage_summary: bool = False
-
