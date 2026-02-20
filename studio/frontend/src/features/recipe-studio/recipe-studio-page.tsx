@@ -282,6 +282,7 @@ export function RecipeStudioPage({
     runPreview,
     runFull,
     cancelExecution,
+    loadExecutionDatasetPage,
     copyRecipe,
     importRecipe,
   } = useRecipeStudioActions({
@@ -404,6 +405,9 @@ export function RecipeStudioPage({
                 }}
                 onCancelExecution={(executionId) => {
                   void cancelExecution(executionId);
+                }}
+                onLoadDatasetPage={(executionId, page) => {
+                  void loadExecutionDatasetPage(executionId, page);
                 }}
               />
             )}

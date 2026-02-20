@@ -194,8 +194,14 @@ class JobManager:
                 return None
             return self._job.analysis
 
-    def get_dataset(self, job_id: str, *, limit: int) -> list[dict[str, Any]] | None:
-        """Load job dataset rows for UI previews (limited head)."""
+    def get_dataset(
+        self,
+        job_id: str,
+        *,
+        limit: int,
+        offset: int = 0,
+    ) -> dict[str, Any] | None:
+        """Load dataset page (offset + limit) and include total rows."""
         with self._lock:
             if self._job is None or self._job.job_id != job_id:
                 return None
@@ -203,7 +209,9 @@ class JobManager:
             artifact_path = self._job.artifact_path
 
         if in_memory_dataset is not None:
-            return in_memory_dataset[:limit]
+            total = len(in_memory_dataset)
+            rows = in_memory_dataset[offset:offset + limit]
+            return {"dataset": rows, "total": total}
         if not artifact_path:
             return None
 
@@ -219,8 +227,9 @@ class JobManager:
                 dataset_name=base_dataset_path.name,
             )
             dataframe = storage.load_dataset()
-            rows = dataframe.head(limit).to_dict(orient="records")
-            return _to_jsonable(rows)
+            total = int(len(dataframe.index))
+            rows = dataframe.iloc[offset:offset + limit].to_dict(orient="records")
+            return {"dataset": _to_jsonable(rows), "total": total}
         except Exception:
             return None
 

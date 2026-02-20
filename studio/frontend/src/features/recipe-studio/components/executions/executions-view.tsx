@@ -31,6 +31,7 @@ type ExecutionsViewProps = {
   onRunPreview: () => void;
   onRunFull: () => void;
   onCancelExecution: (id: string) => void;
+  onLoadDatasetPage: (id: string, page: number) => void;
 };
 
 type AnalysisColumnStat = {
@@ -158,6 +159,7 @@ export function ExecutionsView({
   onRunPreview,
   onRunFull,
   onCancelExecution,
+  onLoadDatasetPage,
 }: ExecutionsViewProps): ReactElement {
   const [detailTab, setDetailTab] = useState("overview");
   const [showRaw, setShowRaw] = useState(false);
@@ -224,6 +226,12 @@ export function ExecutionsView({
   const canCancel = Boolean(
     selectedExecution?.jobId && isInProgress(selectedExecution.status),
   );
+  const datasetPage = selectedExecution?.datasetPage ?? 1;
+  const datasetPageSize = selectedExecution?.datasetPageSize ?? 20;
+  const datasetTotal = selectedExecution?.datasetTotal ?? 0;
+  const totalPages = Math.max(1, Math.ceil(datasetTotal / datasetPageSize));
+  const canPageDataset =
+    Boolean(selectedExecution?.jobId) && selectedExecution?.kind === "full";
 
   return (
     <div className="flex h-full min-h-0">
@@ -511,7 +519,41 @@ export function ExecutionsView({
                 </TabsContent>
                 <TabsContent value="data" className="mt-3">
                   <div className="rounded-xl border p-3">
-                    <p className="mb-2 text-sm font-semibold">Dataset sample</p>
+                    <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                      <p className="text-sm font-semibold">Dataset sample</p>
+                      {canPageDataset && selectedExecution && (
+                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                          <span>
+                            Page {datasetPage}/{totalPages}
+                          </span>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            disabled={
+                              isInProgress(selectedExecution.status) || datasetPage <= 1
+                            }
+                            onClick={() =>
+                              onLoadDatasetPage(selectedExecution.id, datasetPage - 1)}
+                          >
+                            Prev
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            disabled={
+                              isInProgress(selectedExecution.status) ||
+                              datasetPage >= totalPages
+                            }
+                            onClick={() =>
+                              onLoadDatasetPage(selectedExecution.id, datasetPage + 1)}
+                          >
+                            Next
+                          </Button>
+                        </div>
+                      )}
+                    </div>
                     {selectedExecution.dataset.length === 0 ? (
                       <p className="text-xs text-muted-foreground">No rows returned.</p>
                     ) : (

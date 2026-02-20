@@ -130,12 +130,21 @@ def job_analysis(job_id: str):
 
 
 @router.get("/jobs/{job_id}/dataset")
-def job_dataset(job_id: str, limit: int = Query(default=20, ge=1, le=500)):
+def job_dataset(
+    job_id: str,
+    limit: int = Query(default=20, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+):
     mgr = get_job_manager()
-    dataset = mgr.get_dataset(job_id, limit=limit)
-    if dataset is None:
+    result = mgr.get_dataset(job_id, limit=limit, offset=offset)
+    if result is None:
         raise HTTPException(status_code=404, detail="dataset not ready")
-    return {"dataset": dataset}
+    return {
+        "dataset": result["dataset"],
+        "total": result["total"],
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 @router.get("/jobs/{job_id}/events")
