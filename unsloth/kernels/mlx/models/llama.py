@@ -126,7 +126,7 @@ class MLXAttention:
 
             r = lora_config.r
             alpha = lora_config.lora_alpha
-            dropout = lora_config.dropout
+            dropout = lora_config.lora_dropout
 
             if "q_proj" in target_modules:
                 self.lora_q = MLXLinear(self.hidden_size, r, bias=False, dtype=mx.float32)
@@ -443,6 +443,19 @@ class MLXLlamaForCausalLM:
             loss = mx.nn.losses.cross_entropy(shift_logits, shift_labels, reduction="mean")
 
         return logits, loss
+
+    def parameters(self) -> dict:
+        """Return all model parameters as a dictionary."""
+        params = {}
+        for name, value in vars(self.model).items():
+            if isinstance(value, mx.array):
+                params[name] = value
+            elif hasattr(value, "weight"):
+                params[f"{name}.weight"] = value.weight
+                if hasattr(value, "bias") and value.bias is not None:
+                    params[f"{name}.bias"] = value.bias
+        params["lm_head.weight"] = self.lm_head.weight
+        return params
 
     def generate(
         self,
