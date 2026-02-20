@@ -24,6 +24,7 @@ from typing import Optional, Callable, Dict, Any
 import math
 import mlx.core as mx
 from mlx import optimizers as mx_opt
+from mlx.utils import tree_map
 
 
 class Optimizer:
@@ -242,7 +243,7 @@ class AdamW(Optimizer):
             return updated
         
         step_idx = [0]
-        updated_params = mx.tree_map(_update_single, params, gradients)
+        updated_params = tree_map(_update_single, params, gradients)
         self.step_count += 1
         
         if hasattr(model, "update"):
