@@ -58,6 +58,7 @@ fi
 
 if [ "$NEED_NODE" = true ]; then
     # ── 2. Install nvm ──
+    export NODE_OPTIONS=--dns-result-order=ipv4first # or else fails on colab.
     echo "Installing nvm..."
     curl -so- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash > /dev/null 2>&1
 
@@ -165,6 +166,7 @@ if [ "$IS_COLAB" = true ]; then
         -o "$LLAMA_CPP_DST"
     echo "   Installing studio dependencies..."
     run_quiet "pip install studio" pip install -r "$SCRIPT_DIR/studio/backend/requirements/studio.txt"
+    run_quiet "pip install numpy==2.2.6" pip install --force-reinstall numpy==2.2.6
     echo "✅ Python dependencies installed"
 else
     # Local: create venv (always start fresh to preserve correct install order)
