@@ -99,7 +99,6 @@ class MockModule(nn.Module):
                 try: return getattr(torch, str(d).split(".")[-1])
                 except: return torch.float16
             return _get_dtype
-        if name == "backends" and "triton" in self.__name__: return {}
             
         # Device Type Specialization
         if "device_type" in self.__name__:
