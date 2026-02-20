@@ -468,6 +468,23 @@ class MLXLlamaForCausalLM:
             return self.parameters()
         return trainable
 
+    def update(self, params: dict):
+        """Update model parameters from a dictionary."""
+        for key, value in params.items():
+            parts = key.split(".")
+            obj = self
+            for part in parts[:-1]:
+                if hasattr(obj, part):
+                    obj = getattr(obj, part)
+                elif hasattr(obj, "model") and hasattr(obj.model, part):
+                    obj = getattr(obj.model, part)
+                else:
+                    break
+            else:
+                final_key = parts[-1]
+                if hasattr(obj, final_key):
+                    setattr(obj, final_key, value)
+
     def named_modules(self) -> list:
         """Yield (name, module) pairs for all submodules."""
         modules = []
