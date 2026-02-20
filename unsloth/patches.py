@@ -266,6 +266,13 @@ class MacPatcher:
                 def __str__(self): return self.v
                 def __repr__(self): return f"Version('{self.v}')"
             mod.Version = Version
+            def _get_dtype(dtype):
+                import torch
+                if dtype is None: return torch.float16
+                if isinstance(dtype, torch.dtype): return dtype
+                try: return getattr(torch, str(dtype).split(".")[-1])
+                except: return torch.float16
+            mod._get_dtype = _get_dtype
             mod.get_quant_type = lambda m: "unknown"
         elif fullname == "triton.backends":
             mod.backends = {}
