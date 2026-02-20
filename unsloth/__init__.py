@@ -16,6 +16,12 @@ import warnings, importlib, sys
 from packaging.version import Version
 import os, re, subprocess, inspect, functools
 import types
+import platform
+
+# Force disable PyTorch compilation on Mac to prevent
+# the 'transformers' flex_attention Triton compiler crash
+if platform.system() == "Darwin":
+    os.environ["TORCH_COMPILE_DISABLE"] = "1"
 
 import numpy as np
 
