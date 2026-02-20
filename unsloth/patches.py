@@ -48,14 +48,14 @@ class MockModule(nn.Module):
         return self
 
     def __getattr__(self, name):
+        # Handle special attributes by raising AttributeError
+        if name.startswith("__") and name.endswith("__"):
+            raise AttributeError(name)
+            
         # Handle nn.Module internal attributes that might be missing in early init
-        if name.startswith("_") and name not in ("__name__", "__path__", "__file__", "__package__"):
+        if name.startswith("_") and name not in ("_unsloth_mock",):
             try: return self.__dict__[name]
             except KeyError: raise AttributeError(name)
-            
-        if name.startswith("__"): 
-            try: return object.__getattribute__(self, name)
-            except AttributeError: raise AttributeError(name)
             
         # Check for specialized mocks first
         fullname = f"{self.__name__}.{name}"
