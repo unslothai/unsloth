@@ -2,20 +2,14 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { useTrainingConfigStore } from "@/features/training";
+import { useHardwareInfo } from "@/hooks";
 import { isAdapterMethod } from "@/types/training";
 import { GpuIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useShallow } from "zustand/react/shallow";
 
-const SYSTEM_INFO = {
-  gpu: "NVIDIA RTX 4090",
-  vram: "24 GB",
-  pytorch: "2.5.1+cu124",
-  cuda: "12.4",
-  transformers: "4.47.1",
-};
-
 export function SummaryStep() {
+  const hw = useHardwareInfo();
   const {
     modelType,
     selectedModel,
@@ -23,6 +17,8 @@ export function SummaryStep() {
     datasetSource,
     datasetFormat,
     dataset,
+    datasetSubset,
+    datasetSplit,
     uploadedFile,
     epochs,
     contextLength,
@@ -39,6 +35,8 @@ export function SummaryStep() {
         datasetSource,
         datasetFormat,
         dataset,
+        datasetSubset,
+        datasetSplit,
         uploadedFile,
         epochs,
         contextLength,
@@ -53,6 +51,8 @@ export function SummaryStep() {
         datasetSource,
         datasetFormat,
         dataset,
+        datasetSubset,
+        datasetSplit,
         uploadedFile,
         epochs,
         contextLength,
@@ -82,24 +82,24 @@ export function SummaryStep() {
             </div>
             <div className="flex flex-col flex-1">
               <span className="text-xs text-muted-foreground">GPU</span>
-              <span className="text-sm font-medium">{SYSTEM_INFO.gpu}</span>
+              <span className="text-sm font-medium">{hw.gpuName ?? "—"}</span>
             </div>
-            <Badge variant="secondary">{SYSTEM_INFO.vram}</Badge>
+            <Badge variant="secondary">{hw.vramTotalGb != null ? `${hw.vramTotalGb} GB` : "—"}</Badge>
           </div>
           <Separator />
           <div className="space-y-1 text-sm">
             <div className="flex justify-between">
-              <span className="text-muted-foreground">torch</span>
-              <span className="font-mono text-xs">{SYSTEM_INFO.pytorch}</span>
+              <span className="text-muted-foreground">unsloth</span>
+              <span className="font-mono text-xs">{hw.unsloth ?? "—"}</span>
             </div>
             <div className="flex justify-between">
-              <span className="text-muted-foreground">cuda</span>
-              <span className="font-mono text-xs">{SYSTEM_INFO.cuda}</span>
+              <span className="text-muted-foreground">torch</span>
+              <span className="font-mono text-xs">{hw.torch ?? "—"}</span>
             </div>
             <div className="flex justify-between">
               <span className="text-muted-foreground">transformers</span>
               <span className="font-mono text-xs">
-                {SYSTEM_INFO.transformers}
+                {hw.transformers ?? "—"}
               </span>
             </div>
           </div>
@@ -147,6 +147,18 @@ export function SummaryStep() {
             <span className="text-muted-foreground">Source</span>
             <span className="capitalize">{datasetSource}</span>
           </div>
+          {datasetSubset && (
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-muted-foreground">Subset</span>
+              <span className="font-mono text-xs">{datasetSubset}</span>
+            </div>
+          )}
+          {datasetSplit && (
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-muted-foreground">Split</span>
+              <span className="font-mono text-xs">{datasetSplit}</span>
+            </div>
+          )}
           <div className="flex items-center justify-between text-sm">
             <span className="text-muted-foreground">Format</span>
             <span className="capitalize">{datasetFormat}</span>

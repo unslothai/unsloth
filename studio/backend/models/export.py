@@ -5,23 +5,6 @@ from pydantic import BaseModel, Field
 from typing import List, Optional, Literal, Dict, Any
 
 
-class CheckpointInfo(BaseModel):
-    """Information about a discovered checkpoint directory."""
-
-    display_name: str = Field(..., description="User-friendly checkpoint name (folder name)")
-    path: str = Field(..., description="Full path to the checkpoint directory")
-
-
-class CheckpointListResponse(BaseModel):
-    """Response for listing available checkpoints in an outputs directory."""
-
-    outputs_dir: str = Field(..., description="Directory that was scanned")
-    checkpoints: List[CheckpointInfo] = Field(
-        default_factory=list,
-        description="List of discovered checkpoints",
-    )
-
-
 class LoadCheckpointRequest(BaseModel):
     """Request for loading a checkpoint into the export backend."""
 
@@ -88,6 +71,10 @@ class ExportCommonOptions(BaseModel):
     private: bool = Field(
         False,
         description="If True, create a private repository on the Hub (where applicable)",
+    )
+    base_model_id: Optional[str] = Field(
+        None,
+        description="HuggingFace model ID of the base model (for model card metadata)",
     )
 
 

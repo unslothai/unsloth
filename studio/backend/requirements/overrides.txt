@@ -1,0 +1,7 @@
+# Torch AO overrides (installed with --force-reinstall --no-cache-dir)
+torchao==0.14.0
+transformers==4.57.1
+pytorch_tokenizers
+
+# Kernel packages
+kernels

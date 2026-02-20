@@ -25,10 +25,15 @@ import {
 import {
   useDebouncedValue,
   useHfDatasetSearch,
+  useHfTokenValidation,
   useInfiniteScroll,
 } from "@/hooks";
 import { formatCompact } from "@/lib/utils";
-import { useTrainingConfigStore } from "@/features/training";
+import {
+  HfDatasetSubsetSplitSelectors,
+  useDatasetPreviewDialogStore,
+  useTrainingConfigStore,
+} from "@/features/training";
 import {
   CloudUploadIcon,
   Database02Icon,
@@ -40,30 +45,44 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
-import { DatasetPreviewDialog } from "./dataset-preview-dialog";
+
+function isLikelyLocalDatasetRef(value: string) {
+  return (
+    value.startsWith("/") ||
+    value.startsWith("./") ||
+    value.startsWith("../") ||
+    value.includes("\\") ||
+    /\.(jsonl|json|csv|parquet)$/i.test(value)
+  );
+}
 
 export function DatasetSection() {
-  const { dataset, setDataset, datasetFormat, setDatasetFormat, hfToken } =
-    useTrainingConfigStore(
-      useShallow(
-        ({
-          dataset,
-          setDataset,
-          datasetFormat,
-          setDatasetFormat,
-          hfToken,
-        }) => ({
-          dataset,
-          setDataset,
-          datasetFormat,
-          setDatasetFormat,
-          hfToken,
-        }),
-      ),
-    );
+  const {
+    dataset,
+    setDataset,
+    datasetFormat,
+    setDatasetFormat,
+    datasetSubset,
+    setDatasetSubset,
+    datasetSplit,
+    setDatasetSplit,
+    hfToken,
+  } = useTrainingConfigStore(
+    useShallow((s) => ({
+      dataset: s.dataset,
+      setDataset: s.setDataset,
+      datasetFormat: s.datasetFormat,
+      setDatasetFormat: s.setDatasetFormat,
+      datasetSubset: s.datasetSubset,
+      setDatasetSubset: s.setDatasetSubset,
+      datasetSplit: s.datasetSplit,
+      setDatasetSplit: s.setDatasetSplit,
+      hfToken: s.hfToken,
+    })),
+  );
 
   const [inputValue, setInputValue] = useState("");
-  const [previewOpen, setPreviewOpen] = useState(false);
+  const openPreview = useDatasetPreviewDialogStore((s) => s.openPreview);
   const selectingRef = useRef(false);
   const debouncedQuery = useDebouncedValue(inputValue);
 
@@ -84,9 +103,13 @@ export function DatasetSection() {
     isLoading,
     isLoadingMore,
     fetchMore,
+    error: hfSearchError,
   } = useHfDatasetSearch(debouncedQuery, {
     accessToken: hfToken || undefined,
   });
+
+  const { error: tokenValidationError, isChecking: isCheckingToken } =
+    useHfTokenValidation(hfToken);
 
   const resultIds = useMemo(() => {
     const ids = hfResults.map((r) => r.id);
@@ -103,14 +126,15 @@ export function DatasetSection() {
   );
 
   return (
-    <SectionCard
-      icon={<HugeiconsIcon icon={Database02Icon} className="size-5" />}
-      title="Dataset"
-      description="Select or upload training data"
-      accent="indigo"
-      className="lg:col-span-4 min-h-[450px]"
-    >
-      <div className="flex flex-col gap-4">
+    <div data-tour="studio-dataset" className="col-span-1 xl:col-span-4">
+      <SectionCard
+        icon={<HugeiconsIcon icon={Database02Icon} className="size-5" />}
+        title="Dataset"
+        description="Select or upload training data"
+        accent="indigo"
+        className="md:min-h-[450px]"
+      >
+        <div className="flex flex-col gap-4">
         <div className="flex flex-col gap-2">
           <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
             Load from Hub
@@ -171,20 +195,21 @@ export function DatasetSection() {
                   ref={scrollRef}
                   className="max-h-64 overflow-y-auto overscroll-contain [scrollbar-width:thin]"
                 >
-                  <ComboboxList className="p-1 !max-h-none !overflow-visible">
-                    {(id: string) => {
-                      const r = hfResults.find((ds) => ds.id === id);
-                      const detail = r?.totalExamples
-                        ? `${formatCompact(r.totalExamples)} rows`
-                        : r?.sizeCategory
-                          ? r.sizeCategory
-                          : r?.downloads != null
-                            ? `↓${formatCompact(r.downloads)}`
-                            : null;
-                      return (
-                        <ComboboxItem
-                          key={id}
-                          value={id}
+                    <ComboboxList className="p-1 !max-h-none !overflow-visible">
+                      {(id: string) => {
+                        const r = hfResults.find((ds) => ds.id === id);
+                        let detail: string | null = null;
+                        if (r?.totalExamples) {
+                          detail = `${formatCompact(r.totalExamples)} rows`;
+                        } else if (r?.sizeCategory) {
+                          detail = r.sizeCategory;
+                        } else if (r?.downloads != null) {
+                          detail = `↓${formatCompact(r.downloads)}`;
+                        }
+                        return (
+                          <ComboboxItem
+                            key={id}
+                            value={id}
                           className="justify-between"
                         >
                           <Tooltip>
@@ -219,7 +244,35 @@ export function DatasetSection() {
               </ComboboxContent>
             </Combobox>
           </div>
+          {(tokenValidationError ?? hfSearchError) && (
+            <p className="text-xs text-destructive">
+              {tokenValidationError ?? hfSearchError}
+              {" — "}
+              <a
+                href="https://huggingface.co/settings/tokens"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline"
+              >
+                Get or update token
+              </a>
+            </p>
+          )}
+          {isCheckingToken && (
+            <p className="text-xs text-muted-foreground">Checking token…</p>
+          )}
         </div>
+
+        <HfDatasetSubsetSplitSelectors
+          variant="studio"
+          enabled={!!dataset && !isLikelyLocalDatasetRef(dataset)}
+          datasetName={dataset}
+          accessToken={hfToken || undefined}
+          datasetSubset={datasetSubset}
+          setDatasetSubset={setDatasetSubset}
+          datasetSplit={datasetSplit}
+          setDatasetSplit={setDatasetSplit}
+        />
 
         <div className="flex flex-col gap-2">
           <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
@@ -280,6 +333,8 @@ export function DatasetSection() {
               </p>
               <p className="text-[10px] text-muted-foreground">
                 Hugging Face Dataset
+                {datasetSubset && ` / ${datasetSubset}`}
+                {datasetSplit && ` / ${datasetSplit}`}
               </p>
             </div>
           </div>
@@ -309,19 +364,14 @@ export function DatasetSection() {
             size="sm"
             className="cursor-pointer gap-1.5"
             disabled={!dataset}
-            onClick={() => setPreviewOpen(true)}
+            onClick={() => openPreview()}
           >
             <HugeiconsIcon icon={ViewIcon} className="size-3.5" />
             View dataset
           </Button>
         </div>
       </div>
-      <DatasetPreviewDialog
-        open={previewOpen}
-        onOpenChange={setPreviewOpen}
-        datasetName={dataset}
-        hfToken={hfToken}
-      />
-    </SectionCard>
+      </SectionCard>
+    </div>
   );
 }

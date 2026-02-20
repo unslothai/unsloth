@@ -9,6 +9,11 @@ import type {
 
 export type LoraVariant = "lora" | "rslora" | "loftq";
 
+export type DatasetManualMapping = {
+  input: string | null;
+  output: string | null;
+};
+
 export interface TrainingConfigState {
   currentStep: StepNumber;
   modelType: ModelType | null;
@@ -18,6 +23,9 @@ export interface TrainingConfigState {
   datasetSource: DatasetSource;
   datasetFormat: DatasetFormat;
   dataset: string | null;
+  datasetSubset: string | null;
+  datasetSplit: string | null;
+  datasetManualMapping: DatasetManualMapping;
   uploadedFile: string | null;
   epochs: number;
   contextLength: number;
@@ -32,6 +40,7 @@ export interface TrainingConfigState {
   warmupSteps: number;
   maxSteps: number;
   saveSteps: number;
+  evalSteps: number;
   packing: boolean;
   trainOnCompletions: boolean;
   gradientCheckpointing: GradientCheckpointing;
@@ -42,6 +51,13 @@ export interface TrainingConfigState {
   enableTensorboard: boolean;
   tensorboardDir: string;
   logFrequency: number;
+  isCheckingVision: boolean;
+  isVisionModel: boolean;
+  isLoadingModelDefaults: boolean;
+  modelDefaultsError: string | null;
+  modelDefaultsAppliedFor: string | null;
+  isCheckingDataset: boolean;
+  isDatasetMultimodal: boolean | null;
   finetuneVisionLayers: boolean;
   finetuneLanguageLayers: boolean;
   finetuneAttentionModules: boolean;
@@ -55,11 +71,16 @@ export interface TrainingConfigActions {
   prevStep: () => void;
   setModelType: (type: ModelType) => void;
   setSelectedModel: (model: string | null) => void;
+  ensureModelDefaultsLoaded: () => void;
+  ensureDatasetChecked: () => void;
   setTrainingMethod: (method: TrainingMethod) => void;
   setHfToken: (token: string) => void;
   setDatasetSource: (source: DatasetSource) => void;
   setDatasetFormat: (format: DatasetFormat) => void;
   setDataset: (dataset: string | null) => void;
+  setDatasetSubset: (subset: string | null) => void;
+  setDatasetSplit: (split: string | null) => void;
+  setDatasetManualMapping: (mapping: DatasetManualMapping) => void;
   setUploadedFile: (file: string | null) => void;
   setEpochs: (epochs: number) => void;
   setContextLength: (length: number) => void;
@@ -74,6 +95,7 @@ export interface TrainingConfigActions {
   setWarmupSteps: (value: number) => void;
   setMaxSteps: (value: number) => void;
   setSaveSteps: (value: number) => void;
+  setEvalSteps: (value: number) => void;
   setPacking: (value: boolean) => void;
   setTrainOnCompletions: (value: boolean) => void;
   setGradientCheckpointing: (value: GradientCheckpointing) => void;

@@ -30,7 +30,7 @@ class GenerateRequest(BaseModel):
     system_prompt: str = Field("You are a helpful AI assistant.", description="System prompt")
     temperature: float = Field(0.7, ge=0.0, le=2.0, description="Sampling temperature")
     top_p: float = Field(0.9, ge=0.0, le=1.0, description="Top-p sampling")
-    top_k: int = Field(40, ge=1, le=100, description="Top-k sampling")
+    top_k: int = Field(40, ge=-1, le=100, description="Top-k sampling")
     max_new_tokens: int = Field(512, ge=1, le=4096, description="Maximum tokens to generate")
     repetition_penalty: float = Field(1.1, ge=1.0, le=2.0, description="Repetition penalty")
     image_base64: Optional[str] = Field(None, description="Base64 encoded image for vision models")
@@ -128,7 +128,8 @@ class ChatCompletionRequest(BaseModel):
     max_tokens: Optional[int] = Field(512, ge=1, le=4096, description="Maximum tokens to generate")
 
     # ── Unsloth extensions (ignored by standard OpenAI clients) ──
-    top_k: int = Field(40, ge=1, le=100, description="[x-unsloth] Top-k sampling")
+    top_k: int = Field(40, ge=-1, le=100, description="[x-unsloth] Top-k sampling")
+    min_p: float = Field(0.0, ge=0.0, le=1.0, description="[x-unsloth] Min-p sampling threshold")
     repetition_penalty: float = Field(1.1, ge=1.0, le=2.0, description="[x-unsloth] Repetition penalty")
     image_base64: Optional[str] = Field(None, description="[x-unsloth] Base64-encoded image for vision models")
     use_adapter: Optional[Union[bool, str]] = Field(

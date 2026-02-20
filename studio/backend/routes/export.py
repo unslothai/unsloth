@@ -26,8 +26,6 @@ except ImportError:
 
 # Import Pydantic models
 from models import (
-    CheckpointInfo,
-    CheckpointListResponse,
     LoadCheckpointRequest,
     ExportStatusResponse,
     ExportOperationResponse,
@@ -50,38 +48,6 @@ if not logger.handlers:
     logger.setLevel(logging.INFO)
 
 
-@router.get("/checkpoints", response_model=CheckpointListResponse)
-async def list_checkpoints(
-    outputs_dir: str = Query(
-        default="./outputs",
-        description="Directory to scan for checkpoints",
-    ),
-    current_subject: str = Depends(get_current_subject),
-):
-    """
-    List available checkpoints in the outputs directory.
-
-    Wraps ExportBackend.scan_checkpoints.
-    """
-    try:
-        backend = get_export_backend()
-        raw_checkpoints = backend.scan_checkpoints(outputs_dir=outputs_dir)
-
-        checkpoints = [
-            CheckpointInfo(display_name=display_name, path=path)
-            for display_name, path in raw_checkpoints
-        ]
-
-        return CheckpointListResponse(
-            outputs_dir=outputs_dir,
-            checkpoints=checkpoints,
-        )
-    except Exception as e:
-        logger.error(f"Error listing checkpoints: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to list checkpoints: {str(e)}",
-        )
 
 
 @router.post("/load-checkpoint", response_model=ExportOperationResponse)
@@ -224,6 +190,7 @@ async def export_base_model(
             repo_id=request.repo_id,
             hf_token=request.hf_token,
             private=request.private,
+            base_model_id=request.base_model_id,
         )
 
         if not success:

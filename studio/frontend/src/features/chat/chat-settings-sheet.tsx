@@ -23,6 +23,7 @@ import {
   DEFAULT_INFERENCE_PARAMS,
   type InferenceParams,
 } from "./types/runtime";
+import { Switch } from "@/components/ui/switch";
 
 export const defaultInferenceParams = DEFAULT_INFERENCE_PARAMS;
 export type { InferenceParams } from "./types/runtime";
@@ -143,12 +144,16 @@ interface ChatSettingsPanelProps {
   open: boolean;
   params: InferenceParams;
   onParamsChange: (params: InferenceParams) => void;
+  autoTitle: boolean;
+  onAutoTitleChange: (enabled: boolean) => void;
 }
 
 export function ChatSettingsPanel({
   open,
   params,
   onParamsChange,
+  autoTitle,
+  onAutoTitleChange,
 }: ChatSettingsPanelProps) {
   const [presets, setPresets] = useState<Preset[]>(BUILTIN_PRESETS);
   const [activePreset, setActivePreset] = useState("Default");
@@ -268,7 +273,7 @@ export function ChatSettingsPanel({
           <CollapsibleSection
             icon={SlidersHorizontalIcon}
             label="Sampling"
-            defaultOpen={true}
+            defaultOpen={false}
           >
             <div className="flex flex-col gap-5">
               <ParamSlider
@@ -290,10 +295,18 @@ export function ChatSettingsPanel({
               <ParamSlider
                 label="Top K"
                 value={params.topK}
-                min={0}
+                min={-1}
                 max={100}
                 step={1}
                 onChange={set("topK")}
+              />
+              <ParamSlider
+                label="Min P"
+                value={params.minP}
+                min={0}
+                max={1}
+                step={0.01}
+                onChange={set("minP")}
               />
               <ParamSlider
                 label="Repetition Penalty"
@@ -315,9 +328,18 @@ export function ChatSettingsPanel({
           </CollapsibleSection>
 
           <CollapsibleSection icon={Settings02Icon} label="Settings">
-            <p className="text-xs text-muted-foreground">
-              No additional settings yet.
-            </p>
+            <div className="flex items-center justify-between gap-3 py-1">
+              <div className="min-w-0">
+                <div className="text-xs font-medium">Auto title</div>
+                <div className="text-[11px] text-muted-foreground">
+                  Generate short title after reply.
+                </div>
+              </div>
+              <Switch
+                checked={autoTitle}
+                onCheckedChange={onAutoTitleChange}
+              />
+            </div>
           </CollapsibleSection>
         </div>
       </div>

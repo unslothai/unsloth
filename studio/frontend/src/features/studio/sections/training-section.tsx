@@ -38,16 +38,20 @@ export function TrainingSection() {
   const store = useTrainingConfigStore();
   const { isStarting, startError, startTrainingRun } = useTrainingActions();
   const [logOpen, setLogOpen] = useState(false);
+  const isIncompatible =
+    !store.isVisionModel && store.isDatasetMultimodal === true;
+
 
   return (
-    <SectionCard
-      icon={<HugeiconsIcon icon={ChartAverageIcon} className="size-5" />}
-      title="Training"
-      description="Monitor and control training"
-      accent="blue"
-      className="lg:col-span-4 min-h-[450px]"
-    >
-      <div className="flex flex-col gap-4">
+    <div data-tour="studio-training" className="col-span-1 xl:col-span-4">
+      <SectionCard
+        icon={<HugeiconsIcon icon={ChartAverageIcon} className="size-5" />}
+        title="Training"
+        description="Monitor and control training"
+        accent="blue"
+        className="md:min-h-[450px]"
+      >
+        <div className="flex flex-col gap-4">
         {/* Loss chart */}
         <div className="relative  ">
           <ChartContainer
@@ -94,9 +98,10 @@ export function TrainingSection() {
 
         {/* Start/Stop */}
         <Button
+          data-tour="studio-start"
           className="w-full cursor-pointer bg-gradient-to-r from-emerald-500 to-teal-500 text-white hover:from-emerald-600 hover:to-teal-600"
           onClick={() => void startTrainingRun()}
-          disabled={isStarting}
+          disabled={isStarting || isIncompatible}
         >
           <HugeiconsIcon icon={Rocket01Icon} className="size-4" />
           {isStarting ? "Starting..." : "Start Training"}
@@ -104,10 +109,20 @@ export function TrainingSection() {
         {startError && (
           <p className="text-xs text-red-500 leading-relaxed">{startError}</p>
         )}
+        {isIncompatible && (
+          <p className="text-xs text-red-500 leading-relaxed">
+            Text model is not compatible with a multimodal dataset. Switch to a vision model or choose a text-only dataset.
+          </p>
+        )}
 
         {/* Save / Clear */}
         <div className="grid grid-cols-2 gap-2">
-          <Button variant="outline" size="sm" className="cursor-pointer">
+          <Button
+            data-tour="studio-save"
+            variant="outline"
+            size="sm"
+            className="cursor-pointer"
+          >
             <HugeiconsIcon icon={Archive04Icon} className="size-3.5" /> Save
             Config
           </Button>
@@ -194,7 +209,8 @@ export function TrainingSection() {
             )}
           </CollapsibleContent>
         </Collapsible>
-      </div>
-    </SectionCard>
+        </div>
+      </SectionCard>
+    </div>
   );
 }

@@ -3,6 +3,13 @@ import {
   HoverCardContent,
   HoverCardTrigger,
 } from "@/components/ui/hover-card";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger,
+} from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
 import {
   AiChat02Icon,
@@ -10,13 +17,16 @@ import {
   ArrowRight01Icon,
   Book03Icon,
   CookBookIcon,
+  CursorInfo02Icon,
   PackageIcon,
   ZapIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { useTrainingRuntimeStore } from "@/features/training";
 import { Link, useRouterState } from "@tanstack/react-router";
 import { AnimatePresence, motion } from "motion/react";
 import { useState } from "react";
+import { TOUR_OPEN_EVENT } from "@/features/tour";
 
 const NAV_ITEMS = [
   { label: "Studio", href: "/studio", icon: ZapIcon, enabled: true },
@@ -28,11 +38,29 @@ const NAV_ITEMS = [
 
 export function Navbar() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const isTrainingRunning = useTrainingRuntimeStore((s) => s.isTrainingRunning);
   const [logoHovered, setLogoHovered] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false);
+
+  const tourId =
+    pathname === "/studio"
+      ? "studio"
+      : pathname === "/chat"
+        ? "chat"
+        : pathname === "/export"
+          ? "export"
+          : null;
+
+  const openTour = () => {
+    if (!tourId) return;
+    window.dispatchEvent(
+      new CustomEvent(TOUR_OPEN_EVENT, { detail: { id: tourId } }),
+    );
+  };
 
   return (
     <header className="top-0 z-40 h-16 w-full">
-      <div className="mx-auto flex h-full max-w-7xl items-center justify-between px-6">
+      <div className="mx-auto flex h-full max-w-7xl items-center justify-between px-4 sm:px-6">
         {/* Left: logo */}
         <div
           className="relative flex items-center gap-2.5 cursor-pointer select-none"
@@ -46,7 +74,7 @@ export function Navbar() {
             animate={{ rotate: logoHovered ? 360 : 0 }}
             transition={{ duration: 0.5, ease: [0.165, 0.84, 0.44, 1] }}
           />
-          <span className="text-2xl font-bold tracking-wide font-heading">
+          <span className="text-xl font-bold tracking-wide font-heading sm:text-2xl">
             unsloth
           </span>
           <AnimatePresence>
@@ -65,11 +93,18 @@ export function Navbar() {
         </div>
 
         {/* Center: pill nav */}
-        <nav className="flex items-center rounded-full border border-border bg-card p-1 ring-1 ring-foreground/5">
+        <nav
+          data-tour="navbar"
+          className="hidden items-center rounded-full border border-border bg-card p-1 ring-1 ring-foreground/5 md:flex"
+        >
           {NAV_ITEMS.map((item) => {
             const active =
               pathname === item.href || pathname.startsWith(`${item.href}/`);
             if (!item.enabled) {
+            const active = pathname === item.href;
+            const disabledByTraining =
+              isTrainingRunning && item.href !== "/studio";
+            if (!item.enabled || disabledByTraining) {
               return (
                 <span
                   key={item.href}
@@ -127,40 +162,136 @@ export function Navbar() {
           })}
         </nav>
 
-        {/* Right: docs link */}
-        <HoverCard openDelay={200} closeDelay={100}>
-          <HoverCardTrigger asChild={true}>
-            <a
-              href="https://unsloth.ai/docs"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-1.5 text-sm font-medium text-emerald-600 hover:text-emerald-700 transition-colors"
+        {/* Right: docs/tour desktop */}
+        <div className="hidden items-center gap-2 md:flex">
+          <HoverCard openDelay={200} closeDelay={100}>
+            <HoverCardTrigger asChild={true}>
+              <a
+                href="https://unsloth.ai/docs"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-1.5 text-sm font-medium text-emerald-600 hover:text-emerald-700 transition-colors"
+              >
+                <HugeiconsIcon icon={Book03Icon} className="size-4" />
+                Learn more
+              </a>
+            </HoverCardTrigger>
+            <HoverCardContent align="end" className="w-80 p-0">
+              <a
+                href="https://unsloth.ai/docs"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="group/card flex flex-col gap-1 p-4 no-underline"
+              >
+                <p className="text-sm font-semibold font-heading">
+                  Unsloth Documentation
+                </p>
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  Guides on fine-tuning LLMs 2x faster with 70% less memory.
+                  Covers LoRA, QLoRA, data formatting, and deployment.
+                </p>
+                <span className="mt-1 flex items-center gap-1 text-xs font-medium text-emerald-600 group-hover/card:underline">
+                  Visit docs
+                  <HugeiconsIcon icon={ArrowRight01Icon} className="size-3" />
+                </span>
+              </a>
+            </HoverCardContent>
+          </HoverCard>
+
+          {tourId ? (
+            <button
+              type="button"
+              onClick={openTour}
+              className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              title="Tour"
             >
-              <HugeiconsIcon icon={Book03Icon} className="size-4" />
-              Learn more
-            </a>
-          </HoverCardTrigger>
-          <HoverCardContent align="end" className="w-80 p-0">
-            <a
-              href="https://unsloth.ai/docs"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="group/card flex flex-col gap-1 p-4 no-underline"
+              <HugeiconsIcon icon={CursorInfo02Icon} className="size-4" />
+            </button>
+          ) : null}
+        </div>
+
+        {/* Right: mobile */}
+        <div className="flex items-center gap-2 md:hidden">
+          {tourId ? (
+            <button
+              type="button"
+              onClick={openTour}
+              className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              title="Tour"
             >
-              <p className="text-sm font-semibold font-heading">
-                Unsloth Documentation
-              </p>
-              <p className="text-xs text-muted-foreground leading-relaxed">
-                Guides on fine-tuning LLMs 2x faster with 70% less memory.
-                Covers LoRA, QLoRA, data formatting, and deployment.
-              </p>
-              <span className="mt-1 flex items-center gap-1 text-xs font-medium text-emerald-600 group-hover/card:underline">
-                Visit docs
-                <HugeiconsIcon icon={ArrowRight01Icon} className="size-3" />
-              </span>
-            </a>
-          </HoverCardContent>
-        </HoverCard>
+              <HugeiconsIcon icon={CursorInfo02Icon} className="size-4" />
+            </button>
+          ) : null}
+          <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
+            <SheetTrigger asChild={true}>
+              <button
+                type="button"
+                className="rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground"
+                aria-label="Open navigation menu"
+              >
+                Menu
+              </button>
+            </SheetTrigger>
+            <SheetContent side="right" className="w-[300px] p-4">
+              <SheetHeader>
+                <SheetTitle>Navigate</SheetTitle>
+              </SheetHeader>
+              <div className="mt-6 flex flex-col gap-2">
+                {NAV_ITEMS.filter((item) => item.enabled).map((item) => {
+                  const active = pathname === item.href;
+                  const disabledByTraining =
+                    isTrainingRunning && item.href !== "/studio";
+                  if (disabledByTraining) {
+                    return (
+                      <span
+                        key={item.href}
+                        className="rounded-md border border-border px-3 py-2 text-sm font-medium text-muted-foreground/40 cursor-not-allowed"
+                      >
+                        {item.label}
+                      </span>
+                    );
+                  }
+                  return (
+                    <Link
+                      key={item.href}
+                      to={item.href}
+                      onClick={() => setMobileOpen(false)}
+                      className={cn(
+                        "rounded-md border px-3 py-2 text-sm font-medium",
+                        active
+                          ? "border-foreground bg-foreground text-background"
+                          : "border-border text-foreground hover:bg-accent",
+                      )}
+                    >
+                      {item.label}
+                    </Link>
+                  );
+                })}
+                <a
+                  href="https://unsloth.ai/docs"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="mt-2 rounded-md border border-border px-3 py-2 text-sm font-medium text-foreground hover:bg-accent"
+                  onClick={() => setMobileOpen(false)}
+                >
+                  Learn more (Docs)
+                </a>
+                {tourId ? (
+                  <button
+                    type="button"
+                    className="rounded-md border border-border px-3 py-2 text-left text-sm font-medium text-foreground hover:bg-accent"
+                    onClick={() => {
+                      openTour();
+                      setMobileOpen(false);
+                    }}
+                  >
+                    Start tour
+                  </button>
+                ) : null}
+              </div>
+            </SheetContent>
+          </Sheet>
+        </div>
       </div>
     </header>
   );

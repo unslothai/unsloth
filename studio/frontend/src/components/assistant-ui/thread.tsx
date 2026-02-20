@@ -7,9 +7,7 @@ import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { Reasoning, ReasoningGroup } from "@/components/assistant-ui/reasoning";
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
-import { AnimatedShinyText } from "@/components/ui/animated-shiny-text";
 import { Button } from "@/components/ui/button";
-import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { cn } from "@/lib/utils";
 import {
   ActionBarMorePrimitive,
@@ -73,35 +71,12 @@ export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
 
         <ThreadPrimitive.ViewportFooter className="aui-thread-viewport-footer sticky bottom-0 mt-auto flex w-full flex-col gap-4 overflow-visible bg-background pb-4 md:pb-4 before:pointer-events-none before:absolute before:inset-x-0 before:bottom-full before:h-20 before:bg-gradient-to-t before:from-background before:to-transparent">
           <ThreadScrollToBottom />
-          <WarmupIndicator />
           <AuiIf condition={({ thread }) => !thread.isEmpty}>
             {!hideComposer && <ComposerAnimated />}
           </AuiIf>
         </ThreadPrimitive.ViewportFooter>
       </ThreadPrimitive.Viewport>
     </ThreadPrimitive.Root>
-  );
-};
-
-const WarmupIndicator: FC = () => {
-  const threadId = useAuiState(({ threads }) => threads.mainThreadId);
-  const isRunning = useAuiState(({ thread }) => thread.isRunning);
-  const isWarmingUp = useChatRuntimeStore((state) =>
-    Boolean(state.warmingByThreadId[threadId ?? "__default"]),
-  );
-
-  if (!isRunning || !isWarmingUp) {
-    return null;
-  }
-
-  return (
-    <div className="mx-auto -mb-2 w-full max-w-(--thread-max-width) px-2">
-      <div className="inline-flex items-center rounded-full border border-border/60 bg-background/90 px-3 py-1.5 text-xs text-muted-foreground shadow-sm">
-        <AnimatedShinyText className="text-xs">
-          Warming up model...
-        </AnimatedShinyText>
-      </div>
-    </div>
   );
 };
 
