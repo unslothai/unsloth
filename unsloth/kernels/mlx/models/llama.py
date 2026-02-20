@@ -119,21 +119,28 @@ class MLXAttention:
 
         if self.use_lora:
             target_modules = lora_config.target_modules or DEFAULT_LORA_TARGET_MODULES.get("llama", [])
-            self.lora_q = None
-            self.lora_k = None
-            self.lora_v = None
-            self.lora_o = None
+            self.lora_q_A = None
+            self.lora_q_B = None
+            self.lora_k_A = None
+            self.lora_k_B = None
+            self.lora_v_A = None
+            self.lora_v_B = None
+            self.lora_o_A = None
+            self.lora_o_B = None
 
             r = lora_config.r
             alpha = lora_config.lora_alpha
             dropout = lora_config.lora_dropout
 
             if "q_proj" in target_modules:
-                self.lora_q = MLXLinear(self.hidden_size, r, bias=False, dtype=mx.float32)
+                self.lora_q_A = MLXLinear(self.hidden_size, r, bias=False, dtype=mx.float32)
+                self.lora_q_B = MLXLinear(r, self.hidden_size, bias=False, dtype=mx.float32)
             if "k_proj" in target_modules:
-                self.lora_k = MLXLinear(self.hidden_size, r, bias=False, dtype=mx.float32)
+                self.lora_k_A = MLXLinear(self.hidden_size, r, bias=False, dtype=mx.float32)
+                self.lora_k_B = MLXLinear(r, self.num_key_value_heads * self.head_dim, bias=False, dtype=mx.float32)
             if "v_proj" in target_modules:
-                self.lora_v = MLXLinear(self.hidden_size, r, bias=False, dtype=mx.float32)
+                self.lora_v_A = MLXLinear(self.hidden_size, r, bias=False, dtype=mx.float32)
+                self.lora_v_B = MLXLinear(r, self.num_key_value_heads * self.head_dim, bias=False, dtype=mx.float32)
             if "o_proj" in target_modules:
                 self.lora_o_A = MLXLinear(self.hidden_size, r, bias=False, dtype=mx.float32)
                 self.lora_o_B = MLXLinear(r, self.hidden_size, bias=False, dtype=mx.float32)
@@ -156,12 +163,18 @@ class MLXAttention:
         value_states = self.v_proj(hidden_states)
 
         if self.use_lora:
-            if self.lora_q is not None:
-                query_states = query_states + self.lora_scaling * mx.matmul(hidden_states, self.lora_q.weight.T)
-            if self.lora_k is not None:
-                key_states = key_states + self.lora_scaling * mx.matmul(hidden_states, self.lora_k.weight.T)
-            if self.lora_v is not None:
-                value_states = value_states + self.lora_scaling * mx.matmul(hidden_states, self.lora_v.weight.T)
+            if self.lora_q_A is not None:
+                lora_q_out = mx.matmul(hidden_states, self.lora_q_A.weight.T)
+                lora_q_out = mx.matmul(lora_q_out, self.lora_q_B.weight.T)
+                query_states = query_states + self.lora_scaling * lora_q_out
+            if self.lora_k_A is not None:
+                lora_k_out = mx.matmul(hidden_states, self.lora_k_A.weight.T)
+                lora_k_out = mx.matmul(lora_k_out, self.lora_k_B.weight.T)
+                key_states = key_states + self.lora_scaling * lora_k_out
+            if self.lora_v_A is not None:
+                lora_v_out = mx.matmul(hidden_states, self.lora_v_A.weight.T)
+                lora_v_out = mx.matmul(lora_v_out, self.lora_v_B.weight.T)
+                value_states = value_states + self.lora_scaling * lora_v_out
 
         query_states = query_states.reshape(bsz, q_len, self.num_heads, self.head_dim).transpose(0, 2, 1, 3)
         key_states = key_states.reshape(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(0, 2, 1, 3)
