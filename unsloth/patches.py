@@ -129,7 +129,7 @@ class UnslothMockLoader(Loader):
 class UnslothMockFinder(MetaPathFinder):
     """Automatically catches any import for specified packages and provides mocks."""
     def __init__(self):
-        self.targets = ("unsloth_zoo", "triton", "bitsandbytes")
+        self.targets = ("unsloth_zoo", "triton", "bitsandbytes", "peft.tuners.lora.bnb", "peft.tuners.lora.bnb4bit")
         self.loader = UnslothMockLoader()
 
     def find_spec(self, fullname, path, target=None):
