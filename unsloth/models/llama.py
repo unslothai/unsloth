@@ -504,17 +504,32 @@ def fast_swiglu_inference(
     self, X, temp_gate=None, temp_up=None, gate_multiplier=None, down_multiplier=None
 ):
     from ..device_type import DEVICE_TYPE
+
     if DEVICE_TYPE == "mps":
         from ..kernels.utils import get_lora_parameters
+
         gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
         upW, upW_quant, upA, upB, upS = get_lora_parameters(self.up_proj)
         downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
         from ..kernels.mps.dispatch import dispatch_lora_mlp_swiglu
+
         return dispatch_lora_mlp_swiglu(
             X,
-            gateW, gateW_quant, gateA, gateB, gateS,
-            upW, upW_quant, upA, upB, upS,
-            downW, downW_quant, downA, downB, downS,
+            gateW,
+            gateW_quant,
+            gateA,
+            gateB,
+            gateS,
+            upW,
+            upW_quant,
+            upA,
+            upB,
+            upS,
+            downW,
+            downW_quant,
+            downA,
+            downB,
+            downS,
             gate_multiplier=gate_multiplier,
             down_multiplier=down_multiplier,
         )
@@ -550,9 +565,13 @@ torch_mean = torch.mean
 
 def fast_rms_layernorm_inference(self, X, XX=None, XX2=None, variance=None):
     from ..device_type import DEVICE_TYPE
+
     if DEVICE_TYPE == "mps":
         from ..kernels.mps.dispatch import dispatch_rms_layernorm
-        return dispatch_rms_layernorm(X, self.weight, self.variance_epsilon, gemma=False)
+
+        return dispatch_rms_layernorm(
+            X, self.weight, self.variance_epsilon, gemma=False
+        )
 
     old_dtype = X.dtype
     if XX is None:
@@ -575,8 +594,10 @@ def fast_rms_layernorm_inference(self, X, XX=None, XX2=None, variance=None):
 
 def fast_rms_layernorm_inference_gemma(self, X, out_weight=None):
     from ..device_type import DEVICE_TYPE
+
     if DEVICE_TYPE == "mps":
         from ..kernels.mps.dispatch import dispatch_rms_layernorm
+
         return dispatch_rms_layernorm(X, self.weight, self.variance_epsilon, gemma=True)
 
     XX = X.to(torch.float32)
@@ -598,9 +619,16 @@ def fast_rms_layernorm_inference_gemma(self, X, out_weight=None):
 @torch.compile(fullgraph=False, dynamic=True, options=torch_compile_options)
 def fast_layernorm_compiled(layernorm, X):
     from ..device_type import DEVICE_TYPE
+
     if DEVICE_TYPE == "mps":
         from ..kernels.mps.dispatch import dispatch_layernorm
-        return dispatch_layernorm(X, layernorm.weight, getattr(layernorm, "bias", None), getattr(layernorm, "variance_epsilon", getattr(layernorm, "eps", 1e-5)))
+
+        return dispatch_layernorm(
+            X,
+            layernorm.weight,
+            getattr(layernorm, "bias", None),
+            getattr(layernorm, "variance_epsilon", getattr(layernorm, "eps", 1e-5)),
+        )
 
     old_dtype = X.dtype
     X = X.float()
@@ -936,7 +964,9 @@ def LlamaModel_fast_forward(
             # Careful for inference the attention_mask is size (1, kv_seq_len)
             # Whilst the input_embeds is size (1, 1, 4096)
             attention_mask = attention_mask[:, : self.max_seq_length]  # Must resize!
-            inputs_embeds = inputs_embeds * attention_mask.unsqueeze(0).transpose(0, 1).transpose(1, 2)
+            inputs_embeds = inputs_embeds * attention_mask.unsqueeze(0).transpose(
+                0, 1
+            ).transpose(1, 2)
 
     # Ignore attention_mask
     if attention_mask is None:
@@ -1216,19 +1246,11 @@ def _LlamaModel_fast_forward_inference(
         bsz, q_len, hd = X.shape
         assert q_len == 1
         # Get saved buffers to reduce memory movement
-        residual = torch.empty(
-            (bsz, q_len, hd), dtype=torch.float32, device=X.device
-        )
-        _XX = torch.empty(
-            (2, bsz, q_len, hd), dtype=torch.float32, device=X.device
-        )
+        residual = torch.empty((bsz, q_len, hd), dtype=torch.float32, device=X.device)
+        _XX = torch.empty((2, bsz, q_len, hd), dtype=torch.float32, device=X.device)
         XX, XX2 = _XX[0], _XX[1]
-        variance = torch.empty(
-            (bsz, q_len, 1), dtype=torch.float32, device=X.device
-        )
-        temp_mlp = torch.empty(
-            (2, bsz, 1, mlp_size), dtype=X.dtype, device=X.device
-        )
+        variance = torch.empty((bsz, q_len, 1), dtype=torch.float32, device=X.device)
+        temp_mlp = torch.empty((2, bsz, 1, mlp_size), dtype=X.dtype, device=X.device)
         temp_gates, temp_ups = (
             tuple(temp_mlp[0].to(torch.device(x)) for x in range(DEVICE_COUNT)),
             tuple(temp_mlp[1].to(torch.device(x)) for x in range(DEVICE_COUNT)),
@@ -1434,7 +1456,7 @@ def CausalLM_fast_forward(fast_forward_inference):
                     # Calculate logits first
                     logits = self.lm_head(hidden_states.to(dtype))
                     logits = logits.to(_get_dtype(dtype_from_config(self.config)))
-                    
+
                     # Apply softcapping/scaling if needed
                     if logit_scaling != 0:
                         logits = logit_scaling * logits
@@ -2163,6 +2185,7 @@ class FastLlamaModel:
         )
 
         from transformers.models.llama.modeling_llama import LlamaMLP
+
         try:
             from transformers.models.mistral.modeling_mistral import MistralMLP
         except:
@@ -2246,6 +2269,7 @@ class FastLlamaModel:
 
         if DEVICE_TYPE == "cuda":
             from unsloth.device_utils import get_device_properties
+
             gpu_stats = get_device_properties()
             gpu_stats_name = (
                 gpu_stats.name + ". " if gpu_stats.name != "" else "NVIDIA GPU Device. "
@@ -2258,6 +2282,7 @@ class FastLlamaModel:
                 vllm_version = ""
         elif DEVICE_TYPE == "hip":
             from unsloth.device_utils import get_device_properties
+
             gpu_stats = get_device_properties()
             gpu_stats_name = (
                 gpu_stats.name + ". " if gpu_stats.name != "" else "AMD GPU Device. "
@@ -2270,6 +2295,7 @@ class FastLlamaModel:
                 vllm_version = ""
         elif DEVICE_TYPE == "xpu":
             from unsloth.device_utils import get_device_properties
+
             gpu_stats = get_device_properties()
             gpu_stats_name = (
                 gpu_stats.name + ". " if gpu_stats.name != "" else "Intel XPU Device. "
@@ -2282,6 +2308,7 @@ class FastLlamaModel:
                 vllm_version = ""
         elif DEVICE_TYPE == "mps":
             from unsloth.device_utils import get_device_properties
+
             gpu_stats = get_device_properties()
             gpu_stats_name = f"{gpu_stats.name}. "
             gpu_version = "Metal Performance Shaders"
@@ -2334,7 +2361,18 @@ class FastLlamaModel:
         #     dtype = torch.bfloat16
 
         assert (
-            dtype == torch.float16 or dtype == torch.bfloat16 or dtype == torch.float32
+            dtype == torch.float16
+            or dtype == torch.bfloat16
+            or dtype == torch.float32
+            or str(dtype)
+            in (
+                "torch.float16",
+                "torch.bfloat16",
+                "torch.float32",
+                "float16",
+                "bfloat16",
+                "float32",
+            )
         )
 
         # RoPE Scaling
@@ -2435,7 +2473,8 @@ class FastLlamaModel:
             )
             if DEVICE_TYPE == "mps" and device_map is None:
                 model = model.to("mps")
-                if hasattr(model, "hf_device_map"): del model.hf_device_map
+                if hasattr(model, "hf_device_map"):
+                    del model.hf_device_map
         elif not fast_inference:
             model = AutoModelForCausalLM.from_pretrained(
                 cfg_model_name if cfg_model_name is not None else model_name,
@@ -2450,7 +2489,8 @@ class FastLlamaModel:
             )
             if DEVICE_TYPE == "mps" and device_map is None:
                 model = model.to("mps")
-                if hasattr(model, "hf_device_map"): del model.hf_device_map
+                if hasattr(model, "hf_device_map"):
+                    del model.hf_device_map
             model.fast_generate = make_fast_generate_wrapper(model.generate)
             model.fast_generate_batches = None
         else:
@@ -2771,7 +2811,7 @@ class FastLlamaModel:
             if DEVICE_TYPE == "mps":
                 # MPS requires use_reentrant=False for gradient checkpointing
                 # to avoid "element 0 of tensors does not require grad" error
-                # 
+                #
                 # Additionally, disable MPS custom autograd fallback kernels when
                 # gradient checkpointing is enabled. The custom kernels (MPSLoRA_MLP, etc.)
                 # have compatibility issues with gradient checkpointing on MPS because
@@ -2782,7 +2822,8 @@ class FastLlamaModel:
                 # By disabling USE_MPS_FALLBACK, we force the use of standard PyTorch
                 # operations which handle gradient checkpointing correctly.
                 import unsloth.kernels.mps as mps_kernels
-                if hasattr(mps_kernels, 'USE_MPS_FALLBACK'):
+
+                if hasattr(mps_kernels, "USE_MPS_FALLBACK"):
                     if isinstance(mps_kernels.USE_MPS_FALLBACK, bool):
                         mps_kernels.USE_MPS_FALLBACK = False
                     else:
@@ -2792,23 +2833,30 @@ class FastLlamaModel:
                         "Unsloth: Disabled MPS fallback kernels when using gradient checkpointing "
                         "to avoid compatibility issues. Training will use standard PyTorch operations."
                     )
-                
+
                 # Also patch gradient_checkpointing_enable to use use_reentrant=False
                 _original_gradient_checkpointing_enable = None
-                
+
                 def _mps_gradient_checkpointing_enable(self, **kwargs):
                     """Enable gradient checkpointing with use_reentrant=False for MPS."""
                     kwargs["use_reentrant"] = False
                     if _original_gradient_checkpointing_enable is not None:
                         return _original_gradient_checkpointing_enable(self, **kwargs)
                     # Fallback to parent class method
-                    return super(self.__class__, self).gradient_checkpointing_enable(**kwargs)
-                
+                    return super(self.__class__, self).gradient_checkpointing_enable(
+                        **kwargs
+                    )
+
                 # Store and patch
                 import torch.nn as nn
-                if hasattr(nn.Module, 'gradient_checkpointing_enable'):
-                    _original_gradient_checkpointing_enable = nn.Module.gradient_checkpointing_enable
-                    nn.Module.gradient_checkpointing_enable = _mps_gradient_checkpointing_enable
+
+                if hasattr(nn.Module, "gradient_checkpointing_enable"):
+                    _original_gradient_checkpointing_enable = (
+                        nn.Module.gradient_checkpointing_enable
+                    )
+                    nn.Module.gradient_checkpointing_enable = (
+                        _mps_gradient_checkpointing_enable
+                    )
             else:
                 patch_unsloth_smart_gradient_checkpointing(
                     dtype=model.get_input_embeddings().weight.dtype
