@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import torch
 from unsloth_zoo.utils import Version
 from unsloth.device_utils import clean_gpu_cache
 import gc
@@ -55,7 +56,6 @@ except ImportError:
 from typing import Optional, Callable, Union, List
 import sys
 import requests
-import torch
 import os
 import shutil
 import pickle
