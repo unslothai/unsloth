@@ -34,6 +34,7 @@ import { MODEL_TYPE_TO_HF_TASK } from "@/config/training";
 import {
   useDebouncedValue,
   useHfModelSearch,
+  useHfTokenValidation,
   useInfiniteScroll,
 } from "@/hooks";
 import { formatCompact } from "@/lib/utils";
@@ -80,10 +81,14 @@ export function ModelSelectionStep() {
     isLoading,
     isLoadingMore,
     fetchMore,
+    error: hfSearchError,
   } = useHfModelSearch(debouncedQuery, {
     task,
     accessToken: hfToken || undefined,
   });
+
+  const { error: tokenValidationError, isChecking: isCheckingToken } =
+    useHfTokenValidation(hfToken);
 
   const resultIds = useMemo(() => hfResults.map((r) => r.id), [hfResults]);
 
@@ -126,6 +131,23 @@ export function ModelSelectionStep() {
             onChange={(e) => setHfToken(e.target.value)}
           />
         </InputGroup>
+        {(tokenValidationError ?? hfSearchError) && (
+          <p className="text-xs text-destructive">
+            {tokenValidationError ?? hfSearchError}
+            {" — "}
+            <a
+              href="https://huggingface.co/settings/tokens"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline"
+            >
+              Get or update token
+            </a>
+          </p>
+        )}
+        {isCheckingToken && (
+          <p className="text-xs text-muted-foreground">Checking token…</p>
+        )}
       </Field>
 
       <Field>
