@@ -160,11 +160,30 @@ def patch_unsloth_zoo_for_mps() -> bool:
                 cp._unsloth_patched = True
     except: pass
 
-    # 3. Patch PEFT detection
+    # 3. Patch PEFT detection and inject dummy classes
     try:
+        import torch.nn as nn
+        
+        # Ensure bitsandbytes.nn has Linear4bit
+        import bitsandbytes.nn as bnb_nn
+        if not hasattr(bnb_nn, "Linear4bit"):
+            class Linear4bit(nn.Module): pass
+            bnb_nn.Linear4bit = Linear4bit
+            
+        # Ensure peft.tuners.lora has Linear4bit and Linear
         import peft.import_utils
         peft.import_utils.is_bnb_available = lambda: False
         peft.import_utils.is_bnb_4bit_available = lambda: False
+        
+        try:
+            import peft.tuners.lora as lora_mod
+            if not hasattr(lora_mod, "Linear4bit"):
+                class Linear4bit(nn.Module): pass
+                lora_mod.Linear4bit = Linear4bit
+            if not hasattr(lora_mod, "Linear"):
+                class Linear(nn.Module): pass
+                lora_mod.Linear = Linear
+        except ImportError: pass
     except: pass
 
     _PATCH_APPLIED = True
