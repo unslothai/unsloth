@@ -122,6 +122,17 @@ class MacPatcher:
             # CPUs
             res = subprocess.run(["sysctl", "-n", "hw.ncpu"], capture_output=True, text=True)
             if res.returncode == 0: info["cpu_count"] = int(res.stdout.strip())
+
+            # GPU cores (approximate based on chip name if not directly available)
+            chip = info["chip_name"]
+            if "M1" in chip:
+                info["gpu_cores"] = 8 if "Max" not in chip else 32
+            elif "M2" in chip:
+                info["gpu_cores"] = 10 if "Max" not in chip else 38
+            elif "M3" in chip:
+                info["gpu_cores"] = 10 if "Max" not in chip else 40
+            elif "M4" in chip:
+                info["gpu_cores"] = 10 if "Max" not in chip else 40
         except: pass
         return info
     
@@ -206,6 +217,14 @@ class MacPatcher:
                 # Default to returning a mock that is itself callable
                 m = MockModule(f"{self.__name__}.{name}")
                 return m
+            def __iter__(self):
+                return iter([])
+            def __contains__(self, item):
+                return False
+            def __len__(self):
+                return 0
+            def __bool__(self):
+                return False
 
         mod = MockModule(fullname)
         from importlib.machinery import ModuleSpec
@@ -280,6 +299,22 @@ class MacPatcher:
         except:
             return self._create_patch_result(name, PatchStatus.SKIPPED, "PEFT not installed or already patched")
 
+    def patch_checkpoint(self) -> PatchResult:
+        """Patch torch.utils.checkpoint to use use_reentrant=False for MPS."""
+        name = "checkpoint"
+        try:
+            import torch.utils.checkpoint as checkpoint_module
+            if not hasattr(checkpoint_module, "_unsloth_patched"):
+                original_checkpoint = checkpoint_module.checkpoint
+                def _mps_checkpoint(function, *args, use_reentrant=True, **kwargs):
+                    return original_checkpoint(function, *args, use_reentrant=False, **kwargs)
+                checkpoint_module.checkpoint = _mps_checkpoint
+                checkpoint_module._unsloth_patched = True
+                return self._create_patch_result(name, PatchStatus.SUCCESS, "torch.utils.checkpoint patched for MPS")
+            return self._create_patch_result(name, PatchStatus.ALREADY_APPLIED)
+        except Exception as e:
+            return self._create_patch_result(name, PatchStatus.FAILED, str(e), e)
+
     def apply(self) -> List[PatchResult]:
         """Apply all patches."""
         if self._applied: return list(self._patch_results.values())
@@ -291,6 +326,7 @@ class MacPatcher:
         results.append(self.patch_device_type())
         results.append(self.patch_torch_cuda())
         results.append(self.patch_peft())
+        results.append(self.patch_checkpoint())
         
         self._applied = True
         return results
