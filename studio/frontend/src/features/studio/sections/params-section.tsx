@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/tooltip";
 import {
   CONTEXT_LENGTHS,
+  LR_SCHEDULER_OPTIONS,
   OPTIMIZER_OPTIONS,
   TARGET_MODULES,
 } from "@/config/training";
@@ -538,6 +539,43 @@ export function ParamsSection(): ReactElement {
                     </SelectTrigger>
                     <SelectContent>
                       {OPTIMIZER_OPTIONS.map((opt) => (
+                        <SelectItem
+                          key={opt.value}
+                          value={opt.value}
+                          className="font-mono"
+                        >
+                          {opt.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </Row>
+                <Row
+                  label="LR scheduler"
+                  tooltip={
+                    <>
+                      How the learning rate changes over training. Linear decays
+                      steadily; cosine decays in a curve.{" "}
+                      <a
+                        href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-primary underline"
+                      >
+                        Read more
+                      </a>
+                    </>
+                  }
+                >
+                  <Select
+                    value={store.lrSchedulerType}
+                    onValueChange={(v) => store.setLrSchedulerType(v)}
+                  >
+                    <SelectTrigger className="w-48 font-mono">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {LR_SCHEDULER_OPTIONS.map((opt) => (
                         <SelectItem
                           key={opt.value}
                           value={opt.value}
