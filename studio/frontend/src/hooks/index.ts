@@ -5,4 +5,5 @@ export { useHardwareInfo } from "./use-hardware-info";
 export { useHfModelSearch } from "./use-hf-model-search";
 export { useHfDatasetSearch } from "./use-hf-dataset-search";
 export { useHfDatasetSplits } from "./use-hf-dataset-splits";
+export { useHfTokenValidation } from "./use-hf-token-validation";
 export { useInfiniteScroll } from "./use-infinite-scroll";
