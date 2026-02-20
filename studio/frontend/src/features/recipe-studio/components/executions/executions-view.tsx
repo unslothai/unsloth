@@ -1,5 +1,12 @@
-import { useEffect, useMemo, useState, type ReactElement } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
+import {
+  CheckmarkCircle02Icon,
+  Database01Icon,
+  Database02Icon,
+  Flag02Icon,
+} from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DataTable } from "@/components/ui/data-table";
@@ -11,7 +18,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Progress } from "@/components/ui/progress";
-import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
   TableBody,
@@ -47,6 +53,20 @@ type AnalysisColumnStat = {
   simple_dtype: string;
   num_unique: number | null;
   num_null: number | null;
+  input_tokens_mean: number | null;
+  output_tokens_mean: number | null;
+};
+
+type ModelUsageRow = {
+  model: string;
+  input: number | null;
+  output: number | null;
+  total: number | null;
+  tps: number | null;
+  requestsSuccess: number | null;
+  requestsFailed: number | null;
+  requestsTotal: number | null;
+  rpm: number | null;
 };
 
 function formatTimestamp(value: number): string {
@@ -105,6 +125,8 @@ function parseAnalysisColumns(analysis: RecipeExecutionAnalysis | null): Analysi
         simple_dtype: parseString(row.simple_dtype),
         num_unique: parseNumber(row.num_unique),
         num_null: parseNumber(row.num_null),
+        input_tokens_mean: parseNumber(row.input_tokens_mean),
+        output_tokens_mean: parseNumber(row.output_tokens_mean),
       };
     })
     .filter((item): item is AnalysisColumnStat => item !== null);
@@ -167,6 +189,52 @@ function formatDuration(startedAt: number, finishedAt: number | null): string {
   return `${seconds}s`;
 }
 
+function formatMetricValue(value: number | null | undefined): string {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return "--";
+  }
+  return value.toLocaleString();
+}
+
+function parseModelUsageRows(value: Record<string, unknown> | null): ModelUsageRow[] {
+  if (!value) {
+    return [];
+  }
+  return Object.entries(value)
+    .map(([name, data]) => {
+      if (!data || typeof data !== "object" || Array.isArray(data)) {
+        return null;
+      }
+      const modelObj = data as Record<string, unknown>;
+      const tokens =
+        modelObj.tokens && typeof modelObj.tokens === "object" && !Array.isArray(modelObj.tokens)
+          ? (modelObj.tokens as Record<string, unknown>)
+          : null;
+      const requests =
+        modelObj.requests &&
+        typeof modelObj.requests === "object" &&
+        !Array.isArray(modelObj.requests)
+          ? (modelObj.requests as Record<string, unknown>)
+          : null;
+      const modelName =
+        typeof modelObj.model === "string" && modelObj.model.length > 0
+          ? modelObj.model
+          : name;
+      return {
+        model: modelName,
+        input: parseNumber(tokens?.input),
+        output: parseNumber(tokens?.output),
+        total: parseNumber(tokens?.total),
+        tps: parseNumber(tokens?.tps),
+        requestsSuccess: parseNumber(requests?.success),
+        requestsFailed: parseNumber(requests?.failed),
+        requestsTotal: parseNumber(requests?.total),
+        rpm: parseNumber(requests?.rpm),
+      };
+    })
+    .filter((item): item is ModelUsageRow => item !== null);
+}
+
 export function ExecutionsView({
   executions,
   selectedExecutionId,
@@ -185,6 +253,7 @@ export function ExecutionsView({
   const [expandedDatasetCells, setExpandedDatasetCells] = useState<
     Record<string, boolean>
   >({});
+  const terminalRef = useRef<HTMLDivElement | null>(null);
   const selectedExecution = useMemo(
     () =>
       executions.find((execution) => execution.id === selectedExecutionId) ??
@@ -277,13 +346,10 @@ export function ExecutionsView({
     () => parseAnalysisColumns(selectedExecution?.analysis ?? null),
     [selectedExecution?.analysis],
   );
-  const columnTypeCounts = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const column of analysisColumns) {
-      map.set(column.column_type, (map.get(column.column_type) ?? 0) + 1);
-    }
-    return Array.from(map.entries());
-  }, [analysisColumns]);
+  const modelUsageRows = useMemo(
+    () => parseModelUsageRows(selectedExecution?.model_usage ?? null),
+    [selectedExecution?.model_usage],
+  );
   const sideEffects = useMemo(() => {
     const values = selectedExecution?.analysis?.side_effect_column_names;
     return Array.isArray(values)
@@ -300,6 +366,44 @@ export function ExecutionsView({
   const totalPages = Math.max(1, Math.ceil(datasetTotal / datasetPageSize));
   const canPageDataset =
     Boolean(selectedExecution?.jobId) && selectedExecution?.kind === "full";
+  const recordsMetric = useMemo(() => {
+    if (!selectedExecution || selectedExecution.status !== "completed") {
+      return null;
+    }
+    if (typeof selectedExecution.analysis?.num_records === "number") {
+      return selectedExecution.analysis.num_records;
+    }
+    if (selectedExecution.datasetTotal > 0) {
+      return selectedExecution.datasetTotal;
+    }
+    if (selectedExecution.dataset.length > 0) {
+      return selectedExecution.dataset.length;
+    }
+    return null;
+  }, [selectedExecution]);
+  const totalMetric = useMemo(() => {
+    if (!selectedExecution || selectedExecution.status !== "completed") {
+      return null;
+    }
+    if (typeof selectedExecution.analysis?.target_num_records === "number") {
+      return selectedExecution.analysis.target_num_records;
+    }
+    return selectedExecution.rows > 0 ? selectedExecution.rows : null;
+  }, [selectedExecution]);
+  const showSummaryCards = selectedExecution?.status === "completed";
+  const showProgressPanel =
+    selectedExecution?.status === "completed" ||
+    (selectedExecution ? isInProgress(selectedExecution.status) : false);
+  const progressComplete = selectedExecution?.status === "completed";
+  const progressPercent = selectedExecution?.progress?.percent ?? (progressComplete ? 100 : 0);
+  const terminalLines = selectedExecution?.log_lines ?? [];
+
+  useEffect(() => {
+    if (!terminalRef.current) {
+      return;
+    }
+    terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
+  }, [selectedExecution?.id, terminalLines.length]);
 
   return (
     <div className="flex h-full min-h-0">
@@ -431,18 +535,49 @@ export function ExecutionsView({
               )}
             </div>
 
-            {isInProgress(selectedExecution.status) && (
-              <div className="space-y-3 rounded-xl border border-amber-200 bg-amber-50/50 p-3">
+            {showProgressPanel && (
+              <div
+                className={cn(
+                  "space-y-3 rounded-xl border p-3",
+                  progressComplete
+                    ? "border-emerald-200 bg-emerald-50/50"
+                    : "border-amber-200 bg-amber-50/50",
+                )}
+              >
                 <div className="flex items-center justify-between">
-                  <p className="text-sm font-semibold text-amber-900">
-                    Run in progress
-                  </p>
-                  <p className="text-xs text-amber-800">
-                    {formatPercent(selectedExecution.progress?.percent)}
+                  <div className="flex items-center gap-2">
+                    <HugeiconsIcon
+                      icon={progressComplete ? CheckmarkCircle02Icon : Flag02Icon}
+                      className={cn(
+                        "size-4",
+                        progressComplete ? "text-emerald-700" : "text-amber-700",
+                      )}
+                    />
+                    <p
+                      className={cn(
+                        "text-sm font-semibold",
+                        progressComplete ? "text-emerald-900" : "text-amber-900",
+                      )}
+                    >
+                      {progressComplete ? "Run completed" : "Run in progress"}
+                    </p>
+                  </div>
+                  <p
+                    className={cn(
+                      "text-xs",
+                      progressComplete ? "text-emerald-800" : "text-amber-800",
+                    )}
+                  >
+                    {formatPercent(progressPercent)}
                   </p>
                 </div>
-                <Progress value={selectedExecution.progress?.percent ?? 0} />
-                <div className="grid gap-2 text-xs text-amber-900 md:grid-cols-4">
+                <Progress value={progressPercent} />
+                <div
+                  className={cn(
+                    "grid gap-2 text-xs md:grid-cols-4",
+                    progressComplete ? "text-emerald-900" : "text-amber-900",
+                  )}
+                >
                   <p>
                     Done: {selectedExecution.progress?.done ?? "--"}
                   </p>
@@ -457,7 +592,12 @@ export function ExecutionsView({
                   </p>
                 </div>
                 {selectedExecution.current_column && selectedExecution.column_progress && (
-                  <p className="text-xs text-amber-900">
+                  <p
+                    className={cn(
+                      "text-xs",
+                      progressComplete ? "text-emerald-900" : "text-amber-900",
+                    )}
+                  >
                     Column {selectedExecution.current_column}:{" "}
                     {selectedExecution.column_progress.done ?? "--"}/
                     {selectedExecution.column_progress.total ?? "--"} (
@@ -481,13 +621,6 @@ export function ExecutionsView({
               </div>
             )}
 
-            {selectedExecution.status === "running" && (
-              <div className="space-y-2 rounded-xl border p-3">
-                <Skeleton className="h-5 w-44" />
-                <Skeleton className="h-20 w-full" />
-              </div>
-            )}
-
             {(selectedExecution.status === "completed" ||
               isInProgress(selectedExecution.status)) && (
               <Tabs value={detailTab} onValueChange={setDetailTab}>
@@ -498,66 +631,111 @@ export function ExecutionsView({
                   {showRaw && <TabsTrigger value="raw">Raw</TabsTrigger>}
                 </TabsList>
                 <TabsContent value="overview" className="mt-3 space-y-3">
-                  <div className="grid gap-3 md:grid-cols-4">
-                    <div className="rounded-xl border p-3">
-                      <p className="text-xs text-muted-foreground">Records</p>
-                      <p className="text-lg font-semibold">
-                        {selectedExecution.analysis?.num_records ?? "--"}
-                      </p>
-                    </div>
-                    <div className="rounded-xl border p-3">
-                      <p className="text-xs text-muted-foreground">Target</p>
-                      <p className="text-lg font-semibold">
-                        {selectedExecution.analysis?.target_num_records ?? "--"}
-                      </p>
-                    </div>
-                    <div className="rounded-xl border p-3">
-                      <p className="text-xs text-muted-foreground">Completion</p>
-                      <p className="text-lg font-semibold">
-                        {formatPercent(
-                          selectedExecution.analysis?.num_records &&
-                            selectedExecution.analysis?.target_num_records
-                            ? (selectedExecution.analysis.num_records /
-                                selectedExecution.analysis.target_num_records) *
-                                100
-                            : null,
-                        )}
-                      </p>
-                    </div>
-                    <div className="rounded-xl border p-3">
-                      <p className="text-xs text-muted-foreground">Columns</p>
-                      <p className="text-lg font-semibold">
-                        {analysisColumns.length > 0 ? analysisColumns.length : "--"}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="rounded-xl border p-3">
-                    <p className="mb-2 text-sm font-semibold">Column type breakdown</p>
-                    {columnTypeCounts.length === 0 ? (
-                      <p className="text-xs text-muted-foreground">No analysis yet.</p>
-                    ) : (
-                      <div className="flex flex-wrap gap-2">
-                        {columnTypeCounts.map(([type, count]) => (
-                          <Badge key={type} variant="secondary">
-                            {type}: {count}
-                          </Badge>
-                        ))}
+                  {showSummaryCards && (
+                    <div className="rounded-xl border bg-muted/20 p-3">
+                      <div className="grid gap-3 md:grid-cols-3">
+                        <div className="rounded-lg border bg-background/80 p-3">
+                          <div className="mb-2 flex items-center justify-between">
+                            <p className="text-xs text-muted-foreground">Records</p>
+                            <HugeiconsIcon
+                              icon={Database01Icon}
+                              className="size-4 text-muted-foreground"
+                            />
+                          </div>
+                          <p className="text-lg font-semibold">
+                            {formatMetricValue(recordsMetric)} / {formatMetricValue(totalMetric)}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            generated / requested
+                          </p>
+                        </div>
+                        <div className="rounded-lg border bg-background/80 p-3">
+                          <div className="mb-2 flex items-center justify-between">
+                            <p className="text-xs text-muted-foreground">Model usage</p>
+                            <HugeiconsIcon
+                              icon={Flag02Icon}
+                              className="size-4 text-muted-foreground"
+                            />
+                          </div>
+                          {modelUsageRows.length === 0 ? (
+                            <p className="text-xs text-muted-foreground">No model usage yet.</p>
+                          ) : (
+                            <div className="space-y-2 font-mono text-xs">
+                              {modelUsageRows.map((usage) => (
+                                <div
+                                  key={usage.model}
+                                  className="rounded-md border border-border/70 px-2 py-1.5"
+                                >
+                                  <p>|-- model: {usage.model}</p>
+                                  <p>
+                                    |-- tokens: input={formatMetricValue(usage.input)}, output=
+                                    {formatMetricValue(usage.output)}, total=
+                                    {formatMetricValue(usage.total)}, tps=
+                                    {formatMetricValue(usage.tps)}
+                                  </p>
+                                  <p>
+                                    |-- requests: success=
+                                    {formatMetricValue(usage.requestsSuccess)}, failed=
+                                    {formatMetricValue(usage.requestsFailed)}, total=
+                                    {formatMetricValue(usage.requestsTotal)}, rpm=
+                                    {formatMetricValue(usage.rpm)}
+                                  </p>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                        <div className="rounded-lg border bg-background/80 p-3">
+                          <div className="mb-2 flex items-center justify-between">
+                            <p className="text-xs text-muted-foreground">Dropped columns</p>
+                            <HugeiconsIcon
+                              icon={Database02Icon}
+                              className="size-4 text-muted-foreground"
+                            />
+                          </div>
+                          {sideEffects.length === 0 ? (
+                            <p className="text-xs text-muted-foreground">None</p>
+                          ) : (
+                            <div className="flex flex-wrap gap-1.5">
+                              {sideEffects.map((name) => (
+                                <Badge key={name} variant="outline">
+                                  {name}
+                                </Badge>
+                              ))}
+                            </div>
+                          )}
+                        </div>
                       </div>
-                    )}
-                  </div>
-                  <div className="rounded-xl border p-3">
-                    <p className="mb-2 text-sm font-semibold">Side-effect columns</p>
-                    {sideEffects.length === 0 ? (
-                      <p className="text-xs text-muted-foreground">None.</p>
-                    ) : (
-                      <div className="flex flex-wrap gap-2">
-                        {sideEffects.map((name) => (
-                          <Badge key={name} variant="outline">
-                            {name}
-                          </Badge>
-                        ))}
-                      </div>
-                    )}
+                    </div>
+                  )}
+                  <div className="overflow-hidden rounded-xl corner-squircle border">
+                    <div className="flex items-center justify-between border-b px-3 py-2">
+                      <p className="text-sm font-semibold">Terminal output</p>
+                      <p className="text-xs text-muted-foreground">
+                        {terminalLines.length} lines
+                      </p>
+                    </div>
+                    <div
+                      ref={terminalRef}
+                      className="max-h-72 overflow-auto bg-zinc-900/80 px-3 py-2 font-mono text-xs text-zinc-200"
+                    >
+                      {terminalLines.length === 0 ? (
+                        <p className="text-zinc-400">
+                          {isInProgress(selectedExecution.status)
+                            ? "Waiting for logs..."
+                            : "No logs captured."}
+                        </p>
+                      ) : (
+                        terminalLines.map((line, index) => (
+                          <p
+                            key={`${index}-${line.slice(0, 24)}`}
+                            className="whitespace-pre-wrap break-words leading-relaxed"
+                          >
+                            {line}
+                          </p>
+                        ))
+                      )}
+                    </div>
                   </div>
                 </TabsContent>
                 <TabsContent value="columns" className="mt-3">
@@ -576,6 +754,8 @@ export function ExecutionsView({
                             <TableHead>Data type</TableHead>
                             <TableHead>Unique</TableHead>
                             <TableHead>Nulls</TableHead>
+                            <TableHead>Input tok avg</TableHead>
+                            <TableHead>Output tok avg</TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
@@ -586,6 +766,8 @@ export function ExecutionsView({
                               <TableCell>{column.simple_dtype}</TableCell>
                               <TableCell>{column.num_unique ?? "--"}</TableCell>
                               <TableCell>{column.num_null ?? "--"}</TableCell>
+                              <TableCell>{column.input_tokens_mean ?? "--"}</TableCell>
+                              <TableCell>{column.output_tokens_mean ?? "--"}</TableCell>
                             </TableRow>
                           ))}
                         </TableBody>
