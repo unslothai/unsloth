@@ -82,11 +82,17 @@ export const OPTIMIZER_OPTIONS: ReadonlyArray<{ value: string; label: string }> 
   { value: "adamw_torch_fused", label: "AdamW (PyTorch Fused)" },
 ];
 
+export const LR_SCHEDULER_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
+  { value: "linear", label: "Linear" },
+  { value: "cosine", label: "Cosine" },
+];
+
 export const DEFAULT_HYPERPARAMS = {
   epochs: 3,
   contextLength: 2048,
   learningRate: 2e-4,
   optimizerType: "adamw_8bit",
+  lrSchedulerType: "linear",
   loraRank: 16,
   loraAlpha: 32,
   loraDropout: 0.05,
