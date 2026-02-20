@@ -188,43 +188,65 @@ class AdamW(Optimizer):
         self.step_count += 1
         return updated_params
 
-    def update(self, parameter: mx.array, gradient: mx.array) -> mx.array:
-        """Update a single parameter with AdamW."""
-        # Apply weight decay
-        if self.weight_decay > 0:
-            parameter = parameter * (1 - self.learning_rate * self.weight_decay)
-
-        # Get or initialize state
-        param_id = id(parameter)
-        if param_id not in self.state:
-            self.state[param_id] = {
-                "m": mx.zeros_like(parameter),
-                "v": mx.zeros_like(parameter),
-            }
-
-        state = self.state[param_id]
-        m = state["m"]
-        v = state["v"]
-
-        # Adam update
-        m = self.beta1 * m + (1 - self.beta1) * gradient
-        v = self.beta2 * v + (1 - self.beta2) * (gradient * gradient)
-
-        # Bias correction
-        bias_correction1 = 1 - self.beta1 ** (self.step_count + 1)
-        bias_correction2 = 1 - self.beta2 ** (self.step_count + 1)
-
-        m_hat = m / bias_correction1
-        v_hat = v / bias_correction2
-
-        # Update parameter
-        updated = parameter - self.learning_rate * m_hat / (mx.sqrt(v_hat) + self.epsilon)
-
-        # Store updated state
-        state["m"] = m
-        state["v"] = v
-
-        return updated
+    def update(self, model, gradients) -> None:
+        """Update model parameters with gradients.
+        
+        Args:
+            model: MLX model (nn.Module) or dict of parameters
+            gradients: Gradients in same structure as model parameters
+        """
+        if hasattr(model, "trainable_parameters"):
+            params = model.trainable_parameters()
+        elif hasattr(model, "parameters"):
+            params = model.parameters()
+        elif isinstance(model, dict):
+            params = model
+        else:
+            raise TypeError(f"Expected model or dict, got {type(model)}")
+        
+        def _update_single(param, grad):
+            if grad is None:
+                return param
+            
+            nonlocal step_idx
+            state_key = f"param_{step_idx[0]}"
+            step_idx[0] += 1
+            
+            if self.weight_decay > 0:
+                param = param * (1 - self.learning_rate * self.weight_decay)
+            
+            if state_key not in self.state:
+                self.state[state_key] = {
+                    "m": mx.zeros_like(param),
+                    "v": mx.zeros_like(param),
+                }
+            
+            state = self.state[state_key]
+            m = state["m"]
+            v = state["v"]
+            
+            m = self.beta1 * m + (1 - self.beta1) * grad
+            v = self.beta2 * v + (1 - self.beta2) * (grad * grad)
+            
+            bias_correction1 = 1 - self.beta1 ** (self.step_count + 1)
+            bias_correction2 = 1 - self.beta2 ** (self.step_count + 1)
+            
+            m_hat = m / bias_correction1
+            v_hat = v / bias_correction2
+            
+            updated = param - self.learning_rate * m_hat / (mx.sqrt(v_hat) + self.epsilon)
+            
+            state["m"] = m
+            state["v"] = v
+            
+            return updated
+        
+        step_idx = [0]
+        updated_params = mx.tree_map(_update_single, params, gradients)
+        self.step_count += 1
+        
+        if hasattr(model, "update"):
+            model.update(updated_params)
 
 
 class SGD(Optimizer):
