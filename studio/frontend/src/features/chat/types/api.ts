@@ -35,6 +35,12 @@ export interface LoadModelResponse {
   display_name: string;
   is_vision: boolean;
   is_lora: boolean;
+  inference?: {
+    temperature?: number;
+    top_p?: number;
+    top_k?: number;
+    min_p?: number;
+  };
 }
 
 export interface UnloadModelRequest {
@@ -61,8 +67,10 @@ export interface OpenAIChatCompletionsRequest {
   top_p: number;
   max_tokens: number;
   top_k: number;
+  min_p: number;
   repetition_penalty: number;
   image_base64?: string;
+  use_adapter?: boolean | string | null;
 }
 
 export interface OpenAIChatDelta {

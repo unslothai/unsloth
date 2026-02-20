@@ -8,7 +8,12 @@ from .training import (
     TrainingProgress,
 )
 from .models import (
+    CheckpointInfo,
+    ModelCheckpoints,
+    CheckpointListResponse,
     ModelDetails,
+    LocalModelInfo,
+    LocalModelListResponse,
     LoRAInfo,
     LoRAScanResponse,
     ModelListResponse,
@@ -20,8 +25,6 @@ from .auth import (
     AuthStatusResponse,
 )
 from .export import (
-    CheckpointInfo,
-    CheckpointListResponse,
     LoadCheckpointRequest,
     ExportStatusResponse,
     ExportOperationResponse,
@@ -65,6 +68,8 @@ __all__ = [
     "TrainingProgress",
     # Model management schemas
     "ModelDetails",
+    "LocalModelInfo",
+    "LocalModelListResponse",
     "LoRAInfo",
     "LoRAScanResponse",
     "ModelListResponse",
@@ -75,6 +80,7 @@ __all__ = [
     "AuthStatusResponse",
     # Export schemas
     "CheckpointInfo",
+    "ModelCheckpoints",
     "CheckpointListResponse",
     "LoadCheckpointRequest",
     "ExportStatusResponse",

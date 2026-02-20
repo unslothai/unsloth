@@ -5,16 +5,15 @@ import {
 } from "@/components/assistant-ui/model-selector";
 import { Thread } from "@/components/assistant-ui/thread";
 import { Button } from "@/components/ui/button";
+import { SidebarProvider, SidebarTrigger, useSidebar } from "@/components/ui/sidebar";
 import {
-  SidebarProvider,
-  SidebarTrigger,
-  useSidebar,
-} from "@/components/ui/sidebar";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import {
   ColumnInsertIcon,
@@ -33,9 +32,14 @@ import {
   useRef,
   useState,
 } from "react";
+import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { ChatSettingsPanel } from "./chat-settings-sheet";
 import { db } from "./db";
 import { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
+import {
+  clearTrainingCompareHandoff,
+  getTrainingCompareHandoff,
+} from "./lib/training-compare-handoff";
 import { ChatRuntimeProvider } from "./runtime-provider";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import {
@@ -46,6 +50,44 @@ import {
 } from "./shared-composer";
 import { ThreadSidebar } from "./thread-sidebar";
 import type { ChatView } from "./types";
+import { buildChatTourSteps } from "./tour";
+
+type LoraCandidate = {
+  id: string;
+  baseModel: string;
+  updatedAt?: number;
+};
+
+function normalizeModelRef(value: string | null | undefined): string {
+  return value?.trim().toLowerCase() ?? "";
+}
+
+function pickBestLoraForBase(
+  loras: LoraCandidate[],
+  baseModel: string | null,
+): LoraCandidate | null {
+  if (loras.length === 0) return null;
+  const sorted = [...loras].sort(
+    (a, b) => (b.updatedAt ?? -1) - (a.updatedAt ?? -1),
+  );
+  const normalizedBase = normalizeModelRef(baseModel);
+  if (!normalizedBase) return sorted[0];
+
+  const exact = sorted.find(
+    (lora) => normalizeModelRef(lora.baseModel) === normalizedBase,
+  );
+  if (exact) return exact;
+
+  const partial = sorted.find((lora) => {
+    const normalizedLoraBase = normalizeModelRef(lora.baseModel);
+    if (!normalizedLoraBase) return false;
+    return (
+      normalizedLoraBase.includes(normalizedBase) ||
+      normalizedBase.includes(normalizedLoraBase)
+    );
+  });
+  return partial ?? sorted[0];
+}
 
 const SingleContent = memo(function SingleContent({
   threadId,
@@ -92,7 +134,10 @@ const CompareContent = memo(function CompareContent({
   return (
     <CompareHandlesProvider handlesRef={handlesRef}>
       <div className="flex min-h-0 flex-1 flex-col">
-        <div className="grid min-h-0 flex-1 grid-cols-2 px-0">
+        <div
+          data-tour="chat-compare-view"
+          className="grid min-h-0 flex-1 grid-cols-1 px-0 md:grid-cols-2"
+        >
           <div className="flex min-h-0 flex-col">
             <div className="px-3 py-1.5">
               <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
@@ -110,8 +155,8 @@ const CompareContent = memo(function CompareContent({
               </ChatRuntimeProvider>
             </div>
           </div>
-          <div className="flex min-h-0 flex-col">
-            <div className="text-end px-3 py-1.5">
+          <div className="flex min-h-0 flex-col border-t border-border/60 md:border-t-0 md:border-l">
+            <div className="px-3 py-1.5 text-start md:text-end">
               <span className="text-[10px] font-semibold uppercase tracking-wider text-primary">
                 Fine-tuned (LoRA)
               </span>
@@ -143,8 +188,23 @@ function InlineSidebar({
   children: ReactNode;
   side?: "left" | "right";
 }) {
-  const { state } = useSidebar();
+  const { state, isMobile, openMobile, setOpenMobile } = useSidebar();
   const collapsed = state === "collapsed";
+
+  if (isMobile) {
+    return (
+      <Sheet open={openMobile} onOpenChange={setOpenMobile}>
+        <SheetContent side={side} className="w-[18rem] p-0">
+          <SheetHeader className="sr-only">
+            <SheetTitle>Chat sidebar</SheetTitle>
+            <SheetDescription>Chat threads and actions</SheetDescription>
+          </SheetHeader>
+          <div className="h-full overflow-auto">{children}</div>
+        </SheetContent>
+      </Sheet>
+    );
+  }
+
   return (
     <div
       className="group shrink-0 h-full"
@@ -174,7 +234,8 @@ function InlineSidebar({
 function TopBarActions({
   onNewThread,
   onNewCompare,
-}: { onNewThread: () => void; onNewCompare: () => void }) {
+  showCompare,
+}: { onNewThread: () => void; onNewCompare: () => void; showCompare: boolean }) {
   const { state } = useSidebar();
   if (state !== "collapsed") {
     return null;
@@ -189,14 +250,16 @@ function TopBarActions({
         </TooltipTrigger>
         <TooltipContent side="bottom">New Chat</TooltipContent>
       </Tooltip>
-      <Tooltip>
-        <TooltipTrigger asChild={true}>
-          <Button variant="ghost" size="icon-sm" onClick={onNewCompare}>
-            <HugeiconsIcon icon={ColumnInsertIcon} strokeWidth={2} />
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent side="bottom">Compare</TooltipContent>
-      </Tooltip>
+      {showCompare ? (
+        <Tooltip>
+          <TooltipTrigger asChild={true}>
+            <Button variant="ghost" size="icon-sm" onClick={onNewCompare}>
+              <HugeiconsIcon icon={ColumnInsertIcon} strokeWidth={2} />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">Compare</TooltipContent>
+        </Tooltip>
+      ) : null}
     </>
   );
 }
@@ -207,12 +270,32 @@ export function ChatPage(): ReactElement {
     newThreadNonce: crypto.randomUUID(),
   });
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
+  const [modelSelectorLocked, setModelSelectorLocked] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [viewBeforeCompare, setViewBeforeCompare] = useState<ChatView | null>(
+    null,
+  );
   const inferenceParams = useChatRuntimeStore((state) => state.params);
   const setInferenceParams = useChatRuntimeStore((state) => state.setParams);
+  const autoTitle = useChatRuntimeStore((state) => state.autoTitle);
+  const setAutoTitle = useChatRuntimeStore((state) => state.setAutoTitle);
   const modelsFromStore = useChatRuntimeStore((state) => state.models);
   const lorasFromStore = useChatRuntimeStore((state) => state.loras);
   const modelsError = useChatRuntimeStore((state) => state.modelsError);
   const { refresh, selectModel, ejectModel } = useChatModelRuntime();
+  const refreshRef = useRef(refresh);
+  const selectModelRef = useRef(selectModel);
+
+  useEffect(() => {
+    refreshRef.current = refresh;
+    selectModelRef.current = selectModel;
+  }, [refresh, selectModel]);
+  const canCompare = useMemo(() => {
+    const selected = inferenceParams.checkpoint;
+    if (!selected) return false;
+    return lorasFromStore.some((lora) => lora.id === selected);
+  }, [inferenceParams.checkpoint, lorasFromStore]);
 
   const handleCheckpointChange = useCallback(
     (value: string, meta?: { isLora: boolean }) => {
@@ -231,6 +314,38 @@ export function ChatPage(): ReactElement {
     () => setView({ mode: "compare", pairId: crypto.randomUUID() }),
     [],
   );
+
+  const openModelSelector = useCallback(() => {
+    setModelSelectorLocked(true);
+    setModelSelectorOpen(true);
+  }, []);
+
+  const closeModelSelector = useCallback(() => {
+    setModelSelectorLocked(false);
+    setModelSelectorOpen(false);
+  }, []);
+
+  const handleModelSelectorOpenChange = useCallback(
+    (open: boolean) => {
+      if (!open && modelSelectorLocked) return;
+      setModelSelectorOpen(open);
+    },
+    [modelSelectorLocked],
+  );
+  const openSettings = useCallback(() => setSettingsOpen(true), []);
+  const closeSettings = useCallback(() => setSettingsOpen(false), []);
+  const openSidebar = useCallback(() => setSidebarOpen(true), []);
+
+  const enterCompare = useCallback(() => {
+    setViewBeforeCompare((prev) => prev ?? view);
+    setView({ mode: "compare", pairId: crypto.randomUUID() });
+  }, [view]);
+
+  const exitCompare = useCallback(() => {
+    if (!viewBeforeCompare) return;
+    setView(viewBeforeCompare);
+    setViewBeforeCompare(null);
+  }, [viewBeforeCompare]);
 
   const models = useMemo<ModelOption[]>(
     () =>
@@ -254,14 +369,116 @@ export function ChatPage(): ReactElement {
   );
 
   useEffect(() => {
+    if (getTrainingCompareHandoff()) return;
     void refresh();
   }, [refresh]);
 
+  useEffect(() => {
+    const handoff = getTrainingCompareHandoff();
+    if (!handoff) return;
+    console.info("[chat-handoff] received", handoff);
+    function clearHandoff(): void {
+      clearTrainingCompareHandoff();
+    }
+
+    let canceled = false;
+    void (async () => {
+      try {
+        console.info("[chat-handoff] refreshing models+loras");
+        await refreshRef.current();
+        if (canceled) return;
+
+        const state = useChatRuntimeStore.getState();
+        const targetLora = pickBestLoraForBase(state.loras, handoff.baseModel);
+        if (targetLora) {
+          console.info("[chat-handoff] loading lora", {
+            id: targetLora.id,
+            baseModel: targetLora.baseModel,
+          });
+          await selectModelRef.current({ id: targetLora.id, isLora: true });
+          if (canceled) return;
+          setView({ mode: "compare", pairId: crypto.randomUUID() });
+          clearHandoff();
+          console.info("[chat-handoff] loaded lora + opened compare");
+          return;
+        }
+
+        if (
+          handoff.baseModel &&
+          state.models.some((model) => model.id === handoff.baseModel)
+        ) {
+          console.info("[chat-handoff] no lora match, loading base", {
+            id: handoff.baseModel,
+          });
+          await selectModelRef.current({ id: handoff.baseModel, isLora: false });
+          if (canceled) return;
+        } else {
+          console.warn("[chat-handoff] no lora/base match found", {
+            requestedBaseModel: handoff.baseModel,
+            loraCount: state.loras.length,
+            modelCount: state.models.length,
+          });
+        }
+        clearHandoff();
+        console.info("[chat-handoff] completed");
+      } catch (error) {
+        console.error("[chat-handoff] failed", error);
+        clearHandoff();
+      }
+    })();
+
+    return () => {
+      canceled = true;
+    };
+  }, []);
+
+  const tourSteps = useMemo(
+    () =>
+      buildChatTourSteps({
+        canCompare,
+        openModelSelector,
+        closeModelSelector,
+        openSettings,
+        closeSettings,
+        openSidebar,
+        enterCompare,
+        exitCompare,
+      }),
+    [
+      canCompare,
+      closeModelSelector,
+      closeSettings,
+      enterCompare,
+      exitCompare,
+      openModelSelector,
+      openSettings,
+      openSidebar,
+    ],
+  );
+
+  const tour = useGuidedTourController({
+    id: "chat",
+    steps: tourSteps,
+  });
+
+  useEffect(() => {
+    if (tour.open) return;
+    if (!modelSelectorLocked) return;
+    const timeoutId = window.setTimeout(() => {
+      setModelSelectorLocked(false);
+      setModelSelectorOpen(false);
+    }, 0);
+    return () => window.clearTimeout(timeoutId);
+  }, [modelSelectorLocked, tour.open]);
+
   return (
-    <div className="h-[calc(100vh-4rem)] bg-background overflow-hidden">
+    <div className="h-[calc(100dvh-4rem)] bg-background overflow-hidden">
+    <GuidedTour {...tour.tourProps} />
     <SidebarProvider
       defaultOpen={true}
-      className="!min-h-0 h-full max-w-7xl mx-auto px-4"
+      open={sidebarOpen}
+      onOpenChange={setSidebarOpen}
+      className="!min-h-0 h-full w-full max-w-7xl mx-auto px-2 sm:px-4"
       style={
         {
           "--sidebar-width": "14rem",
@@ -275,16 +492,18 @@ export function ChatPage(): ReactElement {
           onSelect={setView}
           onNewThread={handleNewThread}
           onNewCompare={handleNewCompare}
+          showCompare={canCompare}
         />
       </InlineSidebar>
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <div className="flex h-11 shrink-0 items-center px-2">
+        <div className="flex h-11 shrink-0 items-center px-1.5 sm:px-2">
           <div className="flex items-center gap-1">
             <SidebarTrigger />
             <TopBarActions
               onNewThread={handleNewThread}
               onNewCompare={handleNewCompare}
+              showCompare={canCompare}
             />
             <ModelSelector
               models={models}
@@ -293,6 +512,11 @@ export function ChatPage(): ReactElement {
               onValueChange={handleCheckpointChange}
               onEject={handleEject}
               variant="ghost"
+              open={modelSelectorOpen}
+              onOpenChange={handleModelSelectorOpenChange}
+              triggerDataTour="chat-model-selector"
+              contentDataTour="chat-model-selector-popover"
+              className="max-w-[62vw] sm:max-w-none"
             />
           </div>
           {modelsError && (
@@ -306,6 +530,7 @@ export function ChatPage(): ReactElement {
             onClick={() => setSettingsOpen((o) => !o)}
             className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
             title="Inference settings"
+            data-tour="chat-settings"
           >
             <HugeiconsIcon icon={Settings04Icon} className="size-5" />
           </button>
@@ -326,6 +551,8 @@ export function ChatPage(): ReactElement {
         open={settingsOpen}
         params={inferenceParams}
         onParamsChange={setInferenceParams}
+        autoTitle={autoTitle}
+        onAutoTitleChange={setAutoTitle}
       />
     </SidebarProvider>
     </div>

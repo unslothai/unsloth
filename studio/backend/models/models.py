@@ -2,7 +2,47 @@
 Pydantic schemas for Model Management API
 """
 from pydantic import BaseModel, Field
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Literal
+
+
+class CheckpointInfo(BaseModel):
+    """Information about a discovered checkpoint directory."""
+
+    display_name: str = Field(..., description="User-friendly checkpoint name (folder name)")
+    path: str = Field(..., description="Full path to the checkpoint directory")
+    loss: Optional[float] = Field(None, description="Training loss at this checkpoint")
+
+
+class ModelCheckpoints(BaseModel):
+    """A training run and its associated checkpoints."""
+
+    name: str = Field(..., description="Training run folder name")
+    checkpoints: List[CheckpointInfo] = Field(
+        default_factory=list,
+        description="List of checkpoints for this training run (final + intermediate)",
+    )
+    base_model: Optional[str] = Field(
+        None,
+        description="Base model name from adapter_config.json or config.json",
+    )
+    peft_type: Optional[str] = Field(
+        None,
+        description="PEFT type (e.g. LORA) if adapter training, None for full fine-tune",
+    )
+    lora_rank: Optional[int] = Field(
+        None,
+        description="LoRA rank (r) if applicable",
+    )
+
+
+class CheckpointListResponse(BaseModel):
+    """Response for listing available checkpoints in an outputs directory."""
+
+    outputs_dir: str = Field(..., description="Directory that was scanned")
+    models: List[ModelCheckpoints] = Field(
+        default_factory=list,
+        description="List of training runs with their checkpoints",
+    )
 
 
 class ModelDetails(BaseModel):
@@ -34,3 +74,34 @@ class ModelListResponse(BaseModel):
     models: List[ModelDetails] = Field(default_factory=list, description="List of models")
     default_models: List[str] = Field(default_factory=list, description="List of default model IDs")
 
+
+class LocalModelInfo(BaseModel):
+    """Discovered local model candidate."""
+    id: str = Field(..., description="Identifier to use for loading/training")
+    display_name: str = Field(..., description="Display label")
+    path: str = Field(..., description="Local path where model data was discovered")
+    source: Literal["models_dir", "hf_cache"] = Field(
+        ...,
+        description="Discovery source",
+    )
+    model_id: Optional[str] = Field(
+        None,
+        description="HF repo id for cached models, e.g. org/model",
+    )
+    updated_at: Optional[float] = Field(
+        None,
+        description="Unix timestamp of latest observed update",
+    )
+
+
+class LocalModelListResponse(BaseModel):
+    """Response schema for listing local/cached models."""
+    models_dir: str = Field(..., description="Directory scanned for custom local models")
+    hf_cache_dir: Optional[str] = Field(
+        None,
+        description="HF cache root that was scanned",
+    )
+    models: List[LocalModelInfo] = Field(
+        default_factory=list,
+        description="Discovered local/cached models",
+    )

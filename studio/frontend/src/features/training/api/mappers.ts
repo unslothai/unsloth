@@ -14,6 +14,7 @@ export function buildTrainingStartPayload(
   const adapterMethod = config.trainingMethod !== "full";
   const isQlorMethod = config.trainingMethod === "qlora";
   const hfDataset = config.datasetSource === "huggingface" ? config.dataset : null;
+  const customFormatMapping = buildCustomFormatMapping(config);
 
   return {
     model_name: config.selectedModel ?? "",
@@ -22,8 +23,11 @@ export function buildTrainingStartPayload(
     load_in_4bit: adapterMethod ? isQlorMethod : false,
     max_seq_length: config.contextLength,
     hf_dataset: hfDataset,
+    hf_dataset_config: hfDataset ? config.datasetSubset : null,
+    hf_dataset_split: hfDataset ? config.datasetSplit : null,
     local_datasets: [],
     format_type: config.datasetFormat,
+    custom_format_mapping: customFormatMapping,
     num_epochs: config.epochs,
     learning_rate: String(config.learningRate),
     batch_size: config.batchSize,
@@ -32,6 +36,7 @@ export function buildTrainingStartPayload(
     warmup_ratio: null,
     max_steps: config.maxSteps,
     save_steps: config.saveSteps,
+    eval_steps: config.evalSteps,
     weight_decay: config.weightDecay,
     random_seed: config.randomSeed,
     packing: config.packing,
@@ -50,6 +55,7 @@ export function buildTrainingStartPayload(
     finetune_language_layers: config.finetuneLanguageLayers,
     finetune_attention_modules: config.finetuneAttentionModules,
     finetune_mlp_modules: config.finetuneMLPModules,
+    is_dataset_multimodal: !!config.isDatasetMultimodal,
     enable_wandb: config.enableWandb,
     wandb_token: config.enableWandb ? config.wandbToken.trim() || null : null,
     wandb_project: config.enableWandb
@@ -60,4 +66,17 @@ export function buildTrainingStartPayload(
       ? config.tensorboardDir.trim() || null
       : null,
   };
+}
+
+function buildCustomFormatMapping(
+  config: TrainingConfigState,
+): Record<string, string> | undefined {
+  const { input, output } = config.datasetManualMapping;
+  if (!input || !output) return undefined;
+
+  if (config.isVisionModel && config.isDatasetMultimodal) {
+    return { [input]: "image", [output]: "text" };
+  }
+
+  return { [input]: "user", [output]: "assistant" };
 }

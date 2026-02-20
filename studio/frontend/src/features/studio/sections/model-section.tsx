@@ -28,11 +28,23 @@ import {
 import { MODEL_TYPE_TO_HF_TASK } from "@/config/training";
 import {
   useDebouncedValue,
+  useGpuInfo,
   useHfModelSearch,
+  useHfTokenValidation,
   useInfiniteScroll,
 } from "@/hooks";
 import { formatCompact } from "@/lib/utils";
-import { useTrainingConfigStore } from "@/features/training";
+import {
+  type TrainingMethod as VramTrainingMethod,
+  type VramFitStatus,
+  checkVramFit,
+  estimateLoadingVram,
+} from "@/lib/vram";
+import {
+  listLocalModels,
+  type LocalModelInfo,
+  useTrainingConfigStore,
+} from "@/features/training";
 import type { TrainingMethod } from "@/types/training";
 import {
   ChipIcon,
@@ -42,7 +54,7 @@ import {
   Search01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 const METHOD_DOTS: Record<string, string> = {
@@ -57,6 +69,8 @@ const DARK_CONTENT =
   "bg-foreground text-background shadow-xl border-background/10 [--accent:rgba(255,255,255,0.1)] [--accent-foreground:white] [&_[data-slot=select-item]]:text-white/70 [&_[data-slot=select-scroll-up-button]]:bg-foreground [&_[data-slot=select-scroll-down-button]]:bg-foreground";
 
 export function ModelSection() {
+  const gpu = useGpuInfo();
+
   const {
     modelType,
     selectedModel,
@@ -88,6 +102,10 @@ export function ModelSection() {
   );
 
   const [inputValue, setInputValue] = useState("");
+  const [localModelInput, setLocalModelInput] = useState("");
+  const [localModels, setLocalModels] = useState<LocalModelInfo[]>([]);
+  const [isLoadingLocalModels, setIsLoadingLocalModels] = useState(true);
+  const [localModelsError, setLocalModelsError] = useState<string | null>(null);
   const selectingRef = useRef(false);
   const debouncedQuery = useDebouncedValue(inputValue);
 
@@ -103,16 +121,46 @@ export function ModelSection() {
     }
     setInputValue(val);
   }
+
+  function applyLocalModel(value: string) {
+    const next = value.trim();
+    if (!next) return;
+    setSelectedModel(next);
+  }
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void listLocalModels(controller.signal)
+      .then((models) => {
+        if (controller.signal.aborted) return;
+        setLocalModels(models);
+      })
+      .catch((error) => {
+        if (controller.signal.aborted) return;
+        setLocalModelsError(
+          error instanceof Error ? error.message : "Failed to load local models",
+        );
+      })
+      .finally(() => {
+        if (controller.signal.aborted) return;
+        setIsLoadingLocalModels(false);
+      });
+    return () => controller.abort();
+  }, []);
   const task = modelType ? MODEL_TYPE_TO_HF_TASK[modelType] : undefined;
   const {
     results: hfResults,
     isLoading,
     isLoadingMore,
     fetchMore,
+    error: hfSearchError,
   } = useHfModelSearch(debouncedQuery, {
     task,
     accessToken: hfToken || undefined,
   });
+
+  const { error: tokenValidationError, isChecking: isCheckingToken } =
+    useHfTokenValidation(hfToken);
 
   const resultIds = useMemo(() => {
     const ids = hfResults.map((r) => r.id);
@@ -122,26 +170,86 @@ export function ModelSection() {
     return ids;
   }, [hfResults, selectedModel]);
 
+  const localMetaById = useMemo(() => {
+    const map = new Map<string, LocalModelInfo>();
+    for (const model of localModels) map.set(model.id, model);
+    return map;
+  }, [localModels]);
+
+  const localResultIds = useMemo(() => {
+    const ids = localModels.map((model) => model.id);
+    const manual = localModelInput.trim();
+    if (manual && !ids.includes(manual)) {
+      ids.unshift(manual);
+    }
+    return ids;
+  }, [localModelInput, localModels]);
+
+  const localFilteredIds = useMemo(() => {
+    const q = localModelInput.trim().toLowerCase();
+    if (!q) return localResultIds;
+    return localResultIds.filter((id) => {
+      const meta = localMetaById.get(id);
+      if (id.toLowerCase().includes(q)) return true;
+      if (meta?.display_name.toLowerCase().includes(q)) return true;
+      if (meta?.path.toLowerCase().includes(q)) return true;
+      return false;
+    });
+  }, [localMetaById, localModelInput, localResultIds]);
+
+  // Pre-compute VRAM fit status for every model in the current result set.
+  // Keyed by model id so the render callback is a simple O(1) lookup.
+  //
+  // Pre-compute VRAM fit status for every model in the current result set.
+  // Keyed by model id so the render callback is a simple O(1) lookup.
+  // Re-computes when the training method changes (QLoRA=4-bit vs LoRA/Full=fp16).
+  const vramMap = useMemo(() => {
+    const method = trainingMethod as VramTrainingMethod;
+    const map = new Map<
+      string,
+      { est: number; status: VramFitStatus | null; detail: string | null }
+    >();
+    for (const r of hfResults) {
+      const detail = r.totalParams
+        ? formatCompact(r.totalParams)
+        : r.downloads != null
+          ? `\u2193${formatCompact(r.downloads)}`
+          : null;
+      if (r.totalParams) {
+        const est = estimateLoadingVram(r.totalParams, method);
+        const status = gpu.available
+          ? checkVramFit(est, gpu.memoryTotalGb)
+          : null;
+        map.set(r.id, { est, status, detail });
+      } else {
+        map.set(r.id, { est: 0, status: null, detail });
+      }
+    }
+    return map;
+  }, [hfResults, gpu, trainingMethod]);
+
   const comboboxAnchorRef = useRef<HTMLDivElement>(null);
+  const localComboboxAnchorRef = useRef<HTMLDivElement>(null);
   const { scrollRef, sentinelRef } = useInfiniteScroll(
     fetchMore,
     hfResults.length,
   );
 
   return (
-    <SectionCard
-      icon={<HugeiconsIcon icon={ChipIcon} className="size-5" />}
-      title="Model"
-      description="Select base model and training method"
-      accent="emerald"
-      featured={true}
-      badge="2x Faster Training"
-      className="col-span-12 shadow-border ring-1 ring-border"
-    >
-      <div className="grid gap-4 lg:grid-cols-4">
-        <div className="flex flex-col gap-2">
-          <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-            Local Model
+    <div data-tour="studio-model" className="col-span-1 md:col-span-2 xl:col-span-12">
+      <SectionCard
+        icon={<HugeiconsIcon icon={ChipIcon} className="size-5" />}
+        title="Model"
+        description="Select base model and training method"
+        accent="emerald"
+        featured={true}
+        badge="2x Faster Training"
+        className="shadow-border ring-1 ring-border"
+      >
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <div data-tour="studio-local-model" className="flex flex-col gap-2">
+            <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+              Local Model
             <Tooltip>
               <TooltipTrigger asChild={true}>
                 <button
@@ -159,15 +267,92 @@ export function ModelSection() {
               </TooltipContent>
             </Tooltip>
           </span>
-          <InputGroup className="bg-foreground text-background [&_input]:text-background [&_input]:placeholder:text-background/40 [&_svg]:text-background/50 hover:bg-foreground/90">
-            <InputGroupAddon>
-              <HugeiconsIcon icon={FolderSearchIcon} className="size-4" />
-            </InputGroupAddon>
-            <InputGroupInput placeholder="./models/my-model" />
-          </InputGroup>
+          <div ref={localComboboxAnchorRef}>
+            <Combobox
+              items={localResultIds}
+              filteredItems={localFilteredIds}
+              filter={null}
+              value={localModelInput || null}
+              onValueChange={(id) => {
+                const next = id ?? "";
+                setLocalModelInput(next);
+                if (next) setSelectedModel(next);
+              }}
+              onInputValueChange={setLocalModelInput}
+              itemToStringValue={(id) => id}
+              autoHighlight={true}
+            >
+              <ComboboxInput
+                placeholder={
+                  isLoadingLocalModels
+                    ? "Scanning local and cached models..."
+                    : "./models/my-model"
+                }
+                className="w-full bg-foreground text-background [&_input]:text-background [&_input]:placeholder:text-background/40 [&_svg]:text-background/50 hover:bg-foreground/90"
+                onBlur={() => applyLocalModel(localModelInput)}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter") return;
+                  event.preventDefault();
+                  applyLocalModel(localModelInput);
+                }}
+              >
+                <InputGroupAddon>
+                  <HugeiconsIcon icon={FolderSearchIcon} className="size-4" />
+                </InputGroupAddon>
+              </ComboboxInput>
+              <ComboboxContent anchor={localComboboxAnchorRef}>
+                {isLoadingLocalModels ? (
+                  <div className="flex items-center justify-center gap-2 py-4 text-xs text-muted-foreground">
+                    <Spinner className="size-4" /> Scanning...
+                  </div>
+                ) : localModelsError ? (
+                  <div className="px-3 py-2 text-xs text-red-500">
+                    {localModelsError}
+                  </div>
+                ) : (
+                  <ComboboxEmpty>No local models found</ComboboxEmpty>
+                )}
+                <ComboboxList className="p-1">
+                  {(id: string) => {
+                    const model = localMetaById.get(id);
+                    const source =
+                      model?.source === "hf_cache" ? "HF cache" : "Local dir";
+                    return (
+                      <ComboboxItem key={id} value={id} className="justify-between">
+                        <Tooltip>
+                          <TooltipTrigger asChild={true}>
+                            <span className="min-w-0 flex-1 truncate">
+                              {model?.display_name ?? id}
+                            </span>
+                          </TooltipTrigger>
+                          <TooltipContent side="left" className="max-w-xs break-all">
+                            {model?.path ?? id}
+                          </TooltipContent>
+                        </Tooltip>
+                        <span className="shrink-0 text-[10px] text-muted-foreground">
+                          {source}
+                        </span>
+                      </ComboboxItem>
+                    );
+                  }}
+                </ComboboxList>
+              </ComboboxContent>
+            </Combobox>
+          </div>
+          {isLoadingLocalModels ? (
+            <p className="text-[10px] text-muted-foreground">Scanning local models...</p>
+          ) : localModelsError ? (
+            <p className="text-[10px] text-red-500">{localModelsError}</p>
+          ) : (
+            <p className="text-[10px] text-muted-foreground">
+              {localModels.length > 0
+                ? `${localModels.length} local/cached models found`
+                : "No local models found. Enter path manually."}
+            </p>
+          )}
         </div>
 
-        <div className="flex flex-col gap-2">
+          <div data-tour="studio-base-model" className="flex flex-col gap-2">
           <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
             Base Model
             <Tooltip>
@@ -225,21 +410,21 @@ export function ModelSection() {
                 >
                   <ComboboxList className="p-1 !max-h-none !overflow-visible">
                     {(id: string) => {
-                      const r = hfResults.find((m) => m.id === id);
-                      const detail = r?.totalParams
-                        ? formatCompact(r.totalParams)
-                        : r?.downloads != null
-                          ? `↓${formatCompact(r.downloads)}`
-                          : null;
+                      const entry = vramMap.get(id);
+                      const detail = entry?.detail ?? null;
+                      const fitStatus = entry?.status ?? null;
+                      const vramEst = entry?.est ?? null;
+                      const exceeds = fitStatus === "exceeds";
+
                       return (
                         <ComboboxItem
                           key={id}
                           value={id}
-                          className="justify-between"
+                          className={`justify-between ${exceeds ? "opacity-50" : ""}`}
                         >
                           <Tooltip>
                             <TooltipTrigger asChild={true}>
-                              <span className="min-w-0 flex-1 truncate">
+                              <span className={`min-w-0 flex-1 truncate ${exceeds ? "line-through decoration-muted-foreground/50" : ""}`}>
                                 {id}
                               </span>
                             </TooltipTrigger>
@@ -248,13 +433,34 @@ export function ModelSection() {
                               className="max-w-xs break-all"
                             >
                               {id}
+                              {vramEst != null && vramEst > 0 && gpu.available && (
+                                <span className="block text-[10px] mt-1">
+                                  {exceeds
+                                    ? `Needs ~${vramEst}GB VRAM (GPU: ${gpu.memoryTotalGb}GB)`
+                                    : fitStatus === "tight"
+                                      ? `~${vramEst}GB VRAM (tight fit on ${gpu.memoryTotalGb}GB)`
+                                      : `~${vramEst}GB VRAM`}
+                                </span>
+                              )}
                             </TooltipContent>
                           </Tooltip>
-                          {detail && (
-                            <span className="text-[10px] text-muted-foreground shrink-0">
-                              {detail}
-                            </span>
-                          )}
+                          <span className="flex items-center gap-1.5 shrink-0">
+                            {fitStatus === "exceeds" && (
+                              <span className="text-[9px] font-medium text-red-400">
+                                OOM
+                              </span>
+                            )}
+                            {fitStatus === "tight" && (
+                              <span className="text-[9px] font-medium text-amber-400">
+                                TIGHT
+                              </span>
+                            )}
+                            {detail && (
+                              <span className="text-[10px] text-muted-foreground">
+                                {detail}
+                              </span>
+                            )}
+                          </span>
                         </ComboboxItem>
                       );
                     }}
@@ -271,7 +477,7 @@ export function ModelSection() {
           </div>
         </div>
 
-        <div className="flex flex-col gap-2">
+          <div data-tour="studio-method" className="flex flex-col gap-2">
           <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
             Method
             <Tooltip>
@@ -354,8 +560,26 @@ export function ModelSection() {
               onChange={(e) => setHfToken(e.target.value)}
             />
           </InputGroup>
+          {(tokenValidationError ?? hfSearchError) && (
+            <p className="text-xs text-destructive">
+              {tokenValidationError ?? hfSearchError}
+              {" — "}
+              <a
+                href="https://huggingface.co/settings/tokens"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline"
+              >
+                Get or update token
+              </a>
+            </p>
+          )}
+          {isCheckingToken && (
+            <p className="text-xs text-muted-foreground">Checking token…</p>
+          )}
         </div>
-      </div>
-    </SectionCard>
+        </div>
+      </SectionCard>
+    </div>
   );
 }

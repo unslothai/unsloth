@@ -4,6 +4,7 @@ Training backend for FastAPI integration
 import matplotlib.pyplot as plt
 from typing import Any, Generator, Tuple
 import logging
+import math
 
 from .trainer import get_trainer, TrainingProgress
 from utils.hardware import clear_gpu_cache
@@ -28,6 +29,11 @@ class TrainingBackend:
         self.loss_history = []
         self.lr_history = []
         self.step_history = []
+        self.grad_norm_history = []
+        self.grad_norm_step_history = []
+        self.eval_loss_history = []
+        self.eval_step_history = []
+        self.eval_enabled = False
         self.current_theme = "light"
 
         self.trainer.add_progress_callback(self._on_progress_update)
@@ -40,6 +46,17 @@ class TrainingBackend:
             self.loss_history.append(progress.loss)
             self.lr_history.append(progress.learning_rate)
             self.step_history.append(progress.step)
+        if progress.step >= 0 and progress.grad_norm is not None:
+            try:
+                grad_norm = float(progress.grad_norm)
+            except (TypeError, ValueError):
+                grad_norm = None
+            if grad_norm is not None and math.isfinite(grad_norm):
+                self.grad_norm_history.append(grad_norm)
+                self.grad_norm_step_history.append(progress.step)
+        if progress.eval_loss is not None:
+            self.eval_loss_history.append(progress.eval_loss)
+            self.eval_step_history.append(progress.step)
 
     def start_training(self,
                        # Model parameters
@@ -93,8 +110,13 @@ class TrainingBackend:
                        enable_tensorboard: bool,
                        tensorboard_dir: str,
 
-                       # Optional: user-provided column mapping
-                       custom_format_mapping: dict = None) -> bool:
+                       # Optional parameters
+                       custom_format_mapping: dict = None,
+                       subset: str = None,
+                       train_split: str = "train",
+                       eval_split: str = None,
+                       eval_steps: float = 0.01,
+                       is_dataset_multimodal: bool = False) -> bool:
         """
         Start training.
 
@@ -133,6 +155,11 @@ class TrainingBackend:
             self.loss_history = []
             self.lr_history = []
             self.step_history = []
+            self.grad_norm_history = []
+            self.grad_norm_step_history = []
+            self.eval_loss_history = []
+            self.eval_step_history = []
+            self.eval_enabled = False
             import time
             output_dir = f"./outputs/{model_name.replace('/', '_')}_{int(time.time())}"
 
@@ -148,7 +175,8 @@ class TrainingBackend:
                 model_name=model_name,
                 max_seq_length=max_seq_length,
                 load_in_4bit=load_in_4bit if use_lora_actual else False,  # Only 4bit for LoRA
-                hf_token=hf_token if hf_token.strip() else None
+                hf_token=hf_token if hf_token.strip() else None,
+                is_dataset_multimodal=is_dataset_multimodal,
             )
 
             if not success or self.trainer.should_stop:
@@ -187,12 +215,29 @@ class TrainingBackend:
             # ========== LOAD DATASET ==========
             logger.info("Loading dataset...")
             #breakpoint()
-            dataset = self.trainer.load_and_format_dataset(
+            dataset_result = self.trainer.load_and_format_dataset(
                 dataset_source=hf_dataset if hf_dataset.strip() else None,
                 format_type=format_type,
                 local_datasets=local_datasets if local_datasets else None,
                 custom_format_mapping=custom_format_mapping,
+                subset=subset,
+                train_split=train_split,
+                eval_split=eval_split,
             )
+
+            # Unpack: load_and_format_dataset returns (dataset, eval_dataset)
+            if isinstance(dataset_result, tuple):
+                dataset, eval_dataset = dataset_result
+            else:
+                dataset = dataset_result
+                eval_dataset = None
+
+            # If user set eval_steps to 0, disable evaluation entirely
+            if eval_steps is not None and float(eval_steps) <= 0:
+                eval_dataset = None
+
+            # Track whether eval is enabled for status reporting
+            self.eval_enabled = eval_dataset is not None
 
             if dataset is None or self.trainer.should_stop:
                 logger.error("Failed to load dataset or stopped by user")
@@ -213,7 +258,8 @@ class TrainingBackend:
             logger.info("Starting training worker thread...")
             success = self.trainer.start_training(
                 dataset=dataset,
-                #output_dir=f"./outputs/{model_name.replace('/', '_')}_{int(__import__('time').time())}",
+                eval_dataset=eval_dataset,
+                eval_steps=eval_steps,
                 output_dir=output_dir,
                 num_epochs=num_epochs,
                 learning_rate=lr_value,
@@ -232,7 +278,7 @@ class TrainingBackend:
                 wandb_token=wandb_token if wandb_token.strip() else None,
                 enable_tensorboard=enable_tensorboard,
                 tensorboard_dir=tensorboard_dir,
-                max_seq_length=max_seq_length,  # Pass through for config
+                max_seq_length=max_seq_length,
                 optim=optim,
                 lr_scheduler_type=lr_scheduler_type,
             )
@@ -323,8 +369,13 @@ class TrainingBackend:
             True if training is in progress, False otherwise
         """
         try:
-            # If user requested stop, training is no longer considered active
-            if self.trainer.should_stop:
+            training_thread = getattr(self.trainer, "training_thread", None)
+            if training_thread and training_thread.is_alive():
+                return True
+
+            # Stop requested and worker already exited => inactive.
+            # This allows UI to show stopped state + "Back to configuration".
+            if getattr(self.trainer, "should_stop", False):
                 return False
 
             progress = self.trainer.get_training_progress()
@@ -335,7 +386,23 @@ class TrainingBackend:
             # but haven't completed or errored yet
             if not is_active and not progress.is_completed and not progress.error:
                 status = progress.status_message or ""
-                if any(keyword in status.lower() for keyword in ["loading", "preparing", "training"]):
+                status_lower = status.lower()
+                if any(
+                    keyword in status_lower
+                    for keyword in ["cancelled", "canceled", "stopped", "completed", "ready to train"]
+                ):
+                    return False
+                if any(
+                    keyword in status_lower
+                    for keyword in [
+                        "loading",
+                        "preparing",
+                        "training",
+                        "configuring",
+                        "tokenizing",
+                        "starting",
+                    ]
+                ):
                     is_active = True
             return is_active
         except Exception as e:

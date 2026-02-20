@@ -12,12 +12,15 @@ __pycache__/
 .venv/
 venv/
 env/
+environment.yaml
 
 # Unsloth cache
 unsloth_compiled_cache/
 
 # ML artifacts (large files)
 outputs/
+exports/
+unsloth_training_checkpoints/
 *.gguf
 *.safetensors
 
@@ -27,6 +30,9 @@ outputs/
 .claude/
 *.swp
 *.swo
+
+# oh-my-codex
+.omx/
 
 # OS
 .DS_Store
@@ -47,3 +53,5 @@ docs/canvas-lab-architecture.md
 studio/frontend/test/
 studio/tests/
 studio/backend/tests/
+log_rtx.txt
+log.txt

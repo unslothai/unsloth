@@ -1,6 +1,7 @@
 """
 Main FastAPI application for Unsloth UI Backend
 """
+import os
 import secrets
 import shutil
 from contextlib import asynccontextmanager
@@ -23,7 +24,7 @@ from routes import (
     training_router,
 )
 from auth import storage
-from utils.hardware import detect_hardware
+from utils.hardware import detect_hardware, get_device, DeviceType
 import utils.hardware.hardware as _hw_module
 
 UNSLOTH_CACHE_DIR = Path(__file__).parent / "unsloth_compiled_cache"
@@ -34,6 +35,18 @@ async def lifespan(app: FastAPI):
     """Startup: detect hardware, print setup token if needed. Shutdown: clean up compiled cache."""
     # Detect hardware first — sets DEVICE global used everywhere
     detect_hardware()
+
+    # Disable flex attention on Blackwell+ GPUs (sm_120 and above)
+    if get_device() == DeviceType.CUDA:
+        import torch
+        props = torch.cuda.get_device_properties(0)
+        sm_version = props.major * 10 + props.minor
+        if sm_version >= 120:
+            os.environ["UNSLOTH_ENABLE_FLEX_ATTENTION"] = "0"
+            import logging
+            logging.getLogger(__name__).info(
+                f"GPU sm_{sm_version} detected — setting UNSLOTH_FLEX_ATTENTION=0"
+            )
 
     if not storage.is_initialized():
         setup_token = secrets.token_urlsafe(32)
@@ -123,6 +136,17 @@ async def get_system_info():
             "percent_used": memory.percent,
         },
         "gpu": gpu_info,
+    }
+
+
+@app.get("/api/system/hardware")
+async def get_hardware_info():
+    """Return GPU name, total VRAM, and key ML package versions."""
+    from utils.hardware import get_gpu_summary, get_package_versions
+
+    return {
+        "gpu": get_gpu_summary(),
+        "versions": get_package_versions(),
     }
 
 

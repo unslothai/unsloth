@@ -5,11 +5,13 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse, JSONResponse
 from typing import Optional
 import json
 import logging
+import asyncio
+import threading
 
 
 
@@ -304,7 +306,7 @@ def _extract_content_parts(
 
 
 @router.post("/chat/completions")
-async def openai_chat_completions(request: ChatCompletionRequest):
+async def openai_chat_completions(payload: ChatCompletionRequest, request: Request):
     """
     OpenAI-compatible chat completions endpoint.
 
@@ -324,7 +326,7 @@ async def openai_chat_completions(request: ChatCompletionRequest):
 
     # ── Parse messages (handles multimodal content parts) ─────
     system_prompt, chat_messages, extracted_image_b64 = _extract_content_parts(
-        request.messages
+        payload.messages
     )
 
     # If no non-system messages were provided, error out
@@ -336,7 +338,7 @@ async def openai_chat_completions(request: ChatCompletionRequest):
 
     # ── Decode image (from content parts OR legacy field) ─────
     # Content-part images take priority; fall back to legacy field
-    image_b64 = extracted_image_b64 or request.image_base64
+    image_b64 = extracted_image_b64 or payload.image_base64
     image = None
 
     if image_b64:
@@ -366,31 +368,36 @@ async def openai_chat_completions(request: ChatCompletionRequest):
         messages=chat_messages,
         system_prompt=system_prompt,
         image=image,
-        temperature=request.temperature,
-        top_p=request.top_p,
-        top_k=request.top_k,
-        max_new_tokens=request.max_tokens or 512,
-        repetition_penalty=request.repetition_penalty,
+        temperature=payload.temperature,
+        top_p=payload.top_p,
+        top_k=payload.top_k,
+        min_p=payload.min_p,
+        max_new_tokens=payload.max_tokens or 512,
+        repetition_penalty=payload.repetition_penalty,
     )
 
     # ── Choose generation path (adapter-controlled or standard) ──
-    if request.use_adapter is not None:
+    cancel_event = threading.Event()
+
+    if payload.use_adapter is not None:
         # Compare mode: toggle adapter state atomically with generation
         def generate():
             return backend.generate_with_adapter_control(
-                use_adapter=request.use_adapter, **gen_kwargs
+                use_adapter=payload.use_adapter,
+                cancel_event=cancel_event,
+                **gen_kwargs,
             )
     else:
         # Standard path: no adapter toggling
         def generate():
-            return backend.generate_chat_response(**gen_kwargs)
+            return backend.generate_chat_response(cancel_event=cancel_event, **gen_kwargs)
 
-    model_name = backend.active_model_name or request.model
+    model_name = backend.active_model_name or payload.model
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     created = int(time.time())
 
     # ── Streaming response ────────────────────────────────────────
-    if request.stream:
+    if payload.stream:
         async def stream_chunks():
             try:
                 # First chunk: send the role
@@ -409,6 +416,10 @@ async def openai_chat_completions(request: ChatCompletionRequest):
                 # text, so we diff to get incremental deltas.
                 prev_text = ""
                 for cumulative in generate():
+                    if await request.is_disconnected():
+                        cancel_event.set()
+                        backend.reset_generation_state()
+                        return
                     new_text = cumulative[len(prev_text):]
                     prev_text = cumulative
                     if not new_text:
@@ -437,6 +448,10 @@ async def openai_chat_completions(request: ChatCompletionRequest):
                 yield f"data: {final_chunk.model_dump_json(exclude_none=True)}\n\n"
                 yield "data: [DONE]\n\n"
 
+            except asyncio.CancelledError:
+                cancel_event.set()
+                backend.reset_generation_state()
+                raise
             except Exception as e:
                 backend.reset_generation_state()
                 logger.error(f"Error during OpenAI streaming: {e}", exc_info=True)
@@ -477,4 +492,3 @@ async def openai_chat_completions(request: ChatCompletionRequest):
             backend.reset_generation_state()
             logger.error(f"Error during OpenAI completion: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))
-

@@ -19,7 +19,6 @@ import {
   useTrainingConfigStore,
   useTrainingActions,
   useTrainingRuntimeStore,
-  type TrainingPhase,
 } from "@/features/training";
 import {
   ChartAverageIcon,
@@ -31,52 +30,15 @@ import {
   ZapIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
+import { useState, type ReactElement, type ReactNode } from "react";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { useShallow } from "zustand/react/shallow";
-
-const phaseLabel: Record<TrainingPhase, string> = {
-  idle: "Idle",
-  loading_model: "Loading model",
-  loading_dataset: "Loading dataset",
-  configuring: "Configuring",
-  training: "Training",
-  completed: "Completed",
-  error: "Error",
-  stopped: "Stopped",
-};
-
-const phaseColors: Record<TrainingPhase, string> = {
-  idle: "bg-muted text-muted-foreground",
-  loading_model: "bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300",
-  loading_dataset:
-    "bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300",
-  configuring: "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300",
-  training:
-    "bg-emerald-100 text-emerald-700 dark:bg-emerald-900 dark:text-emerald-300",
-  completed:
-    "bg-emerald-100 text-emerald-700 dark:bg-emerald-900 dark:text-emerald-300",
-  error: "bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300",
-  stopped: "bg-muted text-muted-foreground",
-};
-
-function formatDuration(seconds: number | null): string {
-  if (seconds == null || seconds < 0) {
-    return "--";
-  }
-  const total = Math.floor(seconds);
-  const min = Math.floor(total / 60);
-  const sec = total % 60;
-  return `${min}m ${sec}s`;
-}
-
-function formatNumber(value: number | null | undefined, digits: number): string {
-  if (value == null || !Number.isFinite(value)) {
-    return "--";
-  }
-  return value.toFixed(digits);
-}
+import { useGpuUtilization } from "@/hooks";
+import { setTrainingCompareHandoff } from "@/features/chat";
+import { formatDuration, formatNumber, phaseColors, phaseLabel } from "./progress-section-lib";
 
 export function ProgressSection(): ReactElement {
+  const navigate = useNavigate();
   const runtime = useTrainingRuntimeStore(
     useShallow((state) => ({
       phase: state.phase,
@@ -93,6 +55,9 @@ export function ProgressSection(): ReactElement {
       etaSeconds: state.etaSeconds,
       currentNumTokens: state.currentNumTokens,
       isTrainingRunning: state.isTrainingRunning,
+      lossHistory: state.lossHistory,
+      lrHistory: state.lrHistory,
+      gradNormHistory: state.gradNormHistory,
     })),
   );
 
@@ -114,46 +79,21 @@ export function ProgressSection(): ReactElement {
   );
 
   const { stopTrainingRun } = useTrainingActions();
+  const gpu = useGpuUtilization(runtime.isTrainingRunning);
   const [stopDialogOpen, setStopDialogOpen] = useState(false);
-  const localStartAtRef = useRef<number | null>(null);
-  const [, setLocalTick] = useState(0);
 
   const pct =
     runtime.totalSteps > 0
       ? Math.min(
-          100,
-          Math.max(
-            0,
-            Math.round((runtime.currentStep / runtime.totalSteps) * 100),
-          ),
-        )
+        100,
+        Math.max(
+          0,
+          Math.round((runtime.currentStep / runtime.totalSteps) * 100),
+        ),
+      )
       : Math.round(runtime.progressPercent);
 
-  useEffect(() => {
-    if (runtime.elapsedSeconds != null && runtime.elapsedSeconds >= 0) {
-      localStartAtRef.current = Date.now() - runtime.elapsedSeconds * 1000;
-      return;
-    }
-    if (runtime.currentStep > 0 && localStartAtRef.current == null) {
-      localStartAtRef.current = Date.now();
-    }
-  }, [runtime.currentStep, runtime.elapsedSeconds]);
-
-  useEffect(() => {
-    if (!runtime.isTrainingRunning) {
-      return;
-    }
-    const timer = window.setInterval(() => {
-      setLocalTick((prev) => prev + 1);
-    }, 1000);
-    return () => window.clearInterval(timer);
-  }, [runtime.isTrainingRunning]);
-
-  const elapsed =
-    runtime.elapsedSeconds ??
-    (localStartAtRef.current == null
-      ? null
-      : Math.max(0, Math.floor((Date.now() - localStartAtRef.current) / 1000)));
+  const elapsed = runtime.elapsedSeconds;
   const derivedEta =
     elapsed != null && pct > 0
       ? Math.round((elapsed * (100 - pct)) / Math.max(pct, 1))
@@ -164,6 +104,27 @@ export function ProgressSection(): ReactElement {
     elapsed != null && elapsed > 0
       ? runtime.currentStep / elapsed
       : null;
+  const showHalfwayHint =
+    runtime.phase === "training" && pct >= 50 && pct < 100;
+  const showCompletedHint = runtime.phase === "completed";
+  const handleCompareInChat = () => {
+    setTrainingCompareHandoff(config.selectedModel);
+    void navigate({ to: "/chat" });
+  };
+
+  const stoppedLoss = getDisplayMetric(
+    runtime.isTrainingRunning,
+    runtime.currentLoss,
+    runtime.lossHistory,
+  );
+  const stoppedLr = getDisplayMetric(
+    runtime.isTrainingRunning,
+    runtime.currentLearningRate,
+    runtime.lrHistory,
+  );
+  const stoppedGradNorm = runtime.isTrainingRunning
+    ? runtime.currentGradNorm
+    : lastNonZeroValue(runtime.gradNormHistory) ?? runtime.currentGradNorm;
 
   const configItems = [
     {
@@ -179,16 +140,16 @@ export function ProgressSection(): ReactElement {
     },
     ...(config.trainingMethod !== "full"
       ? [
-          {
-            section: "LoRA",
-            rows: [
-              ["Rank", config.loraRank],
-              ["Alpha", config.loraAlpha],
-              ["Dropout", config.loraDropout],
-              ["Variant", config.loraVariant],
-            ],
-          },
-        ]
+        {
+          section: "LoRA",
+          rows: [
+            ["Rank", config.loraRank],
+            ["Alpha", config.loraAlpha],
+            ["Dropout", config.loraDropout],
+            ["Variant", config.loraVariant],
+          ],
+        },
+      ]
       : []),
   ];
 
@@ -238,6 +199,7 @@ export function ProgressSection(): ReactElement {
           </Popover>
           <AlertDialog open={stopDialogOpen} onOpenChange={setStopDialogOpen}>
             <Button
+              data-tour="studio-training-stop"
               variant="destructive"
               size="sm"
               className="h-7 cursor-pointer px-3 text-xs"
@@ -246,7 +208,7 @@ export function ProgressSection(): ReactElement {
             >
               <HugeiconsIcon icon={StopIcon} className="size-3" /> Stop
             </Button>
-            <AlertDialogContent>
+            <AlertDialogContent overlayClassName="bg-background/40 supports-backdrop-filter:backdrop-blur-[1px]">
               <AlertDialogHeader>
                 <AlertDialogTitle>Stop Training</AlertDialogTitle>
                 <AlertDialogDescription>
@@ -300,6 +262,26 @@ export function ProgressSection(): ReactElement {
             </div>
           </div>
 
+          {(showHalfwayHint || showCompletedHint) && (
+            <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/8 p-3">
+              <p className="text-xs font-medium text-emerald-900 dark:text-emerald-200">
+                {showCompletedHint
+                  ? "Training done. Next step: compare base vs fine-tuned outputs."
+                  : "Halfway done. Training is past 50%."}
+              </p>
+              {showCompletedHint && (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <Button size="xs" onClick={handleCompareInChat}>
+                    Compare in Chat
+                  </Button>
+                  <Button asChild={true} size="xs" variant="outline">
+                    <Link to="/export">Export Model</Link>
+                  </Button>
+                </div>
+              )}
+            </div>
+          )}
+
           {runtime.error && (
             <p className="text-xs text-red-500 leading-relaxed">{runtime.error}</p>
           )}
@@ -308,19 +290,19 @@ export function ProgressSection(): ReactElement {
             <div>
               <p className="text-xs text-muted-foreground">Loss</p>
               <p className="text-3xl font-bold tabular-nums tracking-tight">
-                {runtime.currentLoss.toFixed(4)}
+                {stoppedLoss.toFixed(4)}
               </p>
             </div>
             <div>
               <p className="text-xs text-muted-foreground">LR</p>
               <p className="text-lg font-semibold tabular-nums">
-                {runtime.currentLearningRate.toExponential(2)}
+                {stoppedLr.toExponential(2)}
               </p>
             </div>
             <div>
               <p className="text-xs text-muted-foreground">Grad Norm</p>
               <p className="text-lg font-semibold tabular-nums">
-                {formatNumber(runtime.currentGradNorm, 3)}
+                {formatNumber(stoppedGradNorm, 3)}
               </p>
             </div>
             <div>
@@ -362,33 +344,54 @@ export function ProgressSection(): ReactElement {
                   className="size-3.5"
                 />
               }
-              value="--"
-              pct={0}
+              value={gpu.gpu_utilization_pct != null ? `${gpu.gpu_utilization_pct}%` : "--"}
+              pct={gpu.gpu_utilization_pct ?? 0}
             />
             <GpuStat
               label="Temperature"
               icon={<HugeiconsIcon icon={TemperatureIcon} className="size-3.5" />}
-              value="--"
-              pct={0}
+              value={gpu.temperature_c != null ? `${gpu.temperature_c}°C` : "--"}
+              pct={gpu.temperature_c ?? 0}
               max={100}
             />
             <GpuStat
               label="VRAM"
               icon={<HugeiconsIcon icon={RamMemoryIcon} className="size-3.5" />}
-              value="--"
-              pct={0}
+              value={gpu.vram_used_gb != null && gpu.vram_total_gb != null ? `${gpu.vram_used_gb} / ${gpu.vram_total_gb} GB` : "--"}
+              pct={gpu.vram_utilization_pct ?? 0}
             />
             <GpuStat
               label="Power"
               icon={<HugeiconsIcon icon={ZapIcon} className="size-3.5" />}
-              value="--"
-              pct={0}
+              value={gpu.power_draw_w != null ? (gpu.power_limit_w != null ? `${gpu.power_draw_w} / ${gpu.power_limit_w} W` : `${gpu.power_draw_w} W`) : "--"}
+              pct={gpu.power_utilization_pct ?? 0}
             />
           </div>
         </div>
       </div>
     </SectionCard>
   );
+}
+
+function lastNonZeroValue(points: { value: number }[]): number | null {
+  for (let i = points.length - 1; i >= 0; i -= 1) {
+    const value = points[i]?.value;
+    if (Number.isFinite(value) && value !== 0) {
+      return value;
+    }
+  }
+  return null;
+}
+
+function getDisplayMetric(
+  isTrainingRunning: boolean,
+  currentValue: number,
+  history: { value: number }[],
+): number {
+  if (isTrainingRunning) {
+    return currentValue;
+  }
+  return lastNonZeroValue(history) ?? currentValue;
 }
 
 function GpuStat({

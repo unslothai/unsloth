@@ -5,8 +5,11 @@ export interface TrainingStartRequest {
   load_in_4bit: boolean;
   max_seq_length: number;
   hf_dataset: string | null;
+  hf_dataset_config: string | null;
+  hf_dataset_split: string | null;
   local_datasets: string[];
   format_type: string;
+  custom_format_mapping?: Record<string, string> | null;
   num_epochs: number;
   learning_rate: string;
   batch_size: number;
@@ -15,6 +18,7 @@ export interface TrainingStartRequest {
   warmup_ratio: number | null;
   max_steps: number | null;
   save_steps: number;
+  eval_steps: number;
   weight_decay: number;
   random_seed: number;
   packing: boolean;
@@ -33,6 +37,7 @@ export interface TrainingStartRequest {
   finetune_language_layers: boolean;
   finetune_attention_modules: boolean;
   finetune_mlp_modules: boolean;
+  is_dataset_multimodal: boolean;
   enable_wandb: boolean;
   wandb_token: string | null;
   wandb_project: string | null;
