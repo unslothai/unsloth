@@ -2,11 +2,12 @@
 # Licensed under the Apache License, Version 2.0.
 
 """
-Unsloth Automatic Patcher for Apple Silicon (macOS/MPS) Compatibility
-=====================================================================
+Unsloth Full Automatic Patcher for Apple Silicon (macOS/MPS) Compatibility
+==========================================================================
 
-This module provides a fully automatic, dynamic patching system for unsloth_zoo
-and CUDA-specific dependencies.
+This module provides a dynamic, intercepting patching system. It uses a 
+MetaPathFinder to catch imports and either provide mocks or wrap real 
+loaders to inject missing attributes (like Linear4bit) on the fly.
 """
 
 from __future__ import annotations
@@ -32,36 +33,47 @@ def _unsloth_dummy_fn(*args, **kwargs):
     """Universal dummy function for mocks."""
     return None
 
-class MockModule(types.ModuleType):
-    """Extremely robust mock module that behaves like a module but can be used as a class/function."""
+class MockModule(nn.Module):
+    """Robust mock module that survives both import system and torch.nn.Module checks."""
     def __init__(self, name):
-        super().__init__(name)
-        self.__path__ = []
-        self.__file__ = f"{name}.py"
-        self.__package__ = name.rsplit(".", 1)[0] if "." in name else ""
-        self._unsloth_mock = True
+        super().__init__()
+        # Bypass nn.Module.__setattr__ to set module attributes
+        for k, v in {
+            "__name__": name,
+            "__path__": [],
+            "__file__": f"{name}.py",
+            "__package__": name.rsplit(".", 1)[0] if "." in name else "",
+            "_unsloth_mock": True
+        }.items():
+            object.__setattr__(self, k, v)
 
     def __call__(self, *args, **kwargs):
-        # If this mock is called as a constructor (e.g. Bnb_Linear4bit(...)),
-        # return a real nn.Module if it looks like it will be assigned as a child module.
-        if any(x in self.__name__ for x in ("Linear", "dispatch", "Layer", "Norm")):
+        # If it looks like a layer constructor, return an instance that is also an nn.Module
+        if any(x in self.__name__ for x in ("Linear", "Layer", "Norm", "dispatch")):
             return nn.Module()
         return self
 
     def __getattr__(self, name):
+        # 1. Handle double-underscore names
         if name.startswith("__") and name.endswith("__"):
             raise AttributeError(name)
             
-        # Check for specialized mocks first
+        # 2. Handle nn.Module internals
+        if name.startswith("_") and name not in ("_unsloth_mock",):
+            try: return self.__dict__[name]
+            except KeyError: raise AttributeError(name)
+            
+        # 3. Specialized Mocks
         fullname = f"{self.__name__}.{name}"
         
         # RL Specialization
-        if "rl_replacements" in self.__name__ and name == "RL_REPLACEMENTS":
-            return collections.defaultdict(lambda: _unsloth_dummy_fn, {"grpo_compute_loss_slow": "def dummy(): pass"})
-        if "rl_replacements" in self.__name__ and name == "RL_PRE_ITEMS":
-            return collections.defaultdict(list)
+        if "rl_replacements" in self.__name__:
+            if name == "RL_REPLACEMENTS":
+                return collections.defaultdict(lambda: _unsloth_dummy_fn, {"grpo_compute_loss_slow": "def dummy(): pass"})
+            if name == "RL_PRE_ITEMS":
+                return collections.defaultdict(list)
             
-        # Versioning Specialization
+        # Versioning/Utility Specialization
         if name == "Version":
             class Version:
                 def __init__(self, v): self.v = str(v)
@@ -74,14 +86,12 @@ class MockModule(types.ModuleType):
                 def __str__(self): return self.v
             return Version
 
-        # Logic Specialization
         if name == "get_transformers_model_type": return lambda *a, **k: ["llama"]
         if name == "unsloth_compile_transformers": return lambda *a, **k: (["llama"], True)
         if name == "patch_tokenizer": return lambda m, t: (m, t)
         if name == "patch_model_and_tokenizer": return lambda m, t, **k: (m, t)
         if name == "patch_layernorm": return lambda *a, **k: None
         if name == "add_dtype_kwargs": return lambda *a, **k: {}
-        if name == "backends" and "triton" in self.__name__: return {}
         if name == "_get_dtype":
             def _get_dtype(d):
                 if d is None: return torch.float16
@@ -89,6 +99,7 @@ class MockModule(types.ModuleType):
                 try: return getattr(torch, str(d).split(".")[-1])
                 except: return torch.float16
             return _get_dtype
+        if name == "backends" and "triton" in self.__name__: return {}
             
         # Device Type Specialization
         if "device_type" in self.__name__:
@@ -101,11 +112,11 @@ class MockModule(types.ModuleType):
             if name == "ALLOW_PREQUANTIZED_MODELS": return False
             if name == "ALLOW_BITSANDBYTES": return False
 
-        # Default: Return another callable mock ONLY if we are still within mock targets
+        # Default: Return another mock ONLY if we are in a mock target package
         if any(self.__name__.startswith(t) for t in ("unsloth_zoo", "triton", "bitsandbytes", "peft.tuners.lora.bnb")):
             return MockModule(fullname)
             
-        raise AttributeError(name)
+        raise AttributeError(f"MockModule '{self.__name__}' has no attribute '{name}'")
 
     def __iter__(self):
         return iter([self, self])
@@ -126,8 +137,57 @@ class MockModule(types.ModuleType):
         return True
 
     def __mro_entries__(self, bases):
-        # Allow inheriting from the mock
         return (nn.Module,)
+
+class PatchedLoader(Loader):
+    """Wraps a real loader to inject missing attributes after execution."""
+    def __init__(self, real_loader):
+        self.real_loader = real_loader
+    def create_module(self, spec):
+        return self.real_loader.create_module(spec)
+    def exec_module(self, module):
+        self.real_loader.exec_module(module)
+        # On-the-fly hardening for peft
+        if module.__name__ == "peft.tuners.lora":
+            if not hasattr(module, "Linear4bit"):
+                module.Linear4bit = MockModule("peft.tuners.lora.Linear4bit")
+            if not hasattr(module, "Linear"):
+                module.Linear = MockModule("peft.tuners.lora.Linear")
+        # Hardening for bitsandbytes.nn
+        elif module.__name__ == "bitsandbytes.nn":
+            if not hasattr(module, "Linear4bit"):
+                module.Linear4bit = MockModule("bitsandbytes.nn.Linear4bit")
+
+class UnslothMockFinder(MetaPathFinder):
+    """Dynamic finder that provides mocks or wraps real loaders for on-the-fly patching."""
+    def __init__(self):
+        self.mock_targets = ("unsloth_zoo", "triton", "bitsandbytes")
+        self.patch_targets = ("peft.tuners.lora", "bitsandbytes.nn")
+        self._disabled = False
+
+    def find_spec(self, fullname, path, target=None):
+        if self._disabled: return None
+        
+        # 1. Full Mocking for Zoo, Triton, BNB
+        if any(fullname == t or fullname.startswith(f"{t}.") for t in self.mock_targets):
+            # Check if it's already a real module (e.g. partially loaded before patcher)
+            if fullname in sys.modules and not hasattr(sys.modules[fullname], "_unsloth_mock"):
+                return None
+            return ModuleSpec(fullname, UnslothMockLoader(), origin="unsloth_mock")
+            
+        # 2. On-the-fly Patching for PEFT/BNB.nn
+        if fullname in self.patch_targets:
+            self._disabled = True # Prevent recursion
+            try:
+                import importlib.util
+                spec = importlib.util.find_spec(fullname)
+                if spec and spec.loader:
+                    spec.loader = PatchedLoader(spec.loader)
+                    return spec
+            except: pass
+            finally: self._disabled = False
+            
+        return None
 
 class UnslothMockLoader(Loader):
     def create_module(self, spec):
@@ -135,20 +195,6 @@ class UnslothMockLoader(Loader):
         return MockModule(spec.name)
     def exec_module(self, module):
         sys.modules[module.__name__] = module
-
-class UnslothMockFinder(MetaPathFinder):
-    """Automatically catches any import for specified packages and provides mocks."""
-    def __init__(self):
-        self.targets = ("unsloth_zoo", "triton", "bitsandbytes", "peft.tuners.lora.bnb", "peft.tuners.lora.bnb4bit")
-        self.loader = UnslothMockLoader()
-
-    def find_spec(self, fullname, path, target=None):
-        if any(fullname == t or fullname.startswith(f"{t}.") for t in self.targets):
-            # Check if it's already a real module (e.g. partially loaded)
-            if fullname in sys.modules and not hasattr(sys.modules[fullname], "_unsloth_mock"):
-                return None
-            return ModuleSpec(fullname, self.loader, origin="unsloth_mock")
-        return None
 
 _PATCH_APPLIED = False
 
@@ -158,13 +204,12 @@ def patch_unsloth_zoo_for_mps() -> bool:
 
     if platform.system() != "Darwin": return False
     
-    # 1. Install the automatic finder
+    # 1. Install the full automatic finder
     sys.meta_path.insert(0, UnslothMockFinder())
 
     # 2. Mock CUDA properties
     try:
         if not torch.cuda.is_available():
-            # Minimal hardware info for mocking
             info = {"chip": "Apple Silicon", "mem": 16 * 1024**3, "gpu": 8}
             try:
                 res = subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"], capture_output=True, text=True)
