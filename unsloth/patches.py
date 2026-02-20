@@ -18,6 +18,7 @@ import logging
 import subprocess
 import json
 import re
+import collections
 from types import ModuleType
 from typing import Optional, Any, Dict, List, Callable, Union, Tuple
 from dataclasses import dataclass, field
@@ -264,11 +265,19 @@ class MacPatcher:
             mod.get_quant_type = lambda m: "unknown"
         elif fullname == "triton.backends":
             mod.backends = {}
-        elif fullname == "triton.runtime.triton_heuristics" or fullname == "triton.runtime.config":
-            # Mock the Config class that InductorConfig inherits from
-            class Config:
-                def __init__(self, *args, **kwargs): pass
-            mod.Config = Config
+        elif "rl_replacements" in fullname:
+            def dummy_fn(*args, **kwargs): pass
+            mod.RL_REPLACEMENTS = collections.defaultdict(lambda: dummy_fn)
+            mod.RL_PRE_ITEMS = collections.defaultdict(list)
+        elif "patching_utils" in fullname:
+            class DummyLinear: pass
+            mod.Bnb_Linear4bit = DummyLinear
+            mod.Peft_Linear4bit = DummyLinear
+            mod.Peft_Linear = DummyLinear
+            mod.patch_model_and_tokenizer = lambda m, t: (m, t)
+            mod.patch_compiled_autograd = lambda: None
+            mod.patch_layernorm = lambda: None
+            mod.patch_torch_compile = lambda *a, **k: None
         
         return mod
 
@@ -300,7 +309,7 @@ class MacPatcher:
         self._mock_finders.append(finder)
         
         # Populate sys.modules to prevent real imports
-        for sub in ["device_type", "utils", "vision_utils", "log", "hf_utils", "peft_utils", "temporary_patches", "temporary_patches.common"]:
+        for sub in ["device_type", "utils", "vision_utils", "log", "hf_utils", "peft_utils", "temporary_patches", "temporary_patches.common", "rl_replacements", "patching_utils"]:
             full = f"unsloth_zoo.{sub}"
             if full not in sys.modules:
                 sys.modules[full] = self._create_mock_module(full)
