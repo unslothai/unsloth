@@ -41,7 +41,7 @@ export function buildTrainingStartPayload(
     random_seed: config.randomSeed,
     packing: config.packing,
     optim: config.optimizerType,
-    lr_scheduler_type: "linear",
+    lr_scheduler_type: config.lrSchedulerType,
     use_lora: adapterMethod,
     lora_r: config.loraRank,
     lora_alpha: config.loraAlpha,
