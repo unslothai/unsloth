@@ -2,11 +2,12 @@
 # Licensed under the Apache License, Version 2.0.
 
 """
-Unsloth Patcher for Apple Silicon (macOS/MPS) Compatibility
-===========================================================
+Unsloth Automatic Patcher for Apple Silicon (macOS/MPS) Compatibility
+=====================================================================
 
-This module provides comprehensive patching for unsloth_zoo and related
-dependencies to work correctly on Apple Silicon with MPS.
+This module provides a fully automatic, dynamic patching system for unsloth_zoo
+and CUDA-specific dependencies. It uses a MetaPathFinder to intercept imports
+and provide robust mocks on the fly.
 """
 
 from __future__ import annotations
@@ -20,194 +21,154 @@ import types
 import collections
 from typing import Optional, Any, Dict, List
 from dataclasses import dataclass
-from enum import Enum, auto
+from importlib.abc import MetaPathFinder, Loader
+from importlib.machinery import ModuleSpec
 
 # Configure logging
 logger = logging.getLogger("unsloth.patches")
 
-class PatchStatus(Enum):
-    SUCCESS = auto()
-    SKIPPED = auto()
-    FAILED = auto()
-    ALREADY_APPLIED = auto()
-    NOT_NEEDED = auto()
-
-@dataclass
-class PatchResult:
-    name: str
-    status: PatchStatus
-    message: str = ""
-    
-    @property
-    def success(self) -> bool:
-        return self.status in (PatchStatus.SUCCESS, PatchStatus.ALREADY_APPLIED, PatchStatus.NOT_NEEDED)
-
 def _unsloth_dummy_fn(*args, **kwargs):
-    """Dummy function for mocks that need to support inspect.getsource."""
+    """Universal dummy function for mocks."""
     return None
 
-class MacPatcher:
+class MockModule(types.ModuleType):
+    """Extremely robust mock module that survives all common Python operations."""
+    def __init__(self, name):
+        super().__init__(name)
+        self.__path__ = []
+        self.__file__ = f"{name}.py"
+        self._unsloth_mock = True
+
+    def __call__(self, *args, **kwargs):
+        return self
+
+    def __getattr__(self, name):
+        if name.startswith("__"): return super().__getattribute__(name)
+        # Check for specialized mocks first
+        fullname = f"{self.__name__}.{name}"
+        
+        # RL Specialization
+        if "rl_replacements" in self.__name__ and name == "RL_REPLACEMENTS":
+            return collections.defaultdict(lambda: _unsloth_dummy_fn, {"grpo_compute_loss_slow": "def dummy(): pass"})
+        if "rl_replacements" in self.__name__ and name == "RL_PRE_ITEMS":
+            return collections.defaultdict(list)
+            
+        # Versioning Specialization
+        if name == "Version":
+            class Version:
+                def __init__(self, v): self.v = str(v)
+                def __lt__(self, o): return False
+                def __le__(self, o): return True
+                def __gt__(self, o): return True
+                def __ge__(self, o): return True
+                def __eq__(self, o): return True
+                def __ne__(self, o): return False
+                def __str__(self): return self.v
+            return Version
+
+        # Logic Specialization
+        if name == "get_transformers_model_type": return lambda *a, **k: ["llama"]
+        if name == "unsloth_compile_transformers": return lambda *a, **k: (["llama"], True)
+        if name == "patch_tokenizer": return lambda m, t: (m, t)
+        if name == "add_dtype_kwargs": return lambda *a, **k: {}
+        if name == "backends" and "triton" in self.__name__: return {}
+
+        # Default: Return another callable mock
+        return MockModule(fullname)
+
+    def __iter__(self):
+        return iter([self, self])
+
+    def __getitem__(self, key):
+        return self
+
+    def __setitem__(self, key, value):
+        pass
+
+    def __contains__(self, key):
+        return False
+
+    def __len__(self):
+        return 0
+
+    def __bool__(self):
+        return True # Mock modules usually exist
+
+    def __mro_entries__(self, bases):
+        return (object,)
+
+class UnslothMockLoader(Loader):
+    def create_module(self, spec):
+        if spec.name in sys.modules: return sys.modules[spec.name]
+        return MockModule(spec.name)
+    def exec_module(self, module):
+        pass
+
+class UnslothMockFinder(MetaPathFinder):
+    """Automatically catches any import for specified packages and provides mocks."""
     def __init__(self):
-        self._applied = False
-        self._results: Dict[str, PatchResult] = {}
+        self.targets = ("unsloth_zoo", "triton", "bitsandbytes")
+        self.loader = UnslothMockLoader()
 
-    @property
-    def is_applied(self) -> bool:
-        return self._applied
+    def find_spec(self, fullname, path, target=None):
+        if any(fullname == t or fullname.startswith(f"{t}.") for t in self.targets):
+            return ModuleSpec(fullname, self.loader, origin="unsloth_mock")
+        return None
 
-    @staticmethod
-    def is_mac_with_mps() -> bool:
-        if platform.system() != "Darwin": return False
-        if os.environ.get("UNSLOTH_FORCE_MPS", "0") == "1": return True
-        try:
-            import torch
-            return torch.backends.mps.is_available()
-        except: return False
-
-    @staticmethod
-    def get_hardware_info() -> dict:
-        info = {"chip_name": "Apple Silicon", "total_memory_bytes": 16 * 1024**3, "usable_memory_gb": 12.0, "gpu_cores": 8}
-        try:
-            res = subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"], capture_output=True, text=True)
-            if res.returncode == 0: info["chip_name"] = res.stdout.strip()
-            res = subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True, text=True)
-            if res.returncode == 0: 
-                info["total_memory_bytes"] = int(res.stdout.strip())
-                info["usable_memory_gb"] = (info["total_memory_bytes"] / 1024**3) * 0.75
-            chip = info["chip_name"]
-            if "M1" in chip: info["gpu_cores"] = 8 if "Max" not in chip else 32
-            elif "M2" in chip: info["gpu_cores"] = 10 if "Max" not in chip else 38
-            elif "M3" in chip or "M4" in chip: info["gpu_cores"] = 10 if "Max" not in chip else 40
-        except: pass
-        return info
-
-    def _create_mock_module(self, name: str):
-        mod = types.ModuleType(name)
-        mod.__file__ = f"{name}.py"
-        mod.__path__ = []
-        # Support recursive attribute access that is itself a callable mock
-        class MockAttr:
-            def __init__(self, name): self.__name__ = name
-            def __call__(self, *args, **kwargs): return self
-            def __getattr__(self, n): return MockAttr(f"{self.__name__}.{n}")
-            def __iter__(self): return iter([self, self])
-            def __getitem__(self, k): return self
-            def __contains__(self, k): return False
-            def __mro_entries__(self, b): return (object,)
-        
-        mod._unsloth_mock = True
-        return mod
-
-    def apply(self):
-        if self._applied: return list(self._results.values())
-        if not self.is_mac_with_mps(): return []
-
-        hw_info = self.get_hardware_info()
-        
-        # 1. Mock CUDA
-        try:
-            import torch
-            if not torch.cuda.is_available():
-                class AppleSiliconProps:
-                    def __init__(self):
-                        self.name = hw_info["chip_name"]
-                        self.total_memory = int(hw_info["usable_memory_gb"] * 1024**3)
-                        self.major = 0; self.minor = 0; self.multi_processor_count = hw_info["gpu_cores"]; self.is_integrated = True
-                torch.cuda.get_device_properties = lambda d=None: AppleSiliconProps()
-                torch.cuda.get_device_capability = lambda d=None: (0, 0)
-                if not hasattr(torch.cuda, "memory"): torch.cuda.memory = types.ModuleType("torch.cuda.memory")
-                torch.cuda.memory.mem_get_info = lambda d=None: (int(hw_info["usable_memory_gb"] * 1024**3), hw_info["total_memory_bytes"])
-                torch.cuda.is_available = lambda: False
-                torch.cuda.device_count = lambda: 0
-        except: pass
-
-        # 2. Mock Triton & BNB
-        for pkg in ["triton", "triton.language", "triton.backends", "triton.runtime", "bitsandbytes", "bitsandbytes.nn"]:
-            if pkg not in sys.modules:
-                m = types.ModuleType(pkg)
-                m.__path__ = [] # Mark as package
-                if pkg == "triton.backends": m.backends = {}
-                sys.modules[pkg] = m
-
-        # 3. Mock Unsloth Zoo submodules
-        submodules = [
-            "device_type", "utils", "vision_utils", "log", "hf_utils", "peft_utils", 
-            "temporary_patches", "temporary_patches.common", "rl_replacements", 
-            "patching_utils", "tokenizer_utils", "compiler", "rl_environments"
-        ]
-        
-        # Ensure root unsloth_zoo exists and is a package
-        if "unsloth_zoo" not in sys.modules:
-            zoo = types.ModuleType("unsloth_zoo")
-            zoo.__version__ = "999.0.0"
-            zoo.__path__ = [] # Mark as package
-            sys.modules["unsloth_zoo"] = zoo
-
-        for sub in submodules:
-            fullname = f"unsloth_zoo.{sub}"
-            if fullname in sys.modules: continue
-            mod = types.ModuleType(fullname)
-            mod.__file__ = f"{fullname}.py"
-            
-            if sub == "device_type":
-                mod.get_device_type = lambda: "mps"
-                mod.DEVICE_TYPE = "mps"
-                mod.ALLOW_BITSANDBYTES = False
-                mod.ALLOW_PREQUANTIZED_MODELS = False
-                mod.is_mps = lambda: True
-                mod.is_hip = lambda: False
-            elif sub == "utils":
-                class Version:
-                    def __init__(self, v): self.v = str(v)
-                    def __lt__(self, o): return False
-                    def __le__(self, o): return True
-                    def __gt__(self, o): return True
-                    def __ge__(self, o): return True
-                    def __eq__(self, o): return True
-                    def __ne__(self, o): return False
-                    def __str__(self): return self.v
-                mod.Version = Version
-                def _get_dtype(d):
-                    import torch
-                    if isinstance(d, torch.dtype): return d
-                    return getattr(torch, str(d).split(".")[-1], torch.float16)
-                mod._get_dtype = _get_dtype
-                mod.get_quant_type = lambda m: "unknown"
-            elif sub == "compiler":
-                mod.get_transformers_model_type = lambda *a, **k: ["llama"]
-                mod.unsloth_compile_transformers = lambda *a, **k: (["llama"], True)
-            elif sub == "tokenizer_utils":
-                mod.patch_tokenizer = lambda m, t: (m, t)
-            elif sub == "hf_utils":
-                mod.add_dtype_kwargs = lambda *a, **k: {}
-            elif sub == "rl_replacements":
-                mod.RL_REPLACEMENTS = collections.defaultdict(lambda: _unsloth_dummy_fn)
-                mod.RL_REPLACEMENTS["grpo_compute_loss_slow"] = "def dummy(): pass"
-                mod.RL_PRE_ITEMS = collections.defaultdict(list)
-            elif sub == "patching_utils":
-                class DL: pass
-                mod.Bnb_Linear4bit = DL; mod.Peft_Linear4bit = DL; mod.Peft_Linear = DL
-                mod.patch_model_and_tokenizer = lambda m, t, **kwargs: (m, t)
-            elif sub == "rl_environments":
-                mod.GRPOEnvironment = type("GRPOEnvironment", (), {})
-            
-            # Catch-all for missing methods
-            def __getattr__(name):
-                if name.startswith("__"): raise AttributeError(name)
-                return _unsloth_dummy_fn
-            mod.__getattr__ = __getattr__
-            
-            sys.modules[fullname] = mod
-
-        self._applied = True
-        return [PatchResult("mac_patch", PatchStatus.SUCCESS)]
-
-_PATCHER = MacPatcher()
+_PATCH_APPLIED = False
 
 def patch_unsloth_zoo_for_mps() -> bool:
-    if _PATCHER.is_applied: return True
-    results = _PATCHER.apply()
-    return any(r.success for r in results)
+    global _PATCH_APPLIED
+    if _PATCH_APPLIED: return True
+
+    if platform.system() != "Darwin": return False
+    
+    # 1. Install the automatic finder
+    sys.meta_path.insert(0, UnslothMockFinder())
+
+    # 2. Mock CUDA properties (cannot be done via MetaPathFinder easily)
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            # Minimal hardware info for mocking
+            info = {"chip": "Apple Silicon", "mem": 16 * 1024**3}
+            try:
+                res = subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"], capture_output=True, text=True)
+                if res.returncode == 0: info["chip"] = res.stdout.strip()
+                res = subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True, text=True)
+                if res.returncode == 0: info["mem"] = int(res.stdout.strip())
+            except: pass
+
+            class AppleSiliconProps:
+                def __init__(self):
+                    self.name = info["chip"]
+                    self.total_memory = int(info["mem"] * 0.75)
+                    self.major = 0; self.minor = 0; self.multi_processor_count = 8; self.is_integrated = True
+            
+            torch.cuda.get_device_properties = lambda d=None: AppleSiliconProps()
+            torch.cuda.get_device_capability = lambda d=None: (0, 0)
+            if not hasattr(torch.cuda, "memory"): torch.cuda.memory = types.ModuleType("torch.cuda.memory")
+            torch.cuda.memory.mem_get_info = lambda d=None: (int(info["mem"] * 0.75), info["mem"])
+            torch.cuda.is_available = lambda: False
+            torch.cuda.device_count = lambda: 0
+            
+            # Patch checkpointing
+            import torch.utils.checkpoint as cp
+            if not hasattr(cp, "_unsloth_patched"):
+                orig = cp.checkpoint
+                cp.checkpoint = lambda f, *a, use_reentrant=True, **k: orig(f, *a, use_reentrant=False, **k)
+                cp._unsloth_patched = True
+    except: pass
+
+    # 3. Patch PEFT detection
+    try:
+        import peft.import_utils
+        peft.import_utils.is_bnb_available = lambda: False
+        peft.import_utils.is_bnb_4bit_available = lambda: False
+    except: pass
+
+    _PATCH_APPLIED = True
+    return True
 
 def is_patched() -> bool:
-    return _PATCHER.is_applied
+    return _PATCH_APPLIED
