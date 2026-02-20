@@ -76,12 +76,21 @@ export function mapJobStatus(status: string): RecipeExecutionStatus {
   return "running";
 }
 
+export function isExecutionInProgress(status: RecipeExecutionStatus): boolean {
+  return (
+    status === "running" ||
+    status === "active" ||
+    status === "pending" ||
+    status === "cancelling"
+  );
+}
+
 export function executionLabel(kind: "preview" | "full"): string {
   return kind === "preview" ? "Preview" : "Full run";
 }
 
 function executionSortWeight(status: RecipeExecutionStatus): number {
-  if (status === "running" || status === "active" || status === "pending" || status === "cancelling") {
+  if (isExecutionInProgress(status)) {
     return 0;
   }
   if (status === "error" || status === "cancelled") {

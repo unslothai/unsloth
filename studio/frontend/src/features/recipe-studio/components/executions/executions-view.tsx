@@ -33,16 +33,13 @@ import type {
   RecipeExecutionRecord,
   RecipeExecutionStatus,
 } from "../../execution-types";
+import { isExecutionInProgress } from "../../executions/execution-helpers";
 
 type ExecutionsViewProps = {
   executions: RecipeExecutionRecord[];
   selectedExecutionId: string | null;
   currentSignature: string;
-  previewLoading: boolean;
-  fullLoading: boolean;
   onSelectExecution: (id: string) => void;
-  onRunPreview: () => void;
-  onRunFull: () => void;
   onCancelExecution: (id: string) => void;
   onLoadDatasetPage: (id: string, page: number) => void;
 };
@@ -126,15 +123,6 @@ function parseAnalysisColumns(analysis: RecipeExecutionAnalysis | null): Analysi
     .filter((item): item is AnalysisColumnStat => item !== null);
 }
 
-function isInProgress(status: RecipeExecutionStatus): boolean {
-  return (
-    status === "running" ||
-    status === "active" ||
-    status === "pending" ||
-    status === "cancelling"
-  );
-}
-
 function statusTone(status: RecipeExecutionStatus): string {
   if (status === "completed") {
     return "bg-emerald-100 text-emerald-700";
@@ -142,7 +130,7 @@ function statusTone(status: RecipeExecutionStatus): string {
   if (status === "error" || status === "cancelled") {
     return "bg-red-100 text-red-700";
   }
-  if (isInProgress(status)) {
+  if (isExecutionInProgress(status)) {
     return "bg-amber-100 text-amber-700";
   }
   return "bg-muted text-muted-foreground";
@@ -155,7 +143,7 @@ function statusRightBorder(status: RecipeExecutionStatus): string {
   if (status === "error" || status === "cancelled") {
     return "border-r-red-500";
   }
-  if (isInProgress(status)) {
+  if (isExecutionInProgress(status)) {
     return "border-r-amber-500";
   }
   return "border-r-border";
@@ -221,11 +209,7 @@ export function ExecutionsView({
   executions,
   selectedExecutionId,
   currentSignature,
-  previewLoading,
-  fullLoading,
   onSelectExecution,
-  onRunPreview,
-  onRunFull,
   onCancelExecution,
   onLoadDatasetPage,
 }: ExecutionsViewProps): ReactElement {
@@ -349,7 +333,7 @@ export function ExecutionsView({
   }, [selectedExecution?.analysis?.side_effect_column_names]);
 
   const canCancel = Boolean(
-    selectedExecution?.jobId && isInProgress(selectedExecution.status),
+    selectedExecution?.jobId && isExecutionInProgress(selectedExecution.status),
   );
   const datasetPage = selectedExecution?.datasetPage ?? 1;
   const datasetPageSize = selectedExecution?.datasetPageSize ?? 20;
@@ -429,7 +413,7 @@ export function ExecutionsView({
   const showSummaryCards = selectedExecution?.status === "completed";
   const showProgressPanel =
     selectedExecution?.status === "completed" ||
-    (selectedExecution ? isInProgress(selectedExecution.status) : false);
+    (selectedExecution ? isExecutionInProgress(selectedExecution.status) : false);
   const progressComplete = selectedExecution?.status === "completed";
   const progressPercent = selectedExecution?.progress?.percent ?? (progressComplete ? 100 : 0);
   const terminalLines = selectedExecution?.log_lines ?? [];
@@ -455,25 +439,6 @@ export function ExecutionsView({
           <p className="text-xs font-semibold uppercase text-muted-foreground">
             Executions
           </p>
-          <div className="flex items-center gap-1">
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              onClick={onRunPreview}
-              disabled={previewLoading}
-            >
-              {previewLoading ? "Running..." : "Preview"}
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              onClick={onRunFull}
-              disabled={fullLoading}
-            >
-              {fullLoading ? "Starting..." : "Full run"}
-            </Button>
-          </div>
         </div>
         <div className="h-[calc(100%-45px)] overflow-auto p-2">
           {executions.length === 0 ? (
@@ -632,7 +597,7 @@ export function ExecutionsView({
             )}
 
             {(selectedExecution.status === "completed" ||
-              isInProgress(selectedExecution.status)) && (
+              isExecutionInProgress(selectedExecution.status)) && (
               <Tabs value={detailTab} onValueChange={setDetailTab}>
                 <div className="flex items-center justify-between gap-2">
                   <TabsList>
@@ -815,7 +780,7 @@ export function ExecutionsView({
                     >
                       {terminalLines.length === 0 ? (
                         <p className="text-zinc-400">
-                          {isInProgress(selectedExecution.status)
+                          {isExecutionInProgress(selectedExecution.status)
                             ? "Waiting for logs..."
                             : "No logs captured."}
                         </p>
@@ -911,7 +876,7 @@ export function ExecutionsView({
                             size="sm"
                             variant="outline"
                             disabled={
-                              isInProgress(selectedExecution.status) || datasetPage <= 1
+                              isExecutionInProgress(selectedExecution.status) || datasetPage <= 1
                             }
                             onClick={() =>
                               onLoadDatasetPage(selectedExecution.id, datasetPage - 1)}
@@ -923,7 +888,7 @@ export function ExecutionsView({
                             size="sm"
                             variant="outline"
                             disabled={
-                              isInProgress(selectedExecution.status) ||
+                              isExecutionInProgress(selectedExecution.status) ||
                               datasetPage >= totalPages
                             }
                             onClick={() =>
