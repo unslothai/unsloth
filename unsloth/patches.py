@@ -15,13 +15,13 @@ import sys
 import os
 import platform
 import logging
-import warnings
+import subprocess
+import json
+import re
 from types import ModuleType
 from typing import Optional, Any, Dict, List, Callable, Union, Tuple
 from dataclasses import dataclass, field
-from contextlib import contextmanager
 from enum import Enum, auto
-from functools import wraps
 
 # Configure logging
 logger = logging.getLogger("unsloth.patches")
@@ -59,9 +59,7 @@ class PatchConfig:
     mock_triton: bool = True
     mock_torch_cuda: bool = True
     patch_device_type: bool = True
-    patch_fused_losses: bool = True
     patch_peft: bool = True
-    patch_compilers: bool = True
     verbose: bool = os.environ.get("UNSLOTH_VERBOSE", "0") == "1"
 
 class MacPatcher:
@@ -73,7 +71,6 @@ class MacPatcher:
         self.config = config or PatchConfig()
         self._patch_results: Dict[str, PatchResult] = {}
         self._applied = False
-        self._original_modules: Dict[str, Any] = {}
         self._mock_finders: List[Any] = []
         
     @property
@@ -100,18 +97,37 @@ class MacPatcher:
             return torch.backends.mps.is_available()
         except Exception:
             return False
+
+    @staticmethod
+    def get_hardware_info() -> dict:
+        """Get Apple Silicon hardware info WITHOUT importing other unsloth modules."""
+        info = {
+            "chip_name": "Apple Silicon",
+            "total_memory_bytes": 16 * 1024**3,
+            "usable_memory_gb": 12.0,
+            "cpu_count": 8,
+            "gpu_cores": 8,
+        }
+        try:
+            # Chip Name
+            res = subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"], capture_output=True, text=True)
+            if res.returncode == 0: info["chip_name"] = res.stdout.strip()
+            
+            # Memory
+            res = subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True, text=True)
+            if res.returncode == 0: 
+                info["total_memory_bytes"] = int(res.stdout.strip())
+                info["usable_memory_gb"] = (info["total_memory_bytes"] / 1024**3) * 0.75
+            
+            # CPUs
+            res = subprocess.run(["sysctl", "-n", "hw.ncpu"], capture_output=True, text=True)
+            if res.returncode == 0: info["cpu_count"] = int(res.stdout.strip())
+        except: pass
+        return info
     
-    def _create_patch_result(
-        self,
-        name: str,
-        status: PatchStatus,
-        message: str = "",
-        error: Optional[Exception] = None
-    ) -> PatchResult:
-        """Create and store a patch result."""
+    def _create_patch_result(self, name: str, status: PatchStatus, message: str = "", error: Optional[Exception] = None) -> PatchResult:
         result = PatchResult(name, status, message, error)
         self._patch_results[name] = result
-        
         if status == PatchStatus.SUCCESS:
             self._log(logging.INFO, f"✓ {name}: {message or 'patched successfully'}")
         elif status == PatchStatus.FAILED:
@@ -125,27 +141,22 @@ class MacPatcher:
             return self._create_patch_result(name, PatchStatus.SKIPPED, "already imported")
         
         try:
-            from unsloth.kernels.mps import get_apple_hardware_info
-            hw_info = get_apple_hardware_info()
-            
-            mock_device_type = ModuleType("unsloth_zoo.device_type")
-            mock_device_type.get_device_type = lambda: "mps"
-            mock_device_type.is_hip = lambda: False
-            mock_device_type.is_mps = lambda: True
-            mock_device_type.get_device_count = lambda: 1
-            mock_device_type.DEVICE_TYPE = "mps"
-            mock_device_type.DEVICE_TYPE_TORCH = "mps"
-            mock_device_type.DEVICE_COUNT = 1
-            mock_device_type.ALLOW_PREQUANTIZED_MODELS = False
-            mock_device_type.ALLOW_BITSANDBYTES = False
-            mock_device_type.HAS_CUDA = False
-            mock_device_type.HAS_MPS = True
-            mock_device_type.HAS_HIP = False
-            mock_device_type.HAS_XPU = False
-            mock_device_type.TOTAL_MEMORY_GB = hw_info.get("total_memory_gb", 16.0)
-            mock_device_type.USABLE_MEMORY_GB = hw_info.get("usable_memory_gb", 12.0)
-            
-            sys.modules["unsloth_zoo.device_type"] = mock_device_type
+            hw_info = self.get_hardware_info()
+            mock = ModuleType("unsloth_zoo.device_type")
+            mock.get_device_type = lambda: "mps"
+            mock.is_hip = lambda: False
+            mock.is_mps = lambda: True
+            mock.get_device_count = lambda: 1
+            mock.DEVICE_TYPE = "mps"
+            mock.DEVICE_TYPE_TORCH = "mps"
+            mock.DEVICE_COUNT = 1
+            mock.ALLOW_PREQUANTIZED_MODELS = False
+            mock.ALLOW_BITSANDBYTES = False
+            mock.HAS_CUDA = False
+            mock.HAS_MPS = True
+            mock.TOTAL_MEMORY_GB = hw_info["total_memory_bytes"] / 1024**3
+            mock.USABLE_MEMORY_GB = hw_info["usable_memory_gb"]
+            sys.modules["unsloth_zoo.device_type"] = mock
             return self._create_patch_result(name, PatchStatus.SUCCESS, "MPS device type configured")
         except Exception as e:
             return self._create_patch_result(name, PatchStatus.FAILED, str(e), e)
@@ -158,72 +169,72 @@ class MacPatcher:
             if torch.cuda.is_available():
                 return self._create_patch_result(name, PatchStatus.SKIPPED, "CUDA is available")
             
-            from unsloth.kernels.mps import get_apple_hardware_info
-            hw_info = get_apple_hardware_info()
-            
+            hw_info = self.get_hardware_info()
             class AppleSiliconProps:
                 def __init__(self):
-                    self.name = hw_info.get("chip_name", "Apple Silicon")
-                    self.total_memory = int(hw_info.get("usable_memory_gb", 16) * 1024**3)
+                    self.name = hw_info["chip_name"]
+                    self.total_memory = int(hw_info["usable_memory_gb"] * 1024**3)
                     self.major = 0
                     self.minor = 0
-                    self.multi_processor_count = hw_info.get("cpu_count", 8)
+                    self.multi_processor_count = hw_info["gpu_cores"]
                     self.is_integrated = True
 
             torch.cuda.get_device_properties = lambda device=None: AppleSiliconProps()
             torch.cuda.get_device_capability = lambda device=None: (0, 0)
-            
             if not hasattr(torch.cuda, "memory"):
                 torch.cuda.memory = ModuleType("torch.cuda.memory")
-            
-            torch.cuda.memory.mem_get_info = lambda device=None: (
-                int(hw_info.get("usable_memory_gb", 16) * 1024**3),
-                hw_info.get("total_memory_bytes", 24 * 1024**3)
-            )
+            torch.cuda.memory.mem_get_info = lambda device=None: (int(hw_info["usable_memory_gb"] * 1024**3), hw_info["total_memory_bytes"])
             torch.cuda.is_available = lambda: False
             torch.cuda.device_count = lambda: 0
-            
             return self._create_patch_result(name, PatchStatus.SUCCESS, "torch.cuda mocked")
         except Exception as e:
             return self._create_patch_result(name, PatchStatus.FAILED, str(e), e)
 
     def _create_mock_module(self, fullname: str, loader=None):
-        mod = ModuleType(fullname)
-        mod.__path__ = []
+        """Creates a robust mock module that avoids 'TypeError: module object is not callable'."""
+        class MockModule(ModuleType):
+            def __init__(self, name):
+                super().__init__(name)
+                self.__path__ = []
+            def __call__(self, *args, **kwargs):
+                return self
+            def __getattr__(self, name):
+                if name.startswith("__"): return super().__getattribute__(name)
+                # Ensure torch_compile and other expected callables return a dummy decorator
+                if name in ("torch_compile", "unsloth_compile_transformers", "patch_torch_compile"):
+                    return lambda *args, **kwargs: (lambda f: f)
+                # Default to returning a mock that is itself callable
+                m = MockModule(f"{self.__name__}.{name}")
+                return m
+
+        mod = MockModule(fullname)
         from importlib.machinery import ModuleSpec
         mod.__spec__ = ModuleSpec(fullname, loader, origin="mocked")
         
+        # Specific attribute overrides
         if fullname == "unsloth_zoo":
             mod.__version__ = "999.0.0"
-        elif fullname == "unsloth_zoo.device_type":
-            from unsloth.kernels.mps import get_apple_hardware_info
-            hw_info = get_apple_hardware_info()
+        elif "device_type" in fullname:
+            hw_info = self.get_hardware_info()
             mod.get_device_type = lambda: "mps"
-            mod.is_hip = lambda: False
-            mod.is_mps = lambda: True
             mod.DEVICE_TYPE = "mps"
-            mod.DEVICE_COUNT = 1
-            mod.ALLOW_PREQUANTIZED_MODELS = False
             mod.ALLOW_BITSANDBYTES = False
-            mod.TOTAL_MEMORY_GB = hw_info.get("total_memory_gb", 16.0)
-        elif fullname == "unsloth_zoo.utils":
+            mod.ALLOW_PREQUANTIZED_MODELS = False
+        elif "vision_utils" in fullname:
+            mod.HAS_VISION = False
+            mod.process_vision_info = lambda *a, **k: (None, None)
+        elif "utils" in fullname and not fullname.endswith("vision_utils"):
             class Version:
                 def __init__(self, v): self.v = v
                 def __ge__(self, other): return True
                 def __le__(self, other): return True
             mod.Version = Version
-            mod._get_dtype = lambda d: getattr(__import__('torch'), d, __import__('torch').float32)
             mod.get_quant_type = lambda m: "unknown"
-        elif fullname == "unsloth_zoo.vision_utils":
-            mod.HAS_VISION = False
-            mod.process_vision_info = lambda *a, **k: (None, None)
-        elif fullname == "unsloth_zoo.log":
-            mod.logger = logging.getLogger("unsloth_zoo")
         
         return mod
 
     def patch_unsloth_zoo(self) -> PatchResult:
-        """Thoroughly mock unsloth_zoo submodules."""
+        """Thoroughly mock unsloth_zoo and CUDA-only packages."""
         name = "unsloth_zoo"
         from importlib.abc import MetaPathFinder, Loader
         from importlib.machinery import ModuleSpec
@@ -249,13 +260,13 @@ class MacPatcher:
         sys.meta_path.insert(0, finder)
         self._mock_finders.append(finder)
         
-        # Pre-populate some critical ones
-        for sub in ["device_type", "utils", "vision_utils", "log", "hf_utils", "peft_utils"]:
+        # Populate sys.modules to prevent real imports
+        for sub in ["device_type", "utils", "vision_utils", "log", "hf_utils", "peft_utils", "temporary_patches", "temporary_patches.common"]:
             full = f"unsloth_zoo.{sub}"
             if full not in sys.modules:
                 sys.modules[full] = self._create_mock_module(full)
                 
-        return self._create_patch_result(name, PatchStatus.SUCCESS, "unsloth_zoo and dependencies mocked")
+        return self._create_patch_result(name, PatchStatus.SUCCESS, "unsloth_zoo, triton, and bnb mocked")
 
     def patch_peft(self) -> PatchResult:
         """Patch PEFT to disable bitsandbytes detection."""
@@ -266,8 +277,8 @@ class MacPatcher:
             peft.import_utils.is_bnb_4bit_available = lambda: False
             peft.import_utils.is_bnb_8bit_available = lambda: False
             return self._create_patch_result(name, PatchStatus.SUCCESS, "PEFT bnb detection disabled")
-        except ImportError:
-            return self._create_patch_result(name, PatchStatus.SKIPPED, "PEFT not installed")
+        except:
+            return self._create_patch_result(name, PatchStatus.SKIPPED, "PEFT not installed or already patched")
 
     def apply(self) -> List[PatchResult]:
         """Apply all patches."""
@@ -275,9 +286,10 @@ class MacPatcher:
         if not self.is_mac_with_mps(): return []
         
         results = []
+        # Order matters: Mocking must come before any imports that might trigger real unsloth_zoo
+        results.append(self.patch_unsloth_zoo())
         results.append(self.patch_device_type())
         results.append(self.patch_torch_cuda())
-        results.append(self.patch_unsloth_zoo())
         results.append(self.patch_peft())
         
         self._applied = True
