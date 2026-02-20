@@ -64,36 +64,23 @@ class BenchmarkResult:
         self.notes = notes
 
 
-def get_memory_usage() -> Tuple[float, float]:
-    """Get current memory usage in MB for MPS and MLX.
-    Returns: (active_memory_mb, peak_memory_mb)
-    """
-    active_mb = 0.0
-    peak_mb = 0.0
-    
+def get_mem_stats() -> dict:
+    """Get current memory stats in MB - matches comprehensive_apple_benchmark.py."""
+    res = {"mps": 0.0, "mlx_active": 0.0, "mlx_peak": 0.0}
     try:
         if torch.backends.mps.is_available():
             torch.mps.synchronize()
-            active_mb += torch.mps.current_allocated_memory() / (1024 * 1024)
+            res["mps"] = torch.mps.current_allocated_memory() / 1e6
     except Exception:
         pass
     
     try:
-        active_mb += mx.get_active_memory() / (1024 * 1024)
-        peak_mb = mx.get_peak_memory() / (1024 * 1024)
+        res["mlx_active"] = mx.get_active_memory() / 1e6
+        res["mlx_peak"] = mx.get_peak_memory() / 1e6
     except Exception:
         pass
     
-    return active_mb, peak_mb
-
-
-def reset_mlx_memory():
-    """Clear MLX memory cache and reset peak memory tracking for accurate measurements."""
-    try:
-        mx.clear_cache()
-        mx.reset_peak_memory()
-    except Exception:
-        pass
+    return res
 
 
 def estimate_tensor_memory(shape: tuple, dtype) -> float:
@@ -125,8 +112,6 @@ class StandardizedBenchmark:
         mx.synchronize()
         torch.mps.synchronize()
         
-        active_before, _ = get_memory_usage()
-        
         # Warmup
         for _ in range(self.warmup_iters):
             _ = fn(*args, **kwargs)
@@ -140,19 +125,15 @@ class StandardizedBenchmark:
         end = time.perf_counter()
         
         torch.mps.synchronize()
-        active_after, peak_after = get_memory_usage()
+        mem = get_mem_stats()
         
         latency_ms = (end - start) / self.benchmark_iters * 1000
-        active_mb = max(0, active_after - active_before)
-        return latency_ms, active_mb, peak_after
+        return latency_ms, mem["mps"], 0.0
     
     def _benchmark_metal(self, fn, *args, **kwargs) -> Tuple[float, float, float]:
         """Benchmark Metal fused kernel. Returns (latency_ms, active_mb, peak_mb)."""
         mx.synchronize()
         
-        reset_mlx_memory()
-        active_before, _ = get_memory_usage()
-        
         for _ in range(self.warmup_iters):
             result = fn(*args, **kwargs)
             mx.eval(result)
@@ -166,19 +147,15 @@ class StandardizedBenchmark:
         end = time.perf_counter()
         
         mx.synchronize()
-        active_after, peak_after = get_memory_usage()
+        mem = get_mem_stats()
         
         latency_ms = (end - start) / self.benchmark_iters * 1000
-        active_mb = max(0, active_after - active_before)
-        return latency_ms, active_mb, peak_after
+        return latency_ms, mem["mlx_active"], mem["mlx_peak"]
     
     def _benchmark_mlx_fast(self, fn, *args, **kwargs) -> Tuple[float, float, float]:
         """Benchmark MLX.fast operations. Returns (latency_ms, active_mb, peak_mb)."""
         mx.synchronize()
         
-        reset_mlx_memory()
-        active_before, _ = get_memory_usage()
-        
         for _ in range(self.warmup_iters):
             result = fn(*args, **kwargs)
             mx.eval(result)
@@ -192,19 +169,15 @@ class StandardizedBenchmark:
         end = time.perf_counter()
         
         mx.synchronize()
-        active_after, peak_after = get_memory_usage()
+        mem = get_mem_stats()
         
         latency_ms = (end - start) / self.benchmark_iters * 1000
-        active_mb = max(0, active_after - active_before)
-        return latency_ms, active_mb, peak_after
+        return latency_ms, mem["mlx_active"], mem["mlx_peak"]
     
     def _benchmark_mlx_composed(self, fn, *args, **kwargs) -> Tuple[float, float, float]:
         """Benchmark MLX composed operations (no compile). Returns (latency_ms, active_mb, peak_mb)."""
         mx.synchronize()
         
-        reset_mlx_memory()
-        active_before, _ = get_memory_usage()
-        
         for _ in range(self.warmup_iters):
             result = fn(*args, **kwargs)
             mx.eval(result)
@@ -218,19 +191,15 @@ class StandardizedBenchmark:
         end = time.perf_counter()
         
         mx.synchronize()
-        active_after, peak_after = get_memory_usage()
+        mem = get_mem_stats()
         
         latency_ms = (end - start) / self.benchmark_iters * 1000
-        active_mb = max(0, active_after - active_before)
-        return latency_ms, active_mb, peak_after
+        return latency_ms, mem["mlx_active"], mem["mlx_peak"]
     
     def _benchmark_mlx_compiled(self, compiled_fn, *args, **kwargs) -> Tuple[float, float, float]:
         """Benchmark MLX compiled operations. Returns (latency_ms, active_mb, peak_mb)."""
         mx.synchronize()
         
-        reset_mlx_memory()
-        active_before, _ = get_memory_usage()
-        
         for _ in range(self.warmup_iters):
             result = compiled_fn(*args, **kwargs)
             mx.eval(result)
@@ -244,11 +213,10 @@ class StandardizedBenchmark:
         end = time.perf_counter()
         
         mx.synchronize()
-        active_after, peak_after = get_memory_usage()
+        mem = get_mem_stats()
         
         latency_ms = (end - start) / self.benchmark_iters * 1000
-        active_mb = max(0, active_after - active_before)
-        return latency_ms, active_mb, peak_after
+        return latency_ms, mem["mlx_active"], mem["mlx_peak"]
     
     def benchmark_swiglu(self, batch_size: int, seq_len: int, hidden_dim: int) -> Dict[str, BenchmarkResult]:
         """Benchmark SwiGLU activation - all 5 variants."""
