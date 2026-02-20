@@ -100,6 +100,7 @@ from ..device_type import (
     ALLOW_PREQUANTIZED_MODELS,
     is_mps,
 )
+
 is_mps_available = is_mps
 from unsloth_zoo.log import logger
 from unsloth_zoo.tokenizer_utils import (
@@ -149,8 +150,10 @@ from unsloth_zoo.loss_utils import (
 if DEVICE_TYPE == "mps":
     try:
         import unsloth_zoo.fused_losses.cross_entropy_loss as ce_loss_mod
+
         def _mps_get_chunk_multiplier(vocab_size, target_gb):
             return 1.0
+
         ce_loss_mod._get_chunk_multiplier = _mps_get_chunk_multiplier
     except:
         pass
@@ -209,163 +212,46 @@ class HideLoggingMessage(logging.Filter):
         return not (self.text in x.getMessage())
 
 
-# Stop vLLM messages
+# Stop vLLM and Transformers messages
 if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") != "1":
-    try:
-        from vllm.worker.worker import logger as vllm_worker_logger
+    import logging
 
-        vllm_worker_logger.addFilter(HideLoggingMessage("Sleep mode freed"))
-        del vllm_worker_logger
-    except:
-        pass
-    try:
-        from vllm.v1.worker.gpu_worker import logger as vllm_gpu_worker_logger
-
-        vllm_gpu_worker_logger.addFilter(HideLoggingMessage("Sleep mode freed"))
-        del vllm_gpu_worker_logger
-    except:
-        pass
-    try:
-        from vllm.executor.executor_base import logger as vllm_executor_logger
-
-        vllm_executor_logger.addFilter(HideLoggingMessage("to fall asleep"))
-        vllm_executor_logger.addFilter(HideLoggingMessage("to wake up"))
-        vllm_executor_logger.addFilter(HideLoggingMessage("Executor is not sleeping"))
-        del vllm_executor_logger
-    except:
-        pass
-    try:
-        from vllm.core.block.prefix_caching_block import (
-            logger as vllm_prefix_caching_logger,
-        )
-
-        vllm_prefix_caching_logger.addFilter(HideLoggingMessage("reset prefix cache"))
-        del vllm_prefix_caching_logger
-    except:
-        pass
-    try:
-        from vllm.v1.core.block_pool import logger as vllm_block_pool_logger
-
-        vllm_block_pool_logger.addFilter(HideLoggingMessage("reset prefix cache"))
-        del vllm_block_pool_logger
-    except:
-        pass
-    try:
-        from vllm.lora.models import logger as vllm_lora_model_logger
-
-        vllm_lora_model_logger.addFilter(
-            HideLoggingMessage(
-                "Regarding multimodal models, vLLM currently only supports adding"
-            )
-        )
-        del vllm_lora_model_logger
-    except:
-        pass
-    try:
-        from vllm.attention.utils.fa_utils import (
-            logger as vllm_attention_utils_fa_utils_logger,
-        )
-
-        vllm_attention_utils_fa_utils_logger.addFilter(
-            HideLoggingMessage("Cannot use FA version")
-        )
-        del vllm_attention_utils_fa_utils_logger
-    except:
-        pass
-
-# The speedups for torchdynamo mostly come with GPU Ampere or higher and which is not detected here.
-from transformers.training_args import logger as transformers_training_args_logger
-
-transformers_training_args_logger.addFilter(HideLoggingMessage("The speedups"))
-# torch.distributed process group is initialized, but parallel_mode != ParallelMode.DISTRIBUTED.
-transformers_training_args_logger.addFilter(HideLoggingMessage("torch.distributed"))
-# average_tokens_across_devices is set to True but it is invalid when world size is1
-transformers_training_args_logger.addFilter(
-    HideLoggingMessage("average_tokens_across_devices")
-)
-del transformers_training_args_logger
-
-# No label_names provided for model class
-from transformers.trainer import logger as transformers_trainer_logger
-
-transformers_trainer_logger.addFilter(HideLoggingMessage("No label_names"))
-
-# The tokenizer has new PAD/BOS/EOS tokens that differ from the model config and generation config.
-transformers_trainer_logger.addFilter(HideLoggingMessage("The tokenizer has new"))
-del transformers_trainer_logger
-
-# Using the default loss: `ForCausalLMLoss`.
-try:
-    from transformers.modeling_utils import logger as transformers_modeling_utils_logger
-
-    transformers_modeling_utils_logger.addFilter(HideLoggingMessage("ForCausalLMLoss"))
-    del transformers_modeling_utils_logger
-except:
-    pass
-
-# The model weights are not tied. Please use the `tie_weights` method before using the `infer_auto_device` function.
-try:
-    from accelerate.utils.modeling import logger as accelerate_utils_modeling_logger
-
-    accelerate_utils_modeling_logger.addFilter(
-        HideLoggingMessage("The model weights are not tied")
-    )
-    del accelerate_utils_modeling_logger
-except:
-    pass
-
-# Setting `pad_token_id` to `eos_token_id`
-try:
-    from transformers.generation.utils import (
-        logger as transformers_generation_utils_logger,
-    )
-
-    transformers_generation_utils_logger.addFilter(
-        HideLoggingMessage("Setting `pad_token_id` to `eos_token_id`")
-    )
-    # "You have set `compile_config`
-    transformers_generation_utils_logger.addFilter(HideLoggingMessage("compile_config"))
-    del transformers_generation_utils_logger
-except:
-    pass
-
-# The following generation flags are not valid and may be ignored:
-try:
-    from transformers.generation.configuration_utils import (
-        logger as configuration_logger,
-    )
-
-    configuration_logger.addFilter(HideLoggingMessage("following generation flags"))
-    del configuration_logger
-except:
-    pass
-
-# Gemma3 It is strongly recommended to train Gemma3 models with the `eager`
-try:
-    from transformers.models.gemma3.modeling_gemma3 import logger as gemma3_logger
-
-    gemma3_logger.addFilter(HideLoggingMessage("strongly recommended"))
-    del gemma3_logger
-except:
-    pass
-
-# Xet Storage is enabled for this repo, but the 'hf_xet' package is not installed.
-try:
-    from huggingface_hub.file_download import logger as hub_logger
-
-    hub_logger.addFilter(HideLoggingMessage("hf_xet"))
-    del hub_logger
-except:
-    pass
-
-# MXFP4 quantization requires triton >= 3.4.0
-try:
-    from transformers.quantizers.quantizer_mxfp4 import logger as mxfp4_logger
-
-    mxfp4_logger.addFilter(HideLoggingMessage("requires triton"))
-    del mxfp4_logger
-except:
-    pass
+    for name, message in [
+        ("vllm.worker.worker", "Sleep mode freed"),
+        ("vllm.v1.worker.gpu_worker", "Sleep mode freed"),
+        ("vllm.executor.executor_base", "to fall asleep"),
+        ("vllm.executor.executor_base", "to wake up"),
+        ("vllm.executor.executor_base", "Executor is not sleeping"),
+        ("vllm.core.block.prefix_caching_block", "reset prefix cache"),
+        ("vllm.v1.core.block_pool", "reset prefix cache"),
+        (
+            "vllm.lora.models",
+            "Regarding multimodal models, vLLM currently only supports adding",
+        ),
+        ("vllm.attention.utils.fa_utils", "Cannot use FA version"),
+        ("transformers.training_args", "The speedups"),
+        ("transformers.training_args", "torch.distributed"),
+        ("transformers.training_args", "average_tokens_across_devices"),
+        ("transformers.trainer", "No label_names"),
+        ("transformers.trainer", "The tokenizer has new"),
+        ("transformers.trainer", "`use_cache=True`"),
+        ("transformers.utils.generic", "`use_cache=True`"),
+        ("transformers.modeling_utils", "ForCausalLMLoss"),
+        ("transformers.modeling_utils", "anti-pattern"),
+        ("accelerate.utils.modeling", "The model weights are not tied"),
+        ("transformers.generation.utils", "Setting `pad_token_id` to `eos_token_id`"),
+        ("transformers.generation.utils", "compile_config"),
+        ("transformers.generation.configuration_utils", "following generation flags"),
+        ("transformers.models.gemma3.modeling_gemma3", "strongly recommended"),
+        ("huggingface_hub.file_download", "hf_xet"),
+        ("transformers.quantizers.quantizer_mxfp4", "requires triton"),
+        ("transformers.processing_utils", "`use_fast`"),
+        ("transformers.models.auto.image_processing_auto", "`use_fast`"),
+    ]:
+        try:
+            logging.getLogger(name).addFilter(HideLoggingMessage(message))
+        except:
+            pass
 
 # You passed `quantization_config` or equivalent parameters
 try:
@@ -387,53 +273,6 @@ try:
         category=UserWarning,
         append=True,
     )
-except:
-    pass
-
-# Using a slow image processor as `use_fast`
-try:
-    from transformers.processing_utils import logger as processing_utils_logger
-
-    processing_utils_logger.addFilter(HideLoggingMessage("`use_fast`"))
-    del processing_utils_logger
-except:
-    pass
-
-# Using a slow image processor as `use_fast`
-try:
-    from transformers.models.auto.image_processing_auto import (
-        logger as processing_utils_logger,
-    )
-
-    processing_utils_logger.addFilter(HideLoggingMessage("`use_fast`"))
-    del processing_utils_logger
-except:
-    pass
-
-# `use_cache=True` is incompatible with gradient checkpointing
-try:
-    from transformers.trainer import logger as trainer_logger
-
-    trainer_logger.addFilter(HideLoggingMessage("`use_cache=True`"))
-    del trainer_logger
-except:
-    pass
-
-# `use_cache=True` is incompatible with gradient checkpointing
-try:
-    from transformers.utils.generic import logger as trainer_logger
-
-    trainer_logger.addFilter(HideLoggingMessage("`use_cache=True`"))
-    del trainer_logger
-except:
-    pass
-
-# We detected that you are using `from_pretrained` with a meta device context manager or `torch.set_default_device('meta')
-try:
-    from transformers.modeling_utils import logger as modeling_utils_logger
-
-    modeling_utils_logger.addFilter(HideLoggingMessage("anti-pattern"))
-    del modeling_utils_logger
 except:
     pass
 
@@ -577,7 +416,7 @@ model_architectures = [
 for model_name in model_architectures:
     config_filepath = f"transformers.models.{model_name}.configuration_{model_name}"
     model_filepath = f"transformers.models.{model_name}.modeling_{model_name}"
-    config_filename = f"{model_name.title().replace('_','')}Config"  # qwen3 arch folder is qwen3_moe but config is Qwen3Config. Need to remove underscore(_) for now
+    config_filename = f"{model_name.title().replace('_', '')}Config"  # qwen3 arch folder is qwen3_moe but config is Qwen3Config. Need to remove underscore(_) for now
     try:
         exec(f"from {config_filepath} import {config_filename}", globals())
     except:
@@ -820,12 +659,12 @@ try:
             Version(xformers_version) in (Version("0.0.32.post2"),)
         ):
             raise NotImplementedError(
-            "Unsloth: Xformers does not work in RTX 50X, Blackwell GPUs as of yet. Please build from source via\n"
-            "```\n"
-            "pip install ninja\n"
-            "pip install -v --no-build-isolation -U git+https://github.com/facebookresearch/xformers.git@main#egg=xformers\n"
-            "```\n"
-        )
+                "Unsloth: Xformers does not work in RTX 50X, Blackwell GPUs as of yet. Please build from source via\n"
+                "```\n"
+                "pip install ninja\n"
+                "pip install -v --no-build-isolation -U git+https://github.com/facebookresearch/xformers.git@main#egg=xformers\n"
+                "```\n"
+            )
     # Temporarily disable 0.0.27 and higher - inference issues
     if False:  # Version(xformers_version) >= Version("0.0.27"):
         raise ImportError(
@@ -1277,6 +1116,7 @@ def get_statistics(local_files_only=False):
     _get_statistics(None)
     _get_statistics("repeat", force_download=False)
     from unsloth.device_utils import get_device_properties
+
     gpu_stats = get_device_properties()
     total_memory = gpu_stats.total_memory
     vram = total_memory / 1024 / 1024 / 1024
@@ -1379,8 +1219,10 @@ transformers.utils.quantization_config.BitsAndBytesConfig.__init__ = (
 
 # Patch post_init to skip bitsandbytes version check on MPS
 if DEVICE_TYPE == "mps":
-    _original_post_init = transformers.utils.quantization_config.BitsAndBytesConfig.post_init
-    
+    _original_post_init = (
+        transformers.utils.quantization_config.BitsAndBytesConfig.post_init
+    )
+
     def _mps_safe_post_init(self):
         """MPS-safe post_init that skips bitsandbytes version checks."""
         # Skip the version check entirely on MPS - we use MLX quantization instead
@@ -1388,59 +1230,71 @@ if DEVICE_TYPE == "mps":
             # Set defaults without checking bitsandbytes version
             if self.bnb_4bit_compute_dtype is None:
                 import torch
+
                 self.bnb_4bit_compute_dtype = torch.float32
             # Skip all bitsandbytes-specific validation
             return
         if self.load_in_8bit:
             # 8-bit not supported on MPS
             return
-    
-    transformers.utils.quantization_config.BitsAndBytesConfig.post_init = _mps_safe_post_init
-    
+
+    transformers.utils.quantization_config.BitsAndBytesConfig.post_init = (
+        _mps_safe_post_init
+    )
+
     # Also patch the HfQuantizer validate_environment to skip bnb checks
     try:
         from transformers.quantizers.quantizer_bnb_4bit import Bnb4BitHfQuantizer
         from transformers.quantizers.quantizer_bnb_8bit import Bnb8BitHfQuantizer
-        
+
         def _mps_validate_environment_noop(self, *args, **kwargs):
             """No-op validation for MPS - we handle quantization via MLX."""
             pass
-        
+
         Bnb4BitHfQuantizer.validate_environment = _mps_validate_environment_noop
         Bnb8BitHfQuantizer.validate_environment = _mps_validate_environment_noop
-        
+
         # Also need to patch update_torch_dtype to not crash
         def _mps_update_torch_dtype(self, torch_dtype):
             import torch
+
             if torch_dtype is None:
                 torch_dtype = torch.float16
             return torch_dtype
-        
+
         Bnb4BitHfQuantizer.update_torch_dtype = _mps_update_torch_dtype
         Bnb8BitHfQuantizer.update_torch_dtype = _mps_update_torch_dtype
-        
+
         # Patch the model processing methods to skip bnb linear replacement
         def _mps_process_model_before_noop(self, model, *args, **kwargs):
             """Skip bitsandbytes linear replacement on MPS - we use MLX quantization."""
             return model
-        
+
         def _mps_process_model_after_noop(self, model, *args, **kwargs):
             """Skip bitsandbytes post-processing on MPS."""
             return model
-        
+
         def _mps_is_serializable(self, *args, **kwargs):
             return True
-        
+
         def _mps_is_trainable(self, *args, **kwargs):
             return True
-        
-        Bnb4BitHfQuantizer._process_model_before_weight_loading = _mps_process_model_before_noop
-        Bnb4BitHfQuantizer._process_model_after_weight_loading = _mps_process_model_after_noop
+
+        Bnb4BitHfQuantizer._process_model_before_weight_loading = (
+            _mps_process_model_before_noop
+        )
+        Bnb4BitHfQuantizer._process_model_after_weight_loading = (
+            _mps_process_model_after_noop
+        )
         Bnb4BitHfQuantizer.is_serializable = property(lambda self: True)
         Bnb4BitHfQuantizer.is_trainable = property(lambda self: True)
-        
-        Bnb8BitHfQuantizer._process_model_before_weight_loading = _mps_process_model_before_noop
-        Bnb8BitHfQuantizer._process_model_after_weight_loading = _mps_process_model_after_noop
+
+        Bnb8BitHfQuantizer._process_model_before_weight_loading = (
+            _mps_process_model_before_noop
+        )
+        Bnb8BitHfQuantizer._process_model_after_weight_loading = (
+            _mps_process_model_after_noop
+        )
         Bnb8BitHfQuantizer.is_serializable = property(lambda self: True)
         Bnb8BitHfQuantizer.is_trainable = property(lambda self: True)
     except ImportError:
@@ -2247,9 +2101,9 @@ def _untie_input_output_embeddings(model: torch.nn.Module) -> None:
         raise AttributeError("Couldn't locate output projection (lm_head).")
 
     # (Optional) sanity: shapes should match [vocab, hidden]
-    assert (
-        out_proj.weight.shape == in_emb.weight.shape
-    ), f"Shape mismatch: out_proj {out_proj.weight.shape} vs in_emb {in_emb.weight.shape}"
+    assert out_proj.weight.shape == in_emb.weight.shape, (
+        f"Shape mismatch: out_proj {out_proj.weight.shape} vs in_emb {in_emb.weight.shape}"
+    )
 
     # 3) Only clone if they are actually tied (shared storage)
     if out_proj.weight.data_ptr() == in_emb.weight.data_ptr():
@@ -2264,9 +2118,9 @@ def _untie_input_output_embeddings(model: torch.nn.Module) -> None:
     model.tie_weights = _no_tie.__get__(model, model.__class__)
 
     # 5) Verify no shared storage
-    assert (
-        out_proj.weight.data_ptr() != in_emb.weight.data_ptr()
-    ), "Embeddings still tied!"
+    assert out_proj.weight.data_ptr() != in_emb.weight.data_ptr(), (
+        "Embeddings still tied!"
+    )
 
 
 def _filter_fn_to_fqns(

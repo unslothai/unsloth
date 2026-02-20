@@ -352,10 +352,9 @@ def fix_vllm_guided_decoding_params():
 def ignore_logger_messages():
     # Ignore Environment variable `HF_TOKEN` is set
     try:
-        from huggingface_hub._login import logger as huggingface_hub_logger
-
-        huggingface_hub_logger.addFilter(HideLoggingMessage("`HF_TOKEN`"))
-        del huggingface_hub_logger
+        logging.getLogger("huggingface_hub._login").addFilter(
+            HideLoggingMessage("`HF_TOKEN`")
+        )
     except:
         pass
 
