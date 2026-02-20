@@ -204,8 +204,8 @@ class MacPatcher:
     def _create_mock_module(self, fullname: str, loader=None):
         """Creates a robust mock module that avoids 'TypeError: module object is not callable'."""
         class MockModule(ModuleType):
-            def __init__(self, name):
-                super().__init__(name)
+            def __init__(self, name, *args, **kwargs):
+                super().__init__(str(name))
                 self.__path__ = []
             def __call__(self, *args, **kwargs):
                 return self
@@ -225,6 +225,8 @@ class MacPatcher:
                 return 0
             def __bool__(self):
                 return False
+            def __mro_entries__(self, bases):
+                return (object,)
 
         mod = MockModule(fullname)
         from importlib.machinery import ModuleSpec
@@ -256,6 +258,13 @@ class MacPatcher:
                 def __repr__(self): return f"Version('{self.v}')"
             mod.Version = Version
             mod.get_quant_type = lambda m: "unknown"
+        elif fullname == "triton.backends":
+            mod.backends = {}
+        elif fullname == "triton.runtime.triton_heuristics" or fullname == "triton.runtime.config":
+            # Mock the Config class that InductorConfig inherits from
+            class Config:
+                def __init__(self, *args, **kwargs): pass
+            mod.Config = Config
         
         return mod
 
