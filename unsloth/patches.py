@@ -269,6 +269,9 @@ class MacPatcher:
             mod.get_quant_type = lambda m: "unknown"
         elif fullname == "triton.backends":
             mod.backends = {}
+        elif "compiler" in fullname:
+            mod.get_transformers_model_type = lambda *a, **k: ["llama"]
+            mod.unsloth_compile_transformers = lambda *a, **k: (["llama"], True)
         elif "rl_replacements" in fullname:
             # grpo_compute_loss_slow is appended directly as a string in rl_replacements.py
             # others are passed to inspect.getsource(), so they must be functions
