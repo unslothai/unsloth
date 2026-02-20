@@ -2373,6 +2373,8 @@ class FastLlamaModel:
                 "bfloat16",
                 "float32",
             )
+        ), (
+            f"Unsloth: dtype is '{dtype}' ({type(dtype)}) which is not float16, bfloat16, or float32."
         )
 
         # RoPE Scaling

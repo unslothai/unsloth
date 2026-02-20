@@ -177,6 +177,130 @@ def test_cross_entropy_parity():
     print("✅ Cross-Entropy Parity Passed")
 
 
+def test_rope_embedding_parity():
+    print("Testing RoPE Embedding Parity...")
+    batch, n_heads, seq_len, head_dim = 2, 4, 16, 32
+    X = torch.randn(batch, n_heads, seq_len, head_dim, requires_grad=True)
+    cos = torch.randn(seq_len, head_dim // 2)
+    sin = torch.randn(seq_len, head_dim // 2)
+
+    def rotate_half(x):
+        shape = x.shape
+        half = shape[-1] // 2
+        x1 = x[..., :half]
+        x2 = x[..., half:]
+        return torch.cat((-x2, x1), dim=-1)
+
+    X_f32 = X.to(torch.float32)
+    cos_f32 = cos.to(torch.float32)
+    sin_f32 = sin.to(torch.float32)
+    cos_full = torch.cat((cos_f32, cos_f32), dim=-1)
+    sin_full = torch.cat((sin_f32, sin_f32), dim=-1)
+    X_rotated = rotate_half(X_f32)
+    Y_ref = (X_f32 * cos_full) + (X_rotated * sin_full)
+
+    Y_mps = mps_rope_embedding(X, cos, sin)
+
+    assert torch.allclose(Y_ref, Y_mps, atol=1e-5)
+
+    Y_ref.sum().backward()
+    grad_X_ref = X.grad.clone()
+    X.grad.zero_()
+    Y_mps.sum().backward()
+    assert torch.allclose(grad_X_ref, X.grad, atol=1e-4)
+    print("✅ RoPE Embedding Parity Passed")
+
+
+def test_rope_embedding_qk_parity():
+    print("Testing RoPE Embedding QK Parity...")
+    batch, n_heads, seq_len, head_dim = 2, 4, 16, 32
+    Q = torch.randn(batch, n_heads, seq_len, head_dim, requires_grad=True)
+    K = torch.randn(batch, n_heads, seq_len, head_dim, requires_grad=True)
+    cos = torch.randn(seq_len, head_dim // 2)
+    sin = torch.randn(seq_len, head_dim // 2)
+
+    def rotate_half(x):
+        shape = x.shape
+        half = shape[-1] // 2
+        x1 = x[..., :half]
+        x2 = x[..., half:]
+        return torch.cat((-x2, x1), dim=-1)
+
+    Q_f32 = Q.to(torch.float32)
+    K_f32 = K.to(torch.float32)
+    cos_f32 = cos.to(torch.float32)
+    sin_f32 = sin.to(torch.float32)
+    cos_full = torch.cat((cos_f32, cos_f32), dim=-1)
+    sin_full = torch.cat((sin_f32, sin_f32), dim=-1)
+    Q_rotated = rotate_half(Q_f32)
+    K_rotated = rotate_half(K_f32)
+    Q_out_ref = (Q_f32 * cos_full) + (Q_rotated * sin_full)
+    K_out_ref = (K_f32 * cos_full) + (K_rotated * sin_full)
+
+    Q_out_mps, K_out_mps = mps_rope_embedding_qk(Q, K, cos, sin)
+
+    assert torch.allclose(Q_out_ref, Q_out_mps, atol=1e-5)
+    assert torch.allclose(K_out_ref, K_out_mps, atol=1e-5)
+
+    Q_out_ref.sum().backward()
+    K_out_ref.sum().backward()
+    grad_Q_ref = Q.grad.clone()
+    grad_K_ref = K.grad.clone()
+    Q.grad.zero_()
+    K.grad.zero_()
+    Q_out_mps.sum().backward()
+    K_out_mps.sum().backward()
+    assert torch.allclose(grad_Q_ref, Q.grad, atol=1e-4)
+    assert torch.allclose(grad_K_ref, K.grad, atol=1e-4)
+    print("✅ RoPE Embedding QK Parity Passed")
+
+
+def test_geglu_exact_parity():
+    print("Testing GEGLU Exact Parity...")
+    gate = torch.randn(2, 16, 64, requires_grad=True)
+    up = torch.randn(2, 16, 64, requires_grad=True)
+
+    Y_ref = F.gelu(gate, approximate="none") * up
+    Y_mps = mps_geglu_exact_forward(gate, up)
+    assert torch.allclose(Y_ref, Y_mps, atol=1e-5)
+
+    dw = torch.randn_like(Y_ref)
+    loss_ref = (Y_ref * dw).sum()
+    loss_ref.backward()
+    grad_gate_ref = gate.grad.clone()
+    grad_up_ref = up.grad.clone()
+
+    gate.grad.zero_()
+    up.grad.zero_()
+    h_mps, de_mps, dg_mps = mps_geglu_exact_backward(dw, gate, up)
+    assert torch.allclose(grad_gate_ref, de_mps, atol=1e-4)
+    assert torch.allclose(grad_up_ref, dg_mps, atol=1e-4)
+    print("✅ GEGLU Exact Parity Passed")
+
+
+def test_geglu_approx_parity():
+    print("Testing GEGLU Approx Parity...")
+    gate = torch.randn(2, 16, 64, requires_grad=True)
+    up = torch.randn(2, 16, 64, requires_grad=True)
+
+    Y_ref = F.gelu(gate, approximate="tanh") * up
+    Y_mps = mps_geglu_approx_forward(gate, up)
+    assert torch.allclose(Y_ref, Y_mps, atol=1e-5)
+
+    dw = torch.randn_like(Y_ref)
+    loss_ref = (Y_ref * dw).sum()
+    loss_ref.backward()
+    grad_gate_ref = gate.grad.clone()
+    grad_up_ref = up.grad.clone()
+
+    gate.grad.zero_()
+    up.grad.zero_()
+    h_mps, de_mps, dg_mps = mps_geglu_approx_backward(dw, gate, up)
+    assert torch.allclose(grad_gate_ref, de_mps, atol=1e-4)
+    assert torch.allclose(grad_up_ref, dg_mps, atol=1e-4)
+    print("✅ GEGLU Approx Parity Passed")
+
+
 if __name__ == "__main__":
     try:
         test_rms_layernorm_parity()
