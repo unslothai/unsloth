@@ -27,23 +27,36 @@ from importlib.machinery import ModuleSpec
 # Configure logging
 logger = logging.getLogger("unsloth.patches")
 
+import torch
+import torch.nn as nn
+
 def _unsloth_dummy_fn(*args, **kwargs):
     """Universal dummy function for mocks."""
     return None
 
-class MockModule(types.ModuleType):
-    """Extremely robust mock module that survives all common Python operations."""
+class MockModule(nn.Module):
+    """Extremely robust mock module that satisfies both Python imports and torch.nn.Module checks."""
     def __init__(self, name):
-        super().__init__(name)
-        self.__path__ = []
-        self.__file__ = f"{name}.py"
-        self._unsloth_mock = True
+        super().__init__()
+        object.__setattr__(self, "__name__", name)
+        object.__setattr__(self, "__path__", [])
+        object.__setattr__(self, "__file__", f"{name}.py")
+        object.__setattr__(self, "__package__", name.rsplit(".", 1)[0] if "." in name else "")
+        object.__setattr__(self, "_unsloth_mock", True)
 
     def __call__(self, *args, **kwargs):
         return self
 
     def __getattr__(self, name):
-        if name.startswith("__"): return super().__getattribute__(name)
+        # Handle nn.Module internal attributes that might be missing in early init
+        if name.startswith("_") and name not in ("__name__", "__path__", "__file__", "__package__"):
+            try: return self.__dict__[name]
+            except KeyError: raise AttributeError(name)
+            
+        if name.startswith("__"): 
+            try: return object.__getattribute__(self, name)
+            except AttributeError: raise AttributeError(name)
+            
         # Check for specialized mocks first
         fullname = f"{self.__name__}.{name}"
         
@@ -73,16 +86,14 @@ class MockModule(types.ModuleType):
         if name == "patch_model_and_tokenizer": return lambda m, t, **k: (m, t)
         if name == "patch_layernorm": return lambda *a, **k: None
         if name == "add_dtype_kwargs": return lambda *a, **k: {}
-        if name == "backends" and "triton" in self.__name__: return {}
-        
         if name == "_get_dtype":
             def _get_dtype(d):
-                import torch
                 if d is None: return torch.float16
                 if isinstance(d, torch.dtype): return d
                 try: return getattr(torch, str(d).split(".")[-1])
                 except: return torch.float16
             return _get_dtype
+        if name == "backends" and "triton" in self.__name__: return {}
 
         # Device Type Specialization
         if "device_type" in self.__name__:
@@ -114,17 +125,16 @@ class MockModule(types.ModuleType):
         return 0
 
     def __bool__(self):
-        return True # Mock modules usually exist
+        return True
 
     def __mro_entries__(self, bases):
         return (object,)
 
 class UnslothMockLoader(Loader):
     def create_module(self, spec):
-        if spec.name in sys.modules: return sys.modules[spec.name]
         return MockModule(spec.name)
     def exec_module(self, module):
-        pass
+        sys.modules[module.__name__] = module
 
 class UnslothMockFinder(MetaPathFinder):
     """Automatically catches any import for specified packages and provides mocks."""
