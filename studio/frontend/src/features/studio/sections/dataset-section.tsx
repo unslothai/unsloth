@@ -114,7 +114,7 @@ export function DatasetSection() {
   const resultIds = useMemo(() => {
     const ids = hfResults.map((r) => r.id);
     if (dataset && !ids.includes(dataset)) {
-      ids.unshift(dataset);
+      ids.push(dataset);
     }
     return ids;
   }, [hfResults, dataset]);
@@ -164,7 +164,20 @@ export function DatasetSection() {
               </TooltipContent>
             </Tooltip>
           </span>
-          <div ref={comboboxAnchorRef}>
+          <div
+            ref={comboboxAnchorRef}
+            onKeyDown={(event) => {
+              if (event.key !== "Enter") return;
+              if (!(event.target instanceof HTMLInputElement)) return;
+              event.preventDefault();
+              if (hfResults.length > 0) {
+                handleDatasetSelect(hfResults[0].id);
+              } else {
+                const text = event.target.value.trim();
+                if (text) handleDatasetSelect(text);
+              }
+            }}
+          >
             <Combobox
               items={resultIds}
               filteredItems={resultIds}
@@ -175,10 +188,7 @@ export function DatasetSection() {
               itemToStringValue={(id) => id}
               autoHighlight={true}
             >
-              <ComboboxInput
-                placeholder="Search datasets..."
-                className="w-full"
-              >
+              <ComboboxInput placeholder="Search datasets..." className="w-full">
                 <InputGroupAddon>
                   <HugeiconsIcon icon={Search01Icon} className="size-4" />
                 </InputGroupAddon>
