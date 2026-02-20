@@ -67,7 +67,7 @@ class MockModule(nn.Module):
             raise AttributeError(name)
 
         # 2. Handle nn.Module internals
-        if name.startswith("_") and name not in ("_unsloth_mock",):
+        if name.startswith("_") and name not in ("_unsloth_mock", "_get_dtype"):
             try:
                 return self.__dict__[name]
             except KeyError:
