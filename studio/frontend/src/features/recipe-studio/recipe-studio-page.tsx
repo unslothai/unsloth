@@ -160,6 +160,12 @@ export function RecipeStudioPage({
   const [activeView, setActiveView] = useState<RecipeStudioView>("editor");
   const [processorsOpen, setProcessorsOpen] = useState(false);
   const [interactive, setInteractive] = useState(true);
+  const handleExecutionStart = useCallback(() => {
+    setActiveView("executions");
+  }, []);
+  const handlePreviewSuccess = useCallback(() => {
+    setActiveView("executions");
+  }, []);
 
   const baseNodeIds = useMemo(
     () => new Set(nodes.map((node) => node.id)),
@@ -295,12 +301,8 @@ export function RecipeStudioPage({
     resetRecipe,
     loadRecipe,
     getCurrentPayloadFromStore,
-    onExecutionStart: () => {
-      setActiveView("executions");
-    },
-    onPreviewSuccess: () => {
-      setActiveView("executions");
-    },
+    onExecutionStart: handleExecutionStart,
+    onPreviewSuccess: handlePreviewSuccess,
   });
 
   const openProcessorsFromSheet = useCallback(() => {
@@ -324,6 +326,7 @@ export function RecipeStudioPage({
           <RecipeStudioHeader
             activeView={activeView}
             previewLoading={previewLoading}
+            fullLoading={fullLoading}
             saveLoading={saveLoading}
             saveTone={saveTone}
             savedAtLabel={savedAtLabel}
@@ -331,6 +334,9 @@ export function RecipeStudioPage({
             onWorkflowNameChange={setWorkflowName}
             onViewChange={setActiveView}
             onPreview={openPreviewDialog}
+            onRunFull={() => {
+              void runFull();
+            }}
             onSaveRecipe={() => {
               void persistRecipe();
             }}
@@ -396,13 +402,7 @@ export function RecipeStudioPage({
                 executions={executions}
                 selectedExecutionId={selectedExecutionId}
                 currentSignature={currentSignature}
-                previewLoading={previewLoading}
-                fullLoading={fullLoading}
                 onSelectExecution={setSelectedExecutionId}
-                onRunPreview={openPreviewDialog}
-                onRunFull={() => {
-                  void runFull();
-                }}
                 onCancelExecution={(executionId) => {
                   void cancelExecution(executionId);
                 }}
