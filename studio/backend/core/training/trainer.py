@@ -867,6 +867,7 @@ class UnslothTrainer:
                         self.trainer,
                         instruction_part=instruction_part,
                         response_part=response_part,
+                        num_proc=config_args.get("dataset_num_proc", max(1, os.cpu_count() // 4)),
                     )
                     print("Train on responses only configured successfully\n")
                 except Exception as e:
