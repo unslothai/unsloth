@@ -267,7 +267,15 @@ class MacPatcher:
             mod.backends = {}
         elif "rl_replacements" in fullname:
             def dummy_fn(*args, **kwargs): pass
-            mod.RL_REPLACEMENTS = collections.defaultdict(lambda: dummy_fn)
+            def get_rl_item(key):
+                if any(x in key.lower() for x in ("loss", "unsloth", "params", "logps")):
+                    return "def dummy(): pass"
+                return dummy_fn
+            mod.RL_REPLACEMENTS = collections.defaultdict(lambda: dummy_fn, {
+                k: get_rl_item(k) for k in ["grpo_compute_loss", "UnslothEfficientGRPO", "grpo_accumulated_loss", "grpo_compute_loss_slow", "grpo_update_SamplingParams"]
+            })
+            # Also override the __getitem__ of the defaultdict if possible, or just use a helper
+            mod.RL_REPLACEMENTS.default_factory = lambda: "def dummy(): pass"
             mod.RL_PRE_ITEMS = collections.defaultdict(list)
         elif "patching_utils" in fullname:
             class DummyLinear: pass
