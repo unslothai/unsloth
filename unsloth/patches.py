@@ -244,9 +244,16 @@ class MacPatcher:
             mod.process_vision_info = lambda *a, **k: (None, None)
         elif "utils" in fullname and not fullname.endswith("vision_utils"):
             class Version:
-                def __init__(self, v): self.v = v
-                def __ge__(self, other): return True
+                def __init__(self, v): 
+                    self.v = str(v)
+                def __lt__(self, other): return False
                 def __le__(self, other): return True
+                def __gt__(self, other): return True
+                def __ge__(self, other): return True
+                def __eq__(self, other): return True
+                def __ne__(self, other): return False
+                def __str__(self): return self.v
+                def __repr__(self): return f"Version('{self.v}')"
             mod.Version = Version
             mod.get_quant_type = lambda m: "unknown"
         
