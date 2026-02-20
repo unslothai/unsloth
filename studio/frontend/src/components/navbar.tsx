@@ -100,8 +100,6 @@ export function Navbar() {
           {NAV_ITEMS.map((item) => {
             const active =
               pathname === item.href || pathname.startsWith(`${item.href}/`);
-            if (!item.enabled) {
-            const active = pathname === item.href;
             const disabledByTraining =
               isTrainingRunning && item.href !== "/studio";
             if (!item.enabled || disabledByTraining) {
