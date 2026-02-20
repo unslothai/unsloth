@@ -16,6 +16,7 @@ import json
 import threading
 import math
 import logging
+import time
 from typing import Optional, Callable
 from dataclasses import dataclass
 import pandas as pd
@@ -46,6 +47,11 @@ class TrainingProgress:
     is_completed: bool = False
     error: Optional[str] = None
     status_message: str = "Ready to train"  # Current stage message
+    elapsed_seconds: Optional[float] = None
+    eta_seconds: Optional[float] = None
+    grad_norm: Optional[float] = None
+    num_tokens: Optional[int] = None
+    eval_loss: Optional[float] = None
 
 class UnslothTrainer:
     """
@@ -66,6 +72,12 @@ class UnslothTrainer:
         # Model state tracking
         self.is_vlm = False
         self.model_name = None
+
+        # Training metrics tracking
+        self.training_start_time: Optional[float] = None
+        self.batch_size: Optional[int] = None
+        self.max_seq_length: Optional[int] = None
+        self.gradient_accumulation_steps: Optional[int] = None
 
         # Thread safety
         self._lock = threading.Lock()
@@ -99,17 +111,29 @@ class UnslothTrainer:
                    model_name: str,
                    max_seq_length: int = 2048,
                    load_in_4bit: bool = True,
-                   hf_token: Optional[str] = None) -> bool:
+                   hf_token: Optional[str] = None,
+                   is_dataset_multimodal: bool = False) -> bool:
         """Load model for training (supports both text and vision models)"""
         try:
+            if self.model is not None:
+                del self.model
+            if self.tokenizer is not None:
+                del self.tokenizer
+
+            if self.trainer is not None:
+                del self.trainer
+
             print("\nClearing GPU memory before training...")
             clear_gpu_cache()
 
-            # Detect if this is a vision model first
-            self.is_vlm = is_vision_model(model_name)
+            # Detect if this is a vision model AND dataset is multimodal
+            # A vision-capable model with a text-only dataset should use FastLanguageModel
+            self.is_vlm = is_vision_model(model_name) and is_dataset_multimodal
             self.model_name = model_name
 
-            logger.info(f"Model type detected: {'Vision' if self.is_vlm else 'Text'}")
+            logger.info(f"Model architecture is vision: {is_vision_model(model_name)}")
+            logger.info(f"Dataset is multimodal: {is_dataset_multimodal}")
+            logger.info(f"Using VLM path: {self.is_vlm}")
 
             # Reset training state for new run
             self._update_progress(
@@ -198,7 +222,13 @@ class UnslothTrainer:
                 return True
 
             # LoRA/QLoRA mode - apply PEFT
-            if target_modules is None or (isinstance(target_modules, list) and len(target_modules) == 0):
+            # "all-linear" is a PEFT keyword that targets every linear layer
+            if isinstance(target_modules, list) and "all-linear" in target_modules:
+                if len(target_modules) == 1:
+                    target_modules = "all-linear"
+                else:
+                    target_modules = [m for m in target_modules if m != "all-linear"]
+            elif target_modules is None or (isinstance(target_modules, list) and len(target_modules) == 0):
                 target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
                                 "gate_proj", "up_proj", "down_proj"]
 
@@ -306,12 +336,24 @@ class UnslothTrainer:
                      dataset_source: str,
                      format_type: str = "auto",
                      local_datasets: list = None,
-                     custom_format_mapping: dict = None) -> Optional[Dataset]:
+                     custom_format_mapping: dict = None,
+                     subset: str = None,
+                     train_split: str = "train",
+                     eval_split: str = None) -> Optional[tuple]:
         """
-        Load and prepare dataset for training
+        Load and prepare dataset for training.
+
+        Strategy: format first, then split — ensures both train and eval
+        portions are properly formatted and templated.
+
+        Returns:
+            Tuple of (dataset_info, eval_dataset) or None on error.
+            eval_dataset may be None if no eval split is available.
         """
         try:
             dataset = None
+            eval_dataset = None
+            has_separate_eval_source = False  # True if eval comes from a separate HF split
 
             if local_datasets:
                 # Load local datasets
@@ -350,7 +392,10 @@ class UnslothTrainer:
 
             elif dataset_source:
                 # Load from Hugging Face
-                dataset = load_dataset(dataset_source, split="train")
+                load_kwargs = {"path": dataset_source, "split": train_split or "train"}
+                if subset:
+                    load_kwargs["name"] = subset
+                dataset = load_dataset(**load_kwargs)
 
                 # Check if stopped during dataset loading
                 if self.should_stop:
@@ -360,6 +405,25 @@ class UnslothTrainer:
                 self._update_progress(status_message=f"Loaded dataset from HuggingFace: {dataset_source}")
                 print(f"Loaded dataset from Hugging Face: {dataset_source}\n")
 
+                # Resolve eval split from a separate HF split (explicit or auto-detected)
+                if eval_split:
+                    # Explicit eval split provided - load it directly
+                    print(f"Loading explicit eval split: '{eval_split}'\n")
+                    eval_load_kwargs = {"path": dataset_source, "split": eval_split}
+                    if subset:
+                        eval_load_kwargs["name"] = subset
+                    eval_dataset = load_dataset(**eval_load_kwargs)
+                    has_separate_eval_source = True
+                    print(f"Loaded eval split '{eval_split}' with {len(eval_dataset)} rows\n")
+                else:
+                    # Auto-detect eval split from HF (returns a separate dataset, or None)
+                    eval_dataset = self._auto_detect_eval_split_from_hf(
+                        dataset_source=dataset_source,
+                        subset=subset,
+                    )
+                    if eval_dataset is not None:
+                        has_separate_eval_source = True
+
             if dataset is None:
                 raise ValueError("No dataset provided")
 
@@ -368,16 +432,15 @@ class UnslothTrainer:
                 print("Stopped before applying chat template\n")
                 return None
 
-            # NEW: Use unified format_and_template_dataset
+            # ========== FORMAT FIRST ==========
             print(f"Formatting dataset with format_type='{format_type}'...\n")
 
-            #breakpoint()
             dataset_info = format_and_template_dataset(
                 dataset,
                 model_name=self.model_name,
-                tokenizer=self.tokenizer,  # Works for both text and vision models
+                tokenizer=self.tokenizer,
                 is_vlm=self.is_vlm,
-                format_type=format_type,  # "auto", "alpaca", "chatml", "sharegpt"
+                format_type=format_type,
                 dataset_name=dataset_source,
                 custom_format_mapping=custom_format_mapping,
             )
@@ -389,15 +452,94 @@ class UnslothTrainer:
 
             self._update_progress(status_message=f"Dataset formatted and ready for training")
             print(f"Dataset formatted successfully\n")
-            return dataset_info
+
+            # ========== THEN SPLIT ==========
+            if has_separate_eval_source and eval_dataset is not None:
+                # Eval came from a separate HF split — format it too
+                print(f"Formatting eval dataset ({len(eval_dataset)} rows)...\n")
+                eval_info = format_and_template_dataset(
+                    eval_dataset,
+                    model_name=self.model_name,
+                    tokenizer=self.tokenizer,
+                    is_vlm=self.is_vlm,
+                    format_type=format_type,
+                    dataset_name=dataset_source,
+                    custom_format_mapping=custom_format_mapping,
+                )
+                eval_dataset = eval_info["dataset"]
+                print(f"Eval dataset formatted successfully\n")
+            elif not has_separate_eval_source:
+                # No separate eval source — split the already-formatted dataset
+                formatted_dataset = dataset_info["dataset"]
+                split_result = self._resolve_eval_split_from_dataset(formatted_dataset)
+                if split_result is not None:
+                    train_portion, eval_dataset = split_result
+                    dataset_info["dataset"] = train_portion
+
+            return (dataset_info, eval_dataset)
 
         except Exception as e:
             logger.error(f"Error loading dataset: {e}")
             self._update_progress(error=str(e))
             return None
 
+    def _auto_detect_eval_split_from_hf(self, dataset_source: str,
+                                         subset: str) -> Optional[Dataset]:
+        """Auto-detect an eval split from HF dataset (separate named split only)."""
+        try:
+            from datasets import get_dataset_split_names
+            load_kwargs = {"path": dataset_source}
+            if subset:
+                load_kwargs["name"] = subset
+            available_splits = get_dataset_split_names(**load_kwargs)
+            print(f"Available splits: {available_splits}\n")
+
+            # Check for common eval split names
+            for candidate in ["eval", "validation", "valid", "val", "test"]:
+                if candidate in available_splits:
+                    eval_load_kwargs = {"path": dataset_source, "split": candidate}
+                    if subset:
+                        eval_load_kwargs["name"] = subset
+                    candidate_ds = load_dataset(**eval_load_kwargs)
+                    if len(candidate_ds) >= 16:
+                        print(f"Auto-detected eval split '{candidate}' with {len(candidate_ds)} rows\n")
+                        return candidate_ds
+                    else:
+                        print(f"Found eval split '{candidate}' but only {len(candidate_ds)} rows (< 16), skipping\n")
+
+        except Exception as e:
+            logger.warning(f"Could not check dataset splits: {e}")
+
+        # No separate HF eval split found — caller will handle programmatic splitting
+        return None
+
+    def _resolve_eval_split_from_dataset(self, dataset) -> Optional[tuple]:
+        """Split a dataset into train and eval portions.
+
+        Returns:
+            Tuple of (train_dataset, eval_dataset), or None if dataset too small.
+        """
+        MIN_EVAL_ROWS = 16
+        MIN_TOTAL_ROWS = 32  # Need at least 16 train + 16 eval
+
+        n = len(dataset)
+        if n < MIN_TOTAL_ROWS:
+            print(f"Dataset too small ({n} rows) for eval split, skipping eval\n")
+            return None
+
+        eval_size = max(MIN_EVAL_ROWS, min(128, int(0.05 * n)))
+        # Ensure we don't take more than half the dataset
+        eval_size = min(eval_size, n // 2)
+
+        print(f"Auto-splitting: {eval_size} rows for eval from {n} total\n")
+        split_result = dataset.train_test_split(test_size=eval_size, seed=3407)
+        print(f"Split complete: {len(split_result['train'])} train, {len(split_result['test'])} eval\n")
+        return (split_result['train'], split_result['test'])
+
     def start_training(self,
                        dataset: Dataset,
+                       eval_dataset: Dataset = None,
+                       eval_steps: float = 0.01,
                        output_dir: str = "./outputs",
                        num_epochs: int = 3,
                        learning_rate: float = 5e-5,
@@ -451,17 +593,33 @@ class UnslothTrainer:
                 'wandb_token': wandb_token,
                 'enable_tensorboard': enable_tensorboard,
                 'tensorboard_dir': tensorboard_dir,
+                'eval_dataset': eval_dataset,
+                'eval_steps': eval_steps,
                 **kwargs
             }
         )
 
         self.should_stop = False
-        self.training_thread.start()
-        return True
+        self.is_training = True
+        try:
+            self.training_thread.start()
+            return True
+        except Exception as e:
+            self.is_training = False
+            logger.error(f"Failed to start training thread: {e}")
+            return False
 
     def _train_worker(self, dataset: Dataset, **training_args):
         """Worker function for training (runs in separate thread)"""
         try:
+            # Store training parameters for metrics calculation
+            self.batch_size = training_args.get('batch_size', 2)
+            self.max_seq_length = training_args.get('max_seq_length', 2048)
+            self.gradient_accumulation_steps = training_args.get('gradient_accumulation_steps', 4)
+            
+            # Set training start time
+            self.training_start_time = time.time()
+            
             self._update_progress(is_training=True, error=None)
 
             # Setup logging
@@ -548,6 +706,8 @@ class UnslothTrainer:
                 "seed": training_args.get('random_seed', 3407),
                 "output_dir": output_dir,
                 "report_to": ["wandb"] if training_args.get('enable_wandb', False) else "none",
+                "include_num_input_tokens_seen": True,  # Enable token counting
+                "dataset_num_proc": max(1, os.cpu_count() // 4),
             }
             
             # Add warmup parameter - use warmup_ratio if provided, otherwise warmup_steps
@@ -576,6 +736,17 @@ class UnslothTrainer:
                 print(f"Training for {max_steps_val} steps\n")
             else:
                 print(f"Training for {config_args['num_train_epochs']} epochs\n")
+
+            # ========== EVAL CONFIGURATION ==========
+            eval_dataset = training_args.get('eval_dataset', None)
+            eval_steps_val = training_args.get('eval_steps', 0.01)
+            if eval_dataset is not None:
+                config_args["eval_strategy"] = "steps"
+                config_args["eval_steps"] = eval_steps_val
+                print(f"Evaluation enabled: eval_steps={eval_steps_val} (fraction of total steps)\n")
+                print(f"Eval dataset: {len(eval_dataset)} rows\n")
+            else:
+                print("No eval dataset — evaluation disabled\n")
 
             # Add model-specific parameters
             # Use optim and lr_scheduler_type from training_args if provided, otherwise use defaults
@@ -618,21 +789,38 @@ class UnslothTrainer:
             print("Training configuration prepared\n")
             # ========== TRAINER INITIALIZATION ==========
             if self.is_vlm:
-                self.trainer = SFTTrainer(
-                    model=self.model,
-                    train_dataset=dataset['dataset'],
-                    processing_class = self.tokenizer.tokenizer,
-                    data_collator=data_collator,
-                    args=SFTConfig(**config_args),
-                )
+                trainer_kwargs = {
+                    "model": self.model,
+                    "train_dataset": dataset['dataset'],
+                    "processing_class": self.tokenizer.tokenizer,
+                    "data_collator": data_collator,
+                    "args": SFTConfig(**config_args),
+                }
+                if eval_dataset is not None:
+                    trainer_kwargs["eval_dataset"] = eval_dataset
+                self.trainer = SFTTrainer(**trainer_kwargs)
             else:
-                self.trainer = SFTTrainer(
-                    model=self.model,
-                    tokenizer=self.tokenizer,
-                    train_dataset=dataset['dataset'],
-                    data_collator=data_collator,
-                    args=SFTConfig(**config_args),
-                )
+                # For text-only training, if the tokenizer is actually a Processor
+                # (e.g., Gemma-3 returns a ProcessorMixin even for text), we must
+                # unwrap to the raw tokenizer. Otherwise Unsloth's SFTTrainer detects
+                # ProcessorMixin → sets _is_vlm=True → skips _prepare_dataset entirely,
+                # and the 'text' column never gets tokenized to 'input_ids'.
+                from transformers import ProcessorMixin
+                sft_tokenizer = self.tokenizer
+                if isinstance(self.tokenizer, ProcessorMixin) and hasattr(self.tokenizer, 'tokenizer'):
+                    print(f"  ⚠️ Unwrapping Processor → raw tokenizer for text-only SFTTrainer")
+                    sft_tokenizer = self.tokenizer.tokenizer
+
+                trainer_kwargs = {
+                    "model": self.model,
+                    "tokenizer": sft_tokenizer,
+                    "train_dataset": dataset['dataset'],
+                    "data_collator": data_collator,
+                    "args": SFTConfig(**config_args),
+                }
+                if eval_dataset is not None:
+                    trainer_kwargs["eval_dataset"] = eval_dataset
+                self.trainer = SFTTrainer(**trainer_kwargs)
             print("Trainer initialized\n")
 
             # ========== TRAIN ON RESPONSES ONLY ==========
@@ -679,6 +867,7 @@ class UnslothTrainer:
                         self.trainer,
                         instruction_part=instruction_part,
                         response_part=response_part,
+                        num_proc=config_args.get("dataset_num_proc", max(1, os.cpu_count() // 4)),
                     )
                     print("Train on responses only configured successfully\n")
                 except Exception as e:
@@ -706,12 +895,41 @@ class UnslothTrainer:
                     if logs:
                         # Get loss from either 'loss' or 'train_loss' key
                         loss_value = logs.get('loss', logs.get('train_loss', 0.0))
+                        current_step = state.global_step
+                        
+                        # Extract grad_norm from logs (available when gradient clipping is enabled)
+                        grad_norm = logs.get('grad_norm', None)
+                        
+                        # Calculate elapsed_seconds
+                        elapsed_seconds = None
+                        if self.trainer_instance.training_start_time is not None:
+                            elapsed_seconds = time.time() - self.trainer_instance.training_start_time
+                        
+                        # Calculate eta_seconds
+                        eta_seconds = None
+                        if elapsed_seconds is not None and current_step > 0:
+                            total_steps = self.trainer_instance.training_progress.total_steps
+                            if total_steps > 0:
+                                steps_remaining = total_steps - current_step
+                                if steps_remaining > 0:
+                                    time_per_step = elapsed_seconds / current_step
+                                    eta_seconds = time_per_step * steps_remaining
+                        
+                        # Extract num_tokens from TRL SFTTrainer state (real counter)
+                        # Requires include_num_input_tokens_seen=True in SFTConfig
+                        num_tokens = getattr(state, "num_input_tokens_seen", None)
+                        
                         self.trainer_instance._update_progress(
-                            step=state.global_step,
-                            epoch=round(state.epoch, 2) if state.epoch else 0,  # Round epoch to 2 decimals
+                            step=current_step,
+                            epoch=round(state.epoch, 2) if state.epoch else 0,
                             loss=loss_value,
                             learning_rate=logs.get('learning_rate', 0.0),
-                            status_message=""  # Clear status message so metrics show
+                            elapsed_seconds=elapsed_seconds,
+                            eta_seconds=eta_seconds,
+                            grad_norm=grad_norm,
+                            num_tokens=num_tokens,
+                            eval_loss=logs.get('eval_loss', None),
+                            status_message=""
                         )
 
                 def on_epoch_end(self, args, state, control, **kwargs):
@@ -805,9 +1023,12 @@ class UnslothTrainer:
         print(f"\nStopping training (save={save})...")
         self.should_stop = True
         self.save_on_stop = save
-        self.is_training = False
-        # Clear the status message so timer doesn't show stale status
-        self._update_progress(is_training=False, status_message="")
+        stop_msg = (
+            "Stopping training and saving checkpoint..."
+            if save
+            else "Cancelling training..."
+        )
+        self._update_progress(status_message=stop_msg)
 
         # If trainer exists, try to stop it gracefully
         if self.trainer:

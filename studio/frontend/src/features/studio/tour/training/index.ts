@@ -1,0 +1,2 @@
+export { studioTrainingTourSteps } from "./steps";
+

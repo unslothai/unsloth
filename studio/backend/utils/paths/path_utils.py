@@ -41,6 +41,13 @@ def is_local_path(path: str) -> bool:
     if not path:
         return False
 
+    # If it exists on disk, treat as local (covers relative paths like "outputs/foo").
+    try:
+        if Path(normalize_path(path)).expanduser().exists():
+            return True
+    except Exception:
+        pass
+
     # Obvious HF patterns
     if path.count('/') == 1 and not path.startswith(('/', '.', '~')):
         return False  # Looks like org/model format

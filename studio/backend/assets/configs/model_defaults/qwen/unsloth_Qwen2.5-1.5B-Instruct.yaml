@@ -4,17 +4,18 @@
 
 training:
   max_seq_length: 4096
-  num_epochs: 4
+  # num_epochs: 4
+  num_epochs: 0
   learning_rate: 1e-5
   batch_size: 1
   gradient_accumulation_steps: 64
   warmup_ratio: 0.1
-  max_steps: 0
-  save_steps: 0
+  max_steps: 30
+  save_steps: 30
   weight_decay: 0.001
   random_seed: 42
   packing: false
-  train_on_completions: false
+  train_on_completions: true
   gradient_checkpointing: "unsloth"
   optim: "adamw_8bit"
   lr_scheduler_type: "linear"

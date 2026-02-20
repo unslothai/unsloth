@@ -109,24 +109,27 @@ function SliderRow({
 export function ParamsSection(): ReactElement {
   const store = useTrainingConfigStore();
   const isLora = store.trainingMethod !== "full";
-  const isVision = store.modelType === "vision";
+  const showVisionLora = store.isVisionModel && store.isDatasetMultimodal === true;
   const [loraOpen, setLoraOpen] = useState(false);
   const [hyperOpen, setHyperOpen] = useState(false);
+  const maxStepsSliderMax = Math.max(500, store.maxSteps, 30);
+  const epochsSliderMax = Math.max(20, store.epochs, 1);
 
   return (
-    <SectionCard
-      icon={<HugeiconsIcon icon={Settings04Icon} className="size-5" />}
-      title="Parameters"
-      description="Configure training hyperparameters"
-      accent="orange"
-      className="lg:col-span-4 min-h-[450px]"
-    >
-      <div className="flex flex-col gap-4">
-        {/* Epochs */}
+    <div data-tour="studio-params" className="col-span-1 xl:col-span-4">
+      <SectionCard
+        icon={<HugeiconsIcon icon={Settings04Icon} className="size-5" />}
+        title="Parameters"
+        description="Configure training hyperparameters"
+        accent="orange"
+        className="md:min-h-[450px]"
+      >
+        <div className="flex flex-col gap-4">
+        {/* Max Steps */}
         <div className="flex flex-col gap-2">
           <div className="flex items-center justify-between">
             <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-              Epochs
+              Max Steps
               <Tooltip>
                 <TooltipTrigger asChild={true}>
                   <button
@@ -140,8 +143,7 @@ export function ParamsSection(): ReactElement {
                   </button>
                 </TooltipTrigger>
                 <TooltipContent>
-                  How many times the model sees the entire dataset during
-                  training.{" "}
+                  Override total steps. Set 0 to use epochs instead.{" "}
                   <a
                     href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
                     target="_blank"
@@ -155,23 +157,23 @@ export function ParamsSection(): ReactElement {
             </span>
             <input
               type="number"
-              value={store.epochs}
-              onChange={(e) => store.setEpochs(Number(e.target.value))}
-              min={1}
-              max={20}
+              value={store.maxSteps}
+              onChange={(e) => store.setMaxSteps(Number(e.target.value))}
+              min={0}
+              max={maxStepsSliderMax}
               step={1}
-              className="w-12 text-right font-mono text-xs font-medium bg-muted/50 border border-border rounded-lg px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-primary/30 [&::-webkit-inner-spin-button]:appearance-none"
+              className="w-16 text-right font-mono text-xs font-medium bg-muted/50 border border-border rounded-lg px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-primary/30 [&::-webkit-inner-spin-button]:appearance-none"
             />
           </div>
           <Slider
-            value={[store.epochs]}
-            onValueChange={([v]) => store.setEpochs(v)}
-            min={1}
-            max={20}
+            value={[Math.min(maxStepsSliderMax, Math.max(0, store.maxSteps))]}
+            onValueChange={([v]) => store.setMaxSteps(v)}
+            min={0}
+            max={maxStepsSliderMax}
             step={1}
           />
           <p className="text-[10px] text-muted-foreground">
-            Number of full passes over the training dataset
+            Total optimizer steps. Use 0 to run by epochs.
           </p>
         </div>
 
@@ -349,7 +351,7 @@ export function ParamsSection(): ReactElement {
               />
 
               {/* Vision checkboxes */}
-              {isVision && (
+              {showVisionLora && (
                 <div className="flex flex-col gap-2 pt-1">
                   {(
                     [
@@ -399,7 +401,7 @@ export function ParamsSection(): ReactElement {
               )}
 
               {/* Text target modules */}
-              {!isVision && (
+              {!showVisionLora && (
                 <div className="flex flex-col gap-2 pt-1">
                   <span className="text-xs font-medium text-muted-foreground">
                     Target Modules
@@ -601,11 +603,12 @@ export function ParamsSection(): ReactElement {
                   max={100}
                   step={1}
                 />
-                <Row
-                  label="Max Steps"
+                <SliderRow
+                  label="Epochs"
                   tooltip={
                     <>
-                      Override total steps. 0 means use epochs instead.{" "}
+                      Number of full passes over the dataset. Set 0 to run by
+                      max steps.{" "}
                       <a
                         href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
                         target="_blank"
@@ -616,14 +619,12 @@ export function ParamsSection(): ReactElement {
                       </a>
                     </>
                   }
-                >
-                  <Input
-                    type="number"
-                    value={store.maxSteps}
-                    onChange={(e) => store.setMaxSteps(Number(e.target.value))}
-                    className="w-28 font-mono"
-                  />
-                </Row>
+                  value={store.epochs}
+                  onChange={store.setEpochs}
+                  min={0}
+                  max={epochsSliderMax}
+                  step={1}
+                />
                 <Row
                   label="Save Steps"
                   tooltip={
@@ -644,6 +645,20 @@ export function ParamsSection(): ReactElement {
                     type="number"
                     value={store.saveSteps}
                     onChange={(e) => store.setSaveSteps(Number(e.target.value))}
+                    className="w-28 font-mono"
+                  />
+                </Row>
+                <Row
+                  label="Eval Steps"
+                  tooltip="Fraction of total training steps between evaluations. E.g. 0.01 = evaluate every 1% of steps."
+                >
+                  <Input
+                    type="number"
+                    step="0.01"
+                    min="0.001"
+                    max="1"
+                    value={store.evalSteps}
+                    onChange={(e) => store.setEvalSteps(Number(e.target.value))}
                     className="w-28 font-mono"
                   />
                 </Row>
@@ -692,7 +707,7 @@ export function ParamsSection(): ReactElement {
                     </SelectContent>
                   </Select>
                 </Row>
-                {store.modelType !== "vision" && (
+                {!showVisionLora && (
                   <div className="flex items-center gap-2">
                     <Checkbox
                       id="packing"
@@ -724,7 +739,8 @@ export function ParamsSection(): ReactElement {
             </Tabs>
           </CollapsibleContent>
         </Collapsible>
-      </div>
-    </SectionCard>
+        </div>
+      </SectionCard>
+    </div>
   );
 }

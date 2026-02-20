@@ -18,6 +18,45 @@ from core.inference import get_inference_backend
 
 logger = logging.getLogger(__name__)
 
+
+def _is_wsl():
+    """Detect if running under Windows Subsystem for Linux."""
+    try:
+        return "microsoft" in open("/proc/version").read().lower()
+    except Exception:
+        return False
+
+
+def _apply_wsl_sudo_patch():
+    """On WSL, monkey-patch do_we_need_sudo() to return False.
+
+    WSL doesn't have passwordless sudo, and do_we_need_sudo() runs
+    `sudo apt-get update` which hangs waiting for a stdin password
+    inside a non-interactive subprocess. setup.sh pre-installs the
+    build dependencies on WSL, so sudo is not needed at runtime.
+    """
+    if not _is_wsl():
+        return
+
+    try:
+        import unsloth_zoo.llama_cpp as llama_cpp_module
+
+        def _wsl_do_we_need_sudo(system_type="debian"):
+            logger.info(
+                "WSL detected — skipping sudo check "
+                "(build deps pre-installed by setup.sh)"
+            )
+            return False
+
+        llama_cpp_module.do_we_need_sudo = _wsl_do_we_need_sudo
+        logger.info(
+            "Applied WSL sudo patch to "
+            "unsloth_zoo.llama_cpp.do_we_need_sudo"
+        )
+    except Exception as e:
+        logger.warning(f"Could not apply WSL sudo patch: {e}")
+
+
 # Model card template
 MODEL_CARD = \
 """---
@@ -80,43 +119,15 @@ class ExportBackend:
             logger.error(f"Error during memory cleanup: {e}")
             return False
 
-    def scan_checkpoints(self, outputs_dir: str = "./outputs") -> List[Tuple[str, str]]:
+    def scan_checkpoints(self, outputs_dir: str = "./outputs") -> List[Tuple[str, List[Tuple[str, str]]]]:
         """
-        Scan outputs folder for model checkpoints.
+        Scan outputs folder for training runs and their checkpoints.
 
         Returns:
-            List of tuples: [(display_name, checkpoint_path), ...]
+            List of tuples: [(model_name, [(display_name, checkpoint_path), ...]), ...]
         """
-        checkpoints = []
-        outputs_path = Path(outputs_dir)
-
-        if not outputs_path.exists():
-            logger.warning(f"Outputs directory not found: {outputs_dir}")
-            return checkpoints
-
-        try:
-            for item in outputs_path.iterdir():
-                if item.is_dir():
-                    # Check if this directory contains a model
-                    config_file = item / "config.json"
-                    adapter_config = item / "adapter_config.json"
-
-                    if config_file.exists() or adapter_config.exists():
-                        # This is a valid checkpoint
-                        display_name = item.name
-                        checkpoint_path = str(item)
-                        checkpoints.append((display_name, checkpoint_path))
-                        logger.debug(f"Found checkpoint: {display_name}")
-
-            # Sort by modification time (newest first)
-            checkpoints.sort(key=lambda x: Path(x[1]).stat().st_mtime, reverse=True)
-
-            logger.info(f"Found {len(checkpoints)} checkpoints in {outputs_dir}")
-            return checkpoints
-
-        except Exception as e:
-            logger.error(f"Error scanning checkpoints: {e}")
-            return []
+        from utils.models.checkpoints import scan_checkpoints
+        return scan_checkpoints(outputs_dir=outputs_dir)
 
     def load_checkpoint(self,
                        checkpoint_path: str,
@@ -264,7 +275,8 @@ class ExportBackend:
                          push_to_hub: bool = False,
                          repo_id: Optional[str] = None,
                          hf_token: Optional[str] = None,
-                         private: bool = False) -> Tuple[bool, str]:
+                         private: bool = False,
+                         base_model_id: Optional[str] = None) -> Tuple[bool, str]:
         """
         Export base model (for non-PEFT models).
 
@@ -294,8 +306,8 @@ class ExportBackend:
 
                 logger.info(f"Pushing base model to Hub: {repo_id}")
 
-                # Get base model name
-                base_model = self.current_model.config._name_or_path
+                # Get base model name from request or model config
+                base_model = base_model_id or self.current_model.config._name_or_path or "unknown"
 
                 # Create repo
                 hf_api = HfApi(token=hf_token)
@@ -379,6 +391,9 @@ class ExportBackend:
                     # Change to target directory
                     os.chdir(save_directory)
                     logger.info(f"Changed directory to: {save_directory}")
+
+                    # On WSL, patch out sudo check before llama.cpp build
+                    _apply_wsl_sudo_patch()
 
                     # Now save (will save in current directory)
                     self.current_model.save_pretrained_gguf(

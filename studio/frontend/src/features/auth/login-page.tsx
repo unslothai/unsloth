@@ -1,9 +1,10 @@
 import { LightRays } from "@/components/ui/light-rays";
+import { Card } from "@/components/ui/card";
 import { AuthForm } from "./components/auth-form";
 
 export function LoginPage() {
   return (
-    <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-background px-6 py-10 md:px-10">
+    <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-background px-4 py-8 sm:px-6 sm:py-10 md:px-10">
       <LightRays
         count={6}
         color="rgba(34, 197, 94, 0.25)"
@@ -12,9 +13,9 @@ export function LoginPage() {
         length="70vh"
         style={{ opacity: 0.4 }}
       />
-      <div className="relative z-10 w-full max-w-sm">
+      <Card className="relative z-10 w-full max-w-sm px-5 py-6 shadow-border ring-1 ring-border sm:px-6 sm:py-8">
         <AuthForm mode="login" />
-      </div>
+      </Card>
     </div>
   );
 }

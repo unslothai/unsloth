@@ -35,10 +35,14 @@ import {
 import {
   useDebouncedValue,
   useHfDatasetSearch,
+  useHfTokenValidation,
   useInfiniteScroll,
 } from "@/hooks";
 import { cn, formatCompact } from "@/lib/utils";
-import { useTrainingConfigStore } from "@/features/training";
+import {
+  HfDatasetSubsetSplitSelectors,
+  useTrainingConfigStore,
+} from "@/features/training";
 import type { DatasetFormat } from "@/types/training";
 import {
   InformationCircleIcon,
@@ -67,6 +71,10 @@ export function DatasetStep() {
     setDatasetFormat,
     dataset,
     setDataset,
+    datasetSubset,
+    setDatasetSubset,
+    datasetSplit,
+    setDatasetSplit,
     uploadedFile,
     setUploadedFile,
   } = useTrainingConfigStore(
@@ -79,6 +87,10 @@ export function DatasetStep() {
       setDatasetFormat: s.setDatasetFormat,
       dataset: s.dataset,
       setDataset: s.setDataset,
+      datasetSubset: s.datasetSubset,
+      setDatasetSubset: s.setDatasetSubset,
+      datasetSplit: s.datasetSplit,
+      setDatasetSplit: s.setDatasetSplit,
       uploadedFile: s.uploadedFile,
       setUploadedFile: s.setUploadedFile,
     })),
@@ -92,9 +104,13 @@ export function DatasetStep() {
     isLoading,
     isLoadingMore,
     fetchMore,
+    error: hfSearchError,
   } = useHfDatasetSearch(debouncedQuery, {
     accessToken: hfToken || undefined,
   });
+
+  const { error: tokenValidationError, isChecking: isCheckingToken } =
+    useHfTokenValidation(hfToken);
 
   const resultIds = useMemo(() => hfResults.map((r) => r.id), [hfResults]);
 
@@ -168,6 +184,23 @@ export function DatasetStep() {
                 onChange={(e) => setHfToken(e.target.value)}
               />
             </InputGroup>
+            {(tokenValidationError ?? hfSearchError) && (
+              <p className="text-xs text-destructive">
+                {tokenValidationError ?? hfSearchError}
+                {" — "}
+                <a
+                  href="https://huggingface.co/settings/tokens"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline"
+                >
+                  Get or update token
+                </a>
+              </p>
+            )}
+            {isCheckingToken && (
+              <p className="text-xs text-muted-foreground">Checking token…</p>
+            )}
           </Field>
 
           <Field>
@@ -261,6 +294,17 @@ export function DatasetStep() {
               </Combobox>
             </div>
           </Field>
+
+          <HfDatasetSubsetSplitSelectors
+            variant="wizard"
+            enabled={datasetSource === "huggingface"}
+            datasetName={dataset}
+            accessToken={hfToken || undefined}
+            datasetSubset={datasetSubset}
+            setDatasetSubset={setDatasetSubset}
+            datasetSplit={datasetSplit}
+            setDatasetSplit={setDatasetSplit}
+          />
         </>
       ) : (
         <>

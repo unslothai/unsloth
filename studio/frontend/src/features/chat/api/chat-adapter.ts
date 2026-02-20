@@ -1,5 +1,7 @@
 import type { ChatModelAdapter } from "@assistant-ui/react";
+import { toast } from "sonner";
 import { streamChatCompletions } from "./chat-api";
+import { db } from "../db";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import {
   hasClosedThinkTag,
@@ -81,13 +83,33 @@ function findLatestUserImageBase64(messages: RunMessages): string | undefined {
   return undefined;
 }
 
+async function resolveUseAdapter(
+  threadId: string | undefined,
+): Promise<boolean | undefined> {
+  if (!threadId) {
+    return undefined;
+  }
+  try {
+    const thread = await db.threads.get(threadId);
+    if (!thread?.pairId) {
+      return undefined;
+    }
+    return thread.modelType === "lora";
+  } catch {
+    return undefined;
+  }
+}
+
 export function createOpenAIStreamAdapter(): ChatModelAdapter {
   return {
     async *run({ messages, abortSignal, unstable_threadId }) {
-      const state = useChatRuntimeStore.getState();
-      const { params } = state;
+      const runtime = useChatRuntimeStore.getState();
+      const { params } = runtime;
 
       if (!params.checkpoint) {
+        toast.error("No model loaded", {
+          description: "Pick model in top bar, then retry.",
+        });
         throw new Error("Load a model first.");
       }
 
@@ -104,10 +126,48 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         });
       }
       const imageBase64 = findLatestUserImageBase64(messages);
+      const useAdapter = await resolveUseAdapter(unstable_threadId);
 
       const threadKey = unstable_threadId || "__default";
       let waitingFirstChunk = true;
-      useChatRuntimeStore.getState().setThreadWarming(threadKey, true);
+      let firstTokenSettled = false;
+      let resolveFirstToken: (() => void) | null = null;
+      let rejectFirstToken: ((err: unknown) => void) | null = null;
+      const firstTokenPromise = new Promise<void>((resolve, reject) => {
+        resolveFirstToken = resolve;
+        rejectFirstToken = reject;
+      });
+      // Avoid unhandled rejections if toast.promise never attached.
+      void firstTokenPromise.catch(() => {});
+
+      function settleFirstTokenOk(): void {
+        if (firstTokenSettled) return;
+        firstTokenSettled = true;
+        resolveFirstToken?.();
+      }
+
+      function settleFirstTokenErr(err: unknown): void {
+        if (firstTokenSettled) return;
+        firstTokenSettled = true;
+        rejectFirstToken?.(err);
+      }
+
+      let warmupToastShown = false;
+      const warmupDelayMs = 450;
+      const warmupTimer = setTimeout(() => {
+        if (!waitingFirstChunk) return;
+        if (abortSignal.aborted) return;
+        warmupToastShown = true;
+        toast.promise(firstTokenPromise, {
+          loading: "Warming up model",
+          success: "Generating",
+          error: (err) =>
+            err instanceof Error && err.message ? err.message : "Generation failed",
+          description: "Waiting for first token.",
+          duration: 900,
+        });
+      }, warmupDelayMs);
+      runtime.setThreadRunning(threadKey, true);
       let cumulativeText = "";
       let reasoningStartAt: number | null = null;
       let reasoningDuration = 0;
@@ -122,8 +182,10 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             top_p: params.topP,
             max_tokens: params.maxTokens,
             top_k: params.topK,
+            min_p: params.minP,
             repetition_penalty: params.repetitionPenalty,
             image_base64: imageBase64,
+            ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
           },
           abortSignal,
         );
@@ -135,7 +197,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           }
           if (waitingFirstChunk) {
             waitingFirstChunk = false;
-            useChatRuntimeStore.getState().setThreadWarming(threadKey, false);
+            settleFirstTokenOk();
           }
 
           cumulativeText += delta;
@@ -155,10 +217,30 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             };
           }
         }
-      } finally {
-        if (waitingFirstChunk) {
-          useChatRuntimeStore.getState().setThreadWarming(threadKey, false);
+        settleFirstTokenOk();
+      } catch (err) {
+        settleFirstTokenErr(err instanceof Error ? err : new Error("Generation failed"));
+        const isEarly = waitingFirstChunk;
+        if (!abortSignal.aborted && !(warmupToastShown && isEarly)) {
+          toast.error("Generation failed", {
+            description: err instanceof Error ? err.message : "Unknown error",
+          });
         }
+        throw err;
+      } finally {
+        clearTimeout(warmupTimer);
+        if (waitingFirstChunk) {
+          if (warmupToastShown && !firstTokenSettled) {
+            if (abortSignal.aborted) {
+              settleFirstTokenErr(new Error("Cancelled"));
+            } else {
+              settleFirstTokenErr(new Error("No tokens received"));
+            }
+          } else {
+            settleFirstTokenOk();
+          }
+        }
+        runtime.setThreadRunning(threadKey, false);
       }
     },
   };

@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from typing import Dict, Optional
+from typing import Dict, Optional, Any
 import logging
 import asyncio
 from datetime import datetime
@@ -54,6 +54,22 @@ if not logger.handlers:
     handler.setFormatter(formatter)
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
+
+
+@router.get("/hardware")
+async def get_hardware_utilization(
+    current_subject: str = Depends(get_current_subject),
+):
+    """
+    Get a live snapshot of GPU hardware utilization.
+
+    Designed to be polled by the frontend during training.
+    Returns GPU utilization %, temperature, VRAM usage, and power draw
+    via nvidia-smi for maximum accuracy.
+    """
+    from utils.hardware import get_gpu_utilization
+
+    return get_gpu_utilization()
 
 
 @router.post("/start")
@@ -129,6 +145,10 @@ async def start_training(
             "hf_dataset": request.hf_dataset or "",
             "local_datasets": request.local_datasets,
             "format_type": request.format_type,
+            "subset": request.subset,
+            "train_split": request.train_split,
+            "eval_split": request.eval_split,
+            "eval_steps": request.eval_steps,
             "custom_format_mapping": request.custom_format_mapping,
             "num_epochs": request.num_epochs,
             "learning_rate": request.learning_rate,
@@ -158,6 +178,7 @@ async def start_training(
             "finetune_language_layers": request.finetune_language_layers,
             "finetune_attention_modules": request.finetune_attention_modules,
             "finetune_mlp_modules": request.finetune_mlp_modules,
+            "is_dataset_multimodal": request.is_dataset_multimodal,
             "enable_wandb": request.enable_wandb,
             "wandb_token": request.wandb_token or "",
             "wandb_project": request.wandb_project or "",
@@ -267,21 +288,31 @@ async def stop_training(
     """
     try:
         backend = get_training_backend()
-        
-        if not backend.is_training_active():
+        trainer_thread = getattr(getattr(backend, "trainer", None), "training_thread", None)
+        thread_alive = bool(trainer_thread and trainer_thread.is_alive())
+        is_active = backend.is_training_active()
+        logger.info(
+            "Stop requested: save=%s is_active=%s thread_alive=%s should_stop=%s",
+            body.save,
+            is_active,
+            thread_alive,
+            getattr(getattr(backend, "trainer", None), "should_stop", None),
+        )
+
+        if not is_active and not thread_alive:
             return TrainingStopResponse(
                 status="idle",
                 message="No training job is currently running"
             )
-        
+
         # Call backend stop method
         backend.stop_training(save=body.save)
-        
+
         return TrainingStopResponse(
             status="stopped",
-            message="Training job stopped successfully"
+            message="Stop requested. Training will stop at the next safe step."
         )
-        
+
     except Exception as e:
         logger.error(f"Error stopping training: {e}", exc_info=True)
         raise HTTPException(
@@ -299,12 +330,33 @@ async def reset_training(
     """
     try:
         backend = get_training_backend()
+        trainer_thread = getattr(getattr(backend, "trainer", None), "training_thread", None)
+        thread_alive = bool(trainer_thread and trainer_thread.is_alive())
+        is_active = backend.is_training_active()
+
+        if is_active or thread_alive:
+            logger.warning(
+                "Rejected reset while training active: is_active=%s thread_alive=%s should_stop=%s",
+                is_active,
+                thread_alive,
+                getattr(getattr(backend, "trainer", None), "should_stop", None),
+            )
+            raise HTTPException(
+                status_code=409,
+                detail="Training is still running. Stop training and wait for it to finish before resetting.",
+            )
+
+        logger.info("Reset training state: clearing runtime + metric history")
         backend.trainer.should_stop = False
         backend.trainer.training_progress = backend.trainer.training_progress.__class__()
         backend.loss_history = []
         backend.lr_history = []
         backend.step_history = []
+        backend.grad_norm_history = []
+        backend.grad_norm_step_history = []
         return {"status": "ok"}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error resetting training: {e}", exc_info=True)
         raise HTTPException(
@@ -387,12 +439,17 @@ async def get_training_status(
                 "steps": list(backend.step_history),
                 "loss": list(backend.loss_history),
                 "lr": list(backend.lr_history),
+                "grad_norm": list(getattr(backend, "grad_norm_history", [])),
+                "grad_norm_steps": list(getattr(backend, "grad_norm_step_history", [])),
+                "eval_loss": list(backend.eval_loss_history),
+                "eval_steps": list(backend.eval_step_history),
             }
 
         return TrainingStatus(
             job_id=job_id,
             phase=phase,
             is_training_running=is_active,
+            eval_enabled=backend.eval_enabled,
             message=status_message,
             error=error_message,
             details=details,
@@ -421,6 +478,8 @@ async def get_training_metrics(
         loss_history = backend.loss_history
         lr_history = backend.lr_history
         step_history = backend.step_history
+        grad_norm_history = getattr(backend, "grad_norm_history", [])
+        grad_norm_step_history = getattr(backend, "grad_norm_step_history", [])
 
         # Get current values
         current_loss = loss_history[-1] if loss_history else None
@@ -431,6 +490,8 @@ async def get_training_metrics(
             loss_history=loss_history,
             lr_history=lr_history,
             step_history=step_history,
+            grad_norm_history=grad_norm_history,
+            grad_norm_step_history=grad_norm_step_history,
             current_loss=current_loss,
             current_lr=current_lr,
             current_step=current_step,
@@ -480,6 +541,9 @@ async def stream_training_progress(
             learning_rate: float,
             total_steps: int,
             epoch: Optional[float] = None,
+            progress: Optional[Any] = None,
+            grad_norm_override: Optional[float] = None,
+            eval_loss_override: Optional[float] = None,
         ) -> TrainingProgress:
             total = max(total_steps, 0)
             if step < 0 or total == 0:
@@ -489,6 +553,17 @@ async def stream_training_progress(
                     float(step) / float(total) * 100.0 if total > 0 else 0.0
                 )
 
+            # Get actual values from progress object if available
+            elapsed_seconds = getattr(progress, 'elapsed_seconds', None) if progress else None
+            eta_seconds = getattr(progress, 'eta_seconds', None) if progress else None
+            grad_norm = grad_norm_override
+            if grad_norm is None and progress:
+                grad_norm = getattr(progress, 'grad_norm', None)
+            num_tokens = getattr(progress, 'num_tokens', None) if progress else None
+            eval_loss = eval_loss_override
+            if eval_loss is None and progress:
+                eval_loss = getattr(progress, 'eval_loss', None)
+
             return TrainingProgress(
                 job_id=job_id,
                 step=step,
@@ -497,10 +572,11 @@ async def stream_training_progress(
                 learning_rate=learning_rate,
                 progress_percent=progress_percent,
                 epoch=epoch,
-                elapsed_seconds=None,
-                eta_seconds=None,
-                grad_norm=None,
-                num_tokens=None,
+                elapsed_seconds=elapsed_seconds,
+                eta_seconds=eta_seconds,
+                grad_norm=grad_norm,
+                num_tokens=num_tokens,
+                eval_loss=eval_loss,
             )
 
         def format_sse(
@@ -525,6 +601,13 @@ async def stream_training_progress(
         # ── Replay missed steps on reconnect ─────────────────────
         if resume_from_step is not None and backend.step_history:
             replayed = 0
+            grad_norm_by_step = {
+                step_val: grad_val
+                for step_val, grad_val in zip(
+                    getattr(backend, "grad_norm_step_history", []),
+                    getattr(backend, "grad_norm_history", []),
+                )
+            }
             for i, step_val in enumerate(backend.step_history):
                 if step_val > resume_from_step:
                     loss_val = backend.loss_history[i] if i < len(backend.loss_history) else 0.0
@@ -534,7 +617,15 @@ async def stream_training_progress(
                     )
                     total_replay = getattr(tp_replay, "total_steps", step_val) if tp_replay else step_val
                     epoch_replay = getattr(tp_replay, "epoch", None) if tp_replay else None
-                    payload = build_progress(step_val, loss_val, lr_val, total_replay, epoch_replay)
+                    payload = build_progress(
+                        step_val,
+                        loss_val,
+                        lr_val,
+                        total_replay,
+                        epoch_replay,
+                        progress=tp_replay,
+                        grad_norm_override=grad_norm_by_step.get(step_val),
+                    )
                     yield format_sse(payload.model_dump_json(), event="progress", event_id=step_val)
                     replayed += 1
             if replayed:
@@ -553,6 +644,7 @@ async def stream_training_progress(
                 learning_rate=0.0,
                 total_steps=initial_total_steps,
                 epoch=initial_epoch,
+                progress=tp,
             )
             yield format_sse(initial_progress.model_dump_json(), event="progress", event_id=0)
 
@@ -566,11 +658,11 @@ async def stream_training_progress(
                         getattr(tp, "total_steps", final_step) if tp else final_step
                     )
                     final_epoch = getattr(tp, "epoch", None) if tp else None
-                    payload = build_progress(final_step, final_loss, final_lr, final_total_steps, final_epoch)
+                    payload = build_progress(final_step, final_loss, final_lr, final_total_steps, final_epoch, progress=tp)
                     yield format_sse(payload.model_dump_json(), event="complete", event_id=final_step)
                 else:
                     yield format_sse(
-                        build_progress(-1, 0.0, 0.0, 0).model_dump_json(),
+                        build_progress(-1, 0.0, 0.0, 0, progress=tp).model_dump_json(),
                         event="complete",
                         event_id=0,
                     )
@@ -605,6 +697,7 @@ async def stream_training_progress(
                             current_lr,
                             current_total_steps,
                             current_epoch,
+                            progress=tp_inner,
                         )
                         yield format_sse(
                             progress_payload.model_dump_json(),
@@ -623,6 +716,7 @@ async def stream_training_progress(
                                 current_lr,
                                 current_total_steps,
                                 current_epoch,
+                                progress=tp_inner,
                             )
                             yield format_sse(
                                 heartbeat_payload.model_dump_json(),
@@ -644,7 +738,7 @@ async def stream_training_progress(
                             if tp_prep else 0
                         )
                         preparing_payload = build_progress(
-                            0, 0.0, 0.0, prep_total,
+                            0, 0.0, 0.0, prep_total, progress=tp_prep,
                         )
                         yield format_sse(
                             preparing_payload.model_dump_json(),
@@ -655,7 +749,8 @@ async def stream_training_progress(
                 # Timeout check
                 if no_update_count > max_no_updates:
                     logger.warning("Progress stream timeout - no updates received")
-                    timeout_payload = build_progress(last_step, 0.0, 0.0, 0)
+                    tp_timeout = getattr(getattr(backend, "trainer", None), "training_progress", None)
+                    timeout_payload = build_progress(last_step, 0.0, 0.0, 0, progress=tp_timeout)
                     yield format_sse(
                         timeout_payload.model_dump_json(),
                         event="error",
@@ -667,7 +762,8 @@ async def stream_training_progress(
 
             except Exception as e:
                 logger.error(f"Error in progress stream: {e}", exc_info=True)
-                error_payload = build_progress(0, 0.0, 0.0, 0)
+                tp_error = getattr(getattr(backend, "trainer", None), "training_progress", None)
+                error_payload = build_progress(0, 0.0, 0.0, 0, progress=tp_error)
                 yield format_sse(
                     error_payload.model_dump_json(),
                     event="error",
@@ -692,6 +788,7 @@ async def stream_training_progress(
             final_lr,
             final_total_steps,
             final_epoch,
+            progress=final_tp,
         )
         yield format_sse(
             final_payload.model_dump_json(),
