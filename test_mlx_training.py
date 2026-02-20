@@ -102,8 +102,9 @@ def test_mlx_training():
     losses = []
     model = model_with_lora
 
+    loss_and_grad_fn = nn.value_and_grad(model, loss_fn)
+
     for step in range(5):
-        loss_and_grad_fn = mx.value_and_grad(loss_fn)
         loss, grads = loss_and_grad_fn(model, input_ids, labels)
 
         optimizer.update(model, grads)
@@ -182,7 +183,7 @@ def test_mlx_trainer_class():
         def __iter__(self):
             for _ in range(self.num_batches):
                 input_ids = mx.random.randint(0, self.vocab_size, (self.batch_size, self.seq_len))
-                labels = input_ids.copy()
+                labels = mx.array(input_ids)
                 yield {"input_ids": input_ids, "labels": labels}
 
         def __len__(self):
