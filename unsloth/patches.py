@@ -2,411 +2,294 @@
 # Licensed under the Apache License, Version 2.0.
 
 """
-Runtime patches for Apple Silicon (MPS) compatibility.
+Unsloth Patcher for Apple Silicon (macOS/MPS) Compatibility
+===========================================================
 
-The `unsloth_zoo` package enforces CUDA/HIP/XPU device checks at import time,
-which blocks execution on Apple Silicon. This module provides runtime patches
-to enable MPS support by intercepting the device type detection.
+This module provides comprehensive patching for unsloth_zoo and related
+dependencies to work correctly on Apple Silicon with MPS.
 """
+
+from __future__ import annotations
 
 import sys
 import os
 import platform
 import logging
+import warnings
 from types import ModuleType
-from typing import Optional
+from typing import Optional, Any, Dict, List, Callable, Union, Tuple
+from dataclasses import dataclass, field
+from contextlib import contextmanager
+from enum import Enum, auto
+from functools import wraps
 
-__all__ = ["patch_unsloth_zoo_for_mps", "is_patched"]
+# Configure logging
+logger = logging.getLogger("unsloth.patches")
 
-_PATCH_APPLIED = False
+class PatchStatus(Enum):
+    """Status of a patch operation."""
+    SUCCESS = auto()
+    SKIPPED = auto()
+    FAILED = auto()
+    ALREADY_APPLIED = auto()
+    NOT_NEEDED = auto()
+    ERROR = auto()
 
+@dataclass
+class PatchResult:
+    """Result of a patch operation."""
+    name: str
+    status: PatchStatus
+    message: str = ""
+    error: Optional[Exception] = None
+    
+    @property
+    def success(self) -> bool:
+        """Check if patch succeeded."""
+        return self.status in (PatchStatus.SUCCESS, PatchStatus.ALREADY_APPLIED, PatchStatus.NOT_NEEDED)
+    
+    def __repr__(self) -> str:
+        return f"PatchResult({self.name}: {self.status.name}{' - ' + self.message if self.message else ''})"
 
-def is_patched() -> bool:
-    """Check if the unsloth_zoo patch has been applied."""
-    return _PATCH_APPLIED
+@dataclass
+class PatchConfig:
+    """Configuration for Mac compatibility patches."""
+    enable_logging: bool = os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") == "1"
+    mock_bitsandbytes: bool = True
+    mock_triton: bool = True
+    mock_torch_cuda: bool = True
+    patch_device_type: bool = True
+    patch_fused_losses: bool = True
+    patch_peft: bool = True
+    patch_compilers: bool = True
+    verbose: bool = os.environ.get("UNSLOTH_VERBOSE", "0") == "1"
 
-
-def _is_mps_available() -> bool:
-    """Check if MPS backend is available."""
-    if platform.system() != "Darwin":
-        return False
-    try:
-        import torch
-
-        return torch.backends.mps.is_available()
-    except Exception:
-        return False
-
-
-def patch_unsloth_zoo_for_mps() -> bool:
+class MacPatcher:
     """
-    Patch unsloth_zoo.device_type to support Apple Silicon (MPS).
-
-    This must be called BEFORE importing unsloth_zoo.
-
-    The patch:
-    1. Pre-creates a mock device_type module in sys.modules
-    2. Sets DEVICE_TYPE to "mps" for Apple Silicon compatibility
-    3. Provides all expected exports from the original module
-
-    Returns:
-        True if patch was applied, False otherwise.
+    Comprehensive Mac/MPS compatibility patcher for unsloth.
     """
-    global _PATCH_APPLIED
-
-    # Skip if not on macOS or MPS not available
-    if not _is_mps_available():
-        return False
-
-    # Skip if already patched
-    if _PATCH_APPLIED:
-        return True
-
-    # Skip if unsloth_zoo.device_type already imported (too late to patch)
-    # But allow mocks we set up in sys.modules (e.g., from conftest.py during testing)
-    if "unsloth_zoo.device_type" in sys.modules:
-        existing = sys.modules["unsloth_zoo.device_type"]
-        # If it's a real module with a real file, skip patching
-        # Mocks from conftest typically have fake __file__ paths
-        module_file = getattr(existing, '__file__', '')
-        if module_file and os.path.isfile(module_file):
+    
+    def __init__(self, config: Optional[PatchConfig] = None):
+        self.config = config or PatchConfig()
+        self._patch_results: Dict[str, PatchResult] = {}
+        self._applied = False
+        self._original_modules: Dict[str, Any] = {}
+        self._mock_finders: List[Any] = []
+        
+    @property
+    def is_applied(self) -> bool:
+        """Check if patches have been applied."""
+        return self._applied
+    
+    def _log(self, level: int, message: str) -> None:
+        """Log a message if logging is enabled."""
+        if self.config.enable_logging:
+            logger.log(level, message)
+        if self.config.verbose and level >= logging.INFO:
+            print(f"Unsloth Patches: {message}")
+    
+    @staticmethod
+    def is_mac_with_mps() -> bool:
+        """Check if running on macOS with MPS available."""
+        if platform.system() != "Darwin":
             return False
-
-    # Create mock device_type module
-    mock_device_type = ModuleType("unsloth_zoo.device_type")
-
-    # Define patched functions and constants for MPS
-    def get_device_type() -> str:
-        return "mps"
-
-    def is_hip() -> bool:
-        return False
-
-    def get_device_count() -> int:
-        return 1  # MPS is always single-GPU
-
-    # Set module attributes - these match what unsloth expects
-    mock_device_type.get_device_type = get_device_type
-    mock_device_type.is_hip = is_hip
-    mock_device_type.DEVICE_TYPE = "mps"
-    mock_device_type.DEVICE_TYPE_TORCH = "mps"
-    mock_device_type.DEVICE_COUNT = 1
-    mock_device_type.ALLOW_PREQUANTIZED_MODELS = True  # MPS can load prequantized
-    mock_device_type.ALLOW_BITSANDBYTES = False  # bitsandbytes doesn't support MPS
-
-    # Inject into sys.modules before unsloth_zoo import
-    sys.modules["unsloth_zoo.device_type"] = mock_device_type
-
-    # Mock unsloth_zoo.utils for MPS compatibility
-    mock_utils = ModuleType("unsloth_zoo.utils")
-
-    class Version:
-        def __init__(self, v):
-            self.v = v
-
-        def __lt__(self, other):
-            return False
-
-        def __le__(self, other):
+        if os.environ.get("UNSLOTH_FORCE_MPS", "0") == "1":
             return True
-
-        def __gt__(self, other):
+        try:
+            import torch
+            return torch.backends.mps.is_available()
+        except Exception:
             return False
+    
+    def _create_patch_result(
+        self,
+        name: str,
+        status: PatchStatus,
+        message: str = "",
+        error: Optional[Exception] = None
+    ) -> PatchResult:
+        """Create and store a patch result."""
+        result = PatchResult(name, status, message, error)
+        self._patch_results[name] = result
+        
+        if status == PatchStatus.SUCCESS:
+            self._log(logging.INFO, f"✓ {name}: {message or 'patched successfully'}")
+        elif status == PatchStatus.FAILED:
+            self._log(logging.ERROR, f"✗ {name}: {message}")
+        return result
 
-        def __ge__(self, other):
-            return True
+    def patch_device_type(self) -> PatchResult:
+        """Patch unsloth_zoo.device_type to support MPS."""
+        name = "device_type"
+        if "unsloth_zoo.device_type" in sys.modules:
+            return self._create_patch_result(name, PatchStatus.SKIPPED, "already imported")
+        
+        try:
+            from unsloth.kernels.mps import get_apple_hardware_info
+            hw_info = get_apple_hardware_info()
+            
+            mock_device_type = ModuleType("unsloth_zoo.device_type")
+            mock_device_type.get_device_type = lambda: "mps"
+            mock_device_type.is_hip = lambda: False
+            mock_device_type.is_mps = lambda: True
+            mock_device_type.get_device_count = lambda: 1
+            mock_device_type.DEVICE_TYPE = "mps"
+            mock_device_type.DEVICE_TYPE_TORCH = "mps"
+            mock_device_type.DEVICE_COUNT = 1
+            mock_device_type.ALLOW_PREQUANTIZED_MODELS = False
+            mock_device_type.ALLOW_BITSANDBYTES = False
+            mock_device_type.HAS_CUDA = False
+            mock_device_type.HAS_MPS = True
+            mock_device_type.HAS_HIP = False
+            mock_device_type.HAS_XPU = False
+            mock_device_type.TOTAL_MEMORY_GB = hw_info.get("total_memory_gb", 16.0)
+            mock_device_type.USABLE_MEMORY_GB = hw_info.get("usable_memory_gb", 12.0)
+            
+            sys.modules["unsloth_zoo.device_type"] = mock_device_type
+            return self._create_patch_result(name, PatchStatus.SUCCESS, "MPS device type configured")
+        except Exception as e:
+            return self._create_patch_result(name, PatchStatus.FAILED, str(e), e)
 
-    import torch
-
-    def _get_dtype(dtype_str):
-        return getattr(torch, dtype_str, torch.float32)
-
-    def get_quant_type(module):
-        return "unknown"
-
-    mock_utils.Version = Version
-    mock_utils._get_dtype = _get_dtype
-    mock_utils.get_quant_type = get_quant_type
-    sys.modules["unsloth_zoo.utils"] = mock_utils
-
-    # Mock unsloth_zoo.vision_utils for MPS compatibility
-    mock_vision_utils = ModuleType("unsloth_zoo.vision_utils")
-    mock_vision_utils.HAS_VISION = False
-    mock_vision_utils.process_vision_info = lambda *args, **kwargs: (None, None)
-    sys.modules["unsloth_zoo.vision_utils"] = mock_vision_utils
-
-    # Mock unsloth_zoo.log for MPS compatibility
-    mock_log = ModuleType("unsloth_zoo.log")
-    mock_log.logger = logging.getLogger("unsloth_zoo")
-    sys.modules["unsloth_zoo.log"] = mock_log
-
-    # Mock unsloth_zoo.tokenizer_utils for MPS compatibility
-    mock_tokenizer = ModuleType("unsloth_zoo.tokenizer_utils")
-    mock_tokenizer.patch_tokenizer = lambda x: x
-    mock_tokenizer.mean_of_trained_tokens = lambda *a, **k: None
-    mock_tokenizer.add_new_tokens = lambda *a, **k: None
-    mock_tokenizer.fix_untrained_tokens = lambda *a, **k: None
-    sys.modules["unsloth_zoo.tokenizer_utils"] = mock_tokenizer
-
-    # Mock unsloth_zoo.rl_environments for MPS compatibility
-    mock_rl = ModuleType("unsloth_zoo.rl_environments")
-    mock_rl.check_python_modules = lambda: True
-    mock_rl.create_locked_down_function = lambda fn: fn
-    mock_rl.execute_with_time_limit = lambda timeout, fn, *args, **kwargs: fn(*args, **kwargs)
-
-    class MockBenchmarker:
-        pass
-
-    mock_rl.Benchmarker = MockBenchmarker
-    sys.modules["unsloth_zoo.rl_environments"] = mock_rl
-
-    # Mock unsloth_zoo.patching_utils for MPS compatibility
-    mock_patching = ModuleType("unsloth_zoo.patching_utils")
-    mock_patching.patch_compiling_bitsandbytes = lambda: None
-    mock_patching.patch_layernorm = lambda: None
-    mock_patching.patch_torch_compile = lambda *args, **kwargs: None
-    mock_patching.patch_model_and_tokenizer = lambda model, tokenizer: (model, tokenizer)
-    mock_patching.patch_compiled_autograd = lambda: None
-    sys.modules["unsloth_zoo.patching_utils"] = mock_patching
-
-    # Mock unsloth_zoo.gradient_checkpointing for MPS compatibility
-    mock_gc = ModuleType("unsloth_zoo.gradient_checkpointing")
-
-    class MockOffloadedGC:
-        pass
-
-    class MockGC:
-        pass
-
-    mock_gc.Unsloth_Offloaded_Gradient_Checkpointer = MockOffloadedGC
-    mock_gc.unsloth_offloaded_gradient_checkpoint = lambda module, *args, **kwargs: module.forward
-    mock_gc.patch_unsloth_gradient_checkpointing = lambda: None
-    mock_gc.unpatch_unsloth_gradient_checkpointing = lambda: None
-    mock_gc.Unsloth_Gradient_Checkpointer = MockGC
-    mock_gc.unsloth_gradient_checkpoint = lambda module, *args, **kwargs: module.forward
-    mock_gc.patch_gradient_checkpointing = lambda: None
-    mock_gc.unpatch_gradient_checkpointing = lambda: None
-    mock_gc.patch_unsloth_smart_gradient_checkpointing = lambda: None
-    mock_gc.unpatch_unsloth_smart_gradient_checkpointing = lambda: None
-    sys.modules["unsloth_zoo.gradient_checkpointing"] = mock_gc
-
-    # Mock unsloth_zoo.loss_utils for MPS compatibility
-    mock_loss = ModuleType("unsloth_zoo.loss_utils")
-    mock_loss.HAS_CUT_CROSS_ENTROPY = False
-    mock_loss.fused_linear_cross_entropy = lambda *args, **kwargs: 0.0
-    mock_loss._unsloth_get_batch_samples = lambda *args, **kwargs: None
-    mock_loss.unsloth_fused_ce_loss = lambda *args, **kwargs: 0.0
-    mock_loss.patch_loss_functions = lambda *args, **kwargs: None
-    mock_loss.post_patch_loss_function = lambda *args, **kwargs: None
-    sys.modules["unsloth_zoo.loss_utils"] = mock_loss
-
-    # Mock unsloth_zoo.compiler for MPS compatibility
-    mock_compiler = ModuleType("unsloth_zoo.compiler")
-    mock_compiler.create_new_function = lambda fn: fn
-    mock_compiler.get_transformers_model_type = lambda *args, **kwargs: "llama"
-    mock_compiler.unsloth_compile_transformers = lambda *args, **kwargs: None
-    sys.modules["unsloth_zoo.compiler"] = mock_compiler
-
-    # Mock unsloth_zoo.training_utils for MPS compatibility
-    mock_training = ModuleType("unsloth_zoo.training_utils")
-    mock_training.prepare_model_for_training = lambda model, *args, **kwargs: model
-    mock_training.fix_zero_training_loss = lambda *args, **kwargs: None
-    sys.modules["unsloth_zoo.training_utils"] = mock_training
-
-    # Mock unsloth_zoo.hf_utils for MPS compatibility
-    mock_hf = ModuleType("unsloth_zoo.hf_utils")
-    mock_hf.dtype_from_config = lambda config: None
-    mock_hf.add_dtype_kwargs = lambda *args, **kwargs: {}
-    mock_hf.HAS_TORCH_DTYPE = False
-    mock_hf.fix_lora_auto_mapping = lambda *args, **kwargs: None
-    sys.modules["unsloth_zoo.hf_utils"] = mock_hf
-
-    # Mock unsloth_zoo.peft_utils for MPS compatibility
-    mock_peft = ModuleType("unsloth_zoo.peft_utils")
-    mock_peft.SKIP_QUANTIZATION_MODULES = []
-    mock_peft.get_peft_regex = lambda *a, **k: None
-    sys.modules["unsloth_zoo.peft_utils"] = mock_peft
-
-    # Mock unsloth_zoo.vllm_utils for MPS compatibility
-    mock_vllm = ModuleType("unsloth_zoo.vllm_utils")
-    sys.modules["unsloth_zoo.vllm_utils"] = mock_vllm
-
-    # Mock unsloth_zoo.temporary_patches for MPS compatibility
-    mock_temp = ModuleType("unsloth_zoo.temporary_patches")
-    mock_temp.TEMPORARY_PATCHES = []
-    sys.modules["unsloth_zoo.temporary_patches"] = mock_temp
-
-    # Mock unsloth_zoo.temporary_patches.common submodule
-    mock_temp_common = ModuleType("unsloth_zoo.temporary_patches.common")
-    mock_temp_common.torch_compile = lambda *args, **kwargs: (lambda f: f)
-    sys.modules["unsloth_zoo.temporary_patches.common"] = mock_temp_common
-
-    # --- EXTENDED MOCKING FOR TORCH.CUDA ---
-    # Many parts of unsloth_zoo/trl assume CUDA exists and call memory functions.
-    import torch
-
-    if not torch.cuda.is_available():
-        # Mock torch.cuda.memory.mem_get_info
-        if not hasattr(torch.cuda, "memory"):
-
-            class MockMemory:
-                pass
-
-            torch.cuda.memory = MockMemory
-
-        # [Phase 3.1] Add truthful mocks for get_device_properties and get_device_capability
-        # to satisfy external libraries and generated code without "lying" about NVIDIA.
-        class AppleSiliconProps:
-            def __init__(self):
-                try:
-                    from unsloth.kernels.mps import get_apple_hardware_info
-                    hw_info = get_apple_hardware_info()
+    def patch_torch_cuda(self) -> PatchResult:
+        """Mock torch.cuda functions for MPS compatibility."""
+        name = "torch_cuda"
+        try:
+            import torch
+            if torch.cuda.is_available():
+                return self._create_patch_result(name, PatchStatus.SKIPPED, "CUDA is available")
+            
+            from unsloth.kernels.mps import get_apple_hardware_info
+            hw_info = get_apple_hardware_info()
+            
+            class AppleSiliconProps:
+                def __init__(self):
                     self.name = hw_info.get("chip_name", "Apple Silicon")
                     self.total_memory = int(hw_info.get("usable_memory_gb", 16) * 1024**3)
-                except:
-                    self.name = "Apple Silicon"
-                    self.total_memory = 16 * 1024**3
-                self.major = 0
-                self.minor = 0
-                self.multi_processor_count = 1
-                self.is_integrated = True
+                    self.major = 0
+                    self.minor = 0
+                    self.multi_processor_count = hw_info.get("cpu_count", 8)
+                    self.is_integrated = True
 
-        def mock_get_device_properties(device=None):
-            return AppleSiliconProps()
+            torch.cuda.get_device_properties = lambda device=None: AppleSiliconProps()
+            torch.cuda.get_device_capability = lambda device=None: (0, 0)
+            
+            if not hasattr(torch.cuda, "memory"):
+                torch.cuda.memory = ModuleType("torch.cuda.memory")
+            
+            torch.cuda.memory.mem_get_info = lambda device=None: (
+                int(hw_info.get("usable_memory_gb", 16) * 1024**3),
+                hw_info.get("total_memory_bytes", 24 * 1024**3)
+            )
+            torch.cuda.is_available = lambda: False
+            torch.cuda.device_count = lambda: 0
+            
+            return self._create_patch_result(name, PatchStatus.SUCCESS, "torch.cuda mocked")
+        except Exception as e:
+            return self._create_patch_result(name, PatchStatus.FAILED, str(e), e)
 
-        def mock_get_device_capability(device=None):
-            return (0, 0)
-
-        def mock_mem_get_info(device=None):
-            # Use real memory info when available
-            try:
-                from unsloth.kernels.mps import get_apple_hardware_info
-                hw_info = get_apple_hardware_info()
-                total = hw_info.get("total_memory_bytes", 24 * 1024**3)
-                usable = int(hw_info.get("usable_memory_gb", 16) * 1024**3)
-                return (usable, total)
-            except Exception:
-                return (16 * 1024**3, 24 * 1024**3)
-
-        torch.cuda.get_device_properties = mock_get_device_properties
-        torch.cuda.get_device_capability = mock_get_device_capability
-        torch.cuda.memory.mem_get_info = mock_mem_get_info
-
-        pass
-
-    # --- MOCK TRITON (THE GHOST PACKAGE) ---
-    # Triton is not available on macOS, but unsloth_zoo (and others) import it deeply.
-    # We use a MetaPathFinder to catch ALL triton-related imports and return fakes.
-    if "triton" not in sys.modules:
+    def _create_mock_module(self, fullname: str, loader=None):
+        mod = ModuleType(fullname)
+        mod.__path__ = []
         from importlib.machinery import ModuleSpec
+        mod.__spec__ = ModuleSpec(fullname, loader, origin="mocked")
+        
+        if fullname == "unsloth_zoo":
+            mod.__version__ = "999.0.0"
+        elif fullname == "unsloth_zoo.device_type":
+            from unsloth.kernels.mps import get_apple_hardware_info
+            hw_info = get_apple_hardware_info()
+            mod.get_device_type = lambda: "mps"
+            mod.is_hip = lambda: False
+            mod.is_mps = lambda: True
+            mod.DEVICE_TYPE = "mps"
+            mod.DEVICE_COUNT = 1
+            mod.ALLOW_PREQUANTIZED_MODELS = False
+            mod.ALLOW_BITSANDBYTES = False
+            mod.TOTAL_MEMORY_GB = hw_info.get("total_memory_gb", 16.0)
+        elif fullname == "unsloth_zoo.utils":
+            class Version:
+                def __init__(self, v): self.v = v
+                def __ge__(self, other): return True
+                def __le__(self, other): return True
+            mod.Version = Version
+            mod._get_dtype = lambda d: getattr(__import__('torch'), d, __import__('torch').float32)
+            mod.get_quant_type = lambda m: "unknown"
+        elif fullname == "unsloth_zoo.vision_utils":
+            mod.HAS_VISION = False
+            mod.process_vision_info = lambda *a, **k: (None, None)
+        elif fullname == "unsloth_zoo.log":
+            mod.logger = logging.getLogger("unsloth_zoo")
+        
+        return mod
+
+    def patch_unsloth_zoo(self) -> PatchResult:
+        """Thoroughly mock unsloth_zoo submodules."""
+        name = "unsloth_zoo"
         from importlib.abc import MetaPathFinder, Loader
-
-        class FakeTriton(ModuleType):
-            def __init__(self, name, *args, **kwargs):
-                # args might be (bases, dict) if used as a metaclass
-                super().__init__(str(name))
-                self.__path__ = []
-                self.__version__ = "3.0.0"
-                # Satisfy importlib.util.find_spec
-                self.__spec__ = ModuleSpec(
-                    name=str(name), loader=TritonMockLoader(), origin="mocked"
-                )
-
-            def __getattr__(self, name):
-                if name.startswith("__"):
-                    return super().__getattribute__(name)
-                # Return a sub-fake on the fly for any attribute
-                full_name = f"{self.__name__}.{name}"
-                if full_name not in sys.modules:
-                    m = FakeTriton(full_name)
-                    m.__spec__ = ModuleSpec(
-                        name=full_name, loader=TritonMockLoader(), origin="mocked"
-                    )
-                    sys.modules[full_name] = m
-                return sys.modules[full_name]
-
-            def __call__(self, *args, **kwargs):
-                return self  # Act as dummy decorator/constructor
-
-            def __getitem__(self, key):
-                return self  # Support tl.constexpr[int] or similar if needed
-
-            def __len__(self):
-                return 0
-
-            def __iter__(self):
-                return iter([])
-
-            def __bool__(self):
-                return False
-
-            def __repr__(self):
-                return f"<FakeTriton {self.__name__}>"
-
-            # To act as a base class, we need to handle being used in a class definition
-            def __class_getitem__(cls, key):
-                return cls
-
-        class TritonMockLoader(Loader):
+        from importlib.machinery import ModuleSpec
+        
+        patcher_self = self
+        class MockLoader(Loader):
             def create_module(self, spec):
-                if spec.name not in sys.modules:
-                    m = FakeTriton(spec.name)
-                    m.__spec__ = spec
-                    sys.modules[spec.name] = m
-                return sys.modules[spec.name]
+                if spec.name in sys.modules: return sys.modules[spec.name]
+                return patcher_self._create_mock_module(spec.name, self)
+            def exec_module(self, module): pass
 
-            def exec_module(self, module):
-                # Specific overrides for logic checks
-                if module.__name__ == "triton.backends":
-                    module.backends = {}
-                elif module.__name__ == "triton.backends.compiler":
-
-                    class AttrsDescriptor:
-                        def __init__(self, *args, **kwargs):
-                            pass
-
-                    module.AttrsDescriptor = AttrsDescriptor
-                elif module.__name__ == "triton.language":
-
-                    class MockTritonMeta:
-                        def __repr__(self):
-                            return "MockTritonMeta"
-
-                    module.dtype = MockTritonMeta
-
-        class TritonMockFinder(MetaPathFinder):
+        class MockFinder(MetaPathFinder):
             def find_spec(self, fullname, path, target=None):
-                if fullname == "triton" or fullname.startswith("triton."):
-                    return ModuleSpec(fullname, TritonMockLoader())
-                if fullname == "bitsandbytes" or fullname.startswith("bitsandbytes."):
-                    return ModuleSpec(fullname, TritonMockLoader())
+                if fullname == "unsloth_zoo" or fullname.startswith("unsloth_zoo."):
+                    if fullname in sys.modules: return None
+                    return ModuleSpec(fullname, MockLoader(), origin="mocked")
+                if fullname in ["triton", "bitsandbytes"] or fullname.startswith(("triton.", "bitsandbytes.")):
+                    if fullname in sys.modules: return None
+                    return ModuleSpec(fullname, MockLoader(), origin="mocked")
                 return None
 
-        # Inject the finder at the start of meta_path
-        sys.meta_path.insert(0, TritonMockFinder())
+        finder = MockFinder()
+        sys.meta_path.insert(0, finder)
+        self._mock_finders.append(finder)
+        
+        # Pre-populate some critical ones
+        for sub in ["device_type", "utils", "vision_utils", "log", "hf_utils", "peft_utils"]:
+            full = f"unsloth_zoo.{sub}"
+            if full not in sys.modules:
+                sys.modules[full] = self._create_mock_module(full)
+                
+        return self._create_patch_result(name, PatchStatus.SUCCESS, "unsloth_zoo and dependencies mocked")
 
-        # Trigger root imports to populate sys.modules
-        import triton
-
+    def patch_peft(self) -> PatchResult:
+        """Patch PEFT to disable bitsandbytes detection."""
+        name = "peft"
         try:
-            import bitsandbytes
+            import peft.import_utils
+            peft.import_utils.is_bnb_available = lambda: False
+            peft.import_utils.is_bnb_4bit_available = lambda: False
+            peft.import_utils.is_bnb_8bit_available = lambda: False
+            return self._create_patch_result(name, PatchStatus.SUCCESS, "PEFT bnb detection disabled")
         except ImportError:
-            pass
+            return self._create_patch_result(name, PatchStatus.SKIPPED, "PEFT not installed")
 
-    _PATCH_APPLIED = True
-    return True
+    def apply(self) -> List[PatchResult]:
+        """Apply all patches."""
+        if self._applied: return list(self._patch_results.values())
+        if not self.is_mac_with_mps(): return []
+        
+        results = []
+        results.append(self.patch_device_type())
+        results.append(self.patch_torch_cuda())
+        results.append(self.patch_unsloth_zoo())
+        results.append(self.patch_peft())
+        
+        self._applied = True
+        return results
 
+_PATCHER = MacPatcher()
 
-def ensure_mps_compatibility():
-    """
-    Convenience function that applies MPS patch if needed.
-    Call this at the very top of your script before any unsloth imports.
+def patch_unsloth_zoo_for_mps() -> bool:
+    """Legacy entry point for compatibility with __init__.py"""
+    results = _PATCHER.apply()
+    return any(r.success for r in results)
 
-    Example:
-        from unsloth.patches import ensure_mps_compatibility
-        ensure_mps_compatibility()
-
-        import unsloth  # Now works on Apple Silicon!
-    """
-    if _is_mps_available():
-        patch_unsloth_zoo_for_mps()
+def is_patched() -> bool:
+    """Check if patches have been applied."""
+    return _PATCHER.is_applied

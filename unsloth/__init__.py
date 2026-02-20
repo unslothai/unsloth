@@ -316,37 +316,11 @@ elif DEVICE_TYPE == "xpu":
     # TODO: check triton for intel installed properly.
     pass
 elif DEVICE_TYPE == "mps":
-    # MPS/Apple Silicon - bitsandbytes not supported, Triton not available
-    # 16-bit LoRA and full finetuning work via PyTorch's native MPS backend
+    # MPS/Apple Silicon - bitsandbytes and Triton are mocked by MacPatcher
     bnb = None
-    import sys
-    # Forcefully unload bitsandbytes if it was somehow loaded
-    for key in list(sys.modules.keys()):
-        if key.startswith("bitsandbytes"):
-            del sys.modules[key]
-    
-    # Patch importlib.util.find_spec to prevent other libraries from detecting it
-    import importlib.util
-    _old_find_spec = importlib.util.find_spec
-    def _new_find_spec(name, package = None):
-        if name == "bitsandbytes": return None
-        return _old_find_spec(name, package)
-    importlib.util.find_spec = _new_find_spec
-
-    try:
-        import peft.import_utils
-        peft.import_utils.is_bnb_available = lambda: False
-        peft.import_utils.is_bnb_4bit_available = lambda: False
-        peft.import_utils.is_bnb_8bit_available = lambda: False
-        # Also patch peft.utils.other if it exists
-        try:
-            import peft.utils.other
-            peft.utils.other.is_bnb_available = lambda: False
-            peft.utils.other.is_bnb_4bit_available = lambda: False
-            peft.utils.other.is_bnb_8bit_available = lambda: False
-        except: pass
-    except:
-        pass
+    triton = None
+    # We already applied the comprehensive MacPatcher at the start of this file
+    # via patch_unsloth_zoo_for_mps(). No further manual patching needed here.
 
 from .models import *
 from .models import __version__
