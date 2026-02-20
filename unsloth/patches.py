@@ -294,6 +294,10 @@ class MacPatcher:
             mod.patch_compiled_autograd = lambda: None
             mod.patch_layernorm = lambda: None
             mod.patch_torch_compile = lambda *a, **k: None
+        elif "tokenizer_utils" in fullname:
+            mod.patch_tokenizer = lambda model, tokenizer: (model, tokenizer)
+            mod.fix_untrained_tokens = lambda *a, **k: None
+            mod.add_new_tokens = lambda *a, **k: None
         
         return mod
 
@@ -325,7 +329,7 @@ class MacPatcher:
         self._mock_finders.append(finder)
         
         # Populate sys.modules to prevent real imports
-        for sub in ["device_type", "utils", "vision_utils", "log", "hf_utils", "peft_utils", "temporary_patches", "temporary_patches.common", "rl_replacements", "patching_utils"]:
+        for sub in ["device_type", "utils", "vision_utils", "log", "hf_utils", "peft_utils", "temporary_patches", "temporary_patches.common", "rl_replacements", "patching_utils", "tokenizer_utils"]:
             full = f"unsloth_zoo.{sub}"
             if full not in sys.modules:
                 sys.modules[full] = self._create_mock_module(full)
