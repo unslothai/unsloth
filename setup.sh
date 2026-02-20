@@ -166,7 +166,6 @@ if [ "$IS_COLAB" = true ]; then
         -o "$LLAMA_CPP_DST"
     echo "   Installing studio dependencies..."
     run_quiet "pip install studio" pip install -r "$SCRIPT_DIR/studio/backend/requirements/studio.txt"
-    run_quiet "pip install numpy==2.2.6" pip install --force-reinstall numpy==2.2.6
     echo "✅ Python dependencies installed"
 else
     # Local: create venv (always start fresh to preserve correct install order)
