@@ -7,6 +7,8 @@ type ModelDefaultsPatch = Partial<
     | "epochs"
     | "contextLength"
     | "learningRate"
+    | "optimizerType"
+    | "lrSchedulerType"
     | "loraRank"
     | "loraAlpha"
     | "loraDropout"
@@ -85,6 +87,12 @@ export function mapBackendModelConfigToTrainingPatch(
 
   const learningRate = toNumber(training?.learning_rate);
   if (learningRate !== undefined) patch.learningRate = learningRate;
+
+  const optim = toStringValue(training?.optim);
+  if (optim !== undefined) patch.optimizerType = optim;
+
+  const lrSchedulerType = toStringValue(training?.lr_scheduler_type);
+  if (lrSchedulerType !== undefined) patch.lrSchedulerType = lrSchedulerType;
 
   const batchSize = toNumber(training?.batch_size);
   if (batchSize !== undefined) patch.batchSize = batchSize;
