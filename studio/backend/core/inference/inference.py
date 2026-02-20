@@ -576,8 +576,8 @@ class InferenceBackend:
         tokenizer = model_info.get("tokenizer") or model_info.get("processor")
         top_k = self._normalize_top_k(top_k)
 
-        if is_vision:
-            # Vision model generation
+        if is_vision and image:
+            # Vision model generation (only when an image is actually provided)
             yield from self._generate_vision_response(
                 messages, system_prompt, image,
                 temperature, top_p, top_k, min_p, max_new_tokens, repetition_penalty,
@@ -601,7 +601,7 @@ class InferenceBackend:
                     # This modifies the tokenizer with the correct template
                     tokenizer = get_chat_template(
                         tokenizer,
-                        self.active_model_name
+                        chat_template=template_name,
                     )
                 else:
                     logger.info(f"No registered template for {self.active_model_name}, using tokenizer default")
@@ -635,6 +635,9 @@ class InferenceBackend:
         model_info = self.models[self.active_model_name]
         model = model_info["model"]
         processor = model_info["processor"]
+        # FastVisionModel may return a raw tokenizer (e.g. GemmaTokenizerFast)
+        # instead of a Processor for some models. Safe unwrap for tokenize-only ops.
+        raw_tokenizer = getattr(processor, "tokenizer", processor)
 
         # Extract user message
         user_message = ""
@@ -668,7 +671,7 @@ class InferenceBackend:
         else:
             # Text-only for vision model
             formatted_prompt = self.format_chat_prompt(messages, system_prompt)
-            inputs = processor.tokenizer(formatted_prompt, return_tensors="pt").to(self.device)
+            inputs = raw_tokenizer(formatted_prompt, return_tensors="pt").to(self.device)
 
         # Stream with TextIteratorStreamer + background thread
         try:
@@ -676,7 +679,7 @@ class InferenceBackend:
             import threading
 
             streamer = TextIteratorStreamer(
-                processor.tokenizer,
+                raw_tokenizer,
                 skip_prompt=True,
                 skip_special_tokens=True,
                 timeout=0.2,
@@ -1116,24 +1119,13 @@ class InferenceBackend:
         return img
 
     def _clean_generated_text(self, text: str) -> str:
-        import re
-
-        text = re.sub(r'<\|start_header_id\|>.*?<\|end_header_id\|>', '', text)
-        text = re.sub(r'<\|eot_id\|>', '', text)
-        text = re.sub(r'<\|begin_of_text\|>', '', text)
-
-        text = re.sub(r'\[INST\].*?\[/INST\]', '', text)
-        text = re.sub(r'<s>|</s>', '', text)
-
-        # Clean ChatML tokens (used by Qwen2-VL and similar models)
-        text = re.sub(r'<\|im_start\|>.*?<\|im_end\|>', '', text)
-        text = re.sub(r'<\|im_end\|>', '', text)
-        text = re.sub(r'<\|im_start\|>', '', text)
-
-        text = re.sub(r'^\s*(assistant|user|system):\s*', '', text, flags=re.IGNORECASE)
-        text = text.strip()
-
-        return text
+        """Strip leaked special tokens using the tokenizer's own token list."""
+        tokenizer = self.models.get(self.active_model_name, {}).get("tokenizer")
+        if tokenizer:
+            for token in getattr(tokenizer, "all_special_tokens", []):
+                if token in text:
+                    text = text.replace(token, "")
+        return text.strip()
 
     def _load_chat_template_info(self, model_name: str):
         if model_name not in self.models or not self.models[model_name].get("tokenizer"):
