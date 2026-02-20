@@ -707,7 +707,9 @@ def LlamaAttention_fast_forward(
     # If a dense padding mask is provided (e.g. left-padded batched decode),
     # force SDPA since this fast path does not thread that mask through
     # flash/xFormers kernels.
-    backend = "sdpa" if attention_mask is not None else select_attention_backend(use_varlen)
+    backend = (
+        "sdpa" if attention_mask is not None else select_attention_backend(use_varlen)
+    )
     config = AttentionConfig(
         backend = backend,
         n_kv_heads = n_kv_heads,
