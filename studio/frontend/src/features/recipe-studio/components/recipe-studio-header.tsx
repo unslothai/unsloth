@@ -8,16 +8,20 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import type { RecipeStudioView } from "../execution-types";
 
 type StatusTone = "success" | "error";
 
 type RecipeStudioHeaderProps = {
+  activeView: RecipeStudioView;
   previewLoading: boolean;
   saveLoading: boolean;
   saveTone: StatusTone;
   savedAtLabel: string;
   workflowName: string;
   onWorkflowNameChange: (value: string) => void;
+  onViewChange: (view: RecipeStudioView) => void;
   onPreview: () => void;
   onSaveRecipe: () => void;
 };
@@ -28,16 +32,24 @@ const STATUS_MESSAGE_CLASS: Record<StatusTone, string> = {
 };
 
 export function RecipeStudioHeader({
+  activeView,
   previewLoading,
   saveLoading,
   saveTone,
   savedAtLabel,
   workflowName,
   onWorkflowNameChange,
+  onViewChange,
   onPreview,
   onSaveRecipe,
 }: RecipeStudioHeaderProps): ReactElement {
   const [editingWorkflowName, setEditingWorkflowName] = useState(false);
+
+  function handleViewValueChange(value: string): void {
+    if (value === "editor" || value === "executions") {
+      onViewChange(value);
+    }
+  }
 
   function closeWorkflowNameEditor(): void {
     if (workflowName.trim().length === 0) {
@@ -57,7 +69,7 @@ export function RecipeStudioHeader({
   }
 
   return (
-    <div className="flex items-center justify-between gap-4 border-b px-4 py-3">
+    <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-4 border-b px-4 py-3">
       <div className="flex min-w-0 items-center gap-3">
         <button
           type="button"
@@ -91,7 +103,15 @@ export function RecipeStudioHeader({
           <span className="text-xs text-muted-foreground">{savedAtLabel}</span>
         </div>
       </div>
-      <div className="flex items-center gap-2">
+      <div className="justify-self-center">
+        <Tabs value={activeView} onValueChange={handleViewValueChange}>
+          <TabsList>
+            <TabsTrigger value="editor">Editor</TabsTrigger>
+            <TabsTrigger value="executions">Executions</TabsTrigger>
+          </TabsList>
+        </Tabs>
+      </div>
+      <div className="flex items-center justify-self-end gap-2">
         <Button type="button" size="sm" onClick={onPreview} disabled={previewLoading}>
           <HugeiconsIcon icon={TestTubeIcon} className="size-3.5" />
           {previewLoading ? "Previewing..." : "Preview"}

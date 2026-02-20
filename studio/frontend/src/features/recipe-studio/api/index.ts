@@ -1,4 +1,4 @@
-const DEFAULT_BASE = "";
+const DEFAULT_BASE = "/api/data-recipe";
 
 export const DATA_DESIGNER_API_BASE =
   import.meta.env.VITE_DATA_DESIGNER_API ?? DEFAULT_BASE;
@@ -7,6 +7,7 @@ export type PreviewResponse = {
   dataset?: unknown[];
   // biome-ignore lint/style/useNamingConvention: api schema
   processor_artifacts?: Record<string, unknown>;
+  analysis?: Record<string, unknown>;
 };
 
 export type ValidateError = {
