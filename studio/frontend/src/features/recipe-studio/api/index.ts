@@ -3,13 +3,6 @@ const DEFAULT_BASE = "/api/data-recipe";
 export const DATA_DESIGNER_API_BASE =
   import.meta.env.VITE_DATA_DESIGNER_API ?? DEFAULT_BASE;
 
-export type PreviewResponse = {
-  dataset?: unknown[];
-  // biome-ignore lint/style/useNamingConvention: api schema
-  processor_artifacts?: Record<string, unknown>;
-  analysis?: Record<string, unknown>;
-};
-
 export type JobCreateResponse = {
   // biome-ignore lint/style/useNamingConvention: api schema
   job_id: string;
@@ -27,6 +20,17 @@ export type JobStatusResponse = {
     total?: number | null;
   };
   progress?: {
+    done?: number | null;
+    total?: number | null;
+    percent?: number | null;
+    // biome-ignore lint/style/useNamingConvention: api schema
+    eta_sec?: number | null;
+    rate?: number | null;
+    ok?: number | null;
+    failed?: number | null;
+  };
+  // biome-ignore lint/style/useNamingConvention: api schema
+  column_progress?: {
     done?: number | null;
     total?: number | null;
     percent?: number | null;
@@ -159,10 +163,6 @@ function parseJobEvent(rawEvent: string): JobEvent | null {
     id,
     payload,
   };
-}
-
-export async function previewRecipe(payload: unknown): Promise<PreviewResponse> {
-  return postJson<PreviewResponse>("/preview", payload);
 }
 
 export async function validateRecipe(

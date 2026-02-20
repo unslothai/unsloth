@@ -110,10 +110,15 @@ def build_config_builder(recipe: dict[str, Any]):
     return DataDesignerConfigBuilder.from_config({"data_designer": recipe_core})
 
 
-def create_data_designer(recipe: dict[str, Any]):
+def create_data_designer(
+    recipe: dict[str, Any],
+    *,
+    artifact_path: str | None = None,
+):
     from data_designer.interface.data_designer import DataDesigner
 
     return DataDesigner(
+        artifact_path=artifact_path,
         model_providers=build_model_providers(recipe),
         mcp_providers=build_mcp_providers(recipe),
     )

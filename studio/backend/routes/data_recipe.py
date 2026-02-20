@@ -17,8 +17,8 @@ if str(backend_path) not in sys.path:
     sys.path.insert(0, str(backend_path))
 
 from core.data_recipe.jobs import get_job_manager
-from core.data_recipe.service import preview_recipe, validate_recipe
-from models.data_recipe import JobCreateResponse, PreviewResponse, RecipePayload, ValidateError, ValidateResponse
+from core.data_recipe.service import validate_recipe
+from models.data_recipe import JobCreateResponse, RecipePayload, ValidateError, ValidateResponse
 
 router = APIRouter()
 
@@ -47,25 +47,6 @@ def validate(payload: RecipePayload) -> ValidateResponse:
     return ValidateResponse(valid=True)
 
 
-@router.post("/preview", response_model=PreviewResponse)
-def preview(payload: RecipePayload) -> PreviewResponse:
-    recipe = payload.recipe
-    if not recipe.get("columns"):
-        raise HTTPException(status_code=400, detail="Recipe must include columns.")
-
-    run = payload.run or {}
-    num_records = int(run.get("rows") or 5)
-
-    try:
-        dataset, artifacts, analysis = preview_recipe(recipe, num_records)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    return PreviewResponse(dataset=dataset, processor_artifacts=artifacts, analysis=analysis)
-
-
 @router.post("/jobs", response_class=JSONResponse, response_model=JobCreateResponse)
 def create_job(payload: RecipePayload):
     recipe = payload.recipe
@@ -73,6 +54,10 @@ def create_job(payload: RecipePayload):
         raise HTTPException(status_code=400, detail="Recipe must include columns.")
 
     run: dict[str, Any] = payload.run or {}
+    execution_type = str(run.get("execution_type") or "full").strip().lower()
+    if execution_type not in {"preview", "full"}:
+        raise HTTPException(status_code=400, detail="invalid execution_type: must be 'preview' or 'full'")
+    run["execution_type"] = execution_type
     run_config_raw = run.get("run_config")
     if run_config_raw is not None:
         try:
@@ -139,6 +124,8 @@ def job_dataset(
     result = mgr.get_dataset(job_id, limit=limit, offset=offset)
     if result is None:
         raise HTTPException(status_code=404, detail="dataset not ready")
+    if "error" in result:
+        raise HTTPException(status_code=422, detail=result["error"])
     return {
         "dataset": result["dataset"],
         "total": result["total"],

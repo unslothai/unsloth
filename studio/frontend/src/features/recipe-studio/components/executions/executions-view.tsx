@@ -388,6 +388,14 @@ export function ExecutionsView({
                     ETA: {selectedExecution.progress?.eta_sec ?? "--"} s
                   </p>
                 </div>
+                {selectedExecution.current_column && selectedExecution.column_progress && (
+                  <p className="text-xs text-amber-900">
+                    Column {selectedExecution.current_column}:{" "}
+                    {selectedExecution.column_progress.done ?? "--"}/
+                    {selectedExecution.column_progress.total ?? "--"} (
+                    {formatPercent(selectedExecution.column_progress.percent)})
+                  </p>
+                )}
               </div>
             )}
 
