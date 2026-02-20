@@ -52,7 +52,12 @@ from unsloth.kernels.mps.layernorm import mps_layernorm
 from unsloth.kernels.mps.rope_embedding import mps_rope_embedding, mps_rope_embedding_qk
 from unsloth.kernels.mps.cross_entropy_loss import mps_cross_entropy_loss
 from unsloth.kernels.mps.swiglu import mps_swiglu_forward, mps_swiglu_backward
-from unsloth.kernels.mps.linear import mps_gemv, mps_linear_forward
+from unsloth.kernels.mps.geglu import (
+    mps_geglu_exact_forward,
+    mps_geglu_exact_backward,
+    mps_geglu_approx_forward,
+    mps_geglu_approx_backward,
+)
 from unsloth.kernels.mps.linear import mps_gemv, mps_linear_forward
 
 

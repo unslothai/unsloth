@@ -128,6 +128,8 @@ class MockModule(nn.Module):
             return lambda *a, **k: None
         if name == "add_dtype_kwargs":
             return lambda *a, **k: {}
+        if name == "dtype_from_config":
+            return lambda *a, **k: torch.float16
         if name == "_get_dtype":
 
             def _get_dtype(d):
