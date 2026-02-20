@@ -179,7 +179,7 @@ class MacPatcher:
             elif sub == "patching_utils":
                 class DL: pass
                 mod.Bnb_Linear4bit = DL; mod.Peft_Linear4bit = DL; mod.Peft_Linear = DL
-                mod.patch_model_and_tokenizer = lambda m, t: (m, t)
+                mod.patch_model_and_tokenizer = lambda m, t, **kwargs: (m, t)
             
             # Catch-all for missing methods
             def __getattr__(name):
