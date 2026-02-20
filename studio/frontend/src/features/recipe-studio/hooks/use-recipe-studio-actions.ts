@@ -69,9 +69,12 @@ type UseRecipeStudioActionsResult = {
   runPreview: () => Promise<boolean>;
   runFull: () => Promise<boolean>;
   cancelExecution: (id: string) => Promise<void>;
+  loadExecutionDatasetPage: (id: string, page: number) => Promise<void>;
   copyRecipe: () => Promise<void>;
   importRecipe: (value: string) => string | null;
 };
+
+const DATASET_PAGE_SIZE = 20;
 
 function buildSignature(name: string, payload: RecipePayload): string {
   return JSON.stringify({ name, payload });
@@ -162,6 +165,32 @@ function sortExecutions(records: RecipeExecutionRecord[]): RecipeExecutionRecord
     return b.createdAt - a.createdAt;
   });
   return next;
+}
+
+function withExecutionDefaults(
+  record: RecipeExecutionRecord,
+): RecipeExecutionRecord {
+  const dataset = Array.isArray(record.dataset) ? record.dataset : [];
+  const datasetPageSize =
+    typeof record.datasetPageSize === "number" && record.datasetPageSize > 0
+      ? record.datasetPageSize
+      : DATASET_PAGE_SIZE;
+  const datasetPage =
+    typeof record.datasetPage === "number" && record.datasetPage > 0
+      ? record.datasetPage
+      : 1;
+  const datasetTotal =
+    typeof record.datasetTotal === "number" && record.datasetTotal >= 0
+      ? record.datasetTotal
+      : dataset.length;
+
+  return {
+    ...record,
+    dataset,
+    datasetTotal,
+    datasetPage,
+    datasetPageSize,
+  };
 }
 
 function delay(ms: number): Promise<void> {
@@ -280,7 +309,7 @@ export function useRecipeStudioActions({
         if (cancelled) {
           return;
         }
-        const sortedRecords = sortExecutions(records);
+        const sortedRecords = sortExecutions(records.map(withExecutionDefaults));
         setExecutions(sortedRecords);
         setSelectedExecutionId(sortedRecords[0]?.id ?? null);
       } catch (error) {
@@ -296,12 +325,13 @@ export function useRecipeStudioActions({
   }, [recipeId]);
 
   const upsertExecution = useCallback((record: RecipeExecutionRecord): void => {
+    const normalizedRecord = withExecutionDefaults(record);
     setExecutions((current) => {
-      const withoutCurrent = current.filter((item) => item.id !== record.id);
-      return sortExecutions([record, ...withoutCurrent]);
+      const withoutCurrent = current.filter((item) => item.id !== normalizedRecord.id);
+      return sortExecutions([normalizedRecord, ...withoutCurrent]);
     });
-    setSelectedExecutionId(record.id);
-    void saveRecipeExecution(record).catch((error) => {
+    setSelectedExecutionId(normalizedRecord.id);
+    void saveRecipeExecution(normalizedRecord).catch((error) => {
       console.error("Save recipe execution failed:", error);
     });
   }, []);
@@ -380,6 +410,9 @@ export function useRecipeStudioActions({
       lastEventId: null,
       artifact_path: null,
       dataset: [],
+      datasetTotal: 0,
+      datasetPage: 1,
+      datasetPageSize: DATASET_PAGE_SIZE,
       analysis: null,
       processor_artifacts: null,
       error: null,
@@ -413,11 +446,15 @@ export function useRecipeStudioActions({
       }
 
       const result = await previewRecipe(previewPayload);
+      const dataset = normalizeDatasetRows(result.dataset);
       upsertExecution({
         ...baseExecution,
         status: "completed",
         finishedAt: Date.now(),
-        dataset: normalizeDatasetRows(result.dataset),
+        dataset,
+        datasetTotal: dataset.length,
+        datasetPage: 1,
+        datasetPageSize: DATASET_PAGE_SIZE,
         analysis: normalizeAnalysis(result.analysis),
         processor_artifacts: normalizeObject(result.processor_artifacts),
         error: null,
@@ -483,6 +520,9 @@ export function useRecipeStudioActions({
       lastEventId: null,
       artifact_path: null,
       dataset: [],
+      datasetTotal: 0,
+      datasetPage: 1,
+      datasetPageSize: DATASET_PAGE_SIZE,
       analysis: null,
       processor_artifacts: null,
       error: null,
@@ -548,22 +588,32 @@ export function useRecipeStudioActions({
       if (lastStatus === "completed") {
         const [analysisResult, datasetResult] = await Promise.allSettled([
           getRecipeJobAnalysis(jobId),
-          getRecipeJobDataset(jobId, 20),
+          getRecipeJobDataset(jobId, { limit: DATASET_PAGE_SIZE, offset: 0 }),
         ]);
         const analysis =
           analysisResult.status === "fulfilled"
             ? normalizeAnalysis(analysisResult.value)
             : latestExecution.analysis;
-        const dataset =
+        const datasetResponse =
           datasetResult.status === "fulfilled"
-            ? normalizeDatasetRows(datasetResult.value.dataset)
-            : latestExecution.dataset;
+            ? datasetResult.value
+            : null;
+        const dataset = datasetResponse
+          ? normalizeDatasetRows(datasetResponse.dataset)
+          : latestExecution.dataset;
+        const datasetTotal =
+          datasetResponse && typeof datasetResponse.total === "number"
+            ? datasetResponse.total
+            : latestExecution.datasetTotal;
 
         upsertExecution({
           ...latestExecution,
           status: "completed",
           analysis,
           dataset,
+          datasetTotal,
+          datasetPage: 1,
+          datasetPageSize: DATASET_PAGE_SIZE,
           error: null,
           finishedAt: latestExecution.finishedAt ?? Date.now(),
         });
@@ -630,6 +680,40 @@ export function useRecipeStudioActions({
     }
   }, [executions, upsertExecution]);
 
+  const loadExecutionDatasetPage = useCallback(
+    async (id: string, page: number): Promise<void> => {
+      const execution = executions.find((entry) => entry.id === id);
+      if (!execution || execution.kind !== "full" || !execution.jobId) {
+        return;
+      }
+      if (page < 1) {
+        return;
+      }
+
+      const pageSize = execution.datasetPageSize || DATASET_PAGE_SIZE;
+      const offset = (page - 1) * pageSize;
+      try {
+        const response = await getRecipeJobDataset(execution.jobId, {
+          limit: pageSize,
+          offset,
+        });
+        const dataset = normalizeDatasetRows(response.dataset);
+        const total =
+          typeof response.total === "number" ? response.total : execution.datasetTotal;
+        upsertExecution({
+          ...execution,
+          dataset,
+          datasetTotal: total,
+          datasetPage: page,
+        });
+      } catch (error) {
+        const message = toErrorMessage(error, "Could not load dataset page.");
+        toastError("Dataset page failed", message);
+      }
+    },
+    [executions, upsertExecution],
+  );
+
   const selectExecution = useCallback((id: string): void => {
     setSelectedExecutionId(id);
   }, []);
@@ -693,6 +777,7 @@ export function useRecipeStudioActions({
     runPreview,
     runFull,
     cancelExecution,
+    loadExecutionDatasetPage,
     copyRecipe,
     importRecipe,
   };
