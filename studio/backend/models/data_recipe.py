@@ -18,6 +18,7 @@ class RecipePayload(BaseModel):
 class PreviewResponse(BaseModel):
     dataset: list[dict[str, Any]] = Field(default_factory=list)
     processor_artifacts: dict[str, Any] | None = None
+    analysis: dict[str, Any] | None = None
 
 
 class ValidateError(BaseModel):
@@ -34,4 +35,3 @@ class ValidateResponse(BaseModel):
 
 class JobCreateResponse(BaseModel):
     job_id: str
-

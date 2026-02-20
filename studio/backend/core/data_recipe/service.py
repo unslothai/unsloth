@@ -128,7 +128,7 @@ def validate_recipe(recipe: dict[str, Any]) -> None:
 def preview_recipe(
     recipe: dict[str, Any],
     num_records: int,
-) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None, dict[str, Any] | None]:
     builder = build_config_builder(recipe)
     designer = create_data_designer(recipe)
     results = designer.preview(builder, num_records=num_records)
@@ -143,5 +143,10 @@ def preview_recipe(
         if results.processor_artifacts is None
         else _to_jsonable(results.processor_artifacts)
     )
+    analysis = (
+        None
+        if results.analysis is None
+        else _to_jsonable(results.analysis.model_dump(mode="json"))
+    )
 
-    return dataset, artifacts
+    return dataset, artifacts, analysis

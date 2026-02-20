@@ -23,6 +23,7 @@ import { RecipeGraphAuxNode, type RecipeGraphAuxNodeData } from "./components/re
 import { BlockSheet } from "./components/block-sheet";
 import { LayoutControls } from "./components/controls/layout-controls";
 import { ViewportControls } from "./components/controls/viewport-controls";
+import { ExecutionsView } from "./components/executions/executions-view";
 import { InternalsSync } from "./components/graph/internals-sync";
 import { RecipeStudioHeader } from "./components/recipe-studio-header";
 import { RecipeNode } from "./components/recipe-graph-node";
@@ -51,6 +52,7 @@ import {
   buildDialogOptions,
   buildPreviewSummary,
 } from "./utils/recipe-studio-view";
+import type { RecipeStudioView } from "./execution-types";
 
 const NODE_TYPES: NodeTypes = { builder: RecipeNode, aux: RecipeGraphAuxNode };
 const EDGE_TYPES: EdgeTypes = { canvas: DataEdge, semantic: RecipeGraphSemanticEdge };
@@ -155,6 +157,7 @@ export function RecipeStudioPage({
   const [sheetContainer, setSheetContainer] = useState<HTMLDivElement | null>(
     null,
   );
+  const [activeView, setActiveView] = useState<RecipeStudioView>("editor");
   const [processorsOpen, setProcessorsOpen] = useState(false);
   const [interactive, setInteractive] = useState(true);
 
@@ -269,6 +272,10 @@ export function RecipeStudioPage({
     setPreviewRows,
     previewErrors,
     previewLoading,
+    currentSignature,
+    executions,
+    selectedExecutionId,
+    setSelectedExecutionId,
     persistRecipe,
     openPreviewDialog,
     runPreview,
@@ -284,6 +291,9 @@ export function RecipeStudioPage({
     resetRecipe,
     loadRecipe,
     getCurrentPayloadFromStore,
+    onPreviewSuccess: () => {
+      setActiveView("executions");
+    },
   });
 
   const openProcessorsFromSheet = useCallback(() => {
@@ -305,72 +315,85 @@ export function RecipeStudioPage({
           ref={setSheetContainer}
         >
           <RecipeStudioHeader
+            activeView={activeView}
             previewLoading={previewLoading}
             saveLoading={saveLoading}
             saveTone={saveTone}
             savedAtLabel={savedAtLabel}
             workflowName={workflowName}
             onWorkflowNameChange={setWorkflowName}
+            onViewChange={setActiveView}
             onPreview={openPreviewDialog}
             onSaveRecipe={() => {
               void persistRecipe();
             }}
           />
           <div className="h-[75vh] w-full rounded-t-none">
-            <ReactFlow
-              nodes={displayGraph.nodes}
-              edges={displayGraph.edges}
-              nodeTypes={NODE_TYPES}
-              edgeTypes={EDGE_TYPES}
-              defaultEdgeOptions={{
-                type: "canvas",
-                data: { path: "auto" },
-              }}
-              onNodesChange={handleNodesChange}
-              onEdgesChange={handleEdgesChange}
-              onConnect={onConnect}
-              onNodeClick={handleNodeClick}
-              isValidConnection={isValidConnection}
-              nodesDraggable={interactive}
-              nodesConnectable={interactive}
-              elementsSelectable={interactive}
-              fitView={true}
-              className="h-full w-full rounded-t-none"
-            >
-              <LayoutControls
-                direction={layoutDirection}
-                onLayout={applyLayout}
-                onToggleDirection={handleToggleDirection}
-              />
-              <InternalsSync nodeIds={displayNodeIds} />
-              <Background
-                variant={BackgroundVariant.Dots}
-                gap={18}
-                size={1}
-                color="#d4d4d8"
-              />
-              <Panel position="top-right" className="m-3">
-                <BlockSheet
-                  container={sheetContainer}
-                  sheetView={sheetView}
-                  onViewChange={setSheetView}
-                  onAddSampler={addSamplerNode}
-                  onAddSeed={addSeedNode}
-                  onAddLlm={addLlmNode}
-                  onAddModelProvider={addModelProviderNode}
-                  onAddModelConfig={addModelConfigNode}
-                  onAddExpression={addExpressionNode}
-                  onOpenProcessors={openProcessorsFromSheet}
-                  copied={copied}
-                  onCopy={copyRecipe}
-                  onImport={() => setImportOpen(true)}
+            {activeView === "editor" ? (
+              <ReactFlow
+                nodes={displayGraph.nodes}
+                edges={displayGraph.edges}
+                nodeTypes={NODE_TYPES}
+                edgeTypes={EDGE_TYPES}
+                defaultEdgeOptions={{
+                  type: "canvas",
+                  data: { path: "auto" },
+                }}
+                onNodesChange={handleNodesChange}
+                onEdgesChange={handleEdgesChange}
+                onConnect={onConnect}
+                onNodeClick={handleNodeClick}
+                isValidConnection={isValidConnection}
+                nodesDraggable={interactive}
+                nodesConnectable={interactive}
+                elementsSelectable={interactive}
+                fitView={true}
+                className="h-full w-full rounded-t-none"
+              >
+                <LayoutControls
+                  direction={layoutDirection}
+                  onLayout={applyLayout}
+                  onToggleDirection={handleToggleDirection}
                 />
-              </Panel>
-              <ViewportControls
-                interactive={interactive}
-                onToggleInteractive={toggleInteractive}
+                <InternalsSync nodeIds={displayNodeIds} />
+                <Background
+                  variant={BackgroundVariant.Dots}
+                  gap={18}
+                  size={1}
+                  color="#d4d4d8"
+                />
+                <Panel position="top-right" className="m-3">
+                  <BlockSheet
+                    container={sheetContainer}
+                    sheetView={sheetView}
+                    onViewChange={setSheetView}
+                    onAddSampler={addSamplerNode}
+                    onAddSeed={addSeedNode}
+                    onAddLlm={addLlmNode}
+                    onAddModelProvider={addModelProviderNode}
+                    onAddModelConfig={addModelConfigNode}
+                    onAddExpression={addExpressionNode}
+                    onOpenProcessors={openProcessorsFromSheet}
+                    copied={copied}
+                    onCopy={copyRecipe}
+                    onImport={() => setImportOpen(true)}
+                  />
+                </Panel>
+                <ViewportControls
+                  interactive={interactive}
+                  onToggleInteractive={toggleInteractive}
+                />
+              </ReactFlow>
+            ) : (
+              <ExecutionsView
+                executions={executions}
+                selectedExecutionId={selectedExecutionId}
+                currentSignature={currentSignature}
+                previewLoading={previewLoading}
+                onSelectExecution={setSelectedExecutionId}
+                onRunPreview={openPreviewDialog}
               />
-            </ReactFlow>
+            )}
           </div>
         </div>
       </main>

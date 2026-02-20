@@ -57,13 +57,13 @@ def preview(payload: RecipePayload) -> PreviewResponse:
     num_records = int(run.get("rows") or 5)
 
     try:
-        dataset, artifacts = preview_recipe(recipe, num_records)
+        dataset, artifacts, analysis = preview_recipe(recipe, num_records)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    return PreviewResponse(dataset=dataset, processor_artifacts=artifacts)
+    return PreviewResponse(dataset=dataset, processor_artifacts=artifacts, analysis=analysis)
 
 
 @router.post("/jobs", response_class=JSONResponse, response_model=JobCreateResponse)

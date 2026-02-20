@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { toastError, toastSuccess } from "@/shared/toast";
 import { normalizeNonEmptyName } from "@/utils";
 import { previewRecipe, validateRecipe } from "../api";
+import { listRecipeExecutions, saveRecipeExecution } from "../data/executions-db";
+import type { RecipeExecutionRecord } from "../execution-types";
 import { importRecipePayload, type RecipeSnapshot } from "../utils/import";
 import type { RecipePayload, RecipePayloadResult } from "../utils/payload/types";
 
@@ -26,6 +28,7 @@ type UseRecipeStudioActionsParams = {
   resetRecipe: () => void;
   loadRecipe: (snapshot: RecipeSnapshot) => void;
   getCurrentPayloadFromStore: () => RecipePayload;
+  onPreviewSuccess?: () => void;
 };
 
 type UseRecipeStudioActionsResult = {
@@ -43,9 +46,13 @@ type UseRecipeStudioActionsResult = {
   setPreviewRows: (rows: number) => void;
   previewErrors: string[];
   previewLoading: boolean;
+  currentSignature: string;
+  executions: RecipeExecutionRecord[];
+  selectedExecutionId: string | null;
+  setSelectedExecutionId: (id: string) => void;
   persistRecipe: () => Promise<void>;
   openPreviewDialog: () => void;
-  runPreview: () => Promise<void>;
+  runPreview: () => Promise<boolean>;
   copyRecipe: () => Promise<void>;
   importRecipe: (value: string) => string | null;
 };
@@ -70,6 +77,23 @@ function toErrorMessage(error: unknown, fallback: string): string {
     return error.message;
   }
   return fallback;
+}
+
+function normalizeDatasetRows(value: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter(
+    (row): row is Record<string, unknown> =>
+      typeof row === "object" && row !== null && !Array.isArray(row),
+  );
+}
+
+function normalizeObject(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
 }
 
 async function copyTextToClipboard(text: string): Promise<boolean> {
@@ -109,6 +133,7 @@ export function useRecipeStudioActions({
   resetRecipe,
   loadRecipe,
   getCurrentPayloadFromStore,
+  onPreviewSuccess,
 }: UseRecipeStudioActionsParams): UseRecipeStudioActionsResult {
   const [workflowName, setWorkflowName] = useState("Unnamed");
   const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
@@ -120,6 +145,10 @@ export function useRecipeStudioActions({
   const [previewRows, setPreviewRows] = useState(5);
   const [previewErrors, setPreviewErrors] = useState<string[]>([]);
   const [previewLoading, setPreviewLoading] = useState(false);
+  const [executions, setExecutions] = useState<RecipeExecutionRecord[]>([]);
+  const [selectedExecutionId, setSelectedExecutionId] = useState<string | null>(
+    null,
+  );
 
   const normalizedWorkflowName = useMemo(
     () => normalizeNonEmptyName(workflowName, "Unnamed"),
@@ -143,6 +172,7 @@ export function useRecipeStudioActions({
     setCopied(false);
     setPreviewErrors([]);
     setPreviewDialogOpen(false);
+    setSelectedExecutionId(null);
 
     const parsed = importRecipePayload(JSON.stringify(initialPayload));
     if (parsed.snapshot) {
@@ -162,6 +192,43 @@ export function useRecipeStudioActions({
     recipeId,
     resetRecipe,
   ]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setExecutions([]);
+    setSelectedExecutionId(null);
+
+    async function loadExecutions(): Promise<void> {
+      try {
+        const records = await listRecipeExecutions(recipeId);
+        if (cancelled) {
+          return;
+        }
+        setExecutions(records);
+        setSelectedExecutionId(records[0]?.id ?? null);
+      } catch (error) {
+        console.error("Load recipe executions failed:", error);
+      }
+    }
+
+    void loadExecutions();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [recipeId]);
+
+  const upsertExecution = useCallback((record: RecipeExecutionRecord): void => {
+    setExecutions((current) => {
+      const next = current.filter((item) => item.id !== record.id);
+      next.unshift(record);
+      return next;
+    });
+    setSelectedExecutionId(record.id);
+    void saveRecipeExecution(record).catch((error) => {
+      console.error("Save recipe execution failed:", error);
+    });
+  }, []);
 
   const persistRecipe = useCallback(async (): Promise<void> => {
     if (saveLoading) {
@@ -210,15 +277,30 @@ export function useRecipeStudioActions({
     setPreviewDialogOpen(true);
   }
 
-  const runPreview = useCallback(async (): Promise<void> => {
-    setPreviewLoading(true);
+  const runPreview = useCallback(async (): Promise<boolean> => {
     const payload = readPayload();
     if (!payload) {
       setPreviewErrors(payloadResult.errors);
       toastError("Invalid recipe payload", payloadErrorMessage);
-      setPreviewLoading(false);
-      return;
+      return false;
     }
+    setPreviewLoading(true);
+
+    const createdAt = Date.now();
+    const baseExecution: RecipeExecutionRecord = {
+      id: crypto.randomUUID(),
+      recipeId,
+      kind: "preview",
+      status: "running",
+      rows: previewRows,
+      createdAt,
+      recipeSignature: currentSignature,
+      dataset: [],
+      analysis: null,
+      processor_artifacts: null,
+      error: null,
+    };
+    upsertExecution(baseExecution);
 
     const previewPayload = {
       ...payload,
@@ -234,24 +316,58 @@ export function useRecipeStudioActions({
         const errors = validation.errors.map((item) => item.message);
         const fallback = validation.raw_detail ?? "Validation failed.";
         const nextErrors = errors.length > 0 ? errors : [fallback];
+        upsertExecution({
+          ...baseExecution,
+          status: "error",
+          error: nextErrors[0],
+        });
         setPreviewErrors(nextErrors);
         toastError("Validation failed", nextErrors[0]);
-        return;
+        return false;
       }
 
-      await previewRecipe(previewPayload);
+      const result = await previewRecipe(previewPayload);
+      upsertExecution({
+        ...baseExecution,
+        status: "completed",
+        dataset: normalizeDatasetRows(result.dataset),
+        analysis: normalizeObject(result.analysis),
+        processor_artifacts: normalizeObject(result.processor_artifacts),
+        error: null,
+      });
       setPreviewDialogOpen(false);
       setPreviewErrors([]);
       toastSuccess(`Preview generated (${previewRows} rows).`);
+      onPreviewSuccess?.();
+      return true;
     } catch (error) {
       console.error("Preview failed:", error);
       const message = toErrorMessage(error, "Preview request failed.");
+      upsertExecution({
+        ...baseExecution,
+        status: "error",
+        error: message,
+      });
       setPreviewErrors([message]);
       toastError("Preview failed", message);
+      return false;
     } finally {
       setPreviewLoading(false);
     }
-  }, [payloadErrorMessage, payloadResult.errors, previewRows, readPayload]);
+  }, [
+    currentSignature,
+    onPreviewSuccess,
+    payloadErrorMessage,
+    payloadResult.errors,
+    previewRows,
+    readPayload,
+    recipeId,
+    upsertExecution,
+  ]);
+
+  const selectExecution = useCallback((id: string): void => {
+    setSelectedExecutionId(id);
+  }, []);
 
   const copyRecipe = useCallback(async (): Promise<void> => {
     setCopied(false);
@@ -302,6 +418,10 @@ export function useRecipeStudioActions({
     setPreviewRows,
     previewErrors,
     previewLoading,
+    currentSignature,
+    executions,
+    selectedExecutionId,
+    setSelectedExecutionId: selectExecution,
     persistRecipe,
     openPreviewDialog,
     runPreview,
