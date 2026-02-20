@@ -342,6 +342,7 @@ _PATCHER = MacPatcher()
 
 def patch_unsloth_zoo_for_mps() -> bool:
     """Legacy entry point for compatibility with __init__.py"""
+    if is_patched(): return True
     results = _PATCHER.apply()
     return any(r.success for r in results)
 
