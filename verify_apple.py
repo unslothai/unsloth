@@ -98,8 +98,10 @@ def check_unsloth():
             print("❌ ERROR: DEVICE_TYPE is not 'mps'. The patch failed to apply.")
             return False
             
-    except ImportError:
-        print("❌ ERROR: Unsloth not found. Install via 'pip install unsloth'.")
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"❌ ERROR: Failed to import/initialize Unsloth: {str(e)}")
         return False
     return True
 
