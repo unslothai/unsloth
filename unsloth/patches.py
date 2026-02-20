@@ -223,7 +223,8 @@ class MacPatcher:
                 m = MockModule(f"{self.__name__}.{name}")
                 return m
             def __iter__(self):
-                return iter([])
+                # Return a list of self to allow unpacking (e.g. model, tokenizer = ...)
+                return iter([self] * 20)
             def __contains__(self, item):
                 return False
             def __len__(self):
@@ -241,9 +242,31 @@ class MacPatcher:
         from importlib.machinery import ModuleSpec
         mod.__spec__ = ModuleSpec(fullname, loader, origin="mocked")
         
-        # Specific attribute overrides
+        # Specific attribute overrides - Order matters! (Most specific first)
         if fullname == "unsloth_zoo":
             mod.__version__ = "999.0.0"
+        elif "tokenizer_utils" in fullname:
+            mod.patch_tokenizer = lambda model, tokenizer: (model, tokenizer)
+            mod.fix_untrained_tokens = lambda *a, **k: None
+            mod.add_new_tokens = lambda *a, **k: None
+        elif "patching_utils" in fullname:
+            class DummyLinear: pass
+            mod.Bnb_Linear4bit = DummyLinear
+            mod.Peft_Linear4bit = DummyLinear
+            mod.Peft_Linear = DummyLinear
+            mod.patch_model_and_tokenizer = lambda m, t: (m, t)
+            mod.patch_compiled_autograd = lambda: None
+            mod.patch_layernorm = lambda: None
+            mod.patch_torch_compile = lambda *a, **k: None
+        elif "compiler" in fullname:
+            mod.get_transformers_model_type = lambda *a, **k: ["llama"]
+            mod.unsloth_compile_transformers = lambda *a, **k: (["llama"], True)
+        elif "rl_replacements" in fullname:
+            # grpo_compute_loss_slow is appended directly as a string in rl_replacements.py
+            # others are passed to inspect.getsource(), so they must be functions
+            mod.RL_REPLACEMENTS = collections.defaultdict(lambda: _unsloth_dummy_fn)
+            mod.RL_REPLACEMENTS["grpo_compute_loss_slow"] = "def dummy(): pass"
+            mod.RL_PRE_ITEMS = collections.defaultdict(list)
         elif "device_type" in fullname:
             hw_info = self.get_hardware_info()
             mod.get_device_type = lambda: "mps"
@@ -253,7 +276,7 @@ class MacPatcher:
         elif "vision_utils" in fullname:
             mod.HAS_VISION = False
             mod.process_vision_info = lambda *a, **k: (None, None)
-        elif "utils" in fullname and not fullname.endswith("vision_utils"):
+        elif "utils" in fullname: # Generic utils catch-all
             class Version:
                 def __init__(self, v): 
                     self.v = str(v)
@@ -276,28 +299,10 @@ class MacPatcher:
             mod.get_quant_type = lambda m: "unknown"
         elif fullname == "triton.backends":
             mod.backends = {}
-        elif "compiler" in fullname:
-            mod.get_transformers_model_type = lambda *a, **k: ["llama"]
-            mod.unsloth_compile_transformers = lambda *a, **k: (["llama"], True)
-        elif "rl_replacements" in fullname:
-            # grpo_compute_loss_slow is appended directly as a string in rl_replacements.py
-            # others are passed to inspect.getsource(), so they must be functions
-            mod.RL_REPLACEMENTS = collections.defaultdict(lambda: _unsloth_dummy_fn)
-            mod.RL_REPLACEMENTS["grpo_compute_loss_slow"] = "def dummy(): pass"
-            mod.RL_PRE_ITEMS = collections.defaultdict(list)
-        elif "patching_utils" in fullname:
-            class DummyLinear: pass
-            mod.Bnb_Linear4bit = DummyLinear
-            mod.Peft_Linear4bit = DummyLinear
-            mod.Peft_Linear = DummyLinear
-            mod.patch_model_and_tokenizer = lambda m, t: (m, t)
-            mod.patch_compiled_autograd = lambda: None
-            mod.patch_layernorm = lambda: None
-            mod.patch_torch_compile = lambda *a, **k: None
-        elif "tokenizer_utils" in fullname:
-            mod.patch_tokenizer = lambda model, tokenizer: (model, tokenizer)
-            mod.fix_untrained_tokens = lambda *a, **k: None
-            mod.add_new_tokens = lambda *a, **k: None
+        elif fullname == "triton.runtime.triton_heuristics" or fullname == "triton.runtime.config":
+            class Config:
+                def __init__(self, *args, **kwargs): pass
+            mod.Config = Config
         
         return mod
 
