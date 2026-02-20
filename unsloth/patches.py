@@ -201,6 +201,13 @@ class MockModule(nn.Module):
         return (nn.Module,)
 
 
+class _DummyLinear(nn.Module):
+    """Dummy linear class for isinstance compatibility."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__()
+
+
 class PatchedLoader(Loader):
     """Wraps a real loader to inject missing attributes after execution."""
 
@@ -215,13 +222,15 @@ class PatchedLoader(Loader):
         # On-the-fly hardening for peft
         if module.__name__ == "peft.tuners.lora":
             if not hasattr(module, "Linear4bit"):
-                module.Linear4bit = MockModule("peft.tuners.lora.Linear4bit")
+                module.Linear4bit = _DummyLinear
             if not hasattr(module, "Linear"):
-                module.Linear = MockModule("peft.tuners.lora.Linear")
+                module.Linear = _DummyLinear
         # Hardening for bitsandbytes.nn
         elif module.__name__ == "bitsandbytes.nn":
             if not hasattr(module, "Linear4bit"):
-                module.Linear4bit = MockModule("bitsandbytes.nn.Linear4bit")
+                module.Linear4bit = _DummyLinear
+            if not hasattr(module, "Linear8bitLt"):
+                module.Linear8bitLt = _DummyLinear
 
 
 class UnslothMockFinder(MetaPathFinder):
