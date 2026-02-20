@@ -55,6 +55,9 @@ export type RecipeExecutionRecord = {
   // biome-ignore lint/style/useNamingConvention: backend schema
   artifact_path: string | null;
   dataset: Record<string, unknown>[];
+  datasetTotal: number;
+  datasetPage: number;
+  datasetPageSize: number;
   analysis: RecipeExecutionAnalysis | null;
   // biome-ignore lint/style/useNamingConvention: api schema
   processor_artifacts: Record<string, unknown> | null;

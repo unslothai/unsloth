@@ -55,6 +55,9 @@ export type JobStatusResponse = {
 
 export type JobDatasetResponse = {
   dataset?: unknown[];
+  total?: number;
+  limit?: number;
+  offset?: number;
 };
 
 export type JobEvent = {
@@ -184,9 +187,16 @@ export async function getRecipeJobAnalysis(
 
 export async function getRecipeJobDataset(
   jobId: string,
-  limit = 20,
+  options?: {
+    limit?: number;
+    offset?: number;
+  },
 ): Promise<JobDatasetResponse> {
-  return getJson<JobDatasetResponse>(`/jobs/${jobId}/dataset?limit=${limit}`);
+  const limit = options?.limit ?? 20;
+  const offset = options?.offset ?? 0;
+  return getJson<JobDatasetResponse>(
+    `/jobs/${jobId}/dataset?limit=${limit}&offset=${offset}`,
+  );
 }
 
 export async function cancelRecipeJob(jobId: string): Promise<JobStatusResponse> {
