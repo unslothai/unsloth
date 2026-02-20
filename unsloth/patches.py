@@ -295,14 +295,28 @@ class MacPatcher:
         return self._create_patch_result(name, PatchStatus.SUCCESS, "unsloth_zoo, triton, and bnb mocked")
 
     def patch_peft(self) -> PatchResult:
-        """Patch PEFT to disable bitsandbytes detection."""
+        """Patch PEFT to disable bitsandbytes detection and ensure classes exist."""
         name = "peft"
         try:
             import peft.import_utils
             peft.import_utils.is_bnb_available = lambda: False
             peft.import_utils.is_bnb_4bit_available = lambda: False
             peft.import_utils.is_bnb_8bit_available = lambda: False
-            return self._create_patch_result(name, PatchStatus.SUCCESS, "PEFT bnb detection disabled")
+            
+            # Ensure peft.tuners.lora has the classes Unsloth expects
+            import torch.nn as nn
+            try:
+                import peft.tuners.lora as lora_mod
+                if not hasattr(lora_mod, "Linear4bit"):
+                    class Linear4bit(nn.Module): pass
+                    lora_mod.Linear4bit = Linear4bit
+                if not hasattr(lora_mod, "Linear"):
+                    class Linear(nn.Module): pass
+                    lora_mod.Linear = Linear
+            except ImportError:
+                pass
+
+            return self._create_patch_result(name, PatchStatus.SUCCESS, "PEFT bnb detection disabled and classes injected")
         except:
             return self._create_patch_result(name, PatchStatus.SKIPPED, "PEFT not installed or already patched")
 

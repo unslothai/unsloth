@@ -43,8 +43,15 @@ def get_bnb_linear_type():
         except AttributeError:
             pass
     return None
-from peft.tuners.lora import Linear4bit as Peft_Linear4bit
-from peft.tuners.lora import Linear as Peft_Linear
+try:
+    from peft.tuners.lora import Linear4bit as Peft_Linear4bit
+except ImportError:
+    class Peft_Linear4bit(torch.nn.Module): pass
+
+try:
+    from peft.tuners.lora import Linear as Peft_Linear
+except ImportError:
+    class Peft_Linear(torch.nn.Module): pass
 from typing import Optional, Callable, Union, List
 import sys
 import requests
