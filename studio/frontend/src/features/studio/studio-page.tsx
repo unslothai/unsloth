@@ -37,6 +37,9 @@ export function StudioPage(): ReactElement {
   const ensureModelDefaultsLoaded = useTrainingConfigStore(
     (s) => s.ensureModelDefaultsLoaded,
   );
+  const ensureDatasetChecked = useTrainingConfigStore(
+    (s) => s.ensureDatasetChecked,
+  );
   const dialogOpen = useDatasetPreviewDialogStore((s) => s.open);
   const dialogMode = useDatasetPreviewDialogStore((s) => s.mode);
   const dialogInitial = useDatasetPreviewDialogStore((s) => s.initialData);
@@ -65,7 +68,8 @@ export function StudioPage(): ReactElement {
 
   useEffect(() => {
     ensureModelDefaultsLoaded();
-  }, [selectedModel, ensureModelDefaultsLoaded]);
+    ensureDatasetChecked();
+  }, [selectedModel, ensureModelDefaultsLoaded, ensureDatasetChecked]);
 
   return (
     <div className="relative min-h-screen overflow-hidden bg-background">
