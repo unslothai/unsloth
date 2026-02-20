@@ -3,6 +3,13 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DataTable } from "@/components/ui/data-table";
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -61,6 +68,17 @@ function formatCellValue(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+function isExpandableCellValue(value: string): boolean {
+  return value.length > 180;
+}
+
+function truncateCellValue(value: string): string {
+  if (value.length <= 180) {
+    return value;
+  }
+  return `${value.slice(0, 180).trimEnd()}...`;
 }
 
 function parseNumber(value: unknown): number | null {
@@ -163,6 +181,10 @@ export function ExecutionsView({
 }: ExecutionsViewProps): ReactElement {
   const [detailTab, setDetailTab] = useState("overview");
   const [showRaw, setShowRaw] = useState(false);
+  const [hiddenDatasetColumns, setHiddenDatasetColumns] = useState<string[]>([]);
+  const [expandedDatasetCells, setExpandedDatasetCells] = useState<
+    Record<string, boolean>
+  >({});
   const selectedExecution = useMemo(
     () =>
       executions.find((execution) => execution.id === selectedExecutionId) ??
@@ -181,7 +203,12 @@ export function ExecutionsView({
     }
   }, [detailTab, showRaw]);
 
-  const tableColumns = useMemo<ColumnDef<Record<string, unknown>>[]>(() => {
+  useEffect(() => {
+    setHiddenDatasetColumns([]);
+    setExpandedDatasetCells({});
+  }, [selectedExecution?.id]);
+
+  const datasetColumnNames = useMemo(() => {
     if (!selectedExecution) {
       return [];
     }
@@ -191,19 +218,60 @@ export function ExecutionsView({
         names.add(key);
       }
     }
-    return Array.from(names).map((name) => ({
+    return Array.from(names);
+  }, [selectedExecution]);
+
+  const visibleDatasetColumnNames = useMemo(
+    () =>
+      datasetColumnNames.filter(
+        (name) => !hiddenDatasetColumns.includes(name),
+      ),
+    [datasetColumnNames, hiddenDatasetColumns],
+  );
+
+  const tableColumns = useMemo<ColumnDef<Record<string, unknown>>[]>(() => {
+    if (!selectedExecution) {
+      return [];
+    }
+    return visibleDatasetColumnNames.map((name) => ({
       accessorKey: name,
       header: name,
-      cell: ({ getValue }) => {
-        const value = getValue();
+      cell: ({ getValue, row }) => {
+        const rawValue = getValue();
+        const value = formatCellValue(rawValue);
+        const canExpand = isExpandableCellValue(value);
+        const cellId = `${row.id}:${name}`;
+        const expanded = Boolean(expandedDatasetCells[cellId]);
+
         return (
-          <p className="max-w-[32rem] whitespace-pre-wrap break-all">
-            {formatCellValue(value)}
-          </p>
+          <div className="max-w-[32rem]">
+            {canExpand ? (
+              <button
+                type="button"
+                className="w-full text-left"
+                onClick={(event) => {
+                  event.preventDefault();
+                  setExpandedDatasetCells((current) => ({
+                    ...current,
+                    [cellId]: !current[cellId],
+                  }));
+                }}
+              >
+                <p className="whitespace-pre-wrap break-all">
+                  {expanded ? value : truncateCellValue(value)}
+                </p>
+                <span className="text-xs text-muted-foreground">
+                  {expanded ? "Click to collapse" : "Click to expand"}
+                </span>
+              </button>
+            ) : (
+              <p className="whitespace-pre-wrap break-all">{value}</p>
+            )}
+          </div>
         );
       },
     }));
-  }, [selectedExecution]);
+  }, [expandedDatasetCells, selectedExecution, visibleDatasetColumnNames]);
 
   const analysisColumns = useMemo(
     () => parseAnalysisColumns(selectedExecution?.analysis ?? null),
@@ -529,41 +597,75 @@ export function ExecutionsView({
                   <div className="rounded-xl border p-3">
                     <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                       <p className="text-sm font-semibold">Dataset sample</p>
-                      {canPageDataset && selectedExecution && (
-                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                          <span>
-                            Page {datasetPage}/{totalPages}
-                          </span>
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="outline"
-                            disabled={
-                              isInProgress(selectedExecution.status) || datasetPage <= 1
-                            }
-                            onClick={() =>
-                              onLoadDatasetPage(selectedExecution.id, datasetPage - 1)}
-                          >
-                            Prev
-                          </Button>
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="outline"
-                            disabled={
-                              isInProgress(selectedExecution.status) ||
-                              datasetPage >= totalPages
-                            }
-                            onClick={() =>
-                              onLoadDatasetPage(selectedExecution.id, datasetPage + 1)}
-                          >
-                            Next
-                          </Button>
-                        </div>
-                      )}
+                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                        {datasetColumnNames.length > 0 && (
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button type="button" size="sm" variant="outline">
+                                Columns
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              <DropdownMenuLabel>Visible columns</DropdownMenuLabel>
+                              {datasetColumnNames.map((columnName) => (
+                                <DropdownMenuCheckboxItem
+                                  key={columnName}
+                                  checked={!hiddenDatasetColumns.includes(columnName)}
+                                  onCheckedChange={(checked) => {
+                                    setHiddenDatasetColumns((current) => {
+                                      if (checked) {
+                                        return current.filter((name) => name !== columnName);
+                                      }
+                                      return [...current, columnName];
+                                    });
+                                  }}
+                                >
+                                  {columnName}
+                                </DropdownMenuCheckboxItem>
+                              ))}
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        )}
+                        {canPageDataset && selectedExecution && (
+                          <>
+                            <span>
+                              Page {datasetPage}/{totalPages}
+                            </span>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              disabled={
+                                isInProgress(selectedExecution.status) || datasetPage <= 1
+                              }
+                              onClick={() =>
+                                onLoadDatasetPage(selectedExecution.id, datasetPage - 1)}
+                            >
+                              Prev
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              disabled={
+                                isInProgress(selectedExecution.status) ||
+                                datasetPage >= totalPages
+                              }
+                              onClick={() =>
+                                onLoadDatasetPage(selectedExecution.id, datasetPage + 1)}
+                            >
+                              Next
+                            </Button>
+                          </>
+                        )}
+                      </div>
                     </div>
                     {selectedExecution.dataset.length === 0 ? (
                       <p className="text-xs text-muted-foreground">No rows returned.</p>
+                    ) : tableColumns.length === 0 ? (
+                      <p className="text-xs text-muted-foreground">
+                        All columns hidden. Use Columns to show at least one.
+                      </p>
                     ) : (
                       <div className="max-h-[55vh] overflow-auto">
                         <DataTable
