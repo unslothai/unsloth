@@ -61,12 +61,6 @@ type ModelUsageRow = {
   model: string;
   input: number | null;
   output: number | null;
-  total: number | null;
-  tps: number | null;
-  requestsSuccess: number | null;
-  requestsFailed: number | null;
-  requestsTotal: number | null;
-  rpm: number | null;
 };
 
 function formatTimestamp(value: number): string {
@@ -210,12 +204,6 @@ function parseModelUsageRows(value: Record<string, unknown> | null): ModelUsageR
         modelObj.tokens && typeof modelObj.tokens === "object" && !Array.isArray(modelObj.tokens)
           ? (modelObj.tokens as Record<string, unknown>)
           : null;
-      const requests =
-        modelObj.requests &&
-        typeof modelObj.requests === "object" &&
-        !Array.isArray(modelObj.requests)
-          ? (modelObj.requests as Record<string, unknown>)
-          : null;
       const modelName =
         typeof modelObj.model === "string" && modelObj.model.length > 0
           ? modelObj.model
@@ -224,12 +212,6 @@ function parseModelUsageRows(value: Record<string, unknown> | null): ModelUsageR
         model: modelName,
         input: parseNumber(tokens?.input),
         output: parseNumber(tokens?.output),
-        total: parseNumber(tokens?.total),
-        tps: parseNumber(tokens?.tps),
-        requestsSuccess: parseNumber(requests?.success),
-        requestsFailed: parseNumber(requests?.failed),
-        requestsTotal: parseNumber(requests?.total),
-        rpm: parseNumber(requests?.rpm),
       };
     })
     .filter((item): item is ModelUsageRow => item !== null);
@@ -350,6 +332,22 @@ export function ExecutionsView({
     () => parseModelUsageRows(selectedExecution?.model_usage ?? null),
     [selectedExecution?.model_usage],
   );
+  const totalInputTokens = useMemo(
+    () =>
+      modelUsageRows.reduce(
+        (acc, item) => acc + (typeof item.input === "number" ? item.input : 0),
+        0,
+      ),
+    [modelUsageRows],
+  );
+  const totalOutputTokens = useMemo(
+    () =>
+      modelUsageRows.reduce(
+        (acc, item) => acc + (typeof item.output === "number" ? item.output : 0),
+        0,
+      ),
+    [modelUsageRows],
+  );
   const sideEffects = useMemo(() => {
     const values = selectedExecution?.analysis?.side_effect_column_names;
     return Array.isArray(values)
@@ -390,6 +388,51 @@ export function ExecutionsView({
     }
     return selectedExecution.rows > 0 ? selectedExecution.rows : null;
   }, [selectedExecution]);
+  const columnCount = analysisColumns.length;
+  const llmColumnCount = useMemo(
+    () =>
+      analysisColumns.reduce(
+        (acc, column) => (column.column_type.startsWith("llm") ? acc + 1 : acc),
+        0,
+      ),
+    [analysisColumns],
+  );
+  const totalNulls = useMemo(
+    () =>
+      analysisColumns.reduce(
+        (acc, column) => acc + (typeof column.num_null === "number" ? column.num_null : 0),
+        0,
+      ),
+    [analysisColumns],
+  );
+  const nullRate = useMemo(() => {
+    if (
+      typeof recordsMetric !== "number" ||
+      recordsMetric <= 0 ||
+      columnCount <= 0
+    ) {
+      return null;
+    }
+    return (totalNulls / (recordsMetric * columnCount)) * 100;
+  }, [columnCount, recordsMetric, totalNulls]);
+  const lowUniquenessColumns = useMemo(() => {
+    if (typeof recordsMetric !== "number" || recordsMetric <= 0) {
+      return [];
+    }
+    return analysisColumns
+      .filter(
+        (column) =>
+          typeof column.num_unique === "number" &&
+          column.num_unique / recordsMetric < 0.5,
+      )
+      .map((column) => column.column_name);
+  }, [analysisColumns, recordsMetric]);
+  const runDuration = useMemo(() => {
+    if (!selectedExecution) {
+      return "--";
+    }
+    return formatDuration(selectedExecution.createdAt, selectedExecution.finishedAt);
+  }, [selectedExecution]);
   const showSummaryCards = selectedExecution?.status === "completed";
   const showProgressPanel =
     selectedExecution?.status === "completed" ||
@@ -397,6 +440,13 @@ export function ExecutionsView({
   const progressComplete = selectedExecution?.status === "completed";
   const progressPercent = selectedExecution?.progress?.percent ?? (progressComplete ? 100 : 0);
   const terminalLines = selectedExecution?.log_lines ?? [];
+  const rawExecution = useMemo(() => {
+    if (!selectedExecution) {
+      return null;
+    }
+    const { dataset, log_lines, ...rest } = selectedExecution;
+    return rest;
+  }, [selectedExecution]);
 
   useEffect(() => {
     if (!terminalRef.current) {
@@ -632,79 +682,151 @@ export function ExecutionsView({
                 </TabsList>
                 <TabsContent value="overview" className="mt-3 space-y-3">
                   {showSummaryCards && (
-                    <div className="rounded-xl border bg-muted/20 p-3">
-                      <div className="grid gap-3 md:grid-cols-3">
-                        <div className="rounded-lg border bg-background/80 p-3">
+                    <div className="space-y-3 rounded-xl border bg-muted/20 p-3">
+                      <div className="grid gap-3 md:grid-cols-2">
+                        <div className="h-full rounded-lg border bg-background/80 p-3">
                           <div className="mb-2 flex items-center justify-between">
-                            <p className="text-xs text-muted-foreground">Records</p>
+                            <p className="text-xs text-muted-foreground">Run summary</p>
                             <HugeiconsIcon
                               icon={Database01Icon}
                               className="size-4 text-muted-foreground"
                             />
                           </div>
-                          <p className="text-lg font-semibold">
-                            {formatMetricValue(recordsMetric)} / {formatMetricValue(totalMetric)}
-                          </p>
-                          <p className="text-xs text-muted-foreground">
-                            generated / requested
-                          </p>
-                        </div>
-                        <div className="rounded-lg border bg-background/80 p-3">
-                          <div className="mb-2 flex items-center justify-between">
-                            <p className="text-xs text-muted-foreground">Model usage</p>
-                            <HugeiconsIcon
-                              icon={Flag02Icon}
-                              className="size-4 text-muted-foreground"
-                            />
+                          <div className="space-y-1 text-xs">
+                            <p>
+                              Records:{" "}
+                              <span className="font-semibold">
+                                {formatMetricValue(recordsMetric)} / {formatMetricValue(totalMetric)}
+                              </span>
+                            </p>
+                            <p>
+                              Duration: <span className="font-semibold">{runDuration}</span>
+                            </p>
+                            <p>
+                              Columns analyzed:{" "}
+                              <span className="font-semibold">
+                                {formatMetricValue(columnCount)}
+                              </span>
+                            </p>
+                            <p>
+                              Final stage:{" "}
+                              <span className="font-semibold">
+                                {selectedExecution.stage ?? "--"}
+                              </span>
+                            </p>
                           </div>
-                          {modelUsageRows.length === 0 ? (
-                            <p className="text-xs text-muted-foreground">No model usage yet.</p>
-                          ) : (
-                            <div className="space-y-2 font-mono text-xs">
-                              {modelUsageRows.map((usage) => (
-                                <div
-                                  key={usage.model}
-                                  className="rounded-md border border-border/70 px-2 py-1.5"
-                                >
-                                  <p>|-- model: {usage.model}</p>
-                                  <p>
-                                    |-- tokens: input={formatMetricValue(usage.input)}, output=
-                                    {formatMetricValue(usage.output)}, total=
-                                    {formatMetricValue(usage.total)}, tps=
-                                    {formatMetricValue(usage.tps)}
-                                  </p>
-                                  <p>
-                                    |-- requests: success=
-                                    {formatMetricValue(usage.requestsSuccess)}, failed=
-                                    {formatMetricValue(usage.requestsFailed)}, total=
-                                    {formatMetricValue(usage.requestsTotal)}, rpm=
-                                    {formatMetricValue(usage.rpm)}
-                                  </p>
-                                </div>
-                              ))}
-                            </div>
-                          )}
                         </div>
-                        <div className="rounded-lg border bg-background/80 p-3">
+                        <div className="h-full rounded-lg border bg-background/80 p-3">
                           <div className="mb-2 flex items-center justify-between">
-                            <p className="text-xs text-muted-foreground">Dropped columns</p>
+                            <p className="text-xs text-muted-foreground">Insights</p>
                             <HugeiconsIcon
                               icon={Database02Icon}
                               className="size-4 text-muted-foreground"
                             />
                           </div>
-                          {sideEffects.length === 0 ? (
-                            <p className="text-xs text-muted-foreground">None</p>
-                          ) : (
-                            <div className="flex flex-wrap gap-1.5">
-                              {sideEffects.map((name) => (
-                                <Badge key={name} variant="outline">
-                                  {name}
-                                </Badge>
-                              ))}
-                            </div>
-                          )}
+                          <div className="space-y-2 text-xs">
+                            <p>
+                              LLM columns:{" "}
+                              <span className="font-semibold">
+                                {formatMetricValue(llmColumnCount)}
+                              </span>
+                            </p>
+                            <p>
+                              Null rate:{" "}
+                              <span className="font-semibold">{formatPercent(nullRate)}</span>
+                            </p>
+                            <p>
+                              Dropped columns:{" "}
+                              <span className="font-semibold">
+                                {formatMetricValue(sideEffects.length)}
+                              </span>
+                            </p>
+                            {sideEffects.length > 0 && (
+                              <div className="flex flex-wrap gap-1.5">
+                                {sideEffects.map((name) => (
+                                  <Badge key={name} variant="outline">
+                                    {name}
+                                  </Badge>
+                                ))}
+                              </div>
+                            )}
+                            <p>
+                              Low uniqueness flags:{" "}
+                              <span className="font-semibold">
+                                {formatMetricValue(lowUniquenessColumns.length)}
+                              </span>
+                            </p>
+                            {lowUniquenessColumns.length > 0 && (
+                              <div className="flex flex-wrap gap-1.5">
+                                {lowUniquenessColumns.slice(0, 3).map((name) => (
+                                  <Badge key={name} variant="secondary">
+                                    {name}
+                                  </Badge>
+                                ))}
+                                {lowUniquenessColumns.length > 3 && (
+                                  <Badge variant="secondary">
+                                    +{lowUniquenessColumns.length - 3} more
+                                  </Badge>
+                                )}
+                              </div>
+                            )}
+                          </div>
                         </div>
+                      </div>
+                      <div className="rounded-lg border bg-background/80 p-3">
+                        <div className="mb-2 flex items-center justify-between">
+                          <p className="text-xs text-muted-foreground">Model usage</p>
+                          <HugeiconsIcon
+                            icon={Flag02Icon}
+                            className="size-4 text-muted-foreground"
+                          />
+                        </div>
+                        {modelUsageRows.length === 0 ? (
+                          <p className="text-xs text-muted-foreground">No model usage yet.</p>
+                        ) : (
+                          <div className="space-y-2 text-xs">
+                            <div className="grid grid-cols-2 gap-2">
+                              <div className="rounded border bg-muted/30 px-2 py-1.5">
+                                <p className="text-muted-foreground">Total input</p>
+                                <p className="text-sm font-semibold">
+                                  {formatMetricValue(totalInputTokens)}
+                                </p>
+                              </div>
+                              <div className="rounded border bg-muted/30 px-2 py-1.5">
+                                <p className="text-muted-foreground">Total output</p>
+                                <p className="text-sm font-semibold">
+                                  {formatMetricValue(totalOutputTokens)}
+                                </p>
+                              </div>
+                            </div>
+                            <div className="overflow-hidden rounded-md border">
+                              <Table>
+                                <TableHeader>
+                                  <TableRow>
+                                    <TableHead>Model</TableHead>
+                                    <TableHead className="text-right">Input</TableHead>
+                                    <TableHead className="text-right">Output</TableHead>
+                                  </TableRow>
+                                </TableHeader>
+                                <TableBody>
+                                  {modelUsageRows.map((usage) => (
+                                    <TableRow key={usage.model}>
+                                      <TableCell className="max-w-[320px] truncate">
+                                        {usage.model}
+                                      </TableCell>
+                                      <TableCell className="text-right">
+                                        {formatMetricValue(usage.input)}
+                                      </TableCell>
+                                      <TableCell className="text-right">
+                                        {formatMetricValue(usage.output)}
+                                      </TableCell>
+                                    </TableRow>
+                                  ))}
+                                </TableBody>
+                              </Table>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     </div>
                   )}
@@ -863,7 +985,7 @@ export function ExecutionsView({
                     <div className="rounded-xl border p-3">
                       <p className="mb-2 text-sm font-semibold">Raw execution</p>
                       <pre className="max-h-96 overflow-auto rounded-md bg-muted/40 p-3 text-xs">
-                        {JSON.stringify(selectedExecution, null, 2)}
+                        {JSON.stringify(rawExecution, null, 2)}
                       </pre>
                     </div>
                   </TabsContent>
