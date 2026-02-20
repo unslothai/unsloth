@@ -106,8 +106,11 @@ class MockModule(nn.Module):
             if name == "ALLOW_PREQUANTIZED_MODELS": return False
             if name == "ALLOW_BITSANDBYTES": return False
 
-        # Default: Return another callable mock
-        return MockModule(fullname)
+        # Default: Return another callable mock ONLY if we are still within mock targets
+        if any(self.__name__.startswith(t) for t in ("unsloth_zoo", "triton", "bitsandbytes", "peft.tuners.lora.bnb")):
+            return MockModule(fullname)
+            
+        raise AttributeError(name)
 
     def __iter__(self):
         return iter([self, self])
