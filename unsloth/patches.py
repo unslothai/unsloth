@@ -282,6 +282,10 @@ class UnslothMockLoader(Loader):
 
     def exec_module(self, module):
         sys.modules[module.__name__] = module
+        if module.__name__ == "bitsandbytes.nn":
+            module.Linear4bit = _DummyLinear
+            module.Linear8bitLt = _DummyLinear
+            module.Linear = _DummyLinear
 
 
 _PATCH_APPLIED = False
