@@ -6,8 +6,7 @@ Unsloth Automatic Patcher for Apple Silicon (macOS/MPS) Compatibility
 =====================================================================
 
 This module provides a fully automatic, dynamic patching system for unsloth_zoo
-and CUDA-specific dependencies. It uses a MetaPathFinder to intercept imports
-and provide robust mocks on the fly.
+and CUDA-specific dependencies.
 """
 
 from __future__ import annotations
@@ -19,6 +18,8 @@ import logging
 import subprocess
 import types
 import collections
+import torch
+import torch.nn as nn
 from typing import Optional, Any, Dict, List
 from dataclasses import dataclass
 from importlib.abc import MetaPathFinder, Loader
@@ -27,35 +28,29 @@ from importlib.machinery import ModuleSpec
 # Configure logging
 logger = logging.getLogger("unsloth.patches")
 
-import torch
-import torch.nn as nn
-
 def _unsloth_dummy_fn(*args, **kwargs):
     """Universal dummy function for mocks."""
     return None
 
-class MockModule(nn.Module):
-    """Extremely robust mock module that satisfies both Python imports and torch.nn.Module checks."""
+class MockModule(types.ModuleType):
+    """Extremely robust mock module that behaves like a module but can be used as a class/function."""
     def __init__(self, name):
-        super().__init__()
-        object.__setattr__(self, "__name__", name)
-        object.__setattr__(self, "__path__", [])
-        object.__setattr__(self, "__file__", f"{name}.py")
-        object.__setattr__(self, "__package__", name.rsplit(".", 1)[0] if "." in name else "")
-        object.__setattr__(self, "_unsloth_mock", True)
+        super().__init__(name)
+        self.__path__ = []
+        self.__file__ = f"{name}.py"
+        self.__package__ = name.rsplit(".", 1)[0] if "." in name else ""
+        self._unsloth_mock = True
 
     def __call__(self, *args, **kwargs):
+        # If this mock is called as a constructor (e.g. Bnb_Linear4bit(...)),
+        # return a real nn.Module if it looks like it will be assigned as a child module.
+        if any(x in self.__name__ for x in ("Linear", "dispatch", "Layer", "Norm")):
+            return nn.Module()
         return self
 
     def __getattr__(self, name):
-        # Handle special attributes by raising AttributeError
         if name.startswith("__") and name.endswith("__"):
             raise AttributeError(name)
-            
-        # Handle nn.Module internal attributes that might be missing in early init
-        if name.startswith("_") and name not in ("_unsloth_mock",):
-            try: return self.__dict__[name]
-            except KeyError: raise AttributeError(name)
             
         # Check for specialized mocks first
         fullname = f"{self.__name__}.{name}"
@@ -86,6 +81,7 @@ class MockModule(nn.Module):
         if name == "patch_model_and_tokenizer": return lambda m, t, **k: (m, t)
         if name == "patch_layernorm": return lambda *a, **k: None
         if name == "add_dtype_kwargs": return lambda *a, **k: {}
+        if name == "backends" and "triton" in self.__name__: return {}
         if name == "_get_dtype":
             def _get_dtype(d):
                 if d is None: return torch.float16
@@ -93,8 +89,7 @@ class MockModule(nn.Module):
                 try: return getattr(torch, str(d).split(".")[-1])
                 except: return torch.float16
             return _get_dtype
-        if name == "backends" and "triton" in self.__name__: return {}
-
+            
         # Device Type Specialization
         if "device_type" in self.__name__:
             if name == "DEVICE_TYPE": return "mps"
@@ -131,10 +126,12 @@ class MockModule(nn.Module):
         return True
 
     def __mro_entries__(self, bases):
-        return (object,)
+        # Allow inheriting from the mock
+        return (nn.Module,)
 
 class UnslothMockLoader(Loader):
     def create_module(self, spec):
+        if spec.name in sys.modules: return sys.modules[spec.name]
         return MockModule(spec.name)
     def exec_module(self, module):
         sys.modules[module.__name__] = module
@@ -147,6 +144,9 @@ class UnslothMockFinder(MetaPathFinder):
 
     def find_spec(self, fullname, path, target=None):
         if any(fullname == t or fullname.startswith(f"{t}.") for t in self.targets):
+            # Check if it's already a real module (e.g. partially loaded)
+            if fullname in sys.modules and not hasattr(sys.modules[fullname], "_unsloth_mock"):
+                return None
             return ModuleSpec(fullname, self.loader, origin="unsloth_mock")
         return None
 
@@ -161,24 +161,27 @@ def patch_unsloth_zoo_for_mps() -> bool:
     # 1. Install the automatic finder
     sys.meta_path.insert(0, UnslothMockFinder())
 
-    # 2. Mock CUDA properties (cannot be done via MetaPathFinder easily)
+    # 2. Mock CUDA properties
     try:
-        import torch
         if not torch.cuda.is_available():
             # Minimal hardware info for mocking
-            info = {"chip": "Apple Silicon", "mem": 16 * 1024**3}
+            info = {"chip": "Apple Silicon", "mem": 16 * 1024**3, "gpu": 8}
             try:
                 res = subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"], capture_output=True, text=True)
                 if res.returncode == 0: info["chip"] = res.stdout.strip()
                 res = subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True, text=True)
                 if res.returncode == 0: info["mem"] = int(res.stdout.strip())
+                chip = info["chip"]
+                if "M1" in chip: info["gpu"] = 8 if "Max" not in chip else 32
+                elif "M2" in chip: info["gpu"] = 10 if "Max" not in chip else 38
+                elif "M3" in chip or "M4" in chip: info["gpu"] = 10 if "Max" not in chip else 40
             except: pass
 
             class AppleSiliconProps:
                 def __init__(self):
                     self.name = info["chip"]
                     self.total_memory = int(info["mem"] * 0.75)
-                    self.major = 0; self.minor = 0; self.multi_processor_count = 8; self.is_integrated = True
+                    self.major = 0; self.minor = 0; self.multi_processor_count = info["gpu"]; self.is_integrated = True
             
             torch.cuda.get_device_properties = lambda d=None: AppleSiliconProps()
             torch.cuda.get_device_capability = lambda d=None: (0, 0)
@@ -195,30 +198,11 @@ def patch_unsloth_zoo_for_mps() -> bool:
                 cp._unsloth_patched = True
     except: pass
 
-    # 3. Patch PEFT detection and inject dummy classes
+    # 3. Patch PEFT detection
     try:
-        import torch.nn as nn
-        
-        # Ensure bitsandbytes.nn has Linear4bit
-        import bitsandbytes.nn as bnb_nn
-        if not hasattr(bnb_nn, "Linear4bit"):
-            class Linear4bit(nn.Module): pass
-            bnb_nn.Linear4bit = Linear4bit
-            
-        # Ensure peft.tuners.lora has Linear4bit and Linear
         import peft.import_utils
         peft.import_utils.is_bnb_available = lambda: False
         peft.import_utils.is_bnb_4bit_available = lambda: False
-        
-        try:
-            import peft.tuners.lora as lora_mod
-            if not hasattr(lora_mod, "Linear4bit"):
-                class Linear4bit(nn.Module): pass
-                lora_mod.Linear4bit = Linear4bit
-            if not hasattr(lora_mod, "Linear"):
-                class Linear(nn.Module): pass
-                lora_mod.Linear = Linear
-        except ImportError: pass
     except: pass
 
     _PATCH_APPLIED = True
