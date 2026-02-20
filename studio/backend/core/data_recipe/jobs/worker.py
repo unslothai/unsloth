@@ -27,6 +27,32 @@ class _QueueLogHandler(logging.Handler):
             pass
 
 
+def _to_jsonable(value: Any) -> Any:
+    try:
+        import numpy as np  # type: ignore
+    except Exception:  # pragma: no cover
+        np = None  # type: ignore
+
+    if np is not None:
+        if isinstance(value, np.ndarray):
+            return value.tolist()
+        if isinstance(value, np.generic):
+            return value.item()
+
+    if isinstance(value, dict):
+        return {str(k): _to_jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_to_jsonable(v) for v in value]
+
+    if hasattr(value, "isoformat") and callable(value.isoformat):
+        try:
+            return value.isoformat()
+        except Exception:
+            pass
+
+    return value
+
+
 def run_job_process(
     *,
     event_queue,
@@ -63,19 +89,48 @@ def run_job_process(
         if run_config_raw:
             designer.set_run_config(RunConfig.model_validate(run_config_raw))
 
-        results = designer.create(builder, num_records=rows, dataset_name=dataset_name)
-
-        analysis = results.load_analysis().model_dump(mode="json")
-        artifact_path = str(results.artifact_storage.base_dataset_path)
-
-        event_queue.put(
-            {
-                "type": "job.completed",
-                "ts": time.time(),
-                "analysis": analysis,
-                "artifact_path": artifact_path,
-            }
-        )
+        execution_type = str(run.get("execution_type") or "full").strip().lower()
+        if execution_type == "preview":
+            results = designer.preview(builder, num_records=rows)
+            analysis = (
+                None
+                if results.analysis is None
+                else _to_jsonable(results.analysis.model_dump(mode="json"))
+            )
+            dataset = (
+                []
+                if results.dataset is None
+                else _to_jsonable(results.dataset.to_dict(orient="records"))
+            )
+            processor_artifacts = (
+                None
+                if results.processor_artifacts is None
+                else _to_jsonable(results.processor_artifacts)
+            )
+            event_queue.put(
+                {
+                    "type": "job.completed",
+                    "ts": time.time(),
+                    "analysis": analysis,
+                    "dataset": dataset,
+                    "processor_artifacts": processor_artifacts,
+                    "artifact_path": None,
+                    "execution_type": execution_type,
+                }
+            )
+        else:
+            results = designer.create(builder, num_records=rows, dataset_name=dataset_name)
+            analysis = _to_jsonable(results.load_analysis().model_dump(mode="json"))
+            artifact_path = str(results.artifact_storage.base_dataset_path)
+            event_queue.put(
+                {
+                    "type": "job.completed",
+                    "ts": time.time(),
+                    "analysis": analysis,
+                    "artifact_path": artifact_path,
+                    "execution_type": execution_type,
+                }
+            )
     except Exception as exc:
         event_queue.put(
             {

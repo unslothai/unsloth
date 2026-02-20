@@ -6,6 +6,7 @@ import queue
 import threading
 import time
 import uuid
+from pathlib import Path
 from collections import deque
 from dataclasses import dataclass
 from typing import Any
@@ -18,6 +19,29 @@ from .worker import run_job_process
 
 
 _CTX = mp.get_context("spawn")
+
+def _to_jsonable(value: Any) -> Any:
+    try:
+        import numpy as np  # type: ignore
+    except Exception:  # pragma: no cover
+        np = None  # type: ignore
+
+    if np is not None:
+        if isinstance(value, np.ndarray):
+            return value.tolist()
+        if isinstance(value, np.generic):
+            return value.item()
+
+    if isinstance(value, dict):
+        return {str(k): _to_jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_to_jsonable(v) for v in value]
+    if hasattr(value, "isoformat") and callable(value.isoformat):
+        try:
+            return value.isoformat()
+        except Exception:
+            pass
+    return value
 
 
 @dataclass
@@ -144,6 +168,9 @@ class JobManager:
                 "rows": job.rows,
                 "cols": job.cols,
                 "error": job.error,
+                "has_analysis": job.analysis is not None,
+                "dataset_rows": None if job.dataset is None else len(job.dataset),
+                "artifact_path": job.artifact_path,
                 "started_at": job.started_at,
                 "finished_at": job.finished_at,
             }
@@ -166,6 +193,36 @@ class JobManager:
             if self._job is None or self._job.job_id != job_id:
                 return None
             return self._job.analysis
+
+    def get_dataset(self, job_id: str, *, limit: int) -> list[dict[str, Any]] | None:
+        """Load job dataset rows for UI previews (limited head)."""
+        with self._lock:
+            if self._job is None or self._job.job_id != job_id:
+                return None
+            in_memory_dataset = self._job.dataset
+            artifact_path = self._job.artifact_path
+
+        if in_memory_dataset is not None:
+            return in_memory_dataset[:limit]
+        if not artifact_path:
+            return None
+
+        try:
+            from data_designer.engine.dataset_builders.artifact_storage import ArtifactStorage
+        except Exception:
+            return None
+
+        try:
+            base_dataset_path = Path(artifact_path)
+            storage = ArtifactStorage(
+                artifact_path=str(base_dataset_path.parent),
+                dataset_name=base_dataset_path.name,
+            )
+            dataframe = storage.load_dataset()
+            rows = dataframe.head(limit).to_dict(orient="records")
+            return _to_jsonable(rows)
+        except Exception:
+            return None
 
     def subscribe(self, job_id: str, *, after_seq: int | None = None) -> Subscription | None:
         """SSE subscribe: get replay buffer + live events stream."""
@@ -279,6 +336,8 @@ class JobManager:
                 self._job.finished_at = time.time()
                 self._job.analysis = event.get("analysis")
                 self._job.artifact_path = event.get("artifact_path")
+                self._job.dataset = event.get("dataset")
+                self._job.processor_artifacts = event.get("processor_artifacts")
             if et == "job.error":
                 self._job.status = "error"
                 self._job.finished_at = time.time()

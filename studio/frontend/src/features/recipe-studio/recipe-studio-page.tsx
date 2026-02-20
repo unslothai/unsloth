@@ -272,6 +272,7 @@ export function RecipeStudioPage({
     setPreviewRows,
     previewErrors,
     previewLoading,
+    fullLoading,
     currentSignature,
     executions,
     selectedExecutionId,
@@ -279,6 +280,8 @@ export function RecipeStudioPage({
     persistRecipe,
     openPreviewDialog,
     runPreview,
+    runFull,
+    cancelExecution,
     copyRecipe,
     importRecipe,
   } = useRecipeStudioActions({
@@ -291,6 +294,9 @@ export function RecipeStudioPage({
     resetRecipe,
     loadRecipe,
     getCurrentPayloadFromStore,
+    onExecutionStart: () => {
+      setActiveView("executions");
+    },
     onPreviewSuccess: () => {
       setActiveView("executions");
     },
@@ -390,8 +396,15 @@ export function RecipeStudioPage({
                 selectedExecutionId={selectedExecutionId}
                 currentSignature={currentSignature}
                 previewLoading={previewLoading}
+                fullLoading={fullLoading}
                 onSelectExecution={setSelectedExecutionId}
                 onRunPreview={openPreviewDialog}
+                onRunFull={() => {
+                  void runFull();
+                }}
+                onCancelExecution={(executionId) => {
+                  void cancelExecution(executionId);
+                }}
               />
             )}
           </div>
