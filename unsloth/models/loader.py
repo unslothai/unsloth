@@ -256,6 +256,16 @@ class FastLanguageModel(FastLlamaModel):
                 raise NotImplementedError(
                     "Unsloth: set `fast_inference = True` when doing `load_in_fp8`."
                 )
+        
+        # Check if 4bit is requested on MPS and ensure MLX is available
+        if DEVICE_TYPE == "mps" and load_in_4bit:
+            from unsloth.kernels.mlx.utils import is_mlx_available
+            if not is_mlx_available():
+                raise ImportError(
+                    "Unsloth: MLX is required for 4-bit training on Apple Silicon.\n"
+                    "Please install it via `pip install mlx` or set `load_in_4bit=False`."
+                )
+
         # Check if 4bit is allowed specifically for AMD
         if not ALLOW_BITSANDBYTES and not use_exact_model_name and DEVICE_TYPE != "mps":
             if load_in_4bit or load_in_8bit or model_name.lower().endswith("-bnb-4bit"):

@@ -26,7 +26,7 @@ import torch
 model, tokenizer = FastLanguageModel.from_pretrained(
     model_name="unsloth/Llama-3.2-1B-Instruct",
     max_seq_length=2048,
-    load_in_4bit=False,  # 4-bit not supported on MPS yet
+    load_in_4bit=True,  # 4-bit now supported via MLX!
     dtype=torch.bfloat16,
 )
 
@@ -51,23 +51,19 @@ The following features are **not supported** or have **limited support** on Appl
 
 | Feature | Reason | Workaround |
 |---------|--------|------------|
-| **4-bit/8-bit Quantization (bitsandbytes)** | bitsandbytes library requires CUDA | Use 16-bit LoRA or wait for MLX quantization |
 | **Padding-Free Training** | Requires Triton Flash Attention kernels | Standard attention will be used automatically |
 | **FSDP (Fully Sharded Data Parallel)** | Requires NCCL/GLOO multi-GPU backend | Use single-GPU training (standard for M-series) |
 | **DeepSpeed ZeRO Stage 2+** | Requires NCCL backend | Use standard LoRA/QLoRA training |
 | **8-bit Optimizers (adamw_8bit)** | Requires bitsandbytes | Use `adamw_torch` (auto-switched) |
 | **VLLM Inference** | VLLM doesn't support MPS backend | Use standard generation or GGUF export |
 | **Flash Attention** | Custom Triton kernels don't support MPS | PyTorch's `scaled_dot_product_attention` is used |
-| **GGUF Export** | Requires CUDA for weight merging | Use `.save_pretrained()` to save LoRA weights, merge on CUDA machine |
 
 ### ⚠️ Partially Supported
 
 | Feature | Limitations | Notes |
 |---------|-------------|-------|
-| **Vision Models** | No quantization support | Works in 16-bit mode |
-| **GGUF Export** | Currently not supported | Use .save_pretrained() for LoRA weights, merge on CUDA |
-| **Training Optimizers** | No fused/paged optimizers | Standard PyTorch optimizers work fine |
-| **bfloat16** | Limited on older hardware | M1/M2 may fall back to float16 |
+| **4-bit Quantization** | Requires `mlx` package | Enabled via `load_in_4bit=True` |
+| **Vision Models** | Quantization support in progress | Works in 16-bit or 4-bit (experimental) |
 
 ---
 
@@ -99,7 +95,7 @@ Apple Silicon uses **unified memory** architecture:
 model, tokenizer = FastLanguageModel.from_pretrained(
     model_name="unsloth/Llama-3.2-1B-Instruct",  # Start with 1B
     max_seq_length=1024,
-    load_in_4bit=False,  # Required
+    load_in_4bit=True,  # 4-bit is now supported and recommended
     dtype=torch.bfloat16,
 )
 
