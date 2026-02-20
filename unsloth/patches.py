@@ -224,7 +224,7 @@ class MacPatcher:
                 return m
             def __iter__(self):
                 # Return a list of self to allow unpacking (e.g. model, tokenizer = ...)
-                return iter([self] * 20)
+                return iter([self] * 2)
             def __contains__(self, item):
                 return False
             def __len__(self):
@@ -249,6 +249,10 @@ class MacPatcher:
             mod.patch_tokenizer = lambda model, tokenizer: (model, tokenizer)
             mod.fix_untrained_tokens = lambda *a, **k: None
             mod.add_new_tokens = lambda *a, **k: None
+        elif "hf_utils" in fullname:
+            mod.add_dtype_kwargs = lambda *a, **k: {}
+            mod.dtype_from_config = lambda *a, **k: None
+            mod.fix_lora_auto_mapping = lambda *a, **k: None
         elif "patching_utils" in fullname:
             class DummyLinear: pass
             mod.Bnb_Linear4bit = DummyLinear
