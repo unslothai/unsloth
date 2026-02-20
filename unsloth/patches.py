@@ -188,6 +188,8 @@ class MacPatcher:
                 class DL: pass
                 mod.Bnb_Linear4bit = DL; mod.Peft_Linear4bit = DL; mod.Peft_Linear = DL
                 mod.patch_model_and_tokenizer = lambda m, t, **kwargs: (m, t)
+            elif sub == "rl_environments":
+                mod.GRPOEnvironment = type("GRPOEnvironment", (), {})
             
             # Catch-all for missing methods
             def __getattr__(name):
