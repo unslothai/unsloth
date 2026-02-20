@@ -7,12 +7,26 @@ import {
   getRecipeJobAnalysis,
   getRecipeJobDataset,
   getRecipeJobStatus,
-  previewRecipe,
+  streamRecipeJobEvents,
   validateRecipe,
 } from "../api";
 import { listRecipeExecutions, saveRecipeExecution } from "../data/executions-db";
+import {
+  buildSignature,
+  copyTextToClipboard,
+  DATASET_PAGE_SIZE,
+  delay,
+  executionLabel,
+  formatSavedLabel,
+  mapJobStatus,
+  normalizeAnalysis,
+  normalizeDatasetRows,
+  normalizeObject,
+  sortExecutions,
+  toErrorMessage,
+  withExecutionDefaults,
+} from "../executions/execution-helpers";
 import type {
-  RecipeExecutionAnalysis,
   RecipeExecutionRecord,
   RecipeExecutionStatus,
 } from "../execution-types";
@@ -74,157 +88,14 @@ type UseRecipeStudioActionsResult = {
   importRecipe: (value: string) => string | null;
 };
 
-const DATASET_PAGE_SIZE = 20;
-
-function buildSignature(name: string, payload: RecipePayload): string {
-  return JSON.stringify({ name, payload });
-}
-
-function formatSavedLabel(savedAt: number | null): string {
-  if (!savedAt) {
-    return "Not saved yet";
-  }
-  const time = new Date(savedAt).toLocaleTimeString([], {
-    hour: "numeric",
-    minute: "2-digit",
-  });
-  return `Saved ${time}`;
-}
-
-function toErrorMessage(error: unknown, fallback: string): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-  return fallback;
-}
-
-function normalizeDatasetRows(value: unknown): Record<string, unknown>[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return value.filter(
-    (row): row is Record<string, unknown> =>
-      typeof row === "object" && row !== null && !Array.isArray(row),
-  );
-}
-
-function normalizeObject(value: unknown): Record<string, unknown> | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return null;
-  }
-  return value as Record<string, unknown>;
-}
-
-function normalizeAnalysis(value: unknown): RecipeExecutionAnalysis | null {
-  const normalized = normalizeObject(value);
-  if (!normalized) {
-    return null;
-  }
-  return normalized as RecipeExecutionAnalysis;
-}
-
-function mapJobStatus(status: string): RecipeExecutionStatus {
-  if (status === "active") {
-    return "active";
-  }
-  if (status === "pending") {
-    return "pending";
-  }
-  if (status === "cancelling") {
-    return "cancelling";
-  }
-  if (status === "cancelled") {
-    return "cancelled";
-  }
-  if (status === "completed") {
-    return "completed";
-  }
-  if (status === "error") {
-    return "error";
-  }
-  return "running";
-}
-
-function executionSortWeight(status: RecipeExecutionStatus): number {
-  if (status === "running" || status === "active" || status === "pending" || status === "cancelling") {
-    return 0;
-  }
-  if (status === "error" || status === "cancelled") {
-    return 2;
-  }
-  return 1;
-}
-
-function sortExecutions(records: RecipeExecutionRecord[]): RecipeExecutionRecord[] {
-  const next = [...records];
-  next.sort((a, b) => {
-    const statusDelta = executionSortWeight(a.status) - executionSortWeight(b.status);
-    if (statusDelta !== 0) {
-      return statusDelta;
-    }
-    return b.createdAt - a.createdAt;
-  });
-  return next;
-}
-
-function withExecutionDefaults(
-  record: RecipeExecutionRecord,
-): RecipeExecutionRecord {
-  const dataset = Array.isArray(record.dataset) ? record.dataset : [];
-  const datasetPageSize =
-    typeof record.datasetPageSize === "number" && record.datasetPageSize > 0
-      ? record.datasetPageSize
-      : DATASET_PAGE_SIZE;
-  const datasetPage =
-    typeof record.datasetPage === "number" && record.datasetPage > 0
-      ? record.datasetPage
-      : 1;
-  const datasetTotal =
-    typeof record.datasetTotal === "number" && record.datasetTotal >= 0
-      ? record.datasetTotal
-      : dataset.length;
-
-  return {
-    ...record,
-    dataset,
-    datasetTotal,
-    datasetPage,
-    datasetPageSize,
-  };
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    window.setTimeout(resolve, ms);
-  });
-}
-
-async function copyTextToClipboard(text: string): Promise<boolean> {
-  try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text);
-      return true;
-    }
-  } catch {
-    // fallthrough to legacy path
-  }
-
-  try {
-    const textarea = document.createElement("textarea");
-    textarea.value = text;
-    textarea.setAttribute("readonly", "");
-    textarea.style.position = "fixed";
-    textarea.style.top = "0";
-    textarea.style.left = "-9999px";
-    document.body.appendChild(textarea);
-    textarea.select();
-    const ok = document.execCommand("copy");
-    document.body.removeChild(textarea);
-    return ok;
-  } catch {
-    return false;
-  }
-}
+type JobCompletedEventPayload = {
+  analysis?: unknown;
+  dataset?: unknown;
+  // biome-ignore lint/style/useNamingConvention: backend schema
+  artifact_path?: unknown;
+  error?: unknown;
+  type?: unknown;
+};
 
 export function useRecipeStudioActions({
   recipeId,
@@ -383,131 +254,22 @@ export function useRecipeStudioActions({
     setPreviewDialogOpen(true);
   }
 
-  const runPreview = useCallback(async (): Promise<boolean> => {
-    const payload = readPayload();
-    if (!payload) {
-      setPreviewErrors(payloadResult.errors);
-      toastError("Invalid recipe payload", payloadErrorMessage);
-      return false;
-    }
-    setPreviewLoading(true);
+  const runJobExecution = useCallback(async (input: {
+    kind: "preview" | "full";
+    payload: RecipePayload;
+    rows: number;
+  }): Promise<boolean> => {
+    const { kind, payload, rows } = input;
+    const setLoading = kind === "preview" ? setPreviewLoading : setFullLoading;
+    const label = executionLabel(kind);
 
+    setLoading(true);
     const createdAt = Date.now();
     const baseExecution: RecipeExecutionRecord = {
       id: crypto.randomUUID(),
       recipeId,
       jobId: null,
-      kind: "preview",
-      status: "running",
-      rows: previewRows,
-      createdAt,
-      finishedAt: null,
-      recipeSignature: currentSignature,
-      stage: "preview",
-      current_column: null,
-      progress: null,
-      model_usage: null,
-      lastEventId: null,
-      artifact_path: null,
-      dataset: [],
-      datasetTotal: 0,
-      datasetPage: 1,
-      datasetPageSize: DATASET_PAGE_SIZE,
-      analysis: null,
-      processor_artifacts: null,
-      error: null,
-    };
-    upsertExecution(baseExecution);
-    onExecutionStart?.();
-    setPreviewDialogOpen(false);
-
-    const previewPayload = {
-      ...payload,
-      run: {
-        ...payload.run,
-        rows: previewRows,
-      },
-    };
-
-    try {
-      const validation = await validateRecipe(previewPayload);
-      if (!validation.valid) {
-        const errors = validation.errors.map((item) => item.message);
-        const fallback = validation.raw_detail ?? "Validation failed.";
-        const nextErrors = errors.length > 0 ? errors : [fallback];
-        upsertExecution({
-          ...baseExecution,
-          status: "error",
-          error: nextErrors[0],
-        });
-        setPreviewErrors(nextErrors);
-        toastError("Validation failed", nextErrors[0]);
-        return false;
-      }
-
-      const result = await previewRecipe(previewPayload);
-      const dataset = normalizeDatasetRows(result.dataset);
-      upsertExecution({
-        ...baseExecution,
-        status: "completed",
-        finishedAt: Date.now(),
-        dataset,
-        datasetTotal: dataset.length,
-        datasetPage: 1,
-        datasetPageSize: DATASET_PAGE_SIZE,
-        analysis: normalizeAnalysis(result.analysis),
-        processor_artifacts: normalizeObject(result.processor_artifacts),
-        error: null,
-      });
-      setPreviewErrors([]);
-      toastSuccess(`Preview generated (${previewRows} rows).`);
-      onPreviewSuccess?.();
-      return true;
-    } catch (error) {
-      console.error("Preview failed:", error);
-      const message = toErrorMessage(error, "Preview request failed.");
-      upsertExecution({
-        ...baseExecution,
-        status: "error",
-        finishedAt: Date.now(),
-        error: message,
-      });
-      setPreviewErrors([message]);
-      toastError("Preview failed", message);
-      return false;
-    } finally {
-      setPreviewLoading(false);
-    }
-  }, [
-    currentSignature,
-    onExecutionStart,
-    onPreviewSuccess,
-    payloadErrorMessage,
-    payloadResult.errors,
-    previewRows,
-    readPayload,
-    recipeId,
-    upsertExecution,
-  ]);
-
-  const runFull = useCallback(async (): Promise<boolean> => {
-    const payload = readPayload();
-    if (!payload) {
-      setPreviewErrors(payloadResult.errors);
-      toastError("Invalid recipe payload", payloadErrorMessage);
-      return false;
-    }
-
-    const requestedRows = Number(payload.run?.rows);
-    const rows = Number.isFinite(requestedRows) && requestedRows > 0
-      ? Math.floor(requestedRows)
-      : 1000;
-    const createdAt = Date.now();
-    const baseExecution: RecipeExecutionRecord = {
-      id: crypto.randomUUID(),
-      recipeId,
-      jobId: null,
-      kind: "full",
+      kind,
       status: "pending",
       rows,
       createdAt,
@@ -516,6 +278,7 @@ export function useRecipeStudioActions({
       stage: "pending",
       current_column: null,
       progress: null,
+      column_progress: null,
       model_usage: null,
       lastEventId: null,
       artifact_path: null,
@@ -530,65 +293,151 @@ export function useRecipeStudioActions({
 
     upsertExecution(baseExecution);
     onExecutionStart?.();
-    setFullLoading(true);
+    if (kind === "preview") {
+      setPreviewDialogOpen(false);
+    }
 
     try {
-      const fullPayload = {
+      const jobPayload = {
         ...payload,
         run: {
           ...payload.run,
           rows,
           // biome-ignore lint/style/useNamingConvention: backend schema
-          execution_type: "full",
+          execution_type: kind,
         },
       };
-      const createdJob = await createRecipeJob(fullPayload);
+      const createdJob = await createRecipeJob(jobPayload);
       const jobId = createdJob.job_id;
       let done = false;
       let lastStatus: RecipeExecutionStatus = "pending";
+      let completedEventPayload: JobCompletedEventPayload | null = null;
       let latestExecution: RecipeExecutionRecord = {
         ...baseExecution,
         jobId,
       };
       upsertExecution(latestExecution);
 
-      while (!done) {
-        const status = await getRecipeJobStatus(jobId);
-        const mappedStatus = mapJobStatus(status.status);
-        lastStatus = mappedStatus;
+      const eventsAbortController = new AbortController();
+      void streamRecipeJobEvents({
+        jobId,
+        signal: eventsAbortController.signal,
+        onEvent: (event) => {
+          if (typeof event.id === "number") {
+            latestExecution = {
+              ...latestExecution,
+              lastEventId: event.id,
+            };
+          }
 
-        latestExecution = {
-          ...latestExecution,
-          status: mappedStatus,
-          rows: status.rows ?? latestExecution.rows,
-          stage: status.stage ?? latestExecution.stage,
-          current_column: status.current_column ?? null,
-          progress: (normalizeObject(status.progress) as RecipeExecutionRecord["progress"]) ?? null,
-          model_usage: normalizeObject(status.model_usage),
-          artifact_path: status.artifact_path ?? latestExecution.artifact_path,
-          error: status.error ?? null,
-          finishedAt:
+          const eventType =
+            typeof event.payload.type === "string" ? event.payload.type : event.event;
+          if (eventType === "job.completed") {
+            lastStatus = "completed";
+            completedEventPayload = event.payload;
+            done = true;
+            latestExecution = {
+              ...latestExecution,
+              status: "completed",
+              finishedAt: Date.now(),
+              artifact_path:
+                typeof event.payload.artifact_path === "string"
+                  ? event.payload.artifact_path
+                  : latestExecution.artifact_path,
+              error: null,
+            };
+            upsertExecution(latestExecution);
+            return;
+          }
+
+          if (eventType === "job.error") {
+            lastStatus = "error";
+            done = true;
+            latestExecution = {
+              ...latestExecution,
+              status: "error",
+              finishedAt: Date.now(),
+              error:
+                typeof event.payload.error === "string"
+                  ? event.payload.error
+                  : latestExecution.error ?? `${label} failed.`,
+            };
+            upsertExecution(latestExecution);
+            return;
+          }
+
+          if (eventType === "job.cancelling") {
+            latestExecution = {
+              ...latestExecution,
+              status: "cancelling",
+            };
+            upsertExecution(latestExecution);
+          }
+        },
+      }).catch(() => {
+        // polling remains fallback source of truth
+      });
+
+      try {
+        while (!done) {
+          const status = await getRecipeJobStatus(jobId);
+          const mappedStatus = mapJobStatus(status.status);
+          lastStatus = mappedStatus;
+
+          latestExecution = {
+            ...latestExecution,
+            status: mappedStatus,
+            rows: status.rows ?? latestExecution.rows,
+            stage: status.stage ?? latestExecution.stage,
+            current_column: status.current_column ?? null,
+            progress: (normalizeObject(status.progress) as RecipeExecutionRecord["progress"]) ?? null,
+            column_progress:
+              (normalizeObject(status.column_progress) as RecipeExecutionRecord["column_progress"]) ?? null,
+            model_usage: normalizeObject(status.model_usage),
+            artifact_path: status.artifact_path ?? latestExecution.artifact_path,
+            error: status.error ?? null,
+            finishedAt:
+              mappedStatus === "completed" ||
+              mappedStatus === "error" ||
+              mappedStatus === "cancelled"
+                ? Date.now()
+                : null,
+          };
+          upsertExecution(latestExecution);
+
+          done =
             mappedStatus === "completed" ||
             mappedStatus === "error" ||
-            mappedStatus === "cancelled"
-              ? Date.now()
-              : null,
-        };
-        upsertExecution(latestExecution);
-
-        done =
-          mappedStatus === "completed" ||
-          mappedStatus === "error" ||
-          mappedStatus === "cancelled";
-        if (!done) {
-          await delay(1200);
+            mappedStatus === "cancelled";
+          if (!done) {
+            await delay(1200);
+          }
         }
+      } finally {
+        eventsAbortController.abort();
       }
 
       if (lastStatus === "completed") {
+        const eventAnalysis = completedEventPayload
+          ? completedEventPayload["analysis"]
+          : null;
+        const eventDataset = completedEventPayload
+          ? completedEventPayload["dataset"]
+          : null;
+        const shouldFetchPreviewDataset =
+          kind === "preview" && !Array.isArray(eventDataset);
+        const shouldFetchAnalysis =
+          !completedEventPayload ||
+          typeof eventAnalysis !== "object" ||
+          eventAnalysis === null ||
+          kind === "full";
         const [analysisResult, datasetResult] = await Promise.allSettled([
-          getRecipeJobAnalysis(jobId),
-          getRecipeJobDataset(jobId, { limit: DATASET_PAGE_SIZE, offset: 0 }),
+          shouldFetchAnalysis
+            ? getRecipeJobAnalysis(jobId)
+            : Promise.resolve(eventAnalysis),
+          shouldFetchPreviewDataset || kind === "full"
+            ? getRecipeJobDataset(jobId, { limit: DATASET_PAGE_SIZE, offset: 0 })
+            : Promise.resolve({ dataset: eventDataset ?? [], total: rows }),
         ]);
         const analysis =
           analysisResult.status === "fulfilled"
@@ -617,7 +466,14 @@ export function useRecipeStudioActions({
           error: null,
           finishedAt: latestExecution.finishedAt ?? Date.now(),
         });
-        toastSuccess("Full run completed.");
+
+        if (kind === "preview") {
+          setPreviewErrors([]);
+          onPreviewSuccess?.();
+          toastSuccess(`Preview generated (${rows} rows).`);
+        } else {
+          toastSuccess("Full run completed.");
+        }
         return true;
       }
 
@@ -628,39 +484,110 @@ export function useRecipeStudioActions({
           error: latestExecution.error ?? "Run cancelled.",
           finishedAt: latestExecution.finishedAt ?? Date.now(),
         });
-        toastError("Full run cancelled", "The execution was cancelled.");
+        toastError(`${label} cancelled`, "The execution was cancelled.");
         return false;
       }
 
       upsertExecution({
         ...latestExecution,
         status: "error",
-        error: latestExecution.error ?? "Full run failed.",
+        error: latestExecution.error ?? `${label} failed.`,
         finishedAt: latestExecution.finishedAt ?? Date.now(),
       });
-      toastError("Full run failed", latestExecution.error ?? "Execution failed.");
+      toastError(`${label} failed`, latestExecution.error ?? "Execution failed.");
       return false;
     } catch (error) {
-      const message = toErrorMessage(error, "Full run request failed.");
+      const message = toErrorMessage(error, `${label} request failed.`);
       upsertExecution({
         ...baseExecution,
         status: "error",
         error: message,
         finishedAt: Date.now(),
       });
-      toastError("Full run failed", message);
+      if (kind === "preview") {
+        setPreviewErrors([message]);
+      }
+      toastError(`${label} failed`, message);
       return false;
     } finally {
-      setFullLoading(false);
+      setLoading(false);
     }
   }, [
     currentSignature,
     onExecutionStart,
+    onPreviewSuccess,
+    recipeId,
+    upsertExecution,
+  ]);
+
+  const runPreview = useCallback(async (): Promise<boolean> => {
+    const payload = readPayload();
+    if (!payload) {
+      setPreviewErrors(payloadResult.errors);
+      toastError("Invalid recipe payload", payloadErrorMessage);
+      return false;
+    }
+
+    const previewPayload = {
+      ...payload,
+      run: {
+        ...payload.run,
+        rows: previewRows,
+      },
+    };
+    try {
+      const validation = await validateRecipe(previewPayload);
+      if (!validation.valid) {
+        const errors = validation.errors.map((item) => item.message);
+        const fallback = validation.raw_detail ?? "Validation failed.";
+        const nextErrors = errors.length > 0 ? errors : [fallback];
+        setPreviewErrors(nextErrors);
+        toastError("Validation failed", nextErrors[0]);
+        return false;
+      }
+    } catch (error) {
+      const message = toErrorMessage(error, "Validation failed.");
+      setPreviewErrors([message]);
+      toastError("Validation failed", message);
+      return false;
+    }
+
+    return runJobExecution({
+      kind: "preview",
+      payload,
+      rows: previewRows,
+    });
+  }, [
+    payloadErrorMessage,
+    payloadResult.errors,
+    previewRows,
+    readPayload,
+    runJobExecution,
+  ]);
+
+  const runFull = useCallback(async (): Promise<boolean> => {
+    const payload = readPayload();
+    if (!payload) {
+      setPreviewErrors(payloadResult.errors);
+      toastError("Invalid recipe payload", payloadErrorMessage);
+      return false;
+    }
+
+    const requestedRows = Number(payload.run?.rows);
+    const rows = Number.isFinite(requestedRows) && requestedRows > 0
+      ? Math.floor(requestedRows)
+      : 1000;
+
+    return runJobExecution({
+      kind: "full",
+      payload,
+      rows,
+    });
+  }, [
     payloadErrorMessage,
     payloadResult.errors,
     readPayload,
-    recipeId,
-    upsertExecution,
+    runJobExecution,
   ]);
 
   const cancelExecution = useCallback(async (id: string): Promise<void> => {
