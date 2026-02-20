@@ -149,7 +149,7 @@ def test_mlx_optimizers():
     print_header("7. MLX Optimizers")
     try:
         import mlx.core as mx
-        from unsloth.kernels.mlx.optimizers import AdamW, SGDM
+        from unsloth.kernels.mlx.optimizers import AdamW, SGD
         
         
         params = {'w': mx.random.uniform(shape=(10, 10))}

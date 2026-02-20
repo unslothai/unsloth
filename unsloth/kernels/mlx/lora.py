@@ -70,11 +70,9 @@ class LoRALinear:
             shape=(out_features, in_features),
             dtype=mx.float32,
         )
-        self.weight.requires_grad = False  # Freeze base weights
         
         if bias:
             self.bias = mx.zeros(out_features, dtype=mx.float32)
-            self.bias.requires_grad = False
         else:
             self.bias = None
         
@@ -254,9 +252,7 @@ class LoRAEmbedding:
             shape=(num_embeddings, embedding_dim),
             dtype=mx.float32,
         )
-        self.weight.requires_grad = False
         
-        # LoRA parameters for embeddings
         if r > 0:
             # We'll use a projection approach for embeddings
             # Instead of modifying the embedding table directly,
@@ -511,35 +507,13 @@ class QuantizedLoRALinear(LoRALinear):
 def mark_only_lora_as_trainable(model: Any) -> None:
     """Mark only LoRA parameters as trainable.
     
-    This function freezes all parameters except LoRA weights.
+    In MLX, gradients are computed via mx.grad() on specific parameters.
+    This function is a no-op placeholder for API compatibility with PyTorch.
     
     Args:
         model: Model with LoRA layers
     """
-    def mark_module(module):
-        if hasattr(module, "weight"):
-            module.weight.requires_grad = False
-        if hasattr(module, "bias") and module.bias is not None:
-            module.bias.requires_grad = False
-        
-        # Mark LoRA parameters as trainable
-        if isinstance(module, LoRALinear):
-            if module.lora_A is not None:
-                module.lora_A.requires_grad = True
-            if module.lora_B is not None:
-                module.lora_B.requires_grad = True
-        
-        # Recursively process child modules
-        if hasattr(module, "__dict__"):
-            for child in module.__dict__.values():
-                if hasattr(child, "__dict__") or isinstance(child, (list, tuple)):
-                    if isinstance(child, (list, tuple)):
-                        for c in child:
-                            mark_module(c)
-                    else:
-                        mark_module(child)
-    
-    mark_module(model)
+    pass
 
 
 def get_peft_model(model: Any, lora_config: LoRAConfig) -> Any:
