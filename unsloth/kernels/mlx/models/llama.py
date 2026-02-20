@@ -457,6 +457,32 @@ class MLXLlamaForCausalLM:
         params["lm_head.weight"] = self.lm_head.weight
         return params
 
+    def trainable_parameters(self) -> dict:
+        """Return only trainable parameters (LoRA params if LoRA enabled)."""
+        trainable = {}
+        for name, module in self.named_modules():
+            if hasattr(module, "lora_A") and hasattr(module, "lora_B"):
+                trainable[f"{name}.lora_A"] = module.lora_A
+                trainable[f"{name}.lora_B"] = module.lora_B
+        if not trainable:
+            return self.parameters()
+        return trainable
+
+    def named_modules(self) -> list:
+        """Yield (name, module) pairs for all submodules."""
+        modules = []
+        for name, value in vars(self).items():
+            if hasattr(value, "weight") or hasattr(value, "lora_A"):
+                modules.append((name, value))
+        for name, value in vars(self.model).items():
+            if hasattr(value, "weight") or hasattr(value, "lora_A"):
+                modules.append((name, value))
+            elif hasattr(value, "self_attn"):
+                modules.append((f"{name}.self_attn", value.self_attn))
+            elif hasattr(value, "mlp"):
+                modules.append((f"{name}.mlp", value.mlp))
+        return modules
+
     def generate(
         self,
         input_ids: mx.array,
