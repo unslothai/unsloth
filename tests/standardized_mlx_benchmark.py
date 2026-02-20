@@ -87,10 +87,11 @@ def get_memory_usage() -> Tuple[float, float]:
     return active_mb, peak_mb
 
 
-def clear_mlx_cache():
-    """Clear MLX memory cache to get accurate per-operation memory measurements."""
+def reset_mlx_memory():
+    """Clear MLX memory cache and reset peak memory tracking for accurate measurements."""
     try:
-        mx.metal.clear_cache()
+        mx.clear_cache()
+        mx.reset_peak_memory()
     except Exception:
         pass
 
@@ -149,12 +150,7 @@ class StandardizedBenchmark:
         """Benchmark Metal fused kernel. Returns (latency_ms, active_mb, peak_mb)."""
         mx.synchronize()
         
-        clear_mlx_cache()
-        try:
-            mx.reset_peak_memory()
-        except Exception:
-            pass
-        
+        reset_mlx_memory()
         active_before, _ = get_memory_usage()
         
         for _ in range(self.warmup_iters):
@@ -180,12 +176,7 @@ class StandardizedBenchmark:
         """Benchmark MLX.fast operations. Returns (latency_ms, active_mb, peak_mb)."""
         mx.synchronize()
         
-        clear_mlx_cache()
-        try:
-            mx.reset_peak_memory()
-        except Exception:
-            pass
-        
+        reset_mlx_memory()
         active_before, _ = get_memory_usage()
         
         for _ in range(self.warmup_iters):
@@ -211,12 +202,7 @@ class StandardizedBenchmark:
         """Benchmark MLX composed operations (no compile). Returns (latency_ms, active_mb, peak_mb)."""
         mx.synchronize()
         
-        clear_mlx_cache()
-        try:
-            mx.reset_peak_memory()
-        except Exception:
-            pass
-        
+        reset_mlx_memory()
         active_before, _ = get_memory_usage()
         
         for _ in range(self.warmup_iters):
@@ -242,12 +228,7 @@ class StandardizedBenchmark:
         """Benchmark MLX compiled operations. Returns (latency_ms, active_mb, peak_mb)."""
         mx.synchronize()
         
-        clear_mlx_cache()
-        try:
-            mx.reset_peak_memory()
-        except Exception:
-            pass
-        
+        reset_mlx_memory()
         active_before, _ = get_memory_usage()
         
         for _ in range(self.warmup_iters):
