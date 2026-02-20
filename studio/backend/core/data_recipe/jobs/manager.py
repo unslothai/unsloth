@@ -147,6 +147,15 @@ class JobManager:
                     "ok": job.progress.ok,
                     "failed": job.progress.failed,
                 },
+                "column_progress": {
+                    "done": job.column_progress.done,
+                    "total": job.column_progress.total,
+                    "percent": job.column_progress.percent,
+                    "eta_sec": job.column_progress.eta_sec,
+                    "rate": job.column_progress.rate,
+                    "ok": job.column_progress.ok,
+                    "failed": job.column_progress.failed,
+                },
                 "model_usage": {
                     name: {
                         "model": usage.model,
@@ -207,31 +216,31 @@ class JobManager:
                 return None
             in_memory_dataset = self._job.dataset
             artifact_path = self._job.artifact_path
+            job_status = self._job.status
 
         if in_memory_dataset is not None:
             total = len(in_memory_dataset)
             rows = in_memory_dataset[offset:offset + limit]
             return {"dataset": rows, "total": total}
         if not artifact_path:
-            return None
-
-        try:
-            from data_designer.engine.dataset_builders.artifact_storage import ArtifactStorage
-        except Exception:
+            if job_status in {"completed", "error", "cancelled"}:
+                return {"error": "artifact path missing"}
             return None
 
         try:
             base_dataset_path = Path(artifact_path)
-            storage = ArtifactStorage(
-                artifact_path=str(base_dataset_path.parent),
-                dataset_name=base_dataset_path.name,
-            )
-            dataframe = storage.load_dataset()
+            parquet_dir = base_dataset_path / "parquet-files"
+            if not parquet_dir.exists():
+                return {"error": f"dataset path missing: {parquet_dir}"}
+
+            from data_designer.config.utils.io_helpers import read_parquet_dataset
+
+            dataframe = read_parquet_dataset(parquet_dir)
             total = int(len(dataframe.index))
             rows = dataframe.iloc[offset:offset + limit].to_dict(orient="records")
             return {"dataset": _to_jsonable(rows), "total": total}
-        except Exception:
-            return None
+        except Exception as exc:
+            return {"error": f"dataset load failed: {exc}"}
 
     def subscribe(self, job_id: str, *, after_seq: int | None = None) -> Subscription | None:
         """SSE subscribe: get replay buffer + live events stream."""
@@ -347,6 +356,9 @@ class JobManager:
                 self._job.artifact_path = event.get("artifact_path")
                 self._job.dataset = event.get("dataset")
                 self._job.processor_artifacts = event.get("processor_artifacts")
+                if self._job.progress.total and self._job.progress.total > 0:
+                    self._job.progress.done = self._job.progress.total
+                    self._job.progress.percent = 100.0
             if et == "job.error":
                 self._job.status = "error"
                 self._job.finished_at = time.time()

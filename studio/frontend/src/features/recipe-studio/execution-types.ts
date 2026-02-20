@@ -49,6 +49,8 @@ export type RecipeExecutionRecord = {
   current_column: string | null;
   progress: RecipeExecutionProgress | null;
   // biome-ignore lint/style/useNamingConvention: backend schema
+  column_progress: RecipeExecutionProgress | null;
+  // biome-ignore lint/style/useNamingConvention: backend schema
   model_usage: Record<string, unknown> | null;
   // biome-ignore lint/style/useNamingConvention: backend schema
   lastEventId: number | null;

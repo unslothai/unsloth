@@ -52,6 +52,7 @@ class Job:
     stage: str | None = None
     current_column: str | None = None
     progress: Progress = field(default_factory=Progress)
+    column_progress: Progress = field(default_factory=Progress)
     batch: BatchProgress = field(default_factory=BatchProgress)
     rows: int | None = None
     cols: int | None = None
@@ -66,3 +67,4 @@ class Job:
     model_usage: dict[str, ModelUsage] = field(default_factory=dict)
     _current_usage_model: str | None = None
     _in_usage_summary: bool = False
+    _seen_generation_columns: list[str] = field(default_factory=list)

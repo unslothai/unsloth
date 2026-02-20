@@ -81,10 +81,14 @@ def run_job_process(
 
         rows = int(run.get("rows") or 1000)
         dataset_name = str(run.get("dataset_name") or "dataset")
+        artifact_path_raw = run.get("artifact_path")
+        artifact_path = None
+        if isinstance(artifact_path_raw, str) and artifact_path_raw.strip():
+            artifact_path = artifact_path_raw.strip()
         run_config_raw = run.get("run_config") or {}
 
         builder = build_config_builder(recipe)
-        designer = create_data_designer(recipe)
+        designer = create_data_designer(recipe, artifact_path=artifact_path)
 
         if run_config_raw:
             designer.set_run_config(RunConfig.model_validate(run_config_raw))
