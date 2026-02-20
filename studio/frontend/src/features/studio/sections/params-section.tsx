@@ -534,7 +534,7 @@ export function ParamsSection(): ReactElement {
                     value={store.optimizerType}
                     onValueChange={(v) => store.setOptimizerType(v)}
                   >
-                    <SelectTrigger className="w-48 font-mono">
+                    <SelectTrigger className="w-48">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -542,7 +542,6 @@ export function ParamsSection(): ReactElement {
                         <SelectItem
                           key={opt.value}
                           value={opt.value}
-                          className="font-mono"
                         >
                           {opt.label}
                         </SelectItem>
@@ -571,7 +570,7 @@ export function ParamsSection(): ReactElement {
                     value={store.lrSchedulerType}
                     onValueChange={(v) => store.setLrSchedulerType(v)}
                   >
-                    <SelectTrigger className="w-48 font-mono">
+                    <SelectTrigger className="w-48">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -579,7 +578,6 @@ export function ParamsSection(): ReactElement {
                         <SelectItem
                           key={opt.value}
                           value={opt.value}
-                          className="font-mono"
                         >
                           {opt.label}
                         </SelectItem>
