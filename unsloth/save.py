@@ -3135,6 +3135,8 @@ def patch_unsloth_zoo_saving():
         return
 
     # Patch 1: Replace _merge_lora for CPU-based LoRA merging on MPS
+    if not hasattr(unsloth_zoo.saving_utils, "_merge_lora"):
+        return
     original_merge_lora = unsloth_zoo.saving_utils._merge_lora
 
     def _mps_friendly_merge_lora(W, lora_stats, output_key):
@@ -3183,6 +3185,8 @@ def patch_unsloth_zoo_saving():
     # The zoo code calls torch.cuda.get_device_name(0), torch.cuda.empty_cache(),
     # and torch.cuda.synchronize() throughout without checking availability.
     # On MPS these cause SIGTRAP (trace trap) crashes.
+    if not hasattr(unsloth_zoo.saving_utils, "merge_and_overwrite_lora"):
+        return
     original_merge_and_overwrite = unsloth_zoo.saving_utils.merge_and_overwrite_lora
 
     def _mps_safe_merge_and_overwrite_lora(*args, **kwargs):
