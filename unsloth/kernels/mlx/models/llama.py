@@ -204,7 +204,7 @@ class MLXAttention:
             attention_mask = attention_mask.to(query_states.dtype)
             attention_mask = (1.0 - attention_mask) * float("-inf")
 
-        attn_weights = (query_states @ key_states.transpose(0, 2, 3, 1)) / (self.head_dim ** 0.5)
+        attn_weights = (query_states @ key_states.transpose(0, 1, 3, 2)) / (self.head_dim ** 0.5)
 
         if attention_mask is not None:
             attn_weights = attn_weights + attention_mask
