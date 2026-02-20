@@ -2,6 +2,8 @@ import type { TrainingPhase } from "@/features/training";
 
 export const phaseLabel: Record<TrainingPhase, string> = {
   idle: "Idle",
+  downloading_model: "Downloading model",
+  downloading_dataset: "Downloading dataset",
   loading_model: "Loading model",
   loading_dataset: "Loading dataset",
   configuring: "Configuring",
@@ -13,6 +15,10 @@ export const phaseLabel: Record<TrainingPhase, string> = {
 
 export const phaseColors: Record<TrainingPhase, string> = {
   idle: "bg-muted text-muted-foreground",
+  downloading_model:
+    "bg-sky-100 text-sky-700 dark:bg-sky-900 dark:text-sky-300",
+  downloading_dataset:
+    "bg-sky-100 text-sky-700 dark:bg-sky-900 dark:text-sky-300",
   loading_model:
     "bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300",
   loading_dataset:

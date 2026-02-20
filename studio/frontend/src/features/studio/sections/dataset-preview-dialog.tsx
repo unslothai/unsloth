@@ -63,6 +63,7 @@ export function DatasetPreviewDialog({
   const mappingOk = !!manualMapping.input && !!manualMapping.output;
   const leftLabel = isVlm ? "Image" : "Input";
   const rightLabel = isVlm ? "Text" : "Output";
+  const isHfDataset = !!datasetName && datasetName.includes("/");
 
   useEffect(() => {
     if (!manualMapping.input || !manualMapping.output) return;
@@ -266,8 +267,13 @@ export function DatasetPreviewDialog({
                 <Spinner className="size-5 text-primary" />
               </div>
               <p className="text-sm text-muted-foreground font-medium">
-                Loading preview...
+                {isHfDataset ? "Fetching dataset preview from Hugging Face..." : "Loading preview..."}
               </p>
+              {isHfDataset && (
+                <p className="text-xs text-muted-foreground/60">
+                  This may take a moment for large datasets
+                </p>
+              )}
             </div>
           )}
 

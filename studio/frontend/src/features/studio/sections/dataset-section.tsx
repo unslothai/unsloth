@@ -25,6 +25,7 @@ import {
 import {
   useDebouncedValue,
   useHfDatasetSearch,
+  useHfTokenValidation,
   useInfiniteScroll,
 } from "@/hooks";
 import { formatCompact } from "@/lib/utils";
@@ -102,9 +103,13 @@ export function DatasetSection() {
     isLoading,
     isLoadingMore,
     fetchMore,
+    error: hfSearchError,
   } = useHfDatasetSearch(debouncedQuery, {
     accessToken: hfToken || undefined,
   });
+
+  const { error: tokenValidationError, isChecking: isCheckingToken } =
+    useHfTokenValidation(hfToken);
 
   const resultIds = useMemo(() => {
     const ids = hfResults.map((r) => r.id);
@@ -249,6 +254,23 @@ export function DatasetSection() {
               </ComboboxContent>
             </Combobox>
           </div>
+          {(tokenValidationError ?? hfSearchError) && (
+            <p className="text-xs text-destructive">
+              {tokenValidationError ?? hfSearchError}
+              {" — "}
+              <a
+                href="https://huggingface.co/settings/tokens"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline"
+              >
+                Get or update token
+              </a>
+            </p>
+          )}
+          {isCheckingToken && (
+            <p className="text-xs text-muted-foreground">Checking token…</p>
+          )}
         </div>
 
         <HfDatasetSubsetSplitSelectors

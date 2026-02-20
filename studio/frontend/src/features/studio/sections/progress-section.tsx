@@ -35,6 +35,7 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import { useShallow } from "zustand/react/shallow";
 import { useGpuUtilization } from "@/hooks";
 import { setTrainingCompareHandoff } from "@/features/chat";
+import { OPTIMIZER_OPTIONS } from "@/config/training";
 import { formatDuration, formatNumber, phaseColors, phaseLabel } from "./progress-section-lib";
 
 export function ProgressSection(): ReactElement {
@@ -71,6 +72,7 @@ export function ProgressSection(): ReactElement {
       maxSteps: state.maxSteps,
       contextLength: state.contextLength,
       warmupSteps: state.warmupSteps,
+      optimizerType: state.optimizerType,
       loraRank: state.loraRank,
       loraAlpha: state.loraAlpha,
       loraDropout: state.loraDropout,
@@ -126,6 +128,10 @@ export function ProgressSection(): ReactElement {
     ? runtime.currentGradNorm
     : lastNonZeroValue(runtime.gradNormHistory) ?? runtime.currentGradNorm;
 
+  const optimizerLabel =
+    OPTIMIZER_OPTIONS.find((o) => o.value === config.optimizerType)?.label ??
+    config.optimizerType;
+
   const configItems = [
     {
       section: "Hyperparams",
@@ -133,6 +139,7 @@ export function ProgressSection(): ReactElement {
         ["Epochs", config.epochs],
         ["Batch size", config.batchSize],
         ["Learning rate", config.learningRate],
+        ["Optimizer", optimizerLabel],
         ["Max steps", config.maxSteps],
         ["Context length", config.contextLength],
         ["Warmup steps", config.warmupSteps],
