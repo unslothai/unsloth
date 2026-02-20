@@ -230,7 +230,6 @@ export function ExecutionsView({
   onLoadDatasetPage,
 }: ExecutionsViewProps): ReactElement {
   const [detailTab, setDetailTab] = useState("overview");
-  const [showRaw, setShowRaw] = useState(false);
   const [hiddenDatasetColumns, setHiddenDatasetColumns] = useState<string[]>([]);
   const [expandedDatasetCells, setExpandedDatasetCells] = useState<
     Record<string, boolean>
@@ -247,12 +246,6 @@ export function ExecutionsView({
       selectedExecution.recipeSignature.length > 0 &&
       selectedExecution.recipeSignature !== currentSignature,
   );
-
-  useEffect(() => {
-    if (!showRaw && detailTab === "raw") {
-      setDetailTab("overview");
-    }
-  }, [detailTab, showRaw]);
 
   useEffect(() => {
     setHiddenDatasetColumns([]);
@@ -530,59 +523,26 @@ export function ExecutionsView({
           </div>
         ) : (
           <div className="space-y-4">
-            <div className="rounded-xl border p-3">
-              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                <div className="flex flex-wrap items-center gap-2">
-                  <p className="text-sm font-semibold capitalize">
-                    {selectedExecution.kind} execution
-                  </p>
-                  <Badge
-                    variant="secondary"
-                    className={cn("capitalize", statusTone(selectedExecution.status))}
-                  >
-                    {formatStatus(selectedExecution.status)}
-                  </Badge>
-                  {isStale && (
-                    <Badge variant="outline">Recipe changed since this run</Badge>
-                  )}
-                </div>
-                <div className="flex items-center gap-2">
-                  {canCancel && (
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      onClick={() => onCancelExecution(selectedExecution.id)}
-                    >
-                      Cancel
-                    </Button>
-                  )}
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => setShowRaw((value) => !value)}
-                  >
-                    {showRaw ? "Hide raw" : "View raw"}
-                  </Button>
-                </div>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                Started {formatTimestamp(selectedExecution.createdAt)} |{" "}
-                {selectedExecution.rows} rows | Duration{" "}
-                {formatDuration(
-                  selectedExecution.createdAt,
-                  selectedExecution.finishedAt,
-                )}
-              </p>
+            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <span className="font-medium capitalize">{selectedExecution.kind} execution</span>
+              <Badge
+                variant="secondary"
+                className={cn("capitalize", statusTone(selectedExecution.status))}
+              >
+                {formatStatus(selectedExecution.status)}
+              </Badge>
+              <span>{selectedExecution.rows} rows</span>
+              <span>Started {formatTimestamp(selectedExecution.createdAt)}</span>
+              <span>Duration {formatDuration(selectedExecution.createdAt, selectedExecution.finishedAt)}</span>
               {selectedExecution.stage && (
-                <p className="mt-1 text-xs text-muted-foreground">
+                <span>
                   Stage: {selectedExecution.stage}
                   {selectedExecution.current_column
                     ? ` | Column: ${selectedExecution.current_column}`
                     : ""}
-                </p>
+                </span>
               )}
+              {isStale && <Badge variant="outline">Recipe changed since this run</Badge>}
             </div>
 
             {showProgressPanel && (
@@ -674,17 +634,29 @@ export function ExecutionsView({
             {(selectedExecution.status === "completed" ||
               isInProgress(selectedExecution.status)) && (
               <Tabs value={detailTab} onValueChange={setDetailTab}>
-                <TabsList>
-                  <TabsTrigger value="overview">Overview</TabsTrigger>
-                  <TabsTrigger value="columns">Columns</TabsTrigger>
-                  <TabsTrigger value="data">Data</TabsTrigger>
-                  {showRaw && <TabsTrigger value="raw">Raw</TabsTrigger>}
-                </TabsList>
+                <div className="flex items-center justify-between gap-2">
+                  <TabsList>
+                    <TabsTrigger value="overview">Overview</TabsTrigger>
+                    <TabsTrigger value="columns">Columns</TabsTrigger>
+                    <TabsTrigger value="data">Data</TabsTrigger>
+                    <TabsTrigger value="raw">Raw</TabsTrigger>
+                  </TabsList>
+                  {canCancel && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => onCancelExecution(selectedExecution.id)}
+                    >
+                      Cancel
+                    </Button>
+                  )}
+                </div>
                 <TabsContent value="overview" className="mt-3 space-y-3">
                   {showSummaryCards && (
-                    <div className="space-y-3 rounded-xl border bg-muted/20 p-3">
+                    <div className="space-y-3">
                       <div className="grid gap-3 md:grid-cols-2">
-                        <div className="h-full rounded-lg border bg-background/80 p-3">
+                        <div className="h-full rounded-lg bg-muted/20 p-3">
                           <div className="mb-2 flex items-center justify-between">
                             <p className="text-xs text-muted-foreground">Run summary</p>
                             <HugeiconsIcon
@@ -716,7 +688,7 @@ export function ExecutionsView({
                             </p>
                           </div>
                         </div>
-                        <div className="h-full rounded-lg border bg-background/80 p-3">
+                        <div className="h-full rounded-lg bg-muted/20 p-3">
                           <div className="mb-2 flex items-center justify-between">
                             <p className="text-xs text-muted-foreground">Insights</p>
                             <HugeiconsIcon
@@ -773,7 +745,7 @@ export function ExecutionsView({
                           </div>
                         </div>
                       </div>
-                      <div className="rounded-lg border bg-background/80 p-3">
+                      <div className="rounded-lg bg-muted/20 p-3">
                         <div className="mb-2 flex items-center justify-between">
                           <p className="text-xs text-muted-foreground">Model usage</p>
                           <HugeiconsIcon
@@ -898,98 +870,94 @@ export function ExecutionsView({
                   </div>
                 </TabsContent>
                 <TabsContent value="data" className="mt-3">
-                  <div className="rounded-xl border p-3">
-                    <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                      <p className="text-sm font-semibold">Dataset sample</p>
-                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                        {datasetColumnNames.length > 0 && (
-                          <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                              <Button type="button" size="sm" variant="outline">
-                                Columns
-                              </Button>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent align="end">
-                              <DropdownMenuLabel>Visible columns</DropdownMenuLabel>
-                              {datasetColumnNames.map((columnName) => (
-                                <DropdownMenuCheckboxItem
-                                  key={columnName}
-                                  checked={!hiddenDatasetColumns.includes(columnName)}
-                                  onCheckedChange={(checked) => {
-                                    setHiddenDatasetColumns((current) => {
-                                      if (checked) {
-                                        return current.filter((name) => name !== columnName);
-                                      }
-                                      return [...current, columnName];
-                                    });
-                                  }}
-                                >
-                                  {columnName}
-                                </DropdownMenuCheckboxItem>
-                              ))}
-                            </DropdownMenuContent>
-                          </DropdownMenu>
-                        )}
-                        {canPageDataset && selectedExecution && (
-                          <>
-                            <span>
-                              Page {datasetPage}/{totalPages}
-                            </span>
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="outline"
-                              disabled={
-                                isInProgress(selectedExecution.status) || datasetPage <= 1
-                              }
-                              onClick={() =>
-                                onLoadDatasetPage(selectedExecution.id, datasetPage - 1)}
-                            >
-                              Prev
+                  <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-sm font-semibold">Dataset sample</p>
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                      {datasetColumnNames.length > 0 && (
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button type="button" size="sm" variant="outline">
+                              Columns
                             </Button>
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="outline"
-                              disabled={
-                                isInProgress(selectedExecution.status) ||
-                                datasetPage >= totalPages
-                              }
-                              onClick={() =>
-                                onLoadDatasetPage(selectedExecution.id, datasetPage + 1)}
-                            >
-                              Next
-                            </Button>
-                          </>
-                        )}
-                      </div>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuLabel>Visible columns</DropdownMenuLabel>
+                            {datasetColumnNames.map((columnName) => (
+                              <DropdownMenuCheckboxItem
+                                key={columnName}
+                                checked={!hiddenDatasetColumns.includes(columnName)}
+                                onCheckedChange={(checked) => {
+                                  setHiddenDatasetColumns((current) => {
+                                    if (checked) {
+                                      return current.filter((name) => name !== columnName);
+                                    }
+                                    return [...current, columnName];
+                                  });
+                                }}
+                              >
+                                {columnName}
+                              </DropdownMenuCheckboxItem>
+                            ))}
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      )}
+                      {canPageDataset && selectedExecution && (
+                        <>
+                          <span>
+                            Page {datasetPage}/{totalPages}
+                          </span>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            disabled={
+                              isInProgress(selectedExecution.status) || datasetPage <= 1
+                            }
+                            onClick={() =>
+                              onLoadDatasetPage(selectedExecution.id, datasetPage - 1)}
+                          >
+                            Prev
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            disabled={
+                              isInProgress(selectedExecution.status) ||
+                              datasetPage >= totalPages
+                            }
+                            onClick={() =>
+                              onLoadDatasetPage(selectedExecution.id, datasetPage + 1)}
+                          >
+                            Next
+                          </Button>
+                        </>
+                      )}
                     </div>
-                    {selectedExecution.dataset.length === 0 ? (
-                      <p className="text-xs text-muted-foreground">No rows returned.</p>
-                    ) : tableColumns.length === 0 ? (
-                      <p className="text-xs text-muted-foreground">
-                        All columns hidden. Use Columns to show at least one.
-                      </p>
-                    ) : (
-                      <div className="max-h-[55vh] overflow-auto">
-                        <DataTable
-                          columns={tableColumns}
-                          data={selectedExecution.dataset}
-                        />
-                      </div>
-                    )}
+                  </div>
+                  {selectedExecution.dataset.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">No rows returned.</p>
+                  ) : tableColumns.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">
+                      All columns hidden. Use Columns to show at least one.
+                    </p>
+                  ) : (
+                    <div className="max-h-[55vh] overflow-auto">
+                      <DataTable
+                        columns={tableColumns}
+                        data={selectedExecution.dataset}
+                      />
+                    </div>
+                  )}
+                </TabsContent>
+                <TabsContent value="raw" className="mt-3">
+                  <div className="rounded-xl border p-3">
+                    <p className="mb-2 text-sm font-semibold">Raw execution</p>
+                    <pre className="max-h-96 overflow-auto rounded-md bg-muted/40 p-3 text-xs">
+                      {JSON.stringify(rawExecution, null, 2)}
+                    </pre>
                   </div>
                 </TabsContent>
-                {showRaw && (
-                  <TabsContent value="raw" className="mt-3">
-                    <div className="rounded-xl border p-3">
-                      <p className="mb-2 text-sm font-semibold">Raw execution</p>
-                      <pre className="max-h-96 overflow-auto rounded-md bg-muted/40 p-3 text-xs">
-                        {JSON.stringify(rawExecution, null, 2)}
-                      </pre>
-                    </div>
-                  </TabsContent>
-                )}
               </Tabs>
             )}
           </div>
