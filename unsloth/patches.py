@@ -227,6 +227,10 @@ class MacPatcher:
                 return False
             def __mro_entries__(self, bases):
                 return (object,)
+            def __getitem__(self, key):
+                return self
+            def __setitem__(self, key, value):
+                pass
 
         mod = MockModule(fullname)
         from importlib.machinery import ModuleSpec
