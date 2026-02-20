@@ -115,7 +115,6 @@ export function RecipeStudioPage({
     setAuxNodeSize,
     syncAuxNodePositions,
     syncAuxNodeSizes,
-    setFlowMoving,
   } = useRecipeStudioStore(
     useShallow((state) => ({
       nodes: state.nodes,
@@ -151,7 +150,6 @@ export function RecipeStudioPage({
       setAuxNodeSize: state.setAuxNodeSize,
       syncAuxNodePositions: state.syncAuxNodePositions,
       syncAuxNodeSizes: state.syncAuxNodeSizes,
-      setFlowMoving: state.setFlowMoving,
     })),
   );
   const [sheetContainer, setSheetContainer] = useState<HTMLDivElement | null>(
@@ -333,10 +331,6 @@ export function RecipeStudioPage({
               onConnect={onConnect}
               onNodeClick={handleNodeClick}
               isValidConnection={isValidConnection}
-              onMoveStart={() => setFlowMoving(true)}
-              onMoveEnd={() => setFlowMoving(false)}
-              onNodeDragStart={() => setFlowMoving(true)}
-              onNodeDragStop={() => setFlowMoving(false)}
               nodesDraggable={interactive}
               nodesConnectable={interactive}
               elementsSelectable={interactive}

@@ -1,39 +1,22 @@
 import type { NodeConfig } from "../types";
 
-export type AvailableRefItem = {
-  ref: string;
-  kind: Exclude<NodeConfig["kind"], "model_provider" | "model_config">;
-  subtype: string;
-  valueType?: string;
-};
-
-function getStructuredRefs(
-  llmName: string,
-  outputFormat: string,
-): Array<{ ref: string; valueType?: string }> {
+function getStructuredRefs(llmName: string, outputFormat: string): string[] {
   try {
     const schema = JSON.parse(outputFormat);
     if (!(schema?.properties && typeof schema.properties === "object")) {
       return [];
     }
-    return Object.keys(schema.properties).map((key) => {
-      const prop = schema.properties[key];
-      const valueType =
-        prop && typeof prop === "object" && typeof prop.type === "string"
-          ? prop.type
-          : undefined;
-      return { ref: `${llmName}.${key}`, valueType };
-    });
+    return Object.keys(schema.properties).map((key) => `${llmName}.${key}`);
   } catch {
     return [];
   }
 }
 
-export function getAvailableRefItems(
+export function getAvailableVariables(
   configs: Record<string, NodeConfig>,
   currentId: string,
-): AvailableRefItem[] {
-  const items: AvailableRefItem[] = [];
+): string[] {
+  const vars: string[] = [];
 
   for (const config of Object.values(configs)) {
     if (config.id === currentId) {
@@ -44,20 +27,12 @@ export function getAvailableRefItems(
     }
 
     if (config.kind === "sampler") {
-      items.push({
-        ref: config.name,
-        kind: "sampler",
-        subtype: config.sampler_type,
-      });
+      vars.push(config.name);
       continue;
     }
 
     if (config.kind === "expression") {
-      items.push({
-        ref: config.name,
-        kind: "expression",
-        subtype: config.dtype,
-      });
+      vars.push(config.name);
       continue;
     }
 
@@ -65,7 +40,7 @@ export function getAvailableRefItems(
       for (const col of config.seed_columns ?? []) {
         const name = col.trim();
         if (!name) continue;
-        items.push({ ref: name, kind: "seed", subtype: "seed" });
+        vars.push(name);
       }
       continue;
     }
@@ -74,26 +49,12 @@ export function getAvailableRefItems(
       continue;
     }
 
-    items.push({ ref: config.name, kind: "llm", subtype: config.llm_type });
+    vars.push(config.name);
     if (config.llm_type !== "structured" || !config.output_format) {
       continue;
     }
-    for (const ref of getStructuredRefs(config.name, config.output_format)) {
-      items.push({
-        ref: ref.ref,
-        kind: "llm",
-        subtype: config.llm_type,
-        valueType: ref.valueType,
-      });
-    }
+    vars.push(...getStructuredRefs(config.name, config.output_format));
   }
 
-  return items;
-}
-
-export function getAvailableVariables(
-  configs: Record<string, NodeConfig>,
-  currentId: string,
-): string[] {
-  return getAvailableRefItems(configs, currentId).map((item) => item.ref);
+  return vars;
 }
