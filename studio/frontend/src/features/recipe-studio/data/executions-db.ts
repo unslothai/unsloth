@@ -9,6 +9,10 @@ db.version(1).stores({
   executions: "id, recipeId, kind, status, createdAt",
 });
 
+db.version(2).stores({
+  executions: "id, recipeId, kind, status, createdAt, finishedAt, jobId",
+});
+
 export async function listRecipeExecutions(
   recipeId: string,
 ): Promise<RecipeExecutionRecord[]> {
