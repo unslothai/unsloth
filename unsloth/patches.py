@@ -70,8 +70,19 @@ class MockModule(types.ModuleType):
         if name == "get_transformers_model_type": return lambda *a, **k: ["llama"]
         if name == "unsloth_compile_transformers": return lambda *a, **k: (["llama"], True)
         if name == "patch_tokenizer": return lambda m, t: (m, t)
+        if name == "patch_model_and_tokenizer": return lambda m, t, **k: (m, t)
+        if name == "patch_layernorm": return lambda *a, **k: None
         if name == "add_dtype_kwargs": return lambda *a, **k: {}
         if name == "backends" and "triton" in self.__name__: return {}
+        
+        if name == "_get_dtype":
+            def _get_dtype(d):
+                import torch
+                if d is None: return torch.float16
+                if isinstance(d, torch.dtype): return d
+                try: return getattr(torch, str(d).split(".")[-1])
+                except: return torch.float16
+            return _get_dtype
 
         # Device Type Specialization
         if "device_type" in self.__name__:
