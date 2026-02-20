@@ -8,6 +8,7 @@ import {
   getRecipeJobDataset,
   getRecipeJobStatus,
   streamRecipeJobEvents,
+  type JobEvent,
   validateRecipe,
 } from "../api";
 import { listRecipeExecutions, saveRecipeExecution } from "../data/executions-db";
@@ -96,6 +97,65 @@ type JobCompletedEventPayload = {
   error?: unknown;
   type?: unknown;
 };
+
+const MAX_LOG_LINES = 1500;
+
+function formatEventTime(ts: unknown): string {
+  if (typeof ts !== "number" || !Number.isFinite(ts)) {
+    return new Date().toLocaleTimeString();
+  }
+  const ms = ts > 10_000_000_000 ? ts : ts * 1000;
+  return new Date(ms).toLocaleTimeString();
+}
+
+function appendLogLine(lines: string[], nextLine: string): string[] {
+  const next = [...lines, nextLine];
+  if (next.length <= MAX_LOG_LINES) {
+    return next;
+  }
+  return next.slice(next.length - MAX_LOG_LINES);
+}
+
+function toLogLine(event: JobEvent): string | null {
+  const eventType =
+    typeof event.payload.type === "string" ? event.payload.type : event.event;
+  const ts = formatEventTime(event.payload.ts);
+
+  if (eventType === "log") {
+    const message =
+      typeof event.payload.message === "string" ? event.payload.message.trim() : "";
+    if (!message) {
+      return null;
+    }
+    const level =
+      typeof event.payload.level === "string" && event.payload.level.length > 0
+        ? event.payload.level.toUpperCase()
+        : "INFO";
+    return `[${ts}] [${level}] ${message}`;
+  }
+
+  if (eventType === "job.started") {
+    return `[${ts}] [INFO] Job started`;
+  }
+  if (eventType === "job.completed") {
+    return `[${ts}] [INFO] Job completed`;
+  }
+  if (eventType === "job.cancelling") {
+    return `[${ts}] [WARN] Cancellation requested`;
+  }
+  if (eventType === "job.cancelled") {
+    return `[${ts}] [WARN] Job cancelled`;
+  }
+  if (eventType === "job.error") {
+    const error =
+      typeof event.payload.error === "string" && event.payload.error.length > 0
+        ? event.payload.error
+        : "Job failed";
+    return `[${ts}] [ERROR] ${error}`;
+  }
+
+  return null;
+}
 
 export function useRecipeStudioActions({
   recipeId,
@@ -282,6 +342,7 @@ export function useRecipeStudioActions({
       model_usage: null,
       lastEventId: null,
       artifact_path: null,
+      log_lines: [],
       dataset: [],
       datasetTotal: 0,
       datasetPage: 1,
@@ -323,15 +384,35 @@ export function useRecipeStudioActions({
         jobId,
         signal: eventsAbortController.signal,
         onEvent: (event) => {
+          let changed = false;
           if (typeof event.id === "number") {
             latestExecution = {
               ...latestExecution,
               lastEventId: event.id,
             };
+            changed = true;
+          }
+
+          const logLine = toLogLine(event);
+          if (logLine) {
+            latestExecution = {
+              ...latestExecution,
+              log_lines: appendLogLine(latestExecution.log_lines, logLine),
+            };
+            changed = true;
           }
 
           const eventType =
             typeof event.payload.type === "string" ? event.payload.type : event.event;
+          if (eventType === "job.started") {
+            latestExecution = {
+              ...latestExecution,
+              status: "active",
+            };
+            upsertExecution(latestExecution);
+            return;
+          }
+
           if (eventType === "job.completed") {
             lastStatus = "completed";
             completedEventPayload = event.payload;
@@ -371,6 +452,11 @@ export function useRecipeStudioActions({
               ...latestExecution,
               status: "cancelling",
             };
+            upsertExecution(latestExecution);
+            return;
+          }
+
+          if (changed) {
             upsertExecution(latestExecution);
           }
         },
@@ -418,6 +504,36 @@ export function useRecipeStudioActions({
       }
 
       if (lastStatus === "completed") {
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          try {
+            const finalStatus = await getRecipeJobStatus(jobId);
+            latestExecution = {
+              ...latestExecution,
+              status: mapJobStatus(finalStatus.status),
+              rows: finalStatus.rows ?? latestExecution.rows,
+              stage: finalStatus.stage ?? latestExecution.stage,
+              current_column: finalStatus.current_column ?? latestExecution.current_column,
+              progress:
+                (normalizeObject(finalStatus.progress) as RecipeExecutionRecord["progress"]) ??
+                latestExecution.progress,
+              column_progress:
+                (normalizeObject(
+                  finalStatus.column_progress,
+                ) as RecipeExecutionRecord["column_progress"]) ??
+                latestExecution.column_progress,
+              model_usage: normalizeObject(finalStatus.model_usage) ?? latestExecution.model_usage,
+              artifact_path: finalStatus.artifact_path ?? latestExecution.artifact_path,
+              error: finalStatus.error ?? latestExecution.error,
+              finishedAt: latestExecution.finishedAt ?? Date.now(),
+            };
+          } catch {
+            break;
+          }
+          if (attempt < 2) {
+            await delay(250);
+          }
+        }
+
         const eventAnalysis = completedEventPayload
           ? completedEventPayload["analysis"]
           : null;
@@ -454,10 +570,37 @@ export function useRecipeStudioActions({
           datasetResponse && typeof datasetResponse.total === "number"
             ? datasetResponse.total
             : latestExecution.datasetTotal;
+        const progressTotal =
+          typeof latestExecution.progress?.total === "number" &&
+          latestExecution.progress.total > 0
+            ? latestExecution.progress.total
+            : latestExecution.rows > 0
+              ? latestExecution.rows
+              : rows;
+        const completedProgress: RecipeExecutionRecord["progress"] = {
+          ...(latestExecution.progress ?? {}),
+          done: progressTotal,
+          total: progressTotal,
+          percent: 100,
+          eta_sec: 0,
+        };
+        const completedColumnProgress: RecipeExecutionRecord["column_progress"] =
+          latestExecution.column_progress &&
+          typeof latestExecution.column_progress.total === "number" &&
+          latestExecution.column_progress.total > 0
+            ? {
+                ...latestExecution.column_progress,
+                done: latestExecution.column_progress.total,
+                percent: 100,
+                eta_sec: 0,
+              }
+            : latestExecution.column_progress;
 
         upsertExecution({
           ...latestExecution,
           status: "completed",
+          progress: completedProgress,
+          column_progress: completedColumnProgress,
           analysis,
           dataset,
           datasetTotal,

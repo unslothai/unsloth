@@ -103,7 +103,7 @@ def parse_log_message(msg: str) -> ParsedUpdate | None:
         return ParsedUpdate(usage_section_start=True)
 
     m = _RE_USAGE_MODEL.search(msg)
-    if m and "  |-- model:" in msg:
+    if m and "|-- model:" in msg:
         return ParsedUpdate(usage_model=str(m.group("model")).strip())
 
     m = _RE_USAGE_TOKENS.search(msg)

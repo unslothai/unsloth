@@ -106,6 +106,9 @@ export function withExecutionDefaults(
   record: RecipeExecutionRecord,
 ): RecipeExecutionRecord {
   const dataset = Array.isArray(record.dataset) ? record.dataset : [];
+  const logLines = Array.isArray(record.log_lines)
+    ? record.log_lines.filter((line): line is string => typeof line === "string")
+    : [];
   const datasetPageSize =
     typeof record.datasetPageSize === "number" && record.datasetPageSize > 0
       ? record.datasetPageSize
@@ -122,6 +125,7 @@ export function withExecutionDefaults(
   return {
     ...record,
     dataset,
+    log_lines: logLines,
     datasetTotal,
     datasetPage,
     datasetPageSize,
