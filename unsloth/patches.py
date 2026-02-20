@@ -125,6 +125,7 @@ class MacPatcher:
         for pkg in ["triton", "triton.language", "triton.backends", "triton.runtime", "bitsandbytes", "bitsandbytes.nn"]:
             if pkg not in sys.modules:
                 m = types.ModuleType(pkg)
+                m.__path__ = [] # Mark as package
                 if pkg == "triton.backends": m.backends = {}
                 sys.modules[pkg] = m
 
@@ -132,9 +133,16 @@ class MacPatcher:
         submodules = [
             "device_type", "utils", "vision_utils", "log", "hf_utils", "peft_utils", 
             "temporary_patches", "temporary_patches.common", "rl_replacements", 
-            "patching_utils", "tokenizer_utils", "compiler"
+            "patching_utils", "tokenizer_utils", "compiler", "rl_environments"
         ]
         
+        # Ensure root unsloth_zoo exists and is a package
+        if "unsloth_zoo" not in sys.modules:
+            zoo = types.ModuleType("unsloth_zoo")
+            zoo.__version__ = "999.0.0"
+            zoo.__path__ = [] # Mark as package
+            sys.modules["unsloth_zoo"] = zoo
+
         for sub in submodules:
             fullname = f"unsloth_zoo.{sub}"
             if fullname in sys.modules: continue
@@ -188,12 +196,6 @@ class MacPatcher:
             mod.__getattr__ = __getattr__
             
             sys.modules[fullname] = mod
-
-        # Ensure root unsloth_zoo exists
-        if "unsloth_zoo" not in sys.modules:
-            zoo = types.ModuleType("unsloth_zoo")
-            zoo.__version__ = "999.0.0"
-            sys.modules["unsloth_zoo"] = zoo
 
         self._applied = True
         return [PatchResult("mac_patch", PatchStatus.SUCCESS)]
