@@ -36,7 +36,7 @@ from .base import (
 
 def silu(x: mx.array) -> mx.array:
     """SiLU activation function: x * sigmoid(x)."""
-    return x * mx.nn.sigmoid(x)
+    return x * mx.sigmoid(x)
 
 
 def rotate_half(x: mx.array) -> mx.array:
