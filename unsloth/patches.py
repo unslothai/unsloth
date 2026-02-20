@@ -76,6 +76,10 @@ class MockModule(nn.Module):
         # 3. Specialized Mocks
         fullname = f"{self.__name__}.{name}"
 
+        # Return proper class type for bnb.nn.Linear* (isinstance compatibility)
+        if fullname in ("bitsandbytes.nn.Linear4bit", "bitsandbytes.nn.Linear8bitLt", "bitsandbytes.nn.Linear"):
+            return _DummyLinear
+
         # RL Specialization
         if "rl_replacements" in self.__name__:
             if name == "RL_REPLACEMENTS":
