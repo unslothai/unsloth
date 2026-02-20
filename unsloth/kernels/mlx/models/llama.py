@@ -231,7 +231,7 @@ class MLXAttention:
         bsz, num_kv_heads, seq_len, head_dim = x.shape
         if n_rep == 1:
             return x
-        x = x[:, :, None, :, :].expand(bsz, num_kv_heads, n_rep, seq_len, head_dim)
+        x = mx.broadcast_to(x[:, :, None, :, :], (bsz, num_kv_heads, n_rep, seq_len, head_dim))
         return x.reshape(bsz, num_kv_heads * n_rep, seq_len, head_dim)
 
 
