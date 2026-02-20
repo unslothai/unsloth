@@ -52,12 +52,8 @@ from unsloth.kernels.mps.layernorm import mps_layernorm
 from unsloth.kernels.mps.rope_embedding import mps_rope_embedding, mps_rope_embedding_qk
 from unsloth.kernels.mps.cross_entropy_loss import mps_cross_entropy_loss
 from unsloth.kernels.mps.swiglu import mps_swiglu_forward, mps_swiglu_backward
-from unsloth.kernels.mps.geglu import (
-    mps_geglu_exact_forward,
-    mps_geglu_exact_backward,
-    mps_geglu_approx_forward,
-    mps_geglu_approx_backward,
-)
+from unsloth.kernels.mps.linear import mps_gemv, mps_linear_forward
+from unsloth.kernels.mps.linear import mps_gemv, mps_linear_forward
 
 
 def test_rms_layernorm_parity():
@@ -301,12 +297,78 @@ def test_geglu_approx_parity():
     print("✅ GEGLU Approx Parity Passed")
 
 
+def test_gemv_parity():
+    print("Testing GEMV Parity...")
+    # Test 2D input
+    X = torch.randn(16, 32, requires_grad=True)
+    W = torch.randn(64, 32, requires_grad=True)
+
+    Y_ref = torch.matmul(X, W.t())
+    Y_mps = mps_gemv(X, W)
+    assert torch.allclose(Y_ref, Y_mps, atol=1e-5)
+
+    # Test with output buffer
+    out = torch.empty(16, 64)
+    Y_mps_out = mps_gemv(X, W, out=out)
+    assert torch.allclose(Y_ref, Y_mps_out, atol=1e-5)
+
+    # Test gradient
+    Y_ref.sum().backward()
+    grad_X_ref = X.grad.clone()
+    grad_W_ref = W.grad.clone()
+
+    X.grad.zero_()
+    W.grad.zero_()
+    Y_mps.sum().backward()
+    assert torch.allclose(grad_X_ref, X.grad, atol=1e-5)
+    assert torch.allclose(grad_W_ref, W.grad, atol=1e-5)
+    print("✅ GEMV Parity Passed")
+
+
+def test_linear_forward_parity():
+    print("Testing Linear Forward Parity...")
+    X = torch.randn(2, 16, 32, requires_grad=True)
+    W = torch.randn(64, 32, requires_grad=True)
+    bias = torch.randn(64, requires_grad=True)
+
+    # With bias
+    Y_ref = F.linear(X, W, bias)
+    Y_mps = mps_linear_forward(X, W, bias)
+    assert torch.allclose(Y_ref, Y_mps, atol=1e-5)
+
+    # Without bias
+    Y_ref_nb = F.linear(X, W)
+    Y_mps_nb = mps_linear_forward(X, W)
+    assert torch.allclose(Y_ref_nb, Y_mps_nb, atol=1e-5)
+
+    # Gradient check with bias
+    Y_ref.sum().backward()
+    grad_X_ref = X.grad.clone()
+    grad_W_ref = W.grad.clone()
+    grad_b_ref = bias.grad.clone()
+
+    X.grad.zero_()
+    W.grad.zero_()
+    bias.grad.zero_()
+    Y_mps.sum().backward()
+    assert torch.allclose(grad_X_ref, X.grad, atol=1e-5)
+    assert torch.allclose(grad_W_ref, W.grad, atol=1e-5)
+    assert torch.allclose(grad_b_ref, bias.grad, atol=1e-5)
+    print("✅ Linear Forward Parity Passed")
+
+
 if __name__ == "__main__":
     try:
         test_rms_layernorm_parity()
         test_layernorm_parity()
         test_swiglu_parity()
         test_cross_entropy_parity()
+        test_rope_embedding_parity()
+        test_rope_embedding_qk_parity()
+        test_geglu_exact_parity()
+        test_geglu_approx_parity()
+        test_gemv_parity()
+        test_linear_forward_parity()
         print("\n🚀 ALL MPS FALLBACK PARITY TESTS PASSED (CPU VERIFIED)")
     except Exception as e:
         print(f"\n❌ TEST FAILED: {str(e)}")
