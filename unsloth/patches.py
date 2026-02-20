@@ -56,6 +56,9 @@ class MockModule(nn.Module):
     def __getattr__(self, name):
         # 1. Handle double-underscore names
         if name.startswith("__") and name.endswith("__"):
+            # Allow common metadata attributes
+            if name == "__version__": return "3.0.0"
+            if name == "__origin__": return "unsloth_mock"
             raise AttributeError(name)
             
         # 2. Handle nn.Module internals
