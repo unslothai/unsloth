@@ -66,11 +66,20 @@ class BenchmarkResult:
 
 def get_mem_stats() -> dict:
     """Get current memory stats in MB - matches comprehensive_apple_benchmark.py."""
-    res = {"mps": 0.0, "mlx_active": 0.0, "mlx_peak": 0.0}
+    res = {"mps_active": 0.0, "mps_reserved": 0.0, "mlx_active": 0.0, "mlx_peak": 0.0}
     try:
         if torch.backends.mps.is_available():
             torch.mps.synchronize()
-            res["mps"] = torch.mps.current_allocated_memory() / 1e6
+            res["mps_active"] = torch.mps.current_allocated_memory() / 1e6
+            try:
+                driver_mem = torch.mps.driver_allocated_memory() / 1e6
+                if driver_mem > 0:
+                    res["mps_reserved"] = driver_mem
+                else:
+                    res["mps_reserved"] = torch.mps.peak_allocated_memory() / 1e6
+            except (AttributeError, Exception) as e:
+                print(f"  [DEBUG] driver_allocated_memory error: {e}")
+                res["mps_reserved"] = torch.mps.peak_allocated_memory() / 1e6
     except Exception:
         pass
     
@@ -117,6 +126,9 @@ class StandardizedBenchmark:
             _ = fn(*args, **kwargs)
             torch.mps.synchronize()
         
+        # Reset peak stats after warmup
+        torch.mps.reset_peak_memory_stats()
+        
         # Benchmark
         start = time.perf_counter()
         for _ in range(self.benchmark_iters):
@@ -128,7 +140,7 @@ class StandardizedBenchmark:
         mem = get_mem_stats()
         
         latency_ms = (end - start) / self.benchmark_iters * 1000
-        return latency_ms, mem["mps"], 0.0
+        return latency_ms, mem["mps_active"], mem["mps_reserved"]
     
     def _benchmark_metal(self, fn, *args, **kwargs) -> Tuple[float, float, float]:
         """Benchmark Metal fused kernel. Returns (latency_ms, active_mb, peak_mb)."""

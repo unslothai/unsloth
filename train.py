@@ -28,6 +28,8 @@ For all options:
 
 from __future__ import annotations
 
+import unsloth
+
 import argparse
 import os
 import platform

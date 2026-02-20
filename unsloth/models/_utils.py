@@ -1078,7 +1078,12 @@ def prepare_model_for_kbit_training(
 from peft import __version__ as peft_version
 from peft.utils.integrations import dequantize_module_weight
 
-if Version(peft_version) < Version("0.12.0"):
+try:
+    _peft_version_check = Version(peft_version) < Version("0.12.0")
+except TypeError:
+    _peft_version_check = tuple(map(int, peft_version.split(".")[:2])) < (0, 12)
+
+if _peft_version_check:
     from peft.tuners.lora.layer import LoraLayer
 
     try:
