@@ -32,10 +32,15 @@ def test_system():
 def test_mlx_installation():
     print_header("2. MLX Installation")
     try:
-        import mlx
-        print(f"MLX Version: {mlx.__version__}")
-        
+        import importlib.metadata
         import mlx.core as mx
+        
+        try:
+            mlx_version = importlib.metadata.version("mlx")
+            print(f"MLX Version: {mlx_version}")
+        except Exception:
+            print("MLX Version: (unknown)")
+        
         print(f"MLX Core: Available")
         
         default = mx.default_device()
