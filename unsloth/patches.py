@@ -73,6 +73,17 @@ class MockModule(types.ModuleType):
         if name == "add_dtype_kwargs": return lambda *a, **k: {}
         if name == "backends" and "triton" in self.__name__: return {}
 
+        # Device Type Specialization
+        if "device_type" in self.__name__:
+            if name == "DEVICE_TYPE": return "mps"
+            if name == "DEVICE_TYPE_TORCH": return "mps"
+            if name == "DEVICE_COUNT": return 1
+            if name in ("is_mps", "HAS_MPS"): return lambda: True
+            if name in ("is_hip", "is_xpu", "HAS_CUDA", "HAS_HIP"): return lambda: False
+            if name == "get_device_type": return lambda: "mps"
+            if name == "ALLOW_PREQUANTIZED_MODELS": return False
+            if name == "ALLOW_BITSANDBYTES": return False
+
         # Default: Return another callable mock
         return MockModule(fullname)
 
