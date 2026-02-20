@@ -56,6 +56,8 @@ export type RecipeExecutionRecord = {
   lastEventId: number | null;
   // biome-ignore lint/style/useNamingConvention: backend schema
   artifact_path: string | null;
+  // biome-ignore lint/style/useNamingConvention: backend schema
+  log_lines: string[];
   dataset: Record<string, unknown>[];
   datasetTotal: number;
   datasetPage: number;
