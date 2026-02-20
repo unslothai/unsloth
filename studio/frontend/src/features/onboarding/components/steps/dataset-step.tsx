@@ -35,6 +35,7 @@ import {
 import {
   useDebouncedValue,
   useHfDatasetSearch,
+  useHfTokenValidation,
   useInfiniteScroll,
 } from "@/hooks";
 import { cn, formatCompact } from "@/lib/utils";
@@ -103,9 +104,13 @@ export function DatasetStep() {
     isLoading,
     isLoadingMore,
     fetchMore,
+    error: hfSearchError,
   } = useHfDatasetSearch(debouncedQuery, {
     accessToken: hfToken || undefined,
   });
+
+  const { error: tokenValidationError, isChecking: isCheckingToken } =
+    useHfTokenValidation(hfToken);
 
   const resultIds = useMemo(() => hfResults.map((r) => r.id), [hfResults]);
 
@@ -179,6 +184,23 @@ export function DatasetStep() {
                 onChange={(e) => setHfToken(e.target.value)}
               />
             </InputGroup>
+            {(tokenValidationError ?? hfSearchError) && (
+              <p className="text-xs text-destructive">
+                {tokenValidationError ?? hfSearchError}
+                {" — "}
+                <a
+                  href="https://huggingface.co/settings/tokens"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline"
+                >
+                  Get or update token
+                </a>
+              </p>
+            )}
+            {isCheckingToken && (
+              <p className="text-xs text-muted-foreground">Checking token…</p>
+            )}
           </Field>
 
           <Field>
