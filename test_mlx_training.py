@@ -87,7 +87,7 @@ def test_mlx_training():
     print("\n[4] Setting up optimizer and loss function...")
 
     def loss_fn(model, inputs, targets):
-        logits = model(inputs)
+        logits, _ = model(inputs)
         loss = nn.losses.cross_entropy(
             logits.reshape(-1, logits.shape[-1]),
             targets.reshape(-1),
@@ -208,7 +208,7 @@ def test_mlx_trainer_class():
     def loss_fn(model, batch):
         input_ids = batch["input_ids"]
         labels = batch["labels"]
-        logits = model(input_ids)
+        logits, _ = model(input_ids)
         return nn.losses.cross_entropy(
             logits.reshape(-1, logits.shape[-1]),
             labels.reshape(-1),
@@ -219,8 +219,8 @@ def test_mlx_trainer_class():
 
     losses = []
     for i, batch in enumerate(train_loader):
-        loss_and_grad_fn = mx.value_and_grad(loss_fn)
-        loss, grads = loss_and_grad_fn(model, batch)
+        loss_and_grad_fn = nn.value_and_grad(model, lambda m: loss_fn(m, batch))
+        loss, grads = loss_and_grad_fn(model)
         optimizer.update(model, grads)
         mx.eval(model.parameters(), optimizer.state)
         losses.append(float(loss))
