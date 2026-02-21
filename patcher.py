@@ -854,6 +854,7 @@ class MacPatcher:
                 def __gt__(self, other): return self._parsed > Version(other)._parsed
                 def __ge__(self, other): return self._parsed >= Version(other)._parsed
             mod.Version = Version
+            mod._get_dtype = lambda key: torch.float16
 
             def _get_dtype(d):
                 import torch
