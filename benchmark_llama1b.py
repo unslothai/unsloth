@@ -201,7 +201,7 @@ def benchmark_mlx(steps: int, batch_size: int, seq_len: int, warmup: int = 2):
     def create_batch():
         vocab_size = tokenizer.tokenizer.vocab_size if hasattr(tokenizer, 'tokenizer') else tokenizer.vocab_size
         input_ids = mx.random.randint(0, vocab_size, (batch_size, seq_len))
-        labels = mx.copy(input_ids)
+        labels = input_ids  # MLX arrays are immutable, use directly
         return input_ids, labels
     
     optimizer = AdamW(learning_rate=2e-4)
