@@ -107,6 +107,23 @@ class InferenceBackend:
                 # Apply inference optimization
                 FastVisionModel.for_inference(model)
 
+                # FastVisionModel may return a raw tokenizer (e.g. GemmaTokenizerFast)
+                # instead of a proper Processor for some models (e.g. Gemma-3).
+                # In that case, load the real processor from the base model.
+                from transformers import ProcessorMixin
+                if not (isinstance(processor, ProcessorMixin) or hasattr(processor, "image_processor")):
+                    processor_source = config.base_model if config.is_lora else config.identifier
+                    logger.warning(
+                        f"FastVisionModel returned {type(processor).__name__} (no image_processor) "
+                        f"for '{model_name}' — loading proper processor from '{processor_source}'"
+                    )
+                    from transformers import AutoProcessor
+                    processor = AutoProcessor.from_pretrained(
+                        processor_source,
+                        token=hf_token if hf_token and hf_token.strip() else None,
+                    )
+                    logger.info(f"Loaded {type(processor).__name__} from {processor_source}")
+
                 self.models[model_name]["model"] = model
                 self.models[model_name]["tokenizer"] = processor
                 self.models[model_name]["processor"] = processor
@@ -580,55 +597,72 @@ class InferenceBackend:
 
         if is_vision and image:
             # Vision model generation (only when an image is actually provided)
-            yield from self._generate_vision_response(
-                messages, system_prompt, image,
-                temperature, top_p, top_k, min_p, max_new_tokens, repetition_penalty,
-                cancel_event=cancel_event,
+            # Check that the stored processor can actually handle images.
+            # FastVisionModel may return a raw tokenizer (e.g. GemmaTokenizerFast)
+            # instead of a proper ProcessorMixin for some models (e.g. Gemma-3).
+            from transformers import ProcessorMixin
+            processor = model_info.get("processor")
+            has_image_processing = (
+                processor is not None
+                and (isinstance(processor, ProcessorMixin) or hasattr(processor, "image_processor"))
             )
-        else:
-            # Text model: Use training pipeline approach
-            # Messages are already in ChatML format from eval.py
-
-            # Step 1: Apply get_chat_template if model is in mapper
-            try:
-                from utils.datasets import MODEL_TO_TEMPLATE_MAPPER, get_tokenizer_chat_template
-
-                model_name_lower = self.active_model_name.lower()
-
-                # Check if model has a registered template
-                if model_name_lower in MODEL_TO_TEMPLATE_MAPPER:
-                    template_name = MODEL_TO_TEMPLATE_MAPPER[model_name_lower]
-                    logger.info(f"Applying chat template '{template_name}' for {self.active_model_name}")
-
-                    # This modifies the tokenizer with the correct template
-                    tokenizer = get_chat_template(
-                        tokenizer,
-                        chat_template=template_name,
-                    )
-                else:
-                    logger.info(f"No registered template for {self.active_model_name}, using tokenizer default")
-            except Exception as e:
-                logger.warning(f"Could not apply get_chat_template: {e}")
-
-            # Step 2: Format with tokenizer.apply_chat_template()
-            try:
-                formatted_prompt = tokenizer.apply_chat_template(
-                    messages,
-                    tokenize=False,
-                    add_generation_prompt=True
+            if has_image_processing:
+                yield from self._generate_vision_response(
+                    messages, system_prompt, image,
+                    temperature, top_p, top_k, min_p, max_new_tokens, repetition_penalty,
+                    cancel_event=cancel_event,
                 )
-                logger.debug(f"Formatted prompt: {formatted_prompt[:200]}...")
-            except Exception as e:
-                logger.error(f"Error applying chat template: {e}")
-                # Fallback to manual formatting
-                formatted_prompt = self.format_chat_prompt(messages, system_prompt)
+                return
+            else:
+                logger.warning(
+                    f"Model '{self.active_model_name}' is marked as vision but its processor "
+                    f"({type(processor).__name__}) has no image_processor — "
+                    f"falling back to text-only generation (image will be ignored)."
+                )
 
-            # Step 3: Generate
-            yield from self.generate_stream(
-                formatted_prompt, temperature, top_p, top_k, min_p, max_new_tokens, repetition_penalty,
-                cancel_event=cancel_event,
-                _adapter_state=_adapter_state,
+        # Text path: Use training pipeline approach
+        # Messages are already in ChatML format from eval.py
+
+        # Step 1: Apply get_chat_template if model is in mapper
+        try:
+            from utils.datasets import MODEL_TO_TEMPLATE_MAPPER, get_tokenizer_chat_template
+
+            model_name_lower = self.active_model_name.lower()
+
+            # Check if model has a registered template
+            if model_name_lower in MODEL_TO_TEMPLATE_MAPPER:
+                template_name = MODEL_TO_TEMPLATE_MAPPER[model_name_lower]
+                logger.info(f"Applying chat template '{template_name}' for {self.active_model_name}")
+
+                # This modifies the tokenizer with the correct template
+                tokenizer = get_chat_template(
+                    tokenizer,
+                    chat_template=template_name,
+                )
+            else:
+                logger.info(f"No registered template for {self.active_model_name}, using tokenizer default")
+        except Exception as e:
+            logger.warning(f"Could not apply get_chat_template: {e}")
+
+        # Step 2: Format with tokenizer.apply_chat_template()
+        try:
+            formatted_prompt = tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True
             )
+            logger.debug(f"Formatted prompt: {formatted_prompt[:200]}...")
+        except Exception as e:
+            logger.error(f"Error applying chat template: {e}")
+            # Fallback to manual formatting
+            formatted_prompt = self.format_chat_prompt(messages, system_prompt)
+
+        # Step 3: Generate
+        yield from self.generate_stream(
+            formatted_prompt, temperature, top_p, top_k, min_p, max_new_tokens, repetition_penalty,
+            cancel_event=cancel_event,
+            _adapter_state=_adapter_state,
+        )
 
     def _generate_vision_response(self, messages, system_prompt, image,
                                   temperature, top_p, top_k, min_p, max_new_tokens,
@@ -663,7 +697,7 @@ class InferenceBackend:
                 }
             ]
 
-            input_text = processor.apply_chat_template(vision_messages, add_generation_prompt=True)
+            input_text = processor.apply_chat_template(vision_messages, add_generation_prompt=True, tokenize=False)
             inputs = processor(
                 image,
                 input_text,
