@@ -831,6 +831,9 @@ class MacPatcher:
                     if isinstance(v, Version):
                         self._parsed = v._parsed
                     else:
+                        # Extract version from module if needed
+                        if hasattr(v, "__version__"):
+                            v = v.__version__
                         self._parsed = _parse_version(str(v))
                 def __str__(self): return str(self._parsed)
                 def __repr__(self): return f"Version('{self._parsed}')"

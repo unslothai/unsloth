@@ -101,6 +101,8 @@ class MockModule(nn.Module):
 
             class Version:
                 def __init__(self, v):
+                    if hasattr(v, "__version__"):
+                        v = v.__version__
                     self.v = str(v)
 
                 def __lt__(self, o):
