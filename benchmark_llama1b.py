@@ -178,13 +178,13 @@ def benchmark_mlx(steps: int, batch_size: int, seq_len: int, warmup: int = 2):
     
     print("\n[2/4] Adding LoRA adapters...")
     lora_config = {
-        "layers": [".*"],
         "rank": 16,
         "alpha": 32,
         "dropout": 0.0,
         "scale": 0.25,
     }
-    model = linear_to_lora(model, lora_config)
+    num_layers = 16
+    model = linear_to_lora(model, num_layers, lora_config)
     
     print(f"\n[3/4] Training ({warmup} warmup + {steps} benchmark steps)...")
     
