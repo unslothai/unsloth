@@ -286,18 +286,24 @@ def main():
     
     if not args.pytorch_only and platform.system() == "Darwin":
         try:
-            mlx_time, mlx_mem, mlx_dev, mlx_load = benchmark_mlx(
-                steps=args.steps,
-                batch_size=args.batch_size,
-                seq_len=args.seq_len,
-                warmup=args.warmup,
-            )
-            results["mlx"] = {
-                "time_ms": mlx_time,
-                "memory_mb": mlx_mem,
-                "device": mlx_dev,
-                "load_time": mlx_load,
-            }
+            import importlib.util
+            mlx_lm_spec = importlib.util.find_spec("mlx_lm")
+            if mlx_lm_spec is None:
+                print("\nMLX benchmark skipped: mlx_lm not installed")
+                print("Install with: pip install mlx-lm")
+            else:
+                mlx_time, mlx_mem, mlx_dev, mlx_load = benchmark_mlx(
+                    steps=args.steps,
+                    batch_size=args.batch_size,
+                    seq_len=args.seq_len,
+                    warmup=args.warmup,
+                )
+                results["mlx"] = {
+                    "time_ms": mlx_time,
+                    "memory_mb": mlx_mem,
+                    "device": mlx_dev,
+                    "load_time": mlx_load,
+                }
         except Exception as e:
             print(f"\nMLX benchmark failed: {e}")
             import traceback

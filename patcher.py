@@ -825,10 +825,21 @@ class MacPatcher:
             mod.encode_conversations_with_harmony = lambda *a, **k: (a[0] if a else None)
             mod.TEMPORARY_PATCHES = []
         elif fullname == "unsloth_zoo.utils":
+            from packaging.version import parse as _parse_version
             class Version:
-                def __init__(self, v): self.v = v
-                def __str__(self): return self.v
-                def __ge__(self, other): return True
+                def __init__(self, v):
+                    if isinstance(v, Version):
+                        self._parsed = v._parsed
+                    else:
+                        self._parsed = _parse_version(str(v))
+                def __str__(self): return str(self._parsed)
+                def __repr__(self): return f"Version('{self._parsed}')"
+                def __eq__(self, other): return self._parsed == Version(other)._parsed
+                def __ne__(self, other): return self._parsed != Version(other)._parsed
+                def __lt__(self, other): return self._parsed < Version(other)._parsed
+                def __le__(self, other): return self._parsed <= Version(other)._parsed
+                def __gt__(self, other): return self._parsed > Version(other)._parsed
+                def __ge__(self, other): return self._parsed >= Version(other)._parsed
             mod.Version = Version
             mod._get_dtype = lambda dtype_str: __import__('torch', fromlist=[dtype_str]).float32
             mod.get_quant_type = lambda module: "unknown"
