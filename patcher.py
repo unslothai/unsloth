@@ -888,10 +888,9 @@ class MacPatcher:
             mod.get_transformers_model_type = lambda model_config, **kwargs: ["llama"]
             mod.unsloth_compile_transformers = lambda *a, **k: None
         elif fullname == "unsloth_zoo.patching_utils":
-            class _DummyBnbLinear: pass
-            mod.Bnb_Linear4bit = _DummyBnbLinear
-            mod.Peft_Linear4bit = _DummyBnbLinear
-            mod.patch_model_and_tokenizer = lambda m, t, **k: (m, t)
+            def _patch_model_and_tokenizer(model, tokenizer, **kwargs):
+                return model, tokenizer
+            mod.patch_model_and_tokenizer = _patch_model_and_tokenizer
             mod.patch_layernorm = lambda *a, **k: None
             mod.patch_torch_compile = lambda *a, **k: None
             mod.patch_compiling_bitsandbytes = lambda *a, **k: None
