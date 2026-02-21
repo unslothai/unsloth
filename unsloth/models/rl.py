@@ -35,6 +35,13 @@ from .rl_replacements import (
     RL_ADDITIONAL_FUNCTIONS,
 )
 
+def _safe_getsource(fn):
+    """Safely get source code, returning empty string if it fails (e.g., on mocked modules)."""
+    try:
+        return inspect.getsource(fn)
+    except (TypeError, OSError):
+        return ""
+
 torch_compile_options = {
     "epilogue_fusion": True,
     "max_autotune": False,  # Disable Triton mm kernels
@@ -1047,20 +1054,20 @@ def _patch_trl_rl_trainers(trainer_file="grpo_trainer"):
 
     # Check if SamplingParams is in there
     if "SamplingParams" in old_RLTrainer_source:
-        RL_pre = RL_pre + "\n" + inspect.getsource(vLLMSamplingParams)
+        RL_pre = RL_pre + "\n" + _safe_getsource(vLLMSamplingParams)
 
     # Selective log softmax and other functions
-    selective_log_softmax_code = inspect.getsource(selective_log_softmax)
-    grpo_selective_log_softmax_code = inspect.getsource(grpo_selective_log_softmax)
-    calculate_pad_tokens_in_prompt_code = inspect.getsource(
+    selective_log_softmax_code = _safe_getsource(selective_log_softmax)
+    grpo_selective_log_softmax_code = _safe_getsource(grpo_selective_log_softmax)
+    calculate_pad_tokens_in_prompt_code = _safe_getsource(
         calculate_pad_tokens_in_prompt
     )
-    create_completion_attention_mask_code = inspect.getsource(
+    create_completion_attention_mask_code = _safe_getsource(
         create_completion_attention_mask
     )
-    left_pack_padding_code = inspect.getsource(left_pack_padding)
-    align_logprobs_with_mask_code = inspect.getsource(align_logprobs_with_mask)
-    autotune_batch_and_chunks_code = inspect.getsource(autotune_batch_and_chunks)
+    left_pack_padding_code = _safe_getsource(left_pack_padding)
+    align_logprobs_with_mask_code = _safe_getsource(align_logprobs_with_mask)
+    autotune_batch_and_chunks_code = _safe_getsource(autotune_batch_and_chunks)
     # Get final source code
     RLTrainer_source = RLTrainer_replacement.format(
         RLTrainer_name=RLTrainer_name,
