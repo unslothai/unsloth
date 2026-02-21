@@ -885,7 +885,7 @@ class MacPatcher:
             mod.get_peft_regex = lambda *a, **k: None
             mod.requires_grad_for_gradient_checkpointing = lambda *a, **k: None
         elif fullname == "unsloth_zoo.training_utils":
-            mod.prepare_model_for_training = lambda model: model
+            mod.prepare_model_for_training = lambda model, **kwargs: model
             mod.fix_zero_training_loss = lambda *a, **k: None
         elif fullname == "unsloth_zoo.tokenizer_utils":
             mod.patch_tokenizer = lambda model, tokenizer: (model, tokenizer)
