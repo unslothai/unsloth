@@ -151,19 +151,7 @@ def benchmark_mlx(steps: int, batch_size: int, seq_len: int, warmup: int = 2):
     import mlx.core as mx
     import mlx.nn as nn
     from mlx_lm import load, generate
-    try:
-        from mlx_lm.lora import linear_to_lora
-    except ImportError:
-        try:
-            from mlx_lm.tuner import linear_to_lora
-        except ImportError:
-            try:
-                from mlx_lm.utils import linear_to_lora
-            except (ImportError, ModuleNotFoundError) as e:
-                raise ImportError(
-                    f"Could not find linear_to_lora in mlx_lm. "
-                    f"Please install mlx_lm: {e}"
-                ) from e
+    from mlx_lm.lora import linear_to_lora_layers as linear_to_lora
     try:
         from mlx_lm.tuner.trainer import TrainingArgs, Dataset, evaluate
     except (ImportError, ModuleNotFoundError):
