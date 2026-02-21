@@ -182,6 +182,7 @@ def benchmark_mlx(steps: int, batch_size: int, seq_len: int, warmup: int = 2):
         "alpha": 32,
         "dropout": 0.0,
         "scale": 0.25,
+        "keys": ["q_proj", "v_proj", "k_proj", "o_proj", "gate_up_proj", "down_proj"],
     }
     num_layers = 16
     linear_to_lora(model, num_layers, lora_config)
