@@ -17,6 +17,7 @@ if platform.system() == "Darwin":
     from patcher import patch_for_mac
     patch_for_mac()
 
+import unsloth  # Must be imported before transformers/peft
 import torch
 
 MODEL_NAME = "unsloth/Llama-3.2-1B-Instruct"
