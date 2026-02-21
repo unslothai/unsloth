@@ -156,15 +156,24 @@ def benchmark_mlx(steps: int, batch_size: int, seq_len: int, warmup: int = 2):
     except ImportError:
         try:
             from mlx_lm.utils import linear_to_lora
-        except ImportError:
+        except (ImportError, ModuleNotFoundError):
             try:
                 from mlx_lm.lora import linear_to_lora
             except ImportError:
                 try:
                     from mlx_lm.tuner.utils import linear_to_lora
                 except ImportError:
-                    from mlx_lm.utils.tuner import linear_to_lora
-    from mlx_lm.tuner.trainer import TrainingArgs, Dataset, evaluate
+                    try:
+                        from mlx_lm.utils.tuner import linear_to_lora
+                    except (ImportError, ModuleNotFoundError) as e:
+                        raise ImportError(
+                            f"Could not find linear_to_lora in mlx_lm. "
+                            f"Please install mlx_lm: {e}"
+                        ) from e
+    try:
+        from mlx_lm.tuner.trainer import TrainingArgs, Dataset, evaluate
+    except (ImportError, ModuleNotFoundError):
+        from mlx_lm.utils.tuner.trainer import TrainingArgs, Dataset, evaluate
     from mlx.optimizers import AdamW
     
     print(f"\n{'='*60}")

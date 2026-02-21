@@ -96,6 +96,28 @@ class MockModule(nn.Module):
             if name == "RL_CONFIG_CHANGES":
                 return collections.defaultdict(list)
 
+        # tokenizer_utils specialization for patch_tokenizer
+        if self.__name__ == "unsloth_zoo.tokenizer_utils" and name == "patch_tokenizer":
+            return lambda m, t: (m, t)
+        # tokenizer_utils imports
+        if self.__name__ == "unsloth_zoo.tokenizer_utils" and name in (
+            "mean_of_trained_tokens",
+            "add_new_tokens",
+            "fix_untrained_tokens",
+        ):
+            return _unsloth_dummy_fn
+
+        # training_utils imports
+        if self.__name__ == "unsloth_zoo.training_utils" and name in (
+            "prepare_model_for_training",
+            "fix_zero_training_loss",
+        ):
+            return _unsloth_dummy_fn
+
+        # temporary_patches imports
+        if self.__name__ == "unsloth_zoo.temporary_patches" and name == "TEMPORARY_PATCHES":
+            return []
+
         # Versioning/Utility Specialization
         if name == "Version":
 
