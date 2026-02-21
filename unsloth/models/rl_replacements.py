@@ -812,14 +812,19 @@ grpo_compute_loss_slow = RL_REPLACEMENTS["grpo_compute_loss_slow"]
 UnslothEfficientGRPO = RL_REPLACEMENTS["UnslothEfficientGRPO"]
 grpo_accumulated_loss = RL_REPLACEMENTS["grpo_accumulated_loss"]
 grpo_update_SamplingParams = RL_REPLACEMENTS["grpo_update_SamplingParams"]
-RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_compute_loss))
-RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(UnslothEfficientGRPO))
-RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_accumulated_loss))
+
+def _safe_getsource(fn):
+    try:
+        return inspect.getsource(fn)
+    except (TypeError, OSError):
+        return ""
+
+RL_PRE_ITEMS["grpo_trainer"].append(_safe_getsource(grpo_compute_loss))
+RL_PRE_ITEMS["grpo_trainer"].append(_safe_getsource(UnslothEfficientGRPO))
+RL_PRE_ITEMS["grpo_trainer"].append(_safe_getsource(grpo_accumulated_loss))
 RL_PRE_ITEMS["grpo_trainer"].append(grpo_compute_loss_slow)
-RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_update_SamplingParams))
-RL_PRE_ITEMS["grpo_trainer"].append(
-    inspect.getsource(_get_inference_mode_context_manager)
-)
+RL_PRE_ITEMS["grpo_trainer"].append(_safe_getsource(grpo_update_SamplingParams))
+RL_PRE_ITEMS["grpo_trainer"].append(_safe_getsource(_get_inference_mode_context_manager))
 
 
 # Edit _get_per_token_logps to handle mixed precision
