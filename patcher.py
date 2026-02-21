@@ -856,8 +856,9 @@ class MacPatcher:
             mod.Version = Version
             mod._get_dtype = lambda key: torch.float16
 
-            def _get_dtype(d):
+            def _get_dtype(d=None, key=None):
                 import torch
+                if d is None and key is None: return torch.float32
                 if d is None: return torch.float32
                 if isinstance(d, torch.dtype): return d
                 if isinstance(d, str):
