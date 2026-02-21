@@ -35,6 +35,7 @@ from ..utils.attention_dispatch import (
     AttentionConfig,
     AttentionContext,
     run_attention,
+    SDPA,
     select_attention_backend,
 )
 from torch.nn.functional import scaled_dot_product_attention
@@ -212,6 +213,7 @@ def _fast_prepare_inputs_for_generation(
     **kwargs,
 ):
     past_key_values = kwargs.get("past_key_values", None)
+    original_attention_mask = attention_mask
 
     # Handle inputs_embeds - only use on FIRST generation step (no cache)
     # This fixes GitHub issue #3798: inputs_embeds was ignored
@@ -288,8 +290,6 @@ def _fast_prepare_inputs_for_generation(
                     )
                 )
             else:
-                if attention_mask is not None:
-                    attention_mask = attention_mask[:, [-1]]
                 if transformers_version <= Version("4.52.4"):
                     logger.warning_once(
                         f"{self.__class__.__name__} has no `_prepare_4d_causal_attention_mask_with_cache_position` method "
@@ -299,7 +299,19 @@ def _fast_prepare_inputs_for_generation(
                     )
 
     if "cache_position" in kwargs:
-        kwargs["position_ids"] = kwargs["cache_position"]
+        if (
+            kwargs.get("position_ids", None) is None
+            and original_attention_mask is not None
+            and original_attention_mask.dim() == 2
+        ):
+            # Keep RoPE positions consistent with padding for both prefill and decode.
+            position_ids = original_attention_mask.long().cumsum(-1)
+            position_ids.sub_(1).clamp_(min = 0)
+            if past_key_values is not None:
+                position_ids = position_ids[:, -1:]
+            kwargs["position_ids"] = position_ids
+        else:
+            kwargs["position_ids"] = kwargs["cache_position"]
 
     result = {
         "attention_mask": attention_mask,
@@ -681,7 +693,7 @@ def LlamaAttention_fast_forward(
 
     # Attention module
     use_varlen = seq_info is not None and past_key_value is None
-    backend = select_attention_backend(use_varlen)
+    backend = SDPA if attention_mask is not None else select_attention_backend(use_varlen)
     config = AttentionConfig(
         backend = backend,
         n_kv_heads = n_kv_heads,

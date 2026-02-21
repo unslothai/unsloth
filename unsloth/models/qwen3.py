@@ -21,6 +21,7 @@ from ..utils.attention_dispatch import (
     AttentionConfig,
     AttentionContext,
     run_attention,
+    SDPA,
     select_attention_backend,
 )
 from .llama import (
@@ -139,7 +140,7 @@ def Qwen3Attention_fast_forward(
 
     # Attention module
     use_varlen = seq_info is not None and past_key_value is None
-    backend = select_attention_backend(use_varlen)
+    backend = SDPA if attention_mask is not None else select_attention_backend(use_varlen)
     attention_config = AttentionConfig(
         backend = backend,
         n_kv_heads = n_kv_heads,
