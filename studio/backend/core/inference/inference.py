@@ -574,6 +574,8 @@ class InferenceBackend:
         model_info = self.models[self.active_model_name]
         is_vision = model_info.get("is_vision", False)
         tokenizer = model_info.get("tokenizer") or model_info.get("processor")
+        # Unwrap processor → raw tokenizer for VLMs on the text path
+        tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
         top_k = self._normalize_top_k(top_k)
 
         if is_vision and image:
@@ -769,7 +771,11 @@ class InferenceBackend:
 
         model_info = self.models[self.active_model_name]
         model = model_info["model"]
+        # For VLMs the stored "tokenizer" is actually the processor.
+        # Unwrap to get the real tokenizer so TextIteratorStreamer's
+        # skip_prompt / skip_special_tokens work correctly.
         tokenizer = model_info["tokenizer"]
+        tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
 
         try:
             inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
@@ -879,6 +885,7 @@ class InferenceBackend:
 
         chat_template_info = self.models[self.active_model_name].get("chat_template_info", {})
         tokenizer = self.models[self.active_model_name]["tokenizer"]
+        tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
 
         chat_messages = []
 
