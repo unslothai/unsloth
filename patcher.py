@@ -867,7 +867,7 @@ class MacPatcher:
         elif fullname == "unsloth_zoo.vision_utils":
             mod.process_vision_info = lambda *a, **k: None
         elif fullname == "unsloth_zoo.compiler":
-            mod.get_transformers_model_type = lambda model_config: "llama"
+            mod.get_transformers_model_type = lambda model_config, **kwargs: ["llama"]
             mod.unsloth_compile_transformers = lambda *a, **k: None
         elif fullname == "unsloth_zoo.patching_utils":
             class _DummyBnbLinear: pass

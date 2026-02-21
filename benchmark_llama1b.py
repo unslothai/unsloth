@@ -151,7 +151,7 @@ def benchmark_mlx(steps: int, batch_size: int, seq_len: int, warmup: int = 2):
     import mlx.core as mx
     import mlx.nn as nn
     from mlx_lm import load, generate
-    from mlx_lm.tuner import linear_to_lora
+    from mlx_lm.utils import linear_to_lora
     from mlx_lm.tuner.trainer import TrainingArgs, Dataset, evaluate
     from mlx.optimizers import AdamW
     
