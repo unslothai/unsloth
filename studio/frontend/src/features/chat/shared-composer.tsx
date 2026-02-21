@@ -317,6 +317,8 @@ export function SharedComposer({
           >
             <PlusIcon className="size-5 stroke-[1.5px]" />
           </TooltipIconButton>
+        </div>
+        <div className="flex items-center gap-1">
           {dictationSupported && (
             <>
               {!isDictating ? (
@@ -346,30 +348,30 @@ export function SharedComposer({
               )}
             </>
           )}
+          {running ? (
+            <Button
+              type="button"
+              variant="default"
+              size="icon"
+              className="size-8 rounded-full"
+              onClick={stop}
+            >
+              <SquareIcon className="size-3 fill-current" />
+            </Button>
+          ) : (
+            <TooltipIconButton
+              tooltip="Send message"
+              side="bottom"
+              variant="default"
+              size="icon"
+              className="size-8 rounded-full"
+              onClick={send}
+              disabled={!canSend}
+            >
+              <ArrowUpIcon className="size-4" />
+            </TooltipIconButton>
+          )}
         </div>
-        {running ? (
-          <Button
-            type="button"
-            variant="default"
-            size="icon"
-            className="size-8 rounded-full"
-            onClick={stop}
-          >
-            <SquareIcon className="size-3 fill-current" />
-          </Button>
-        ) : (
-          <TooltipIconButton
-            tooltip="Send message"
-            side="bottom"
-            variant="default"
-            size="icon"
-            className="size-8 rounded-full"
-            onClick={send}
-            disabled={!canSend}
-          >
-            <ArrowUpIcon className="size-4" />
-          </TooltipIconButton>
-        )}
       </div>
     </div>
   );
