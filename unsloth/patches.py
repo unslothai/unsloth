@@ -387,6 +387,15 @@ def patch_unsloth_zoo_for_mps() -> bool:
     except:
         pass
 
+    # 4. Immediate patching for already imported target modules
+    for name in ("peft.tuners.lora", "bitsandbytes.nn"):
+        if name in sys.modules:
+            mod = sys.modules[name]
+            if not hasattr(mod, "Linear4bit"):
+                mod.Linear4bit = _DummyLinear
+            if name == "peft.tuners.lora" and not hasattr(mod, "Linear"):
+                mod.Linear = _DummyLinear
+
     _PATCH_APPLIED = True
     return True
 
