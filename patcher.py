@@ -873,6 +873,12 @@ class MacPatcher:
             mod.requires_grad_for_gradient_checkpointing = lambda *a, **k: None
         elif fullname == "unsloth_zoo.training_utils":
             mod.prepare_model_for_training = lambda model: model
+            mod.fix_zero_training_loss = lambda *a, **k: None
+        elif fullname == "unsloth_zoo.tokenizer_utils":
+            mod.patch_tokenizer = lambda model, tokenizer: (model, tokenizer)
+            mod.mean_of_trained_tokens = lambda *a, **k: 0
+            mod.add_new_tokens = lambda *a, **k: 0
+            mod.fix_untrained_tokens = lambda model, tokenizer: (model, tokenizer)
         elif fullname == "unsloth_zoo.vision_utils":
             mod.process_vision_info = lambda *a, **k: None
         elif fullname == "unsloth_zoo.compiler":
