@@ -189,15 +189,23 @@ def benchmark_mlx(steps: int, batch_size: int, seq_len: int, warmup: int = 2):
     
     print(f"\n[3/4] Training ({warmup} warmup + {steps} benchmark steps)...")
     
-    def loss_fn(model, input_ids, labels):
+    def loss_fn(trainable_params, input_ids, labels):
+        # Temporarily set model params to trainable subset
+        orig_params = dict(model.parameters())
+        model.update_params(trainable_params, strict=False)
+        
         logits = model(input_ids)
         shift_logits = logits[:, :-1, :]
         shift_labels = labels[:, 1:]
-        return nn.losses.cross_entropy(
+        loss = nn.losses.cross_entropy(
             shift_logits.reshape(-1, shift_logits.shape[-1]),
             shift_labels.reshape(-1),
             reduction="mean"
         )
+        
+        # Restore original params
+        model.update_params(orig_params, strict=False)
+        return loss
     
     def create_batch():
         vocab_size = tokenizer.tokenizer.vocab_size if hasattr(tokenizer, 'tokenizer') else tokenizer.vocab_size
@@ -210,8 +218,9 @@ def benchmark_mlx(steps: int, batch_size: int, seq_len: int, warmup: int = 2):
     
     for i in range(warmup):
         input_ids, labels = create_batch()
-        loss_and_grad = nn.value_and_grad(model, loss_fn)
-        loss, grads = loss_and_grad(model, input_ids, labels)
+        trainable_params = model.trainable_parameters()
+        loss_and_grad = nn.value_and_grad(loss_fn)
+        loss, grads = loss_and_grad(trainable_params, input_ids, labels)
         optimizer.update(model, grads)
         mx.eval(model, optimizer.state)
     
@@ -224,8 +233,9 @@ def benchmark_mlx(steps: int, batch_size: int, seq_len: int, warmup: int = 2):
         step_start = time.perf_counter()
         
         input_ids, labels = create_batch()
-        loss_and_grad = nn.value_and_grad(model, loss_fn)
-        loss, grads = loss_and_grad(model, input_ids, labels)
+        trainable_params = model.trainable_parameters()
+        loss_and_grad = nn.value_and_grad(loss_fn)
+        loss, grads = loss_and_grad(trainable_params, input_ids, labels)
         optimizer.update(model, grads)
         mx.eval(model, optimizer.state)
         
