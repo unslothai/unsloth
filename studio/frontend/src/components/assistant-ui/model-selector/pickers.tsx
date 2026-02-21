@@ -1,7 +1,14 @@
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
-import { useDebouncedValue, useHfModelSearch, useInfiniteScroll } from "@/hooks";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { useDebouncedValue, useGpuInfo, useHfModelSearch, useInfiniteScroll } from "@/hooks";
 import { cn, formatCompact } from "@/lib/utils";
+import type { VramFitStatus } from "@/lib/vram";
+import { checkVramFit, estimateLoadingVram } from "@/lib/vram";
 import { Search01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useMemo, useState, type ReactNode } from "react";
@@ -28,27 +35,77 @@ function ModelRow({
   meta,
   selected,
   onClick,
+  vramStatus,
+  vramEst,
+  gpuGb,
 }: {
   label: string;
   meta?: string;
   selected?: boolean;
   onClick: () => void;
+  vramStatus?: VramFitStatus | null;
+  vramEst?: number;
+  gpuGb?: number;
 }) {
-  return (
+  const exceeds = vramStatus === "exceeds";
+  const showVramTooltip =
+    vramEst != null && vramEst > 0 && gpuGb != null && gpuGb > 0;
+  const vramTooltipText =
+    showVramTooltip && vramStatus
+      ? exceeds
+        ? `Needs ~${vramEst}GB VRAM (GPU: ${gpuGb}GB)`
+        : vramStatus === "tight"
+          ? `~${vramEst}GB VRAM (tight fit on ${gpuGb}GB)`
+          : `~${vramEst}GB VRAM`
+      : null;
+
+  const content = (
     <button
       type="button"
       onClick={onClick}
       className={cn(
         "flex w-full items-center justify-between gap-2 rounded-md px-2.5 py-1.5 text-left text-sm transition-colors hover:bg-accent",
         selected && "bg-accent/60",
+        exceeds && "opacity-50",
       )}
     >
-      <span className="min-w-0 flex-1 truncate">{label}</span>
-      {meta ? (
-        <span className="shrink-0 text-[10px] text-muted-foreground">{meta}</span>
-      ) : null}
+      <span
+        className={cn(
+          "min-w-0 flex-1 truncate",
+          exceeds && "line-through decoration-muted-foreground/50",
+        )}
+      >
+        {label}
+      </span>
+      <span className="flex items-center gap-1.5 shrink-0">
+        {vramStatus === "exceeds" && (
+          <span className="text-[9px] font-medium text-red-400">OOM</span>
+        )}
+        {vramStatus === "tight" && (
+          <span className="text-[9px] font-medium text-amber-400">TIGHT</span>
+        )}
+        {vramStatus === "fits" && (
+          <span className="text-[9px] font-medium text-emerald-500/90">FIT</span>
+        )}
+        {meta ? (
+          <span className="text-[10px] text-muted-foreground">{meta}</span>
+        ) : null}
+      </span>
     </button>
   );
+
+  if (vramTooltipText) {
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>{content}</TooltipTrigger>
+        <TooltipContent side="left" className="max-w-xs break-all">
+          {label}
+          <span className="block text-[10px] mt-1">{vramTooltipText}</span>
+        </TooltipContent>
+      </Tooltip>
+    );
+  }
+  return content;
 }
 
 export function HubModelPicker({
@@ -60,6 +117,7 @@ export function HubModelPicker({
   value?: string;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
 }) {
+  const gpu = useGpuInfo();
   const [query, setQuery] = useState("");
   const debouncedQuery = useDebouncedValue(query);
   const { results, isLoading, isLoadingMore, fetchMore } = useHfModelSearch(
@@ -93,6 +151,30 @@ export function HubModelPicker({
       ),
     [results],
   );
+
+  const vramMap = useMemo(() => {
+    const map = new Map<
+      string,
+      { est: number; status: VramFitStatus | null; detail: string | null }
+    >();
+    for (const r of results) {
+      const detail = r.totalParams
+        ? formatCompact(r.totalParams)
+        : r.downloads != null
+          ? `↓${formatCompact(r.downloads)}`
+          : null;
+      if (r.totalParams) {
+        const est = estimateLoadingVram(r.totalParams, "qlora");
+        const status = gpu.available
+          ? checkVramFit(est, gpu.memoryTotalGb)
+          : null;
+        map.set(r.id, { est, status, detail });
+      } else {
+        map.set(r.id, { est: 0, status: null, detail });
+      }
+    }
+    return map;
+  }, [results, gpu]);
 
   const { scrollRef, sentinelRef } = useInfiniteScroll(fetchMore, results.length);
 
@@ -144,15 +226,23 @@ export function HubModelPicker({
                   No matching models.
                 </div>
               ) : (
-                hfIds.map((id) => (
-                  <ModelRow
-                    key={id}
-                    label={id}
-                    meta={metricsById.get(id)}
-                    selected={value === id}
-                    onClick={() => onSelect(id, { source: "hub", isLora: false })}
-                  />
-                ))
+                hfIds.map((id) => {
+                  const vram = vramMap.get(id);
+                  return (
+                    <ModelRow
+                      key={id}
+                      label={id}
+                      meta={metricsById.get(id)}
+                      selected={value === id}
+                      onClick={() =>
+                        onSelect(id, { source: "hub", isLora: false })
+                      }
+                      vramStatus={vram?.status ?? null}
+                      vramEst={vram?.est}
+                      gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
+                    />
+                  );
+                })
               )}
               <div ref={sentinelRef} className="h-px" />
               {isLoadingMore ? (
