@@ -173,7 +173,12 @@ def benchmark_mlx(steps: int, batch_size: int, seq_len: int, warmup: int = 2):
     try:
         from mlx_lm.tuner.trainer import TrainingArgs, Dataset, evaluate
     except (ImportError, ModuleNotFoundError):
-        from mlx_lm.utils.tuner.trainer import TrainingArgs, Dataset, evaluate
+        try:
+            from mlx_lm.utils.tuner.trainer import TrainingArgs, Dataset, evaluate
+        except (ImportError, ModuleNotFoundError):
+            TrainingArgs = None
+            Dataset = None
+            evaluate = None
     from mlx.optimizers import AdamW
     
     print(f"\n{'='*60}")

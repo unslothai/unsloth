@@ -747,6 +747,16 @@ class MacPatcher:
             except ImportError:
                 pass
             
+            # Mock peft.tuners.lora.bnb to provide dummy functions for MPS
+            try:
+                import sys
+                from types import ModuleType
+                bnb_module = ModuleType("peft.tuners.lora.bnb")
+                bnb_module.dispatch_bnb_8bit = lambda *args, **kwargs: None
+                sys.modules["peft.tuners.lora.bnb"] = bnb_module
+            except Exception:
+                pass
+            
             return self._create_patch_result(name, PatchStatus.SUCCESS, "bnb detection disabled")
             
         except ImportError:
