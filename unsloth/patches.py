@@ -151,13 +151,15 @@ class MockModule(nn.Module):
                     return d
                 if isinstance(d, str):
                     try:
-                        return getattr(torch, d)
+                        return getattr(torch, d.split(".")[-1])
                     except:
                         return torch.float16
                 if str(type(d)) == "<class 'unsloth.patches.MockModule'>":
                     return torch.float16
                 try:
-                    return getattr(torch, str(d).split(".")[-1])
+                    # Handle torch.float16 vs torch.dtype
+                    name = str(d).split(".")[-1]
+                    return getattr(torch, name)
                 except:
                     return torch.float16
 

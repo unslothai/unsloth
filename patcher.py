@@ -844,7 +844,16 @@ class MacPatcher:
                 def __gt__(self, other): return self._parsed > Version(other)._parsed
                 def __ge__(self, other): return self._parsed >= Version(other)._parsed
             mod.Version = Version
-            mod._get_dtype = lambda dtype_str: __import__('torch', fromlist=[dtype_str]).float32
+
+            def _get_dtype(d):
+                import torch
+                if d is None: return torch.float32
+                if isinstance(d, torch.dtype): return d
+                if isinstance(d, str):
+                    return getattr(torch, d.split(".")[-1], torch.float32)
+                return torch.float32
+            
+            mod._get_dtype = _get_dtype
             mod.get_quant_type = lambda module: "unknown"
         elif fullname == "unsloth_zoo.log":
             import logging
