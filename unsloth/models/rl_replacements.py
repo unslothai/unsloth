@@ -822,7 +822,7 @@ def _safe_getsource(fn):
 RL_PRE_ITEMS["grpo_trainer"].append(_safe_getsource(grpo_compute_loss))
 RL_PRE_ITEMS["grpo_trainer"].append(_safe_getsource(UnslothEfficientGRPO))
 RL_PRE_ITEMS["grpo_trainer"].append(_safe_getsource(grpo_accumulated_loss))
-RL_PRE_ITEMS["grpo_trainer"].append(grpo_compute_loss_slow)
+RL_PRE_ITEMS["grpo_trainer"].append(_safe_getsource(grpo_compute_loss_slow))
 RL_PRE_ITEMS["grpo_trainer"].append(_safe_getsource(grpo_update_SamplingParams))
 RL_PRE_ITEMS["grpo_trainer"].append(_safe_getsource(_get_inference_mode_context_manager))
 
