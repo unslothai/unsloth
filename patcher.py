@@ -855,6 +855,7 @@ class MacPatcher:
             
             mod._get_dtype = _get_dtype
             mod.get_quant_type = lambda module: "unknown"
+            mod.add_dtype_kwargs = lambda *a, **k: {}
         elif fullname == "unsloth_zoo.log":
             import logging
             logger = logging.getLogger("unsloth_zoo")
@@ -867,6 +868,8 @@ class MacPatcher:
         elif fullname == "unsloth_zoo.hf_utils":
             mod.HAS_TORCH_DTYPE = True
             mod.dtype_from_config = lambda cfg, key: cfg.get(key, "float32")
+            mod.add_dtype_kwargs = lambda *a, **k: {}
+            mod.fix_lora_auto_mapping = lambda *a, **k: None
         elif fullname == "unsloth_zoo.peft_utils":
             mod.SKIP_QUANTIZATION_MODULES = []
             mod.get_peft_regex = lambda *a, **k: None
@@ -888,6 +891,22 @@ class MacPatcher:
             class _DummyBnbLinear: pass
             mod.Bnb_Linear4bit = _DummyBnbLinear
             mod.Peft_Linear4bit = _DummyBnbLinear
+            mod.patch_model_and_tokenizer = lambda m, t, **k: (m, t)
+            mod.patch_layernorm = lambda *a, **k: None
+            mod.patch_torch_compile = lambda *a, **k: None
+            mod.patch_compiling_bitsandbytes = lambda *a, **k: None
+            mod.patch_compiled_autograd = lambda *a, **k: None
+        elif fullname == "unsloth_zoo.gradient_checkpointing":
+            mod.Unsloth_Offloaded_Gradient_Checkpointer = type("Offloaded", (), {})
+            mod.unsloth_offloaded_gradient_checkpoint = lambda *a, **k: None
+            mod.patch_unsloth_gradient_checkpointing = lambda *a, **k: None
+            mod.unpatch_unsloth_gradient_checkpointing = lambda *a, **k: None
+            mod.Unsloth_Gradient_Checkpointer = type("GC", (), {})
+            mod.unsloth_gradient_checkpoint = lambda *a, **k: None
+            mod.patch_gradient_checkpointing = lambda *a, **k: None
+            mod.unpatch_gradient_checkpointing = lambda *a, **k: None
+            mod.patch_unsloth_smart_gradient_checkpointing = lambda *a, **k: None
+            mod.unpatch_unsloth_smart_gradient_checkpointing = lambda *a, **k: None
         elif fullname == "unsloth_zoo.fused_losses":
             mod.cross_entropy_loss = ModuleType("unsloth_zoo.fused_losses.cross_entropy_loss")
         
