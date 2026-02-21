@@ -104,7 +104,8 @@ def sft_trainer_prepare_dataset(function_name, function):
         return function
 
     fast_sft_prepare_dataset = RL_REPLACEMENTS.get("sft_prepare_dataset", None)
-    if fast_sft_prepare_dataset is not None:
+    if (fast_sft_prepare_dataset is not None and 
+        not hasattr(fast_sft_prepare_dataset, "_unsloth_mock")):
         params = inspect.signature(fast_sft_prepare_dataset).parameters.keys()
         params = ".*?".join(params)
         matched = re.match(

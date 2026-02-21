@@ -81,13 +81,19 @@ class MockModule(nn.Module):
             return _DummyLinear
 
         # RL Specialization
-        if "rl_replacements" in self.__name__:
+        if "rl_replacements" in self.__name__ or "rl_environments" in self.__name__:
             if name == "RL_REPLACEMENTS":
                 return collections.defaultdict(
                     lambda: _unsloth_dummy_fn,
                     {"grpo_compute_loss_slow": "def dummy(): pass"},
                 )
             if name == "RL_PRE_ITEMS":
+                return collections.defaultdict(list)
+            if name == "left_pack_padding":
+                return _unsloth_dummy_fn
+            if name == "RL_METRICS_CHANGES":
+                return collections.defaultdict(list)
+            if name == "RL_CONFIG_CHANGES":
                 return collections.defaultdict(list)
 
         # Versioning/Utility Specialization
@@ -254,10 +260,15 @@ class UnslothMockFinder(MetaPathFinder):
             fullname == t or fullname.startswith(f"{t}.") for t in self.mock_targets
         ):
             # Check if it's already a real module (e.g. partially loaded before patcher)
-            if fullname in sys.modules and not hasattr(
-                sys.modules[fullname], "_unsloth_mock"
-            ):
-                return None
+            if fullname in sys.modules:
+                mod = sys.modules[fullname]
+                if hasattr(mod, "_unsloth_mock"):
+                    return None
+                # If it's just a dummy module (e.g. from another patcher), we can replace it
+                # if we are sure it's one of our targets.
+                # However, to be safe, we just return a spec that will create our MockModule
+                # which will then be inserted into sys.modules, effectively replacing it.
+            
             return ModuleSpec(fullname, UnslothMockLoader(), origin="unsloth_mock")
 
         # 2. On-the-fly Patching for PEFT/BNB.nn
@@ -281,7 +292,9 @@ class UnslothMockFinder(MetaPathFinder):
 class UnslothMockLoader(Loader):
     def create_module(self, spec):
         if spec.name in sys.modules:
-            return sys.modules[spec.name]
+            mod = sys.modules[spec.name]
+            if hasattr(mod, "_unsloth_mock"):
+                return mod
         return MockModule(spec.name)
 
     def exec_module(self, module):
