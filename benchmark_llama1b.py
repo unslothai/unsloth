@@ -1,17 +1,23 @@
 #!/usr/bin/env python3
-"""Benchmark PyTorch vs MLX training with real LLaMA 1B model.
+"""
+Benchmark: PyTorch + Unsloth vs MLX Fine-Tuning on LLaMA 1B
+
+Compares training speed and memory usage between PyTorch/Unsloth and MLX.
 
 Usage:
-    python benchmark_llama1b.py
-    python benchmark_llama1b.py --steps 10 --batch-size 1
+    python benchmark_llama1b.py --steps 20 --batch-size 2
 """
-
-import sys
-import os
-import time
 import argparse
 import gc
+import sys
+import time
 import platform
+
+if platform.system() == "Darwin":
+    from patcher import patch_for_mac
+    patch_for_mac()
+
+import torch
 
 MODEL_NAME = "unsloth/Llama-3.2-1B-Instruct"
 
@@ -66,7 +72,7 @@ def benchmark_pytorch(steps: int, batch_size: int, seq_len: int, warmup: int = 2
     model = FastLanguageModel.get_peft_model(
         model,
         r=16,
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
         lora_alpha=32,
         lora_dropout=0,
         bias="none",
