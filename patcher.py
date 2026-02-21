@@ -878,7 +878,7 @@ class MacPatcher:
             mod.logger = logger
         elif fullname == "unsloth_zoo.hf_utils":
             mod.HAS_TORCH_DTYPE = True
-            mod.dtype_from_config = lambda cfg, key: cfg.get(key, "float32")
+            mod.dtype_from_config = lambda cfg, key="torch_dtype": cfg.get(key, "float32")
             mod.add_dtype_kwargs = lambda *a, **k: {}
             mod.fix_lora_auto_mapping = lambda *a, **k: None
         elif fullname == "unsloth_zoo.peft_utils":
