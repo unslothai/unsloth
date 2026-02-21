@@ -187,7 +187,7 @@ export function useChatModelRuntime() {
         });
 
         await toast.promise(loadPromise, {
-          loading: "Downloading model…",
+          loading: "Loading model…",
           success: `${displayName} loaded`,
           error: (err) =>
             err instanceof Error ? err.message : "Failed to load model",
