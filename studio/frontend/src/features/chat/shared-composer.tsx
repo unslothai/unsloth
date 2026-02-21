@@ -38,7 +38,6 @@ function fileToBase64DataURL(file: File): Promise<string> {
 }
 
 function useDictation(
-  textareaRef: React.RefObject<HTMLTextAreaElement | null>,
   setText: (value: string | ((prev: string) => string)) => void,
 ) {
   const [isDictating, setIsDictating] = useState(false);
@@ -188,7 +187,6 @@ export function SharedComposer({
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const { isDictating, start: startDictation, stop: stopDictation, supported: dictationSupported } = useDictation(
-    textareaRef,
     setText,
   );
 
