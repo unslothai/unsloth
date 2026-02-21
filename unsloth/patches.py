@@ -184,6 +184,9 @@ class MockModule(nn.Module):
             if name == "ALLOW_BITSANDBYTES":
                 return False
 
+        if name == "fix_lora_auto_mapping":
+            return lambda *a, **k: None
+
         # Default: Return another mock ONLY if we are in a mock target package
         if any(
             self.__name__.startswith(t)
@@ -194,7 +197,7 @@ class MockModule(nn.Module):
         raise AttributeError(f"MockModule '{self.__name__}' has no attribute '{name}'")
 
     def __iter__(self):
-        return iter([self, self])
+        return iter([])
 
     def __getitem__(self, key):
         return self

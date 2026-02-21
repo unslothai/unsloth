@@ -157,8 +157,13 @@ def benchmark_mlx(steps: int, batch_size: int, seq_len: int, warmup: int = 2):
         try:
             from mlx_lm.utils import linear_to_lora
         except ImportError:
-            # For even newer mlx-lm versions
-            from mlx_lm.lora import linear_to_lora
+            try:
+                from mlx_lm.lora import linear_to_lora
+            except ImportError:
+                try:
+                    from mlx_lm.tuner.utils import linear_to_lora
+                except ImportError:
+                    from mlx_lm.utils.tuner import linear_to_lora
     from mlx_lm.tuner.trainer import TrainingArgs, Dataset, evaluate
     from mlx.optimizers import AdamW
     
