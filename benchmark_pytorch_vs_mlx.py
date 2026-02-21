@@ -235,8 +235,9 @@ class MLXLoRAModel:
                 x = x + self.mlp(h)
                 return x
         
-        class SimpleTransformer:
+        class SimpleTransformer(nn.Module):
             def __init__(self, vocab_size, hidden_size, intermediate_size, num_layers, num_heads, lora_r, lora_scaling):
+                super().__init__()
                 self.embed = Embedding(vocab_size, hidden_size)
                 self.layers = [TransformerBlock(hidden_size, num_heads, intermediate_size) for _ in range(num_layers)]
                 self.norm = nn.LayerNorm(hidden_size)
