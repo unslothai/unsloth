@@ -976,6 +976,11 @@ class MacPatcher:
                 if full_name not in sys.modules:
                     sys.modules[full_name] = self._create_unsloth_zoo_mock_module(full_name, loader)
                     print(f"[MLX MOCK] pre-populated: {full_name}")
+                submod = sys.modules[full_name]
+                parent_name = "unsloth_zoo"
+                attr_name = full_name.split(".")[-1] if "." in full_name else full_name.replace("unsloth_zoo.", "")
+                if parent_name in sys.modules:
+                    setattr(sys.modules[parent_name], attr_name, submod)
             
             # Verify vision_utils has the attribute
             vu = sys.modules.get("unsloth_zoo.vision_utils")
