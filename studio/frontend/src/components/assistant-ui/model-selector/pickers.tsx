@@ -5,7 +5,13 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { useDebouncedValue, useGpuInfo, useHfModelSearch, useInfiniteScroll } from "@/hooks";
+import {
+  useDebouncedValue,
+  useGpuInfo,
+  useHfModelSearch,
+  useInfiniteScroll,
+  useRecommendedModelVram,
+} from "@/hooks";
 import { cn, formatCompact } from "@/lib/utils";
 import type { VramFitStatus } from "@/lib/vram";
 import { checkVramFit, estimateLoadingVram } from "@/lib/vram";
@@ -129,6 +135,9 @@ export function HubModelPicker({
     [models, value],
   );
 
+  const { paramCountById: recommendedParamCountById } =
+    useRecommendedModelVram(recommendedIds);
+
   const showHfSection = debouncedQuery.trim().length > 0;
   const recommendedSet = useMemo(() => new Set(recommendedIds), [recommendedIds]);
 
@@ -176,6 +185,25 @@ export function HubModelPicker({
     return map;
   }, [results, gpu]);
 
+  const recommendedVramMap = useMemo(() => {
+    const map = new Map<
+      string,
+      { est: number; status: VramFitStatus | null; detail: string | null }
+    >();
+    for (const id of recommendedIds) {
+      const totalParams = recommendedParamCountById.get(id);
+      if (totalParams) {
+        const est = estimateLoadingVram(totalParams, "qlora");
+        const status = gpu.available
+          ? checkVramFit(est, gpu.memoryTotalGb)
+          : null;
+        const detail = formatCompact(totalParams);
+        map.set(id, { est, status, detail });
+      }
+    }
+    return map;
+  }, [recommendedIds, recommendedParamCountById, gpu]);
+
   const { scrollRef, sentinelRef } = useInfiniteScroll(fetchMore, results.length);
 
   return (
@@ -206,14 +234,23 @@ export function HubModelPicker({
                   No default models.
                 </div>
               ) : (
-                recommendedIds.map((id) => (
-                  <ModelRow
-                    key={id}
-                    label={id}
-                    selected={value === id}
-                    onClick={() => onSelect(id, { source: "hub", isLora: false })}
-                  />
-                ))
+                recommendedIds.map((id) => {
+                  const vram = recommendedVramMap.get(id);
+                  return (
+                    <ModelRow
+                      key={id}
+                      label={id}
+                      meta={vram?.detail ?? undefined}
+                      selected={value === id}
+                      onClick={() =>
+                        onSelect(id, { source: "hub", isLora: false })
+                      }
+                      vramStatus={vram?.status ?? null}
+                      vramEst={vram?.est}
+                      gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
+                    />
+                  );
+                })
               )}
             </>
           ) : null}
