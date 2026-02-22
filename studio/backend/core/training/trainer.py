@@ -792,7 +792,7 @@ class UnslothTrainer:
                 trainer_kwargs = {
                     "model": self.model,
                     "train_dataset": dataset['dataset'],
-                    "processing_class": self.tokenizer.tokenizer,
+                    "processing_class": self.tokenizer,
                     "data_collator": data_collator,
                     "args": SFTConfig(**config_args),
                 }
