@@ -248,6 +248,10 @@ async def get_model_config(
     This endpoint wraps the backend load_model_defaults function.
     """
     try:
+        # Ensure correct transformers version for this model architecture
+        from utils.transformers_version import ensure_transformers_version
+        ensure_transformers_version(model_name)
+
         logger.info(f"Getting model config for: {model_name}")
         # Load model defaults from backend
         config_dict = load_model_defaults(model_name)
@@ -371,6 +375,10 @@ async def check_vision_model(
     This endpoint wraps the backend is_vision_model function.
     """
     try:
+        # Ensure correct transformers version for this model architecture
+        from utils.transformers_version import ensure_transformers_version
+        ensure_transformers_version(model_name)
+
         logger.info(f"Checking if vision model: {model_name}")
         is_vision = is_vision_model(model_name)
         
