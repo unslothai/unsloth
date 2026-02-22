@@ -210,11 +210,7 @@ export function ModelSection() {
       { est: number; status: VramFitStatus | null; detail: string | null }
     >();
     for (const r of hfResults) {
-      const detail = r.totalParams
-        ? formatCompact(r.totalParams)
-        : r.downloads != null
-          ? `\u2193${formatCompact(r.downloads)}`
-          : null;
+      const detail = r.totalParams ? formatCompact(r.totalParams) : null;
       if (r.totalParams) {
         const est = estimateLoadingVram(r.totalParams, method);
         const status = gpu.available
