@@ -59,4 +59,3 @@ export function syncSizesRecord(
   }
   return prev;
 }
-

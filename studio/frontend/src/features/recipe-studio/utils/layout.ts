@@ -6,6 +6,7 @@ type LayoutOptions = {
   direction?: LayoutDirection;
   nodesep?: number;
   ranksep?: number;
+  edgesep?: number;
   nodeWidth?: number;
   nodeHeight?: number;
 };
@@ -19,13 +20,20 @@ export function getLayoutedElements<TNode extends Node>(
     direction = "LR",
     nodesep = 80,
     ranksep = 80,
+    edgesep = 28,
     nodeWidth = 220,
     nodeHeight = 64,
   } = options;
 
   const graph = new dagre.graphlib.Graph();
   graph.setDefaultEdgeLabel(() => ({}));
-  graph.setGraph({ rankdir: direction, nodesep, ranksep });
+  graph.setGraph({
+    rankdir: direction,
+    nodesep,
+    ranksep,
+    edgesep,
+    ranker: "network-simplex",
+  });
 
   nodes.forEach((node) => {
     const width = node.measured?.width ?? nodeWidth;
@@ -34,7 +42,12 @@ export function getLayoutedElements<TNode extends Node>(
   });
 
   edges.forEach((edge) => {
-    graph.setEdge(edge.source, edge.target);
+    const semantic = edge.type === "semantic";
+    const aux = edge.source.startsWith("aux-") || edge.target.startsWith("aux-");
+    graph.setEdge(edge.source, edge.target, {
+      minlen: semantic ? 1 : 1,
+      weight: semantic ? 10 : aux ? 1 : 3,
+    });
   });
 
   dagre.layout(graph);

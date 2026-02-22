@@ -90,6 +90,7 @@ export function RecipeStudioPage({
     edges,
     auxNodePositions,
     auxNodeSizes,
+    llmAuxVisibility,
     configs,
     processors,
     sheetView,
@@ -125,6 +126,7 @@ export function RecipeStudioPage({
       edges: state.edges,
       auxNodePositions: state.auxNodePositions,
       auxNodeSizes: state.auxNodeSizes,
+      llmAuxVisibility: state.llmAuxVisibility,
       configs: state.configs,
       processors: state.processors,
       sheetView: state.sheetView,
@@ -187,8 +189,17 @@ export function RecipeStudioPage({
       layoutDirection,
       auxNodePositions,
       auxNodeSizes,
+      llmAuxVisibility,
     });
-  }, [auxNodePositions, auxNodeSizes, configs, edges, layoutDirection, nodes]);
+  }, [
+    auxNodePositions,
+    auxNodeSizes,
+    configs,
+    edges,
+    layoutDirection,
+    llmAuxVisibility,
+    nodes,
+  ]);
   const displayNodeIds = useMemo(
     () => displayGraph.nodes.map((node) => node.id),
     [displayGraph.nodes],
@@ -358,7 +369,7 @@ export function RecipeStudioPage({
                 edgeTypes={EDGE_TYPES}
                 defaultEdgeOptions={{
                   type: "canvas",
-                  data: { path: "auto" },
+                  data: { path: "smoothstep" },
                 }}
                 onNodesChange={handleNodesChange}
                 onEdgesChange={handleEdgesChange}
