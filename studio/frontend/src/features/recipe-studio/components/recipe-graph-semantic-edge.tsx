@@ -11,6 +11,7 @@ export const RecipeGraphSemanticEdge = memo(function RecipeGraphSemanticEdge({
   targetPosition,
   style,
   markerEnd,
+  selected,
 }: EdgeProps): ReactElement {
   const [path] = getSmoothStepPath({
     sourceX,
@@ -29,9 +30,12 @@ export const RecipeGraphSemanticEdge = memo(function RecipeGraphSemanticEdge({
       path={path}
       markerEnd={markerEnd}
       style={{
-        strokeDasharray: "4 4",
-        strokeWidth: 1.5,
-        stroke: "var(--muted-foreground)",
+        strokeDasharray: selected ? "7 5" : "6 5",
+        strokeWidth: selected ? 2.3 : 1.8,
+        stroke: selected
+          ? "hsl(var(--primary) / 0.9)"
+          : "hsl(var(--foreground) / 0.38)",
+        opacity: selected ? 1 : 0.92,
         ...style,
       }}
     />

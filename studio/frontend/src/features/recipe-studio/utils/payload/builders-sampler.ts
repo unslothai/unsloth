@@ -153,14 +153,12 @@ function buildSamplerParams(
   if (config.person_locale?.trim()) {
     params.locale = config.person_locale.trim();
   }
-  if (config.sampler_type === "person") {
-    if (isValidSex(config.person_sex?.trim())) {
-      params.sex = config.person_sex?.trim();
-    } else if (config.person_sex?.trim()) {
+  if (config.person_sex?.trim()) {
+    if (isValidSex(config.person_sex.trim())) {
+      params.sex = config.person_sex.trim();
+    } else {
       errors.push(`Person ${config.name}: sex must be Male or Female.`);
     }
-  } else if (config.person_sex?.trim()) {
-    params.sex = config.person_sex.trim();
   }
   if (config.person_city?.trim()) {
     params.city = config.person_city.trim();
@@ -173,11 +171,6 @@ function buildSamplerParams(
     } else {
       errors.push(`Person ${config.name}: age range must be like 18-70.`);
     }
-  }
-  if (config.sampler_type === "person") {
-    // biome-ignore lint/style/useNamingConvention: api schema
-    params.with_synthetic_personas =
-      config.person_with_synthetic_personas ?? undefined;
   }
   return params;
 }

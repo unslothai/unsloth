@@ -72,7 +72,7 @@ export type BlockDefinition = {
 export const BLOCK_GROUPS: BlockGroup[] = [
   {
     kind: "sampler",
-    title: "Sampler",
+    title: "Samplers",
     description: "Numeric + categorical blocks.",
     icon: DiceFaces03Icon,
   },
@@ -84,8 +84,8 @@ export const BLOCK_GROUPS: BlockGroup[] = [
   },
   {
     kind: "llm",
-    title: "LLM",
-    description: "Text + structured blocks.",
+    title: "LLM + Models",
+    description: "Generation, providers, and model aliases.",
     icon: PencilEdit02Icon,
   },
   {
@@ -182,7 +182,7 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
     kind: "sampler",
     type: "person",
     title: "Person",
-    description: "Synthetic person sampler.",
+    description: "Faker person sampler.",
     icon: UserAccountIcon,
     dialogKey: "person",
     createConfig: (id, existing) => makeSamplerConfig(id, "person", existing),
@@ -227,7 +227,7 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
     kind: "llm",
     type: "model_provider",
     title: "Model Provider",
-    description: "Configure API endpoint + key.",
+    description: "Endpoint, auth, and provider settings.",
     icon: Shield02Icon,
     dialogKey: "model_provider",
     createConfig: (id, existing) => makeModelProviderConfig(id, existing),
@@ -236,7 +236,7 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
     kind: "llm",
     type: "model_config",
     title: "Model Config",
-    description: "Alias + model + inference params.",
+    description: "Alias, model, provider, and inference params.",
     icon: Plant01Icon,
     dialogKey: "model_config",
     createConfig: (id, existing) => makeModelConfig(id, existing),
@@ -291,4 +291,3 @@ export function getBlockDefinitionForConfig(
   }
   return getBlockDefinition("expression", "expression");
 }
-

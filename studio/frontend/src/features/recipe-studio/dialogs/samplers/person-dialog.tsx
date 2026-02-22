@@ -6,8 +6,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
-import type { ReactElement } from "react";
+import { type ReactElement, useEffect } from "react";
 import type { SamplerConfig } from "../../types";
 import { NameField } from "../shared/name-field";
 
@@ -24,13 +23,23 @@ export function PersonDialog({
   const sexId = `${config.id}-person-sex`;
   const ageRangeId = `${config.id}-person-age-range`;
   const cityId = `${config.id}-person-city`;
-  const sourceId = `${config.id}-person-source`;
+
   const updateField = <K extends keyof SamplerConfig>(
     key: K,
     value: SamplerConfig[K],
   ) => {
     onUpdate({ [key]: value } as Partial<SamplerConfig>);
   };
+
+  useEffect(() => {
+    if (config.sampler_type !== "person_from_faker") {
+      onUpdate({
+        sampler_type: "person_from_faker",
+        person_with_synthetic_personas: undefined,
+      });
+    }
+  }, [config.sampler_type, onUpdate]);
+
   return (
     <div className="space-y-4">
       <NameField
@@ -38,30 +47,11 @@ export function PersonDialog({
         onChange={(value) => onUpdate({ name: value })}
       />
       <div className="grid gap-3">
-        <div className="grid gap-2">
-          <label
-            className="text-xs font-semibold uppercase text-muted-foreground"
-            htmlFor={sourceId}
-          >
+        <div className="rounded-2xl border border-border/60 px-3 py-2">
+          <p className="text-xs font-semibold uppercase text-muted-foreground">
             Source
-          </label>
-          <Select
-            value={config.sampler_type === "person_from_faker" ? "faker" : "person"}
-            onValueChange={(value) =>
-              updateField(
-                "sampler_type",
-                value === "faker" ? "person_from_faker" : "person",
-              )
-            }
-          >
-            <SelectTrigger className="nodrag w-full" id={sourceId}>
-              <SelectValue placeholder="Select source" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="person">Managed dataset</SelectItem>
-              <SelectItem value="faker">Faker</SelectItem>
-            </SelectContent>
-          </Select>
+          </p>
+          <p className="text-sm text-foreground">Faker</p>
         </div>
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="grid gap-2">
@@ -137,22 +127,6 @@ export function PersonDialog({
             />
           </div>
         </div>
-        {config.sampler_type === "person" && (
-          <div className="flex items-center justify-between gap-3 rounded-2xl border border-border/60 px-3 py-2">
-            <div>
-              <p className="text-sm font-semibold">Synthetic personas</p>
-              <p className="text-xs text-muted-foreground">
-                Generate persona profiles.
-              </p>
-            </div>
-            <Switch
-              checked={config.person_with_synthetic_personas ?? false}
-              onCheckedChange={(value) =>
-                updateField("person_with_synthetic_personas", value)
-              }
-            />
-          </div>
-        )}
       </div>
     </div>
   );

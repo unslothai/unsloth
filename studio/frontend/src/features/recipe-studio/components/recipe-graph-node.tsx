@@ -253,13 +253,13 @@ function LlmInputHandles({ items, isTopBottom }: LlmInputHandlesProps): ReactEle
             key={item.id}
             className="pointer-events-none relative flex min-w-[80px] flex-1 justify-center pt-2"
           >
-            <Handle
-              id={item.id}
-              type="target"
-              position={Position.Top}
-              className="pointer-events-auto !size-2 !border-border !bg-background"
-              style={{ left: "50%", top: 0, transform: "translate(-50%, -50%)" }}
-            />
+          <Handle
+            id={item.id}
+            type="target"
+            position={Position.Top}
+            className="pointer-events-auto !size-2.5 !border-border/80 !bg-muted shadow-sm hover:!border-primary/70 hover:!bg-primary/20"
+            style={{ left: "50%", top: 0, transform: "translate(-50%, -50%)" }}
+          />
             <span className="text-[10px] text-muted-foreground">{item.label}</span>
           </div>
         ))}
@@ -275,7 +275,7 @@ function LlmInputHandles({ items, isTopBottom }: LlmInputHandlesProps): ReactEle
             id={item.id}
             type="target"
             position={Position.Left}
-            className="pointer-events-auto !size-2 !border-border !bg-background"
+            className="pointer-events-auto !size-2.5 !border-border/80 !bg-muted shadow-sm hover:!border-primary/70 hover:!bg-primary/20"
             style={{ left: -3, top: "50%", transform: "translate(-50%, -50%)" }}
           />
           <span className="block truncate text-[10px] text-muted-foreground">
@@ -383,7 +383,7 @@ function RecipeGraphNodeBase({
             position={dataInPosition}
             className="absolute inset-0 pointer-events-none"
             labelClassName="sr-only"
-            handleClassName="pointer-events-auto !size-2 !border-border !bg-background"
+            handleClassName="pointer-events-auto !size-2.5 !border-border/80 !bg-muted shadow-sm hover:!border-primary/70 hover:!bg-primary/20"
           />
           <LabeledHandle
             id={HANDLE_IDS.dataOut}
@@ -392,7 +392,7 @@ function RecipeGraphNodeBase({
             position={dataOutPosition}
             className="absolute inset-0 pointer-events-none"
             labelClassName="sr-only"
-            handleClassName="pointer-events-auto !size-2 !border-border !bg-background"
+            handleClassName="pointer-events-auto !size-2.5 !border-border/80 !bg-muted shadow-sm hover:!border-primary/70 hover:!bg-primary/20"
           />
         </>
       )}
@@ -405,7 +405,7 @@ function RecipeGraphNodeBase({
           position={semanticInPosition}
           className="absolute inset-0 pointer-events-none"
           labelClassName="sr-only"
-          handleClassName="pointer-events-auto !size-2 !border-border !bg-background"
+          handleClassName="pointer-events-auto !size-2.5 !border-border/80 !bg-muted shadow-sm hover:!border-primary/70 hover:!bg-primary/20"
         />
       )}
 
@@ -417,7 +417,7 @@ function RecipeGraphNodeBase({
           position={semanticOutPosition}
           className="absolute inset-0 pointer-events-none"
           labelClassName="sr-only"
-          handleClassName="pointer-events-auto !size-2 !border-border !bg-background"
+          handleClassName="pointer-events-auto !size-2.5 !border-border/80 !bg-muted shadow-sm hover:!border-primary/70 hover:!bg-primary/20"
         />
       )}
     </BaseNode>

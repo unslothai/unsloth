@@ -41,6 +41,7 @@ const CODE_LANG_OPTIONS = [
 type LlmGeneralTabProps = {
   config: LlmConfig;
   modelConfigAliases: string[];
+  modelProviderOptions: string[];
   modelAliasAnchorRef: RefObject<HTMLDivElement | null>;
   onUpdate: (patch: Partial<LlmConfig>) => void;
 };
@@ -48,6 +49,7 @@ type LlmGeneralTabProps = {
 export function LlmGeneralTab({
   config,
   modelConfigAliases,
+  modelProviderOptions,
   modelAliasAnchorRef,
   onUpdate,
 }: LlmGeneralTabProps): ReactElement {
@@ -56,11 +58,22 @@ export function LlmGeneralTab({
   const promptId = `${config.id}-prompt`;
   const outputFormatId = `${config.id}-output-format`;
   const systemPromptId = `${config.id}-system-prompt`;
+  const hasModelConfigs = modelConfigAliases.length > 0;
+  const hasModelProviders = modelProviderOptions.length > 0;
 
   return (
     <div className="space-y-4">
       <AvailableVariables configId={config.id} />
       <NameField value={config.name} onChange={(value) => onUpdate({ name: value })} />
+      {(!hasModelConfigs || !hasModelProviders) && (
+        <div className="rounded-2xl border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+          <p className="font-semibold text-foreground">Setup hint</p>
+          <p>
+            {!hasModelProviders && "Add a Model Provider block. "}
+            {!hasModelConfigs && "Add a Model Config block and pick its alias here."}
+          </p>
+        </div>
+      )}
       <div className="grid gap-2">
         <label
           className="text-xs font-semibold uppercase text-muted-foreground"

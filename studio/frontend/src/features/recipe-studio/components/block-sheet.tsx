@@ -36,6 +36,8 @@ type BlockSheetProps = {
   container: HTMLDivElement | null;
   sheetView: SheetView;
   onViewChange: (sheetView: SheetView) => void;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
   onAddSampler: (type: SamplerType) => void;
   onAddSeed: () => void;
   onAddLlm: (type: LlmType) => void;
@@ -128,6 +130,8 @@ export function BlockSheet({
   container,
   sheetView,
   onViewChange,
+  open,
+  onOpenChange,
   onAddSampler,
   onAddSeed,
   onAddLlm,
@@ -140,16 +144,26 @@ export function BlockSheet({
   onImport,
 }: BlockSheetProps): ReactElement {
   const sheetTitle = getSheetTitle(sheetView);
-  const [open, setOpen] = useState(false);
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const expressionBlocks = useMemo(() => getBlocksForKind("expression"), []);
   const seedBlocks = useMemo(() => getBlocksForKind("seed"), []);
+  const isControlled = typeof open === "boolean";
+  const sheetOpen = isControlled ? (open as boolean) : uncontrolledOpen;
+
+  const setSheetOpen = (nextOpen: boolean) => {
+    if (!isControlled) {
+      setUncontrolledOpen(nextOpen);
+    }
+    onOpenChange?.(nextOpen);
+  };
+
   return (
     <div className="flex flex-col items-end gap-2">
       <Sheet
-        open={open}
-        onOpenChange={(open) => {
-          setOpen(open);
-          if (open) {
+        open={sheetOpen}
+        onOpenChange={(nextOpen) => {
+          setSheetOpen(nextOpen);
+          if (nextOpen) {
             onViewChange("root");
           }
         }}
@@ -201,17 +215,17 @@ export function BlockSheet({
                     isActive={index === 0}
                     onClick={() => {
                       if (item.kind === "processor") {
-                        setOpen(false);
+                        setSheetOpen(false);
                         onOpenProcessors();
                         return;
                       }
                       if (item.kind === "seed" && seedBlocks.length === 1) {
-                        setOpen(false);
+                        setSheetOpen(false);
                         onAddSeed();
                         return;
                       }
                       if (item.kind === "expression" && expressionBlocks.length === 1) {
-                        setOpen(false);
+                        setSheetOpen(false);
                         onAddExpression();
                         return;
                       }

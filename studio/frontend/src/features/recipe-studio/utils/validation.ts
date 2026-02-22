@@ -108,21 +108,16 @@ export function getConfigErrors(config: NodeConfig | null): string[] {
     if (config.sampler_type === "subcategory" && !config.subcategory_parent) {
       errors.push("Subcategory needs a parent category column.");
     }
-    if (config.sampler_type === "person") {
+    if (
+      config.sampler_type === "person" ||
+      config.sampler_type === "person_from_faker"
+    ) {
       if (config.person_sex?.trim()) {
         const normalized = config.person_sex.trim();
         if (!isValidSex(normalized)) {
           errors.push("Person sex must be Male or Female.");
         }
       }
-      if (config.person_age_range?.trim()) {
-        const parsed = parseAgeRange(config.person_age_range);
-        if (!parsed) {
-          errors.push("Person age range must be like 18-70.");
-        }
-      }
-    }
-    if (config.sampler_type === "person_from_faker") {
       if (config.person_age_range?.trim()) {
         const parsed = parseAgeRange(config.person_age_range);
         if (!parsed) {
