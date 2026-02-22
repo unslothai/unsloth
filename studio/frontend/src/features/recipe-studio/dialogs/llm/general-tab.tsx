@@ -17,6 +17,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { type ReactElement, type RefObject } from "react";
 import type { LlmConfig } from "../../types";
 import { AvailableVariables } from "../shared/available-variables";
+import { FieldLabel } from "../shared/field-label";
 import { NameField } from "../shared/name-field";
 
 const CODE_LANG_OPTIONS = [
@@ -75,12 +76,11 @@ export function LlmGeneralTab({
         </div>
       )}
       <div className="grid gap-2">
-        <label
-          className="text-xs font-semibold uppercase text-muted-foreground"
+        <FieldLabel
+          label="Model alias"
           htmlFor={modelAliasId}
-        >
-          Model alias
-        </label>
+          hint="Alias must match a Model Config block."
+        />
         <div ref={modelAliasAnchorRef}>
           <Combobox
             items={modelConfigAliases}
@@ -117,12 +117,11 @@ export function LlmGeneralTab({
       </div>
       {config.llm_type === "code" && (
         <div className="grid gap-2">
-          <label
-            className="text-xs font-semibold uppercase text-muted-foreground"
+          <FieldLabel
+            label="Code language"
             htmlFor={codeLangId}
-          >
-            Code language
-          </label>
+            hint="Target language for LLM code generation."
+          />
           <Select
             value={config.code_lang ?? "python"}
             onValueChange={(value) => onUpdate({ code_lang: value })}
@@ -141,12 +140,11 @@ export function LlmGeneralTab({
         </div>
       )}
       <div className="grid gap-2">
-        <label
-          className="text-xs font-semibold uppercase text-muted-foreground"
+        <FieldLabel
+          label="Prompt"
           htmlFor={promptId}
-        >
-          Prompt
-        </label>
+          hint="Jinja template. references other columns via {{ variable }}."
+        />
         <Textarea
           id={promptId}
           className="corner-squircle nodrag"
@@ -156,12 +154,11 @@ export function LlmGeneralTab({
       </div>
       {config.llm_type === "structured" && (
         <div className="grid gap-2">
-          <label
-            className="text-xs font-semibold uppercase text-muted-foreground"
+          <FieldLabel
+            label="Output format (JSON schema)"
             htmlFor={outputFormatId}
-          >
-            Output format (JSON schema)
-          </label>
+            hint="Schema used to constrain structured JSON output."
+          />
           <Textarea
             id={outputFormatId}
             className="corner-squircle nodrag"
@@ -173,12 +170,11 @@ export function LlmGeneralTab({
         </div>
       )}
       <div className="grid gap-2">
-        <label
-          className="text-xs font-semibold uppercase text-muted-foreground"
+        <FieldLabel
+          label="System prompt (optional)"
           htmlFor={systemPromptId}
-        >
-          System prompt (optional)
-        </label>
+          hint="Global behavior instructions prepended before prompt."
+        />
         <Textarea
           id={systemPromptId}
           className="corner-squircle nodrag"

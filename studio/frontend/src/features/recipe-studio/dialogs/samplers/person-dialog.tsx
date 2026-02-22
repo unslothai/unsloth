@@ -9,6 +9,7 @@ import {
 import { type ReactElement, useEffect } from "react";
 import type { SamplerConfig } from "../../types";
 import { NameField } from "../shared/name-field";
+import { FieldLabel } from "../shared/field-label";
 
 type PersonDialogProps = {
   config: SamplerConfig;
@@ -55,12 +56,11 @@ export function PersonDialog({
         </div>
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="grid gap-2">
-            <label
-              className="text-xs font-semibold uppercase text-muted-foreground"
+            <FieldLabel
+              label="Locale"
               htmlFor={localeId}
-            >
-              Locale
-            </label>
+              hint="Faker locale e.g. en_US."
+            />
             <Input
               id={localeId}
               className="nodrag"
@@ -71,12 +71,11 @@ export function PersonDialog({
             />
           </div>
           <div className="grid gap-2">
-            <label
-              className="text-xs font-semibold uppercase text-muted-foreground"
+            <FieldLabel
+              label="Sex"
               htmlFor={sexId}
-            >
-              Sex
-            </label>
+              hint="Optional demographic filter."
+            />
             <Select
               value={config.person_sex?.trim() ? config.person_sex : "any"}
               onValueChange={(value) =>
@@ -94,12 +93,11 @@ export function PersonDialog({
             </Select>
           </div>
           <div className="grid gap-2">
-            <label
-              className="text-xs font-semibold uppercase text-muted-foreground"
+            <FieldLabel
+              label="Age range"
               htmlFor={ageRangeId}
-            >
-              Age range
-            </label>
+              hint="Range format: min-max, e.g. 18-70."
+            />
             <Input
               id={ageRangeId}
               className="nodrag"
@@ -111,12 +109,11 @@ export function PersonDialog({
             />
           </div>
           <div className="grid gap-2">
-            <label
-              className="text-xs font-semibold uppercase text-muted-foreground"
+            <FieldLabel
+              label="City"
               htmlFor={cityId}
-            >
-              City
-            </label>
+              hint="Optional city bias for faker generation."
+            />
             <Input
               id={cityId}
               className="nodrag"

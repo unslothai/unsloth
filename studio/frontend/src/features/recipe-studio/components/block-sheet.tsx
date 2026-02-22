@@ -253,6 +253,7 @@ export function BlockSheet({
                       description={item.description}
                       isActive={index === 0}
                       onClick={() => {
+                        setSheetOpen(false);
                         if (item.kind === "sampler") {
                           onAddSampler(item.type as SamplerType);
                         } else if (item.kind === "seed") {

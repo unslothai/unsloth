@@ -9,6 +9,7 @@ import {
 import type { ReactElement } from "react";
 import type { SamplerConfig } from "../../types";
 import { NameField } from "../shared/name-field";
+import { FieldLabel } from "../shared/field-label";
 
 const TIMEDELTA_UNITS: Array<"D" | "h" | "m" | "s"> = ["D", "h", "m", "s"];
 const NONE_VALUE = "__none";
@@ -42,12 +43,11 @@ export function TimedeltaDialog({
       />
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="grid gap-2">
-          <label
-            className="text-xs font-semibold uppercase text-muted-foreground"
+          <FieldLabel
+            label="dt_min"
             htmlFor={dtMinId}
-          >
-            dt_min
-          </label>
+            hint="Minimum offset from reference datetime."
+          />
           <Input
             id={dtMinId}
             type="number"
@@ -57,12 +57,11 @@ export function TimedeltaDialog({
           />
         </div>
         <div className="grid gap-2">
-          <label
-            className="text-xs font-semibold uppercase text-muted-foreground"
+          <FieldLabel
+            label="dt_max"
             htmlFor={dtMaxId}
-          >
-            dt_max
-          </label>
+            hint="Maximum offset from reference datetime."
+          />
           <Input
             id={dtMaxId}
             type="number"
@@ -73,12 +72,11 @@ export function TimedeltaDialog({
         </div>
       </div>
       <div className="grid gap-2">
-        <label
-          className="text-xs font-semibold uppercase text-muted-foreground"
+        <FieldLabel
+          label="Unit"
           htmlFor={unitId}
-        >
-          Unit
-        </label>
+          hint="Offset unit. D/h/m/s."
+        />
         <Select
           value={config.timedelta_unit ?? "D"}
           onValueChange={(value) =>
@@ -98,12 +96,11 @@ export function TimedeltaDialog({
         </Select>
       </div>
       <div className="grid gap-2">
-        <label
-          className="text-xs font-semibold uppercase text-muted-foreground"
+        <FieldLabel
+          label="Reference datetime column"
           htmlFor={referenceId}
-        >
-          Reference datetime column
-        </label>
+          hint="Datetime column used as anchor before offset."
+        />
         <Select
           value={config.reference_column_name?.trim() || NONE_VALUE}
           onValueChange={(value) =>

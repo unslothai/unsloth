@@ -9,6 +9,7 @@ import {
 import type { ReactElement } from "react";
 import type { SamplerConfig } from "../../types";
 import { NameField } from "../shared/name-field";
+import { FieldLabel } from "../shared/field-label";
 
 type GaussianDialogProps = {
   config: SamplerConfig;
@@ -30,12 +31,11 @@ export function GaussianDialog({
       />
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="grid gap-2">
-          <label
-            className="text-xs font-semibold uppercase text-muted-foreground"
+          <FieldLabel
+            label="Mean"
             htmlFor={meanId}
-          >
-            Mean
-          </label>
+            hint="Center of the normal distribution."
+          />
           <Input
             id={meanId}
             type="number"
@@ -45,12 +45,11 @@ export function GaussianDialog({
           />
         </div>
         <div className="grid gap-2">
-          <label
-            className="text-xs font-semibold uppercase text-muted-foreground"
+          <FieldLabel
+            label="Std"
             htmlFor={stdId}
-          >
-            Std
-          </label>
+            hint="Standard deviation. must be > 0."
+          />
           <Input
             id={stdId}
             type="number"
@@ -61,12 +60,11 @@ export function GaussianDialog({
         </div>
       </div>
       <div className="grid gap-2">
-        <label
-          className="text-xs font-semibold uppercase text-muted-foreground"
+        <FieldLabel
+          label="Convert to"
           htmlFor={convertId}
-        >
-          Convert to
-        </label>
+          hint="Optionally cast sampled values before output."
+        />
         <Select
           value={config.convert_to ?? "none"}
           onValueChange={(value) =>

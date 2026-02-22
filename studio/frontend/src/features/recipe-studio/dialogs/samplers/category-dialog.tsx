@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { type ReactElement, useState } from "react";
 import type { SamplerConfig } from "../../types";
 import { ChipInput } from "../../components/chip-input";
+import { FieldLabel } from "../shared/field-label";
 import { NameField } from "../shared/name-field";
 
 type CategoryDialogProps = {
@@ -85,9 +86,10 @@ export function CategoryDialog({
       />
       <div className="space-y-3">
         <div className="grid gap-2">
-          <p className="text-xs font-semibold uppercase text-muted-foreground">
-            Values
-          </p>
+          <FieldLabel
+            label="Values"
+            hint="Define allowed categorical values for this column."
+          />
           <ChipInput
             values={config.values ?? []}
             onAdd={(value) => {
@@ -132,9 +134,10 @@ export function CategoryDialog({
           </CollapsibleTrigger>
           <CollapsibleContent className="space-y-3 border-t border-border/60 p-3">
             <div className="grid gap-2">
-              <p className="text-xs font-semibold uppercase text-muted-foreground">
-                Weights (optional)
-              </p>
+              <FieldLabel
+                label="Weights (optional)"
+                hint="Set selection probability per value."
+              />
               {(config.values ?? []).length === 0 ? (
                 <p className="text-xs text-muted-foreground">
                   Add values first, then set optional weights.
@@ -165,9 +168,10 @@ export function CategoryDialog({
               )}
             </div>
             <div className="flex items-center justify-between gap-2">
-              <p className="text-xs font-semibold uppercase text-muted-foreground">
-                Conditional params (category)
-              </p>
+              <FieldLabel
+                label="Conditional params (category)"
+                hint="Override category values/weights when condition matches."
+              />
               <span className="text-xs text-muted-foreground">
                 {conditionalCount} rules
               </span>

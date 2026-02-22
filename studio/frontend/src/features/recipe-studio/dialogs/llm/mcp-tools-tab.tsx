@@ -22,6 +22,7 @@ import {
   toApiProvider,
 } from "./mcp-tools/helpers";
 import { ToolConfigsSection } from "./mcp-tools/tool-configs-section";
+import { FieldLabel } from "../shared/field-label";
 
 type LlmMcpToolsTabProps = {
   config: LlmConfig;
@@ -236,9 +237,10 @@ export function LlmMcpToolsTab({
   return (
     <div className="space-y-5">
       <div className="grid gap-2">
-        <label className="text-xs font-semibold uppercase text-muted-foreground">
-          Active tool alias
-        </label>
+        <FieldLabel
+          label="Active tool alias"
+          hint="Tool alias selected here is used by this LLM column."
+        />
         {toolAliasOptions.length > 0 ? (
           <Select
             value={activeToolAlias}

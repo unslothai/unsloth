@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { LlmMcpProviderConfig, McpEnvVar } from "../../../types";
+import { FieldLabel } from "../../shared/field-label";
 
 type McpProvidersSectionProps = {
   providers: LlmMcpProviderConfig[];
@@ -44,9 +45,10 @@ export function McpProvidersSection({
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
-        <p className="text-xs font-semibold uppercase text-muted-foreground">
-          MCP servers
-        </p>
+        <FieldLabel
+          label="MCP servers"
+          hint="Server definitions used by tool configs for tool calls."
+        />
         <Button type="button" size="xs" variant="outline" onClick={onAddProvider}>
           <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
           Add MCP server
@@ -72,9 +74,10 @@ export function McpProvidersSection({
             className="space-y-3 border-b border-border/40 pb-4 last:border-b-0"
           >
             <div className="grid gap-2">
-              <label className="text-xs font-semibold uppercase text-muted-foreground">
-                Name
-              </label>
+              <FieldLabel
+                label="Name"
+                hint="Unique provider name referenced by tool configs."
+              />
               <Input
                 value={provider.name}
                 placeholder="MCP server name"
@@ -102,9 +105,10 @@ export function McpProvidersSection({
             {provider.provider_type === "stdio" ? (
               <div className="space-y-3">
                 <div className="grid gap-2">
-                  <label className="text-xs font-semibold uppercase text-muted-foreground">
-                    Command to launch
-                  </label>
+                  <FieldLabel
+                    label="Command to launch"
+                    hint="Executable used to start stdio MCP server."
+                  />
                   <Input
                     value={provider.command ?? ""}
                     placeholder="npx"
@@ -117,9 +121,10 @@ export function McpProvidersSection({
                 </div>
 
                 <div className="space-y-2">
-                  <p className="text-xs font-semibold uppercase text-muted-foreground">
-                    Arguments
-                  </p>
+                  <FieldLabel
+                    label="Arguments"
+                    hint="CLI args passed to MCP command."
+                  />
                   {args.map((arg, argIndex) => (
                     <div key={`${provider.id}-arg-${argIndex}`} className="flex gap-2">
                       <Input
@@ -150,9 +155,10 @@ export function McpProvidersSection({
                 </div>
 
                 <div className="space-y-2">
-                  <p className="text-xs font-semibold uppercase text-muted-foreground">
-                    Environment variables
-                  </p>
+                  <FieldLabel
+                    label="Environment variables"
+                    hint="Key/value env vars for MCP process."
+                  />
                   {envVars.map((item, envIndex) => (
                     <div
                       key={`${provider.id}-env-${envIndex}`}
@@ -199,9 +205,10 @@ export function McpProvidersSection({
             ) : (
               <div className="space-y-2">
                 <div className="grid gap-2">
-                  <label className="text-xs font-semibold uppercase text-muted-foreground">
-                    Endpoint
-                  </label>
+                  <FieldLabel
+                    label="Endpoint"
+                    hint="Streamable HTTP MCP server URL."
+                  />
                   <Input
                     value={provider.endpoint ?? ""}
                     placeholder="https://example.com/mcp"
@@ -213,9 +220,10 @@ export function McpProvidersSection({
                   />
                 </div>
                 <div className="grid gap-2">
-                  <label className="text-xs font-semibold uppercase text-muted-foreground">
-                    API key env (optional)
-                  </label>
+                  <FieldLabel
+                    label="API key env (optional)"
+                    hint="Env var name for endpoint auth token."
+                  />
                   <Input
                     value={provider.api_key_env ?? ""}
                     placeholder="MCP_API_KEY"
@@ -228,9 +236,10 @@ export function McpProvidersSection({
                   />
                 </div>
                 <div className="grid gap-2">
-                  <label className="text-xs font-semibold uppercase text-muted-foreground">
-                    API key (optional)
-                  </label>
+                  <FieldLabel
+                    label="API key (optional)"
+                    hint="Inline token for endpoint auth."
+                  />
                   <Input
                     value={provider.api_key ?? ""}
                     placeholder="api key"

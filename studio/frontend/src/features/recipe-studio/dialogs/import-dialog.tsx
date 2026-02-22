@@ -8,6 +8,7 @@ import {
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { type ReactElement, useState } from "react";
+import { FieldLabel } from "./shared/field-label";
 
 type ImportDialogProps = {
   open: boolean;
@@ -55,12 +56,11 @@ export function ImportDialog({
           <DialogTitle>Import recipe</DialogTitle>
         </DialogHeader>
         <div className="grid gap-2">
-          <label
-            className="text-xs font-semibold uppercase text-muted-foreground"
+          <FieldLabel
+            label="JSON payload"
             htmlFor={payloadId}
-          >
-            JSON payload
-          </label>
+            hint="Paste exported recipe payload JSON."
+          />
           <Textarea
             id={payloadId}
             className="corner-squircle nodrag min-h-[220px]"

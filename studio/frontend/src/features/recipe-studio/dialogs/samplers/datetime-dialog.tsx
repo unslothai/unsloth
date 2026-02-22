@@ -9,6 +9,7 @@ import {
 import type { ReactElement } from "react";
 import type { SamplerConfig } from "../../types";
 import { NameField } from "../shared/name-field";
+import { FieldLabel } from "../shared/field-label";
 
 const DATETIME_UNITS = [
   "second",
@@ -47,12 +48,11 @@ export function DatetimeDialog({
       <div className="grid gap-3">
         <div className="grid gap-2 sm:grid-cols-2">
           <div className="grid gap-2">
-            <label
-              className="text-xs font-semibold uppercase text-muted-foreground"
+            <FieldLabel
+              label="Start"
               htmlFor={startId}
-            >
-              Start
-            </label>
+              hint="Earliest datetime allowed."
+            />
             <Input
               id={startId}
               type="datetime-local"
@@ -64,12 +64,11 @@ export function DatetimeDialog({
             />
           </div>
           <div className="grid gap-2">
-            <label
-              className="text-xs font-semibold uppercase text-muted-foreground"
+            <FieldLabel
+              label="End"
               htmlFor={endId}
-            >
-              End
-            </label>
+              hint="Latest datetime allowed."
+            />
             <Input
               id={endId}
               type="datetime-local"
@@ -82,12 +81,11 @@ export function DatetimeDialog({
           </div>
         </div>
         <div className="grid gap-2">
-          <label
-            className="text-xs font-semibold uppercase text-muted-foreground"
+          <FieldLabel
+            label="Unit"
             htmlFor={unitId}
-          >
-            Unit
-          </label>
+            hint="Sampling granularity for generated timestamps."
+          />
           <Select
             value={config.datetime_unit ?? ""}
             onValueChange={(value) => updateField("datetime_unit", value)}
