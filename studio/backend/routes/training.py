@@ -85,6 +85,11 @@ async def start_training(
     """
     try:
         logger.info(f"Starting training job with model: {request.model_name}")
+
+        # Ensure correct transformers version for this model architecture
+        from utils.transformers_version import ensure_transformers_version
+        ensure_transformers_version(request.model_name)
+
         backend = get_training_backend()
 
         # Generate job ID and attach to backend for later status/progress calls

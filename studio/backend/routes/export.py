@@ -61,6 +61,10 @@ async def load_checkpoint(
     Wraps ExportBackend.load_checkpoint.
     """
     try:
+        # Ensure correct transformers version for this model architecture
+        from utils.transformers_version import ensure_transformers_version
+        ensure_transformers_version(request.checkpoint_path)
+
         backend = get_export_backend()
         success, message = backend.load_checkpoint(
             checkpoint_path=request.checkpoint_path,
