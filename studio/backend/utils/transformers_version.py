@@ -138,6 +138,12 @@ _PURGE_PREFIXES = (
     "accelerate",
     "auto_gptq",
     "bitsandbytes",
+    # Our own modules that import from transformers at module level
+    # (e.g. model_config.py: `from transformers import AutoConfig`)
+    "utils.models",
+    "core.training",
+    "core.inference",
+    "core.export",
 )
 
 

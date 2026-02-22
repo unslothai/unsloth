@@ -256,8 +256,9 @@ async def get_model_config(
         # Load model defaults from backend
         config_dict = load_model_defaults(model_name)
         
-        # Check if it's a vision model
-        is_vision = is_vision_model(model_name)
+        # Lazy import to pick up fresh transformers after version switch
+        from utils.models import is_vision_model as _is_vision_model
+        is_vision = _is_vision_model(model_name)
         
         # Check if it's a LoRA adapter
         is_lora = False
@@ -380,7 +381,9 @@ async def check_vision_model(
         ensure_transformers_version(model_name)
 
         logger.info(f"Checking if vision model: {model_name}")
-        is_vision = is_vision_model(model_name)
+        # Lazy import to pick up fresh transformers after version switch
+        from utils.models import is_vision_model as _is_vision_model
+        is_vision = _is_vision_model(model_name)
         
         logger.info(f"Vision check result for {model_name}: is_vision={is_vision}")
         return VisionCheckResponse(
