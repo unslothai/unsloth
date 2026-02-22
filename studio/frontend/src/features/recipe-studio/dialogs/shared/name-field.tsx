@@ -1,27 +1,32 @@
 import { Input } from "@/components/ui/input";
 import { type ReactElement, useId } from "react";
+import { FieldLabel } from "./field-label";
 
 type NameFieldProps = {
   id?: string;
   value: string;
   onChange: (value: string) => void;
+  hint?: string;
 };
 
 export function NameField({
   id,
   value,
   onChange,
+  hint,
 }: NameFieldProps): ReactElement {
   const fallbackId = useId();
   const inputId = id ?? fallbackId;
   return (
     <div className="grid gap-2">
-      <label
-        className="text-xs font-semibold uppercase text-muted-foreground"
+      <FieldLabel
+        label="Column name"
         htmlFor={inputId}
-      >
-        Column name
-      </label>
+        hint={
+          hint ??
+          "Unique field name used in templates and final dataset output."
+        }
+      />
       <Input
         id={inputId}
         className="nodrag"

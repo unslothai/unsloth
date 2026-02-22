@@ -10,6 +10,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { type ReactElement, useRef } from "react";
 import type { ModelConfig } from "../../types";
+import { FieldLabel } from "../shared/field-label";
 import { NameField } from "../shared/name-field";
 
 type ModelConfigDialogProps = {
@@ -49,12 +50,11 @@ export function ModelConfigDialog({
         onChange={(value) => onUpdate({ name: value })}
       />
       <div className="grid gap-2">
-        <label
-          className="text-xs font-semibold uppercase text-muted-foreground"
+        <FieldLabel
+          label="Model"
           htmlFor={modelId}
-        >
-          Model
-        </label>
+          hint="Exact model id string sent to provider."
+        />
         <Input
           id={modelId}
           className="nodrag"
@@ -64,12 +64,11 @@ export function ModelConfigDialog({
         />
       </div>
       <div className="grid gap-2">
-        <label
-          className="text-xs font-semibold uppercase text-muted-foreground"
+        <FieldLabel
+          label="Provider name"
           htmlFor={providerId}
-        >
-          Provider name
-        </label>
+          hint="Must match a Model Provider block name."
+        />
         <div ref={providerAnchorRef}>
           <Combobox
             items={providerOptions}
@@ -111,9 +110,10 @@ export function ModelConfigDialog({
         </p>
       </div>
       <div className="grid gap-2">
-        <label className="text-xs font-semibold uppercase text-muted-foreground">
-          Inference
-        </label>
+        <FieldLabel
+          label="Inference"
+          hint="Runtime generation params for this model alias."
+        />
         <div className="grid grid-cols-3 gap-2">
           <Input
             id={tempId}

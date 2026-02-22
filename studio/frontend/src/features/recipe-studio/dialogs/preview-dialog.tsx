@@ -8,6 +8,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { type ReactElement } from "react";
+import { FieldLabel } from "./shared/field-label";
 
 type PreviewDialogProps = {
   open: boolean;
@@ -78,12 +79,11 @@ export function PreviewDialog({
           </div>
         </div>
         <div className="grid gap-2">
-          <label
-            className="text-xs font-semibold uppercase text-muted-foreground"
+          <FieldLabel
+            label="Number of records"
             htmlFor="preview-rows"
-          >
-            Number of records
-          </label>
+            hint="Target rows for preview run."
+          />
           <Input
             id="preview-rows"
             type="number"

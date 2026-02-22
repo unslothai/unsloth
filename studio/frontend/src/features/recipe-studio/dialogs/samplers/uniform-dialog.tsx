@@ -9,6 +9,7 @@ import {
 import type { ReactElement } from "react";
 import type { SamplerConfig } from "../../types";
 import { NameField } from "../shared/name-field";
+import { FieldLabel } from "../shared/field-label";
 
 type UniformDialogProps = {
   config: SamplerConfig;
@@ -30,12 +31,11 @@ export function UniformDialog({
       />
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="grid gap-2">
-          <label
-            className="text-xs font-semibold uppercase text-muted-foreground"
+          <FieldLabel
+            label="Low"
             htmlFor={lowId}
-          >
-            Low
-          </label>
+            hint="Minimum sampled value."
+          />
           <Input
             id={lowId}
             type="number"
@@ -45,12 +45,11 @@ export function UniformDialog({
           />
         </div>
         <div className="grid gap-2">
-          <label
-            className="text-xs font-semibold uppercase text-muted-foreground"
+          <FieldLabel
+            label="High"
             htmlFor={highId}
-          >
-            High
-          </label>
+            hint="Maximum sampled value."
+          />
           <Input
             id={highId}
             type="number"
@@ -61,12 +60,11 @@ export function UniformDialog({
         </div>
       </div>
       <div className="grid gap-2">
-        <label
-          className="text-xs font-semibold uppercase text-muted-foreground"
+        <FieldLabel
+          label="Convert to"
           htmlFor={convertId}
-        >
-          Convert to
-        </label>
+          hint="Optionally cast sampled values before output."
+        />
         <Select
           value={config.convert_to ?? "none"}
           onValueChange={(value) =>
