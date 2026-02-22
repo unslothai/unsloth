@@ -64,6 +64,53 @@ function mapModel(raw: unknown): HfModelResult | null {
   };
 }
 
+/** Number of unsloth results to pull up-front before yielding general results. */
+const UNSLOTH_PREFETCH = 20;
+
+/**
+ * Creates a merged async generator that yields unsloth-owned models first,
+ * then general results (with deduplication).
+ */
+async function* mergedModelIterator(
+  query: string,
+  task?: PipelineType,
+  accessToken?: string,
+): AsyncGenerator<unknown> {
+  const common = {
+    additionalFields: ["safetensors", "tags"] as ("safetensors" | "tags")[],
+    fetch: withPopularitySort,
+    ...(accessToken ? { credentials: { accessToken } } : {}),
+  };
+
+  // Fire both iterators immediately (parallel network requests on first pull)
+  const unslothIter = listModels({
+    search: { query, owner: "unsloth", ...(task ? { task } : {}) },
+    ...common,
+  });
+  const generalIter = listModels({
+    search: { query, ...(task ? { task } : {}) },
+    ...common,
+  });
+
+  // Phase 1: pull & yield unsloth models first
+  const seen = new Set<string>();
+  let count = 0;
+  for await (const model of unslothIter) {
+    const m = model as { name?: string };
+    if (m.name) seen.add(m.name);
+    yield model;
+    count++;
+    if (count >= UNSLOTH_PREFETCH) break;
+  }
+
+  // Phase 2: yield general results, skipping already-seen unsloth models
+  for await (const model of generalIter) {
+    const m = model as { name?: string };
+    if (m.name && seen.has(m.name)) continue;
+    yield model;
+  }
+}
+
 export function useHfModelSearch(
   query: string,
   options?: { task?: PipelineType; accessToken?: string },
@@ -71,21 +118,26 @@ export function useHfModelSearch(
   const { task, accessToken } = options ?? {};
 
   const createIter = useCallback(
-    () =>
-      listModels({
-        search: {
-          ...(query.trim() ? { query } : { owner: "unsloth" }),
-          ...(task ? { task } : {}),
-        },
-        additionalFields: ["safetensors", "tags"],
-        fetch: withPopularitySort,
-        ...(accessToken ? { credentials: { accessToken } } : {}),
-      }) as AsyncGenerator<unknown>,
+    () => {
+      const trimmed = query.trim();
+      if (!trimmed) {
+        // No query → show default unsloth models
+        return listModels({
+          search: { owner: "unsloth", ...(task ? { task } : {}) },
+          additionalFields: ["safetensors", "tags"],
+          fetch: withPopularitySort,
+          ...(accessToken ? { credentials: { accessToken } } : {}),
+        }) as AsyncGenerator<unknown>;
+      }
+      // Dual-query: unsloth first, then general
+      return mergedModelIterator(trimmed, task, accessToken) as AsyncGenerator<unknown>;
+    },
     [query, task, accessToken],
   );
 
   const search = useHfPaginatedSearch(createIter, mapModel);
 
+  // Secondary sort guarantee: unsloth models always float to the top
   const results = useMemo(
     () =>
       [...search.results].sort((a, b) => {
@@ -98,3 +150,4 @@ export function useHfModelSearch(
 
   return { ...search, results };
 }
+
