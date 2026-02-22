@@ -358,6 +358,41 @@ export function ChatPage(): ReactElement {
     setViewBeforeCompare(null);
   }, [viewBeforeCompare]);
 
+  const handleThreadSelect = useCallback(
+    (nextView: ChatView) => {
+      setView(nextView);
+
+      const threadId =
+        nextView.mode === "single" ? nextView.threadId : undefined;
+      const pairId =
+        nextView.mode === "compare" ? nextView.pairId : undefined;
+
+      void (async () => {
+        let thread: import("./types").ThreadRecord | undefined;
+        if (threadId) {
+          thread = await db.threads.get(threadId);
+        } else if (pairId) {
+          thread = await db.threads
+            .where("pairId")
+            .equals(pairId)
+            .first();
+        }
+        const threadModelId = thread?.modelId;
+        if (!threadModelId) return;
+
+        const currentCheckpoint =
+          useChatRuntimeStore.getState().params.checkpoint;
+        if (threadModelId === currentCheckpoint) return;
+
+        if (currentCheckpoint) {
+          await ejectModel();
+        }
+        await selectModel({ id: threadModelId });
+      })();
+    },
+    [ejectModel, selectModel],
+  );
+
   const models = useMemo<ModelOption[]>(
     () =>
       modelsFromStore.map((model) => ({
@@ -500,7 +535,7 @@ export function ChatPage(): ReactElement {
         <InlineSidebar>
           <ThreadSidebar
             view={view}
-            onSelect={setView}
+            onSelect={handleThreadSelect}
             onNewThread={handleNewThread}
             onNewCompare={handleNewCompare}
             showCompare={canCompare}
