@@ -165,8 +165,10 @@ export function useChatModelRuntime() {
       setLoadingModel({ id: modelId, displayName });
       try {
         async function performLoad(): Promise<void> {
-          if (params.checkpoint) {
-            await unloadModel({ model_path: params.checkpoint });
+          const currentCheckpoint =
+            useChatRuntimeStore.getState().params.checkpoint;
+          if (currentCheckpoint) {
+            await unloadModel({ model_path: currentCheckpoint });
           }
 
           const loadResponse = await loadModel({
