@@ -57,7 +57,7 @@ export function Navbar() {
   };
 
   return (
-    <header className="relative top-0 z-40 h-16 w-full">
+    <header className="top-0 z-40 h-16 w-full">
       <div className="mx-auto flex h-full max-w-7xl items-center justify-between px-4 sm:px-6">
         {/* Left: logo */}
         <div
