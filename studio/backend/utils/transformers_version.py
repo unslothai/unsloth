@@ -46,13 +46,15 @@ def _resolve_base_model(model_name: str) -> str:
     """If *model_name* points to a LoRA adapter, return its base model.
 
     Checks for ``adapter_config.json`` locally first (covers the common case of
-    local output directories with custom names).  Falls back to the existing
-    ``get_base_model_from_lora`` utility which also handles remote HF LoRAs.
+    local output directories with custom names).  For HF repo IDs that look
+    like they might be LoRA adapters, falls back to
+    ``get_base_model_from_lora``.
 
     Returns the original *model_name* unchanged if it is not a LoRA adapter.
     """
     # --- Fast local check ---------------------------------------------------
-    adapter_cfg_path = Path(model_name) / "adapter_config.json"
+    local_path = Path(model_name)
+    adapter_cfg_path = local_path / "adapter_config.json"
     if adapter_cfg_path.is_file():
         try:
             with open(adapter_cfg_path) as f:
@@ -66,18 +68,24 @@ def _resolve_base_model(model_name: str) -> str:
         except Exception as exc:
             logger.debug("Could not read %s: %s", adapter_cfg_path, exc)
 
-    # --- Fallback: use the project's existing helper (handles HF repos too) --
-    try:
-        from utils.models import get_base_model_from_lora
-        base = get_base_model_from_lora(model_name)
-        if base:
-            logger.info(
-                "Resolved LoRA adapter '%s' → base model '%s' (via get_base_model_from_lora)",
-                model_name, base,
+    # --- Only try the heavier fallback for paths that look like local dirs ---
+    # (Avoids triggering noisy warnings for plain HF model IDs like
+    # "unsloth/GLM-4.7-Flash" which are obviously not LoRA adapters.)
+    if local_path.is_dir():
+        try:
+            from utils.models import get_base_model_from_lora
+            base = get_base_model_from_lora(model_name)
+            if base:
+                logger.info(
+                    "Resolved LoRA adapter '%s' → base model '%s' "
+                    "(via get_base_model_from_lora)",
+                    model_name, base,
+                )
+                return base
+        except Exception as exc:
+            logger.debug(
+                "get_base_model_from_lora failed for '%s': %s", model_name, exc,
             )
-            return base
-    except Exception as exc:
-        logger.debug("get_base_model_from_lora failed for '%s': %s", model_name, exc)
 
     return model_name
 
@@ -93,8 +101,17 @@ def needs_transformers_5(model_name: str) -> bool:
 # Version switching
 # ---------------------------------------------------------------------------
 
-def _installed_transformers_version() -> str | None:
-    """Return the currently installed transformers version, or None."""
+def _get_in_memory_version() -> str | None:
+    """Return the transformers version currently loaded in this process,
+    or None if transformers hasn't been imported yet."""
+    tf = sys.modules.get("transformers")
+    if tf is not None:
+        return getattr(tf, "__version__", None)
+    return None
+
+
+def _get_on_disk_version() -> str | None:
+    """Return the transformers version installed on disk (pip metadata)."""
     try:
         return importlib.metadata.version("transformers")
     except importlib.metadata.PackageNotFoundError:
@@ -166,44 +183,72 @@ def _reload_transformers() -> None:
 def ensure_transformers_version(model_name: str) -> None:
     """Ensure the correct ``transformers`` version is installed for *model_name*.
 
-    * If the model needs 5.x and the installed version is already 5.x → no-op.
-    * If the model needs 5.x but 4.x is installed → ``pip install transformers==5.1.0``.
-    * If the model does NOT need 5.x but 5.x is installed → downgrade to 4.57.1.
+    Checks BOTH the on-disk version (pip metadata) and the in-memory version
+    (``transformers.__version__``) because they can diverge after a previous
+    pip install in the same process.
+
+    * If the model needs 5.x and the loaded version is already 5.x → no-op.
+    * If the model needs 5.x but 4.x is loaded → pip install 5.1.0 + reload.
+    * If the model does NOT need 5.x but 5.x is loaded → downgrade + reload.
     * Otherwise → no-op.
 
     For LoRA adapters with custom names, the base model is resolved from
     ``adapter_config.json`` before checking.
 
     Call this at the top of every model-loading code path (training ``/start``,
-    inference ``/load``).
+    inference ``/load``, export ``/load-checkpoint``).
     """
     # Resolve LoRA adapters to their base model for accurate detection
     resolved = _resolve_base_model(model_name)
     want_5 = needs_transformers_5(resolved)
-    current = _installed_transformers_version()
-
-    if current is None:
-        logger.warning("transformers is not installed — skipping version check")
-        return
-
-    current_major = int(current.split(".")[0])
     target_version = TRANSFORMERS_5_VERSION if want_5 else TRANSFORMERS_DEFAULT_VERSION
     target_major = int(target_version.split(".")[0])
 
-    if current_major == target_major:
-        logger.debug(
-            "transformers %s already satisfies requirement (need major=%d) for model '%s'",
-            current, target_major, model_name,
-        )
-        return
+    # --- Check what's actually loaded in memory first -----------------------
+    in_memory = _get_in_memory_version()
+    on_disk = _get_on_disk_version()
 
     logger.info(
-        "Model '%s' requires transformers %s but %s is installed — switching…",
-        model_name, target_version, current,
+        "Version check for '%s' (resolved: '%s'): need=%s, "
+        "in_memory=%s, on_disk=%s",
+        model_name, resolved, target_version, in_memory, on_disk,
     )
 
-    _pip_install(f"transformers=={target_version}")
+    if in_memory is not None:
+        in_memory_major = int(in_memory.split(".")[0])
+        if in_memory_major == target_major:
+            logger.info(
+                "transformers %s in memory — already correct for '%s'",
+                in_memory, model_name,
+            )
+            return
+        # Wrong major in memory — need to switch
+        logger.info(
+            "transformers %s loaded in memory but need %s — switching…",
+            in_memory, target_version,
+        )
+    elif on_disk is not None:
+        on_disk_major = int(on_disk.split(".")[0])
+        if on_disk_major == target_major:
+            logger.info(
+                "transformers %s on disk (not yet imported) — correct for '%s'",
+                on_disk, model_name,
+            )
+            return
+        logger.info(
+            "transformers %s on disk but need %s — switching…",
+            on_disk, target_version,
+        )
+    else:
+        logger.warning("transformers is not installed — skipping version check")
+        return
+
+    # --- pip install the target version if needed ---------------------------
+    if on_disk is None or int(on_disk.split(".")[0]) != target_major:
+        _pip_install(f"transformers=={target_version}")
+
+    # --- Purge and reload ---------------------------------------------------
     _reload_transformers()
 
-    new_version = _installed_transformers_version()
-    logger.info("Transformers version is now %s", new_version)
+    final = _get_in_memory_version()
+    logger.info("Transformers version is now %s (in memory)", final)
