@@ -1,4 +1,10 @@
+import { type ReactElement, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import {
   Dialog,
   DialogContent,
@@ -7,39 +13,75 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { type ReactElement } from "react";
+import { Switch } from "@/components/ui/switch";
+import type { RecipeExecutionKind } from "../execution-types";
+import type { RecipeRunSettings } from "../stores/recipe-executions";
 import { FieldLabel } from "./shared/field-label";
 
-type PreviewDialogProps = {
+type RunDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  kind: RecipeExecutionKind;
   rows: number;
   onRowsChange: (rows: number) => void;
+  settings: RecipeRunSettings;
+  onSettingsChange: (patch: Partial<RecipeRunSettings>) => void;
   loading: boolean;
   errors: string[];
-  summary: {
-    totalColumns: number;
-    llmColumns: number;
-    samplerColumns: number;
-    expressionColumns: number;
-    toolConfigs: number;
-    mcpProviders: number;
-  };
-  onPreview: () => void;
+  onRun: () => void;
   container?: HTMLDivElement | null;
 };
 
-export function PreviewDialog({
+function clampInt(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) {
+    return min;
+  }
+  const next = Math.floor(value);
+  if (next < min) {
+    return min;
+  }
+  if (next > max) {
+    return max;
+  }
+  return next;
+}
+
+function clampFloat(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) {
+    return min;
+  }
+  if (value < min) {
+    return min;
+  }
+  if (value > max) {
+    return max;
+  }
+  return value;
+}
+
+export function RunDialog({
   open,
   onOpenChange,
+  kind,
   rows,
   onRowsChange,
+  settings,
+  onSettingsChange,
   loading,
   errors,
-  summary,
-  onPreview,
+  onRun,
   container,
-}: PreviewDialogProps): ReactElement {
+}: RunDialogProps): ReactElement {
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const kindLabel = kind === "preview" ? "Preview" : "Full run";
+  const rowHint = useMemo(
+    () =>
+      kind === "preview"
+        ? "How many sample rows to generate for a quick check."
+        : "How many rows to generate in total.",
+    [kind],
+  );
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
@@ -47,57 +89,233 @@ export function PreviewDialog({
         position="absolute"
         overlayPosition="absolute"
         overlayClassName="bg-transparent"
-        className="corner-squircle sm:max-w-md"
+        className="corner-squircle sm:max-w-2xl"
       >
         <DialogHeader>
-          <DialogTitle>Preview data</DialogTitle>
+          <DialogTitle>{kindLabel} settings</DialogTitle>
+          <p className="text-sm text-muted-foreground">
+            Configure run size and performance knobs for this execution.
+          </p>
         </DialogHeader>
-        <div className="grid grid-cols-2 gap-2">
-          <div className="rounded-xl border border-border/60 p-2">
-            <p className="text-[11px] uppercase text-muted-foreground">Columns</p>
-            <p className="text-sm font-semibold">{summary.totalColumns}</p>
+
+        <div className="grid gap-4 md:grid-cols-3">
+          <div className="grid gap-2">
+            <FieldLabel
+              label="Records"
+              htmlFor="run-rows"
+              hint={rowHint}
+            />
+            <Input
+              id="run-rows"
+              type="number"
+              min={1}
+              max={200000}
+              value={String(rows)}
+              onChange={(event) => {
+                const parsed = Number(event.target.value);
+                if (!Number.isFinite(parsed)) {
+                  return;
+                }
+                onRowsChange(clampInt(parsed, 1, 200000));
+              }}
+            />
           </div>
-          <div className="rounded-xl border border-border/60 p-2">
-            <p className="text-[11px] uppercase text-muted-foreground">LLM</p>
-            <p className="text-sm font-semibold">{summary.llmColumns}</p>
+          <div className="grid gap-2">
+            <FieldLabel
+              label="Batch size"
+              htmlFor="run-buffer-size"
+              hint="Rows handled per batch. Bigger can be faster; smaller uses less memory."
+            />
+            <Input
+              id="run-buffer-size"
+              type="number"
+              min={1}
+              max={200000}
+              value={String(settings.bufferSize)}
+              onChange={(event) => {
+                const parsed = Number(event.target.value);
+                if (!Number.isFinite(parsed)) {
+                  return;
+                }
+                onSettingsChange({
+                  bufferSize: clampInt(parsed, 1, 200000),
+                });
+              }}
+            />
           </div>
-          <div className="rounded-xl border border-border/60 p-2">
-            <p className="text-[11px] uppercase text-muted-foreground">Samplers</p>
-            <p className="text-sm font-semibold">{summary.samplerColumns}</p>
-          </div>
-          <div className="rounded-xl border border-border/60 p-2">
-            <p className="text-[11px] uppercase text-muted-foreground">Expressions</p>
-            <p className="text-sm font-semibold">{summary.expressionColumns}</p>
-          </div>
-          <div className="rounded-xl border border-border/60 p-2">
-            <p className="text-[11px] uppercase text-muted-foreground">Tool configs</p>
-            <p className="text-sm font-semibold">{summary.toolConfigs}</p>
-          </div>
-          <div className="rounded-xl border border-border/60 p-2">
-            <p className="text-[11px] uppercase text-muted-foreground">MCP servers</p>
-            <p className="text-sm font-semibold">{summary.mcpProviders}</p>
+          <div className="grid gap-2">
+            <FieldLabel
+              label="LLM parallel"
+              htmlFor="run-llm-parallel"
+              hint="How many LLM calls run at once. Leave empty to keep each model's own setting."
+            />
+            <Input
+              id="run-llm-parallel"
+              type="number"
+              min={1}
+              max={2048}
+              placeholder="Use model config"
+              value={settings.llmParallelRequests ?? ""}
+              onChange={(event) => {
+                const value = event.target.value.trim();
+                if (!value) {
+                  onSettingsChange({ llmParallelRequests: null });
+                  return;
+                }
+                const parsed = Number(value);
+                if (!Number.isFinite(parsed)) {
+                  return;
+                }
+                onSettingsChange({
+                  llmParallelRequests: clampInt(parsed, 1, 2048),
+                });
+              }}
+            />
           </div>
         </div>
-        <div className="grid gap-2">
-          <FieldLabel
-            label="Number of records"
-            htmlFor="preview-rows"
-            hint="Target rows for preview run."
-          />
-          <Input
-            id="preview-rows"
-            type="number"
-            min={1}
-            max={1000}
-            value={String(rows)}
-            onChange={(event) => {
-              const parsed = Number(event.target.value);
-              if (Number.isFinite(parsed) && parsed > 0) {
-                onRowsChange(Math.min(1000, Math.floor(parsed)));
-              }
-            }}
-          />
-        </div>
+
+        <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
+          <CollapsibleTrigger asChild={true}>
+            <button
+              type="button"
+              className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
+            >
+              {advancedOpen ? "Hide advanced" : "Show advanced"}
+            </button>
+          </CollapsibleTrigger>
+          <CollapsibleContent className="mt-3 space-y-4">
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="grid gap-2">
+                <FieldLabel
+                  label="CPU workers"
+                  htmlFor="run-non-inference-workers"
+                  hint="Worker threads for non-LLM steps like samplers and expressions."
+                />
+                <Input
+                  id="run-non-inference-workers"
+                  type="number"
+                  min={1}
+                  max={2048}
+                  value={String(settings.nonInferenceWorkers)}
+                  onChange={(event) => {
+                    const parsed = Number(event.target.value);
+                    if (!Number.isFinite(parsed)) {
+                      return;
+                    }
+                    onSettingsChange({
+                      nonInferenceWorkers: clampInt(parsed, 1, 2048),
+                    });
+                  }}
+                />
+              </div>
+              <div className="grid gap-2">
+                <FieldLabel
+                  label="Error window"
+                  htmlFor="run-shutdown-window"
+                  hint="How many attempts to observe before early-stop checks kick in."
+                />
+                <Input
+                  id="run-shutdown-window"
+                  type="number"
+                  min={1}
+                  max={10000}
+                  value={String(settings.shutdownErrorWindow)}
+                  onChange={(event) => {
+                    const parsed = Number(event.target.value);
+                    if (!Number.isFinite(parsed)) {
+                      return;
+                    }
+                    onSettingsChange({
+                      shutdownErrorWindow: clampInt(parsed, 1, 10000),
+                    });
+                  }}
+                />
+              </div>
+              <div className="grid gap-2">
+                <FieldLabel
+                  label="Conversation restarts"
+                  htmlFor="run-max-restarts"
+                  hint="How many full retries to do if model output fails validation."
+                />
+                <Input
+                  id="run-max-restarts"
+                  type="number"
+                  min={0}
+                  max={100}
+                  value={String(settings.maxConversationRestarts)}
+                  onChange={(event) => {
+                    const parsed = Number(event.target.value);
+                    if (!Number.isFinite(parsed)) {
+                      return;
+                    }
+                    onSettingsChange({
+                      maxConversationRestarts: clampInt(parsed, 0, 100),
+                    });
+                  }}
+                />
+              </div>
+              <div className="grid gap-2">
+                <FieldLabel
+                  label="Correction steps"
+                  htmlFor="run-correction-steps"
+                  hint="Extra in-chat fix attempts before a full retry."
+                />
+                <Input
+                  id="run-correction-steps"
+                  type="number"
+                  min={0}
+                  max={100}
+                  value={String(settings.maxConversationCorrectionSteps)}
+                  onChange={(event) => {
+                    const parsed = Number(event.target.value);
+                    if (!Number.isFinite(parsed)) {
+                      return;
+                    }
+                    onSettingsChange({
+                      maxConversationCorrectionSteps: clampInt(parsed, 0, 100),
+                    });
+                  }}
+                />
+              </div>
+              <div className="grid gap-2">
+                <FieldLabel
+                  label="Shutdown error rate"
+                  htmlFor="run-shutdown-rate"
+                  hint="Stop early if failure rate passes this value. Example: 0.5 = 50%."
+                />
+                <Input
+                  id="run-shutdown-rate"
+                  type="number"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={String(settings.shutdownErrorRate)}
+                  onChange={(event) => {
+                    const parsed = Number(event.target.value);
+                    if (!Number.isFinite(parsed)) {
+                      return;
+                    }
+                    onSettingsChange({
+                      shutdownErrorRate: clampFloat(parsed, 0, 1),
+                    });
+                  }}
+                />
+              </div>
+              <label className="flex items-center gap-3 text-sm text-foreground">
+                <Switch
+                  checked={settings.disableEarlyShutdown}
+                  onCheckedChange={(checked) =>
+                    onSettingsChange({
+                      disableEarlyShutdown: Boolean(checked),
+                    })
+                  }
+                />
+                Disable early shutdown
+              </label>
+            </div>
+          </CollapsibleContent>
+        </Collapsible>
+
         {errors.length > 0 && (
           <div className="max-h-44 space-y-1 overflow-y-auto rounded-xl border border-destructive/30 bg-destructive/5 p-3">
             <p className="text-xs font-semibold uppercase text-destructive">
@@ -110,6 +328,7 @@ export function PreviewDialog({
             ))}
           </div>
         )}
+
         <DialogFooter>
           <Button
             type="button"
@@ -119,8 +338,8 @@ export function PreviewDialog({
           >
             Cancel
           </Button>
-          <Button type="button" onClick={onPreview} disabled={loading}>
-            {loading ? "Running..." : "Run preview"}
+          <Button type="button" onClick={onRun} disabled={loading}>
+            {loading ? "Starting..." : `Start ${kindLabel.toLowerCase()}`}
           </Button>
         </DialogFooter>
       </DialogContent>
