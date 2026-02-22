@@ -1,18 +1,47 @@
 import { create } from "zustand";
+import type { RecipeExecutionKind } from "../execution-types";
 import type { RecipeExecutionRecord } from "../execution-types";
 import { sortExecutions, withExecutionDefaults } from "../executions/execution-helpers";
 
+export type RecipeRunSettings = {
+  bufferSize: number;
+  llmParallelRequests: number | null;
+  nonInferenceWorkers: number;
+  maxConversationRestarts: number;
+  maxConversationCorrectionSteps: number;
+  disableEarlyShutdown: boolean;
+  shutdownErrorRate: number;
+  shutdownErrorWindow: number;
+};
+
+const DEFAULT_RUN_SETTINGS: RecipeRunSettings = {
+  bufferSize: 1000,
+  llmParallelRequests: null,
+  nonInferenceWorkers: 4,
+  maxConversationRestarts: 5,
+  maxConversationCorrectionSteps: 0,
+  disableEarlyShutdown: false,
+  shutdownErrorRate: 0.5,
+  shutdownErrorWindow: 10,
+};
+
 type RecipeExecutionsState = {
-  previewDialogOpen: boolean;
+  runDialogOpen: boolean;
+  runDialogKind: RecipeExecutionKind;
   previewRows: number;
-  previewErrors: string[];
+  fullRows: number;
+  runErrors: string[];
+  runSettings: RecipeRunSettings;
   previewLoading: boolean;
   fullLoading: boolean;
   executions: RecipeExecutionRecord[];
   selectedExecutionId: string | null;
-  setPreviewDialogOpen: (open: boolean) => void;
+  setRunDialogOpen: (open: boolean) => void;
+  setRunDialogKind: (kind: RecipeExecutionKind) => void;
   setPreviewRows: (rows: number) => void;
-  setPreviewErrors: (errors: string[]) => void;
+  setFullRows: (rows: number) => void;
+  setRunErrors: (errors: string[]) => void;
+  setRunSettings: (patch: Partial<RecipeRunSettings>) => void;
   setPreviewLoading: (loading: boolean) => void;
   setFullLoading: (loading: boolean) => void;
   setExecutions: (records: RecipeExecutionRecord[]) => void;
@@ -22,18 +51,24 @@ type RecipeExecutionsState = {
 };
 
 const INITIAL_STATE = {
-  previewDialogOpen: false,
+  runDialogOpen: false,
+  runDialogKind: "preview",
   previewRows: 5,
-  previewErrors: [],
+  fullRows: 1000,
+  runErrors: [],
+  runSettings: DEFAULT_RUN_SETTINGS,
   previewLoading: false,
   fullLoading: false,
   executions: [],
   selectedExecutionId: null,
 } satisfies Pick<
   RecipeExecutionsState,
-  | "previewDialogOpen"
+  | "runDialogOpen"
+  | "runDialogKind"
   | "previewRows"
-  | "previewErrors"
+  | "fullRows"
+  | "runErrors"
+  | "runSettings"
   | "previewLoading"
   | "fullLoading"
   | "executions"
@@ -42,10 +77,20 @@ const INITIAL_STATE = {
 
 export const useRecipeExecutionsStore = create<RecipeExecutionsState>((set) => ({
   ...INITIAL_STATE,
-  setPreviewDialogOpen: (open) => set({ previewDialogOpen: open }),
+  setRunDialogOpen: (open) => set({ runDialogOpen: open }),
+  setRunDialogKind: (kind) => set({ runDialogKind: kind }),
   setPreviewRows: (rows) =>
     set({ previewRows: Number.isFinite(rows) && rows > 0 ? Math.floor(rows) : 1 }),
-  setPreviewErrors: (errors) => set({ previewErrors: errors }),
+  setFullRows: (rows) =>
+    set({ fullRows: Number.isFinite(rows) && rows > 0 ? Math.floor(rows) : 1 }),
+  setRunErrors: (errors) => set({ runErrors: errors }),
+  setRunSettings: (patch) =>
+    set((state) => ({
+      runSettings: {
+        ...state.runSettings,
+        ...patch,
+      },
+    })),
   setPreviewLoading: (loading) => set({ previewLoading: loading }),
   setFullLoading: (loading) => set({ fullLoading: loading }),
   setExecutions: (records) =>

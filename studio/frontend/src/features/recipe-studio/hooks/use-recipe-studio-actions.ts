@@ -1,6 +1,10 @@
 import { useRecipeExecutions } from "./use-recipe-executions";
 import { useRecipePersistence } from "./use-recipe-persistence";
-import type { RecipeExecutionRecord } from "../execution-types";
+import type {
+  RecipeExecutionKind,
+  RecipeExecutionRecord,
+} from "../execution-types";
+import type { RecipeRunSettings } from "../stores/recipe-executions";
 import type { RecipeSnapshot } from "../utils/import";
 import type { RecipePayload, RecipePayloadResult } from "../utils/payload/types";
 
@@ -38,11 +42,16 @@ type UseRecipeStudioActionsResult = {
   copied: boolean;
   importOpen: boolean;
   setImportOpen: (open: boolean) => void;
-  previewDialogOpen: boolean;
-  setPreviewDialogOpen: (open: boolean) => void;
+  runDialogOpen: boolean;
+  runDialogKind: RecipeExecutionKind;
+  setRunDialogOpen: (open: boolean) => void;
   previewRows: number;
+  fullRows: number;
   setPreviewRows: (rows: number) => void;
-  previewErrors: string[];
+  setFullRows: (rows: number) => void;
+  runErrors: string[];
+  runSettings: RecipeRunSettings;
+  setRunSettings: (patch: Partial<RecipeRunSettings>) => void;
   previewLoading: boolean;
   fullLoading: boolean;
   currentSignature: string;
@@ -50,7 +59,8 @@ type UseRecipeStudioActionsResult = {
   selectedExecutionId: string | null;
   setSelectedExecutionId: (id: string) => void;
   persistRecipe: () => Promise<void>;
-  openPreviewDialog: () => void;
+  openRunDialog: (kind: RecipeExecutionKind) => void;
+  runFromDialog: () => Promise<boolean>;
   runPreview: () => Promise<boolean>;
   runFull: () => Promise<boolean>;
   cancelExecution: (id: string) => Promise<void>;
@@ -101,11 +111,16 @@ export function useRecipeStudioActions({
     copied: persistence.copied,
     importOpen: persistence.importOpen,
     setImportOpen: persistence.setImportOpen,
-    previewDialogOpen: executions.previewDialogOpen,
-    setPreviewDialogOpen: executions.setPreviewDialogOpen,
+    runDialogOpen: executions.runDialogOpen,
+    runDialogKind: executions.runDialogKind,
+    setRunDialogOpen: executions.setRunDialogOpen,
     previewRows: executions.previewRows,
+    fullRows: executions.fullRows,
     setPreviewRows: executions.setPreviewRows,
-    previewErrors: executions.previewErrors,
+    setFullRows: executions.setFullRows,
+    runErrors: executions.runErrors,
+    runSettings: executions.runSettings,
+    setRunSettings: executions.setRunSettings,
     previewLoading: executions.previewLoading,
     fullLoading: executions.fullLoading,
     currentSignature: persistence.currentSignature,
@@ -113,7 +128,8 @@ export function useRecipeStudioActions({
     selectedExecutionId: executions.selectedExecutionId,
     setSelectedExecutionId: executions.setSelectedExecutionId,
     persistRecipe: persistence.persistRecipe,
-    openPreviewDialog: executions.openPreviewDialog,
+    openRunDialog: executions.openRunDialog,
+    runFromDialog: executions.runFromDialog,
     runPreview: executions.runPreview,
     runFull: executions.runFull,
     cancelExecution: executions.cancelExecution,

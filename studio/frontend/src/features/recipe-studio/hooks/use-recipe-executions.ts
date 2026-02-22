@@ -8,7 +8,10 @@ import {
   validateRecipe,
 } from "../api";
 import { saveRecipeExecution } from "../data/executions-db";
-import type { RecipeExecutionRecord } from "../execution-types";
+import type {
+  RecipeExecutionKind,
+  RecipeExecutionRecord,
+} from "../execution-types";
 import {
   DATASET_PAGE_SIZE,
   executionLabel,
@@ -21,8 +24,15 @@ import {
   loadSortedRecipeExecutions,
 } from "../executions/hydration";
 import { createBaseExecutionRecord } from "../executions/runtime";
+import {
+  buildExecutionPayload,
+  sanitizeExecutionRows,
+} from "../executions/run-settings";
 import { trackRecipeExecution } from "../executions/tracker";
-import { useRecipeExecutionsStore } from "../stores/recipe-executions";
+import {
+  type RecipeRunSettings,
+  useRecipeExecutionsStore,
+} from "../stores/recipe-executions";
 import type { RecipePayload, RecipePayloadResult } from "../utils/payload/types";
 
 type UseRecipeExecutionsParams = {
@@ -34,17 +44,23 @@ type UseRecipeExecutionsParams = {
 };
 
 type UseRecipeExecutionsResult = {
-  previewDialogOpen: boolean;
-  setPreviewDialogOpen: (open: boolean) => void;
+  runDialogOpen: boolean;
+  runDialogKind: RecipeExecutionKind;
+  setRunDialogOpen: (open: boolean) => void;
   previewRows: number;
+  fullRows: number;
   setPreviewRows: (rows: number) => void;
-  previewErrors: string[];
+  setFullRows: (rows: number) => void;
+  runErrors: string[];
+  runSettings: RecipeRunSettings;
+  setRunSettings: (patch: Partial<RecipeRunSettings>) => void;
   previewLoading: boolean;
   fullLoading: boolean;
   executions: RecipeExecutionRecord[];
   selectedExecutionId: string | null;
   setSelectedExecutionId: (id: string) => void;
-  openPreviewDialog: () => void;
+  openRunDialog: (kind: RecipeExecutionKind) => void;
+  runFromDialog: () => Promise<boolean>;
   runPreview: () => Promise<boolean>;
   runFull: () => Promise<boolean>;
   cancelExecution: (id: string) => Promise<void>;
@@ -59,16 +75,22 @@ export function useRecipeExecutions({
   onPreviewSuccess,
 }: UseRecipeExecutionsParams): UseRecipeExecutionsResult {
   const {
-    previewDialogOpen,
+    runDialogOpen,
+    runDialogKind,
     previewRows,
-    previewErrors,
+    fullRows,
+    runErrors,
+    runSettings,
     previewLoading,
     fullLoading,
     executions,
     selectedExecutionId,
-    setPreviewDialogOpen,
+    setRunDialogOpen,
+    setRunDialogKind,
     setPreviewRows,
-    setPreviewErrors,
+    setFullRows,
+    setRunErrors,
+    setRunSettings,
     setPreviewLoading,
     setFullLoading,
     setExecutions,
@@ -77,16 +99,22 @@ export function useRecipeExecutions({
     resetForRecipe,
   } = useRecipeExecutionsStore(
     useShallow((state) => ({
-      previewDialogOpen: state.previewDialogOpen,
+      runDialogOpen: state.runDialogOpen,
+      runDialogKind: state.runDialogKind,
       previewRows: state.previewRows,
-      previewErrors: state.previewErrors,
+      fullRows: state.fullRows,
+      runErrors: state.runErrors,
+      runSettings: state.runSettings,
       previewLoading: state.previewLoading,
       fullLoading: state.fullLoading,
       executions: state.executions,
       selectedExecutionId: state.selectedExecutionId,
-      setPreviewDialogOpen: state.setPreviewDialogOpen,
+      setRunDialogOpen: state.setRunDialogOpen,
+      setRunDialogKind: state.setRunDialogKind,
       setPreviewRows: state.setPreviewRows,
-      setPreviewErrors: state.setPreviewErrors,
+      setFullRows: state.setFullRows,
+      setRunErrors: state.setRunErrors,
+      setRunSettings: state.setRunSettings,
       setPreviewLoading: state.setPreviewLoading,
       setFullLoading: state.setFullLoading,
       setExecutions: state.setExecutions,
@@ -134,7 +162,7 @@ export function useRecipeExecutions({
           initialExecution: resumable,
           notify: false,
           onUpsert: upsertAndPersist,
-          onSetPreviewErrors: setPreviewErrors,
+          onSetPreviewErrors: setRunErrors,
           onPreviewSuccess,
         });
       } catch (error) {
@@ -152,7 +180,7 @@ export function useRecipeExecutions({
     recipeId,
     resetForRecipe,
     setExecutions,
-    setPreviewErrors,
+    setRunErrors,
     upsertAndPersist,
   ]);
 
@@ -162,29 +190,26 @@ export function useRecipeExecutions({
     }
     return null;
   }, [payloadResult.errors.length, payloadResult.payload]);
+
   const readExecutablePayload = useCallback((): RecipePayload | null => {
     const payload = readPayload();
     if (payload) {
       return payload;
     }
 
-    setPreviewErrors(payloadResult.errors);
+    setRunErrors(payloadResult.errors);
     toastError("Invalid recipe payload", payloadErrorMessage);
     return null;
-  }, [payloadErrorMessage, payloadResult.errors, readPayload, setPreviewErrors]);
-
-  const openPreviewDialog = useCallback((): void => {
-    setPreviewErrors([]);
-    setPreviewDialogOpen(true);
-  }, [setPreviewDialogOpen, setPreviewErrors]);
+  }, [payloadErrorMessage, payloadResult.errors, readPayload, setRunErrors]);
 
   const runExecution = useCallback(
     async (input: {
-      kind: "preview" | "full";
+      kind: RecipeExecutionKind;
       payload: RecipePayload;
       rows: number;
+      settings: RecipeRunSettings;
     }): Promise<boolean> => {
-      const { kind, payload, rows } = input;
+      const { kind, payload, rows, settings } = input;
       const setLoading = kind === "preview" ? setPreviewLoading : setFullLoading;
       const label = executionLabel(kind);
 
@@ -198,20 +223,15 @@ export function useRecipeExecutions({
 
       upsertAndPersist(baseExecution);
       onExecutionStart?.();
-      if (kind === "preview") {
-        setPreviewDialogOpen(false);
-      }
+      setRunDialogOpen(false);
 
       try {
-        const jobPayload = {
-          ...payload,
-          run: {
-            ...payload.run,
-            rows,
-            // biome-ignore lint/style/useNamingConvention: backend schema
-            execution_type: kind,
-          },
-        };
+        const jobPayload = buildExecutionPayload({
+          payload,
+          kind,
+          rows,
+          settings,
+        });
         const createdJob = await createRecipeJob(jobPayload);
         const executionWithJob = {
           ...baseExecution,
@@ -227,7 +247,7 @@ export function useRecipeExecutions({
           initialExecution: executionWithJob,
           notify: true,
           onUpsert: upsertAndPersist,
-          onSetPreviewErrors: setPreviewErrors,
+          onSetPreviewErrors: setRunErrors,
           onPreviewSuccess,
         });
       } catch (error) {
@@ -238,9 +258,7 @@ export function useRecipeExecutions({
           error: message,
           finishedAt: Date.now(),
         });
-        if (kind === "preview") {
-          setPreviewErrors([message]);
-        }
+        setRunErrors([message]);
         toastError(`${label} failed`, message);
         return false;
       } finally {
@@ -253,68 +271,91 @@ export function useRecipeExecutions({
       onPreviewSuccess,
       recipeId,
       setFullLoading,
-      setPreviewDialogOpen,
-      setPreviewErrors,
       setPreviewLoading,
+      setRunDialogOpen,
+      setRunErrors,
       upsertAndPersist,
     ],
   );
 
-  const runPreview = useCallback(async (): Promise<boolean> => {
-    const payload = readExecutablePayload();
-    if (!payload) {
-      return false;
-    }
-
-    const previewPayload = {
-      ...payload,
-      run: {
-        ...payload.run,
-        rows: previewRows,
-      },
-    };
-    try {
-      const validation = await validateRecipe(previewPayload);
-      if (!validation.valid) {
-        const errors = validation.errors.map((item) => item.message);
-        const fallback = validation.raw_detail ?? "Validation failed.";
-        const nextErrors = errors.length > 0 ? errors : [fallback];
-        setPreviewErrors(nextErrors);
-        toastError("Validation failed", nextErrors[0]);
+  const runWithValidation = useCallback(
+    async (kind: RecipeExecutionKind, rows: number): Promise<boolean> => {
+      const payload = readExecutablePayload();
+      if (!payload) {
         return false;
       }
-    } catch (error) {
-      const message = toErrorMessage(error, "Validation failed.");
-      setPreviewErrors([message]);
-      toastError("Validation failed", message);
-      return false;
-    }
 
-    return runExecution({
-      kind: "preview",
-      payload,
-      rows: previewRows,
-    });
-  }, [previewRows, readExecutablePayload, runExecution, setPreviewErrors]);
+      const normalizedRows = sanitizeExecutionRows(rows, kind);
+      const executionPayload = buildExecutionPayload({
+        payload,
+        kind,
+        rows: normalizedRows,
+        settings: runSettings,
+      });
+
+      try {
+        const validation = await validateRecipe(executionPayload);
+        if (!validation.valid) {
+          const errors = validation.errors.map((item) => item.message);
+          const fallback = validation.raw_detail ?? "Validation failed.";
+          const nextErrors = errors.length > 0 ? errors : [fallback];
+          setRunErrors(nextErrors);
+          toastError("Validation failed", nextErrors[0]);
+          return false;
+        }
+      } catch (error) {
+        const message = toErrorMessage(error, "Validation failed.");
+        setRunErrors([message]);
+        toastError("Validation failed", message);
+        return false;
+      }
+
+      return runExecution({
+        kind,
+        payload,
+        rows: normalizedRows,
+        settings: runSettings,
+      });
+    },
+    [readExecutablePayload, runExecution, runSettings, setRunErrors],
+  );
+
+  const runPreview = useCallback(async (): Promise<boolean> => {
+    return runWithValidation("preview", previewRows);
+  }, [previewRows, runWithValidation]);
 
   const runFull = useCallback(async (): Promise<boolean> => {
-    const payload = readExecutablePayload();
-    if (!payload) {
-      return false;
+    return runWithValidation("full", fullRows);
+  }, [fullRows, runWithValidation]);
+
+  const runFromDialog = useCallback(async (): Promise<boolean> => {
+    if (runDialogKind === "preview") {
+      return runPreview();
     }
+    return runFull();
+  }, [runDialogKind, runFull, runPreview]);
 
-    const requestedRows = Number(payload.run?.rows);
-    const rows =
-      Number.isFinite(requestedRows) && requestedRows > 0
-        ? Math.floor(requestedRows)
-        : 1000;
-
-    return runExecution({
-      kind: "full",
-      payload,
-      rows,
-    });
-  }, [readExecutablePayload, runExecution]);
+  const openRunDialog = useCallback(
+    (kind: RecipeExecutionKind): void => {
+      setRunErrors([]);
+      setRunDialogKind(kind);
+      if (kind === "full") {
+        const payload = readPayload();
+        const payloadRows = Number(payload?.run?.rows);
+        if (Number.isFinite(payloadRows) && payloadRows > 0) {
+          setFullRows(Math.floor(payloadRows));
+        }
+      }
+      setRunDialogOpen(true);
+    },
+    [
+      readPayload,
+      setFullRows,
+      setRunDialogKind,
+      setRunDialogOpen,
+      setRunErrors,
+    ],
+  );
 
   const cancelExecution = useCallback(
     async (id: string): Promise<void> => {
@@ -375,17 +416,23 @@ export function useRecipeExecutions({
   );
 
   return {
-    previewDialogOpen,
-    setPreviewDialogOpen,
+    runDialogOpen,
+    runDialogKind,
+    setRunDialogOpen,
     previewRows,
+    fullRows,
     setPreviewRows,
-    previewErrors,
+    setFullRows,
+    runErrors,
+    runSettings,
+    setRunSettings,
     previewLoading,
     fullLoading,
     executions,
     selectedExecutionId,
     setSelectedExecutionId,
-    openPreviewDialog,
+    openRunDialog,
+    runFromDialog,
     runPreview,
     runFull,
     cancelExecution,
