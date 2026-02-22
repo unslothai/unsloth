@@ -5,6 +5,7 @@ Data Recipe routes (DataDesigner runner).
 from __future__ import annotations
 
 import sys
+from itertools import islice
 from pathlib import Path
 from typing import Any
 
@@ -18,9 +19,162 @@ if str(backend_path) not in sys.path:
 
 from core.data_recipe.jobs import get_job_manager
 from core.data_recipe.service import validate_recipe
-from models.data_recipe import JobCreateResponse, RecipePayload, ValidateError, ValidateResponse
+from models.data_recipe import (
+    JobCreateResponse,
+    RecipePayload,
+    SeedInspectRequest,
+    SeedInspectResponse,
+    ValidateError,
+    ValidateResponse,
+)
 
 router = APIRouter()
+DATA_EXTS = (".parquet", ".jsonl", ".json", ".csv")
+
+
+def _serialize_preview_value(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(key): _serialize_preview_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_serialize_preview_value(item) for item in value]
+    return str(value)
+
+
+def _serialize_preview_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {str(key): _serialize_preview_value(value) for key, value in row.items()}
+        for row in rows
+    ]
+
+
+def _select_best_file(data_files: list[str], split: str | None) -> str | None:
+    if not data_files:
+        return None
+    if not split:
+        return data_files[0]
+    split_lower = split.lower()
+
+    def score(path: str) -> tuple[int, int]:
+        name = path.lower()
+        if f"/{split_lower}/" in name:
+            return (0, len(path))
+        if (
+            f"_{split_lower}." in name
+            or f"-{split_lower}." in name
+            or f"/{split_lower}." in name
+            or f"/{split_lower}_" in name
+            or f"/{split_lower}-" in name
+        ):
+            return (1, len(path))
+        return (2, len(path))
+
+    return sorted(data_files, key=score)[0]
+
+
+def _resolve_seed_hf_path(dataset_name: str, data_files: list[str], split: str | None) -> str | None:
+    selected = _select_best_file(data_files, split)
+    if not selected:
+        return None
+
+    ext = Path(selected).suffix.lower()
+    if ext not in DATA_EXTS:
+        return f"datasets/{dataset_name}/{selected}"
+
+    parent = Path(selected).parent.as_posix()
+    if not parent or parent == ".":
+        return f"datasets/{dataset_name}/**/*{ext}"
+    return f"datasets/{dataset_name}/{parent}/**/*{ext}"
+
+
+@router.post("/seed/inspect", response_model=SeedInspectResponse)
+def inspect_seed_dataset(payload: SeedInspectRequest) -> SeedInspectResponse:
+    dataset_name = payload.dataset_name.strip()
+    if not dataset_name or dataset_name.count("/") < 1:
+        raise HTTPException(status_code=400, detail="dataset_name must be a Hugging Face repo id like org/repo")
+
+    try:
+        from datasets import load_dataset
+        from huggingface_hub import HfApi
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"seed inspect dependencies unavailable: {exc}") from exc
+
+    split = (payload.split or "train").strip() or "train"
+    subset = payload.subset.strip() if payload.subset else None
+    token = payload.hf_token.strip() if payload.hf_token else None
+    preview_size = int(payload.preview_size)
+
+    preview_rows: list[dict[str, Any]] = []
+    data_files: list[str] = []
+
+    try:
+        api = HfApi()
+        repo_files = api.list_repo_files(dataset_name, repo_type="dataset", token=token)
+        data_files = [f for f in repo_files if f.lower().endswith(DATA_EXTS)]
+    except Exception:
+        data_files = []
+
+    selected_file = _select_best_file(data_files, split)
+    if selected_file:
+        try:
+            load_kwargs: dict[str, Any] = {
+                "path": dataset_name,
+                "data_files": [selected_file],
+                "split": "train",
+                "streaming": True,
+            }
+            if subset:
+                load_kwargs["name"] = subset
+            if token:
+                load_kwargs["token"] = token
+            streamed_ds = load_dataset(**load_kwargs)
+            preview_rows = [_row for _row in islice(streamed_ds, preview_size)]
+        except Exception:
+            preview_rows = []
+
+    if not preview_rows:
+        try:
+            load_kwargs = {
+                "path": dataset_name,
+                "split": split,
+                "streaming": True,
+            }
+            if subset:
+                load_kwargs["name"] = subset
+            if token:
+                load_kwargs["token"] = token
+            streamed_ds = load_dataset(**load_kwargs)
+            preview_rows = [_row for _row in islice(streamed_ds, preview_size)]
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=f"seed inspect failed: {exc}") from exc
+
+    if not preview_rows:
+        raise HTTPException(status_code=422, detail="dataset appears empty or unreadable")
+    preview_rows = _serialize_preview_rows(preview_rows)
+
+    columns_seen: dict[str, None] = {}
+    for row in preview_rows:
+        for key in row.keys():
+            columns_seen[str(key)] = None
+    columns = list(columns_seen.keys())
+
+    if not data_files:
+        # Best effort path fallback when file list is unavailable.
+        resolved_path = f"datasets/{dataset_name}/**/*.parquet"
+    else:
+        resolved_path = _resolve_seed_hf_path(dataset_name, data_files, split)
+        if not resolved_path:
+            raise HTTPException(status_code=422, detail="unable to resolve seed dataset path")
+
+    return SeedInspectResponse(
+        dataset_name=dataset_name,
+        resolved_path=resolved_path,
+        columns=columns,
+        preview_rows=preview_rows,
+        split=split,
+        subset=subset,
+    )
 
 
 @router.post("/validate", response_model=ValidateResponse)

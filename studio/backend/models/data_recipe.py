@@ -35,3 +35,20 @@ class ValidateResponse(BaseModel):
 
 class JobCreateResponse(BaseModel):
     job_id: str
+
+
+class SeedInspectRequest(BaseModel):
+    dataset_name: str = Field(min_length=1)
+    hf_token: str | None = None
+    subset: str | None = None
+    split: str | None = "train"
+    preview_size: int = Field(default=10, ge=1, le=50)
+
+
+class SeedInspectResponse(BaseModel):
+    dataset_name: str
+    resolved_path: str
+    columns: list[str] = Field(default_factory=list)
+    preview_rows: list[dict[str, Any]] = Field(default_factory=list)
+    split: str | None = None
+    subset: str | None = None

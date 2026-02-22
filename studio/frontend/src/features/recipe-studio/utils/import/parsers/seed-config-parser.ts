@@ -17,8 +17,8 @@ function makeDefaultSeedConfig(id: string): SeedConfig {
     kind: "seed",
     name: "seed",
     drop: false,
-    hf_url: "",
     hf_repo_id: "",
+    hf_subset: "",
     hf_split: "",
     hf_path: "",
     hf_token: "",
@@ -35,6 +35,19 @@ function makeDefaultSeedConfig(id: string): SeedConfig {
   };
 }
 
+function inferRepoIdFromSeedPath(path: string): string {
+  const trimmed = path.trim();
+  if (!trimmed) return "";
+  const parts = trimmed.split("/").filter(Boolean);
+  if (parts.length >= 3 && parts[0] === "datasets") {
+    return `${parts[1]}/${parts[2]}`;
+  }
+  if (parts.length >= 2) {
+    return `${parts[0]}/${parts[1]}`;
+  }
+  return "";
+}
+
 function parseSeedSettings(seedConfigRaw: unknown): Partial<SeedConfig> {
   if (!isRecord(seedConfigRaw)) {
     return {};
@@ -45,11 +58,13 @@ function parseSeedSettings(seedConfigRaw: unknown): Partial<SeedConfig> {
   let hf_path = "";
   let hf_token = "";
   let hf_endpoint = "https://huggingface.co";
+  let hf_repo_id = "";
   const sourceRaw = seedConfigRaw.source;
   if (isRecord(sourceRaw) && readString(sourceRaw.seed_type) === "hf") {
     hf_path = readString(sourceRaw.path) ?? "";
     hf_token = readString(sourceRaw.token) ?? "";
     hf_endpoint = readString(sourceRaw.endpoint) ?? hf_endpoint;
+    hf_repo_id = inferRepoIdFromSeedPath(hf_path);
   }
 
   let selection_type: SeedSelectionType = "none";
@@ -77,6 +92,7 @@ function parseSeedSettings(seedConfigRaw: unknown): Partial<SeedConfig> {
   }
 
   return {
+    hf_repo_id,
     hf_path,
     hf_token,
     hf_endpoint,
