@@ -9,10 +9,11 @@ export function BaseNode({
   return (
     <div
       className={cn(
-        "bg-card text-card-foreground relative rounded-md border",
-        "hover:ring-1",
-        "[.react-flow\\_\\_node.selected_&]:border-muted-foreground",
-        "[.react-flow\\_\\_node.selected_&]:shadow-lg",
+        "bg-card text-card-foreground relative rounded-md border transition-[border-color,box-shadow] duration-150",
+        "hover:border-primary/40 hover:ring-1 hover:ring-primary/20 hover:shadow-sm",
+        "[.react-flow\\_\\_node.selected_&]:border-primary/45",
+        "[.react-flow\\_\\_node.selected_&]:ring-1 [.react-flow\\_\\_node.selected_&]:ring-primary/25",
+        "[.react-flow\\_\\_node.selected_&]:shadow-md",
         className,
       )}
       tabIndex={0}
