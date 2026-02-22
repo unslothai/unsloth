@@ -33,7 +33,7 @@ import { RecipeGraphSemanticEdge } from "./components/recipe-graph-semantic-edge
 import { DataEdge } from "./components/rf-ui/data-edge";
 import { ConfigDialog } from "./dialogs/config-dialog";
 import { ImportDialog } from "./dialogs/import-dialog";
-import { PreviewDialog } from "./dialogs/preview-dialog";
+import { RunDialog } from "./dialogs/preview-dialog";
 import { ProcessorsDialog } from "./dialogs/processors-dialog";
 import { useRecipeStudioActions } from "./hooks/use-recipe-studio-actions";
 import { useRecipeStudioStore } from "./stores/recipe-studio";
@@ -52,7 +52,6 @@ import {
 } from "./utils/reactflow-changes";
 import {
   buildDialogOptions,
-  buildPreviewSummary,
 } from "./utils/recipe-studio-view";
 import type { RecipeStudioView } from "./execution-types";
 
@@ -251,10 +250,6 @@ export function RecipeStudioPage({
     () => buildDialogOptions(configList),
     [configList],
   );
-  const previewSummary = useMemo(
-    () => buildPreviewSummary(configList),
-    [configList],
-  );
 
   const handleToggleDirection = useCallback(() => {
     setLayoutDirection(layoutDirection === "LR" ? "TB" : "LR");
@@ -286,11 +281,16 @@ export function RecipeStudioPage({
     copied,
     importOpen,
     setImportOpen,
-    previewDialogOpen,
-    setPreviewDialogOpen,
+    runDialogOpen,
+    runDialogKind,
+    setRunDialogOpen,
     previewRows,
+    fullRows,
     setPreviewRows,
-    previewErrors,
+    setFullRows,
+    runErrors,
+    runSettings,
+    setRunSettings,
     previewLoading,
     fullLoading,
     currentSignature,
@@ -298,9 +298,8 @@ export function RecipeStudioPage({
     selectedExecutionId,
     setSelectedExecutionId,
     persistRecipe,
-    openPreviewDialog,
-    runPreview,
-    runFull,
+    openRunDialog,
+    runFromDialog,
     cancelExecution,
     loadExecutionDatasetPage,
     copyRecipe,
@@ -334,6 +333,9 @@ export function RecipeStudioPage({
     setSheetView("root");
     setBlockSheetOpen(true);
   }, [setSheetView]);
+  const runDialogRows = runDialogKind === "preview" ? previewRows : fullRows;
+  const runDialogLoading =
+    runDialogKind === "preview" ? previewLoading : fullLoading;
 
   return (
     <div className="min-h-screen bg-background">
@@ -352,10 +354,8 @@ export function RecipeStudioPage({
             workflowName={workflowName}
             onWorkflowNameChange={setWorkflowName}
             onViewChange={setActiveView}
-            onPreview={openPreviewDialog}
-            onRunFull={() => {
-              void runFull();
-            }}
+            onPreview={() => openRunDialog("preview")}
+            onRunFull={() => openRunDialog("full")}
             onSaveRecipe={() => {
               void persistRecipe();
             }}
@@ -483,16 +483,24 @@ export function RecipeStudioPage({
         onProcessorsChange={setProcessors}
         container={sheetContainer}
       />
-      <PreviewDialog
-        open={previewDialogOpen}
-        onOpenChange={setPreviewDialogOpen}
-        rows={previewRows}
-        onRowsChange={setPreviewRows}
-        loading={previewLoading}
-        errors={previewErrors}
-        summary={previewSummary}
-        onPreview={() => {
-          void runPreview();
+      <RunDialog
+        open={runDialogOpen}
+        onOpenChange={setRunDialogOpen}
+        kind={runDialogKind}
+        rows={runDialogRows}
+        onRowsChange={(rows) => {
+          if (runDialogKind === "preview") {
+            setPreviewRows(rows);
+            return;
+          }
+          setFullRows(rows);
+        }}
+        settings={runSettings}
+        onSettingsChange={setRunSettings}
+        loading={runDialogLoading}
+        errors={runErrors}
+        onRun={() => {
+          void runFromDialog();
         }}
         container={sheetContainer}
       />

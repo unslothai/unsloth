@@ -18,6 +18,14 @@ export type RecipePayload = {
     preview: boolean;
     // biome-ignore lint/style/useNamingConvention: api schema
     output_formats: string[];
+    // biome-ignore lint/style/useNamingConvention: backend schema
+    execution_type?: "preview" | "full";
+    // biome-ignore lint/style/useNamingConvention: backend schema
+    run_config?: Record<string, unknown>;
+    // biome-ignore lint/style/useNamingConvention: backend schema
+    dataset_name?: string;
+    // biome-ignore lint/style/useNamingConvention: backend schema
+    artifact_path?: string;
   };
   ui: {
     nodes: { id: string; x: number; y: number }[];
