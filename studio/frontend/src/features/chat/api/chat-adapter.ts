@@ -65,15 +65,6 @@ function findLatestUserImageBase64(messages: RunMessages): string | undefined {
       continue;
     }
 
-    // Image in message.content (e.g. compare view appends content with image parts)
-    for (const part of message.content ?? []) {
-      if (part.type === "image" && "image" in part) {
-        const encoded = extractImageBase64(part.image);
-        if (encoded) return encoded;
-      }
-    }
-
-    // Image in message.attachments (e.g. chat composer)
     if ("attachments" in message && (message.attachments?.length ?? 0) > 0) {
       for (const attachment of message.attachments ?? []) {
         for (const part of attachment.content ?? []) {
