@@ -219,9 +219,10 @@ def benchmark_mlx(steps: int, batch_size: int, seq_len: int, warmup: int = 2):
     for i in range(warmup):
         input_ids, labels = create_batch()
         trainable_params = model.trainable_parameters()
-        loss_and_grad = nn.value_and_grad(loss_fn)
-        loss, grads = loss_and_grad(trainable_params, input_ids, labels)
-        optimizer.update(model, grads)
+        grads = nn.grad(loss_fn)(input_ids, labels)
+        # Filter gradients to only trainable params
+        trainable_grads = {k: grads[k] for k in trainable_params if k in grads}
+        optimizer.update(model, trainable_grads)
         mx.eval(model, optimizer.state)
     
     mx.reset_peak_memory()
@@ -234,9 +235,12 @@ def benchmark_mlx(steps: int, batch_size: int, seq_len: int, warmup: int = 2):
         
         input_ids, labels = create_batch()
         trainable_params = model.trainable_parameters()
-        loss_and_grad = nn.value_and_grad(loss_fn)
-        loss, grads = loss_and_grad(trainable_params, input_ids, labels)
-        optimizer.update(model, grads)
+        
+        # Compute loss and grads, then filter to trainable params only
+        loss, grads = nn.value_and_grad(loss_fn)(input_ids, labels)
+        # Filter gradients to only trainable params for optimizer update
+        trainable_grads = {k: grads[k] for k in trainable_params if k in grads}
+        optimizer.update(model, trainable_grads)
         mx.eval(model, optimizer.state)
         
         step_time = time.perf_counter() - step_start
