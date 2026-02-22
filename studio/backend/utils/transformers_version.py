@@ -164,22 +164,41 @@ _OVERLAY_PACKAGES = (
 
 
 def _install_overlay() -> None:
-    """Install transformers 5.x and its critical deps into the overlay
-    directory and prepend it to ``sys.path``."""
-    # Check if overlay needs (re)creation.
-    # If the overlay exists but is missing huggingface_hub, it's stale.
-    needs_install = (
+    """Install transformers 5.x into BOTH site-packages and the overlay
+    directory, then prepend the overlay to ``sys.path``.
+
+    We install into site-packages so that:
+      - ``importlib.metadata.version()`` returns the correct version
+      - sub-package resolution (``transformers.models.*``) uses 5.x code
+    The overlay is kept as a safety net for sys.path-based resolution.
+    """
+    # --- 1. Install into site-packages (updates code + metadata) -----------
+    for pkg in _OVERLAY_PACKAGES:
+        cmd = [sys.executable, "-m", "pip", "install", pkg]
+        logger.info("Installing %s into site-packages: %s", pkg, " ".join(cmd))
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        if result.returncode != 0:
+            logger.error("pip install failed:\n%s", result.stdout)
+            raise RuntimeError(
+                f"Failed to install {pkg}.\npip output:\n{result.stdout}"
+            )
+    logger.info("Site-packages install succeeded")
+
+    # --- 2. Install into overlay (safety net for sys.path resolution) ------
+    needs_overlay = (
         not os.path.isdir(_OVERLAY_DIR)
         or not os.listdir(_OVERLAY_DIR)
         or not os.path.isdir(os.path.join(_OVERLAY_DIR, "huggingface_hub"))
     )
-
-    if needs_install:
-        # Clean up stale overlay if present
+    if needs_overlay:
         if os.path.isdir(_OVERLAY_DIR):
             shutil.rmtree(_OVERLAY_DIR)
         os.makedirs(_OVERLAY_DIR, exist_ok=True)
-
         for pkg in _OVERLAY_PACKAGES:
             cmd = [
                 sys.executable, "-m", "pip", "install",
@@ -188,54 +207,53 @@ def _install_overlay() -> None:
                 pkg,
             ]
             logger.info("Installing %s to overlay: %s", pkg, " ".join(cmd))
-            result = subprocess.run(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-            )
-            if result.returncode != 0:
-                logger.error("pip install failed:\n%s", result.stdout)
-                raise RuntimeError(
-                    f"Failed to install {pkg} to {_OVERLAY_DIR}.\n"
-                    f"pip output:\n{result.stdout}"
-                )
+            subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         logger.info("Overlay install succeeded")
-    else:
-        logger.info("Overlay directory already exists at %s", _OVERLAY_DIR)
 
     # Prepend to sys.path (if not already there)
     if _OVERLAY_DIR not in sys.path:
         sys.path.insert(0, _OVERLAY_DIR)
         logger.info("Prepended %s to sys.path", _OVERLAY_DIR)
 
-    # Purge old modules and force fresh import
+    # --- 3. Purge old modules and force fresh import -----------------------
     count = _purge_modules()
     logger.info("Purged %d cached modules", count)
 
     import transformers
-    logger.info("Loaded transformers %s from overlay", transformers.__version__)
+    logger.info("Loaded transformers %s", transformers.__version__)
 
 
 def _remove_overlay() -> None:
-    """Remove the overlay directory from ``sys.path`` so the default
-    site-packages version (4.57.x) takes effect again."""
-    # Remove from sys.path
-    changed = False
+    """Revert to the default transformers (4.57.x) by restoring site-packages
+    and removing the overlay from ``sys.path``."""
+    # --- 1. Restore default versions in site-packages ----------------------
+    default_packages = (
+        f"transformers=={TRANSFORMERS_DEFAULT_VERSION}",
+        "huggingface_hub==0.36.0",
+    )
+    for pkg in default_packages:
+        cmd = [sys.executable, "-m", "pip", "install", pkg]
+        logger.info("Restoring %s in site-packages: %s", pkg, " ".join(cmd))
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        if result.returncode != 0:
+            logger.error("pip install failed:\n%s", result.stdout)
+
+    # --- 2. Remove overlay from sys.path -----------------------------------
     while _OVERLAY_DIR in sys.path:
         sys.path.remove(_OVERLAY_DIR)
-        changed = True
+    logger.info("Removed %s from sys.path", _OVERLAY_DIR)
 
-    if changed:
-        logger.info("Removed %s from sys.path", _OVERLAY_DIR)
-
-    # Purge old modules and force fresh import
+    # --- 3. Purge old modules and force fresh import -----------------------
     count = _purge_modules()
     logger.info("Purged %d cached modules", count)
 
     import transformers
-    logger.info("Reverted to transformers %s from site-packages",
-                transformers.__version__)
+    logger.info("Reverted to transformers %s", transformers.__version__)
 
 
 def ensure_transformers_version(model_name: str) -> None:
