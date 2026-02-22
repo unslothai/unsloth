@@ -5,6 +5,7 @@ import {
 } from "@/components/assistant-ui/model-selector";
 import { Thread } from "@/components/assistant-ui/thread";
 import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
 import { SidebarProvider, SidebarTrigger, useSidebar } from "@/components/ui/sidebar";
 import {
   Sheet,
@@ -283,7 +284,8 @@ export function ChatPage(): ReactElement {
   const modelsFromStore = useChatRuntimeStore((state) => state.models);
   const lorasFromStore = useChatRuntimeStore((state) => state.loras);
   const modelsError = useChatRuntimeStore((state) => state.modelsError);
-  const { refresh, selectModel, ejectModel } = useChatModelRuntime();
+  const { refresh, selectModel, ejectModel, loadingModel } =
+    useChatModelRuntime();
   const refreshRef = useRef(refresh);
   const selectModelRef = useRef(selectModel);
 
@@ -518,6 +520,17 @@ export function ChatPage(): ReactElement {
               contentDataTour="chat-model-selector-popover"
               className="max-w-[62vw] sm:max-w-none"
             />
+            {loadingModel ? (
+              <div
+                className="flex items-center gap-1.5 text-muted-foreground"
+                title={`Loading ${loadingModel.displayName}. This may include downloading.`}
+              >
+                <Spinner className="size-3.5 shrink-0" />
+                <span className="text-xs">
+                  Downloading model…
+                </span>
+              </div>
+            ) : null}
           </div>
           {modelsError && (
             <div className="ml-2 text-xs text-destructive truncate max-w-[28rem]">

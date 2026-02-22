@@ -165,7 +165,7 @@ export function ModelSection() {
   const resultIds = useMemo(() => {
     const ids = hfResults.map((r) => r.id);
     if (selectedModel && !ids.includes(selectedModel)) {
-      ids.unshift(selectedModel);
+      ids.push(selectedModel);
     }
     return ids;
   }, [hfResults, selectedModel]);
@@ -380,7 +380,20 @@ export function ModelSection() {
               </TooltipContent>
             </Tooltip>
           </span>
-          <div ref={comboboxAnchorRef}>
+          <div
+            ref={comboboxAnchorRef}
+            onKeyDown={(event) => {
+              if (event.key !== "Enter") return;
+              if (!(event.target instanceof HTMLInputElement)) return;
+              event.preventDefault();
+              if (hfResults.length > 0) {
+                handleModelSelect(hfResults[0].id);
+              } else {
+                const text = event.target.value.trim();
+                if (text) handleModelSelect(text);
+              }
+            }}
+          >
             <Combobox
               items={resultIds}
               filteredItems={resultIds}

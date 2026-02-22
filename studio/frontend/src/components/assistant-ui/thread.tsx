@@ -8,6 +8,7 @@ import { Reasoning, ReasoningGroup } from "@/components/assistant-ui/reasoning";
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { cn } from "@/lib/utils";
 import {
   ActionBarMorePrimitive,
@@ -38,7 +39,7 @@ import {
   RefreshCwIcon,
   SquareIcon,
 } from "lucide-react";
-import { type FC, useRef } from "react";
+import { type FC, useRef, useState } from "react";
 
 export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
   hideComposer,
@@ -275,6 +276,32 @@ const AssistantMessage: FC = () => {
   );
 };
 
+const COPY_RESET_MS = 2000;
+
+const CopyButton: FC = () => {
+  const aui = useAui();
+  const [copied, setCopied] = useState(false);
+  const resetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleCopy = () => {
+    const text = aui.message().getCopyText();
+    if (copyToClipboard(text)) {
+      setCopied(true);
+      if (resetTimeoutRef.current) clearTimeout(resetTimeoutRef.current);
+      resetTimeoutRef.current = setTimeout(() => {
+        setCopied(false);
+        resetTimeoutRef.current = null;
+      }, COPY_RESET_MS);
+    }
+  };
+
+  return (
+    <TooltipIconButton tooltip="Copy" onClick={handleCopy}>
+      {copied ? <CheckIcon /> : <CopyIcon />}
+    </TooltipIconButton>
+  );
+};
+
 const AssistantActionBar: FC = () => {
   return (
     <ActionBarPrimitive.Root
@@ -283,16 +310,7 @@ const AssistantActionBar: FC = () => {
       autohideFloat="single-branch"
       className="aui-assistant-action-bar-root col-start-3 row-start-2 -ml-1 flex gap-1 text-muted-foreground data-floating:absolute data-floating:rounded-md data-floating:border data-floating:bg-background data-floating:p-1 data-floating:shadow-sm"
     >
-      <ActionBarPrimitive.Copy asChild={true}>
-        <TooltipIconButton tooltip="Copy">
-          <AuiIf condition={({ message }) => message.isCopied}>
-            <CheckIcon />
-          </AuiIf>
-          <AuiIf condition={({ message }) => !message.isCopied}>
-            <CopyIcon />
-          </AuiIf>
-        </TooltipIconButton>
-      </ActionBarPrimitive.Copy>
+      <CopyButton />
       <ActionBarPrimitive.Reload asChild={true}>
         <TooltipIconButton tooltip="Refresh">
           <RefreshCwIcon />
@@ -352,16 +370,7 @@ const UserActionBar: FC = () => {
       autohide="not-last"
       className="aui-user-action-bar-root flex items-center"
     >
-      <ActionBarPrimitive.Copy asChild={true}>
-        <TooltipIconButton tooltip="Copy">
-          <AuiIf condition={({ message }) => message.isCopied}>
-            <CheckIcon />
-          </AuiIf>
-          <AuiIf condition={({ message }) => !message.isCopied}>
-            <CopyIcon />
-          </AuiIf>
-        </TooltipIconButton>
-      </ActionBarPrimitive.Copy>
+      <CopyButton />
       <ActionBarPrimitive.Edit asChild={true}>
         <TooltipIconButton tooltip="Edit" className="aui-user-action-edit">
           <PencilIcon />
