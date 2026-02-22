@@ -5,7 +5,6 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   Handle,
   NodeResizer,
-  Position,
   type Node,
   type NodeProps,
   useUpdateNodeInternals,
@@ -14,6 +13,10 @@ import { memo, type ReactElement, useEffect } from "react";
 import { MAX_NODE_WIDTH, MIN_NODE_WIDTH } from "../constants";
 import { useRecipeStudioStore } from "../stores/recipe-studio";
 import type { LayoutDirection, LlmConfig, Score, ScoreOption } from "../types";
+import {
+  AUX_HANDLE_CLASS,
+  getAuxSourceHandlePosition,
+} from "../utils/handle-layout";
 import { HANDLE_IDS } from "../utils/handles";
 import { getAvailableVariableEntries } from "../utils/variables";
 import { BaseNode, BaseNodeContent, BaseNodeHeader, BaseNodeHeaderTitle } from "./rf-ui/base-node";
@@ -101,8 +104,7 @@ function AuxNodeBase({
     return null;
   }
 
-  const sourcePosition =
-    data.layoutDirection === "TB" ? Position.Bottom : Position.Right;
+  const sourcePosition = getAuxSourceHandlePosition(data.layoutDirection);
 
   if (data.kind === "llm-prompt-input") {
     const value = data.field === "prompt" ? config.prompt : config.system_prompt;
@@ -141,7 +143,7 @@ function AuxNodeBase({
           position={sourcePosition}
           isConnectable={false}
           isConnectableStart={false}
-          className="!size-2 !border-border !bg-background"
+          className={AUX_HANDLE_CLASS}
         />
       </BaseNode>
     );
@@ -264,7 +266,7 @@ function AuxNodeBase({
         position={sourcePosition}
         isConnectable={false}
         isConnectableStart={false}
-        className="!size-2 !border-border !bg-background"
+        className={AUX_HANDLE_CLASS}
       />
     </BaseNode>
   );

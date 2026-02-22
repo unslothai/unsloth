@@ -22,7 +22,9 @@ import {
   type BlockKind,
   type BlockType,
 } from "../blocks/registry";
+import { deriveDisplayGraph } from "../utils/graph/derive-display-graph";
 import { applyRecipeConnection, isValidRecipeConnection } from "../utils/graph";
+import { HANDLE_IDS } from "../utils/handles";
 import type { RecipeSnapshot } from "../utils/import";
 import { getLayoutedElements } from "../utils/layout";
 import { syncPositionsRecord, syncSizesRecord } from "./helpers/aux-sync";
@@ -43,6 +45,7 @@ type RecipeStudioState = {
   edges: Edge[];
   auxNodePositions: Record<string, XYPosition>;
   auxNodeSizes: Record<string, { width: number; height: number }>;
+  llmAuxVisibility: Record<string, boolean>;
   configs: Record<string, NodeConfig>;
   processors: RecipeProcessorConfig[];
   sheetView: SheetView;
@@ -59,6 +62,7 @@ type RecipeStudioState = {
   openConfig: (id: string) => void;
   setLayoutDirection: (direction: LayoutDirection) => void;
   applyLayout: () => void;
+  setLlmAuxVisibility: (id: string, visible: boolean) => void;
   addSamplerNode: (type: SamplerType) => void;
   addSeedNode: () => void;
   addLlmNode: (type: LlmType) => void;
@@ -88,6 +92,7 @@ const INITIAL_STATE = {
   edges: [],
   auxNodePositions: {},
   auxNodeSizes: {},
+  llmAuxVisibility: {},
   configs: {},
   processors: [],
   sheetView: "root",
@@ -102,6 +107,7 @@ const INITIAL_STATE = {
   | "edges"
   | "auxNodePositions"
   | "auxNodeSizes"
+  | "llmAuxVisibility"
   | "configs"
   | "processors"
   | "sheetView"
@@ -127,6 +133,79 @@ function buildAddedNodeState(
   return buildNodeUpdate(state, config, state.layoutDirection);
 }
 
+function getAddedNodeContext(
+  update: Partial<RecipeStudioState> | RecipeStudioState,
+): {
+  nodes: RecipeNode[];
+  configs: Record<string, NodeConfig>;
+  newNodeId: string;
+} | null {
+  const nodes = "nodes" in update ? update.nodes : null;
+  const configs = "configs" in update ? update.configs : null;
+  const newNodeId = "activeConfigId" in update ? update.activeConfigId : null;
+  if (!(nodes && configs && newNodeId)) {
+    return null;
+  }
+  return { nodes, configs, newNodeId };
+}
+
+function placeNodeNear(
+  nodes: RecipeNode[],
+  nodeId: string,
+  anchorId: string,
+  direction: LayoutDirection,
+  relation: "before" | "after",
+): RecipeNode[] {
+  const anchor = nodes.find((node) => node.id === anchorId);
+  if (!anchor) {
+    return nodes;
+  }
+  const primaryOffset = relation === "before" ? -440 : 440;
+  return nodes.map((node) => {
+    if (node.id !== nodeId) {
+      return node;
+    }
+    if (direction === "TB") {
+      return {
+        ...node,
+        position: {
+          x: anchor.position.x,
+          y: anchor.position.y + primaryOffset,
+        },
+      };
+    }
+    return {
+      ...node,
+      position: {
+        x: anchor.position.x + primaryOffset,
+        y: anchor.position.y,
+      },
+    };
+  });
+}
+
+function connectSemantic(
+  edges: Edge[],
+  configs: Record<string, NodeConfig>,
+  sourceId: string,
+  targetId: string,
+): { edges: Edge[]; configs: Record<string, NodeConfig> } {
+  const result = applyRecipeConnection(
+    {
+      source: sourceId,
+      sourceHandle: HANDLE_IDS.semanticOut,
+      target: targetId,
+      targetHandle: HANDLE_IDS.semanticIn,
+    },
+    configs,
+    edges,
+  );
+  return {
+    edges: result.edges,
+    configs: result.configs ?? configs,
+  };
+}
+
 export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
   ...INITIAL_STATE,
   setSheetView: (view) => set({ sheetView: view }),
@@ -138,7 +217,6 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
   setLayoutDirection: (direction) =>
     set((state) => ({
       layoutDirection: direction,
-      auxNodePositions: {},
       nodes: applyLayoutDirectionToNodes(
         state.nodes,
         state.configs,
@@ -148,18 +226,66 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
   applyLayout: () =>
     set((state) => {
       const isTopBottom = state.layoutDirection === "TB";
-      const { nodes } = getLayoutedElements(state.nodes, state.edges, {
+      const displayGraph = deriveDisplayGraph({
+        nodes: state.nodes,
+        edges: state.edges,
+        configs: state.configs,
+        layoutDirection: state.layoutDirection,
+        auxNodePositions: state.auxNodePositions,
+        auxNodeSizes: state.auxNodeSizes,
+        llmAuxVisibility: state.llmAuxVisibility,
+      });
+      const { nodes } = getLayoutedElements(displayGraph.nodes, displayGraph.edges, {
         direction: state.layoutDirection,
         nodesep: isTopBottom ? 120 : 80,
         ranksep: isTopBottom ? 140 : 80,
       });
+      const layoutedPositions = new Map(
+        nodes.map((node) => [node.id, node.position] as const),
+      );
+      const nextNodes = state.nodes.map((node) => {
+        const position = layoutedPositions.get(node.id);
+        if (!position) {
+          return node;
+        }
+        return { ...node, position };
+      });
+      const nextAuxNodePositions: Record<string, XYPosition> = {};
+      for (const auxId of displayGraph.auxNodeIds) {
+        const existing = state.auxNodePositions[auxId];
+        const layouted = layoutedPositions.get(auxId);
+        if (layouted) {
+          nextAuxNodePositions[auxId] = layouted;
+          continue;
+        }
+        if (existing) {
+          nextAuxNodePositions[auxId] = existing;
+          continue;
+        }
+        const fallback = displayGraph.auxDefaults[auxId];
+        if (fallback) {
+          nextAuxNodePositions[auxId] = fallback;
+        }
+      }
       return {
-        auxNodePositions: {},
+        auxNodePositions: nextAuxNodePositions,
         nodes: applyLayoutDirectionToNodes(
-          nodes,
+          nextNodes,
           state.configs,
           state.layoutDirection,
         ),
+      };
+    }),
+  setLlmAuxVisibility: (id, visible) =>
+    set((state) => {
+      if (state.llmAuxVisibility[id] === visible) {
+        return state;
+      }
+      return {
+        llmAuxVisibility: {
+          ...state.llmAuxVisibility,
+          [id]: visible,
+        },
       };
     }),
   addSamplerNode: (type) =>
@@ -183,9 +309,94 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
     }),
   addLlmNode: (type) => set((state) => buildAddedNodeState(state, "llm", type)),
   addModelProviderNode: () =>
-    set((state) => buildAddedNodeState(state, "llm", "model_provider")),
+    set((state) => {
+      const added = buildAddedNodeState(state, "llm", "model_provider");
+      const context = getAddedNodeContext(added);
+      if (!context) {
+        return added;
+      }
+      let { nodes, configs } = context;
+      let edges = state.edges;
+      const unboundModelConfigs = Object.values(configs).filter(
+        (config) =>
+          config.kind === "model_config" &&
+          !config.provider.trim(),
+      );
+      if (unboundModelConfigs.length > 0) {
+        nodes = placeNodeNear(
+          nodes,
+          context.newNodeId,
+          unboundModelConfigs[0].id,
+          state.layoutDirection,
+          "before",
+        );
+      }
+      if (unboundModelConfigs.length === 1) {
+        const next = connectSemantic(
+          edges,
+          configs,
+          context.newNodeId,
+          unboundModelConfigs[0].id,
+        );
+        edges = next.edges;
+        configs = next.configs;
+      }
+      return { ...added, nodes, edges, configs };
+    }),
   addModelConfigNode: () =>
-    set((state) => buildAddedNodeState(state, "llm", "model_config")),
+    set((state) => {
+      const added = buildAddedNodeState(state, "llm", "model_config");
+      const context = getAddedNodeContext(added);
+      if (!context) {
+        return added;
+      }
+      let { nodes, configs } = context;
+      let edges = state.edges;
+      const providers = Object.values(configs).filter(
+        (config) => config.kind === "model_provider",
+      );
+      const unboundLlms = Object.values(configs).filter(
+        (config) => config.kind === "llm" && !config.model_alias.trim(),
+      );
+      if (providers.length === 1) {
+        nodes = placeNodeNear(
+          nodes,
+          context.newNodeId,
+          providers[0].id,
+          state.layoutDirection,
+          "after",
+        );
+      } else if (unboundLlms.length > 0) {
+        nodes = placeNodeNear(
+          nodes,
+          context.newNodeId,
+          unboundLlms[0].id,
+          state.layoutDirection,
+          "before",
+        );
+      }
+      if (providers.length === 1) {
+        const next = connectSemantic(
+          edges,
+          configs,
+          providers[0].id,
+          context.newNodeId,
+        );
+        edges = next.edges;
+        configs = next.configs;
+      }
+      if (unboundLlms.length === 1) {
+        const next = connectSemantic(
+          edges,
+          configs,
+          context.newNodeId,
+          unboundLlms[0].id,
+        );
+        edges = next.edges;
+        configs = next.configs;
+      }
+      return { ...added, nodes, edges, configs };
+    }),
   addExpressionNode: () =>
     set((state) => buildAddedNodeState(state, "expression", "expression")),
   loadRecipe: (snapshot) =>
@@ -202,6 +413,7 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
       nextY: snapshot.nextY,
       auxNodePositions: {},
       auxNodeSizes: {},
+      llmAuxVisibility: {},
       activeConfigId: null,
       dialogOpen: false,
       sheetView: "root",
@@ -237,7 +449,12 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
   syncAuxNodePositions: (activeIds, defaults) =>
     set((state) => {
       const next = syncPositionsRecord(state.auxNodePositions, activeIds, defaults);
-      return next === state.auxNodePositions ? state : { auxNodePositions: next };
+      if (next === state.auxNodePositions) {
+        return state;
+      }
+      return {
+        auxNodePositions: next,
+      };
     }),
   syncAuxNodeSizes: (activeIds) =>
     set((state) => {
@@ -293,7 +510,20 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
         removedIds,
       );
       const nodes = applyNodeChanges<RecipeNode>(changes, state.nodes);
-      return { nodes, edges: removed.edges, configs: removed.configs };
+      const llmAuxVisibility =
+        removedIds.length === 0
+          ? state.llmAuxVisibility
+          : Object.fromEntries(
+              Object.entries(state.llmAuxVisibility).filter(
+                ([id]) => !removedIds.includes(id),
+              ),
+            );
+      return {
+        nodes,
+        edges: removed.edges,
+        configs: removed.configs,
+        llmAuxVisibility,
+      };
     };
     set(applyNodesChange);
   },
