@@ -1,9 +1,23 @@
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
+import {
   AnimatedSpan,
   Terminal,
   TypingAnimation,
-} from "@/components/ui/terminal"
-import type { ReactElement } from "react"
+} from "@/components/ui/terminal";
+import { useTrainingActions, useTrainingRuntimeStore } from "@/features/training";
+import { StopIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { useEffect, useState, type ReactElement } from "react";
 
 type TrainingStartOverlayProps = {
   message: string
@@ -14,9 +28,58 @@ export function TrainingStartOverlay({
   message,
   currentStep,
 }: TrainingStartOverlayProps): ReactElement {
+  const { stopTrainingRun } = useTrainingActions();
+  const isStarting = useTrainingRuntimeStore((s) => s.isStarting);
+  const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
+  const [cancelRequested, setCancelRequested] = useState(false);
+
+  useEffect(() => {
+    if (!isStarting) {
+      setCancelRequested(false);
+    }
+  }, [isStarting]);
+
   return (
-    <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center rounded-2xl bg-background/45 backdrop-blur-[1px]">
+    <div className="absolute inset-0 z-30 flex items-center justify-center rounded-2xl bg-background/45 backdrop-blur-[1px]">
       <div className="flex w-[860px] max-w-[calc(100%-2rem)] flex-col items-center gap-4">
+        <div className="absolute right-4 top-4 flex justify-end">
+          <AlertDialog open={cancelDialogOpen} onOpenChange={setCancelDialogOpen}>
+            <Button
+              variant="destructive"
+              size="sm"
+              className={`h-7 px-3 text-xs ${cancelRequested ? "cursor-not-allowed opacity-60" : "cursor-pointer"}`}
+              onClick={() => setCancelDialogOpen(true)}
+              disabled={cancelRequested}
+            >
+              <HugeiconsIcon icon={StopIcon} className="size-3" />
+              {cancelRequested ? "Cancelling…" : "Cancel Training"}
+            </Button>
+            <AlertDialogContent overlayClassName="bg-background/40 supports-backdrop-filter:backdrop-blur-[1px]">
+              <AlertDialogHeader>
+                <AlertDialogTitle>Cancel Training</AlertDialogTitle>
+                <AlertDialogDescription>
+                  Do you want to cancel the current training run?
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Continue Training</AlertDialogCancel>
+                <AlertDialogAction
+                  variant="destructive"
+                  onClick={() => {
+                    setCancelRequested(true);
+                    setCancelDialogOpen(false);
+                    useTrainingRuntimeStore.getState().setStopRequested(true);
+                    void stopTrainingRun(false).then((ok) => {
+                      if (!ok) setCancelRequested(false);
+                    });
+                  }}
+                >
+                  Cancel Training
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        </div>
         <img
           src="/Sloth emojis/large sloth wave.png"
           alt="Unsloth mascot"
