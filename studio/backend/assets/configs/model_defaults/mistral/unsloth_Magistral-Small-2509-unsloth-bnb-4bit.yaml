@@ -35,7 +35,7 @@ lora:
     - "down_proj"
   use_rslora: false
   use_loftq: false
-  finetune_vision_layers: false
+  finetune_vision_layers: true
   finetune_language_layers: true
   finetune_attention_modules: true
   finetune_mlp_modules: true
