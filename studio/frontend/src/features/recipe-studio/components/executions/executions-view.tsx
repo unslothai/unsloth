@@ -145,22 +145,6 @@ export function ExecutionsView({
     () => parseModelUsageRows(selectedExecution?.model_usage ?? null),
     [selectedExecution?.model_usage],
   );
-  const totalInputTokens = useMemo(
-    () =>
-      modelUsageRows.reduce(
-        (acc, item) => acc + (typeof item.input === "number" ? item.input : 0),
-        0,
-      ),
-    [modelUsageRows],
-  );
-  const totalOutputTokens = useMemo(
-    () =>
-      modelUsageRows.reduce(
-        (acc, item) => acc + (typeof item.output === "number" ? item.output : 0),
-        0,
-      ),
-    [modelUsageRows],
-  );
   const sideEffects = useMemo(() => {
     const values = selectedExecution?.analysis?.side_effect_column_names;
     return Array.isArray(values)
@@ -459,8 +443,6 @@ export function ExecutionsView({
                     sideEffects={sideEffects}
                     lowUniquenessColumns={lowUniquenessColumns}
                     modelUsageRows={modelUsageRows}
-                    totalInputTokens={totalInputTokens}
-                    totalOutputTokens={totalOutputTokens}
                     terminalLines={terminalLines}
                     terminalRef={terminalRef}
                     onTerminalScroll={(event) => {

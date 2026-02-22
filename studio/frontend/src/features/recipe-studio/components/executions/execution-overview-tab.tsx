@@ -31,8 +31,6 @@ type ExecutionOverviewTabProps = {
   sideEffects: string[];
   lowUniquenessColumns: string[];
   modelUsageRows: ModelUsageRow[];
-  totalInputTokens: number;
-  totalOutputTokens: number;
   terminalLines: string[];
   terminalRef: RefObject<HTMLDivElement | null>;
   onTerminalScroll: (event: UIEvent<HTMLDivElement>) => void;
@@ -50,8 +48,6 @@ export function ExecutionOverviewTab({
   sideEffects,
   lowUniquenessColumns,
   modelUsageRows,
-  totalInputTokens,
-  totalOutputTokens,
   terminalLines,
   terminalRef,
   onTerminalScroll,
@@ -69,22 +65,23 @@ export function ExecutionOverviewTab({
                   className="size-4 text-muted-foreground"
                 />
               </div>
-              <div className="space-y-1 text-xs">
-                <p>
-                  Records:{" "}
+              <div className="space-y-1.5 text-xs">
+                <p className="flex items-center justify-between gap-3">
+                  <span className="text-muted-foreground">Records</span>
                   <span className="font-semibold">
                     {formatMetricValue(recordsMetric)} / {formatMetricValue(totalMetric)}
                   </span>
                 </p>
-                <p>
-                  Duration: <span className="font-semibold">{runDuration}</span>
+                <p className="flex items-center justify-between gap-3">
+                  <span className="text-muted-foreground">Duration</span>
+                  <span className="font-semibold">{runDuration}</span>
                 </p>
-                <p>
-                  Columns analyzed:{" "}
+                <p className="flex items-center justify-between gap-3">
+                  <span className="text-muted-foreground">Columns analyzed</span>
                   <span className="font-semibold">{formatMetricValue(columnCount)}</span>
                 </p>
-                <p>
-                  Final stage:{" "}
+                <p className="flex items-center justify-between gap-3">
+                  <span className="text-muted-foreground">Final stage</span>
                   <span className="font-semibold">{execution.stage ?? "--"}</span>
                 </p>
               </div>
@@ -97,45 +94,50 @@ export function ExecutionOverviewTab({
                   className="size-4 text-muted-foreground"
                 />
               </div>
-              <div className="space-y-2 text-xs">
-                <p>
-                  LLM columns:{" "}
+              <div className="space-y-1.5 text-xs">
+                <p className="flex items-center justify-between gap-3">
+                  <span className="text-muted-foreground">LLM columns</span>
                   <span className="font-semibold">{formatMetricValue(llmColumnCount)}</span>
                 </p>
-                <p>
-                  Null rate: <span className="font-semibold">{nullRate?.toFixed(1) ?? "--"}%</span>
+                <p className="flex items-center justify-between gap-3">
+                  <span className="text-muted-foreground">Null rate</span>
+                  <span className="font-semibold">{nullRate?.toFixed(1) ?? "--"}%</span>
                 </p>
-                <p>
-                  Dropped columns:{" "}
+                <p className="flex items-center justify-between gap-3">
+                  <span className="text-muted-foreground">Dropped columns</span>
                   <span className="font-semibold">{formatMetricValue(sideEffects.length)}</span>
                 </p>
                 {sideEffects.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5">
-                    {sideEffects.map((name) => (
-                      <Badge key={name} variant="outline">
-                        {name}
-                      </Badge>
-                    ))}
+                  <div className="pt-0.5">
+                    <div className="flex flex-wrap gap-1.5">
+                      {sideEffects.map((name) => (
+                        <Badge key={name} variant="outline">
+                          {name}
+                        </Badge>
+                      ))}
+                    </div>
                   </div>
                 )}
-                <p>
-                  Low uniqueness flags:{" "}
+                <p className="flex items-center justify-between gap-3">
+                  <span className="text-muted-foreground">Low uniqueness flags</span>
                   <span className="font-semibold">
                     {formatMetricValue(lowUniquenessColumns.length)}
                   </span>
                 </p>
                 {lowUniquenessColumns.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5">
-                    {lowUniquenessColumns.slice(0, 3).map((name) => (
-                      <Badge key={name} variant="secondary">
-                        {name}
-                      </Badge>
-                    ))}
-                    {lowUniquenessColumns.length > 3 && (
-                      <Badge variant="secondary">
-                        +{lowUniquenessColumns.length - 3} more
-                      </Badge>
-                    )}
+                  <div className="pt-0.5">
+                    <div className="flex flex-wrap gap-1.5">
+                      {lowUniquenessColumns.slice(0, 3).map((name) => (
+                        <Badge key={name} variant="secondary">
+                          {name}
+                        </Badge>
+                      ))}
+                      {lowUniquenessColumns.length > 3 && (
+                        <Badge variant="secondary">
+                          +{lowUniquenessColumns.length - 3} more
+                        </Badge>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>
@@ -149,45 +151,29 @@ export function ExecutionOverviewTab({
             {modelUsageRows.length === 0 ? (
               <p className="text-xs text-muted-foreground">No model usage yet.</p>
             ) : (
-              <div className="space-y-2 text-xs">
-                <div className="grid grid-cols-2 gap-2">
-                  <div className="rounded border bg-muted/30 px-2 py-1.5">
-                    <p className="text-muted-foreground">Total input</p>
-                    <p className="text-sm font-semibold">
-                      {formatMetricValue(totalInputTokens)}
-                    </p>
-                  </div>
-                  <div className="rounded border bg-muted/30 px-2 py-1.5">
-                    <p className="text-muted-foreground">Total output</p>
-                    <p className="text-sm font-semibold">
-                      {formatMetricValue(totalOutputTokens)}
-                    </p>
-                  </div>
-                </div>
-                <div className="overflow-hidden rounded-md border">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Model</TableHead>
-                        <TableHead className="text-right">Input</TableHead>
-                        <TableHead className="text-right">Output</TableHead>
+              <div className="overflow-hidden rounded-md border">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Model</TableHead>
+                      <TableHead className="text-right">Input</TableHead>
+                      <TableHead className="text-right">Output</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {modelUsageRows.map((usage) => (
+                      <TableRow key={usage.model}>
+                        <TableCell className="max-w-[320px] truncate">{usage.model}</TableCell>
+                        <TableCell className="text-right">
+                          {formatMetricValue(usage.input)}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          {formatMetricValue(usage.output)}
+                        </TableCell>
                       </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {modelUsageRows.map((usage) => (
-                        <TableRow key={usage.model}>
-                          <TableCell className="max-w-[320px] truncate">{usage.model}</TableCell>
-                          <TableCell className="text-right">
-                            {formatMetricValue(usage.input)}
-                          </TableCell>
-                          <TableCell className="text-right">
-                            {formatMetricValue(usage.output)}
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
+                    ))}
+                  </TableBody>
+                </Table>
               </div>
             )}
           </div>
