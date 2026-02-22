@@ -153,7 +153,7 @@ def _fix_requires_grad_hooks_for_kwargs(model):
                 return
             if torch.is_floating_point(input[0]):
                 input[0].requires_grad_(True)
-    pass
+
 
     for name, module in model.named_modules():
         if len(module._forward_pre_hooks) == 0:
@@ -166,7 +166,8 @@ def _fix_requires_grad_hooks_for_kwargs(model):
             else:
                 new_hooks[hook_id] = hook
         module._forward_pre_hooks = new_hooks
-pass
+
+
 
 
 def unsloth_base_fast_generate(
