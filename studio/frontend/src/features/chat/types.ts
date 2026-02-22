@@ -8,6 +8,7 @@ export interface ThreadRecord {
   id: string;
   title: string;
   modelType: ModelType;
+  modelId?: string;
   pairId?: string;
   archived: boolean;
   createdAt: number;
