@@ -323,10 +323,13 @@ function createDexieAdapter(
     },
 
     async initialize(threadId: string) {
+      const currentModelId =
+        useChatRuntimeStore.getState().params.checkpoint ?? "";
       await db.threads.add({
         id: threadId,
         title: "New Chat",
         modelType,
+        modelId: currentModelId,
         pairId,
         archived: false,
         createdAt: Date.now(),
