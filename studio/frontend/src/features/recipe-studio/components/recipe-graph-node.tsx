@@ -170,10 +170,13 @@ function getConfigSummary(config: NodeConfig | undefined): string {
   }
 
   if (config.kind === "seed") {
+    if (config.hf_repo_id.trim()) {
+      return config.hf_repo_id.trim();
+    }
     if (config.hf_path.trim()) {
       return config.hf_path.trim();
     }
-    return "Set HF dataset path";
+    return "Set HF dataset repo";
   }
 
   return "Open details for config";

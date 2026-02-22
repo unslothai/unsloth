@@ -70,6 +70,29 @@ export type JobEvent = {
   payload: Record<string, unknown>;
 };
 
+export type SeedInspectRequest = {
+  // biome-ignore lint/style/useNamingConvention: api schema
+  dataset_name: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  hf_token?: string;
+  subset?: string;
+  split?: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  preview_size?: number;
+};
+
+export type SeedInspectResponse = {
+  // biome-ignore lint/style/useNamingConvention: api schema
+  dataset_name: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  resolved_path: string;
+  columns: string[];
+  // biome-ignore lint/style/useNamingConvention: api schema
+  preview_rows: Record<string, unknown>[];
+  split?: string | null;
+  subset?: string | null;
+};
+
 export type ValidateError = {
   message: string;
   path?: string | null;
@@ -201,6 +224,12 @@ export async function getRecipeJobDataset(
 
 export async function cancelRecipeJob(jobId: string): Promise<JobStatusResponse> {
   return postJson<JobStatusResponse>(`/jobs/${jobId}/cancel`, {});
+}
+
+export async function inspectSeedDataset(
+  payload: SeedInspectRequest,
+): Promise<SeedInspectResponse> {
+  return postJson<SeedInspectResponse>("/seed/inspect", payload);
 }
 
 export async function streamRecipeJobEvents(options: {

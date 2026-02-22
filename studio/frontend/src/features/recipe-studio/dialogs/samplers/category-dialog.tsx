@@ -113,26 +113,16 @@ export function CategoryDialog({
         </div>
       </div>
       <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
-        <div className="rounded-2xl border border-border/60">
-          <CollapsibleTrigger asChild={true}>
-            <button
-              type="button"
-              className="flex w-full items-center justify-between px-3 py-2 text-left"
-            >
-              <div>
-                <p className="text-xs font-semibold uppercase text-muted-foreground">
-                  Advanced
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  Weights and conditional rules.
-                </p>
-              </div>
-              <span className="text-xs text-muted-foreground">
-                {advancedOpen ? "Hide" : "Show"}
-              </span>
-            </button>
-          </CollapsibleTrigger>
-          <CollapsibleContent className="space-y-3 border-t border-border/60 p-3">
+        <CollapsibleTrigger asChild={true}>
+          <button
+            type="button"
+            className="flex w-full items-center justify-between text-left text-xs text-muted-foreground"
+          >
+            <span className="font-semibold uppercase">Advanced</span>
+            <span>{advancedOpen ? "Hide" : "Show"}</span>
+          </button>
+        </CollapsibleTrigger>
+        <CollapsibleContent className="mt-2 space-y-3">
             <div className="grid gap-2">
               <FieldLabel
                 label="Weights (optional)"
@@ -286,8 +276,7 @@ export function CategoryDialog({
                 </div>
               </div>
             ))}
-          </CollapsibleContent>
-        </div>
+        </CollapsibleContent>
       </Collapsible>
     </div>
   );
