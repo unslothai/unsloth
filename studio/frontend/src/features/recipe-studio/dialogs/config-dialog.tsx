@@ -2,6 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import type { ReactElement } from "react";
+import { getBlockDefinitionForConfig } from "../blocks/definitions";
 import { renderBlockDialog } from "../blocks/registry";
 import type { NodeConfig, SamplerConfig } from "../types";
 import { DialogShell } from "./shared/dialog-shell";
@@ -30,6 +31,8 @@ export function ConfigDialog({
   onUpdate,
   container,
 }: ConfigDialogProps): ReactElement {
+  const blockDefinition = getBlockDefinitionForConfig(config);
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
@@ -39,7 +42,14 @@ export function ConfigDialog({
         overlayClassName="bg-transparent"
         className="corner-squircle max-h-[650px] overflow-auto sm:max-w-2xl shadow-border"
       >
-        <DialogShell />
+        <DialogShell
+          title={blockDefinition ? `${blockDefinition.title} block` : undefined}
+          description={
+            blockDefinition
+              ? blockDefinition.description
+              : "Adjust block params before running the flow."
+          }
+        />
         {!config && (
           <div className="text-sm text-muted-foreground">
             Select a node to edit.

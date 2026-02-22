@@ -87,6 +87,7 @@ export function renderBlockDialog(
         <LlmDialog
           config={config}
           modelConfigAliases={modelConfigAliases}
+          modelProviderOptions={modelProviderOptions}
           onUpdate={update}
         />
       ) : null;

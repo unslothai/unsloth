@@ -10,6 +10,8 @@ import {
   Panel,
   ReactFlow,
 } from "@xyflow/react";
+import { PlusSignIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type ReactElement,
   useCallback,
@@ -157,6 +159,7 @@ export function RecipeStudioPage({
   const [sheetContainer, setSheetContainer] = useState<HTMLDivElement | null>(
     null,
   );
+  const [blockSheetOpen, setBlockSheetOpen] = useState(false);
   const [activeView, setActiveView] = useState<RecipeStudioView>("editor");
   const [processorsOpen, setProcessorsOpen] = useState(false);
   const [interactive, setInteractive] = useState(true);
@@ -316,6 +319,11 @@ export function RecipeStudioPage({
     setProcessorsOpen(true);
   }, [processors, setProcessors]);
 
+  const openRootBlockSheet = useCallback(() => {
+    setSheetView("root");
+    setBlockSheetOpen(true);
+  }, [setSheetView]);
+
   return (
     <div className="min-h-screen bg-background">
       <main className="w-full px-6 py-8">
@@ -375,11 +383,37 @@ export function RecipeStudioPage({
                   size={1}
                   color="#d4d4d8"
                 />
+                {nodes.length === 0 && (
+                  <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center p-4">
+                    <button
+                      type="button"
+                      onClick={openRootBlockSheet}
+                      className="pointer-events-auto corner-squircle flex min-h-36 w-full max-w-md flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-border/70 bg-background/75 px-6 py-6 text-center backdrop-blur-[1px] transition hover:border-primary/60 hover:bg-background"
+                    >
+                      <div className="flex size-12 items-center justify-center rounded-xl border border-border/70 bg-muted/40">
+                        <HugeiconsIcon
+                          icon={PlusSignIcon}
+                          className="size-6 text-muted-foreground"
+                        />
+                      </div>
+                      <div>
+                        <p className="text-sm font-semibold text-foreground">
+                          Add your first block
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          Click to open block library.
+                        </p>
+                      </div>
+                    </button>
+                  </div>
+                )}
                 <Panel position="top-right" className="m-3">
                   <BlockSheet
                     container={sheetContainer}
                     sheetView={sheetView}
                     onViewChange={setSheetView}
+                    open={blockSheetOpen}
+                    onOpenChange={setBlockSheetOpen}
                     onAddSampler={addSamplerNode}
                     onAddSeed={addSeedNode}
                     onAddLlm={addLlmNode}
