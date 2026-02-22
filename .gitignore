@@ -10,6 +10,7 @@ __pycache__/
 
 # Virtual environments
 .venv/
+.venv_overlay/
 venv/
 env/
 environment.yaml
