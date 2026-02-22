@@ -1,5 +1,12 @@
 import type { NodeConfig } from "../types";
 
+export type AvailableVariableSource = "column" | "seed";
+
+export type AvailableVariableEntry = {
+  name: string;
+  source: AvailableVariableSource;
+};
+
 function getStructuredRefs(llmName: string, outputFormat: string): string[] {
   try {
     const schema = JSON.parse(outputFormat);
@@ -12,11 +19,11 @@ function getStructuredRefs(llmName: string, outputFormat: string): string[] {
   }
 }
 
-export function getAvailableVariables(
+export function getAvailableVariableEntries(
   configs: Record<string, NodeConfig>,
   currentId: string,
-): string[] {
-  const vars: string[] = [];
+): AvailableVariableEntry[] {
+  const vars: AvailableVariableEntry[] = [];
 
   for (const config of Object.values(configs)) {
     if (config.id === currentId) {
@@ -27,12 +34,12 @@ export function getAvailableVariables(
     }
 
     if (config.kind === "sampler") {
-      vars.push(config.name);
+      vars.push({ name: config.name, source: "column" });
       continue;
     }
 
     if (config.kind === "expression") {
-      vars.push(config.name);
+      vars.push({ name: config.name, source: "column" });
       continue;
     }
 
@@ -40,7 +47,7 @@ export function getAvailableVariables(
       for (const col of config.seed_columns ?? []) {
         const name = col.trim();
         if (!name) continue;
-        vars.push(name);
+        vars.push({ name, source: "seed" });
       }
       continue;
     }
@@ -49,12 +56,24 @@ export function getAvailableVariables(
       continue;
     }
 
-    vars.push(config.name);
+    vars.push({ name: config.name, source: "column" });
     if (config.llm_type !== "structured" || !config.output_format) {
       continue;
     }
-    vars.push(...getStructuredRefs(config.name, config.output_format));
+    vars.push(
+      ...getStructuredRefs(config.name, config.output_format).map((name) => ({
+        name,
+        source: "column" as const,
+      })),
+    );
   }
 
   return vars;
+}
+
+export function getAvailableVariables(
+  configs: Record<string, NodeConfig>,
+  currentId: string,
+): string[] {
+  return getAvailableVariableEntries(configs, currentId).map((entry) => entry.name);
 }
