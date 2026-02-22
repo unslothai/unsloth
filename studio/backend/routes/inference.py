@@ -72,6 +72,10 @@ async def load_model(request: LoadRequest):
     from the model's YAML config, falling back to default.yaml for missing values.
     """
     try:
+        # Ensure correct transformers version for this model architecture
+        from utils.transformers_version import ensure_transformers_version
+        ensure_transformers_version(request.model_path)
+
         backend = get_inference_backend()
         
         # Create config using clean factory method
