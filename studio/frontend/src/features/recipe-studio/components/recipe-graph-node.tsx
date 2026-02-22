@@ -31,9 +31,11 @@ import { useRecipeStudioStore } from "../stores/recipe-studio";
 import type {
   RecipeNode as RecipeGraphNodeType,
   LlmType,
+  LayoutDirection,
   NodeConfig,
   SamplerType,
 } from "../types";
+import { getNodeHandleLayout, NODE_HANDLE_CLASS } from "../utils/handle-layout";
 import { getLlmJudgeScoreHandleId, HANDLE_IDS } from "../utils/handles";
 import { InlineCategoryBadges } from "./inline/inline-category-badges";
 import { InlineExpression } from "./inline/inline-expression";
@@ -240,13 +242,17 @@ function getLlmInputHandleItems(config: NodeConfig | undefined): LlmInputHandleI
 
 type LlmInputHandlesProps = {
   items: LlmInputHandleItem[];
-  isTopBottom: boolean;
+  layoutDirection: LayoutDirection;
 };
 
-function LlmInputHandles({ items, isTopBottom }: LlmInputHandlesProps): ReactElement | null {
+function LlmInputHandles({
+  items,
+  layoutDirection,
+}: LlmInputHandlesProps): ReactElement | null {
   if (items.length === 0) {
     return null;
   }
+  const isTopBottom = layoutDirection === "TB";
 
   if (isTopBottom) {
     return (
@@ -260,7 +266,7 @@ function LlmInputHandles({ items, isTopBottom }: LlmInputHandlesProps): ReactEle
             id={item.id}
             type="target"
             position={Position.Top}
-            className="pointer-events-auto !size-2.5 !border-border/80 !bg-muted shadow-sm hover:!border-primary/70 hover:!bg-primary/20"
+            className={NODE_HANDLE_CLASS}
             style={{ left: "50%", top: 0, transform: "translate(-50%, -50%)" }}
           />
             <span className="text-[10px] text-muted-foreground">{item.label}</span>
@@ -278,7 +284,7 @@ function LlmInputHandles({ items, isTopBottom }: LlmInputHandlesProps): ReactEle
             id={item.id}
             type="target"
             position={Position.Left}
-            className="pointer-events-auto !size-2.5 !border-border/80 !bg-muted shadow-sm hover:!border-primary/70 hover:!bg-primary/20"
+            className={NODE_HANDLE_CLASS}
             style={{ left: -3, top: "50%", transform: "translate(-50%, -50%)" }}
           />
           <span className="block truncate text-[10px] text-muted-foreground">
@@ -301,6 +307,12 @@ function RecipeGraphNodeBase({
   const config = useRecipeStudioStore((state) => state.configs[id]);
   const openConfig = useRecipeStudioStore((state) => state.openConfig);
   const updateConfig = useRecipeStudioStore((state) => state.updateConfig);
+  const llmAuxVisible = useRecipeStudioStore(
+    (state) => state.llmAuxVisibility[id] ?? false,
+  );
+  const setLlmAuxVisibility = useRecipeStudioStore(
+    (state) => state.setLlmAuxVisibility,
+  );
   const updateNodeInternals = useUpdateNodeInternals();
 
   useEffect(() => {
@@ -313,16 +325,21 @@ function RecipeGraphNodeBase({
     data.kind === "sampler";
   const showSemanticIn = data.kind === "llm" || data.kind === "model_config";
   const showSemanticOut = data.kind === "model_config" || data.kind === "model_provider";
-  const isTopBottom = layoutDirection === "TB";
-
-  const dataInPosition = isTopBottom ? Position.Top : Position.Left;
-  const dataOutPosition = isTopBottom ? Position.Bottom : Position.Right;
-  const semanticInPosition = isTopBottom ? Position.Left : Position.Top;
-  const semanticOutPosition = isTopBottom ? Position.Right : Position.Bottom;
+  const {
+    dataInPosition,
+    dataOutPosition,
+    semanticInPosition,
+    semanticOutPosition,
+  } = getNodeHandleLayout(layoutDirection);
 
   const summary = getConfigSummary(config);
   const nodeBody = renderNodeBody(config, summary, updateConfig);
-  const llmInputHandles = getLlmInputHandleItems(config);
+  const llmInputHandles = llmAuxVisible ? getLlmInputHandleItems(config) : [];
+  const canShowLlmAux =
+    config?.kind === "llm" &&
+    (Boolean(config.prompt.trim()) ||
+      Boolean(config.system_prompt.trim()) ||
+      Boolean((config.scores?.length ?? 0) > 0));
 
   return (
     <BaseNode className="corner-squircle relative w-full min-w-0 overflow-visible rounded-lg border-border/60 shadow-sm">
@@ -357,23 +374,40 @@ function RecipeGraphNodeBase({
             </p>
           </div>
         </div>
-        <Button
-          type="button"
-          size="xs"
-          variant="ghost"
-          className="nodrag"
-          onClick={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            openConfig(id);
-          }}
-        >
-          Configure
-        </Button>
+        <div className="flex items-center gap-1">
+          {canShowLlmAux && (
+            <Button
+              type="button"
+              size="xs"
+              variant="ghost"
+              className="nodrag"
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                setLlmAuxVisibility(id, !llmAuxVisible);
+              }}
+            >
+              {llmAuxVisible ? "Hide inputs" : "Show inputs"}
+            </Button>
+          )}
+          <Button
+            type="button"
+            size="xs"
+            variant="ghost"
+            className="nodrag"
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              openConfig(id);
+            }}
+          >
+            Configure
+          </Button>
+        </div>
       </BaseNodeHeader>
 
       <BaseNodeContent className="gap-2 px-3 py-2">
-        <LlmInputHandles items={llmInputHandles} isTopBottom={isTopBottom} />
+        <LlmInputHandles items={llmInputHandles} layoutDirection={layoutDirection} />
         {nodeBody}
       </BaseNodeContent>
 
@@ -386,7 +420,7 @@ function RecipeGraphNodeBase({
             position={dataInPosition}
             className="absolute inset-0 pointer-events-none"
             labelClassName="sr-only"
-            handleClassName="pointer-events-auto !size-2.5 !border-border/80 !bg-muted shadow-sm hover:!border-primary/70 hover:!bg-primary/20"
+            handleClassName={NODE_HANDLE_CLASS}
           />
           <LabeledHandle
             id={HANDLE_IDS.dataOut}
@@ -395,7 +429,7 @@ function RecipeGraphNodeBase({
             position={dataOutPosition}
             className="absolute inset-0 pointer-events-none"
             labelClassName="sr-only"
-            handleClassName="pointer-events-auto !size-2.5 !border-border/80 !bg-muted shadow-sm hover:!border-primary/70 hover:!bg-primary/20"
+            handleClassName={NODE_HANDLE_CLASS}
           />
         </>
       )}
@@ -408,7 +442,7 @@ function RecipeGraphNodeBase({
           position={semanticInPosition}
           className="absolute inset-0 pointer-events-none"
           labelClassName="sr-only"
-          handleClassName="pointer-events-auto !size-2.5 !border-border/80 !bg-muted shadow-sm hover:!border-primary/70 hover:!bg-primary/20"
+          handleClassName={NODE_HANDLE_CLASS}
         />
       )}
 
@@ -420,7 +454,7 @@ function RecipeGraphNodeBase({
           position={semanticOutPosition}
           className="absolute inset-0 pointer-events-none"
           labelClassName="sr-only"
-          handleClassName="pointer-events-auto !size-2.5 !border-border/80 !bg-muted shadow-sm hover:!border-primary/70 hover:!bg-primary/20"
+          handleClassName={NODE_HANDLE_CLASS}
         />
       )}
     </BaseNode>

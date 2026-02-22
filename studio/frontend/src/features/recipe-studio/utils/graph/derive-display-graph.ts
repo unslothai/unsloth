@@ -13,6 +13,7 @@ type DisplayGraphInput = {
   layoutDirection: LayoutDirection;
   auxNodePositions: Record<string, XYPosition>;
   auxNodeSizes: Record<string, { width: number; height: number }>;
+  llmAuxVisibility: Record<string, boolean>;
 };
 
 export type DisplayGraph = {
@@ -29,6 +30,7 @@ function normalizeEdge(edge: Edge, configs: Record<string, NodeConfig>): Edge {
     return {
       ...edge,
       type: "canvas",
+      data: { ...(edge.data ?? {}), path: "smoothstep" },
       style: { ...baseStyle, ...(edge.style ?? {}) },
     };
   }
@@ -43,6 +45,7 @@ function normalizeEdge(edge: Edge, configs: Record<string, NodeConfig>): Edge {
   return {
     ...edge,
     type: semantic ? "semantic" : "canvas",
+    data: semantic ? edge.data : { ...(edge.data ?? {}), path: "smoothstep" },
     ...handles,
     style: { ...baseStyle, ...(edge.style ?? {}) },
   };
@@ -54,6 +57,68 @@ type AuxNodeItem = {
   data: RecipeGraphAuxNodeData;
 };
 
+type Rect = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+function toRect(
+  position: XYPosition,
+  width: number,
+  height: number,
+): Rect {
+  return {
+    x: position.x,
+    y: position.y,
+    width,
+    height,
+  };
+}
+
+function intersects(a: Rect, b: Rect, pad = 18): boolean {
+  return !(
+    a.x + a.width + pad <= b.x ||
+    b.x + b.width + pad <= a.x ||
+    a.y + a.height + pad <= b.y ||
+    b.y + b.height + pad <= a.y
+  );
+}
+
+function findNonOverlappingPosition(
+  preferred: XYPosition,
+  width: number,
+  height: number,
+  direction: LayoutDirection,
+  occupied: Rect[],
+): XYPosition {
+  const primaryStep =
+    direction === "TB"
+      ? { x: 0, y: -(height + 24) }
+      : { x: -(width + 24), y: 0 };
+  const lateralUnit =
+    direction === "TB"
+      ? { x: Math.max(48, Math.round(width * 0.3)), y: 0 }
+      : { x: 0, y: Math.max(40, Math.round(height * 0.35)) };
+  const lateralPattern = [0, 1, -1, 2, -2];
+
+  for (let ring = 0; ring <= 8; ring += 1) {
+    for (const lateral of lateralPattern) {
+      const candidate = {
+        x: preferred.x + primaryStep.x * ring + lateralUnit.x * lateral,
+        y: preferred.y + primaryStep.y * ring + lateralUnit.y * lateral,
+      };
+      const rect = toRect(candidate, width, height);
+      if (!occupied.some((other) => intersects(rect, other))) {
+        return candidate;
+      }
+    }
+  }
+
+  return preferred;
+}
+
 export function deriveDisplayGraph({
   nodes,
   edges,
@@ -61,6 +126,7 @@ export function deriveDisplayGraph({
   layoutDirection,
   auxNodePositions,
   auxNodeSizes,
+  llmAuxVisibility,
 }: DisplayGraphInput): DisplayGraph {
   const displayNodes = nodes.map((node) => {
     const hasWidth =
@@ -80,10 +146,20 @@ export function deriveDisplayGraph({
   const auxEdges: Edge[] = [];
   const auxDefaults: Record<string, XYPosition> = {};
   const auxNodeIds: string[] = [];
+  const occupiedRects: Rect[] = displayNodes.map((node) =>
+    toRect(
+      node.position,
+      readNodeWidth(node) ?? DEFAULT_NODE_WIDTH,
+      readNodeHeight(node) ?? DEFAULT_NODE_HEIGHT,
+    ),
+  );
 
   for (const node of displayNodes) {
     const config = configs[node.id];
     if (!(config && config.kind === "llm")) {
+      continue;
+    }
+    if (!llmAuxVisibility[config.id]) {
       continue;
     }
     const llmDirection = node.data.layoutDirection ?? layoutDirection;
@@ -160,10 +236,17 @@ export function deriveDisplayGraph({
       let xCursor = startX;
 
       for (const entry of itemsWithLayout) {
-        const defaultPosition = {
+        const preferredPosition = {
           x: xCursor,
           y: node.position.y - entry.height - sideOffset,
         };
+        const defaultPosition = findNonOverlappingPosition(
+          preferredPosition,
+          entry.width,
+          entry.height,
+          llmDirection,
+          occupiedRects,
+        );
         const position = auxNodePositions[entry.auxId] ?? defaultPosition;
         xCursor += entry.width + gap;
 
@@ -171,6 +254,7 @@ export function deriveDisplayGraph({
         if (!auxNodePositions[entry.auxId]) {
           auxDefaults[entry.auxId] = defaultPosition;
         }
+        occupiedRects.push(toRect(position, entry.width, entry.height));
 
         auxNodes.push({
           id: entry.auxId,
@@ -212,10 +296,17 @@ export function deriveDisplayGraph({
     let yCursor = node.position.y + (parentHeight - totalHeight) / 2;
 
     for (const entry of itemsWithLayout) {
-      const defaultPosition = {
+      const preferredPosition = {
         x: baseX + (maxWidth - entry.width),
         y: yCursor,
       };
+      const defaultPosition = findNonOverlappingPosition(
+        preferredPosition,
+        entry.width,
+        entry.height,
+        llmDirection,
+        occupiedRects,
+      );
       const position = auxNodePositions[entry.auxId] ?? defaultPosition;
       yCursor += entry.height + gap;
 
@@ -223,6 +314,7 @@ export function deriveDisplayGraph({
       if (!auxNodePositions[entry.auxId]) {
         auxDefaults[entry.auxId] = defaultPosition;
       }
+      occupiedRects.push(toRect(position, entry.width, entry.height));
 
       auxNodes.push({
         id: entry.auxId,
