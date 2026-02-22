@@ -17,6 +17,7 @@ export function DataEdge({
   data = { path: "auto" },
   id,
   markerEnd,
+  selected,
   sourcePosition,
   sourceX,
   sourceY,
@@ -44,8 +45,17 @@ export function DataEdge({
     targetPosition,
   });
 
+  const edgeStyle = {
+    stroke: selected
+      ? "hsl(var(--primary) / 0.92)"
+      : "hsl(var(--foreground) / 0.42)",
+    strokeWidth: selected ? 2.6 : 2.1,
+    opacity: selected ? 1 : 0.92,
+    ...style,
+  };
+
   return (
-    <BaseEdge id={id} path={edgePath} markerEnd={markerEnd} style={style} />
+    <BaseEdge id={id} path={edgePath} markerEnd={markerEnd} style={edgeStyle} />
   );
 }
 

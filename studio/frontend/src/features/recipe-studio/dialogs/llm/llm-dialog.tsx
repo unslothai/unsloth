@@ -13,12 +13,14 @@ import { LlmScoresTab } from "./scores-tab";
 type LlmDialogProps = {
   config: LlmConfig;
   modelConfigAliases: string[];
+  modelProviderOptions: string[];
   onUpdate: (patch: Partial<LlmConfig>) => void;
 };
 
 export function LlmDialog({
   config,
   modelConfigAliases,
+  modelProviderOptions,
   onUpdate,
 }: LlmDialogProps): ReactElement {
   const modelAliasAnchorRef = useRef<HTMLDivElement>(null);
@@ -34,6 +36,7 @@ export function LlmDialog({
         <LlmGeneralTab
           config={config}
           modelConfigAliases={modelConfigAliases}
+          modelProviderOptions={modelProviderOptions}
           modelAliasAnchorRef={modelAliasAnchorRef}
           onUpdate={onUpdate}
         />

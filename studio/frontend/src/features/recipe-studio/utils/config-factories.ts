@@ -27,8 +27,8 @@ export function makeSamplerConfig(
       sampler_type: "category",
       name,
       drop: false,
-      values: ["A", "B", "C"],
-      weights: [null, null, null],
+      values: [],
+      weights: [],
     };
   }
   if (samplerType === "subcategory") {
@@ -42,12 +42,7 @@ export function makeSamplerConfig(
       // biome-ignore lint/style/useNamingConvention: api schema
       subcategory_parent: "",
       // biome-ignore lint/style/useNamingConvention: api schema
-      subcategory_mapping: {
-        // biome-ignore lint/style/useNamingConvention: sample values
-        A: ["A1", "A2"],
-        // biome-ignore lint/style/useNamingConvention: sample values
-        B: ["B1", "B2"],
-      },
+      subcategory_mapping: {},
     };
   }
   if (samplerType === "uniform") {
@@ -131,7 +126,7 @@ export function makeSamplerConfig(
       uuid_format: "",
     };
   }
-  if (samplerType === "person_from_faker") {
+  if (samplerType === "person" || samplerType === "person_from_faker") {
     return {
       id,
       kind: "sampler",
@@ -153,7 +148,7 @@ export function makeSamplerConfig(
     id,
     kind: "sampler",
     // biome-ignore lint/style/useNamingConvention: api schema
-    sampler_type: "person",
+    sampler_type: "person_from_faker",
     name,
     drop: false,
     // biome-ignore lint/style/useNamingConvention: api schema
@@ -164,8 +159,6 @@ export function makeSamplerConfig(
     person_age_range: "",
     // biome-ignore lint/style/useNamingConvention: api schema
     person_city: "",
-    // biome-ignore lint/style/useNamingConvention: api schema
-    person_with_synthetic_personas: false,
   };
 }
 
@@ -191,7 +184,7 @@ export function makeLlmConfig(
     name,
     drop: false,
     // biome-ignore lint/style/useNamingConvention: api schema
-    model_alias: "allenai/olmo-3.1-32b-instruct",
+    model_alias: "",
     prompt:
       llmType === "judge"
         ? "Evaluate the content using the scoring criteria below."

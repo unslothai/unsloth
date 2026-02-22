@@ -5,13 +5,19 @@ import {
 } from "@/components/ui/dialog";
 import type { ReactElement } from "react";
 
-export function DialogShell(): ReactElement {
+type DialogShellProps = {
+  title?: string;
+  description?: string;
+};
+
+export function DialogShell({
+  title = "Configure block",
+  description = "Adjust block params before running the flow.",
+}: DialogShellProps): ReactElement {
   return (
     <DialogHeader>
-      <DialogTitle>Configure block</DialogTitle>
-      <DialogDescription>
-        Adjust block params before running the flow.
-      </DialogDescription>
+      <DialogTitle>{title}</DialogTitle>
+      <DialogDescription>{description}</DialogDescription>
     </DialogHeader>
   );
 }
