@@ -1,6 +1,6 @@
 import type { PipelineType } from "@huggingface/hub";
 import { listModels } from "@huggingface/hub";
-import { useCallback } from "react";
+import { useCallback, useMemo } from "react";
 import { useHfPaginatedSearch } from "./use-hf-paginated-search";
 
 export interface HfModelResult {
@@ -84,5 +84,17 @@ export function useHfModelSearch(
     [query, task, accessToken],
   );
 
-  return useHfPaginatedSearch(createIter, mapModel);
+  const search = useHfPaginatedSearch(createIter, mapModel);
+
+  const results = useMemo(
+    () =>
+      [...search.results].sort((a, b) => {
+        const aFirst = a.id.startsWith("unsloth/") ? 0 : 1;
+        const bFirst = b.id.startsWith("unsloth/") ? 0 : 1;
+        return aFirst - bFirst;
+      }),
+    [search.results],
+  );
+
+  return { ...search, results };
 }
