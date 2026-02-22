@@ -170,6 +170,7 @@ if [ "$IS_COLAB" = true ]; then
 else
     # Local: create venv (always start fresh to preserve correct install order)
     rm -rf .venv
+    rm -rf .venv_overlay  # Clean up stale transformers version overlay
     "$BEST_PY" -m venv .venv
     source .venv/bin/activate
     run_quiet "pip upgrade" pip install --upgrade pip
