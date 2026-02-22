@@ -25,7 +25,6 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -57,8 +56,9 @@ TRANSFORMERS_5_MODEL_SUBSTRINGS: tuple[str, ...] = (
 TRANSFORMERS_5_VERSION = "5.1.0"
 TRANSFORMERS_DEFAULT_VERSION = "4.57.1"
 
-# Persistent directory for the transformers 5.x overlay
-_OVERLAY_DIR = os.path.join(tempfile.gettempdir(), "transformers_5_overlay")
+# Persistent directory for the transformers 5.x overlay — lives next to .venv/
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent  # studio/backend/utils/ → project root
+_OVERLAY_DIR = str(_PROJECT_ROOT / ".venv_overlay")
 
 
 def _resolve_base_model(model_name: str) -> str:
@@ -130,6 +130,7 @@ def _get_in_memory_version() -> str | None:
 # All top-level prefixes that hold references to transformers internals.
 _PURGE_PREFIXES = (
     "transformers",
+    "huggingface_hub",
     "unsloth",
     "unsloth_zoo",
     "peft",
@@ -155,32 +156,50 @@ def _purge_modules() -> int:
     return len(to_remove)
 
 
+# Packages to install into the overlay (each with --no-deps).
+_OVERLAY_PACKAGES = (
+    f"transformers=={TRANSFORMERS_5_VERSION}",
+    "huggingface_hub>=1.3.0,<2.0",
+)
+
+
 def _install_overlay() -> None:
-    """Install transformers 5.x into the overlay directory and prepend
-    it to ``sys.path`` so it shadows the default site-packages version."""
-    # Install if the overlay doesn't already exist
-    if not os.path.isdir(_OVERLAY_DIR) or not os.listdir(_OVERLAY_DIR):
+    """Install transformers 5.x and its critical deps into the overlay
+    directory and prepend it to ``sys.path``."""
+    # Check if overlay needs (re)creation.
+    # If the overlay exists but is missing huggingface_hub, it's stale.
+    needs_install = (
+        not os.path.isdir(_OVERLAY_DIR)
+        or not os.listdir(_OVERLAY_DIR)
+        or not os.path.isdir(os.path.join(_OVERLAY_DIR, "huggingface_hub"))
+    )
+
+    if needs_install:
+        # Clean up stale overlay if present
+        if os.path.isdir(_OVERLAY_DIR):
+            shutil.rmtree(_OVERLAY_DIR)
         os.makedirs(_OVERLAY_DIR, exist_ok=True)
-        cmd = [
-            sys.executable, "-m", "pip", "install",
-            "--target", _OVERLAY_DIR,
-            "--no-deps",
-            f"transformers=={TRANSFORMERS_5_VERSION}",
-        ]
-        logger.info("Installing transformers %s to overlay: %s",
-                     TRANSFORMERS_5_VERSION, " ".join(cmd))
-        result = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
-        if result.returncode != 0:
-            logger.error("pip install failed:\n%s", result.stdout)
-            raise RuntimeError(
-                f"Failed to install transformers=={TRANSFORMERS_5_VERSION} "
-                f"to {_OVERLAY_DIR}.\npip output:\n{result.stdout}"
+
+        for pkg in _OVERLAY_PACKAGES:
+            cmd = [
+                sys.executable, "-m", "pip", "install",
+                "--target", _OVERLAY_DIR,
+                "--no-deps",
+                pkg,
+            ]
+            logger.info("Installing %s to overlay: %s", pkg, " ".join(cmd))
+            result = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
             )
+            if result.returncode != 0:
+                logger.error("pip install failed:\n%s", result.stdout)
+                raise RuntimeError(
+                    f"Failed to install {pkg} to {_OVERLAY_DIR}.\n"
+                    f"pip output:\n{result.stdout}"
+                )
         logger.info("Overlay install succeeded")
     else:
         logger.info("Overlay directory already exists at %s", _OVERLAY_DIR)
