@@ -30,6 +30,8 @@ export interface TrainingConfigState {
   epochs: number;
   contextLength: number;
   learningRate: number;
+  optimizerType: string;
+  lrSchedulerType: string;
   loraRank: number;
   loraAlpha: number;
   loraDropout: number;
@@ -85,6 +87,8 @@ export interface TrainingConfigActions {
   setEpochs: (epochs: number) => void;
   setContextLength: (length: number) => void;
   setLearningRate: (rate: number) => void;
+  setOptimizerType: (value: string) => void;
+  setLrSchedulerType: (value: string) => void;
   setLoraRank: (rank: number) => void;
   setLoraAlpha: (alpha: number) => void;
   setLoraDropout: (dropout: number) => void;

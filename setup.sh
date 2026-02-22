@@ -58,6 +58,7 @@ fi
 
 if [ "$NEED_NODE" = true ]; then
     # ── 2. Install nvm ──
+    export NODE_OPTIONS=--dns-result-order=ipv4first # or else fails on colab.
     echo "Installing nvm..."
     curl -so- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash > /dev/null 2>&1
 

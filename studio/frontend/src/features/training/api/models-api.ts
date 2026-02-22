@@ -9,6 +9,8 @@ interface BackendTrainingDefaults {
   max_seq_length?: number;
   num_epochs?: number;
   learning_rate?: number | string;
+  optim?: string;
+  lr_scheduler_type?: string;
   batch_size?: number;
   gradient_accumulation_steps?: number;
   warmup_steps?: number;

@@ -1,23 +1,100 @@
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
 import { useAui } from "@assistant-ui/react";
-import { ArrowUpIcon, SquareIcon } from "lucide-react";
+import { ArrowUpIcon, MicIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
 import {
   type KeyboardEvent,
   type MutableRefObject,
   type ReactElement,
   type ReactNode,
   createContext,
+  useCallback,
   useContext,
   useEffect,
   useRef,
   useState,
 } from "react";
 
+export type CompareMessagePart =
+  | { type: "text"; text: string }
+  | { type: "image"; image: string };
+
 export interface CompareHandle {
-  append: (content: { type: "text"; text: string }[]) => void;
+  append: (content: CompareMessagePart[]) => void;
   cancel: () => void;
   isRunning: () => boolean;
+}
+
+const IMAGE_ACCEPT = "image/jpeg,image/png,image/webp,image/gif";
+const MAX_IMAGE_SIZE = 20 * 1024 * 1024;
+
+function fileToBase64DataURL(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(new Error("Failed to read image file"));
+    reader.readAsDataURL(file);
+  });
+}
+
+function useDictation(
+  setText: (value: string | ((prev: string) => string)) => void,
+) {
+  const [isDictating, setIsDictating] = useState(false);
+  const recognitionRef = useRef<SpeechRecognition | null>(null);
+
+  const start = useCallback(() => {
+    const SpeechRecognitionAPI =
+      typeof window !== "undefined" &&
+      (window.SpeechRecognition ?? (window as unknown as { webkitSpeechRecognition?: typeof SpeechRecognition }).webkitSpeechRecognition);
+    if (!SpeechRecognitionAPI) {
+      return;
+    }
+    const recognition = new SpeechRecognitionAPI() as SpeechRecognition;
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = "en-US";
+    recognition.onresult = (event: SpeechRecognitionEvent) => {
+      const last = event.resultIndex;
+      const result = event.results[last];
+      if (!result?.isFinal) return;
+      const transcript = result[0]?.transcript?.trim();
+      if (transcript) {
+        setText((prev) => (prev ? `${prev} ${transcript}` : transcript));
+      }
+    };
+    recognition.onerror = () => {
+      setIsDictating(false);
+    };
+    recognition.onend = () => {
+      setIsDictating(false);
+    };
+    recognition.start();
+    recognitionRef.current = recognition;
+    setIsDictating(true);
+  }, [setText]);
+
+  const stop = useCallback(() => {
+    if (recognitionRef.current) {
+      recognitionRef.current.stop();
+      recognitionRef.current = null;
+    }
+    setIsDictating(false);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (recognitionRef.current) {
+        recognitionRef.current.abort();
+      }
+    };
+  }, []);
+
+  const supported =
+    typeof window !== "undefined" &&
+    !!(window.SpeechRecognition ?? (window as unknown as { webkitSpeechRecognition?: unknown }).webkitSpeechRecognition);
+
+  return { isDictating, start, stop, supported };
 }
 
 export type CompareHandles = MutableRefObject<Record<string, CompareHandle>>;
@@ -66,6 +143,37 @@ export function RegisterCompareHandle({
   return null;
 }
 
+type PendingImage = { id: string; file: File };
+
+function PendingImageThumb({
+  file,
+  onRemove,
+}: {
+  file: File;
+  onRemove: () => void;
+}): ReactElement {
+  const [src, setSrc] = useState<string | null>(null);
+  useEffect(() => {
+    const url = URL.createObjectURL(file);
+    setSrc(url);
+    return () => URL.revokeObjectURL(url);
+  }, [file]);
+  if (!src) return <div className="size-14 animate-pulse rounded-[14px] bg-muted" />;
+  return (
+    <div className="relative size-14 shrink-0 overflow-hidden rounded-[14px] border border-foreground/20 bg-muted">
+      <img src={src} alt={file.name} className="h-full w-full object-cover" />
+      <button
+        type="button"
+        onClick={onRemove}
+        className="absolute top-1 right-1 flex size-5 items-center justify-center rounded-full bg-white text-muted-foreground shadow-sm hover:bg-destructive hover:text-destructive-foreground"
+        aria-label="Remove attachment"
+      >
+        <XIcon className="size-3" />
+      </button>
+    </div>
+  );
+}
+
 export function SharedComposer({
   handlesRef,
 }: {
@@ -73,7 +181,14 @@ export function SharedComposer({
 }): ReactElement {
   const [text, setText] = useState("");
   const [running, setRunning] = useState(false);
+  const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
+  const [dragging, setDragging] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const { isDictating, start: startDictation, stop: stopDictation, supported: dictationSupported } = useDictation(
+    setText,
+  );
 
   useEffect(() => {
     const id = setInterval(() => {
@@ -84,23 +199,50 @@ export function SharedComposer({
     return () => clearInterval(id);
   }, [handlesRef]);
 
-  function send() {
-    const msg = text.trim();
-    if (!msg) {
-      return;
+  const addFiles = useCallback((files: FileList | null) => {
+    if (!files?.length) return;
+    const next: PendingImage[] = [];
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      if (!file?.type.match(/^image\/(jpeg|png|webp|gif)$/i)) continue;
+      if (file.size > MAX_IMAGE_SIZE) continue;
+      next.push({ id: crypto.randomUUID(), file });
     }
+    setPendingImages((prev) => [...prev, ...next]);
+  }, []);
 
-    const content: { type: "text"; text: string }[] = [
-      { type: "text", text: msg },
-    ];
+  const removePendingImage = useCallback((id: string) => {
+    setPendingImages((prev) => prev.filter((p) => p.id !== id));
+  }, []);
+
+  async function send() {
+    const msg = text.trim();
+    if (!msg && pendingImages.length === 0) return;
+
+    const content: CompareMessagePart[] = [];
+    for (const { file } of pendingImages) {
+      try {
+        const image = await fileToBase64DataURL(file);
+        content.push({ type: "image", image });
+      } catch {
+        // skip failed image
+      }
+    }
+    if (msg) {
+      content.push({ type: "text", text: msg });
+    }
+    if (content.length === 0) return;
+
     for (const handle of Object.values(handlesRef.current)) {
       handle.append(content);
     }
     setText("");
+    setPendingImages([]);
     textareaRef.current?.focus();
   }
 
   function stop() {
+    if (isDictating) stopDictation();
     for (const handle of Object.values(handlesRef.current)) {
       handle.cancel();
     }
@@ -115,8 +257,33 @@ export function SharedComposer({
     }
   }
 
+  const canSend = (text.trim().length > 0 || pendingImages.length > 0) && !running;
+
   return (
-    <div className="shadow-border ring-1 ring-border relative flex w-full flex-col rounded-2xl bg-background px-1 pt-2 transition-shadow">
+    <div
+      className={`shadow-border ring-1 ring-border relative flex w-full flex-col rounded-2xl bg-background px-1 pt-2 transition-shadow outline-none ${dragging ? "ring-ring bg-accent/50" : ""}`}
+      onDragOver={(e) => {
+        e.preventDefault();
+        setDragging(true);
+      }}
+      onDragLeave={() => setDragging(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setDragging(false);
+        addFiles(e.dataTransfer.files);
+      }}
+    >
+      {pendingImages.length > 0 && (
+        <div className="mb-2 flex w-full flex-row flex-wrap items-center gap-2 px-1.5 pt-0.5 pb-1">
+          {pendingImages.map(({ id, file }) => (
+            <PendingImageThumb
+              key={id}
+              file={file}
+              onRemove={() => removePendingImage(id)}
+            />
+          ))}
+        </div>
+      )}
       <textarea
         ref={textareaRef}
         value={text}
@@ -126,30 +293,85 @@ export function SharedComposer({
         className="mb-1 max-h-32 min-h-14 w-full resize-none bg-transparent px-4 pt-2 pb-3 text-sm outline-none placeholder:text-muted-foreground"
         rows={1}
       />
-      <div className="relative mx-2 mb-2 flex items-center justify-end">
-        {running ? (
-          <Button
-            type="button"
-            variant="default"
-            size="icon"
-            className="size-8 rounded-full"
-            onClick={stop}
-          >
-            <SquareIcon className="size-3 fill-current" />
-          </Button>
-        ) : (
+      <div className="relative mx-2 mb-2 flex items-center justify-between">
+        <div className="flex items-center gap-1">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept={IMAGE_ACCEPT}
+            multiple
+            className="hidden"
+            onChange={(e) => {
+              addFiles(e.target.files);
+              e.target.value = "";
+            }}
+          />
           <TooltipIconButton
-            tooltip="Send message"
+            tooltip="Add attachment"
             side="bottom"
-            variant="default"
+            variant="ghost"
             size="icon"
-            className="size-8 rounded-full"
-            onClick={send}
-            disabled={!text.trim()}
+            className="size-8 rounded-full text-muted-foreground hover:bg-muted-foreground/15"
+            onClick={() => fileInputRef.current?.click()}
+            aria-label="Add attachment"
           >
-            <ArrowUpIcon className="size-4" />
+            <PlusIcon className="size-5 stroke-[1.5px]" />
           </TooltipIconButton>
-        )}
+        </div>
+        <div className="flex items-center gap-1">
+          {dictationSupported && (
+            <>
+              {!isDictating ? (
+                <TooltipIconButton
+                  tooltip="Dictate"
+                  side="bottom"
+                  variant="ghost"
+                  size="icon"
+                  className="size-8 rounded-full text-muted-foreground hover:bg-muted-foreground/15"
+                  onClick={startDictation}
+                  aria-label="Dictate"
+                >
+                  <MicIcon className="size-4" />
+                </TooltipIconButton>
+              ) : (
+                <TooltipIconButton
+                  tooltip="Stop dictation"
+                  side="bottom"
+                  variant="ghost"
+                  size="icon"
+                  className="size-8 rounded-full text-destructive"
+                  onClick={stopDictation}
+                  aria-label="Stop dictation"
+                >
+                  <SquareIcon className="size-3 animate-pulse fill-current" />
+                </TooltipIconButton>
+              )}
+            </>
+          )}
+          {running ? (
+            <Button
+              type="button"
+              variant="default"
+              size="icon"
+              className="size-8 rounded-full"
+              onClick={stop}
+            >
+              <SquareIcon className="size-3 fill-current" />
+            </Button>
+          ) : (
+            <TooltipIconButton
+              tooltip="Send message"
+              side="bottom"
+              variant="default"
+              size="icon"
+              className="size-8 rounded-full"
+              onClick={send}
+              disabled={!canSend}
+            >
+              <ArrowUpIcon className="size-4" />
+            </TooltipIconButton>
+          )}
+        </div>
       </div>
     </div>
   );
