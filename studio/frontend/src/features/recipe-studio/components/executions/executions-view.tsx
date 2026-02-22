@@ -60,6 +60,9 @@ type ModelUsageRow = {
   output: number | null;
 };
 
+const PREVIEW_DATASET_PAGE_SIZE = 20;
+const TERMINAL_STICKY_BOTTOM_THRESHOLD_PX = 24;
+
 function formatTimestamp(value: number): string {
   return new Date(value).toLocaleString();
 }
@@ -214,11 +217,17 @@ export function ExecutionsView({
   onLoadDatasetPage,
 }: ExecutionsViewProps): ReactElement {
   const [detailTab, setDetailTab] = useState("overview");
-  const [hiddenDatasetColumns, setHiddenDatasetColumns] = useState<string[]>([]);
-  const [expandedDatasetCells, setExpandedDatasetCells] = useState<
-    Record<string, boolean>
+  const [hiddenDatasetColumnsByExecution, setHiddenDatasetColumnsByExecution] = useState<
+    Record<string, string[]>
+  >({});
+  const [expandedDatasetRowsByExecution, setExpandedDatasetRowsByExecution] = useState<
+    Record<string, Record<string, boolean>>
+  >({});
+  const [previewDatasetPageByExecution, setPreviewDatasetPageByExecution] = useState<
+    Record<string, number>
   >({});
   const terminalRef = useRef<HTMLDivElement | null>(null);
+  const shouldStickTerminalToBottomRef = useRef(true);
   const selectedExecution = useMemo(
     () =>
       executions.find((execution) => execution.id === selectedExecutionId) ??
@@ -231,10 +240,19 @@ export function ExecutionsView({
       selectedExecution.recipeSignature !== currentSignature,
   );
 
-  useEffect(() => {
-    setHiddenDatasetColumns([]);
-    setExpandedDatasetCells({});
-  }, [selectedExecution?.id]);
+  const selectedExecutionIdSafe = selectedExecution?.id ?? null;
+  const hiddenDatasetColumns = useMemo(() => {
+    if (!selectedExecutionIdSafe) {
+      return [];
+    }
+    return hiddenDatasetColumnsByExecution[selectedExecutionIdSafe] ?? [];
+  }, [hiddenDatasetColumnsByExecution, selectedExecutionIdSafe]);
+  const expandedDatasetRows = useMemo(() => {
+    if (!selectedExecutionIdSafe) {
+      return {};
+    }
+    return expandedDatasetRowsByExecution[selectedExecutionIdSafe] ?? {};
+  }, [expandedDatasetRowsByExecution, selectedExecutionIdSafe]);
 
   const datasetColumnNames = useMemo(() => {
     if (!selectedExecution) {
@@ -267,39 +285,22 @@ export function ExecutionsView({
       cell: ({ getValue, row }) => {
         const rawValue = getValue();
         const value = formatCellValue(rawValue);
-        const canExpand = isExpandableCellValue(value);
-        const cellId = `${row.id}:${name}`;
-        const expanded = Boolean(expandedDatasetCells[cellId]);
+        const rowExpanded = Boolean(expandedDatasetRows[row.id]);
+        const rowHasExpandableCell = visibleDatasetColumnNames.some((columnName) =>
+          isExpandableCellValue(formatCellValue(row.original[columnName])),
+        );
+        const showTruncated = rowHasExpandableCell && !rowExpanded;
 
         return (
           <div className="max-w-[32rem]">
-            {canExpand ? (
-              <button
-                type="button"
-                className="w-full text-left"
-                onClick={(event) => {
-                  event.preventDefault();
-                  setExpandedDatasetCells((current) => ({
-                    ...current,
-                    [cellId]: !current[cellId],
-                  }));
-                }}
-              >
-                <p className="whitespace-pre-wrap break-all">
-                  {expanded ? value : truncateCellValue(value)}
-                </p>
-                <span className="text-xs text-muted-foreground">
-                  {expanded ? "Click to collapse" : "Click to expand"}
-                </span>
-              </button>
-            ) : (
-              <p className="whitespace-pre-wrap break-all">{value}</p>
-            )}
+            <p className="whitespace-pre-wrap break-all">
+              {showTruncated ? truncateCellValue(value) : value}
+            </p>
           </div>
         );
       },
     }));
-  }, [expandedDatasetCells, selectedExecution, visibleDatasetColumnNames]);
+  }, [expandedDatasetRows, selectedExecution, visibleDatasetColumnNames]);
 
   const analysisColumns = useMemo(
     () => parseAnalysisColumns(selectedExecution?.analysis ?? null),
@@ -338,9 +339,37 @@ export function ExecutionsView({
   const datasetPage = selectedExecution?.datasetPage ?? 1;
   const datasetPageSize = selectedExecution?.datasetPageSize ?? 20;
   const datasetTotal = selectedExecution?.datasetTotal ?? 0;
-  const totalPages = Math.max(1, Math.ceil(datasetTotal / datasetPageSize));
+  const previewPageRaw = selectedExecutionIdSafe
+    ? previewDatasetPageByExecution[selectedExecutionIdSafe] ?? 1
+    : 1;
+  const previewTotalPages = useMemo(() => {
+    if (!selectedExecution || selectedExecution.kind !== "preview") {
+      return 1;
+    }
+    return Math.max(
+      1,
+      Math.ceil(selectedExecution.dataset.length / PREVIEW_DATASET_PAGE_SIZE),
+    );
+  }, [selectedExecution]);
+  const previewPage = Math.min(previewPageRaw, previewTotalPages);
+  const totalPages =
+    selectedExecution?.kind === "preview"
+      ? previewTotalPages
+      : Math.max(1, Math.ceil(datasetTotal / datasetPageSize));
   const canPageDataset =
-    Boolean(selectedExecution?.jobId) && selectedExecution?.kind === "full";
+    selectedExecution?.kind === "preview" ||
+    (selectedExecution?.kind === "full" && Boolean(selectedExecution.jobId));
+  const datasetRowsForTable = useMemo(() => {
+    if (!selectedExecution) {
+      return [];
+    }
+    if (selectedExecution.kind !== "preview") {
+      return selectedExecution.dataset;
+    }
+    const start = (previewPage - 1) * PREVIEW_DATASET_PAGE_SIZE;
+    return selectedExecution.dataset.slice(start, start + PREVIEW_DATASET_PAGE_SIZE);
+  }, [previewPage, selectedExecution]);
+  const currentDatasetPage = selectedExecution?.kind === "preview" ? previewPage : datasetPage;
   const recordsMetric = useMemo(() => {
     if (!selectedExecution || selectedExecution.status !== "completed") {
       return null;
@@ -421,16 +450,29 @@ export function ExecutionsView({
     if (!selectedExecution) {
       return null;
     }
-    const { dataset, log_lines, ...rest } = selectedExecution;
-    return rest;
+    const next = { ...selectedExecution } as Record<string, unknown>;
+    delete next.dataset;
+    delete next.log_lines;
+    return next;
   }, [selectedExecution]);
 
   useEffect(() => {
     if (!terminalRef.current) {
       return;
     }
+    shouldStickTerminalToBottomRef.current = true;
     terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
-  }, [selectedExecution?.id, terminalLines.length]);
+  }, [selectedExecution?.id]);
+
+  useEffect(() => {
+    if (!terminalRef.current) {
+      return;
+    }
+    if (!shouldStickTerminalToBottomRef.current) {
+      return;
+    }
+    terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
+  }, [terminalLines.length]);
 
   return (
     <div className="flex h-full min-h-0">
@@ -777,6 +819,13 @@ export function ExecutionsView({
                     <div
                       ref={terminalRef}
                       className="max-h-72 overflow-auto bg-zinc-900/80 px-3 py-2 font-mono text-xs text-zinc-200"
+                      onScroll={(event) => {
+                        const element = event.currentTarget;
+                        const distanceFromBottom =
+                          element.scrollHeight - element.scrollTop - element.clientHeight;
+                        shouldStickTerminalToBottomRef.current =
+                          distanceFromBottom <= TERMINAL_STICKY_BOTTOM_THRESHOLD_PX;
+                      }}
                     >
                       {terminalLines.length === 0 ? (
                         <p className="text-zinc-400">
@@ -851,12 +900,23 @@ export function ExecutionsView({
                               <DropdownMenuCheckboxItem
                                 key={columnName}
                                 checked={!hiddenDatasetColumns.includes(columnName)}
+                                onSelect={(event) => {
+                                  event.preventDefault();
+                                }}
                                 onCheckedChange={(checked) => {
-                                  setHiddenDatasetColumns((current) => {
-                                    if (checked) {
-                                      return current.filter((name) => name !== columnName);
-                                    }
-                                    return [...current, columnName];
+                                  const selectedId = selectedExecution?.id;
+                                  if (!selectedId) {
+                                    return;
+                                  }
+                                  setHiddenDatasetColumnsByExecution((current) => {
+                                    const currentColumns = current[selectedId] ?? [];
+                                    const nextColumns = checked
+                                      ? currentColumns.filter((name) => name !== columnName)
+                                      : [...currentColumns, columnName];
+                                    return {
+                                      ...current,
+                                      [selectedId]: nextColumns,
+                                    };
                                   });
                                 }}
                               >
@@ -869,17 +929,27 @@ export function ExecutionsView({
                       {canPageDataset && selectedExecution && (
                         <>
                           <span>
-                            Page {datasetPage}/{totalPages}
+                            Page {currentDatasetPage}/{totalPages}
                           </span>
                           <Button
                             type="button"
                             size="sm"
                             variant="outline"
                             disabled={
-                              isExecutionInProgress(selectedExecution.status) || datasetPage <= 1
+                              isExecutionInProgress(selectedExecution.status) ||
+                              currentDatasetPage <= 1
                             }
-                            onClick={() =>
-                              onLoadDatasetPage(selectedExecution.id, datasetPage - 1)}
+                            onClick={() => {
+                              if (selectedExecution.kind === "preview") {
+                                const selectedId = selectedExecution.id;
+                                setPreviewDatasetPageByExecution((current) => ({
+                                  ...current,
+                                  [selectedId]: Math.max(1, currentDatasetPage - 1),
+                                }));
+                                return;
+                              }
+                              onLoadDatasetPage(selectedExecution.id, currentDatasetPage - 1);
+                            }}
                           >
                             Prev
                           </Button>
@@ -889,10 +959,19 @@ export function ExecutionsView({
                             variant="outline"
                             disabled={
                               isExecutionInProgress(selectedExecution.status) ||
-                              datasetPage >= totalPages
+                              currentDatasetPage >= totalPages
                             }
-                            onClick={() =>
-                              onLoadDatasetPage(selectedExecution.id, datasetPage + 1)}
+                            onClick={() => {
+                              if (selectedExecution.kind === "preview") {
+                                const selectedId = selectedExecution.id;
+                                setPreviewDatasetPageByExecution((current) => ({
+                                  ...current,
+                                  [selectedId]: Math.min(totalPages, currentDatasetPage + 1),
+                                }));
+                                return;
+                              }
+                              onLoadDatasetPage(selectedExecution.id, currentDatasetPage + 1);
+                            }}
                           >
                             Next
                           </Button>
@@ -910,7 +989,39 @@ export function ExecutionsView({
                     <div className="max-h-[55vh] overflow-auto">
                       <DataTable
                         columns={tableColumns}
-                        data={selectedExecution.dataset}
+                        data={datasetRowsForTable}
+                        getRowClassName={(row, _rowIndex, rowId) => {
+                          const canExpand = visibleDatasetColumnNames.some((columnName) =>
+                            isExpandableCellValue(formatCellValue(row[columnName])),
+                          );
+                          if (!canExpand) {
+                            return undefined;
+                          }
+                          return cn(
+                            "cursor-pointer",
+                            expandedDatasetRows[rowId]
+                              ? "bg-primary/[0.05]"
+                              : "hover:bg-primary/[0.06]",
+                          );
+                        }}
+                        onRowClick={(row, _rowIndex, rowId) => {
+                          const canExpand = visibleDatasetColumnNames.some((columnName) =>
+                            isExpandableCellValue(formatCellValue(row[columnName])),
+                          );
+                          if (!canExpand || !selectedExecutionIdSafe) {
+                            return;
+                          }
+                          setExpandedDatasetRowsByExecution((current) => {
+                            const rows = current[selectedExecutionIdSafe] ?? {};
+                            return {
+                              ...current,
+                              [selectedExecutionIdSafe]: {
+                                ...rows,
+                                [rowId]: !rows[rowId],
+                              },
+                            };
+                          });
+                        }}
                       />
                     </div>
                   )}
