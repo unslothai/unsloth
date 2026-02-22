@@ -15,7 +15,7 @@ import { MAX_NODE_WIDTH, MIN_NODE_WIDTH } from "../constants";
 import { useRecipeStudioStore } from "../stores/recipe-studio";
 import type { LayoutDirection, LlmConfig, Score, ScoreOption } from "../types";
 import { HANDLE_IDS } from "../utils/handles";
-import { getAvailableVariables } from "../utils/variables";
+import { getAvailableVariableEntries } from "../utils/variables";
 import { BaseNode, BaseNodeContent, BaseNodeHeader, BaseNodeHeaderTitle } from "./rf-ui/base-node";
 
 type PromptField = "prompt" | "system_prompt";
@@ -61,7 +61,7 @@ function updateOptionAt(
 
 function AuxVariableBadges({ llmId }: { llmId: string }): ReactElement | null {
   const configs = useRecipeStudioStore((state) => state.configs);
-  const vars = getAvailableVariables(configs, llmId);
+  const vars = getAvailableVariableEntries(configs, llmId);
   if (vars.length === 0) return null;
   return (
     <div className="space-y-1">
@@ -69,11 +69,15 @@ function AuxVariableBadges({ llmId }: { llmId: string }): ReactElement | null {
       <div className="flex flex-wrap gap-1">
         {vars.map((v) => (
           <Badge
-            key={v}
+            key={`${v.source}:${v.name}`}
             variant="secondary"
-            className="corner-squircle h-4 px-1.5 font-mono text-[10px]"
+            className={
+              v.source === "seed"
+                ? "corner-squircle h-4 border-blue-500/25 bg-blue-500/10 px-1.5 font-mono text-[10px] text-blue-700 dark:text-blue-300"
+                : "corner-squircle h-4 px-1.5 font-mono text-[10px]"
+            }
           >
-            {v}
+            {v.name}
           </Badge>
         ))}
       </div>

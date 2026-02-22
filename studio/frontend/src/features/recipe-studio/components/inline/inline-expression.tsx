@@ -10,7 +10,7 @@ import {
 import type { ReactElement } from "react";
 import { useRecipeStudioStore } from "../../stores/recipe-studio";
 import type { ExpressionConfig, ExpressionDtype } from "../../types";
-import { getAvailableVariables } from "../../utils/variables";
+import { getAvailableVariableEntries } from "../../utils/variables";
 import { InlineField } from "./inline-field";
 
 type InlineExpressionProps = {
@@ -25,7 +25,7 @@ export function InlineExpression({
   onUpdate,
 }: InlineExpressionProps): ReactElement {
   const configs = useRecipeStudioStore((state) => state.configs);
-  const vars = getAvailableVariables(configs, config.id);
+  const vars = getAvailableVariableEntries(configs, config.id);
 
   return (
     <div className="space-y-3">
@@ -64,11 +64,15 @@ export function InlineExpression({
           <div className="flex flex-wrap gap-1">
             {vars.map((v) => (
               <Badge
-                key={v}
+                key={`${v.source}:${v.name}`}
                 variant="secondary"
-                className="corner-squircle h-4 px-1.5 font-mono text-[10px]"
+                className={
+                  v.source === "seed"
+                    ? "corner-squircle h-4 border-blue-500/25 bg-blue-500/10 px-1.5 font-mono text-[10px] text-blue-700 dark:text-blue-300"
+                    : "corner-squircle h-4 px-1.5 font-mono text-[10px]"
+                }
               >
-                {v}
+                {v.name}
               </Badge>
             ))}
           </div>
