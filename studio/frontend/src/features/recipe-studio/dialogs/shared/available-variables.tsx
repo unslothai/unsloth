@@ -1,7 +1,7 @@
 import { Badge } from "@/components/ui/badge";
 import type { ReactElement } from "react";
 import { useRecipeStudioStore } from "../../stores/recipe-studio";
-import { getAvailableVariables } from "../../utils/variables";
+import { getAvailableVariableEntries } from "../../utils/variables";
 
 type AvailableVariablesProps = {
   configId: string;
@@ -11,7 +11,7 @@ export function AvailableVariables({
   configId,
 }: AvailableVariablesProps): ReactElement | null {
   const configs = useRecipeStudioStore((state) => state.configs);
-  const vars = getAvailableVariables(configs, configId);
+  const vars = getAvailableVariableEntries(configs, configId);
 
   if (vars.length === 0) return null;
 
@@ -23,11 +23,15 @@ export function AvailableVariables({
       <div className="flex flex-wrap gap-1.5">
         {vars.map((v) => (
           <Badge
-            key={v}
+            key={`${v.source}:${v.name}`}
             variant="secondary"
-            className="corner-squircle font-mono text-[11px]"
+            className={
+              v.source === "seed"
+                ? "corner-squircle border-blue-500/25 bg-blue-500/10 font-mono text-[11px] text-blue-700 dark:text-blue-300"
+                : "corner-squircle font-mono text-[11px]"
+            }
           >
-            {`{{ ${v} }}`}
+            {`{{ ${v.name} }}`}
           </Badge>
         ))}
       </div>
