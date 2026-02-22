@@ -36,20 +36,20 @@ const NAV_ITEMS = [
   { label: "Chat", href: "/chat", icon: AiChat02Icon, enabled: true },
 ];
 
+function getTourId(pathname: string): "studio" | "chat" | "export" | null {
+  if (pathname === "/studio") return "studio";
+  if (pathname === "/chat") return "chat";
+  if (pathname === "/export") return "export";
+  return null;
+}
+
 export function Navbar() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const isTrainingRunning = useTrainingRuntimeStore((s) => s.isTrainingRunning);
   const [logoHovered, setLogoHovered] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
 
-  const tourId =
-    pathname === "/studio"
-      ? "studio"
-      : pathname === "/chat"
-        ? "chat"
-        : pathname === "/export"
-          ? "export"
-          : null;
+  const tourId = getTourId(pathname);
 
   const openTour = () => {
     if (!tourId) return;

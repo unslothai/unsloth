@@ -30,6 +30,7 @@ from models.data_recipe import (
 
 router = APIRouter()
 DATA_EXTS = (".parquet", ".jsonl", ".json", ".csv")
+DEFAULT_SPLIT = "train"
 
 
 def _serialize_preview_value(value: Any) -> Any:
@@ -47,6 +48,24 @@ def _serialize_preview_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         {str(key): _serialize_preview_value(value) for key, value in row.items()}
         for row in rows
     ]
+
+
+def _normalize_optional_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    trimmed = value.strip()
+    return trimmed if trimmed else None
+
+
+def _list_hf_data_files(*, dataset_name: str, token: str | None) -> list[str]:
+    try:
+        from huggingface_hub import HfApi
+
+        api = HfApi()
+        repo_files = api.list_repo_files(dataset_name, repo_type="dataset", token=token)
+        return [file for file in repo_files if file.lower().endswith(DATA_EXTS)]
+    except Exception:
+        return []
 
 
 def _select_best_file(data_files: list[str], split: str | None) -> str | None:
@@ -88,6 +107,46 @@ def _resolve_seed_hf_path(dataset_name: str, data_files: list[str], split: str |
     return f"datasets/{dataset_name}/{parent}/**/*{ext}"
 
 
+def _build_stream_load_kwargs(
+    *,
+    dataset_name: str,
+    split: str,
+    subset: str | None,
+    token: str | None,
+    data_file: str | None = None,
+) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "path": dataset_name,
+        "split": split,
+        "streaming": True,
+    }
+    if data_file:
+        kwargs["data_files"] = [data_file]
+    if subset:
+        kwargs["name"] = subset
+    if token:
+        kwargs["token"] = token
+    return kwargs
+
+
+def _load_preview_rows(
+    *,
+    load_dataset_fn,
+    load_kwargs: dict[str, Any],
+    preview_size: int,
+) -> list[dict[str, Any]]:
+    streamed_ds = load_dataset_fn(**load_kwargs)
+    return [row for row in islice(streamed_ds, preview_size)]
+
+
+def _extract_columns(rows: list[dict[str, Any]]) -> list[str]:
+    columns_seen: dict[str, None] = {}
+    for row in rows:
+        for key in row.keys():
+            columns_seen[str(key)] = None
+    return list(columns_seen.keys())
+
+
 @router.post("/seed/inspect", response_model=SeedInspectResponse)
 def inspect_seed_dataset(payload: SeedInspectRequest) -> SeedInspectResponse:
     dataset_name = payload.dataset_name.strip()
@@ -96,68 +155,55 @@ def inspect_seed_dataset(payload: SeedInspectRequest) -> SeedInspectResponse:
 
     try:
         from datasets import load_dataset
-        from huggingface_hub import HfApi
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"seed inspect dependencies unavailable: {exc}") from exc
 
-    split = (payload.split or "train").strip() or "train"
-    subset = payload.subset.strip() if payload.subset else None
-    token = payload.hf_token.strip() if payload.hf_token else None
+    split = (payload.split or DEFAULT_SPLIT).strip() or DEFAULT_SPLIT
+    subset = _normalize_optional_text(payload.subset)
+    token = _normalize_optional_text(payload.hf_token)
     preview_size = int(payload.preview_size)
 
     preview_rows: list[dict[str, Any]] = []
-    data_files: list[str] = []
-
-    try:
-        api = HfApi()
-        repo_files = api.list_repo_files(dataset_name, repo_type="dataset", token=token)
-        data_files = [f for f in repo_files if f.lower().endswith(DATA_EXTS)]
-    except Exception:
-        data_files = []
+    data_files = _list_hf_data_files(dataset_name=dataset_name, token=token)
 
     selected_file = _select_best_file(data_files, split)
     if selected_file:
         try:
-            load_kwargs: dict[str, Any] = {
-                "path": dataset_name,
-                "data_files": [selected_file],
-                "split": "train",
-                "streaming": True,
-            }
-            if subset:
-                load_kwargs["name"] = subset
-            if token:
-                load_kwargs["token"] = token
-            streamed_ds = load_dataset(**load_kwargs)
-            preview_rows = [_row for _row in islice(streamed_ds, preview_size)]
+            single_file_kwargs = _build_stream_load_kwargs(
+                dataset_name=dataset_name,
+                split=DEFAULT_SPLIT,
+                subset=subset,
+                token=token,
+                data_file=selected_file,
+            )
+            preview_rows = _load_preview_rows(
+                load_dataset_fn=load_dataset,
+                load_kwargs=single_file_kwargs,
+                preview_size=preview_size,
+            )
         except Exception:
             preview_rows = []
 
     if not preview_rows:
         try:
-            load_kwargs = {
-                "path": dataset_name,
-                "split": split,
-                "streaming": True,
-            }
-            if subset:
-                load_kwargs["name"] = subset
-            if token:
-                load_kwargs["token"] = token
-            streamed_ds = load_dataset(**load_kwargs)
-            preview_rows = [_row for _row in islice(streamed_ds, preview_size)]
+            split_kwargs = _build_stream_load_kwargs(
+                dataset_name=dataset_name,
+                split=split,
+                subset=subset,
+                token=token,
+            )
+            preview_rows = _load_preview_rows(
+                load_dataset_fn=load_dataset,
+                load_kwargs=split_kwargs,
+                preview_size=preview_size,
+            )
         except Exception as exc:
             raise HTTPException(status_code=422, detail=f"seed inspect failed: {exc}") from exc
 
     if not preview_rows:
         raise HTTPException(status_code=422, detail="dataset appears empty or unreadable")
     preview_rows = _serialize_preview_rows(preview_rows)
-
-    columns_seen: dict[str, None] = {}
-    for row in preview_rows:
-        for key in row.keys():
-            columns_seen[str(key)] = None
-    columns = list(columns_seen.keys())
+    columns = _extract_columns(preview_rows)
 
     if not data_files:
         # Best effort path fallback when file list is unavailable.

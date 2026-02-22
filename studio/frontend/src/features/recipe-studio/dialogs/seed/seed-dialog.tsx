@@ -78,6 +78,30 @@ type SeedDialogProps = {
   onUpdate: (patch: Partial<SeedConfig>) => void;
 };
 
+function getErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  return fallback;
+}
+
+function getPreferredSplit(
+  availableSplits: string[],
+  currentSplit: string | undefined,
+): string | null {
+  if (availableSplits.length === 0) return null;
+  if (availableSplits.length === 1) {
+    return availableSplits[0] === currentSplit ? null : availableSplits[0];
+  }
+  if (!currentSplit && availableSplits.includes("train")) {
+    return "train";
+  }
+  if (!currentSplit) {
+    return availableSplits[0];
+  }
+  return null;
+}
+
 function stringifyCell(value: unknown): string {
   if (value === null || value === undefined) return "";
   if (typeof value === "string") return value;
@@ -138,18 +162,8 @@ export function SeedDialog({ config, onUpdate }: SeedDialogProps): ReactElement 
   useEffect(() => {
     if (splits.length === 0) return;
     if (hasMultipleSubsets && !config.hf_subset) return;
-
-    if (splits.length === 1 && config.hf_split !== splits[0]) {
-      onUpdate({ hf_split: splits[0] });
-      return;
-    }
-    if (!config.hf_split && splits.includes("train")) {
-      onUpdate({ hf_split: "train" });
-      return;
-    }
-    if (!config.hf_split) {
-      onUpdate({ hf_split: splits[0] });
-    }
+    const preferredSplit = getPreferredSplit(splits, config.hf_split);
+    if (preferredSplit) onUpdate({ hf_split: preferredSplit });
   }, [
     splits,
     hasMultipleSubsets,
@@ -219,7 +233,7 @@ export function SeedDialog({ config, onUpdate }: SeedDialogProps): ReactElement 
       });
       setPreviewRows(response.preview_rows ?? []);
     } catch (error) {
-      setInspectError(error instanceof Error ? error.message : "Failed to load seed metadata.");
+      setInspectError(getErrorMessage(error, "Failed to load seed metadata."));
       setPreviewRows([]);
     } finally {
       setIsInspecting(false);
