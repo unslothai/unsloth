@@ -220,8 +220,8 @@ export type SeedConfig = {
   name: string;
   drop?: boolean;
   // ui-only (serialized in seed_config)
-  hf_url?: string;
-  hf_repo_id?: string;
+  hf_repo_id: string;
+  hf_subset?: string;
   hf_split?: string;
   hf_path: string;
   hf_token?: string;

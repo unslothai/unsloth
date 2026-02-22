@@ -180,8 +180,11 @@ export function getConfigErrors(config: NodeConfig | null): string[] {
     }
   }
   if (config.kind === "seed") {
+    if (!config.hf_repo_id.trim()) {
+      errors.push("Seed dataset repo is required.");
+    }
     if (!config.hf_path.trim()) {
-      errors.push("HF dataset path is required.");
+      errors.push("Seed metadata not loaded. Click 'Load columns + 10 rows'.");
     }
     if (config.hf_endpoint?.trim() && !config.hf_endpoint.trim().startsWith("http")) {
       errors.push("HF endpoint must start with http.");
