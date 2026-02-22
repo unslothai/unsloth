@@ -9,6 +9,7 @@ import { type ReactElement, useCallback, useEffect, useMemo } from "react";
 import type { SamplerConfig } from "../../types";
 import { ChipInput } from "../../components/chip-input";
 import { NameField } from "../shared/name-field";
+import { FieldLabel } from "../shared/field-label";
 
 type SubcategoryDialogProps = {
   config: SamplerConfig;
@@ -71,12 +72,11 @@ export function SubcategoryDialog({
       />
       <div className="space-y-3">
         <div className="grid gap-2">
-          <label
-            className="text-xs font-semibold uppercase text-muted-foreground"
+          <FieldLabel
+            label="Parent category column"
             htmlFor={parentSelectId}
-          >
-            Parent category column
-          </label>
+            hint="Category column this block maps from."
+          />
           <Select
             value={config.subcategory_parent ?? ""}
             onValueChange={(value) => {

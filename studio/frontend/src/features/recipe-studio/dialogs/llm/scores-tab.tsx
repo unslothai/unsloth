@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { type ReactElement } from "react";
 import type { LlmConfig, Score } from "../../types";
+import { FieldLabel } from "../shared/field-label";
 
 type LlmScoresTabProps = {
   config: LlmConfig;
@@ -38,9 +39,10 @@ export function LlmScoresTab({
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
-        <p className="text-xs font-semibold uppercase text-muted-foreground">
-          Scorers
-        </p>
+        <FieldLabel
+          label="Scorers"
+          hint="Rubrics used by LLM Judge to score each generated row."
+        />
         <Button type="button" size="xs" variant="outline" onClick={addScore}>
           Add scorer block
         </Button>

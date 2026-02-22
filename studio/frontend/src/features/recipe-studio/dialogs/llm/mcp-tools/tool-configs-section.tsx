@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { ChipInput } from "../../../components/chip-input";
 import type { LlmToolConfig } from "../../../types";
 import { addUnique, collectToolSuggestions } from "./helpers";
+import { FieldLabel } from "../../shared/field-label";
 
 type ToolConfigsSectionProps = {
   toolConfigs: LlmToolConfig[];
@@ -30,9 +31,10 @@ export function ToolConfigsSection({
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
-        <p className="text-xs font-semibold uppercase text-muted-foreground">
-          Tool configs
-        </p>
+        <FieldLabel
+          label="Tool configs"
+          hint="Map a tool alias to MCP providers and allowed tools."
+        />
         <div className="flex items-center gap-2">
           <Button
             type="button"
@@ -63,9 +65,10 @@ export function ToolConfigsSection({
           className="space-y-3 border-b border-border/40 pb-4 last:border-b-0"
         >
           <div className="grid gap-2">
-            <label className="text-xs font-semibold uppercase text-muted-foreground">
-              Tool alias
-            </label>
+            <FieldLabel
+              label="Tool alias"
+              hint="Alias referenced by LLM column tool_alias."
+            />
             <Input
               value={toolConfig.tool_alias}
               placeholder="context7_tools"
@@ -79,9 +82,10 @@ export function ToolConfigsSection({
           </div>
 
           <div className="grid gap-2">
-            <label className="text-xs font-semibold uppercase text-muted-foreground">
-              Providers
-            </label>
+            <FieldLabel
+              label="Providers"
+              hint="MCP provider names this alias can call."
+            />
             <ChipInput
               values={toolConfig.providers}
               suggestions={providerNameSuggestions}
@@ -102,9 +106,10 @@ export function ToolConfigsSection({
           </div>
 
           <div className="grid gap-2">
-            <label className="text-xs font-semibold uppercase text-muted-foreground">
-              Allow tools (optional)
-            </label>
+            <FieldLabel
+              label="Allow tools (optional)"
+              hint="Optional allowlist of tool names."
+            />
             <ChipInput
               // biome-ignore lint/style/useNamingConvention: api schema
               values={toolConfig.allow_tools ?? []}
@@ -129,9 +134,10 @@ export function ToolConfigsSection({
 
           <div className="grid grid-cols-2 gap-2">
             <div className="grid gap-2">
-              <label className="text-xs font-semibold uppercase text-muted-foreground">
-                Max turns
-              </label>
+              <FieldLabel
+                label="Max turns"
+                hint="Max tool-calling turns before forcing completion."
+              />
               <Input
                 value={toolConfig.max_tool_call_turns ?? ""}
                 onChange={(event) =>
@@ -143,9 +149,10 @@ export function ToolConfigsSection({
               />
             </div>
             <div className="grid gap-2">
-              <label className="text-xs font-semibold uppercase text-muted-foreground">
-                Timeout sec
-              </label>
+              <FieldLabel
+                label="Timeout sec"
+                hint="Timeout per tool call."
+              />
               <Input
                 value={toolConfig.timeout_sec ?? ""}
                 onChange={(event) =>

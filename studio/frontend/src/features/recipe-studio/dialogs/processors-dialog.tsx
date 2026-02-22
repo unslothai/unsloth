@@ -8,6 +8,7 @@ import { type ReactElement, useMemo } from "react";
 import type { RecipeProcessorConfig } from "../types";
 import { buildDefaultSchemaTransform } from "../utils/processors";
 import { AvailableVariables } from "./shared/available-variables";
+import { FieldLabel } from "./shared/field-label";
 type ProcessorsDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -90,12 +91,11 @@ export function ProcessorsDialog({
             <div className="space-y-3">
               <AvailableVariables configId="" />
               <div className="grid gap-2">
-                <label
-                  className="text-xs font-semibold uppercase text-muted-foreground"
+                <FieldLabel
+                  label="Name"
                   htmlFor={nameId}
-                >
-                  Name
-                </label>
+                  hint="Processor name shown in graph and payload."
+                />
                 <Input
                   id={nameId}
                   className="nodrag"
@@ -104,12 +104,11 @@ export function ProcessorsDialog({
                 />
               </div>
               <div className="grid gap-2">
-                <label
-                  className="text-xs font-semibold uppercase text-muted-foreground"
+                <FieldLabel
+                  label="Template (JSON)"
                   htmlFor={templateId}
-                >
-                  Template (JSON)
-                </label>
+                  hint="Target output schema template using Jinja references."
+                />
                 <Textarea
                   id={templateId}
                   className="corner-squircle nodrag min-h-[220px]"

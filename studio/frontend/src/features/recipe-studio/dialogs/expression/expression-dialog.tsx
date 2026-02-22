@@ -9,6 +9,7 @@ import { Textarea } from "@/components/ui/textarea";
 import type { ReactElement } from "react";
 import type { ExpressionConfig, ExpressionDtype } from "../../types";
 import { AvailableVariables } from "../shared/available-variables";
+import { FieldLabel } from "../shared/field-label";
 import { NameField } from "../shared/name-field";
 
 const DTYPE_OPTIONS: ExpressionDtype[] = ["str", "int", "float", "bool"];
@@ -38,12 +39,11 @@ export function ExpressionDialog({
         onChange={(value) => onUpdate({ name: value })}
       />
       <div className="grid gap-2">
-        <label
-          className="text-xs font-semibold uppercase text-muted-foreground"
+        <FieldLabel
+          label="Output type"
           htmlFor={dtypeId}
-        >
-          Output type
-        </label>
+          hint="Cast expression output type in final dataset."
+        />
         <Select
           value={config.dtype}
           onValueChange={(value) =>
@@ -63,12 +63,11 @@ export function ExpressionDialog({
         </Select>
       </div>
       <div className="grid gap-2">
-        <label
-          className="text-xs font-semibold uppercase text-muted-foreground"
+        <FieldLabel
+          label="Expression (Jinja2)"
           htmlFor={exprId}
-        >
-          Expression (Jinja2)
-        </label>
+          hint="Use Jinja to combine or transform existing columns."
+        />
         <Textarea
           id={exprId}
           className="corner-squircle nodrag"

@@ -34,6 +34,7 @@ import type {
   SeedSamplingStrategy,
   SeedSelectionType,
 } from "../../types";
+import { FieldLabel } from "../shared/field-label";
 
 const SAMPLING_OPTIONS: Array<{ value: SeedSamplingStrategy; label: string }> = [
   { value: "ordered", label: "Ordered" },
@@ -125,12 +126,11 @@ export function SeedDialog({ config, onUpdate }: SeedDialogProps): ReactElement 
       <TabsContent value="config" className="pt-3">
         <div className="space-y-4">
           <div className="grid gap-2">
-            <label
-              className="text-xs font-semibold uppercase text-muted-foreground"
+            <FieldLabel
+              label="HF dataset URL"
               htmlFor={urlId}
-            >
-              HF dataset URL
-            </label>
+              hint="Dataset URL or org/repo used to bootstrap seed columns."
+            />
             <div className="flex items-center gap-2">
               <Input
                 id={urlId}
@@ -159,12 +159,11 @@ export function SeedDialog({ config, onUpdate }: SeedDialogProps): ReactElement 
 
           {(config.seed_splits?.length ?? 0) > 0 && (
             <div className="grid gap-2">
-              <label
-                className="text-xs font-semibold uppercase text-muted-foreground"
+              <FieldLabel
+                label="Split"
                 htmlFor={splitId}
-              >
-                Split
-              </label>
+                hint="Dataset split to sample from (train/validation/test)."
+              />
               <Select
                 value={config.hf_split ?? ""}
                 onValueChange={(value) => {
@@ -187,12 +186,11 @@ export function SeedDialog({ config, onUpdate }: SeedDialogProps): ReactElement 
           )}
 
           <div className="grid gap-2">
-            <label
-              className="text-xs font-semibold uppercase text-muted-foreground"
+            <FieldLabel
+              label="HF path (auto)"
               htmlFor={pathId}
-            >
-              HF path (auto)
-            </label>
+              hint="Resolved dataset file path/pattern."
+            />
             <Input
               id={pathId}
               className="nodrag"
@@ -203,12 +201,11 @@ export function SeedDialog({ config, onUpdate }: SeedDialogProps): ReactElement 
           </div>
 
           <div className="grid gap-2">
-            <label
-              className="text-xs font-semibold uppercase text-muted-foreground"
+            <FieldLabel
+              label="HF token (optional)"
               htmlFor={tokenId}
-            >
-              HF token (optional)
-            </label>
+              hint="Optional private dataset access token."
+            />
             <Input
               id={tokenId}
               className="nodrag"
@@ -219,12 +216,11 @@ export function SeedDialog({ config, onUpdate }: SeedDialogProps): ReactElement 
           </div>
 
           <div className="grid gap-2">
-            <label
-              className="text-xs font-semibold uppercase text-muted-foreground"
+            <FieldLabel
+              label="Sampling strategy"
               htmlFor={samplingId}
-            >
-              Sampling strategy
-            </label>
+              hint="Ordered keeps row order. shuffle randomizes sampled rows."
+            />
             <Select
               value={config.sampling_strategy}
               onValueChange={(value) =>
@@ -245,12 +241,11 @@ export function SeedDialog({ config, onUpdate }: SeedDialogProps): ReactElement 
           </div>
 
           <div className="grid gap-2">
-            <label
-              className="text-xs font-semibold uppercase text-muted-foreground"
+            <FieldLabel
+              label="Selection strategy"
               htmlFor={selectionId}
-            >
-              Selection strategy
-            </label>
+              hint="Select all, a row range, or partition block."
+            />
             <Select
               value={config.selection_type}
               onValueChange={(value) =>
@@ -273,9 +268,10 @@ export function SeedDialog({ config, onUpdate }: SeedDialogProps): ReactElement 
           {config.selection_type === "index_range" && (
             <div className="grid grid-cols-2 gap-3">
               <div className="grid gap-2">
-                <label className="text-xs font-semibold uppercase text-muted-foreground">
-                  Start
-                </label>
+                <FieldLabel
+                  label="Start"
+                  hint="Inclusive start row index for index_range."
+                />
                 <Input
                   className="nodrag"
                   inputMode="numeric"
@@ -284,9 +280,10 @@ export function SeedDialog({ config, onUpdate }: SeedDialogProps): ReactElement 
                 />
               </div>
               <div className="grid gap-2">
-                <label className="text-xs font-semibold uppercase text-muted-foreground">
-                  End
-                </label>
+                <FieldLabel
+                  label="End"
+                  hint="Inclusive end row index for index_range."
+                />
                 <Input
                   className="nodrag"
                   inputMode="numeric"
@@ -300,9 +297,10 @@ export function SeedDialog({ config, onUpdate }: SeedDialogProps): ReactElement 
           {config.selection_type === "partition_block" && (
             <div className="grid grid-cols-2 gap-3">
               <div className="grid gap-2">
-                <label className="text-xs font-semibold uppercase text-muted-foreground">
-                  Index
-                </label>
+                <FieldLabel
+                  label="Index"
+                  hint="Partition index to load."
+                />
                 <Input
                   className="nodrag"
                   inputMode="numeric"
@@ -311,9 +309,10 @@ export function SeedDialog({ config, onUpdate }: SeedDialogProps): ReactElement 
                 />
               </div>
               <div className="grid gap-2">
-                <label className="text-xs font-semibold uppercase text-muted-foreground">
-                  Partitions
-                </label>
+                <FieldLabel
+                  label="Partitions"
+                  hint="Total number of partitions."
+                />
                 <Input
                   className="nodrag"
                   inputMode="numeric"

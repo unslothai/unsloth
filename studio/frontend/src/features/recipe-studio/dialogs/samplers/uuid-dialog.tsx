@@ -2,6 +2,7 @@ import { Input } from "@/components/ui/input";
 import type { ReactElement } from "react";
 import type { SamplerConfig } from "../../types";
 import { NameField } from "../shared/name-field";
+import { FieldLabel } from "../shared/field-label";
 
 type UuidDialogProps = {
   config: SamplerConfig;
@@ -26,12 +27,11 @@ export function UuidDialog({
         onChange={(value) => onUpdate({ name: value })}
       />
       <div className="grid gap-2">
-        <label
-          className="text-xs font-semibold uppercase text-muted-foreground"
+        <FieldLabel
+          label="UUID format (optional)"
           htmlFor={uuidId}
-        >
-          UUID format (optional)
-        </label>
+          hint="Optional formatter e.g. prefix:, short, uppercase."
+        />
         <Input
           id={uuidId}
           className="nodrag"

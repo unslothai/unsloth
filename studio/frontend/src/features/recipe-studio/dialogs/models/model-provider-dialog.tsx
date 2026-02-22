@@ -2,6 +2,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import type { ReactElement } from "react";
 import type { ModelProviderConfig } from "../../types";
+import { FieldLabel } from "../shared/field-label";
 import { NameField } from "../shared/name-field";
 
 type ModelProviderDialogProps = {
@@ -33,12 +34,11 @@ export function ModelProviderDialog({
         onChange={(value) => onUpdate({ name: value })}
       />
       <div className="grid gap-2">
-        <label
-          className="text-xs font-semibold uppercase text-muted-foreground"
+        <FieldLabel
+          label="Provider type"
           htmlFor={providerTypeId}
-        >
-          Provider type
-        </label>
+          hint="Provider adapter type, e.g. openai or openrouter."
+        />
         <Input
           id={providerTypeId}
           className="nodrag"
@@ -50,12 +50,11 @@ export function ModelProviderDialog({
         />
       </div>
       <div className="grid gap-2">
-        <label
-          className="text-xs font-semibold uppercase text-muted-foreground"
+        <FieldLabel
+          label="Endpoint"
           htmlFor={endpointId}
-        >
-          Endpoint
-        </label>
+          hint="Base API URL used for model requests."
+        />
         <Input
           id={endpointId}
           className="nodrag"
@@ -65,12 +64,11 @@ export function ModelProviderDialog({
         />
       </div>
       <div className="grid gap-2">
-        <label
-          className="text-xs font-semibold uppercase text-muted-foreground"
+        <FieldLabel
+          label="API key env (optional)"
           htmlFor={apiKeyEnvId}
-        >
-          API key env (optional)
-        </label>
+          hint="Env var name to read secret key from runtime."
+        />
         <Input
           id={apiKeyEnvId}
           className="nodrag"
@@ -80,12 +78,11 @@ export function ModelProviderDialog({
         />
       </div>
       <div className="grid gap-2">
-        <label
-          className="text-xs font-semibold uppercase text-muted-foreground"
+        <FieldLabel
+          label="API key (optional)"
           htmlFor={apiKeyId}
-        >
-          API key (optional)
-        </label>
+          hint="Inline key. prefer env var for safer configs."
+        />
         <Input
           id={apiKeyId}
           className="nodrag"
@@ -94,12 +91,11 @@ export function ModelProviderDialog({
         />
       </div>
       <div className="grid gap-2">
-        <label
-          className="text-xs font-semibold uppercase text-muted-foreground"
+        <FieldLabel
+          label="Extra headers (JSON)"
           htmlFor={extraHeadersId}
-        >
-          Extra headers (JSON)
-        </label>
+          hint="Optional request headers merged into every call."
+        />
         <Textarea
           id={extraHeadersId}
           className="corner-squircle nodrag"
@@ -111,12 +107,11 @@ export function ModelProviderDialog({
         />
       </div>
       <div className="grid gap-2">
-        <label
-          className="text-xs font-semibold uppercase text-muted-foreground"
+        <FieldLabel
+          label="Extra body (JSON)"
           htmlFor={extraBodyId}
-        >
-          Extra body (JSON)
-        </label>
+          hint="Optional payload fields merged into requests."
+        />
         <Textarea
           id={extraBodyId}
           className="corner-squircle nodrag"

@@ -365,7 +365,7 @@ function RecipeGraphNodeBase({
             openConfig(id);
           }}
         >
-          Details
+          Configure
         </Button>
       </BaseNodeHeader>
 

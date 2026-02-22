@@ -2,6 +2,7 @@ import { Input } from "@/components/ui/input";
 import type { ReactElement } from "react";
 import type { SamplerConfig } from "../../types";
 import { NameField } from "../shared/name-field";
+import { FieldLabel } from "../shared/field-label";
 
 type BernoulliDialogProps = {
   config: SamplerConfig;
@@ -20,12 +21,11 @@ export function BernoulliDialog({
         onChange={(value) => onUpdate({ name: value })}
       />
       <div className="grid gap-2">
-        <label
-          className="text-xs font-semibold uppercase text-muted-foreground"
+        <FieldLabel
+          label="Probability (p)"
           htmlFor={pId}
-        >
-          Probability (p)
-        </label>
+          hint="Success probability in [0, 1]."
+        />
         <Input
           id={pId}
           type="number"
