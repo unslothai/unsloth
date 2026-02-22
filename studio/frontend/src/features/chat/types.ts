@@ -18,6 +18,7 @@ export interface MessageRecord {
   threadId: string;
   role: import("@assistant-ui/react").ThreadMessage["role"];
   content: import("@assistant-ui/react").ThreadMessage["content"];
+  attachments?: import("@assistant-ui/react").ThreadMessage["attachments"];
   metadata?: Record<string, unknown>;
   createdAt: number;
 }
