@@ -11,3 +11,4 @@ git+https://github.com/meta-pytorch/OpenEnv.git
 executorch==1.0.1
 torch-c-dlpack-ext
 sentence_transformers==5.2.0
+transformers==4.57.1

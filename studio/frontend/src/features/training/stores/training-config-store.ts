@@ -305,6 +305,8 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         setEpochs: (epochs) => set({ epochs }),
         setContextLength: (contextLength) => set({ contextLength }),
         setLearningRate: (learningRate) => set({ learningRate }),
+        setOptimizerType: (optimizerType) => set({ optimizerType }),
+        setLrSchedulerType: (lrSchedulerType) => set({ lrSchedulerType }),
         setLoraRank: (loraRank) => set({ loraRank }),
         setLoraAlpha: (loraAlpha) => set({ loraAlpha }),
         setLoraDropout: (loraDropout) => set({ loraDropout }),
@@ -346,7 +348,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
     },
     {
       name: "unsloth_training_config_v1",
-      version: 3,
+      version: 5,
       migrate: (persisted, version) => {
         const s = persisted as Record<string, unknown>;
         if (version < 2 && s.datasetSubset == null && s.datasetConfig != null) {
@@ -355,6 +357,12 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         delete s.datasetConfig;
         if (version < 3 && s.modelDefaultsAppliedFor == null) {
           s.modelDefaultsAppliedFor = null;
+        }
+        if (version < 4 && s.optimizerType == null) {
+          s.optimizerType = DEFAULT_HYPERPARAMS.optimizerType;
+        }
+        if (version < 5 && s.lrSchedulerType == null) {
+          s.lrSchedulerType = DEFAULT_HYPERPARAMS.lrSchedulerType;
         }
         return s as unknown as TrainingConfigStore;
       },
