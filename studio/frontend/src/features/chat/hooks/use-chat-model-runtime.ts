@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import { toast } from "sonner";
 import {
   getInferenceStatus,
@@ -116,6 +116,11 @@ export function useChatModelRuntime() {
   const setCheckpoint = useChatRuntimeStore((state) => state.setCheckpoint);
   const clearCheckpoint = useChatRuntimeStore((state) => state.clearCheckpoint);
 
+  const [loadingModel, setLoadingModel] = useState<{
+    id: string;
+    displayName: string;
+  } | null>(null);
+
   const refresh = useCallback(async () => {
     setModelsError(null);
     try {
@@ -157,6 +162,7 @@ export function useChatModelRuntime() {
       const displayName = model?.name || lora?.name || modelId;
 
       setModelsError(null);
+      setLoadingModel({ id: modelId, displayName });
       try {
         async function performLoad(): Promise<void> {
           if (params.checkpoint) {
@@ -176,19 +182,20 @@ export function useChatModelRuntime() {
           await refresh();
         }
 
-        let description = "Base model selected.";
-        if (isLora) {
-          description = "Fine-tuned (LoRA) selected.";
-        }
+        const loadPromise = performLoad().finally(() => {
+          setLoadingModel(null);
+        });
 
-        await toast.promise(performLoad(), {
-          loading: `Loading ${displayName}`,
+        await toast.promise(loadPromise, {
+          loading: "Loading model…",
           success: `${displayName} loaded`,
           error: (err) =>
             err instanceof Error ? err.message : "Failed to load model",
-          description,
+          description:
+            "This may include downloading. Large models can take a while.",
         });
       } catch (error) {
+        setLoadingModel(null);
         const message =
           error instanceof Error ? error.message : "Failed to load model";
         setModelsError(message);
@@ -227,5 +234,6 @@ export function useChatModelRuntime() {
     refresh,
     selectModel,
     ejectModel,
+    loadingModel,
   };
 }
