@@ -91,11 +91,50 @@ async def load_model(request: LoadRequest):
                 detail=f"Invalid model identifier: {request.model_path}"
             )
         
+        # Auto-detect quantization for LoRA adapters from adapter_config.json
+        # The training pipeline patches this file with "unsloth_training_method"
+        # which is 'qlora' or 'lora'. Only LoRA (16-bit) needs load_in_4bit=False.
+        load_in_4bit = request.load_in_4bit
+        if config.is_lora and config.path:
+            import json
+            from pathlib import Path
+            adapter_cfg_path = Path(config.path) / "adapter_config.json"
+            if adapter_cfg_path.exists():
+                try:
+                    with open(adapter_cfg_path) as f:
+                        adapter_cfg = json.load(f)
+                    training_method = adapter_cfg.get("unsloth_training_method")
+                    if training_method == "lora" and load_in_4bit:
+                        logger.info(
+                            f"adapter_config.json says unsloth_training_method='lora' — "
+                            f"setting load_in_4bit=False to match 16-bit training"
+                        )
+                        load_in_4bit = False
+                    elif training_method == "qlora" and not load_in_4bit:
+                        logger.info(
+                            f"adapter_config.json says unsloth_training_method='qlora' — "
+                            f"setting load_in_4bit=True to match QLoRA training"
+                        )
+                        load_in_4bit = True
+                    elif training_method:
+                        logger.info(f"Training method: {training_method}, load_in_4bit={load_in_4bit}")
+                    else:
+                        # No unsloth_training_method — fallback to base model name
+                        if config.base_model and "-bnb-4bit" not in config.base_model.lower() and load_in_4bit:
+                            logger.info(
+                                f"No unsloth_training_method in adapter_config.json. "
+                                f"Base model '{config.base_model}' has no -bnb-4bit suffix — "
+                                f"setting load_in_4bit=False"
+                            )
+                            load_in_4bit = False
+                except Exception as e:
+                    logger.warning(f"Could not read adapter_config.json: {e}")
+        
         # Load the model
         success = backend.load_model(
             config=config,
             max_seq_length=request.max_seq_length,
-            load_in_4bit=request.load_in_4bit,
+            load_in_4bit=load_in_4bit,
             hf_token=request.hf_token,
         )
         
