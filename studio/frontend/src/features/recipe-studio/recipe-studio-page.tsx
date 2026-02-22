@@ -390,7 +390,7 @@ export function RecipeStudioPage({
                       onClick={openRootBlockSheet}
                       className="pointer-events-auto corner-squircle flex min-h-36 w-full max-w-md flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-border/70 bg-background/75 px-6 py-6 text-center backdrop-blur-[1px] transition hover:border-primary/60 hover:bg-background"
                     >
-                      <div className="flex size-12 items-center justify-center rounded-xl border border-border/70 bg-muted/40">
+                      <div className="flex size-12 items-center justify-center corner-squircle rounded-xl border border-border/70 bg-muted/40">
                         <HugeiconsIcon
                           icon={PlusSignIcon}
                           className="size-6 text-muted-foreground"

@@ -339,7 +339,7 @@ function RecipeGraphNodeBase({
         <div className="flex min-w-0 items-center gap-2">
           <div
             className={cn(
-              "flex size-7 items-center justify-center rounded-md border",
+              "corner-squircle flex size-7 items-center justify-center rounded-md border",
               meta.tone,
             )}
           >
