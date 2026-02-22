@@ -125,17 +125,42 @@ def _pip_install(package_spec: str) -> None:
 
 
 def _reload_transformers() -> None:
-    """Invalidate importlib caches and force-reload transformers so the new
-    version is visible in the current process."""
-    # Clear the metadata cache so importlib.metadata.version() returns the
-    # freshly installed version.
+    """Purge transformers AND all packages that cache transformers internals
+    from ``sys.modules``, then force a fresh re-import.
+
+    Simply clearing ``transformers.*`` is not enough because libraries like
+    ``unsloth``, ``peft``, ``trl``, and ``accelerate`` bind transformers
+    classes/functions into their own module-level state.  We must evict them
+    all so the next ``import`` picks up the freshly pip-installed version.
+    """
     importlib.invalidate_caches()
 
-    # Remove cached transformers modules so the next import picks up the new
-    # package on disk.
-    to_remove = [k for k in sys.modules if k == "transformers" or k.startswith("transformers.")]
+    # All top-level prefixes that hold references to transformers internals.
+    _PREFIXES = (
+        "transformers",
+        "unsloth",
+        "unsloth_zoo",
+        "peft",
+        "trl",
+        "accelerate",
+        "auto_gptq",
+        "bitsandbytes",
+    )
+
+    to_remove = [
+        k for k in list(sys.modules.keys())
+        if any(k == p or k.startswith(p + ".") for p in _PREFIXES)
+    ]
     for key in to_remove:
         del sys.modules[key]
+
+    logger.info("Purged %d cached modules (%s)", len(to_remove),
+                ", ".join(_PREFIXES))
+
+    # Force a fresh import so the new version is loaded into the process.
+    import transformers  # noqa: F811
+    logger.info("Re-imported transformers — version is now %s",
+                transformers.__version__)
 
 
 def ensure_transformers_version(model_name: str) -> None:
