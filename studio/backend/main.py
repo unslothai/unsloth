@@ -3,6 +3,7 @@ Main FastAPI application for Unsloth UI Backend
 """
 import os
 import secrets
+import shutil
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
