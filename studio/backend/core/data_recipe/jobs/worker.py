@@ -66,18 +66,7 @@ def run_job_process(
     event_queue.put({"type": "job.started", "ts": time.time()})
 
     try:
-        # Importing data_designer.interface.* triggers DataDesigner logging setup (it clears root handlers),
-        # so attach our queue handler after that import.
         from data_designer.config.run_config import RunConfig
-
-        import data_designer.interface.data_designer  # noqa: F401
-
-        handler = _QueueLogHandler(event_queue)
-        handler.setLevel(logging.INFO)
-        root = logging.getLogger()
-        root.addHandler(handler)
-        root.setLevel(logging.INFO)
-        logging.getLogger("data_designer").setLevel(logging.INFO)
 
         rows = int(run.get("rows") or 1000)
         dataset_name = str(run.get("dataset_name") or "dataset")
@@ -89,6 +78,15 @@ def run_job_process(
 
         builder = build_config_builder(recipe)
         designer = create_data_designer(recipe, artifact_path=artifact_path)
+
+        # DataDesigner configures root logging in DataDesigner.__init__.
+        # Attach queue logger directly to `data_designer` so parser events survive root resets.
+        handler = _QueueLogHandler(event_queue)
+        handler.setLevel(logging.INFO)
+        data_designer_logger = logging.getLogger("data_designer")
+        data_designer_logger.addHandler(handler)
+        data_designer_logger.setLevel(logging.INFO)
+        data_designer_logger.propagate = True
 
         if run_config_raw:
             designer.set_run_config(RunConfig.model_validate(run_config_raw))
