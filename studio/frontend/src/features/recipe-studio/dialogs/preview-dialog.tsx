@@ -1,4 +1,9 @@
 import { type ReactElement, useMemo, useState } from "react";
+import {
+  CookBookIcon,
+  TestTube01Icon,
+} from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { Button } from "@/components/ui/button";
 import {
   Collapsible,
@@ -22,13 +27,21 @@ type RunDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   kind: RecipeExecutionKind;
+  onKindChange: (kind: RecipeExecutionKind) => void;
   rows: number;
   onRowsChange: (rows: number) => void;
   settings: RecipeRunSettings;
   onSettingsChange: (patch: Partial<RecipeRunSettings>) => void;
   loading: boolean;
+  validateLoading: boolean;
+  validateResult: {
+    valid: boolean;
+    errors: string[];
+    rawDetail: string | null;
+  } | null;
   errors: string[];
   onRun: () => void;
+  onValidate: () => void;
   container?: HTMLDivElement | null;
 };
 
@@ -63,13 +76,17 @@ export function RunDialog({
   open,
   onOpenChange,
   kind,
+  onKindChange,
   rows,
   onRowsChange,
   settings,
   onSettingsChange,
   loading,
+  validateLoading,
+  validateResult,
   errors,
   onRun,
+  onValidate,
   container,
 }: RunDialogProps): ReactElement {
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -97,6 +114,16 @@ export function RunDialog({
             Configure run size and performance knobs for this execution.
           </p>
         </DialogHeader>
+
+        <label className="flex items-center justify-between rounded-xl border bg-muted/20 px-3 py-2 text-sm">
+          <span className="font-medium text-foreground">Preview mode</span>
+          <Switch
+            checked={kind === "preview"}
+            onCheckedChange={(checked) =>
+              onKindChange(checked ? "preview" : "full")
+            }
+          />
+        </label>
 
         <div className="grid gap-4 md:grid-cols-3">
           <div className="grid gap-2">
@@ -319,13 +346,45 @@ export function RunDialog({
         {errors.length > 0 && (
           <div className="max-h-44 space-y-1 overflow-y-auto rounded-xl border border-destructive/30 bg-destructive/5 p-3">
             <p className="text-xs font-semibold uppercase text-destructive">
-              Validation errors
+              Run checks
             </p>
             {errors.map((error) => (
               <p key={error} className="text-xs text-destructive">
                 {error}
               </p>
             ))}
+          </div>
+        )}
+
+        {validateResult && (
+          <div
+            className={
+              validateResult.valid
+                ? "space-y-1 rounded-xl border border-emerald-300 bg-emerald-50 p-3"
+                : "space-y-1 rounded-xl border border-destructive/30 bg-destructive/5 p-3"
+            }
+          >
+            <p
+              className={
+                validateResult.valid
+                  ? "text-xs font-semibold uppercase text-emerald-700"
+                  : "text-xs font-semibold uppercase text-destructive"
+              }
+            >
+              {validateResult.valid ? "Validation passed" : "Validation failed"}
+            </p>
+            {!validateResult.valid && validateResult.errors.length > 0 && (
+              <div className="space-y-1">
+                {validateResult.errors.map((error) => (
+                  <p key={error} className="text-xs text-destructive">
+                    {error}
+                  </p>
+                ))}
+              </div>
+            )}
+            {!validateResult.valid && validateResult.rawDetail && (
+              <p className="text-xs text-destructive">{validateResult.rawDetail}</p>
+            )}
           </div>
         )}
 
@@ -338,7 +397,17 @@ export function RunDialog({
           >
             Cancel
           </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={onValidate}
+            disabled={loading || validateLoading}
+          >
+            <HugeiconsIcon icon={TestTube01Icon} className="size-3.5" />
+            {validateLoading ? "Validating..." : "Validate recipe"}
+          </Button>
           <Button type="button" onClick={onRun} disabled={loading}>
+            <HugeiconsIcon icon={CookBookIcon} className="size-3.5" />
             {loading ? "Starting..." : `Start ${kindLabel.toLowerCase()}`}
           </Button>
         </DialogFooter>

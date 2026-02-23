@@ -44,6 +44,7 @@ type UseRecipeStudioActionsResult = {
   setImportOpen: (open: boolean) => void;
   runDialogOpen: boolean;
   runDialogKind: RecipeExecutionKind;
+  setRunDialogKind: (kind: RecipeExecutionKind) => void;
   setRunDialogOpen: (open: boolean) => void;
   previewRows: number;
   fullRows: number;
@@ -61,6 +62,13 @@ type UseRecipeStudioActionsResult = {
   persistRecipe: () => Promise<void>;
   openRunDialog: (kind: RecipeExecutionKind) => void;
   runFromDialog: () => Promise<boolean>;
+  validateFromDialog: () => Promise<boolean>;
+  validateLoading: boolean;
+  validateResult: {
+    valid: boolean;
+    errors: string[];
+    rawDetail: string | null;
+  } | null;
   runPreview: () => Promise<boolean>;
   runFull: () => Promise<boolean>;
   cancelExecution: (id: string) => Promise<void>;
@@ -113,6 +121,7 @@ export function useRecipeStudioActions({
     setImportOpen: persistence.setImportOpen,
     runDialogOpen: executions.runDialogOpen,
     runDialogKind: executions.runDialogKind,
+    setRunDialogKind: executions.setRunDialogKind,
     setRunDialogOpen: executions.setRunDialogOpen,
     previewRows: executions.previewRows,
     fullRows: executions.fullRows,
@@ -130,6 +139,9 @@ export function useRecipeStudioActions({
     persistRecipe: persistence.persistRecipe,
     openRunDialog: executions.openRunDialog,
     runFromDialog: executions.runFromDialog,
+    validateFromDialog: executions.validateFromDialog,
+    validateLoading: executions.validateLoading,
+    validateResult: executions.validateResult,
     runPreview: executions.runPreview,
     runFull: executions.runFull,
     cancelExecution: executions.cancelExecution,
