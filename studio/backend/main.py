@@ -3,7 +3,6 @@ Main FastAPI application for Unsloth UI Backend
 """
 import os
 import secrets
-import shutil
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -19,12 +18,15 @@ from auth import storage
 from utils.hardware import detect_hardware, get_device, DeviceType
 import utils.hardware.hardware as _hw_module
 
-UNSLOTH_CACHE_DIR = Path(__file__).parent / "unsloth_compiled_cache"
+from utils.cache_cleanup import clear_unsloth_compiled_cache
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup: detect hardware, print setup token if needed. Shutdown: clean up compiled cache."""
+    # Clean up any stale compiled cache from previous runs
+    clear_unsloth_compiled_cache()
+
     # Detect hardware first — sets DEVICE global used everywhere
     detect_hardware()
 
@@ -52,7 +54,7 @@ async def lifespan(app: FastAPI):
     yield
     # Cleanup
     _hw_module.DEVICE = None
-    shutil.rmtree(UNSLOTH_CACHE_DIR, ignore_errors=True)
+    clear_unsloth_compiled_cache()
 
 
 # Create FastAPI app
