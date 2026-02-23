@@ -278,13 +278,13 @@ function LlmInputHandles({
             key={item.id}
             className="pointer-events-none relative flex min-w-[80px] flex-1 justify-center pt-2"
           >
-          <Handle
-            id={item.id}
-            type="target"
-            position={Position.Top}
-            className={NODE_HANDLE_CLASS}
-            style={{ left: "50%", top: 0, transform: "translate(-50%, -50%)" }}
-          />
+            <Handle
+              id={item.id}
+              type="target"
+              position={Position.Top}
+              className={NODE_HANDLE_CLASS}
+              style={{ left: "50%", top: 0, transform: "translate(-50%, -50%)" }}
+            />
             <span className="text-[10px] text-muted-foreground">{item.label}</span>
           </div>
         ))}
@@ -340,8 +340,9 @@ function RecipeGraphNodeBase({
     data.kind === "expression" ||
     data.kind === "sampler" ||
     data.kind === "seed";
-  const showSemanticIn = data.kind === "llm" || data.kind === "model_config";
-  const showSemanticOut = data.kind === "model_config" || data.kind === "model_provider";
+  const showSemanticIn = data.kind === "model_config";
+  const showSemanticOut =
+    data.kind === "model_config" || data.kind === "model_provider";
   const summary = getConfigSummary(config);
   const nodeBody = renderNodeBody(config, summary, updateConfig);
   const llmInputHandles = llmAuxVisible ? getLlmInputHandleItems(config) : [];
@@ -468,16 +469,16 @@ function RecipeGraphNodeBase({
             id={HANDLE_IDS.semanticIn}
             title="Semantic input"
             type="target"
-            position={Position.Top}
+            position={Position.Left}
             className="absolute inset-0 pointer-events-none"
             labelClassName="sr-only"
             handleClassName={NODE_HANDLE_CLASS}
           />
           <LabeledHandle
-            id={HANDLE_IDS.semanticInLeft}
+            id={HANDLE_IDS.semanticInTop}
             title="Semantic input"
             type="target"
-            position={Position.Left}
+            position={Position.Top}
             className="absolute inset-0 pointer-events-none"
             labelClassName="sr-only"
             handleClassName={NODE_HANDLE_CLASS}
@@ -491,16 +492,16 @@ function RecipeGraphNodeBase({
             id={HANDLE_IDS.semanticOut}
             title="Semantic output"
             type="source"
-            position={Position.Bottom}
+            position={Position.Right}
             className="absolute inset-0 pointer-events-none"
             labelClassName="sr-only"
             handleClassName={NODE_HANDLE_CLASS}
           />
           <LabeledHandle
-            id={HANDLE_IDS.semanticOutRight}
+            id={HANDLE_IDS.semanticOutBottom}
             title="Semantic output"
             type="source"
-            position={Position.Right}
+            position={Position.Bottom}
             className="absolute inset-0 pointer-events-none"
             labelClassName="sr-only"
             handleClassName={NODE_HANDLE_CLASS}

@@ -398,9 +398,15 @@ export function importRecipePayload(input: string): ImportResult {
     return { errors, snapshot: null };
   }
 
-  const { layouts, edges: uiEdges } = parseUi(ui);
+  const { layouts, edges: uiEdges, layoutDirection } = parseUi(ui);
+  const resolvedLayoutDirection = layoutDirection ?? "LR";
   const nodes = buildNodes(configs, layouts);
-  const edges = buildEdges(configs, nameToId, uiEdges);
+  const edges = buildEdges(
+    configs,
+    nameToId,
+    uiEdges,
+    resolvedLayoutDirection,
+  );
 
   const maxY = nodes.reduce(
     (acc, node) => Math.max(acc, node.position.y),
@@ -414,6 +420,7 @@ export function importRecipePayload(input: string): ImportResult {
       nodes,
       edges,
       processors,
+      layoutDirection: resolvedLayoutDirection,
       nextId,
       nextY: maxY + 140,
     },

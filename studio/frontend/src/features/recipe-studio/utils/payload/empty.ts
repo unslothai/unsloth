@@ -23,7 +23,7 @@ export function createEmptyRecipePayload(): RecipePayload {
     ui: {
       nodes: [],
       edges: [],
+      layout_direction: "LR",
     },
   };
 }
-
