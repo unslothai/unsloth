@@ -1,19 +1,19 @@
 import type { Edge } from "@xyflow/react";
 import type {
-  RecipeProcessorConfig,
-  RecipeNode,
   ModelConfig,
   ModelProviderConfig,
   NodeConfig,
+  RecipeNode,
+  RecipeProcessorConfig,
 } from "../../types";
-import { getConfigErrors } from "../index";
 import { isSemanticRelation } from "../graph/relations";
+import { getConfigErrors } from "../index";
 import { readNodeWidth } from "../rf-node-dimensions";
 import {
   buildExpressionColumn,
+  buildLlmColumn,
   buildLlmMcpProvider,
   buildLlmToolConfig,
-  buildLlmColumn,
   buildModelConfig,
   buildModelProvider,
   buildProcessors,
@@ -175,9 +175,6 @@ export function buildRecipePayload(
     if (!config) {
       return [];
     }
-    if (config.kind === "seed") {
-      return [];
-    }
     const width = readNodeWidth(node);
     return [
       {
@@ -243,7 +240,9 @@ export function buildRecipePayload(
         edges: uiEdges,
         ...(firstSeed && { seed_source_type: firstSeed.seed_source_type }),
         ...(firstSeed && { seed_columns: firstSeed.seed_columns ?? [] }),
-        ...(firstSeed && { seed_preview_rows: firstSeed.seed_preview_rows ?? [] }),
+        ...(firstSeed && {
+          seed_preview_rows: firstSeed.seed_preview_rows ?? [],
+        }),
         ...(firstSeed &&
           firstSeed.local_file_name !== undefined && {
             local_file_name: firstSeed.local_file_name,
