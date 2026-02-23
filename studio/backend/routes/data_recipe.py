@@ -21,7 +21,11 @@ if str(backend_path) not in sys.path:
     sys.path.insert(0, str(backend_path))
 
 from core.data_recipe.jobs import get_job_manager
-from core.data_recipe.service import validate_recipe
+from core.data_recipe.service import (
+    build_config_builder,
+    create_data_designer,
+    validate_recipe,
+)
 from models.data_recipe import (
     JobCreateResponse,
     RecipePayload,
@@ -198,6 +202,55 @@ def _read_preview_rows_from_local_file(path: Path, preview_size: int) -> list[di
     return _serialize_preview_rows(rows)
 
 
+def _collect_validation_errors(recipe: dict[str, Any]) -> list[ValidateError]:
+    try:
+        from data_designer.engine.compiler import (
+            _add_internal_row_id_column_if_needed,
+            _get_allowed_references,
+            _resolve_and_add_seed_columns,
+        )
+        from data_designer.engine.validation import (
+            ViolationLevel,
+            validate_data_designer_config,
+        )
+    except Exception:
+        return []
+
+    try:
+        builder = build_config_builder(recipe)
+        designer = create_data_designer(recipe)
+        resource_provider = designer._create_resource_provider(  # type: ignore[attr-defined]
+            "validate-configuration",
+            builder,
+        )
+        config = builder.build()
+        _resolve_and_add_seed_columns(config, resource_provider.seed_reader)
+        _add_internal_row_id_column_if_needed(config)
+        violations = validate_data_designer_config(
+            columns=config.columns,
+            processor_configs=config.processors or [],
+            allowed_references=_get_allowed_references(config),
+        )
+    except Exception:
+        return []
+
+    errors: list[ValidateError] = []
+    for violation in violations:
+        if violation.level != ViolationLevel.ERROR:
+            continue
+        code = getattr(violation.type, "value", None)
+        path = violation.column if violation.column else None
+        message = str(violation.message).strip() or "Validation failed."
+        errors.append(
+            ValidateError(
+                message=message,
+                path=path,
+                code=code,
+            )
+        )
+    return errors
+
+
 @router.post("/seed/inspect", response_model=SeedInspectResponse)
 def inspect_seed_dataset(payload: SeedInspectRequest) -> SeedInspectResponse:
     dataset_name = payload.dataset_name.strip()
@@ -327,9 +380,10 @@ def validate(payload: RecipePayload) -> ValidateResponse:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
         detail = str(exc).strip() or "Validation failed."
+        parsed_errors = _collect_validation_errors(recipe)
         return ValidateResponse(
             valid=False,
-            errors=[ValidateError(message=detail)],
+            errors=parsed_errors or [ValidateError(message=detail)],
             raw_detail=detail,
         )
 

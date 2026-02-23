@@ -275,6 +275,11 @@ export function importRecipePayload(input: string): ImportResult {
       unstructured_chunk_overlap: uiUnstructuredChunkOverlap,
     });
     if (seedConfig) {
+      if (nameToId.has(seedConfig.name)) {
+        errors.push(`Duplicate column name: ${seedConfig.name}.`);
+      } else {
+        nameToId.set(seedConfig.name, seedConfig.id);
+      }
       configs.push(seedConfig);
     }
   }
