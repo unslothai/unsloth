@@ -617,16 +617,27 @@ class FastBaseModel:
         # even for 16-bit loading.
         if hasattr(auto_config, "quantization_config"):
             _qc = auto_config.quantization_config
-            _qm = _qc.get("quant_method", "") if isinstance(_qc, dict) else getattr(_qc, "quant_method", "")
-            if _qm == "fp8" and not (load_in_fp8 if isinstance(load_in_fp8, bool) else load_in_fp8 != False):
+            _qm = (
+                _qc.get("quant_method", "")
+                if isinstance(_qc, dict)
+                else getattr(_qc, "quant_method", "")
+            )
+            if _qm == "fp8" and not (
+                load_in_fp8 if isinstance(load_in_fp8, bool) else load_in_fp8 != False
+            ):
                 _bf16_name = model_name.rstrip("/") + "-BF16"
                 try:
                     from huggingface_hub import model_info as _hf_model_info
-                    _hf_model_info(_bf16_name, token=token)
-                    print(f"Unsloth: {model_name} uses FP8 weights. Redirecting to {_bf16_name}.")
+
+                    _hf_model_info(_bf16_name, token = token)
+                    print(
+                        f"Unsloth: {model_name} uses FP8 weights. Redirecting to {_bf16_name}."
+                    )
                     model_name = _bf16_name
                     auto_config = AutoConfig.from_pretrained(
-                        model_name, token=token, trust_remote_code=trust_remote_code,
+                        model_name,
+                        token = token,
+                        trust_remote_code = trust_remote_code,
                     )
                     try:
                         model_class = auto_model._model_mapping[auto_config.__class__]
