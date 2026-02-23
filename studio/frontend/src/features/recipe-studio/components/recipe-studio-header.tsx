@@ -2,7 +2,6 @@ import { type KeyboardEvent, type ReactElement, useState } from "react";
 import {
   CookBookIcon,
   FloppyDiskIcon,
-  TestTubeIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Badge } from "@/components/ui/badge";
@@ -15,16 +14,12 @@ type StatusTone = "success" | "error";
 
 type RecipeStudioHeaderProps = {
   activeView: RecipeStudioView;
-  previewLoading: boolean;
-  fullLoading: boolean;
   saveLoading: boolean;
   saveTone: StatusTone;
   savedAtLabel: string;
   workflowName: string;
   onWorkflowNameChange: (value: string) => void;
   onViewChange: (view: RecipeStudioView) => void;
-  onPreview: () => void;
-  onRunFull: () => void;
   onSaveRecipe: () => void;
 };
 
@@ -35,16 +30,12 @@ const STATUS_MESSAGE_CLASS: Record<StatusTone, string> = {
 
 export function RecipeStudioHeader({
   activeView,
-  previewLoading,
-  fullLoading,
   saveLoading,
   saveTone,
   savedAtLabel,
   workflowName,
   onWorkflowNameChange,
   onViewChange,
-  onPreview,
-  onRunFull,
   onSaveRecipe,
 }: RecipeStudioHeaderProps): ReactElement {
   const [editingWorkflowName, setEditingWorkflowName] = useState(false);
@@ -116,14 +107,6 @@ export function RecipeStudioHeader({
         </Tabs>
       </div>
       <div className="flex items-center justify-self-end gap-2">
-        <Button type="button" size="sm" onClick={onPreview} disabled={previewLoading}>
-          <HugeiconsIcon icon={TestTubeIcon} className="size-3.5" />
-          {previewLoading ? "Previewing..." : "Preview"}
-        </Button>
-        <Button type="button" size="sm" onClick={onRunFull} disabled={fullLoading}>
-          <HugeiconsIcon icon={TestTubeIcon} className="size-3.5" />
-          {fullLoading ? "Starting..." : "Full run"}
-        </Button>
         <Button
           type="button"
           size="sm"
