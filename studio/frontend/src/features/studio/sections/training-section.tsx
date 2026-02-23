@@ -9,16 +9,23 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
-import { useTrainingActions, useTrainingConfigStore } from "@/features/training";
+import {
+  parseYamlConfig,
+  serializeConfigToYaml,
+  useTrainingActions,
+  useTrainingConfigStore,
+} from "@/features/training";
 import {
   Archive04Icon,
   ArrowDown01Icon,
   ChartAverageIcon,
   CleanIcon,
+  CloudUploadIcon,
   Rocket01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useState } from "react";
+import { useRef, useState } from "react";
+import { toast } from "sonner";
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts";
 
 const chartConfig = {
@@ -40,7 +47,47 @@ export function TrainingSection() {
   const [logOpen, setLogOpen] = useState(false);
   const isIncompatible =
     !store.isVisionModel && store.isDatasetMultimodal === true;
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = "";
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const config = parseYamlConfig(reader.result as string);
+        store.applyConfigPatch(config);
+        toast.success("Config loaded", { description: file.name });
+      } catch (err) {
+        toast.error("Failed to load config", {
+          description:
+            err instanceof Error ? err.message : "Invalid YAML file",
+        });
+      }
+    };
+    reader.onerror = () => {
+      toast.error("Failed to read file");
+    };
+    reader.readAsText(file);
+  };
+
+  const handleSaveConfig = () => {
+    const yamlStr = serializeConfigToYaml(store, store.isVisionModel);
+    const blob = new Blob([yamlStr], { type: "text/yaml" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "training-config.yaml";
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleResetConfig = () => {
+    store.resetToModelDefaults();
+    toast.success("Parameters reset to model defaults");
+  };
 
   return (
     <div data-tour="studio-training" className="col-span-1 xl:col-span-4">
@@ -115,21 +162,45 @@ export function TrainingSection() {
           </p>
         )}
 
-        {/* Save / Clear */}
-        <div className="grid grid-cols-2 gap-2">
+        {/* Upload / Save / Reset */}
+        <div className="grid grid-cols-3 gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            className="cursor-pointer"
+            onClick={() => fileInputRef.current?.click()}
+          >
+            <HugeiconsIcon icon={CloudUploadIcon} className="size-3.5" />
+            Upload
+          </Button>
           <Button
             data-tour="studio-save"
             variant="outline"
             size="sm"
             className="cursor-pointer"
+            onClick={handleSaveConfig}
           >
-            <HugeiconsIcon icon={Archive04Icon} className="size-3.5" /> Save
-            Config
+            <HugeiconsIcon icon={Archive04Icon} className="size-3.5" />
+            Save
           </Button>
-          <Button variant="outline" size="sm" className="cursor-pointer">
-            <HugeiconsIcon icon={CleanIcon} className="size-3.5" /> Clear
+          <Button
+            variant="outline"
+            size="sm"
+            className="cursor-pointer"
+            onClick={handleResetConfig}
+            disabled={!store.selectedModel}
+          >
+            <HugeiconsIcon icon={CleanIcon} className="size-3.5" />
+            Reset
           </Button>
         </div>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".yaml,.yml"
+          className="hidden"
+          onChange={handleFileUpload}
+        />
 
         {/* Logging */}
         <Collapsible open={logOpen} onOpenChange={setLogOpen}>
