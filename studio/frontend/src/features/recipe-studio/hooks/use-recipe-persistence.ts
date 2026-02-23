@@ -47,6 +47,23 @@ type UseRecipePersistenceResult = {
   importRecipe: (value: string) => string | null;
 };
 
+function stripApiKeys(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(stripApiKeys);
+  }
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+  const output: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (key === "api_key") {
+      continue;
+    }
+    output[key] = stripApiKeys(entry);
+  }
+  return output;
+}
+
 export function useRecipePersistence({
   recipeId,
   initialRecipeName,
@@ -77,7 +94,6 @@ export function useRecipePersistence({
   const isDirty = savedSignature.length > 0 && currentSignature !== savedSignature;
   const saveTone: SaveTone = !isDirty && Boolean(lastSavedAt) ? "success" : "error";
   const savedAtLabel = formatSavedLabel(lastSavedAt);
-  const payloadErrorMessage = payloadResult.errors[0] ?? "Invalid payload.";
 
   useEffect(() => {
     const nextName = normalizeNonEmptyName(initialRecipeName, "Unnamed");
@@ -143,12 +159,9 @@ export function useRecipePersistence({
 
   const copyRecipe = useCallback(async (): Promise<void> => {
     setCopied(false);
-    if (payloadResult.errors.length > 0) {
-      toastError("Copy failed", payloadErrorMessage);
-      return;
-    }
     try {
-      const ok = await copyTextToClipboard(JSON.stringify(payloadResult.payload, null, 2));
+      const safePayload = stripApiKeys(payloadResult.payload);
+      const ok = await copyTextToClipboard(JSON.stringify(safePayload, null, 2));
       if (!ok) {
         throw new Error("Clipboard not available.");
       }
@@ -159,7 +172,7 @@ export function useRecipePersistence({
       console.error("Copy failed:", error);
       toastError("Copy failed", "Could not copy payload.");
     }
-  }, [payloadErrorMessage, payloadResult.errors.length, payloadResult.payload]);
+  }, [payloadResult.payload]);
 
   const importRecipe = useCallback(
     (value: string): string | null => {
