@@ -26,25 +26,22 @@ import {
   type FC,
   type PropsWithChildren,
   useEffect,
-  useMemo,
   useState,
 } from "react";
 import { useShallow } from "zustand/shallow";
 
 const useFileSrc = (file: File | undefined): string | undefined => {
-  const objectUrl = useMemo(
-    () => (file ? URL.createObjectURL(file) : undefined),
-    [file],
-  );
+  const [objectUrl, setObjectUrl] = useState<string | undefined>(undefined);
 
   useEffect(() => {
-    if (!objectUrl) {
-      return undefined;
+    if (!file) {
+      setObjectUrl(undefined);
+      return;
     }
-    return () => {
-      URL.revokeObjectURL(objectUrl);
-    };
-  }, [objectUrl]);
+    const url = URL.createObjectURL(file);
+    setObjectUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [file]);
 
   return objectUrl;
 };

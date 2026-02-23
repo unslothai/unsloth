@@ -151,12 +151,9 @@ export function HubModelPicker({
   const metricsById = useMemo(
     () =>
       new Map(
-        results.map((result) => [
-          result.id,
-          result.totalParams
-            ? formatCompact(result.totalParams)
-            : `↓${formatCompact(result.downloads)}`,
-        ]),
+        results
+          .filter((result) => result.totalParams)
+          .map((result) => [result.id, formatCompact(result.totalParams!)]),
       ),
     [results],
   );
@@ -167,11 +164,7 @@ export function HubModelPicker({
       { est: number; status: VramFitStatus | null; detail: string | null }
     >();
     for (const r of results) {
-      const detail = r.totalParams
-        ? formatCompact(r.totalParams)
-        : r.downloads != null
-          ? `↓${formatCompact(r.downloads)}`
-          : null;
+      const detail = r.totalParams ? formatCompact(r.totalParams) : null;
       if (r.totalParams) {
         const est = estimateLoadingVram(r.totalParams, "qlora");
         const status = gpu.available
