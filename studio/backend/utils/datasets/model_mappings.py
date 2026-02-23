@@ -383,7 +383,13 @@ TEMPLATE_TO_MODEL_MAPPER = {
         "unsloth/yi-34b-chat-bnb-4bit",
         "01-ai/Yi-6B-Chat",
         "01-ai/Yi-34B-Chat",
-    )
+    ),
+    "glm": (
+        "unsloth/GLM-4.7-Flash-unsloth-bnb-4bit",
+        "unsloth/GLM-4.7-Flash",
+        "THUDM/GLM-4.7-Flash",
+        "unsloth/GLM-4.7-Flash-bnb-4bit",
+    ),
 }
 
 MODEL_TO_TEMPLATE_MAPPER = {}
@@ -506,4 +512,9 @@ TEMPLATE_TO_RESPONSES_MAPPER = {
         "instruction": "<|im_start|>user\n",
         "response": "<|im_start|>assistant\n",
     },
+    "glm": {
+        "instruction": "[gMASK]<sop><|user|>",
+        "response": "<|assistant|><think>",
+    },
 }
+

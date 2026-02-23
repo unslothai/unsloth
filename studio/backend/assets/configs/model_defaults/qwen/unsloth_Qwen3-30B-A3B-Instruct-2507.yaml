@@ -1,17 +1,18 @@
-# Model defaults for unsloth/Phi-4-14B-Instruct
-# Based on Phi_4-Conversational.ipynb
-# Also applies to: unsloth/Phi-4-14B-Instruct-unsloth-bnb-4bit, microsoft/Phi-4-14B-Instruct, unsloth/Phi-4-14B-Instruct-bnb-4bit
+# Model defaults for unsloth/Qwen3-30B-A3B-Instruct-2507
+# Based on Qwen3_MoE.py
+# Also applies to: Qwen/Qwen3-30B-A3B-Instruct-2507, unsloth/Qwen3-30B-A3B-Instruct-2507-bnb-4bit
+# MoE model - includes gate_up_proj for MoE layers
 
 training:
   max_seq_length: 2048
   # num_epochs: 4
   num_epochs: 0
   learning_rate: 2e-4
-  batch_size: 2
-  gradient_accumulation_steps: 4
+  batch_size: 1
+  gradient_accumulation_steps: 1
   warmup_steps: 5
-  max_steps: 30
-  save_steps: 30
+  max_steps: 50
+  save_steps: 50
   weight_decay: 0.001
   random_seed: 3407
   packing: false
@@ -21,8 +22,8 @@ training:
   lr_scheduler_type: "linear"
 
 lora:
-  lora_r: 16
-  lora_alpha: 16
+  lora_r: 32
+  lora_alpha: 64
   lora_dropout: 0.0
   target_modules:
     - "q_proj"
@@ -32,12 +33,9 @@ lora:
     - "gate_proj"
     - "up_proj"
     - "down_proj"
+    - "gate_up_proj"
   use_rslora: false
   use_loftq: false
-  finetune_vision_layers: false
-  finetune_language_layers: true
-  finetune_attention_modules: true
-  finetune_mlp_modules: true
 
 logging:
   enable_wandb: false
@@ -45,4 +43,9 @@ logging:
   enable_tensorboard: false
   tensorboard_dir: "runs"
   log_frequency: 10
+
+inference:
+  temperature: 0.6
+  top_k: 20
+  top_p: 0.95
 
