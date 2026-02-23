@@ -1,5 +1,9 @@
 import type { JobEvent, JobStatusResponse } from "../api";
-import type { RecipeExecutionKind, RecipeExecutionRecord } from "../execution-types";
+import type {
+  RecipeExecutionBatch,
+  RecipeExecutionKind,
+  RecipeExecutionRecord,
+} from "../execution-types";
 import {
   DATASET_PAGE_SIZE,
   mapJobStatus,
@@ -70,6 +74,13 @@ export function applyExecutionStatusSnapshot(
   status: JobStatusResponse,
 ): RecipeExecutionRecord {
   const mappedStatus = mapJobStatus(status.status);
+  const batchRaw = normalizeObject(status.batch);
+  const batch: RecipeExecutionBatch | null = batchRaw
+    ? {
+        idx: typeof batchRaw.idx === "number" ? batchRaw.idx : null,
+        total: typeof batchRaw.total === "number" ? batchRaw.total : null,
+      }
+    : null;
   return {
     ...execution,
     status: mappedStatus,
@@ -80,6 +91,7 @@ export function applyExecutionStatusSnapshot(
     column_progress:
       (normalizeObject(status.column_progress) as RecipeExecutionRecord["column_progress"]) ??
       null,
+    batch,
     model_usage: normalizeObject(status.model_usage),
     artifact_path: status.artifact_path ?? execution.artifact_path,
     error: status.error ?? null,
@@ -113,6 +125,7 @@ export function createBaseExecutionRecord(input: {
     current_column: null,
     progress: null,
     column_progress: null,
+    batch: null,
     model_usage: null,
     lastEventId: null,
     artifact_path: null,

@@ -22,6 +22,11 @@ export type RecipeExecutionProgress = {
   failed?: number | null;
 };
 
+export type RecipeExecutionBatch = {
+  idx?: number | null;
+  total?: number | null;
+};
+
 export type RecipeExecutionAnalysis = {
   num_records?: number;
   target_num_records?: number;
@@ -50,6 +55,7 @@ export type RecipeExecutionRecord = {
   progress: RecipeExecutionProgress | null;
   // biome-ignore lint/style/useNamingConvention: backend schema
   column_progress: RecipeExecutionProgress | null;
+  batch: RecipeExecutionBatch | null;
   // biome-ignore lint/style/useNamingConvention: backend schema
   model_usage: Record<string, unknown> | null;
   // biome-ignore lint/style/useNamingConvention: backend schema

@@ -108,10 +108,12 @@ class JobManager:
             self._events.clear()
             self._seq = 0
 
+            run_payload = dict(run)
+            run_payload["_job_id"] = job_id
             mp_q = _CTX.Queue()
             proc = _CTX.Process(
                 target=run_job_process,
-                kwargs={"event_queue": mp_q, "recipe": recipe, "run": run},
+                kwargs={"event_queue": mp_q, "recipe": recipe, "run": run_payload},
                 daemon=True,
             )
             proc.start()
@@ -246,14 +248,85 @@ class JobManager:
             if not parquet_dir.exists():
                 return {"error": f"dataset path missing: {parquet_dir}"}
 
-            from data_designer.config.utils.io_helpers import read_parquet_dataset
-
-            dataframe = read_parquet_dataset(parquet_dir)
-            total = int(len(dataframe.index))
-            rows = dataframe.iloc[offset:offset + limit].to_dict(orient="records")
-            return {"dataset": _to_jsonable(rows), "total": total}
+            return self._load_dataset_page(parquet_dir=parquet_dir, limit=limit, offset=offset)
         except Exception as exc:
             return {"error": f"dataset load failed: {exc}"}
+
+    @staticmethod
+    def _load_dataset_page(
+        *,
+        parquet_dir: Path,
+        limit: int,
+        offset: int,
+    ) -> dict[str, Any]:
+        dataset_page = JobManager._load_dataset_page_with_duckdb(
+            parquet_dir=parquet_dir,
+            limit=limit,
+            offset=offset,
+        )
+        if dataset_page is not None:
+            return dataset_page
+        return JobManager._load_dataset_page_with_data_designer(
+            parquet_dir=parquet_dir,
+            limit=limit,
+            offset=offset,
+        )
+
+    @staticmethod
+    def _load_dataset_page_with_duckdb(
+        *,
+        parquet_dir: Path,
+        limit: int,
+        offset: int,
+    ) -> dict[str, Any] | None:
+        parquet_glob = str((parquet_dir / "*.parquet").resolve())
+        try:
+            import duckdb  # type: ignore
+        except Exception:
+            return None
+
+        try:
+            conn = duckdb.connect(":memory:")
+            try:
+                total_row = conn.execute(
+                    "SELECT COUNT(*) FROM read_parquet(?)",
+                    [parquet_glob],
+                ).fetchone()
+                total = int(total_row[0] if total_row else 0)
+                dataframe = conn.execute(
+                    (
+                        "SELECT *, row_number() OVER (PARTITION BY filename) AS __row_num__ "
+                        "FROM read_parquet(?, filename=true) "
+                        "ORDER BY filename, __row_num__ "
+                        "LIMIT ? OFFSET ?"
+                    ),
+                    [parquet_glob, int(limit), int(offset)],
+                ).fetchdf()
+            finally:
+                conn.close()
+        except Exception:
+            return None
+
+        for helper_col in ("filename", "__row_num__"):
+            if helper_col in dataframe.columns:
+                dataframe = dataframe.drop(columns=[helper_col])
+
+        rows = dataframe.to_dict(orient="records")
+        return {"dataset": _to_jsonable(rows), "total": total}
+
+    @staticmethod
+    def _load_dataset_page_with_data_designer(
+        *,
+        parquet_dir: Path,
+        limit: int,
+        offset: int,
+    ) -> dict[str, Any]:
+        from data_designer.config.utils.io_helpers import read_parquet_dataset
+
+        dataframe = read_parquet_dataset(parquet_dir)
+        total = int(len(dataframe.index))
+        rows = dataframe.iloc[offset:offset + limit].to_dict(orient="records")
+        return {"dataset": _to_jsonable(rows), "total": total}
 
     def subscribe(self, job_id: str, *, after_seq: int | None = None) -> Subscription | None:
         """SSE subscribe: get replay buffer + live events stream."""
