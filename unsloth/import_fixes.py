@@ -97,6 +97,44 @@ class HidePrintMessage:
         return getattr(self._original_stream, name)
 
 
+import contextlib
+import ctypes
+
+_libc = ctypes.CDLL(None)
+
+@contextlib.contextmanager
+def suppress_cuda_printf():
+    """Suppress CUDA device-side printf by redirecting stdout/stderr fds to /dev/null.
+
+    CUDA device printf (eg CUTLASS "Arch conditional MMA" errors on Blackwell)
+    writes to stdout fd 1 at the C level, bypassing Python sys.stdout entirely.
+    The existing HidePrintMessage filter on sys.stderr cannot catch these since
+    they go to a different fd at a different layer. This context manager redirects
+    both fd 1 and fd 2 at the OS level, syncs CUDA, then restores them.
+    """
+    sys.stdout.flush()
+    sys.stderr.flush()
+    saved_fds = {}
+    try:
+        for fd in (1, 2):
+            saved_fds[fd] = os.dup(fd)
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(devnull, fd)
+            os.close(devnull)
+        yield
+    finally:
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+        except Exception:
+            pass
+        _libc.fflush(None)
+        for fd, saved in saved_fds.items():
+            os.dup2(saved, fd)
+            os.close(saved)
+
+
 if not UNSLOTH_ENABLE_LOGGING:
     import sys
 
