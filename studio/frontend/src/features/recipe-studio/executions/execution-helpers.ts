@@ -139,6 +139,7 @@ export function withExecutionDefaults(
     datasetPage,
     datasetPageSize,
     column_progress: record.column_progress ?? null,
+    batch: record.batch ?? null,
   };
 }
 

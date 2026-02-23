@@ -264,6 +264,9 @@ export function ExecutionsView({
     (selectedExecution ? isExecutionInProgress(selectedExecution.status) : false);
   const progressComplete = selectedExecution?.status === "completed";
   const progressPercent = selectedExecution?.progress?.percent ?? (progressComplete ? 100 : 0);
+  const batchTotal = selectedExecution?.batch?.total ?? null;
+  const batchIdx = selectedExecution?.batch?.idx ?? null;
+  const showBatchProgress = typeof batchTotal === "number" && batchTotal > 1;
   const terminalLines = selectedExecution?.log_lines ?? [];
   const rawExecution = useMemo(() => {
     if (!selectedExecution) {
@@ -328,6 +331,11 @@ export function ExecutionsView({
                     : ""}
                 </span>
               )}
+              {showBatchProgress && (
+                <span>
+                  Batch {batchIdx ?? "--"}/{batchTotal}
+                </span>
+              )}
               {isStale && <Badge variant="outline">Recipe changed since this run</Badge>}
             </div>
 
@@ -390,6 +398,16 @@ export function ExecutionsView({
                     {selectedExecution.column_progress.done ?? "--"}/
                     {selectedExecution.column_progress.total ?? "--"} (
                     {formatPercent(selectedExecution.column_progress.percent)})
+                  </p>
+                )}
+                {showBatchProgress && (
+                  <p
+                    className={cn(
+                      "text-xs",
+                      progressComplete ? "text-emerald-900" : "text-amber-900",
+                    )}
+                  >
+                    Processed batch: {batchIdx ?? "--"}/{batchTotal}
                   </p>
                 )}
               </div>
