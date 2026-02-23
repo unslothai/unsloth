@@ -1,16 +1,99 @@
+import type { RecipePayload } from "@/features/recipe-studio";
+
+const structuredOutputsJinjaUrl = new URL(
+  "./structured-outputs-jinja.json",
+  import.meta.url,
+).href;
+const pdfGroundedQaUrl = new URL("./pdf-grounded-qa.json", import.meta.url)
+  .href;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function toRecordArray(value: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter((item): item is Record<string, unknown> =>
+    isRecord(item),
+  );
+}
+
+function coerceRecipePayload(value: unknown): RecipePayload {
+  if (!isRecord(value)) {
+    throw new Error("Template payload is invalid JSON object.");
+  }
+
+  const recipeSource = isRecord(value.recipe) ? value.recipe : value;
+  if (!Array.isArray(recipeSource.columns)) {
+    throw new Error("Template payload must include recipe.columns.");
+  }
+
+  if (isRecord(value.recipe) && isRecord(value.run) && isRecord(value.ui)) {
+    return value as unknown as RecipePayload;
+  }
+
+  const recipe: RecipePayload["recipe"] = {
+    // biome-ignore lint/style/useNamingConvention: api schema
+    model_providers: toRecordArray(recipeSource.model_providers),
+    // biome-ignore lint/style/useNamingConvention: api schema
+    mcp_providers: toRecordArray(recipeSource.mcp_providers),
+    // biome-ignore lint/style/useNamingConvention: api schema
+    model_configs: toRecordArray(recipeSource.model_configs),
+    // biome-ignore lint/style/useNamingConvention: api schema
+    seed_config: isRecord(recipeSource.seed_config)
+      ? recipeSource.seed_config
+      : undefined,
+    // biome-ignore lint/style/useNamingConvention: api schema
+    tool_configs: toRecordArray(recipeSource.tool_configs),
+    columns: toRecordArray(recipeSource.columns),
+    processors: toRecordArray(recipeSource.processors),
+  };
+
+  return {
+    recipe,
+    run: {
+      rows: 5,
+      preview: true,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      output_formats: ["jsonl"],
+    },
+    ui: {
+      nodes: [],
+      edges: [],
+    },
+  };
+}
+
+async function loadPayloadFromUrl(url: string): Promise<RecipePayload> {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch template payload (${response.status})`);
+  }
+  const json = (await response.json()) as unknown;
+  return coerceRecipePayload(json);
+}
+
 export type LearningRecipeDef = {
   id: string;
   title: string;
   description: string;
-  filePath: string;
+  loadPayload: () => Promise<RecipePayload>;
 };
 
 export const LEARNING_RECIPES: LearningRecipeDef[] = [
   {
     id: "structured-outputs-jinja",
     title: "Structured Outputs + Jinja Expressions",
-    description: "Minimal schema + Jinja refs + if/else patterns.",
-    filePath:
-      "/src/features/data-recipes/learning-recipes/structured-outputs-jinja.json",
+    description:
+      "Support ticket triage with structured JSON outputs and Jinja conditionals.",
+    loadPayload: () => loadPayloadFromUrl(structuredOutputsJinjaUrl),
+  },
+  {
+    id: "pdf-grounded-qa",
+    title: "PDF Document QA",
+    description: "Build grounded question-answer examples from PDF chunks.",
+    loadPayload: () => loadPayloadFromUrl(pdfGroundedQaUrl),
   },
 ];

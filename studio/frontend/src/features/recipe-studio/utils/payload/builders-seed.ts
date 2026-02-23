@@ -85,15 +85,15 @@ export function buildSeedDropProcessor(
   }
   const cols = (config.seed_columns ?? []).map((c) => c.trim()).filter(Boolean);
   if (cols.length === 0) {
-    errors.push(`Seed ${config.name}: drop enabled but no seed columns loaded.`);
+    errors.push(
+      `Seed ${config.name}: drop enabled but no seed columns loaded.`,
+    );
     return null;
   }
   return {
     // biome-ignore lint/style/useNamingConvention: api schema
     processor_type: "drop_columns",
     name: "drop_seed_columns",
-    // biome-ignore lint/style/useNamingConvention: api schema
-    build_stage: "post_batch",
     // biome-ignore lint/style/useNamingConvention: api schema
     column_names: cols,
   };

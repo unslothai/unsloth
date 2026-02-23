@@ -1,4 +1,18 @@
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   Empty,
   EmptyContent,
@@ -8,16 +22,18 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty";
 import { ShineBorder } from "@/components/ui/shine-border";
+import { toastError } from "@/shared/toast";
 import {
   AiChat02Icon,
+  ArrowDown01Icon,
   CodeIcon,
   CookBookIcon,
   Database02Icon,
   Delete02Icon,
+  DocumentAttachmentIcon,
   FunctionIcon,
   Plant01Icon,
   PlusSignIcon,
-  Shield02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
@@ -25,16 +41,20 @@ import type { ReactElement } from "react";
 import { useState } from "react";
 import {
   createRecipeDraft,
+  createRecipeFromLearningRecipe,
   deleteRecipe,
   useRecipes,
 } from "../data/recipes-db";
+import { LEARNING_RECIPES } from "../learning-recipes";
 
 type TemplateCard = {
   title: string;
   description: string;
   icon: typeof CookBookIcon;
+  difficulty: "Easy" | "Starter" | "Intermediate" | "Advanced";
   surfaceClassName: string;
   shineColor: string[];
+  learningRecipeId?: string;
 };
 
 const TEMPLATE_CARDS: TemplateCard[] = [
@@ -43,24 +63,29 @@ const TEMPLATE_CARDS: TemplateCard[] = [
     description:
       "Support ticket triage dataset with structured JSON outputs and Jinja if/else refs.",
     icon: FunctionIcon,
+    difficulty: "Advanced",
     surfaceClassName:
       "from-cyan-500/15 via-sky-500/5 to-transparent border-cyan-500/30",
     shineColor: ["#06b6d4", "#38bdf8", "#22d3ee"],
+    learningRecipeId: "structured-outputs-jinja",
   },
   {
-    title: "Basic MCP Tool Use",
+    title: "PDF Document QA",
     description:
-      "Agent workflow starter showing tool-call patterns and grounded tool result usage.",
-    icon: Shield02Icon,
+      "Unstructured PDF chunks transformed into grounded question-answer training pairs.",
+    icon: DocumentAttachmentIcon,
+    difficulty: "Easy",
     surfaceClassName:
       "from-violet-500/15 via-fuchsia-500/5 to-transparent border-violet-500/30",
     shineColor: ["#8b5cf6", "#d946ef", "#a855f7"],
+    learningRecipeId: "pdf-grounded-qa",
   },
   {
     title: "Seed Dataset",
     description:
       "Start from real rows, then expand with synthetic fields while preserving source context.",
     icon: Plant01Icon,
+    difficulty: "Starter",
     surfaceClassName:
       "from-emerald-500/15 via-green-500/5 to-transparent border-emerald-500/30",
     shineColor: ["#10b981", "#22c55e", "#34d399"],
@@ -70,6 +95,7 @@ const TEMPLATE_CARDS: TemplateCard[] = [
     description:
       "Instruction-to-code pairs for training models that generate clean Python implementations.",
     icon: CodeIcon,
+    difficulty: "Starter",
     surfaceClassName:
       "from-amber-500/15 via-orange-500/5 to-transparent border-amber-500/30",
     shineColor: ["#f59e0b", "#f97316", "#fb923c"],
@@ -79,6 +105,7 @@ const TEMPLATE_CARDS: TemplateCard[] = [
     description:
       "Natural language to SQL pairs, including schema-aware query construction patterns.",
     icon: Database02Icon,
+    difficulty: "Intermediate",
     surfaceClassName:
       "from-blue-500/15 via-indigo-500/5 to-transparent border-blue-500/30",
     shineColor: ["#3b82f6", "#6366f1", "#60a5fa"],
@@ -88,11 +115,16 @@ const TEMPLATE_CARDS: TemplateCard[] = [
     description:
       "Role-based multi-turn conversations for assistant behavior, memory, and response quality.",
     icon: AiChat02Icon,
+    difficulty: "Advanced",
     surfaceClassName:
       "from-rose-500/15 via-pink-500/5 to-transparent border-rose-500/30",
     shineColor: ["#f43f5e", "#ec4899", "#fb7185"],
   },
 ];
+
+const LEARNING_RECIPE_BY_ID = new Map(
+  LEARNING_RECIPES.map((recipe) => [recipe.id, recipe]),
+);
 
 function formatRelativeTime(value: number): string {
   const now = Date.now();
@@ -121,13 +153,87 @@ function formatRelativeTime(value: number): string {
   return `${weeks} week${weeks === 1 ? "" : "s"} ago`;
 }
 
+function LearningRecipeCards({
+  onSelect,
+  loadingTemplateId,
+}: {
+  onSelect: (template: TemplateCard) => void;
+  loadingTemplateId: string | null;
+}): ReactElement {
+  return (
+    <div className="grid w-full gap-4 sm:grid-cols-2 xl:grid-cols-3">
+      {TEMPLATE_CARDS.map((template) => {
+        const learningRecipe = template.learningRecipeId
+          ? LEARNING_RECIPE_BY_ID.get(template.learningRecipeId)
+          : undefined;
+        const isReady = Boolean(learningRecipe);
+        const isLoading =
+          template.learningRecipeId !== undefined &&
+          loadingTemplateId === template.learningRecipeId;
+        const isDisabled = !isReady || isLoading || Boolean(loadingTemplateId);
+        return (
+          <button
+            key={template.title}
+            type="button"
+            disabled={isDisabled}
+            onClick={() => onSelect(template)}
+            className={`group relative overflow-hidden rounded-2xl border bg-gradient-to-br text-left transition-transform ${template.surfaceClassName} enabled:cursor-pointer enabled:hover:-translate-y-0.5 enabled:hover:shadow-md disabled:cursor-not-allowed disabled:opacity-70`}
+          >
+            <ShineBorder
+              borderWidth={1.2}
+              duration={11}
+              shineColor={template.shineColor}
+            />
+            <div className="relative flex h-full min-h-40 flex-col justify-between gap-3 p-4">
+              <div className="inline-flex size-10 items-center justify-center rounded-xl border border-foreground/10 bg-background/80">
+                <HugeiconsIcon
+                  icon={template.icon}
+                  className="size-5 text-foreground/90"
+                />
+              </div>
+              <div className="space-y-1">
+                <p className="line-clamp-2 text-sm font-semibold leading-tight text-foreground">
+                  {template.title}
+                </p>
+                <p className="line-clamp-2 text-xs text-muted-foreground">
+                  {template.description}
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <Badge
+                  variant={
+                    template.difficulty === "Advanced" ? "secondary" : "outline"
+                  }
+                >
+                  {template.difficulty}
+                </Badge>
+                {isLoading ? (
+                  <Badge variant="outline">Loading...</Badge>
+                ) : (
+                  <Badge variant={isReady ? "outline" : "secondary"}>
+                    {isReady ? "Learning Recipe" : "Soon"}
+                  </Badge>
+                )}
+              </div>
+            </div>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 export function DataRecipesPage(): ReactElement {
   const navigate = useNavigate();
   const recipes = useRecipes();
   const [creatingRecipe, setCreatingRecipe] = useState(false);
+  const [learningDialogOpen, setLearningDialogOpen] = useState(false);
+  const [loadingTemplateId, setLoadingTemplateId] = useState<string | null>(
+    null,
+  );
 
   async function openNewRecipe(): Promise<void> {
-    if (creatingRecipe) {
+    if (creatingRecipe || loadingTemplateId) {
       return;
     }
     setCreatingRecipe(true);
@@ -142,6 +248,43 @@ export function DataRecipesPage(): ReactElement {
     }
   }
 
+  async function openLearningRecipe(template: TemplateCard): Promise<void> {
+    if (creatingRecipe || loadingTemplateId) {
+      return;
+    }
+    if (!template.learningRecipeId) {
+      toastError("Learning recipe not ready yet.");
+      return;
+    }
+    const recipeTemplate = LEARNING_RECIPE_BY_ID.get(template.learningRecipeId);
+    if (!recipeTemplate) {
+      toastError("Learning recipe not found.");
+      return;
+    }
+
+    setLoadingTemplateId(template.learningRecipeId);
+    try {
+      const payload = await recipeTemplate.loadPayload();
+      const recipe = await createRecipeFromLearningRecipe({
+        templateId: recipeTemplate.id,
+        templateTitle: recipeTemplate.title,
+        payload,
+      });
+      setLearningDialogOpen(false);
+      await navigate({
+        to: "/data-recipes/$recipeId",
+        params: { recipeId: recipe.id },
+      });
+    } catch (error) {
+      toastError(
+        "Failed to start learning recipe.",
+        error instanceof Error ? error.message : undefined,
+      );
+    } finally {
+      setLoadingTemplateId(null);
+    }
+  }
+
   function openRecipe(recipeId: string): void {
     navigate({
       to: "/data-recipes/$recipeId",
@@ -152,6 +295,8 @@ export function DataRecipesPage(): ReactElement {
   async function handleDeleteRecipe(recipeId: string): Promise<void> {
     await deleteRecipe(recipeId);
   }
+
+  const isBusy = creatingRecipe || Boolean(loadingTemplateId);
 
   return (
     <div className="min-h-screen bg-background">
@@ -165,16 +310,33 @@ export function DataRecipesPage(): ReactElement {
               Create and manage local recipe workflows.
             </p>
           </div>
-          <Button
-            type="button"
-            onClick={() => {
-              openNewRecipe().catch(() => undefined);
-            }}
-            disabled={creatingRecipe}
-          >
-            <HugeiconsIcon icon={PlusSignIcon} className="size-4" />
-            New Recipe
-          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild={true}>
+              <Button type="button" disabled={isBusy}>
+                <HugeiconsIcon icon={PlusSignIcon} className="size-4" />
+                New Recipe
+                <HugeiconsIcon icon={ArrowDown01Icon} className="size-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem
+                onSelect={() => {
+                  openNewRecipe().catch(() => undefined);
+                }}
+              >
+                <HugeiconsIcon icon={PlusSignIcon} className="size-4" />
+                Start Empty
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onSelect={() => {
+                  setLearningDialogOpen(true);
+                }}
+              >
+                <HugeiconsIcon icon={CookBookIcon} className="size-4" />
+                Start from Learning Recipe
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
 
         {recipes.length === 0 ? (
@@ -194,44 +356,18 @@ export function DataRecipesPage(): ReactElement {
                 type="button"
                 variant="secondary"
                 className="mx-auto"
-                disabled={true}
+                onClick={() => setLearningDialogOpen(true)}
+                disabled={isBusy}
               >
-                <HugeiconsIcon icon={PlusSignIcon} className="size-4" />
+                <HugeiconsIcon icon={CookBookIcon} className="size-4" />
                 Start Tutorial
               </Button>
-              <div className="grid w-full gap-4 sm:grid-cols-2 xl:grid-cols-3">
-                {TEMPLATE_CARDS.map((template) => (
-                  <div
-                    key={template.title}
-                    className={`group relative overflow-hidden rounded-2xl border bg-gradient-to-br ${template.surfaceClassName}`}
-                  >
-                    <ShineBorder
-                      borderWidth={1.2}
-                      duration={11}
-                      shineColor={template.shineColor}
-                    />
-                    <div className="relative flex h-full min-h-40 flex-col justify-between gap-3 p-4 text-left">
-                      <div className="inline-flex size-10 items-center justify-center rounded-xl border border-foreground/10 bg-background/80">
-                        <HugeiconsIcon
-                          icon={template.icon}
-                          className="size-5 text-foreground/90"
-                        />
-                      </div>
-                      <div className="space-y-1">
-                        <p className="line-clamp-2 text-sm font-semibold leading-tight text-foreground">
-                          {template.title}
-                        </p>
-                        <p className="line-clamp-2 text-xs text-muted-foreground">
-                          {template.description}
-                        </p>
-                      </div>
-                      <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground/80">
-                        Template
-                      </span>
-                    </div>
-                  </div>
-                ))}
-              </div>
+              <LearningRecipeCards
+                onSelect={(template) => {
+                  openLearningRecipe(template).catch(() => undefined);
+                }}
+                loadingTemplateId={loadingTemplateId}
+              />
             </EmptyContent>
           </Empty>
         ) : (
@@ -253,9 +389,14 @@ export function DataRecipesPage(): ReactElement {
                     />
                   </div>
                   <div className="min-w-0">
-                    <p className="truncate text-sm font-medium">
-                      {recipe.name}
-                    </p>
+                    <div className="flex items-center gap-2">
+                      <p className="truncate text-sm font-medium">
+                        {recipe.name}
+                      </p>
+                      {recipe.learningRecipeId ? (
+                        <Badge variant="outline">Learning Recipe</Badge>
+                      ) : null}
+                    </div>
                     <p className="text-xs text-muted-foreground">
                       Last updated {formatRelativeTime(recipe.updatedAt)} |
                       Created {formatRelativeTime(recipe.createdAt)}
@@ -279,6 +420,23 @@ export function DataRecipesPage(): ReactElement {
           </div>
         )}
       </main>
+
+      <Dialog open={learningDialogOpen} onOpenChange={setLearningDialogOpen}>
+        <DialogContent className="sm:max-w-5xl">
+          <DialogHeader>
+            <DialogTitle>Learning Recipes</DialogTitle>
+            <DialogDescription>
+              Start from a prebuilt recipe to learn patterns, then edit and run.
+            </DialogDescription>
+          </DialogHeader>
+          <LearningRecipeCards
+            onSelect={(template) => {
+              openLearningRecipe(template).catch(() => undefined);
+            }}
+            loadingTemplateId={loadingTemplateId}
+          />
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
