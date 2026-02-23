@@ -10,7 +10,11 @@ import {
   Panel,
   ReactFlow,
 } from "@xyflow/react";
-import { PlusSignIcon } from "@hugeicons/core-free-icons";
+import {
+  CookBookIcon,
+  PlusSignIcon,
+  TestTube01Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type ReactElement,
@@ -31,6 +35,7 @@ import { RecipeStudioHeader } from "./components/recipe-studio-header";
 import { RecipeNode } from "./components/recipe-graph-node";
 import { RecipeGraphSemanticEdge } from "./components/recipe-graph-semantic-edge";
 import { DataEdge } from "./components/rf-ui/data-edge";
+import { Button } from "@/components/ui/button";
 import { ConfigDialog } from "./dialogs/config-dialog";
 import { ImportDialog } from "./dialogs/import-dialog";
 import { RunDialog } from "./dialogs/preview-dialog";
@@ -283,6 +288,7 @@ export function RecipeStudioPage({
     setImportOpen,
     runDialogOpen,
     runDialogKind,
+    setRunDialogKind,
     setRunDialogOpen,
     previewRows,
     fullRows,
@@ -300,6 +306,9 @@ export function RecipeStudioPage({
     persistRecipe,
     openRunDialog,
     runFromDialog,
+    validateFromDialog,
+    validateLoading,
+    validateResult,
     cancelExecution,
     loadExecutionDatasetPage,
     copyRecipe,
@@ -346,16 +355,12 @@ export function RecipeStudioPage({
         >
           <RecipeStudioHeader
             activeView={activeView}
-            previewLoading={previewLoading}
-            fullLoading={fullLoading}
             saveLoading={saveLoading}
             saveTone={saveTone}
             savedAtLabel={savedAtLabel}
             workflowName={workflowName}
             onWorkflowNameChange={setWorkflowName}
             onViewChange={setActiveView}
-            onPreview={() => openRunDialog("preview")}
-            onRunFull={() => openRunDialog("full")}
             onSaveRecipe={() => {
               void persistRecipe();
             }}
@@ -441,6 +446,32 @@ export function RecipeStudioPage({
                   interactive={interactive}
                   onToggleInteractive={toggleInteractive}
                 />
+                <div className="pointer-events-none absolute inset-x-0 bottom-3 z-20 flex justify-center">
+                  <div className="pointer-events-auto flex items-center gap-2">
+                    <Button
+                      type="button"
+                      className="h-11 px-5"
+                      onClick={() => openRunDialog(runDialogKind)}
+                      disabled={previewLoading || fullLoading}
+                    >
+                      <HugeiconsIcon icon={CookBookIcon} className="size-4" />
+                      {previewLoading || fullLoading ? "Running..." : "Run"}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="h-11 px-5"
+                      onClick={() => {
+                        openRunDialog(runDialogKind);
+                        void validateFromDialog();
+                      }}
+                      disabled={validateLoading}
+                    >
+                      <HugeiconsIcon icon={TestTube01Icon} className="size-4" />
+                      {validateLoading ? "Validating..." : "Validate"}
+                    </Button>
+                  </div>
+                </div>
               </ReactFlow>
             ) : (
               <ExecutionsView
@@ -487,6 +518,7 @@ export function RecipeStudioPage({
         open={runDialogOpen}
         onOpenChange={setRunDialogOpen}
         kind={runDialogKind}
+        onKindChange={setRunDialogKind}
         rows={runDialogRows}
         onRowsChange={(rows) => {
           if (runDialogKind === "preview") {
@@ -498,7 +530,12 @@ export function RecipeStudioPage({
         settings={runSettings}
         onSettingsChange={setRunSettings}
         loading={runDialogLoading}
+        validateLoading={validateLoading}
+        validateResult={validateResult}
         errors={runErrors}
+        onValidate={() => {
+          void validateFromDialog();
+        }}
         onRun={() => {
           void runFromDialog();
         }}
