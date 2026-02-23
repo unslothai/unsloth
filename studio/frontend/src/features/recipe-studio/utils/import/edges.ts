@@ -31,7 +31,9 @@ export function buildEdges(
     seen.add(key);
     const source = configByName.get(from);
     const target = configByName.get(to);
-    const isSemantic = Boolean(source && target && isSemanticConnection(source, target));
+    const isSemantic = Boolean(
+      source && target && isSemanticConnection(source, target),
+    );
     const normalizedType = isSemantic ? "semantic" : "canvas";
     const handles =
       normalizedType === "semantic"
@@ -56,7 +58,9 @@ export function buildEdges(
     for (const edge of uiEdges) {
       addEdgeByName(edge.from, edge.to);
     }
-    return edges;
+    if (edges.length > 0) {
+      return edges;
+    }
   }
 
   for (const config of configs) {

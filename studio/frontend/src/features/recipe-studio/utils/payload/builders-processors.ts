@@ -44,8 +44,6 @@ export function buildProcessors(
       // biome-ignore lint/style/useNamingConvention: api schema
       processor_type: "schema_transform",
       name,
-      // biome-ignore lint/style/useNamingConvention: api schema
-      build_stage: "post_batch",
       template,
     });
   }
