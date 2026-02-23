@@ -30,6 +30,8 @@ export type RecipePayload = {
   ui: {
     nodes: { id: string; x: number; y: number }[];
     edges: { from: string; to: string; type?: string }[];
+    // ui-only, used to preserve seed block mode across imports/refresh
+    seed_source_type?: "hf" | "local" | "unstructured";
   };
 };
 

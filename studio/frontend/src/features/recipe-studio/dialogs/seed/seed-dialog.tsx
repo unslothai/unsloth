@@ -33,6 +33,7 @@ import {
   TabsList,
   TabsTrigger,
 } from "@/components/ui/tabs";
+import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
 import mammoth from "mammoth";
 import { type ReactElement, useEffect, useMemo, useState } from "react";
 import { extractText, getDocumentProxy } from "unpdf";
@@ -60,6 +61,10 @@ const UNSTRUCTURED_ACCEPT = ".txt,.pdf,.docx";
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 const CHUNK_SIZE = 1200;
 const CHUNK_OVERLAP = 200;
+const UNSTRUCTURED_SPLITTER = new RecursiveCharacterTextSplitter({
+  chunkSize: CHUNK_SIZE,
+  chunkOverlap: CHUNK_OVERLAP,
+});
 
 type SeedDialogProps = {
   config: SeedConfig;
@@ -84,20 +89,12 @@ function stringifyCell(value: unknown): string {
   }
 }
 
-function chunkText(input: string): string[] {
+async function chunkText(input: string): Promise<string[]> {
   const text = input.replace(/\r\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
   if (!text) return [];
 
-  const chunks: string[] = [];
-  let cursor = 0;
-  const overlap = Math.max(0, Math.min(CHUNK_OVERLAP, CHUNK_SIZE - 1));
-  while (cursor < text.length) {
-    const end = Math.min(cursor + CHUNK_SIZE, text.length);
-    chunks.push(text.slice(cursor, end).trim());
-    if (end >= text.length) break;
-    cursor = Math.max(0, end - overlap);
-  }
-  return chunks.filter(Boolean);
+  const chunks = await UNSTRUCTURED_SPLITTER.splitText(text);
+  return chunks.map((chunk) => chunk.trim()).filter(Boolean);
 }
 
 async function fileToBase64Payload(file: File): Promise<string> {
@@ -218,7 +215,7 @@ export function SeedDialog({ config, onUpdate }: SeedDialogProps): ReactElement 
       }
 
       const text = await extractUnstructuredText(unstructuredFile);
-      const chunks = chunkText(text);
+      const chunks = await chunkText(text);
       if (chunks.length === 0) {
         throw new Error("No text found in file.");
       }

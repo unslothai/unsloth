@@ -241,6 +241,7 @@ export function buildRecipePayload(
       ui: {
         nodes: uiNodes,
         edges: uiEdges,
+        ...(firstSeed && { seed_source_type: firstSeed.seed_source_type }),
       },
     },
   };
