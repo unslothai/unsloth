@@ -35,7 +35,7 @@ import type {
   NodeConfig,
   SamplerType,
 } from "../types";
-import { getNodeHandleLayout, NODE_HANDLE_CLASS } from "../utils/handle-layout";
+import { NODE_HANDLE_CLASS } from "../utils/handle-layout";
 import { getLlmJudgeScoreHandleId, HANDLE_IDS } from "../utils/handles";
 import { InlineCategoryBadges } from "./inline/inline-category-badges";
 import { InlineExpression } from "./inline/inline-expression";
@@ -342,13 +342,6 @@ function RecipeGraphNodeBase({
     data.kind === "seed";
   const showSemanticIn = data.kind === "llm" || data.kind === "model_config";
   const showSemanticOut = data.kind === "model_config" || data.kind === "model_provider";
-  const {
-    dataInPosition,
-    dataOutPosition,
-    semanticInPosition,
-    semanticOutPosition,
-  } = getNodeHandleLayout(layoutDirection);
-
   const summary = getConfigSummary(config);
   const nodeBody = renderNodeBody(config, summary, updateConfig);
   const llmInputHandles = llmAuxVisible ? getLlmInputHandleItems(config) : [];
@@ -434,7 +427,16 @@ function RecipeGraphNodeBase({
             id={HANDLE_IDS.dataIn}
             title="Data input"
             type="target"
-            position={dataInPosition}
+            position={Position.Left}
+            className="absolute inset-0 pointer-events-none"
+            labelClassName="sr-only"
+            handleClassName={NODE_HANDLE_CLASS}
+          />
+          <LabeledHandle
+            id={HANDLE_IDS.dataInTop}
+            title="Data input"
+            type="target"
+            position={Position.Top}
             className="absolute inset-0 pointer-events-none"
             labelClassName="sr-only"
             handleClassName={NODE_HANDLE_CLASS}
@@ -443,7 +445,16 @@ function RecipeGraphNodeBase({
             id={HANDLE_IDS.dataOut}
             title="Data output"
             type="source"
-            position={dataOutPosition}
+            position={Position.Right}
+            className="absolute inset-0 pointer-events-none"
+            labelClassName="sr-only"
+            handleClassName={NODE_HANDLE_CLASS}
+          />
+          <LabeledHandle
+            id={HANDLE_IDS.dataOutBottom}
+            title="Data output"
+            type="source"
+            position={Position.Bottom}
             className="absolute inset-0 pointer-events-none"
             labelClassName="sr-only"
             handleClassName={NODE_HANDLE_CLASS}
@@ -452,27 +463,49 @@ function RecipeGraphNodeBase({
       )}
 
       {showSemanticIn && (
-        <LabeledHandle
-          id={HANDLE_IDS.semanticIn}
-          title="Semantic input"
-          type="target"
-          position={semanticInPosition}
-          className="absolute inset-0 pointer-events-none"
-          labelClassName="sr-only"
-          handleClassName={NODE_HANDLE_CLASS}
-        />
+        <>
+          <LabeledHandle
+            id={HANDLE_IDS.semanticIn}
+            title="Semantic input"
+            type="target"
+            position={Position.Top}
+            className="absolute inset-0 pointer-events-none"
+            labelClassName="sr-only"
+            handleClassName={NODE_HANDLE_CLASS}
+          />
+          <LabeledHandle
+            id={HANDLE_IDS.semanticInLeft}
+            title="Semantic input"
+            type="target"
+            position={Position.Left}
+            className="absolute inset-0 pointer-events-none"
+            labelClassName="sr-only"
+            handleClassName={NODE_HANDLE_CLASS}
+          />
+        </>
       )}
 
       {showSemanticOut && (
-        <LabeledHandle
-          id={HANDLE_IDS.semanticOut}
-          title="Semantic output"
-          type="source"
-          position={semanticOutPosition}
-          className="absolute inset-0 pointer-events-none"
-          labelClassName="sr-only"
-          handleClassName={NODE_HANDLE_CLASS}
-        />
+        <>
+          <LabeledHandle
+            id={HANDLE_IDS.semanticOut}
+            title="Semantic output"
+            type="source"
+            position={Position.Bottom}
+            className="absolute inset-0 pointer-events-none"
+            labelClassName="sr-only"
+            handleClassName={NODE_HANDLE_CLASS}
+          />
+          <LabeledHandle
+            id={HANDLE_IDS.semanticOutRight}
+            title="Semantic output"
+            type="source"
+            position={Position.Right}
+            className="absolute inset-0 pointer-events-none"
+            labelClassName="sr-only"
+            handleClassName={NODE_HANDLE_CLASS}
+          />
+        </>
       )}
     </BaseNode>
   );
