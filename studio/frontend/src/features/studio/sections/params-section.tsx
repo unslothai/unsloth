@@ -727,12 +727,12 @@ export function ParamsSection(): ReactElement {
                 </Row>
                 <Row
                   label="Eval Steps"
-                  tooltip="Fraction of total training steps between evaluations. E.g. 0.01 = evaluate every 1% of steps."
+                  tooltip="Fraction of total training steps between evaluations (0-1). Set to 0 to disable evaluation. E.g. 0.01 = evaluate every 1% of steps."
                 >
                   <Input
                     type="number"
                     step="0.01"
-                    min="0.001"
+                    min="0"
                     max="1"
                     value={store.evalSteps}
                     onChange={(e) => store.setEvalSteps(Number(e.target.value))}
