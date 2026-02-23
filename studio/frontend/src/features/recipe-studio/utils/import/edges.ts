@@ -1,6 +1,16 @@
 import type { Edge } from "@xyflow/react";
-import type { NodeConfig } from "../../types";
-import { HANDLE_IDS } from "../handles";
+import type { LayoutDirection, NodeConfig } from "../../types";
+import {
+  getDefaultDataSourceHandle,
+  getDefaultDataTargetHandle,
+  getDefaultSemanticSourceHandle,
+  getDefaultSemanticTargetHandle,
+  isDataSourceHandle,
+  isDataTargetHandle,
+  isSemanticSourceHandle,
+  isSemanticTargetHandle,
+  normalizeRecipeHandleId,
+} from "../handles";
 import { extractRefs } from "./helpers";
 
 function isSemanticConnection(source: NodeConfig, target: NodeConfig): boolean {
@@ -13,12 +23,26 @@ function isSemanticConnection(source: NodeConfig, target: NodeConfig): boolean {
 export function buildEdges(
   configs: NodeConfig[],
   nameToId: Map<string, string>,
-  uiEdges: Array<{ from: string; to: string; type?: string }> | null,
+  uiEdges:
+    | Array<{
+        from: string;
+        to: string;
+        type?: string;
+        sourceHandle?: string;
+        targetHandle?: string;
+      }>
+    | null,
+  layoutDirection: LayoutDirection,
 ): Edge[] {
   const edges: Edge[] = [];
   const seen = new Set<string>();
   const configByName = new Map(configs.map((config) => [config.name, config]));
-  const addEdgeByName = (from: string, to: string) => {
+  const addEdgeByName = (
+    from: string,
+    to: string,
+    sourceHandleInput?: string,
+    targetHandleInput?: string,
+  ): void => {
     const sourceId = nameToId.get(from);
     const targetId = nameToId.get(to);
     if (!(sourceId && targetId)) {
@@ -35,28 +59,56 @@ export function buildEdges(
       source && target && isSemanticConnection(source, target),
     );
     const normalizedType = isSemantic ? "semantic" : "canvas";
-    const handles =
-      normalizedType === "semantic"
-        ? {
-            sourceHandle: HANDLE_IDS.semanticOut,
-            targetHandle: HANDLE_IDS.semanticIn,
-          }
-        : {
-            sourceHandle: HANDLE_IDS.dataOut,
-            targetHandle: HANDLE_IDS.dataIn,
-          };
+    const sourceHandleNormalized = normalizeRecipeHandleId(sourceHandleInput);
+    const targetHandleNormalized = normalizeRecipeHandleId(targetHandleInput);
+    const semanticSourceDefault =
+      source?.kind === "llm"
+        ? getDefaultDataSourceHandle(layoutDirection)
+        : getDefaultSemanticSourceHandle(layoutDirection);
+    const semanticTargetDefault =
+      target?.kind === "llm"
+        ? getDefaultDataTargetHandle(layoutDirection)
+        : getDefaultSemanticTargetHandle(layoutDirection);
+    let sourceHandle = getDefaultDataSourceHandle(layoutDirection);
+    let targetHandle = getDefaultDataTargetHandle(layoutDirection);
+
+    if (isSemantic) {
+      sourceHandle =
+        isSemanticSourceHandle(sourceHandleNormalized) ||
+        isDataSourceHandle(sourceHandleNormalized)
+          ? sourceHandleNormalized ?? semanticSourceDefault
+          : semanticSourceDefault;
+      targetHandle =
+        isSemanticTargetHandle(targetHandleNormalized) ||
+        isDataTargetHandle(targetHandleNormalized)
+          ? targetHandleNormalized ?? semanticTargetDefault
+          : semanticTargetDefault;
+    } else {
+      sourceHandle = isDataSourceHandle(sourceHandleNormalized)
+        ? sourceHandleNormalized ?? getDefaultDataSourceHandle(layoutDirection)
+        : getDefaultDataSourceHandle(layoutDirection);
+      targetHandle = isDataTargetHandle(targetHandleNormalized)
+        ? targetHandleNormalized ?? getDefaultDataTargetHandle(layoutDirection)
+        : getDefaultDataTargetHandle(layoutDirection);
+    }
     edges.push({
       id: `e-${key}`,
       source: sourceId,
       target: targetId,
       type: normalizedType,
-      ...handles,
+      sourceHandle,
+      targetHandle,
     });
   };
 
   if (uiEdges && uiEdges.length > 0) {
     for (const edge of uiEdges) {
-      addEdgeByName(edge.from, edge.to);
+      addEdgeByName(
+        edge.from,
+        edge.to,
+        edge.sourceHandle,
+        edge.targetHandle,
+      );
     }
     if (edges.length > 0) {
       return edges;

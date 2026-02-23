@@ -26,7 +26,7 @@ import {
 } from "../blocks/registry";
 import { deriveDisplayGraph } from "../utils/graph/derive-display-graph";
 import { applyRecipeConnection, isValidRecipeConnection } from "../utils/graph";
-import { HANDLE_IDS } from "../utils/handles";
+import { HANDLE_IDS, remapRecipeEdgeHandlesForLayout } from "../utils/handles";
 import type { RecipeSnapshot } from "../utils/import";
 import { getLayoutedElements } from "../utils/layout";
 import { syncPositionsRecord, syncSizesRecord } from "./helpers/aux-sync";
@@ -219,6 +219,10 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
   setLayoutDirection: (direction) =>
     set((state) => ({
       layoutDirection: direction,
+      edges: state.edges.map((edge) => ({
+        ...edge,
+        ...remapRecipeEdgeHandlesForLayout(edge, direction),
+      })),
       nodes: applyLayoutDirectionToNodes(
         state.nodes,
         state.configs,
@@ -432,15 +436,16 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
   addExpressionNode: () =>
     set((state) => buildAddedNodeState(state, "expression", "expression")),
   loadRecipe: (snapshot) =>
-    set((state) => ({
+    set(() => ({
       configs: snapshot.configs,
       nodes: applyLayoutDirectionToNodes(
         snapshot.nodes,
         snapshot.configs,
-        state.layoutDirection,
+        snapshot.layoutDirection,
       ),
       edges: snapshot.edges,
       processors: snapshot.processors,
+      layoutDirection: snapshot.layoutDirection,
       nextId: snapshot.nextId,
       nextY: snapshot.nextY,
       auxNodePositions: {},

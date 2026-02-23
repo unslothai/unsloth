@@ -31,7 +31,15 @@ export type RecipePayload = {
   };
   ui: {
     nodes: { id: string; x: number; y: number }[];
-    edges: { from: string; to: string; type?: string }[];
+    edges: {
+      from: string;
+      to: string;
+      type?: string;
+      source_handle?: string;
+      target_handle?: string;
+    }[];
+    // ui-only: graph orientation
+    layout_direction?: "LR" | "TB";
     // ui-only, used to preserve seed block mode across imports/refresh
     seed_source_type?: "hf" | "local" | "unstructured";
     // ui-only, seed metadata cached for refresh/import UX

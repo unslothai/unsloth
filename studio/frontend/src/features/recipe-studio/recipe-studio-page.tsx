@@ -265,8 +265,8 @@ export function RecipeStudioPage({
   }, []);
 
   const payloadResult = useMemo(
-    () => buildRecipePayload(configs, nodes, edges, processors),
-    [configs, edges, nodes, processors],
+    () => buildRecipePayload(configs, nodes, edges, processors, layoutDirection),
+    [configs, edges, layoutDirection, nodes, processors],
   );
   const getCurrentPayloadFromStore = useCallback((): RecipePayload => {
     const state = useRecipeStudioStore.getState();
@@ -275,6 +275,7 @@ export function RecipeStudioPage({
       state.nodes,
       state.edges,
       state.processors,
+      state.layoutDirection,
     ).payload;
   }, []);
   const {

@@ -2,7 +2,19 @@ import type { Edge, Node, XYPosition } from "@xyflow/react";
 import type { RecipeGraphAuxNodeData } from "../../components/recipe-graph-aux-node";
 import { DEFAULT_NODE_HEIGHT, DEFAULT_NODE_WIDTH } from "../../constants";
 import type { RecipeNode, LayoutDirection, NodeConfig } from "../../types";
-import { getLlmJudgeScoreHandleId, HANDLE_IDS } from "../handles";
+import {
+  getDefaultDataSourceHandle,
+  getDefaultDataTargetHandle,
+  getDefaultSemanticSourceHandle,
+  getDefaultSemanticTargetHandle,
+  getLlmJudgeScoreHandleId,
+  HANDLE_IDS,
+  isDataSourceHandle,
+  isDataTargetHandle,
+  isSemanticSourceHandle,
+  isSemanticTargetHandle,
+  normalizeRecipeHandleId,
+} from "../handles";
 import { readNodeHeight, readNodeWidth } from "../rf-node-dimensions";
 import { isSemanticRelation } from "./relations";
 
@@ -23,7 +35,11 @@ export type DisplayGraph = {
   auxDefaults: Record<string, XYPosition>;
 };
 
-function normalizeEdge(edge: Edge, configs: Record<string, NodeConfig>): Edge {
+function normalizeEdge(
+  edge: Edge,
+  configs: Record<string, NodeConfig>,
+  layoutDirection: LayoutDirection,
+): Edge {
   const baseStyle = { stroke: "var(--foreground)", strokeWidth: 2 };
   const isAux = edge.source.startsWith("aux-") || edge.target.startsWith("aux-");
   if (isAux) {
@@ -38,15 +54,45 @@ function normalizeEdge(edge: Edge, configs: Record<string, NodeConfig>): Edge {
   const source = configs[edge.source];
   const target = configs[edge.target];
   const semantic = Boolean(source && target) && isSemanticRelation(source, target);
-  const handles = semantic
-    ? { sourceHandle: HANDLE_IDS.semanticOut, targetHandle: HANDLE_IDS.semanticIn }
-    : { sourceHandle: HANDLE_IDS.dataOut, targetHandle: HANDLE_IDS.dataIn };
+  const sourceHandleNormalized = normalizeRecipeHandleId(edge.sourceHandle);
+  const targetHandleNormalized = normalizeRecipeHandleId(edge.targetHandle);
+  const semanticSourceDefault =
+    source?.kind === "llm"
+      ? getDefaultDataSourceHandle(layoutDirection)
+      : getDefaultSemanticSourceHandle(layoutDirection);
+  const semanticTargetDefault =
+    target?.kind === "llm"
+      ? getDefaultDataTargetHandle(layoutDirection)
+      : getDefaultSemanticTargetHandle(layoutDirection);
+  let sourceHandle = getDefaultDataSourceHandle(layoutDirection);
+  let targetHandle = getDefaultDataTargetHandle(layoutDirection);
+
+  if (semantic) {
+    sourceHandle =
+      isSemanticSourceHandle(sourceHandleNormalized) ||
+      isDataSourceHandle(sourceHandleNormalized)
+        ? sourceHandleNormalized ?? semanticSourceDefault
+        : semanticSourceDefault;
+    targetHandle =
+      isSemanticTargetHandle(targetHandleNormalized) ||
+      isDataTargetHandle(targetHandleNormalized)
+        ? targetHandleNormalized ?? semanticTargetDefault
+        : semanticTargetDefault;
+  } else {
+    sourceHandle = isDataSourceHandle(sourceHandleNormalized)
+      ? sourceHandleNormalized ?? getDefaultDataSourceHandle(layoutDirection)
+      : getDefaultDataSourceHandle(layoutDirection);
+    targetHandle = isDataTargetHandle(targetHandleNormalized)
+      ? targetHandleNormalized ?? getDefaultDataTargetHandle(layoutDirection)
+      : getDefaultDataTargetHandle(layoutDirection);
+  }
 
   return {
     ...edge,
     type: semantic ? "semantic" : "canvas",
     data: semantic ? edge.data : { ...(edge.data ?? {}), path: "smoothstep" },
-    ...handles,
+    sourceHandle,
+    targetHandle,
     style: { ...baseStyle, ...(edge.style ?? {}) },
   };
 }
@@ -349,7 +395,9 @@ export function deriveDisplayGraph({
 
   return {
     nodes: [...displayNodes, ...auxNodes],
-    edges: [...edges, ...auxEdges].map((edge) => normalizeEdge(edge, configs)),
+    edges: [...edges, ...auxEdges].map((edge) =>
+      normalizeEdge(edge, configs, layoutDirection),
+    ),
     auxNodeIds,
     auxDefaults,
   };
