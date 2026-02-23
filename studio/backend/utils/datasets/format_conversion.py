@@ -107,10 +107,12 @@ def standardize_chat_format(
     }
 
     if not isinstance(dataset, IterableDataset):
-        from multiprocessing import cpu_count
+        from utils.hardware import safe_num_proc
 
         if num_proc is None or type(num_proc) is not int:
-            num_proc = max(1, cpu_count() // 3)
+            num_proc = safe_num_proc()
+        else:
+            num_proc = safe_num_proc(num_proc)
 
         dataset_map_kwargs['num_proc'] = num_proc
         dataset_map_kwargs['desc'] = "Standardizing chat format"
@@ -173,10 +175,12 @@ def convert_chatml_to_alpaca(dataset, batch_size=1000, num_proc=None):
     }
 
     if not isinstance(dataset, IterableDataset):
-        from multiprocessing import cpu_count
+        from utils.hardware import safe_num_proc
 
         if num_proc is None or type(num_proc) is not int:
-            num_proc = max(1, cpu_count() // 3)
+            num_proc = safe_num_proc()
+        else:
+            num_proc = safe_num_proc(num_proc)
 
         dataset_map_kwargs['num_proc'] = num_proc
         dataset_map_kwargs['desc'] = "Converting ChatML to Alpaca format"
@@ -221,10 +225,12 @@ def convert_alpaca_to_chatml(dataset, batch_size=1000, num_proc=None):
     }
 
     if not isinstance(dataset, IterableDataset):
-        from multiprocessing import cpu_count
+        from utils.hardware import safe_num_proc
 
         if num_proc is None or type(num_proc) is not int:
-            num_proc = max(1, cpu_count() // 3)
+            num_proc = safe_num_proc()
+        else:
+            num_proc = safe_num_proc(num_proc)
 
         dataset_map_kwargs['num_proc'] = num_proc
         dataset_map_kwargs['desc'] = "Converting Alpaca to ChatML format"
