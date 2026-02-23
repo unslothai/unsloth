@@ -1470,9 +1470,8 @@ def _is_broken_vllm_error(error) -> bool:
         # Also catch CUDA shared library mismatches during vllm import
         # e.g. "libcudart.so.12: cannot open shared object file"
         if (
-            ("libcudart" in message or "libcublas" in message or "libnvrtc" in message)
-            and "cannot open shared object file" in message
-        ):
+            "libcudart" in message or "libcublas" in message or "libnvrtc" in message
+        ) and "cannot open shared object file" in message:
             return True
         current = getattr(current, "__cause__", None) or getattr(
             current, "__context__", None
@@ -1483,6 +1482,7 @@ def _is_broken_vllm_error(error) -> bool:
 def _get_vllm_cuda_mismatch_message(error):
     """If the error is a CUDA version mismatch, return a helpful install message."""
     import re as _re
+
     checked = set()
     current = error
     wanted_cuda = None
@@ -1502,9 +1502,10 @@ def _get_vllm_cuda_mismatch_message(error):
 
     # Detect what CUDA version is actually available on the system
     system_cuda_display = None  # Human-readable, e.g. "13.0"
-    system_cuda_tag = None      # For wheel URL, e.g. "130"
+    system_cuda_tag = None  # For wheel URL, e.g. "130"
     try:
         import torch
+
         cuda_version = torch.version.cuda  # e.g. "13.0" or "12.8"
         if cuda_version:
             system_cuda_display = cuda_version
@@ -1523,6 +1524,7 @@ def _get_vllm_cuda_mismatch_message(error):
     cpu_arch = "x86_64"
     try:
         import platform
+
         cpu_arch = platform.machine()
     except Exception:
         pass

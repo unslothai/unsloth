@@ -920,16 +920,25 @@ class FastBaseModel:
         # Fix _Unsloth_Patched_ prefix in local config files from old saves (issue #4085)
         if os.path.isdir(tokenizer_name):
             import json as _json
-            for _cfg_name in ("processor_config.json", "preprocessor_config.json", "tokenizer_config.json"):
+
+            for _cfg_name in (
+                "processor_config.json",
+                "preprocessor_config.json",
+                "tokenizer_config.json",
+            ):
                 _cfg_path = os.path.join(tokenizer_name, _cfg_name)
                 if os.path.exists(_cfg_path):
                     try:
-                        with open(_cfg_path, "r", encoding="utf-8") as _f:
+                        with open(_cfg_path, "r", encoding = "utf-8") as _f:
                             _cfg = _json.load(_f)
-                        if _cfg.get("processor_class", "").startswith("_Unsloth_Patched_"):
-                            _cfg["processor_class"] = _cfg["processor_class"][len("_Unsloth_Patched_"):]
-                            with open(_cfg_path, "w", encoding="utf-8") as _f:
-                                _json.dump(_cfg, _f, indent=2, ensure_ascii=False)
+                        if _cfg.get("processor_class", "").startswith(
+                            "_Unsloth_Patched_"
+                        ):
+                            _cfg["processor_class"] = _cfg["processor_class"][
+                                len("_Unsloth_Patched_") :
+                            ]
+                            with open(_cfg_path, "w", encoding = "utf-8") as _f:
+                                _json.dump(_cfg, _f, indent = 2, ensure_ascii = False)
                     except Exception:
                         pass
 
