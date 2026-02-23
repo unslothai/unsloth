@@ -184,6 +184,10 @@ class InferenceBackend:
                 # Clear GPU memory cache
                 clear_gpu_cache()
 
+                # Remove stale compiled cache so the next model gets a fresh one
+                from utils.cache_cleanup import clear_unsloth_compiled_cache
+                clear_unsloth_compiled_cache()
+
                 logger.info(f"Model '{model_name}' successfully unloaded.")
                 return True
             except Exception as e:
