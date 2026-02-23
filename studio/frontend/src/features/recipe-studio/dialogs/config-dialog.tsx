@@ -77,6 +77,7 @@ export function ConfigDialog({
             )}
             {renderBlockDialog(
               config,
+              open,
               categoryOptions,
               modelConfigAliases,
               modelProviderOptions,

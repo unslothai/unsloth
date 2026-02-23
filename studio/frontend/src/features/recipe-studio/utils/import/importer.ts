@@ -31,7 +31,23 @@ type UiInput = {
   nodes?: unknown;
   edges?: unknown;
   seed_source_type?: unknown;
+  seed_columns?: unknown;
+  seed_preview_rows?: unknown;
+  local_file_name?: unknown;
+  unstructured_file_name?: unknown;
+  unstructured_chunk_size?: unknown;
+  unstructured_chunk_overlap?: unknown;
 };
+
+function readStringNumber(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(value);
+  }
+  return undefined;
+}
 
 function parseProcessors(input: unknown): RecipeProcessorConfig[] {
   if (!Array.isArray(input)) {
@@ -228,11 +244,36 @@ export function importRecipePayload(input: string): ImportResult {
     uiSeedSourceTypeRaw === "unstructured"
       ? uiSeedSourceTypeRaw
       : undefined;
+  const uiSeedColumns = Array.isArray(ui?.seed_columns)
+    ? ui.seed_columns
+        .map((value) => (typeof value === "string" ? value.trim() : ""))
+        .filter(Boolean)
+    : undefined;
+  const uiSeedPreviewRows = Array.isArray(ui?.seed_preview_rows)
+    ? ui.seed_preview_rows
+        .filter((row): row is Record<string, unknown> => isRecord(row))
+        .map((row) => ({ ...row }))
+    : undefined;
+  const uiLocalFileName = readString(ui?.local_file_name) ?? undefined;
+  const uiUnstructuredFileName =
+    readString(ui?.unstructured_file_name) ?? undefined;
+  const uiUnstructuredChunkSize = readStringNumber(ui?.unstructured_chunk_size);
+  const uiUnstructuredChunkOverlap = readStringNumber(
+    ui?.unstructured_chunk_overlap,
+  );
 
   if (recipe.seed_config) {
     const id = `n${nextId}`;
     nextId += 1;
-    const seedConfig = parseSeedConfig(recipe.seed_config, id, uiSeedSourceType);
+    const seedConfig = parseSeedConfig(recipe.seed_config, id, {
+      preferredSourceType: uiSeedSourceType,
+      seed_columns: uiSeedColumns,
+      seed_preview_rows: uiSeedPreviewRows,
+      local_file_name: uiLocalFileName,
+      unstructured_file_name: uiUnstructuredFileName,
+      unstructured_chunk_size: uiUnstructuredChunkSize,
+      unstructured_chunk_overlap: uiUnstructuredChunkOverlap,
+    });
     if (seedConfig) {
       configs.push(seedConfig);
     }
