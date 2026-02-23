@@ -874,6 +874,41 @@ class UnslothTrainer:
                         num_proc=config_args.get("dataset_num_proc", max(1, os.cpu_count() // 4)),
                     )
                     print("Train on responses only configured successfully\n")
+
+                    # ── Safety net: check if all samples were filtered out ──
+                    # Unsloth's train_on_responses_only masks non-response
+                    # tokens with -100. If max_seq_length is too short and the
+                    # response portion gets truncated away, EVERY sample ends
+                    # up with all labels == -100 and Unsloth removes them,
+                    # leaving 0 usable training samples.
+                    filtered_len = len(self.trainer.train_dataset)
+                    original_len = len(dataset["dataset"])
+                    dropped = original_len - filtered_len
+                    drop_pct = round(100 * dropped / original_len, 1) if original_len > 0 else 0
+
+                    if filtered_len == 0 or drop_pct > 30:
+                        max_seq = training_args.get('max_seq_length', 2048)
+                        error_msg = (
+                            f"{dropped}/{original_len} samples ({drop_pct}%) "
+                            f"were dropped after applying 'train on responses "
+                            f"only' — only {filtered_len} remain. This usually "
+                            f"means max_seq_length ({max_seq}) is too short "
+                            f"and the response portion is being truncated "
+                            f"away. Try increasing max_seq_length (e.g. 8192) "
+                            f"or disabling 'Train on completions'."
+                        )
+                        logger.error(error_msg)
+                        self._update_progress(error=error_msg, is_training=False)
+                        return
+
+                    if dropped > 0:
+                        print(
+                            f"⚠️ {dropped}/{original_len} samples "
+                            f"({drop_pct}%) were dropped (all labels "
+                            f"masked). {filtered_len} samples remain.\n"
+                        )
+                    print(f"Post-filter dataset size: {filtered_len} samples\n")
+
                 except Exception as e:
                     logger.warning(f"Failed to apply train on responses only: {e}")
                     train_on_responses_enabled = False
@@ -955,7 +990,7 @@ class UnslothTrainer:
             progress_callback = ProgressCallback(self)
             self.trainer.add_callback(progress_callback)
 
-            num_samples = len(dataset["dataset"])
+            num_samples = len(self.trainer.train_dataset)
             batch_size = training_args.get('batch_size', 2)
             grad_accum = training_args.get('gradient_accumulation_steps', 4)
             num_epochs = training_args.get('num_epochs', 3)
