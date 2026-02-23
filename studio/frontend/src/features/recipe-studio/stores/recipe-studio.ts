@@ -300,12 +300,12 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
       if (!existing) {
         return buildAddedNodeState(state, "seed", type);
       }
-      const nextSourceType: SeedSourceType =
-        type === "seed_local"
-          ? "local"
-          : type === "seed_unstructured"
-            ? "unstructured"
-            : "hf";
+      let nextSourceType: SeedSourceType = "hf";
+      if (type === "seed_local") {
+        nextSourceType = "local";
+      } else if (type === "seed_unstructured") {
+        nextSourceType = "unstructured";
+      }
 
       const nextConfig = {
         ...existing,

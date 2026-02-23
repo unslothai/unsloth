@@ -4,6 +4,7 @@ import type {
   LlmToolConfig,
   NodeConfig,
   RecipeProcessorConfig,
+  SeedSourceType,
 } from "../../types";
 import { buildEdges } from "./edges";
 import { isRecord, parseJson, readString } from "./helpers";
@@ -29,6 +30,7 @@ type RecipeInput = {
 type UiInput = {
   nodes?: unknown;
   edges?: unknown;
+  seed_source_type?: unknown;
 };
 
 function parseProcessors(input: unknown): RecipeProcessorConfig[] {
@@ -219,11 +221,18 @@ export function importRecipePayload(input: string): ImportResult {
   const nameToId = new Map<string, string>();
 
   let nextId = 1;
+  const uiSeedSourceTypeRaw = readString(ui?.seed_source_type);
+  const uiSeedSourceType: SeedSourceType | undefined =
+    uiSeedSourceTypeRaw === "hf" ||
+    uiSeedSourceTypeRaw === "local" ||
+    uiSeedSourceTypeRaw === "unstructured"
+      ? uiSeedSourceTypeRaw
+      : undefined;
 
   if (recipe.seed_config) {
     const id = `n${nextId}`;
     nextId += 1;
-    const seedConfig = parseSeedConfig(recipe.seed_config, id);
+    const seedConfig = parseSeedConfig(recipe.seed_config, id, uiSeedSourceType);
     if (seedConfig) {
       configs.push(seedConfig);
     }
