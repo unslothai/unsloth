@@ -18,6 +18,7 @@ import { UuidDialog } from "../dialogs/samplers/uuid-dialog";
 
 export function renderBlockDialog(
   config: NodeConfig | null,
+  open: boolean,
   categoryOptions: SamplerConfig[],
   modelConfigAliases: string[],
   modelProviderOptions: string[],
@@ -34,7 +35,7 @@ export function renderBlockDialog(
   switch (definition.dialogKey) {
     case "seed":
       return config.kind === "seed" ? (
-        <SeedDialog config={config} onUpdate={update} />
+        <SeedDialog config={config} onUpdate={update} open={open} />
       ) : null;
     case "category":
       return config.kind === "sampler" && config.sampler_type === "category" ? (
