@@ -15,7 +15,7 @@ import {
   TagsIcon,
   UserAccountIcon,
 } from "@hugeicons/core-free-icons";
-import type { LlmType, NodeConfig, SamplerType } from "../types";
+import type { LlmType, NodeConfig, SamplerType, SeedSourceType } from "../types";
 import {
   makeExpressionConfig,
   makeLlmConfig,
@@ -31,8 +31,13 @@ export type BlockType =
   | LlmType
   | "expression"
   | "seed"
+  | "seed_hf"
+  | "seed_local"
+  | "seed_unstructured"
   | "model_provider"
   | "model_config";
+
+export type SeedBlockType = "seed_hf" | "seed_local" | "seed_unstructured";
 
 type IconType = typeof CodeIcon;
 
@@ -99,12 +104,30 @@ export const BLOCK_GROUPS: BlockGroup[] = [
 const BLOCK_DEFINITIONS: BlockDefinition[] = [
   {
     kind: "seed",
-    type: "seed",
+    type: "seed_hf",
     title: "Seed (Hugging Face)",
     description: "Load real rows from HF and use them as generation context.",
     icon: Plant01Icon,
     dialogKey: "seed",
-    createConfig: (id, existing) => makeSeedConfig(id, existing),
+    createConfig: (id, existing) => makeSeedConfig(id, existing, "hf"),
+  },
+  {
+    kind: "seed",
+    type: "seed_local",
+    title: "Seed (Local File)",
+    description: "Upload CSV/JSON/JSONL and use rows as seed context.",
+    icon: Plant01Icon,
+    dialogKey: "seed",
+    createConfig: (id, existing) => makeSeedConfig(id, existing, "local"),
+  },
+  {
+    kind: "seed",
+    type: "seed_unstructured",
+    title: "Seed (Unstructured)",
+    description: "Upload PDF/DOCX/TXT, chunk to text rows, then seed.",
+    icon: Plant01Icon,
+    dialogKey: "seed",
+    createConfig: (id, existing) => makeSeedConfig(id, existing, "unstructured"),
   },
   {
     kind: "sampler",
@@ -273,7 +296,12 @@ export function getBlockDefinitionForConfig(
     return null;
   }
   if (config.kind === "seed") {
-    return getBlockDefinition("seed", "seed");
+    const seedType: Record<SeedSourceType, SeedBlockType> = {
+      hf: "seed_hf",
+      local: "seed_local",
+      unstructured: "seed_unstructured",
+    };
+    return getBlockDefinition("seed", seedType[config.seed_source_type ?? "hf"]);
   }
   if (config.kind === "sampler") {
     const samplerType =

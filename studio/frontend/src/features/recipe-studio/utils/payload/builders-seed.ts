@@ -12,6 +12,7 @@ export function buildSeedConfig(
   config: SeedConfig,
   errors: string[],
 ): Record<string, unknown> | undefined {
+  const seedSourceType = config.seed_source_type ?? "hf";
   const path = config.hf_path.trim();
   if (!path) {
     return undefined;
@@ -40,14 +41,23 @@ export function buildSeedConfig(
     selectionStrategy = { index, num_partitions: numPartitions };
   }
 
+  const source =
+    seedSourceType === "hf"
+      ? {
+          // biome-ignore lint/style/useNamingConvention: api schema
+          seed_type: "hf",
+          path,
+          token,
+          endpoint,
+        }
+      : {
+          // biome-ignore lint/style/useNamingConvention: api schema
+          seed_type: "local",
+          path,
+        };
+
   return {
-    source: {
-      // biome-ignore lint/style/useNamingConvention: api schema
-      seed_type: "hf",
-      path,
-      token,
-      endpoint,
-    },
+    source,
     // biome-ignore lint/style/useNamingConvention: api schema
     sampling_strategy: config.sampling_strategy,
     // biome-ignore lint/style/useNamingConvention: api schema
