@@ -1,5 +1,6 @@
 import type { Edge } from "@xyflow/react";
 import type {
+  LayoutDirection,
   ModelConfig,
   ModelProviderConfig,
   NodeConfig,
@@ -8,6 +9,17 @@ import type {
 } from "../../types";
 import { isSemanticRelation } from "../graph/relations";
 import { getConfigErrors } from "../index";
+import {
+  getDefaultDataSourceHandle,
+  getDefaultDataTargetHandle,
+  getDefaultSemanticSourceHandle,
+  getDefaultSemanticTargetHandle,
+  isDataSourceHandle,
+  isDataTargetHandle,
+  isSemanticSourceHandle,
+  isSemanticTargetHandle,
+  normalizeRecipeHandleId,
+} from "../handles";
 import { readNodeWidth } from "../rf-node-dimensions";
 import {
   buildExpressionColumn,
@@ -57,6 +69,7 @@ export function buildRecipePayload(
   nodes: RecipeNode[],
   edges: Edge[],
   processors: RecipeProcessorConfig[] = [],
+  layoutDirection: LayoutDirection = "LR",
 ): RecipePayloadResult {
   const errors: string[] = [];
   const columns: Record<string, unknown>[] = [];
@@ -192,14 +205,47 @@ export function buildRecipePayload(
     if (!(source && target)) {
       return [];
     }
+    const semantic =
+      edge.type === "semantic" || isSemanticRelation(source, target);
+    const sourceHandleNormalized = normalizeRecipeHandleId(edge.sourceHandle);
+    const targetHandleNormalized = normalizeRecipeHandleId(edge.targetHandle);
+    const semanticSourceDefault =
+      source.kind === "llm"
+        ? getDefaultDataSourceHandle(layoutDirection)
+        : getDefaultSemanticSourceHandle(layoutDirection);
+    const semanticTargetDefault =
+      target.kind === "llm"
+        ? getDefaultDataTargetHandle(layoutDirection)
+        : getDefaultSemanticTargetHandle(layoutDirection);
+    let sourceHandle = getDefaultDataSourceHandle(layoutDirection);
+    let targetHandle = getDefaultDataTargetHandle(layoutDirection);
+
+    if (semantic) {
+      sourceHandle =
+        isSemanticSourceHandle(sourceHandleNormalized) ||
+        isDataSourceHandle(sourceHandleNormalized)
+          ? sourceHandleNormalized ?? semanticSourceDefault
+          : semanticSourceDefault;
+      targetHandle =
+        isSemanticTargetHandle(targetHandleNormalized) ||
+        isDataTargetHandle(targetHandleNormalized)
+          ? targetHandleNormalized ?? semanticTargetDefault
+          : semanticTargetDefault;
+    } else {
+      sourceHandle = isDataSourceHandle(sourceHandleNormalized)
+        ? sourceHandleNormalized ?? getDefaultDataSourceHandle(layoutDirection)
+        : getDefaultDataSourceHandle(layoutDirection);
+      targetHandle = isDataTargetHandle(targetHandleNormalized)
+        ? targetHandleNormalized ?? getDefaultDataTargetHandle(layoutDirection)
+        : getDefaultDataTargetHandle(layoutDirection);
+    }
     return [
       {
         from: source.name,
         to: target.name,
-        type:
-          edge.type === "semantic" || isSemanticRelation(source, target)
-            ? "semantic"
-            : "canvas",
+        type: semantic ? "semantic" : "canvas",
+        source_handle: sourceHandle ?? undefined,
+        target_handle: targetHandle ?? undefined,
       },
     ];
   });
@@ -238,6 +284,7 @@ export function buildRecipePayload(
       ui: {
         nodes: uiNodes,
         edges: uiEdges,
+        layout_direction: layoutDirection,
         ...(firstSeed && { seed_source_type: firstSeed.seed_source_type }),
         ...(firstSeed && { seed_columns: firstSeed.seed_columns ?? [] }),
         ...(firstSeed && {

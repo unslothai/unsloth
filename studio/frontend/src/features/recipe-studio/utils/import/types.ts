@@ -1,5 +1,6 @@
 import type { Edge } from "@xyflow/react";
 import type {
+  LayoutDirection,
   RecipeNode,
   RecipeProcessorConfig,
   NodeConfig,
@@ -10,6 +11,7 @@ export type RecipeSnapshot = {
   nodes: RecipeNode[];
   edges: Edge[];
   processors: RecipeProcessorConfig[];
+  layoutDirection: LayoutDirection;
   nextId: number;
   nextY: number;
 };

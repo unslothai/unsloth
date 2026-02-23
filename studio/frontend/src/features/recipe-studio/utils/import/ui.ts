@@ -1,21 +1,37 @@
 import type { RecipeNode, NodeConfig } from "../../types";
 import { DEFAULT_NODE_WIDTH } from "../../constants";
 import { nodeDataFromConfig } from "../index";
+import { normalizeRecipeHandleId } from "../handles";
 import { isRecord, readString } from "./helpers";
 
 type UiInput = {
   nodes?: unknown;
   edges?: unknown;
+  layout_direction?: unknown;
+  layoutDirection?: unknown;
 };
 
 export function parseUi(
   ui: UiInput | null,
 ): {
   layouts: Map<string, { x: number; y: number; width?: number }>;
-  edges: Array<{ from: string; to: string; type?: string }> | null;
+  edges: Array<{
+    from: string;
+    to: string;
+    type?: string;
+    sourceHandle?: string;
+    targetHandle?: string;
+  }> | null;
+  layoutDirection: "LR" | "TB" | null;
 } {
   const layouts = new Map<string, { x: number; y: number; width?: number }>();
-  const edges: Array<{ from: string; to: string; type?: string }> = [];
+  const edges: Array<{
+    from: string;
+    to: string;
+    type?: string;
+    sourceHandle?: string;
+    targetHandle?: string;
+  }> = [];
   if (ui && Array.isArray(ui.nodes)) {
     for (const node of ui.nodes) {
       if (isRecord(node)) {
@@ -39,16 +55,33 @@ export function parseUi(
         const from = readString(edge.from);
         const to = readString(edge.to);
         if (from && to) {
+          const sourceHandle = normalizeRecipeHandleId(
+            readString(edge.source_handle) ?? readString(edge.sourceHandle),
+          );
+          const targetHandle = normalizeRecipeHandleId(
+            readString(edge.target_handle) ?? readString(edge.targetHandle),
+          );
           edges.push({
             from,
             to,
             type: readString(edge.type) ?? undefined,
+            sourceHandle: sourceHandle ?? undefined,
+            targetHandle: targetHandle ?? undefined,
           });
         }
       }
     }
   }
-  return { layouts, edges: edges.length > 0 ? edges : null };
+  const layoutDirectionRaw =
+    readString(ui?.layout_direction) ?? readString(ui?.layoutDirection);
+  const layoutDirection =
+    layoutDirectionRaw === "TB"
+      ? "TB"
+      : layoutDirectionRaw === "LR"
+        ? "LR"
+        : null;
+
+  return { layouts, edges: edges.length > 0 ? edges : null, layoutDirection };
 }
 
 export function buildNodes(

@@ -1,6 +1,11 @@
 import { type Connection, type Edge, addEdge } from "@xyflow/react";
 import type { NodeConfig, SamplerConfig } from "../../types";
-import { HANDLE_IDS, normalizeRecipeConnectionHandles } from "../handles";
+import {
+  isDataSourceHandle,
+  isDataTargetHandle,
+  isSemanticSourceHandle,
+  isSemanticTargetHandle,
+} from "../handles";
 import { isSemanticRelation } from "./relations";
 import {
   isCategoryConfig,
@@ -52,18 +57,18 @@ function isModelInfraNode(config: NodeConfig): boolean {
 }
 
 function isSemanticLane(connection: Connection): boolean {
-  const normalized = normalizeRecipeConnectionHandles(connection);
   return (
-    normalized.sourceHandle === HANDLE_IDS.semanticOut &&
-    normalized.targetHandle === HANDLE_IDS.semanticIn
+    (isSemanticSourceHandle(connection.sourceHandle) ||
+      isDataSourceHandle(connection.sourceHandle)) &&
+    (isSemanticTargetHandle(connection.targetHandle) ||
+      isDataTargetHandle(connection.targetHandle))
   );
 }
 
 function isDataLane(connection: Connection): boolean {
-  const normalized = normalizeRecipeConnectionHandles(connection);
   return (
-    normalized.sourceHandle === HANDLE_IDS.dataOut &&
-    normalized.targetHandle === HANDLE_IDS.dataIn
+    isDataSourceHandle(connection.sourceHandle) &&
+    isDataTargetHandle(connection.targetHandle)
   );
 }
 
@@ -126,7 +131,6 @@ export function isValidRecipeConnection(
   connection: Connection,
   configs: Record<string, NodeConfig>,
 ): boolean {
-  const normalizedConnection = normalizeRecipeConnectionHandles(connection);
   if (!(connection.source && connection.target)) {
     return false;
   }
@@ -140,12 +144,12 @@ export function isValidRecipeConnection(
   }
   const semanticRelation = isSemanticRelation(source, target);
   if (semanticRelation) {
-    return isSemanticLane(normalizedConnection);
+    return isSemanticLane(connection);
   }
   if (isModelInfraNode(source) || isModelInfraNode(target)) {
     return false;
   }
-  return isDataLane(normalizedConnection);
+  return isDataLane(connection);
 }
 
 export function applyRecipeConnection(
@@ -153,15 +157,14 @@ export function applyRecipeConnection(
   configs: Record<string, NodeConfig>,
   edges: Edge[],
 ): { edges: Edge[]; configs?: Record<string, NodeConfig> } {
-  const normalizedConnection = normalizeRecipeConnectionHandles(connection);
-  if (!isValidRecipeConnection(normalizedConnection, configs)) {
+  if (!isValidRecipeConnection(connection, configs)) {
     return { edges };
   }
-  const source = normalizedConnection.source
-    ? configs[normalizedConnection.source]
+  const source = connection.source
+    ? configs[connection.source]
     : null;
-  const target = normalizedConnection.target
-    ? configs[normalizedConnection.target]
+  const target = connection.target
+    ? configs[connection.target]
     : null;
   if (!(source && target)) {
     return { edges };
@@ -175,7 +178,7 @@ export function applyRecipeConnection(
       )
     : edges;
   const nextEdges = addEdge(
-    { ...normalizedConnection, type: semanticRelation ? "semantic" : "canvas" },
+    { ...connection, type: semanticRelation ? "semantic" : "canvas" },
     nextBaseEdges,
   );
   if (source.kind === "model_provider" && target.kind === "model_config") {
