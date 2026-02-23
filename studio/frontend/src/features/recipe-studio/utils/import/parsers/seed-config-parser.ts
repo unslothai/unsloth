@@ -27,6 +27,9 @@ function makeDefaultSeedConfig(id: string): SeedConfig {
     hf_endpoint: "https://huggingface.co",
     local_file_name: "",
     unstructured_file_name: "",
+    seed_preview_rows: [],
+    unstructured_chunk_size: "1200",
+    unstructured_chunk_overlap: "200",
     seed_splits: [],
     seed_globs_by_split: {},
     seed_columns: [],
@@ -127,7 +130,15 @@ function parseSeedSettings(seedConfigRaw: unknown): Partial<SeedConfig> {
 export function parseSeedConfig(
   seedConfigRaw: unknown,
   id: string,
-  preferredSourceType?: SeedSourceType,
+  options?: {
+    preferredSourceType?: SeedSourceType;
+    seed_columns?: string[];
+    seed_preview_rows?: Record<string, unknown>[];
+    local_file_name?: string;
+    unstructured_file_name?: string;
+    unstructured_chunk_size?: string;
+    unstructured_chunk_overlap?: string;
+  },
 ): SeedConfig | null {
   if (!seedConfigRaw) {
     return null;
@@ -136,8 +147,8 @@ export function parseSeedConfig(
   let sourceType: SeedSourceType = "hf";
   if (parsed.seed_source_type === "hf") {
     sourceType = "hf";
-  } else if (preferredSourceType) {
-    sourceType = preferredSourceType;
+  } else if (options?.preferredSourceType) {
+    sourceType = options.preferredSourceType;
   } else if (parsed.seed_source_type) {
     sourceType = parsed.seed_source_type;
   }
@@ -145,5 +156,21 @@ export function parseSeedConfig(
     ...makeDefaultSeedConfig(id),
     ...parsed, // payload-only fields override ui defaults
     seed_source_type: sourceType,
+    ...(options?.seed_columns ? { seed_columns: options.seed_columns } : {}),
+    ...(options?.seed_preview_rows
+      ? { seed_preview_rows: options.seed_preview_rows }
+      : {}),
+    ...(options?.local_file_name !== undefined
+      ? { local_file_name: options.local_file_name }
+      : {}),
+    ...(options?.unstructured_file_name !== undefined
+      ? { unstructured_file_name: options.unstructured_file_name }
+      : {}),
+    ...(options?.unstructured_chunk_size !== undefined
+      ? { unstructured_chunk_size: options.unstructured_chunk_size }
+      : {}),
+    ...(options?.unstructured_chunk_overlap !== undefined
+      ? { unstructured_chunk_overlap: options.unstructured_chunk_overlap }
+      : {}),
   };
 }

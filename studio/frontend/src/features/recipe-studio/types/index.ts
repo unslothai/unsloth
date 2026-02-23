@@ -230,6 +230,12 @@ export type SeedConfig = {
   hf_endpoint?: string;
   local_file_name?: string;
   unstructured_file_name?: string;
+  // ui-only
+  seed_preview_rows?: Record<string, unknown>[];
+  // ui-only (string for input ergonomics)
+  unstructured_chunk_size?: string;
+  // ui-only (string for input ergonomics)
+  unstructured_chunk_overlap?: string;
   seed_splits?: string[];
   // ui-only
   // biome-ignore lint/style/useNamingConvention: ui schema

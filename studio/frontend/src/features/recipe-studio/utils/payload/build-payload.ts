@@ -242,6 +242,24 @@ export function buildRecipePayload(
         nodes: uiNodes,
         edges: uiEdges,
         ...(firstSeed && { seed_source_type: firstSeed.seed_source_type }),
+        ...(firstSeed && { seed_columns: firstSeed.seed_columns ?? [] }),
+        ...(firstSeed && { seed_preview_rows: firstSeed.seed_preview_rows ?? [] }),
+        ...(firstSeed &&
+          firstSeed.local_file_name !== undefined && {
+            local_file_name: firstSeed.local_file_name,
+          }),
+        ...(firstSeed &&
+          firstSeed.unstructured_file_name !== undefined && {
+            unstructured_file_name: firstSeed.unstructured_file_name,
+          }),
+        ...(firstSeed &&
+          firstSeed.unstructured_chunk_size !== undefined && {
+            unstructured_chunk_size: firstSeed.unstructured_chunk_size,
+          }),
+        ...(firstSeed &&
+          firstSeed.unstructured_chunk_overlap !== undefined && {
+            unstructured_chunk_overlap: firstSeed.unstructured_chunk_overlap,
+          }),
       },
     },
   };
