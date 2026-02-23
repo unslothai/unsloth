@@ -352,8 +352,8 @@ class Unsloth{RLConfig_name}({RLConfig_name}):
     def __init__({RLConfig_arguments},
         vllm_sampling_params = None,
         unsloth_num_chunks = -1,
-        unsloth_logit_chunk_multiplier = None, 
-        unsloth_grpo_mini_batch = None, 
+        unsloth_logit_chunk_multiplier = None,
+        unsloth_grpo_mini_batch = None,
         {max_seq_length_call}
         **kwargs,
     ):
@@ -1578,9 +1578,9 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                 if trl_version >= Version("0.23.0"):
                     # We need to set this flag for sleep mode auto working with trl update
                     vllm_setter += (
-                        " " * 12
+                        " " * 8
                         + "if os.environ.get('UNSLOTH_VLLM_STANDBY', '0') == '1':\n"
-                        + " " * 16
+                        + " " * 12
                         + "args.vllm_enable_sleep_mode=True\n"
                     )
 
