@@ -45,6 +45,12 @@ class SeedInspectRequest(BaseModel):
     preview_size: int = Field(default=10, ge=1, le=50)
 
 
+class SeedInspectUploadRequest(BaseModel):
+    filename: str = Field(min_length=1)
+    content_base64: str = Field(min_length=1)
+    preview_size: int = Field(default=10, ge=1, le=50)
+
+
 class SeedInspectResponse(BaseModel):
     dataset_name: str
     resolved_path: str

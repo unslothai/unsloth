@@ -2,6 +2,7 @@ import type {
   SeedConfig,
   SeedSamplingStrategy,
   SeedSelectionType,
+  SeedSourceType,
 } from "../../../types";
 import { isRecord, readString } from "../helpers";
 
@@ -17,12 +18,15 @@ function makeDefaultSeedConfig(id: string): SeedConfig {
     kind: "seed",
     name: "seed",
     drop: false,
+    seed_source_type: "hf",
     hf_repo_id: "",
     hf_subset: "",
     hf_split: "",
     hf_path: "",
     hf_token: "",
     hf_endpoint: "https://huggingface.co",
+    local_file_name: "",
+    unstructured_file_name: "",
     seed_splits: [],
     seed_globs_by_split: {},
     seed_columns: [],
@@ -55,16 +59,28 @@ function parseSeedSettings(seedConfigRaw: unknown): Partial<SeedConfig> {
 
   const sampling_strategy = normalizeSampling(seedConfigRaw.sampling_strategy);
 
+  let seed_source_type: SeedSourceType = "hf";
   let hf_path = "";
   let hf_token = "";
   let hf_endpoint = "https://huggingface.co";
   let hf_repo_id = "";
+  let local_file_name = "";
+  let unstructured_file_name = "";
   const sourceRaw = seedConfigRaw.source;
-  if (isRecord(sourceRaw) && readString(sourceRaw.seed_type) === "hf") {
-    hf_path = readString(sourceRaw.path) ?? "";
-    hf_token = readString(sourceRaw.token) ?? "";
-    hf_endpoint = readString(sourceRaw.endpoint) ?? hf_endpoint;
-    hf_repo_id = inferRepoIdFromSeedPath(hf_path);
+  if (isRecord(sourceRaw)) {
+    const seedType = readString(sourceRaw.seed_type);
+    const sourcePath = readString(sourceRaw.path) ?? "";
+    if (seedType === "hf") {
+      seed_source_type = "hf";
+      hf_path = sourcePath;
+      hf_token = readString(sourceRaw.token) ?? "";
+      hf_endpoint = readString(sourceRaw.endpoint) ?? hf_endpoint;
+      hf_repo_id = inferRepoIdFromSeedPath(hf_path);
+    } else if (seedType === "local") {
+      seed_source_type = "local";
+      hf_path = sourcePath;
+      local_file_name = sourcePath.split("/").pop() ?? sourcePath;
+    }
   }
 
   let selection_type: SeedSelectionType = "none";
@@ -92,10 +108,13 @@ function parseSeedSettings(seedConfigRaw: unknown): Partial<SeedConfig> {
   }
 
   return {
+    seed_source_type,
     hf_repo_id,
     hf_path,
     hf_token,
     hf_endpoint,
+    local_file_name,
+    unstructured_file_name,
     sampling_strategy,
     selection_type,
     selection_start,

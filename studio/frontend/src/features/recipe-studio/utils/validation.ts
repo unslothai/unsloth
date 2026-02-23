@@ -180,13 +180,18 @@ export function getConfigErrors(config: NodeConfig | null): string[] {
     }
   }
   if (config.kind === "seed") {
-    if (!config.hf_repo_id.trim()) {
+    const seedSourceType = config.seed_source_type ?? "hf";
+    if (seedSourceType === "hf" && !config.hf_repo_id.trim()) {
       errors.push("Seed dataset repo is required.");
     }
     if (!config.hf_path.trim()) {
       errors.push("Seed metadata not loaded. Click 'Load columns + 10 rows'.");
     }
-    if (config.hf_endpoint?.trim() && !config.hf_endpoint.trim().startsWith("http")) {
+    if (
+      seedSourceType === "hf" &&
+      config.hf_endpoint?.trim() &&
+      !config.hf_endpoint.trim().startsWith("http")
+    ) {
       errors.push("HF endpoint must start with http.");
     }
     if (config.drop && (config.seed_columns?.length ?? 0) === 0) {

@@ -4,6 +4,7 @@ export type {
   BlockGroup,
   BlockKind,
   BlockType,
+  SeedBlockType,
 } from "./definitions";
 export {
   BLOCK_GROUPS,
@@ -12,4 +13,3 @@ export {
   getBlocksForKind,
 } from "./definitions";
 export { renderBlockDialog } from "./render-dialog";
-

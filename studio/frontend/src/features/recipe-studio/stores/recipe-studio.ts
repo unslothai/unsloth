@@ -15,12 +15,14 @@ import type {
   LayoutDirection,
   LlmType,
   NodeConfig,
+  SeedSourceType,
   SamplerType,
 } from "../types";
 import {
   getBlockDefinition,
   type BlockKind,
   type BlockType,
+  type SeedBlockType,
 } from "../blocks/registry";
 import { deriveDisplayGraph } from "../utils/graph/derive-display-graph";
 import { applyRecipeConnection, isValidRecipeConnection } from "../utils/graph";
@@ -64,7 +66,7 @@ type RecipeStudioState = {
   applyLayout: () => void;
   setLlmAuxVisibility: (id: string, visible: boolean) => void;
   addSamplerNode: (type: SamplerType) => void;
-  addSeedNode: () => void;
+  addSeedNode: (type: SeedBlockType) => void;
   addLlmNode: (type: LlmType) => void;
   addModelProviderNode: () => void;
   addModelConfigNode: () => void;
@@ -290,21 +292,47 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
     }),
   addSamplerNode: (type) =>
     set((state) => buildAddedNodeState(state, "sampler", type)),
-  addSeedNode: () =>
+  addSeedNode: (type) =>
     set((state) => {
       const existing = Object.values(state.configs).find(
         (config) => config.kind === "seed",
       );
       if (!existing) {
-        return buildAddedNodeState(state, "seed", "seed");
+        return buildAddedNodeState(state, "seed", type);
       }
+      const nextSourceType: SeedSourceType =
+        type === "seed_local"
+          ? "local"
+          : type === "seed_unstructured"
+            ? "unstructured"
+            : "hf";
+
+      const nextConfig = {
+        ...existing,
+        seed_source_type: nextSourceType,
+        hf_repo_id: "",
+        hf_subset: "",
+        hf_split: "",
+        hf_path: "",
+        hf_token: "",
+        hf_endpoint: "https://huggingface.co",
+        local_file_name: "",
+        unstructured_file_name: "",
+        seed_columns: [],
+      };
       return {
+        configs: {
+          ...state.configs,
+          [existing.id]: nextConfig,
+        },
+        nodes: updateNodeData(
+          state.nodes.map((node) => ({ ...node, selected: node.id === existing.id })),
+          existing.id,
+          nextConfig,
+          state.layoutDirection,
+        ),
         activeConfigId: existing.id,
         dialogOpen: true,
-        nodes: state.nodes.map((node) => ({
-          ...node,
-          selected: node.id === existing.id,
-        })),
       };
     }),
   addLlmNode: (type) => set((state) => buildAddedNodeState(state, "llm", type)),

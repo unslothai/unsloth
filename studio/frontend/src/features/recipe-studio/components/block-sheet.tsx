@@ -20,7 +20,11 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useMemo, useState } from "react";
 import { RECIPE_FLOATING_ICON_BUTTON_CLASS } from "./recipe-floating-icon-button-class";
 import type { LlmType, SamplerType } from "../types";
-import { BLOCK_GROUPS, getBlocksForKind } from "../blocks/registry";
+import {
+  BLOCK_GROUPS,
+  getBlocksForKind,
+  type SeedBlockType,
+} from "../blocks/registry";
 
 type SheetView = "root" | "sampler" | "seed" | "llm" | "expression" | "processor";
 type SheetKind = "sampler" | "seed" | "llm" | "expression";
@@ -39,7 +43,7 @@ type BlockSheetProps = {
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
   onAddSampler: (type: SamplerType) => void;
-  onAddSeed: () => void;
+  onAddSeed: (type: SeedBlockType) => void;
   onAddLlm: (type: LlmType) => void;
   onAddModelProvider: () => void;
   onAddModelConfig: () => void;
@@ -221,7 +225,7 @@ export function BlockSheet({
                       }
                       if (item.kind === "seed" && seedBlocks.length === 1) {
                         setSheetOpen(false);
-                        onAddSeed();
+                        onAddSeed(seedBlocks[0].type as SeedBlockType);
                         return;
                       }
                       if (item.kind === "expression" && expressionBlocks.length === 1) {
@@ -257,7 +261,7 @@ export function BlockSheet({
                         if (item.kind === "sampler") {
                           onAddSampler(item.type as SamplerType);
                         } else if (item.kind === "seed") {
-                          onAddSeed();
+                          onAddSeed(item.type as SeedBlockType);
                         } else if (item.kind === "llm") {
                           if (item.type === "model_provider") {
                             onAddModelProvider();

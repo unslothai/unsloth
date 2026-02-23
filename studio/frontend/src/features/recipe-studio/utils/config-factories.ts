@@ -6,6 +6,7 @@ import type {
   ModelProviderConfig,
   NodeConfig,
   SeedConfig,
+  SeedSourceType,
   SamplerConfig,
   SamplerType,
 } from "../types";
@@ -279,18 +280,22 @@ export function makeExpressionConfig(
 export function makeSeedConfig(
   id: string,
   existing: NodeConfig[],
+  seedSourceType: SeedSourceType = "hf",
 ): SeedConfig {
   return {
     id,
     kind: "seed",
     name: nextName(existing, "seed"),
     drop: false,
+    seed_source_type: seedSourceType,
     hf_repo_id: "",
     hf_subset: "",
     hf_split: "",
     hf_path: "",
     hf_token: "",
     hf_endpoint: "https://huggingface.co",
+    local_file_name: "",
+    unstructured_file_name: "",
     seed_splits: [],
     seed_globs_by_split: {},
     seed_columns: [],

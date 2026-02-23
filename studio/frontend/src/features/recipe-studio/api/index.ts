@@ -81,6 +81,14 @@ export type SeedInspectRequest = {
   preview_size?: number;
 };
 
+export type SeedInspectUploadRequest = {
+  filename: string;
+  // base64 payload without data URL prefix
+  content_base64: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  preview_size?: number;
+};
+
 export type SeedInspectResponse = {
   // biome-ignore lint/style/useNamingConvention: api schema
   dataset_name: string;
@@ -230,6 +238,12 @@ export async function inspectSeedDataset(
   payload: SeedInspectRequest,
 ): Promise<SeedInspectResponse> {
   return postJson<SeedInspectResponse>("/seed/inspect", payload);
+}
+
+export async function inspectSeedUpload(
+  payload: SeedInspectUploadRequest,
+): Promise<SeedInspectResponse> {
+  return postJson<SeedInspectResponse>("/seed/inspect-upload", payload);
 }
 
 export async function streamRecipeJobEvents(options: {

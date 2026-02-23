@@ -172,13 +172,29 @@ function getConfigSummary(config: NodeConfig | undefined): string {
   }
 
   if (config.kind === "seed") {
-    if (config.hf_repo_id.trim()) {
+    const seedSourceType = config.seed_source_type ?? "hf";
+    if (seedSourceType === "hf" && config.hf_repo_id.trim()) {
       return config.hf_repo_id.trim();
+    }
+    if (seedSourceType === "local" && config.local_file_name?.trim()) {
+      return config.local_file_name.trim();
+    }
+    if (
+      seedSourceType === "unstructured" &&
+      config.unstructured_file_name?.trim()
+    ) {
+      return config.unstructured_file_name.trim();
     }
     if (config.hf_path.trim()) {
       return config.hf_path.trim();
     }
-    return "Set HF dataset repo";
+    if (seedSourceType === "hf") {
+      return "Set HF dataset repo";
+    }
+    if (seedSourceType === "local") {
+      return "Upload CSV/JSON file";
+    }
+    return "Upload PDF/DOCX/TXT file";
   }
 
   return "Open details for config";
