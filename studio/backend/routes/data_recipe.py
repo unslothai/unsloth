@@ -397,6 +397,8 @@ def create_job(payload: RecipePayload):
         raise HTTPException(status_code=400, detail="Recipe must include columns.")
 
     run: dict[str, Any] = payload.run or {}
+    run.pop("artifact_path", None)
+    run.pop("dataset_name", None)
     execution_type = str(run.get("execution_type") or "full").strip().lower()
     if execution_type not in {"preview", "full"}:
         raise HTTPException(status_code=400, detail="invalid execution_type: must be 'preview' or 'full'")

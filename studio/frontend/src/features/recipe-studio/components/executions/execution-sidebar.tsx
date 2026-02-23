@@ -2,6 +2,7 @@ import type { ReactElement } from "react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import type { RecipeExecutionRecord } from "../../execution-types";
+import { isExecutionInProgress } from "../../executions/execution-helpers";
 import {
   formatStatus,
   formatTimestamp,
@@ -58,6 +59,13 @@ export function ExecutionSidebar({
                 </Badge>
               </div>
               <p className="text-xs text-muted-foreground">{execution.rows} rows</p>
+              {isExecutionInProgress(execution.status) &&
+                typeof execution.batch?.total === "number" &&
+                execution.batch.total > 1 && (
+                  <p className="text-xs text-muted-foreground">
+                    Batch {execution.batch.idx ?? "--"}/{execution.batch.total}
+                  </p>
+                )}
               <p className="text-xs text-muted-foreground">
                 {formatTimestamp(execution.createdAt)}
               </p>

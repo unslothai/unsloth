@@ -4,7 +4,9 @@ import type { RecipeExecutionRecord } from "../execution-types";
 import { sortExecutions, withExecutionDefaults } from "../executions/execution-helpers";
 
 export type RecipeRunSettings = {
-  bufferSize: number;
+  batchSize: number;
+  batchEnabled: boolean;
+  mergeBatches: boolean;
   llmParallelRequests: number | null;
   nonInferenceWorkers: number;
   maxConversationRestarts: number;
@@ -15,7 +17,9 @@ export type RecipeRunSettings = {
 };
 
 const DEFAULT_RUN_SETTINGS: RecipeRunSettings = {
-  bufferSize: 1000,
+  batchSize: 1000,
+  batchEnabled: true,
+  mergeBatches: false,
   llmParallelRequests: null,
   nonInferenceWorkers: 4,
   maxConversationRestarts: 5,

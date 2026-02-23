@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import logging
+import shutil
 import time
 import traceback
+from pathlib import Path
 from typing import Any
 
 from ..service import build_config_builder, create_data_designer
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[5]
+_ARTIFACT_ROOT = _PROJECT_ROOT / "datasets" / "recipes"
 
 
 class _QueueLogHandler(logging.Handler):
@@ -69,15 +74,16 @@ def run_job_process(
         from data_designer.config.run_config import RunConfig
 
         rows = int(run.get("rows") or 1000)
-        dataset_name = str(run.get("dataset_name") or "dataset")
-        artifact_path_raw = run.get("artifact_path")
-        artifact_path = None
-        if isinstance(artifact_path_raw, str) and artifact_path_raw.strip():
-            artifact_path = artifact_path_raw.strip()
+        job_id = str(run.get("_job_id") or "").strip()
+        if not job_id:
+            job_id = f"{int(time.time())}"
+        dataset_name = f"recipe_{job_id}"
+        merge_batches = bool(run.get("merge_batches"))
+        _ARTIFACT_ROOT.mkdir(parents=True, exist_ok=True)
         run_config_raw = run.get("run_config") or {}
 
         builder = build_config_builder(recipe)
-        designer = create_data_designer(recipe, artifact_path=artifact_path)
+        designer = create_data_designer(recipe, artifact_path=str(_ARTIFACT_ROOT))
 
         # DataDesigner configures root logging in DataDesigner.__init__.
         # Attach queue logger directly to `data_designer` so parser events survive root resets.
@@ -123,6 +129,8 @@ def run_job_process(
         else:
             results = designer.create(builder, num_records=rows, dataset_name=dataset_name)
             analysis = _to_jsonable(results.load_analysis().model_dump(mode="json"))
+            if merge_batches:
+                _merge_batches_to_single_parquet(results.artifact_storage.base_dataset_path)
             artifact_path = str(results.artifact_storage.base_dataset_path)
             event_queue.put(
                 {
@@ -142,3 +150,20 @@ def run_job_process(
                 "stack": traceback.format_exc(limit=20),
             }
         )
+
+
+def _merge_batches_to_single_parquet(base_dataset_path: Path) -> None:
+    parquet_dir = base_dataset_path / "parquet-files"
+    parquet_files = sorted(parquet_dir.glob("*.parquet"))
+    if len(parquet_files) <= 1:
+        return
+
+    try:
+        from data_designer.config.utils.io_helpers import read_parquet_dataset
+    except Exception:
+        return
+
+    dataframe = read_parquet_dataset(parquet_dir)
+    shutil.rmtree(parquet_dir)
+    parquet_dir.mkdir(parents=True, exist_ok=True)
+    dataframe.to_parquet(parquet_dir / "batch_00000.parquet", index=False)

@@ -61,7 +61,9 @@ export function sanitizeExecutionRows(
 
 export function normalizeRunSettings(settings: RecipeRunSettings): RecipeRunSettings {
   return {
-    bufferSize: toPositiveInt(settings.bufferSize, 1000, 1, 200_000),
+    batchSize: toPositiveInt(settings.batchSize, 1000, 1, 200_000),
+    batchEnabled: Boolean(settings.batchEnabled),
+    mergeBatches: Boolean(settings.mergeBatches),
     llmParallelRequests:
       typeof settings.llmParallelRequests === "number"
         ? toPositiveInt(settings.llmParallelRequests, 4, 1, 2048)
@@ -90,10 +92,13 @@ export function normalizeRunSettings(settings: RecipeRunSettings): RecipeRunSett
 
 function buildRunConfigPayload(
   settings: RecipeRunSettings,
+  rows: number,
+  kind: RecipeExecutionKind,
 ): Record<string, unknown> {
+  const useBatching = kind === "full" && settings.batchEnabled;
   return {
     // biome-ignore lint/style/useNamingConvention: backend schema
-    buffer_size: settings.bufferSize,
+    buffer_size: useBatching ? settings.batchSize : toPositiveInt(rows, 1000, 1, 200_000),
     // biome-ignore lint/style/useNamingConvention: backend schema
     non_inference_max_parallel_workers: settings.nonInferenceWorkers,
     // biome-ignore lint/style/useNamingConvention: backend schema
@@ -163,7 +168,12 @@ export function buildExecutionPayload(input: {
       // biome-ignore lint/style/useNamingConvention: backend schema
       execution_type: input.kind,
       // biome-ignore lint/style/useNamingConvention: backend schema
-      run_config: buildRunConfigPayload(normalizedSettings),
+      run_config: buildRunConfigPayload(normalizedSettings, input.rows, input.kind),
+      // biome-ignore lint/style/useNamingConvention: backend schema
+      merge_batches:
+        input.kind === "full" &&
+        normalizedSettings.batchEnabled &&
+        normalizedSettings.mergeBatches,
     },
   };
 }
