@@ -287,6 +287,7 @@ export function makeSeedConfig(
     kind: "seed",
     name: nextName(existing, "seed"),
     drop: false,
+    seed_drop_columns: [],
     seed_source_type: seedSourceType,
     hf_repo_id: "",
     hf_subset: "",

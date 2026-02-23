@@ -32,6 +32,7 @@ type UiInput = {
   edges?: unknown;
   seed_source_type?: unknown;
   seed_columns?: unknown;
+  seed_drop_columns?: unknown;
   seed_preview_rows?: unknown;
   local_file_name?: unknown;
   unstructured_file_name?: unknown;
@@ -81,6 +82,39 @@ function parseProcessors(input: unknown): RecipeProcessorConfig[] {
     });
   });
   return processors;
+}
+
+function parseSeedDropColumns(input: unknown): string[] {
+  if (!Array.isArray(input)) {
+    return [];
+  }
+  const values = new Set<string>();
+  for (const item of input) {
+    if (!isRecord(item)) {
+      continue;
+    }
+    const type = readString(item.processor_type);
+    if (type !== "drop_columns") {
+      continue;
+    }
+    const name = readString(item.name);
+    if (name !== "drop_seed_columns") {
+      continue;
+    }
+    const columnNames = Array.isArray(item.column_names)
+      ? item.column_names
+      : [];
+    for (const columnName of columnNames) {
+      if (typeof columnName !== "string") {
+        continue;
+      }
+      const next = columnName.trim();
+      if (next) {
+        values.add(next);
+      }
+    }
+  }
+  return Array.from(values);
 }
 
 function parseMcpProviders(
@@ -249,6 +283,12 @@ export function importRecipePayload(input: string): ImportResult {
         .map((value) => (typeof value === "string" ? value.trim() : ""))
         .filter(Boolean)
     : undefined;
+  const uiSeedDropColumns = Array.isArray(ui?.seed_drop_columns)
+    ? ui.seed_drop_columns
+        .map((value) => (typeof value === "string" ? value.trim() : ""))
+        .filter(Boolean)
+    : undefined;
+  const payloadSeedDropColumns = parseSeedDropColumns(recipe.processors);
   const uiSeedPreviewRows = Array.isArray(ui?.seed_preview_rows)
     ? ui.seed_preview_rows
         .filter((row): row is Record<string, unknown> => isRecord(row))
@@ -268,6 +308,8 @@ export function importRecipePayload(input: string): ImportResult {
     const seedConfig = parseSeedConfig(recipe.seed_config, id, {
       preferredSourceType: uiSeedSourceType,
       seed_columns: uiSeedColumns,
+      seed_drop_columns:
+        uiSeedDropColumns ?? payloadSeedDropColumns,
       seed_preview_rows: uiSeedPreviewRows,
       local_file_name: uiLocalFileName,
       unstructured_file_name: uiUnstructuredFileName,

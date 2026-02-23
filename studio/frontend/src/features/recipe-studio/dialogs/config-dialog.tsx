@@ -32,6 +32,12 @@ export function ConfigDialog({
   container,
 }: ConfigDialogProps): ReactElement {
   const blockDefinition = getBlockDefinitionForConfig(config);
+  const showDropToggle =
+    config?.kind === "sampler" ||
+    config?.kind === "llm" ||
+    config?.kind === "expression" ||
+    (config?.kind === "seed" &&
+      (config.seed_source_type ?? "hf") === "unstructured");
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -58,10 +64,7 @@ export function ConfigDialog({
         {config && (
           <div className="space-y-4">
             <ValidationBanner config={config} />
-            {(config.kind === "sampler" ||
-              config.kind === "llm" ||
-              config.kind === "expression" ||
-              config.kind === "seed") && (
+            {showDropToggle && (
               <div className="flex items-center corner-squircle justify-between gap-3 rounded-2xl border border-border/60 px-3 py-2">
                 <div>
                   <p className="text-sm font-semibold">Drop from final dataset</p>
