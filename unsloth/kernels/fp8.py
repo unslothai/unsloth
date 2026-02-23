@@ -579,7 +579,14 @@ try:
     if Version(fbgemm_gpu.__version__) >= Version("1.4.0"):
         # We must manually confirm if blockwise FBGEMM works!
         # This check is a must for consumer grade GPUs which fail
-        if test_has_fbgemm():
+        # Suppress CUDA device printf during probe -- on Blackwell (SM100) GPUs,
+        # FBGEMM's CUTLASS blockwise kernel (hardcoded SM90) fires thousands of
+        # "Arch conditional MMA" lines to stdout fd 1 before aborting.
+        from unsloth.import_fixes import suppress_cuda_printf
+
+        with suppress_cuda_printf():
+            _has_fbgemm = test_has_fbgemm()
+        if _has_fbgemm:
             os.environ["UNSLOTH_HAS_FBGEMM"] = "1"
             logger.info(f"Using fbgemm_gpu block quantized FP8 matmul")
             fp8_block_quant_linear = fp8_fbgemm_block_linear
