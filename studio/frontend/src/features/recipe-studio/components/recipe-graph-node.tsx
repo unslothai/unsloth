@@ -338,7 +338,8 @@ function RecipeGraphNodeBase({
   const showDataHandles =
     data.kind === "llm" ||
     data.kind === "expression" ||
-    data.kind === "sampler";
+    data.kind === "sampler" ||
+    data.kind === "seed";
   const showSemanticIn = data.kind === "llm" || data.kind === "model_config";
   const showSemanticOut = data.kind === "model_config" || data.kind === "model_provider";
   const {

@@ -107,7 +107,7 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
   {
     kind: "seed",
     type: "seed_hf",
-    title: "Seed (Hugging Face)",
+    title: "Hugginface dataset",
     description: "Load real rows from HF and use them as generation context.",
     icon: Plant01Icon,
     dialogKey: "seed",
@@ -116,7 +116,7 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
   {
     kind: "seed",
     type: "seed_local",
-    title: "Seed (Local File)",
+    title: "Local file",
     description: "Upload CSV/JSON/JSONL and use rows as seed context.",
     icon: DocumentCodeIcon,
     dialogKey: "seed",
@@ -125,7 +125,7 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
   {
     kind: "seed",
     type: "seed_unstructured",
-    title: "Seed (Unstructured)",
+    title: "Unstructured documents",
     description: "Upload PDF/DOCX/TXT, chunk to text rows, then seed.",
     icon: DocumentAttachmentIcon,
     dialogKey: "seed",
