@@ -6,10 +6,14 @@ export type RecipeRecord = {
   payload: RecipePayload;
   createdAt: number;
   updatedAt: number;
+  learningRecipeId?: string;
+  learningRecipeTitle?: string;
 };
 
 export type SaveRecipeInput = {
   id?: string | null;
   name: string;
   payload: RecipePayload;
+  learningRecipeId?: string;
+  learningRecipeTitle?: string;
 };
