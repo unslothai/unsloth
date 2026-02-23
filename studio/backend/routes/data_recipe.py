@@ -4,10 +4,13 @@ Data Recipe routes (DataDesigner runner).
 
 from __future__ import annotations
 
+import base64
+import binascii
 import sys
 from itertools import islice
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -23,6 +26,7 @@ from models.data_recipe import (
     JobCreateResponse,
     RecipePayload,
     SeedInspectRequest,
+    SeedInspectUploadRequest,
     SeedInspectResponse,
     ValidateError,
     ValidateResponse,
@@ -31,6 +35,8 @@ from models.data_recipe import (
 router = APIRouter()
 DATA_EXTS = (".parquet", ".jsonl", ".json", ".csv")
 DEFAULT_SPLIT = "train"
+LOCAL_UPLOAD_EXTS = {".csv", ".json", ".jsonl"}
+SEED_UPLOAD_DIR = Path.home() / ".cache" / "unsloth" / "data-recipe" / "seed-uploads"
 
 
 def _serialize_preview_value(value: Any) -> Any:
@@ -147,6 +153,51 @@ def _extract_columns(rows: list[dict[str, Any]]) -> list[str]:
     return list(columns_seen.keys())
 
 
+def _sanitize_filename(filename: str) -> str:
+    name = Path(filename).name.strip().replace("\x00", "")
+    if not name:
+        return "seed_upload"
+    return name
+
+
+def _decode_base64_payload(content_base64: str) -> bytes:
+    raw = content_base64.strip()
+    if "," in raw and raw.lower().startswith("data:"):
+        raw = raw.split(",", 1)[1]
+    try:
+        return base64.b64decode(raw, validate=True)
+    except binascii.Error as exc:
+        raise HTTPException(status_code=400, detail="invalid base64 payload") from exc
+
+
+def _read_preview_rows_from_local_file(path: Path, preview_size: int) -> list[dict[str, Any]]:
+    try:
+        import pandas as pd
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"seed inspect dependencies unavailable: {exc}") from exc
+
+    ext = path.suffix.lower()
+    try:
+        if ext == ".csv":
+            df = pd.read_csv(path, nrows=preview_size)
+        elif ext == ".jsonl":
+            df = pd.read_json(path, lines=True).head(preview_size)
+        elif ext == ".json":
+            try:
+                df = pd.read_json(path, lines=True).head(preview_size)
+            except Exception:
+                df = pd.read_json(path).head(preview_size)
+        else:
+            raise HTTPException(status_code=422, detail=f"unsupported file type: {ext}")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"seed inspect failed: {exc}") from exc
+
+    rows = df.to_dict(orient="records")
+    return _serialize_preview_rows(rows)
+
+
 @router.post("/seed/inspect", response_model=SeedInspectResponse)
 def inspect_seed_dataset(payload: SeedInspectRequest) -> SeedInspectResponse:
     dataset_name = payload.dataset_name.strip()
@@ -220,6 +271,44 @@ def inspect_seed_dataset(payload: SeedInspectRequest) -> SeedInspectResponse:
         preview_rows=preview_rows,
         split=split,
         subset=subset,
+    )
+
+
+@router.post("/seed/inspect-upload", response_model=SeedInspectResponse)
+def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectResponse:
+    filename = _sanitize_filename(payload.filename)
+    ext = Path(filename).suffix.lower()
+    if ext not in LOCAL_UPLOAD_EXTS:
+        allowed = ", ".join(sorted(LOCAL_UPLOAD_EXTS))
+        raise HTTPException(status_code=400, detail=f"unsupported file type: {ext}. allowed: {allowed}")
+
+    file_bytes = _decode_base64_payload(payload.content_base64)
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="empty upload payload")
+    max_size_bytes = 50 * 1024 * 1024
+    if len(file_bytes) > max_size_bytes:
+        raise HTTPException(status_code=413, detail="file too large (max 50MB)")
+
+    SEED_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    stored_name = f"{uuid4().hex}_{filename}"
+    stored_path = SEED_UPLOAD_DIR / stored_name
+    stored_path.write_bytes(file_bytes)
+
+    preview_rows = _read_preview_rows_from_local_file(
+        stored_path,
+        int(payload.preview_size),
+    )
+    if not preview_rows:
+        raise HTTPException(status_code=422, detail="dataset appears empty or unreadable")
+    columns = _extract_columns(preview_rows)
+
+    return SeedInspectResponse(
+        dataset_name=filename,
+        resolved_path=str(stored_path),
+        columns=columns,
+        preview_rows=preview_rows,
+        split=None,
+        subset=None,
     )
 
 

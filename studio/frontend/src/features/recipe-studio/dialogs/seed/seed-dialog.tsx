@@ -1,13 +1,5 @@
 import { Button } from "@/components/ui/button";
 import {
-  Combobox,
-  ComboboxContent,
-  ComboboxEmpty,
-  ComboboxInput,
-  ComboboxItem,
-  ComboboxList,
-} from "@/components/ui/combobox";
-import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
@@ -20,7 +12,6 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty";
 import { Input } from "@/components/ui/input";
-import { InputGroupAddon } from "@/components/ui/input-group";
 import {
   Select,
   SelectContent,
@@ -28,7 +19,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Spinner } from "@/components/ui/spinner";
 import {
   Table,
   TableBody,
@@ -43,18 +33,10 @@ import {
   TabsList,
   TabsTrigger,
 } from "@/components/ui/tabs";
-import {
-  useDebouncedValue,
-  useHfDatasetSearch,
-  useHfDatasetSplits,
-  useHfTokenValidation,
-  useInfiniteScroll,
-} from "@/hooks";
-import { formatCompact } from "@/lib/utils";
-import { Search01Icon } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactElement, useEffect, useMemo, useRef, useState } from "react";
-import { inspectSeedDataset } from "../../api";
+import mammoth from "mammoth";
+import { type ReactElement, useEffect, useMemo, useState } from "react";
+import { extractText, getDocumentProxy } from "unpdf";
+import { inspectSeedDataset, inspectSeedUpload } from "../../api";
 import type {
   SeedConfig,
   SeedSamplingStrategy,
@@ -73,6 +55,12 @@ const SELECTION_OPTIONS: Array<{ value: SeedSelectionType; label: string }> = [
   { value: "partition_block", label: "Partition block" },
 ];
 
+const LOCAL_ACCEPT = ".csv,.json,.jsonl";
+const UNSTRUCTURED_ACCEPT = ".txt,.pdf,.docx";
+const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+const CHUNK_SIZE = 1200;
+const CHUNK_OVERLAP = 200;
+
 type SeedDialogProps = {
   config: SeedConfig;
   onUpdate: (patch: Partial<SeedConfig>) => void;
@@ -83,23 +71,6 @@ function getErrorMessage(error: unknown, fallback: string): string {
     return error.message;
   }
   return fallback;
-}
-
-function getPreferredSplit(
-  availableSplits: string[],
-  currentSplit: string | undefined,
-): string | null {
-  if (availableSplits.length === 0) return null;
-  if (availableSplits.length === 1) {
-    return availableSplits[0] === currentSplit ? null : availableSplits[0];
-  }
-  if (!currentSplit && availableSplits.includes("train")) {
-    return "train";
-  }
-  if (!currentSplit) {
-    return availableSplits[0];
-  }
-  return null;
 }
 
 function stringifyCell(value: unknown): string {
@@ -113,123 +84,168 @@ function stringifyCell(value: unknown): string {
   }
 }
 
+function chunkText(input: string): string[] {
+  const text = input.replace(/\r\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+  if (!text) return [];
+
+  const chunks: string[] = [];
+  let cursor = 0;
+  const overlap = Math.max(0, Math.min(CHUNK_OVERLAP, CHUNK_SIZE - 1));
+  while (cursor < text.length) {
+    const end = Math.min(cursor + CHUNK_SIZE, text.length);
+    chunks.push(text.slice(cursor, end).trim());
+    if (end >= text.length) break;
+    cursor = Math.max(0, end - overlap);
+  }
+  return chunks.filter(Boolean);
+}
+
+async function fileToBase64Payload(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const value = String(reader.result ?? "");
+      const parts = value.split(",");
+      resolve(parts.length > 1 ? parts[1] : value);
+    };
+    reader.onerror = () => reject(new Error("Failed to read file"));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function extractUnstructuredText(file: File): Promise<string> {
+  const lower = file.name.toLowerCase();
+  if (lower.endsWith(".txt")) {
+    return file.text();
+  }
+  if (lower.endsWith(".pdf")) {
+    const buffer = new Uint8Array(await file.arrayBuffer());
+    const pdf = await getDocumentProxy(buffer);
+    const { text } = await extractText(pdf, { mergePages: true });
+    return text;
+  }
+  if (lower.endsWith(".docx")) {
+    const arrayBuffer = await file.arrayBuffer();
+    const { value } = await mammoth.extractRawText({ arrayBuffer });
+    return value;
+  }
+  throw new Error("Unsupported unstructured file type");
+}
+
 export function SeedDialog({ config, onUpdate }: SeedDialogProps): ReactElement {
-  const [inputValue, setInputValue] = useState("");
   const [inspectError, setInspectError] = useState<string | null>(null);
   const [isInspecting, setIsInspecting] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [previewRows, setPreviewRows] = useState<Record<string, unknown>[]>([]);
+  const [localFile, setLocalFile] = useState<File | null>(null);
+  const [unstructuredFile, setUnstructuredFile] = useState<File | null>(null);
 
-  const selectingRef = useRef(false);
-  const comboboxAnchorRef = useRef<HTMLDivElement>(null);
-  const debouncedQuery = useDebouncedValue(inputValue);
-
-  const hfToken = config.hf_token?.trim() ?? "";
-  const dataset = config.hf_repo_id.trim();
-
-  const {
-    results: hfResults,
-    isLoading,
-    isLoadingMore,
-    fetchMore,
-    error: hfSearchError,
-  } = useHfDatasetSearch(debouncedQuery, {
-    accessToken: hfToken || undefined,
-  });
-
-  const { error: tokenValidationError, isChecking: isCheckingToken } =
-    useHfTokenValidation(hfToken);
-
-  const { scrollRef, sentinelRef } = useInfiniteScroll(fetchMore, hfResults.length);
-
-  const {
-    subsets,
-    splits,
-    hasMultipleSubsets,
-    hasMultipleSplits,
-    isLoading: splitsLoading,
-    error: splitsError,
-  } = useHfDatasetSplits(dataset || null, config.hf_subset || null, {
-    accessToken: hfToken || undefined,
-  });
+  const mode = config.seed_source_type ?? "hf";
 
   useEffect(() => {
-    if (subsets.length === 1 && config.hf_subset !== subsets[0]) {
-      onUpdate({ hf_subset: subsets[0] });
-    }
-  }, [subsets, config.hf_subset, onUpdate]);
-
-  useEffect(() => {
-    if (splits.length === 0) return;
-    if (hasMultipleSubsets && !config.hf_subset) return;
-    const preferredSplit = getPreferredSplit(splits, config.hf_split);
-    if (preferredSplit) onUpdate({ hf_split: preferredSplit });
-  }, [
-    splits,
-    hasMultipleSubsets,
-    config.hf_subset,
-    config.hf_split,
-    onUpdate,
-  ]);
-
-  const resultIds = useMemo(() => {
-    const ids = hfResults.map((result) => result.id);
-    if (dataset && !ids.includes(dataset)) {
-      ids.push(dataset);
-    }
-    return ids;
-  }, [hfResults, dataset]);
+    setInspectError(null);
+    setPreviewRows([]);
+    setLocalFile(null);
+    setUnstructuredFile(null);
+  }, [mode]);
 
   const samplingId = `${config.id}-sampling`;
   const selectionId = `${config.id}-selection`;
   const tokenId = `${config.id}-hf-token`;
   const subsetId = `${config.id}-hf-subset`;
   const splitId = `${config.id}-hf-split`;
-
-  function handleDatasetSelect(id: string | null): void {
-    selectingRef.current = true;
-    const value = id ?? "";
-    onUpdate({
-      hf_repo_id: value,
-      hf_subset: "",
-      hf_split: "",
-      hf_path: "",
-      seed_columns: [],
-    });
-    setInspectError(null);
-    setPreviewRows([]);
-  }
-
-  function handleInputChange(value: string): void {
-    if (selectingRef.current) {
-      selectingRef.current = false;
-      return;
-    }
-    setInputValue(value);
-  }
+  const datasetId = `${config.id}-hf-dataset`;
 
   async function loadSeedMetadata(): Promise<void> {
-    const datasetName = config.hf_repo_id.trim();
-    if (!datasetName) {
-      setInspectError("Select a dataset first.");
-      return;
-    }
-
     setInspectError(null);
     setIsInspecting(true);
     try {
-      const response = await inspectSeedDataset({
-        dataset_name: datasetName,
-        hf_token: hfToken || undefined,
-        subset: config.hf_subset || undefined,
-        split: config.hf_split || "train",
+      if (mode === "hf") {
+        const datasetName = config.hf_repo_id.trim();
+        if (!datasetName) {
+          throw new Error("Dataset repo is required.");
+        }
+        const response = await inspectSeedDataset({
+          dataset_name: datasetName,
+          hf_token: config.hf_token?.trim() || undefined,
+          subset: config.hf_subset || undefined,
+          split: config.hf_split || "train",
+          preview_size: 10,
+        });
+        onUpdate({
+          hf_path: response.resolved_path,
+          seed_columns: response.columns,
+          hf_split: response.split ?? config.hf_split ?? "",
+          hf_subset: response.subset ?? config.hf_subset ?? "",
+          local_file_name: "",
+          unstructured_file_name: "",
+        });
+        setPreviewRows(response.preview_rows ?? []);
+        return;
+      }
+
+      if (mode === "local") {
+        if (!localFile) {
+          throw new Error("Select a local CSV/JSON/JSONL file first.");
+        }
+        if (localFile.size > MAX_UPLOAD_BYTES) {
+          throw new Error("File too large (max 50MB).");
+        }
+        const payload = await fileToBase64Payload(localFile);
+        const response = await inspectSeedUpload({
+          filename: localFile.name,
+          content_base64: payload,
+          preview_size: 10,
+        });
+        onUpdate({
+          hf_path: response.resolved_path,
+          seed_columns: response.columns,
+          hf_repo_id: "",
+          hf_subset: "",
+          hf_split: "",
+          local_file_name: localFile.name,
+          unstructured_file_name: "",
+        });
+        setPreviewRows(response.preview_rows ?? []);
+        return;
+      }
+
+      if (!unstructuredFile) {
+        throw new Error("Select a PDF/DOCX/TXT file first.");
+      }
+      if (unstructuredFile.size > MAX_UPLOAD_BYTES) {
+        throw new Error("File too large (max 50MB).");
+      }
+
+      const text = await extractUnstructuredText(unstructuredFile);
+      const chunks = chunkText(text);
+      if (chunks.length === 0) {
+        throw new Error("No text found in file.");
+      }
+      const jsonl = chunks
+        .map((chunk) => JSON.stringify({ chunk_text: chunk }))
+        .join("\n");
+      const stem =
+        unstructuredFile.name.replace(/\.(pdf|docx|txt)$/i, "") ||
+        "unstructured_seed";
+      const jsonlFile = new File([jsonl], `${stem}.jsonl`, {
+        type: "application/json",
+      });
+
+      const payload = await fileToBase64Payload(jsonlFile);
+      const response = await inspectSeedUpload({
+        filename: jsonlFile.name,
+        content_base64: payload,
         preview_size: 10,
       });
       onUpdate({
         hf_path: response.resolved_path,
         seed_columns: response.columns,
-        hf_split: response.split ?? config.hf_split ?? "",
-        hf_subset: response.subset ?? config.hf_subset ?? "",
+        hf_repo_id: "",
+        hf_subset: "",
+        hf_split: "",
+        local_file_name: "",
+        unstructured_file_name: unstructuredFile.name,
       });
       setPreviewRows(response.preview_rows ?? []);
     } catch (error) {
@@ -247,6 +263,13 @@ export function SeedDialog({ config, onUpdate }: SeedDialogProps): ReactElement 
     return [];
   }, [config.seed_columns, previewRows]);
 
+  const canLoad =
+    mode === "hf"
+      ? Boolean(config.hf_repo_id.trim())
+      : mode === "local"
+        ? Boolean(localFile)
+        : Boolean(unstructuredFile);
+
   return (
     <Tabs defaultValue="config" className="w-full">
       <TabsList className="w-full">
@@ -256,167 +279,138 @@ export function SeedDialog({ config, onUpdate }: SeedDialogProps): ReactElement 
 
       <TabsContent value="config" className="pt-3">
         <div className="space-y-4">
-          <div className="grid gap-2">
-            <FieldLabel
-              label="Dataset"
-              hint="Search and select a Hugging Face dataset repo (org/repo)."
-            />
-            <div
-              ref={comboboxAnchorRef}
-              onKeyDown={(event) => {
-                if (event.key !== "Enter") return;
-                if (!(event.target instanceof HTMLInputElement)) return;
-                event.preventDefault();
-                if (hfResults.length > 0) {
-                  handleDatasetSelect(hfResults[0].id);
-                } else {
-                  const text = event.target.value.trim();
-                  if (text) handleDatasetSelect(text);
-                }
-              }}
-            >
-              <Combobox
-                items={resultIds}
-                filteredItems={resultIds}
-                filter={null}
-                value={dataset || null}
-                onValueChange={handleDatasetSelect}
-                onInputValueChange={handleInputChange}
-                itemToStringValue={(id) => id}
-                autoHighlight={true}
-              >
-                <ComboboxInput placeholder="Search datasets..." className="nodrag w-full">
-                  <InputGroupAddon>
-                    <HugeiconsIcon icon={Search01Icon} className="size-4" />
-                  </InputGroupAddon>
-                </ComboboxInput>
-                <ComboboxContent anchor={comboboxAnchorRef}>
-                  {isLoading ? (
-                    <div className="flex items-center justify-center gap-2 py-4 text-xs text-muted-foreground">
-                      <Spinner className="size-4" /> Searching...
-                    </div>
-                  ) : (
-                    <ComboboxEmpty>No datasets found</ComboboxEmpty>
-                  )}
-                  <div
-                    ref={scrollRef}
-                    className="max-h-64 overflow-y-auto overscroll-contain [scrollbar-width:thin]"
-                  >
-                    <ComboboxList className="p-1 !max-h-none !overflow-visible">
-                      {(id: string) => {
-                        const result = hfResults.find((entry) => entry.id === id);
-                        let detail: string | null = null;
-                        if (result?.totalExamples) {
-                          detail = `${formatCompact(result.totalExamples)} rows`;
-                        } else if (result?.sizeCategory) {
-                          detail = result.sizeCategory;
-                        } else if (result?.downloads != null) {
-                          detail = `↓${formatCompact(result.downloads)}`;
-                        }
-                        return (
-                          <ComboboxItem key={id} value={id} className="justify-between">
-                            <span className="min-w-0 flex-1 truncate">{id}</span>
-                            {detail && (
-                              <span className="shrink-0 text-[10px] text-muted-foreground">{detail}</span>
-                            )}
-                          </ComboboxItem>
-                        );
-                      }}
-                    </ComboboxList>
-                    <div ref={sentinelRef} className="h-px" />
-                    {isLoadingMore && (
-                      <div className="flex items-center justify-center py-2">
-                        <Spinner className="size-3.5 text-muted-foreground" />
-                      </div>
-                    )}
-                  </div>
-                </ComboboxContent>
-              </Combobox>
-            </div>
-          </div>
+          {mode === "hf" && (
+            <>
+              <div className="grid gap-2">
+                <FieldLabel
+                  label="Dataset"
+                  htmlFor={datasetId}
+                  hint="Hugging Face dataset repo id (org/repo)."
+                />
+                <Input
+                  id={datasetId}
+                  className="nodrag"
+                  placeholder="org/repo"
+                  value={config.hf_repo_id}
+                  onChange={(event) =>
+                    onUpdate({
+                      hf_repo_id: event.target.value,
+                      hf_path: "",
+                      seed_columns: [],
+                    })
+                  }
+                />
+              </div>
 
-          <div className="grid gap-2">
-            <FieldLabel
-              label="HF token (optional)"
-              htmlFor={tokenId}
-              hint="Only needed for private or gated datasets."
-            />
-            <Input
-              id={tokenId}
-              className="nodrag"
-              placeholder="hf_..."
-              value={config.hf_token ?? ""}
-              onChange={(event) => onUpdate({ hf_token: event.target.value })}
-            />
-            {(tokenValidationError ?? hfSearchError) && (
-              <p className="text-xs text-destructive">{tokenValidationError ?? hfSearchError}</p>
-            )}
-            {isCheckingToken && (
-              <p className="text-xs text-muted-foreground">Checking token…</p>
-            )}
-          </div>
+              <div className="grid gap-2">
+                <FieldLabel
+                  label="HF token (optional)"
+                  htmlFor={tokenId}
+                  hint="Only needed for private/gated datasets."
+                />
+                <Input
+                  id={tokenId}
+                  className="nodrag"
+                  placeholder="hf_..."
+                  value={config.hf_token ?? ""}
+                  onChange={(event) => onUpdate({ hf_token: event.target.value })}
+                />
+              </div>
 
-          {splitsLoading && dataset ? (
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              <Spinner className="size-3.5" /> Loading subsets and splits...
-            </div>
-          ) : null}
+              <div className="grid grid-cols-2 gap-3">
+                <div className="grid gap-2">
+                  <FieldLabel
+                    label="Subset (optional)"
+                    htmlFor={subsetId}
+                    hint="Dataset config/subset name."
+                  />
+                  <Input
+                    id={subsetId}
+                    className="nodrag"
+                    placeholder="default"
+                    value={config.hf_subset ?? ""}
+                    onChange={(event) => onUpdate({ hf_subset: event.target.value })}
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <FieldLabel
+                    label="Split"
+                    htmlFor={splitId}
+                    hint="Split to inspect (default train)."
+                  />
+                  <Input
+                    id={splitId}
+                    className="nodrag"
+                    placeholder="train"
+                    value={config.hf_split ?? ""}
+                    onChange={(event) => onUpdate({ hf_split: event.target.value })}
+                  />
+                </div>
+              </div>
+            </>
+          )}
 
-          {splitsError ? (
-            <p className="text-xs text-amber-700 dark:text-amber-400">
-              Could not fetch dataset splits: {splitsError}
-            </p>
-          ) : null}
-
-          {hasMultipleSubsets && (
+          {mode === "local" && (
             <div className="grid gap-2">
               <FieldLabel
-                label="Subset"
-                htmlFor={subsetId}
-                hint="Pick a dataset subset/config when multiple are available."
+                label="Local file"
+                hint="Upload CSV, JSON, or JSONL seed file."
               />
-              <Select
-                value={config.hf_subset ?? ""}
-                onValueChange={(value) => onUpdate({ hf_subset: value || "", hf_split: "" })}
-              >
-                <SelectTrigger className="nodrag w-full" id={subsetId}>
-                  <SelectValue placeholder="Select subset" />
-                </SelectTrigger>
-                <SelectContent>
-                  {subsets.map((subset) => (
-                    <SelectItem key={subset} value={subset}>
-                      {subset}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Input
+                className="nodrag"
+                type="file"
+                accept={LOCAL_ACCEPT}
+                onChange={(event) => {
+                  const file = event.target.files?.[0] ?? null;
+                  setLocalFile(file);
+                  onUpdate({ hf_path: "", seed_columns: [] });
+                }}
+              />
+              <p className="text-xs text-muted-foreground">
+                Upload-only. Max 50MB.
+              </p>
+              {localFile && (
+                <p className="text-xs text-muted-foreground">Selected: {localFile.name}</p>
+              )}
             </div>
           )}
 
-          {hasMultipleSplits && (
+          {mode === "unstructured" && (
             <div className="grid gap-2">
               <FieldLabel
-                label="Split"
-                htmlFor={splitId}
-                hint="Pick split used for preview sampling."
+                label="Unstructured file"
+                hint="Upload PDF, DOCX, or TXT. We chunk text into seed rows."
               />
-              <Select
-                value={config.hf_split ?? ""}
-                onValueChange={(value) => onUpdate({ hf_split: value || "" })}
-              >
-                <SelectTrigger className="nodrag w-full" id={splitId}>
-                  <SelectValue placeholder="Select split" />
-                </SelectTrigger>
-                <SelectContent>
-                  {splits.map((split) => (
-                    <SelectItem key={split} value={split}>
-                      {split}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Input
+                className="nodrag"
+                type="file"
+                accept={UNSTRUCTURED_ACCEPT}
+                onChange={(event) => {
+                  const file = event.target.files?.[0] ?? null;
+                  setUnstructuredFile(file);
+                  onUpdate({ hf_path: "", seed_columns: [] });
+                }}
+              />
+              <p className="text-xs text-muted-foreground">
+                Chunking uses chunk_text only. Max 50MB.
+              </p>
+              {unstructuredFile && (
+                <p className="text-xs text-muted-foreground">
+                  Selected: {unstructuredFile.name}
+                </p>
+              )}
             </div>
           )}
+
+          <Button
+            type="button"
+            variant="outline"
+            className="nodrag"
+            onClick={() => void loadSeedMetadata()}
+            disabled={isInspecting || !canLoad}
+          >
+            {isInspecting ? "Loading..." : "Load columns + 10 rows"}
+          </Button>
 
           {inspectError && <p className="text-xs text-red-600">{inspectError}</p>}
 
@@ -431,103 +425,103 @@ export function SeedDialog({ config, onUpdate }: SeedDialogProps): ReactElement 
               </button>
             </CollapsibleTrigger>
             <CollapsibleContent className="mt-2 space-y-3">
-                <div className="grid gap-2">
-                  <FieldLabel
-                    label="Sampling strategy"
-                    htmlFor={samplingId}
-                    hint="Ordered keeps row order. Shuffle randomizes sampled rows."
-                  />
-                  <Select
-                    value={config.sampling_strategy}
-                    onValueChange={(value) =>
-                      onUpdate({ sampling_strategy: value as SeedSamplingStrategy })
-                    }
-                  >
-                    <SelectTrigger className="nodrag w-full" id={samplingId}>
-                      <SelectValue placeholder="Select sampling" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {SAMPLING_OPTIONS.map((option) => (
-                        <SelectItem key={option.value} value={option.value}>
-                          {option.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
+              <div className="grid gap-2">
+                <FieldLabel
+                  label="Sampling strategy"
+                  htmlFor={samplingId}
+                  hint="Ordered keeps row order. Shuffle randomizes sampled rows."
+                />
+                <Select
+                  value={config.sampling_strategy}
+                  onValueChange={(value) =>
+                    onUpdate({ sampling_strategy: value as SeedSamplingStrategy })
+                  }
+                >
+                  <SelectTrigger className="nodrag w-full" id={samplingId}>
+                    <SelectValue placeholder="Select sampling" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {SAMPLING_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
 
-                <div className="grid gap-2">
-                  <FieldLabel
-                    label="Selection strategy"
-                    htmlFor={selectionId}
-                    hint="Select all, a row range, or partition block."
-                  />
-                  <Select
-                    value={config.selection_type}
-                    onValueChange={(value) =>
-                      onUpdate({ selection_type: value as SeedSelectionType })
-                    }
-                  >
-                    <SelectTrigger className="nodrag w-full" id={selectionId}>
-                      <SelectValue placeholder="Select selection" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {SELECTION_OPTIONS.map((option) => (
-                        <SelectItem key={option.value} value={option.value}>
-                          {option.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
+              <div className="grid gap-2">
+                <FieldLabel
+                  label="Selection strategy"
+                  htmlFor={selectionId}
+                  hint="Select all, a row range, or partition block."
+                />
+                <Select
+                  value={config.selection_type}
+                  onValueChange={(value) =>
+                    onUpdate({ selection_type: value as SeedSelectionType })
+                  }
+                >
+                  <SelectTrigger className="nodrag w-full" id={selectionId}>
+                    <SelectValue placeholder="Select selection" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {SELECTION_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
 
-                {config.selection_type === "index_range" && (
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="grid gap-2">
-                      <FieldLabel label="Start" hint="Inclusive start row index for index_range." />
-                      <Input
-                        className="nodrag"
-                        inputMode="numeric"
-                        value={config.selection_start ?? ""}
-                        onChange={(event) => onUpdate({ selection_start: event.target.value })}
-                      />
-                    </div>
-                    <div className="grid gap-2">
-                      <FieldLabel label="End" hint="Inclusive end row index for index_range." />
-                      <Input
-                        className="nodrag"
-                        inputMode="numeric"
-                        value={config.selection_end ?? ""}
-                        onChange={(event) => onUpdate({ selection_end: event.target.value })}
-                      />
-                    </div>
+              {config.selection_type === "index_range" && (
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="grid gap-2">
+                    <FieldLabel label="Start" hint="Inclusive start row index for index_range." />
+                    <Input
+                      className="nodrag"
+                      inputMode="numeric"
+                      value={config.selection_start ?? ""}
+                      onChange={(event) => onUpdate({ selection_start: event.target.value })}
+                    />
                   </div>
-                )}
-
-                {config.selection_type === "partition_block" && (
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="grid gap-2">
-                      <FieldLabel label="Index" hint="Partition index to load." />
-                      <Input
-                        className="nodrag"
-                        inputMode="numeric"
-                        value={config.selection_index ?? ""}
-                        onChange={(event) => onUpdate({ selection_index: event.target.value })}
-                      />
-                    </div>
-                    <div className="grid gap-2">
-                      <FieldLabel label="Partitions" hint="Total number of partitions." />
-                      <Input
-                        className="nodrag"
-                        inputMode="numeric"
-                        value={config.selection_num_partitions ?? ""}
-                        onChange={(event) =>
-                          onUpdate({ selection_num_partitions: event.target.value })
-                        }
-                      />
-                    </div>
+                  <div className="grid gap-2">
+                    <FieldLabel label="End" hint="Inclusive end row index for index_range." />
+                    <Input
+                      className="nodrag"
+                      inputMode="numeric"
+                      value={config.selection_end ?? ""}
+                      onChange={(event) => onUpdate({ selection_end: event.target.value })}
+                    />
                   </div>
-                )}
+                </div>
+              )}
+
+              {config.selection_type === "partition_block" && (
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="grid gap-2">
+                    <FieldLabel label="Index" hint="Partition index to load." />
+                    <Input
+                      className="nodrag"
+                      inputMode="numeric"
+                      value={config.selection_index ?? ""}
+                      onChange={(event) => onUpdate({ selection_index: event.target.value })}
+                    />
+                  </div>
+                  <div className="grid gap-2">
+                    <FieldLabel label="Partitions" hint="Total number of partitions." />
+                    <Input
+                      className="nodrag"
+                      inputMode="numeric"
+                      value={config.selection_num_partitions ?? ""}
+                      onChange={(event) =>
+                        onUpdate({ selection_num_partitions: event.target.value })
+                      }
+                    />
+                  </div>
+                </div>
+              )}
             </CollapsibleContent>
           </Collapsible>
         </div>
@@ -541,7 +535,7 @@ export function SeedDialog({ config, onUpdate }: SeedDialogProps): ReactElement 
                 <EmptyHeader>
                   <EmptyTitle>Seed preview</EmptyTitle>
                   <EmptyDescription>
-                    Click load to fetch 10 rows from the selected dataset.
+                    Click load to fetch 10 rows from the selected seed source.
                   </EmptyDescription>
                 </EmptyHeader>
                 <EmptyContent>
@@ -550,7 +544,7 @@ export function SeedDialog({ config, onUpdate }: SeedDialogProps): ReactElement 
                     variant="outline"
                     className="nodrag"
                     onClick={() => void loadSeedMetadata()}
-                    disabled={isInspecting || !dataset}
+                    disabled={isInspecting || !canLoad}
                   >
                     {isInspecting ? "Loading..." : "Load 10 rows"}
                   </Button>
@@ -558,43 +552,39 @@ export function SeedDialog({ config, onUpdate }: SeedDialogProps): ReactElement 
               </Empty>
             </div>
           ) : (
-            <div className="space-y-3">
-              <div className="flex items-center gap-3">
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="nodrag"
-                  onClick={() => void loadSeedMetadata()}
-                  disabled={isInspecting || !dataset}
-                >
-                  {isInspecting ? "Loading..." : "Reload 10 rows"}
-                </Button>
+            <div className="space-y-2">
+              <div className="text-xs text-muted-foreground">
+                Loaded columns: {previewColumns.join(", ") || "None"}
               </div>
-              <Table className="rounded-xl border border-border/60">
-                <TableHeader>
-                  <TableRow>
-                    {previewColumns.map((column) => (
-                      <TableHead key={column} className="max-w-[260px]">
-                        {column}
-                      </TableHead>
-                    ))}
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {previewRows.map((row, index) => (
-                    <TableRow key={index}>
-                      {previewColumns.map((column) => (
-                        <TableCell key={column} className="max-w-[260px]">
-                          <div className="truncate">{stringifyCell(row[column])}</div>
-                        </TableCell>
+              <div className="max-h-[360px] overflow-auto rounded-xl border border-border/60">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      {previewColumns.map((col) => (
+                        <TableHead key={col} className="whitespace-nowrap">
+                          {col}
+                        </TableHead>
                       ))}
                     </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+                  </TableHeader>
+                  <TableBody>
+                    {previewRows.map((row, rowIdx) => (
+                      <TableRow key={`row-${rowIdx}`}>
+                        {previewColumns.map((col) => (
+                          <TableCell
+                            key={`${rowIdx}-${col}`}
+                            className="max-w-[260px] whitespace-pre-wrap break-words text-xs"
+                          >
+                            {stringifyCell(row[col])}
+                          </TableCell>
+                        ))}
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
             </div>
           )}
-          {inspectError && <p className="text-xs text-red-600">{inspectError}</p>}
         </div>
       </TabsContent>
     </Tabs>

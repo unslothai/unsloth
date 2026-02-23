@@ -20,6 +20,7 @@ export type LayoutDirection = "LR" | "TB";
 
 export type SeedSamplingStrategy = "ordered" | "shuffle";
 export type SeedSelectionType = "none" | "index_range" | "partition_block";
+export type SeedSourceType = "hf" | "local" | "unstructured";
 
 export type RecipeNodeData = {
   title: string;
@@ -219,6 +220,7 @@ export type SeedConfig = {
   kind: "seed";
   name: string;
   drop?: boolean;
+  seed_source_type: SeedSourceType;
   // ui-only (serialized in seed_config)
   hf_repo_id: string;
   hf_subset?: string;
@@ -226,6 +228,8 @@ export type SeedConfig = {
   hf_path: string;
   hf_token?: string;
   hf_endpoint?: string;
+  local_file_name?: string;
+  unstructured_file_name?: string;
   seed_splits?: string[];
   // ui-only
   // biome-ignore lint/style/useNamingConvention: ui schema

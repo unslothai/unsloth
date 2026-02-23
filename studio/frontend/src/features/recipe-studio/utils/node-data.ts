@@ -30,10 +30,17 @@ export function nodeDataFromConfig(
     };
   }
   if (config.kind === "seed") {
+    const seedSourceType = config.seed_source_type ?? "hf";
+    const subtype =
+      seedSourceType === "hf"
+        ? "Hugging Face"
+        : seedSourceType === "local"
+          ? "Local File"
+          : "Unstructured";
     return {
       title: "Seed",
       kind: "seed",
-      subtype: "Hugging Face",
+      subtype,
       blockType: "seed",
       name: config.name,
       layoutDirection,
