@@ -38,6 +38,9 @@ unsloth_training_checkpoints/
 .DS_Store
 Thumbs.db
 
+# Firebase
+firebase-debug.log
+
 # Other
 resources/
 tmp/
@@ -45,3 +48,4 @@ auth.db
 studio/frontend/package-lock.json
 log_rtx.txt
 log.txt
+setup_leo.sh
