@@ -80,13 +80,32 @@ export function buildSeedDropProcessor(
   config: SeedConfig,
   errors: string[],
 ): Record<string, unknown> | null {
-  if (!config.drop) {
-    return null;
+  const seedSourceType = config.seed_source_type ?? "hf";
+  const loadedCols = (config.seed_columns ?? []).map((c) => c.trim()).filter(Boolean);
+  let cols: string[] = [];
+
+  if (seedSourceType === "unstructured") {
+    if (!config.drop) {
+      return null;
+    }
+    cols = loadedCols;
+  } else {
+    const selectedDropColumns = (config.seed_drop_columns ?? [])
+      .map((c) => c.trim())
+      .filter(Boolean);
+    if (selectedDropColumns.length === 0) {
+      return null;
+    }
+    const loadedSet = new Set(loadedCols);
+    cols =
+      loadedCols.length > 0
+        ? selectedDropColumns.filter((col) => loadedSet.has(col))
+        : selectedDropColumns;
   }
-  const cols = (config.seed_columns ?? []).map((c) => c.trim()).filter(Boolean);
+
   if (cols.length === 0) {
     errors.push(
-      `Seed ${config.name}: drop enabled but no seed columns loaded.`,
+      `Seed ${config.name}: selected drop columns are unavailable.`,
     );
     return null;
   }

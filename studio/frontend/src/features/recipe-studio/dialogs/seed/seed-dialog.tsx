@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Collapsible,
   CollapsibleContent,
@@ -37,6 +38,7 @@ import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
 import mammoth from "mammoth";
 import { type ReactElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { extractText, getDocumentProxy } from "unpdf";
+import { cn } from "@/lib/utils";
 import { inspectSeedDataset, inspectSeedUpload } from "../../api";
 import type {
   SeedConfig,
@@ -62,6 +64,7 @@ const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 const DEFAULT_CHUNK_SIZE = 1200;
 const DEFAULT_CHUNK_OVERLAP = 200;
 const MAX_CHUNK_SIZE = 20000;
+const PREVIEW_TRUNCATE_AT = 320;
 
 type SeedDialogProps = {
   config: SeedConfig;
@@ -85,6 +88,17 @@ function stringifyCell(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+function isExpandablePreviewValue(value: string): boolean {
+  return value.length > PREVIEW_TRUNCATE_AT;
+}
+
+function truncatePreviewValue(value: string): string {
+  if (!isExpandablePreviewValue(value)) {
+    return value;
+  }
+  return `${value.slice(0, PREVIEW_TRUNCATE_AT)}…`;
 }
 
 function parseChunkNumber(
@@ -175,6 +189,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
   const [isInspecting, setIsInspecting] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [previewRows, setPreviewRows] = useState<Record<string, unknown>[]>([]);
+  const [expandedPreviewRows, setExpandedPreviewRows] = useState<Record<number, boolean>>({});
   const [localFile, setLocalFile] = useState<File | null>(null);
   const [unstructuredFile, setUnstructuredFile] = useState<File | null>(null);
 
@@ -188,6 +203,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
 
   useEffect(() => {
     setPreviewRows(config.seed_preview_rows ?? []);
+    setExpandedPreviewRows({});
   }, [config.seed_preview_rows]);
 
   const samplingId = `${config.id}-sampling`;
@@ -246,6 +262,9 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
         onUpdate({
           hf_path: response.resolved_path,
           seed_columns: response.columns,
+          seed_drop_columns: (config.seed_drop_columns ?? []).filter((name) =>
+            response.columns.includes(name),
+          ),
           seed_preview_rows: response.preview_rows ?? [],
           hf_split: response.split ?? config.hf_split ?? "",
           hf_subset: response.subset ?? config.hf_subset ?? "",
@@ -273,6 +292,9 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
         onUpdate({
           hf_path: response.resolved_path,
           seed_columns: response.columns,
+          seed_drop_columns: (config.seed_drop_columns ?? []).filter((name) =>
+            response.columns.includes(name),
+          ),
           seed_preview_rows: response.preview_rows ?? [],
           hf_repo_id: "",
           hf_subset: "",
@@ -317,6 +339,9 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
       onUpdate({
         hf_path: response.resolved_path,
         seed_columns: response.columns,
+        seed_drop_columns: (config.seed_drop_columns ?? []).filter((name) =>
+          response.columns.includes(name),
+        ),
         seed_preview_rows: response.preview_rows ?? [],
         hf_repo_id: "",
         hf_subset: "",
@@ -364,6 +389,14 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
     if (previewRows[0]) return Object.keys(previewRows[0]);
     return [];
   }, [config.seed_columns, previewRows]);
+  const selectedSeedDropColumns = useMemo(
+    () => (config.seed_drop_columns ?? []).filter((name) => name.trim().length > 0),
+    [config.seed_drop_columns],
+  );
+  const selectedSeedDropSet = useMemo(
+    () => new Set(selectedSeedDropColumns),
+    [selectedSeedDropColumns],
+  );
 
   return (
     <Tabs defaultValue="config" className="w-full">
@@ -393,6 +426,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
                         hf_repo_id: event.target.value,
                         hf_path: "",
                         seed_columns: [],
+                        seed_drop_columns: [],
                         seed_preview_rows: [],
                       })
                     }
@@ -474,6 +508,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
                     onUpdate({
                       hf_path: "",
                       seed_columns: [],
+                      seed_drop_columns: [],
                       seed_preview_rows: [],
                       local_file_name: file?.name ?? "",
                     });
@@ -517,6 +552,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
                     onUpdate({
                       hf_path: "",
                       seed_columns: [],
+                      seed_drop_columns: [],
                       seed_preview_rows: [],
                       unstructured_file_name: file?.name ?? "",
                     });
@@ -546,6 +582,44 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
           )}
 
           {inspectError && <p className="text-xs text-red-600">{inspectError}</p>}
+
+          {mode !== "unstructured" && (
+            <div className="space-y-2 rounded-xl corner-squircle border border-border/60 p-3">
+              <FieldLabel
+                label="Drop specific seed columns"
+                hint="Dropped columns stay usable in prompts/expressions but are omitted from final dataset."
+              />
+              {previewColumns.length === 0 ? (
+                <p className="text-xs text-muted-foreground">
+                  Load columns to select which seed fields to drop.
+                </p>
+              ) : (
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {previewColumns.map((columnName) => {
+                    const checked = selectedSeedDropSet.has(columnName);
+                    return (
+                      <label
+                        key={columnName}
+                        className="flex cursor-pointer items-center gap-2 rounded-md border border-border/60 px-2 py-1.5 text-xs"
+                      >
+                        <Checkbox
+                          checked={checked}
+                          onCheckedChange={(value) => {
+                            const isChecked = value === true;
+                            const next = isChecked
+                              ? Array.from(new Set([...selectedSeedDropColumns, columnName]))
+                              : selectedSeedDropColumns.filter((name) => name !== columnName);
+                            onUpdate({ seed_drop_columns: next });
+                          }}
+                        />
+                        <span className="truncate">{columnName}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
 
           <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
             <CollapsibleTrigger asChild={true}>
@@ -732,13 +806,42 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
                   </TableHeader>
                   <TableBody>
                     {previewRows.map((row, rowIdx) => (
-                      <TableRow key={`row-${rowIdx}`}>
+                      <TableRow
+                        key={`row-${rowIdx}`}
+                        className={cn(
+                          previewColumns.some((col) =>
+                            isExpandablePreviewValue(stringifyCell(row[col])),
+                          ) && "cursor-pointer hover:bg-primary/[0.06]",
+                          expandedPreviewRows[rowIdx] && "bg-primary/[0.05]",
+                        )}
+                        onClick={() => {
+                          const canExpand = previewColumns.some((col) =>
+                            isExpandablePreviewValue(stringifyCell(row[col])),
+                          );
+                          if (!canExpand) {
+                            return;
+                          }
+                          setExpandedPreviewRows((current) => ({
+                            ...current,
+                            [rowIdx]: !current[rowIdx],
+                          }));
+                        }}
+                      >
                         {previewColumns.map((col) => (
                           <TableCell
                             key={`${rowIdx}-${col}`}
                             className="max-w-[260px] whitespace-pre-wrap break-words text-xs"
                           >
-                            {stringifyCell(row[col])}
+                            {(() => {
+                              const value = stringifyCell(row[col]);
+                              const rowHasExpandableCell = previewColumns.some((columnName) =>
+                                isExpandablePreviewValue(stringifyCell(row[columnName])),
+                              );
+                              const rowExpanded = Boolean(expandedPreviewRows[rowIdx]);
+                              return rowHasExpandableCell && !rowExpanded
+                                ? truncatePreviewValue(value)
+                                : value;
+                            })()}
                           </TableCell>
                         ))}
                       </TableRow>

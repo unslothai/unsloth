@@ -194,8 +194,17 @@ export function getConfigErrors(config: NodeConfig | null): string[] {
     ) {
       errors.push("HF endpoint must start with http.");
     }
-    if (config.drop && (config.seed_columns?.length ?? 0) === 0) {
-      errors.push("Seed drop needs loaded columns (open Seed Preview).");
+    if (seedSourceType === "unstructured") {
+      if (config.drop && (config.seed_columns?.length ?? 0) === 0) {
+        errors.push("Seed drop needs loaded columns.");
+      }
+    } else {
+      const selectedDropColumns = (config.seed_drop_columns ?? [])
+        .map((value) => value.trim())
+        .filter(Boolean);
+      if (selectedDropColumns.length > 0 && (config.seed_columns?.length ?? 0) === 0) {
+        errors.push("Seed drop columns need loaded columns.");
+      }
     }
 
     if (config.selection_type === "index_range") {
