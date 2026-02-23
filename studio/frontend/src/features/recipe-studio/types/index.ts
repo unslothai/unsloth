@@ -220,6 +220,8 @@ export type SeedConfig = {
   kind: "seed";
   name: string;
   drop?: boolean;
+  // ui-only: explicit per-column drop for structured seed sources (hf/local)
+  seed_drop_columns?: string[];
   seed_source_type: SeedSourceType;
   // ui-only (serialized in seed_config)
   hf_repo_id: string;

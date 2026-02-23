@@ -319,6 +319,7 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
         local_file_name: "",
         unstructured_file_name: "",
         seed_columns: [],
+        seed_drop_columns: [],
         seed_preview_rows: [],
         unstructured_chunk_size: "1200",
         unstructured_chunk_overlap: "200",

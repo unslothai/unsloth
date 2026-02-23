@@ -18,6 +18,7 @@ function makeDefaultSeedConfig(id: string): SeedConfig {
     kind: "seed",
     name: "seed",
     drop: false,
+    seed_drop_columns: [],
     seed_source_type: "hf",
     hf_repo_id: "",
     hf_subset: "",
@@ -133,6 +134,7 @@ export function parseSeedConfig(
   options?: {
     preferredSourceType?: SeedSourceType;
     seed_columns?: string[];
+    seed_drop_columns?: string[];
     seed_preview_rows?: Record<string, unknown>[];
     local_file_name?: string;
     unstructured_file_name?: string;
@@ -157,6 +159,9 @@ export function parseSeedConfig(
     ...parsed, // payload-only fields override ui defaults
     seed_source_type: sourceType,
     ...(options?.seed_columns ? { seed_columns: options.seed_columns } : {}),
+    ...(options?.seed_drop_columns
+      ? { seed_drop_columns: options.seed_drop_columns }
+      : {}),
     ...(options?.seed_preview_rows
       ? { seed_preview_rows: options.seed_preview_rows }
       : {}),

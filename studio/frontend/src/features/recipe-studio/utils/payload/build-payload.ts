@@ -241,6 +241,9 @@ export function buildRecipePayload(
         ...(firstSeed && { seed_source_type: firstSeed.seed_source_type }),
         ...(firstSeed && { seed_columns: firstSeed.seed_columns ?? [] }),
         ...(firstSeed && {
+          seed_drop_columns: firstSeed.seed_drop_columns ?? [],
+        }),
+        ...(firstSeed && {
           seed_preview_rows: firstSeed.seed_preview_rows ?? [],
         }),
         ...(firstSeed &&

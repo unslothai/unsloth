@@ -36,6 +36,7 @@ export type RecipePayload = {
     seed_source_type?: "hf" | "local" | "unstructured";
     // ui-only, seed metadata cached for refresh/import UX
     seed_columns?: string[];
+    seed_drop_columns?: string[];
     seed_preview_rows?: Record<string, unknown>[];
     local_file_name?: string;
     unstructured_file_name?: string;
