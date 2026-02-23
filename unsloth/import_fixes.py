@@ -100,7 +100,10 @@ class HidePrintMessage:
 import contextlib
 import ctypes
 
-_libc = ctypes.CDLL(None)
+try:
+    _libc = ctypes.CDLL(None)
+except Exception:
+    _libc = None
 
 
 @contextlib.contextmanager
@@ -131,7 +134,11 @@ def suppress_cuda_printf():
                 torch.cuda.synchronize()
         except Exception:
             pass
-        _libc.fflush(None)
+        if _libc is not None:
+            try:
+                _libc.fflush(None)
+            except Exception:
+                pass
         for fd, saved in saved_fds.items():
             os.dup2(saved, fd)
             os.close(saved)
