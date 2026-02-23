@@ -6,6 +6,10 @@ const structuredOutputsJinjaUrl = new URL(
 ).href;
 const pdfGroundedQaUrl = new URL("./pdf-grounded-qa.json", import.meta.url)
   .href;
+const instructionFromAnswerUrl = new URL(
+  "./instruction-from-answer.json",
+  import.meta.url,
+).href;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -95,5 +99,12 @@ export const LEARNING_RECIPES: LearningRecipeDef[] = [
     title: "PDF Document QA",
     description: "Build grounded question-answer examples from PDF chunks.",
     loadPayload: () => loadPayloadFromUrl(pdfGroundedQaUrl),
+  },
+  {
+    id: "instruction-from-answer",
+    title: "Instruction from Answer",
+    description:
+      "Use seed answer columns to generate high-quality instruction targets.",
+    loadPayload: () => loadPayloadFromUrl(instructionFromAnswerUrl),
   },
 ];

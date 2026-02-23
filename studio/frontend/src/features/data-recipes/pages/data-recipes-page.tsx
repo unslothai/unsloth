@@ -52,6 +52,7 @@ type TemplateCard = {
   description: string;
   icon: typeof CookBookIcon;
   difficulty: "Easy" | "Starter" | "Intermediate" | "Advanced";
+  learningBadges: string[];
   surfaceClassName: string;
   shineColor: string[];
   learningRecipeId?: string;
@@ -64,6 +65,7 @@ const TEMPLATE_CARDS: TemplateCard[] = [
       "Support ticket triage dataset with structured JSON outputs and Jinja if/else refs.",
     icon: FunctionIcon,
     difficulty: "Advanced",
+    learningBadges: ["Structured LLM", "Expression", "Jinja"],
     surfaceClassName:
       "from-cyan-500/15 via-sky-500/5 to-transparent border-cyan-500/30",
     shineColor: ["#06b6d4", "#38bdf8", "#22d3ee"],
@@ -75,20 +77,23 @@ const TEMPLATE_CARDS: TemplateCard[] = [
       "Unstructured PDF chunks transformed into grounded question-answer training pairs.",
     icon: DocumentAttachmentIcon,
     difficulty: "Easy",
+    learningBadges: ["Unstructured", "LLM Text"],
     surfaceClassName:
       "from-violet-500/15 via-fuchsia-500/5 to-transparent border-violet-500/30",
     shineColor: ["#8b5cf6", "#d946ef", "#a855f7"],
     learningRecipeId: "pdf-grounded-qa",
   },
   {
-    title: "Seed Dataset",
+    title: "Instruction from Answer",
     description:
-      "Start from real rows, then expand with synthetic fields while preserving source context.",
+      "Start from seed answer fields and generate matching user instructions for SFT pairs.",
     icon: Plant01Icon,
-    difficulty: "Starter",
+    difficulty: "Easy",
+    learningBadges: ["Seed Dataset", "LLM Text", "Prompting"],
     surfaceClassName:
       "from-emerald-500/15 via-green-500/5 to-transparent border-emerald-500/30",
     shineColor: ["#10b981", "#22c55e", "#34d399"],
+    learningRecipeId: "instruction-from-answer",
   },
   {
     title: "Text to Python",
@@ -96,6 +101,7 @@ const TEMPLATE_CARDS: TemplateCard[] = [
       "Instruction-to-code pairs for training models that generate clean Python implementations.",
     icon: CodeIcon,
     difficulty: "Starter",
+    learningBadges: ["LLM Code", "Prompting"],
     surfaceClassName:
       "from-amber-500/15 via-orange-500/5 to-transparent border-amber-500/30",
     shineColor: ["#f59e0b", "#f97316", "#fb923c"],
@@ -106,6 +112,7 @@ const TEMPLATE_CARDS: TemplateCard[] = [
       "Natural language to SQL pairs, including schema-aware query construction patterns.",
     icon: Database02Icon,
     difficulty: "Intermediate",
+    learningBadges: ["Structured LLM", "Prompting"],
     surfaceClassName:
       "from-blue-500/15 via-indigo-500/5 to-transparent border-blue-500/30",
     shineColor: ["#3b82f6", "#6366f1", "#60a5fa"],
@@ -116,6 +123,7 @@ const TEMPLATE_CARDS: TemplateCard[] = [
       "Role-based multi-turn conversations for assistant behavior, memory, and response quality.",
     icon: AiChat02Icon,
     difficulty: "Advanced",
+    learningBadges: ["LLM Text", "Conversation Design"],
     surfaceClassName:
       "from-rose-500/15 via-pink-500/5 to-transparent border-rose-500/30",
     shineColor: ["#f43f5e", "#ec4899", "#fb7185"],
@@ -171,6 +179,8 @@ function LearningRecipeCards({
           template.learningRecipeId !== undefined &&
           loadingTemplateId === template.learningRecipeId;
         const isDisabled = !isReady || isLoading || Boolean(loadingTemplateId);
+        const visibleLearningBadges = template.learningBadges.slice(0, 3);
+        const extraLearningBadgeCount = Math.max(0, template.learningBadges.length - 3);
         return (
           <button
             key={template.title}
@@ -185,6 +195,14 @@ function LearningRecipeCards({
               shineColor={template.shineColor}
             />
             <div className="relative flex h-full min-h-40 flex-col justify-between gap-3 p-4">
+              <Badge
+                className="absolute right-3 top-3"
+                variant={
+                  template.difficulty === "Advanced" ? "secondary" : "outline"
+                }
+              >
+                {template.difficulty}
+              </Badge>
               <div className="inline-flex size-10 items-center justify-center rounded-xl border border-foreground/10 bg-background/80">
                 <HugeiconsIcon
                   icon={template.icon}
@@ -199,20 +217,31 @@ function LearningRecipeCards({
                   {template.description}
                 </p>
               </div>
-              <div className="flex items-center gap-2">
-                <Badge
-                  variant={
-                    template.difficulty === "Advanced" ? "secondary" : "outline"
-                  }
-                >
-                  {template.difficulty}
-                </Badge>
+              <div className="flex items-center gap-1 overflow-hidden whitespace-nowrap">
                 {isLoading ? (
                   <Badge variant="outline">Loading...</Badge>
                 ) : (
-                  <Badge variant={isReady ? "outline" : "secondary"}>
-                    {isReady ? "Learning Recipe" : "Soon"}
-                  </Badge>
+                  <>
+                    {visibleLearningBadges.map((badge) => (
+                      <Badge
+                        key={`${template.title}-${badge}`}
+                        variant="outline"
+                        className="h-5 shrink-0 px-1.5 text-[10px]"
+                      >
+                        {badge}
+                      </Badge>
+                    ))}
+                    {extraLearningBadgeCount > 0 ? (
+                      <Badge variant="outline" className="h-5 shrink-0 px-1.5 text-[10px]">
+                        +{extraLearningBadgeCount}
+                      </Badge>
+                    ) : null}
+                    {!isReady ? (
+                      <Badge variant="secondary" className="h-5 shrink-0 px-1.5 text-[10px]">
+                        Soon
+                      </Badge>
+                    ) : null}
+                  </>
                 )}
               </div>
             </div>
