@@ -75,6 +75,22 @@ type UseRecipeExecutionsResult = {
   loadExecutionDatasetPage: (id: string, page: number) => Promise<void>;
 };
 
+function formatValidationMessages(input: {
+  errors: Array<{ message: string; path?: string | null; code?: string | null }>;
+}): string[] {
+  return input.errors.map((item) => {
+    const path = item.path?.trim();
+    const code = item.code?.trim();
+    const prefix = [
+      code ? code.toUpperCase() : null,
+      path ? `column ${path}` : null,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    return prefix ? `${prefix}: ${item.message}` : item.message;
+  });
+}
+
 export function useRecipeExecutions({
   recipeId,
   currentSignature,
@@ -310,7 +326,7 @@ export function useRecipeExecutions({
       try {
         const validation = await validateRecipe(executionPayload);
         if (!validation.valid) {
-          const errors = validation.errors.map((item) => item.message);
+          const errors = formatValidationMessages({ errors: validation.errors });
           const fallback = validation.raw_detail ?? "Validation failed.";
           const nextErrors = errors.length > 0 ? errors : [fallback];
           setRunErrors(nextErrors);
@@ -343,6 +359,7 @@ export function useRecipeExecutions({
   }, [fullRows, runWithValidation]);
 
   const runFromDialog = useCallback(async (): Promise<boolean> => {
+    setValidateResult(null);
     if (runDialogKind === "preview") {
       return runPreview();
     }
@@ -350,6 +367,7 @@ export function useRecipeExecutions({
   }, [runDialogKind, runFull, runPreview]);
 
   const validateFromDialog = useCallback(async (): Promise<boolean> => {
+    setRunErrors([]);
     const payload = readPayload();
     if (!payload) {
       const nextErrors = payloadResult.errors.length > 0
@@ -375,7 +393,7 @@ export function useRecipeExecutions({
     setValidateLoading(true);
     try {
       const validation = await validateRecipe(executionPayload);
-      const errors = validation.errors.map((item) => item.message);
+      const errors = formatValidationMessages({ errors: validation.errors });
       setValidateResult({
         valid: validation.valid,
         errors,

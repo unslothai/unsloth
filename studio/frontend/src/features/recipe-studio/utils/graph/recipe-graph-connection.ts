@@ -193,6 +193,7 @@ export function applyRecipeConnection(
   }
   if (
     isLlmConfig(target) &&
+    source.kind !== "seed" &&
     source.kind !== "model_provider" &&
     source.kind !== "model_config"
   ) {
@@ -205,6 +206,7 @@ export function applyRecipeConnection(
   }
   if (
     isExpressionConfig(target) &&
+    source.kind !== "seed" &&
     source.kind !== "model_provider" &&
     source.kind !== "model_config"
   ) {
