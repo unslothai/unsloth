@@ -35,6 +35,14 @@ const DEFAULT_SUGGESTIONS = [
   "Format a comparison of 3 databases as a markdown table with pros and cons",
 ];
 
+type TitleResponse = {
+  choices?: Array<{
+    message?: {
+      content?: string;
+    };
+  }>;
+};
+
 class VisionImageAdapter implements AttachmentAdapter {
   accept = "image/jpeg,image/png,image/webp,image/gif";
 
@@ -216,7 +224,7 @@ async function generateTitleWithModel(payload: {
     }),
   });
 
-  const body = (await response.json().catch(() => null)) as any;
+  const body = (await response.json().catch(() => null)) as TitleResponse | null;
   if (!response.ok) return null;
   const raw: string | undefined = body?.choices?.[0]?.message?.content;
   if (!raw) return null;
@@ -233,27 +241,42 @@ function fallbackTitleFromUserText(userText: string): string {
   return cleaned.slice(0, max) + (cleaned.length > max ? "..." : "");
 }
 
+function cloneContent(content: ThreadMessage["content"]): ThreadMessage["content"] {
+  return Array.isArray(content)
+    ? JSON.parse(JSON.stringify(content))
+    : [];
+}
+
+function cloneAttachments(
+  attachments: readonly CompleteAttachment[] | undefined,
+): readonly CompleteAttachment[] {
+  if (!Array.isArray(attachments)) {
+    return [];
+  }
+  return JSON.parse(JSON.stringify(attachments));
+}
+
 function toThreadMessage(m: MessageRecord): ThreadMessage {
-  const base = {
-    id: m.id,
-    createdAt: new Date(m.createdAt),
-    content:
-      Array.isArray(m.content) && m.content.length > 0
-        ? m.content
-        : [{ type: "text" as const, text: "" }],
-  };
+  const content =
+    Array.isArray(m.content) && m.content.length > 0
+      ? cloneContent(m.content)
+      : [{ type: "text" as const, text: "" }];
 
   if (m.role === "user") {
     return {
-      ...base,
+      id: m.id,
+      createdAt: new Date(m.createdAt),
       role: "user" as const,
-      attachments: [],
+      content: content as Extract<ThreadMessage, { role: "user" }>["content"],
+      attachments: cloneAttachments(m.attachments),
       metadata: { custom: {} },
     };
   }
   return {
-    ...base,
+    id: m.id,
+    createdAt: new Date(m.createdAt),
     role: "assistant" as const,
+    content: content as Extract<ThreadMessage, { role: "assistant" }>["content"],
     status: { type: "complete" as const, reason: "unknown" as const },
     metadata: {
       custom: (m.metadata as Record<string, unknown>) ?? {},
@@ -300,10 +323,13 @@ function createDexieAdapter(
     },
 
     async initialize(threadId: string) {
+      const currentModelId =
+        useChatRuntimeStore.getState().params.checkpoint ?? "";
       await db.threads.add({
         id: threadId,
         title: "New Chat",
         modelType,
+        modelId: currentModelId,
         pairId,
         archived: false,
         createdAt: Date.now(),
@@ -441,9 +467,9 @@ function ThreadHistoryProvider({
 
       async append({ message }: ExportedMessageRepositoryItem) {
         const { remoteId } = await aui.threadListItem().initialize();
-        const content = Array.isArray(message.content)
-          ? JSON.parse(JSON.stringify(message.content))
-          : [];
+        const content = cloneContent(message.content);
+        const attachments =
+          message.role === "user" ? cloneAttachments(message.attachments) : [];
         const custom = message.metadata?.custom;
         const existing = await db.messages.get(message.id);
         const createdAt =
@@ -455,6 +481,7 @@ function ThreadHistoryProvider({
           threadId: remoteId,
           role: message.role,
           content,
+          ...(attachments.length > 0 && { attachments }),
           ...(custom && Object.keys(custom).length > 0 && { metadata: custom }),
           createdAt,
         });

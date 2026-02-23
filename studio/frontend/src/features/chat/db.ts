@@ -19,6 +19,20 @@ db.version(2)
   })
   .upgrade((tx) => tx.table("messages").clear());
 
+db.version(3)
+  .stores({
+    threads: "id, modelType, pairId, archived, createdAt",
+    messages: "id, threadId, createdAt",
+  })
+  .upgrade((tx) =>
+    tx
+      .table("threads")
+      .toCollection()
+      .modify((thread) => {
+        if (!thread.modelId) thread.modelId = "";
+      }),
+  );
+
 export { db };
 
 export function useLiveQuery<T>(

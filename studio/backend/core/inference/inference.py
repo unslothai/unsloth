@@ -107,6 +107,23 @@ class InferenceBackend:
                 # Apply inference optimization
                 FastVisionModel.for_inference(model)
 
+                # FastVisionModel may return a raw tokenizer (e.g. GemmaTokenizerFast)
+                # instead of a proper Processor for some models (e.g. Gemma-3).
+                # In that case, load the real processor from the base model.
+                from transformers import ProcessorMixin
+                if not (isinstance(processor, ProcessorMixin) or hasattr(processor, "image_processor")):
+                    processor_source = config.base_model if config.is_lora else config.identifier
+                    logger.warning(
+                        f"FastVisionModel returned {type(processor).__name__} (no image_processor) "
+                        f"for '{model_name}' — loading proper processor from '{processor_source}'"
+                    )
+                    from transformers import AutoProcessor
+                    processor = AutoProcessor.from_pretrained(
+                        processor_source,
+                        token=hf_token if hf_token and hf_token.strip() else None,
+                    )
+                    logger.info(f"Loaded {type(processor).__name__} from {processor_source}")
+
                 self.models[model_name]["model"] = model
                 self.models[model_name]["tokenizer"] = processor
                 self.models[model_name]["processor"] = processor
@@ -166,6 +183,10 @@ class InferenceBackend:
 
                 # Clear GPU memory cache
                 clear_gpu_cache()
+
+                # Remove stale compiled cache so the next model gets a fresh one
+                from utils.cache_cleanup import clear_unsloth_compiled_cache
+                clear_unsloth_compiled_cache()
 
                 logger.info(f"Model '{model_name}' successfully unloaded.")
                 return True
@@ -574,59 +595,78 @@ class InferenceBackend:
         model_info = self.models[self.active_model_name]
         is_vision = model_info.get("is_vision", False)
         tokenizer = model_info.get("tokenizer") or model_info.get("processor")
+        # Unwrap processor → raw tokenizer for VLMs on the text path
+        tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
         top_k = self._normalize_top_k(top_k)
 
-        if is_vision:
-            # Vision model generation
-            yield from self._generate_vision_response(
-                messages, system_prompt, image,
-                temperature, top_p, top_k, min_p, max_new_tokens, repetition_penalty,
-                cancel_event=cancel_event,
+        if is_vision and image:
+            # Vision model generation (only when an image is actually provided)
+            # Check that the stored processor can actually handle images.
+            # FastVisionModel may return a raw tokenizer (e.g. GemmaTokenizerFast)
+            # instead of a proper ProcessorMixin for some models (e.g. Gemma-3).
+            from transformers import ProcessorMixin
+            processor = model_info.get("processor")
+            has_image_processing = (
+                processor is not None
+                and (isinstance(processor, ProcessorMixin) or hasattr(processor, "image_processor"))
             )
-        else:
-            # Text model: Use training pipeline approach
-            # Messages are already in ChatML format from eval.py
-
-            # Step 1: Apply get_chat_template if model is in mapper
-            try:
-                from utils.datasets import MODEL_TO_TEMPLATE_MAPPER, get_tokenizer_chat_template
-
-                model_name_lower = self.active_model_name.lower()
-
-                # Check if model has a registered template
-                if model_name_lower in MODEL_TO_TEMPLATE_MAPPER:
-                    template_name = MODEL_TO_TEMPLATE_MAPPER[model_name_lower]
-                    logger.info(f"Applying chat template '{template_name}' for {self.active_model_name}")
-
-                    # This modifies the tokenizer with the correct template
-                    tokenizer = get_chat_template(
-                        tokenizer,
-                        self.active_model_name
-                    )
-                else:
-                    logger.info(f"No registered template for {self.active_model_name}, using tokenizer default")
-            except Exception as e:
-                logger.warning(f"Could not apply get_chat_template: {e}")
-
-            # Step 2: Format with tokenizer.apply_chat_template()
-            try:
-                formatted_prompt = tokenizer.apply_chat_template(
-                    messages,
-                    tokenize=False,
-                    add_generation_prompt=True
+            if has_image_processing:
+                yield from self._generate_vision_response(
+                    messages, system_prompt, image,
+                    temperature, top_p, top_k, min_p, max_new_tokens, repetition_penalty,
+                    cancel_event=cancel_event,
                 )
-                logger.debug(f"Formatted prompt: {formatted_prompt[:200]}...")
-            except Exception as e:
-                logger.error(f"Error applying chat template: {e}")
-                # Fallback to manual formatting
-                formatted_prompt = self.format_chat_prompt(messages, system_prompt)
+                return
+            else:
+                logger.warning(
+                    f"Model '{self.active_model_name}' is marked as vision but its processor "
+                    f"({type(processor).__name__}) has no image_processor — "
+                    f"falling back to text-only generation (image will be ignored)."
+                )
 
-            # Step 3: Generate
-            yield from self.generate_stream(
-                formatted_prompt, temperature, top_p, top_k, min_p, max_new_tokens, repetition_penalty,
-                cancel_event=cancel_event,
-                _adapter_state=_adapter_state,
+        # Text path: Use training pipeline approach
+        # Messages are already in ChatML format from eval.py
+
+        # Step 1: Apply get_chat_template if model is in mapper
+        try:
+            from utils.datasets import MODEL_TO_TEMPLATE_MAPPER, get_tokenizer_chat_template
+
+            model_name_lower = self.active_model_name.lower()
+
+            # Check if model has a registered template
+            if model_name_lower in MODEL_TO_TEMPLATE_MAPPER:
+                template_name = MODEL_TO_TEMPLATE_MAPPER[model_name_lower]
+                logger.info(f"Applying chat template '{template_name}' for {self.active_model_name}")
+
+                # This modifies the tokenizer with the correct template
+                tokenizer = get_chat_template(
+                    tokenizer,
+                    chat_template=template_name,
+                )
+            else:
+                logger.info(f"No registered template for {self.active_model_name}, using tokenizer default")
+        except Exception as e:
+            logger.warning(f"Could not apply get_chat_template: {e}")
+
+        # Step 2: Format with tokenizer.apply_chat_template()
+        try:
+            formatted_prompt = tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True
             )
+            logger.debug(f"Formatted prompt: {formatted_prompt[:200]}...")
+        except Exception as e:
+            logger.error(f"Error applying chat template: {e}")
+            # Fallback to manual formatting
+            formatted_prompt = self.format_chat_prompt(messages, system_prompt)
+
+        # Step 3: Generate
+        yield from self.generate_stream(
+            formatted_prompt, temperature, top_p, top_k, min_p, max_new_tokens, repetition_penalty,
+            cancel_event=cancel_event,
+            _adapter_state=_adapter_state,
+        )
 
     def _generate_vision_response(self, messages, system_prompt, image,
                                   temperature, top_p, top_k, min_p, max_new_tokens,
@@ -635,6 +675,9 @@ class InferenceBackend:
         model_info = self.models[self.active_model_name]
         model = model_info["model"]
         processor = model_info["processor"]
+        # FastVisionModel may return a raw tokenizer (e.g. GemmaTokenizerFast)
+        # instead of a Processor for some models. Safe unwrap for tokenize-only ops.
+        raw_tokenizer = getattr(processor, "tokenizer", processor)
 
         # Extract user message
         user_message = ""
@@ -658,7 +701,7 @@ class InferenceBackend:
                 }
             ]
 
-            input_text = processor.apply_chat_template(vision_messages, add_generation_prompt=True)
+            input_text = processor.apply_chat_template(vision_messages, add_generation_prompt=True, tokenize=False)
             inputs = processor(
                 image,
                 input_text,
@@ -668,7 +711,7 @@ class InferenceBackend:
         else:
             # Text-only for vision model
             formatted_prompt = self.format_chat_prompt(messages, system_prompt)
-            inputs = processor.tokenizer(formatted_prompt, return_tensors="pt").to(self.device)
+            inputs = raw_tokenizer(formatted_prompt, return_tensors="pt").to(self.device)
 
         # Stream with TextIteratorStreamer + background thread
         try:
@@ -676,7 +719,7 @@ class InferenceBackend:
             import threading
 
             streamer = TextIteratorStreamer(
-                processor.tokenizer,
+                raw_tokenizer,
                 skip_prompt=True,
                 skip_special_tokens=True,
                 timeout=0.2,
@@ -766,7 +809,11 @@ class InferenceBackend:
 
         model_info = self.models[self.active_model_name]
         model = model_info["model"]
+        # For VLMs the stored "tokenizer" is actually the processor.
+        # Unwrap to get the real tokenizer so TextIteratorStreamer's
+        # skip_prompt / skip_special_tokens work correctly.
         tokenizer = model_info["tokenizer"]
+        tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
 
         try:
             inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
@@ -876,6 +923,7 @@ class InferenceBackend:
 
         chat_template_info = self.models[self.active_model_name].get("chat_template_info", {})
         tokenizer = self.models[self.active_model_name]["tokenizer"]
+        tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
 
         chat_messages = []
 
@@ -1116,24 +1164,13 @@ class InferenceBackend:
         return img
 
     def _clean_generated_text(self, text: str) -> str:
-        import re
-
-        text = re.sub(r'<\|start_header_id\|>.*?<\|end_header_id\|>', '', text)
-        text = re.sub(r'<\|eot_id\|>', '', text)
-        text = re.sub(r'<\|begin_of_text\|>', '', text)
-
-        text = re.sub(r'\[INST\].*?\[/INST\]', '', text)
-        text = re.sub(r'<s>|</s>', '', text)
-
-        # Clean ChatML tokens (used by Qwen2-VL and similar models)
-        text = re.sub(r'<\|im_start\|>.*?<\|im_end\|>', '', text)
-        text = re.sub(r'<\|im_end\|>', '', text)
-        text = re.sub(r'<\|im_start\|>', '', text)
-
-        text = re.sub(r'^\s*(assistant|user|system):\s*', '', text, flags=re.IGNORECASE)
-        text = text.strip()
-
-        return text
+        """Strip leaked special tokens using the tokenizer's own token list."""
+        tokenizer = self.models.get(self.active_model_name, {}).get("tokenizer")
+        if tokenizer:
+            for token in getattr(tokenizer, "all_special_tokens", []):
+                if token in text:
+                    text = text.replace(token, "")
+        return text.strip()
 
     def _load_chat_template_info(self, model_name: str):
         if model_name not in self.models or not self.models[model_name].get("tokenizer"):
