@@ -622,9 +622,7 @@ class FastBaseModel:
                 if isinstance(_qc, dict)
                 else getattr(_qc, "quant_method", "")
             )
-            if _qm == "fp8" and not (
-                load_in_fp8 if isinstance(load_in_fp8, bool) else load_in_fp8 != False
-            ):
+            if _qm == "fp8" and not load_in_fp8:
                 _bf16_name = model_name.rstrip("/") + "-BF16"
                 try:
                     from huggingface_hub import model_info as _hf_model_info
@@ -641,9 +639,10 @@ class FastBaseModel:
                     )
                     try:
                         model_class = auto_model._model_mapping[auto_config.__class__]
-                    except Exception:
+                    except KeyError:
                         pass
                 except Exception:
+                    # BF16 sibling may not exist, or network error -- keep original model
                     pass
 
         default_attn_impl = "flex_attention" if flex_attn_impl else "sdpa"
