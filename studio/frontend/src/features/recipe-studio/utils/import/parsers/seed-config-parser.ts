@@ -65,7 +65,7 @@ function parseSeedSettings(seedConfigRaw: unknown): Partial<SeedConfig> {
   let hf_endpoint = "https://huggingface.co";
   let hf_repo_id = "";
   let local_file_name = "";
-  let unstructured_file_name = "";
+  const unstructured_file_name = "";
   const sourceRaw = seedConfigRaw.source;
   if (isRecord(sourceRaw)) {
     const seedType = readString(sourceRaw.seed_type);
@@ -127,12 +127,23 @@ function parseSeedSettings(seedConfigRaw: unknown): Partial<SeedConfig> {
 export function parseSeedConfig(
   seedConfigRaw: unknown,
   id: string,
+  preferredSourceType?: SeedSourceType,
 ): SeedConfig | null {
   if (!seedConfigRaw) {
     return null;
   }
+  const parsed = parseSeedSettings(seedConfigRaw);
+  let sourceType: SeedSourceType = "hf";
+  if (parsed.seed_source_type === "hf") {
+    sourceType = "hf";
+  } else if (preferredSourceType) {
+    sourceType = preferredSourceType;
+  } else if (parsed.seed_source_type) {
+    sourceType = parsed.seed_source_type;
+  }
   return {
     ...makeDefaultSeedConfig(id),
-    ...parseSeedSettings(seedConfigRaw), // payload-only fields override ui defaults
+    ...parsed, // payload-only fields override ui defaults
+    seed_source_type: sourceType,
   };
 }
