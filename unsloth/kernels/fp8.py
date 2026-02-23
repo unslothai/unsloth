@@ -583,6 +583,7 @@ try:
         # FBGEMM's CUTLASS blockwise kernel (hardcoded SM90) fires thousands of
         # "Arch conditional MMA" lines to stdout fd 1 before aborting.
         from unsloth.import_fixes import suppress_cuda_printf
+
         with suppress_cuda_printf():
             _has_fbgemm = test_has_fbgemm()
         if _has_fbgemm:

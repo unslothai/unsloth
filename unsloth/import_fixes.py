@@ -102,6 +102,7 @@ import ctypes
 
 _libc = ctypes.CDLL(None)
 
+
 @contextlib.contextmanager
 def suppress_cuda_printf():
     """Suppress CUDA device-side printf by redirecting stdout/stderr fds to /dev/null.
@@ -125,6 +126,7 @@ def suppress_cuda_printf():
     finally:
         try:
             import torch
+
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
         except Exception:
