@@ -25,6 +25,12 @@ UNSLOTH_CACHE_DIR = Path(__file__).parent / "unsloth_compiled_cache"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup: detect hardware, print setup token if needed. Shutdown: clean up compiled cache."""
+    # Remove stale .venv_overlay from previous sessions — it will be
+    # rebuilt at runtime if a model needs transformers 5.x
+    overlay_dir = Path(__file__).resolve().parent.parent.parent / ".venv_overlay"
+    if overlay_dir.is_dir():
+        shutil.rmtree(overlay_dir, ignore_errors=True)
+
     # Detect hardware first — sets DEVICE global used everywhere
     detect_hardware()
 
