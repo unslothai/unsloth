@@ -543,7 +543,7 @@ class UnslothTrainer:
     def start_training(self,
                        dataset: Dataset,
                        eval_dataset: Dataset = None,
-                       eval_steps: float = 0.01,
+                       eval_steps: float = 0.00,
                        output_dir: str = "./outputs",
                        num_epochs: int = 3,
                        learning_rate: float = 5e-5,
@@ -743,12 +743,16 @@ class UnslothTrainer:
 
             # ========== EVAL CONFIGURATION ==========
             eval_dataset = training_args.get('eval_dataset', None)
-            eval_steps_val = training_args.get('eval_steps', 0.01)
+            eval_steps_val = training_args.get('eval_steps', 0.00)
             if eval_dataset is not None:
-                config_args["eval_strategy"] = "steps"
-                config_args["eval_steps"] = eval_steps_val
-                print(f"Evaluation enabled: eval_steps={eval_steps_val} (fraction of total steps)\n")
-                print(f"Eval dataset: {len(eval_dataset)} rows\n")
+                if eval_steps_val > 0:
+                    config_args["eval_strategy"] = "steps"
+                    config_args["eval_steps"] = eval_steps_val
+                    print(f"✅ Evaluation enabled: eval_steps={eval_steps_val} (fraction of total steps)\n")
+                    print(f"Eval dataset: {len(eval_dataset)} rows\n")
+                else:
+                    print(f"⚠️  Eval dataset provided but eval_steps={eval_steps_val} (disabled)\n")
+                    print("To enable evaluation, set eval_steps > 0.0\n")
             else:
                 print("No eval dataset — evaluation disabled\n")
 
