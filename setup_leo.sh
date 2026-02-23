@@ -24,11 +24,6 @@ echo "╔═══════════════════════�
 echo "║     Unsloth Studio Setup Script      ║"
 echo "╚══════════════════════════════════════╝"
 
-# ── Clean up stale Unsloth compiled caches ──
-rm -rf "$SCRIPT_DIR/unsloth_compiled_cache"
-rm -rf "$SCRIPT_DIR/studio/backend/unsloth_compiled_cache"
-rm -rf "$SCRIPT_DIR/studio/tmp/unsloth_compiled_cache"
-
 # ── Detect Colab (like unsloth does) ──
 IS_COLAB=false
 keynames=$'\n'$(printenv | cut -d= -f1)
@@ -63,7 +58,6 @@ fi
 
 if [ "$NEED_NODE" = true ]; then
     # ── 2. Install nvm ──
-    export NODE_OPTIONS=--dns-result-order=ipv4first # or else fails on colab.
     echo "Installing nvm..."
     curl -so- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash > /dev/null 2>&1
 
@@ -159,54 +153,23 @@ if [ "$IS_COLAB" = true ]; then
     # Colab: install packages directly without venv
     run_quiet "pip upgrade" pip install --upgrade pip
     echo "   Installing unsloth-zoo + unsloth..."
-    run_quiet "pip install unsloth" pip install -r "$SCRIPT_DIR/studio/backend/requirements/base.txt"
-    echo "   Installing additional unsloth dependencies..."
-    run_quiet "pip install extras" pip install --no-cache-dir -r "$SCRIPT_DIR/studio/backend/requirements/extras.txt"
-    run_quiet "pip install extras" pip install --no-deps --no-cache-dir -r "$SCRIPT_DIR/studio/backend/requirements/extras-no-deps.txt"
-    run_quiet "pip install torchao+transformers" pip install --force-reinstall --no-cache-dir -r "$SCRIPT_DIR/studio/backend/requirements/overrides.txt"
-    run_quiet "pip install triton_kernels" pip install --no-deps -r "$SCRIPT_DIR/studio/backend/requirements/triton-kernels.txt"
-    # Patch: override llama_cpp.py with fix from unsloth-zoo branch
-    LLAMA_CPP_DST="$(pip show unsloth-zoo | grep -i '^Location:' | awk '{print $2}')/unsloth_zoo/llama_cpp.py"
-    curl -sSL "https://raw.githubusercontent.com/unslothai/unsloth-zoo/refs/heads/main/unsloth_zoo/llama_cpp.py" \
-        -o "$LLAMA_CPP_DST"
+    run_quiet "pip install unsloth" pip install unsloth-zoo unsloth
     echo "   Installing studio dependencies..."
-    run_quiet "pip install studio" pip install -r "$SCRIPT_DIR/studio/backend/requirements/studio.txt"
+    run_quiet "pip install extras" pip install typer fastapi uvicorn pydantic matplotlib pandas nest_asyncio "datasets==4.3.0" pyjwt easydict addict
     echo "✅ Python dependencies installed"
 else
-    # Local: create venv (always start fresh to preserve correct install order)
-    rm -rf .venv
+    # Local: create venv
     "$BEST_PY" -m venv .venv
     source .venv/bin/activate
     run_quiet "pip upgrade" pip install --upgrade pip
     echo "   Installing unsloth-zoo + unsloth..."
-    run_quiet "pip install unsloth" pip install -r "$SCRIPT_DIR/studio/backend/requirements/base.txt"
-    echo "   Installing additional unsloth dependencies..."
-    run_quiet "pip install extras" pip install --no-cache-dir -r "$SCRIPT_DIR/studio/backend/requirements/extras.txt"
-    run_quiet "pip install extras" pip install --no-deps --no-cache-dir -r "$SCRIPT_DIR/studio/backend/requirements/extras-no-deps.txt"
-    run_quiet "pip install torchao+transformers" pip install --force-reinstall --no-cache-dir -r "$SCRIPT_DIR/studio/backend/requirements/overrides.txt"
-    run_quiet "pip install triton_kernels" pip install --no-deps -r "$SCRIPT_DIR/studio/backend/requirements/triton-kernels.txt"
-    # Patch: override llama_cpp.py with fix from unsloth-zoo branch
-    LLAMA_CPP_DST="$(pip show unsloth-zoo | grep -i '^Location:' | awk '{print $2}')/unsloth_zoo/llama_cpp.py"
-    curl -sSL "https://raw.githubusercontent.com/unslothai/unsloth-zoo/refs/heads/main/unsloth_zoo/llama_cpp.py" \
-        -o "$LLAMA_CPP_DST"
+    run_quiet "pip install unsloth" pip install unsloth-zoo unsloth
     echo "   Installing studio dependencies..."
-    run_quiet "pip install studio" pip install -r "$SCRIPT_DIR/studio/backend/requirements/studio.txt"
+    run_quiet "pip install extras" pip install typer fastapi uvicorn pydantic matplotlib pandas nest_asyncio "datasets==4.3.0" pyjwt easydict addict
     echo "✅ Python dependencies installed"
-    
-    # ── 7. WSL: pre-install GGUF build dependencies ──
-    # On WSL, sudo requires a password and can't be entered during GGUF export
-    # (runs in a non-interactive subprocess). Install build deps here instead.
-    if grep -qi microsoft /proc/version 2>/dev/null; then
-        echo ""
-        echo "⚠️  WSL detected — installing build dependencies for GGUF export..."
-        echo "   You may be prompted for your password."
-        sudo apt-get update -y
-        sudo apt-get install -y build-essential cmake curl git libcurl4-openssl-dev
-        echo "✅ GGUF build dependencies installed"
-    fi
 fi
 
-# ── 8. Add shell alias (skip in Colab) ──
+# ── 7. Add shell alias (skip in Colab) ──
 # Note: venv activation does NOT persist across terminal sessions.
 # This alias hardcodes the venv python path so users don't need to activate.
 if [ "$IS_COLAB" = false ]; then
@@ -218,42 +181,38 @@ USER_SHELL="$(basename "${SHELL:-/bin/bash}")"
 case "$USER_SHELL" in
     zsh)
         SHELL_RC="$HOME/.zshrc"
-        ALIAS_BLOCK="alias unsloth-studio='${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py studio -f ${REPO_DIR}/studio/frontend/dist'
-alias unsloth-ui='${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py studio -f ${REPO_DIR}/studio/frontend/dist'"
+        ALIAS_BLOCK="alias unsloth-ui='${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py ui -f ${REPO_DIR}/studio/frontend/dist'"
         ;;
     fish)
         SHELL_RC="$HOME/.config/fish/config.fish"
         # fish uses 'abbr' or 'function'; a simple alias works via 'alias' in config.fish
-        ALIAS_BLOCK="alias unsloth-studio '${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py studio -f ${REPO_DIR}/studio/frontend/dist'
-alias unsloth-ui '${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py studio -f ${REPO_DIR}/studio/frontend/dist'"
+        ALIAS_BLOCK="alias unsloth-ui '${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py ui -f ${REPO_DIR}/studio/frontend/dist'"
         ;;
     ksh)
         SHELL_RC="$HOME/.kshrc"
-        ALIAS_BLOCK="alias unsloth-studio='${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py studio -f ${REPO_DIR}/studio/frontend/dist'
-alias unsloth-ui='${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py studio -f ${REPO_DIR}/studio/frontend/dist'"
+        ALIAS_BLOCK="alias unsloth-ui='${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py ui -f ${REPO_DIR}/studio/frontend/dist'"
         ;;
     *)
         # Default to bash for bash and any other POSIX-compatible shell
         SHELL_RC="$HOME/.bashrc"
-        ALIAS_BLOCK="alias unsloth-studio='${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py studio -f ${REPO_DIR}/studio/frontend/dist'
-alias unsloth-ui='${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py studio -f ${REPO_DIR}/studio/frontend/dist'"
+        ALIAS_BLOCK="alias unsloth-ui='${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py ui -f ${REPO_DIR}/studio/frontend/dist'"
         ;;
 esac
 
 echo "   Detected shell: $USER_SHELL → $SHELL_RC"
 
 ALIAS_ADDED=false
-if ! grep -qF "unsloth-studio" "$SHELL_RC" 2>/dev/null; then
+if ! grep -qF "unsloth-ui" "$SHELL_RC" 2>/dev/null; then
     mkdir -p "$(dirname "$SHELL_RC")"   # needed for fish's nested config path
     cat >> "$SHELL_RC" <<UNSLOTH_EOF
 
 # Unsloth Studio launcher
 $ALIAS_BLOCK
 UNSLOTH_EOF
-    echo "✅ Aliases 'unsloth-studio' and 'unsloth-ui' added to $SHELL_RC"
+    echo "✅ Alias 'unsloth-ui' added to $SHELL_RC"
     ALIAS_ADDED=true
 else
-    echo "✅ Aliases 'unsloth-studio' and 'unsloth-ui' already exist in $SHELL_RC"
+    echo "✅ Alias 'unsloth-ui' already exists in $SHELL_RC"
 fi
 
 fi  # End of "if not Colab" for shell alias setup
@@ -277,6 +236,6 @@ else
         echo "║ Launch with:                         ║"
     fi
     echo "║                                      ║"
-    echo "║ unsloth-studio -H 0.0.0.0 -p 8000   ║"
+    echo "║ unsloth-ui -H 0.0.0.0 -p 8000       ║"
     echo "╚══════════════════════════════════════╝"
 fi

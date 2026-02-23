@@ -5,6 +5,7 @@ import {
 } from "@/components/assistant-ui/model-selector";
 import { Thread } from "@/components/assistant-ui/thread";
 import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
 import { SidebarProvider, SidebarTrigger, useSidebar } from "@/components/ui/sidebar";
 import {
   Sheet,
@@ -217,9 +218,9 @@ function InlineSidebar({
         className={cn(
           "bg-sidebar text-sidebar-foreground h-full overflow-hidden rounded-2xl corner-squircle transition-[width] duration-200 ease-linear",
           !collapsed &&
-            (side === "left"
-              ? "border-r border-0 border-sidebar-border"
-              : "border-l border-0 border-sidebar-border"),
+          (side === "left"
+            ? "border-r border-0 border-sidebar-border"
+            : "border-l border-0 border-sidebar-border"),
           collapsed ? "w-0" : "w-(--sidebar-width)",
         )}
       >
@@ -283,7 +284,8 @@ export function ChatPage(): ReactElement {
   const modelsFromStore = useChatRuntimeStore((state) => state.models);
   const lorasFromStore = useChatRuntimeStore((state) => state.loras);
   const modelsError = useChatRuntimeStore((state) => state.modelsError);
-  const { refresh, selectModel, ejectModel } = useChatModelRuntime();
+  const { refresh, selectModel, ejectModel, loadingModel } =
+    useChatModelRuntime();
   const refreshRef = useRef(refresh);
   const selectModelRef = useRef(selectModel);
 
@@ -299,9 +301,18 @@ export function ChatPage(): ReactElement {
 
   const handleCheckpointChange = useCallback(
     (value: string, meta?: { isLora: boolean }) => {
-      void selectModel({ id: value, isLora: meta?.isLora });
+      const currentCheckpoint =
+        useChatRuntimeStore.getState().params.checkpoint;
+      if (!value || value === currentCheckpoint) return;
+      setView({ mode: "single", newThreadNonce: crypto.randomUUID() });
+      void (async () => {
+        if (currentCheckpoint) {
+          await ejectModel();
+        }
+        await selectModel({ id: value, isLora: meta?.isLora });
+      })();
     },
-    [selectModel],
+    [selectModel, ejectModel],
   );
   const handleEject = useCallback(() => {
     void ejectModel();
@@ -346,6 +357,41 @@ export function ChatPage(): ReactElement {
     setView(viewBeforeCompare);
     setViewBeforeCompare(null);
   }, [viewBeforeCompare]);
+
+  const handleThreadSelect = useCallback(
+    (nextView: ChatView) => {
+      setView(nextView);
+
+      const threadId =
+        nextView.mode === "single" ? nextView.threadId : undefined;
+      const pairId =
+        nextView.mode === "compare" ? nextView.pairId : undefined;
+
+      void (async () => {
+        let thread: import("./types").ThreadRecord | undefined;
+        if (threadId) {
+          thread = await db.threads.get(threadId);
+        } else if (pairId) {
+          thread = await db.threads
+            .where("pairId")
+            .equals(pairId)
+            .first();
+        }
+        const threadModelId = thread?.modelId;
+        if (!threadModelId) return;
+
+        const currentCheckpoint =
+          useChatRuntimeStore.getState().params.checkpoint;
+        if (threadModelId === currentCheckpoint) return;
+
+        if (currentCheckpoint) {
+          await ejectModel();
+        }
+        await selectModel({ id: threadModelId });
+      })();
+    },
+    [ejectModel, selectModel],
+  );
 
   const models = useMemo<ModelOption[]>(
     () =>
@@ -473,88 +519,99 @@ export function ChatPage(): ReactElement {
 
   return (
     <div className="h-[calc(100dvh-4rem)] bg-background overflow-hidden">
-    <GuidedTour {...tour.tourProps} />
-    <SidebarProvider
-      defaultOpen={true}
-      open={sidebarOpen}
-      onOpenChange={setSidebarOpen}
-      className="!min-h-0 h-full w-full max-w-7xl mx-auto px-2 sm:px-4"
-      style={
-        {
-          "--sidebar-width": "14rem",
-          "--sidebar-width-icon": "3rem",
-        } as CSSProperties
-      }
-    >
-      <InlineSidebar>
-        <ThreadSidebar
-          view={view}
-          onSelect={setView}
-          onNewThread={handleNewThread}
-          onNewCompare={handleNewCompare}
-          showCompare={canCompare}
-        />
-      </InlineSidebar>
+      <GuidedTour {...tour.tourProps} />
+      <SidebarProvider
+        defaultOpen={true}
+        open={sidebarOpen}
+        onOpenChange={setSidebarOpen}
+        className="!min-h-0 h-full w-full max-w-7xl mx-auto px-2 sm:px-4"
+        style={
+          {
+            "--sidebar-width": "14rem",
+            "--sidebar-width-icon": "3rem",
+          } as CSSProperties
+        }
+      >
+        <InlineSidebar>
+          <ThreadSidebar
+            view={view}
+            onSelect={handleThreadSelect}
+            onNewThread={handleNewThread}
+            onNewCompare={handleNewCompare}
+            showCompare={canCompare}
+          />
+        </InlineSidebar>
 
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <div className="flex h-11 shrink-0 items-center px-1.5 sm:px-2">
-          <div className="flex items-center gap-1">
-            <SidebarTrigger />
-            <TopBarActions
-              onNewThread={handleNewThread}
-              onNewCompare={handleNewCompare}
-              showCompare={canCompare}
-            />
-            <ModelSelector
-              models={models}
-              loraModels={loraModels}
-              value={inferenceParams.checkpoint}
-              onValueChange={handleCheckpointChange}
-              onEject={handleEject}
-              variant="ghost"
-              open={modelSelectorOpen}
-              onOpenChange={handleModelSelectorOpenChange}
-              triggerDataTour="chat-model-selector"
-              contentDataTour="chat-model-selector-popover"
-              className="max-w-[62vw] sm:max-w-none"
-            />
-          </div>
-          {modelsError && (
-            <div className="ml-2 text-xs text-destructive truncate max-w-[28rem]">
-              {modelsError}
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <div className="flex h-11 shrink-0 items-center px-1.5 sm:px-2">
+            <div className="flex items-center gap-1">
+              <SidebarTrigger />
+              <TopBarActions
+                onNewThread={handleNewThread}
+                onNewCompare={handleNewCompare}
+                showCompare={canCompare}
+              />
+              <ModelSelector
+                models={models}
+                loraModels={loraModels}
+                value={inferenceParams.checkpoint}
+                onValueChange={handleCheckpointChange}
+                onEject={handleEject}
+                variant="ghost"
+                open={modelSelectorOpen}
+                onOpenChange={handleModelSelectorOpenChange}
+                triggerDataTour="chat-model-selector"
+                contentDataTour="chat-model-selector-popover"
+                className="max-w-[62vw] sm:max-w-none"
+              />
+              {loadingModel ? (
+                <div
+                  className="flex items-center gap-1.5 text-muted-foreground"
+                  title={`Loading ${loadingModel.displayName}. This may include downloading.`}
+                >
+                  <Spinner className="size-3.5 shrink-0" />
+                  <span className="text-xs">
+                    Downloading model…
+                  </span>
+                </div>
+              ) : null}
             </div>
+            {modelsError && (
+              <div className="ml-2 text-xs text-destructive truncate max-w-[28rem]">
+                {modelsError}
+              </div>
+            )}
+            <div className="flex-1" />
+            <button
+              type="button"
+              onClick={() => setSettingsOpen((o) => !o)}
+              className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              title="Inference settings"
+              data-tour="chat-settings"
+            >
+              <HugeiconsIcon icon={Settings04Icon} className="size-5" />
+            </button>
+          </div>
+
+          {view.mode === "single" ? (
+            <SingleContent
+              key={view.threadId ?? view.newThreadNonce ?? "new"}
+              threadId={view.threadId}
+              newThreadNonce={view.newThreadNonce}
+            />
+          ) : (
+            <CompareContent key={view.pairId} pairId={view.pairId} />
           )}
-          <div className="flex-1" />
-          <button
-            type="button"
-            onClick={() => setSettingsOpen((o) => !o)}
-            className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-            title="Inference settings"
-            data-tour="chat-settings"
-          >
-            <HugeiconsIcon icon={Settings04Icon} className="size-5" />
-          </button>
         </div>
 
-        {view.mode === "single" ? (
-          <SingleContent
-            key={view.threadId ?? view.newThreadNonce ?? "new"}
-            threadId={view.threadId}
-            newThreadNonce={view.newThreadNonce}
-          />
-        ) : (
-          <CompareContent key={view.pairId} pairId={view.pairId} />
-        )}
-      </div>
-
-      <ChatSettingsPanel
-        open={settingsOpen}
-        params={inferenceParams}
-        onParamsChange={setInferenceParams}
-        autoTitle={autoTitle}
-        onAutoTitleChange={setAutoTitle}
-      />
-    </SidebarProvider>
+        <ChatSettingsPanel
+          open={settingsOpen}
+          params={inferenceParams}
+          onParamsChange={setInferenceParams}
+          autoTitle={autoTitle}
+          onAutoTitleChange={setAutoTitle}
+        />
+      </SidebarProvider>
     </div>
   );
 }

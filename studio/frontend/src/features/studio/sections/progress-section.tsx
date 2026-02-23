@@ -30,7 +30,7 @@ import {
   ZapIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useState, type ReactElement, type ReactNode } from "react";
+import { useEffect, useState, type ReactElement, type ReactNode } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useShallow } from "zustand/react/shallow";
 import { useGpuUtilization } from "@/hooks";
@@ -83,6 +83,13 @@ export function ProgressSection(): ReactElement {
   const { stopTrainingRun } = useTrainingActions();
   const gpu = useGpuUtilization(runtime.isTrainingRunning);
   const [stopDialogOpen, setStopDialogOpen] = useState(false);
+  const [stopRequested, setStopRequested] = useState(false);
+
+  useEffect(() => {
+    if (!runtime.isTrainingRunning) {
+      setStopRequested(false);
+    }
+  }, [runtime.isTrainingRunning]);
 
   const pct =
     runtime.totalSteps > 0
@@ -209,11 +216,12 @@ export function ProgressSection(): ReactElement {
               data-tour="studio-training-stop"
               variant="destructive"
               size="sm"
-              className="h-7 cursor-pointer px-3 text-xs"
+              className={`h-7 px-3 text-xs ${stopRequested ? "cursor-not-allowed opacity-60" : "cursor-pointer"}`}
               onClick={() => setStopDialogOpen(true)}
-              disabled={!runtime.isTrainingRunning}
+              disabled={!runtime.isTrainingRunning || stopRequested}
             >
-              <HugeiconsIcon icon={StopIcon} className="size-3" /> Stop
+              <HugeiconsIcon icon={StopIcon} className="size-3" />
+              {stopRequested ? "Stopping…" : "Stop"}
             </Button>
             <AlertDialogContent overlayClassName="bg-background/40 supports-backdrop-filter:backdrop-blur-[1px]">
               <AlertDialogHeader>
@@ -226,12 +234,24 @@ export function ProgressSection(): ReactElement {
                 <AlertDialogCancel>Continue Training</AlertDialogCancel>
                 <AlertDialogAction
                   variant="destructive"
-                  onClick={() => void stopTrainingRun(false)}
+                  onClick={() => {
+                    setStopRequested(true);
+                    setStopDialogOpen(false);
+                    void stopTrainingRun(false).then((ok) => {
+                      if (!ok) setStopRequested(false);
+                    });
+                  }}
                 >
                   Cancel Training
                 </AlertDialogAction>
                 <AlertDialogAction
-                  onClick={() => void stopTrainingRun(true)}
+                  onClick={() => {
+                    setStopRequested(true);
+                    setStopDialogOpen(false);
+                    void stopTrainingRun(true).then((ok) => {
+                      if (!ok) setStopRequested(false);
+                    });
+                  }}
                 >
                   Stop and Save
                 </AlertDialogAction>

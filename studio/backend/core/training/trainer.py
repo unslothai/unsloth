@@ -126,6 +126,10 @@ class UnslothTrainer:
             print("\nClearing GPU memory before training...")
             clear_gpu_cache()
 
+            # Remove stale compiled cache so the new model gets a fresh one
+            from utils.cache_cleanup import clear_unsloth_compiled_cache
+            clear_unsloth_compiled_cache()
+
             # Detect if this is a vision model AND dataset is multimodal
             # A vision-capable model with a text-only dataset should use FastLanguageModel
             self.is_vlm = is_vision_model(model_name) and is_dataset_multimodal
@@ -792,7 +796,7 @@ class UnslothTrainer:
                 trainer_kwargs = {
                     "model": self.model,
                     "train_dataset": dataset['dataset'],
-                    "processing_class": self.tokenizer.tokenizer,
+                    "processing_class": self.tokenizer,
                     "data_collator": data_collator,
                     "args": SFTConfig(**config_args),
                 }

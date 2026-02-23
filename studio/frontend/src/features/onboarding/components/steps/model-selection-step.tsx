@@ -244,10 +244,6 @@ export function ModelSelectionStep() {
                           <span className="text-xs text-muted-foreground shrink-0">
                             {sizeLabel}
                           </span>
-                        ) : r?.downloads != null ? (
-                          <span className="text-[10px] text-muted-foreground shrink-0">
-                            ↓{formatCompact(r.downloads)}
-                          </span>
                         ) : null}
                       </ComboboxItem>
                     );
