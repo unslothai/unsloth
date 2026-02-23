@@ -188,7 +188,12 @@ function parseJobEvent(rawEvent: string): JobEvent | null {
   if (dataLines.length === 0) {
     return null;
   }
-  const payload = JSON.parse(dataLines.join("\n")) as Record<string, unknown>;
+  let payload: Record<string, unknown>;
+  try {
+    payload = JSON.parse(dataLines.join("\n")) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
   return {
     event: eventName,
     id,
