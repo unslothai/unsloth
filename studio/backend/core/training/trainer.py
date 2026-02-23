@@ -7,7 +7,7 @@ import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 import torch
-from utils.hardware import clear_gpu_cache
+from utils.hardware import clear_gpu_cache, safe_num_proc
 torch._dynamo.config.recompile_limit = 64
 from unsloth import FastLanguageModel, FastVisionModel, is_bfloat16_supported
 from unsloth.chat_templates import get_chat_template
@@ -711,7 +711,7 @@ class UnslothTrainer:
                 "output_dir": output_dir,
                 "report_to": ["wandb"] if training_args.get('enable_wandb', False) else "none",
                 "include_num_input_tokens_seen": True,  # Enable token counting
-                "dataset_num_proc": max(1, os.cpu_count() // 4),
+                "dataset_num_proc": safe_num_proc(max(1, os.cpu_count() // 4)),
             }
             
             # Add warmup parameter - use warmup_ratio if provided, otherwise warmup_steps
@@ -871,7 +871,7 @@ class UnslothTrainer:
                         self.trainer,
                         instruction_part=instruction_part,
                         response_part=response_part,
-                        num_proc=config_args.get("dataset_num_proc", max(1, os.cpu_count() // 4)),
+                        num_proc=config_args.get("dataset_num_proc", safe_num_proc(max(1, os.cpu_count() // 4))),
                     )
                     print("Train on responses only configured successfully\n")
 
