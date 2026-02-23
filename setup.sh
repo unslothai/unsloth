@@ -24,6 +24,11 @@ echo "╔═══════════════════════�
 echo "║     Unsloth Studio Setup Script      ║"
 echo "╚══════════════════════════════════════╝"
 
+# ── Clean up stale Unsloth compiled caches ──
+rm -rf "$SCRIPT_DIR/unsloth_compiled_cache"
+rm -rf "$SCRIPT_DIR/studio/backend/unsloth_compiled_cache"
+rm -rf "$SCRIPT_DIR/studio/tmp/unsloth_compiled_cache"
+
 # ── Detect Colab (like unsloth does) ──
 IS_COLAB=false
 keynames=$'\n'$(printenv | cut -d= -f1)
