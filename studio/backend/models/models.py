@@ -57,10 +57,12 @@ class ModelDetails(BaseModel):
 
 
 class LoRAInfo(BaseModel):
-    """LoRA adapter information"""
+    """LoRA adapter or exported model information"""
     display_name: str = Field(..., description="Display name for the LoRA")
-    adapter_path: str = Field(..., description="Path to the LoRA adapter")
+    adapter_path: str = Field(..., description="Path to the LoRA adapter or exported model")
     base_model: Optional[str] = Field(None, description="Base model identifier")
+    source: Optional[str] = Field(None, description="'training' or 'exported'")
+    export_type: Optional[str] = Field(None, description="'lora' or 'merged' (for exports)")
 
 
 class LoRAScanResponse(BaseModel):
