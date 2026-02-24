@@ -3,6 +3,7 @@ import {
   HoverCardContent,
   HoverCardTrigger,
 } from "@/components/ui/hover-card";
+import { AnimatedThemeToggler } from "@/components/ui/animated-theme-toggler";
 import {
   Sheet,
   SheetContent,
@@ -160,6 +161,11 @@ export function Navbar() {
 
         {/* Right: docs/tour desktop */}
         <div className="hidden items-center gap-2 md:flex">
+          <AnimatedThemeToggler
+            className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground [&_svg]:size-4"
+            title="Toggle theme"
+            aria-label="Toggle theme"
+          />
           <HoverCard openDelay={200} closeDelay={100}>
             <HoverCardTrigger asChild={true}>
               <a
