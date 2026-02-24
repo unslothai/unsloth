@@ -167,6 +167,50 @@
   "ui": {
     "nodes": [
       {
+        "id": "note_1",
+        "x": 1084.767431711644,
+        "y": -293.4482850247655,
+        "width": 782,
+        "node_type": "markdown_note",
+        "name": "note_1",
+        "markdown": "## Expression columns \nAre like lightweight spreadsheet formulas.\nUse them when you want to transform existing columns quickly, without calling an LLM.\n\n### What you can do:\n\n- Use values from other columns: `{{ first_name }} {{ last_name }}`\n- Clean/format text: `{{ city | upper }}`, `{{ product_name | trim }}`\n- Conditional logic:\n  - `{% if order_total >= 100 %}VIP{% elif order_total >= 50 %}Standard{% else %}Starter{% endif %}`\n- Simple math:\n  - `{{ quantity * unit_price }}`\n  - `{{ (subtotal - discount) | round(2) }}`\n\n### Good rule:\n- If the value can be computed from existing data, use Expression first.\n- Use LLM only when you need true language generation.",
+        "note_color": "#fffbeb",
+        "note_opacity": "35"
+      },
+      {
+        "id": "note_2",
+        "x": 1944,
+        "y": 760.9999999999999,
+        "width": 400,
+        "node_type": "markdown_note",
+        "name": "note_2",
+        "markdown": "### LLM Structured block\nGenerates JSON that matches your Output Format schema.\nThink of Output Format as a contract for what the model must return.\n\n#### Prompt tips:\n\n- Reference existing columns with Jinja: `{{ column_name }}`\n- You can reference nested values too: `{{ customer.first_name }}`\n- Be explicit about what each field should contain.\n\n#### Example prompt pattern:\n\n```text\nCreate a support ticket summary.\nCustomer: {{ customer_name }}\nIssue text: {{ issue_text }}\n\nReturn data for:\n- priority\n- short_title\n- resolution_steps\n```",
+        "note_color": "#f4efdc",
+        "note_opacity": "35"
+      },
+      {
+        "id": "note_3",
+        "x": 2381.178207301403,
+        "y": 790.2196835690842,
+        "width": 638,
+        "node_type": "markdown_note",
+        "name": "note_3",
+        "markdown": "## Example output format shape (concept):\n\n```json\n{\n  \"type\": \"object\",\n  \"properties\": {\n    \"priority\": { \"type\": \"string\" },\n    \"short_title\": { \"type\": \"string\" },\n    \"resolution_steps\": { \"type\": \"array\", \"items\": { \"type\": \"string\" } }\n  },\n  \"required\": [\"priority\", \"short_title\", \"resolution_steps\"]\n}\n```",
+        "note_color": "#fbf6e5",
+        "note_opacity": "35"
+      },
+      {
+        "id": "note_4",
+        "x": 2405.796928768747,
+        "y": -362.26583299682716,
+        "width": 399,
+        "node_type": "markdown_note",
+        "name": "note_4",
+        "markdown": "### Model provider & Config\nEvery LLM block needs a model alias.\nThat alias comes from a Model Config.\nModel Config points to a Model Provider.\n\n#### Minimum setup:\n\n1. Create **Model Provider**\n   - Set endpoint/provider type\n   - Prefer env var auth (`api_key_env`) over hardcoded keys\n\n2. Create **Model Config**\n   - Set alias (example: `model_1`)\n   - Set model id\n   - Link to provider\n   - Tune params (temperature, max_tokens, etc.)\n\n3. In each LLM block\n   - Set `model_alias` to that alias\n\nIf alias/provider link is missing, validation/run will fail.",
+        "note_color": "#f6f4ef",
+        "note_opacity": "35"
+      },
+      {
         "id": "provider_column",
         "x": 1947.2039072039072,
         "y": 32.08363858363858,
