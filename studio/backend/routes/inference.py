@@ -438,7 +438,7 @@ async def openai_chat_completions(payload: ChatCompletionRequest, request: Reque
             detail="At least one non-system message is required.",
         )
 
-    # ── GGUF path: format prompt → proxy to llama-server ──────
+    # ── GGUF path: proxy to llama-server /v1/chat/completions ──
     if using_gguf:
         # Reject images if this GGUF model doesn't support vision
         image_b64 = extracted_image_b64 or payload.image_base64
@@ -448,7 +448,12 @@ async def openai_chat_completions(payload: ChatCompletionRequest, request: Reque
                 detail="Image provided but current GGUF model does not support vision.",
             )
 
-        prompt = llama_backend.format_prompt(chat_messages, system_prompt)
+        # Build message list with system prompt prepended
+        gguf_messages = []
+        if system_prompt:
+            gguf_messages.append({"role": "system", "content": system_prompt})
+        gguf_messages.extend(chat_messages)
+
         cancel_event = threading.Event()
 
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
@@ -456,7 +461,8 @@ async def openai_chat_completions(payload: ChatCompletionRequest, request: Reque
 
         def gguf_generate():
             return llama_backend.generate_chat_completion(
-                prompt=prompt,
+                messages=gguf_messages,
+                image_b64=image_b64,
                 temperature=payload.temperature,
                 top_p=payload.top_p,
                 top_k=payload.top_k,
