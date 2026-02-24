@@ -3194,6 +3194,9 @@ class FastLlamaModel:
 
         model = FastLlamaModel.patch_peft_model(model, use_gradient_checkpointing)
 
+        if model is None:
+            return None
+
         if ensure_weight_tying:
             try:
                 input_embeddings = model.get_input_embeddings()
