@@ -21,17 +21,19 @@ import type { LlmType, NodeConfig, SamplerType, SeedSourceType } from "../types"
 import {
   makeExpressionConfig,
   makeLlmConfig,
+  makeMarkdownNoteConfig,
   makeModelConfig,
   makeModelProviderConfig,
   makeSamplerConfig,
   makeSeedConfig,
 } from "../utils";
 
-export type BlockKind = "sampler" | "llm" | "expression" | "seed";
+export type BlockKind = "sampler" | "llm" | "expression" | "seed" | "note";
 export type BlockType =
   | SamplerType
   | LlmType
   | "expression"
+  | "markdown_note"
   | "seed"
   | "seed_hf"
   | "seed_local"
@@ -52,6 +54,7 @@ export type BlockGroup = {
 
 export type BlockDialogKey =
   | "seed"
+  | "markdown_note"
   | "category"
   | "subcategory"
   | "uniform"
@@ -100,6 +103,12 @@ export const BLOCK_GROUPS: BlockGroup[] = [
     title: "Expression",
     description: "Derive columns with Jinja templates.",
     icon: FunctionIcon,
+  },
+  {
+    kind: "note",
+    title: "Notes",
+    description: "Add markdown notes to document your flow.",
+    icon: PencilEdit02Icon,
   },
 ];
 
@@ -275,6 +284,15 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
     dialogKey: "expression",
     createConfig: (id, existing) => makeExpressionConfig(id, existing),
   },
+  {
+    kind: "note",
+    type: "markdown_note",
+    title: "Markdown note",
+    description: "UI-only markdown notes on canvas, not sent to backend.",
+    icon: PencilEdit02Icon,
+    dialogKey: "markdown_note",
+    createConfig: (id, existing) => makeMarkdownNoteConfig(id, existing),
+  },
 ];
 
 export function getBlocksForKind(kind: BlockKind): BlockDefinition[] {
@@ -318,6 +336,9 @@ export function getBlockDefinitionForConfig(
   }
   if (config.kind === "model_config") {
     return getBlockDefinition("llm", "model_config");
+  }
+  if (config.kind === "markdown_note") {
+    return getBlockDefinition("note", "markdown_note");
   }
   return getBlockDefinition("expression", "expression");
 }

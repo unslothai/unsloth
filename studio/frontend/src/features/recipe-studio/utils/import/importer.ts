@@ -2,6 +2,7 @@ import type {
   LlmConfig,
   LlmMcpProviderConfig,
   LlmToolConfig,
+  MarkdownNoteConfig,
   NodeConfig,
   RecipeProcessorConfig,
   SeedSourceType,
@@ -38,6 +39,11 @@ type UiInput = {
   unstructured_file_name?: unknown;
   unstructured_chunk_size?: unknown;
   unstructured_chunk_overlap?: unknown;
+};
+
+type UiMarkdownNoteNode = {
+  name: string;
+  markdown: string;
 };
 
 function readStringNumber(value: unknown): string | undefined {
@@ -221,6 +227,31 @@ function cloneMcpProvider(config: LlmMcpProviderConfig): LlmMcpProviderConfig {
   };
 }
 
+function parseUiMarkdownNoteNodes(input: unknown): UiMarkdownNoteNode[] {
+  if (!Array.isArray(input)) {
+    return [];
+  }
+  const noteNodes: UiMarkdownNoteNode[] = [];
+  for (const node of input) {
+    if (!isRecord(node)) {
+      continue;
+    }
+    const nodeType = readString(node.node_type) ?? readString(node.type);
+    if (nodeType !== "markdown_note") {
+      continue;
+    }
+    const name = readString(node.name) ?? readString(node.id);
+    if (!name?.trim()) {
+      continue;
+    }
+    noteNodes.push({
+      name: name.trim(),
+      markdown: readString(node.markdown) ?? "",
+    });
+  }
+  return noteNodes;
+}
+
 function attachLlmTooling(
   config: LlmConfig,
   toolConfigsByAlias: Map<string, LlmToolConfig>,
@@ -301,6 +332,24 @@ export function importRecipePayload(input: string): ImportResult {
   const uiUnstructuredChunkOverlap = readStringNumber(
     ui?.unstructured_chunk_overlap,
   );
+  const uiMarkdownNotes = parseUiMarkdownNoteNodes(ui?.nodes);
+
+  for (const note of uiMarkdownNotes) {
+    const id = `n${nextId}`;
+    nextId += 1;
+    const config: MarkdownNoteConfig = {
+      id,
+      kind: "markdown_note",
+      name: note.name,
+      markdown: note.markdown,
+    };
+    if (nameToId.has(config.name)) {
+      errors.push(`Duplicate column name: ${config.name}.`);
+      continue;
+    }
+    nameToId.set(config.name, config.id);
+    configs.push(config);
+  }
 
   if (recipe.seed_config) {
     const id = `n${nextId}`;

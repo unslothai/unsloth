@@ -15,6 +15,7 @@ import { SubcategoryDialog } from "../dialogs/samplers/subcategory-dialog";
 import { TimedeltaDialog } from "../dialogs/samplers/timedelta-dialog";
 import { UniformDialog } from "../dialogs/samplers/uniform-dialog";
 import { UuidDialog } from "../dialogs/samplers/uuid-dialog";
+import { MarkdownNoteDialog } from "../dialogs/markdown-note/markdown-note-dialog";
 
 export function renderBlockDialog(
   config: NodeConfig | null,
@@ -107,6 +108,10 @@ export function renderBlockDialog(
     case "expression":
       return config.kind === "expression" ? (
         <ExpressionDialog config={config} onUpdate={update} />
+      ) : null;
+    case "markdown_note":
+      return config.kind === "markdown_note" ? (
+        <MarkdownNoteDialog config={config} onUpdate={update} />
       ) : null;
   }
 }

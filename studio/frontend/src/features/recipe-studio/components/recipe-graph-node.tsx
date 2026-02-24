@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import { cn } from "@/lib/utils";
 import {
   BalanceScaleIcon,
@@ -63,6 +64,9 @@ const NODE_META = {
   expression: {
     tone: "bg-indigo-50 text-indigo-600 border-indigo-100",
   },
+  note: {
+    tone: "bg-violet-50 text-violet-700 border-violet-100",
+  },
   seed: {
     tone: "bg-lime-50 text-lime-700 border-lime-100",
   },
@@ -106,6 +110,9 @@ function resolveNodeIcon(
   }
   if (kind === "expression") {
     return FunctionIcon;
+  }
+  if (kind === "note") {
+    return PencilEdit02Icon;
   }
   if (kind === "model_provider") {
     return Shield02Icon;
@@ -197,6 +204,13 @@ function getConfigSummary(config: NodeConfig | undefined): string {
     return "Upload PDF/DOCX/TXT file";
   }
 
+  if (config.kind === "markdown_note") {
+    if (config.markdown.trim()) {
+      return "Markdown preview";
+    }
+    return "Add markdown content";
+  }
+
   return "Open details for config";
 }
 
@@ -205,6 +219,10 @@ function renderNodeBody(
   summary: string,
   updateConfig: (id: string, patch: Partial<NodeConfig>) => void,
 ): ReactElement {
+  if (config?.kind === "markdown_note") {
+    return <MarkdownPreview markdown={config.markdown} />;
+  }
+
   if (config && isInlineConfig(config)) {
     const onUpdate = (patch: Partial<NodeConfig>) => updateConfig(config.id, patch);
 

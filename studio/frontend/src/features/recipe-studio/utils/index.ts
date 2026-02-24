@@ -1,6 +1,7 @@
 export {
   makeExpressionConfig,
   makeLlmConfig,
+  makeMarkdownNoteConfig,
   makeModelConfig,
   makeModelProviderConfig,
   makeSamplerConfig,
