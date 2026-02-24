@@ -642,8 +642,12 @@ class FastBaseModel:
                     except KeyError:
                         pass
                 except Exception:
-                    # BF16 sibling may not exist, or network error -- keep original model
-                    pass
+                    print(
+                        f"Unsloth: {model_name} uses FP8 weights but no BF16 version was found "
+                        f"at {_bf16_name}.\n"
+                        f"Loading FP8 weights with BitsAndBytes or in 16-bit may fail.\n"
+                        f"Set load_in_fp8=True to use FP8 mode, or upload a BF16 version."
+                    )
 
         default_attn_impl = "flex_attention" if flex_attn_impl else "sdpa"
         if not ("attn_implementation" in kwargs):
