@@ -18,6 +18,7 @@ from auth.authentication import get_current_subject
 try:
     from utils.models import (
         scan_trained_loras,
+        scan_exported_models,
         load_model_defaults,
         get_base_model_from_lora,
         is_vision_model,
@@ -32,6 +33,7 @@ except ImportError:
         sys.path.insert(0, str(parent_backend))
     from utils.models import (
         scan_trained_loras,
+        scan_exported_models,
         load_model_defaults,
         get_base_model_from_lora,
         is_vision_model,
@@ -289,35 +291,45 @@ async def get_model_config(
 @router.get("/loras")
 async def scan_loras(
     outputs_dir: str = Query(default="./outputs", description="Directory to scan for LoRA adapters"),
+    exports_dir: str = Query(default="./exports", description="Directory to scan for exported models"),
     current_subject: str = Depends(get_current_subject),
 ):
     """
-    Scan for trained LoRA adapters in the outputs directory.
-    
-    This endpoint wraps the backend scan_trained_loras function.
+    Scan for trained LoRA adapters and exported models.
+
+    Returns both training outputs (from outputs_dir) and exported models
+    (from exports_dir) in a single list, distinguished by source field.
     """
     try:
-        # Call backend scan function
-        trained_loras = scan_trained_loras(outputs_dir=outputs_dir)
-        
-        # Convert to LoRAInfo objects
         lora_list = []
+
+        # Scan training outputs
+        trained_loras = scan_trained_loras(outputs_dir=outputs_dir)
         for display_name, adapter_path in trained_loras:
-            # Get base model if available
             base_model = get_base_model_from_lora(adapter_path)
-            
-            lora_info = LoRAInfo(
+            lora_list.append(LoRAInfo(
                 display_name=display_name,
                 adapter_path=adapter_path,
-                base_model=base_model
-            )
-            lora_list.append(lora_info)
-        
+                base_model=base_model,
+                source="training",
+            ))
+
+        # Scan exported models (merged, LoRA, base — skips GGUF)
+        exported = scan_exported_models(exports_dir=exports_dir)
+        for display_name, model_path, export_type, base_model in exported:
+            lora_list.append(LoRAInfo(
+                display_name=display_name,
+                adapter_path=model_path,
+                base_model=base_model,
+                source="exported",
+                export_type=export_type,
+            ))
+
         return LoRAScanResponse(
             loras=lora_list,
             outputs_dir=outputs_dir
         )
-        
+
     except Exception as e:
         logger.error(f"Error scanning LoRAs: {e}", exc_info=True)
         raise HTTPException(
