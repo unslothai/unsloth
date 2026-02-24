@@ -56,6 +56,7 @@ type RecipeStudioState = {
   layoutDirection: LayoutDirection;
   nextId: number;
   nextY: number;
+  fitViewTick: number;
   setSheetView: (view: SheetView) => void;
   setProcessors: (processors: RecipeProcessorConfig[]) => void;
   setDialogOpen: (open: boolean) => void;
@@ -103,6 +104,7 @@ const INITIAL_STATE = {
   layoutDirection: "LR",
   nextId: 3,
   nextY: 280,
+  fitViewTick: 0,
 } satisfies Pick<
   RecipeStudioState,
   | "nodes"
@@ -118,6 +120,7 @@ const INITIAL_STATE = {
   | "layoutDirection"
   | "nextId"
   | "nextY"
+  | "fitViewTick"
 >;
 
 function buildAddedNodeState(
@@ -436,7 +439,7 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
   addExpressionNode: () =>
     set((state) => buildAddedNodeState(state, "expression", "expression")),
   loadRecipe: (snapshot) =>
-    set(() => ({
+    set((state) => ({
       configs: snapshot.configs,
       nodes: applyLayoutDirectionToNodes(
         snapshot.nodes,
@@ -454,6 +457,7 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
       activeConfigId: null,
       dialogOpen: false,
       sheetView: "root",
+      fitViewTick: state.fitViewTick + 1,
     })),
   setAuxNodePosition: (id, position) =>
     set((state) => {

@@ -9,6 +9,7 @@ import {
   type NodeTypes,
   Panel,
   ReactFlow,
+  type ReactFlowInstance,
 } from "@xyflow/react";
 import {
   CookBookIcon,
@@ -101,6 +102,7 @@ export function RecipeStudioPage({
     activeConfigId,
     dialogOpen,
     layoutDirection,
+    fitViewTick,
     onNodesChange,
     onEdgesChange,
     onConnect,
@@ -137,6 +139,7 @@ export function RecipeStudioPage({
       activeConfigId: state.activeConfigId,
       dialogOpen: state.dialogOpen,
       layoutDirection: state.layoutDirection,
+      fitViewTick: state.fitViewTick,
       onNodesChange: state.onNodesChange,
       onEdgesChange: state.onEdgesChange,
       onConnect: state.onConnect,
@@ -169,6 +172,9 @@ export function RecipeStudioPage({
   const [activeView, setActiveView] = useState<RecipeStudioView>("editor");
   const [processorsOpen, setProcessorsOpen] = useState(false);
   const [interactive, setInteractive] = useState(true);
+  const [reactFlowInstance, setReactFlowInstance] = useState<
+    ReactFlowInstance<Node<RecipeNodeData | RecipeGraphAuxNodeData>, Edge> | null
+  >(null);
   const handleExecutionStart = useCallback(() => {
     setActiveView("executions");
   }, []);
@@ -347,6 +353,24 @@ export function RecipeStudioPage({
   const runDialogLoading =
     runDialogKind === "preview" ? previewLoading : fullLoading;
 
+  useEffect(() => {
+    if (!reactFlowInstance || activeView !== "editor" || fitViewTick === 0) {
+      return;
+    }
+    let frame2 = 0;
+    const frame1 = window.requestAnimationFrame(() => {
+      frame2 = window.requestAnimationFrame(() => {
+        reactFlowInstance.fitView({ duration: 250 });
+      });
+    });
+    return () => {
+      window.cancelAnimationFrame(frame1);
+      if (frame2) {
+        window.cancelAnimationFrame(frame2);
+      }
+    };
+  }, [activeView, fitViewTick, reactFlowInstance]);
+
   return (
     <div className="min-h-screen bg-background">
       <main className="w-full px-6 py-8">
@@ -368,7 +392,8 @@ export function RecipeStudioPage({
           />
           <div className="h-[75vh] w-full rounded-t-none">
             {activeView === "editor" ? (
-              <ReactFlow
+              <ReactFlow<Node<RecipeNodeData | RecipeGraphAuxNodeData>, Edge>
+                onInit={setReactFlowInstance}
                 nodes={displayGraph.nodes}
                 edges={displayGraph.edges}
                 nodeTypes={NODE_TYPES}
