@@ -67,7 +67,7 @@ const TEMPLATE_CARDS: TemplateCard[] = [
     difficulty: "Advanced",
     learningBadges: ["Structured LLM", "Expression", "Jinja"],
     surfaceClassName:
-      "from-cyan-500/15 via-sky-500/5 to-transparent",
+      "from-cyan-500/15 via-sky-500/5 to-transparent dark:from-cyan-400/30 dark:via-sky-400/14 dark:to-cyan-950/16",
     shineColor: [
       "rgb(6 182 212 / 0.45)",
       "rgb(56 189 248 / 0.4)",
@@ -83,7 +83,7 @@ const TEMPLATE_CARDS: TemplateCard[] = [
     difficulty: "Easy",
     learningBadges: ["Unstructured", "LLM Text"],
     surfaceClassName:
-      "from-violet-500/15 via-fuchsia-500/5 to-transparent",
+      "from-violet-500/15 via-fuchsia-500/5 to-transparent dark:from-violet-400/30 dark:via-fuchsia-400/14 dark:to-violet-950/16",
     shineColor: [
       "rgb(139 92 246 / 0.45)",
       "rgb(217 70 239 / 0.4)",
@@ -99,7 +99,7 @@ const TEMPLATE_CARDS: TemplateCard[] = [
     difficulty: "Easy",
     learningBadges: ["Seed Dataset", "LLM Text", "Prompting"],
     surfaceClassName:
-      "from-emerald-500/15 via-green-500/5 to-transparent",
+      "from-emerald-500/15 via-green-500/5 to-transparent dark:from-emerald-400/30 dark:via-green-400/14 dark:to-emerald-950/16",
     shineColor: [
       "rgb(16 185 129 / 0.45)",
       "rgb(34 197 94 / 0.4)",
@@ -115,7 +115,7 @@ const TEMPLATE_CARDS: TemplateCard[] = [
     difficulty: "Intermediate",
     learningBadges: ["LLM Judge", "LLM Code", "Subcategory", "Category"],
     surfaceClassName:
-      "from-amber-500/15 via-orange-500/5 to-transparent",
+      "from-amber-500/15 via-orange-500/5 to-transparent dark:from-amber-400/30 dark:via-orange-400/14 dark:to-amber-950/16",
     shineColor: [
       "rgb(245 158 11 / 0.45)",
       "rgb(249 115 22 / 0.4)",
@@ -131,7 +131,7 @@ const TEMPLATE_CARDS: TemplateCard[] = [
     difficulty: "Intermediate",
     learningBadges: ["LLM Code", "Prompting", "Drop Columns"],
     surfaceClassName:
-      "from-blue-500/15 via-indigo-500/5 to-transparent",
+      "from-blue-500/15 via-indigo-500/5 to-transparent dark:from-blue-400/30 dark:via-indigo-400/14 dark:to-blue-950/16",
     shineColor: [
       "rgb(59 130 246 / 0.45)",
       "rgb(99 102 241 / 0.4)",
@@ -147,7 +147,7 @@ const TEMPLATE_CARDS: TemplateCard[] = [
     difficulty: "Easy",
     learningBadges: ["Structured LLM", "LLM Text"],
     surfaceClassName:
-      "from-rose-500/15 via-pink-500/5 to-transparent",
+      "from-rose-500/15 via-pink-500/5 to-transparent dark:from-rose-400/30 dark:via-pink-400/14 dark:to-rose-950/16",
     shineColor: [
       "rgb(244 63 94 / 0.45)",
       "rgb(236 72 153 / 0.4)",

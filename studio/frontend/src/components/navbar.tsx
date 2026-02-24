@@ -16,7 +16,7 @@ import {
   AiChat02Icon,
   ArrowRight01Icon,
   Book03Icon,
-  CookBookIcon,
+  ChefHatIcon,
   CursorInfo02Icon,
   PackageIcon,
   ZapIcon,
@@ -30,7 +30,7 @@ import { TOUR_OPEN_EVENT } from "@/features/tour";
 
 const NAV_ITEMS = [
   { label: "Studio", href: "/studio", icon: ZapIcon, enabled: true },
-  { label: "Recipes", href: "/data-recipes", icon: CookBookIcon, enabled: true },
+  { label: "Recipes", href: "/data-recipes", icon: ChefHatIcon, enabled: true },
   { label: "Export", href: "/export", icon: PackageIcon, enabled: true },
   { label: "Chat", href: "/chat", icon: AiChat02Icon, enabled: true },
 ];
@@ -129,7 +129,7 @@ export function Navbar() {
                       >
                         <HugeiconsIcon
                           icon={item.icon}
-                          className="size-3.5 -mt-px fill-current"
+                          className="size-3.5 -mt-px"
                         />
                       </motion.span>
                     )}
