@@ -965,11 +965,18 @@ __INT_TO_FLOAT_MAPPER = \
         "mistralai/Magistral-Small-2506",
         "unsloth/Magistral-Small-2506-bnb-4bit",
     ),
-    "unsloth/Mistral-Small-3.2-24B-Instruct-2506-unsloth-bnb-4bit" : (
-        "unsloth/Mistral-Small-3.2-24B-Instruct-2506",
-        "mistralai/Mistral-Small-3.2-24B-Instruct-2506",
-        "unsloth/Mistral-Small-3.2-24B-Instruct-2506-bnb-4bit",
-    ),
+    "unsloth/Mistral-Small-3.2-24B-Instruct-2506-unsloth-bnb-4bit" : {
+        "8" : (
+            "mistralai/Mistral-Small-3.2-24B-Instruct-2506",
+            "unsloth/Mistral-Small-3.2-24B-Instruct-2506-FP8",
+            "unsloth/Mistral-Small-3.2-24B-Instruct-2506-FP8",
+        ),
+        "16" : (
+            "unsloth/Mistral-Small-3.2-24B-Instruct-2506",
+            "mistralai/Mistral-Small-3.2-24B-Instruct-2506",
+            "unsloth/Mistral-Small-3.2-24B-Instruct-2506-bnb-4bit",
+        ),
+    },
     "unsloth/gemma-3n-E4B-it-unsloth-bnb-4bit" : (
         "unsloth/gemma-3n-E4B-it",
         "google/gemma-3n-E4B-it",
@@ -1056,11 +1063,18 @@ __INT_TO_FLOAT_MAPPER = \
         "mistralai/Magistral-Small-2507",
         "unsloth/Magistral-Small-2507-bnb-4bit",
     ),
-    "unsloth/Magistral-Small-2509-unsloth-bnb-4bit" : (
-        "unsloth/Magistral-Small-2509",
-        "mistralai/Magistral-Small-2509",
-        "unsloth/Magistral-Small-2509-bnb-4bit",
-    ),
+    "unsloth/Magistral-Small-2509-unsloth-bnb-4bit" : {
+        "8" : (
+            "mistralai/Magistral-Small-2509",
+            "unsloth/Magistral-Small-2509-FP8-Dynamic",
+            "unsloth/Magistral-Small-2509-FP8-Dynamic",
+        ),
+        "16" : (
+            "unsloth/Magistral-Small-2509",
+            "mistralai/Magistral-Small-2509",
+            "unsloth/Magistral-Small-2509-bnb-4bit",
+        ),
+    },
     "unsloth/Apertus-70B-Instruct-2509-unsloth-bnb-4bit" : (
         "unsloth/Apertus-70B-Instruct-2509",
         "swiss-ai/Apertus-70B-2509",
