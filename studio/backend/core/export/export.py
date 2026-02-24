@@ -378,53 +378,33 @@ class ExportBackend:
 
             # Save locally if requested
             if save_directory:
-                logger.info(f"Saving GGUF model locally to: {save_directory}")
+                # Resolve to absolute path so unsloth's relative-path internals
+                # (check_llama_cpp, use_local_gguf, _download_convert_hf_to_gguf)
+                # all resolve against the repo root cwd, NOT the export directory.
+                abs_save_dir = os.path.abspath(save_directory)
+                logger.info(f"Saving GGUF model locally to: {abs_save_dir}")
 
                 # Create the directory if it doesn't exist
-                os.makedirs(save_directory, exist_ok=True)
+                os.makedirs(abs_save_dir, exist_ok=True)
 
-                # Get the base filename for the GGUF file
-                import shutil
-                original_dir = os.getcwd()
+                # On WSL, patch out sudo check before llama.cpp build
+                _apply_wsl_sudo_patch()
 
-                try:
-                    # Change to target directory
-                    os.chdir(save_directory)
-                    logger.info(f"Changed directory to: {save_directory}")
+                # Enable verbose logging so subprocess errors are printed
+                os.environ["UNSLOTH_ENABLE_LOGGING"] = "1"
 
-                    # On WSL, patch out sudo check before llama.cpp build
-                    _apply_wsl_sudo_patch()
+                # Pass absolute path — no os.chdir needed.
+                # unsloth saves model files into this directory, while
+                # check_llama_cpp("llama.cpp") resolves against cwd (repo root)
+                # where setup.sh already built llama.cpp with quantizer.
+                model_save_path = os.path.join(abs_save_dir, "model")
+                self.current_model.save_pretrained_gguf(
+                    model_save_path,
+                    self.current_tokenizer,
+                    quantization_method=quant_method
+                )
 
-                    # Now save (will save in current directory)
-                    self.current_model.save_pretrained_gguf(
-                        "model",  # Base filename
-                        self.current_tokenizer,
-                        quantization_method=quant_method
-                    )
-
-                    logger.info(f"GGUF model saved successfully in {save_directory}")
-
-                    # Check if llama.cpp directory was created here
-                    llama_cpp_in_target = os.path.join(save_directory, "llama.cpp")
-                    llama_cpp_in_original = os.path.join(original_dir, "llama.cpp")
-
-                    if os.path.exists(llama_cpp_in_target):
-                        logger.info(f"Found llama.cpp directory in {save_directory}")
-
-                        # Remove llama.cpp from original directory if it exists
-                        if os.path.exists(llama_cpp_in_original):
-                            logger.info(f"Removing existing llama.cpp in {original_dir}")
-                            shutil.rmtree(llama_cpp_in_original)
-
-                        # Move llama.cpp back to original directory
-                        logger.info(f"Moving llama.cpp to {original_dir}")
-                        shutil.move(llama_cpp_in_target, llama_cpp_in_original)
-                        logger.info(f"Successfully moved llama.cpp back to original directory")
-
-                finally:
-                    # Always change back to original directory
-                    os.chdir(original_dir)
-                    logger.info(f"Changed back to original directory: {original_dir}")
+                logger.info(f"GGUF model saved successfully in {abs_save_dir}")
 
             # Push to hub if requested
             if push_to_hub:
