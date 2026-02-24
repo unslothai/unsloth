@@ -3279,16 +3279,17 @@ class FastLlamaModel:
 
         # Patch tokenizer to pad to the right
         internal_model = model
-        while hasattr(internal_model, "model"):
+        while hasattr(internal_model, "model") and internal_model is not None:
             if hasattr(internal_model, "_saved_temp_tokenizer"):
                 internal_model._saved_temp_tokenizer.padding_side = "right"
             # Also set is_loaded_in_8bit to disable incorrect DDP
             internal_model.is_loaded_in_8bit = True
             internal_model = internal_model.model
-        if hasattr(internal_model, "_saved_temp_tokenizer"):
-            internal_model._saved_temp_tokenizer.padding_side = "right"
-        # Also set is_loaded_in_8bit to disable incorrect DDP
-        internal_model.is_loaded_in_8bit = True
+        if internal_model is not None:
+            if hasattr(internal_model, "_saved_temp_tokenizer"):
+                internal_model._saved_temp_tokenizer.padding_side = "right"
+            # Also set is_loaded_in_8bit to disable incorrect DDP
+            internal_model.is_loaded_in_8bit = True
 
         # Clear deleted GPU items
         for _ in range(3):
