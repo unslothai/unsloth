@@ -26,8 +26,15 @@ import {
   type SeedBlockType,
 } from "../blocks/registry";
 
-type SheetView = "root" | "sampler" | "seed" | "llm" | "expression" | "processor";
-type SheetKind = "sampler" | "seed" | "llm" | "expression";
+type SheetView =
+  | "root"
+  | "sampler"
+  | "seed"
+  | "llm"
+  | "expression"
+  | "note"
+  | "processor";
+type SheetKind = "sampler" | "seed" | "llm" | "expression" | "note";
 type RootSheetView = Exclude<SheetView, "root">;
 type RootGroup = {
   kind: RootSheetView;
@@ -48,6 +55,7 @@ type BlockSheetProps = {
   onAddModelProvider: () => void;
   onAddModelConfig: () => void;
   onAddExpression: () => void;
+  onAddMarkdownNote: () => void;
   onOpenProcessors: () => void;
   copied: boolean;
   onCopy: () => void;
@@ -67,6 +75,9 @@ function getSheetTitle(sheetView: SheetView): string {
   if (sheetView === "expression") {
     return "Expression blocks";
   }
+  if (sheetView === "note") {
+    return "Note blocks";
+  }
   if (sheetView === "processor") {
     return "Processor blocks";
   }
@@ -79,6 +90,7 @@ const VIEW_KIND: Record<SheetView, SheetKind | null> = {
   seed: "seed",
   llm: "llm",
   expression: "expression",
+  note: "note",
   processor: null,
 };
 
@@ -142,6 +154,7 @@ export function BlockSheet({
   onAddModelProvider,
   onAddModelConfig,
   onAddExpression,
+  onAddMarkdownNote,
   onOpenProcessors,
   copied,
   onCopy,
@@ -150,6 +163,7 @@ export function BlockSheet({
   const sheetTitle = getSheetTitle(sheetView);
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const expressionBlocks = useMemo(() => getBlocksForKind("expression"), []);
+  const noteBlocks = useMemo(() => getBlocksForKind("note"), []);
   const seedBlocks = useMemo(() => getBlocksForKind("seed"), []);
   const isControlled = typeof open === "boolean";
   const sheetOpen = isControlled ? (open as boolean) : uncontrolledOpen;
@@ -233,6 +247,11 @@ export function BlockSheet({
                         onAddExpression();
                         return;
                       }
+                      if (item.kind === "note" && noteBlocks.length === 1) {
+                        setSheetOpen(false);
+                        onAddMarkdownNote();
+                        return;
+                      }
                       onViewChange(item.kind);
                     }}
                   />
@@ -270,8 +289,10 @@ export function BlockSheet({
                           } else {
                             onAddLlm(item.type as LlmType);
                           }
-                        } else {
+                        } else if (item.kind === "expression") {
                           onAddExpression();
+                        } else {
+                          onAddMarkdownNote();
                         }
                       }}
                     />

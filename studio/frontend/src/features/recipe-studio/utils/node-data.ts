@@ -29,6 +29,16 @@ export function nodeDataFromConfig(
       layoutDirection,
     };
   }
+  if (config.kind === "markdown_note") {
+    return {
+      title: "Note",
+      kind: "note",
+      subtype: "Markdown",
+      blockType: "markdown_note",
+      name: config.name,
+      layoutDirection,
+    };
+  }
   if (config.kind === "seed") {
     const seedSourceType = config.seed_source_type ?? "hf";
     const subtype =

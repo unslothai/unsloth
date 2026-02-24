@@ -30,7 +30,15 @@ export type RecipePayload = {
     merge_batches?: boolean;
   };
   ui: {
-    nodes: { id: string; x: number; y: number }[];
+    nodes: Array<{
+      id: string;
+      x: number;
+      y: number;
+      width?: number;
+      node_type?: "markdown_note";
+      name?: string;
+      markdown?: string;
+    }>;
     edges: {
       from: string;
       to: string;

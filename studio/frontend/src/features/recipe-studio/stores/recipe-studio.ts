@@ -40,7 +40,14 @@ import {
   updateNodeData,
 } from "./recipe-studio-helpers";
 
-type SheetView = "root" | "sampler" | "seed" | "llm" | "expression" | "processor";
+type SheetView =
+  | "root"
+  | "sampler"
+  | "seed"
+  | "llm"
+  | "expression"
+  | "note"
+  | "processor";
 
 type RecipeStudioState = {
   nodes: RecipeNode[];
@@ -72,6 +79,7 @@ type RecipeStudioState = {
   addModelProviderNode: () => void;
   addModelConfigNode: () => void;
   addExpressionNode: () => void;
+  addMarkdownNoteNode: () => void;
   updateConfig: (id: string, patch: Partial<NodeConfig>) => void;
   loadRecipe: (snapshot: RecipeSnapshot) => void;
   setAuxNodePosition: (id: string, position: XYPosition) => void;
@@ -438,6 +446,8 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
     }),
   addExpressionNode: () =>
     set((state) => buildAddedNodeState(state, "expression", "expression")),
+  addMarkdownNoteNode: () =>
+    set((state) => buildAddedNodeState(state, "note", "markdown_note")),
   loadRecipe: (snapshot) =>
     set((state) => ({
       configs: snapshot.configs,
