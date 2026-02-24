@@ -293,7 +293,7 @@ def FalconH1Attention_fast_forward_inference(
 
     Qn = fast_linear_forward(self.q_proj, Xn, out = self.temp_QA[0])
     Kn = fast_linear_forward(self.k_proj, Xn, out = self.temp_KV[0])
-    Kn = Kn * self.config.key_multiplier
+    Kn.mul_(self.config.key_multiplier)
     Vn = fast_linear_forward(self.v_proj, Xn, out = self.temp_KV[1])
     Qn = Qn.view(
         bsz, 1, n_heads, head_dim

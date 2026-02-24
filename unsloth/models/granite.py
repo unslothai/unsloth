@@ -460,6 +460,9 @@ def GraniteModel_fast_forward_inference(
             hidden_states,
             seq_len,
         )
+        # Pre-convert to bool once for all layers (avoids per-layer .eq(0))
+        if attention_mask is not None and attention_mask.dtype != torch.bool:
+            attention_mask = attention_mask.eq(0)
     else:
         attention_mask = None
 

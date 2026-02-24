@@ -185,12 +185,11 @@ def GemmaModel_fast_forward_inference(
     hidden_states = hidden_states.to(_get_dtype(dtype_from_config(self.config)))
     # 3072**0.5 = 55.5000 in bfloat16, whilst 55.4256 in float32
     # 2048**0.5 = 45.2500 in bfloat16, whilst 45.2548 in float32
-    hidden_states *= torch.tensor(
-        math_sqrt(self.config.hidden_size), dtype = hidden_states.dtype
-    )
+    hidden_states *= math_sqrt(self.config.hidden_size)
 
     bsz, q_len, hd = hidden_states.shape
     seq_len = past_key_values[0][0].shape[-2]
+    kv_seq_len = seq_len + 1
     if bsz != 1:
         attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
             attention_mask,
@@ -198,6 +197,12 @@ def GemmaModel_fast_forward_inference(
             hidden_states,
             seq_len,
         )
+        # Pre-convert to bool once for all layers (avoids per-layer .eq(0))
+        if attention_mask is not None and attention_mask.dtype != torch.bool:
+            attention_mask = attention_mask.eq(0)
+
+    # Compute rotary_seq_len once to avoid per-layer GPU-CPU sync from .item()
+    rotary_seq_len = max(kv_seq_len, int(position_ids.max().item()) + 1)
 
     next_decoder_cache = []
     for idx, decoder_layer in enumerate(self.model.layers):
@@ -217,6 +222,7 @@ def GemmaModel_fast_forward_inference(
             position_ids = position_ids,
             attention_mask = attention_mask,
             do_prefill = not hasattr(decoder_layer.self_attn, "paged_attention"),
+            rotary_seq_len = rotary_seq_len,
         )
         hidden_states += residual
 
