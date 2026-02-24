@@ -78,8 +78,8 @@
         "node_type": "markdown_note",
         "name": "note_1",
         "markdown": "This recipe uses **seed data** from external documents.\nInstead of starting from empty generation, we load real source text first.\n\nIn this flow, the seed source is **Unstructured Documents**:\n\n- Upload: `.pdf`, `.docx`, `.txt`\n- Text is extracted and split on client into chunks\n- Each chunk becomes a row-like seed record (`chunk_text`) that you can reference in prompts with `{{ chunk_text }} `",
-        "note_color": "#30f9fd",
-        "note_opacity": "10"
+        "note_color": "#F3E8FF",
+        "note_opacity": "35"
       },
       {
         "id": "note_2",
@@ -89,8 +89,8 @@
         "node_type": "markdown_note",
         "name": "note_2",
         "markdown": "##### Chunking settings:\n\n- **Chunk size**: how much text per chunk\n- **Chunk overlap**: shared text between neighboring chunks to preserve context\n\n##### Sampling settings:\n\n- **Ordered**: keep original document order\n- **Shuffle**: randomize chunk order\n- **Selection index / selection settings**: choose which part/subset of seed data to use",
-        "note_color": "#2bf9fd",
-        "note_opacity": "10"
+        "note_color": "#F3E8FF",
+        "note_opacity": "35"
       },
       {
         "id": "note_3",
@@ -100,8 +100,8 @@
         "node_type": "markdown_note",
         "name": "note_3",
         "markdown": "- LLM prompt: `{{ chunk_text }}`\n- Expression block: combine/format values using `{{ chunk_text }}`\n- Processor templates: use `{{ chunk_text }}` during transforms\n\nTip:\n- Start with medium chunk size + small overlap.\n- Increase overlap only if answers lose context between chunks.",
-        "note_color": "#8bf0fd",
-        "note_opacity": "20"
+        "note_color": "#F3E8FF",
+        "note_opacity": "35"
       },
       {
         "id": "seed",
