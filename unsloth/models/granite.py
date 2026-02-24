@@ -397,22 +397,32 @@ def GraniteAttention_fast_forward_inference(
     # Attention
     if bsz == 1:
         Qn *= self.scaling
-        A = torch_matmul(Qn, Kn.transpose(2, 3), out = self.attention[:, :, :, :cached_len])
+        A = torch_matmul(
+            Qn, Kn.transpose(2, 3), out = self.attention[:, :, :, :cached_len]
+        )
         A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)
         A = torch_matmul(A, Vn, out = Qn)
     else:
-        if attention_mask is not None and attention_mask.dim() == 4 and attention_mask.dtype != torch.bool:
+        if (
+            attention_mask is not None
+            and attention_mask.dim() == 4
+            and attention_mask.dtype != torch.bool
+        ):
             attention_mask = attention_mask.eq(0)
         if SDPA_HAS_GQA:
             A = scaled_dot_product_attention(
-                Qn, Kn, Vn,
+                Qn,
+                Kn,
+                Vn,
                 attn_mask = attention_mask,
                 scale = self.scaling,
                 enable_gqa = True,
             )
         else:
             A = scaled_dot_product_attention(
-                Qn, Kn, Vn,
+                Qn,
+                Kn,
+                Vn,
                 attn_mask = attention_mask,
                 scale = self.scaling,
             )

@@ -294,8 +294,8 @@ def _fast_prepare_inputs_for_generation(
             if hasattr(
                 base_model, "_prepare_4d_causal_attention_mask_with_cache_position"
             ):
-
                 if not hasattr(base_model, "_unsloth_mask_needs_device"):
+
                     def _check_needs_device(fn) -> bool:
                         try:
                             sig = inspect.signature(inspect.unwrap(fn))
@@ -303,6 +303,7 @@ def _fast_prepare_inputs_for_generation(
                         except:
                             # transformers <= 4.51.3 includes device arg but > 4.51.3 does not
                             return transformers_version < Version("4.52.0")
+
                     base_model._unsloth_mask_needs_device = _check_needs_device(
                         base_model._prepare_4d_causal_attention_mask_with_cache_position
                     )
