@@ -622,31 +622,37 @@ class FastBaseModel:
                 if isinstance(_qc, dict)
                 else getattr(_qc, "quant_method", "")
             )
-            if _qm == "fp8" and not load_in_fp8:
+            if _qm in ("fp8", "fbgemm_fp8") and not load_in_fp8:
                 _bf16_name = model_name.rstrip("/") + "-BF16"
+                _original_name = model_name
                 try:
                     from huggingface_hub import model_info as _hf_model_info
 
                     _hf_model_info(_bf16_name, token = token)
-                    print(
-                        f"Unsloth: {model_name} uses FP8 weights. Redirecting to {_bf16_name}."
-                    )
-                    model_name = _bf16_name
-                    auto_config = AutoConfig.from_pretrained(
-                        model_name,
+                    _bf16_config = AutoConfig.from_pretrained(
+                        _bf16_name,
                         token = token,
                         trust_remote_code = trust_remote_code,
                     )
+                    # Only update state after both checks succeed
+                    print(
+                        f"Unsloth: {_original_name} uses FP8 weights. "
+                        f"Redirecting to {_bf16_name}."
+                    )
+                    model_name = _bf16_name
+                    auto_config = _bf16_config
                     try:
                         model_class = auto_model._model_mapping[auto_config.__class__]
                     except KeyError:
                         pass
                 except Exception:
                     print(
-                        f"Unsloth: {model_name} uses FP8 weights but no BF16 version was found "
-                        f"at {_bf16_name}.\n"
-                        f"Loading FP8 weights with BitsAndBytes or in 16-bit may fail.\n"
-                        f"Set load_in_fp8=True to use FP8 mode, or upload a BF16 version."
+                        f"Unsloth: {_original_name} uses FP8 weights but no BF16 "
+                        f"version was found at {_bf16_name}.\n"
+                        f"Loading FP8 weights with BitsAndBytes or in 16-bit may "
+                        f"fail.\n"
+                        f"Set load_in_fp8=True to use FP8 mode, or upload a BF16 "
+                        f"version."
                     )
 
         default_attn_impl = "flex_attention" if flex_attn_impl else "sdpa"
