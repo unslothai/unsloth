@@ -424,14 +424,14 @@ pass
 
 def detect_gguf_model(path: str) -> Optional[str]:
     """
-    Check if the given path is or contains a GGUF model file.
+    Check if the given local path is or contains a GGUF model file.
 
-    Handles three cases:
+    Handles two cases:
     1. path is a direct .gguf file path
     2. path is a directory containing .gguf files
-    3. path is an HuggingFace repo with GGUF files (not yet — future enhancement)
 
     Returns the full path to the .gguf file if found, None otherwise.
+    For HuggingFace repo detection, use detect_gguf_model_remote() instead.
     """
     p = Path(path)
 
@@ -446,6 +446,76 @@ def detect_gguf_model(path: str) -> Optional[str]:
             return str(gguf_files[0].resolve())
 
     return None
+
+
+# Preferred GGUF quantization levels, in descending priority.
+# Q4_K_M is a good default: small, fast, acceptable quality.
+_GGUF_QUANT_PREFERENCE = [
+    "Q4_K_M", "Q4_K_S", "Q5_K_M", "Q5_K_S",
+    "Q6_K", "Q8_0", "Q3_K_M", "Q3_K_L", "Q2_K",
+    "F16", "BF16", "F32",
+]
+
+
+def _pick_best_gguf(filenames: list[str]) -> Optional[str]:
+    """
+    Pick the best GGUF file from a list of filenames.
+
+    Prefers quantization levels in _GGUF_QUANT_PREFERENCE order.
+    Falls back to the first .gguf file found.
+    """
+    gguf_files = [f for f in filenames if f.endswith(".gguf")]
+    if not gguf_files:
+        return None
+
+    # Try preferred quantization levels
+    for quant in _GGUF_QUANT_PREFERENCE:
+        for f in gguf_files:
+            if quant in f:
+                return f
+
+    # Fallback: first GGUF file
+    return gguf_files[0]
+
+
+def detect_gguf_model_remote(
+    repo_id: str,
+    hf_token: Optional[str] = None,
+) -> Optional[str]:
+    """
+    Check if a HuggingFace repo contains GGUF files.
+
+    Returns the filename of the best GGUF file in the repo, or None.
+    """
+    try:
+        from huggingface_hub import model_info as hf_model_info
+
+        info = hf_model_info(repo_id, token=hf_token)
+        repo_files = [s.rfilename for s in info.siblings]
+        return _pick_best_gguf(repo_files)
+    except Exception as e:
+        logger.debug(f"Could not check GGUF files for '{repo_id}': {e}")
+        return None
+
+
+def download_gguf_file(
+    repo_id: str,
+    filename: str,
+    hf_token: Optional[str] = None,
+) -> str:
+    """
+    Download a specific GGUF file from a HuggingFace repo.
+
+    Returns the local path to the downloaded file.
+    """
+    from huggingface_hub import hf_hub_download
+
+    local_path = hf_hub_download(
+        repo_id=repo_id,
+        filename=filename,
+        token=hf_token,
+    )
+    return local_path
 
 
 def scan_trained_loras(outputs_dir: str = "./outputs") -> List[Tuple[str, str]]:
@@ -714,7 +784,7 @@ class ModelConfig:
             gguf_file = detect_gguf_model(path)
             if gguf_file:
                 display_name = Path(gguf_file).stem
-                logger.info(f"Detected GGUF model: {gguf_file}")
+                logger.info(f"Detected local GGUF model: {gguf_file}")
                 return cls(
                     identifier=identifier,
                     display_name=display_name,
@@ -725,6 +795,29 @@ class ModelConfig:
                     is_lora=False,
                     is_gguf=True,
                     gguf_file=gguf_file,
+                )
+        else:
+            # Check if the HF repo contains GGUF files
+            gguf_filename = detect_gguf_model_remote(identifier, hf_token=hf_token)
+            if gguf_filename:
+                logger.info(f"Detected remote GGUF repo '{identifier}', file: {gguf_filename}")
+                logger.info(f"Downloading GGUF file '{gguf_filename}' from '{identifier}'...")
+                local_gguf_path = download_gguf_file(
+                    repo_id=identifier,
+                    filename=gguf_filename,
+                    hf_token=hf_token,
+                )
+                display_name = Path(gguf_filename).stem
+                return cls(
+                    identifier=identifier,
+                    display_name=display_name,
+                    path=local_gguf_path,
+                    is_local=False,
+                    is_cached=True,
+                    is_vision=False,
+                    is_lora=False,
+                    is_gguf=True,
+                    gguf_file=local_gguf_path,
                 )
 
         # Auto-detect LoRA for local paths (check adapter_config.json on disk)
