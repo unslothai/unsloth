@@ -233,9 +233,25 @@ else
 
         if [ "$BUILD_OK" = true ]; then
             CMAKE_ARGS=""
+            # Detect CUDA: check nvcc on PATH, then common install locations
+            NVCC_PATH=""
             if command -v nvcc &>/dev/null; then
-                echo "   Building with CUDA support..."
+                NVCC_PATH="$(command -v nvcc)"
+            elif [ -x /usr/local/cuda/bin/nvcc ]; then
+                NVCC_PATH="/usr/local/cuda/bin/nvcc"
+                export PATH="/usr/local/cuda/bin:$PATH"
+            elif ls /usr/local/cuda-*/bin/nvcc &>/dev/null 2>&1; then
+                # Pick the newest cuda-XX.X directory
+                NVCC_PATH="$(ls -d /usr/local/cuda-*/bin/nvcc 2>/dev/null | sort -V | tail -1)"
+                export PATH="$(dirname "$NVCC_PATH"):$PATH"
+            fi
+
+            if [ -n "$NVCC_PATH" ]; then
+                echo "   Building with CUDA support (nvcc: $NVCC_PATH)..."
                 CMAKE_ARGS="-DGGML_CUDA=ON"
+            elif [ -d /usr/local/cuda ] || nvidia-smi &>/dev/null; then
+                echo "   CUDA driver detected but nvcc not found — building CPU-only"
+                echo "   To enable GPU: install cuda-toolkit or add nvcc to PATH"
             else
                 echo "   Building CPU-only (no CUDA detected)..."
             fi
