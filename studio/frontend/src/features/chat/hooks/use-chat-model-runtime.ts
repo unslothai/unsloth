@@ -41,11 +41,13 @@ function stripTrailingEpoch(input: string): string {
 function describeModel(model: {
   is_lora?: boolean;
   is_vision?: boolean;
+  is_gguf?: boolean;
 }): string | undefined {
   const tags: string[] = [];
+  if (model.is_gguf) tags.push("GGUF");
   if (model.is_lora) tags.push("LoRA");
   if (model.is_vision) tags.push("Vision");
-  if (!model.is_lora && !model.is_vision) tags.push("Base");
+  if (!model.is_lora && !model.is_vision && !model.is_gguf) tags.push("Base");
   return tags.join(" · ");
 }
 
@@ -54,6 +56,7 @@ function toChatModelSummary(model: {
   name?: string | null;
   is_lora?: boolean;
   is_vision?: boolean;
+  is_gguf?: boolean;
 }): ChatModelSummary {
   return {
     id: model.id,
@@ -61,6 +64,7 @@ function toChatModelSummary(model: {
     description: describeModel(model),
     isLora: Boolean(model.is_lora),
     isVision: Boolean(model.is_vision),
+    isGguf: Boolean(model.is_gguf),
   };
 }
 

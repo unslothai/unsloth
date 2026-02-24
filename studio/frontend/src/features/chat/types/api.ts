@@ -3,6 +3,7 @@ export interface BackendModelDetails {
   name?: string | null;
   is_vision?: boolean;
   is_lora?: boolean;
+  is_gguf?: boolean;
 }
 
 export interface ListModelsResponse {
@@ -35,6 +36,7 @@ export interface LoadModelResponse {
   display_name: string;
   is_vision: boolean;
   is_lora: boolean;
+  is_gguf?: boolean;
   inference?: {
     temperature?: number;
     top_p?: number;
@@ -50,6 +52,7 @@ export interface UnloadModelRequest {
 export interface InferenceStatusResponse {
   active_model: string | null;
   is_vision: boolean;
+  is_gguf?: boolean;
   loading: string[];
   loaded: string[];
 }

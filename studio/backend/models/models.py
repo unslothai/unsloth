@@ -53,6 +53,7 @@ class ModelDetails(BaseModel):
     config: Optional[Dict[str, Any]] = Field(None, description="Model configuration dictionary")
     is_vision: bool = Field(False, description="Whether model is a vision model")
     is_lora: bool = Field(False, description="Whether model is a LoRA adapter")
+    is_gguf: bool = Field(False, description="Whether model is a GGUF model (llama.cpp format)")
     base_model: Optional[str] = Field(None, description="Base model if this is a LoRA adapter")
 
 

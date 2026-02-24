@@ -206,7 +206,67 @@ else
     fi
 fi
 
-# ── 8. Add shell alias (skip in Colab) ──
+# ── 8. Build llama-server for GGUF inference ──
+# Builds in an isolated temp directory to avoid conflicts with unsloth-zoo's
+# own llama.cpp management (used for GGUF export). Only the llama-server
+# binary is extracted to $REPO/bin/.
+LLAMA_SERVER_BIN="$SCRIPT_DIR/bin/llama-server"
+if [ -f "$LLAMA_SERVER_BIN" ]; then
+    echo ""
+    echo "✅ llama-server already exists at $LLAMA_SERVER_BIN"
+else
+    # Check prerequisites
+    if ! command -v cmake &>/dev/null; then
+        echo ""
+        echo "⚠️  cmake not found — skipping llama-server build (GGUF inference won't be available)"
+        echo "   Install cmake and re-run setup.sh to enable GGUF inference."
+    elif ! command -v git &>/dev/null; then
+        echo ""
+        echo "⚠️  git not found — skipping llama-server build (GGUF inference won't be available)"
+    else
+        echo ""
+        echo "Building llama-server for GGUF inference..."
+        LLAMA_BUILD_TMP=$(mktemp -d)
+
+        BUILD_OK=true
+        run_quiet "clone llama.cpp" git clone --depth 1 https://github.com/ggml-org/llama.cpp.git "$LLAMA_BUILD_TMP/llama.cpp" || BUILD_OK=false
+
+        if [ "$BUILD_OK" = true ]; then
+            CMAKE_ARGS=""
+            if command -v nvcc &>/dev/null; then
+                echo "   Building with CUDA support..."
+                CMAKE_ARGS="-DGGML_CUDA=ON"
+            else
+                echo "   Building CPU-only (no CUDA detected)..."
+            fi
+
+            NCPU=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+
+            run_quiet "cmake llama.cpp" cmake -S "$LLAMA_BUILD_TMP/llama.cpp" -B "$LLAMA_BUILD_TMP/llama.cpp/build" $CMAKE_ARGS || BUILD_OK=false
+        fi
+
+        if [ "$BUILD_OK" = true ]; then
+            run_quiet "build llama-server" cmake --build "$LLAMA_BUILD_TMP/llama.cpp/build" --config Release --target llama-server -j"$NCPU" || BUILD_OK=false
+        fi
+
+        if [ "$BUILD_OK" = true ]; then
+            mkdir -p "$SCRIPT_DIR/bin"
+            if [ -f "$LLAMA_BUILD_TMP/llama.cpp/build/bin/llama-server" ]; then
+                cp "$LLAMA_BUILD_TMP/llama.cpp/build/bin/llama-server" "$LLAMA_SERVER_BIN"
+                echo "✅ llama-server built and installed to $LLAMA_SERVER_BIN"
+            else
+                echo "⚠️  llama-server binary not found after build — GGUF inference won't be available"
+            fi
+        else
+            echo "⚠️  llama-server build failed — GGUF inference won't be available, but everything else works"
+        fi
+
+        # Clean up temp build directory
+        rm -rf "$LLAMA_BUILD_TMP"
+    fi
+fi
+
+# ── 9. Add shell alias (skip in Colab) ──
 # Note: venv activation does NOT persist across terminal sessions.
 # This alias hardcodes the venv python path so users don't need to activate.
 if [ "$IS_COLAB" = false ]; then

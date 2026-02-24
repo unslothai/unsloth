@@ -11,7 +11,6 @@ export interface HfModelResult {
 }
 
 const EXCLUDED_TAGS = new Set([
-  "gguf",
   "gptq",
   "awq",
   "exl2",

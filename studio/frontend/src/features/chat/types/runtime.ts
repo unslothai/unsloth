@@ -26,6 +26,7 @@ export interface ChatModelSummary {
   description?: string;
   isVision: boolean;
   isLora: boolean;
+  isGguf?: boolean;
 }
 
 export interface ChatLoraSummary {
