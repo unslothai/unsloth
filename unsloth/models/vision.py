@@ -1353,7 +1353,9 @@ class FastBaseModel:
         # Only do this if tokenizer is defined since eos_token == pad_token sometimes!
         pad_token_id = getattr(tokenizer, "pad_token_id", None)
         lm_head = getattr(model, "lm_head", None)
-        lm_head_weight = getattr(lm_head, "weight", None) if lm_head is not None else None
+        lm_head_weight = (
+            getattr(lm_head, "weight", None) if lm_head is not None else None
+        )
         if (
             tokenizer is not None
             and getattr(tokenizer, "eos_token_id", None) != pad_token_id
@@ -1372,7 +1374,8 @@ class FastBaseModel:
                                 # Skip if tied to lm_head
                                 if (
                                     lm_head_weight is not None
-                                    and module.weight.data_ptr() == lm_head_weight.data_ptr()
+                                    and module.weight.data_ptr()
+                                    == lm_head_weight.data_ptr()
                                 ):
                                     continue
                                 module.weight[module.padding_idx] = 0

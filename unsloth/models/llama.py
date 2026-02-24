@@ -2668,11 +2668,17 @@ class FastLlamaModel:
         # This is higher than the (negative) logits for real tokens in models
         # like Gemma, causing the decoder to emit <pad> and produce gibberish.
         # Skip entirely if eos_token == pad_token to avoid zeroing EOS embedding.
-        eos_token_id = getattr(tokenizer, "eos_token_id", None) if tokenizer is not None else None
-        pad_token_id = getattr(tokenizer, "pad_token_id", None) if tokenizer is not None else None
+        eos_token_id = (
+            getattr(tokenizer, "eos_token_id", None) if tokenizer is not None else None
+        )
+        pad_token_id = (
+            getattr(tokenizer, "pad_token_id", None) if tokenizer is not None else None
+        )
         if tokenizer is not None and eos_token_id != pad_token_id:
             lm_head = getattr(model, "lm_head", None)
-            lm_head_weight = getattr(lm_head, "weight", None) if lm_head is not None else None
+            lm_head_weight = (
+                getattr(lm_head, "weight", None) if lm_head is not None else None
+            )
             with torch.no_grad():
                 for name, module in model.named_modules():
                     if type(module) is torch.nn.Embedding:
@@ -2684,7 +2690,8 @@ class FastLlamaModel:
                                 # Skip if tied to lm_head
                                 if (
                                     lm_head_weight is not None
-                                    and module.weight.data_ptr() == lm_head_weight.data_ptr()
+                                    and module.weight.data_ptr()
+                                    == lm_head_weight.data_ptr()
                                 ):
                                     continue
                                 module.weight[module.padding_idx] = 0

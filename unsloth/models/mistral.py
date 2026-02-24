@@ -228,7 +228,9 @@ def MistralForCausalLM_fast_forward(
                     )
                     attention_mask = causal_mask_values[None, None, :, :] + padding_mask
                 else:
-                    attention_mask = attention_mask + causal_mask_values[None, None, :, :]
+                    attention_mask = (
+                        attention_mask + causal_mask_values[None, None, :, :]
+                    )
 
             attention_mask = attention_mask.to(
                 dtype = _get_dtype(dtype_from_config(self.config))

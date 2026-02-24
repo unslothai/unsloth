@@ -126,7 +126,11 @@ def run_attention(
     # batched generation), fall back to SDPA which consumes attn_mask.
     # xFormers also does not thread context.attention_mask through, so the
     # same fallback applies.
-    if context.attention_mask is not None and backend in (FLASH_DENSE, FLASH_VARLEN, XFORMERS):
+    if context.attention_mask is not None and backend in (
+        FLASH_DENSE,
+        FLASH_VARLEN,
+        XFORMERS,
+    ):
         backend = SDPA
 
     flash_dense_kwargs = config.flash_dense_kwargs or {}

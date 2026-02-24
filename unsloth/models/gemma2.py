@@ -458,7 +458,7 @@ def Gemma2Attention_fast_forward_inference(
     if attention_mask is not None and isinstance(attention_mask, torch.Tensor):
         # Slice mask to match K/V when sliding window is active
         if attention_mask.shape[-1] != A.shape[-1]:
-            attention_mask = attention_mask[:, :, :, -A.shape[-1]:]
+            attention_mask = attention_mask[:, :, :, -A.shape[-1] :]
         A = A + attention_mask
 
     A *= self.reciprocal_t
