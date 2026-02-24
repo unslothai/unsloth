@@ -2,7 +2,7 @@
 llama-server inference backend for GGUF models.
 
 Manages a llama-server subprocess and proxies chat completions
-through its /v1/completions endpoint.
+through its OpenAI-compatible /v1/chat/completions endpoint.
 """
 import atexit
 import json
@@ -27,7 +27,7 @@ class LlamaCppBackend:
 
     Lifecycle:
         1. load_model()  — starts llama-server with the GGUF file
-        2. generate_chat_completion() — formats prompt, proxies to /v1/completions, streams back
+        2. generate_chat_completion() — proxies to /v1/chat/completions, streams back
         3. unload_model() — terminates llama-server subprocess
     """
 
@@ -41,7 +41,6 @@ class LlamaCppBackend:
         self._is_vision: bool = False
         self._healthy = False
         self._lock = threading.Lock()
-        self._chat_template: Optional[str] = None
 
         atexit.register(self._cleanup)
 
@@ -218,13 +217,6 @@ class LlamaCppBackend:
 
             self._healthy = True
 
-            # Read chat template from local GGUF metadata (skip in HF mode —
-            # llama-server handles template application internally)
-            if gguf_path:
-                self._chat_template = self._read_gguf_chat_template(gguf_path)
-            else:
-                self._chat_template = None
-
             logger.info(
                 f"llama-server ready on port {self._port} "
                 f"for model '{model_identifier}'"
@@ -243,7 +235,6 @@ class LlamaCppBackend:
             self._is_vision = False
             self._port = None
             self._healthy = False
-            self._chat_template = None
             return True
 
     def _kill_process(self):
@@ -298,92 +289,49 @@ class LlamaCppBackend:
         logger.error(f"llama-server health check timed out after {timeout}s")
         return False
 
-    # ── Chat template ─────────────────────────────────────────────
+    # ── Message building (OpenAI format) ──────────────────────────
 
     @staticmethod
-    def _read_gguf_chat_template(gguf_path: str) -> Optional[str]:
+    def _build_openai_messages(
+        messages: list[dict],
+        image_b64: Optional[str] = None,
+    ) -> list[dict]:
         """
-        Try to read the chat_template from GGUF file metadata.
+        Build OpenAI-format messages, optionally injecting an image_url
+        content part into the last user message for vision models.
 
-        Uses the gguf Python library if available.
-        Returns the Jinja2 template string, or None.
+        If no image is provided, returns messages as-is.
         """
-        try:
-            from gguf import GGUFReader
+        if not image_b64:
+            return messages
 
-            reader = GGUFReader(gguf_path)
-            for field_name in reader.fields:
-                if field_name == "tokenizer.chat_template":
-                    field = reader.fields[field_name]
-                    # Field data is an array of bytes
-                    template_bytes = bytes(field.parts[field.data[0]])
-                    template = template_bytes.decode("utf-8")
-                    logger.info(f"Read chat template from GGUF metadata ({len(template)} chars)")
-                    return template
-        except ImportError:
-            logger.debug("gguf library not available, cannot read chat template from GGUF metadata")
-        except Exception as e:
-            logger.warning(f"Could not read chat template from GGUF: {e}")
+        # Find the last user message and convert to multimodal content parts
+        result = [msg.copy() for msg in messages]
+        last_user_idx = None
+        for i, msg in enumerate(result):
+            if msg["role"] == "user":
+                last_user_idx = i
 
-        return None
+        if last_user_idx is not None:
+            text_content = result[last_user_idx].get("content", "")
+            result[last_user_idx]["content"] = [
+                {"type": "text", "text": text_content},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/png;base64,{image_b64}",
+                    },
+                },
+            ]
 
-    def format_prompt(self, messages: list[dict], system_prompt: str = "") -> str:
-        """
-        Format chat messages into a raw prompt string for /v1/completions.
-
-        Attempts to:
-        1. Render the GGUF's embedded chat_template with Jinja2
-        2. Fallback to ChatML format
-        """
-        # Build full message list with system prompt
-        full_messages = []
-        if system_prompt:
-            full_messages.append({"role": "system", "content": system_prompt})
-        full_messages.extend(messages)
-
-        # Try Jinja2 rendering if we have a template
-        if self._chat_template:
-            try:
-                return self._render_jinja_template(full_messages)
-            except Exception as e:
-                logger.warning(f"Jinja2 template rendering failed, falling back to ChatML: {e}")
-
-        # Fallback: ChatML format
-        return self._format_chatml(full_messages)
-
-    def _render_jinja_template(self, messages: list[dict]) -> str:
-        """Render messages using the GGUF's Jinja2 chat template."""
-        from jinja2 import BaseLoader, Environment
-
-        env = Environment(loader=BaseLoader(), keep_trailing_newline=True)
-        # Add common template globals
-        env.globals["raise_exception"] = lambda msg: (_ for _ in ()).throw(ValueError(msg))
-
-        template = env.from_string(self._chat_template)
-        rendered = template.render(
-            messages=messages,
-            add_generation_prompt=True,
-            bos_token="<s>",
-            eos_token="</s>",
-        )
-        return rendered
-
-    @staticmethod
-    def _format_chatml(messages: list[dict]) -> str:
-        """Format messages using ChatML template (universal fallback)."""
-        parts = []
-        for msg in messages:
-            role = msg.get("role", "user")
-            content = msg.get("content", "")
-            parts.append(f"<|im_start|>{role}\n{content}<|im_end|>")
-        parts.append("<|im_start|>assistant")
-        return "\n".join(parts) + "\n"
+        return result
 
     # ── Generation (proxy to llama-server) ────────────────────────
 
     def generate_chat_completion(
         self,
-        prompt: str,
+        messages: list[dict],
+        image_b64: Optional[str] = None,
         temperature: float = 0.7,
         top_p: float = 0.9,
         top_k: int = 40,
@@ -394,30 +342,32 @@ class LlamaCppBackend:
         cancel_event: Optional[threading.Event] = None,
     ) -> Generator[str, None, None]:
         """
-        Send a completion request to llama-server and stream tokens back.
+        Send a chat completion request to llama-server and stream tokens back.
 
-        Uses /v1/completions (NOT /v1/chat/completions) so we control
-        the prompt format entirely.
+        Uses /v1/chat/completions — llama-server handles chat template
+        application and vision (multimodal image_url parts) natively.
 
         Yields cumulative text (matching InferenceBackend's convention).
         """
         if not self.is_loaded:
             raise RuntimeError("llama-server is not loaded")
 
+        openai_messages = self._build_openai_messages(messages, image_b64)
+
         payload = {
-            "prompt": prompt,
+            "messages": openai_messages,
             "stream": True,
             "temperature": temperature,
             "top_p": top_p,
             "top_k": top_k if top_k >= 0 else 0,
             "min_p": min_p,
-            "n_predict": max_tokens,
+            "max_tokens": max_tokens,
             "repeat_penalty": repetition_penalty,
         }
         if stop:
             payload["stop"] = stop
 
-        url = f"{self.base_url}/v1/completions"
+        url = f"{self.base_url}/v1/chat/completions"
         cumulative = ""
 
         try:
@@ -450,7 +400,8 @@ class LlamaCppBackend:
                                 data = json.loads(line[6:])
                                 choices = data.get("choices", [])
                                 if choices:
-                                    token = choices[0].get("text", "")
+                                    delta = choices[0].get("delta", {})
+                                    token = delta.get("content", "")
                                     if token:
                                         cumulative += token
                                         yield cumulative
