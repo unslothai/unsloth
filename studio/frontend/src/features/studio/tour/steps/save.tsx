@@ -6,8 +6,8 @@ export const studioSaveStep: TourStep = {
   title: "Save config",
   body: (
     <>
-      Save configs that worked. Re-running the same baseline makes it obvious
-      if a change helped (or if you just got lucky).
+      Save your training config as a YAML file. Re-running the same baseline
+      makes it obvious if a change helped (or if you just got lucky).
     </>
   ),
 };

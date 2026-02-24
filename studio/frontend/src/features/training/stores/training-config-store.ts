@@ -5,6 +5,7 @@ import { persist } from "zustand/middleware";
 import { checkDatasetFormat } from "../api/datasets-api";
 import { checkVisionModel, getModelConfig } from "../api/models-api";
 import { mapBackendModelConfigToTrainingPatch } from "../lib/model-defaults";
+import type { BackendModelConfig } from "../api/models-api";
 import type { TrainingConfigState, TrainingConfigStore } from "../types/config";
 
 const MIN_STEP: StepNumber = 1;
@@ -344,6 +345,16 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         setTargetModules: (targetModules) => set({ targetModules }),
         canProceed: () => canProceedForStep(get()),
         reset: () => set(initialState),
+        resetToModelDefaults: () => {
+          const { selectedModel } = get();
+          if (!selectedModel) return;
+          set({ modelDefaultsAppliedFor: null });
+          loadAndApplyModelDefaults(selectedModel);
+        },
+        applyConfigPatch: (config: BackendModelConfig) => {
+          const patch = mapBackendModelConfigToTrainingPatch(config);
+          set(patch);
+        },
       };
     },
     {
