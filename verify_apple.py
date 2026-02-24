@@ -208,9 +208,21 @@ def test_gguf_export(skip_downloads=False):
                 return True
                 
         except ImportError as e:
-            print(f"⚠️  MLX not available or GGUF export failed: {e}")
+            print(f"⚠️  MLX not available: {e}")
             print("   Note: MLX GGUF export requires 'pip install mlx'")
             return True  # Not a failure, just MLX not available
+        except RuntimeError as e:
+            err_msg = str(e)
+            if "llama.cpp" in err_msg.lower() or "quantizer" in err_msg.lower():
+                print(f"⚠️  llama.cpp not properly installed for GGUF export: {e}")
+                print("   Note: On macOS, you need to build llama.cpp with Metal support:")
+                print("   git clone https://github.com/ggerganov/llama.cpp")
+                print("   cd llama.cpp && cmake -B build -DGGML_METAL=ON && cmake --build build")
+                return True  # Not a failure, just llama.cpp not installed
+            print(f"❌ ERROR during MLX GGUF export test: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return False
         except Exception as e:
             print(f"❌ ERROR during MLX GGUF export test: {str(e)}")
             import traceback
