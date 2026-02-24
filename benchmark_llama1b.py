@@ -190,9 +190,10 @@ def benchmark_mlx(steps: int, batch_size: int, seq_len: int, warmup: int = 2):
     
     print(f"\n[3/4] Training ({warmup} warmup + {steps} benchmark steps)...")
     
-    def loss_fn(trainable_params, input_ids, labels):
+    def loss_fn(input_ids, labels):
         # Temporarily set model params to trainable subset
         orig_params = dict(model.parameters())
+        trainable_params = model.trainable_parameters()
         model.update_params(trainable_params, strict=False)
         
         logits = model(input_ids)
@@ -219,10 +220,8 @@ def benchmark_mlx(steps: int, batch_size: int, seq_len: int, warmup: int = 2):
     
     for i in range(warmup):
         input_ids, labels = create_batch()
-        trainable_params = model.trainable_parameters()
         grads = mx.grad(loss_fn)(input_ids, labels)
-        # Filter gradients to only trainable params
-        trainable_grads = {k: grads[k] for k in trainable_params if k in grads}
+        trainable_grads = {k: grads[k] for k in model.trainable_parameters() if k in grads}
         optimizer.update(model, trainable_grads)
         mx.eval(model, optimizer.state)
     
@@ -235,12 +234,11 @@ def benchmark_mlx(steps: int, batch_size: int, seq_len: int, warmup: int = 2):
         step_start = time.perf_counter()
         
         input_ids, labels = create_batch()
-        trainable_params = model.trainable_parameters()
         
         # Compute loss and grads, then filter to trainable params only
         loss, grads = nn.value_and_grad(loss_fn)(input_ids, labels)
         # Filter gradients to only trainable params for optimizer update
-        trainable_grads = {k: grads[k] for k in trainable_params if k in grads}
+        trainable_grads = {k: grads[k] for k in model.trainable_parameters() if k in grads}
         optimizer.update(model, trainable_grads)
         mx.eval(model, optimizer.state)
         
