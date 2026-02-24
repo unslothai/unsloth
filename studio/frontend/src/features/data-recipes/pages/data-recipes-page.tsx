@@ -144,8 +144,8 @@ const TEMPLATE_CARDS: TemplateCard[] = [
     description:
       "Role-based multi-turn conversations for assistant behavior, memory, and response quality.",
     icon: AiChat02Icon,
-    difficulty: "Advanced",
-    learningBadges: ["LLM Text", "Conversation Design"],
+    difficulty: "Easy",
+    learningBadges: ["Structured LLM", "LLM Text"],
     surfaceClassName:
       "from-rose-500/15 via-pink-500/5 to-transparent",
     shineColor: [
@@ -153,6 +153,7 @@ const TEMPLATE_CARDS: TemplateCard[] = [
       "rgb(236 72 153 / 0.4)",
       "rgb(251 113 133 / 0.45)",
     ],
+    learningRecipeId: "conversation",
   },
 ];
 
