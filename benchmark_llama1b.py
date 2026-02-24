@@ -30,15 +30,27 @@ def load_fineweb_data(tokenizer, num_samples: int, seq_len: int, batch_size: int
     print(f"      Loading FineWeb samples...")
     ds = load_dataset("HuggingFaceFW/fineweb", name="sample-10BT", split="train", streaming=True)
     
-    actual_tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
+    if hasattr(tokenizer, "tokenizer"):
+        actual_tokenizer = tokenizer.tokenizer
+    elif hasattr(tokenizer, "encode"):
+        actual_tokenizer = tokenizer
+    else:
+        from transformers import AutoTokenizer
+        actual_tokenizer = AutoTokenizer.from_pretrained("unsloth/Llama-3.2-1B-Instruct")
     
     samples = []
     for i, item in enumerate(ds):
         if i >= num_samples:
             break
         text = item["text"]
-        tokens = actual_tokenizer(text, truncation=True, max_length=seq_len, return_tensors="pt")
-        input_ids = tokens["input_ids"].squeeze(0)
+        if hasattr(actual_tokenizer, "__call__"):
+            tokens = actual_tokenizer(text, truncation=True, max_length=seq_len, return_tensors="pt")
+            input_ids = tokens["input_ids"].squeeze(0)
+        else:
+            input_ids = actual_tokenizer.encode(text, add_special_tokens=True)
+            if len(input_ids) > seq_len:
+                input_ids = input_ids[:seq_len]
+            input_ids = torch.tensor(input_ids)
         samples.append(input_ids)
     
     return samples
