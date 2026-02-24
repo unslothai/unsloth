@@ -670,6 +670,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 kwargs.get("pixel_attention_mask", None),
                 kwargs.get("image_sizes", None),
             )
+            token_type_ids = kwargs.get("token_type_ids", None)
 
             unwrapped_model = self.accelerator.unwrap_model(
                 model, keep_fp32_wrapper = False
@@ -735,6 +736,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             pixel_values_chunks = []
             image_grid_thw_chunks = []
             pixel_attention_mask_chunks = []
+            token_type_ids_chunks = []
 
             current_pixel_idx = 0
             # TRL 0.23.0 batching logic
@@ -766,10 +768,19 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
 
                     current_pixel_idx = end_pixel_idx
 
+                    if token_type_ids is not None:
+                        token_type_ids_chunks.append(token_type_ids[start:end])
+                    else:
+                        token_type_ids_chunks.append(None)
+
                 else:
                     pixel_values_chunks.append(None)
                     image_grid_thw_chunks.append(None)
                     pixel_attention_mask_chunks.append(None)
+                    if token_type_ids is not None:
+                        token_type_ids_chunks.append(token_type_ids[start:end])
+                    else:
+                        token_type_ids_chunks.append(None)
 
             if image_sizes is not None and not isinstance(image_sizes, torch.Tensor):
                 image_sizes_chunks = [[size] for size in image_sizes]
@@ -794,6 +805,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 image_grid_thw_chunks,
                 pixel_attention_mask_chunks,
                 image_sizes_chunks,
+                token_type_ids_chunks,
             )
             os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
 
@@ -805,6 +817,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     image_grid_thw_chunk,
                     pixel_attention_mask_chunk,
                     image_sizes_chunk,
+                    token_type_ids_chunk,
                 ) in zipped_inputs:
                     with torch.amp.autocast(
                         device_type = "cuda", dtype = self._autocast_dtype
@@ -817,6 +830,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 image_grid_thw = image_grid_thw_chunk,
                                 pixel_attention_mask = pixel_attention_mask_chunk,
                                 image_sizes = image_sizes_chunk,
+                                token_type_ids = token_type_ids_chunk,
                             ).logits
 
                             completion_input_ids_chunk = input_ids_chunk[
@@ -836,6 +850,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 image_grid_thw = image_grid_thw_chunk,
                                 pixel_attention_mask = pixel_attention_mask_chunk,
                                 image_sizes = image_sizes_chunk,
+                                token_type_ids = token_type_ids_chunk,
                                 logits_to_keep = logits_to_keep + 1,
                             ).logits
 
@@ -927,6 +942,7 @@ def grpo_trainer_compute_loss(function_name, function):
             inputs.get("pixel_attention_mask", None),
             inputs.get("image_sizes", None),
         )
+        token_type_ids = inputs.get("token_type_ids", None)
         num_items_in_batch = inputs.get("num_items_in_batch", None)
         sampling_per_token_logps = inputs.get("sampling_per_token_logps", None)
         current_gradient_accumulation_steps = self.current_gradient_accumulation_steps
@@ -1053,6 +1069,7 @@ def grpo_trainer_compute_loss(function_name, function):
                         logit_scale_multiply = logit_scale_multiply,
                         logit_scale_divide = logit_scale_divide,
                         attention_mask = attention_mask,
+                        token_type_ids = token_type_ids,
                         num_items_in_batch = num_items_in_batch,
                         current_gradient_accumulation_steps = current_gradient_accumulation_steps,
                         num_processes = num_processes,
@@ -1075,6 +1092,7 @@ def grpo_trainer_compute_loss(function_name, function):
                     logit_scale_multiply = logit_scale_multiply,
                     logit_scale_divide = logit_scale_divide,
                     attention_mask = attention_mask,
+                    token_type_ids = token_type_ids,
                 )
         if "train" in self._metrics:
             mode = "eval" if self.control.should_evaluate else "train"
