@@ -800,6 +800,15 @@ class ModelConfig:
             # Check if the HF repo contains GGUF files
             gguf_filename = detect_gguf_model_remote(identifier, hf_token=hf_token)
             if gguf_filename:
+                # Preflight: verify llama-server binary exists before downloading
+                # a potentially multi-GB GGUF file
+                from core.inference.llama_cpp import LlamaCppBackend
+                if not LlamaCppBackend._find_llama_server_binary():
+                    raise RuntimeError(
+                        "llama-server binary not found — cannot load GGUF models. "
+                        "Run setup.sh to build it, or set LLAMA_SERVER_PATH."
+                    )
+
                 logger.info(f"Detected remote GGUF repo '{identifier}', file: {gguf_filename}")
                 logger.info(f"Downloading GGUF file '{gguf_filename}' from '{identifier}'...")
                 local_gguf_path = download_gguf_file(
