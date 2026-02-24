@@ -280,7 +280,10 @@ def _fast_prepare_inputs_for_generation(
                     dtype = torch.long,
                 )
             else:
-                if hasattr(cache_position, "device") and cache_position.device != device:
+                if (
+                    hasattr(cache_position, "device")
+                    and cache_position.device != device
+                ):
                     kwargs["cache_position"] = cache_position.to(device)
 
             # Get to the base model
@@ -498,8 +501,8 @@ def LlamaAttention_fast_forward_inference(
     self.rotary_emb.extend_rope_embedding(Vn, rotary_seq_len + 1)  # +1 slack
     cos, sin = self.rotary_emb.get_cached(rotary_seq_len, Qn.device.index or 0)
 
-    cos = cos[position_ids].unsqueeze(1).to(device=Qn.device, dtype=Qn.dtype)
-    sin = sin[position_ids].unsqueeze(1).to(device=Qn.device, dtype=Qn.dtype)
+    cos = cos[position_ids].unsqueeze(1).to(device = Qn.device, dtype = Qn.dtype)
+    sin = sin[position_ids].unsqueeze(1).to(device = Qn.device, dtype = Qn.dtype)
 
     h = self.half_head_dim
 
@@ -739,8 +742,8 @@ def LlamaAttention_fast_forward(
         rotary_emb = self.rotary_emb
         rotary_emb.extend_rope_embedding(V, seq_len = kv_seq_len)
         cos, sin = rotary_emb.get_cached(kv_seq_len, Q.device.index)
-        cos = cos.to(device=Q.device, dtype=Q.dtype)
-        sin = sin.to(device=Q.device, dtype=Q.dtype)
+        cos = cos.to(device = Q.device, dtype = Q.dtype)
+        sin = sin.to(device = Q.device, dtype = Q.dtype)
 
     rope_position_ids = position_ids
     if rope_position_ids is None and seq_info is not None:
@@ -760,7 +763,9 @@ def LlamaAttention_fast_forward(
 
     # Attention module
     use_varlen = seq_info is not None and past_key_value is None
-    backend = SDPA if attention_mask is not None else select_attention_backend(use_varlen)
+    backend = (
+        SDPA if attention_mask is not None else select_attention_backend(use_varlen)
+    )
 
     # should dropout be hardcoded to 0.0?
     config = AttentionConfig(

@@ -247,20 +247,26 @@ def run_attention(
                         # tokenizer attention_mask is typically int 0/1
                         key_keep = local_mask != 0
 
-                    past_len = k_len_local - q_len_local  # works for prefill (0) and decode
+                    past_len = (
+                        k_len_local - q_len_local
+                    )  # works for prefill (0) and decode
                     q_pos = torch.arange(
                         past_len, past_len + q_len_local, device = Q.device
                     )
                     k_pos = torch.arange(k_len_local, device = Q.device)
 
-                    causal_keep = (k_pos[None, :] <= q_pos[:, None])  # True = allowed (SDPA)
+                    causal_keep = (
+                        k_pos[None, :] <= q_pos[:, None]
+                    )  # True = allowed (SDPA)
                     if sliding_window is not None:
-                        causal_keep &= (
-                            k_pos[None, :] >= (q_pos[:, None] - (sliding_window - 1))
+                        causal_keep &= k_pos[None, :] >= (
+                            q_pos[:, None] - (sliding_window - 1)
                         )
 
                     # (bsz, 1, q_len, k_len) boolean keep mask
-                    local_mask = causal_keep[None, None, :, :] & key_keep[:, None, None, :]
+                    local_mask = (
+                        causal_keep[None, None, :, :] & key_keep[:, None, None, :]
+                    )
 
                 elif local_mask.dim() == 3:
                     # (bsz, q_len, k_len) -> (bsz, 1, q_len, k_len)
@@ -277,7 +283,9 @@ def run_attention(
 
                 # Avoid NaNs from fully-masked rows (common with left padding).
                 if local_mask.dtype == torch.bool:
-                    no_allowed = ~local_mask.any(dim = -1, keepdim = True)  # (bsz,1,q_len,1)
+                    no_allowed = ~local_mask.any(
+                        dim = -1, keepdim = True
+                    )  # (bsz,1,q_len,1)
                     local_mask = local_mask | no_allowed
 
             is_causal_local = local_mask is None and q_len_local == k_len_local
