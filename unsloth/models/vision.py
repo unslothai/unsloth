@@ -30,6 +30,7 @@ from ..kernels import (
     post_patch_loss_function,
 )
 from ._utils import __version__, importlib_version, _prepare_model_for_qat
+from ._utils import _redirect_fp8_to_bf16
 from ._utils import *
 from .loader_utils import _get_fp8_mode_and_check_settings
 from ..save import patch_saving_functions
@@ -611,6 +612,24 @@ class FastBaseModel:
             model_class = None
         flex_attn_impl = prefer_flex_attn_if_supported(model_class, auto_config)
 
+        # Handle FP8 models: redirect to BF16 sibling when the model ships with
+        # FP8 weights (e.g. Ministral-3-3B-Instruct-2512). FP8 weights cannot be
+        # directly loaded by BNB, and the FP8 quantization config can cause issues
+        # even for 16-bit loading.
+        # Redirect is skipped when load_in_fp8 is truthy (True or 'block').
+        model_name, auto_config = _redirect_fp8_to_bf16(
+            model_name,
+            auto_config,
+            load_in_fp8,
+            token,
+            trust_remote_code,
+        )
+        # Re-resolve model_class after potential config change
+        try:
+            model_class = auto_model._model_mapping[auto_config.__class__]
+        except KeyError:
+            pass
+
         default_attn_impl = "flex_attention" if flex_attn_impl else "sdpa"
         if not ("attn_implementation" in kwargs):
             kwargs["attn_implementation"] = default_attn_impl
@@ -759,6 +778,7 @@ class FastBaseModel:
         if hasattr(auto_config, "attn_implementation"):
             setattr(auto_config, "attn_implementation", config_attn_impl)
         model_config = auto_config
+
         verify_fp8_support_if_applicable(model_config)
 
         raise_handler = RaiseUninitialized()
@@ -767,6 +787,7 @@ class FastBaseModel:
             load_in_fp8 = kwargs.pop("load_in_fp8", None)
             model = auto_model.from_pretrained(
                 model_name,
+                config = model_config,
                 device_map = device_map,
                 # torch_dtype           = torch_dtype, # Transformers removed torch_dtype
                 # quantization_config   = bnb_config,
