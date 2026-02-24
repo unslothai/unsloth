@@ -237,6 +237,7 @@ export function ProgressSection(): ReactElement {
                   onClick={() => {
                     setStopRequested(true);
                     setStopDialogOpen(false);
+                    useTrainingRuntimeStore.getState().setStopRequested(true);
                     void stopTrainingRun(false).then((ok) => {
                       if (!ok) setStopRequested(false);
                     });
@@ -248,6 +249,7 @@ export function ProgressSection(): ReactElement {
                   onClick={() => {
                     setStopRequested(true);
                     setStopDialogOpen(false);
+                    useTrainingRuntimeStore.getState().setStopRequested(true);
                     void stopTrainingRun(true).then((ok) => {
                       if (!ok) setStopRequested(false);
                     });

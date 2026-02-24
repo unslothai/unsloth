@@ -1,0 +1,36 @@
+{
+  "actual_num_records": 50,
+  "buffer_size": 50,
+  "column_statistics": [
+    {
+      "column_name": "generated_instruction",
+      "column_type": "llm-text",
+      "input_tokens_mean": 170.52,
+      "input_tokens_median": 132.5,
+      "input_tokens_stddev": 119.91,
+      "num_null": 0,
+      "num_records": 50,
+      "num_unique": 50,
+      "output_tokens_mean": 39.74,
+      "output_tokens_median": 31.0,
+      "output_tokens_stddev": 39.58,
+      "pyarrow_dtype": "string",
+      "simple_dtype": "string"
+    }
+  ],
+  "dataset_name": "recipe_a28d33f9eab14660bba2437a6dfda290",
+  "file_paths": {
+    "parquet-files": [
+      "parquet-files/batch_00000.parquet"
+    ]
+  },
+  "num_completed_batches": 1,
+  "schema": {
+    "generated_instruction": "string",
+    "input": "string",
+    "instruction": "string",
+    "output": "string"
+  },
+  "target_num_records": 50,
+  "total_num_batches": 1
+}

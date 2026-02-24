@@ -115,7 +115,7 @@ class TrainingBackend:
                        subset: str = None,
                        train_split: str = "train",
                        eval_split: str = None,
-                       eval_steps: float = 0.01,
+                       eval_steps: float = 0.00,
                        is_dataset_multimodal: bool = False) -> bool:
         """
         Start training.
@@ -223,6 +223,7 @@ class TrainingBackend:
                 subset=subset,
                 train_split=train_split,
                 eval_split=eval_split,
+                eval_steps=eval_steps,
             )
 
             # Unpack: load_and_format_dataset returns (dataset, eval_dataset)
@@ -230,10 +231,6 @@ class TrainingBackend:
                 dataset, eval_dataset = dataset_result
             else:
                 dataset = dataset_result
-                eval_dataset = None
-
-            # If user set eval_steps to 0, disable evaluation entirely
-            if eval_steps is not None and float(eval_steps) <= 0:
                 eval_dataset = None
 
             # Track whether eval is enabled for status reporting
