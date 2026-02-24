@@ -3356,8 +3356,11 @@ class FastLlamaModel:
             use_reentrant=False,
         )
 
+        if model is None:
+            return None
+
         # Fix up config for transformers uploading PEFT
-        if model.peft_config is not None:
+        if model is not None and model.peft_config is not None:
             for active_adapter in model.peft_config.keys():
                 # Not necessary since we requires transformers >= 4.37
                 if False:
@@ -3379,7 +3382,7 @@ class FastLlamaModel:
 
         # Fix loftq issues
         # loftq_config must not = None, but rather {}
-        if model.peft_config is not None:
+        if model is not None and model.peft_config is not None:
             all_configs = model.peft_config
             for key, current_config in all_configs.items():
                 if (
@@ -3396,14 +3399,17 @@ class FastLlamaModel:
         n_qkv = 0
         n_o = 0
 
-        active_adapter = (
-            model.active_adapters[0]
-            if hasattr(model, "active_adapters")
-            else model.active_adapter
-        )
+        if model is not None:
+            active_adapter = (
+                model.active_adapters[0]
+                if hasattr(model, "active_adapters")
+                else model.active_adapter
+            )
+        else:
+            active_adapter = "default"
 
         # Get dropout and bias
-        if model.peft_config is not None:
+        if model is not None and model.peft_config is not None:
             lora_dropout = model.peft_config[active_adapter].lora_dropout
             bias = model.peft_config[active_adapter].bias
         else:
