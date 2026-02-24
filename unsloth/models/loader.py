@@ -568,7 +568,10 @@ class FastLanguageModel(FastLlamaModel):
         if (
             os.path.exists(os.path.join(old_model_name, "tokenizer_config.json"))
             and os.path.exists(os.path.join(old_model_name, "tokenizer.json"))
-            and os.path.exists(os.path.join(old_model_name, "special_tokens_map.json"))
+            and (
+                os.path.exists(os.path.join(old_model_name, "special_tokens_map.json"))
+                or os.path.exists(os.path.join(old_model_name, "chat_template.jinja"))
+            )
         ):
             tokenizer_name = old_model_name
         else:
@@ -1237,7 +1240,10 @@ class FastModel(FastBaseModel):
         if (
             os.path.exists(os.path.join(old_model_name, "tokenizer_config.json"))
             and os.path.exists(os.path.join(old_model_name, "tokenizer.json"))
-            and os.path.exists(os.path.join(old_model_name, "special_tokens_map.json"))
+            and (
+                os.path.exists(os.path.join(old_model_name, "special_tokens_map.json"))
+                or os.path.exists(os.path.join(old_model_name, "chat_template.jinja"))
+            )
         ):
             tokenizer_name = old_model_name
         else:
