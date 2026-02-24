@@ -67,8 +67,12 @@ const TEMPLATE_CARDS: TemplateCard[] = [
     difficulty: "Advanced",
     learningBadges: ["Structured LLM", "Expression", "Jinja"],
     surfaceClassName:
-      "from-cyan-500/15 via-sky-500/5 to-transparent border-cyan-500/30",
-    shineColor: ["#06b6d4", "#38bdf8", "#22d3ee"],
+      "from-cyan-500/15 via-sky-500/5 to-transparent",
+    shineColor: [
+      "rgb(6 182 212 / 0.45)",
+      "rgb(56 189 248 / 0.4)",
+      "rgb(34 211 238 / 0.45)",
+    ],
     learningRecipeId: "structured-outputs-jinja",
   },
   {
@@ -79,8 +83,12 @@ const TEMPLATE_CARDS: TemplateCard[] = [
     difficulty: "Easy",
     learningBadges: ["Unstructured", "LLM Text"],
     surfaceClassName:
-      "from-violet-500/15 via-fuchsia-500/5 to-transparent border-violet-500/30",
-    shineColor: ["#8b5cf6", "#d946ef", "#a855f7"],
+      "from-violet-500/15 via-fuchsia-500/5 to-transparent",
+    shineColor: [
+      "rgb(139 92 246 / 0.45)",
+      "rgb(217 70 239 / 0.4)",
+      "rgb(168 85 247 / 0.45)",
+    ],
     learningRecipeId: "pdf-grounded-qa",
   },
   {
@@ -91,8 +99,12 @@ const TEMPLATE_CARDS: TemplateCard[] = [
     difficulty: "Easy",
     learningBadges: ["Seed Dataset", "LLM Text", "Prompting"],
     surfaceClassName:
-      "from-emerald-500/15 via-green-500/5 to-transparent border-emerald-500/30",
-    shineColor: ["#10b981", "#22c55e", "#34d399"],
+      "from-emerald-500/15 via-green-500/5 to-transparent",
+    shineColor: [
+      "rgb(16 185 129 / 0.45)",
+      "rgb(34 197 94 / 0.4)",
+      "rgb(52 211 153 / 0.45)",
+    ],
     learningRecipeId: "instruction-from-answer",
   },
   {
@@ -100,11 +112,16 @@ const TEMPLATE_CARDS: TemplateCard[] = [
     description:
       "Instruction-to-code pairs for training models that generate clean Python implementations.",
     icon: CodeIcon,
-    difficulty: "Starter",
-    learningBadges: ["LLM Code", "Prompting"],
+    difficulty: "Intermediate",
+    learningBadges: ["LLM Judge", "LLM Code", "Subcategory", "Category"],
     surfaceClassName:
-      "from-amber-500/15 via-orange-500/5 to-transparent border-amber-500/30",
-    shineColor: ["#f59e0b", "#f97316", "#fb923c"],
+      "from-amber-500/15 via-orange-500/5 to-transparent",
+    shineColor: [
+      "rgb(245 158 11 / 0.45)",
+      "rgb(249 115 22 / 0.4)",
+      "rgb(251 146 60 / 0.45)",
+    ],
+    learningRecipeId: "text-to-python",
   },
   {
     title: "Text to SQL",
@@ -112,10 +129,15 @@ const TEMPLATE_CARDS: TemplateCard[] = [
       "Natural language to SQL pairs, including schema-aware query construction patterns.",
     icon: Database02Icon,
     difficulty: "Intermediate",
-    learningBadges: ["Structured LLM", "Prompting"],
+    learningBadges: ["LLM Code", "Prompting", "Drop Columns"],
     surfaceClassName:
-      "from-blue-500/15 via-indigo-500/5 to-transparent border-blue-500/30",
-    shineColor: ["#3b82f6", "#6366f1", "#60a5fa"],
+      "from-blue-500/15 via-indigo-500/5 to-transparent",
+    shineColor: [
+      "rgb(59 130 246 / 0.45)",
+      "rgb(99 102 241 / 0.4)",
+      "rgb(96 165 250 / 0.45)",
+    ],
+    learningRecipeId: "text-to-sql",
   },
   {
     title: "Multi-Turn Chat",
@@ -125,8 +147,12 @@ const TEMPLATE_CARDS: TemplateCard[] = [
     difficulty: "Advanced",
     learningBadges: ["LLM Text", "Conversation Design"],
     surfaceClassName:
-      "from-rose-500/15 via-pink-500/5 to-transparent border-rose-500/30",
-    shineColor: ["#f43f5e", "#ec4899", "#fb7185"],
+      "from-rose-500/15 via-pink-500/5 to-transparent",
+    shineColor: [
+      "rgb(244 63 94 / 0.45)",
+      "rgb(236 72 153 / 0.4)",
+      "rgb(251 113 133 / 0.45)",
+    ],
   },
 ];
 
@@ -179,19 +205,19 @@ function LearningRecipeCards({
           template.learningRecipeId !== undefined &&
           loadingTemplateId === template.learningRecipeId;
         const isDisabled = !isReady || isLoading || Boolean(loadingTemplateId);
-        const visibleLearningBadges = template.learningBadges.slice(0, 3);
-        const extraLearningBadgeCount = Math.max(0, template.learningBadges.length - 3);
+        const visibleLearningBadges = template.learningBadges.slice(0, 4);
+        const extraLearningBadgeCount = Math.max(0, template.learningBadges.length - 4);
         return (
           <button
             key={template.title}
             type="button"
             disabled={isDisabled}
             onClick={() => onSelect(template)}
-            className={`group relative overflow-hidden rounded-2xl border bg-gradient-to-br text-left transition-transform ${template.surfaceClassName} enabled:cursor-pointer enabled:hover:-translate-y-0.5 enabled:hover:shadow-md disabled:cursor-not-allowed disabled:opacity-70`}
+            className={`group shadow-border relative overflow-hidden rounded-2xl bg-gradient-to-br text-left transition-transform ${template.surfaceClassName} enabled:cursor-pointer enabled:hover:-translate-y-0.5 enabled:hover:shadow-md disabled:cursor-not-allowed disabled:opacity-70`}
           >
             <ShineBorder
               borderWidth={1.2}
-              duration={11}
+              duration={13}
               shineColor={template.shineColor}
             />
             <div className="relative flex h-full min-h-40 flex-col justify-between gap-3 p-4">
