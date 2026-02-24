@@ -12,6 +12,7 @@ const instructionFromAnswerUrl = new URL(
 ).href;
 const textToPythonUrl = new URL("./text-to-python.json", import.meta.url).href;
 const textToSqlUrl = new URL("./text-to-sql.json", import.meta.url).href;
+const conversationUrl = new URL("./conversation.json", import.meta.url).href;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -122,5 +123,12 @@ export const LEARNING_RECIPES: LearningRecipeDef[] = [
     description:
       "Generate SQL tasks and runnable SQL outputs with prompt-driven generation.",
     loadPayload: () => loadPayloadFromUrl(textToSqlUrl),
+  },
+  {
+    id: "conversation",
+    title: "Multi-Turn Chat",
+    description:
+      "Generate realistic user-assistant conversations with structured message output.",
+    loadPayload: () => loadPayloadFromUrl(conversationUrl),
   },
 ];
