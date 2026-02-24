@@ -23,6 +23,25 @@ import torch
 MODEL_NAME = "unsloth/Llama-3.2-1B-Instruct"
 
 
+def load_fineweb_data(tokenizer, num_samples: int, seq_len: int, batch_size: int):
+    """Load samples from FineWeb dataset."""
+    from datasets import load_dataset
+    
+    print(f"      Loading FineWeb samples...")
+    ds = load_dataset("HuggingFaceFW/fineweb", name="sample-10B", split="train", streaming=True)
+    
+    samples = []
+    for i, item in enumerate(ds):
+        if i >= num_samples:
+            break
+        text = item["text"]
+        tokens = tokenizer(text, truncation=True, max_length=seq_len, return_tensors="pt")
+        input_ids = tokens["input_ids"].squeeze(0)
+        samples.append(input_ids)
+    
+    return samples
+
+
 def get_memory_mb():
     """Get current memory usage in MB."""
     import torch
@@ -85,11 +104,18 @@ def benchmark_pytorch(steps: int, batch_size: int, seq_len: int, warmup: int = 2
     
     reset_memory()
     
+    num_samples = warmup + steps
+    fineweb_samples = load_fineweb_data(tokenizer, num_samples, seq_len, batch_size)
+    
     optimizer = torch.optim.AdamW(model.parameters(), lr=2e-4)
     
+    sample_idx = 0
+    
     def create_batch():
-        input_ids = torch.randint(0, 128256, (batch_size, seq_len), device=model.device)
+        nonlocal sample_idx
+        input_ids = fineweb_samples[sample_idx % len(fineweb_samples)].unsqueeze(0).to(model.device)
         labels = input_ids.clone()
+        sample_idx += 1
         return input_ids, labels
     
     for i in range(warmup):
@@ -190,6 +216,12 @@ def benchmark_mlx(steps: int, batch_size: int, seq_len: int, warmup: int = 2):
     
     print(f"\n[3/4] Training ({warmup} warmup + {steps} benchmark steps)...")
     
+    num_samples = warmup + steps
+    fineweb_samples = load_fineweb_data(tokenizer, num_samples, seq_len, batch_size)
+    fineweb_mx_samples = [mx.array(s.cpu().numpy()) for s in fineweb_samples]
+    
+    sample_idx = 0
+    
     def loss_fn(input_ids, labels):
         logits = model(input_ids)
         shift_logits = logits[:, :-1, :]
@@ -202,9 +234,10 @@ def benchmark_mlx(steps: int, batch_size: int, seq_len: int, warmup: int = 2):
         return loss
     
     def create_batch():
-        vocab_size = tokenizer.tokenizer.vocab_size if hasattr(tokenizer, 'tokenizer') else tokenizer.vocab_size
-        input_ids = mx.random.randint(0, vocab_size, (batch_size, seq_len))
-        labels = input_ids  # MLX arrays are immutable, use directly
+        nonlocal sample_idx
+        input_ids = fineweb_mx_samples[sample_idx % len(fineweb_mx_samples)].reshape(1, -1)
+        labels = input_ids.copy()
+        sample_idx += 1
         return input_ids, labels
     
     optimizer = AdamW(learning_rate=2e-4)
