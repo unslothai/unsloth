@@ -14,7 +14,8 @@ export function buildTrainingStartPayload(
   const adapterMethod = config.trainingMethod !== "full";
   const isQlorMethod = config.trainingMethod === "qlora";
   const hfDataset = config.datasetSource === "huggingface" ? config.dataset : null;
-  const customFormatMapping = buildCustomFormatMapping(config);
+  const customFormatMapping =
+    Object.keys(config.datasetManualMapping).length > 0 ? config.datasetManualMapping : undefined;
 
   return {
     model_name: config.selectedModel ?? "",
@@ -68,15 +69,3 @@ export function buildTrainingStartPayload(
   };
 }
 
-function buildCustomFormatMapping(
-  config: TrainingConfigState,
-): Record<string, string> | undefined {
-  const { input, output } = config.datasetManualMapping;
-  if (!input || !output) return undefined;
-
-  if (config.isVisionModel && config.isDatasetMultimodal) {
-    return { [input]: "image", [output]: "text" };
-  }
-
-  return { [input]: "user", [output]: "assistant" };
-}
