@@ -12,7 +12,7 @@ const MIN_STEP: StepNumber = 1;
 const MAX_STEP: StepNumber = STEPS.length as StepNumber;
 
 function emptyManualMapping(): TrainingConfigState["datasetManualMapping"] {
-  return { input: null, output: null };
+  return {};
 }
 
 const initialState: TrainingConfigState = {
