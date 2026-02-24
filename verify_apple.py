@@ -27,6 +27,8 @@ import platform
 import subprocess
 import time
 import argparse
+import tempfile
+import shutil
 
 # Add current directory to sys.path to ensure we can import the local unsloth package
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
