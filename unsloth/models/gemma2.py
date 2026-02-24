@@ -352,7 +352,7 @@ def Gemma2Attention_fast_forward_inference(
         )
         self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = device)
         # Only for Gemma2
-        self.temp_O = torch.empty((1, bsz, hidden_size), dtype = dtype, device = device)
+        self.temp_O = torch.empty((bsz, 1, hidden_size), dtype = dtype, device = device)
         self.attention = torch.empty(
             (bsz, n_heads, 1, KV_CACHE_INCREMENT + seq_len), dtype = dtype, device = device
         )
