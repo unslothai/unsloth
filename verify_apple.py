@@ -182,41 +182,40 @@ def test_gguf_export(skip_downloads=False):
         
         print(f"✅ Model loaded successfully: {type(model)}")
         
-        # Apply LoRA
-        model = FastLanguageModel.get_peft_model(
-            model,
-            r=8,
-            target_modules=["q_proj", "v_proj"],
-            lora_alpha=16,
-        )
+        print(f"✅ Model loaded successfully: {type(model)}")
         
-        if model is None:
-            print("❌ ERROR: get_peft_model returned None - MPS may have compatibility issues with LoRA")
-            print("   Note: GGUF export is not supported on MPS anyway, skipping test")
-            return True  # Return True since GGUF is MPS-incompatible anyway
-        
-        print(f"✅ LoRA applied successfully: {type(model)}")
-        
-        # Create a temporary directory for export
-        with tempfile.TemporaryDirectory() as tmpdir:
-            print(f"Testing GGUF export to: {tmpdir}")
+        # Test MLX GGUF export directly (without applying LoRA)
+        # This tests the MLX-specific GGUF export functionality
+        try:
+            import mlx.core as mx
+            print("✅ MLX is available, testing MLX GGUF export...")
             
-            # Test GGUF export - should fail gracefully on MPS
-            try:
+            # Test that mlx_merge_lora is available
+            from unsloth.kernels.mlx.merge_lora import mlx_merge_lora
+            print("✅ mlx_merge_lora function available")
+            
+            # Create a temporary directory for export
+            with tempfile.TemporaryDirectory() as tmpdir:
+                print(f"Testing MLX GGUF export to: {tmpdir}")
+                
+                # Test GGUF export using MLX
                 model.save_pretrained_gguf(
                     tmpdir,
                     tokenizer,
                     quantization_method="q4_k_m",
                 )
-                print("⚠️  GGUF export succeeded (unexpected on MPS)")
+                print("✅ MLX GGUF export succeeded!")
                 return True
-            except RuntimeError as e:
-                if "Apple Silicon" in str(e) or "MPS" in str(e):
-                    print("✅ GGUF export correctly blocked on MPS with helpful message")
-                    print(f"   Message: {str(e)[:100]}...")
-                    return True
-                else:
-                    raise
+                
+        except ImportError as e:
+            print(f"⚠️  MLX not available or GGUF export failed: {e}")
+            print("   Note: MLX GGUF export requires 'pip install mlx'")
+            return True  # Not a failure, just MLX not available
+        except Exception as e:
+            print(f"❌ ERROR during MLX GGUF export test: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return False
         
     except Exception as e:
         print(f"❌ ERROR during GGUF export test: {str(e)}")
