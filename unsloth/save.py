@@ -1209,7 +1209,7 @@ def save_to_gguf(
             )
         else:
             quantizer_location, converter_location = install_llama_cpp(
-                gpu_support = False,  # GGUF conversion doesn't need CUDA
+                gpu_support = True,   # Enable GPU for llama.cpp inference
                 print_output = print_output,
             )
 
