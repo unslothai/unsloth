@@ -45,11 +45,16 @@ export function StudioPage(): ReactElement {
   const dialogInitial = useDatasetPreviewDialogStore((s) => s.initialData);
   const closeDialog = useDatasetPreviewDialogStore((s) => s.close);
 
+  const stopRequested = useTrainingRuntimeStore((state) => state.stopRequested);
   const canGoBack =
     showTrainingView &&
-    !isTrainingRunning &&
     !isHydratingRuntime &&
-    (runtimePhase === "stopped" || runtimePhase === "error" || runtimePhase === "completed" || runtimePhase === "idle");
+    (stopRequested ||
+      (!isTrainingRunning &&
+        (runtimePhase === "stopped" ||
+          runtimePhase === "error" ||
+          runtimePhase === "completed" ||
+          runtimePhase === "idle")));
   const tourEnabled = hasHydratedRuntime && !isHydratingRuntime;
   const isConfigTour = !showTrainingView;
   const tourSteps = showTrainingView ? studioTrainingTourSteps : studioTourSteps;
