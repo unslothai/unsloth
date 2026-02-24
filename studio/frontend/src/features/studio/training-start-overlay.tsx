@@ -15,7 +15,7 @@ import {
   TypingAnimation,
 } from "@/components/ui/terminal";
 import { useTrainingActions, useTrainingRuntimeStore } from "@/features/training";
-import { StopIcon } from "@hugeicons/core-free-icons";
+import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState, type ReactElement } from "react";
 
@@ -40,19 +40,23 @@ export function TrainingStartOverlay({
   }, [isStarting]);
 
   return (
-    <div className="absolute inset-0 z-30 flex items-center justify-center rounded-2xl bg-background/45 backdrop-blur-[1px]">
-      <div className="flex w-[860px] max-w-[calc(100%-2rem)] flex-col items-center gap-4">
-        <div className="absolute right-4 top-4 flex justify-end">
+    <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center rounded-2xl bg-background/45 backdrop-blur-[1px]">
+      <div className="pointer-events-auto relative flex w-[860px] max-w-[calc(100%-2rem)] flex-col items-center gap-4">
+        <img
+          src="/Sloth emojis/large sloth wave.png"
+          alt="Unsloth mascot"
+          className="size-24 animate-bounce object-contain"
+        />
+        <div className="relative w-full">
           <AlertDialog open={cancelDialogOpen} onOpenChange={setCancelDialogOpen}>
             <Button
-              variant="destructive"
-              size="sm"
-              className={`h-7 px-3 text-xs ${cancelRequested ? "cursor-not-allowed opacity-60" : "cursor-pointer"}`}
+              variant="ghost"
+              size="icon"
+              className="absolute right-3 top-3 z-10 size-7 cursor-pointer rounded-full text-muted-foreground/60 hover:bg-destructive/10 hover:text-destructive"
               onClick={() => setCancelDialogOpen(true)}
               disabled={cancelRequested}
             >
-              <HugeiconsIcon icon={StopIcon} className="size-3" />
-              {cancelRequested ? "Cancelling…" : "Cancel Training"}
+              <HugeiconsIcon icon={Cancel01Icon} className="size-3.5" />
             </Button>
             <AlertDialogContent overlayClassName="bg-background/40 supports-backdrop-filter:backdrop-blur-[1px]">
               <AlertDialogHeader>
@@ -79,16 +83,10 @@ export function TrainingStartOverlay({
               </AlertDialogFooter>
             </AlertDialogContent>
           </AlertDialog>
-        </div>
-        <img
-          src="/Sloth emojis/large sloth wave.png"
-          alt="Unsloth mascot"
-          className="size-24 animate-bounce object-contain"
-        />
-        <Terminal
-          className="w-full min-h-[390px] rounded-2xl px-7 py-6 text-left"
-          startOnView={false}
-        >
+          <Terminal
+            className="w-full min-h-[390px] rounded-2xl px-7 py-6 text-left"
+            startOnView={false}
+          >
           <TypingAnimation
             duration={36}
             className="bg-gradient-to-r from-emerald-300 via-lime-300 to-teal-300 bg-clip-text font-semibold text-transparent"
@@ -114,7 +112,8 @@ O^O/ \\_/ \\
           <AnimatedSpan className="mt-2 text-muted-foreground">
             {`> ${message || "starting training..."} | waiting for first step... (${currentStep})`}
           </AnimatedSpan>
-        </Terminal>
+          </Terminal>
+        </div>
       </div>
     </div>
   )
