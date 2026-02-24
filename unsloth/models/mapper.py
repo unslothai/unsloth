@@ -1256,6 +1256,73 @@ __INT_TO_FLOAT_MAPPER = \
         "google/functiongemma-270m-it",
         "unsloth/functiongemma-270m-it-unsloth-bnb-4bit",
     ),
+    # Ministral 3 models
+    "unsloth/Ministral-3-3B-Instruct-2512-unsloth-bnb-4bit" : {
+        "8" : (
+            "mistralai/Ministral-3-3B-Instruct-2512",
+            "unsloth/Ministral-3-3B-Instruct-2512-FP8",
+            "unsloth/Ministral-3-3B-Instruct-2512-FP8",
+        ),
+        "16" : (
+            "unsloth/Ministral-3-3B-Instruct-2512",
+            "mistralai/Ministral-3-3B-Instruct-2512",
+            "unsloth/Ministral-3-3B-Instruct-2512-bnb-4bit",
+        ),
+    },
+    "unsloth/Ministral-3-3B-Base-2512-unsloth-bnb-4bit" : (
+        "unsloth/Ministral-3-3B-Base-2512",
+        "mistralai/Ministral-3-3B-Base-2512",
+        "unsloth/Ministral-3-3B-Base-2512-bnb-4bit",
+    ),
+    "unsloth/Ministral-3-3B-Reasoning-2512-unsloth-bnb-4bit" : (
+        "unsloth/Ministral-3-3B-Reasoning-2512",
+        "mistralai/Ministral-3-3B-Reasoning-2512",
+        "unsloth/Ministral-3-3B-Reasoning-2512-bnb-4bit",
+    ),
+    "unsloth/Ministral-3-8B-Instruct-2512-unsloth-bnb-4bit" : {
+        "8" : (
+            "mistralai/Ministral-3-8B-Instruct-2512",
+            "unsloth/Ministral-3-8B-Instruct-2512-FP8",
+            "unsloth/Ministral-3-8B-Instruct-2512-FP8",
+        ),
+        "16" : (
+            "unsloth/Ministral-3-8B-Instruct-2512",
+            "mistralai/Ministral-3-8B-Instruct-2512",
+            "unsloth/Ministral-3-8B-Instruct-2512-bnb-4bit",
+        ),
+    },
+    "unsloth/Ministral-3-8B-Base-2512-unsloth-bnb-4bit" : (
+        "unsloth/Ministral-3-8B-Base-2512",
+        "mistralai/Ministral-3-8B-Base-2512",
+        "unsloth/Ministral-3-8B-Base-2512-bnb-4bit",
+    ),
+    "unsloth/Ministral-3-8B-Reasoning-2512-unsloth-bnb-4bit" : (
+        "unsloth/Ministral-3-8B-Reasoning-2512",
+        "mistralai/Ministral-3-8B-Reasoning-2512",
+        "unsloth/Ministral-3-8B-Reasoning-2512-bnb-4bit",
+    ),
+    "unsloth/Ministral-3-14B-Instruct-2512-unsloth-bnb-4bit" : {
+        "8" : (
+            "mistralai/Ministral-3-14B-Instruct-2512",
+            "unsloth/Ministral-3-14B-Instruct-2512-FP8",
+            "unsloth/Ministral-3-14B-Instruct-2512-FP8",
+        ),
+        "16" : (
+            "unsloth/Ministral-3-14B-Instruct-2512",
+            "mistralai/Ministral-3-14B-Instruct-2512",
+            "unsloth/Ministral-3-14B-Instruct-2512-bnb-4bit",
+        ),
+    },
+    "unsloth/Ministral-3-14B-Base-2512-unsloth-bnb-4bit" : (
+        "unsloth/Ministral-3-14B-Base-2512",
+        "mistralai/Ministral-3-14B-Base-2512",
+        "unsloth/Ministral-3-14B-Base-2512-bnb-4bit",
+    ),
+    "unsloth/Ministral-3-14B-Reasoning-2512-unsloth-bnb-4bit" : (
+        "unsloth/Ministral-3-14B-Reasoning-2512",
+        "mistralai/Ministral-3-14B-Reasoning-2512",
+        "unsloth/Ministral-3-14B-Reasoning-2512-bnb-4bit",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER  = {}
