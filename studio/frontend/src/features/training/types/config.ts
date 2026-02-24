@@ -6,6 +6,7 @@ import type {
   StepNumber,
   TrainingMethod,
 } from "@/types/training";
+import type { BackendModelConfig } from "../api/models-api";
 
 export type LoraVariant = "lora" | "rslora" | "loftq";
 
@@ -117,6 +118,8 @@ export interface TrainingConfigActions {
   setTargetModules: (value: string[]) => void;
   canProceed: () => boolean;
   reset: () => void;
+  resetToModelDefaults: () => void;
+  applyConfigPatch: (config: BackendModelConfig) => void;
 }
 
 export type TrainingConfigStore = TrainingConfigState & TrainingConfigActions;
