@@ -27,7 +27,7 @@ import {
   type NodeProps,
 } from "@xyflow/react";
 import { memo, type ReactElement, useEffect } from "react";
-import { MAX_NODE_WIDTH, MIN_NODE_WIDTH } from "../constants";
+import { MAX_NODE_WIDTH, MAX_NOTE_NODE_WIDTH, MIN_NODE_WIDTH } from "../constants";
 import { useRecipeStudioStore } from "../stores/recipe-studio";
 import type {
   RecipeNode as RecipeGraphNodeType,
@@ -393,7 +393,7 @@ function RecipeGraphNodeBase({
           isVisible={selected}
           minWidth={MIN_NODE_WIDTH}
           minHeight={80}
-          maxWidth={MAX_NODE_WIDTH}
+          maxWidth={MAX_NOTE_NODE_WIDTH}
           maxHeight={520}
           color="var(--primary)"
           lineClassName="!border-transparent !shadow-none"

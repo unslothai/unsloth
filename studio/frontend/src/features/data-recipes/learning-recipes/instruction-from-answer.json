@@ -64,7 +64,7 @@
         "node_type": "markdown_note",
         "name": "note_1",
         "markdown": "#### Hugginface seed block\nThis recipe uses a ** HuggingFace dataset ** as seed data.\nYou provide dataset identity, load columns, then generate new fields from seed columns.\n\n##### Setup:\n\n1. Paste dataset id as `org/repo` (example: `unsloth/alpaca-cleaned`)\n2. Add token only if dataset is gated/private\n3. Load columns + preview rows so variables are available in prompts\n\n##### Why this matters:\n- Seed columns can drive generation quality\n- You can reference seed values directly in prompts (for example `{{ output }}`)",
-        "note_color": "#d6fff8",
+        "note_color": "#DCFCE7",
         "note_opacity": "35"
       },
       {
@@ -75,7 +75,7 @@
         "node_type": "markdown_note",
         "name": "note_2",
         "markdown": "##### Drop columns behavior:\n\n- You can mark specific seed columns to **drop from final output**\n- Those columns are still used during generation\n- They are removed only from exported final dataset\n\n##### Example:\n- Keep `generated_instruction` from llm-text block\n- Drop original `instruction`, `input`, `output` from the hugginface dataset from final artifact\n- Result: clean training output while still using source columns as generation context\n",
-        "note_color": "#d6fff8",
+        "note_color": "#DCFCE7",
         "note_opacity": "35"
       },
       {
