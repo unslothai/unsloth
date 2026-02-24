@@ -30,12 +30,14 @@ def load_fineweb_data(tokenizer, num_samples: int, seq_len: int, batch_size: int
     print(f"      Loading FineWeb samples...")
     ds = load_dataset("HuggingFaceFW/fineweb", name="sample-10BT", split="train", streaming=True)
     
+    actual_tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
+    
     samples = []
     for i, item in enumerate(ds):
         if i >= num_samples:
             break
         text = item["text"]
-        tokens = tokenizer(text, truncation=True, max_length=seq_len, return_tensors="pt")
+        tokens = actual_tokenizer(text, truncation=True, max_length=seq_len, return_tensors="pt")
         input_ids = tokens["input_ids"].squeeze(0)
         samples.append(input_ids)
     
