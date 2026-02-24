@@ -399,7 +399,7 @@ def Gemma2Attention_fast_forward_inference(
     RH_Q = self.RH_Q
     RH_Q[:, :, :, :h] = Qn[:, :, :, h:]
     RH_Q[:, :, :, h:] = Qn[:, :, :, :h]
-    torch.neg(RH_Q[:, :, :, :h], out = RH_Q[:, :, :, :h])
+    RH_Q[:, :, :, :h].neg_()
     Qn *= cos
     Qn.addcmul_(RH_Q, sin)
 
@@ -408,7 +408,7 @@ def Gemma2Attention_fast_forward_inference(
     ]  # torch.empty((n_kv_heads, 1, head_dim), dtype = dtype, device = "cuda:0")
     RH_K[:, :, :, :h] = Kn[:, :, :, h:]
     RH_K[:, :, :, h:] = Kn[:, :, :, :h]
-    torch.neg(RH_K[:, :, :, :h], out = RH_K[:, :, :, :h])
+    RH_K[:, :, :, :h].neg_()
     Kn *= cos
     Kn.addcmul_(RH_K, sin)
 
@@ -459,7 +459,7 @@ def Gemma2Attention_fast_forward_inference(
         # Slice mask to match K/V when sliding window is active
         if attention_mask.shape[-1] != A.shape[-1]:
             attention_mask = attention_mask[:, :, :, -A.shape[-1] :]
-        A = A + attention_mask
+        A += attention_mask
 
     A *= self.reciprocal_t
     torch_tanh(A, out = A)

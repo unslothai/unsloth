@@ -361,7 +361,7 @@ def GraniteAttention_fast_forward_inference(
     RH_Q = self.RH_Q
     RH_Q[:, :, :, :h] = Qn[:, :, :, h:]
     RH_Q[:, :, :, h:] = Qn[:, :, :, :h]
-    torch.neg(RH_Q[:, :, :, :h], out = RH_Q[:, :, :, :h])
+    RH_Q[:, :, :, :h].neg_()
     Qn *= cos
     Qn.addcmul_(RH_Q, sin)
 
@@ -370,7 +370,7 @@ def GraniteAttention_fast_forward_inference(
     ]  # torch.empty((n_kv_heads, 1, head_dim), dtype = dtype, device = "cuda:0")
     RH_K[:, :, :, :h] = Kn[:, :, :, h:]
     RH_K[:, :, :, h:] = Kn[:, :, :, :h]
-    torch.neg(RH_K[:, :, :, :h], out = RH_K[:, :, :, :h])
+    RH_K[:, :, :, :h].neg_()
     Kn *= cos
     Kn.addcmul_(RH_K, sin)
 
@@ -384,7 +384,7 @@ def GraniteAttention_fast_forward_inference(
 
     # Grouped query attention
     _, _, cached_len, _ = Kn.shape
-    if n_groups != 1:
+    if bsz == 1 or not SDPA_HAS_GQA and n_groups != 1:
         Kn = Kn[:, :, None, :, :].expand(
             bsz, n_kv_heads, n_groups, cached_len, head_dim
         )
@@ -393,20 +393,29 @@ def GraniteAttention_fast_forward_inference(
         )
         Kn = Kn.reshape(bsz, n_heads, cached_len, head_dim)
         Vn = Vn.reshape(bsz, n_heads, cached_len, head_dim)
-    # else:
-    #     Kn, Vn = Kn, Vn
-    # pass
 
-    # [TODO] Granite uses manual matmul for all batch sizes (same pattern as
-    # Gemma2). Consider adding bsz==1/else SDPA branching to match llama/qwen3
-    # for better performance on batched inference.
-    Qn *= self.scaling
-    A = torch_matmul(Qn, Kn.transpose(2, 3), out = self.attention[:, :, :, :cached_len])
-    if attention_mask is not None:
-        A = A + attention_mask
-
-    A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)  # .to(A.dtype)
-    A = torch_matmul(A, Vn, out = Qn)
+    # Attention
+    if bsz == 1:
+        Qn *= self.scaling
+        A = torch_matmul(Qn, Kn.transpose(2, 3), out = self.attention[:, :, :, :cached_len])
+        A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)
+        A = torch_matmul(A, Vn, out = Qn)
+    else:
+        if attention_mask is not None and attention_mask.dim() == 4 and attention_mask.dtype != torch.bool:
+            attention_mask = attention_mask.eq(0)
+        if SDPA_HAS_GQA:
+            A = scaled_dot_product_attention(
+                Qn, Kn, Vn,
+                attn_mask = attention_mask,
+                scale = self.scaling,
+                enable_gqa = True,
+            )
+        else:
+            A = scaled_dot_product_attention(
+                Qn, Kn, Vn,
+                attn_mask = attention_mask,
+                scale = self.scaling,
+            )
     A = A.transpose(1, 2)
     A = A.reshape(bsz, 1, attention_size)
     A = fast_linear_forward(self.o_proj, A, out = self.temp_O)

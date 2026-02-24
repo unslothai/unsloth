@@ -295,13 +295,17 @@ def _fast_prepare_inputs_for_generation(
                 base_model, "_prepare_4d_causal_attention_mask_with_cache_position"
             ):
 
-                def needs_device_kw(fn) -> bool:
-                    try:
-                        sig = inspect.signature(inspect.unwrap(fn))
-                        return "device" in sig.parameters
-                    except:
-                        # transformers <= 4.51.3 includes device arg but > 4.51.3 does not
-                        return transformers_version < Version("4.52.0")
+                if not hasattr(base_model, "_unsloth_mask_needs_device"):
+                    def _check_needs_device(fn) -> bool:
+                        try:
+                            sig = inspect.signature(inspect.unwrap(fn))
+                            return "device" in sig.parameters
+                        except:
+                            # transformers <= 4.51.3 includes device arg but > 4.51.3 does not
+                            return transformers_version < Version("4.52.0")
+                    base_model._unsloth_mask_needs_device = _check_needs_device(
+                        base_model._prepare_4d_causal_attention_mask_with_cache_position
+                    )
 
                 if max_cache_len is not None:
                     target_length = max_cache_len
@@ -322,15 +326,8 @@ def _fast_prepare_inputs_for_generation(
                     "config": self.config,
                     "past_key_values": past_key_values,
                 }
-                try:
-                    if needs_device_kw(
-                        base_model._prepare_4d_causal_attention_mask_with_cache_position
-                    ):
-                        mask_kwargs["device"] = device
-                except:
-                    print(
-                        f"Unsloth: Could not inspect signature of {base_model._prepare_4d_causal_attention_mask_with_cache_position}"
-                    )
+                if base_model._unsloth_mask_needs_device:
+                    mask_kwargs["device"] = device
 
                 attention_mask = (
                     base_model._prepare_4d_causal_attention_mask_with_cache_position(
@@ -387,6 +384,7 @@ def LlamaAttention_fast_forward_inference(
     position_ids,
     do_prefill = False,
     attention_mask = None,
+    rotary_seq_len = None,
 ):
     """
     https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L406
@@ -497,7 +495,8 @@ def LlamaAttention_fast_forward_inference(
         position_ids = position_ids[:, None]
     position_ids = position_ids.to(Qn.device)
 
-    rotary_seq_len = max(kv_seq_len, int(position_ids.max().item()) + 1)
+    if rotary_seq_len is None:
+        rotary_seq_len = max(kv_seq_len, int(position_ids.max().item()) + 1)
     self.rotary_emb.extend_rope_embedding(Vn, rotary_seq_len + 1)  # +1 slack
     cos, sin = self.rotary_emb.get_cached(rotary_seq_len, Qn.device.index or 0)
 
@@ -1342,6 +1341,7 @@ def _LlamaModel_fast_forward_inference(
         )
 
         seq_len = past_key_values[0][0].shape[-2]
+        kv_seq_len = seq_len + 1
         if attention_mask is not None:
             attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
                 attention_mask,
@@ -1350,8 +1350,14 @@ def _LlamaModel_fast_forward_inference(
                 seq_len,
                 sliding_window = getattr(self.config, "sliding_window", None),
             )
+            # Pre-convert to bool once for all layers (avoids per-layer .eq(0))
+            if attention_mask is not None and attention_mask.dtype != torch.bool:
+                attention_mask = attention_mask.eq(0)
         else:
             attention_mask = None
+
+        # Compute rotary_seq_len once to avoid per-layer GPU-CPU sync from .item()
+        rotary_seq_len = max(kv_seq_len, int(position_ids.max().item()) + 1)
 
         next_decoder_cache = []
 
@@ -1375,6 +1381,7 @@ def _LlamaModel_fast_forward_inference(
                 position_ids = position_ids,
                 attention_mask = attention_mask,
                 do_prefill = not hasattr(decoder_layer.self_attn, "paged_attention"),
+                rotary_seq_len = rotary_seq_len,
             )
             X += residual
 

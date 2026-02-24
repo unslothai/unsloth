@@ -254,6 +254,7 @@ def CohereAttention_fast_forward_inference(
     position_ids,
     do_prefill = False,
     attention_mask = None,
+    **kwargs,
 ):
     Xn = hidden_states
     bsz, _, hd = hidden_states.size()
