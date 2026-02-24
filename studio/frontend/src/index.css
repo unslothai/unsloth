@@ -152,6 +152,7 @@
   --shadow-2xl: 0px 0px 0px 0px hsl(0 0% 0% / 0);
 }
 
+
 @theme inline {
   --font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
   --font-heading: "Hellix", "Space Grotesk Variable", ui-sans-serif, sans-serif;
