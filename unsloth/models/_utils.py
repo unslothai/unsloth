@@ -2030,6 +2030,8 @@ def fast_inference_setup(model_name, model_config):
 
 
 def patch_peft_fast_inference(model):
+    if model is None:
+        return
     vllm_engine = getattr(model.model, "vllm_engine", None)
     if vllm_engine is not None:
         model.vllm_engine = model.model.vllm_engine
