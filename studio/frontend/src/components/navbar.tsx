@@ -45,7 +45,6 @@ function getTourId(pathname: string): "studio" | "chat" | "export" | null {
 export function Navbar() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const isTrainingRunning = useTrainingRuntimeStore((s) => s.isTrainingRunning);
-  const [logoHovered, setLogoHovered] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
 
   const tourId = getTourId(pathname);
@@ -61,35 +60,18 @@ export function Navbar() {
     <header className="relative top-0 z-40 h-16 w-full">
       <div className="mx-auto flex h-full max-w-7xl items-center justify-between px-4 sm:px-6">
         {/* Left: logo */}
-        <div
-          className="relative flex items-center gap-2.5 cursor-pointer select-none"
-          onMouseEnter={() => setLogoHovered(true)}
-          onMouseLeave={() => setLogoHovered(false)}
-        >
-          <motion.img
-            src="https://unsloth.ai/cgi/image/unsloth_sticker_no_shadow_ldN4V4iydw00qSIIWDCUv.png?width=96&quality=80&format=auto"
-            alt="unsloth"
-            className="size-10"
-            animate={{ rotate: logoHovered ? 360 : 0 }}
-            transition={{ duration: 0.5, ease: [0.165, 0.84, 0.44, 1] }}
+        <Link to="/studio" className="flex items-center select-none">
+          <img
+            src="/blacklogo.png"
+            alt="Unsloth"
+            className="h-9 w-auto dark:hidden"
           />
-          <span className="text-xl font-bold tracking-wide font-heading sm:text-2xl">
-            unsloth
-          </span>
-          <AnimatePresence>
-            {logoHovered && (
-              <motion.img
-                src="/Sloth emojis/large sloth wave.png"
-                alt="hi!"
-                className="absolute -bottom-10 left-1 size-10 pointer-events-none"
-                initial={{ y: 10, opacity: 0 }}
-                animate={{ y: 0, opacity: 1 }}
-                exit={{ y: 10, opacity: 0 }}
-                transition={{ duration: 0.25, ease: [0.215, 0.61, 0.355, 1] }}
-              />
-            )}
-          </AnimatePresence>
-        </div>
+          <img
+            src="/whitelogo.png"
+            alt="Unsloth"
+            className="hidden h-9 w-auto dark:block"
+          />
+        </Link>
 
         {/* Center: pill nav */}
         <nav

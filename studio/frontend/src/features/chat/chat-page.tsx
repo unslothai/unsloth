@@ -216,11 +216,11 @@ function InlineSidebar({
       <aside
         data-sidebar="sidebar"
         className={cn(
-          "bg-sidebar text-sidebar-foreground h-full overflow-hidden rounded-2xl corner-squircle transition-[width] duration-200 ease-linear",
+          "bg-muted/70 text-sidebar-foreground h-full overflow-hidden rounded-2xl corner-squircle transition-[width] duration-200 ease-linear",
           !collapsed &&
           (side === "left"
-            ? "border-r border-0 border-sidebar-border"
-            : "border-l border-0 border-sidebar-border"),
+            ? "border-r border-sidebar-border/70"
+            : "border-l border-sidebar-border/70"),
           collapsed ? "w-0" : "w-(--sidebar-width)",
         )}
       >
