@@ -20,6 +20,7 @@ const DEFAULT_MODEL_MAX_SEQ_LENGTH = 2048;
 type SelectedModelInput = {
   id: string;
   isLora?: boolean;
+  ggufVariant?: string;
 };
 
 const LORA_SUFFIX_RE = /_(\d{9,})$/;
@@ -159,6 +160,8 @@ export function useChatModelRuntime() {
 
       const explicitIsLora =
         typeof selection === "string" ? undefined : selection.isLora;
+      const ggufVariant =
+        typeof selection === "string" ? undefined : selection.ggufVariant;
       const model = models.find((entry) => entry.id === modelId);
       const lora = loras.find((entry) => entry.id === modelId);
       const isLora =
@@ -181,6 +184,7 @@ export function useChatModelRuntime() {
             max_seq_length: DEFAULT_MODEL_MAX_SEQ_LENGTH,
             load_in_4bit: true,
             is_lora: isLora,
+            gguf_variant: ggufVariant ?? null,
           });
 
           const currentParams = useChatRuntimeStore.getState().params;

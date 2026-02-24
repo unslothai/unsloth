@@ -76,6 +76,21 @@ class ModelListResponse(BaseModel):
     default_models: List[str] = Field(default_factory=list, description="List of default model IDs")
 
 
+class GgufVariantDetail(BaseModel):
+    """A single GGUF quantization variant in a HuggingFace repo."""
+    filename: str = Field(..., description="GGUF filename (e.g., 'gemma-3-4b-it-Q4_K_M.gguf')")
+    quant: str = Field(..., description="Quantization label (e.g., 'Q4_K_M')")
+    size_bytes: int = Field(0, description="File size in bytes")
+
+
+class GgufVariantsResponse(BaseModel):
+    """Response for listing GGUF quantization variants in a HuggingFace repo."""
+    repo_id: str = Field(..., description="HuggingFace repo ID")
+    variants: List[GgufVariantDetail] = Field(default_factory=list, description="Available GGUF variants")
+    has_vision: bool = Field(False, description="Whether the model has vision support (mmproj files)")
+    default_variant: Optional[str] = Field(None, description="Recommended default quantization variant")
+
+
 class LocalModelInfo(BaseModel):
     """Discovered local model candidate."""
     id: str = Field(..., description="Identifier to use for loading/training")

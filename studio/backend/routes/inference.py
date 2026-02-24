@@ -87,6 +87,7 @@ async def load_model(request: LoadRequest):
         config = ModelConfig.from_identifier(
             model_id=request.model_path,
             hf_token=request.hf_token,
+            gguf_variant=request.gguf_variant,
         )
 
         if not config:
@@ -105,11 +106,25 @@ async def load_model(request: LoadRequest):
                 logger.info(f"Unloading Unsloth model '{unsloth_backend.active_model_name}' before loading GGUF")
                 unsloth_backend.unload_model(unsloth_backend.active_model_name)
 
-            success = llama_backend.load_model(
-                gguf_path=config.gguf_file,
-                model_identifier=config.identifier,
-                n_ctx=request.max_seq_length,
-            )
+            # Route to HF mode or local mode based on config
+            if config.gguf_hf_repo:
+                # HF mode: llama-server downloads via -hf "repo:quant"
+                success = llama_backend.load_model(
+                    hf_repo=config.gguf_hf_repo,
+                    hf_variant=config.gguf_variant,
+                    hf_token=request.hf_token,
+                    model_identifier=config.identifier,
+                    is_vision=config.is_vision,
+                    n_ctx=request.max_seq_length,
+                )
+            else:
+                # Local mode: llama-server loads via -m <path>
+                success = llama_backend.load_model(
+                    gguf_path=config.gguf_file,
+                    model_identifier=config.identifier,
+                    is_vision=config.is_vision,
+                    n_ctx=request.max_seq_length,
+                )
 
             if not success:
                 raise HTTPException(
@@ -125,7 +140,7 @@ async def load_model(request: LoadRequest):
                 status="loaded",
                 model=config.identifier,
                 display_name=config.display_name,
-                is_vision=False,
+                is_vision=config.is_vision,
                 is_lora=False,
                 is_gguf=True,
                 inference=inference_config,
@@ -292,7 +307,7 @@ async def get_status():
         if llama_backend.is_loaded:
             return InferenceStatusResponse(
                 active_model=llama_backend.model_identifier,
-                is_vision=False,
+                is_vision=llama_backend.is_vision,
                 is_gguf=True,
                 loading=[],
                 loaded=[llama_backend.model_identifier],
@@ -425,12 +440,12 @@ async def openai_chat_completions(payload: ChatCompletionRequest, request: Reque
 
     # ── GGUF path: format prompt → proxy to llama-server ──────
     if using_gguf:
-        # GGUF models don't support vision
+        # Reject images if this GGUF model doesn't support vision
         image_b64 = extracted_image_b64 or payload.image_base64
-        if image_b64:
+        if image_b64 and not llama_backend.is_vision:
             raise HTTPException(
                 status_code=400,
-                detail="Image provided but GGUF models do not support vision.",
+                detail="Image provided but current GGUF model does not support vision.",
             )
 
         prompt = llama_backend.format_prompt(chat_messages, system_prompt)

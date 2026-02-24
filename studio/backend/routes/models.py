@@ -22,8 +22,10 @@ try:
         get_base_model_from_lora,
         is_vision_model,
         scan_checkpoints,
+        list_gguf_variants,
         ModelConfig,
     )
+    from utils.models.model_config import _pick_best_gguf, _extract_quant_label
     from core.inference import get_inference_backend
 except ImportError:
     # Fallback: try to import from parent directory
@@ -36,8 +38,10 @@ except ImportError:
         get_base_model_from_lora,
         is_vision_model,
         scan_checkpoints,
+        list_gguf_variants,
         ModelConfig,
     )
+    from utils.models.model_config import _pick_best_gguf, _extract_quant_label
     from core.inference import get_inference_backend
 
 from models import (
@@ -51,6 +55,7 @@ from models import (
     LoRAInfo,
     ModelListResponse,
 )
+from models.models import GgufVariantDetail, GgufVariantsResponse
 from models.responses import LoRABaseModelResponse, VisionCheckResponse
 
 router = APIRouter()
@@ -404,6 +409,49 @@ async def check_vision_model(
             status_code=500,
             detail=f"Failed to check vision model: {str(e)}"
         )
+
+@router.get("/gguf-variants", response_model=GgufVariantsResponse)
+async def get_gguf_variants(
+    repo_id: str = Query(..., description="HuggingFace repo ID (e.g. 'unsloth/gemma-3-4b-it-GGUF')"),
+    hf_token: Optional[str] = Query(None, description="HuggingFace token for private repos"),
+    current_subject: str = Depends(get_current_subject),
+):
+    """
+    List available GGUF quantization variants for a HuggingFace repo.
+
+    Returns all available quantization variants (Q4_K_M, Q8_0, BF16, etc.)
+    with file sizes, whether the model supports vision, and the recommended
+    default variant.
+    """
+    try:
+        variants, has_vision = list_gguf_variants(repo_id, hf_token=hf_token)
+
+        # Determine default variant
+        filenames = [v.filename for v in variants]
+        best = _pick_best_gguf(filenames)
+        default_variant = _extract_quant_label(best) if best else None
+
+        return GgufVariantsResponse(
+            repo_id=repo_id,
+            variants=[
+                GgufVariantDetail(
+                    filename=v.filename,
+                    quant=v.quant,
+                    size_bytes=v.size_bytes,
+                )
+                for v in variants
+            ],
+            has_vision=has_vision,
+            default_variant=default_variant,
+        )
+
+    except Exception as e:
+        logger.error(f"Error listing GGUF variants for '{repo_id}': {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to list GGUF variants: {str(e)}",
+        )
+
 
 @router.get("/checkpoints", response_model=CheckpointListResponse)
 async def list_checkpoints(
