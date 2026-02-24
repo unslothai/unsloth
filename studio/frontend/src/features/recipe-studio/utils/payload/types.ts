@@ -38,6 +38,8 @@ export type RecipePayload = {
       node_type?: "markdown_note";
       name?: string;
       markdown?: string;
+      note_color?: string;
+      note_opacity?: string;
     }>;
     edges: {
       from: string;

@@ -202,6 +202,8 @@ export function buildRecipePayload(
           node_type: "markdown_note" as const,
           name: config.name,
           markdown: config.markdown,
+          note_color: config.note_color,
+          note_opacity: config.note_opacity,
         },
       ];
     }

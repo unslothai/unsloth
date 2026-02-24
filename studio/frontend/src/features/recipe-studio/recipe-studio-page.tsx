@@ -114,6 +114,7 @@ export function RecipeStudioPage({
     addExpressionNode,
     addMarkdownNoteNode,
     selectConfig,
+    openConfig,
     updateConfig,
     isValidConnection,
     setSheetView,
@@ -152,6 +153,7 @@ export function RecipeStudioPage({
       addExpressionNode: state.addExpressionNode,
       addMarkdownNoteNode: state.addMarkdownNoteNode,
       selectConfig: state.selectConfig,
+      openConfig: state.openConfig,
       updateConfig: state.updateConfig,
       isValidConnection: state.isValidConnection,
       setSheetView: state.setSheetView,
@@ -231,6 +233,19 @@ export function RecipeStudioPage({
       selectConfig(node.id);
     },
     [selectConfig],
+  );
+
+  const handleNodeDoubleClick = useCallback(
+    (_: unknown, node: Node<RecipeNodeData | RecipeGraphAuxNodeData>) => {
+      if (node.type !== "builder") {
+        return;
+      }
+      const nodeConfig = configs[node.id];
+      if (nodeConfig?.kind === "markdown_note") {
+        openConfig(node.id);
+      }
+    },
+    [configs, openConfig],
   );
 
   const handleNodesChange = useCallback(
@@ -408,6 +423,7 @@ export function RecipeStudioPage({
                 onEdgesChange={handleEdgesChange}
                 onConnect={onConnect}
                 onNodeClick={handleNodeClick}
+                onNodeDoubleClick={handleNodeDoubleClick}
                 isValidConnection={isValidConnection}
                 nodesDraggable={interactive}
                 nodesConnectable={interactive}
