@@ -206,10 +206,11 @@ else
     fi
 fi
 
-# ── 8. Build llama-server for GGUF inference ──
+# ── 8. Build llama.cpp binaries for GGUF inference + export ──
 # Builds in-tree at $REPO/llama.cpp/. This directory is shared with
-# unsloth-zoo's GGUF export pipeline — if converter/quantize are missing,
-# unsloth-zoo will rebuild them on first export. We only build llama-server here.
+# unsloth-zoo's GGUF export pipeline. We build:
+#   - llama-server: for GGUF model inference
+#   - llama-quantize: for GGUF export quantization (symlinked to root for check_llama_cpp())
 LLAMA_SERVER_BIN="$SCRIPT_DIR/llama.cpp/build/bin/llama-server"
 if [ -f "$LLAMA_SERVER_BIN" ]; then
     echo ""
@@ -272,11 +273,24 @@ else
             run_quiet "build llama-server" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-server -j"$NCPU" || BUILD_OK=false
         fi
 
+        # Also build llama-quantize (needed by unsloth-zoo's GGUF export pipeline)
+        if [ "$BUILD_OK" = true ]; then
+            run_quiet "build llama-quantize" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-quantize -j"$NCPU" || true
+            # Symlink to llama.cpp root — check_llama_cpp() looks for the binary there
+            QUANTIZE_BIN="$LLAMA_CPP_DIR/build/bin/llama-quantize"
+            if [ -f "$QUANTIZE_BIN" ]; then
+                ln -sf build/bin/llama-quantize "$LLAMA_CPP_DIR/llama-quantize"
+            fi
+        fi
+
         if [ "$BUILD_OK" = true ]; then
             if [ -f "$LLAMA_SERVER_BIN" ]; then
                 echo "✅ llama-server built at $LLAMA_SERVER_BIN"
             else
                 echo "⚠️  llama-server binary not found after build — GGUF inference won't be available"
+            fi
+            if [ -f "$LLAMA_CPP_DIR/llama-quantize" ]; then
+                echo "✅ llama-quantize available for GGUF export"
             fi
         else
             echo "⚠️  llama-server build failed — GGUF inference won't be available, but everything else works"
