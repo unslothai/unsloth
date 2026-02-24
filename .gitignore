@@ -24,6 +24,9 @@ unsloth_training_checkpoints/
 *.gguf
 *.safetensors
 
+# Built binaries (llama-server etc.)
+bin/
+
 # IDE / Editors
 .vscode/
 .idea/

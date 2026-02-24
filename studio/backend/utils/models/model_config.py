@@ -422,6 +422,32 @@ def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
 pass
 
 
+def detect_gguf_model(path: str) -> Optional[str]:
+    """
+    Check if the given path is or contains a GGUF model file.
+
+    Handles three cases:
+    1. path is a direct .gguf file path
+    2. path is a directory containing .gguf files
+    3. path is an HuggingFace repo with GGUF files (not yet — future enhancement)
+
+    Returns the full path to the .gguf file if found, None otherwise.
+    """
+    p = Path(path)
+
+    # Case 1: direct .gguf file
+    if p.suffix == ".gguf" and p.is_file():
+        return str(p.resolve())
+
+    # Case 2: directory containing .gguf files
+    if p.is_dir():
+        gguf_files = sorted(p.glob("*.gguf"), key=lambda f: f.stat().st_size, reverse=True)
+        if gguf_files:
+            return str(gguf_files[0].resolve())
+
+    return None
+
+
 def scan_trained_loras(outputs_dir: str = "./outputs") -> List[Tuple[str, str]]:
     """
     Scan outputs folder for trained LoRA adapters.
@@ -595,6 +621,8 @@ class ModelConfig:
     is_cached: bool     # Is this already in HF cache?
     is_vision: bool     # Is this a vision model?
     is_lora: bool       # Is this a lora adapter?
+    is_gguf: bool = False       # Is this a GGUF model?
+    gguf_file: Optional[str] = None  # Full path to the .gguf file
     base_model: Optional[str] = None  # Base model (for LoRAs)
 
     @classmethod
@@ -675,12 +703,30 @@ class ModelConfig:
         identifier = model_id.strip()
         is_local = is_local_path(identifier)
         path = normalize_path(identifier) if is_local else identifier
-        
+
         # Add unsloth/ prefix for shorthand HF models
         if not is_local and "/" not in identifier:
             identifier = f"unsloth/{identifier}"
             path = identifier
-        
+
+        # Auto-detect GGUF models (check before LoRA/vision detection)
+        if is_local:
+            gguf_file = detect_gguf_model(path)
+            if gguf_file:
+                display_name = Path(gguf_file).stem
+                logger.info(f"Detected GGUF model: {gguf_file}")
+                return cls(
+                    identifier=identifier,
+                    display_name=display_name,
+                    path=path,
+                    is_local=True,
+                    is_cached=True,
+                    is_vision=False,
+                    is_lora=False,
+                    is_gguf=True,
+                    gguf_file=gguf_file,
+                )
+
         # Auto-detect LoRA for local paths (check adapter_config.json on disk)
         if not is_lora and is_local:
             detected_base = get_base_model_from_lora(path)

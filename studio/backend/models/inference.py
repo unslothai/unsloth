@@ -43,6 +43,7 @@ class LoadResponse(BaseModel):
     display_name: str = Field(..., description="Display name of the model")
     is_vision: bool = Field(False, description="Whether model is a vision model")
     is_lora: bool = Field(False, description="Whether model is a LoRA adapter")
+    is_gguf: bool = Field(False, description="Whether model is a GGUF model (llama.cpp)")
     inference: dict = Field(..., description="Inference parameters (temperature, top_p, top_k, min_p)")
 
 
@@ -56,6 +57,7 @@ class InferenceStatusResponse(BaseModel):
     """Current inference backend status"""
     active_model: Optional[str] = Field(None, description="Currently active model identifier")
     is_vision: bool = Field(False, description="Whether the active model is a vision model")
+    is_gguf: bool = Field(False, description="Whether the active model is a GGUF model (llama.cpp)")
     loading: List[str] = Field(default_factory=list, description="Models currently being loaded")
     loaded: List[str] = Field(default_factory=list, description="Models currently loaded")
 

@@ -88,6 +88,7 @@ def _scan_models_dir(models_dir: Path) -> List[LocalModelInfo]:
             or (child / "adapter_config.json").exists()
             or any(child.glob("*.safetensors"))
             or any(child.glob("*.bin"))
+            or any(child.glob("*.gguf"))
         )
         if not has_model_files:
             continue
@@ -104,6 +105,23 @@ def _scan_models_dir(models_dir: Path) -> List[LocalModelInfo]:
                 updated_at=updated_at,
             ),
         )
+    # Also scan for standalone .gguf files directly in the models directory
+    for gguf_file in models_dir.glob("*.gguf"):
+        if gguf_file.is_file():
+            try:
+                updated_at = gguf_file.stat().st_mtime
+            except OSError:
+                updated_at = None
+            found.append(
+                LocalModelInfo(
+                    id=str(gguf_file),
+                    display_name=gguf_file.stem,
+                    path=str(gguf_file),
+                    source="models_dir",
+                    updated_at=updated_at,
+                ),
+            )
+
     return found
 
 
