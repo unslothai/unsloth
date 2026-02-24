@@ -10,6 +10,8 @@ const instructionFromAnswerUrl = new URL(
   "./instruction-from-answer.json",
   import.meta.url,
 ).href;
+const textToPythonUrl = new URL("./text-to-python.json", import.meta.url).href;
+const textToSqlUrl = new URL("./text-to-sql.json", import.meta.url).href;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -106,5 +108,19 @@ export const LEARNING_RECIPES: LearningRecipeDef[] = [
     description:
       "Use seed answer columns to generate high-quality instruction targets.",
     loadPayload: () => loadPayloadFromUrl(instructionFromAnswerUrl),
+  },
+  {
+    id: "text-to-python",
+    title: "Text to Python",
+    description:
+      "Generate instruction-to-code data with category sampling and LLM judging.",
+    loadPayload: () => loadPayloadFromUrl(textToPythonUrl),
+  },
+  {
+    id: "text-to-sql",
+    title: "Text to SQL",
+    description:
+      "Generate SQL tasks and runnable SQL outputs with prompt-driven generation.",
+    loadPayload: () => loadPayloadFromUrl(textToSqlUrl),
   },
 ];
