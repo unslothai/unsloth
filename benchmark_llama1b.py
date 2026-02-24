@@ -191,11 +191,6 @@ def benchmark_mlx(steps: int, batch_size: int, seq_len: int, warmup: int = 2):
     print(f"\n[3/4] Training ({warmup} warmup + {steps} benchmark steps)...")
     
     def loss_fn(input_ids, labels):
-        # Temporarily set model params to trainable subset
-        orig_params = dict(model.parameters())
-        trainable_params = model.trainable_parameters()
-        model.update_params(trainable_params, strict=False)
-        
         logits = model(input_ids)
         shift_logits = logits[:, :-1, :]
         shift_labels = labels[:, 1:]
@@ -204,9 +199,6 @@ def benchmark_mlx(steps: int, batch_size: int, seq_len: int, warmup: int = 2):
             shift_labels.reshape(-1),
             reduction="mean"
         )
-        
-        # Restore original params
-        model.update_params(orig_params, strict=False)
         return loss
     
     def create_batch():
