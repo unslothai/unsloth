@@ -3285,6 +3285,36 @@ def patch_unsloth_zoo_saving():
             return unsloth_zoo.llama_cpp.check_llama_cpp()
 
         def _wrapped_check_llama_cpp():
+            import platform
+            # First check if we have a local llama.cpp build on macOS
+            if platform.system() == "Darwin":
+                # Check multiple possible locations for locally built llama.cpp
+                possible_paths = [
+                    os.path.join(os.getcwd(), "llama.cpp", "build", "bin"),
+                    os.path.expanduser("~/llama.cpp/build/bin"),
+                    os.path.join(os.getcwd(), "llama.cpp"),
+                ]
+                for bin_path in possible_paths:
+                    if os.path.exists(bin_path):
+                        quantizer = os.path.join(bin_path, "llama-quantize")
+                        converter = os.path.join(bin_path, "convert-hf-to-gguf")
+                        # Check for executables with or without extension
+                        if not os.path.exists(quantizer):
+                            quantizer = os.path.join(bin_path, "quantize")
+                        if not os.path.exists(converter):
+                            converter = os.path.join(bin_path, "convert.py")
+                        if os.path.exists(quantizer) or os.path.exists(os.path.join(bin_path, "llama-*")):
+                            # Found it! Copy binaries to llama.cpp folder for compatibility
+                            import shutil
+                            llama_dir = os.path.join(os.getcwd(), "llama.cpp")
+                            os.makedirs(llama_dir, exist_ok=True)
+                            for f in os.listdir(bin_path):
+                                src = os.path.join(bin_path, f)
+                                if os.path.isfile(src):
+                                    shutil.copy2(src, llama_dir)
+                            # Now return the expected format
+                            return unsloth_zoo.llama_cpp.check_llama_cpp()
+            
             # First try the original function
             try:
                 return _orig_check_llama_cpp()
