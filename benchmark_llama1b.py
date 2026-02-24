@@ -208,6 +208,7 @@ def benchmark_mlx(steps: int, batch_size: int, seq_len: int, warmup: int = 2):
         return input_ids, labels
     
     optimizer = AdamW(learning_rate=2e-4)
+    model.train()
     mx.reset_peak_memory()
     
     for i in range(warmup):
