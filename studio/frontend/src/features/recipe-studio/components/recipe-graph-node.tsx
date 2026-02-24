@@ -378,10 +378,10 @@ function RecipeGraphNodeBase({
           </div>
           <div className="min-w-0">
             <BaseNodeHeaderTitle className="truncate text-sm">
-              {data.title}
+              {data.name}
             </BaseNodeHeaderTitle>
             <p className="truncate text-[11px] text-muted-foreground">
-              {data.subtype} · {data.name}
+              {data.subtype} · {data.title}
             </p>
           </div>
         </div>

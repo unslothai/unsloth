@@ -1,0 +1,215 @@
+{
+  "recipe": {
+    "model_providers": [
+      {
+        "name": "provider_1",
+        "endpoint": "https://openrouter.ai/api/v1",
+        "provider_type": "openai",
+        "extra_headers": {},
+        "extra_body": {}
+      }
+    ],
+    "mcp_providers": [],
+    "model_configs": [
+      {
+        "alias": "model_1",
+        "model": "mistralai/ministral-8b-2512",
+        "provider": "provider_1",
+        "inference_parameters": {
+          "temperature": 0.7,
+          "max_tokens": 2048
+        }
+      }
+    ],
+    "tool_configs": [],
+    "columns": [
+      {
+        "column_type": "sampler",
+        "name": "domain",
+        "drop": false,
+        "sampler_type": "category",
+        "params": {
+          "values": [
+            "Data Processing",
+            "Web API",
+            "Automation"
+          ]
+        }
+      },
+      {
+        "column_type": "sampler",
+        "name": "task_type",
+        "drop": false,
+        "sampler_type": "subcategory",
+        "params": {
+          "category": "domain",
+          "values": {
+            "Data Processing": [
+              "CSV cleaning",
+              "JSON transform",
+              "deduplicate rows"
+            ],
+            "Web API": [
+              "GET endpoint",
+              "POST validation",
+              "pagination helper"
+            ],
+            "Automation": [
+              "file organizer",
+              "log parser",
+              "daily report script"
+            ]
+          }
+        }
+      },
+      {
+        "column_type": "llm-text",
+        "name": "instruction",
+        "drop": false,
+        "model_alias": "model_1",
+        "prompt": "Write one clear Python coding instruction.\nDomain: {{ domain }}\nTask type: {{ task_type }}\n\nKeep it practical and specific.\nReturn only the instruction without any code.",
+        "with_trace": "none"
+      },
+      {
+        "column_type": "llm-code",
+        "name": "code_implementation",
+        "drop": false,
+        "model_alias": "model_1",
+        "prompt": "Write Python code for:\n{{ instruction }}\n\nRequirements:\n- runnable script or function\n- include needed imports\n- short comments only where useful\n- no markdown fences",
+        "code_lang": "python"
+      },
+      {
+        "column_type": "llm-judge",
+        "name": "code_judge_result",
+        "drop": false,
+        "model_alias": "model_1",
+        "prompt": "Evaluate generated Python code against the instruction.\n\nInstruction:\n{{ instruction }}\n\nCode:\n{{ code_implementation }}",
+        "scores": [
+          {
+            "name": "Correctness",
+            "description": "Follows instruction and is executable",
+            "options": {
+              "0": "bad",
+              "1": "partial",
+              "2": "good",
+              "3": "excellent"
+            }
+          }
+        ]
+      }
+    ],
+    "processors": []
+  },
+  "run": {
+    "rows": 5,
+    "preview": true,
+    "output_formats": [
+      "jsonl"
+    ]
+  },
+  "ui": {
+    "nodes": [
+      {
+        "id": "provider_1",
+        "x": 1032.6798211423347,
+        "y": -450.4885376732656,
+        "width": 400
+      },
+      {
+        "id": "model_1",
+        "x": 1538.0273166472973,
+        "y": -483.2003290046642,
+        "width": 400
+      },
+      {
+        "id": "domain",
+        "x": 0,
+        "y": 24,
+        "width": 400
+      },
+      {
+        "id": "task_type",
+        "x": 480,
+        "y": 24,
+        "width": 400
+      },
+      {
+        "id": "instruction",
+        "x": 958.8989453654599,
+        "y": -9.971266983459952,
+        "width": 400
+      },
+      {
+        "id": "code_implementation",
+        "x": 1538.788058529745,
+        "y": -45.56493974435071,
+        "width": 400
+      },
+      {
+        "id": "code_judge_result",
+        "x": 2040.9251520522098,
+        "y": -13.362336454344792,
+        "width": 400
+      }
+    ],
+    "edges": [
+      {
+        "from": "domain",
+        "to": "task_type",
+        "type": "canvas",
+        "source_handle": "data-out",
+        "target_handle": "data-in"
+      },
+      {
+        "from": "task_type",
+        "to": "instruction",
+        "type": "canvas",
+        "source_handle": "data-out",
+        "target_handle": "data-in"
+      },
+      {
+        "from": "provider_1",
+        "to": "model_1",
+        "type": "semantic",
+        "source_handle": "semantic-out",
+        "target_handle": "semantic-in"
+      },
+      {
+        "from": "instruction",
+        "to": "code_implementation",
+        "type": "canvas",
+        "source_handle": "data-out",
+        "target_handle": "data-in"
+      },
+      {
+        "from": "model_1",
+        "to": "instruction",
+        "type": "semantic",
+        "source_handle": "semantic-out-bottom",
+        "target_handle": "data-in-top"
+      },
+      {
+        "from": "model_1",
+        "to": "code_implementation",
+        "type": "semantic",
+        "source_handle": "semantic-out-bottom",
+        "target_handle": "data-in-top"
+      },
+      {
+        "from": "code_implementation",
+        "to": "code_judge_result",
+        "type": "canvas",
+        "source_handle": "data-out",
+        "target_handle": "data-in"
+      },
+      {
+        "from": "model_1",
+        "to": "code_judge_result",
+        "type": "semantic",
+        "source_handle": "semantic-out-bottom",
+        "target_handle": "data-in-top"
+      }
+    ],
+    "layout_direction": "LR"
+  }
+}

@@ -1,0 +1,157 @@
+{
+  "recipe": {
+    "model_providers": [
+      {
+        "name": "provider_1",
+        "endpoint": "https://openrouter.ai/api/v1",
+        "provider_type": "openai",
+        "api_key": "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",
+        "extra_headers": {},
+        "extra_body": {}
+      }
+    ],
+    "mcp_providers": [],
+    "model_configs": [
+      {
+        "alias": "provider_column",
+        "model": "mistralai/ministral-8b-2512",
+        "provider": "provider_1",
+        "inference_parameters": {
+          "temperature": 0.7,
+          "max_tokens": 256
+        }
+      }
+    ],
+    "seed_config": {
+      "source": {
+        "seed_type": "local",
+        "path": "/home/wasim/.cache/unsloth/data-recipe/seed-uploads/dc8ef7c169ed43399b7d37164495150f_50 page sample PDF.indd.jsonl"
+      },
+      "sampling_strategy": "ordered",
+      "selection_strategy": null
+    },
+    "tool_configs": [],
+    "columns": [
+      {
+        "column_type": "llm-structured",
+        "name": "llm_structured_1",
+        "drop": false,
+        "model_alias": "provider_column",
+        "prompt": "Given ONLY this chunk: {{ chunk_text }} generate one answerable question, answer, and exact supporting quote from chunk. If not answerable, skip.",
+        "output_format": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "question",
+            "answer",
+            "evidence_quote"
+          ],
+          "properties": {
+            "question": {
+              "type": "string"
+            },
+            "answer": {
+              "type": "string"
+            },
+            "evidence_quote": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    ],
+    "processors": []
+  },
+  "run": {
+    "rows": 5,
+    "preview": true,
+    "output_formats": [
+      "jsonl"
+    ]
+  },
+  "ui": {
+    "nodes": [
+      {
+        "id": "seed",
+        "x": 295.56977201312833,
+        "y": 108.19964868337735,
+        "width": 400
+      },
+      {
+        "id": "provider_1",
+        "x": 960.0115722892822,
+        "y": -465.06410256410254,
+        "width": 400
+      },
+      {
+        "id": "provider_column",
+        "x": 959.90231990232,
+        "y": -180.56654456654456,
+        "width": 400
+      },
+      {
+        "id": "llm_structured_1",
+        "x": 960,
+        "y": 108.25,
+        "width": 400
+      }
+    ],
+    "edges": [
+      {
+        "from": "provider_1",
+        "to": "provider_column",
+        "type": "semantic"
+      },
+      {
+        "from": "provider_column",
+        "to": "llm_structured_1",
+        "type": "semantic"
+      },
+      {
+        "from": "seed",
+        "to": "llm_structured_1",
+        "type": "canvas"
+      }
+    ],
+    "seed_source_type": "unstructured",
+    "seed_columns": [
+      "chunk_text"
+    ],
+    "seed_preview_rows": [
+      {
+        "chunk_text": "[Citation Needed] The Best of Wikipedia’s Worst Writing Conor Lastowka and Josh Fruhlinger Boring Legal Fine Print Each entry in this book contains material from Wikipedia, although the text we use may not represent the current version of any article. The URL at the bottom of each page will direct you to the source Wikipedia article; use the article’s History tab to find a list of contributors. All material in this book that is taken from Wikipedia is licensed under the Creative Commons-Attribution Share Alike 3.0 license. Here’s a quick human-readable summary of your rights to use this content: You are free: to Share—to copy, distribute and transmit the work, and to Remix—to adapt the work Under the following conditions: Attribution—You must attribute the work in the manner specified by the author or licensor (but not in any way that suggests that they endorse you or your use of the work.) Share Alike—If you alter, transform, or build upon this work, you may distribute the resulting work only under the same, similar or a compatible license. With the understanding that: Waiver—Any of the above conditions can be waived if you get permission from the copyright holder. Other Rights—In"
+      },
+      {
+        "chunk_text": "only under the same, similar or a compatible license. With the understanding that: Waiver—Any of the above conditions can be waived if you get permission from the copyright holder. Other Rights—In no way are any of the following rights affected by the license: your fair dealing or fair use rights; the author’s moral rights; and rights other persons may have either in the work itself or in how the work is used, such as publicity or privacy rights. Notice—For any reuse or distribution, you must make clear to others the license terms of this work. The best way to do this is with a link to: http://creativecommons.org/licenses/by-sa/3.0/ Italicized material beneath each Wikipedia entry is © 2011 Conor Lastowka and Josh Fruhlinger. Copy-edited by Lauren Lastowka Cover design by Jaime Robinson ISBN # 978-1466346987 This book is dedicated to every person who wrote an entry that appears in it. May your citations always be needed. 6 Introduction Wikipedia. Whether you’ve used it to settle an argument, plagiarized a history report from it, or simply replaced the entire text of the biography of a respected humanitarian with the single word “dogballs,” it’s an inescapable part of the Internet"
+      },
+      {
+        "chunk_text": "plagiarized a history report from it, or simply replaced the entire text of the biography of a respected humanitarian with the single word “dogballs,” it’s an inescapable part of the Internet experience. Since its launch in 2001, it has rapidly risen to become the seventh most popular website, with over 365 million readers (Source: Wikipedia). If you’re like us, when you want to know the name of the kangaroo on Shirt Tales or just want to confirm that Mother Teresa was a dogballs who helped the farts (Source: Wikipedia), The Encyclopedia That Anyone Can Edit will probably be the first place you check. But here’s the thing about letting anybody edit your encyclopedia: it means that anybody can edit your encyclopedia. And while in theory this means that one day Stephen Hawking might decide to weigh in on the entry for string theory, in reality it means that somebody who deeply cares about pro wrestling is going to call someone else a Nazi when they revert his edits about Wrestlemania XI on Razor Ramon’s page. And so we arrive at a cosmic intersection, where an obscure topic of dubious relevance is written about by the type of weirdo who logs on to Wikipedia to write about obscure"
+      },
+      {
+        "chunk_text": "XI on Razor Ramon’s page. And so we arrive at a cosmic intersection, where an obscure topic of dubious relevance is written about by the type of weirdo who logs on to Wikipedia to write about obscure topics of dubious relevance. Were these authors re-watching their video of Wrestlemania XI instead of completing basic 8th grade English assignments? It’s very likely. Does this 7 stop them from attempting to emulate the academic tone of the great encyclopedias of the past as they describe a large mammalian species from the Star Wars universe that shares a common ancestor with the Wookies? It does not. The result? Some really terrible Wikipedia writing. For the past two years, we have collected this writing on our blog, [Citation Needed]. Fascinated and delighted by the brilliantly bad writing we encountered in our Wikipedia browsing, we set out to curate The Best of Wikipedia’s Worst Writing. Starting the blog was a no-brainer; our only concern was whether, after a few months of our daily mining, the well of awful Wikipedia writing would eventually run dry. By the time you read this, we will have published our thousandth entry. We started a podcast. Instead of drying up, the ocean of"
+      },
+      {
+        "chunk_text": "mining, the well of awful Wikipedia writing would eventually run dry. By the time you read this, we will have published our thousandth entry. We started a podcast. Instead of drying up, the ocean of ineptitude has proven far more vast than we ever could have imagined. Through our own browsing, and with the help of a dedicated group of readers who are exploring the topics they submit for God knows what reason, we’ve continually lowered and re-lowered the bar for bad Wikipedia writing. Now, let’s get one thing straight: we love each and every entry written in this book. If you are one of the authors who have chosen to use your valuable time on this planet to write straight-faced exegeses on the subject of forgotten action figures from the seventies, we hope you don’t take offense. And if you do, we have an acceptable retort prepared for you: “You guys ran a blog about Wikipedia for two years, who the hell are you to talk?” Feel free to use it! Others may criticize us for not doing our part to help Wikipedia become “better” by revising these passages. Nothing that does not involve electrodes near our genitals would make us more miserable. In our opinion, many of the passages in this"
+      },
+      {
+        "chunk_text": "to help Wikipedia become “better” by revising these passages. Nothing that does not involve electrodes near our genitals would make us more miserable. In our opinion, many of the passages in this book stand alone as works of art. Think of us as photographers preserving the memory of the great street art of the world before the joyless police come and whitewash over it. (Is that an official police responsibility? It seems beneath them. If it’s not, but they’re still forced to do it, that might explain the joylessness.) The point is, if you’re moved to correct these entries, we’re powerless to stop you. They’ve already given us joy, and we’re just happy to have encountered them. Enough introduction. Here are over two hundred of our favorite bad Wikipedia articles of all time. Comments in italics are ours. Everything else is a faithful reproduction of the way the entry stood at the moment we or our informants encountered it. We hope you will laugh, cry, maybe even learn something, and always remember to dogballs. —Conor Lastowka & Josh Fruhlinger citationneeded.tumblr.com 8 9 In barely one decade, Jimmy Wales has succeeded in establishing a worldwide network of knowledge. Wikipedia,"
+      },
+      {
+        "chunk_text": "remember to dogballs. —Conor Lastowka & Josh Fruhlinger citationneeded.tumblr.com 8 9 In barely one decade, Jimmy Wales has succeeded in establishing a worldwide network of knowledge. Wikipedia, his online encyclopaedia, accessible on the Internet for free, has become a symbol of a radical change in the media economy. Moreover, it revolutionized the access to knowledge as man’s most important resource and thus contributed to democratizing knowledge. The Gottlieb Duttweiler Institute, awarding the 2011 Gottlieb Duttweiler Prize to Wikipedia founder Jimmy Wales I saw the Beavis and Butt-Head episode that had Hogan’s “Real American” music on there. I don’t quite remembering it being critiqued by Beavis and Butt-Head. They sounded more like they liked the music and I don’t really remember any criticism of it (except for when it was going, when Butt-Head said “homework sucks”, but I’m not quite sure if he was referring to music or not). Wikipedia discussion page for Hulk Hogan 10 11 http://en.wikipedia.org/wiki/Polybius_(video_game) Want a Citation for this one? Please see the following 206 pages. The Roach story contained a number of inconsistencies: some of it seems to be directly"
+      },
+      {
+        "chunk_text": "Want a Citation for this one? Please see the following 206 pages. The Roach story contained a number of inconsistencies: some of it seems to be directly sourced from Wikipedia- all in all, an entirely untrustworthy source. Polybius (video game) 12 http://en.wikipedia.org/wiki/General_Mills_monster-themed_breakfast_cereals You can imagine the marketing team having their first meeting after the cereal’s release. “We have good news and bad news. The good news is, your latest cereal is very, very popular. The bad news is, it’s not in any way due to the character you came up with, the box design you slaved over, the costly ad campaign, or the hours you put in coming up with free toy ideas. Gentlemen, you should probably sit down....” Franken Berry was very popular when first introduced possibly because the initial batches of the cereal used a dye that didn’t break down in the body, causing many children’s feces to be bright pink, a symptom sometimes referred to as “Frankenberry Stool.” General Mills monster-themed breakfast cereals 13 http://en.wikipedia.org/wiki/Skiffle Because if your encyclopedia can’t provide you with an unsourced claim that it admits is only one of several"
+      },
+      {
+        "chunk_text": "General Mills monster-themed breakfast cereals 13 http://en.wikipedia.org/wiki/Skiffle Because if your encyclopedia can’t provide you with an unsourced claim that it admits is only one of several theories put forth about the subject, and then go on to inform you in the very same sentence that other unidentified parties disagree with that claim, then what the hell good is it? Skiffle is often said to have developed from New Orleans jazz, but this has been disputed. Skiffle 14 http://en.wikipedia.org/wiki/House_Party_%28film%29 “HP4: Coda or Mistake?” was by far the most contentious panel at HoPaCon 2009, with impassioned arguments echoing through the halls of the Kansas City International Airport Days Inn. In 2001, Immature (now going by IMx) starred in a direct-to-video sequel, House Party 4: Down to the Last Minute, which does not feature Kid or Play. The film is not considered a part of the House Party canon amongst fans. [citation needed] House Party (film) 15 http://en.wikipedia.org/wiki/Inglewood,_California So it would appear that, due to the presence of the anti- drug organization D.A.R.E. in Inglewood, there are in fact parts of Inglewood that are attempting to do good."
+      },
+      {
+        "chunk_text": "So it would appear that, due to the presence of the anti- drug organization D.A.R.E. in Inglewood, there are in fact parts of Inglewood that are attempting to do good. Thus the claim that Inglewood is “always” up to no good can be assumed to be false, or at the very least a gross exaggeration. Also, many have speculated that the so-called “Doctor” Dre never actually received a PhD. D.A.R.E. America has its headquarters in Inglewood. Despite this, in the 1996 rap hit “California Love”, Dr. Dre remarks that Inglewood is “always up to no good”. Inglewood, California 16 http://en.wikipedia.org/wiki/Tyler_Perry People who feel that Tyler Perry’s 6’5” stature is severely diminished by his wearing a wig? The line in the sand has been drawn. Another comical aspect is provided by Perry’s 6’- 5” stature, which is in no way diminished by his wearing a wig. Tyler Perry 17 http://en.wikipedia.org/wiki/Bondage_bed Do not attempt to affix your bondage partner to this question mark using chains and shackles! It is purely metaphorical! It is possible to buy inflatable bondage beds; however, a question mark must remain over how effective they are. Bondage bed 18"
+      }
+    ],
+    "local_file_name": "",
+    "unstructured_file_name": "50 page sample PDF.indd.pdf",
+    "unstructured_chunk_size": "1200",
+    "unstructured_chunk_overlap": "200"
+  }
+}
