@@ -68,6 +68,8 @@ function toLoraSummary(lora: {
   display_name: string;
   adapter_path: string;
   base_model?: string | null;
+  source?: "training" | "exported" | null;
+  export_type?: "lora" | "merged" | null;
 }): ChatLoraSummary {
   const idTail = lora.adapter_path.split("/").filter(Boolean).at(-1) ?? "";
   const updatedAt =
@@ -78,6 +80,8 @@ function toLoraSummary(lora: {
     name: stripTrailingEpoch(lora.display_name),
     baseModel: lora.base_model || "Unknown base model",
     updatedAt,
+    source: lora.source ?? undefined,
+    exportType: lora.export_type ?? undefined,
   };
 }
 
