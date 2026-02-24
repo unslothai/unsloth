@@ -2232,7 +2232,11 @@ class FastLlamaModel:
         # Handle FP8 models: redirect to BF16 sibling when the model ships with
         # FP8 weights. Redirect is skipped when load_in_fp8 is truthy (True or 'block').
         model_name, model_config = _redirect_fp8_to_bf16(
-            model_name, model_config, load_in_fp8, token, trust_remote_code,
+            model_name,
+            model_config,
+            load_in_fp8,
+            token,
+            trust_remote_code,
         )
         model_config.model_name = model_name
         model_max_seq_length = model_config.max_position_embeddings

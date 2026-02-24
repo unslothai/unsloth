@@ -2571,7 +2571,9 @@ def patch_hf_quantizer():
 patch_hf_quantizer()
 
 
-def _redirect_fp8_to_bf16(model_name, auto_config, load_in_fp8, token, trust_remote_code):
+def _redirect_fp8_to_bf16(
+    model_name, auto_config, load_in_fp8, token, trust_remote_code
+):
     """
     Detect FP8 quantization in model config and redirect to BF16 sibling.
 
@@ -2602,11 +2604,11 @@ def _redirect_fp8_to_bf16(model_name, auto_config, load_in_fp8, token, trust_rem
         from huggingface_hub import model_info as _hf_model_info
         from transformers import AutoConfig
 
-        _hf_model_info(_bf16_name, token=token)
+        _hf_model_info(_bf16_name, token = token)
         _bf16_config = AutoConfig.from_pretrained(
             _bf16_name,
-            token=token,
-            trust_remote_code=trust_remote_code,
+            token = token,
+            trust_remote_code = trust_remote_code,
         )
         print(
             f"Unsloth: {_original_name} uses FP8 weights. "

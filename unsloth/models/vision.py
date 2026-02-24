@@ -618,7 +618,11 @@ class FastBaseModel:
         # even for 16-bit loading.
         # Redirect is skipped when load_in_fp8 is truthy (True or 'block').
         model_name, auto_config = _redirect_fp8_to_bf16(
-            model_name, auto_config, load_in_fp8, token, trust_remote_code,
+            model_name,
+            auto_config,
+            load_in_fp8,
+            token,
+            trust_remote_code,
         )
         # Re-resolve model_class after potential config change
         try:
