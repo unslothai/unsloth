@@ -222,6 +222,10 @@ export type MarkdownNoteConfig = {
   kind: "markdown_note";
   name: string;
   markdown: string;
+  // ui-only
+  note_color?: string;
+  // ui-only (0-100 as string for slider/input ergonomics)
+  note_opacity?: string;
 };
 
 export type SeedConfig = {

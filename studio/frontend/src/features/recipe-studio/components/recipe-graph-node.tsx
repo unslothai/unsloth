@@ -54,6 +54,27 @@ import { LabeledHandle } from "./rf-ui/labeled-handle";
 
 type IconType = typeof CodeIcon;
 
+function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
+  const normalized = hex.trim().replace("#", "");
+  if (!/^[0-9a-fA-F]{6}$/.test(normalized)) {
+    return null;
+  }
+  const int = Number.parseInt(normalized, 16);
+  return {
+    r: (int >> 16) & 255,
+    g: (int >> 8) & 255,
+    b: int & 255,
+  };
+}
+
+function parseNoteOpacity(value: string | undefined): number {
+  const parsed = Number.parseInt(value ?? "", 10);
+  if (!Number.isFinite(parsed)) {
+    return 0.35;
+  }
+  return Math.max(0.05, Math.min(1, parsed / 100));
+}
+
 const NODE_META = {
   sampler: {
     tone: "bg-emerald-50 text-emerald-600 border-emerald-100",
@@ -352,6 +373,40 @@ function RecipeGraphNodeBase({
   useEffect(() => {
     updateNodeInternals(id);
   }, [id, layoutDirection, config, updateNodeInternals]);
+
+  if (config?.kind === "markdown_note") {
+    const rgb = hexToRgb(config.note_color ?? "#FDE68A");
+    const alpha = parseNoteOpacity(config.note_opacity);
+    const noteStyle = rgb
+      ? {
+          backgroundColor: `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${alpha})`,
+          borderColor: `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${Math.min(1, Math.max(alpha + 0.15, 0.3))})`,
+        }
+      : undefined;
+
+    return (
+      <BaseNode
+        className="corner-squircle relative w-full min-w-0 overflow-visible rounded-lg border-border/60 shadow-sm"
+        style={noteStyle}
+      >
+        <NodeResizer
+          isVisible={selected}
+          minWidth={MIN_NODE_WIDTH}
+          minHeight={80}
+          maxWidth={MAX_NODE_WIDTH}
+          maxHeight={520}
+          color="var(--primary)"
+          lineClassName="!border-transparent !shadow-none"
+          lineStyle={{ opacity: 0 }}
+          handleClassName="!h-3 !w-3 !border-transparent !bg-transparent"
+          handleStyle={{ opacity: 0 }}
+        />
+        <BaseNodeContent className="px-3 py-2">
+          <MarkdownPreview markdown={config.markdown} plain={true} />
+        </BaseNodeContent>
+      </BaseNode>
+    );
+  }
 
   const showDataHandles =
     data.kind === "llm" ||

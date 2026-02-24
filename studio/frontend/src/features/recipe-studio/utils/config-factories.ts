@@ -287,6 +287,8 @@ export function makeMarkdownNoteConfig(
     kind: "markdown_note",
     name: nextName(existing, "note"),
     markdown: "## Note\n\nAdd markdown here.",
+    note_color: "#FDE68A",
+    note_opacity: "35",
   };
 }
 

@@ -44,6 +44,8 @@ type UiInput = {
 type UiMarkdownNoteNode = {
   name: string;
   markdown: string;
+  note_color?: string;
+  note_opacity?: string;
 };
 
 function readStringNumber(value: unknown): string | undefined {
@@ -247,6 +249,8 @@ function parseUiMarkdownNoteNodes(input: unknown): UiMarkdownNoteNode[] {
     noteNodes.push({
       name: name.trim(),
       markdown: readString(node.markdown) ?? "",
+      note_color: readString(node.note_color) ?? undefined,
+      note_opacity: readStringNumber(node.note_opacity) ?? undefined,
     });
   }
   return noteNodes;
@@ -342,6 +346,8 @@ export function importRecipePayload(input: string): ImportResult {
       kind: "markdown_note",
       name: note.name,
       markdown: note.markdown,
+      note_color: note.note_color ?? "#FDE68A",
+      note_opacity: note.note_opacity ?? "35",
     };
     if (nameToId.has(config.name)) {
       errors.push(`Duplicate column name: ${config.name}.`);
