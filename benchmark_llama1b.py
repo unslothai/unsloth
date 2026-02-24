@@ -250,7 +250,7 @@ def benchmark_mlx(steps: int, batch_size: int, seq_len: int, warmup: int = 2):
     def create_batch():
         nonlocal sample_idx
         input_ids = fineweb_mx_samples[sample_idx % len(fineweb_mx_samples)].reshape(1, -1)
-        labels = input_ids.copy()
+        labels = mx.array(input_ids)
         sample_idx += 1
         return input_ids, labels
     
