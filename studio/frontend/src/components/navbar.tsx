@@ -13,7 +13,6 @@ import {
 import { cn } from "@/lib/utils";
 import {
   AiChat02Icon,
-  Analytics01Icon,
   ArrowRight01Icon,
   Book03Icon,
   CookBookIcon,
@@ -31,7 +30,6 @@ import { TOUR_OPEN_EVENT } from "@/features/tour";
 const NAV_ITEMS = [
   { label: "Studio", href: "/studio", icon: ZapIcon, enabled: true },
   { label: "Recipes", href: "/data-recipes", icon: CookBookIcon, enabled: true },
-  { label: "Evaluate", href: "/evaluate", icon: Analytics01Icon, enabled: false },
   { label: "Export", href: "/export", icon: PackageIcon, enabled: true },
   { label: "Chat", href: "/chat", icon: AiChat02Icon, enabled: true },
 ];
