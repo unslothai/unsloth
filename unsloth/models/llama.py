@@ -219,6 +219,16 @@ def _fast_prepare_inputs_for_generation(
     # This fixes GitHub issue #3798: inputs_embeds was ignored
     use_inputs_embeds = inputs_embeds is not None and past_key_values is None
 
+    if input_ids is not None and input_ids.numel() > 0:
+        bs, seq_length = input_ids.shape
+        device = input_ids.device
+    elif inputs_embeds is not None:
+        bs, seq_length, _ = inputs_embeds.shape
+        device = inputs_embeds.device
+    else:
+        bs, seq_length = 1, 0
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
     if past_key_values is not None:
         # Check for uninitialized DynamicCache
         if len(past_key_values) == 0:
@@ -235,15 +245,43 @@ def _fast_prepare_inputs_for_generation(
             use_inputs_embeds = inputs_embeds is not None
         else:
             if input_ids is not None and input_ids.numel() > 0:
-                bs, cache_length = input_ids.shape
+                bs, _seq_length = input_ids.shape
                 input_ids = input_ids[:, [-1]]
                 device = input_ids.device
+                seq_length = input_ids.shape[1]
             elif inputs_embeds is not None:
-                bs, cache_length, _ = inputs_embeds.shape
+                bs, seq_length, _ = inputs_embeds.shape
                 device = inputs_embeds.device
             else:
-                bs, cache_length = 1, 0
+                bs, seq_length = 1, 0
                 device = "cuda" if torch.cuda.is_available() else "cpu"
+
+            if hasattr(past_key_values, "get_seq_length"):
+                past_len = int(past_key_values.get_seq_length())
+            else:
+                # legacy tuple cache: (layer, (K,V))
+                past_len = int(past_key_values[0][0].shape[-2])
+
+            max_cache_len = None
+            if hasattr(past_key_values, "get_max_cache_shape"):
+                m = int(past_key_values.get_max_cache_shape())
+                max_cache_len = m if m and m > 0 else None
+            elif hasattr(past_key_values, "get_max_length"):
+                m = past_key_values.get_max_length()
+                max_cache_len = int(m) if m is not None else None
+
+            # ensure cache_position
+            cache_position = kwargs.get("cache_position", None)
+            if cache_position is None:
+                kwargs["cache_position"] = torch.arange(
+                    past_len,
+                    past_len + seq_length,
+                    device = device,
+                    dtype = torch.long,
+                )
+            else:
+                if hasattr(cache_position, "device") and cache_position.device != device:
+                    kwargs["cache_position"] = cache_position.to(device)
 
             # Get to the base model
             base_model = self
@@ -262,13 +300,21 @@ def _fast_prepare_inputs_for_generation(
                         # transformers <= 4.51.3 includes device arg but > 4.51.3 does not
                         return transformers_version < Version("4.52.0")
 
-                kwargs = {
-                    "sequence_length": 1,
-                    "target_length": cache_length,
+                if max_cache_len is not None:
+                    target_length = max_cache_len
+                elif (
+                    original_attention_mask is not None
+                    and original_attention_mask.dim() == 2
+                ):
+                    target_length = original_attention_mask.shape[-1]
+                else:
+                    target_length = past_len + seq_length
+
+                mask_kwargs = {
+                    "sequence_length": seq_length,
+                    "target_length": target_length,
                     "dtype": self.dtype,
-                    "cache_position": torch.arange(
-                        cache_length, cache_length + 1, device = device
-                    ),
+                    "cache_position": kwargs["cache_position"],
                     "batch_size": bs,
                     "config": self.config,
                     "past_key_values": past_key_values,
@@ -277,7 +323,7 @@ def _fast_prepare_inputs_for_generation(
                     if needs_device_kw(
                         base_model._prepare_4d_causal_attention_mask_with_cache_position
                     ):
-                        kwargs["device"] = device
+                        mask_kwargs["device"] = device
                 except:
                     print(
                         f"Unsloth: Could not inspect signature of {base_model._prepare_4d_causal_attention_mask_with_cache_position}"
@@ -286,7 +332,7 @@ def _fast_prepare_inputs_for_generation(
                 attention_mask = (
                     base_model._prepare_4d_causal_attention_mask_with_cache_position(
                         attention_mask,
-                        **kwargs,
+                        **mask_kwargs,
                     )
                 )
             else:
@@ -298,20 +344,17 @@ def _fast_prepare_inputs_for_generation(
                         "issue on GitHub."
                     )
 
-    if "cache_position" in kwargs:
-        if (
-            kwargs.get("position_ids", None) is None
-            and original_attention_mask is not None
-            and original_attention_mask.dim() == 2
-        ):
-            # Keep RoPE positions consistent with padding for both prefill and decode.
-            position_ids = original_attention_mask.long().cumsum(-1)
-            position_ids.sub_(1).clamp_(min = 0)
-            if past_key_values is not None:
-                position_ids = position_ids[:, -1:]
+    if kwargs.get("position_ids", None) is None:
+        if original_attention_mask is not None and original_attention_mask.dim() == 2:
+            position_ids = original_attention_mask.long().cumsum(-1) - 1
+            position_ids.masked_fill_(original_attention_mask == 0, 1)
+            position_ids = position_ids[:, -seq_length:]
             kwargs["position_ids"] = position_ids
-        else:
-            kwargs["position_ids"] = kwargs["cache_position"]
+        elif kwargs.get("cache_position", None) is not None:
+            cp = kwargs["cache_position"]
+            if cp.dim() == 1:
+                cp = cp.unsqueeze(0).expand(bs, -1)
+            kwargs["position_ids"] = cp
 
     result = {
         "attention_mask": attention_mask,
@@ -409,7 +452,7 @@ def LlamaAttention_fast_forward_inference(
 
         # Mistral Nemo 12b has weird dimensions
         if attention_size != hidden_size:
-            self.temp_O = torch.empty((1, bsz, hidden_size), dtype = dtype, device = device)
+            self.temp_O = torch.empty((bsz, 1, hidden_size), dtype = dtype, device = device)
         else:
             self.temp_O = self.temp_QA[1][:, :, :hidden_size]
 
@@ -446,10 +489,18 @@ def LlamaAttention_fast_forward_inference(
 
     # Need to do it prior 2 steps before hitting full on short KV cache
     # or else error
-    self.rotary_emb.extend_rope_embedding(Vn, seq_len + 2)
-    cos, sin = self.rotary_emb.get_cached(kv_seq_len, Qn.device.index)
-    cos = cos[position_ids].unsqueeze(1)
-    sin = sin[position_ids].unsqueeze(1)
+    # ensure correct shape
+    if position_ids.dim() == 1:
+        position_ids = position_ids[:, None]
+    position_ids = position_ids.to(Qn.device)
+
+    rotary_seq_len = max(kv_seq_len, int(position_ids.max().item()) + 1)
+    self.rotary_emb.extend_rope_embedding(Vn, rotary_seq_len + 1)  # +1 slack
+    cos, sin = self.rotary_emb.get_cached(rotary_seq_len, Qn.device.index or 0)
+
+    cos = cos[position_ids].unsqueeze(1).to(device=Qn.device, dtype=Qn.dtype)
+    sin = sin[position_ids].unsqueeze(1).to(device=Qn.device, dtype=Qn.dtype)
+
     h = self.half_head_dim
 
     RH_Q = self.RH_Q
@@ -480,9 +531,11 @@ def LlamaAttention_fast_forward_inference(
     sliding_window = getattr(self.config, "sliding_window", None)
     if sliding_window is not None and kv_seq_len > sliding_window:
         # From https://github.com/huggingface/transformers/blob/main/src/transformers/models/mistral/modeling_mistral.py#L193
-        slicing_tokens = 1 - sliding_window
-        Knn = Kn[:, :, slicing_tokens:, :]  # .contiguous()
-        Vnn = Vn[:, :, slicing_tokens:, :]  # .contiguous()
+        start = kv_seq_len - sliding_window
+        Knn = Kn[:, :, start:, :]  # .contiguous()
+        Vnn = Vn[:, :, start:, :]  # .contiguous()
+        if attention_mask is not None:
+            attention_mask = attention_mask[..., start:]
     else:
         Knn, Vnn = Kn, Vn
 
@@ -520,7 +573,19 @@ def LlamaAttention_fast_forward_inference(
             A, dim = -1, dtype = torch.float32
         )  # .to(A.dtype)
         A = torch_matmul(A, Vnn, out = Qn)
+    # --- attention_mask fixup for SDPA if user passes 2D padding mask
     else:
+        if attention_mask is not None and attention_mask.dim() == 2:
+            attention_mask = attention_mask[:, None, None, :].to(torch.bool)
+            # is it more appropriate to use _prepare_4d_causal_attention_mask_for_sdpa?
+        elif (
+            attention_mask is not None
+            and attention_mask.dim() == 4
+            and attention_mask.dtype != torch.bool
+        ):
+            # Decode is more stable with boolean keep masks than additive bf16 masks.
+            attention_mask = attention_mask.eq(0)
+
         if SDPA_HAS_GQA:
             A = scaled_dot_product_attention(
                 Qn,
@@ -674,6 +739,8 @@ def LlamaAttention_fast_forward(
         rotary_emb = self.rotary_emb
         rotary_emb.extend_rope_embedding(V, seq_len = kv_seq_len)
         cos, sin = rotary_emb.get_cached(kv_seq_len, Q.device.index)
+        cos = cos.to(device=Q.device, dtype=Q.dtype)
+        sin = sin.to(device=Q.device, dtype=Q.dtype)
 
     rope_position_ids = position_ids
     if rope_position_ids is None and seq_info is not None:
@@ -694,6 +761,8 @@ def LlamaAttention_fast_forward(
     # Attention module
     use_varlen = seq_info is not None and past_key_value is None
     backend = SDPA if attention_mask is not None else select_attention_backend(use_varlen)
+
+    # should dropout be hardcoded to 0.0?
     config = AttentionConfig(
         backend = backend,
         n_kv_heads = n_kv_heads,
@@ -1268,7 +1337,7 @@ def _LlamaModel_fast_forward_inference(
         )
 
         seq_len = past_key_values[0][0].shape[-2]
-        if bsz != 1:
+        if attention_mask is not None:
             attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
                 attention_mask,
                 (bsz, q_len),

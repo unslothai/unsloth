@@ -250,7 +250,7 @@ def Qwen3Attention_fast_forward_inference(
 
         # Mistral Nemo 12b has weird dimensions
         if attention_size != hidden_size:
-            self.temp_O = torch.empty((1, bsz, hidden_size), dtype = dtype, device = device)
+            self.temp_O = torch.empty((bsz, 1, hidden_size), dtype = dtype, device = device)
         else:
             self.temp_O = self.temp_QA[1][:, :, :hidden_size]
 
@@ -340,14 +340,31 @@ def Qwen3Attention_fast_forward_inference(
     # when qlen==vlen and attn_mask is None, we should use causal attention
     Q_len = Qn.shape[-2]
     K_len = Knn.shape[-2]
+    if attention_mask is not None and attention_mask.dim() == 2:
+        attention_mask = attention_mask[:, None, None, :].to(torch.bool)
+    elif (
+        attention_mask is not None
+        and attention_mask.dim() == 4
+        and attention_mask.dtype != torch.bool
+    ):
+        attention_mask = attention_mask.eq(0)
     if attention_mask is None and Q_len == K_len:
         is_causal = True
     else:
         is_causal = False
+    use_sdpa_gqa = SDPA_HAS_GQA
+    if (
+        use_sdpa_gqa
+        and isinstance(attention_mask, torch.Tensor)
+        and attention_mask.dim() >= 3
+        and attention_mask.shape[0] > 1
+    ):
+        # Avoid SDPA GQA drift for batched masked decode.
+        use_sdpa_gqa = False
 
     # Grouped query attention
     _, _, cached_len, _ = Knn.shape
-    if bsz == 1 or not SDPA_HAS_GQA and n_groups != 1:
+    if bsz == 1 or (not use_sdpa_gqa) and n_groups != 1:
         Knn = Knn[:, :, None, :, :].expand(
             bsz, n_kv_heads, n_groups, cached_len, head_dim
         )
@@ -373,7 +390,7 @@ def Qwen3Attention_fast_forward_inference(
         )  # .to(A.dtype)
         A = torch_matmul(A, Vnn, out = Qn)
     else:
-        if SDPA_HAS_GQA:
+        if use_sdpa_gqa:
             A = scaled_dot_product_attention(
                 Qn,
                 Knn,
