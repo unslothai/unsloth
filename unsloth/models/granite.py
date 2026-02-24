@@ -323,7 +323,6 @@ def GraniteAttention_fast_forward_inference(
             (2, bsz, 1, n_kv_heads * head_dim), dtype = dtype, device = device
         )
         self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = device)
-        # Only for Gemma2
         self.temp_O = torch.empty((bsz, 1, hidden_size), dtype = dtype, device = device)
         self.attention = torch.empty(
             (bsz, n_heads, 1, KV_CACHE_INCREMENT + seq_len), dtype = dtype, device = device
@@ -398,16 +397,16 @@ def GraniteAttention_fast_forward_inference(
     #     Kn, Vn = Kn, Vn
     # pass
 
+    # [TODO] Granite uses manual matmul for all batch sizes (same pattern as
+    # Gemma2). Consider adding bsz==1/else SDPA branching to match llama/qwen3
+    # for better performance on batched inference.
     Qn *= self.scaling
     A = torch_matmul(Qn, Kn.transpose(2, 3), out = self.attention[:, :, :, :cached_len])
-
-    # if attention_mask is not None: A += attention_mask # Must add attention_mask for batched
+    if attention_mask is not None:
+        A = A + attention_mask
 
     A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)  # .to(A.dtype)
     A = torch_matmul(A, Vn, out = Qn)
-    # else:
-    #     A = scaled_dot_product_attention(Qn, Kn, Vn, attn_mask = attention_mask, is_causal = False)
-    # pass
     A = A.transpose(1, 2)
     A = A.reshape(bsz, 1, attention_size)
     A = fast_linear_forward(self.o_proj, A, out = self.temp_O)

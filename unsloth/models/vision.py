@@ -1347,9 +1347,13 @@ class FastBaseModel:
             m.for_training = functools.partial(FastBaseModel.for_training, m)
             m.for_inference = functools.partial(FastBaseModel.for_inference, m)
             m = m.model
-        # Set weight[padding_idx] = 0
+        # Set weight[padding_idx] = 0 for embeddings that are NOT tied with the
+        # lm_head. When weights are tied, zeroing the padding row also zeros
+        # the corresponding lm_head row, forcing logit = 0 for the pad token.
         # Only do this if tokenizer is defined since eos_token == pad_token sometimes!
         pad_token_id = getattr(tokenizer, "pad_token_id", None)
+        lm_head = getattr(model, "lm_head", None)
+        lm_head_weight = getattr(lm_head, "weight", None) if lm_head is not None else None
         if (
             tokenizer is not None
             and getattr(tokenizer, "eos_token_id", None) != pad_token_id
@@ -1365,6 +1369,12 @@ class FastBaseModel:
                                 module.padding_idx == pad_token_id
                                 and module.padding_idx < module.weight.shape[0]
                             ):
+                                # Skip if tied to lm_head
+                                if (
+                                    lm_head_weight is not None
+                                    and module.weight.data_ptr() == lm_head_weight.data_ptr()
+                                ):
+                                    continue
                                 module.weight[module.padding_idx] = 0
         return model
 

@@ -245,10 +245,10 @@ def _fast_prepare_inputs_for_generation(
             use_inputs_embeds = inputs_embeds is not None
         else:
             if input_ids is not None and input_ids.numel() > 0:
-                bs, _seq_length = input_ids.shape
+                bs = input_ids.shape[0]
                 input_ids = input_ids[:, [-1]]
                 device = input_ids.device
-                seq_length = input_ids.shape[1]
+                seq_length = 1
             elif inputs_embeds is not None:
                 bs, seq_length, _ = inputs_embeds.shape
                 device = inputs_embeds.device
@@ -264,8 +264,8 @@ def _fast_prepare_inputs_for_generation(
 
             max_cache_len = None
             if hasattr(past_key_values, "get_max_cache_shape"):
-                m = int(past_key_values.get_max_cache_shape())
-                max_cache_len = m if m and m > 0 else None
+                m = past_key_values.get_max_cache_shape()
+                max_cache_len = int(m) if m is not None and m > 0 else None
             elif hasattr(past_key_values, "get_max_length"):
                 m = past_key_values.get_max_length()
                 max_cache_len = int(m) if m is not None else None
@@ -2662,16 +2662,32 @@ class FastLlamaModel:
             model._old_generate = model.generate
             unsloth_fast_generate.__doc__ = model._old_generate.__doc__
             model.generate = types.MethodType(unsloth_fast_generate, model)
-        # Set weight[padding_idx] = 0
-        with torch.no_grad():
-            for name, module in model.named_modules():
-                if type(module) is torch.nn.Embedding:
-                    if (
-                        getattr(module, "weight", None) is not None
-                        and getattr(module, "padding_idx", None) is not None
-                    ):
-                        if module.padding_idx < module.weight.shape[0]:
-                            module.weight[module.padding_idx] = 0
+        # Set weight[padding_idx] = 0 for embeddings that are NOT tied with the
+        # lm_head. When weights are tied, zeroing the padding row also zeros
+        # the corresponding lm_head row, forcing logit = 0 for the pad token.
+        # This is higher than the (negative) logits for real tokens in models
+        # like Gemma, causing the decoder to emit <pad> and produce gibberish.
+        # Skip entirely if eos_token == pad_token to avoid zeroing EOS embedding.
+        eos_token_id = getattr(tokenizer, "eos_token_id", None) if tokenizer is not None else None
+        pad_token_id = getattr(tokenizer, "pad_token_id", None) if tokenizer is not None else None
+        if tokenizer is not None and eos_token_id != pad_token_id:
+            lm_head = getattr(model, "lm_head", None)
+            lm_head_weight = getattr(lm_head, "weight", None) if lm_head is not None else None
+            with torch.no_grad():
+                for name, module in model.named_modules():
+                    if type(module) is torch.nn.Embedding:
+                        if (
+                            getattr(module, "weight", None) is not None
+                            and getattr(module, "padding_idx", None) is not None
+                        ):
+                            if module.padding_idx < module.weight.shape[0]:
+                                # Skip if tied to lm_head
+                                if (
+                                    lm_head_weight is not None
+                                    and module.weight.data_ptr() == lm_head_weight.data_ptr()
+                                ):
+                                    continue
+                                module.weight[module.padding_idx] = 0
         return model, tokenizer
 
     @staticmethod

@@ -120,6 +120,15 @@ def run_attention(
     backend = config.backend
     if backend == FLASH_VARLEN and context.seq_info is None:
         backend = FLASH_DENSE if HAS_FLASH_ATTENTION else SDPA
+
+    # [TODO] Flash attention does not support arbitrary attention masks (only
+    # causal via flag). When a padding mask is present (e.g. left-padded
+    # batched generation), fall back to SDPA which consumes attn_mask.
+    # xFormers also does not thread context.attention_mask through, so the
+    # same fallback applies.
+    if context.attention_mask is not None and backend in (FLASH_DENSE, FLASH_VARLEN, XFORMERS):
+        backend = SDPA
+
     flash_dense_kwargs = config.flash_dense_kwargs or {}
     flash_varlen_kwargs = config.flash_varlen_kwargs or {}
     sdpa_kwargs = config.sdpa_kwargs or {}
