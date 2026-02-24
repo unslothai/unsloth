@@ -30,6 +30,7 @@ from ..kernels import (
     post_patch_loss_function,
 )
 from ._utils import __version__, importlib_version, _prepare_model_for_qat
+from ._utils import _redirect_fp8_to_bf16
 from ._utils import *
 from .loader_utils import _get_fp8_mode_and_check_settings
 from ..save import patch_saving_functions
@@ -615,45 +616,15 @@ class FastBaseModel:
         # FP8 weights (e.g. Ministral-3-3B-Instruct-2512). FP8 weights cannot be
         # directly loaded by BNB, and the FP8 quantization config can cause issues
         # even for 16-bit loading.
-        if hasattr(auto_config, "quantization_config"):
-            _qc = auto_config.quantization_config
-            _qm = (
-                _qc.get("quant_method", "")
-                if isinstance(_qc, dict)
-                else getattr(_qc, "quant_method", "")
-            )
-            if _qm in ("fp8", "fbgemm_fp8") and not load_in_fp8:
-                _bf16_name = model_name.rstrip("/") + "-BF16"
-                _original_name = model_name
-                try:
-                    from huggingface_hub import model_info as _hf_model_info
-
-                    _hf_model_info(_bf16_name, token = token)
-                    _bf16_config = AutoConfig.from_pretrained(
-                        _bf16_name,
-                        token = token,
-                        trust_remote_code = trust_remote_code,
-                    )
-                    # Only update state after both checks succeed
-                    print(
-                        f"Unsloth: {_original_name} uses FP8 weights. "
-                        f"Redirecting to {_bf16_name}."
-                    )
-                    model_name = _bf16_name
-                    auto_config = _bf16_config
-                    try:
-                        model_class = auto_model._model_mapping[auto_config.__class__]
-                    except KeyError:
-                        pass
-                except Exception:
-                    print(
-                        f"Unsloth: {_original_name} uses FP8 weights but no BF16 "
-                        f"version was found at {_bf16_name}.\n"
-                        f"Loading FP8 weights with BitsAndBytes or in 16-bit may "
-                        f"fail.\n"
-                        f"Set load_in_fp8=True to use FP8 mode, or upload a BF16 "
-                        f"version."
-                    )
+        # Redirect is skipped when load_in_fp8 is truthy (True or 'block').
+        model_name, auto_config = _redirect_fp8_to_bf16(
+            model_name, auto_config, load_in_fp8, token, trust_remote_code,
+        )
+        # Re-resolve model_class after potential config change
+        try:
+            model_class = auto_model._model_mapping[auto_config.__class__]
+        except KeyError:
+            pass
 
         default_attn_impl = "flex_attention" if flex_attn_impl else "sdpa"
         if not ("attn_implementation" in kwargs):
