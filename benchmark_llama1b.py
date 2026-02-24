@@ -28,7 +28,7 @@ def load_fineweb_data(tokenizer, num_samples: int, seq_len: int, batch_size: int
     from datasets import load_dataset
     
     print(f"      Loading FineWeb samples...")
-    ds = load_dataset("HuggingFaceFW/fineweb", name="sample-10B", split="train", streaming=True)
+    ds = load_dataset("HuggingFaceFW/fineweb", name="sample-10BT", split="train", streaming=True)
     
     samples = []
     for i, item in enumerate(ds):
