@@ -3357,17 +3357,18 @@ class FastLlamaModel:
         )
 
         # Fix up config for transformers uploading PEFT
-        for active_adapter in model.peft_config.keys():
-            # Not necessary since we requires transformers >= 4.37
-            if False:
-                name = model.peft_config[active_adapter].base_model_name_or_path
-                if name.startswith("unsloth/") and name.endswith("-bnb-4bit"):
-                    name = name[: len(name) - len("-bnb-4bit")]
-                    model.peft_config[active_adapter].base_model_name_or_path = name
-                pass
-            # Add revision to enable future fast inference paths
-            # [TODO] Bugs out!see https://github.com/unslothai/unsloth/issues/492
-            # model.peft_config[active_adapter].revision = f"unsloth"
+        if model.peft_config is not None:
+            for active_adapter in model.peft_config.keys():
+                # Not necessary since we requires transformers >= 4.37
+                if False:
+                    name = model.peft_config[active_adapter].base_model_name_or_path
+                    if name.startswith("unsloth/") and name.endswith("-bnb-4bit"):
+                        name = name[: len(name) - len("-bnb-4bit")]
+                        model.peft_config[active_adapter].base_model_name_or_path = name
+                    pass
+                # Add revision to enable future fast inference paths
+                # [TODO] Bugs out!see https://github.com/unslothai/unsloth/issues/492
+                # model.peft_config[active_adapter].revision = f"unsloth"
 
         from transformers.trainer import Trainer
 
@@ -3378,16 +3379,17 @@ class FastLlamaModel:
 
         # Fix loftq issues
         # loftq_config must not = None, but rather {}
-        all_configs = model.peft_config
-        for key, current_config in all_configs.items():
-            if (
-                hasattr(current_config, "loftq_config")
-                and current_config.loftq_config is None
-            ):
-                new_args = current_config.__dict__
-                new_args["loftq_config"] = {}
-                current_config = current_config.__class__(**new_args)
-                all_configs[key] = current_config
+        if model.peft_config is not None:
+            all_configs = model.peft_config
+            for key, current_config in all_configs.items():
+                if (
+                    hasattr(current_config, "loftq_config")
+                    and current_config.loftq_config is None
+                ):
+                    new_args = current_config.__dict__
+                    new_args["loftq_config"] = {}
+                    current_config = current_config.__class__(**new_args)
+                    all_configs[key] = current_config
 
         # Do patching
         n_mlp = 0
@@ -3401,8 +3403,12 @@ class FastLlamaModel:
         )
 
         # Get dropout and bias
-        lora_dropout = model.peft_config[active_adapter].lora_dropout
-        bias = model.peft_config[active_adapter].bias
+        if model.peft_config is not None:
+            lora_dropout = model.peft_config[active_adapter].lora_dropout
+            bias = model.peft_config[active_adapter].bias
+        else:
+            lora_dropout = 0
+            bias = "none"
 
         # We also do not inplace edit QKV for Cohere!
         _apply_lora_mlp = (
