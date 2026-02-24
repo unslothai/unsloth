@@ -157,6 +157,9 @@ export function buildRecipePayload(
       // SeedConfig is global config (seed_config); seed-dataset columns are added by DataDesigner.
       continue;
     }
+    if (config.kind === "markdown_note") {
+      continue;
+    }
     if (config.kind === "model_provider") {
       modelProviderNames.add(config.name);
       modelProviders.push(buildModelProvider(config, errors));
@@ -189,6 +192,19 @@ export function buildRecipePayload(
       return [];
     }
     const width = readNodeWidth(node);
+    if (config.kind === "markdown_note") {
+      return [
+        {
+          id: config.name,
+          x: node.position.x,
+          y: node.position.y,
+          ...(width !== null ? { width } : {}),
+          node_type: "markdown_note" as const,
+          name: config.name,
+          markdown: config.markdown,
+        },
+      ];
+    }
     return [
       {
         id: config.name,
@@ -203,6 +219,9 @@ export function buildRecipePayload(
     const source = edge.source ? configs[edge.source] : null;
     const target = edge.target ? configs[edge.target] : null;
     if (!(source && target)) {
+      return [];
+    }
+    if (source.kind === "markdown_note" || target.kind === "markdown_note") {
       return [];
     }
     const semantic =

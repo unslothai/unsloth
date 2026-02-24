@@ -30,6 +30,7 @@ export type RecipeNodeData = {
     | "llm"
     | "expression"
     | "seed"
+    | "note"
     | "model_provider"
     | "model_config";
   subtype: string;
@@ -38,6 +39,7 @@ export type RecipeNodeData = {
     | LlmType
     | "expression"
     | "seed"
+    | "markdown_note"
     | "model_provider"
     | "model_config";
   layoutDirection?: LayoutDirection;
@@ -215,6 +217,13 @@ export type ExpressionConfig = {
   dtype: ExpressionDtype;
 };
 
+export type MarkdownNoteConfig = {
+  id: string;
+  kind: "markdown_note";
+  name: string;
+  markdown: string;
+};
+
 export type SeedConfig = {
   id: string;
   kind: "seed";
@@ -265,6 +274,7 @@ export type NodeConfig =
   | SamplerConfig
   | LlmConfig
   | ExpressionConfig
+  | MarkdownNoteConfig
   | SeedConfig
   | ModelProviderConfig
   | ModelConfig;

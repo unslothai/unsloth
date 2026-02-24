@@ -2,6 +2,7 @@ import type {
   ExpressionConfig,
   LlmConfig,
   LlmType,
+  MarkdownNoteConfig,
   ModelConfig,
   ModelProviderConfig,
   NodeConfig,
@@ -274,6 +275,18 @@ export function makeExpressionConfig(
     drop: false,
     expr: "",
     dtype: "str",
+  };
+}
+
+export function makeMarkdownNoteConfig(
+  id: string,
+  existing: NodeConfig[],
+): MarkdownNoteConfig {
+  return {
+    id,
+    kind: "markdown_note",
+    name: nextName(existing, "note"),
+    markdown: "## Note\n\nAdd markdown here.",
   };
 }
 

@@ -112,6 +112,7 @@ export function RecipeStudioPage({
     addModelProviderNode,
     addModelConfigNode,
     addExpressionNode,
+    addMarkdownNoteNode,
     selectConfig,
     updateConfig,
     isValidConnection,
@@ -149,6 +150,7 @@ export function RecipeStudioPage({
       addModelProviderNode: state.addModelProviderNode,
       addModelConfigNode: state.addModelConfigNode,
       addExpressionNode: state.addExpressionNode,
+      addMarkdownNoteNode: state.addMarkdownNoteNode,
       selectConfig: state.selectConfig,
       updateConfig: state.updateConfig,
       isValidConnection: state.isValidConnection,
@@ -462,6 +464,7 @@ export function RecipeStudioPage({
                     onAddModelProvider={addModelProviderNode}
                     onAddModelConfig={addModelConfigNode}
                     onAddExpression={addExpressionNode}
+                    onAddMarkdownNote={addMarkdownNoteNode}
                     onOpenProcessors={openProcessorsFromSheet}
                     copied={copied}
                     onCopy={copyRecipe}
