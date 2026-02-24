@@ -298,6 +298,24 @@
   .dark .shadow-border {
     --tw-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
   }
+
+  [data-streamdown="unordered-list"] {
+    list-style-type: disc;
+    list-style-position: outside;
+    padding-left: 1.25rem;
+    margin-block: 0.5rem;
+  }
+
+  [data-streamdown="ordered-list"] {
+    list-style-type: decimal;
+    list-style-position: outside;
+    padding-left: 1.25rem;
+    margin-block: 0.5rem;
+  }
+
+  [data-streamdown="list-item"] {
+    display: list-item;
+  }
 }
 
 /* Minimal scrollbar — thumb only, no track */

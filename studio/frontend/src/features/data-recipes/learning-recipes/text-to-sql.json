@@ -120,6 +120,18 @@
   "ui": {
     "nodes": [
       {
+        "id": "provider_1",
+        "x": -1092.2003193114556,
+        "y": 715.157165665104,
+        "width": 400
+      },
+      {
+        "id": "model_1",
+        "x": -546.1001596557278,
+        "y": 681.8114012018752,
+        "width": 400
+      },
+      {
         "id": "domain",
         "x": -18.379173679952572,
         "y": 137.70260329000595,
@@ -156,16 +168,48 @@
         "width": 400
       },
       {
-        "id": "model_1",
-        "x": -546.1001596557278,
-        "y": 681.8114012018752,
-        "width": 400
+        "id": "note_1",
+        "x": -103.00586025666547,
+        "y": -332.088439142397,
+        "width": 600,
+        "node_type": "markdown_note",
+        "name": "note_1",
+        "markdown": "##### This recipe starts with **sampler columns** to create controlled SQL task context:\n\n- `domain`\n- `topic` (subcategory from `domain`)\n- `sql_task_type`\n- `instruction_phrase`\n\n##### Why this is useful:\n\n- You get diverse tasks without writing every prompt by hand\n- You can steer business context + task pattern in a predictable way\n- LLM prompts become cleaner because context is already structured",
+        "note_color": "#DBEAFE",
+        "note_opacity": "35"
       },
       {
-        "id": "provider_1",
-        "x": -1092.2003193114556,
-        "y": 715.157165665104,
-        "width": 400
+        "id": "note_2",
+        "x": 517.0372102151987,
+        "y": 600.4949327304814,
+        "width": 400,
+        "node_type": "markdown_note",
+        "name": "note_2",
+        "markdown": "The **LLM Text** block (`sql_prompt`) turns sampler context into one clean natural-language SQL task.\n\n##### Prompt pattern in this recipe:\n\n- references prior columns with Jinja (`{{ domain }}`, `{{ topic }}`, etc.)\n- enforces start phrase with `{{ instruction_phrase }}`\n- returns instruction text only (no SQL yet)\n\n##### Tip:\n\n- Keep this instruction block concise and specific\n- Save implementation details for the next SQL generation block",
+        "note_color": "#DBEAFE",
+        "note_opacity": "35"
+      },
+      {
+        "id": "note_3",
+        "x": 12.635681904967385,
+        "y": 1224.7626182706356,
+        "width": 400,
+        "node_type": "markdown_note",
+        "name": "note_3",
+        "markdown": "The **LLM Code** block (`sql`) generates SQL script from `{{ sql_prompt }}`.\n\n##### In this recipe it returns:\n\n- schema section (`CREATE TABLE`)\n- sample seed rows (`INSERT`)\n- final query (`SELECT`)\n\n##### Current status:\n\n- SQL validation block is **not** included yet in this learning recipe\n- We will add SQL validation later",
+        "note_color": "#DBEAFE",
+        "note_opacity": "35"
+      },
+      {
+        "id": "note_4",
+        "x": -1044,
+        "y": 108.64730935525904,
+        "width": 400,
+        "node_type": "markdown_note",
+        "name": "note_4",
+        "markdown": "Sampler columns are useful during generation, but often noisy in final output.\n\nSet helper columns to **drop=true** (like in this recipe), keep only output columns you want to export.\n\n#### Final keep we have set here:\n\n- `sql_prompt`\n- `sql`\n\n",
+        "note_color": "#DBEAFE",
+        "note_opacity": "35"
       }
     ],
     "edges": [

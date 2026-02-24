@@ -159,7 +159,7 @@
         "node_type": "markdown_note",
         "name": "note_1",
         "markdown": "The **LLM Code** block is where Python code is generated from your instruction/prompt.\n\n##### How it works in this recipe:\n\n- You provide a clear prompt (often using Jinja references from earlier columns)\n- The model returns a response\n- The block extracts code content directly for the output column\n\n##### Current status:\n\n- We are **not** running Python lint/syntax validation in this recipe yet (Soon)\n- Validation support is planned and will be added\n\n##### What this means:\n\n- You may get mostly correct code, but some rows can still have syntax/style issues\n- Keep prompts specific and constrained to reduce bad outputs\n\n##### Tip:\n\n- Ask for one self-contained function/script\n- Ask for required imports\n- Ask for no markdown fences if you want cleaner extraction\n",
-        "note_color": "#FDE68A",
+        "note_color": "#FEF3C7",
         "note_opacity": "35"
       },
       {
@@ -170,7 +170,7 @@
         "node_type": "markdown_note",
         "name": "note_2",
         "markdown": "The **LLM Judge** block evaluates generated outputs with rubric-style scores.\n\n##### Important:\n\n- A judge can have **one or many scores**\n- Each score has:\n  - a name (for example: `Correctness`)\n  - a description\n  - options (value + meaning)\n\n##### Example multi-score setup:\n\n- Correctness\n- Readability\n- Efficiency\n\n##### Why use multiple scores:\n\n- You get richer quality signals than a single pass/fail\n- Easier filtering and weighting later in training data prep\n\n##### Practical pattern:\n\n1. Generate code with LLM Code\n2. Judge with 2-4 focused scores\n3. Keep high-quality rows based on score thresholds\n",
-        "note_color": "#FDE68A",
+        "note_color": "#FEF3C7",
         "note_opacity": "35"
       }
     ],
