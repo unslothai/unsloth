@@ -227,8 +227,9 @@ def benchmark_mlx(steps: int, batch_size: int, seq_len: int, warmup: int = 2):
         
         input_ids, labels = create_batch()
         
-        # Compute loss and grads, then filter to trainable params only
-        loss, grads = nn.value_and_grad(loss_fn)(input_ids, labels)
+        # Compute loss first, then grads
+        loss = loss_fn(input_ids, labels)
+        grads = mx.grad(loss_fn)(input_ids, labels)
         # Filter gradients to only trainable params for optimizer update
         trainable_grads = {k: grads[k] for k in model.trainable_parameters() if k in grads}
         optimizer.update(model, trainable_grads)
