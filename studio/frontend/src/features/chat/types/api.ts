@@ -28,6 +28,20 @@ export interface LoadModelRequest {
   max_seq_length: number;
   load_in_4bit: boolean;
   is_lora: boolean;
+  gguf_variant?: string | null;
+}
+
+export interface GgufVariantDetail {
+  filename: string;
+  quant: string;
+  size_bytes: number;
+}
+
+export interface GgufVariantsResponse {
+  repo_id: string;
+  variants: GgufVariantDetail[];
+  has_vision: boolean;
+  default_variant: string | null;
 }
 
 export interface LoadModelResponse {

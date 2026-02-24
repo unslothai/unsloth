@@ -1,5 +1,6 @@
 import { authFetch } from "@/features/auth";
 import type {
+  GgufVariantsResponse,
   InferenceStatusResponse,
   ListLorasResponse,
   ListModelsResponse,
@@ -72,6 +73,16 @@ export async function unloadModel(payload: UnloadModelRequest): Promise<void> {
     body: JSON.stringify(payload),
   });
   await parseJsonOrThrow<unknown>(response);
+}
+
+export async function listGgufVariants(
+  repoId: string,
+  hfToken?: string,
+): Promise<GgufVariantsResponse> {
+  const params = new URLSearchParams({ repo_id: repoId });
+  if (hfToken) params.set("hf_token", hfToken);
+  const response = await authFetch(`/api/models/gguf-variants?${params}`);
+  return parseJsonOrThrow<GgufVariantsResponse>(response);
 }
 
 function parseSseEvent(rawEvent: string): string[] {

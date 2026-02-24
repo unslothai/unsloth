@@ -36,6 +36,9 @@ class LlamaCppBackend:
         self._port: Optional[int] = None
         self._model_identifier: Optional[str] = None
         self._gguf_path: Optional[str] = None
+        self._hf_repo: Optional[str] = None
+        self._hf_variant: Optional[str] = None
+        self._is_vision: bool = False
         self._healthy = False
         self._lock = threading.Lock()
         self._chat_template: Optional[str] = None
@@ -55,6 +58,10 @@ class LlamaCppBackend:
     @property
     def model_identifier(self) -> Optional[str]:
         return self._model_identifier
+
+    @property
+    def is_vision(self) -> bool:
+        return self._is_vision
 
     # ── Binary discovery ──────────────────────────────────────────
 
@@ -109,27 +116,33 @@ class LlamaCppBackend:
 
     def load_model(
         self,
-        gguf_path: str,
+        *,
+        # Local mode: pass a path to a .gguf file
+        gguf_path: Optional[str] = None,
+        # HF mode: let llama-server download via -hf "repo:quant"
+        hf_repo: Optional[str] = None,
+        hf_variant: Optional[str] = None,
+        hf_token: Optional[str] = None,
+        # Common
         model_identifier: str,
+        is_vision: bool = False,
         n_ctx: int = 4096,
         n_gpu_layers: int = -1,
         n_threads: Optional[int] = None,
     ) -> bool:
         """
-        Start llama-server with the given GGUF file.
+        Start llama-server with a GGUF model.
 
-        Args:
-            gguf_path: Path to the .gguf file
-            model_identifier: Display identifier for the model
-            n_ctx: Context window size
-            n_gpu_layers: Number of layers to offload to GPU (-1 = all)
-            n_threads: Number of CPU threads (None = auto)
+        Two modes:
+        - Local: ``gguf_path="/path/to/model.gguf"`` → uses ``-m``
+        - HF:    ``hf_repo="unsloth/gemma-3-4b-it-GGUF", hf_variant="Q4_K_M"`` → uses ``-hf``
 
-        Returns:
-            True if server started and health check passed.
+        In HF mode, llama-server handles downloading, caching, and
+        auto-loading mmproj files for vision models.
+
+        Returns True if server started and health check passed.
         """
         with self._lock:
-            # Kill existing process if any
             self._kill_process()
 
             binary = self._find_llama_server_binary()
@@ -140,17 +153,33 @@ class LlamaCppBackend:
                     "or set LLAMA_SERVER_PATH environment variable."
                 )
 
-            if not Path(gguf_path).is_file():
-                raise FileNotFoundError(f"GGUF file not found: {gguf_path}")
-
             self._port = self._find_free_port()
-            cmd = [
-                binary,
-                "-m", gguf_path,
-                "--port", str(self._port),
-                "-c", str(n_ctx),
-                "-ngl", str(n_gpu_layers),
-            ]
+
+            # Build command based on mode
+            if hf_repo:
+                hf_spec = f"{hf_repo}:{hf_variant}" if hf_variant else hf_repo
+                cmd = [
+                    binary,
+                    "-hf", hf_spec,
+                    "--port", str(self._port),
+                    "-c", str(n_ctx),
+                    "-ngl", str(n_gpu_layers),
+                ]
+                if hf_token:
+                    cmd.extend(["--hf-token", hf_token])
+            elif gguf_path:
+                if not Path(gguf_path).is_file():
+                    raise FileNotFoundError(f"GGUF file not found: {gguf_path}")
+                cmd = [
+                    binary,
+                    "-m", gguf_path,
+                    "--port", str(self._port),
+                    "-c", str(n_ctx),
+                    "-ngl", str(n_gpu_layers),
+                ]
+            else:
+                raise ValueError("Either gguf_path or hf_repo must be provided")
+
             if n_threads is not None:
                 cmd.extend(["--threads", str(n_threads)])
 
@@ -173,10 +202,14 @@ class LlamaCppBackend:
             )
 
             self._gguf_path = gguf_path
+            self._hf_repo = hf_repo
+            self._hf_variant = hf_variant
+            self._is_vision = is_vision
             self._model_identifier = model_identifier
 
-            # Wait for health
-            if not self._wait_for_health(timeout=120.0):
+            # HF mode: llama-server downloads before becoming healthy — need longer timeout
+            timeout = 600.0 if hf_repo else 120.0
+            if not self._wait_for_health(timeout=timeout):
                 self._kill_process()
                 raise RuntimeError(
                     "llama-server failed to start. "
@@ -185,8 +218,12 @@ class LlamaCppBackend:
 
             self._healthy = True
 
-            # Try to read chat template from GGUF metadata
-            self._chat_template = self._read_gguf_chat_template(gguf_path)
+            # Read chat template from local GGUF metadata (skip in HF mode —
+            # llama-server handles template application internally)
+            if gguf_path:
+                self._chat_template = self._read_gguf_chat_template(gguf_path)
+            else:
+                self._chat_template = None
 
             logger.info(
                 f"llama-server ready on port {self._port} "
@@ -201,6 +238,9 @@ class LlamaCppBackend:
             logger.info(f"Unloaded GGUF model: {self._model_identifier}")
             self._model_identifier = None
             self._gguf_path = None
+            self._hf_repo = None
+            self._hf_variant = None
+            self._is_vision = False
             self._port = None
             self._healthy = False
             self._chat_template = None

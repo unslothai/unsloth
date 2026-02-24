@@ -15,5 +15,6 @@ export interface LoraModelOption extends ModelOption {
 export interface ModelSelectorChangeMeta {
   source: "hub" | "lora";
   isLora: boolean;
+  ggufVariant?: string;
 }
 
