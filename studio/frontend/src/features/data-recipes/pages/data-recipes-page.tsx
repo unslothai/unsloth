@@ -408,16 +408,16 @@ export function DataRecipesPage(): ReactElement {
               </EmptyDescription>
             </EmptyHeader>
             <EmptyContent className="max-w-6xl items-stretch">
-              <Button
-                type="button"
-                variant="secondary"
-                className="mx-auto"
-                onClick={() => setLearningDialogOpen(true)}
-                disabled={isBusy}
-              >
-                <HugeiconsIcon icon={CookBookIcon} className="size-4" />
-                Start Tutorial
-              </Button>
+              {/*<Button*/}
+              {/*  type="button"*/}
+              {/*  variant="secondary"*/}
+              {/*  className="mx-auto"*/}
+              {/*  onClick={() => setLearningDialogOpen(true)}*/}
+              {/*  disabled={isBusy}*/}
+              {/*>*/}
+              {/*  <HugeiconsIcon icon={CookBookIcon} className="size-4" />*/}
+              {/*  Start Tutorial*/}
+              {/*</Button>*/}
               <LearningRecipeCards
                 onSelect={(template) => {
                   openLearningRecipe(template).catch(() => undefined);
