@@ -50,6 +50,7 @@
     "date-fns": "^4.1.0",
     "dexie": "^4.3.0",
     "framer-motion": "^11.18.2",
+    "js-yaml": "^4.1.1",
     "katex": "^0.16.28",
     "lucide-react": "^0.575.0",
     "mammoth": "^1.11.0",
@@ -76,6 +77,7 @@
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
     "@eslint/js": "^9.39.1",
+    "@types/js-yaml": "^4.0.9",
     "@types/node": "^24.10.1",
     "@types/react": "^19.2.5",
     "@types/react-dom": "^19.2.3",

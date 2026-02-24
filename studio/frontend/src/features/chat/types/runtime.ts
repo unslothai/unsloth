@@ -33,4 +33,6 @@ export interface ChatLoraSummary {
   name: string;
   baseModel: string;
   updatedAt?: number;
+  source?: "training" | "exported";
+  exportType?: "lora" | "merged";
 }
