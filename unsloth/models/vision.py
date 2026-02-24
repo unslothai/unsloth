@@ -127,47 +127,15 @@ _compile_config = CompileConfig(
 )
 _compile_config.disable = True  # Must set manually
 
+from unsloth_zoo.vllm_utils import (
+    convert_lora_modules,
+    return_lora_modules,
+)
+
 try:
     torch_compiler_set_stance = torch.compiler.set_stance
 except:
     torch_compiler_set_stance = None
-
-
-def _fix_requires_grad_hooks_for_kwargs(model):
-    """
-    Fix requires_grad pre-hooks for models whose forward() receives all
-    arguments via kwargs (e.g. Idefics3 vision encoder).
-
-    requires_grad_pre_hook in unsloth_zoo only inspects positional args.
-    When positional args are empty it raises RuntimeError. This replaces
-    those hooks with a version that returns gracefully on empty args.
-    """
-    from collections import OrderedDict
-
-    def _safe_requires_grad_pre_hook(module, input):
-        type_input = type(input)
-        if type_input is torch.Tensor:
-            input.requires_grad_(True)
-        elif type_input is tuple or type_input is list:
-            if len(input) == 0:
-                return
-            if torch.is_floating_point(input[0]):
-                input[0].requires_grad_(True)
-
-
-    for name, module in model.named_modules():
-        if len(module._forward_pre_hooks) == 0:
-            continue
-        new_hooks = OrderedDict()
-        for hook_id, hook in module._forward_pre_hooks.items():
-            qualname = getattr(hook, "__qualname__", "")
-            if "requires_grad_pre_hook" in qualname:
-                new_hooks[hook_id] = _safe_requires_grad_pre_hook
-            else:
-                new_hooks[hook_id] = hook
-        module._forward_pre_hooks = new_hooks
-
-
 
 
 def unsloth_base_fast_generate(
@@ -497,7 +465,7 @@ class FastBaseModel:
         if is_vlm and fast_inference:
             if not any(arch in VLLM_SUPPORTED_VLM for arch in model_types):
                 raise RuntimeError(
-                    f"Unsloth: Fast inference is only supported for Language models and Qwen2.5-VL, Gemma3 among vision models. "
+                    f"Unsloth: Fast inference is only supported for Language models and Qwen2.5-VL, Gemma3, Idefics3 among vision models. "
                     f"Found architectures: {', '.join(model_types)}!"
                 )
 
@@ -530,7 +498,9 @@ class FastBaseModel:
                 vllm_version = ""
         elif DEVICE_TYPE == "hip":
             gpu_stats = torch.cuda.get_device_properties(0)
-            gpu_stats_name = resolve_hip_gpu_stats_name(gpu_stats)
+            gpu_stats_name = (
+                gpu_stats.name + ". " if gpu_stats.name != "" else "AMD GPU Device. "
+            )
             gpu_version = torch.version.hip
             gpu_stats_snippet = f"ROCm Toolkit: {gpu_version}."
             try:
@@ -1264,8 +1234,6 @@ class FastBaseModel:
         fix_lora_auto_mapping(model)
         # Enable gradients on modules which are trainable
         requires_grad_for_gradient_checkpointing(model)
-        # Fix hooks for models with kwargs-only forward (e.g. Idefics3)
-        _fix_requires_grad_hooks_for_kwargs(model)
         trust_remote_code = getattr(model, "_unsloth_trust_remote_code", False)
         model = FastBaseModel.post_patch_model(
             model,
