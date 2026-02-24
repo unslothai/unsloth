@@ -410,6 +410,8 @@ export function ChatPage(): ReactElement {
         name: lora.name,
         baseModel: lora.baseModel,
         updatedAt: lora.updatedAt,
+        source: lora.source,
+        exportType: lora.exportType,
       })),
     [lorasFromStore],
   );

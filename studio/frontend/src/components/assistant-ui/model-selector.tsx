@@ -62,7 +62,7 @@ function ModelSelectorTrigger({
         className={cn(
           "flex items-center gap-2 transition-colors",
           variant === "outline" &&
-            "rounded-full border border-border/60 hover:bg-accent",
+          "rounded-full border border-border/60 hover:bg-accent",
           variant === "ghost" && "rounded-md hover:bg-accent",
           variant === "muted" && "rounded-md bg-muted hover:bg-muted/80",
           size === "sm" && "h-8 px-3 text-xs",
@@ -183,9 +183,20 @@ export function ModelSelector({
       all.set(model.id, model);
     }
     for (const lora of loraModels) {
+      // Strip "/ suffix" from display name (e.g. "foo_123/foo" → "foo_123")
+      const displayName = lora.name.includes("/")
+        ? lora.name.split("/")[0].trim()
+        : lora.name;
+      // Show type tag instead of base model name
+      const isExported = lora.source === "exported";
+      const isMerged = lora.exportType === "merged";
+      const tag = isExported
+        ? isMerged ? "Merged · Exported" : "LoRA"
+        : "LoRA";
       all.set(lora.id, {
         ...lora,
-        description: lora.baseModel || lora.description,
+        name: displayName,
+        description: tag,
       });
     }
     return all;
