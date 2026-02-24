@@ -9,10 +9,8 @@ import type {
 
 export type LoraVariant = "lora" | "rslora" | "loftq";
 
-export type DatasetManualMapping = {
-  input: string | null;
-  output: string | null;
-};
+/** Column-to-role mapping, e.g. { "problem": "user", "solution": "assistant", "context": "system" } */
+export type DatasetManualMapping = Record<string, string>;
 
 export interface TrainingConfigState {
   currentStep: StepNumber;
