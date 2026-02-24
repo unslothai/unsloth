@@ -163,12 +163,24 @@ def test_gguf_export(skip_downloads=False):
         model_name = "unsloth/Llama-3.2-1B-Instruct"
         
         print(f"Loading small model to test GGUF export: {model_name}")
-        model, tokenizer = FastLanguageModel.from_pretrained(
+        result = FastLanguageModel.from_pretrained(
             model_name=model_name,
             max_seq_length=512,
             load_in_4bit=False,
             dtype=torch.bfloat16,
         )
+        
+        if result is None:
+            print("❌ ERROR: from_pretrained returned None")
+            return False
+        
+        model, tokenizer = result
+        
+        if model is None:
+            print("❌ ERROR: model is None after loading")
+            return False
+        
+        print(f"✅ Model loaded successfully: {type(model)}")
         
         # Apply LoRA
         model = FastLanguageModel.get_peft_model(
@@ -177,6 +189,12 @@ def test_gguf_export(skip_downloads=False):
             target_modules=["q_proj", "v_proj"],
             lora_alpha=16,
         )
+        
+        if model is None:
+            print("❌ ERROR: get_peft_model returned None")
+            return False
+        
+        print(f"✅ LoRA applied successfully: {type(model)}")
         
         # Create a temporary directory for export
         with tempfile.TemporaryDirectory() as tmpdir:
