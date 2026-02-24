@@ -65,9 +65,9 @@ class LlamaCppBackend:
 
         Search order:
         1. LLAMA_SERVER_PATH environment variable
-        2. ./bin/llama-server  (built by setup.sh)
+        2. ./llama.cpp/build/bin/llama-server  (built by setup.sh in-tree)
         3. llama-server on PATH  (system install)
-        4. ./llama.cpp/llama-server  (unsloth-zoo build output)
+        4. ./bin/llama-server  (legacy: extracted binary)
         """
         import os
 
@@ -76,21 +76,23 @@ class LlamaCppBackend:
         if env_path and Path(env_path).is_file():
             return env_path
 
-        # 2. Project bin/ directory (setup.sh output)
-        project_root = Path(__file__).resolve().parents[3]  # core/inference/ → backend/ → studio/ → root
-        bin_path = project_root / "bin" / "llama-server"
-        if bin_path.is_file():
-            return str(bin_path)
+        # Project root: llama_cpp.py → inference/ → core/ → backend/ → studio/ → root
+        project_root = Path(__file__).resolve().parents[4]
+
+        # 2. In-tree llama.cpp build (setup.sh builds here)
+        build_path = project_root / "llama.cpp" / "build" / "bin" / "llama-server"
+        if build_path.is_file():
+            return str(build_path)
 
         # 3. System PATH
         system_path = shutil.which("llama-server")
         if system_path:
             return system_path
 
-        # 4. unsloth-zoo build output (from GGUF export)
-        llama_cpp_path = project_root / "llama.cpp" / "llama-server"
-        if llama_cpp_path.is_file():
-            return str(llama_cpp_path)
+        # 4. Legacy: extracted to bin/
+        bin_path = project_root / "bin" / "llama-server"
+        if bin_path.is_file():
+            return str(bin_path)
 
         return None
 
@@ -154,11 +156,20 @@ class LlamaCppBackend:
 
             logger.info(f"Starting llama-server: {' '.join(cmd)}")
 
+            # Set LD_LIBRARY_PATH so llama-server can find its shared libs
+            # (libmtmd.so, libllama.so, etc.) which live next to the binary
+            import os
+            env = os.environ.copy()
+            binary_dir = str(Path(binary).parent)
+            existing_ld = env.get("LD_LIBRARY_PATH", "")
+            env["LD_LIBRARY_PATH"] = f"{binary_dir}:{existing_ld}" if existing_ld else binary_dir
+
             self._process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                env=env,
             )
 
             self._gguf_path = gguf_path
