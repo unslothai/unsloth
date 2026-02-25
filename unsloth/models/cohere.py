@@ -407,9 +407,6 @@ def CohereAttention_fast_forward_inference(
         )
         Knn = Knn.reshape(bsz, n_heads, cached_len, head_dim)
         Vnn = Vnn.reshape(bsz, n_heads, cached_len, head_dim)
-    # else:
-    #     Knn, Vnn = Knn, Vnn
-    # pass
 
     # Attention
     if bsz == 1:
@@ -418,7 +415,6 @@ def CohereAttention_fast_forward_inference(
         A = torch_matmul(
             Qn, Knn.transpose(2, 3), out = self.attention[:, :, :, :cached_len]
         )
-        # if attention_mask is not None: A += attention_mask # Must add attention_mask for batched
         A[:] = torch_nn_functional_softmax(
             A, dim = -1, dtype = torch.float32
         )  # .to(A.dtype)

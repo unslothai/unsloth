@@ -442,9 +442,6 @@ def Gemma2Attention_fast_forward_inference(
         )
         Knn = Knn.reshape(bsz, n_heads, cached_len, head_dim)
         Vnn = Vnn.reshape(bsz, n_heads, cached_len, head_dim)
-    # else:
-    #     Knn, Vnn = Knn, Vnn
-    # pass
 
     # Attention
     # [TODO] Gemma2 uses manual matmul for all batch sizes because SDPA does

@@ -384,7 +384,7 @@ def GraniteAttention_fast_forward_inference(
 
     # Grouped query attention
     _, _, cached_len, _ = Kn.shape
-    if bsz == 1 or not SDPA_HAS_GQA and n_groups != 1:
+    if bsz == 1 or ((not SDPA_HAS_GQA) and n_groups != 1):
         Kn = Kn[:, :, None, :, :].expand(
             bsz, n_kv_heads, n_groups, cached_len, head_dim
         )

@@ -544,7 +544,7 @@ def LlamaAttention_fast_forward_inference(
 
     # Grouped query attention
     _, _, cached_len, _ = Knn.shape
-    if bsz == 1 or not SDPA_HAS_GQA and n_groups != 1:
+    if bsz == 1 or ((not SDPA_HAS_GQA) and n_groups != 1):
         Knn = Knn[:, :, None, :, :].expand(
             bsz, n_kv_heads, n_groups, cached_len, head_dim
         )
@@ -553,9 +553,6 @@ def LlamaAttention_fast_forward_inference(
         )
         Knn = Knn.reshape(bsz, n_heads, cached_len, head_dim)
         Vnn = Vnn.reshape(bsz, n_heads, cached_len, head_dim)
-    # else:
-    #     Knn, Vnn = Knn, Vnn
-    # pass
 
     # when qlen==vlen and attn_mask is None, we should use causal attention
     Q_len = Qn.shape[-2]
@@ -571,7 +568,6 @@ def LlamaAttention_fast_forward_inference(
         A = torch_matmul(
             Qn, Knn.transpose(2, 3), out = self.attention[:, :, :, :cached_len]
         )
-        # if attention_mask is not None: A += attention_mask # Must add attention_mask for batched
         A[:] = torch_nn_functional_softmax(
             A, dim = -1, dtype = torch.float32
         )  # .to(A.dtype)
