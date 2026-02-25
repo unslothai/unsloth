@@ -640,14 +640,15 @@ def scan_trained_loras(outputs_dir: str = "./outputs") -> List[Tuple[str, str]]:
 
 def scan_exported_models(exports_dir: str = "./exports") -> List[Tuple[str, str, str, Optional[str]]]:
     """
-    Scan exports folder for exported models (merged, LoRA, base).
-    Skips GGUF-only exports (not loadable by Unsloth inference backend).
+    Scan exports folder for exported models (merged, LoRA, GGUF).
 
-    The exports directory is two levels deep: {run}/{checkpoint}/
+    Supports two directory layouts:
+      - Two-level: {run}/{checkpoint}/  (merged & LoRA exports)
+      - Flat:      {name}-finetune-gguf/  (GGUF exports)
 
     Returns:
         List of tuples: [(display_name, model_path, export_type, base_model), ...]
-        export_type: "lora" | "merged"
+        export_type: "lora" | "merged" | "gguf"
     """
     results = []
     exports_path = Path(exports_dir)
@@ -659,6 +660,26 @@ def scan_exported_models(exports_dir: str = "./exports") -> List[Tuple[str, str,
         for run_dir in exports_path.iterdir():
             if not run_dir.is_dir():
                 continue
+
+            # Check for flat GGUF export (e.g. exports/gemma-3-4b-it-finetune-gguf/)
+            gguf_files = list(run_dir.glob("*.gguf"))
+            if gguf_files:
+                base_model = None
+                export_meta = run_dir / "export_metadata.json"
+                try:
+                    if export_meta.exists():
+                        meta = json.loads(export_meta.read_text())
+                        base_model = meta.get("base_model")
+                except Exception:
+                    pass
+
+                display_name = run_dir.name
+                model_path = str(gguf_files[0])  # path to the .gguf file
+                results.append((display_name, model_path, "gguf", base_model))
+                logger.debug(f"Found GGUF export: {display_name}")
+                continue
+
+            # Two-level: {run}/{checkpoint}/
             for checkpoint_dir in run_dir.iterdir():
                 if not checkpoint_dir.is_dir():
                     continue
@@ -683,7 +704,6 @@ def scan_exported_models(exports_dir: str = "./exports") -> List[Tuple[str, str,
                         pass
                 elif config_file.exists() and has_weights:
                     export_type = "merged"
-                    # Read base model from export_metadata.json (written at export time)
                     export_meta = checkpoint_dir / "export_metadata.json"
                     try:
                         if export_meta.exists():
@@ -692,7 +712,20 @@ def scan_exported_models(exports_dir: str = "./exports") -> List[Tuple[str, str,
                     except Exception:
                         pass
                 elif has_gguf:
-                    # GGUF-only — not loadable by current inference backend
+                    export_type = "gguf"
+                    gguf_list = list(checkpoint_dir.glob("*.gguf"))
+                    export_meta = checkpoint_dir / "export_metadata.json"
+                    try:
+                        if export_meta.exists():
+                            meta = json.loads(export_meta.read_text())
+                            base_model = meta.get("base_model")
+                    except Exception:
+                        pass
+
+                    display_name = f"{run_dir.name} / {checkpoint_dir.name}"
+                    model_path = str(gguf_list[0]) if gguf_list else str(checkpoint_dir)
+                    results.append((display_name, model_path, export_type, base_model))
+                    logger.debug(f"Found GGUF export: {display_name}")
                     continue
                 else:
                     continue
