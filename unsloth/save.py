@@ -3389,20 +3389,16 @@ def patch_unsloth_zoo_saving():
     try:
         import unsloth_zoo.saving_utils
         if hasattr(unsloth_zoo.saving_utils, "use_local_gguf"):
-            # Save the original
-            _orig_use_local_gguf = unsloth_zoo.saving_utils.use_local_gguf
+            # Create a dummy context manager that does nothing
+            from contextlib import contextmanager
             
-            # Create a wrapper that doesn't need the context manager
-            def _patched_use_local_gguf():
-                # Just return a dummy context manager that does nothing
-                from contextlib import contextmanager
-                @contextmanager
-                def _dummy_cm():
-                    yield
-                return _dummy_cm()
+            @contextmanager
+            def _dummy_use_local_gguf(*args, **kwargs):
+                # Just do nothing, yield immediately
+                yield
             
-            unsloth_zoo.saving_utils.use_local_gguf = _patched_use_local_gguf
-            print("DEBUG: Patched use_local_gguf")
+            unsloth_zoo.saving_utils.use_local_gguf = _dummy_use_local_gguf
+            print("DEBUG: Patched use_local_gguf with dummy")
     except Exception as e:
         print(f"DEBUG: Could not patch use_local_gguf: {e}")
     
