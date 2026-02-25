@@ -1084,6 +1084,15 @@ class FastModel(FastBaseModel):
                 ";"
                 "os.environ['TRITON_F32_DEFAULT'] = 'ieee'"
             )
+        elif "nemotron_h" in model_types_all:
+            # NemotronH (hybrid Mamba-2 + Transformer) uses same Mamba kernels as Falcon-H1
+            # Mamba kernels need float32 Triton precision
+            os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = (
+                "float16;torch.float32;torch.float16;"
+                "if name.endswith(('q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj', 'head')): module.to(torch.float16)"
+                ";"
+                "os.environ['TRITON_F32_DEFAULT'] = 'ieee'"
+            )
         elif "gpt_oss" in model_types_all:
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
             if not load_in_4bit:
@@ -1281,7 +1290,21 @@ class FastModel(FastBaseModel):
         is_vlm = any(x.endswith("ForConditionalGeneration") for x in architectures)
         is_vlm = is_vlm or hasattr(model_config, "vision_config")
         if auto_model is None:
-            auto_model = AutoModelForVision2Seq if is_vlm else AutoModelForCausalLM
+            if is_vlm:
+                # Check if the model's auto_map supports the VLM auto class.
+                # Some VL models (e.g. Nemotron-VL) only register AutoModelForCausalLM
+                # in their auto_map, not AutoModelForImageTextToText/AutoModelForVision2Seq.
+                _auto_map = getattr(model_config, "auto_map", {}) or {}
+                _vlm_class_name = AutoModelForVision2Seq.__name__
+                if (
+                    "AutoModelForCausalLM" in _auto_map
+                    and _vlm_class_name not in _auto_map
+                ):
+                    auto_model = AutoModelForCausalLM
+                else:
+                    auto_model = AutoModelForVision2Seq
+            else:
+                auto_model = AutoModelForCausalLM
 
         load_in_4bit_kwargs = load_in_4bit
         load_in_8bit_kwargs = load_in_8bit
