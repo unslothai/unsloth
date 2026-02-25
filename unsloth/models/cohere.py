@@ -188,7 +188,9 @@ def CohereDecoderLayer_fast_forward(
         self, "_flag_for_generation"
     ):  # past_key_value is not None:
         out_weight = torch.empty(
-            self.input_layernorm.weight.shape, dtype = torch.float32, device = f"{DEVICE_TYPE_TORCH}:0"
+            self.input_layernorm.weight.shape,
+            dtype = torch.float32,
+            device = f"{DEVICE_TYPE_TORCH}:0",
         )
 
         # Self Attention
@@ -288,7 +290,9 @@ def CohereAttention_fast_forward_inference(
             (2, bsz, 1, attention_size), dtype = dtype, device = f"{DEVICE_TYPE_TORCH}:0"
         )
         self.temp_KV = torch.empty(
-            (2, bsz, 1, n_kv_heads * head_dim), dtype = dtype, device = f"{DEVICE_TYPE_TORCH}:0"
+            (2, bsz, 1, n_kv_heads * head_dim),
+            dtype = dtype,
+            device = f"{DEVICE_TYPE_TORCH}:0",
         )
         self.RH_Q = torch.empty(
             (bsz, n_heads, 1, head_dim), dtype = dtype, device = f"{DEVICE_TYPE_TORCH}:0"
@@ -312,10 +316,14 @@ def CohereAttention_fast_forward_inference(
         # Cohere has QK layernorms
         if self.use_qk_norm:
             self.q_norm_out_weight = torch.empty(
-                self.q_norm.weight.shape, dtype = torch.float32, device = f"{DEVICE_TYPE_TORCH}:0"
+                self.q_norm.weight.shape,
+                dtype = torch.float32,
+                device = f"{DEVICE_TYPE_TORCH}:0",
             )
             self.k_norm_out_weight = torch.empty(
-                self.k_norm.weight.shape, dtype = torch.float32, device = f"{DEVICE_TYPE_TORCH}:0"
+                self.k_norm.weight.shape,
+                dtype = torch.float32,
+                device = f"{DEVICE_TYPE_TORCH}:0",
             )
         else:
             self.q_norm_out_weight = None
