@@ -127,7 +127,7 @@ export function ParamsSection(): ReactElement {
         title="Parameters"
         description="Configure training hyperparameters"
         accent="orange"
-        className="md:min-h-[450px]"
+        className="md:min-h-[470px]"
       >
         <div className="flex flex-col gap-4">
           {/* Max Steps */}

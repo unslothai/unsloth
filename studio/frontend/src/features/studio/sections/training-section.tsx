@@ -98,7 +98,7 @@ export function TrainingSection() {
         title="Training"
         description="Monitor and control training"
         accent="blue"
-        className="md:min-h-[450px]"
+        className="md:min-h-[470px]"
       >
         <div className="flex flex-col gap-4">
         {/* Loss chart */}

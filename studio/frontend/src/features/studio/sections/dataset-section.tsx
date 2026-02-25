@@ -1,6 +1,11 @@
 import { SectionCard } from "@/components/section-card";
 import { Button } from "@/components/ui/button";
 import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
+import {
   Combobox,
   ComboboxContent,
   ComboboxEmpty,
@@ -35,6 +40,7 @@ import {
   useTrainingConfigStore,
 } from "@/features/training";
 import {
+  ArrowDown01Icon,
   CloudUploadIcon,
   Database02Icon,
   FileAttachmentIcon,
@@ -66,6 +72,8 @@ export function DatasetSection() {
     setDatasetSubset,
     datasetSplit,
     setDatasetSplit,
+    datasetEvalSplit,
+    setDatasetEvalSplit,
     hfToken,
   } = useTrainingConfigStore(
     useShallow((s) => ({
@@ -77,11 +85,14 @@ export function DatasetSection() {
       setDatasetSubset: s.setDatasetSubset,
       datasetSplit: s.datasetSplit,
       setDatasetSplit: s.setDatasetSplit,
+      datasetEvalSplit: s.datasetEvalSplit,
+      setDatasetEvalSplit: s.setDatasetEvalSplit,
       hfToken: s.hfToken,
     })),
   );
 
   const [inputValue, setInputValue] = useState("");
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const openPreview = useDatasetPreviewDialogStore((s) => s.openPreview);
   const selectingRef = useRef(false);
   const debouncedQuery = useDebouncedValue(inputValue);
@@ -132,79 +143,82 @@ export function DatasetSection() {
         title="Dataset"
         description="Select or upload training data"
         accent="indigo"
-        className="md:min-h-[450px] dark:shadow-border"
+        className="md:min-h-[470px] dark:shadow-border"
       >
         <div className="flex flex-col gap-4">
-        <div className="flex flex-col gap-2">
-          <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-            Load from Hub
-            <Tooltip>
-              <TooltipTrigger asChild={true}>
-                <button
-                  type="button"
-                  className="text-foreground/70 hover:text-foreground"
-                >
-                  <HugeiconsIcon
-                    icon={InformationCircleIcon}
-                    className="size-3"
-                  />
-                </button>
-              </TooltipTrigger>
-              <TooltipContent>
-                Search Hugging Face datasets or enter a path like
-                'username/dataset-name'.{" "}
-                <a
-                  href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/datasets-guide"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-primary underline"
-                >
-                  Read more
-                </a>
-              </TooltipContent>
-            </Tooltip>
-          </span>
-          <div
-            ref={comboboxAnchorRef}
-            onKeyDown={(event) => {
-              if (event.key !== "Enter") return;
-              if (!(event.target instanceof HTMLInputElement)) return;
-              event.preventDefault();
-              if (hfResults.length > 0) {
-                handleDatasetSelect(hfResults[0].id);
-              } else {
-                const text = event.target.value.trim();
-                if (text) handleDatasetSelect(text);
-              }
-            }}
-          >
-            <Combobox
-              items={resultIds}
-              filteredItems={resultIds}
-              filter={null}
-              value={dataset}
-              onValueChange={handleDatasetSelect}
-              onInputValueChange={handleInputChange}
-              itemToStringValue={(id) => id}
-              autoHighlight={true}
+          <div className="flex flex-col gap-2">
+            <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+              Load from Hub
+              <Tooltip>
+                <TooltipTrigger asChild={true}>
+                  <button
+                    type="button"
+                    className="text-foreground/70 hover:text-foreground"
+                  >
+                    <HugeiconsIcon
+                      icon={InformationCircleIcon}
+                      className="size-3"
+                    />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  Search Hugging Face datasets or enter a path like
+                  'username/dataset-name'.{" "}
+                  <a
+                    href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/datasets-guide"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-primary underline"
+                  >
+                    Read more
+                  </a>
+                </TooltipContent>
+              </Tooltip>
+            </span>
+            <div
+              ref={comboboxAnchorRef}
+              onKeyDown={(event) => {
+                if (event.key !== "Enter") return;
+                if (!(event.target instanceof HTMLInputElement)) return;
+                event.preventDefault();
+                if (hfResults.length > 0) {
+                  handleDatasetSelect(hfResults[0].id);
+                } else {
+                  const text = event.target.value.trim();
+                  if (text) handleDatasetSelect(text);
+                }
+              }}
             >
-              <ComboboxInput placeholder="Search datasets..." className="w-full">
-                <InputGroupAddon>
-                  <HugeiconsIcon icon={Search01Icon} className="size-4" />
-                </InputGroupAddon>
-              </ComboboxInput>
-              <ComboboxContent anchor={comboboxAnchorRef}>
-                {isLoading ? (
-                  <div className="flex items-center justify-center py-4 gap-2 text-xs text-muted-foreground">
-                    <Spinner className="size-4" /> Searching...
-                  </div>
-                ) : (
-                  <ComboboxEmpty>No datasets found</ComboboxEmpty>
-                )}
-                <div
-                  ref={scrollRef}
-                  className="max-h-64 overflow-y-auto overscroll-contain [scrollbar-width:thin]"
+              <Combobox
+                items={resultIds}
+                filteredItems={resultIds}
+                filter={null}
+                value={dataset}
+                onValueChange={handleDatasetSelect}
+                onInputValueChange={handleInputChange}
+                itemToStringValue={(id) => id}
+                autoHighlight={true}
+              >
+                <ComboboxInput
+                  placeholder="Search datasets..."
+                  className="w-full"
                 >
+                  <InputGroupAddon>
+                    <HugeiconsIcon icon={Search01Icon} className="size-4" />
+                  </InputGroupAddon>
+                </ComboboxInput>
+                <ComboboxContent anchor={comboboxAnchorRef}>
+                  {isLoading ? (
+                    <div className="flex items-center justify-center py-4 gap-2 text-xs text-muted-foreground">
+                      <Spinner className="size-4" /> Searching...
+                    </div>
+                  ) : (
+                    <ComboboxEmpty>No datasets found</ComboboxEmpty>
+                  )}
+                  <div
+                    ref={scrollRef}
+                    className="max-h-64 overflow-y-auto overscroll-contain [scrollbar-width:thin]"
+                  >
                     <ComboboxList className="p-1 !max-h-none !overflow-visible">
                       {(id: string) => {
                         const r = hfResults.find((ds) => ds.id === id);
@@ -220,58 +234,58 @@ export function DatasetSection() {
                           <ComboboxItem
                             key={id}
                             value={id}
-                          className="justify-between"
-                        >
-                          <Tooltip>
-                            <TooltipTrigger asChild={true}>
-                              <span className="min-w-0 flex-1 truncate">
+                            className="justify-between"
+                          >
+                            <Tooltip>
+                              <TooltipTrigger asChild={true}>
+                                <span className="min-w-0 flex-1 truncate">
+                                  {id}
+                                </span>
+                              </TooltipTrigger>
+                              <TooltipContent
+                                side="left"
+                                className="max-w-xs break-all"
+                              >
                                 {id}
+                              </TooltipContent>
+                            </Tooltip>
+                            {detail && (
+                              <span className="text-[10px] text-muted-foreground shrink-0">
+                                {detail}
                               </span>
-                            </TooltipTrigger>
-                            <TooltipContent
-                              side="left"
-                              className="max-w-xs break-all"
-                            >
-                              {id}
-                            </TooltipContent>
-                          </Tooltip>
-                          {detail && (
-                            <span className="text-[10px] text-muted-foreground shrink-0">
-                              {detail}
-                            </span>
-                          )}
-                        </ComboboxItem>
-                      );
-                    }}
-                  </ComboboxList>
-                  <div ref={sentinelRef} className="h-px" />
-                  {isLoadingMore && (
-                    <div className="flex items-center justify-center py-2">
-                      <Spinner className="size-3.5 text-muted-foreground" />
-                    </div>
-                  )}
-                </div>
-              </ComboboxContent>
-            </Combobox>
+                            )}
+                          </ComboboxItem>
+                        );
+                      }}
+                    </ComboboxList>
+                    <div ref={sentinelRef} className="h-px" />
+                    {isLoadingMore && (
+                      <div className="flex items-center justify-center py-2">
+                        <Spinner className="size-3.5 text-muted-foreground" />
+                      </div>
+                    )}
+                  </div>
+                </ComboboxContent>
+              </Combobox>
+            </div>
+            {(tokenValidationError ?? hfSearchError) && (
+              <p className="text-xs text-destructive">
+                {tokenValidationError ?? hfSearchError}
+                {" — "}
+                <a
+                  href="https://huggingface.co/settings/tokens"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline"
+                >
+                  Get or update token
+                </a>
+              </p>
+            )}
+            {isCheckingToken && (
+              <p className="text-xs text-muted-foreground">Checking token…</p>
+            )}
           </div>
-          {(tokenValidationError ?? hfSearchError) && (
-            <p className="text-xs text-destructive">
-              {tokenValidationError ?? hfSearchError}
-              {" — "}
-              <a
-                href="https://huggingface.co/settings/tokens"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="underline"
-              >
-                Get or update token
-              </a>
-            </p>
-          )}
-          {isCheckingToken && (
-            <p className="text-xs text-muted-foreground">Checking token…</p>
-          )}
-        </div>
 
         <HfDatasetSubsetSplitSelectors
           variant="studio"
@@ -282,52 +296,67 @@ export function DatasetSection() {
           setDatasetSubset={setDatasetSubset}
           datasetSplit={datasetSplit}
           setDatasetSplit={setDatasetSplit}
+          datasetEvalSplit={datasetEvalSplit}
+          setDatasetEvalSplit={setDatasetEvalSplit}
         />
 
-        <div className="flex flex-col gap-2">
-          <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-            Target Format
-            <Tooltip>
-              <TooltipTrigger asChild={true}>
-                <button
-                  type="button"
-                  className="text-foreground/70 hover:text-foreground"
-                >
-                  <HugeiconsIcon
-                    icon={InformationCircleIcon}
-                    className="size-3"
-                  />
-                </button>
-              </TooltipTrigger>
-              <TooltipContent>
-                Format of your training data. Auto-detect works for most
-                datasets.{" "}
-                <a
-                  href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/datasets-guide"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-primary underline"
-                >
-                  Read more
-                </a>
-              </TooltipContent>
-            </Tooltip>
-          </span>
-          <Select
-            value={datasetFormat}
-            onValueChange={(v) => setDatasetFormat(v as typeof datasetFormat)}
-          >
-            <SelectTrigger className="w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="auto">Auto</SelectItem>
-              <SelectItem value="alpaca">Alpaca</SelectItem>
-              <SelectItem value="chatml">ChatML</SelectItem>
-              <SelectItem value="sharegpt">ShareGPT</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
+        <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
+          <CollapsibleTrigger className="flex w-full cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
+            <HugeiconsIcon
+              icon={ArrowDown01Icon}
+              className={`size-3.5 transition-transform ${advancedOpen ? "rotate-180" : ""}`}
+            />
+            Advanced
+          </CollapsibleTrigger>
+          <CollapsibleContent className="mt-3">
+            <div className="flex flex-col gap-2">
+              <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                Target Format
+                <Tooltip>
+                  <TooltipTrigger asChild={true}>
+                    <button
+                      type="button"
+                      className="text-foreground/70 hover:text-foreground"
+                    >
+                      <HugeiconsIcon
+                        icon={InformationCircleIcon}
+                        className="size-3"
+                      />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    Format of your training data. Auto-detect works for most
+                    datasets.{" "}
+                    <a
+                      href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/datasets-guide"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-primary underline"
+                    >
+                      Read more
+                    </a>
+                  </TooltipContent>
+                </Tooltip>
+              </span>
+              <Select
+                value={datasetFormat}
+                onValueChange={(v) =>
+                  setDatasetFormat(v as typeof datasetFormat)
+                }
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="auto">Auto</SelectItem>
+                  <SelectItem value="alpaca">Alpaca</SelectItem>
+                  <SelectItem value="chatml">ChatML</SelectItem>
+                  <SelectItem value="sharegpt">ShareGPT</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </CollapsibleContent>
+        </Collapsible>
 
         {dataset ? (
           <div className="flex items-center gap-3 rounded-lg border bg-muted/40 px-3.5 py-3">
