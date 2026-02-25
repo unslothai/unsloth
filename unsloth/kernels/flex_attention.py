@@ -43,17 +43,18 @@ except:
 if not HAS_FLEX_ATTENTION:
     # Logit softcapping
     @torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)
-    def slow_attention_softcapping(Q, K, V, causal_mask, self, bsz, q_len):
+    def slow_attention_softcapping(Q, K, V, causal_mask, self, bsz, kv_len):
         n_heads = self.config.num_attention_heads
         head_dim = self.head_dim
         n_kv_heads = self.config.num_key_value_heads
         n_groups = self.num_key_value_groups
+        actual_q_len = Q.shape[-2]
 
         # Grouped query attention
-        K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, q_len, head_dim)
-        V = V[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, q_len, head_dim)
-        K = K.reshape(bsz, n_heads, q_len, head_dim)
-        V = V.reshape(bsz, n_heads, q_len, head_dim)
+        K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_len, head_dim)
+        V = V[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_len, head_dim)
+        K = K.reshape(bsz, n_heads, kv_len, head_dim)
+        V = V.reshape(bsz, n_heads, kv_len, head_dim)
 
         # See https://github.com/google/gemma_pytorch/commit/03e657582d17cb5a8617ebf333c1c16f3694670e
         # Gemma 9b should use 256 and not 224 (hs / nah). 27b uses the below
@@ -65,13 +66,15 @@ if not HAS_FLEX_ATTENTION:
         Q = Q * torch.tensor(s**-0.5, dtype = Q.dtype)  # Follow Keras exactly
         A = torch.matmul(Q, K.transpose(2, 3))
         A = t * torch.tanh(A / t)  # Logit softcapping
-        A += causal_mask[:q_len, :q_len]
-        # Much slower in torch compile!
-        # A.masked_fill_(causal_mask[:q_len, :q_len], -float("inf"))
+        # Handle both 2D static masks and 4D dynamic masks
+        if causal_mask.dim() >= 3:
+            A += causal_mask
+        else:
+            A += causal_mask[:actual_q_len, :kv_len]
         A = torch.nn.functional.softmax(A, dim = -1, dtype = torch.float32).to(Q.dtype)
         A = torch.matmul(A, V)
         A = A.transpose(1, 2).contiguous()
-        A = A.reshape(bsz, q_len, n_heads * head_dim)
+        A = A.reshape(bsz, actual_q_len, n_heads * head_dim)
         return A
 
     create_flex_attention_causal_mask = None
@@ -151,17 +154,18 @@ torch_tanh = torch.tanh
 torch_nn_functional_softmax = torch.nn.functional.softmax
 
 
-def slow_inference_attention_softcapping(Q, K, V, causal_mask, self, bsz, q_len):
+def slow_inference_attention_softcapping(Q, K, V, causal_mask, self, bsz, kv_len):
     n_heads = self.config.num_attention_heads
     head_dim = self.head_dim
     n_kv_heads = self.config.num_key_value_heads
     n_groups = self.num_key_value_groups
+    actual_q_len = Q.shape[-2]
 
     # Grouped query attention
-    K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, q_len, head_dim)
-    V = V[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, q_len, head_dim)
-    K = K.reshape(bsz, n_heads, q_len, head_dim)
-    V = V.reshape(bsz, n_heads, q_len, head_dim)
+    K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_len, head_dim)
+    V = V[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_len, head_dim)
+    K = K.reshape(bsz, n_heads, kv_len, head_dim)
+    V = V.reshape(bsz, n_heads, kv_len, head_dim)
 
     # See https://github.com/google/gemma_pytorch/commit/03e657582d17cb5a8617ebf333c1c16f3694670e
     # Gemma 9b should use 256 and not 224 (hs / nah). 27b uses the below
@@ -177,11 +181,13 @@ def slow_inference_attention_softcapping(Q, K, V, causal_mask, self, bsz, q_len)
     A /= t
     torch_tanh(A, out = A)
     A *= t
-    A += causal_mask[:q_len, :q_len]
-    # Much slower in torch compile!
-    # A.masked_fill_(causal_mask[:q_len, :q_len], -float("inf"))
+    # Handle both 2D static masks and 4D dynamic masks
+    if causal_mask.dim() >= 3:
+        A += causal_mask
+    else:
+        A += causal_mask[:actual_q_len, :kv_len]
     A = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32).to(Q.dtype)
     A = torch_matmul(A, V)
     A = A.transpose(1, 2).contiguous()
-    A = A.reshape(bsz, q_len, n_heads * head_dim)
+    A = A.reshape(bsz, actual_q_len, n_heads * head_dim)
     return A
