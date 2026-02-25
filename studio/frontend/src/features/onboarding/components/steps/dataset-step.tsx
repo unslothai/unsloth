@@ -75,6 +75,8 @@ export function DatasetStep() {
     setDatasetSubset,
     datasetSplit,
     setDatasetSplit,
+    datasetEvalSplit,
+    setDatasetEvalSplit,
     uploadedFile,
     setUploadedFile,
   } = useTrainingConfigStore(
@@ -91,6 +93,8 @@ export function DatasetStep() {
       setDatasetSubset: s.setDatasetSubset,
       datasetSplit: s.datasetSplit,
       setDatasetSplit: s.setDatasetSplit,
+      datasetEvalSplit: s.datasetEvalSplit,
+      setDatasetEvalSplit: s.setDatasetEvalSplit,
       uploadedFile: s.uploadedFile,
       setUploadedFile: s.setUploadedFile,
     })),
@@ -304,6 +308,8 @@ export function DatasetStep() {
             setDatasetSubset={setDatasetSubset}
             datasetSplit={datasetSplit}
             setDatasetSplit={setDatasetSplit}
+            datasetEvalSplit={datasetEvalSplit}
+            setDatasetEvalSplit={setDatasetEvalSplit}
           />
         </>
       ) : (
