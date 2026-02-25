@@ -43,9 +43,9 @@ export function TrainingStartOverlay({
     <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center rounded-2xl bg-background/45 backdrop-blur-[1px]">
       <div className="pointer-events-auto relative flex w-[860px] max-w-[calc(100%-2rem)] flex-col items-center gap-4">
         <img
-          src="/Sloth emojis/large sloth wave.png"
+          src="/unsloth-gem.png"
           alt="Unsloth mascot"
-          className="size-24 animate-bounce object-contain"
+          className="size-24 object-contain"
         />
         <div className="relative w-full">
           <AlertDialog open={cancelDialogOpen} onOpenChange={setCancelDialogOpen}>
@@ -105,9 +105,6 @@ O^O/ \\_/ \\
           </TypingAnimation>
           <TypingAnimation duration={44}>
             {"> We are getting everything ready for your run..."}
-          </TypingAnimation>
-          <TypingAnimation duration={44}>
-            {"> Did you know, Mugi is actually short for \"Mugiwara\" xd"}
           </TypingAnimation>
           <AnimatedSpan className="mt-2 text-muted-foreground">
             {`> ${message || "starting training..."} | waiting for first step... (${currentStep})`}
