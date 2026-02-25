@@ -22,6 +22,7 @@ from .utils import (
     triton_cast,
     torch_gpu_device,
     is_cdna,
+    is_rdna,
 )
 from transformers.models.llama.modeling_llama import logger
 from unsloth_zoo.utils import Version

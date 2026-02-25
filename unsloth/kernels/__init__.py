@@ -51,6 +51,8 @@ from .utils import (
     QUANT_STATE,
     fast_linear_forward,
     matmul_lora,
+    is_cdna,
+    is_rdna,
 )
 
 from .flex_attention import (
