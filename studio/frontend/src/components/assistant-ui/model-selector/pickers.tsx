@@ -522,15 +522,26 @@ export function LoraModelPicker({
               <div key={baseModel}>
                 {index > 0 ? <div className="my-1" /> : null}
                 <ListLabel>{baseModel}</ListLabel>
-                {adapters.map((adapter) => (
-                  <ModelRow
-                    key={adapter.id}
-                    label={adapter.name}
-                    meta="LoRA"
-                    selected={value === adapter.id}
-                    onClick={() => onSelect(adapter.id, { source: "lora", isLora: true })}
-                  />
-                ))}
+                {adapters.map((adapter) => {
+                  const isExported = adapter.source === "exported";
+                  const isMerged = adapter.exportType === "merged";
+                  const tag = isExported
+                    ? isMerged ? "Merged" : "LoRA"
+                    : "LoRA";
+                  const meta = isExported ? `${tag} · Exported` : tag;
+                  return (
+                    <ModelRow
+                      key={adapter.id}
+                      label={adapter.name}
+                      meta={meta}
+                      selected={value === adapter.id}
+                      onClick={() => onSelect(adapter.id, {
+                        source: isExported ? "exported" : "lora",
+                        isLora: !isMerged,
+                      })}
+                    />
+                  );
+                })}
               </div>
             ))
           )}

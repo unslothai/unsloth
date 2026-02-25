@@ -37,6 +37,7 @@ const initialState: TrainingRuntimeState = {
   gradNormHistory: [],
   evalLossHistory: [],
   resetGeneration: 0,
+  stopRequested: false,
 };
 
 function sortSeries(points: TrainingSeriesPoint[]): TrainingSeriesPoint[] {
@@ -110,6 +111,7 @@ function applyMetricHistoryFromStatus(payload: TrainingStatusResponse): {
 export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => ({
   ...initialState,
 
+  setStopRequested: (value) => set({ stopRequested: value }),
   setHydrating: (value) => set({ isHydrating: value }),
   setHasHydrated: (value) => set({ hasHydrated: value }),
   setStarting: (value) => set({ isStarting: value }),
@@ -173,12 +175,15 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
       const detailLoss = payload.details?.loss;
       const detailLr = payload.details?.learning_rate;
       const detailEpoch = payload.details?.epoch;
+      const stopRequested =
+        payload.is_training_running ? state.stopRequested : false;
 
       return {
         ...state,
         jobId: payload.job_id || state.jobId,
         phase: payload.phase,
         isTrainingRunning: payload.is_training_running,
+        stopRequested,
         evalEnabled: payload.eval_enabled ?? state.evalEnabled,
         message: payload.message,
         error: payload.error,

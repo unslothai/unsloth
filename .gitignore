@@ -20,6 +20,7 @@ unsloth_compiled_cache/
 # ML artifacts (large files)
 outputs/
 exports/
+/datasets/
 unsloth_training_checkpoints/
 *.gguf
 *.safetensors
@@ -52,6 +53,16 @@ resources/
 tmp/
 auth.db
 studio/frontend/package-lock.json
+
+# Local working docs
+**/CLAUDE.md
+**/claude.md
+**/AGENT.md
+**/agent.md
+docs/canvas-lab-architecture.md
+studio/frontend/test/
+studio/tests/
+studio/backend/tests/
 log_rtx.txt
 log.txt
 setup_leo.sh

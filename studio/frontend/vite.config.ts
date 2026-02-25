@@ -17,6 +17,14 @@ export default defineConfig({
         target: "http://127.0.0.1:8000",
         changeOrigin: true,
       },
+      "/seed/inspect": {
+        target: "http://127.0.0.1:8004",
+        changeOrigin: true,
+      },
+      "/seed/preview": {
+        target: "http://127.0.0.1:8004",
+        changeOrigin: true,
+      },
       "/preview": {
         target: "http://127.0.0.1:8004",
         changeOrigin: true,

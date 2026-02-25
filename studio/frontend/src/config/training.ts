@@ -103,7 +103,7 @@ export const DEFAULT_HYPERPARAMS = {
   warmupSteps: 5,
   maxSteps: 0,
   saveSteps: 0,
-  evalSteps: 0.01,
+  evalSteps: 0.00,
   packing: false,
   trainOnCompletions: false,
   gradientCheckpointing: "unsloth" as const,

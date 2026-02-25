@@ -188,18 +188,22 @@ def check_format(request: CheckFormatRequest):
         # Generate preview samples
         preview_samples = None
         if not result["requires_manual_mapping"]:
-            try:
-                format_result = format_dataset(
-                    preview_slice,
-                    format_type="auto",
-                    custom_format_mapping=result.get("suggested_mapping"),
-                    num_proc=1,  # Only 10 preview rows — no need for multiprocessing
-                )
-                processed = format_result["dataset"]
-                preview_samples = _serialize_preview_rows(processed)
-            except Exception as e:
-                logger.warning(f"Processed preview generation failed (non-fatal): {e}")
+            if result.get("suggested_mapping"):
+                # Heuristic-detected: show raw data so columns match the API response.
+                # Processing (column stripping) happens at training time, not preview.
                 preview_samples = _serialize_preview_rows(preview_slice)
+            else:
+                try:
+                    format_result = format_dataset(
+                        preview_slice,
+                        format_type="auto",
+                        num_proc=1,  # Only 10 preview rows — no need for multiprocessing
+                    )
+                    processed = format_result["dataset"]
+                    preview_samples = _serialize_preview_rows(processed)
+                except Exception as e:
+                    logger.warning(f"Processed preview generation failed (non-fatal): {e}")
+                    preview_samples = _serialize_preview_rows(preview_slice)
         else:
             preview_samples = _serialize_preview_rows(preview_slice)
 
