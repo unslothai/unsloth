@@ -422,6 +422,179 @@ def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
 pass
 
 
+def detect_gguf_model(path: str) -> Optional[str]:
+    """
+    Check if the given local path is or contains a GGUF model file.
+
+    Handles two cases:
+    1. path is a direct .gguf file path
+    2. path is a directory containing .gguf files
+
+    Returns the full path to the .gguf file if found, None otherwise.
+    For HuggingFace repo detection, use detect_gguf_model_remote() instead.
+    """
+    p = Path(path)
+
+    # Case 1: direct .gguf file
+    if p.suffix == ".gguf" and p.is_file():
+        return str(p.resolve())
+
+    # Case 2: directory containing .gguf files
+    if p.is_dir():
+        gguf_files = sorted(p.glob("*.gguf"), key=lambda f: f.stat().st_size, reverse=True)
+        if gguf_files:
+            return str(gguf_files[0].resolve())
+
+    return None
+
+
+# Preferred GGUF quantization levels, in descending priority.
+# Q4_K_M is a good default: small, fast, acceptable quality.
+_GGUF_QUANT_PREFERENCE = [
+    "Q4_K_M", "Q4_K_S", "Q5_K_M", "Q5_K_S",
+    "Q6_K", "Q8_0", "Q3_K_M", "Q3_K_L", "Q2_K",
+    "F16", "BF16", "F32",
+]
+
+
+def _pick_best_gguf(filenames: list[str]) -> Optional[str]:
+    """
+    Pick the best GGUF file from a list of filenames.
+
+    Prefers quantization levels in _GGUF_QUANT_PREFERENCE order.
+    Falls back to the first .gguf file found.
+    """
+    gguf_files = [f for f in filenames if f.endswith(".gguf")]
+    if not gguf_files:
+        return None
+
+    # Try preferred quantization levels
+    for quant in _GGUF_QUANT_PREFERENCE:
+        for f in gguf_files:
+            if quant in f:
+                return f
+
+    # Fallback: first GGUF file
+    return gguf_files[0]
+
+
+@dataclass
+class GgufVariantInfo:
+    """A single GGUF quantization variant from a HuggingFace repo."""
+    filename: str       # e.g., "gemma-3-4b-it-Q4_K_M.gguf"
+    quant: str          # e.g., "Q4_K_M" (extracted from filename)
+    size_bytes: int     # file size
+
+
+def _extract_quant_label(filename: str) -> str:
+    """
+    Extract quantization label like Q4_K_M, IQ4_XS, BF16 from a GGUF filename.
+
+    Examples:
+        "gemma-3-4b-it-Q4_K_M.gguf" → "Q4_K_M"
+        "model-IQ4_NL.gguf"          → "IQ4_NL"
+        "model-BF16.gguf"            → "BF16"
+        "model-UD-IQ1_S.gguf"        → "UD-IQ1_S"
+    """
+    import re
+    stem = filename.rsplit(".", 1)[0]  # Remove .gguf
+    # Match known quantization patterns (UD- prefix, IQ, Q, BF/F variants)
+    match = re.search(
+        r'(UD-)?'  # Optional UD- prefix (Ultra Discrete)
+        r'(IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?'  # IQ variants: IQ4_XS, IQ4_NL, IQ1_S
+        r'|Q[0-9]+_K_[A-Z]+'                  # K-quant: Q4_K_M, Q3_K_S
+        r'|Q[0-9]+_[0-9]+'                    # Standard: Q8_0, Q5_1
+        r'|Q[0-9]+_K'                          # Short K-quant: Q6_K
+        r'|BF16|F16|F32)',                     # Full precision
+        stem, re.IGNORECASE,
+    )
+    if match:
+        prefix = match.group(1) or ""
+        return f"{prefix}{match.group(2)}"
+    # Fallback: last segment after hyphen
+    return stem.split("-")[-1]
+
+
+def list_gguf_variants(
+    repo_id: str,
+    hf_token: Optional[str] = None,
+) -> tuple[list[GgufVariantInfo], bool]:
+    """
+    List all GGUF quantization variants in a HuggingFace repo.
+
+    Separates main model files from mmproj (vision projection) files.
+    The presence of mmproj files indicates a vision-capable model.
+
+    Returns:
+        (variants, has_vision): list of non-mmproj GGUF variants + vision flag.
+    """
+    from huggingface_hub import model_info as hf_model_info
+
+    info = hf_model_info(repo_id, token=hf_token)
+    variants: list[GgufVariantInfo] = []
+    has_vision = False
+
+    for sibling in info.siblings:
+        fname = sibling.rfilename
+        if not fname.endswith(".gguf"):
+            continue
+        size = sibling.size or 0
+
+        # mmproj files are vision projection models, not main model files
+        if "mmproj" in fname.lower():
+            has_vision = True
+            continue
+
+        quant = _extract_quant_label(fname)
+        variants.append(GgufVariantInfo(
+            filename=fname,
+            quant=quant,
+            size_bytes=size,
+        ))
+
+    return variants, has_vision
+
+
+def detect_gguf_model_remote(
+    repo_id: str,
+    hf_token: Optional[str] = None,
+) -> Optional[str]:
+    """
+    Check if a HuggingFace repo contains GGUF files.
+
+    Returns the filename of the best GGUF file in the repo, or None.
+    """
+    try:
+        from huggingface_hub import model_info as hf_model_info
+
+        info = hf_model_info(repo_id, token=hf_token)
+        repo_files = [s.rfilename for s in info.siblings]
+        return _pick_best_gguf(repo_files)
+    except Exception as e:
+        logger.debug(f"Could not check GGUF files for '{repo_id}': {e}")
+        return None
+
+
+def download_gguf_file(
+    repo_id: str,
+    filename: str,
+    hf_token: Optional[str] = None,
+) -> str:
+    """
+    Download a specific GGUF file from a HuggingFace repo.
+
+    Returns the local path to the downloaded file.
+    """
+    from huggingface_hub import hf_hub_download
+
+    local_path = hf_hub_download(
+        repo_id=repo_id,
+        filename=filename,
+        token=hf_token,
+    )
+    return local_path
+
+
 def scan_trained_loras(outputs_dir: str = "./outputs") -> List[Tuple[str, str]]:
     """
     Scan outputs folder for trained LoRA adapters.
@@ -679,6 +852,10 @@ class ModelConfig:
     is_cached: bool     # Is this already in HF cache?
     is_vision: bool     # Is this a vision model?
     is_lora: bool       # Is this a lora adapter?
+    is_gguf: bool = False       # Is this a GGUF model?
+    gguf_file: Optional[str] = None  # Full path to the .gguf file (local mode)
+    gguf_hf_repo: Optional[str] = None  # HF repo ID for -hf mode (e.g. "unsloth/gemma-3-4b-it-GGUF")
+    gguf_variant: Optional[str] = None  # Quantization variant (e.g. "Q4_K_M")
     base_model: Optional[str] = None  # Base model (for LoRAs)
 
     @classmethod
@@ -734,37 +911,102 @@ class ModelConfig:
         cls,
         model_id: str,
         hf_token: Optional[str] = None,
-        is_lora: bool = False
+        is_lora: bool = False,
+        gguf_variant: Optional[str] = None,
     ) -> Optional['ModelConfig']:
         """
         Create ModelConfig from a clean model identifier.
-        
+
         For FastAPI routes where the frontend sends sanitized model paths.
         No Gradio dropdown parsing - expects clean identifiers like:
         - "unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit"
         - "./outputs/my_lora_adapter"
         - "/absolute/path/to/model"
-        
+
         Args:
             model_id: Clean model identifier (HF repo name or local path)
             hf_token: Optional HF token for vision detection on gated models
             is_lora: Whether this is a LoRA adapter
-        
+            gguf_variant: Optional GGUF quantization variant (e.g. "Q4_K_M").
+                For remote GGUF repos, specifies which quant to load via -hf.
+                If None, auto-selects using _pick_best_gguf().
+
         Returns:
             ModelConfig or None if configuration cannot be created
         """
         if not model_id or not model_id.strip():
             return None
-        
+
         identifier = model_id.strip()
         is_local = is_local_path(identifier)
         path = normalize_path(identifier) if is_local else identifier
-        
+
         # Add unsloth/ prefix for shorthand HF models
         if not is_local and "/" not in identifier:
             identifier = f"unsloth/{identifier}"
             path = identifier
-        
+
+        # Auto-detect GGUF models (check before LoRA/vision detection)
+        if is_local:
+            gguf_file = detect_gguf_model(path)
+            if gguf_file:
+                display_name = Path(gguf_file).stem
+                logger.info(f"Detected local GGUF model: {gguf_file}")
+                return cls(
+                    identifier=identifier,
+                    display_name=display_name,
+                    path=path,
+                    is_local=True,
+                    is_cached=True,
+                    is_vision=False,
+                    is_lora=False,
+                    is_gguf=True,
+                    gguf_file=gguf_file,
+                )
+        else:
+            # Check if the HF repo contains GGUF files
+            gguf_filename = detect_gguf_model_remote(identifier, hf_token=hf_token)
+            if gguf_filename:
+                # Preflight: verify llama-server binary exists BEFORE user waits
+                # for a multi-GB download that llama-server handles natively
+                from core.inference.llama_cpp import LlamaCppBackend
+                if not LlamaCppBackend._find_llama_server_binary():
+                    raise RuntimeError(
+                        "llama-server binary not found — cannot load GGUF models. "
+                        "Run setup.sh to build it, or set LLAMA_SERVER_PATH."
+                    )
+
+                # Use list_gguf_variants() to detect vision & resolve variant
+                variants, has_vision = list_gguf_variants(identifier, hf_token=hf_token)
+                variant = gguf_variant
+                if not variant:
+                    # Auto-select best quantization
+                    variant_filenames = [v.filename for v in variants]
+                    best = _pick_best_gguf(variant_filenames)
+                    if best:
+                        variant = _extract_quant_label(best)
+                    else:
+                        variant = "Q4_K_M"  # Fallback — llama-server's own default
+
+                display_name = f"{identifier.split('/')[-1]} ({variant})"
+                logger.info(
+                    f"Detected remote GGUF repo '{identifier}', "
+                    f"variant={variant}, vision={has_vision}"
+                )
+                return cls(
+                    identifier=identifier,
+                    display_name=display_name,
+                    path=identifier,
+                    is_local=False,
+                    is_cached=False,
+                    is_vision=has_vision,
+                    is_lora=False,
+                    is_gguf=True,
+                    gguf_file=None,
+                    gguf_hf_repo=identifier,
+                    gguf_variant=variant,
+                )
+
         # Auto-detect LoRA for local paths (check adapter_config.json on disk)
         if not is_lora and is_local:
             detected_base = get_base_model_from_lora(path)
