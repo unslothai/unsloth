@@ -3158,11 +3158,11 @@ def patch_unsloth_zoo_saving():
         print("DEBUG: Could not import unsloth_zoo.saving_utils")
         return
 
-    # Patch 1: Replace _merge_lora for CPU-based LoRA merging on MPS
-    if not hasattr(unsloth_zoo.saving_utils, "_merge_lora"):
-        print("DEBUG: unsloth_zoo.saving_utils._merge_lora not found, returning early")
-        return
-    original_merge_lora = unsloth_zoo.saving_utils._merge_lora
+    # Patch 1: Replace _merge_lora for CPU-based LoRA merging on MPS (if available)
+    has_merge_lora = hasattr(unsloth_zoo.saving_utils, "_merge_lora")
+    print(f"DEBUG: has _merge_lora: {has_merge_lora}")
+    if has_merge_lora:
+        original_merge_lora = unsloth_zoo.saving_utils._merge_lora
 
     def _mps_friendly_merge_lora(W, lora_stats, output_key):
         # Check if we are on MPS or if CUDA is not available (CPU fallback)
@@ -3204,15 +3204,18 @@ def patch_unsloth_zoo_saving():
         else:
             return original_merge_lora(W, lora_stats, output_key)
 
-    unsloth_zoo.saving_utils._merge_lora = _mps_friendly_merge_lora
+    if has_merge_lora:
+        unsloth_zoo.saving_utils._merge_lora = _mps_friendly_merge_lora
+        print("DEBUG: Patched _merge_lora")
 
     # Patch 2: Wrap merge_and_overwrite_lora to neutralize torch.cuda calls on MPS.
     # The zoo code calls torch.cuda.get_device_name(0), torch.cuda.empty_cache(),
     # and torch.cuda.synchronize() throughout without checking availability.
     # On MPS these cause SIGTRAP (trace trap) crashes.
-    if not hasattr(unsloth_zoo.saving_utils, "merge_and_overwrite_lora"):
-        return
-    original_merge_and_overwrite = unsloth_zoo.saving_utils.merge_and_overwrite_lora
+    has_merge_and_overwrite = hasattr(unsloth_zoo.saving_utils, "merge_and_overwrite_lora")
+    print(f"DEBUG: has merge_and_overwrite_lora: {has_merge_and_overwrite}")
+    if has_merge_and_overwrite:
+        original_merge_and_overwrite = unsloth_zoo.saving_utils.merge_and_overwrite_lora
 
     def _mps_safe_merge_and_overwrite_lora(*args, **kwargs):
         print("DEBUG: _mps_safe_merge_and_overwrite_lora called")
@@ -3250,7 +3253,9 @@ def patch_unsloth_zoo_saving():
         else:
             return original_merge_and_overwrite(*args, **kwargs)
 
-    unsloth_zoo.saving_utils.merge_and_overwrite_lora = _mps_safe_merge_and_overwrite_lora
+    if has_merge_and_overwrite:
+        unsloth_zoo.saving_utils.merge_and_overwrite_lora = _mps_safe_merge_and_overwrite_lora
+        print("DEBUG: Patched merge_and_overwrite_lora")
 
     # Patch 3: Bypass GGUF apt-get check on macOS
     # unsloth_zoo.llama_cpp.do_we_need_sudo erroneously checks for apt-get on macOS
