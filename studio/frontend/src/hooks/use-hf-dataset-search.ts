@@ -49,6 +49,7 @@ export interface HfDatasetResult {
   totalExamples?: number;
   sizeCategory?: string;
   taskCategories: string[];
+  plainTags: string[];
 }
 
 function mapDataset(raw: unknown): HfDatasetResult {
@@ -60,9 +61,11 @@ function mapDataset(raw: unknown): HfDatasetResult {
     cardData?: unknown;
   };
   const card = ds.cardData as CardDataWithInfo | undefined;
-  const taskCategories = (ds.tags ?? [])
+  const tags = ds.tags ?? [];
+  const taskCategories = tags
     .filter((t) => t.startsWith("task_categories:"))
     .map((t) => t.slice("task_categories:".length));
+  const plainTags = tags.filter((t) => !t.includes(":"));
   return {
     id: ds.name,
     downloads: ds.downloads,
@@ -70,6 +73,7 @@ function mapDataset(raw: unknown): HfDatasetResult {
     totalExamples: extractTotalExamples(card),
     sizeCategory: card?.size_categories?.[0],
     taskCategories,
+    plainTags,
   };
 }
 
@@ -95,7 +99,9 @@ function withTrendingSort(
   return fetch(url, init);
 }
 
-const RELEVANT_TASK_CATEGORIES: Record<ModelType, Set<string>> = {
+type DatasetRelevance = "incompatible" | "neutral" | "boosted";
+
+const BOOSTED_TASK_CATEGORIES: Record<ModelType, Set<string>> = {
   text: new Set([
     "text-generation",
     "text2text-generation",
@@ -121,10 +127,28 @@ const RELEVANT_TASK_CATEGORIES: Record<ModelType, Set<string>> = {
   ]),
 };
 
-const INCOMPATIBLE_TASK_CATEGORIES: Record<ModelType, Set<string>> = {
+const INCOMPATIBLE_TASKS_ALL_MODELS = new Set([
+  "text-to-3d",
+  "image-to-3d",
+  "robotics",
+  "reinforcement-learning",
+  "tabular-classification",
+  "tabular-regression",
+  "time-series-forecasting",
+]);
+
+const PRETRAINING_PLAIN_TAGS = new Set(["pretraining", "pre-training"]);
+
+const PRETRAINING_SIZE_CATEGORIES = new Set([
+  "100M<n<1B",
+  "1B<n<10B",
+  "10B<n<100B",
+  "100B<n<1T",
+  "n>1T",
+]);
+
+const INCOMPATIBLE_TASKS_BY_MODEL: Record<ModelType, Set<string>> = {
   text: new Set([
-    "text-to-3d",
-    "image-to-3d",
     "text-to-image",
     "image-to-image",
     "image-to-video",
@@ -143,30 +167,16 @@ const INCOMPATIBLE_TASK_CATEGORIES: Record<ModelType, Set<string>> = {
     "audio-to-audio",
     "automatic-speech-recognition",
     "video-classification",
-    "robotics",
-    "reinforcement-learning",
-    "tabular-classification",
-    "tabular-regression",
-    "time-series-forecasting",
     "visual-document-retrieval",
   ]),
   vision: new Set([
-    "text-to-3d",
-    "image-to-3d",
     "text-to-speech",
     "text-to-audio",
     "audio-classification",
     "audio-to-audio",
     "automatic-speech-recognition",
-    "robotics",
-    "reinforcement-learning",
-    "tabular-classification",
-    "tabular-regression",
-    "time-series-forecasting",
   ]),
   tts: new Set([
-    "text-to-3d",
-    "image-to-3d",
     "text-to-image",
     "image-to-image",
     "image-to-video",
@@ -180,16 +190,9 @@ const INCOMPATIBLE_TASK_CATEGORIES: Record<ModelType, Set<string>> = {
     "image-segmentation",
     "depth-estimation",
     "video-classification",
-    "robotics",
-    "reinforcement-learning",
-    "tabular-classification",
-    "tabular-regression",
-    "time-series-forecasting",
     "visual-document-retrieval",
   ]),
   embeddings: new Set([
-    "text-to-3d",
-    "image-to-3d",
     "text-to-image",
     "image-to-image",
     "image-to-video",
@@ -208,28 +211,41 @@ const INCOMPATIBLE_TASK_CATEGORIES: Record<ModelType, Set<string>> = {
     "audio-to-audio",
     "automatic-speech-recognition",
     "video-classification",
-    "robotics",
-    "reinforcement-learning",
-    "tabular-classification",
-    "tabular-regression",
-    "time-series-forecasting",
     "visual-document-retrieval",
   ]),
 };
 
-function classifyDataset(
+function isPretrainingDataset(dataset: HfDatasetResult): boolean {
+  if (dataset.plainTags.some((t) => PRETRAINING_PLAIN_TAGS.has(t.toLowerCase())))
+    return true;
+  if (
+    dataset.sizeCategory &&
+    PRETRAINING_SIZE_CATEGORIES.has(dataset.sizeCategory)
+  )
+    return true;
+  return false;
+}
+
+function rankDatasetRelevance(
   dataset: HfDatasetResult,
   modelType: ModelType,
-): -1 | 0 | 1 {
+): DatasetRelevance {
+  if (isPretrainingDataset(dataset)) return "incompatible";
+
   const { taskCategories } = dataset;
-  if (taskCategories.length === 0) return 0;
+  if (taskCategories.length === 0) return "neutral";
 
-  const relevant = RELEVANT_TASK_CATEGORIES[modelType];
-  const incompatible = INCOMPATIBLE_TASK_CATEGORIES[modelType];
+  const boosted = BOOSTED_TASK_CATEGORIES[modelType];
+  const modelIncompat = INCOMPATIBLE_TASKS_BY_MODEL[modelType];
 
-  if (taskCategories.some((t) => relevant.has(t))) return 1;
-  if (taskCategories.every((t) => incompatible.has(t))) return -1;
-  return 0;
+  if (taskCategories.some((t) => boosted.has(t))) return "boosted";
+  if (
+    taskCategories.every(
+      (t) => INCOMPATIBLE_TASKS_ALL_MODELS.has(t) || modelIncompat.has(t),
+    )
+  )
+    return "incompatible";
+  return "neutral";
 }
 
 export function useHfDatasetSearch(
@@ -257,9 +273,9 @@ export function useHfDatasetSearch(
     const neutral: HfDatasetResult[] = [];
 
     for (const ds of search.results) {
-      const rank = classifyDataset(ds, modelType);
-      if (rank === 1) boosted.push(ds);
-      else if (rank !== -1) neutral.push(ds);
+      const relevance = rankDatasetRelevance(ds, modelType);
+      if (relevance === "boosted") boosted.push(ds);
+      else if (relevance !== "incompatible") neutral.push(ds);
     }
 
     return [...boosted, ...neutral];
