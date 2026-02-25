@@ -1,46 +1,107 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import type { CheckFormatResponse } from "@/features/training/types/datasets";
 import { cn } from "@/lib/utils";
 import { AlertCircleIcon, CheckmarkCircle02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
-export function HeaderPick({
-  label,
-  checked,
-  onCheckedChange,
+const CHATML_ROLES = ["system", "user", "assistant"] as const;
+const ALPACA_ROLES = ["instruction", "input", "output"] as const;
+const SHAREGPT_ROLES = ["system", "human", "gpt"] as const;
+const VLM_ROLES = ["image", "text"] as const;
+
+const ROLE_LABELS: Record<string, string> = {
+  system: "System",
+  user: "User",
+  assistant: "Assistant",
+  human: "Human",
+  gpt: "GPT",
+  instruction: "Instruction",
+  input: "Input",
+  output: "Output",
+  image: "Image",
+  text: "Text",
+};
+
+export function getAvailableRoles(isVlm: boolean, format?: string): readonly string[] {
+  if (isVlm) return VLM_ROLES;
+  if (format === "alpaca") return ALPACA_ROLES;
+  if (format === "sharegpt") return SHAREGPT_ROLES;
+  return CHATML_ROLES;
+}
+
+export function isMappingComplete(
+  mapping: Record<string, string>,
+  isVlm: boolean,
+  format?: string,
+): boolean {
+  const roles = new Set(Object.values(mapping));
+  if (isVlm) return roles.has("image") && roles.has("text");
+  if (format === "alpaca") return roles.has("instruction") && roles.has("output");
+  if (format === "sharegpt") return roles.has("human") && roles.has("gpt");
+  return roles.has("user") && roles.has("assistant");
+}
+
+export function HeaderRolePicker({
+  currentRole,
+  onRoleChange,
+  availableRoles,
 }: {
-  label: string;
-  checked: boolean;
-  onCheckedChange: (checked: boolean) => void;
+  currentRole: string | undefined;
+  onRoleChange: (role: string | undefined) => void;
+  availableRoles: readonly string[];
 }) {
   return (
-    <label className="flex items-center gap-1.5 text-[10px] text-muted-foreground cursor-pointer select-none">
-      <Checkbox
-        checked={checked}
-        onCheckedChange={(v) => onCheckedChange(v === true)}
-        aria-label={label}
-        className="h-3.5 w-3.5"
-      />
-      <span>{label}</span>
-    </label>
+    <Select
+      value={currentRole ?? "_none"}
+      onValueChange={(v) => onRoleChange(v === "_none" ? undefined : v)}
+    >
+      <SelectTrigger className="h-6 w-[90px] text-[10px] px-2 py-0 border-dashed cursor-pointer">
+        <SelectValue placeholder="Role..." />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="_none" className="text-[11px]">
+          None
+        </SelectItem>
+        {availableRoles.map((role) => (
+          <SelectItem key={role} value={role} className="text-[11px]">
+            {ROLE_LABELS[role] ?? role}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
   );
 }
 
 export function DatasetMappingCard({
-  leftLabel,
-  rightLabel,
+  mapping,
   mappingOk,
-  input,
-  output,
+  autoDetected = false,
+  isVlm = false,
+  format,
 }: {
-  leftLabel: string;
-  rightLabel: string;
+  mapping: Record<string, string>;
   mappingOk: boolean;
-  input: string | null;
-  output: string | null;
+  autoDetected?: boolean;
+  isVlm?: boolean;
+  format?: string;
 }) {
+  const entries = Object.entries(mapping);
+  const requiredLabel = isVlm
+    ? "image and text"
+    : format === "alpaca"
+      ? "instruction and output"
+      : format === "sharegpt"
+        ? "human and gpt"
+        : "user and assistant";
+
   return (
     <div
       className={cn(
@@ -69,7 +130,9 @@ export function DatasetMappingCard({
         </div>
         <div className="min-w-0">
           <p className="text-sm font-semibold tracking-tight">
-            {mappingOk ? "Mapping ready" : "Map dataset columns"}
+            {mappingOk
+              ? autoDetected ? "Auto-detected mapping" : "Mapping ready"
+              : "Map dataset columns"}
           </p>
           <p
             className={cn(
@@ -80,27 +143,29 @@ export function DatasetMappingCard({
             )}
           >
             {mappingOk
-              ? "Looks good. We'll convert this dataset automatically."
-              : `We couldn't auto-detect the format. Pick the ${leftLabel.toLowerCase()} column and the ${rightLabel.toLowerCase()} column. We'll convert it to a supported format automatically.`}
+              ? autoDetected
+                ? "We auto-detected the column mapping below. You can change it using the dropdowns in the column headers."
+                : "Looks good. We'll convert this dataset automatically."
+              : `Assign roles to columns using the dropdowns in the headers. At minimum, assign ${requiredLabel}.`}
           </p>
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            <Badge
-              variant="outline"
-              className="h-6 text-[11px] bg-white/60 dark:bg-transparent"
-            >
-              {leftLabel}: <span className="font-mono">{input ?? "--"}</span>
-            </Badge>
-            <Badge
-              variant="outline"
-              className="h-6 text-[11px] bg-white/60 dark:bg-transparent"
-            >
-              {rightLabel}: <span className="font-mono">{output ?? "--"}</span>
-            </Badge>
-          </div>
-          {!mappingOk && (
+          {entries.length > 0 && (
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              {entries.map(([col, role]) => (
+                <Badge
+                  key={col}
+                  variant="outline"
+                  className="h-6 text-[11px] bg-white/60 dark:bg-transparent"
+                >
+                  <span className="font-mono">{col}</span>
+                  <span className="mx-1 text-muted-foreground/60">&rarr;</span>
+                  <span>{ROLE_LABELS[role] ?? role}</span>
+                </Badge>
+              ))}
+            </div>
+          )}
+          {!mappingOk && entries.length === 0 && (
             <p className="mt-2 text-xs text-amber-800/80 dark:text-amber-200/80">
-              Select exactly 1 {leftLabel.toLowerCase()} and 1{" "}
-              {rightLabel.toLowerCase()} column to continue.
+              Use the dropdowns in the column headers to assign roles.
             </p>
           )}
         </div>
@@ -110,16 +175,12 @@ export function DatasetMappingCard({
 }
 
 export function DatasetMappingFooter({
-  leftLabel,
-  rightLabel,
   mappingOk,
   isStarting,
   startError,
   onCancel,
   onStartTraining,
 }: {
-  leftLabel: string;
-  rightLabel: string;
   mappingOk: boolean;
   isStarting: boolean;
   startError: string | null;
@@ -130,7 +191,7 @@ export function DatasetMappingFooter({
     <div className="mt-3 flex flex-col gap-2">
       <div className="flex items-center justify-between gap-3">
         <p className="text-[11px] text-muted-foreground/70 leading-relaxed">
-          Tip: you can click {leftLabel} / {rightLabel} in the headers.
+          Tip: use the role dropdowns in the column headers to assign roles.
         </p>
         <div className="flex items-center gap-2">
           <Button
@@ -161,31 +222,50 @@ export function DatasetMappingFooter({
   );
 }
 
+/** Canonical chatml role for any format-specific role name. */
+const TO_CANONICAL: Record<string, string> = {
+  user: "user", assistant: "assistant", system: "system",
+  instruction: "user", input: "system", output: "assistant",
+  human: "user", gpt: "assistant",
+  image: "image", text: "text",
+};
+
+/** Chatml → format-specific role names (only for formats that differ). */
+const FROM_CANONICAL: Record<string, Record<string, string>> = {
+  alpaca: { user: "instruction", system: "input", assistant: "output" },
+  sharegpt: { user: "human", assistant: "gpt", system: "system" },
+};
+
+/**
+ * Remap a column→role mapping between formats.
+ * Normalises every role to canonical chatml first, then maps to the target format.
+ */
+export function remapRolesForFormat(
+  mapping: Record<string, string>,
+  format?: string,
+): Record<string, string> {
+  const table = format ? FROM_CANONICAL[format] : undefined;
+  const out: Record<string, string> = {};
+  for (const [col, role] of Object.entries(mapping)) {
+    const canonical = TO_CANONICAL[role] ?? role;
+    out[col] = table ? (table[canonical] ?? canonical) : canonical;
+  }
+  return out;
+}
+
 export function deriveDefaultMapping(
   data: CheckFormatResponse,
   isVlm: boolean,
-): { input: string | null; output: string | null } {
-  const input = isVlm
-    ? data.detected_image_column ?? pickRole(data.suggested_mapping, "image")
-    : pickRole(data.suggested_mapping, "user");
-  const output = isVlm
-    ? data.detected_text_column ?? pickRole(data.suggested_mapping, "text")
-    : pickRole(data.suggested_mapping, "assistant");
-
-  if (input && output && input === output) {
-    return { input, output: null };
+  format?: string,
+): Record<string, string> {
+  if (data.suggested_mapping) {
+    return remapRolesForFormat({ ...data.suggested_mapping }, format);
   }
-
-  return { input: input ?? null, output: output ?? null };
-}
-
-function pickRole(
-  mapping: Record<string, string> | null | undefined,
-  role: string,
-): string | null {
-  if (!mapping) return null;
-  for (const [col, mappedRole] of Object.entries(mapping)) {
-    if (mappedRole === role) return col;
+  if (isVlm) {
+    const result: Record<string, string> = {};
+    if (data.detected_image_column) result[data.detected_image_column] = "image";
+    if (data.detected_text_column) result[data.detected_text_column] = "text";
+    return result;
   }
-  return null;
+  return {};
 }
