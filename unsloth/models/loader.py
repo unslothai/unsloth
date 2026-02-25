@@ -161,7 +161,9 @@ def _fix_rope_inv_freq(model):
             inv_freq = 1.0 / (
                 module.base
                 ** (
-                    torch.arange(0, module.dim, 2, dtype=torch.int64, device="cpu").float()
+                    torch.arange(
+                        0, module.dim, 2, dtype = torch.int64, device = "cpu"
+                    ).float()
                     / module.dim
                 )
             )
@@ -170,9 +172,9 @@ def _fix_rope_inv_freq(model):
             for device_idx in range(len(module.multi_gpu_cos_cached)):
                 if module.multi_gpu_cos_cached[device_idx] is not None:
                     module._set_cos_sin_cache(
-                        seq_len=module.current_rope_size,
-                        device=torch.device(device_idx),
-                        dtype=torch.get_default_dtype(),
+                        seq_len = module.current_rope_size,
+                        device = torch.device(device_idx),
+                        dtype = torch.get_default_dtype(),
                     )
 
         # LongRopeRotaryEmbedding (Phi-3.5 style with short_inv_freq + long_inv_freq)
@@ -189,31 +191,33 @@ def _fix_rope_inv_freq(model):
                 long_factor = rope_scaling.get("long_factor", None)
                 if short_factor is not None and long_factor is not None:
                     inv_freq_shape = (
-                        torch.arange(0, module.dim, 2, dtype=torch.int64, device="cpu").float()
+                        torch.arange(
+                            0, module.dim, 2, dtype = torch.int64, device = "cpu"
+                        ).float()
                         / module.dim
                     )
-                    sf = torch.tensor(short_factor, device="cpu", dtype=torch.float32)
-                    lf = torch.tensor(long_factor, device="cpu", dtype=torch.float32)
-                    module.short_inv_freq = 1.0 / (sf * module.base ** inv_freq_shape)
-                    module.long_inv_freq = 1.0 / (lf * module.base ** inv_freq_shape)
+                    sf = torch.tensor(short_factor, device = "cpu", dtype = torch.float32)
+                    lf = torch.tensor(long_factor, device = "cpu", dtype = torch.float32)
+                    module.short_inv_freq = 1.0 / (sf * module.base**inv_freq_shape)
+                    module.long_inv_freq = 1.0 / (lf * module.base**inv_freq_shape)
 
                     dtype = torch.bfloat16 if is_bfloat16_supported() else torch.float16
                     t = torch.arange(
                         module.original_max_position_embeddings,
-                        device=module.short_inv_freq.device,
-                        dtype=torch.int64,
+                        device = module.short_inv_freq.device,
+                        dtype = torch.int64,
                     ).float()
                     freqs = torch.outer(t, module.short_inv_freq)
-                    emb = torch.cat((freqs, freqs), dim=-1)
+                    emb = torch.cat((freqs, freqs), dim = -1)
                     for device_idx in range(len(module.multi_gpu_short_cos_cached)):
                         if module.multi_gpu_short_cos_cached[device_idx] is not None:
                             device_obj = torch.device(device_idx)
                             module.multi_gpu_short_cos_cached[device_idx] = (
                                 emb.cos() * module.scaling_factor
-                            ).to(dtype=dtype, device=device_obj, non_blocking=True)
+                            ).to(dtype = dtype, device = device_obj, non_blocking = True)
                             module.multi_gpu_short_sin_cached[device_idx] = (
                                 emb.sin() * module.scaling_factor
-                            ).to(dtype=dtype, device=device_obj, non_blocking=True)
+                            ).to(dtype = dtype, device = device_obj, non_blocking = True)
     return model
 
 
