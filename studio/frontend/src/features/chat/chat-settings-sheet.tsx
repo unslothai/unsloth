@@ -320,7 +320,7 @@ export function ChatSettingsPanel({
                 label="Max Tokens"
                 value={params.maxTokens}
                 min={64}
-                max={4096}
+                max={4092}
                 step={64}
                 onChange={set("maxTokens")}
               />
