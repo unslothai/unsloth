@@ -208,7 +208,7 @@ function InlineSidebar({
 
   return (
     <div
-      className="group shrink-0 h-full"
+      className="group shrink-0 h-full pb-3.5"
       data-state={state}
       data-collapsible={collapsed ? "offcanvas" : ""}
       data-side={side}
