@@ -3380,6 +3380,87 @@ def patch_unsloth_zoo_saving():
     # which creates a local reference that is NOT affected by patching the zoo module.
     # We must update the globals() of THIS module so the call at line 2754 uses our wrapper.
     globals()["merge_and_overwrite_lora"] = _mps_safe_merge_and_overwrite_lora
+    
+    # CRITICAL: Patch check_llama_cpp and install_llama_cpp in unsloth_zoo.llama_cpp module
+    # This is needed because save_to_gguf from unsloth_zoo.saving_utils calls these directly
+    # from the module, not from our imported reference
+    try:
+        import unsloth_zoo.llama_cpp as llama_cpp_module
+        
+        # Store originals
+        _orig_check_llama_cpp = llama_cpp_module.check_llama_cpp
+        _orig_install_llama_cpp = llama_cpp_module.install_llama_cpp
+        
+        # Create a wrapper for check_llama_cpp that handles macOS Metal builds
+        def _wrapped_check_llama_cpp_zoo():
+            import platform
+            if platform.system() == "Darwin":
+                possible_paths = [
+                    os.path.join(os.getcwd(), "llama.cpp", "build", "bin"),
+                    os.path.expanduser("~/llama.cpp/build/bin"),
+                ]
+                for bin_path in possible_paths:
+                    if os.path.exists(bin_path) and os.listdir(bin_path):
+                        import shutil
+                        llama_dir = os.path.join(os.getcwd(), "llama.cpp")
+                        os.makedirs(llama_dir, exist_ok=True)
+                        for f in os.listdir(bin_path):
+                            src = os.path.join(bin_path, f)
+                            if os.path.isfile(src):
+                                shutil.copy2(src, llama_dir)
+                        print(f"Unsloth: Found local llama.cpp at {bin_path}, copied binaries")
+                        
+                        quantizer_location = os.path.join(llama_dir, "llama-quantize")
+                        if not os.path.exists(quantizer_location):
+                            quantizer_location = os.path.join(llama_dir, "quantize")
+                        if not os.path.exists(quantizer_location):
+                            for f in os.listdir(llama_dir):
+                                if "quantize" in f.lower():
+                                    quantizer_location = os.path.join(llama_dir, f)
+                                    break
+                        
+                        converter_location = os.path.join(llama_dir, "convert-hf-to-gguf")
+                        if not os.path.exists(converter_location):
+                            converter_location = os.path.join(llama_dir, "convert.py")
+                        if not os.path.exists(converter_location):
+                            for f in os.listdir(llama_dir):
+                                if "convert" in f.lower() and not f.endswith(".pyc"):
+                                    converter_location = os.path.join(llama_dir, f)
+                                    break
+                        
+                        if os.path.exists(quantizer_location) and os.path.exists(converter_location):
+                            return quantizer_location, converter_location
+            
+            # Fallback to original
+            return _orig_check_llama_cpp()
+        
+        # Create wrapper for install_llama_cpp
+        def _wrapped_install_llama_cpp_zoo(**kwargs):
+            import platform
+            if platform.system() == "Darwin":
+                possible_paths = [
+                    os.path.join(os.getcwd(), "llama.cpp", "build", "bin"),
+                    os.path.expanduser("~/llama.cpp/build/bin"),
+                ]
+                for bin_path in possible_paths:
+                    if os.path.exists(bin_path) and os.listdir(bin_path):
+                        import shutil
+                        llama_dir = os.path.join(os.getcwd(), "llama.cpp")
+                        os.makedirs(llama_dir, exist_ok=True)
+                        for f in os.listdir(bin_path):
+                            src = os.path.join(bin_path, f)
+                            if os.path.isfile(src):
+                                shutil.copy2(src, llama_dir)
+                        print(f"Unsloth: Using existing local llama.cpp at {bin_path}")
+            
+            return _orig_install_llama_cpp(**kwargs)
+        
+        # Patch the module
+        llama_cpp_module.check_llama_cpp = _wrapped_check_llama_cpp_zoo
+        llama_cpp_module.install_llama_cpp = _wrapped_install_llama_cpp_zoo
+        print("Unsloth: Patched unsloth_zoo.llama_cpp for macOS Metal support")
+    except Exception as e:
+        print(f"Warning: Could not patch unsloth_zoo.llama_cpp: {e}")
 
 
 def patch_saving_functions(model, vision=False):
