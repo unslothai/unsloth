@@ -10,7 +10,7 @@ from typing import Any
 from ..service import build_config_builder, create_data_designer
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[5]
-_ARTIFACT_ROOT = _PROJECT_ROOT / "datasets" / "recipes"
+_ARTIFACT_ROOT = _PROJECT_ROOT / "studio" / "backend" / "assets" / "datasets"
 
 
 class _QueueLogHandler(logging.Handler):
