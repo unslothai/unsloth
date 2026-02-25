@@ -121,7 +121,7 @@ function BlockSheetButton({
     <button
       type="button"
       onClick={onClick}
-      className={`flex w-full items-center gap-3 bg-white px-3 py-3 text-left transition border-l-2 ${
+      className={`flex w-full items-center gap-3 border-l-2 bg-background px-3 py-3 text-left transition hover:bg-muted/35 ${
         isActive
           ? "border-emerald-500"
           : "border-transparent hover:border-border/60"
