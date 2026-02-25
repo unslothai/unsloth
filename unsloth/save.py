@@ -3150,13 +3150,17 @@ def patch_unsloth_zoo_saving():
     We patch _merge_lora for CPU-based merging, and wrap merge_and_overwrite_lora to
     neutralize all torch.cuda calls during the merge flow on MPS.
     """
+    print("DEBUG: patch_unsloth_zoo_saving() called")
     try:
         import unsloth_zoo.saving_utils
+        print("DEBUG: unsloth_zoo.saving_utils imported")
     except ImportError:
+        print("DEBUG: Could not import unsloth_zoo.saving_utils")
         return
 
     # Patch 1: Replace _merge_lora for CPU-based LoRA merging on MPS
     if not hasattr(unsloth_zoo.saving_utils, "_merge_lora"):
+        print("DEBUG: unsloth_zoo.saving_utils._merge_lora not found, returning early")
         return
     original_merge_lora = unsloth_zoo.saving_utils._merge_lora
 
@@ -3384,8 +3388,10 @@ def patch_unsloth_zoo_saving():
     # CRITICAL: Patch check_llama_cpp and install_llama_cpp in unsloth_zoo.llama_cpp module
     # This is needed because save_to_gguf from unsloth_zoo.saving_utils calls these directly
     # from the module, not from our imported reference
+    print("DEBUG: Starting llama_cpp module patching")
     try:
         import unsloth_zoo.llama_cpp as llama_cpp_module
+        print(f"DEBUG: Found unsloth_zoo.llama_cpp: {llama_cpp_module}")
         
         # Store originals
         _orig_check_llama_cpp = llama_cpp_module.check_llama_cpp
