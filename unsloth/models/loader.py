@@ -1296,7 +1296,10 @@ class FastModel(FastBaseModel):
                 # in their auto_map, not AutoModelForImageTextToText/AutoModelForVision2Seq.
                 _auto_map = getattr(model_config, "auto_map", {}) or {}
                 _vlm_class_name = AutoModelForVision2Seq.__name__
-                if "AutoModelForCausalLM" in _auto_map and _vlm_class_name not in _auto_map:
+                if (
+                    "AutoModelForCausalLM" in _auto_map
+                    and _vlm_class_name not in _auto_map
+                ):
                     auto_model = AutoModelForCausalLM
                 else:
                     auto_model = AutoModelForVision2Seq
