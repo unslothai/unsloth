@@ -20,6 +20,7 @@ const DEFAULT_MODEL_MAX_SEQ_LENGTH = 2048;
 type SelectedModelInput = {
   id: string;
   isLora?: boolean;
+  loadingDescription?: string;
 };
 
 const LORA_SUFFIX_RE = /_(\d{9,})$/;
@@ -159,11 +160,22 @@ export function useChatModelRuntime() {
 
       const explicitIsLora =
         typeof selection === "string" ? undefined : selection.isLora;
+      const extraLoadingDescription =
+        typeof selection === "string" ? undefined : selection.loadingDescription;
       const model = models.find((entry) => entry.id === modelId);
       const lora = loras.find((entry) => entry.id === modelId);
       const isLora =
         explicitIsLora ?? model?.isLora ?? (lora ? true : false);
       const displayName = model?.name || lora?.name || modelId;
+      const currentCheckpoint =
+        useChatRuntimeStore.getState().params.checkpoint;
+      const loadingDescription = [
+        currentCheckpoint ? "Unloading previous model first." : null,
+        extraLoadingDescription ?? null,
+        "This may include downloading. Large models can take a while.",
+      ]
+        .filter(Boolean)
+        .join(" ");
 
       setModelsError(null);
       setLoadingModel({ id: modelId, displayName });
@@ -197,8 +209,7 @@ export function useChatModelRuntime() {
           success: `${displayName} loaded`,
           error: (err) =>
             err instanceof Error ? err.message : "Failed to load model",
-          description:
-            "This may include downloading. Large models can take a while.",
+          description: loadingDescription,
         });
       } catch (error) {
         setLoadingModel(null);
@@ -224,7 +235,7 @@ export function useChatModelRuntime() {
 
       await toast.promise(performUnload(), {
         loading: "Unloading model",
-        success: "Model unloaded",
+        success: { message: "Model unloaded", duration: 1200 },
         error: (err) =>
           err instanceof Error ? err.message : "Failed to unload model",
         description: "Releases VRAM and resets inference state.",
