@@ -323,8 +323,7 @@ def GraniteAttention_fast_forward_inference(
             (2, bsz, 1, n_kv_heads * head_dim), dtype = dtype, device = device
         )
         self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = device)
-        # Only for Gemma2
-        self.temp_O = torch.empty((1, bsz, hidden_size), dtype = dtype, device = device)
+        self.temp_O = torch.empty((bsz, 1, hidden_size), dtype = dtype, device = device)
         self.attention = torch.empty(
             (bsz, n_heads, 1, KV_CACHE_INCREMENT + seq_len), dtype = dtype, device = device
         )
@@ -362,7 +361,7 @@ def GraniteAttention_fast_forward_inference(
     RH_Q = self.RH_Q
     RH_Q[:, :, :, :h] = Qn[:, :, :, h:]
     RH_Q[:, :, :, h:] = Qn[:, :, :, :h]
-    torch.neg(RH_Q[:, :, :, :h], out = RH_Q[:, :, :, :h])
+    RH_Q[:, :, :, :h].neg_()
     Qn *= cos
     Qn.addcmul_(RH_Q, sin)
 
@@ -371,7 +370,7 @@ def GraniteAttention_fast_forward_inference(
     ]  # torch.empty((n_kv_heads, 1, head_dim), dtype = dtype, device = "cuda:0")
     RH_K[:, :, :, :h] = Kn[:, :, :, h:]
     RH_K[:, :, :, h:] = Kn[:, :, :, :h]
-    torch.neg(RH_K[:, :, :, :h], out = RH_K[:, :, :, :h])
+    RH_K[:, :, :, :h].neg_()
     Kn *= cos
     Kn.addcmul_(RH_K, sin)
 
@@ -385,7 +384,7 @@ def GraniteAttention_fast_forward_inference(
 
     # Grouped query attention
     _, _, cached_len, _ = Kn.shape
-    if n_groups != 1:
+    if bsz == 1 or ((not SDPA_HAS_GQA) and n_groups != 1):
         Kn = Kn[:, :, None, :, :].expand(
             bsz, n_kv_heads, n_groups, cached_len, head_dim
         )
@@ -394,20 +393,39 @@ def GraniteAttention_fast_forward_inference(
         )
         Kn = Kn.reshape(bsz, n_heads, cached_len, head_dim)
         Vn = Vn.reshape(bsz, n_heads, cached_len, head_dim)
-    # else:
-    #     Kn, Vn = Kn, Vn
-    # pass
 
-    Qn *= self.scaling
-    A = torch_matmul(Qn, Kn.transpose(2, 3), out = self.attention[:, :, :, :cached_len])
-
-    # if attention_mask is not None: A += attention_mask # Must add attention_mask for batched
-
-    A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)  # .to(A.dtype)
-    A = torch_matmul(A, Vn, out = Qn)
-    # else:
-    #     A = scaled_dot_product_attention(Qn, Kn, Vn, attn_mask = attention_mask, is_causal = False)
-    # pass
+    # Attention
+    if bsz == 1:
+        Qn *= self.scaling
+        A = torch_matmul(
+            Qn, Kn.transpose(2, 3), out = self.attention[:, :, :, :cached_len]
+        )
+        A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)
+        A = torch_matmul(A, Vn, out = Qn)
+    else:
+        if (
+            attention_mask is not None
+            and attention_mask.dim() == 4
+            and attention_mask.dtype != torch.bool
+        ):
+            attention_mask = attention_mask.eq(0)
+        if SDPA_HAS_GQA:
+            A = scaled_dot_product_attention(
+                Qn,
+                Kn,
+                Vn,
+                attn_mask = attention_mask,
+                scale = self.scaling,
+                enable_gqa = True,
+            )
+        else:
+            A = scaled_dot_product_attention(
+                Qn,
+                Kn,
+                Vn,
+                attn_mask = attention_mask,
+                scale = self.scaling,
+            )
     A = A.transpose(1, 2)
     A = A.reshape(bsz, 1, attention_size)
     A = fast_linear_forward(self.o_proj, A, out = self.temp_O)
@@ -442,6 +460,9 @@ def GraniteModel_fast_forward_inference(
             hidden_states,
             seq_len,
         )
+        # Pre-convert to bool once for all layers (avoids per-layer .eq(0))
+        if attention_mask is not None and attention_mask.dtype != torch.bool:
+            attention_mask = attention_mask.eq(0)
     else:
         attention_mask = None
 
