@@ -131,6 +131,7 @@ else:
 
 from transformers.cache_utils import DynamicCache, Cache
 
+
 def _ensure_cache_is_dynamic(past_key_values):
     """Convert list/tuple of (K, V) pairs to DynamicCache for transformers v5 compat."""
     if past_key_values is None:
@@ -151,10 +152,10 @@ def _slice_position_ids(position_ids, input_ids):
         return None
     if position_ids.dim() == 2:
         if position_ids.shape[1] > input_ids.shape[1]:
-            position_ids = position_ids[:, -input_ids.shape[1]:]
+            position_ids = position_ids[:, -input_ids.shape[1] :]
     elif position_ids.dim() == 1:
         if position_ids.shape[0] > input_ids.shape[1]:
-            position_ids = position_ids[-input_ids.shape[1]:]
+            position_ids = position_ids[-input_ids.shape[1] :]
     return position_ids
 
 
@@ -386,10 +387,14 @@ def fix_prepare_inputs_for_generation(module):
     # Wrap generate() to convert tuple/list past_key_values to DynamicCache
     # before transformers v5's _get_cache rejects them
     _original_generate = module.generate
+
     def _fast_generate(self, *args, **kwargs):
         if "past_key_values" in kwargs:
-            kwargs["past_key_values"] = _ensure_cache_is_dynamic(kwargs["past_key_values"])
+            kwargs["past_key_values"] = _ensure_cache_is_dynamic(
+                kwargs["past_key_values"]
+            )
         return _original_generate(self, *args, **kwargs)
+
     module.generate = _fast_generate
 
 

@@ -10,6 +10,7 @@ Or run individual model tests:
     python -m pytest tests/test_past_kv_models.py -v -s -k "Gemma2"
     python -m pytest tests/test_past_kv_models.py -v -s -k "Llama"
 """
+
 import unittest
 import torch
 
@@ -19,7 +20,7 @@ def _skip_if_no_cuda():
         raise unittest.SkipTest("CUDA not available")
 
 
-def _run_past_kv_test(test_case, model_name, load_in_4bit=True):
+def _run_past_kv_test(test_case, model_name, load_in_4bit = True):
     """
     Shared test logic: generate with baseline vs past_key_values and verify
     outputs match (or at minimum, that no errors are raised).
@@ -27,10 +28,10 @@ def _run_past_kv_test(test_case, model_name, load_in_4bit=True):
     from unsloth import FastLanguageModel
 
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=model_name,
-        max_seq_length=2048,
-        dtype=None,
-        load_in_4bit=load_in_4bit,
+        model_name = model_name,
+        max_seq_length = 2048,
+        dtype = None,
+        load_in_4bit = load_in_4bit,
     )
     FastLanguageModel.for_inference(model)
 
@@ -45,15 +46,15 @@ def _run_past_kv_test(test_case, model_name, load_in_4bit=True):
 
     # Tokenize history alone
     text_history = tokenizer.apply_chat_template(
-        messages_history, tokenize=False, add_generation_prompt=False
+        messages_history, tokenize = False, add_generation_prompt = False
     )
-    inputs_history = tokenizer(text_history, return_tensors="pt").to("cuda")
+    inputs_history = tokenizer(text_history, return_tensors = "pt").to("cuda")
 
     # Tokenize full conversation
     text_full = tokenizer.apply_chat_template(
-        messages_history + messages_new, tokenize=False, add_generation_prompt=True
+        messages_history + messages_new, tokenize = False, add_generation_prompt = True
     )
-    inputs_full = tokenizer(text_full, return_tensors="pt").to("cuda")
+    inputs_full = tokenizer(text_full, return_tensors = "pt").to("cuda")
 
     len_history = inputs_history.input_ids.shape[1]
     len_full = inputs_full.input_ids.shape[1]
@@ -61,35 +62,33 @@ def _run_past_kv_test(test_case, model_name, load_in_4bit=True):
 
     # Pre-compute KV cache for history
     with torch.no_grad():
-        outputs_history = model(**inputs_history, use_cache=True)
+        outputs_history = model(**inputs_history, use_cache = True)
         past_kv = outputs_history.past_key_values
 
     # Baseline generation (no custom KV)
     output_baseline = model.generate(
         **inputs_full,
-        max_new_tokens=30,
-        use_cache=True,
-        do_sample=False,
+        max_new_tokens = 30,
+        use_cache = True,
+        do_sample = False,
     )
     text_baseline = tokenizer.decode(
-        output_baseline[0][len_full:], skip_special_tokens=True
+        output_baseline[0][len_full:], skip_special_tokens = True
     )
     print(f"  Baseline: {text_baseline.strip()}")
 
     # KV cache generation
     output_kv = model.generate(
         **inputs_full,
-        max_new_tokens=30,
-        past_key_values=past_kv,
-        use_cache=True,
-        do_sample=False,
+        max_new_tokens = 30,
+        past_key_values = past_kv,
+        use_cache = True,
+        do_sample = False,
     )
     if output_kv.shape[1] > len_full:
-        text_kv = tokenizer.decode(
-            output_kv[0][len_full:], skip_special_tokens=True
-        )
+        text_kv = tokenizer.decode(output_kv[0][len_full:], skip_special_tokens = True)
     else:
-        text_kv = tokenizer.decode(output_kv[0], skip_special_tokens=True)
+        text_kv = tokenizer.decode(output_kv[0], skip_special_tokens = True)
     print(f"  KV Cache: {text_kv.strip()}")
 
     # Both should produce coherent output (not crash)
@@ -107,7 +106,7 @@ def _run_past_kv_test(test_case, model_name, load_in_4bit=True):
     torch.cuda.empty_cache()
 
 
-def _run_tuple_kv_test(test_case, model_name, load_in_4bit=True):
+def _run_tuple_kv_test(test_case, model_name, load_in_4bit = True):
     """
     Test that passing tuple past_key_values (not DynamicCache) works.
     This validates the _ensure_cache_is_dynamic v5 compat path.
@@ -115,19 +114,19 @@ def _run_tuple_kv_test(test_case, model_name, load_in_4bit=True):
     from unsloth import FastLanguageModel
 
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=model_name,
-        max_seq_length=2048,
-        dtype=None,
-        load_in_4bit=load_in_4bit,
+        model_name = model_name,
+        max_seq_length = 2048,
+        dtype = None,
+        load_in_4bit = load_in_4bit,
     )
     FastLanguageModel.for_inference(model)
 
     prompt = "The capital of France is"
-    inputs = tokenizer(prompt, return_tensors="pt").to("cuda")
+    inputs = tokenizer(prompt, return_tensors = "pt").to("cuda")
 
     # Get KV cache from forward pass
     with torch.no_grad():
-        outputs = model(**inputs, use_cache=True)
+        outputs = model(**inputs, use_cache = True)
         past_kv = outputs.past_key_values
 
     # Convert DynamicCache to tuple format (simulating user-provided tuple KV)
@@ -137,16 +136,16 @@ def _run_tuple_kv_test(test_case, model_name, load_in_4bit=True):
         tuple_kv = past_kv  # Already tuple
 
     # This should NOT raise ValueError even on transformers v5
-    next_token = tokenizer(" Paris", return_tensors="pt").to("cuda")
-    full_input = torch.cat([inputs.input_ids, next_token.input_ids], dim=1)
+    next_token = tokenizer(" Paris", return_tensors = "pt").to("cuda")
+    full_input = torch.cat([inputs.input_ids, next_token.input_ids], dim = 1)
     output = model.generate(
-        input_ids=full_input,
-        max_new_tokens=10,
-        past_key_values=tuple_kv,
-        use_cache=True,
-        do_sample=False,
+        input_ids = full_input,
+        max_new_tokens = 10,
+        past_key_values = tuple_kv,
+        use_cache = True,
+        do_sample = False,
     )
-    text = tokenizer.decode(output[0], skip_special_tokens=True)
+    text = tokenizer.decode(output[0], skip_special_tokens = True)
     print(f"\n  Tuple KV output: {text.strip()}")
     test_case.assertGreater(len(text.strip()), 0)
 
