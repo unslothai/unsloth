@@ -1926,8 +1926,11 @@ def unsloth_save_pretrained_gguf(
     # GPT-OSS needs mxfp4 save method
     if is_gpt_oss:
         if quantization_method is not None:
-            _qm = quantization_method if isinstance(quantization_method, (list, tuple)) \
+            _qm = (
+                quantization_method
+                if isinstance(quantization_method, (list, tuple))
                 else [quantization_method]
+            )
             _ignored = [q for q in _qm if str(q).lower() != "mxfp4"]
             if _ignored:
                 logger.warning_once(
