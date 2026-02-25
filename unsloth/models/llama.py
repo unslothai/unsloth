@@ -1972,6 +1972,21 @@ def unsloth_fast_generate(
 
     FastLlamaModel.for_inference(self)
 
+    # Unpack BatchEncoding passed as input_ids for backwards compatibility.
+    # Old notebooks do model.generate(input_ids=tokenizer(...)) where the tokenizer
+    # output is a BatchEncoding (dict-like). Transformers v5 generate() calls
+    # .shape on it directly and crashes. Unpack into separate kwargs so both
+    # v4 and v5 work transparently.
+    _maybe_encoding = kwargs.get("input_ids", None)
+    if (
+        _maybe_encoding is not None
+        and not isinstance(_maybe_encoding, torch.Tensor)
+        and hasattr(_maybe_encoding, "items")
+    ):
+        batch_data = kwargs.pop("input_ids")
+        for key, val in batch_data.items():
+            kwargs.setdefault(key, val)
+
     dtype = _get_dtype(dtype_from_config(self.config))
 
     if hasattr(self, "config") and hasattr(self.config, "max_position_embeddings"):
@@ -1981,9 +1996,6 @@ def unsloth_fast_generate(
             and "max_new_tokens" in kwargs
         ):
             _ids = kwargs["input_ids"]
-            # Handle BatchEncoding from transformers 5.0+ (no .shape attribute)
-            if hasattr(_ids, "input_ids"):
-                _ids = _ids["input_ids"]
             if hasattr(_ids, "shape") and (
                 _ids.shape[-1] + kwargs["max_new_tokens"]
                 > self.config.max_position_embeddings
