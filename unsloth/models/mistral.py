@@ -30,6 +30,7 @@ from ..utils.attention_dispatch import (
 from .llama import (
     LlamaRotaryEmbedding,
     LlamaLinearScalingRotaryEmbedding,
+    _slice_position_ids,
 )
 from transformers.models.mistral.modeling_mistral import (
     MistralAttention,
@@ -255,14 +256,7 @@ def MistralForCausalLM_fast_forward(
         )
     else:
         if position_ids is not None:
-            # Robust fix: Slice position_ids if it's longer than input_ids
-            # Handle both 1D and 2D position_ids
-            if position_ids.dim() == 2:
-                if position_ids.shape[1] > input_ids.shape[1]:
-                    position_ids = position_ids[:, -input_ids.shape[1] :]
-            elif position_ids.dim() == 1:
-                if position_ids.shape[0] > input_ids.shape[1]:
-                    position_ids = position_ids[-input_ids.shape[1] :]
+            position_ids = _slice_position_ids(position_ids, input_ids)
 
         outputs = self.model(
             input_ids = input_ids,
