@@ -126,38 +126,76 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
             "multimodal_columns": None,
         }
 
+# Normalise any format-specific role to canonical chatml (user/assistant/system)
+_TO_CHATML = {
+    "user": "user", "human": "user", "instruction": "user",
+    "assistant": "assistant", "gpt": "assistant", "output": "assistant",
+    "system": "system", "input": "system",
+}
+_CHATML_ROLE_ORDER = ("system", "user", "assistant")
+_CHATML_TO_ALPACA = {"user": "instruction", "system": "input", "assistant": "output"}
+
+
 def _apply_user_mapping(dataset, mapping: dict, batch_size: int = 1000):
     """
     Apply user-provided column mapping to convert dataset to conversations format.
-    
-    Args:
-        dataset: HuggingFace dataset
-        mapping: Dict like {"question": "user", "answer": "assistant", "context": "system"}
-        batch_size: Batch size for processing
-    
+
+    Accepts chatml (user/assistant/system), sharegpt (human/gpt/system), and
+    alpaca (instruction/input/output) role names — all normalised to chatml output.
+
     Returns:
-        Dataset with single 'conversations' column (no extra columns preserved)
+        Dataset with single 'conversations' column
     """
+    # Pre-compute: group columns by canonical chatml role
+    role_groups: dict[str, list[str]] = {r: [] for r in _CHATML_ROLE_ORDER}
+    for col_name, role in mapping.items():
+        canonical = _TO_CHATML.get(role)
+        if canonical:
+            role_groups[canonical].append(col_name)
+
     def _convert(examples):
-        num_examples = len(examples[list(examples.keys())[0]])
+        num = len(next(iter(examples.values())))
         conversations = []
-        
-        for i in range(num_examples):
+        for i in range(num):
             convo = []
-            role_order = ['system', 'user', 'assistant']
-            
-            for target_role in role_order:
-                for col_name, role in mapping.items():
-                    if role == target_role and col_name in examples:
-                        content = examples[col_name][i]
-                        # User explicitly mapped - always include even if empty
-                        convo.append({"role": role, "content": str(content) if content else ""})
-            
+            for chatml_role in _CHATML_ROLE_ORDER:
+                for col in role_groups[chatml_role]:
+                    if col in examples:
+                        content = examples[col][i]
+                        convo.append({"role": chatml_role, "content": str(content) if content else ""})
             conversations.append(convo)
-        
-        # ONLY return conversations - no extra columns
         return {"conversations": conversations}
-    
+
+    return dataset.map(_convert, batched=True, batch_size=batch_size, remove_columns=dataset.column_names)
+
+
+def _apply_user_mapping_alpaca(dataset, mapping: dict, batch_size: int = 1000):
+    """
+    Apply user-provided column mapping to convert dataset to Alpaca format.
+
+    Accepts any format's role names — normalises via _TO_CHATML, then maps
+    user → instruction, system → input, assistant → output.
+
+    Returns:
+        Dataset with instruction/input/output columns
+    """
+    col_for: dict[str, str | None] = {"instruction": None, "input": None, "output": None}
+    for col_name, role in mapping.items():
+        canonical = _TO_CHATML.get(role)
+        alpaca_field = _CHATML_TO_ALPACA.get(canonical) if canonical else None
+        if alpaca_field:
+            col_for[alpaca_field] = col_name
+
+    def _convert(examples):
+        num = len(next(iter(examples.values())))
+        instructions, inputs, outputs = [], [], []
+        for i in range(num):
+            for field, dest in (("instruction", instructions), ("input", inputs), ("output", outputs)):
+                col = col_for[field]
+                val = str(examples[col][i]) if col and col in examples and examples[col][i] else ""
+                dest.append(val)
+        return {"instruction": instructions, "input": inputs, "output": outputs}
+
     return dataset.map(_convert, batched=True, batch_size=batch_size, remove_columns=dataset.column_names)
 
 
@@ -191,20 +229,30 @@ def format_dataset(
     # Detect multimodal first (needed for all flows)
     multimodal_info = detect_multimodal_dataset(dataset)
 
-    # NEW: If user provided explicit mapping, skip detection and apply directly
+    # If user provided explicit mapping, skip detection and apply in the requested format
     if custom_format_mapping:
         try:
-            mapped_dataset = _apply_user_mapping(dataset, custom_format_mapping, batch_size)
+            if format_type == "alpaca":
+                mapped_dataset = _apply_user_mapping_alpaca(dataset, custom_format_mapping, batch_size)
+                final_format = "alpaca"
+                chat_column = None
+            else:
+                # auto / chatml / sharegpt / conversational — all produce chatml conversations
+                # (sharegpt is always standardized to role/content internally)
+                mapped_dataset = _apply_user_mapping(dataset, custom_format_mapping, batch_size)
+                final_format = "chatml_conversations"
+                chat_column = "conversations"
+
             return {
                 "dataset": mapped_dataset,
                 "detected_format": "user_mapped",
-                "final_format": "chatml_conversations",
-                "chat_column": "conversations",
+                "final_format": final_format,
+                "chat_column": chat_column,
                 "is_standardized": True,
                 "requires_manual_mapping": False,
                 "is_multimodal": multimodal_info["is_multimodal"],
                 "multimodal_info": multimodal_info,
-                "warnings": [f"Applied user-provided column mapping: {custom_format_mapping}"]
+                "warnings": [f"Applied user-provided column mapping ({format_type}): {custom_format_mapping}"]
             }
         except Exception as e:
             return {
@@ -224,7 +272,7 @@ def format_dataset(
     detected = detect_dataset_format(dataset)
     warnings = []
 
-     # Add multimodal warning if detected
+    # Add multimodal warning if detected
     if multimodal_info["is_multimodal"]:
         warnings.append(
             f"Multimodal dataset detected. Found columns: {multimodal_info['multimodal_columns']}"
@@ -309,48 +357,25 @@ def format_dataset(
                         conversations = []
                         num_examples = len(examples[list(examples.keys())[0]])
 
-                        # NEW: Check if this is user-provided or auto-detected
-                        is_user_provided = custom_format_mapping is not None  # Passed explicitly
-
-                        # Preserve non-mapped columns ONLY if auto-detected
-                        preserved_columns = {}
-                        if not is_user_provided:  # Only preserve for auto-detection
-                            all_columns = set(examples.keys())
-                            mapped_columns = set(custom_mapping.keys())
-                            non_mapped_columns = all_columns - mapped_columns
-
-                            for col in non_mapped_columns:
-                                preserved_columns[col] = examples[col]
+                        # Preserve non-mapped columns
+                        all_columns = set(examples.keys())
+                        mapped_columns = set(custom_mapping.keys())
+                        preserved_columns = {
+                            col: examples[col]
+                            for col in all_columns - mapped_columns
+                        }
 
                         for i in range(num_examples):
                             convo = []
-
-                            # Enforce standard role order
-                            role_order = ['system', 'user', 'assistant']
-
-                            for target_role in role_order:
+                            for target_role in ['system', 'user', 'assistant']:
                                 for col_name, role in custom_mapping.items():
                                     if role == target_role and col_name in examples:
                                         content = examples[col_name][i]
-
-                                        # NEW: Different behavior based on mapping source
-                                        if is_user_provided:
-                                            # User explicitly mapped this - always include even if empty
-                                            convo.append({"role": role, "content": str(content) if content else ""})
-                                        else:
-                                            # Auto-detected - skip empty (original behavior)
-                                            if content and str(content).strip():
-                                                convo.append({"role": role, "content": str(content)})
-
+                                        if content and str(content).strip():
+                                            convo.append({"role": role, "content": str(content)})
                             conversations.append(convo)
 
-                        result = {"conversations": conversations}
-
-                        # Only add preserved columns if auto-detected
-                        if not is_user_provided:
-                            result.update(preserved_columns)
-
-                        return result
+                        return {"conversations": conversations, **preserved_columns}
 
 
                     try:
@@ -459,7 +484,7 @@ def format_dataset(
             }
 
     # CHATML MODE: Convert to ChatML
-    elif format_type in ["chatml", "conversational"]:
+    elif format_type in ["chatml", "conversational", "sharegpt"]:
 
         if detected["format"] == "alpaca":
             converted = convert_alpaca_to_chatml(dataset, batch_size, num_proc)
@@ -508,36 +533,38 @@ def format_dataset(
 
         else:
             warnings.append(f"Unknown format, attempting standardization")
-            try:
-                standardized = standardize_chat_format(
-                    dataset, tokenizer, aliases_for_system,
-                    aliases_for_user, aliases_for_assistant,
-                    batch_size, num_proc
-                )
-                return {
-                    "dataset": standardized,
-                    "detected_format": "unknown",
-                    "final_format": f"chatml_{detected['chat_column']}",
-                    "chat_column": detected["chat_column"],
-                    "is_standardized": True,
-                    "requires_manual_mapping": False,
-                    "is_multimodal": multimodal_info["is_multimodal"],
-                    "multimodal_info": multimodal_info,
-                    "warnings": warnings
-                }
-            except Exception as e:
-                warnings.append(f"Standardization failed: {e}")
-                return {
-                    "dataset": dataset,
-                    "detected_format": "unknown",
-                    "final_format": "unknown",
-                    "chat_column": detected["chat_column"],
-                    "is_standardized": False,
-                    "requires_manual_mapping": True,
-                    "is_multimodal": multimodal_info["is_multimodal"],
-                    "multimodal_info": multimodal_info,
-                    "warnings": warnings
-                }
+            if detected["chat_column"]:
+                try:
+                    standardized = standardize_chat_format(
+                        dataset, tokenizer, aliases_for_system,
+                        aliases_for_user, aliases_for_assistant,
+                        batch_size, num_proc
+                    )
+                    return {
+                        "dataset": standardized,
+                        "detected_format": "unknown",
+                        "final_format": f"chatml_{detected['chat_column']}",
+                        "chat_column": detected["chat_column"],
+                        "is_standardized": True,
+                        "requires_manual_mapping": False,
+                        "is_multimodal": multimodal_info["is_multimodal"],
+                        "multimodal_info": multimodal_info,
+                        "warnings": warnings
+                    }
+                except Exception as e:
+                    warnings.append(f"Standardization failed: {e}")
+
+            return {
+                "dataset": dataset,
+                "detected_format": "unknown",
+                "final_format": "unknown",
+                "chat_column": detected["chat_column"],
+                "is_standardized": False,
+                "requires_manual_mapping": True,
+                "is_multimodal": multimodal_info["is_multimodal"],
+                "multimodal_info": multimodal_info,
+                "warnings": warnings
+            }
 
     else:
         raise ValueError(f"Unknown format_type: {format_type}")
@@ -768,8 +795,10 @@ def format_and_template_dataset(
         )
 
         # Step 2: Apply chat template
-        if "gemma" in model_name.lower() and not dataset_info["is_multimodal"] and (format_type != "alpaca" or (format_type == "auto" and dataset_info["detected_format"] != "alpaca")):
-            print("remove_bos_prefix is true")
+        # Gemma emits a leading <bos> that must be stripped for text-only chatml/sharegpt.
+        is_alpaca = format_type == "alpaca" or (format_type == "auto" and dataset_info["detected_format"] == "alpaca")
+        is_gemma = "gemma" in model_name.lower()
+        if is_gemma and not dataset_info["is_multimodal"] and not is_alpaca:
             remove_bos_prefix = True
         template_result = apply_chat_template_to_dataset(
             dataset_info=dataset_info,
@@ -791,14 +820,24 @@ def format_and_template_dataset(
         all_warnings = dataset_info.get("warnings", []) + template_result.get("warnings", [])
         all_errors = template_result.get("errors", [])
 
+        # If format_dataset returned "unknown" but apply_chat_template rescued
+        # it via heuristic detection, update final_format to reflect reality.
+        final_format = dataset_info["final_format"]
+        requires_manual = dataset_info.get("requires_manual_mapping", False)
+        if final_format == "unknown" and template_result["success"]:
+            out_ds = template_result["dataset"]
+            if hasattr(out_ds, "column_names") and "text" in out_ds.column_names:
+                final_format = "chatml_conversations"
+                requires_manual = False
+
         return {
             "dataset": template_result["dataset"],
             "detected_format": dataset_info["detected_format"],
-            "final_format": dataset_info["final_format"],
+            "final_format": final_format,
             "chat_column": dataset_info.get("chat_column"),
             "is_vlm": False,  # This is LLM flow
             "success": template_result["success"],
-            "requires_manual_mapping": dataset_info.get("requires_manual_mapping", False),
+            "requires_manual_mapping": requires_manual,
             "warnings": all_warnings,
             "errors": all_errors,
             "summary": summary,

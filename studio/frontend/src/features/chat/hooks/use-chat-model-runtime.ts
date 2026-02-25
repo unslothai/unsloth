@@ -21,6 +21,7 @@ type SelectedModelInput = {
   id: string;
   isLora?: boolean;
   ggufVariant?: string;
+  loadingDescription?: string;
 };
 
 const LORA_SUFFIX_RE = /_(\d{9,})$/;
@@ -73,6 +74,8 @@ function toLoraSummary(lora: {
   display_name: string;
   adapter_path: string;
   base_model?: string | null;
+  source?: "training" | "exported" | null;
+  export_type?: "lora" | "merged" | null;
 }): ChatLoraSummary {
   const idTail = lora.adapter_path.split("/").filter(Boolean).at(-1) ?? "";
   const updatedAt =
@@ -83,6 +86,8 @@ function toLoraSummary(lora: {
     name: stripTrailingEpoch(lora.display_name),
     baseModel: lora.base_model || "Unknown base model",
     updatedAt,
+    source: lora.source ?? undefined,
+    exportType: lora.export_type ?? undefined,
   };
 }
 
@@ -162,11 +167,22 @@ export function useChatModelRuntime() {
         typeof selection === "string" ? undefined : selection.isLora;
       const ggufVariant =
         typeof selection === "string" ? undefined : selection.ggufVariant;
+      const extraLoadingDescription =
+        typeof selection === "string" ? undefined : selection.loadingDescription;
       const model = models.find((entry) => entry.id === modelId);
       const lora = loras.find((entry) => entry.id === modelId);
       const isLora =
         explicitIsLora ?? model?.isLora ?? (lora ? true : false);
       const displayName = model?.name || lora?.name || modelId;
+      const currentCheckpoint =
+        useChatRuntimeStore.getState().params.checkpoint;
+      const loadingDescription = [
+        currentCheckpoint ? "Unloading previous model first." : null,
+        extraLoadingDescription ?? null,
+        "This may include downloading. Large models can take a while.",
+      ]
+        .filter(Boolean)
+        .join(" ");
 
       setModelsError(null);
       setLoadingModel({ id: modelId, displayName });
@@ -201,8 +217,7 @@ export function useChatModelRuntime() {
           success: `${displayName} loaded`,
           error: (err) =>
             err instanceof Error ? err.message : "Failed to load model",
-          description:
-            "This may include downloading. Large models can take a while.",
+          description: loadingDescription,
         });
       } catch (error) {
         setLoadingModel(null);
@@ -228,7 +243,7 @@ export function useChatModelRuntime() {
 
       await toast.promise(performUnload(), {
         loading: "Unloading model",
-        success: "Model unloaded",
+        success: { message: "Model unloaded", duration: 1200 },
         error: (err) =>
           err instanceof Error ? err.message : "Failed to unload model",
         description: "Releases VRAM and resets inference state.",
