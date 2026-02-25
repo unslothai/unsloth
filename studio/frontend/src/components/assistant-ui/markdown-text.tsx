@@ -1,20 +1,30 @@
 "use client";
 
-import { INTERNAL } from "@assistant-ui/react";
-import { StreamdownTextPrimitive } from "@assistant-ui/react-streamdown";
+import { INTERNAL, useMessagePartText } from "@assistant-ui/react";
 import { code } from "@streamdown/code";
 import { math } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
+import { Streamdown } from "streamdown";
 import "katex/dist/katex.min.css";
 
-const { withSmoothContextProvider } = INTERNAL;
+const { withSmoothContextProvider, useSmoothStatus } = INTERNAL;
 
 const MarkdownTextImpl = () => {
+  const { text } = useMessagePartText();
+  const status = useSmoothStatus();
+
   return (
-    <StreamdownTextPrimitive
-      plugins={{ code, math, mermaid }}
-      controls={true}
-    />
+    <div data-status={status.type}>
+      <Streamdown
+        mode="streaming"
+        isAnimating={status.type === "running"}
+        plugins={{ code, math, mermaid }}
+        controls={true}
+        shikiTheme={["github-light", "github-dark"]}
+      >
+        {text}
+      </Streamdown>
+    </div>
   );
 };
 

@@ -1,11 +1,13 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
+@import "streamdown/styles.css";
 @import "@fontsource-variable/figtree";
 @import "@fontsource-variable/space-grotesk";
 @import "@fontsource-variable/inter";
 @import "tw-shimmer";
 @plugin "@toolwind/corner-shape";
+@source "../node_modules/streamdown/dist/*.js";
 
 @font-face {
   font-family: "Hellix";
