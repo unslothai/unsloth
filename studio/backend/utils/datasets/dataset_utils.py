@@ -507,7 +507,7 @@ def format_dataset(
             }
 
     # CHATML MODE: Convert to ChatML
-    elif format_type in ["chatml", "conversational"]:
+    elif format_type in ["chatml", "conversational", "sharegpt"]:
 
         if detected["format"] == "alpaca":
             converted = convert_alpaca_to_chatml(dataset, batch_size, num_proc)
