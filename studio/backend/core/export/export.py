@@ -2,9 +2,11 @@
 """
 Export backend - handles model exporting in various formats
 """
+import glob
 import json
 import logging
 import os
+import shutil
 from pathlib import Path
 from typing import Optional, Tuple, List
 from peft import PeftModel, PeftModelForCausalLM
@@ -409,9 +411,15 @@ class ExportBackend:
                 # On WSL, patch out sudo check before llama.cpp build
                 _apply_wsl_sudo_patch()
 
+                # Snapshot existing .gguf files in cwd before conversion.
+                # unsloth's convert_to_gguf writes output files relative to
+                # cwd (repo root), so we diff afterwards and relocate them.
+                cwd = os.getcwd()
+                pre_existing_ggufs = set(glob.glob(os.path.join(cwd, "*.gguf")))
+
                 # Pass absolute path — no os.chdir needed.
-                # unsloth saves model files into this directory, while
-                # check_llama_cpp("llama.cpp") resolves against cwd (repo root)
+                # unsloth saves intermediate HF model files into model_save_path,
+                # while check_llama_cpp("llama.cpp") resolves against cwd (repo root)
                 # where setup.sh already built llama.cpp with quantizer.
                 model_save_path = os.path.join(abs_save_dir, "model")
                 self.current_model.save_pretrained_gguf(
@@ -419,6 +427,27 @@ class ExportBackend:
                     self.current_tokenizer,
                     quantization_method=quant_method
                 )
+
+                # Relocate GGUF artifacts into the export directory.
+                # convert_to_gguf writes .gguf files to cwd (repo root)
+                # because --outfile is a relative path like "model.Q4_K_M.gguf".
+                new_ggufs = set(glob.glob(os.path.join(cwd, "*.gguf"))) - pre_existing_ggufs
+                for src in sorted(new_ggufs):
+                    dest = os.path.join(abs_save_dir, os.path.basename(src))
+                    shutil.move(src, dest)
+                    logger.info(f"Relocated GGUF: {os.path.basename(src)} → {abs_save_dir}/")
+
+                # Also check model_save_path for any .gguf files
+                if os.path.isdir(model_save_path):
+                    for src in glob.glob(os.path.join(model_save_path, "*.gguf")):
+                        dest = os.path.join(abs_save_dir, os.path.basename(src))
+                        shutil.move(src, dest)
+                        logger.info(f"Relocated GGUF: {os.path.basename(src)} → {abs_save_dir}/")
+
+                    # Clean up intermediate HF model files (safetensors, config, etc.)
+                    # since we only need the final .gguf output
+                    shutil.rmtree(model_save_path, ignore_errors=True)
+                    logger.info("Cleaned up intermediate HF model files")
 
                 logger.info(f"GGUF model saved successfully in {abs_save_dir}")
 
