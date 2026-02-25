@@ -2,6 +2,7 @@
 """
 Export backend - handles model exporting in various formats
 """
+import json
 import logging
 import os
 from pathlib import Path
@@ -200,6 +201,18 @@ class ExportBackend:
             logger.error(traceback.format_exc())
             return False, f"Failed to load checkpoint: {str(e)}"
 
+    def _write_export_metadata(self, save_directory: str):
+        """Write export_metadata.json with base model info for Chat page discovery."""
+        try:
+            base_model = get_base_model_from_lora(self.current_checkpoint) if self.current_checkpoint else None
+            metadata = {"base_model": base_model}
+            metadata_path = os.path.join(save_directory, "export_metadata.json")
+            with open(metadata_path, "w") as f:
+                json.dump(metadata, f, indent=2)
+            logger.info(f"Wrote export metadata to {metadata_path}")
+        except Exception as e:
+            logger.warning(f"Could not write export metadata: {e}")
+
     def export_merged_model(self,
                            save_directory: str,
                            format_type: str = "16-bit (FP16)",
@@ -244,6 +257,9 @@ class ExportBackend:
                     self.current_tokenizer,
                     save_method=save_method
                 )
+
+                # Write export metadata so the Chat page can identify the base model
+                self._write_export_metadata(save_directory)
                 logger.info(f"Model saved successfully to {save_directory}")
 
             # Push to hub if requested
@@ -297,6 +313,9 @@ class ExportBackend:
 
                 self.current_model.save_pretrained(save_directory)
                 self.current_tokenizer.save_pretrained(save_directory)
+
+                # Write export metadata so the Chat page can identify the base model
+                self._write_export_metadata(save_directory)
                 logger.info(f"Model saved successfully to {save_directory}")
 
             # Push to hub if requested

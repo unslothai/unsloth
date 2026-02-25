@@ -4,6 +4,8 @@
     "ignore": [
       "dist",
       "node_modules",
+      "test",
+      "test/**",
       "**/._*",
       "._*",
       "**/.DS_Store",

@@ -1,0 +1,84 @@
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
+import type { ReactElement } from "react";
+import type { ExpressionConfig, ExpressionDtype } from "../../types";
+import { AvailableVariables } from "../shared/available-variables";
+import { FieldLabel } from "../shared/field-label";
+import { NameField } from "../shared/name-field";
+
+const DTYPE_OPTIONS: ExpressionDtype[] = ["str", "int", "float", "bool"];
+
+type ExpressionDialogProps = {
+  config: ExpressionConfig;
+  onUpdate: (patch: Partial<ExpressionConfig>) => void;
+};
+
+export function ExpressionDialog({
+  config,
+  onUpdate,
+}: ExpressionDialogProps): ReactElement {
+  const dtypeId = `${config.id}-dtype`;
+  const exprId = `${config.id}-expr`;
+  const updateField = <K extends keyof ExpressionConfig>(
+    key: K,
+    value: ExpressionConfig[K],
+  ) => {
+    onUpdate({ [key]: value } as Partial<ExpressionConfig>);
+  };
+  return (
+    <div className="space-y-4">
+      <AvailableVariables configId={config.id} />
+      <NameField
+        value={config.name}
+        onChange={(value) => onUpdate({ name: value })}
+      />
+      <div className="grid gap-2">
+        <FieldLabel
+          label="Output type"
+          htmlFor={dtypeId}
+          hint="Cast expression output type in final dataset."
+        />
+        <Select
+          value={config.dtype}
+          onValueChange={(value) =>
+            updateField("dtype", value as ExpressionDtype)
+          }
+        >
+          <SelectTrigger className="nodrag w-full" id={dtypeId}>
+            <SelectValue placeholder="Select type" />
+          </SelectTrigger>
+          <SelectContent>
+            {DTYPE_OPTIONS.map((dtype) => (
+              <SelectItem key={dtype} value={dtype}>
+                {dtype}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      <div className="grid gap-2">
+        <FieldLabel
+          label="Expression (Jinja2)"
+          htmlFor={exprId}
+          hint="Use Jinja to combine or transform existing columns."
+        />
+        <Textarea
+          id={exprId}
+          className="corner-squircle nodrag"
+          placeholder="{{ category_1 }} - {{ subcategory_1 }}"
+          value={config.expr}
+          onChange={(event) => updateField("expr", event.target.value)}
+        />
+        <p className="text-xs text-muted-foreground">
+          Use Jinja2. Reference columns like {"{{ column_name }}"}.
+        </p>
+      </div>
+    </div>
+  );
+}

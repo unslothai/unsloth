@@ -638,6 +638,90 @@ def scan_trained_loras(outputs_dir: str = "./outputs") -> List[Tuple[str, str]]:
         logger.error(f"Error scanning outputs folder: {e}")
         return []
 
+def scan_exported_models(exports_dir: str = "./exports") -> List[Tuple[str, str, str, Optional[str]]]:
+    """
+    Scan exports folder for exported models (merged, LoRA, base).
+    Skips GGUF-only exports (not loadable by Unsloth inference backend).
+
+    The exports directory is two levels deep: {run}/{checkpoint}/
+
+    Returns:
+        List of tuples: [(display_name, model_path, export_type, base_model), ...]
+        export_type: "lora" | "merged"
+    """
+    results = []
+    exports_path = Path(exports_dir)
+
+    if not exports_path.exists():
+        return results
+
+    try:
+        for run_dir in exports_path.iterdir():
+            if not run_dir.is_dir():
+                continue
+            for checkpoint_dir in run_dir.iterdir():
+                if not checkpoint_dir.is_dir():
+                    continue
+
+                adapter_config = checkpoint_dir / "adapter_config.json"
+                config_file = checkpoint_dir / "config.json"
+                has_weights = (
+                    any(checkpoint_dir.glob("*.safetensors"))
+                    or any(checkpoint_dir.glob("*.bin"))
+                )
+                has_gguf = any(checkpoint_dir.glob("*.gguf"))
+
+                base_model = None
+                export_type = None
+
+                if adapter_config.exists():
+                    export_type = "lora"
+                    try:
+                        cfg = json.loads(adapter_config.read_text())
+                        base_model = cfg.get("base_model_name_or_path")
+                    except Exception:
+                        pass
+                elif config_file.exists() and has_weights:
+                    export_type = "merged"
+                    # Read base model from export_metadata.json (written at export time)
+                    export_meta = checkpoint_dir / "export_metadata.json"
+                    try:
+                        if export_meta.exists():
+                            meta = json.loads(export_meta.read_text())
+                            base_model = meta.get("base_model")
+                    except Exception:
+                        pass
+                elif has_gguf:
+                    # GGUF-only — not loadable by current inference backend
+                    continue
+                else:
+                    continue
+
+                # Fallback: read base model from the original training run's
+                # adapter_config.json in ./outputs/{run_name}/
+                if not base_model:
+                    outputs_adapter_cfg = Path("./outputs") / run_dir.name / "adapter_config.json"
+                    try:
+                        if outputs_adapter_cfg.exists():
+                            cfg = json.loads(outputs_adapter_cfg.read_text())
+                            base_model = cfg.get("base_model_name_or_path")
+                    except Exception:
+                        pass
+
+                display_name = f"{run_dir.name} / {checkpoint_dir.name}"
+                model_path = str(checkpoint_dir)
+                results.append((display_name, model_path, export_type, base_model))
+                logger.debug(f"Found exported model: {display_name} ({export_type})")
+
+        results.sort(key=lambda x: Path(x[1]).stat().st_mtime, reverse=True)
+        logger.info(f"Found {len(results)} exported models in {exports_dir}")
+        return results
+
+    except Exception as e:
+        logger.error(f"Error scanning exports folder: {e}")
+        return []
+
+
 def get_base_model_from_lora(lora_path: str) -> Optional[str]:
     """
     Read the base model name from a LoRA adapter's config.

@@ -11,4 +11,4 @@ pyjwt
 easydict
 addict
 gradio>=4.0.0
-huggingface-hub==0.36.0
+huggingface-hub==0.36.2
