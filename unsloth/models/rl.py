@@ -94,7 +94,45 @@ def vLLMSamplingParams(**kwargs):
 
 
 def PatchRL(FastLanguageModel):
-    from trl.models.utils import unwrap_model_for_generation
+    try:
+        from trl.models.utils import unwrap_model_for_generation
+    except ImportError:
+        try:
+            from trl.models import unwrap_model_for_generation
+        except ImportError:
+            # Local fallback -- TRL removed or moved this symbol
+            from contextlib import contextmanager as _cm
+
+            @_cm
+            def unwrap_model_for_generation(
+                model, accelerator, gather_deepspeed3_params=True
+            ):
+                unwrapped_model = accelerator.unwrap_model(model)
+                is_gc = getattr(
+                    unwrapped_model, "is_gradient_checkpointing", False
+                )
+                if is_gc:
+                    unwrapped_model.gradient_checkpointing_disable()
+                if (
+                    getattr(accelerator, "state", None) is not None
+                    and getattr(accelerator.state, "deepspeed_plugin", None)
+                    is not None
+                    and accelerator.state.deepspeed_plugin.zero_stage == 3
+                ):
+                    if not gather_deepspeed3_params:
+                        yield accelerator.unwrap_model(model)
+                    else:
+                        import deepspeed
+
+                        with deepspeed.zero.GatheredParameters(
+                            model.parameters()
+                        ):
+                            yield accelerator.unwrap_model(model)
+                else:
+                    yield unwrapped_model
+                if is_gc:
+                    unwrapped_model.gradient_checkpointing_enable()
+
     from contextlib import contextmanager
 
     @contextmanager
@@ -253,9 +291,12 @@ create_completion_attention_mask = RL_REPLACEMENTS["create_completion_attention_
 left_pack_padding = RL_REPLACEMENTS["left_pack_padding"]
 align_logprobs_with_mask = RL_REPLACEMENTS["align_logprobs_with_mask"]
 autotune_batch_and_chunks = RL_REPLACEMENTS["grpo_autotune_batch_and_chunks"]
+sanitize_logprob = RL_REPLACEMENTS["sanitize_logprob"]
 
 RLTrainer_replacement = '''
 import os
+import math
+import logging
 from typing import *
 from dataclasses import dataclass, field
 from packaging.version import Version
@@ -324,6 +365,7 @@ torch_compile_options = {{
 {left_pack_padding_code}
 {align_logprobs_with_mask_code}
 {autotune_batch_and_chunks_code}
+{sanitize_logprob_code}
 
 {RL_pre}
 
@@ -1228,6 +1270,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     left_pack_padding_code = inspect.getsource(left_pack_padding)
     align_logprobs_with_mask_code = inspect.getsource(align_logprobs_with_mask)
     autotune_batch_and_chunks_code = inspect.getsource(autotune_batch_and_chunks)
+    sanitize_logprob_code = inspect.getsource(sanitize_logprob)
     # Get final source code
     RLTrainer_source = RLTrainer_replacement.format(
         RLTrainer_name = RLTrainer_name,
@@ -1256,6 +1299,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         autotune_batch_and_chunks_code = autotune_batch_and_chunks_code,
         left_pack_padding_code = left_pack_padding_code,
         align_logprobs_with_mask_code = align_logprobs_with_mask_code,
+        sanitize_logprob_code = sanitize_logprob_code,
     )
 
     if RLTrainer_name == "GRPOTrainer":
