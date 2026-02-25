@@ -159,6 +159,7 @@ export function ModelSection() {
   } = useHfModelSearch(debouncedQuery, {
     task,
     accessToken: hfToken || undefined,
+    excludeGguf: true,
   });
 
   const { error: tokenValidationError, isChecking: isCheckingToken } =
