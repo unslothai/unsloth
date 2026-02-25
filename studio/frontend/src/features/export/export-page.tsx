@@ -155,7 +155,12 @@ export function ExportPage() {
     setExportError(null);
     setExportSuccess(false);
 
-    const saveDir = `./exports/${selectedModelIdx ?? "model"}/${checkpoint}`;
+    // For GGUF, use a flat folder like "exports/gemma-3-4b-it-finetune-gguf"
+    // For other formats, nest under training-run/checkpoint
+    const saveDir =
+      exportMethod === "gguf"
+        ? `./exports/${(baseModelName.split("/").pop() ?? selectedModelIdx ?? "model")}-finetune-gguf`
+        : `./exports/${selectedModelIdx ?? "model"}/${checkpoint}`;
     const pushToHub = destination === "hub";
     const repoId = pushToHub && hfUsername && modelName
       ? `${hfUsername}/${modelName}`
