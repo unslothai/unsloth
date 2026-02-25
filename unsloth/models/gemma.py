@@ -97,7 +97,7 @@ def GemmaDecoderLayer_fast_forward(
         self, "_flag_for_generation"
     ):  # past_key_value is not None:
         out_weight = torch.empty(
-            self.input_layernorm.weight.shape, dtype = torch.float32, device = "cuda:0"
+            self.input_layernorm.weight.shape, dtype = torch.float32, device = f"{DEVICE_TYPE_TORCH}:0"
         )
 
         # Self Attention
