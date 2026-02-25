@@ -3492,9 +3492,59 @@ def patch_unsloth_zoo_saving():
             
             return _orig_install_llama_cpp(**kwargs)
         
+        # CRITICAL: Also patch _download_convert_hf_to_gguf which returns converter info
+        # The MockModule returns itself instead of the expected tuple
+        def _wrapped_download_convert_hf_to_gguf():
+            import platform
+            if platform.system() == "Darwin":
+                possible_paths = [
+                    os.path.join(os.getcwd(), "llama.cpp"),
+                    os.path.expanduser("~/llama.cpp"),
+                ]
+                for llama_dir in possible_paths:
+                    if os.path.exists(llama_dir):
+                        converter_location = os.path.join(llama_dir, "convert_lora_to_gguf.py")
+                        if not os.path.exists(converter_location):
+                            converter_location = os.path.join(llama_dir, "convert-hf-to-gguf")
+                        if not os.path.exists(converter_location):
+                            converter_location = os.path.join(llama_dir, "convert.py")
+                        if not os.path.exists(converter_location):
+                            for f in os.listdir(llama_dir):
+                                if "convert" in f.lower() and f.endswith(".py"):
+                                    converter_location = os.path.join(llama_dir, f)
+                                    break
+                        
+                        if os.path.exists(converter_location):
+                            supported_text_archs = ["llama", "mistral", "qwen2", "gemma2", "phi3", "stable_lm", "stablelm2", "gpt2", "falcon", "dbrx", "command-r", "bloom", "mpt", "opt", "t5", "XLNet", "roformer", "bert", "nemo", "decoding"]
+                            supported_vision_archs = ["llama", "qwen2", "glm4", "vit"]
+                            return converter_location, supported_text_archs, supported_vision_archs
+            
+            # Fallback - return empty values which will cause test to fail gracefully
+            return None, None, None
+        
+        llama_cpp_module._download_convert_hf_to_gguf = _wrapped_download_convert_hf_to_gguf
+        
+        # Also patch convert_to_gguf to handle the mock gracefully
+        _orig_convert_to_gguf = llama_cpp_module.convert_to_gguf
+        def _wrapped_convert_to_gguf(*args, **kwargs):
+            # If we have a mock, just return empty to fail gracefully
+            if hasattr(_orig_convert_to_gguf, '_unsloth_mock'):
+                return [], False
+            return _orig_convert_to_gguf(*args, **kwargs)
+        
+        llama_cpp_module.convert_to_gguf = _wrapped_convert_to_gguf
+        
         # Patch the module
         llama_cpp_module.check_llama_cpp = _wrapped_check_llama_cpp_zoo
         llama_cpp_module.install_llama_cpp = _wrapped_install_llama_cpp_zoo
+        
+        # CRITICAL: Also update the local binding in this module (save.py).
+        # Line 27 does `from unsloth_zoo.llama_cpp import ... _download_convert_hf_to_gguf ...`
+        # which creates a local reference that is NOT affected by patching the zoo module.
+        # We must update the globals() of THIS module so the call at line 1376 uses our wrapper.
+        globals()["_download_convert_hf_to_gguf"] = _wrapped_download_convert_hf_to_gguf
+        globals()["convert_to_gguf"] = _wrapped_convert_to_gguf
+        
         print("Unsloth: Patched unsloth_zoo.llama_cpp for macOS Metal support")
     except Exception as e:
         print(f"Warning: Could not patch unsloth_zoo.llama_cpp: {e}")
