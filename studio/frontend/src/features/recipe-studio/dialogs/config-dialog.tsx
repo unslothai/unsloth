@@ -1,0 +1,104 @@
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogFooter } from "@/components/ui/dialog";
+import { Switch } from "@/components/ui/switch";
+import type { ReactElement } from "react";
+import { getBlockDefinitionForConfig } from "../blocks/definitions";
+import { renderBlockDialog } from "../blocks/registry";
+import type { NodeConfig, SamplerConfig } from "../types";
+import { DialogShell } from "./shared/dialog-shell";
+import { ValidationBanner } from "./shared/validation-banner";
+
+type ConfigDialogProps = {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  config: NodeConfig | null;
+  categoryOptions: SamplerConfig[];
+  modelConfigAliases: string[];
+  modelProviderOptions: string[];
+  datetimeOptions: string[];
+  onUpdate: (id: string, patch: Partial<NodeConfig>) => void;
+  container?: HTMLDivElement | null;
+};
+
+export function ConfigDialog({
+  open,
+  onOpenChange,
+  config,
+  categoryOptions,
+  modelConfigAliases,
+  modelProviderOptions,
+  datetimeOptions,
+  onUpdate,
+  container,
+}: ConfigDialogProps): ReactElement {
+  const blockDefinition = getBlockDefinitionForConfig(config);
+  const showDropToggle =
+    config?.kind === "sampler" ||
+    config?.kind === "llm" ||
+    config?.kind === "expression" ||
+    (config?.kind === "seed" &&
+      (config.seed_source_type ?? "hf") === "unstructured");
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent
+        container={container}
+        position="absolute"
+        overlayPosition="absolute"
+        overlayClassName="bg-transparent"
+        className="corner-squircle max-h-[650px] overflow-auto sm:max-w-2xl shadow-border"
+      >
+        <DialogShell
+          title={blockDefinition ? `${blockDefinition.title} block` : undefined}
+          description={
+            blockDefinition
+              ? blockDefinition.description
+              : "Adjust block params before running the flow."
+          }
+        />
+        {!config && (
+          <div className="text-sm text-muted-foreground">
+            Select a node to edit.
+          </div>
+        )}
+        {config && (
+          <div className="space-y-4">
+            <ValidationBanner config={config} />
+            {showDropToggle && (
+              <div className="flex items-center corner-squircle justify-between gap-3 rounded-2xl border border-border/60 px-3 py-2">
+                <div>
+                  <p className="text-sm font-semibold">Drop from final dataset</p>
+                  <p className="text-xs text-muted-foreground">
+                    Keep for generation but omit from exported rows.
+                  </p>
+                </div>
+                <Switch
+                  checked={config.drop ?? false}
+                  onCheckedChange={(value) => onUpdate(config.id, { drop: value })}
+                />
+              </div>
+            )}
+            {renderBlockDialog(
+              config,
+              open,
+              categoryOptions,
+              modelConfigAliases,
+              modelProviderOptions,
+              datetimeOptions,
+              onUpdate,
+            )}
+          </div>
+        )}
+        <DialogFooter>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => onOpenChange(false)}
+          >
+            Done
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}

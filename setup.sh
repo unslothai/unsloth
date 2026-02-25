@@ -155,43 +155,44 @@ fi
 BEST_VER=$("$BEST_PY" --version 2>&1 | awk '{print $2}')
 echo "✅ Using $BEST_PY ($BEST_VER) — compatible (≤ 3.12.x)"
 
-if [ "$IS_COLAB" = true ]; then
-    # Colab: install packages directly without venv
+REQ_ROOT="$SCRIPT_DIR/studio/backend/requirements"
+SINGLE_ENV_CONSTRAINTS="$REQ_ROOT/single-env/constraints.txt"
+SINGLE_ENV_DATA_DESIGNER="$REQ_ROOT/single-env/data-designer.txt"
+SINGLE_ENV_DATA_DESIGNER_DEPS="$REQ_ROOT/single-env/data-designer-deps.txt"
+SINGLE_ENV_PATCH="$REQ_ROOT/single-env/patch_metadata.py"
+
+install_python_stack() {
     run_quiet "pip upgrade" pip install --upgrade pip
     echo "   Installing unsloth-zoo + unsloth..."
-    run_quiet "pip install unsloth" pip install -r "$SCRIPT_DIR/studio/backend/requirements/base.txt"
+    run_quiet "pip install unsloth" pip install --no-cache-dir -c "$SINGLE_ENV_CONSTRAINTS" -r "$REQ_ROOT/base.txt"
     echo "   Installing additional unsloth dependencies..."
-    run_quiet "pip install extras" pip install --no-cache-dir -r "$SCRIPT_DIR/studio/backend/requirements/extras.txt"
-    run_quiet "pip install extras" pip install --no-deps --no-cache-dir -r "$SCRIPT_DIR/studio/backend/requirements/extras-no-deps.txt"
-    run_quiet "pip install torchao+transformers" pip install --force-reinstall --no-cache-dir -r "$SCRIPT_DIR/studio/backend/requirements/overrides.txt"
-    run_quiet "pip install triton_kernels" pip install --no-deps -r "$SCRIPT_DIR/studio/backend/requirements/triton-kernels.txt"
+    run_quiet "pip install extras" pip install --no-cache-dir -c "$SINGLE_ENV_CONSTRAINTS" -r "$REQ_ROOT/extras.txt"
+    run_quiet "pip install torchao+transformers" pip install --force-reinstall --no-cache-dir -c "$SINGLE_ENV_CONSTRAINTS" -r "$REQ_ROOT/overrides.txt"
+    run_quiet "pip install triton_kernels" pip install --no-deps --no-cache-dir -r "$REQ_ROOT/triton-kernels.txt"
     # Patch: override llama_cpp.py with fix from unsloth-zoo branch
     LLAMA_CPP_DST="$(pip show unsloth-zoo | grep -i '^Location:' | awk '{print $2}')/unsloth_zoo/llama_cpp.py"
     curl -sSL "https://raw.githubusercontent.com/unslothai/unsloth-zoo/refs/heads/main/unsloth_zoo/llama_cpp.py" \
         -o "$LLAMA_CPP_DST"
     echo "   Installing studio dependencies..."
-    run_quiet "pip install studio" pip install -r "$SCRIPT_DIR/studio/backend/requirements/studio.txt"
+    run_quiet "pip install studio" pip install --no-cache-dir -c "$SINGLE_ENV_CONSTRAINTS" -r "$REQ_ROOT/studio.txt"
+    echo "   Installing data-designer dependencies..."
+    run_quiet "pip install data-designer deps" pip install --no-cache-dir -c "$SINGLE_ENV_CONSTRAINTS" -r "$SINGLE_ENV_DATA_DESIGNER_DEPS"
+    echo "   Installing data-designer..."
+    run_quiet "pip install data-designer" pip install --no-cache-dir --no-deps -c "$SINGLE_ENV_CONSTRAINTS" -r "$SINGLE_ENV_DATA_DESIGNER"
+    run_quiet "patch single-env metadata" python "$SINGLE_ENV_PATCH"
+    run_quiet "pip check" pip check
     echo "✅ Python dependencies installed"
+}
+
+if [ "$IS_COLAB" = true ]; then
+    # Colab: install packages directly without venv
+    install_python_stack
 else
     # Local: create venv (always start fresh to preserve correct install order)
     rm -rf .venv
     "$BEST_PY" -m venv .venv
     source .venv/bin/activate
-    run_quiet "pip upgrade" pip install --upgrade pip
-    echo "   Installing unsloth-zoo + unsloth..."
-    run_quiet "pip install unsloth" pip install -r "$SCRIPT_DIR/studio/backend/requirements/base.txt"
-    echo "   Installing additional unsloth dependencies..."
-    run_quiet "pip install extras" pip install --no-cache-dir -r "$SCRIPT_DIR/studio/backend/requirements/extras.txt"
-    run_quiet "pip install extras" pip install --no-deps --no-cache-dir -r "$SCRIPT_DIR/studio/backend/requirements/extras-no-deps.txt"
-    run_quiet "pip install torchao+transformers" pip install --force-reinstall --no-cache-dir -r "$SCRIPT_DIR/studio/backend/requirements/overrides.txt"
-    run_quiet "pip install triton_kernels" pip install --no-deps -r "$SCRIPT_DIR/studio/backend/requirements/triton-kernels.txt"
-    # Patch: override llama_cpp.py with fix from unsloth-zoo branch
-    LLAMA_CPP_DST="$(pip show unsloth-zoo | grep -i '^Location:' | awk '{print $2}')/unsloth_zoo/llama_cpp.py"
-    curl -sSL "https://raw.githubusercontent.com/unslothai/unsloth-zoo/refs/heads/main/unsloth_zoo/llama_cpp.py" \
-        -o "$LLAMA_CPP_DST"
-    echo "   Installing studio dependencies..."
-    run_quiet "pip install studio" pip install -r "$SCRIPT_DIR/studio/backend/requirements/studio.txt"
-    echo "✅ Python dependencies installed"
+    install_python_stack
     
     # ── 7. WSL: pre-install GGUF build dependencies ──
     # On WSL, sudo requires a password and can't be entered during GGUF export

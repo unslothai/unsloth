@@ -1,0 +1,280 @@
+{
+  "recipe": {
+    "model_providers": [
+      {
+        "name": "provider_1",
+        "endpoint": "https://openrouter.ai/api/v1",
+        "provider_type": "openai",
+        "extra_headers": {},
+        "extra_body": {}
+      }
+    ],
+    "mcp_providers": [],
+    "model_configs": [
+      {
+        "alias": "model_1",
+        "model": "mistralai/ministral-8b-2512",
+        "provider": "provider_1",
+        "inference_parameters": {
+          "temperature": 0.7,
+          "max_tokens": 2048
+        }
+      }
+    ],
+    "tool_configs": [],
+    "columns": [
+      {
+        "column_type": "sampler",
+        "name": "domain",
+        "drop": true,
+        "sampler_type": "category",
+        "params": {
+          "values": [
+            "Tech Support",
+            "Personal Finance",
+            "Learning"
+          ]
+        }
+      },
+      {
+        "column_type": "sampler",
+        "name": "topic",
+        "drop": true,
+        "sampler_type": "subcategory",
+        "params": {
+          "category": "domain",
+          "values": {
+            "Tech Support": [
+              "Wi-Fi keeps disconnecting",
+              "Laptop running very slow",
+              "Cannot install app update"
+            ],
+            "Personal Finance": [
+              "Monthly budget planning",
+              "Credit card debt payoff",
+              "Emergency fund setup"
+            ],
+            "Learning": [
+              "Exam study plan",
+              "Learn Python basics",
+              "Improve English writing"
+            ]
+          }
+        }
+      },
+      {
+        "column_type": "sampler",
+        "name": "conversation_length",
+        "drop": true,
+        "sampler_type": "category",
+        "params": {
+          "values": [
+            "4",
+            "6"
+          ]
+        }
+      },
+      {
+        "column_type": "llm-text",
+        "name": "user_goal",
+        "drop": false,
+        "model_alias": "model_1",
+        "prompt": "Write one user goal for a chat assistant.\nDomain: {{ domain }}\nTopic: {{ topic }}\nConversation length target: {{ conversation_length }} messages total.\nRules:\n- 1 sentence.\n- Specific and practical.\n- Output only the goal text.",
+        "system_prompt": "You write realistic user goals for assistant conversations.\n",
+        "with_trace": "none"
+      },
+      {
+        "column_type": "llm-structured",
+        "name": "output_format",
+        "drop": false,
+        "model_alias": "model_1",
+        "prompt": "Generate a realistic multi-turn conversation.\nUser goal:\n{{ user_goal }}\nConstraints:\n- Exactly {{ conversation_length }} messages total.\n- Alternate roles strictly: user, assistant, user, assistant...\n- First message must be user.\n- Last message must be assistant.\n- Keep responses grounded in {{ domain }} / {{ topic }}.\n- End naturally with resolution or clear next step.\n- No markdown, no extra keys.",
+        "output_format": {
+          "type": "object",
+          "properties": {
+            "conversation": {
+              "type": "array",
+              "minItems": 4,
+              "maxItems": 6,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "role": {
+                    "type": "string",
+                    "enum": [
+                      "user",
+                      "assistant"
+                    ]
+                  },
+                  "content": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "role",
+                  "content"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "conversation"
+          ],
+          "additionalProperties": false
+        }
+      }
+    ],
+    "processors": []
+  },
+  "run": {
+    "rows": 5,
+    "preview": true,
+    "output_formats": [
+      "jsonl"
+    ]
+  },
+  "ui": {
+    "nodes": [
+      {
+        "id": "provider_1",
+        "x": -1056.848383841495,
+        "y": 519.6373927070263,
+        "width": 400
+      },
+      {
+        "id": "model_1",
+        "x": -543.7221365246206,
+        "y": 488.2975724283656,
+        "width": 400
+      },
+      {
+        "id": "domain",
+        "x": 0,
+        "y": 140,
+        "width": 400
+      },
+      {
+        "id": "topic",
+        "x": 0,
+        "y": 280,
+        "width": 400
+      },
+      {
+        "id": "conversation_length",
+        "x": 466.61510192672256,
+        "y": 139.68271861864798,
+        "width": 400
+      },
+      {
+        "id": "user_goal",
+        "x": 1.412158386197035,
+        "y": 508.77123580445596,
+        "width": 400
+      },
+      {
+        "id": "output_format",
+        "x": 1.1486983549970375,
+        "y": 754.4221089431811,
+        "width": 400
+      },
+      {
+        "id": "note_1",
+        "x": 210.01377182764494,
+        "y": -262.9440547613487,
+        "width": 400,
+        "node_type": "markdown_note",
+        "name": "note_1",
+        "markdown": "###  Start with controlled chat context\nThis recipe uses sampler columns to shape each conversation:\n\n- `domain`\n- `topic`\n- `conversation_length` (4 or 6 messages)\n\n**Why this helps**:\n\n- You get varied conversations without manual writing\n- Each row stays grounded in a clear scenario\n- You can scale quickly while keeping data quality consistent",
+        "note_color": "#FFE4E6",
+        "note_opacity": "35"
+      },
+      {
+        "id": "note_2",
+        "x": 515.9369583007435,
+        "y": 454.3936030274385,
+        "width": 400,
+        "node_type": "markdown_note",
+        "name": "note_2",
+        "markdown": "The **LLM Text** block (`user_goal`) creates one realistic user intent from sampler context.\n\n**It should be**:\n\n- **specific**\n- **practical**\n- **short**\n\nThis goal becomes the anchor for the full multi-turn conversation.",
+        "note_color": "#FFE4E6",
+        "note_opacity": "35"
+      },
+      {
+        "id": "note_3",
+        "x": -12.952616065779239,
+        "y": 912.1316336111515,
+        "width": 400,
+        "node_type": "markdown_note",
+        "name": "note_3",
+        "markdown": "The **LLM Structured** block (`output_format`) generates the conversation as strict JSON.\n\nIn this recipe, schema enforces:\n\n- `conversation` array\n- message objects with `role` + `content`\n- role enum: `user` / `assistant`\n- no extra keys\n\nPrompt constraints also enforce:\n\n- exact length (`{{ conversation_length }}`)\n- alternating roles\n- first user message, last assistant message\n- natural ending\n\nThis is key for training data: same shape, less cleanup.",
+        "note_color": "#FFE4E6",
+        "note_opacity": "35"
+      },
+      {
+        "id": "note_4",
+        "x": -519.9585237323188,
+        "y": 81.84144119564277,
+        "width": 400,
+        "node_type": "markdown_note",
+        "name": "note_4",
+        "markdown": "Sampler columns are useful during generation but usually noisy in final export.\n\nSet helper columns to `drop=true`, keep only core outputs such as:\n\n- `user_goal`\n- `output_format`\n\nTip: Keep final schema close to your training format, not your generation scaffolding.\n",
+        "note_color": "#FFE4E6",
+        "note_opacity": "35"
+      }
+    ],
+    "edges": [
+      {
+        "from": "domain",
+        "to": "topic",
+        "type": "canvas",
+        "source_handle": "data-out-bottom",
+        "target_handle": "data-in-top"
+      },
+      {
+        "from": "domain",
+        "to": "conversation_length",
+        "type": "canvas",
+        "source_handle": "data-out",
+        "target_handle": "data-in"
+      },
+      {
+        "from": "topic",
+        "to": "user_goal",
+        "type": "canvas",
+        "source_handle": "data-out-bottom",
+        "target_handle": "data-in-top"
+      },
+      {
+        "from": "user_goal",
+        "to": "output_format",
+        "type": "canvas",
+        "source_handle": "data-out-bottom",
+        "target_handle": "data-in-top"
+      },
+      {
+        "from": "provider_1",
+        "to": "model_1",
+        "type": "semantic",
+        "source_handle": "semantic-out",
+        "target_handle": "semantic-in"
+      },
+      {
+        "from": "model_1",
+        "to": "user_goal",
+        "type": "semantic",
+        "source_handle": "semantic-out",
+        "target_handle": "data-in"
+      },
+      {
+        "from": "model_1",
+        "to": "output_format",
+        "type": "semantic",
+        "source_handle": "semantic-out-bottom",
+        "target_handle": "data-in"
+      }
+    ],
+    "layout_direction": "LR"
+  }
+}

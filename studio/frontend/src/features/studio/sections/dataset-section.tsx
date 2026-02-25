@@ -132,7 +132,7 @@ export function DatasetSection() {
         title="Dataset"
         description="Select or upload training data"
         accent="indigo"
-        className="md:min-h-[450px]"
+        className="md:min-h-[450px] dark:shadow-border"
       >
         <div className="flex flex-col gap-4">
         <div className="flex flex-col gap-2">

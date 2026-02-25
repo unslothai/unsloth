@@ -1,5 +1,4 @@
 import { Button } from "@/components/ui/button";
-import { LightRays } from "@/components/ui/light-rays";
 import {
   shouldShowTrainingView,
   useDatasetPreviewDialogStore,
@@ -78,14 +77,6 @@ export function StudioPage(): ReactElement {
 
   return (
     <div className="relative min-h-screen overflow-hidden bg-background">
-      <LightRays
-        count={6}
-        color="rgba(34, 197, 94, 0.14)"
-        blur={30}
-        speed={18}
-        length="62vh"
-        style={{ opacity: 0.45 }}
-      />
       <main className="relative z-10 mx-auto max-w-7xl px-4 py-4 sm:px-6">
         <GuidedTour {...tour.tourProps} celebrate={isConfigTour} />
 
