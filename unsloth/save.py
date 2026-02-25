@@ -3386,6 +3386,7 @@ def patch_unsloth_zoo_saving():
 
     # CRITICAL: Also patch use_local_gguf which is a context manager
     # This is needed because the MockModule doesn't support context manager protocol
+    _dummy_use_local_gguf = None
     try:
         import unsloth_zoo.saving_utils
         if hasattr(unsloth_zoo.saving_utils, "use_local_gguf"):
@@ -3401,6 +3402,13 @@ def patch_unsloth_zoo_saving():
             print("DEBUG: Patched use_local_gguf with dummy")
     except Exception as e:
         print(f"DEBUG: Could not patch use_local_gguf: {e}")
+    
+    # CRITICAL: Also update the local binding in this module (save.py).
+    # Line 24 does `from unsloth_zoo.llama_cpp import ... use_local_gguf ...`
+    # which creates a local reference that is NOT affected by patching the zoo module.
+    # We must update the globals() of THIS module so the call at line 1374 uses our wrapper.
+    if _dummy_use_local_gguf is not None:
+        globals()["use_local_gguf"] = _dummy_use_local_gguf
     
     # CRITICAL: Also update the local binding in this module (save.py).
     # Line 2620 does `from unsloth_zoo.saving_utils import merge_and_overwrite_lora`
