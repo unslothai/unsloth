@@ -126,38 +126,76 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
             "multimodal_columns": None,
         }
 
+# Normalise any format-specific role to canonical chatml (user/assistant/system)
+_TO_CHATML = {
+    "user": "user", "human": "user", "instruction": "user",
+    "assistant": "assistant", "gpt": "assistant", "output": "assistant",
+    "system": "system", "input": "system",
+}
+_CHATML_ROLE_ORDER = ("system", "user", "assistant")
+_CHATML_TO_ALPACA = {"user": "instruction", "system": "input", "assistant": "output"}
+
+
 def _apply_user_mapping(dataset, mapping: dict, batch_size: int = 1000):
     """
     Apply user-provided column mapping to convert dataset to conversations format.
-    
-    Args:
-        dataset: HuggingFace dataset
-        mapping: Dict like {"question": "user", "answer": "assistant", "context": "system"}
-        batch_size: Batch size for processing
-    
+
+    Accepts chatml (user/assistant/system), sharegpt (human/gpt/system), and
+    alpaca (instruction/input/output) role names — all normalised to chatml output.
+
     Returns:
-        Dataset with single 'conversations' column (no extra columns preserved)
+        Dataset with single 'conversations' column
     """
+    # Pre-compute: group columns by canonical chatml role
+    role_groups: dict[str, list[str]] = {r: [] for r in _CHATML_ROLE_ORDER}
+    for col_name, role in mapping.items():
+        canonical = _TO_CHATML.get(role)
+        if canonical:
+            role_groups[canonical].append(col_name)
+
     def _convert(examples):
-        num_examples = len(examples[list(examples.keys())[0]])
+        num = len(next(iter(examples.values())))
         conversations = []
-        
-        for i in range(num_examples):
+        for i in range(num):
             convo = []
-            role_order = ['system', 'user', 'assistant']
-            
-            for target_role in role_order:
-                for col_name, role in mapping.items():
-                    if role == target_role and col_name in examples:
-                        content = examples[col_name][i]
-                        # User explicitly mapped - always include even if empty
-                        convo.append({"role": role, "content": str(content) if content else ""})
-            
+            for chatml_role in _CHATML_ROLE_ORDER:
+                for col in role_groups[chatml_role]:
+                    if col in examples:
+                        content = examples[col][i]
+                        convo.append({"role": chatml_role, "content": str(content) if content else ""})
             conversations.append(convo)
-        
-        # ONLY return conversations - no extra columns
         return {"conversations": conversations}
-    
+
+    return dataset.map(_convert, batched=True, batch_size=batch_size, remove_columns=dataset.column_names)
+
+
+def _apply_user_mapping_alpaca(dataset, mapping: dict, batch_size: int = 1000):
+    """
+    Apply user-provided column mapping to convert dataset to Alpaca format.
+
+    Accepts any format's role names — normalises via _TO_CHATML, then maps
+    user → instruction, system → input, assistant → output.
+
+    Returns:
+        Dataset with instruction/input/output columns
+    """
+    col_for: dict[str, str | None] = {"instruction": None, "input": None, "output": None}
+    for col_name, role in mapping.items():
+        canonical = _TO_CHATML.get(role)
+        alpaca_field = _CHATML_TO_ALPACA.get(canonical) if canonical else None
+        if alpaca_field:
+            col_for[alpaca_field] = col_name
+
+    def _convert(examples):
+        num = len(next(iter(examples.values())))
+        instructions, inputs, outputs = [], [], []
+        for i in range(num):
+            for field, dest in (("instruction", instructions), ("input", inputs), ("output", outputs)):
+                col = col_for[field]
+                val = str(examples[col][i]) if col and col in examples and examples[col][i] else ""
+                dest.append(val)
+        return {"instruction": instructions, "input": inputs, "output": outputs}
+
     return dataset.map(_convert, batched=True, batch_size=batch_size, remove_columns=dataset.column_names)
 
 
@@ -191,20 +229,30 @@ def format_dataset(
     # Detect multimodal first (needed for all flows)
     multimodal_info = detect_multimodal_dataset(dataset)
 
-    # NEW: If user provided explicit mapping, skip detection and apply directly
+    # If user provided explicit mapping, skip detection and apply in the requested format
     if custom_format_mapping:
         try:
-            mapped_dataset = _apply_user_mapping(dataset, custom_format_mapping, batch_size)
+            if format_type == "alpaca":
+                mapped_dataset = _apply_user_mapping_alpaca(dataset, custom_format_mapping, batch_size)
+                final_format = "alpaca"
+                chat_column = None
+            else:
+                # auto / chatml / sharegpt / conversational — all produce chatml conversations
+                # (sharegpt is always standardized to role/content internally)
+                mapped_dataset = _apply_user_mapping(dataset, custom_format_mapping, batch_size)
+                final_format = "chatml_conversations"
+                chat_column = "conversations"
+
             return {
                 "dataset": mapped_dataset,
                 "detected_format": "user_mapped",
-                "final_format": "chatml_conversations",
-                "chat_column": "conversations",
+                "final_format": final_format,
+                "chat_column": chat_column,
                 "is_standardized": True,
                 "requires_manual_mapping": False,
                 "is_multimodal": multimodal_info["is_multimodal"],
                 "multimodal_info": multimodal_info,
-                "warnings": [f"Applied user-provided column mapping: {custom_format_mapping}"]
+                "warnings": [f"Applied user-provided column mapping ({format_type}): {custom_format_mapping}"]
             }
         except Exception as e:
             return {
@@ -224,7 +272,7 @@ def format_dataset(
     detected = detect_dataset_format(dataset)
     warnings = []
 
-     # Add multimodal warning if detected
+    # Add multimodal warning if detected
     if multimodal_info["is_multimodal"]:
         warnings.append(
             f"Multimodal dataset detected. Found columns: {multimodal_info['multimodal_columns']}"
