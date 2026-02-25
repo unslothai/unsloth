@@ -66,6 +66,8 @@ export function DatasetSection() {
     setDatasetSubset,
     datasetSplit,
     setDatasetSplit,
+    datasetEvalSplit,
+    setDatasetEvalSplit,
     hfToken,
   } = useTrainingConfigStore(
     useShallow((s) => ({
@@ -77,6 +79,8 @@ export function DatasetSection() {
       setDatasetSubset: s.setDatasetSubset,
       datasetSplit: s.datasetSplit,
       setDatasetSplit: s.setDatasetSplit,
+      datasetEvalSplit: s.datasetEvalSplit,
+      setDatasetEvalSplit: s.setDatasetEvalSplit,
       hfToken: s.hfToken,
     })),
   );
@@ -282,6 +286,8 @@ export function DatasetSection() {
           setDatasetSubset={setDatasetSubset}
           datasetSplit={datasetSplit}
           setDatasetSplit={setDatasetSplit}
+          datasetEvalSplit={datasetEvalSplit}
+          setDatasetEvalSplit={setDatasetEvalSplit}
         />
 
         <div className="flex flex-col gap-2">
