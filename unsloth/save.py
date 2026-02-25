@@ -3524,11 +3524,63 @@ def patch_unsloth_zoo_saving():
         
         llama_cpp_module._download_convert_hf_to_gguf = _wrapped_download_convert_hf_to_gguf
         
-        # Also patch convert_to_gguf to handle the mock gracefully
+        # Also patch convert_to_gguf to actually run the conversion using local llama.cpp
         _orig_convert_to_gguf = llama_cpp_module.convert_to_gguf
         def _wrapped_convert_to_gguf(*args, **kwargs):
-            # If we have a mock, just return empty to fail gracefully
+            # If we have a mock, we need to actually run the conversion
             if hasattr(_orig_convert_to_gguf, '_unsloth_mock'):
+                # Extract parameters from kwargs
+                model_location = kwargs.get('model_location', '')
+                output_dir = kwargs.get('output_dir', '')
+                first_conversion = kwargs.get('first_conversion', 'f16')
+                print_output = kwargs.get('print_output', True)
+                
+                # Find the converter
+                import platform
+                if platform.system() == "Darwin":
+                    possible_paths = [
+                        os.path.join(os.getcwd(), "llama.cpp"),
+                        os.path.expanduser("~/llama.cpp"),
+                    ]
+                    converter_location = None
+                    for llama_dir in possible_paths:
+                        if os.path.exists(llama_dir):
+                            converter_location = os.path.join(llama_dir, "convert_lora_to_gguf.py")
+                            if not os.path.exists(converter_location):
+                                converter_location = os.path.join(llama_dir, "convert-hf-to-gguf")
+                            if not os.path.exists(converter_location):
+                                converter_location = os.path.join(llama_dir, "convert.py")
+                            if os.path.exists(converter_location):
+                                break
+                            converter_location = None
+                    
+                    if converter_location and os.path.exists(converter_location):
+                        import subprocess
+                        output_file = os.path.join(output_dir, "model.gguf")
+                        
+                        cmd = [
+                            "python", converter_location,
+                            model_location,
+                            "--outfile", output_file,
+                        ]
+                        if first_conversion == "f16":
+                            cmd.append("--outtype f16")
+                        
+                        try:
+                            result = subprocess.run(
+                                cmd,
+                                capture_output=True,
+                                text=True,
+                                check=True,
+                            )
+                            if print_output:
+                                print(result.stdout)
+                            return [output_file], False
+                        except subprocess.CalledProcessError as e:
+                            if print_output:
+                                print(f"Conversion error: {e.stderr}")
+                            return [], False
+                
                 return [], False
             return _orig_convert_to_gguf(*args, **kwargs)
         
