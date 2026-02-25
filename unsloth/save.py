@@ -3527,6 +3527,7 @@ def patch_unsloth_zoo_saving():
         # Also patch convert_to_gguf to actually run the conversion using local llama.cpp
         _orig_convert_to_gguf = llama_cpp_module.convert_to_gguf
         def _wrapped_convert_to_gguf(*args, **kwargs):
+            print("DEBUG: _wrapped_convert_to_gguf called!")
             # If we have a mock, we need to actually run the conversion
             if hasattr(_orig_convert_to_gguf, '_unsloth_mock'):
                 # Extract parameters from kwargs
@@ -3535,6 +3536,8 @@ def patch_unsloth_zoo_saving():
                 first_conversion = kwargs.get('first_conversion', 'f16')
                 print_output = kwargs.get('print_output', True)
                 
+                print(f"DEBUG: model_location={model_location}, output_dir={output_dir}")
+                
                 # Find the converter
                 import platform
                 if platform.system() == "Darwin":
@@ -3542,15 +3545,18 @@ def patch_unsloth_zoo_saving():
                         os.path.join(os.getcwd(), "llama.cpp"),
                         os.path.expanduser("~/llama.cpp"),
                     ]
+                    print(f"DEBUG: Checking paths: {possible_paths}")
                     converter_location = None
                     for llama_dir in possible_paths:
                         if os.path.exists(llama_dir):
                             converter_location = os.path.join(llama_dir, "convert_lora_to_gguf.py")
+                            print(f"DEBUG: Checking {converter_location}")
                             if not os.path.exists(converter_location):
                                 converter_location = os.path.join(llama_dir, "convert-hf-to-gguf")
                             if not os.path.exists(converter_location):
                                 converter_location = os.path.join(llama_dir, "convert.py")
                             if os.path.exists(converter_location):
+                                print(f"DEBUG: Found converter: {converter_location}")
                                 break
                             converter_location = None
                     
@@ -3566,6 +3572,7 @@ def patch_unsloth_zoo_saving():
                         if first_conversion == "f16":
                             cmd.append("--outtype f16")
                         
+                        print(f"DEBUG: Running: {' '.join(cmd)}")
                         try:
                             result = subprocess.run(
                                 cmd,
@@ -3575,11 +3582,15 @@ def patch_unsloth_zoo_saving():
                             )
                             if print_output:
                                 print(result.stdout)
+                            print(f"DEBUG: Conversion succeeded, output: {output_file}")
                             return [output_file], False
                         except subprocess.CalledProcessError as e:
                             if print_output:
                                 print(f"Conversion error: {e.stderr}")
+                            print(f"DEBUG: Conversion failed: {e}")
                             return [], False
+                    else:
+                        print("DEBUG: No converter found!")
                 
                 return [], False
             return _orig_convert_to_gguf(*args, **kwargs)
