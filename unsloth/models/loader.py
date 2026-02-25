@@ -1200,8 +1200,9 @@ class FastModel(FastBaseModel):
             redirector = contextlib.redirect_stdout(open(os.devnull, "w"))
 
         model_types = ["siglip"] + model_types
-        # Set forced float32 env flag
-        os.environ["UNSLOTH_FORCE_FLOAT32"] = "0"
+        # Preserve explicit user override if set prior to model loading.
+        user_forced_float32 = os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1"
+        os.environ["UNSLOTH_FORCE_FLOAT32"] = "1" if user_forced_float32 else "0"
         do_forced_float32 = False
         for model_type_arch in model_types:
             if model_type_arch != "siglip":
