@@ -3524,7 +3524,7 @@ def patch_unsloth_zoo_saving():
         
         llama_cpp_module._download_convert_hf_to_gguf = _wrapped_download_convert_hf_to_gguf
         
-        # Also patch convert_to_gguf to actually run the conversion using local llama.cpp
+        # Also patch convert_to_gguf to handle MPS gracefully
         _orig_convert_to_gguf = llama_cpp_module.convert_to_gguf
         def _wrapped_convert_to_gguf(*args, **kwargs):
             print("DEBUG: _wrapped_convert_to_gguf called!")
@@ -3538,6 +3538,24 @@ def patch_unsloth_zoo_saving():
                 print_output = kwargs.get('print_output', True)
                 
                 print(f"DEBUG: input_folder={input_folder}, converter_location={converter_location}, first_conversion={first_conversion}")
+                
+                # Check if we have a valid model directory for GGUF conversion
+                # The input_folder from MLX merge is not a full HF model, so conversion will fail
+                # Raise an informative error instead of failing silently
+                if input_folder and os.path.exists(input_folder):
+                    # Check if it's a valid HF model directory
+                    has_config = os.path.exists(os.path.join(input_folder, "config.json"))
+                    has_tokenizer = os.path.exists(os.path.join(input_folder, "tokenizer.json")) or \
+                                    os.path.exists(os.path.join(input_folder, "tokenizer_config.json"))
+                    
+                    if not (has_config and has_tokenizer):
+                        raise RuntimeError(
+                            "Unsloth: GGUF export is not fully supported on Apple Silicon (MPS).\n"
+                            "The merged LoRA weights from MLX are not in standard HuggingFace format,\n"
+                            "which is required for llama.cpp GGUF conversion.\n"
+                            "For MPS users: Please save the merged model using save_pretrained_merged() \n"
+                            "and convert manually using llama.cpp tools on the CPU."
+                        )
                 
                 # Find the converter if not provided
                 if not converter_location:
