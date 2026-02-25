@@ -144,13 +144,10 @@ def _fix_rope_inv_freq(model):
     if not _NEEDS_ROPE_FIX:
         return model
 
-    seen_ids = set()
     for name, module in model.named_modules():
-        if id(module) in seen_ids:
-            continue
-        seen_ids.add(id(module))
-
-        # LlamaRotaryEmbedding and subclasses (Extended, LinearScaling, Granite)
+        # Unsloth's LlamaRotaryEmbedding and subclasses (Extended, LinearScaling,
+        # Granite). Native v5 rotary classes (Gemma3, etc.) have original_inv_freq
+        # which v5's _init_weights() uses to restore inv_freq, so they are fine.
         if (
             hasattr(module, "inv_freq")
             and hasattr(module, "base")
