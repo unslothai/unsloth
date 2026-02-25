@@ -105,18 +105,15 @@ def PatchRL(FastLanguageModel):
 
             @_cm
             def unwrap_model_for_generation(
-                model, accelerator, gather_deepspeed3_params=True
+                model, accelerator, gather_deepspeed3_params = True
             ):
                 unwrapped_model = accelerator.unwrap_model(model)
-                is_gc = getattr(
-                    unwrapped_model, "is_gradient_checkpointing", False
-                )
+                is_gc = getattr(unwrapped_model, "is_gradient_checkpointing", False)
                 if is_gc:
                     unwrapped_model.gradient_checkpointing_disable()
                 if (
                     getattr(accelerator, "state", None) is not None
-                    and getattr(accelerator.state, "deepspeed_plugin", None)
-                    is not None
+                    and getattr(accelerator.state, "deepspeed_plugin", None) is not None
                     and accelerator.state.deepspeed_plugin.zero_stage == 3
                 ):
                     if not gather_deepspeed3_params:
@@ -124,9 +121,7 @@ def PatchRL(FastLanguageModel):
                     else:
                         import deepspeed
 
-                        with deepspeed.zero.GatheredParameters(
-                            model.parameters()
-                        ):
+                        with deepspeed.zero.GatheredParameters(model.parameters()):
                             yield accelerator.unwrap_model(model)
                 else:
                     yield unwrapped_model
