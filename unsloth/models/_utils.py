@@ -28,6 +28,7 @@ __all__ = [
     "HAS_FLASH_ATTENTION_SOFTCAPPING",
     "USE_MODELSCOPE",
     "platform_system",
+    "resolve_hip_gpu_stats_name",
     "patch_tokenizer",
     "get_statistics",
     "Unsloth_Offloaded_Gradient_Checkpointer",
@@ -73,6 +74,7 @@ __all__ = [
     "dequantize_module_weight",
     "patch_hf_quantizer",
     "verify_fp8_support_if_applicable",
+    "_redirect_fp8_to_bf16",
     "_get_inference_mode_context_manager",
     "hf_login",
     "is_moe_model",
@@ -149,6 +151,39 @@ from unsloth_zoo.compiler import (
 from unsloth_zoo.training_utils import (
     prepare_model_for_training,
 )
+
+
+def resolve_hip_gpu_stats_name(gpu_stats):
+    name = str(getattr(gpu_stats, "name", "") or "").strip()
+    name = re.sub(r"\s*\([^)]*\)\s*$", "", name).strip()
+    normalized_name = name.lower().strip(". ")
+    if normalized_name and normalized_name not in ("amd radeon graphics",):
+        return name + ". "
+
+    try:
+        torch_name = str(torch.cuda.get_device_name(0) or "").strip()
+        torch_name = re.sub(r"\s*\([^)]*\)\s*$", "", torch_name).strip()
+    except Exception:
+        torch_name = ""
+    normalized_torch_name = torch_name.lower().strip(". ")
+    if normalized_torch_name and normalized_torch_name not in ("amd radeon graphics",):
+        return torch_name + ". "
+
+    arch_name = ""
+    for key in ("gcnArchName", "gcn_arch_name", "arch_name", "gfx_arch_name"):
+        value = getattr(gpu_stats, key, None)
+        if value is not None and str(value).strip():
+            arch_name = str(value).strip()
+            break
+
+    if arch_name:
+        arch_name = arch_name.strip()
+        match = re.search(r"(gfx[0-9a-z]+)", arch_name, flags = re.I)
+        if match:
+            return f"AMD {match.group(1).lower()} GPU. "
+    return "AMD GPU. "
+
+
 from unsloth_zoo.temporary_patches import (
     TEMPORARY_PATCHES,
 )
@@ -842,11 +877,8 @@ if DEVICE_TYPE == "cuda":
                     )
             except:
                 print(
-                    "Unsloth: Your Flash Attention 2 installation seems to be broken?\n"
-                    "A possible explanation is you have a new CUDA version which isn't\n"
-                    "yet compatible with FA2? Please file a ticket to Unsloth or FA2.\n"
-                    "We shall now use Xformers instead, which does not have any performance hits!\n"
-                    "We found this negligible impact by benchmarking on 1x A100."
+                    "Unsloth: Your Flash Attention 2 installation seems to be broken. "
+                    "Using Xformers instead. No performance changes will be seen."
                 )
 
                 # Stop Flash Attention from importing!
@@ -894,11 +926,8 @@ elif DEVICE_TYPE == "hip":
                 )
         except:
             print(
-                "Unsloth: Your Flash Attention 2 installation seems to be broken?\n"
-                "A possible explanation is you have a new CUDA version which isn't\n"
-                "yet compatible with FA2? Please file a ticket to Unsloth or FA2.\n"
-                "We shall now use Xformers instead, which does not have any performance hits!\n"
-                "We found this negligible impact by benchmarking on 1x A100."
+                "Unsloth: Your Flash Attention 2 installation seems to be broken. "
+                "Using Xformers instead. No performance changes will be seen."
             )
 
             # Stop Flash Attention from importing!
@@ -2540,6 +2569,59 @@ def patch_hf_quantizer():
 
 
 patch_hf_quantizer()
+
+
+def _redirect_fp8_to_bf16(
+    model_name, auto_config, load_in_fp8, token, trust_remote_code
+):
+    """
+    Detect FP8 quantization in model config and redirect to BF16 sibling.
+
+    Models shipping FP8 as default (e.g. mistralai/Ministral-3-*B-Instruct)
+    cannot be loaded with BNB 4-bit/8-bit or 16-bit mode. This detects
+    quant_method in ("fp8", "fbgemm_fp8") and redirects to {model_name}-BF16.
+
+    Redirect is SKIPPED when load_in_fp8 is truthy (True or 'block'),
+    meaning the user explicitly wants FP8 loading.
+
+    Returns (model_name, auto_config) -- possibly updated.
+    """
+    if not hasattr(auto_config, "quantization_config"):
+        return model_name, auto_config
+
+    _qc = auto_config.quantization_config
+    _qm = (
+        _qc.get("quant_method", "")
+        if isinstance(_qc, dict)
+        else getattr(_qc, "quant_method", "")
+    )
+    if _qm not in ("fp8", "fbgemm_fp8") or load_in_fp8:
+        return model_name, auto_config
+
+    _bf16_name = model_name.rstrip("/") + "-BF16"
+    _original_name = model_name
+    try:
+        from huggingface_hub import model_info as _hf_model_info
+        from transformers import AutoConfig
+
+        _hf_model_info(_bf16_name, token = token)
+        _bf16_config = AutoConfig.from_pretrained(
+            _bf16_name,
+            token = token,
+            trust_remote_code = trust_remote_code,
+        )
+        print(
+            f"Unsloth: {_original_name} uses FP8 weights. "
+            f"Redirecting to {_bf16_name}."
+        )
+        return _bf16_name, _bf16_config
+    except Exception:
+        raise RuntimeError(
+            f"Unsloth: {_original_name} uses FP8 weights but no BF16 version "
+            f"was found at {_bf16_name}.\n"
+            f"Loading FP8 weights with BitsAndBytes or in 16-bit will fail.\n"
+            f"Set load_in_fp8=True to use FP8 mode, or upload a BF16 version."
+        )
 
 
 def verify_fp8_support_if_applicable(model_config):
