@@ -3313,28 +3313,49 @@ def patch_unsloth_zoo_saving():
                 possible_paths = [
                     os.path.join(os.getcwd(), "llama.cpp", "build", "bin"),
                     os.path.expanduser("~/llama.cpp/build/bin"),
-                    os.path.join(os.getcwd(), "llama.cpp"),
                 ]
                 for bin_path in possible_paths:
-                    if os.path.exists(bin_path):
-                        quantizer = os.path.join(bin_path, "llama-quantize")
-                        converter = os.path.join(bin_path, "convert-hf-to-gguf")
-                        # Check for executables with or without extension
-                        if not os.path.exists(quantizer):
-                            quantizer = os.path.join(bin_path, "quantize")
-                        if not os.path.exists(converter):
-                            converter = os.path.join(bin_path, "convert.py")
-                        if os.path.exists(quantizer) or os.path.exists(os.path.join(bin_path, "llama-*")):
-                            # Found it! Copy binaries to llama.cpp folder for compatibility
-                            import shutil
-                            llama_dir = os.path.join(os.getcwd(), "llama.cpp")
-                            os.makedirs(llama_dir, exist_ok=True)
-                            for f in os.listdir(bin_path):
-                                src = os.path.join(bin_path, f)
-                                if os.path.isfile(src):
-                                    shutil.copy2(src, llama_dir)
-                            # Now return the expected format
-                            return unsloth_zoo.llama_cpp.check_llama_cpp()
+                    if os.path.exists(bin_path) and os.listdir(bin_path):
+                        # Found it! Copy binaries to llama.cpp folder for compatibility
+                        import shutil
+                        llama_dir = os.path.join(os.getcwd(), "llama.cpp")
+                        os.makedirs(llama_dir, exist_ok=True)
+                        for f in os.listdir(bin_path):
+                            src = os.path.join(bin_path, f)
+                            if os.path.isfile(src):
+                                shutil.copy2(src, llama_dir)
+                        print(f"Unsloth: Found local llama.cpp build at {bin_path}, copied binaries")
+                        
+                        # Now manually construct and return the paths
+                        quantizer_location = os.path.join(llama_dir, "llama-quantize")
+                        if not os.path.exists(quantizer_location):
+                            quantizer_location = os.path.join(llama_dir, "quantize")
+                        if not os.path.exists(quantizer_location):
+                            # Try to find any quantize binary
+                            for f in os.listdir(llama_dir):
+                                if "quantize" in f.lower():
+                                    quantizer_location = os.path.join(llama_dir, f)
+                                    break
+                        
+                        converter_location = os.path.join(llama_dir, "convert-hf-to-gguf")
+                        if not os.path.exists(converter_location):
+                            converter_location = os.path.join(llama_dir, "convert.py")
+                        if not os.path.exists(converter_location):
+                            # Try to find any convert script
+                            for f in os.listdir(llama_dir):
+                                if "convert" in f.lower() and not f.endswith(".pyc"):
+                                    converter_location = os.path.join(llama_dir, f)
+                                    break
+                        
+                        if os.path.exists(quantizer_location) and os.path.exists(converter_location):
+                            print(f"Unsloth: Using quantizer: {quantizer_location}")
+                            print(f"Unsloth: Using converter: {converter_location}")
+                            return quantizer_location, converter_location
+                        else:
+                            print(f"Unsloth: Warning - quantizer or converter not found in {llama_dir}")
+                            print(f"  quantizer exists: {os.path.exists(quantizer_location)}")
+                            print(f"  converter exists: {os.path.exists(converter_location)}")
+                            print(f"  files in llama_dir: {os.listdir(llama_dir) if os.path.exists(llama_dir) else 'dir not exists'}")
             
             # First try the original function
             try:
