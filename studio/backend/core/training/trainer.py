@@ -173,6 +173,15 @@ class UnslothTrainer:
                     token=hf_token,
                 )
                 logger.info("Loaded vision model")
+
+                # Diagnostic: check if FastVisionModel returned a real Processor or a raw tokenizer
+                from transformers import ProcessorMixin
+                tok = self.tokenizer
+                has_image_proc = isinstance(tok, ProcessorMixin) or hasattr(tok, "image_processor")
+                print(f"\n[VLM Diagnostic] FastVisionModel returned: {type(tok).__name__}")
+                print(f"[VLM Diagnostic] Is ProcessorMixin: {isinstance(tok, ProcessorMixin)}")
+                print(f"[VLM Diagnostic] Has image_processor: {hasattr(tok, 'image_processor')}")
+                print(f"[VLM Diagnostic] Usable as vision processor: {has_image_proc}\n")
             else:
                 # Load text model - returns (model, tokenizer)
                 self.model, self.tokenizer = FastLanguageModel.from_pretrained(
