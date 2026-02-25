@@ -1138,6 +1138,7 @@ class FastModel(FastBaseModel):
             if DEVICE_TYPE == "hip":
                 os.environ["UNSLOTH_COMPILE_DISABLE"] = "1"
                 import unsloth_zoo.compiler
+
                 unsloth_zoo.compiler.UNSLOTH_COMPILE_DISABLE = True
         # Cohere
         elif "cohere2" in model_types_all and transformers_version < Version(
