@@ -654,18 +654,25 @@ class FastBaseModel:
             raise RuntimeError(
                 "Unsloth: Can only load in 4bit or 8bit or 16bit, not a combination!"
             )
+        _skip_modules = SKIP_QUANTIZATION_MODULES.copy()
+        # Nemotron-H uses 'mixer' (not 'mamba') for Mamba layers.
+        # Mamba fused kernels pass out_proj.weight directly to F.linear,
+        # which fails with quantized Params4bit. Skip out_proj from quantization.
+        if any(mt == "nemotron_h" for mt in (model_types or [])):
+            _skip_modules.append("out_proj")
+
         if load_in_4bit:
             bnb_config = BitsAndBytesConfig(
                 load_in_4bit = True,
                 bnb_4bit_use_double_quant = True,
                 bnb_4bit_quant_type = "nf4",
                 bnb_4bit_compute_dtype = bnb_compute_dtype,
-                llm_int8_skip_modules = SKIP_QUANTIZATION_MODULES.copy(),
+                llm_int8_skip_modules = _skip_modules,
             )
         elif load_in_8bit:
             bnb_config = BitsAndBytesConfig(
                 load_in_8bit = True,
-                llm_int8_skip_modules = SKIP_QUANTIZATION_MODULES.copy(),
+                llm_int8_skip_modules = _skip_modules,
             )
         elif load_in_16bit:
             bnb_config = None
