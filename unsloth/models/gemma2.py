@@ -496,7 +496,9 @@ def Gemma2Model_fast_forward_inference(
     hidden_states = hidden_states.to(_get_dtype(dtype_from_config(self.config)))
     # 3072**0.5 = 55.5000 in bfloat16, whilst 55.4256 in float32
     # 2048**0.5 = 45.2500 in bfloat16, whilst 45.2548 in float32
-    hidden_states *= math_sqrt(self.config.hidden_size)
+    hidden_states *= torch.tensor(
+        math_sqrt(self.config.hidden_size), dtype = hidden_states.dtype
+    )
 
     bsz, q_len, hd = hidden_states.shape
     seq_len = past_key_values[0][0].shape[-2]
