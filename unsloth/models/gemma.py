@@ -13,8 +13,9 @@
 # limitations under the License.
 
 from .llama import *
+from .llama import _get_rope_theta
 from ._utils import __version__
-from unsloth_zoo.utils import _get_dtype
+from unsloth_zoo.utils import _get_dtype, Version
 from unsloth_zoo.hf_utils import dtype_from_config
 from ..utils.packing import (
     build_sdpa_packed_attention_mask,
@@ -34,8 +35,6 @@ try:
         repeat_kv,
     )
 except:
-    from packaging.version import Version
-
     transformers_version = Version(transformers_version)
     if not transformers_version >= Version("4.38"):
         raise ImportError(
@@ -258,9 +257,17 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
         config = None,  # [TODO] Hack to pass in config - need to remove later
     ):
         super().__init__()
+        # In transformers 5.0+, RotaryEmbedding(config) passes config as first positional arg (dim)
+        if (
+            config is None
+            and dim is not None
+            and hasattr(dim, "max_position_embeddings")
+        ):
+            config = dim
+            dim = None
         if config is not None:
             # [TODO] Hack to pass in config - need to remove later
-            base = config.rope_theta
+            base = _get_rope_theta(config, default = base)
             partial_rotary_factor = (
                 config.partial_rotary_factor
                 if hasattr(config, "partial_rotary_factor")
@@ -435,10 +442,10 @@ class FastGemmaModel(FastLlamaModel):
         return
 
     @staticmethod
-    def post_patch(model, tokenizer):
+    def post_patch(model, tokenizer, correct_dtype = None):
         # Gemma does not downcast RoPE
         model, tokenizer = patch_model_and_tokenizer(
-            model, tokenizer, downcast_rope = False
+            model, tokenizer, downcast_rope = False, correct_dtype = correct_dtype
         )
 
         # Add 1 to weight

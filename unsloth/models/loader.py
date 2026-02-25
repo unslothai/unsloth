@@ -20,6 +20,7 @@ from ._utils import (
     HAS_FLASH_ATTENTION_SOFTCAPPING,
     USE_MODELSCOPE,
     get_transformers_model_type,
+    hf_login,
 )
 from .granite import FastGraniteModel
 from .llama import FastLlamaModel, logger
@@ -36,6 +37,7 @@ from .loader_utils import (
     _offline_quantize_to_fp8,
     _tag_model_with_fp8_torchao_config,
     get_model_name,
+    prepare_device_map,
 )
 import os, contextlib, sys
 
@@ -87,7 +89,7 @@ from ._utils import (
     patch_compiling_bitsandbytes,
     patch_model_and_tokenizer,
     prepare_model_for_kbit_training,
-    patch_unsloth_smart_gradient_checkpointing,
+    apply_unsloth_gradient_checkpointing,
     patch_compiled_autograd,
     process_vision_info,
     unsloth_compile_transformers,
@@ -98,6 +100,7 @@ global FORCE_FLOAT32
 # Forces float32 precision since float16 goes to infinity
 FORCE_FLOAT32 = [
     "gemma3,",  # Add comma bc gemma3 will match gemma3n
+    "gemma3text",  # Gemma3TextModel (EmbeddingGemma, standalone text-only Gemma3)
     "gemma3n",
     "gpt_oss",
 ]
@@ -114,6 +117,7 @@ global DISABLE_SDPA_MODEL_NAMES
 # Disables some SDPA modules since it's wrong
 DISABLE_SDPA_MODEL_NAMES = [
     "gemma3,",  # Add comma bc gemma3 will match gemma3n
+    "gemma3_text",  # Gemma3TextModel (EmbeddingGemma) - substring match, keep underscore
 ]
 
 
@@ -150,16 +154,51 @@ class FastLanguageModel(FastLlamaModel):
         *args,
         **kwargs,
     ):
-        # Login to allow private models
-        if token is None:
-            token = get_token()
-        if token is not None:
-            try:
-                from huggingface_hub import login
+        # Respect user-provided quantization_config (e.g. BitsAndBytesConfig)
+        quantization_config = kwargs.get("quantization_config", None)
+        if quantization_config is not None:
+            if isinstance(quantization_config, dict):
+                q_load_in_4bit = quantization_config.get("load_in_4bit", False)
+                q_load_in_8bit = quantization_config.get("load_in_8bit", False)
+            else:
+                q_load_in_4bit = getattr(quantization_config, "load_in_4bit", False)
+                q_load_in_8bit = getattr(quantization_config, "load_in_8bit", False)
+            if q_load_in_4bit:
+                load_in_4bit = True
+                load_in_8bit = False
+            if q_load_in_8bit:
+                load_in_8bit = True
+                load_in_4bit = False
 
-                login(token = token)
-            except:
-                pass
+        # Login to allow private models
+        token = hf_login(token)
+        # Align dtype with bnb_4bit_compute_dtype if provided and dtype is unset.
+        if dtype is None and quantization_config is not None:
+            bnb_compute_dtype = None
+            if isinstance(quantization_config, dict):
+                if quantization_config.get("load_in_4bit", False):
+                    bnb_compute_dtype = quantization_config.get(
+                        "bnb_4bit_compute_dtype", None
+                    )
+            else:
+                if getattr(quantization_config, "load_in_4bit", False):
+                    bnb_compute_dtype = getattr(
+                        quantization_config, "bnb_4bit_compute_dtype", None
+                    )
+            if isinstance(bnb_compute_dtype, str):
+                bnb_compute_dtype = getattr(torch, bnb_compute_dtype, None)
+            if isinstance(bnb_compute_dtype, torch.dtype):
+                dtype = bnb_compute_dtype
+
+        # Distributed-safe device placement for quantized models.
+        # In multi-GPU (torchrun), each rank must load the model on its own device
+        # to avoid Accelerate device relocation errors with quantized weights.
+        is_quantized = load_in_4bit or load_in_8bit or load_in_fp8
+        if is_quantized and isinstance(device_map, str):
+            distributed_device_map, is_dist = prepare_device_map()
+            if is_dist:
+                device_map = distributed_device_map
+
         if load_in_8bit or full_finetuning or qat_scheme is not None:
             return FastModel.from_pretrained(
                 model_name = model_name,
@@ -191,12 +230,11 @@ class FastLanguageModel(FastLlamaModel):
                 disable_log_stats = disable_log_stats,
                 qat_scheme = qat_scheme,
                 load_in_fp8 = load_in_fp8,
+                unsloth_tiled_mlp = unsloth_tiled_mlp,
                 *args,
                 **kwargs,
             )
 
-        if token is None:
-            token = get_token()
         if isinstance(dtype, str) and dtype in ["float16", "bfloat16"]:
             dtype = getattr(torch, dtype)
         assert (
@@ -212,6 +250,17 @@ class FastLanguageModel(FastLlamaModel):
                     "Unsloth: Please install vLLM before enabling `fast_inference`!\n"
                     "You can do this in a terminal via `pip install vllm`"
                 )
+            if DEVICE_TYPE_TORCH == "cuda":
+                for i in range(DEVICE_COUNT):
+                    # [TODO] DGX Spark vLLM breaks
+                    if "NVIDIA GB10" in str(torch.cuda.get_device_name(i)).upper():
+                        print(
+                            "Unsloth: DGX Spark detected - `fast_inference=True` is currently broken as of January 2026.\n"
+                            "Defaulting to native Unsloth inference."
+                        )
+                        fast_inference = False
+                        break
+
         # [TODO] For now fast_inference only works with fast_inference ie vLLM
         if load_in_fp8 != False:
             if not fast_inference:
@@ -241,15 +290,18 @@ class FastLanguageModel(FastLlamaModel):
                     load_in_4bit,
                     load_in_8bit,
                     load_in_16bit,
-                    use_exact_model_name,
                 )
                 model_name = _offline_quantize_to_fp8(model_name, fp8_mode)
             else:
                 assert new_model_name is not None
                 model_name = new_model_name
+                # If mapper resolved to a pre-quantized FP8 model, disable
+                # on-the-fly quantization to avoid double quantization
+                if load_in_fp8 != False and new_model_name != old_model_name:
+                    load_in_fp8 = False
 
         # Check if pre-quantized models are allowed
-        # For eg AMD GPUs need blocksize = 128, but our pre-quants are blocksize = 64
+        # For eg AMD Instinct GPUs need blocksize = 128, but our pre-quants are blocksize = 64
         if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
             ("-unsloth-bnb-4bit", "-bnb-4bit")
         ):
@@ -289,6 +341,8 @@ class FastLanguageModel(FastLlamaModel):
                 trust_remote_code = trust_remote_code,
             )
             is_model = True
+        except ImportError:
+            raise
         except Exception as error:
             autoconfig_error = str(error)
             if "architecture" in autoconfig_error:
@@ -305,6 +359,8 @@ class FastLanguageModel(FastLlamaModel):
                 trust_remote_code = trust_remote_code,
             )
             is_peft = True
+        except ImportError:
+            raise
         except Exception as error:
             peft_error = str(error)
             if "architecture" in peft_error:
@@ -326,7 +382,8 @@ class FastLanguageModel(FastLlamaModel):
                 "Please separate the LoRA and base models to 2 repos."
             )
         model_types = get_transformers_model_type(
-            peft_config if peft_config is not None else model_config
+            peft_config if peft_config is not None else model_config,
+            trust_remote_code = trust_remote_code,
         )
         if len(model_types) == 1:
             model_type = model_types[0]
@@ -378,7 +435,7 @@ class FastLanguageModel(FastLlamaModel):
             if not use_exact_model_name:
                 model_name = get_model_name(model_name, load_in_4bit)
             # Check if pre-quantized models are allowed
-            # For eg AMD GPUs need blocksize = 128, but our pre-quants are blocksize = 64
+            # For eg AMD Instinct GPUs need blocksize = 128, but our pre-quants are blocksize = 64
             if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
                 ("-unsloth-bnb-4bit", "-bnb-4bit")
             ):
@@ -518,8 +575,10 @@ class FastLanguageModel(FastLlamaModel):
                 **kwargs,
             )
 
-        if use_gradient_checkpointing == "unsloth":
-            patch_unsloth_smart_gradient_checkpointing(dtype = dtype)
+        # Apply gradient checkpointing with smart heuristics
+        use_gradient_checkpointing = apply_unsloth_gradient_checkpointing(
+            use_gradient_checkpointing, max_seq_length, dtype
+        )
 
         # Check if this is local model since the tokenizer gets overwritten
         if (
@@ -534,11 +593,17 @@ class FastLanguageModel(FastLlamaModel):
         if fast_inference:
             fast_inference, model_name = fast_inference_setup(model_name, model_config)
 
+        load_in_4bit_kwargs = load_in_4bit
+        load_in_8bit_kwargs = load_in_8bit
+        if quantization_config is not None and not fast_inference:
+            load_in_4bit_kwargs = False
+            load_in_8bit_kwargs = False
+
         model, tokenizer = dispatch_model.from_pretrained(
             model_name = model_name,
             max_seq_length = max_seq_length,
             dtype = _get_dtype(dtype),
-            load_in_4bit = load_in_4bit,
+            load_in_4bit = load_in_4bit_kwargs,
             token = token,
             device_map = device_map,
             rope_scaling = rope_scaling,
@@ -553,6 +618,7 @@ class FastLanguageModel(FastLlamaModel):
             random_state = random_state,
             max_lora_rank = max_lora_rank,
             disable_log_stats = disable_log_stats,
+            load_in_fp8 = load_in_fp8,
             *args,
             **kwargs,
         )
@@ -575,22 +641,30 @@ class FastLanguageModel(FastLlamaModel):
             )
 
         if load_in_4bit:
-            # Fix up bitsandbytes config
-            compute_dtype = dtype_from_config(model.config)
-            quantization_config = {
-                # Sometimes compute_dtype is not a string!!
-                "bnb_4bit_compute_dtype": compute_dtype,
-                "bnb_4bit_quant_type": "nf4",
-                "bnb_4bit_use_double_quant": True,
-                "llm_int8_enable_fp32_cpu_offload": False,
-                "llm_int8_has_fp16_weight": False,
-                "llm_int8_skip_modules": None,
-                "llm_int8_threshold": 6.0,
-                "load_in_4bit": True,
-                "load_in_8bit": False,
-                "quant_method": "bitsandbytes",
-            }
-            model.config.update({"quantization_config": quantization_config})
+            # Fix up bitsandbytes config, but respect user-provided quantization_config
+            if quantization_config is None:
+                compute_dtype = dtype_from_config(model.config)
+                quantization_config = {
+                    # Sometimes compute_dtype is not a string!!
+                    "bnb_4bit_compute_dtype": compute_dtype,
+                    "bnb_4bit_quant_type": "nf4",
+                    "bnb_4bit_use_double_quant": True,
+                    "llm_int8_enable_fp32_cpu_offload": False,
+                    "llm_int8_has_fp16_weight": False,
+                    "llm_int8_skip_modules": None,
+                    "llm_int8_threshold": 6.0,
+                    "load_in_4bit": True,
+                    "load_in_8bit": False,
+                    "quant_method": "bitsandbytes",
+                }
+                model.config.update({"quantization_config": quantization_config})
+            else:
+                if hasattr(quantization_config, "to_dict"):
+                    model.config.update(
+                        {"quantization_config": quantization_config.to_dict()}
+                    )
+                elif isinstance(quantization_config, dict):
+                    model.config.update({"quantization_config": quantization_config})
 
         if load_in_fp8 != False:
             _tag_model_with_fp8_torchao_config(model, fp8_mode)
@@ -679,23 +753,49 @@ class FastModel(FastBaseModel):
         qat_scheme = None,
         load_in_fp8 = False,  # fp8 LoRA (True, False, 'block')
         unsloth_tiled_mlp = False,
+        target_parameters = None,  # For MoE expert parameters
         *args,
         **kwargs,
     ):
-        if token is None:
-            token = get_token()
-        # Login to allow private models
-        if token is not None:
-            try:
-                from huggingface_hub import login
+        # Respect user-provided quantization_config (e.g. BitsAndBytesConfig)
+        quantization_config = kwargs.get("quantization_config", None)
+        if quantization_config is not None:
+            if isinstance(quantization_config, dict):
+                q_load_in_4bit = quantization_config.get("load_in_4bit", False)
+                q_load_in_8bit = quantization_config.get("load_in_8bit", False)
+            else:
+                q_load_in_4bit = getattr(quantization_config, "load_in_4bit", False)
+                q_load_in_8bit = getattr(quantization_config, "load_in_8bit", False)
+            if q_load_in_4bit:
+                load_in_4bit = True
+                load_in_8bit = False
+            if q_load_in_8bit:
+                load_in_8bit = True
+                load_in_4bit = False
 
-                login(token = token)
-            except:
-                pass
+        # Login to allow private models
+        token = hf_login(token)
         if whisper_language is not None:
             assert type(whisper_language) is str
         if whisper_task is not None:
             assert type(whisper_task) is str
+        # Align dtype with bnb_4bit_compute_dtype if provided and dtype is unset.
+        if dtype is None and quantization_config is not None:
+            bnb_compute_dtype = None
+            if isinstance(quantization_config, dict):
+                if quantization_config.get("load_in_4bit", False):
+                    bnb_compute_dtype = quantization_config.get(
+                        "bnb_4bit_compute_dtype", None
+                    )
+            else:
+                if getattr(quantization_config, "load_in_4bit", False):
+                    bnb_compute_dtype = getattr(
+                        quantization_config, "bnb_4bit_compute_dtype", None
+                    )
+            if isinstance(bnb_compute_dtype, str):
+                bnb_compute_dtype = getattr(torch, bnb_compute_dtype, None)
+            if isinstance(bnb_compute_dtype, torch.dtype):
+                dtype = bnb_compute_dtype
         SUPPORTS_BFLOAT16 = is_bfloat16_supported()
         if dtype is None:
             dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
@@ -739,6 +839,18 @@ class FastModel(FastBaseModel):
                 "compatible with `full_finetuning=True`. If you wish to use QAT with LoRA, "
                 "please pass in `qat_scheme` in `FastLanguageModel.get_peft_model(...)` instead."
             )
+        if qat_scheme == "phone-deployment":
+            qat_scheme = "int8-int4"
+
+        # Distributed-safe device placement for quantized models.
+        # In multi-GPU (torchrun), each rank must load the model on its own device
+        # to avoid Accelerate device relocation errors with quantized weights.
+        is_quantized = load_in_4bit or load_in_8bit or load_in_fp8
+        if is_quantized and isinstance(device_map, str):
+            distributed_device_map, is_dist = prepare_device_map()
+            if is_dist:
+                device_map = distributed_device_map
+
         # Check if 4bit is allowed specifically for AMD
         if not ALLOW_BITSANDBYTES and not use_exact_model_name:
             if load_in_4bit or load_in_8bit or model_name.lower().endswith("-bnb-4bit"):
@@ -753,6 +865,17 @@ class FastModel(FastBaseModel):
                     "Unsloth: Please install vLLM before enabling `fast_inference`!\n"
                     "You can do this in a terminal via `pip install vllm`"
                 )
+            if DEVICE_TYPE_TORCH == "cuda":
+                for i in range(DEVICE_COUNT):
+                    # [TODO] DGX Spark vLLM breaks
+                    if "NVIDIA GB10" in str(torch.cuda.get_device_name(i)).upper():
+                        print(
+                            "Unsloth: DGX Spark detected - `fast_inference=True` is currently broken as of January 2026.\n"
+                            "Defaulting to native Unsloth inference."
+                        )
+                        fast_inference = False
+                        break
+
         # [TODO] For now fast_inference only works with fast_inference ie vLLM
         if load_in_fp8 != False:
             if not fast_inference:
@@ -775,15 +898,18 @@ class FastModel(FastBaseModel):
                     load_in_4bit,
                     load_in_8bit,
                     load_in_16bit,
-                    use_exact_model_name,
                 )
                 model_name = _offline_quantize_to_fp8(model_name, fp8_mode)
             else:
                 assert new_model_name is not None
                 model_name = new_model_name
+                # If mapper resolved to a pre-quantized FP8 model, disable
+                # on-the-fly quantization to avoid double quantization
+                if load_in_fp8 != False and new_model_name != old_model_name:
+                    load_in_fp8 = False
 
         # Check if pre-quantized models are allowed
-        # For eg AMD GPUs need blocksize = 128, but our pre-quants are blocksize = 64
+        # For eg AMD Instinct GPUs need blocksize = 128, but our pre-quants are blocksize = 64
         if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
             ("-unsloth-bnb-4bit", "-bnb-4bit")
         ):
@@ -824,6 +950,8 @@ class FastModel(FastBaseModel):
                 trust_remote_code = trust_remote_code,
             )
             is_model = True
+        except ImportError:
+            raise
         except Exception as error:
             autoconfig_error = str(error)
             if "architecture" in autoconfig_error:
@@ -840,6 +968,8 @@ class FastModel(FastBaseModel):
                 trust_remote_code = trust_remote_code,
             )
             is_peft = True
+        except ImportError:
+            raise
         except Exception as error:
             peft_error = str(error)
             if "architecture" in peft_error:
@@ -859,7 +989,8 @@ class FastModel(FastBaseModel):
                 "Please separate the LoRA and base models to 2 repos."
             )
         model_types = get_transformers_model_type(
-            peft_config if peft_config is not None else model_config
+            peft_config if peft_config is not None else model_config,
+            trust_remote_code = trust_remote_code,
         )
         model_types_all = ",".join(model_types) + ","
 
@@ -1044,7 +1175,7 @@ class FastModel(FastBaseModel):
             if not use_exact_model_name:
                 model_name = get_model_name(model_name, load_in_4bit)
             # Check if pre-quantized models are allowed
-            # For eg AMD GPUs need blocksize = 128, but our pre-quants are blocksize = 64
+            # For eg AMD Instinct GPUs need blocksize = 128, but our pre-quants are blocksize = 64
             if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
                 ("-unsloth-bnb-4bit", "-bnb-4bit")
             ):
@@ -1090,9 +1221,10 @@ class FastModel(FastBaseModel):
                 os.environ["UNSLOTH_FORCE_FLOAT32"] = "1"
                 dtype = torch.bfloat16  # Change to bfloat16 loading
                 break
-        # Patch gradient checkpointing
-        if use_gradient_checkpointing == "unsloth":
-            patch_unsloth_smart_gradient_checkpointing(dtype = dtype)
+        # Apply gradient checkpointing with smart heuristics
+        use_gradient_checkpointing = apply_unsloth_gradient_checkpointing(
+            use_gradient_checkpointing, max_seq_length, dtype
+        )
         with redirector:
             patch_loss_functions(torch_compile = False)
             model_types, supports_sdpa = unsloth_compile_transformers(
@@ -1151,12 +1283,18 @@ class FastModel(FastBaseModel):
         if auto_model is None:
             auto_model = AutoModelForVision2Seq if is_vlm else AutoModelForCausalLM
 
+        load_in_4bit_kwargs = load_in_4bit
+        load_in_8bit_kwargs = load_in_8bit
+        if quantization_config is not None and not fast_inference:
+            load_in_4bit_kwargs = False
+            load_in_8bit_kwargs = False
+
         model, tokenizer = FastBaseModel.from_pretrained(
             model_name = model_name,
             max_seq_length = max_seq_length,
             dtype = _get_dtype(dtype),
-            load_in_4bit = load_in_4bit,
-            load_in_8bit = load_in_8bit,
+            load_in_4bit = load_in_4bit_kwargs,
+            load_in_8bit = load_in_8bit_kwargs,
             load_in_16bit = load_in_16bit,
             full_finetuning = full_finetuning,
             token = token,
@@ -1180,6 +1318,7 @@ class FastModel(FastBaseModel):
             random_state = random_state,
             max_lora_rank = max_lora_rank,
             disable_log_stats = disable_log_stats,
+            load_in_fp8 = load_in_fp8,
             *args,
             **kwargs,
         )
@@ -1202,22 +1341,30 @@ class FastModel(FastBaseModel):
             )
 
         if load_in_4bit:
-            # Fix up bitsandbytes config
-            compute_dtype = dtype_from_config(model.config)
-            quantization_config = {
-                # Sometimes compute_dtype is not a string!!
-                "bnb_4bit_compute_dtype": compute_dtype,
-                "bnb_4bit_quant_type": "nf4",
-                "bnb_4bit_use_double_quant": True,
-                "llm_int8_enable_fp32_cpu_offload": False,
-                "llm_int8_has_fp16_weight": False,
-                "llm_int8_skip_modules": None,
-                "llm_int8_threshold": 6.0,
-                "load_in_4bit": True,
-                "load_in_8bit": False,
-                "quant_method": "bitsandbytes",
-            }
-            model.config.update({"quantization_config": quantization_config})
+            # Fix up bitsandbytes config, but respect user-provided quantization_config
+            if quantization_config is None:
+                compute_dtype = dtype_from_config(model.config)
+                quantization_config = {
+                    # Sometimes compute_dtype is not a string!!
+                    "bnb_4bit_compute_dtype": compute_dtype,
+                    "bnb_4bit_quant_type": "nf4",
+                    "bnb_4bit_use_double_quant": True,
+                    "llm_int8_enable_fp32_cpu_offload": False,
+                    "llm_int8_has_fp16_weight": False,
+                    "llm_int8_skip_modules": None,
+                    "llm_int8_threshold": 6.0,
+                    "load_in_4bit": True,
+                    "load_in_8bit": False,
+                    "quant_method": "bitsandbytes",
+                }
+                model.config.update({"quantization_config": quantization_config})
+            else:
+                if hasattr(quantization_config, "to_dict"):
+                    model.config.update(
+                        {"quantization_config": quantization_config.to_dict()}
+                    )
+                elif isinstance(quantization_config, dict):
+                    model.config.update({"quantization_config": quantization_config})
 
         if load_in_fp8 != False:
             _tag_model_with_fp8_torchao_config(model, fp8_mode)

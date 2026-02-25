@@ -11,7 +11,7 @@ jobs:
       issues: write
 
     steps:
-      - uses: actions/stale@v9
+      - uses: actions/stale@v10
         with:
           # The message to post on stale issues.
           # This message will ping the issue author.

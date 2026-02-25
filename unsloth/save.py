@@ -69,8 +69,8 @@ __all__ = [
 # llama.cpp specific targets - all takes 90s. Below takes 60s
 LLAMA_CPP_TARGETS = [
     "llama-quantize",
-    "llama-export-lora",
     "llama-cli",
+    "llama-server",
 ]
 
 # Check environments
@@ -129,6 +129,13 @@ ALLOWED_QUANTS = {
     # "iq3_xxs" : "3.06 bpw quantization",
     "q3_k_xs": "3-bit extra small quantization",
 }
+
+
+def has_curl():
+    return shutil.which("curl") is not None
+
+
+CURL_FLAG = "-DLLAMA_CURL=ON" if has_curl() else "-DLLAMA_CURL=OFF"
 
 
 def print_quantization_methods():
@@ -250,6 +257,7 @@ def unsloth_save_model(
     # Our functions
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.9,
+    datasets: Optional[List[str]] = None,
 ):
     if token is None:
         token = get_token()
@@ -282,6 +290,7 @@ def unsloth_save_model(
         "save_method",
         "temporary_location",
         "maximum_memory_usage",
+        "datasets",
     ):
         del save_pretrained_settings[deletion]
 
@@ -359,6 +368,7 @@ def unsloth_save_model(
             file_location = None,
             old_username = None,
             private = private,
+            datasets = datasets,
         )
 
         getattr(model, "original_push_to_hub", model.push_to_hub)(
@@ -468,6 +478,7 @@ def unsloth_save_model(
                 file_location = None,
                 old_username = None,
                 private = private,
+                datasets = datasets,
             )
 
         if tokenizer is not None:
@@ -547,7 +558,7 @@ def unsloth_save_model(
         elif mb_found:
             sharded_ram_usage = int(mb_found.group(1)) * 1024 * 1024
     elif type(max_shard_size) is int:
-        sharded_ram_usage = sharded_ram_usage
+        sharded_ram_usage = max_shard_size
 
     # Switch to our fast saving modules if it's a slow PC!
     n_cpus = psutil.cpu_count(logical = False)
@@ -730,6 +741,7 @@ def unsloth_save_model(
             file_location = None,
             old_username = username,
             private = private,
+            datasets = datasets,
         )
 
     # First check if we're pushing to an organization!
@@ -872,15 +884,16 @@ def install_llama_cpp_make_non_blocking():
     IS_CMAKE = False
     if check == 0:
         # Uses old MAKE
-        n_jobs = max(int(psutil.cpu_count() * 1.5), 1)
+        n_jobs = max(int((psutil.cpu_count() or 1) * 1.5), 1)
         full_command = ["make", "all", "-j" + str(n_jobs), "-C", "llama.cpp"]
         IS_CMAKE = False
     else:
         # Uses new CMAKE
-        n_jobs = max(int(psutil.cpu_count()), 1)  # Use less CPUs since 1.5x faster
+        n_jobs = max(int(psutil.cpu_count() or 1), 1)  # Use less CPUs since 1.5x faster
         check = os.system(
-            "cmake llama.cpp -B llama.cpp/build -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=OFF -DLLAMA_CURL=ON"
+            f"cmake llama.cpp -B llama.cpp/build -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=OFF {CURL_FLAG}"
         )
+
         if check != 0:
             raise RuntimeError(
                 f"*** Unsloth: Failed compiling llama.cpp using os.system(...) with error {check}. Please report this ASAP!"
@@ -986,16 +999,17 @@ def install_llama_cpp_old(version = -10):
     # Try using MAKE
     commands = [
         "make clean -C llama.cpp",
-        f"make all -j{psutil.cpu_count()*2} -C llama.cpp",
+        f"make all -j{(psutil.cpu_count() or 1)*2} -C llama.cpp",
     ]
     if try_execute(commands) == "CMAKE":
         # Instead use CMAKE
         commands = [
-            "cmake llama.cpp -B llama.cpp/build -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=OFF -DLLAMA_CURL=ON",
-            f"cmake --build llama.cpp/build --config Release -j{psutil.cpu_count()*2} --clean-first --target {' '.join(LLAMA_CPP_TARGETS)}",
+            f"cmake llama.cpp -B llama.cpp/build -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=OFF {CURL_FLAG}",
+            f"cmake --build llama.cpp/build --config Release -j{(psutil.cpu_count() or 1)*2} --clean-first --target {' '.join(LLAMA_CPP_TARGETS)}",
             "cp llama.cpp/build/bin/llama-* llama.cpp",
             "rm -rf llama.cpp/build",
         ]
+
         try_execute(commands)
 
     # Check if successful
@@ -1031,14 +1045,14 @@ def install_llama_cpp_blocking(use_cuda = False):
         "make clean -C llama.cpp",
         # https://github.com/ggerganov/llama.cpp/issues/7062
         # Weirdly GPU conversion for GGUF breaks??
-        # f"{use_cuda} make all -j{psutil.cpu_count()*2} -C llama.cpp",
-        f"make all -j{psutil.cpu_count()*2} -C llama.cpp",
+        # f"{use_cuda} make all -j{(psutil.cpu_count() or 1)*2} -C llama.cpp",
+        f"make all -j{(psutil.cpu_count() or 1)*2} -C llama.cpp",
     ]
     if try_execute(commands) == "CMAKE":
         # Instead use CMAKE
         commands = [
-            "cmake llama.cpp -B llama.cpp/build -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=OFF -DLLAMA_CURL=ON",
-            f"cmake --build llama.cpp/build --config Release -j{psutil.cpu_count()*2} --clean-first --target {' '.join(LLAMA_CPP_TARGETS)}",
+            f"cmake llama.cpp -B llama.cpp/build -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=OFF {CURL_FLAG}",
+            f"cmake --build llama.cpp/build --config Release -j{(psutil.cpu_count() or 1)*2} --clean-first --target {' '.join(LLAMA_CPP_TARGETS)}",
             "cp llama.cpp/build/bin/llama-* llama.cpp",
             "rm -rf llama.cpp/build",
         ]
@@ -1248,6 +1262,16 @@ def save_to_gguf(
                     "Please check disk space and try again."
                 )
 
+    # Move initial GGUF files into a dedicated _gguf directory
+    gguf_directory = f"{model_directory}_gguf"
+    os.makedirs(gguf_directory, exist_ok = True)
+    moved_files = []
+    for fpath in initial_files:
+        dst = os.path.join(gguf_directory, os.path.basename(fpath))
+        shutil.move(fpath, dst)
+        moved_files.append(dst)
+    initial_files = moved_files
+
     print(f"Unsloth: Initial conversion completed! Files: {initial_files}")
 
     # Step 4: Additional quantizations using llama-quantize
@@ -1267,8 +1291,9 @@ def save_to_gguf(
                 print(
                     f"Unsloth: [2] Converting GGUF {first_conversion_dtype} into {quant_method}. This might take 10 minutes..."
                 )
-                output_location = f"{model_name}.{quant_method.upper()}.gguf"
-
+                output_location = os.path.join(
+                    gguf_directory, f"{model_name}.{quant_method.upper()}.gguf"
+                )
                 try:
                     # Use the quantize_gguf function we created
                     quantized_file = quantize_gguf(
@@ -1307,7 +1332,7 @@ def save_to_gguf(
         print("Unsloth: Model files cleanup...")
         if quants_created:
             all_saved_locations.remove(base_gguf)
-            Path(base_gguf).unlink()
+            Path(base_gguf).unlink(missing_ok = True)
 
             # flip the list to get [text_model, mmproj] order. for text models stays the same.
             all_saved_locations.reverse()
@@ -1342,6 +1367,7 @@ def unsloth_save_pretrained_merged(
     tags: List[str] = None,
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.75,
+    datasets: Optional[List[str]] = None,
 ):
     """
     Same as .save_pretrained(...) except 4bit weights are auto
@@ -1383,6 +1409,7 @@ def unsloth_push_to_hub_merged(
     tags: Optional[List[str]] = None,
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.75,
+    datasets: Optional[List[str]] = None,
 ):
     """
     Same as .push_to_hub(...) except 4bit weights are auto
@@ -1429,7 +1456,7 @@ language:
 - **License:** apache-2.0
 - **Finetuned from model :** {base_model}
 
-This {model_type} model was trained 2x faster with [Unsloth](https://github.com/unslothai/unsloth) and Huggingface's TRL library.
+This {model_type} model was trained 2x faster with [Unsloth](https://github.com/unslothai/unsloth)
 
 [<img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20made%20with%20love.png" width="200"/>](https://github.com/unslothai/unsloth)
 """
@@ -1460,10 +1487,11 @@ def create_huggingface_repo(
     save_directory,
     token = None,
     private = False,
+    datasets = None,
 ):
     if token is None:
         token = get_token()
-    save_directory, username = _determine_username(save_directory, "", token)
+    save_directory, username = _determine_username(save_directory, None, token)
 
     from huggingface_hub import create_repo
 
@@ -1487,9 +1515,22 @@ def create_huggingface_repo(
             extra = "unsloth",
         )
         card = ModelCard(content)
+        if datasets:
+            card.data.datasets = datasets
         card.push_to_hub(save_directory, token = token)
     except:
-        pass
+        # Repo already exists — update datasets metadata separately
+        if datasets:
+            try:
+                from huggingface_hub import metadata_update
+
+                metadata_update(
+                    save_directory, {"datasets": datasets}, overwrite = True, token = token
+                )
+            except Exception as e:
+                logger.warning_once(
+                    f"Unsloth: Could not update datasets metadata for {save_directory}: {e}"
+                )
     hf_api = HfApi(token = token)
     return save_directory, hf_api
 
@@ -1504,6 +1545,7 @@ def upload_to_huggingface(
     old_username = None,
     private = None,
     create_config = True,
+    datasets = None,
 ):
     save_directory, username = _determine_username(save_directory, old_username, token)
 
@@ -1529,9 +1571,22 @@ def upload_to_huggingface(
             extra = extra,
         )
         card = ModelCard(content)
+        if datasets:
+            card.data.datasets = datasets
         card.push_to_hub(save_directory, token = token)
     except:
-        pass
+        # Repo already exists — update datasets metadata separately
+        if datasets:
+            try:
+                from huggingface_hub import metadata_update
+
+                metadata_update(
+                    save_directory, {"datasets": datasets}, overwrite = True, token = token
+                )
+            except Exception as e:
+                logger.warning_once(
+                    f"Unsloth: Could not update datasets metadata for {save_directory}: {e}"
+                )
 
     if file_location is not None:
         # Now upload file
@@ -1987,6 +2042,7 @@ def unsloth_save_pretrained_gguf(
             raise RuntimeError(f"Unsloth: GGUF conversion failed: {e}")
 
     # Step 9: Create Ollama modelfile
+    gguf_directory = f"{save_directory}_gguf"
     modelfile_location = None
     ollama_success = False
     if all_file_locations:
@@ -1995,13 +2051,12 @@ def unsloth_save_pretrained_gguf(
                 modelfile = create_ollama_modelfile(tokenizer, base_model_name, ".")
             else:
                 modelfile = create_ollama_modelfile(
-                    tokenizer, base_model_name, all_file_locations[0]
+                    tokenizer,
+                    base_model_name,
+                    os.path.basename(all_file_locations[0]),
                 )
             if modelfile is not None:
-                if is_vlm_update:
-                    modelfile_location = os.path.join(save_directory, "Modelfile")
-                else:
-                    modelfile_location = os.path.join(os.getcwd(), "Modelfile")
+                modelfile_location = os.path.join(gguf_directory, "Modelfile")
                 with open(modelfile_location, "w", encoding = "utf-8") as file:
                     file.write(modelfile)
                 ollama_success = True
@@ -2018,28 +2073,25 @@ def unsloth_save_pretrained_gguf(
     if is_vlm_update:
         print("\n")
         print(
-            f"Unsloth: example usage for Multimodal LLMs: llama-mtmd-cli -m {all_file_locations[0]} --mmproj {all_file_locations[-1]}"
+            f"Unsloth: example usage for Multimodal LLMs: llama.cpp/llama-mtmd-cli -m {all_file_locations[0]} --mmproj {all_file_locations[-1]}"
         )
         print("Unsloth: load image inside llama.cpp runner: /image test_image.jpg")
         print("Unsloth: Prompt model to describe the image")
     else:
         print(
-            f'Unsloth: example usage for text only LLMs: llama-cli --model {all_file_locations[0]} -p "why is the sky blue?"'
+            f'Unsloth: example usage for text only LLMs: llama.cpp/llama-cli --model {all_file_locations[0]} -p "why is the sky blue?"'
         )
-    if ollama_success and is_vlm_update:
+
+    if ollama_success:
         print(f"Unsloth: Saved Ollama Modelfile to {modelfile_location}")
         print(
-            "Unsloth: convert model to ollama format by running - ollama create model_name -f ./Modelfile - inside save directory."
-        )
-    if ollama_success and not is_vlm_update:
-        print("Unsloth: Saved Ollama Modelfile to current directory")
-        print(
-            "Unsloth: convert model to ollama format by running - ollama create model_name -f ./Modelfile - inside current directory."
+            f"Unsloth: convert model to ollama format by running - ollama create model_name -f {modelfile_location}"
         )
 
     # Return a dict with all needed info for push_to_hub
     return {
         "save_directory": save_directory,
+        "gguf_directory": gguf_directory,
         "gguf_files": all_file_locations,
         "modelfile_location": modelfile_location,
         "want_full_precision": want_full_precision,
@@ -2066,6 +2118,7 @@ def unsloth_push_to_hub_gguf(
     tags: Optional[List[str]] = None,
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.85,
+    datasets: Optional[List[str]] = None,
 ):
     """
     Same as .push_to_hub(...) except 4bit weights are auto
@@ -2139,10 +2192,11 @@ def unsloth_push_to_hub_gguf(
         if cleanup_temp:
             import shutil
 
-            try:
-                shutil.rmtree(save_directory)
-            except:
-                pass
+            for d in [save_directory, f"{save_directory}_gguf"]:
+                try:
+                    shutil.rmtree(d)
+                except:
+                    pass
         raise RuntimeError(f"Failed to convert model to GGUF: {e}")
 
     # Step 3: Upload to HuggingFace Hub
@@ -2234,13 +2288,13 @@ tags:
 {"- vision-language-model" if is_vlm else ""}
 ---
 
-# {repo_id.split("/")[-1]} - GGUF
+# {repo_id.split("/")[-1]} : GGUF
 
 This model was finetuned and converted to GGUF format using [Unsloth](https://github.com/unslothai/unsloth).
 
 **Example usage**:
-- For text only LLMs:    **llama-cli** **--hf** repo_id/model_name **-p** "why is the sky blue?"
-- For multimodal models: **llama-mtmd-cli** **-m** model_name.gguf **--mmproj** mmproj_file.gguf
+- For text only LLMs:    `./llama.cpp/llama-cli -hf {repo_id} --jinja`
+- For multimodal models: `./llama.cpp/llama-mtmd-cli -hf {repo_id} --jinja`
 
 ## Available Model files:
 """
@@ -2281,6 +2335,11 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
                 "The model's BOS token behavior was adjusted for GGUF compatibility.\n"
             )
 
+        readme_content += (
+            "This was trained 2x faster with [Unsloth](https://github.com/unslothai/unsloth)\n"
+            '[<img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20made%20with%20love.png" width="200"/>](https://github.com/unslothai/unsloth)\n'
+        )
+
         readme_path = os.path.join(actual_save_directory, "README.md")
         with open(readme_path, "w") as f:
             f.write(readme_content)
@@ -2315,19 +2374,33 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
         except:
             pass
 
+        if datasets:
+            try:
+                from huggingface_hub import metadata_update
+
+                metadata_update(
+                    full_repo_id, {"datasets": datasets}, overwrite = True, token = token
+                )
+            except Exception as e:
+                logger.warning_once(
+                    f"Unsloth: Could not update datasets metadata for {full_repo_id}: {e}"
+                )
+
     except Exception as e:
         raise RuntimeError(f"Failed to upload to Hugging Face Hub: {e}")
 
     finally:
         # Clean up temporary directory
-        if cleanup_temp and os.path.exists(save_directory):
+        if cleanup_temp:
             print("Unsloth: Cleaning up temporary files...")
             import shutil
 
-            try:
-                shutil.rmtree(save_directory)
-            except:
-                pass
+            for d in [save_directory, f"{save_directory}_gguf"]:
+                if os.path.exists(d):
+                    try:
+                        shutil.rmtree(d)
+                    except:
+                        pass
 
     return full_repo_id
 
@@ -2620,6 +2693,7 @@ def unsloth_generic_save(
     # Our functions
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.9,
+    datasets: Optional[List[str]] = None,
 ):
     if token is None and push_to_hub:
         token = get_token()
@@ -2647,6 +2721,20 @@ def unsloth_generic_save(
         low_disk_space_usage = True,
         use_temp_file = False,
     )
+
+    if push_to_hub and datasets:
+        try:
+            from huggingface_hub import metadata_update
+
+            save_dir, _ = _determine_username(save_directory, None, token)
+            metadata_update(
+                save_dir, {"datasets": datasets}, overwrite = True, token = token
+            )
+        except Exception as e:
+            logger.warning_once(
+                f"Unsloth: Could not update datasets metadata for {save_directory}: {e}"
+            )
+
     return
 
 
@@ -2667,6 +2755,7 @@ def unsloth_generic_save_pretrained_merged(
     tags: List[str] = None,
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.75,
+    datasets: Optional[List[str]] = None,
 ):
     """
     Same as .push_to_hub(...) except 4bit weights are auto
@@ -2708,6 +2797,7 @@ def unsloth_generic_push_to_hub_merged(
     tags: Optional[List[str]] = None,
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.75,
+    datasets: Optional[List[str]] = None,
 ):
     """
     Same as .push_to_hub(...) except 4bit weights are auto
@@ -2745,6 +2835,17 @@ def _unsloth_save_torchao_with_attached_config(
     """Save a QAT-trained model by converting fake-quantized weights to real quantized weights."""
     # Convert QAT fake-quantized weights to real quantized weights
     _convert_torchao_model(model)
+    # PEFT models also might come here, so parse it
+    if isinstance(model, PeftModelForCausalLM):
+        _unsloth_save_torchao_with_given_config(
+            model = model,
+            save_directory = save_directory,
+            tokenizer = tokenizer,
+            torchao_config = model.config.quantization_config,
+            push_to_hub = push_to_hub,
+            token = token,
+        )
+        return
 
     # TorchAO does not support safe_serialization reliably
     safe_serialization = False
@@ -2806,7 +2907,10 @@ def _unsloth_save_torchao_with_given_config(
     )
     from torchao import quantize_
 
-    quantization_config = TorchAoConfig(quant_type = torchao_config)
+    if isinstance(torchao_config, TorchAoConfig):
+        quantization_config = torchao_config
+    else:
+        quantization_config = TorchAoConfig(quant_type = torchao_config)
 
     # Determine if this is a VLM
     is_vlm = False
@@ -2897,7 +3001,7 @@ def unsloth_save_pretrained_torchao(
     )
 
     if torchao_config is not None:
-        # PTQ path: user provided a config, model must NOT have QAT config
+        # PTQ path: user provided a config, model must NOT have QAT config unless PEFT
         assert not has_qat_config, (
             "Unsloth: You passed `torchao_config` but this model was trained with `qat_scheme`. "
             "For QAT models, do not pass `torchao_config` - the quantization config is already "
@@ -3010,7 +3114,11 @@ def patch_saving_functions(model, vision = False):
 
     original_model = model
     while True:
-        if original_model.push_to_hub.__name__ != "unsloth_push_to_hub":
+        # Check if push_to_hub exists before accessing its __name__
+        if (
+            hasattr(original_model, "push_to_hub")
+            and original_model.push_to_hub.__name__ != "unsloth_push_to_hub"
+        ):
             original_model.original_push_to_hub = original_model.push_to_hub
             original_model.push_to_hub = types.MethodType(
                 unsloth_push_to_hub, original_model

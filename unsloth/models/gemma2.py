@@ -14,7 +14,7 @@
 
 from .llama import *
 from ._utils import __version__
-from unsloth_zoo.utils import _get_dtype
+from unsloth_zoo.utils import _get_dtype, Version
 from unsloth_zoo.hf_utils import dtype_from_config
 from ..utils.packing import get_packed_info_from_kwargs
 from ..utils.attention_dispatch import (
@@ -41,8 +41,6 @@ try:
         repeat_kv,
     )
 except:
-    from packaging.version import Version
-
     transformers_version = Version(transformers_version)
     if not transformers_version >= Version("4.42"):
         raise ImportError(
@@ -615,10 +613,10 @@ class FastGemma2Model(FastLlamaModel):
         return
 
     @staticmethod
-    def post_patch(model, tokenizer):
+    def post_patch(model, tokenizer, correct_dtype = None):
         # Gemma does not downcast RoPE
         model, tokenizer = patch_model_and_tokenizer(
-            model, tokenizer, downcast_rope = False
+            model, tokenizer, downcast_rope = False, correct_dtype = correct_dtype
         )
 
         # Add 1 to weight
