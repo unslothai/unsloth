@@ -186,10 +186,11 @@ export function Navbar() {
             <button
               type="button"
               onClick={openTour}
-              className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              className="flex h-9 items-center gap-1.5 rounded-md px-3 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
               title="Tour"
             >
               <HugeiconsIcon icon={CursorInfo02Icon} className="size-4" />
+              <span className="text-sm font-medium">Tour</span>
             </button>
           ) : null}
         </div>
