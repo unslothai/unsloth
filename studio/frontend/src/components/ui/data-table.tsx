@@ -22,15 +22,24 @@ interface DataTableProps<TData, TValue> {
   columns: ColumnDef<TData, TValue>[];
   data: TData[];
   className?: string;
+  onRowClick?: (row: TData, rowIndex: number, rowId: string) => void;
+  getRowClassName?: (
+    row: TData,
+    rowIndex: number,
+    rowId: string,
+  ) => string | undefined;
 }
 
 export function DataTable<TData, TValue>({
   columns,
   data,
   className,
+  onRowClick,
+  getRowClassName,
 }: DataTableProps<TData, TValue>) {
   const [sorting, setSorting] = useState<SortingState>([]);
 
+  // eslint-disable-next-line react-hooks/incompatible-library
   const table = useReactTable({
     data,
     columns,
@@ -81,7 +90,9 @@ export function DataTable<TData, TValue>({
                     ? "bg-background"
                     : "bg-muted/20",
                   "hover:bg-primary/[0.03]",
+                  getRowClassName?.(row.original, idx, row.id),
                 )}
+                onClick={() => onRowClick?.(row.original, idx, row.id)}
               >
                 {row.getVisibleCells().map((cell) => (
                   <TableCell
