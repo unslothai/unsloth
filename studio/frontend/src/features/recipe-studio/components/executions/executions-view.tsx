@@ -344,8 +344,8 @@ export function ExecutionsView({
                 className={cn(
                   "space-y-3 rounded-xl border p-3",
                   progressComplete
-                    ? "border-emerald-200 bg-emerald-50/50"
-                    : "border-amber-200 bg-amber-50/50",
+                    ? "border-emerald-200 bg-emerald-50/50 dark:border-emerald-900/50 dark:bg-emerald-950/25"
+                    : "border-amber-200 bg-amber-50/50 dark:border-amber-900/50 dark:bg-amber-950/25",
                 )}
               >
                 <div className="flex items-center justify-between">
@@ -354,13 +354,17 @@ export function ExecutionsView({
                       icon={progressComplete ? CheckmarkCircle02Icon : Flag02Icon}
                       className={cn(
                         "size-4",
-                        progressComplete ? "text-emerald-700" : "text-amber-700",
+                        progressComplete
+                          ? "text-emerald-700 dark:text-emerald-300"
+                          : "text-amber-700 dark:text-amber-300",
                       )}
                     />
                     <p
                       className={cn(
                         "text-sm font-semibold",
-                        progressComplete ? "text-emerald-900" : "text-amber-900",
+                        progressComplete
+                          ? "text-emerald-900 dark:text-emerald-100"
+                          : "text-amber-900 dark:text-amber-100",
                       )}
                     >
                       {progressComplete ? "Run completed" : "Run in progress"}
@@ -369,7 +373,9 @@ export function ExecutionsView({
                   <p
                     className={cn(
                       "text-xs",
-                      progressComplete ? "text-emerald-800" : "text-amber-800",
+                      progressComplete
+                        ? "text-emerald-800 dark:text-emerald-200"
+                        : "text-amber-800 dark:text-amber-200",
                     )}
                   >
                     {formatPercent(progressPercent)}
@@ -379,7 +385,9 @@ export function ExecutionsView({
                 <div
                   className={cn(
                     "grid gap-2 text-xs md:grid-cols-4",
-                    progressComplete ? "text-emerald-900" : "text-amber-900",
+                    progressComplete
+                      ? "text-emerald-900 dark:text-emerald-100"
+                      : "text-amber-900 dark:text-amber-100",
                   )}
                 >
                   <p>Done: {selectedExecution.progress?.done ?? "--"}</p>
@@ -391,7 +399,9 @@ export function ExecutionsView({
                   <p
                     className={cn(
                       "text-xs",
-                      progressComplete ? "text-emerald-900" : "text-amber-900",
+                      progressComplete
+                        ? "text-emerald-900 dark:text-emerald-100"
+                        : "text-amber-900 dark:text-amber-100",
                     )}
                   >
                     Column {selectedExecution.current_column}:{" "}
@@ -404,7 +414,9 @@ export function ExecutionsView({
                   <p
                     className={cn(
                       "text-xs",
-                      progressComplete ? "text-emerald-900" : "text-amber-900",
+                      progressComplete
+                        ? "text-emerald-900 dark:text-emerald-100"
+                        : "text-amber-900 dark:text-amber-100",
                     )}
                   >
                     Processed batch: {batchIdx ?? "--"}/{batchTotal}
