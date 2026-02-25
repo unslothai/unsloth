@@ -627,8 +627,8 @@ class FastBaseModel:
         # Re-resolve model_class after potential config change
         try:
             model_class = auto_model._model_mapping[auto_config.__class__]
-        except KeyError:
-            pass
+        except Exception:
+            model_class = None
 
         default_attn_impl = "flex_attention" if flex_attn_impl else "sdpa"
         if not ("attn_implementation" in kwargs):
