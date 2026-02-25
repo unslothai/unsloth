@@ -3384,6 +3384,28 @@ def patch_unsloth_zoo_saving():
     except Exception as e:
         print(f"Warning: Could not patch GGUF apt-get check: {e}")
 
+    # CRITICAL: Also patch use_local_gguf which is a context manager
+    # This is needed because the MockModule doesn't support context manager protocol
+    try:
+        import unsloth_zoo.saving_utils
+        if hasattr(unsloth_zoo.saving_utils, "use_local_gguf"):
+            # Save the original
+            _orig_use_local_gguf = unsloth_zoo.saving_utils.use_local_gguf
+            
+            # Create a wrapper that doesn't need the context manager
+            def _patched_use_local_gguf():
+                # Just return a dummy context manager that does nothing
+                from contextlib import contextmanager
+                @contextmanager
+                def _dummy_cm():
+                    yield
+                return _dummy_cm()
+            
+            unsloth_zoo.saving_utils.use_local_gguf = _patched_use_local_gguf
+            print("DEBUG: Patched use_local_gguf")
+    except Exception as e:
+        print(f"DEBUG: Could not patch use_local_gguf: {e}")
+    
     # CRITICAL: Also update the local binding in this module (save.py).
     # Line 2620 does `from unsloth_zoo.saving_utils import merge_and_overwrite_lora`
     # which creates a local reference that is NOT affected by patching the zoo module.
