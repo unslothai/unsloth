@@ -74,6 +74,7 @@ __all__ = [
     "dequantize_module_weight",
     "patch_hf_quantizer",
     "verify_fp8_support_if_applicable",
+    "_redirect_fp8_to_bf16",
     "_get_inference_mode_context_manager",
     "hf_login",
     "is_moe_model",
@@ -2576,6 +2577,59 @@ def patch_hf_quantizer():
 
 
 patch_hf_quantizer()
+
+
+def _redirect_fp8_to_bf16(
+    model_name, auto_config, load_in_fp8, token, trust_remote_code
+):
+    """
+    Detect FP8 quantization in model config and redirect to BF16 sibling.
+
+    Models shipping FP8 as default (e.g. mistralai/Ministral-3-*B-Instruct)
+    cannot be loaded with BNB 4-bit/8-bit or 16-bit mode. This detects
+    quant_method in ("fp8", "fbgemm_fp8") and redirects to {model_name}-BF16.
+
+    Redirect is SKIPPED when load_in_fp8 is truthy (True or 'block'),
+    meaning the user explicitly wants FP8 loading.
+
+    Returns (model_name, auto_config) -- possibly updated.
+    """
+    if not hasattr(auto_config, "quantization_config"):
+        return model_name, auto_config
+
+    _qc = auto_config.quantization_config
+    _qm = (
+        _qc.get("quant_method", "")
+        if isinstance(_qc, dict)
+        else getattr(_qc, "quant_method", "")
+    )
+    if _qm not in ("fp8", "fbgemm_fp8") or load_in_fp8:
+        return model_name, auto_config
+
+    _bf16_name = model_name.rstrip("/") + "-BF16"
+    _original_name = model_name
+    try:
+        from huggingface_hub import model_info as _hf_model_info
+        from transformers import AutoConfig
+
+        _hf_model_info(_bf16_name, token = token)
+        _bf16_config = AutoConfig.from_pretrained(
+            _bf16_name,
+            token = token,
+            trust_remote_code = trust_remote_code,
+        )
+        print(
+            f"Unsloth: {_original_name} uses FP8 weights. "
+            f"Redirecting to {_bf16_name}."
+        )
+        return _bf16_name, _bf16_config
+    except Exception:
+        raise RuntimeError(
+            f"Unsloth: {_original_name} uses FP8 weights but no BF16 version "
+            f"was found at {_bf16_name}.\n"
+            f"Loading FP8 weights with BitsAndBytes or in 16-bit will fail.\n"
+            f"Set load_in_fp8=True to use FP8 mode, or upload a BF16 version."
+        )
 
 
 def verify_fp8_support_if_applicable(model_config):

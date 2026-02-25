@@ -31,7 +31,6 @@ from .mapper import (
 from transformers import __version__ as transformers_version
 from unsloth.models._utils import TorchAOConfig
 from unsloth_zoo.utils import Version
-from unsloth_zoo.vllm_utils import _get_torchao_fp8_config
 import gc
 
 transformers_version = Version(transformers_version)
@@ -47,6 +46,13 @@ BAD_MAPPINGS = {
     "unsloth/Qwen3-30B-A3B-Base-unsloth-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B-Base".lower(),  # HF loads MoEs too slowly
     "unsloth/Qwen3-30B-A3B-Base-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B-Base".lower(),  # We rather do it on the fly
 }
+
+
+def _get_torchao_fp8_config(fp8_mode):
+    # Import lazily so an optional, broken vLLM install does not break plain `import unsloth`.
+    from unsloth_zoo.vllm_utils import _get_torchao_fp8_config as _impl
+
+    return _impl(fp8_mode)
 
 
 def _get_env_int(keys):

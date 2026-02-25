@@ -257,6 +257,7 @@ def unsloth_save_model(
     # Our functions
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.9,
+    datasets: Optional[List[str]] = None,
 ):
     if token is None:
         token = get_token()
@@ -289,6 +290,7 @@ def unsloth_save_model(
         "save_method",
         "temporary_location",
         "maximum_memory_usage",
+        "datasets",
     ):
         del save_pretrained_settings[deletion]
 
@@ -366,6 +368,7 @@ def unsloth_save_model(
             file_location = None,
             old_username = None,
             private = private,
+            datasets = datasets,
         )
 
         getattr(model, "original_push_to_hub", model.push_to_hub)(
@@ -475,6 +478,7 @@ def unsloth_save_model(
                 file_location = None,
                 old_username = None,
                 private = private,
+                datasets = datasets,
             )
 
         if tokenizer is not None:
@@ -737,6 +741,7 @@ def unsloth_save_model(
             file_location = None,
             old_username = username,
             private = private,
+            datasets = datasets,
         )
 
     # First check if we're pushing to an organization!
@@ -1362,6 +1367,7 @@ def unsloth_save_pretrained_merged(
     tags: List[str] = None,
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.75,
+    datasets: Optional[List[str]] = None,
 ):
     """
     Same as .save_pretrained(...) except 4bit weights are auto
@@ -1403,6 +1409,7 @@ def unsloth_push_to_hub_merged(
     tags: Optional[List[str]] = None,
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.75,
+    datasets: Optional[List[str]] = None,
 ):
     """
     Same as .push_to_hub(...) except 4bit weights are auto
@@ -1480,10 +1487,11 @@ def create_huggingface_repo(
     save_directory,
     token = None,
     private = False,
+    datasets = None,
 ):
     if token is None:
         token = get_token()
-    save_directory, username = _determine_username(save_directory, "", token)
+    save_directory, username = _determine_username(save_directory, None, token)
 
     from huggingface_hub import create_repo
 
@@ -1507,9 +1515,22 @@ def create_huggingface_repo(
             extra = "unsloth",
         )
         card = ModelCard(content)
+        if datasets:
+            card.data.datasets = datasets
         card.push_to_hub(save_directory, token = token)
     except:
-        pass
+        # Repo already exists — update datasets metadata separately
+        if datasets:
+            try:
+                from huggingface_hub import metadata_update
+
+                metadata_update(
+                    save_directory, {"datasets": datasets}, overwrite = True, token = token
+                )
+            except Exception as e:
+                logger.warning_once(
+                    f"Unsloth: Could not update datasets metadata for {save_directory}: {e}"
+                )
     hf_api = HfApi(token = token)
     return save_directory, hf_api
 
@@ -1524,6 +1545,7 @@ def upload_to_huggingface(
     old_username = None,
     private = None,
     create_config = True,
+    datasets = None,
 ):
     save_directory, username = _determine_username(save_directory, old_username, token)
 
@@ -1549,9 +1571,22 @@ def upload_to_huggingface(
             extra = extra,
         )
         card = ModelCard(content)
+        if datasets:
+            card.data.datasets = datasets
         card.push_to_hub(save_directory, token = token)
     except:
-        pass
+        # Repo already exists — update datasets metadata separately
+        if datasets:
+            try:
+                from huggingface_hub import metadata_update
+
+                metadata_update(
+                    save_directory, {"datasets": datasets}, overwrite = True, token = token
+                )
+            except Exception as e:
+                logger.warning_once(
+                    f"Unsloth: Could not update datasets metadata for {save_directory}: {e}"
+                )
 
     if file_location is not None:
         # Now upload file
@@ -1890,6 +1925,20 @@ def unsloth_save_pretrained_gguf(
     arguments["push_to_hub"] = False  # We handle upload ourselves
     # GPT-OSS needs mxfp4 save method
     if is_gpt_oss:
+        if quantization_method is not None:
+            _qm = (
+                quantization_method
+                if isinstance(quantization_method, (list, tuple))
+                else [quantization_method]
+            )
+            _ignored = [q for q in _qm if str(q).lower() != "mxfp4"]
+            if _ignored:
+                logger.warning_once(
+                    f"Unsloth: GPT-OSS does not support GGUF quantization "
+                    f"(requested: {', '.join(str(q) for q in _ignored)}). "
+                    f"Overriding to MXFP4 format. "
+                    f"Pass quantization_method=None to suppress this warning."
+                )
         arguments["save_method"] = "mxfp4"
     else:
         arguments["save_method"] = "merged_16bit"
@@ -2083,6 +2132,7 @@ def unsloth_push_to_hub_gguf(
     tags: Optional[List[str]] = None,
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.85,
+    datasets: Optional[List[str]] = None,
 ):
     """
     Same as .push_to_hub(...) except 4bit weights are auto
@@ -2337,6 +2387,18 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
             )
         except:
             pass
+
+        if datasets:
+            try:
+                from huggingface_hub import metadata_update
+
+                metadata_update(
+                    full_repo_id, {"datasets": datasets}, overwrite = True, token = token
+                )
+            except Exception as e:
+                logger.warning_once(
+                    f"Unsloth: Could not update datasets metadata for {full_repo_id}: {e}"
+                )
 
     except Exception as e:
         raise RuntimeError(f"Failed to upload to Hugging Face Hub: {e}")
@@ -2645,6 +2707,7 @@ def unsloth_generic_save(
     # Our functions
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.9,
+    datasets: Optional[List[str]] = None,
 ):
     if token is None and push_to_hub:
         token = get_token()
@@ -2672,6 +2735,20 @@ def unsloth_generic_save(
         low_disk_space_usage = True,
         use_temp_file = False,
     )
+
+    if push_to_hub and datasets:
+        try:
+            from huggingface_hub import metadata_update
+
+            save_dir, _ = _determine_username(save_directory, None, token)
+            metadata_update(
+                save_dir, {"datasets": datasets}, overwrite = True, token = token
+            )
+        except Exception as e:
+            logger.warning_once(
+                f"Unsloth: Could not update datasets metadata for {save_directory}: {e}"
+            )
+
     return
 
 
@@ -2692,6 +2769,7 @@ def unsloth_generic_save_pretrained_merged(
     tags: List[str] = None,
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.75,
+    datasets: Optional[List[str]] = None,
 ):
     """
     Same as .push_to_hub(...) except 4bit weights are auto
@@ -2733,6 +2811,7 @@ def unsloth_generic_push_to_hub_merged(
     tags: Optional[List[str]] = None,
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.75,
+    datasets: Optional[List[str]] = None,
 ):
     """
     Same as .push_to_hub(...) except 4bit weights are auto

@@ -29,6 +29,7 @@ from .import_fixes import (
     fix_message_factory_issue,
     check_fbgemm_gpu_version,
     disable_broken_causal_conv1d,
+    disable_broken_vllm,
     configure_amdgpu_asic_id_table_path,
     torchvision_compatibility_check,
     fix_diffusers_warnings,
@@ -38,6 +39,7 @@ from .import_fixes import (
 # Configure libdrm ids table path early so ROCm can resolve AMD GPU names.
 configure_amdgpu_asic_id_table_path()
 disable_broken_causal_conv1d()
+disable_broken_vllm()
 fix_message_factory_issue()
 check_fbgemm_gpu_version()
 torchvision_compatibility_check()
@@ -45,6 +47,7 @@ fix_diffusers_warnings()
 fix_huggingface_hub()
 del configure_amdgpu_asic_id_table_path
 del disable_broken_causal_conv1d
+del disable_broken_vllm
 del fix_message_factory_issue
 del check_fbgemm_gpu_version
 del torchvision_compatibility_check
@@ -137,6 +140,7 @@ from .import_fixes import (
     fix_vllm_pdl_blackwell,
     fix_triton_compiled_kernel_missing_attrs,
     fix_rocm_triton_key_error,
+    patch_trunc_normal_precision_issue,
     ignore_logger_messages,
     patch_ipykernel_hf_xet,
     patch_trackio,
@@ -158,6 +162,7 @@ fix_vllm_guided_decoding_params()
 fix_vllm_pdl_blackwell()
 fix_triton_compiled_kernel_missing_attrs()
 fix_rocm_triton_key_error()
+patch_trunc_normal_precision_issue()
 ignore_logger_messages()
 patch_ipykernel_hf_xet()
 patch_trackio()
@@ -177,6 +182,7 @@ del fix_vllm_guided_decoding_params
 del fix_vllm_pdl_blackwell
 del fix_triton_compiled_kernel_missing_attrs
 del fix_rocm_triton_key_error
+del patch_trunc_normal_precision_issue
 del ignore_logger_messages
 del patch_ipykernel_hf_xet
 del patch_trackio
