@@ -112,24 +112,49 @@ export function HfDatasetSubsetSplitSelectors({
 
       {showDropdowns && (
         <>
-          <SelectorDropdown
-            variant={variant}
-            label="Subset"
-            tooltip="Select which subset (config) of the dataset to use."
-            value={datasetSubset}
-            onChange={setDatasetSubset}
-            options={hfSubsets}
-            placeholder="Select a subset..."
-          />
-          <SelectorDropdown
-            variant={variant}
-            label="Train Split"
-            tooltip="Select which split to use for training."
-            value={datasetSplit}
-            onChange={setDatasetSplit}
-            options={hfSplits}
-            placeholder="Select a split..."
-          />
+          {variant === "studio" ? (
+            <div className="grid gap-3 sm:grid-cols-2">
+              <SelectorDropdown
+                variant={variant}
+                label="Subset"
+                tooltip="Select which subset (config) of the dataset to use."
+                value={datasetSubset}
+                onChange={setDatasetSubset}
+                options={hfSubsets}
+                placeholder="Select a subset..."
+              />
+              <SelectorDropdown
+                variant={variant}
+                label="Train Split"
+                tooltip="Select which split to use for training."
+                value={datasetSplit}
+                onChange={setDatasetSplit}
+                options={hfSplits}
+                placeholder="Select a split..."
+              />
+            </div>
+          ) : (
+            <>
+              <SelectorDropdown
+                variant={variant}
+                label="Subset"
+                tooltip="Select which subset (config) of the dataset to use."
+                value={datasetSubset}
+                onChange={setDatasetSubset}
+                options={hfSubsets}
+                placeholder="Select a subset..."
+              />
+              <SelectorDropdown
+                variant={variant}
+                label="Train Split"
+                tooltip="Select which split to use for training."
+                value={datasetSplit}
+                onChange={setDatasetSplit}
+                options={hfSplits}
+                placeholder="Select a split..."
+              />
+            </>
+          )}
           <SelectorDropdown
             variant={variant}
             label="Eval Split"
