@@ -118,11 +118,10 @@ def Qwen3Attention_fast_forward(
         rotary_emb.extend_rope_embedding(V, seq_len = kv_seq_len)
         device_index = Q.device.index
 
-        if position_ids is None:
-            # Useful for LongRoPE
-            cos, sin = rotary_emb.get_cached(kv_seq_len, device_index)
-        else:
-            cos, sin = rotary_emb.get_cached(kv_seq_len, device_index)
+        cos, sin = rotary_emb.get_cached(kv_seq_len, device_index)
+        if position_ids is not None:
+            cos = cos[position_ids]
+            sin = sin[position_ids]
     Q, K = fast_rope_embedding(Q, K, cos, sin)
 
     if past_key_value is not None:

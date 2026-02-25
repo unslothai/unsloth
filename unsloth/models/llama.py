@@ -119,6 +119,35 @@ else:
     get_current_device = torch.cuda.current_device
 
 
+from transformers.cache_utils import DynamicCache, Cache
+
+def _ensure_cache_is_dynamic(past_key_values):
+    """Convert list/tuple of (K, V) pairs to DynamicCache for transformers v5 compat."""
+    if past_key_values is None:
+        return None
+    if isinstance(past_key_values, Cache):
+        return past_key_values
+    if isinstance(past_key_values, (tuple, list)) and len(past_key_values) > 0:
+        cache = DynamicCache()
+        for layer_idx, layer_kv in enumerate(past_key_values):
+            cache.update(layer_kv[0], layer_kv[1], layer_idx)
+        return cache
+    return past_key_values
+
+
+def _slice_position_ids(position_ids, input_ids):
+    """Slice position_ids to match input_ids length if needed."""
+    if position_ids is None:
+        return None
+    if position_ids.dim() == 2:
+        if position_ids.shape[1] > input_ids.shape[1]:
+            position_ids = position_ids[:, -input_ids.shape[1]:]
+    elif position_ids.dim() == 1:
+        if position_ids.shape[0] > input_ids.shape[1]:
+            position_ids = position_ids[-input_ids.shape[1]:]
+    return position_ids
+
+
 def original_apply_qkv(self, X):
     Q = self.q_proj(X)
     K = self.k_proj(X)
@@ -211,7 +240,6 @@ def _fast_prepare_inputs_for_generation(
 
                 # Define bs and calculate correct sequence length
                 bs, seq_len = input_ids.shape
-                seq_len = input_ids.shape[1]
                 
                 # cache_position should start from past_length and cover the new tokens
                 cache_position = torch.arange(
@@ -266,6 +294,14 @@ def fix_prepare_inputs_for_generation(module):
     # Fix prepare_inputs_for_generation
     if hasattr(module, "prepare_inputs_for_generation"):
         module.prepare_inputs_for_generation = _fast_prepare_inputs_for_generation
+    # Wrap generate() to convert tuple/list past_key_values to DynamicCache
+    # before transformers v5's _get_cache rejects them
+    _original_generate = module.generate
+    def _fast_generate(self, *args, **kwargs):
+        if "past_key_values" in kwargs:
+            kwargs["past_key_values"] = _ensure_cache_is_dynamic(kwargs["past_key_values"])
+        return _original_generate(self, *args, **kwargs)
+    module.generate = _fast_generate
 
 
 torch_matmul = torch.matmul
@@ -1366,6 +1402,10 @@ def CausalLM_fast_forward(fast_forward_inference):
             )
             # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
             self.model._has_no_labels = labels is None
+
+            if position_ids is not None:
+                position_ids = _slice_position_ids(position_ids, input_ids)
+
             outputs = self.model(
                 input_ids = input_ids,
                 causal_mask = causal_mask,
@@ -1557,17 +1597,7 @@ def PeftModel_fast_forward(
     else:
         position_ids = kwargs.get("position_ids", None)
         if position_ids is not None:
-            # Robust fix: Slice position_ids if it's longer than input_ids
-            # Handle both 1D and 2D position_ids
-            if position_ids.dim() == 2:
-                if position_ids.shape[1] > input_ids.shape[1]:
-                    position_ids = position_ids[:, -input_ids.shape[1] :]
-            elif position_ids.dim() == 1:
-                if position_ids.shape[0] > input_ids.shape[1]:
-                    position_ids = position_ids[-input_ids.shape[1]:]
-            
-            # Update kwargs with sliced position_ids
-            kwargs["position_ids"] = position_ids
+            kwargs["position_ids"] = _slice_position_ids(position_ids, input_ids)
 
         return self.base_model(
             input_ids = input_ids,
