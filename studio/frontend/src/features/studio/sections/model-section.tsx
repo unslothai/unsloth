@@ -172,14 +172,25 @@ export function ModelSection() {
     return ids;
   }, [hfResults, selectedModel]);
 
+  // Filter out GGUF models — they can't be used for training
+  const trainableLocalModels = useMemo(
+    () =>
+      localModels.filter((m) => {
+        if (m.path.endsWith(".gguf")) return false;
+        if (m.id.toLowerCase().includes("-gguf")) return false;
+        return true;
+      }),
+    [localModels],
+  );
+
   const localMetaById = useMemo(() => {
     const map = new Map<string, LocalModelInfo>();
-    for (const model of localModels) map.set(model.id, model);
+    for (const model of trainableLocalModels) map.set(model.id, model);
     return map;
-  }, [localModels]);
+  }, [trainableLocalModels]);
 
   const localResultIds = useMemo(() => {
-    const ids = localModels.map((model) => model.id);
+    const ids = trainableLocalModels.map((model) => model.id);
     const manual = localModelInput.trim();
     if (manual && !ids.includes(manual)) {
       ids.unshift(manual);
@@ -346,8 +357,8 @@ export function ModelSection() {
             <p className="text-[10px] text-red-500">{localModelsError}</p>
           ) : (
             <p className="text-[10px] text-muted-foreground">
-              {localModels.length > 0
-                ? `${localModels.length} local/cached models found`
+              {trainableLocalModels.length > 0
+                ? `${trainableLocalModels.length} local/cached models found`
                 : "No local models found. Enter path manually."}
             </p>
           )}
