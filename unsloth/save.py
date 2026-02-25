@@ -1145,6 +1145,30 @@ def install_llama_cpp_old(version=-10):
 
 
 def install_llama_cpp_blocking(use_cuda=False):
+    import platform
+    IS_MAC = platform.system() == "Darwin"
+    
+    # Check if we already have a local build with Metal on macOS
+    if IS_MAC:
+        possible_paths = [
+            os.path.join(os.getcwd(), "llama.cpp", "build", "bin"),
+            os.path.expanduser("~/llama.cpp/build/bin"),
+        ]
+        for bin_path in possible_paths:
+            if os.path.exists(bin_path):
+                # Check if there are any binaries in the build directory
+                if os.listdir(bin_path):
+                    # Copy binaries to llama.cpp directory
+                    import shutil
+                    llama_dir = os.path.join(os.getcwd(), "llama.cpp")
+                    os.makedirs(llama_dir, exist_ok=True)
+                    for f in os.listdir(bin_path):
+                        src = os.path.join(bin_path, f)
+                        if os.path.isfile(src):
+                            shutil.copy2(src, llama_dir)
+                    print(f"Unsloth: Found local llama.cpp build at {bin_path}, copied binaries")
+                    return
+    
     # https://github.com/ggerganov/llama.cpp/issues/7062
     # Weirdly GPU conversion for GGUF breaks??
     # use_cuda = "LLAMA_CUDA=1" if use_cuda else ""
@@ -1157,9 +1181,6 @@ def install_llama_cpp_blocking(use_cuda=False):
         return
     try_execute(commands)
 
-    # Check if we're on Mac - use Metal instead of CUDA
-    import platform
-    IS_MAC = platform.system() == "Darwin"
     METAL_FLAG = "-DGGML_METAL=ON" if IS_MAC else "-DGGML_CUDA=OFF"
 
     commands = [
