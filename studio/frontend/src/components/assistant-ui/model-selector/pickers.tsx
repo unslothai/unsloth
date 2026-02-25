@@ -70,20 +70,20 @@ function ModelRow({
       type="button"
       onClick={onClick}
       className={cn(
-        "flex w-full items-center justify-between gap-2 rounded-md px-2.5 py-1.5 text-left text-sm transition-colors hover:bg-accent",
+        "flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm transition-colors hover:bg-accent",
         selected && "bg-accent/60",
         exceeds && "opacity-50",
       )}
     >
       <span
         className={cn(
-          "min-w-0 flex-1 truncate",
+          "block min-w-0 flex-1 truncate",
           exceeds && "line-through decoration-muted-foreground/50",
         )}
       >
         {label}
       </span>
-      <span className="flex items-center gap-1.5 shrink-0">
+      <span className="ml-auto flex items-center gap-1.5 shrink-0">
         {vramStatus === "exceeds" && (
           <span className="text-[9px] font-medium text-red-400">OOM</span>
         )}

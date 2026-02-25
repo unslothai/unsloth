@@ -234,11 +234,11 @@ export function DatasetSection() {
                           <ComboboxItem
                             key={id}
                             value={id}
-                            className="justify-between"
+                            className="gap-2"
                           >
                             <Tooltip>
                               <TooltipTrigger asChild={true}>
-                                <span className="min-w-0 flex-1 truncate">
+                                <span className="block min-w-0 flex-1 truncate">
                                   {id}
                                 </span>
                               </TooltipTrigger>
@@ -250,7 +250,7 @@ export function DatasetSection() {
                               </TooltipContent>
                             </Tooltip>
                             {detail && (
-                              <span className="text-[10px] text-muted-foreground shrink-0">
+                              <span className="ml-auto text-[10px] text-muted-foreground shrink-0">
                                 {detail}
                               </span>
                             )}
