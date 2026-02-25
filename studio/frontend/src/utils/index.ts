@@ -1,2 +1,2 @@
 // Utility functions
-export {};
+export { normalizeNonEmptyName } from "./strings";

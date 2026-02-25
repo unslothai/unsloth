@@ -13,7 +13,15 @@ from pathlib import Path
 from datetime import datetime
 
 # Import routers
-from routes import training_router, models_router, inference_router, datasets_router, auth_router, export_router
+from routes import (
+    auth_router,
+    data_recipe_router,
+    datasets_router,
+    export_router,
+    inference_router,
+    models_router,
+    training_router,
+)
 from auth import storage
 from utils.hardware import detect_hardware, get_device, DeviceType
 import utils.hardware.hardware as _hw_module
@@ -82,6 +90,7 @@ app.include_router(training_router, prefix="/api/train", tags=["training"])
 app.include_router(models_router, prefix="/api/models", tags=["models"])
 app.include_router(inference_router, prefix="/api/inference", tags=["inference"])
 app.include_router(datasets_router, prefix="/api/datasets", tags=["datasets"])
+app.include_router(data_recipe_router, prefix="/api/data-recipe", tags=["data-recipe"])
 app.include_router(export_router, prefix="/api/export", tags=["export"])
 
 
@@ -170,4 +179,3 @@ def setup_frontend(app: FastAPI, build_path: Path):
 
         return True
     return False
-

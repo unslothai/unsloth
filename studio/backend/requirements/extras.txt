@@ -51,6 +51,6 @@ addict
 easydict
 einops
 tabulate
-fastmcp>=2.0.0
+fastmcp>=3.0.2
 openai>=2.7.2
-websockets>=13.0,<14
+websockets>=15.0.1

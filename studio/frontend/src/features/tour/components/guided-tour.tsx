@@ -282,7 +282,7 @@ export function GuidedTour({
                   transition={{ duration: 0.22, ease: [0.165, 0.84, 0.44, 1] }}
                   className={cn(
                     "relative overflow-hidden rounded-[28px] corner-squircle",
-                    "bg-white/95 text-foreground ring-1 ring-black/10",
+                    "bg-white/95 text-foreground ring-1 ring-black/10 dark:bg-zinc-900/96 dark:text-zinc-100 dark:ring-white/12",
                     "shadow-[0_30px_120px_rgba(0,0,0,0.35)]",
                   )}
                   style={{
@@ -291,7 +291,7 @@ export function GuidedTour({
                 >
                   <div
                     className={cn(
-                      "absolute z-10 size-3 rotate-45 rounded-[3px] bg-white/95 ring-1 ring-black/10",
+                      "absolute z-10 size-3 rotate-45 rounded-[3px] bg-white/95 ring-1 ring-black/10 dark:bg-zinc-900/96 dark:ring-white/12",
                       placement === "right" &&
                         "-left-1 top-1/2 -translate-y-1/2",
                       placement === "left" &&
@@ -303,14 +303,14 @@ export function GuidedTour({
                     )}
                     aria-hidden={true}
                   />
-                  <div className="absolute inset-x-0 top-0 h-20 bg-gradient-to-b from-emerald-400/18 via-cyan-300/6 to-transparent" />
-                  <div className="absolute -left-14 -top-16 size-44 rounded-full bg-emerald-400/20 blur-2xl" />
-                  <div className="absolute -right-14 -bottom-16 size-44 rounded-full bg-cyan-300/18 blur-2xl" />
+                  <div className="absolute inset-x-0 top-0 h-20 bg-gradient-to-b from-emerald-400/18 via-cyan-300/6 to-transparent dark:from-emerald-400/24 dark:via-cyan-300/12" />
+                  <div className="absolute -left-14 -top-16 size-44 rounded-full bg-emerald-400/20 blur-2xl dark:bg-emerald-400/26" />
+                  <div className="absolute -right-14 -bottom-16 size-44 rounded-full bg-cyan-300/18 blur-2xl dark:bg-cyan-300/24" />
 
                   <div className="relative p-5">
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
-                        <div className="inline-flex items-center gap-2 rounded-full bg-black/[0.04] px-2.5 py-1 text-[10px] font-mono text-foreground/60 ring-1 ring-black/10">
+                        <div className="inline-flex items-center gap-2 rounded-full bg-black/[0.04] px-2.5 py-1 text-[10px] font-mono text-foreground/60 ring-1 ring-black/10 dark:bg-white/[0.04] dark:text-zinc-200/75 dark:ring-white/14">
                           {idx + 1}/{total}
                           <span className="size-1 rounded-full bg-emerald-500/70" />
                           guided tour
@@ -321,7 +321,7 @@ export function GuidedTour({
                         >
                           {step?.title ?? "Quick tour"}
                         </DialogPrimitive.Title>
-                        <DialogPrimitive.Description className="mt-1.5 text-sm leading-relaxed text-foreground/70">
+                        <DialogPrimitive.Description className="mt-1.5 text-sm leading-relaxed text-foreground/70 dark:text-zinc-200/75">
                           {step?.body ?? "Let’s get you oriented."}
                         </DialogPrimitive.Description>
                       </div>
@@ -329,7 +329,7 @@ export function GuidedTour({
                       <Button
                         variant="ghost"
                         size="icon-sm"
-                        className="text-foreground/60 hover:text-foreground hover:bg-black/[0.05]"
+                        className="text-foreground/60 hover:text-foreground hover:bg-black/[0.05] dark:text-zinc-300/70 dark:hover:text-zinc-100 dark:hover:bg-white/[0.08]"
                         onClick={() => requestClose("skip")}
                         aria-label="Skip tour"
                       >
@@ -340,7 +340,7 @@ export function GuidedTour({
                     <div className="mt-5 flex items-center justify-between gap-3">
                       <Button
                         variant="ghost"
-                        className="text-foreground/60 hover:text-foreground hover:bg-black/[0.05]"
+                        className="text-foreground/60 hover:text-foreground hover:bg-black/[0.05] dark:text-zinc-300/70 dark:hover:text-zinc-100 dark:hover:bg-white/[0.08]"
                         onClick={() => requestClose("skip")}
                       >
                         Skip
@@ -349,7 +349,7 @@ export function GuidedTour({
                       <div className="flex items-center gap-2">
                         <Button
                           variant="outline"
-                          className="border-black/10 bg-white/70 text-foreground hover:bg-white hover:text-foreground"
+                          className="border-black/10 bg-white/70 text-foreground hover:bg-white hover:text-foreground dark:border-white/15 dark:bg-white/[0.07] dark:text-zinc-100 dark:hover:bg-white/[0.12]"
                           disabled={idx === 0}
                           onClick={() => setIdx((i) => Math.max(0, i - 1))}
                         >
@@ -379,8 +379,8 @@ export function GuidedTour({
                     </div>
                   </div>
 
-                  <div className="h-px bg-gradient-to-r from-transparent via-black/10 to-transparent" />
-                  <div className="px-5 py-3 text-[11px] text-foreground/55">
+                  <div className="h-px bg-gradient-to-r from-transparent via-black/10 to-transparent dark:via-white/14" />
+                  <div className="px-5 py-3 text-[11px] text-foreground/55 dark:text-zinc-300/65">
                     Tip: `Esc` skips. Tour blocks clicks so you can read.
                   </div>
                 </motion.div>
