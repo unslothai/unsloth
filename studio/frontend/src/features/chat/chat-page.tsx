@@ -33,6 +33,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { toast } from "sonner";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { ChatSettingsPanel } from "./chat-settings-sheet";
 import { db } from "./db";
@@ -50,7 +51,7 @@ import {
   SharedComposer,
 } from "./shared-composer";
 import { ThreadSidebar } from "./thread-sidebar";
-import type { ChatView } from "./types";
+import type { ChatView, MessageRecord } from "./types";
 import { buildChatTourSteps } from "./tour";
 
 type LoraCandidate = {
@@ -88,6 +89,40 @@ function pickBestLoraForBase(
     );
   });
   return partial ?? sorted[0];
+}
+
+function messageHasImage(message: MessageRecord): boolean {
+  const contentParts = Array.isArray(message.content) ? message.content : [];
+  if (contentParts.some((part) => part.type === "image")) {
+    return true;
+  }
+  const attachments = Array.isArray(message.attachments) ? message.attachments : [];
+  for (const attachment of attachments) {
+    const parts = Array.isArray(attachment.content) ? attachment.content : [];
+    for (const part of parts as Array<{ type?: string }>) {
+      if (part?.type === "image") {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+async function resolveActiveSingleThreadId(view: ChatView): Promise<string | undefined> {
+  if (view.mode !== "single") {
+    return undefined;
+  }
+  if (view.threadId) {
+    return view.threadId;
+  }
+
+  // New-thread flow keeps threadId undefined in local view state.
+  // Fall back to most recent regular base thread.
+  const candidates = await db.threads.where("modelType").equals("base").toArray();
+  const latest = candidates
+    .filter((thread) => !thread.archived && !thread.pairId)
+    .sort((a, b) => b.createdAt - a.createdAt)[0];
+  return latest?.id;
 }
 
 const SingleContent = memo(function SingleContent({
@@ -304,15 +339,42 @@ export function ChatPage(): ReactElement {
       const currentCheckpoint =
         useChatRuntimeStore.getState().params.checkpoint;
       if (!value || value === currentCheckpoint) return;
-      setView({ mode: "single", newThreadNonce: crypto.randomUUID() });
       void (async () => {
-        if (currentCheckpoint) {
-          await ejectModel();
+        let switchNote: string | undefined;
+        const activeThreadId = await resolveActiveSingleThreadId(view);
+        if (activeThreadId) {
+          const thread = await db.threads.get(activeThreadId);
+          if (thread?.modelId && thread.modelId !== value) {
+            const messages = await db.messages
+              .where("threadId")
+              .equals(activeThreadId)
+              .toArray();
+            const hasImage = messages.some(messageHasImage);
+            const targetModel = modelsFromStore.find((model) => model.id === value);
+            const nonVisionWithImages = hasImage && targetModel?.isVision === false;
+
+            switchNote = nonVisionWithImages
+              ? "Full chat history will be sent to the new model. This chat has images; text-only models may fail."
+              : hasImage
+                ? "Full chat history will be sent to the new model. This chat includes images."
+                : "Full chat history will be sent to the new model.";
+          }
         }
-        await selectModel({ id: value, isLora: meta?.isLora });
+
+        if (switchNote) {
+          toast.warning("Model changed for this chat", {
+            description: switchNote,
+            duration: 6000,
+          });
+        }
+
+        await selectModel({
+          id: value,
+          isLora: meta?.isLora,
+        });
       })();
     },
-    [selectModel, ejectModel],
+    [modelsFromStore, selectModel, view],
   );
   const handleEject = useCallback(() => {
     void ejectModel();
@@ -361,36 +423,8 @@ export function ChatPage(): ReactElement {
   const handleThreadSelect = useCallback(
     (nextView: ChatView) => {
       setView(nextView);
-
-      const threadId =
-        nextView.mode === "single" ? nextView.threadId : undefined;
-      const pairId =
-        nextView.mode === "compare" ? nextView.pairId : undefined;
-
-      void (async () => {
-        let thread: import("./types").ThreadRecord | undefined;
-        if (threadId) {
-          thread = await db.threads.get(threadId);
-        } else if (pairId) {
-          thread = await db.threads
-            .where("pairId")
-            .equals(pairId)
-            .first();
-        }
-        const threadModelId = thread?.modelId;
-        if (!threadModelId) return;
-
-        const currentCheckpoint =
-          useChatRuntimeStore.getState().params.checkpoint;
-        if (threadModelId === currentCheckpoint) return;
-
-        if (currentCheckpoint) {
-          await ejectModel();
-        }
-        await selectModel({ id: threadModelId });
-      })();
     },
-    [ejectModel, selectModel],
+    [],
   );
 
   const models = useMemo<ModelOption[]>(
