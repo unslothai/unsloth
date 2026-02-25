@@ -390,9 +390,6 @@ class ExportBackend:
                 # On WSL, patch out sudo check before llama.cpp build
                 _apply_wsl_sudo_patch()
 
-                # Enable verbose logging so subprocess errors are printed
-                os.environ["UNSLOTH_ENABLE_LOGGING"] = "1"
-
                 # Pass absolute path — no os.chdir needed.
                 # unsloth saves model files into this directory, while
                 # check_llama_cpp("llama.cpp") resolves against cwd (repo root)
