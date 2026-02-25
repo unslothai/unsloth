@@ -12,8 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from ..device_type import DEVICE_TYPE_TORCH
 import importlib
 import os
+import torch
 import re
 import tempfile
 from typing import Union
@@ -30,11 +32,13 @@ from packaging.version import Version
 from transformers import __version__ as transformers_version
 from unsloth.models._utils import TorchAOConfig
 from unsloth_zoo.utils import Version
-import torch
 import gc
 
 transformers_version = Version(transformers_version)
 SUPPORTS_FOURBIT = transformers_version >= Version("4.37")
+
+LOCAL_RANK_KEYS = ("LOCAL_RANK", "RANK")
+WORLD_SIZE_KEYS = ("WORLD_SIZE",)
 
 BAD_MAPPINGS = {
     "unsloth/Qwen3-32B-unsloth-bnb-4bit".lower(): "unsloth/Qwen3-32B-bnb-4bit".lower(),  # 32B dynamic quant is way too big
@@ -43,6 +47,50 @@ BAD_MAPPINGS = {
     "unsloth/Qwen3-30B-A3B-Base-unsloth-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B-Base".lower(),  # HF loads MoEs too slowly
     "unsloth/Qwen3-30B-A3B-Base-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B-Base".lower(),  # We rather do it on the fly
 }
+
+
+def _get_env_int(keys):
+    for key in keys:
+        value = os.environ.get(key)
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except ValueError:
+            continue
+    return None
+
+
+def _infer_distributed_ranks():
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        try:
+            return torch.distributed.get_rank(), torch.distributed.get_world_size()
+        except Exception:
+            pass
+    return _get_env_int(LOCAL_RANK_KEYS), _get_env_int(WORLD_SIZE_KEYS)
+
+
+def is_distributed():
+    rank, world_size = _infer_distributed_ranks()
+    return (world_size or 1) > 1 or (rank is not None and rank > 0)
+
+
+def prepare_device_map():
+    rank, world_size = _infer_distributed_ranks()
+    distributed = (world_size or 1) > 1 or (rank is not None and rank > 0)
+    if not distributed:
+        return None, False
+
+    local_rank = 0 if rank is None else rank
+    device_map = {"": f"{DEVICE_TYPE_TORCH}:{local_rank}"}
+    try:
+        if DEVICE_TYPE_TORCH == "cuda":
+            torch.cuda.set_device(local_rank)
+        elif DEVICE_TYPE_TORCH == "xpu" and hasattr(torch, "xpu"):
+            torch.xpu.set_device(local_rank)
+    except Exception:
+        pass
+    return device_map, True
 
 
 def __get_model_name(

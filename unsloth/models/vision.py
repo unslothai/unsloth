@@ -430,8 +430,10 @@ class FastBaseModel:
 
         max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
 
+        arch_name = model_type_arch.title()
+        arch_name = arch_name.replace("_Vl_", "_VL_").replace("_Moe", "_MoE")
         statistics = (
-            f"==((====))==  Unsloth {__version__}: Fast {model_type_arch.title()} patching. Transformers: {transformers_version}.{vllm_version}\n"
+            f"==((====))==  Unsloth {__version__}: Fast {arch_name} patching. Transformers: {transformers_version}.{vllm_version}\n"
             f"   {chr(92)}{chr(92)}   /|    {gpu_stats_name}Num GPUs = {DEVICE_COUNT}. Max memory: {max_memory} GB. Platform: {platform_system}.\n"
             f"O^O/ {chr(92)}_/ {chr(92)}    Torch: {torch.__version__}. {gpu_stats_snippet} Triton: {triton_version}\n"
             f"{chr(92)}        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. FA [Xformers = {xformers_version}. FA2 = {HAS_FLASH_ATTENTION}]\n"
@@ -654,6 +656,8 @@ class FastBaseModel:
 
         raise_handler = RaiseUninitialized()
         if not fast_inference:
+            # Prevent load_in_fp8 from being forwarded into HF internal model loading
+            load_in_fp8 = kwargs.pop("load_in_fp8", None)
             model = auto_model.from_pretrained(
                 model_name,
                 device_map = device_map,
@@ -668,25 +672,34 @@ class FastBaseModel:
                 model.fast_generate = model.generate
                 model.fast_generate_batches = error_out_no_vllm
             if offload_embedding:
-                embed_tokens = model.get_input_embeddings()
-                nbytes = embed_tokens.weight.numel() * embed_tokens.weight.itemsize
-                ngb = round(nbytes / 1024 / 1024 / 1024, 2)
-                print(f"Unsloth: Offloading embeddings to RAM to save {ngb} GB.")
-                embed_tokens.to("cpu")
+                if bool(
+                    os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP")
+                ):
+                    # WSL doesn't work with offloaded embeddings
+                    pass
+                elif os.name == "nt":
+                    # Windows doesn't work with offloaded embeddings
+                    pass
+                else:
+                    embed_tokens = model.get_input_embeddings()
+                    nbytes = embed_tokens.weight.numel() * embed_tokens.weight.itemsize
+                    ngb = round(nbytes / 1024 / 1024 / 1024, 2)
+                    print(f"Unsloth: Offloading embeddings to RAM to save {ngb} GB.")
+                    embed_tokens.to("cpu")
 
-                # Add hooks to move inputs to CPU and back to CUDA
-                # [TODO] Doesn't seem to work!
-                # def pre_hook(module, args):
-                #     args[0]._old_device = args[0].device
-                #     return (args[0].to("cpu", non_blocking = True))
-                # def post_hook(module, args, output):
-                #     old_device = getattr(args[0], "_old_device", "cuda")
-                #     return output.to(old_device, non_blocking = True)
-                # embed_tokens.register_forward_pre_hook(pre_hook,  prepend = True)
-                # embed_tokens.register_forward_hook    (post_hook, prepend = True)
-                # Must free GPU memory otherwise will not free!
-                torch.cuda.empty_cache()
-                gc.collect()
+                    # Add hooks to move inputs to CPU and back to CUDA
+                    # [TODO] Doesn't seem to work!
+                    # def pre_hook(module, args):
+                    #     args[0]._old_device = args[0].device
+                    #     return (args[0].to("cpu", non_blocking = True))
+                    # def post_hook(module, args, output):
+                    #     old_device = getattr(args[0], "_old_device", "cuda")
+                    #     return output.to(old_device, non_blocking = True)
+                    # embed_tokens.register_forward_pre_hook(pre_hook,  prepend = True)
+                    # embed_tokens.register_forward_hook    (post_hook, prepend = True)
+                    # Must free GPU memory otherwise will not free!
+                    torch.cuda.empty_cache()
+                    gc.collect()
         else:
             from unsloth_zoo.vllm_utils import (
                 load_vllm,

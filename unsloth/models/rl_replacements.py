@@ -26,6 +26,10 @@ import torch
 import inspect
 from collections import defaultdict
 from unsloth_zoo.rl_replacements import RL_REPLACEMENTS, left_pack_padding
+from unsloth_zoo.utils import Version
+from importlib.metadata import version as importlib_version
+from unsloth_zoo.log import logger
+import importlib.util
 from ..device_type import (
     is_hip,
     get_device_type,
@@ -42,6 +46,7 @@ RL_FUNCTIONS = defaultdict(list)
 RL_PRE_ITEMS = defaultdict(list)
 RL_CONFIG_CHANGES = defaultdict(list)
 RL_METRICS_CHANGES = defaultdict(list)
+RL_ADDITIONAL_FUNCTIONS = defaultdict(list)
 
 torch_compile_options = {
     "epilogue_fusion": True,
@@ -214,6 +219,27 @@ def grpo_trainer__prepare_inputs(function_name, function):
 
 
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__prepare_inputs)
+
+
+# Remove collective RPC of reload weights from generate
+# trl added reload weights (potentially for quantized models), we don't need it for our use case (LoRA primarily)
+# https://github.com/huggingface/trl/commit/7856d3b1f6518601732f489883b341bb6dd36434#diff-964e6fd373aa93037604064cb2b822d7f8e2735e33f791065acf2c4c3552d393R1168-R1169
+def grpo_trainer__generate_single_turn(function_name, function):
+    if function_name != "_generate_single_turn":
+        return function
+
+    # Remove the reload_weights collective RPC call from the generate function's source
+    # function = function.replace('self.llm.collective_rpc("reload_weights")', "")
+    # The regex below does the same thing but is more flexible and can handle single or double quotes
+    function = re.sub(
+        r"self\.llm\.collective_rpc\(\s*(['\"])reload_weights\1\s*\)",
+        "",
+        function,
+    )
+    return function
+
+
+RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__generate_single_turn)
 
 
 # Fix incorrect special tokens handling and truncation in older TRL versions
@@ -906,3 +932,54 @@ def grpo_trainer_metrics(RLTrainer_source, RLConfig_source):
 
 
 RL_METRICS_CHANGES["grpo_trainer"].append(grpo_trainer_metrics)
+
+
+def openenv_vllm_reload_weights():
+    # This function patches the trl openenv generate_rollout_completions function to:
+    # 1. Remove the reload_weights call (unsloth handles weight reloading)
+    # 2. Fix wake_up call to be compatible with unsloth (remove tags to wake everything)
+    #
+    # The issue: TRL's wake_up(tags=["kv_cache"]) only wakes kv_cache, leaving is_sleeping=True
+    # at the executor level. This causes unsloth's patched generate to try waking up again,
+    # resulting in double create_and_map on already-mapped handles.
+    #
+    # The fix: Use wake_up() with no tags, which wakes everything. Unsloth's patched
+    # CuMemAllocator.wake_up skips weights anyway, so this is safe.
+    if importlib.util.find_spec("trl") is None:
+        return
+    if Version(importlib_version("trl")) < Version("0.26.0"):
+        return
+    try:
+        import trl.experimental.openenv.utils as openenv_utils
+        import trl.experimental.openenv as openenv
+    except ImportError as e:
+        logger.info(f"Unsloth: Failed to import trl openenv: {e}")
+        return
+
+    src = inspect.getsource(openenv_utils.generate_rollout_completions)
+    src = textwrap.dedent(src)
+    original_src = src
+
+    # Remove the reload_weights call - unsloth handles this differently
+    src = re.sub(r'.*\.collective_rpc\("reload_weights"\).*\n?', "", src)
+
+    # Change wake_up(tags=["kv_cache"]) to wake_up() - wake everything to set is_sleeping=False
+    # This prevents double wake_up issues. Unsloth's allocator skips weights anyway.
+    src = re.sub(r"\.wake_up\(tags=\[.*?\]\)", ".wake_up()", src)
+
+    if original_src == src:
+        logger.warning("Unsloth: Warning - regex did not match, patch may have failed")
+        return
+
+    # Execute and explicitly assign to module
+    local_ns = {}
+    exec(compile(src, "<unsloth>", "exec"), openenv_utils.__dict__, local_ns)
+    patched_func = local_ns["generate_rollout_completions"]
+
+    # Patch both the utils module and the parent openenv module
+    openenv_utils.generate_rollout_completions = patched_func
+    openenv.generate_rollout_completions = patched_func
+    logger.info("Unsloth: Patched trl openenv generate_rollout_completions")
+
+
+RL_ADDITIONAL_FUNCTIONS["openenv"].append(openenv_vllm_reload_weights)

@@ -160,7 +160,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
     def forward(ctx, X: torch.Tensor, W: torch.Tensor, eps: float, gemma: bool = False):
         shape = X.shape
         dim: int = shape[-1]
-        X = X.view(-1, dim)
+        X = X.reshape(-1, dim)
         n_rows: int
         n_cols: int
         n_rows, n_cols = X.shape
@@ -199,7 +199,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
     def backward(ctx, dY: torch.Tensor):
         shape = dY.shape
         dim: int = shape[-1]
-        dY = dY.view(-1, dim)
+        dY = dY.reshape(-1, dim)
         X, W, r = ctx.saved_tensors
         n_rows: int
         n_cols: int
