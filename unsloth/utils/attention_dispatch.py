@@ -20,6 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Optional, Tuple
 
+import torch
 from torch import Tensor
 from torch.nn.functional import scaled_dot_product_attention
 
@@ -119,6 +120,19 @@ def run_attention(
     backend = config.backend
     if backend == FLASH_VARLEN and context.seq_info is None:
         backend = FLASH_DENSE if HAS_FLASH_ATTENTION else SDPA
+
+    # [TODO] Flash attention does not support arbitrary attention masks (only
+    # causal via flag). When a padding mask is present (e.g. left-padded
+    # batched generation), fall back to SDPA which consumes attn_mask.
+    # xFormers also does not thread context.attention_mask through, so the
+    # same fallback applies.
+    if context.attention_mask is not None and backend in (
+        FLASH_DENSE,
+        FLASH_VARLEN,
+        XFORMERS,
+    ):
+        backend = SDPA
+
     flash_dense_kwargs = config.flash_dense_kwargs or {}
     flash_varlen_kwargs = config.flash_varlen_kwargs or {}
     sdpa_kwargs = config.sdpa_kwargs or {}
@@ -234,14 +248,79 @@ def run_attention(
         else:
             q_len_local = Q.shape[-2]
             k_len_local = K.shape[-2]
+            # ---- SDPA mask normalization for left padding / 2D masks ----
+            if local_mask is not None and isinstance(local_mask, torch.Tensor):
+                local_mask = local_mask.to(device = Q.device)
+
+                if local_mask.dim() == 2:
+                    # key padding keep mask: (bsz, k_len), 1/True = real token
+                    if local_mask.dtype == torch.bool:
+                        key_keep = local_mask
+                    else:
+                        # tokenizer attention_mask is typically int 0/1
+                        key_keep = local_mask != 0
+
+                    past_len = (
+                        k_len_local - q_len_local
+                    )  # works for prefill (0) and decode
+                    q_pos = torch.arange(
+                        past_len, past_len + q_len_local, device = Q.device
+                    )
+                    k_pos = torch.arange(k_len_local, device = Q.device)
+
+                    causal_keep = (
+                        k_pos[None, :] <= q_pos[:, None]
+                    )  # True = allowed (SDPA)
+                    if sliding_window is not None:
+                        causal_keep &= k_pos[None, :] >= (
+                            q_pos[:, None] - (sliding_window - 1)
+                        )
+
+                    # (bsz, 1, q_len, k_len) boolean keep mask
+                    local_mask = (
+                        causal_keep[None, None, :, :] & key_keep[:, None, None, :]
+                    )
+
+                elif local_mask.dim() == 3:
+                    # (bsz, q_len, k_len) -> (bsz, 1, q_len, k_len)
+                    local_mask = local_mask[:, None, :, :]
+
+                elif local_mask.dim() == 4:
+                    if local_mask.dtype != torch.bool:
+                        # Use boolean keep masks for better SDPA stability.
+                        local_mask = local_mask.eq(0)
+                else:
+                    raise ValueError(
+                        f"Unsupported SDPA attention_mask rank: {local_mask.dim()}"
+                    )
+
+                # Avoid NaNs from fully-masked rows (common with left padding).
+                if local_mask.dtype == torch.bool:
+                    no_allowed = ~local_mask.any(
+                        dim = -1, keepdim = True
+                    )  # (bsz,1,q_len,1)
+                    local_mask = local_mask | no_allowed
+
             is_causal_local = local_mask is None and q_len_local == k_len_local
 
         kwargs = dict(sdpa_kwargs)
         kwargs.setdefault("attn_mask", local_mask)
         kwargs.setdefault("is_causal", is_causal_local)
 
-        if SDPA_HAS_GQA:
-            kwargs.setdefault("enable_gqa", config.n_groups != 1)
+        use_sdpa_gqa = SDPA_HAS_GQA and config.n_groups != 1
+        if (
+            use_sdpa_gqa
+            and (not requires_grad)
+            and isinstance(local_mask, torch.Tensor)
+            and local_mask.dim() >= 3
+            and local_mask.shape[0] > 1
+        ):
+            # Batched masked inference has shown row-coupled drift with SDPA GQA.
+            # Fall back to explicit KV expansion for deterministic row-wise behavior.
+            use_sdpa_gqa = False
+
+        if use_sdpa_gqa:
+            kwargs.setdefault("enable_gqa", True)
             out = scaled_dot_product_attention(Q, K, V, **kwargs)
             return out.transpose(1, 2)
 
