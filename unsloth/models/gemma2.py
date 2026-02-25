@@ -456,15 +456,18 @@ def Gemma2Attention_fast_forward_inference(
     )  # See https://github.com/ggerganov/llama.cpp/issues/7805#issuecomment-2153349963
     # It seems like doing (Q * scalar) @ K is better than (Q @ K) * scalar to stop overflows
     A = torch_matmul(Qn, Knn.transpose(2, 3), out = self.attention[:, :, :, :cached_len])
+
+    # Softcapping must happen BEFORE the mask is applied.
+    # Reference: google-deepmind/gemma _modules.py and transformers gemma2 eager_attention_forward
+    A *= self.reciprocal_t
+    A.tanh_()
+    A *= self.t  # Logit softcapping
+
     if attention_mask is not None and isinstance(attention_mask, torch.Tensor):
         # Slice mask to match K/V when sliding window is active
         if attention_mask.shape[-1] != A.shape[-1]:
             attention_mask = attention_mask[:, :, :, -A.shape[-1] :]
         A += attention_mask
-
-    A *= self.reciprocal_t
-    A.tanh_()
-    A *= self.t  # Logit softcapping
 
     A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)  # .to(A.dtype)
     A = torch_matmul(A, Vnn, out = Qn)
