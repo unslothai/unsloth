@@ -733,6 +733,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             "    force_float32 = True\n"
             "if force_float32:\n"
             "    # Forced float32 training\n"
+            "    os.environ['UNSLOTH_FORCE_FLOAT32'] = '1'\n"
             "    args.fp16 = False\n"
             "    args.bf16 = False\n"
             "    os.environ['ACCELERATE_MIXED_PRECISION'] = 'no'\n"
