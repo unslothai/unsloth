@@ -151,6 +151,15 @@ def apply_update(job: Job, update: ParsedUpdate) -> None:
         job.cols = update.cols
     if update.progress is not None:
         job.column_progress = update.progress
+        if (
+            job.current_column
+            and update.progress.done is not None
+            and update.progress.total is not None
+            and update.progress.total > 0
+            and update.progress.done >= update.progress.total
+            and job.current_column not in job.completed_columns
+        ):
+            job.completed_columns.append(job.current_column)
         job.progress = _compute_overall_progress(job, update.progress)
     if update.batch_idx is not None:
         job.batch.idx = update.batch_idx

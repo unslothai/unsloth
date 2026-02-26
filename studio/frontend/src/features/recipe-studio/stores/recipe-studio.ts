@@ -67,12 +67,14 @@ type RecipeStudioState = {
   activeConfigId: string | null;
   dialogOpen: boolean;
   layoutDirection: LayoutDirection;
+  executionLocked: boolean;
   nextId: number;
   nextY: number;
   fitViewTick: number;
   setSheetView: (view: SheetView) => void;
   setProcessors: (processors: RecipeProcessorConfig[]) => void;
   setDialogOpen: (open: boolean) => void;
+  setExecutionLocked: (locked: boolean) => void;
   resetRecipe: () => void;
   selectConfig: (id: string) => void;
   openConfig: (id: string) => void;
@@ -114,6 +116,7 @@ const INITIAL_STATE = {
   activeConfigId: null,
   dialogOpen: false,
   layoutDirection: "LR",
+  executionLocked: false,
   nextId: 3,
   nextY: 280,
   fitViewTick: 0,
@@ -129,6 +132,7 @@ const INITIAL_STATE = {
   | "activeConfigId"
   | "dialogOpen"
   | "layoutDirection"
+  | "executionLocked"
   | "nextId"
   | "nextY"
   | "fitViewTick"
@@ -244,35 +248,45 @@ function isModelSemanticEdge(edge: Edge, configs: Record<string, NodeConfig>): b
 export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
   ...INITIAL_STATE,
   setSheetView: (view) => set({ sheetView: view }),
-  setProcessors: (processors) => set({ processors }),
+  setProcessors: (processors) =>
+    set((state) => (state.executionLocked ? state : { processors })),
   setDialogOpen: (open) => set({ dialogOpen: open }),
+  setExecutionLocked: (locked) => set({ executionLocked: locked }),
   resetRecipe: () => set(INITIAL_STATE),
   selectConfig: (id) => set({ activeConfigId: id, dialogOpen: false }),
   openConfig: (id) => set({ activeConfigId: id, dialogOpen: true }),
   setLayoutDirection: (direction) =>
-    set((state) => ({
-      layoutDirection: direction,
-      edges: state.edges.map((edge) => {
-        if (isModelSemanticEdge(edge, state.configs)) {
+    set((state) => {
+      if (state.executionLocked) {
+        return state;
+      }
+      return {
+        layoutDirection: direction,
+        edges: state.edges.map((edge) => {
+          if (isModelSemanticEdge(edge, state.configs)) {
+            return {
+              ...edge,
+              sourceHandle: normalizeRecipeHandleId(edge.sourceHandle),
+              targetHandle: normalizeRecipeHandleId(edge.targetHandle),
+            };
+          }
           return {
             ...edge,
-            sourceHandle: normalizeRecipeHandleId(edge.sourceHandle),
-            targetHandle: normalizeRecipeHandleId(edge.targetHandle),
+            ...remapRecipeEdgeHandlesForLayout(edge, direction),
           };
-        }
-        return {
-          ...edge,
-          ...remapRecipeEdgeHandlesForLayout(edge, direction),
-        };
-      }),
-      nodes: applyLayoutDirectionToNodes(
-        state.nodes,
-        state.configs,
-        direction,
-      ),
-    })),
+        }),
+        nodes: applyLayoutDirectionToNodes(
+          state.nodes,
+          state.configs,
+          direction,
+        ),
+      };
+    }),
   applyLayout: () =>
     set((state) => {
+      if (state.executionLocked) {
+        return state;
+      }
       const isTopBottom = state.layoutDirection === "TB";
 
       const displayGraph = deriveDisplayGraph({
@@ -333,11 +347,17 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
       };
     }),
   addSamplerNode: (type, position, openDialog = true) =>
-    set((state) =>
-      buildAddedNodeState(state, "sampler", type, position, openDialog),
-    ),
+    set((state) => {
+      if (state.executionLocked) {
+        return state;
+      }
+      return buildAddedNodeState(state, "sampler", type, position, openDialog);
+    }),
   addSeedNode: (type, position, openDialog = true) =>
     set((state) => {
+      if (state.executionLocked) {
+        return state;
+      }
       const existing = Object.values(state.configs).find(
         (config) => config.kind === "seed",
       );
@@ -390,11 +410,17 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
       };
     }),
   addLlmNode: (type, position, openDialog = true) =>
-    set((state) =>
-      buildAddedNodeState(state, "llm", type, position, openDialog),
-    ),
+    set((state) => {
+      if (state.executionLocked) {
+        return state;
+      }
+      return buildAddedNodeState(state, "llm", type, position, openDialog);
+    }),
   addModelProviderNode: (position, openDialog = true) =>
     set((state) => {
+      if (state.executionLocked) {
+        return state;
+      }
       const added = buildAddedNodeState(
         state,
         "llm",
@@ -436,6 +462,9 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
     }),
   addModelConfigNode: (position, openDialog = true) =>
     set((state) => {
+      if (state.executionLocked) {
+        return state;
+      }
       const added = buildAddedNodeState(
         state,
         "llm",
@@ -495,25 +524,31 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
       return { ...added, nodes, edges, configs };
     }),
   addExpressionNode: (position, openDialog = true) =>
-    set((state) =>
-      buildAddedNodeState(
+    set((state) => {
+      if (state.executionLocked) {
+        return state;
+      }
+      return buildAddedNodeState(
         state,
         "expression",
         "expression",
         position,
         openDialog,
-      ),
-    ),
+      );
+    }),
   addMarkdownNoteNode: (position, openDialog = true) =>
-    set((state) =>
-      buildAddedNodeState(
+    set((state) => {
+      if (state.executionLocked) {
+        return state;
+      }
+      return buildAddedNodeState(
         state,
         "note",
         "markdown_note",
         position,
         openDialog,
-      ),
-    ),
+      );
+    }),
   loadRecipe: (snapshot) =>
     set((state) => ({
       configs: snapshot.configs,
@@ -549,6 +584,9 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
     }),
   updateConfig: (id, patch) => {
     const applyUpdate = (state: RecipeStudioState) => {
+      if (state.executionLocked) {
+        return state;
+      }
       const current = state.configs[id];
       if (!current) {
         return state;
@@ -587,6 +625,9 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
   },
   onNodesChange: (changes) => {
     const applyNodesChange = (state: RecipeStudioState) => {
+      if (state.executionLocked) {
+        return state;
+      }
       const removedIds = changes
         .filter((change) => change.type === "remove")
         .map((change) => change.id);
@@ -615,6 +656,9 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
   },
   onEdgesChange: (changes) => {
     set((state) => {
+      if (state.executionLocked) {
+        return state;
+      }
       const removedEdges = changes
         .filter((change) => change.type === "remove")
         .map((change) => state.edges.find((edge) => edge.id === change.id))
@@ -628,6 +672,9 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
   },
   onConnect: (connection) => {
     set((state) => {
+      if (state.executionLocked) {
+        return state;
+      }
       const result = applyRecipeConnection(
         connection,
         state.configs,
