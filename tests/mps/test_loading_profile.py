@@ -1,8 +1,17 @@
 import platform
+import sys
+import os
+
 if platform.system() == "Darwin":
-    from patcher import MacPatcher
-    patcher = MacPatcher()
-    patcher.apply()
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    try:
+        from patcher import MacPatcher
+        patcher = MacPatcher()
+        patcher.apply()
+    except ImportError:
+        patcher = None
+else:
+    patcher = None
 
 import gc
 import time
@@ -10,7 +19,7 @@ import torch
 
 from unsloth import FastLanguageModel
 
-if platform.system() == "Darwin":
+if platform.system() == "Darwin" and patcher is not None:
     patcher.patch_patching_utils_late()
 
 
