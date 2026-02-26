@@ -11,7 +11,7 @@ export interface LoraModelOption extends ModelOption {
   baseModel?: string;
   updatedAt?: number;
   source?: "training" | "exported";
-  exportType?: "lora" | "merged" | "gguf";
+  exportType?: "lora" | "merged";
 }
 
 export interface ModelSelectorChangeMeta {
