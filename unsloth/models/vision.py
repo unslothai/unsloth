@@ -30,6 +30,7 @@ from ..kernels import (
     post_patch_loss_function,
 )
 from ._utils import __version__, importlib_version, _prepare_model_for_qat
+from ._utils import _redirect_fp8_to_bf16
 from ._utils import *
 from .loader_utils import _get_fp8_mode_and_check_settings
 from ..save import patch_saving_functions
@@ -611,6 +612,24 @@ class FastBaseModel:
             model_class = None
         flex_attn_impl = prefer_flex_attn_if_supported(model_class, auto_config)
 
+        # Handle FP8 models: redirect to BF16 sibling when the model ships with
+        # FP8 weights (e.g. Ministral-3-3B-Instruct-2512). FP8 weights cannot be
+        # directly loaded by BNB, and the FP8 quantization config can cause issues
+        # even for 16-bit loading.
+        # Redirect is skipped when load_in_fp8 is truthy (True or 'block').
+        model_name, auto_config = _redirect_fp8_to_bf16(
+            model_name,
+            auto_config,
+            load_in_fp8,
+            token,
+            trust_remote_code,
+        )
+        # Re-resolve model_class after potential config change
+        try:
+            model_class = auto_model._model_mapping[auto_config.__class__]
+        except KeyError:
+            pass
+
         default_attn_impl = "flex_attention" if flex_attn_impl else "sdpa"
         if not ("attn_implementation" in kwargs):
             kwargs["attn_implementation"] = default_attn_impl
@@ -635,18 +654,25 @@ class FastBaseModel:
             raise RuntimeError(
                 "Unsloth: Can only load in 4bit or 8bit or 16bit, not a combination!"
             )
+        _skip_modules = SKIP_QUANTIZATION_MODULES.copy()
+        # Nemotron-H uses 'mixer' (not 'mamba') for Mamba layers.
+        # Mamba fused kernels pass out_proj.weight directly to F.linear,
+        # which fails with quantized Params4bit. Skip out_proj from quantization.
+        if any(mt == "nemotron_h" for mt in (model_types or [])):
+            _skip_modules.append("out_proj")
+
         if load_in_4bit:
             bnb_config = BitsAndBytesConfig(
                 load_in_4bit = True,
                 bnb_4bit_use_double_quant = True,
                 bnb_4bit_quant_type = "nf4",
                 bnb_4bit_compute_dtype = bnb_compute_dtype,
-                llm_int8_skip_modules = SKIP_QUANTIZATION_MODULES.copy(),
+                llm_int8_skip_modules = _skip_modules,
             )
         elif load_in_8bit:
             bnb_config = BitsAndBytesConfig(
                 load_in_8bit = True,
-                llm_int8_skip_modules = SKIP_QUANTIZATION_MODULES.copy(),
+                llm_int8_skip_modules = _skip_modules,
             )
         elif load_in_16bit:
             bnb_config = None
@@ -759,6 +785,7 @@ class FastBaseModel:
         if hasattr(auto_config, "attn_implementation"):
             setattr(auto_config, "attn_implementation", config_attn_impl)
         model_config = auto_config
+
         verify_fp8_support_if_applicable(model_config)
 
         raise_handler = RaiseUninitialized()
@@ -767,6 +794,7 @@ class FastBaseModel:
             load_in_fp8 = kwargs.pop("load_in_fp8", None)
             model = auto_model.from_pretrained(
                 model_name,
+                config = model_config,
                 device_map = device_map,
                 # torch_dtype           = torch_dtype, # Transformers removed torch_dtype
                 # quantization_config   = bnb_config,
@@ -916,6 +944,32 @@ class FastBaseModel:
 
         # Counteract saved tokenizers
         tokenizer_name = model_name if tokenizer_name is None else tokenizer_name
+
+        # Fix _Unsloth_Patched_ prefix in local config files from old saves (issue #4085)
+        if os.path.isdir(tokenizer_name):
+            import json as _json
+
+            for _cfg_name in (
+                "processor_config.json",
+                "preprocessor_config.json",
+                "tokenizer_config.json",
+            ):
+                _cfg_path = os.path.join(tokenizer_name, _cfg_name)
+                if os.path.exists(_cfg_path):
+                    try:
+                        with open(_cfg_path, "r", encoding = "utf-8") as _f:
+                            _cfg = _json.load(_f)
+                        if _cfg.get("processor_class", "").startswith(
+                            "_Unsloth_Patched_"
+                        ):
+                            _cfg["processor_class"] = _cfg["processor_class"][
+                                len("_Unsloth_Patched_") :
+                            ]
+                            with open(_cfg_path, "w", encoding = "utf-8") as _f:
+                                _json.dump(_cfg, _f, indent = 2, ensure_ascii = False)
+                    except Exception:
+                        pass
+
         if (whisper_language and whisper_task) or auto_model.__name__.endswith(
             "ForConditionalGeneration"
         ):
@@ -947,14 +1001,23 @@ class FastBaseModel:
                 )
 
         # If processor loading failed (e.g., tokenizer class not found),
+        # or if AutoProcessor silently degraded to a text-only tokenizer
+        # instead of returning a full VLM processor (issue #4085),
         # try constructing the processor manually from separate components.
-        if tokenizer is None and is_vlm:
-            tokenizer = _construct_vlm_processor_fallback(
+        _processor_is_degraded = (
+            is_vlm
+            and tokenizer is not None
+            and not hasattr(tokenizer, "image_processor")
+        )
+        if (tokenizer is None or _processor_is_degraded) and is_vlm:
+            _fallback = _construct_vlm_processor_fallback(
                 tokenizer_name,
                 model_type_arch,
                 token,
                 trust_remote_code,
             )
+            if _fallback is not None:
+                tokenizer = _fallback
             if tokenizer is None:
                 import sys
 
@@ -1347,9 +1410,15 @@ class FastBaseModel:
             m.for_training = functools.partial(FastBaseModel.for_training, m)
             m.for_inference = functools.partial(FastBaseModel.for_inference, m)
             m = m.model
-        # Set weight[padding_idx] = 0
+        # Set weight[padding_idx] = 0 for embeddings that are NOT tied with the
+        # lm_head. When weights are tied, zeroing the padding row also zeros
+        # the corresponding lm_head row, forcing logit = 0 for the pad token.
         # Only do this if tokenizer is defined since eos_token == pad_token sometimes!
         pad_token_id = getattr(tokenizer, "pad_token_id", None)
+        lm_head = getattr(model, "lm_head", None)
+        lm_head_weight = (
+            getattr(lm_head, "weight", None) if lm_head is not None else None
+        )
         if (
             tokenizer is not None
             and getattr(tokenizer, "eos_token_id", None) != pad_token_id
@@ -1365,6 +1434,13 @@ class FastBaseModel:
                                 module.padding_idx == pad_token_id
                                 and module.padding_idx < module.weight.shape[0]
                             ):
+                                # Skip if tied to lm_head
+                                if (
+                                    lm_head_weight is not None
+                                    and module.weight.data_ptr()
+                                    == lm_head_weight.data_ptr()
+                                ):
+                                    continue
                                 module.weight[module.padding_idx] = 0
         return model
 

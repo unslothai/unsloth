@@ -97,6 +97,53 @@ class HidePrintMessage:
         return getattr(self._original_stream, name)
 
 
+import contextlib
+import ctypes
+
+try:
+    _libc = ctypes.CDLL(None)
+except Exception:
+    _libc = None
+
+
+@contextlib.contextmanager
+def suppress_cuda_printf():
+    """Suppress CUDA device-side printf by redirecting stdout/stderr fds to /dev/null.
+
+    CUDA device printf (eg CUTLASS "Arch conditional MMA" errors on Blackwell)
+    writes to stdout fd 1 at the C level, bypassing Python sys.stdout entirely.
+    The existing HidePrintMessage filter on sys.stderr cannot catch these since
+    they go to a different fd at a different layer. This context manager redirects
+    both fd 1 and fd 2 at the OS level, syncs CUDA, then restores them.
+    """
+    sys.stdout.flush()
+    sys.stderr.flush()
+    saved_fds = {}
+    try:
+        for fd in (1, 2):
+            saved_fds[fd] = os.dup(fd)
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(devnull, fd)
+            os.close(devnull)
+        yield
+    finally:
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+        except Exception:
+            pass
+        if _libc is not None:
+            try:
+                _libc.fflush(None)
+            except Exception:
+                pass
+        for fd, saved in saved_fds.items():
+            os.dup2(saved, fd)
+            os.close(saved)
+
+
 if not UNSLOTH_ENABLE_LOGGING:
     import sys
 
@@ -1467,10 +1514,76 @@ def _is_broken_vllm_error(error) -> bool:
             )
         ) or ("vllm" in message and "undefined symbol" in message):
             return True
+        # Also catch CUDA shared library mismatches during vllm import
+        # e.g. "libcudart.so.12: cannot open shared object file"
+        if (
+            "libcudart" in message or "libcublas" in message or "libnvrtc" in message
+        ) and "cannot open shared object file" in message:
+            return True
         current = getattr(current, "__cause__", None) or getattr(
             current, "__context__", None
         )
     return False
+
+
+def _get_vllm_cuda_mismatch_message(error):
+    """If the error is a CUDA version mismatch, return a helpful install message."""
+    import re as _re
+
+    checked = set()
+    current = error
+    wanted_cuda = None
+    while current is not None and id(current) not in checked:
+        checked.add(id(current))
+        message = str(current)
+        # Extract the CUDA version vllm was built for, e.g. "libcudart.so.12"
+        match = _re.search(r"libcudart\.so\.(\d+)", message)
+        if match:
+            wanted_cuda = match.group(1)
+            break
+        current = getattr(current, "__cause__", None) or getattr(
+            current, "__context__", None
+        )
+    if wanted_cuda is None:
+        return None
+
+    # Detect what CUDA version is actually available on the system
+    system_cuda_display = None  # Human-readable, e.g. "13.0"
+    system_cuda_tag = None  # For wheel URL, e.g. "130"
+    try:
+        import torch
+
+        cuda_version = torch.version.cuda  # e.g. "13.0" or "12.8"
+        if cuda_version:
+            system_cuda_display = cuda_version
+            system_cuda_tag = cuda_version.replace(".", "")[:3]  # "130" or "128"
+    except Exception:
+        pass
+
+    if system_cuda_tag is None or system_cuda_tag.startswith(wanted_cuda):
+        return None  # Not a mismatch or can't determine
+
+    try:
+        vllm_version = importlib_version("vllm").split("+")[0]
+    except Exception:
+        vllm_version = "VLLM_VERSION"
+
+    cpu_arch = "x86_64"
+    try:
+        import platform
+
+        cpu_arch = platform.machine()
+    except Exception:
+        pass
+
+    return (
+        f"Unsloth: vLLM was built for CUDA {wanted_cuda} but this system has "
+        f"CUDA {system_cuda_display}. Please reinstall vLLM with the correct CUDA version:\n"
+        f"\n"
+        f"  uv pip install https://github.com/vllm-project/vllm/releases/download/"
+        f"v{vllm_version}/vllm-{vllm_version}+cu{system_cuda_tag}-cp38-abi3-"
+        f"manylinux_2_35_{cpu_arch}.whl"
+    )
 
 
 class _CausalConv1dImportBlockerLoader(importlib.abc.Loader):
@@ -1621,12 +1734,16 @@ def disable_broken_vllm(error = None):
     VLLM_BROKEN = True
     _clear_vllm_modules()
     _install_vllm_blocker()
-    logger.warning(
-        "Unsloth: Detected broken vLLM binary extension; "
-        "disabling vLLM imports and continuing import.\n"
-        "Please reinstall via `uv pip install unsloth vllm torchvision torchaudio "
-        "--torch-backend=auto`."
-    )
+    cuda_msg = _get_vllm_cuda_mismatch_message(failure)
+    if cuda_msg:
+        logger.warning(cuda_msg)
+    else:
+        logger.warning(
+            "Unsloth: Detected broken vLLM binary extension; "
+            "disabling vLLM imports and continuing import.\n"
+            "Please reinstall via `uv pip install unsloth vllm torchvision torchaudio "
+            "--torch-backend=auto`."
+        )
     return True
 
 

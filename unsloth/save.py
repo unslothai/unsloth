@@ -1925,6 +1925,20 @@ def unsloth_save_pretrained_gguf(
     arguments["push_to_hub"] = False  # We handle upload ourselves
     # GPT-OSS needs mxfp4 save method
     if is_gpt_oss:
+        if quantization_method is not None:
+            _qm = (
+                quantization_method
+                if isinstance(quantization_method, (list, tuple))
+                else [quantization_method]
+            )
+            _ignored = [q for q in _qm if str(q).lower() != "mxfp4"]
+            if _ignored:
+                logger.warning_once(
+                    f"Unsloth: GPT-OSS does not support GGUF quantization "
+                    f"(requested: {', '.join(str(q) for q in _ignored)}). "
+                    f"Overriding to MXFP4 format. "
+                    f"Pass quantization_method=None to suppress this warning."
+                )
         arguments["save_method"] = "mxfp4"
     else:
         arguments["save_method"] = "merged_16bit"
