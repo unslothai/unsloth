@@ -32,6 +32,9 @@ def is_mlx_available():
         import mlx.core
         if getattr(mlx.core, "_unsloth_mock", False):
             return False
+        type_name = type(mlx).__name__
+        if "Mock" in type_name:
+            return False
         return True
     except (ImportError, AttributeError):
         return False
