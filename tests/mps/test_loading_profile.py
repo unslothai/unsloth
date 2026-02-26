@@ -134,16 +134,21 @@ def run_loading_profiler():
         print(f"  Memory reserved: {result_4bit['memory_reserved_mb']} MB")
     else:
         print(f"  Failed: {result_4bit['error']}")
+        print("  Note: 4-bit loading requires bitsandbytes which is not available on MPS")
     
     print("\n" + "=" * 60)
     print("Summary")
     print("=" * 60)
     
-    if result_16bit["success"] and result_4bit["success"]:
+    if result_16bit["success"]:
         print(f"16-bit: {result_16bit['load_time_sec']}s, {result_16bit['memory_active_mb']} MB active")
+    
+    if result_4bit["success"]:
         print(f"4-bit:  {result_4bit['load_time_sec']}s, {result_4bit['memory_active_mb']} MB active")
         print(f"Memory savings: {result_16bit['memory_active_mb'] - result_4bit['memory_active_mb']:.2f} MB")
         print(f"Time difference: {result_16bit['load_time_sec'] - result_4bit['load_time_sec']:.2f}s")
+    elif result_16bit["success"]:
+        print(f"4-bit:  Not available (requires bitsandbytes)")
 
 
 if __name__ == "__main__":
