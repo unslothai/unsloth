@@ -1,4 +1,3 @@
-import { Button } from "@/components/ui/button";
 import {
   Collapsible,
   CollapsibleContent,
@@ -6,8 +5,6 @@ import {
 } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { ArrowDown01Icon } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useState } from "react";
 import type { ModelProviderConfig } from "../../types";
 import { FieldLabel } from "../shared/field-label";
@@ -70,21 +67,13 @@ export function ModelProviderDialog({
       </div>
       <Collapsible open={optionalOpen} onOpenChange={setOptionalOpen}>
         <CollapsibleTrigger asChild={true}>
-          <Button
+          <button
             type="button"
-            variant="outline"
-            size="sm"
-            className="w-full justify-between"
+            className="flex w-full items-center justify-between text-left text-xs text-muted-foreground"
           >
-            Optional
-            <HugeiconsIcon
-              icon={ArrowDown01Icon}
-              strokeWidth={2}
-              className={
-                optionalOpen ? "rotate-180 transition-transform" : "transition-transform"
-              }
-            />
-          </Button>
+            <span className="font-semibold uppercase">Optional</span>
+            <span>{optionalOpen ? "Hide" : "Show"}</span>
+          </button>
         </CollapsibleTrigger>
         <CollapsibleContent className="mt-3 space-y-4">
           <div className="grid gap-2">
