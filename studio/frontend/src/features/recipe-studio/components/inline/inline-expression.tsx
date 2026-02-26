@@ -9,6 +9,7 @@ import {
 import type { ReactElement } from "react";
 import { useRecipeStudioStore } from "../../stores/recipe-studio";
 import type { ExpressionConfig, ExpressionDtype } from "../../types";
+import { findInvalidJinjaReferences } from "../../utils/refs";
 import { getAvailableVariableEntries } from "../../utils/variables";
 import { AvailableReferencesInline } from "../shared/available-references-inline";
 import { InlineField } from "./inline-field";
@@ -26,6 +27,10 @@ export function InlineExpression({
 }: InlineExpressionProps): ReactElement {
   const configs = useRecipeStudioStore((state) => state.configs);
   const vars = getAvailableVariableEntries(configs, config.id);
+  const invalidRefs = findInvalidJinjaReferences(
+    config.expr,
+    vars.map((entry) => entry.name),
+  );
 
   return (
     <div className="space-y-3">
@@ -52,6 +57,7 @@ export function InlineExpression({
         <InlineField label="Expression">
           <Input
             className="nodrag h-8 w-full text-xs"
+            aria-invalid={invalidRefs.length > 0}
             placeholder="{{ column_name }}"
             value={config.expr}
             onChange={(event) => onUpdate({ expr: event.target.value })}
