@@ -73,6 +73,35 @@ import type { RecipeStudioView } from "./execution-types";
 
 const NODE_TYPES: NodeTypes = { builder: RecipeNode, aux: RecipeGraphAuxNode };
 const EDGE_TYPES: EdgeTypes = { canvas: DataEdge, semantic: RecipeGraphSemanticEdge };
+const SUPPORTED_DRAG_KINDS: RecipeBlockDragPayload["kind"][] = [
+  "sampler",
+  "seed",
+  "llm",
+  "expression",
+  "note",
+];
+
+function parseRecipeBlockDragPayload(raw: string): RecipeBlockDragPayload | null {
+  try {
+    const parsed = JSON.parse(raw) as {
+      kind?: RecipeBlockDragPayload["kind"];
+      type?: RecipeBlockDragPayload["type"];
+    };
+    if (
+      !parsed.kind ||
+      !parsed.type ||
+      !SUPPORTED_DRAG_KINDS.includes(parsed.kind)
+    ) {
+      return null;
+    }
+    return {
+      kind: parsed.kind,
+      type: parsed.type,
+    };
+  } catch {
+    return null;
+  }
+}
 
 export type PersistRecipeInput = {
   id: string | null;
@@ -290,29 +319,7 @@ export function RecipeStudioPage({
       if (!raw) {
         return;
       }
-      let payload: RecipeBlockDragPayload | null = null;
-      try {
-        const parsed = JSON.parse(raw) as {
-          kind?: RecipeBlockDragPayload["kind"];
-          type?: RecipeBlockDragPayload["type"];
-        };
-        if (
-          parsed.kind &&
-          parsed.type &&
-          (parsed.kind === "sampler" ||
-            parsed.kind === "seed" ||
-            parsed.kind === "llm" ||
-            parsed.kind === "expression" ||
-            parsed.kind === "note")
-        ) {
-          payload = {
-            kind: parsed.kind,
-            type: parsed.type,
-          };
-        }
-      } catch {
-        payload = null;
-      }
+      const payload = parseRecipeBlockDragPayload(raw);
       if (!payload) {
         return;
       }
