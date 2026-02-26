@@ -249,5 +249,5 @@ def _compute_overall_progress(job: Job, column_progress: Progress) -> Progress:
 
 
 def coerce_event(obj: Any) -> dict:
-    # worker sends dict already
+    """Normalize worker payload into event dict."""
     return obj if isinstance(obj, dict) else {"type": "log", "message": str(obj)}

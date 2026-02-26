@@ -37,6 +37,10 @@ export type DisplayGraph = {
   edges: Edge[];
 };
 
+function isAuxEdge(edge: Edge): boolean {
+  return edge.source.startsWith("aux-") || edge.target.startsWith("aux-");
+}
+
 function normalizeEdge(
   edge: Edge,
   configs: Record<string, NodeConfig>,
@@ -44,7 +48,7 @@ function normalizeEdge(
   activeEdgeIds: Set<string>,
 ): Edge {
   const isActiveEdge = activeEdgeIds.has(edge.id);
-  const isAux = edge.source.startsWith("aux-") || edge.target.startsWith("aux-");
+  const isAux = isAuxEdge(edge);
   if (isAux) {
     return {
       ...edge,
@@ -56,7 +60,9 @@ function normalizeEdge(
 
   const source = configs[edge.source];
   const target = configs[edge.target];
-  const semantic = Boolean(source && target) && isSemanticRelation(source, target);
+  const semantic =
+    edge.type === "semantic" ||
+    (Boolean(source && target) && isSemanticRelation(source, target));
   const sourceHandleNormalized = normalizeRecipeHandleId(edge.sourceHandle);
   const targetHandleNormalized = normalizeRecipeHandleId(edge.targetHandle);
   const semanticSourceDefault =
@@ -237,7 +243,7 @@ function pickAuxTargetHandle(
 ): string {
   const occupied = new Set<HandleSide>();
   for (const edge of edges) {
-    if (edge.source.startsWith("aux-") || edge.target.startsWith("aux-")) {
+    if (isAuxEdge(edge)) {
       continue;
     }
     if (edge.target === llmId) {
