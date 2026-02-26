@@ -632,6 +632,10 @@ export function RecipeStudioPage({
       return;
     }
     lastProcessedFitTickRef.current = fitViewTick;
+    const targetNodes = getFitNodeIdsIgnoringNotes(reactFlowInstance.getNodes());
+    if (targetNodes.length === 0) {
+      return;
+    }
     let frame2 = 0;
     let frame3 = 0;
     const frame1 = window.requestAnimationFrame(() => {
@@ -639,7 +643,7 @@ export function RecipeStudioPage({
         frame3 = window.requestAnimationFrame(() => {
           reactFlowInstance.fitView({
             duration: 320,
-            nodes: getFitNodeIdsIgnoringNotes(reactFlowInstance.getNodes()),
+            nodes: targetNodes,
           });
         });
       });
