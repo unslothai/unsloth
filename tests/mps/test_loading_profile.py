@@ -23,6 +23,15 @@ if platform.system() == "Darwin" and patcher is not None:
     patcher.patch_patching_utils_late()
 
 
+def is_mlx_available():
+    """Check if MLX is available."""
+    try:
+        import mlx
+        return True
+    except ImportError:
+        return False
+
+
 def get_mps_memory_mb():
     """Get current MPS memory usage in MB."""
     if not torch.backends.mps.is_available():
@@ -125,8 +134,15 @@ def run_loading_profiler():
     torch.mps.empty_cache()
     time.sleep(2)
     
-    print("\nTesting 4-bit loading...")
-    result_4bit = profile_model_loading(model_name, load_in_4bit=True)
+    print("\nTesting 4-bit loading (MLX)...")
+    
+    if not is_mlx_available():
+        print("  Skipped: MLX not installed")
+        print("  Install with: pip install mlx")
+        result_4bit = {"success": False, "error": "MLX not installed", 
+                      "load_time_sec": 0, "memory_active_mb": 0, "memory_reserved_mb": 0}
+    else:
+        result_4bit = profile_model_loading(model_name, load_in_4bit=True)
     
     if result_4bit["success"]:
         print(f"  Load time: {result_4bit['load_time_sec']}s")
@@ -134,7 +150,7 @@ def run_loading_profiler():
         print(f"  Memory reserved: {result_4bit['memory_reserved_mb']} MB")
     else:
         print(f"  Failed: {result_4bit['error']}")
-        print("  Note: 4-bit loading requires bitsandbytes which is not available on MPS")
+        print("  Note: 4-bit loading on MPS requires MLX to be installed")
     
     print("\n" + "=" * 60)
     print("Summary")
