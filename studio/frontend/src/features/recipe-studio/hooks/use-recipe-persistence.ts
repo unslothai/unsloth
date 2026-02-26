@@ -167,7 +167,7 @@ export function useRecipePersistence({
       }
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1500);
-      toastSuccess("Payload copied");
+      toastSuccess("👨‍🍳 Recipe copied");
     } catch (error) {
       console.error("Copy failed:", error);
       toastError("Copy failed", "Could not copy payload.");

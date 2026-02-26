@@ -1,4 +1,3 @@
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -15,6 +14,7 @@ import type { LlmConfig, Score, ScoreOption } from "../types";
 import { AUX_HANDLE_CLASS } from "../utils/handle-layout";
 import { HANDLE_IDS } from "../utils/handles";
 import { getAvailableVariableEntries } from "../utils/variables";
+import { AvailableReferencesInline } from "./shared/available-references-inline";
 import { BaseNode, BaseNodeContent, BaseNodeHeader, BaseNodeHeaderTitle } from "./rf-ui/base-node";
 
 type PromptField = "prompt" | "system_prompt";
@@ -59,27 +59,7 @@ function updateOptionAt(
 function AuxVariableBadges({ llmId }: { llmId: string }): ReactElement | null {
   const configs = useRecipeStudioStore((state) => state.configs);
   const vars = getAvailableVariableEntries(configs, llmId);
-  if (vars.length === 0) return null;
-  return (
-    <div className="space-y-1">
-      <p className="text-[10px] font-medium text-muted-foreground">Available references</p>
-      <div className="flex flex-wrap gap-1">
-        {vars.map((v) => (
-          <Badge
-            key={`${v.source}:${v.name}`}
-            variant="secondary"
-            className={
-              v.source === "seed"
-                ? "corner-squircle h-4 border-blue-500/25 bg-blue-500/10 px-1.5 font-mono text-[10px] text-blue-700 dark:text-blue-300"
-                : "corner-squircle h-4 px-1.5 font-mono text-[10px]"
-            }
-          >
-            {v.name}
-          </Badge>
-        ))}
-      </div>
-    </div>
-  );
+  return <AvailableReferencesInline entries={vars} />;
 }
 
 function AuxNodeBase({
@@ -144,7 +124,7 @@ function AuxNodeBase({
         </BaseNodeHeader>
         <BaseNodeContent className="gap-2 px-3 py-2">
           <Textarea
-            className="corner-squircle nodrag max-h-40 min-h-[88px] w-full resize-none overflow-y-auto text-xs"
+            className="corner-squircle nodrag nowheel max-h-40 min-h-[88px] w-full resize-none overflow-y-auto text-xs"
             value={value}
             onChange={(event) =>
               updateConfig(data.llmId, {
@@ -216,7 +196,7 @@ function AuxNodeBase({
           onChange={(event) => updateScore({ name: event.target.value })}
         />
         <Textarea
-          className="corner-squircle nodrag max-h-32 min-h-[56px] w-full resize-none overflow-y-auto text-xs"
+          className="corner-squircle nodrag nowheel max-h-32 min-h-[56px] w-full resize-none overflow-y-auto text-xs"
           placeholder="Score description"
           value={score.description}
           onChange={(event) => updateScore({ description: event.target.value })}
