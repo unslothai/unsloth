@@ -16,7 +16,7 @@ export interface BackendLoraInfo {
   adapter_path: string;
   base_model?: string | null;
   source?: "training" | "exported" | null;
-  export_type?: "lora" | "merged" | "gguf" | null;
+  export_type?: "lora" | "merged" | null;
 }
 
 export interface ListLorasResponse {
