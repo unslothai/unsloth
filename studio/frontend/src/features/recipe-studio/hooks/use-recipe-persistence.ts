@@ -64,6 +64,58 @@ function stripApiKeys(value: unknown): unknown {
   return output;
 }
 
+function sanitizeSeedForShare(payload: unknown): unknown {
+  if (!payload || typeof payload !== "object") {
+    return payload;
+  }
+  const root = payload as Record<string, unknown>;
+  const recipe =
+    root.recipe && typeof root.recipe === "object"
+      ? (root.recipe as Record<string, unknown>)
+      : null;
+  const ui =
+    root.ui && typeof root.ui === "object"
+      ? (root.ui as Record<string, unknown>)
+      : null;
+
+  const seedConfig =
+    recipe?.seed_config && typeof recipe.seed_config === "object"
+      ? (recipe.seed_config as Record<string, unknown>)
+      : null;
+  const source =
+    seedConfig?.source && typeof seedConfig.source === "object"
+      ? (seedConfig.source as Record<string, unknown>)
+      : null;
+
+  if (source && "token" in source) {
+    delete source.token;
+  }
+
+  const uiSourceType =
+    typeof ui?.seed_source_type === "string" ? ui.seed_source_type : null;
+  const sourceType =
+    typeof source?.seed_type === "string" ? source.seed_type : null;
+  const shouldResetLocalState =
+    sourceType === "local" ||
+    uiSourceType === "local" ||
+    uiSourceType === "unstructured";
+
+  if (shouldResetLocalState) {
+    if (source && "path" in source) {
+      source.path = "";
+    }
+    if (ui) {
+      ui.seed_columns = [];
+      ui.seed_drop_columns = [];
+      ui.seed_preview_rows = [];
+      ui.local_file_name = "";
+      ui.unstructured_file_name = "";
+    }
+  }
+
+  return root;
+}
+
 export function useRecipePersistence({
   recipeId,
   initialRecipeName,
@@ -160,14 +212,14 @@ export function useRecipePersistence({
   const copyRecipe = useCallback(async (): Promise<void> => {
     setCopied(false);
     try {
-      const safePayload = stripApiKeys(payloadResult.payload);
+      const safePayload = sanitizeSeedForShare(stripApiKeys(payloadResult.payload));
       const ok = await copyTextToClipboard(JSON.stringify(safePayload, null, 2));
       if (!ok) {
         throw new Error("Clipboard not available.");
       }
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1500);
-      toastSuccess("Payload copied");
+      toastSuccess("👨‍🍳 Recipe copied");
     } catch (error) {
       console.error("Copy failed:", error);
       toastError("Copy failed", "Could not copy payload.");

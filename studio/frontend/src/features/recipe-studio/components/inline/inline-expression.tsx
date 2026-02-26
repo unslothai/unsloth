@@ -1,4 +1,3 @@
-import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -10,7 +9,9 @@ import {
 import type { ReactElement } from "react";
 import { useRecipeStudioStore } from "../../stores/recipe-studio";
 import type { ExpressionConfig, ExpressionDtype } from "../../types";
+import { findInvalidJinjaReferences } from "../../utils/refs";
 import { getAvailableVariableEntries } from "../../utils/variables";
+import { AvailableReferencesInline } from "../shared/available-references-inline";
 import { InlineField } from "./inline-field";
 
 type InlineExpressionProps = {
@@ -26,6 +27,10 @@ export function InlineExpression({
 }: InlineExpressionProps): ReactElement {
   const configs = useRecipeStudioStore((state) => state.configs);
   const vars = getAvailableVariableEntries(configs, config.id);
+  const invalidRefs = findInvalidJinjaReferences(
+    config.expr,
+    vars.map((entry) => entry.name),
+  );
 
   return (
     <div className="space-y-3">
@@ -52,32 +57,14 @@ export function InlineExpression({
         <InlineField label="Expression">
           <Input
             className="nodrag h-8 w-full text-xs"
+            aria-invalid={invalidRefs.length > 0}
             placeholder="{{ column_name }}"
             value={config.expr}
             onChange={(event) => onUpdate({ expr: event.target.value })}
           />
         </InlineField>
       </div>
-      {vars.length > 0 && (
-        <div className="space-y-1">
-          <p className="text-[10px] font-medium text-muted-foreground">Available references</p>
-          <div className="flex flex-wrap gap-1">
-            {vars.map((v) => (
-              <Badge
-                key={`${v.source}:${v.name}`}
-                variant="secondary"
-                className={
-                  v.source === "seed"
-                    ? "corner-squircle h-4 border-blue-500/25 bg-blue-500/10 px-1.5 font-mono text-[10px] text-blue-700 dark:text-blue-300"
-                    : "corner-squircle h-4 px-1.5 font-mono text-[10px]"
-                }
-              >
-                {v.name}
-              </Badge>
-            ))}
-          </div>
-        </div>
-      )}
+      <AvailableReferencesInline entries={vars} />
     </div>
   );
 }
