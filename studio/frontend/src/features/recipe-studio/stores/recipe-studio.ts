@@ -29,7 +29,6 @@ import { applyRecipeConnection, isValidRecipeConnection } from "../utils/graph";
 import { HANDLE_IDS, remapRecipeEdgeHandlesForLayout } from "../utils/handles";
 import type { RecipeSnapshot } from "../utils/import";
 import { getLayoutedElements } from "../utils/layout";
-import { syncPositionsRecord, syncSizesRecord } from "./helpers/aux-sync";
 import { applyEdgeRemovals, applyNodeRemovals } from "./helpers/removals";
 import {
   applyRenameToConfigs,
@@ -53,7 +52,6 @@ type RecipeStudioState = {
   nodes: RecipeNode[];
   edges: Edge[];
   auxNodePositions: Record<string, XYPosition>;
-  auxNodeSizes: Record<string, { width: number; height: number }>;
   llmAuxVisibility: Record<string, boolean>;
   configs: Record<string, NodeConfig>;
   processors: RecipeProcessorConfig[];
@@ -83,15 +81,6 @@ type RecipeStudioState = {
   updateConfig: (id: string, patch: Partial<NodeConfig>) => void;
   loadRecipe: (snapshot: RecipeSnapshot) => void;
   setAuxNodePosition: (id: string, position: XYPosition) => void;
-  setAuxNodeSize: (
-    id: string,
-    size: { width: number; height: number },
-  ) => void;
-  syncAuxNodePositions: (
-    activeIds: string[],
-    defaults: Record<string, XYPosition>,
-  ) => void;
-  syncAuxNodeSizes: (activeIds: string[]) => void;
   onNodesChange: (changes: NodeChange<RecipeNode>[]) => void;
   onEdgesChange: (changes: EdgeChange<Edge>[]) => void;
   onConnect: (connection: Connection) => void;
@@ -102,7 +91,6 @@ const INITIAL_STATE = {
   nodes: [],
   edges: [],
   auxNodePositions: {},
-  auxNodeSizes: {},
   llmAuxVisibility: {},
   configs: {},
   processors: [],
@@ -118,7 +106,6 @@ const INITIAL_STATE = {
   | "nodes"
   | "edges"
   | "auxNodePositions"
-  | "auxNodeSizes"
   | "llmAuxVisibility"
   | "configs"
   | "processors"
@@ -248,8 +235,7 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
         edges: state.edges,
         configs: state.configs,
         layoutDirection: state.layoutDirection,
-        auxNodePositions: state.auxNodePositions,
-        auxNodeSizes: state.auxNodeSizes,
+        auxNodePositions: {},
         llmAuxVisibility: state.llmAuxVisibility,
       });
       const { nodes } = getLayoutedElements(displayGraph.nodes, displayGraph.edges, {
@@ -267,25 +253,8 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
         }
         return { ...node, position };
       });
-      const nextAuxNodePositions: Record<string, XYPosition> = {};
-      for (const auxId of displayGraph.auxNodeIds) {
-        const existing = state.auxNodePositions[auxId];
-        const layouted = layoutedPositions.get(auxId);
-        if (layouted) {
-          nextAuxNodePositions[auxId] = layouted;
-          continue;
-        }
-        if (existing) {
-          nextAuxNodePositions[auxId] = existing;
-          continue;
-        }
-        const fallback = displayGraph.auxDefaults[auxId];
-        if (fallback) {
-          nextAuxNodePositions[auxId] = fallback;
-        }
-      }
       return {
-        auxNodePositions: nextAuxNodePositions,
+        auxNodePositions: {},
         nodes: applyLayoutDirectionToNodes(
           nextNodes,
           state.configs,
@@ -461,8 +430,7 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
       layoutDirection: snapshot.layoutDirection,
       nextId: snapshot.nextId,
       nextY: snapshot.nextY,
-      auxNodePositions: {},
-      auxNodeSizes: {},
+      auxNodePositions: snapshot.auxNodePositions ?? {},
       llmAuxVisibility: {},
       activeConfigId: null,
       dialogOpen: false,
@@ -481,36 +449,6 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
           [id]: position,
         },
       };
-    }),
-  setAuxNodeSize: (id, size) =>
-    set((state) => {
-      const width = Math.max(1, size.width);
-      const height = Math.max(1, size.height);
-      const current = state.auxNodeSizes[id];
-      if (current && current.width === width && current.height === height) {
-        return state;
-      }
-      return {
-        auxNodeSizes: {
-          ...state.auxNodeSizes,
-          [id]: { width, height },
-        },
-      };
-    }),
-  syncAuxNodePositions: (activeIds, defaults) =>
-    set((state) => {
-      const next = syncPositionsRecord(state.auxNodePositions, activeIds, defaults);
-      if (next === state.auxNodePositions) {
-        return state;
-      }
-      return {
-        auxNodePositions: next,
-      };
-    }),
-  syncAuxNodeSizes: (activeIds) =>
-    set((state) => {
-      const next = syncSizesRecord(state.auxNodeSizes, activeIds);
-      return next === state.auxNodeSizes ? state : { auxNodeSizes: next };
     }),
   updateConfig: (id, patch) => {
     const applyUpdate = (state: RecipeStudioState) => {
