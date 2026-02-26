@@ -22,6 +22,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -172,6 +173,7 @@ export function RecipeStudioPage({
   const [reactFlowInstance, setReactFlowInstance] = useState<
     ReactFlowInstance<Node<RecipeNodeData | RecipeGraphAuxNodeData>, Edge> | null
   >(null);
+  const lastProcessedFitTickRef = useRef(0);
   const handleExecutionStart = useCallback(() => {
     setActiveView("executions");
   }, []);
@@ -365,15 +367,22 @@ export function RecipeStudioPage({
     runDialogKind === "preview" ? previewLoading : fullLoading;
 
   useEffect(() => {
-    if (!reactFlowInstance || activeView !== "editor" || fitViewTick === 0) {
+    if (!reactFlowInstance || fitViewTick === 0 || activeView !== "editor") {
       return;
     }
+    if (lastProcessedFitTickRef.current === fitViewTick) {
+      return;
+    }
+    lastProcessedFitTickRef.current = fitViewTick;
     let frame2 = 0;
+    let frame3 = 0;
     const frame1 = window.requestAnimationFrame(() => {
       frame2 = window.requestAnimationFrame(() => {
-        reactFlowInstance.fitView({
-          duration: 250,
-          nodes: getFitNodeIdsIgnoringNotes(reactFlowInstance.getNodes()),
+        frame3 = window.requestAnimationFrame(() => {
+          reactFlowInstance.fitView({
+            duration: 320,
+            nodes: getFitNodeIdsIgnoringNotes(reactFlowInstance.getNodes()),
+          });
         });
       });
     });
@@ -381,6 +390,9 @@ export function RecipeStudioPage({
       window.cancelAnimationFrame(frame1);
       if (frame2) {
         window.cancelAnimationFrame(frame2);
+      }
+      if (frame3) {
+        window.cancelAnimationFrame(frame3);
       }
     };
   }, [activeView, fitViewTick, reactFlowInstance]);

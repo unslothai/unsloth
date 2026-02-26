@@ -45,6 +45,7 @@ import type {
   SeedSamplingStrategy,
   SeedSelectionType,
 } from "../../types";
+import { HfDatasetCombobox } from "../../components/shared/hf-dataset-combobox";
 import { FieldLabel } from "../shared/field-label";
 
 const SAMPLING_OPTIONS: Array<{ value: SeedSamplingStrategy; label: string }> = [
@@ -209,8 +210,6 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
   const samplingId = `${config.id}-sampling`;
   const selectionId = `${config.id}-selection`;
   const tokenId = `${config.id}-hf-token`;
-  const subsetId = `${config.id}-hf-subset`;
-  const splitId = `${config.id}-hf-split`;
   const datasetId = `${config.id}-hf-dataset`;
   const chunkSizeId = `${config.id}-chunk-size`;
   const chunkOverlapId = `${config.id}-chunk-overlap`;
@@ -221,10 +220,8 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
     if (mode === "hf") {
       const dataset = config.hf_repo_id.trim();
       if (!dataset) return null;
-      const subset = config.hf_subset?.trim() ?? "";
-      const split = config.hf_split?.trim() || "train";
       const token = config.hf_token?.trim() ?? "";
-      return `hf:${dataset}|${subset}|${split}|${token}`;
+      return `hf:${dataset}|${token}`;
     }
     if (mode === "local") {
       if (!localFile) return null;
@@ -255,8 +252,8 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
         const response = await inspectSeedDataset({
           dataset_name: datasetName,
           hf_token: config.hf_token?.trim() || undefined,
-          subset: config.hf_subset || undefined,
-          split: config.hf_split || "train",
+          subset: undefined,
+          split: "train",
           preview_size: 10,
         });
         onUpdate({
@@ -266,8 +263,8 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
             response.columns.includes(name),
           ),
           seed_preview_rows: response.preview_rows ?? [],
-          hf_split: response.split ?? config.hf_split ?? "",
-          hf_subset: response.subset ?? config.hf_subset ?? "",
+          hf_split: "",
+          hf_subset: "",
           local_file_name: "",
           unstructured_file_name: "",
         });
@@ -416,14 +413,17 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
                   hint="Hugging Face dataset repo id (org/repo)."
                 />
                 <div className="flex items-center gap-2">
-                  <Input
-                    id={datasetId}
-                    className="nodrag flex-1"
-                    placeholder="org/repo"
+                  <HfDatasetCombobox
+                    inputId={datasetId}
+                    className="flex-1"
                     value={config.hf_repo_id}
-                    onChange={(event) =>
+                    accessToken={config.hf_token?.trim() || undefined}
+                    placeholder="org/repo"
+                    onValueChange={(nextValue) =>
                       onUpdate({
-                        hf_repo_id: event.target.value,
+                        hf_repo_id: nextValue,
+                        hf_subset: "",
+                        hf_split: "",
                         hf_path: "",
                         seed_columns: [],
                         seed_drop_columns: [],
@@ -458,43 +458,13 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div className="grid gap-2">
-                  <FieldLabel
-                    label="Subset (optional)"
-                    htmlFor={subsetId}
-                    hint="Dataset config/subset name."
-                  />
-                  <Input
-                    id={subsetId}
-                    className="nodrag"
-                    placeholder="default"
-                    value={config.hf_subset ?? ""}
-                    onChange={(event) => onUpdate({ hf_subset: event.target.value })}
-                  />
-                </div>
-                <div className="grid gap-2">
-                  <FieldLabel
-                    label="Split"
-                    htmlFor={splitId}
-                    hint="Split to inspect (default train)."
-                  />
-                  <Input
-                    id={splitId}
-                    className="nodrag"
-                    placeholder="train"
-                    value={config.hf_split ?? ""}
-                    onChange={(event) => onUpdate({ hf_split: event.target.value })}
-                  />
-                </div>
-              </div>
             </>
           )}
 
           {mode === "local" && (
             <div className="grid gap-2">
               <FieldLabel
-                label="Local file"
+                label="Structured file"
                 hint="Upload CSV, JSON, or JSONL seed file."
               />
               <div className="flex items-center gap-2">
