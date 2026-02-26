@@ -3,7 +3,7 @@ SQLite storage for authentication data (user credentials + JWT secret).
 """
 import hashlib
 import sqlite3
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -218,7 +218,7 @@ def verify_refresh_token(token: str) -> Optional[str]:
         # Clean up any expired tokens while we're here
         conn.execute(
             "DELETE FROM refresh_tokens WHERE expires_at < ?",
-            (datetime.now(UTC).isoformat(),),
+            (datetime.now(timezone.utc).isoformat(),),
         )
         conn.commit()
 
@@ -235,7 +235,7 @@ def verify_refresh_token(token: str) -> Optional[str]:
 
         # Check expiry
         expires_at = datetime.fromisoformat(row["expires_at"])
-        if datetime.now(UTC) > expires_at:
+        if datetime.now(timezone.utc) > expires_at:
             conn.execute("DELETE FROM refresh_tokens WHERE id = ?", (row["id"],))
             conn.commit()
             return None
