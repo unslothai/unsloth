@@ -14,9 +14,6 @@ export function buildSeedConfig(
 ): Record<string, unknown> | undefined {
   const seedSourceType = config.seed_source_type ?? "hf";
   const path = config.hf_path.trim();
-  if (!path) {
-    return undefined;
-  }
 
   const endpoint = config.hf_endpoint?.trim() || "https://huggingface.co";
   const token = config.hf_token?.trim() || null;

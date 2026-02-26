@@ -453,7 +453,7 @@ export function importRecipePayload(input: string): ImportResult {
     return { errors, snapshot: null };
   }
 
-  const { layouts, edges: uiEdges, layoutDirection } = parseUi(ui);
+  const { layouts, auxNodes, edges: uiEdges, layoutDirection } = parseUi(ui);
   const resolvedLayoutDirection = layoutDirection ?? "LR";
   const nodes = buildNodes(configs, layouts);
   const edges = buildEdges(
@@ -461,6 +461,15 @@ export function importRecipePayload(input: string): ImportResult {
     nameToId,
     uiEdges,
     resolvedLayoutDirection,
+  );
+  const auxNodePositions = Object.fromEntries(
+    auxNodes.flatMap((item) => {
+      const llmId = nameToId.get(item.llm);
+      if (!llmId) {
+        return [];
+      }
+      return [[`aux-${llmId}-${item.key}`, { x: item.x, y: item.y }]];
+    }),
   );
 
   const maxY = nodes.reduce(
@@ -474,6 +483,7 @@ export function importRecipePayload(input: string): ImportResult {
       configs: Object.fromEntries(configs.map((config) => [config.id, config])),
       nodes,
       edges,
+      auxNodePositions,
       processors,
       layoutDirection: resolvedLayoutDirection,
       nextId,
