@@ -140,11 +140,11 @@ def run_loading_profiler():
     torch.mps.empty_cache()
     time.sleep(2)
     
-    print("\nTesting 4-bit loading (MLX)...")
+    mlx_available = is_mlx_available()
+    print(f"\nTesting 4-bit loading (MLX)... {'(available)' if mlx_available else '(not available - skipping)'}")
     
-    if not is_mlx_available():
-        print("  Skipped: MLX not installed")
-        print("  Install with: pip install mlx")
+    if not mlx_available:
+        print("  Skipped: Install MLX to test 4-bit loading")
         result_4bit = {"success": False, "error": "MLX not installed", 
                       "load_time_sec": 0, "memory_active_mb": 0, "memory_reserved_mb": 0}
     else:
