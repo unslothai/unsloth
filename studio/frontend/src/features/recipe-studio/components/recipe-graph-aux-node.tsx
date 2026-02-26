@@ -13,6 +13,7 @@ import { useRecipeStudioStore } from "../stores/recipe-studio";
 import type { LlmConfig, Score, ScoreOption } from "../types";
 import { AUX_HANDLE_CLASS } from "../utils/handle-layout";
 import { HANDLE_IDS } from "../utils/handles";
+import { findInvalidJinjaReferences } from "../utils/refs";
 import { getAvailableVariableEntries } from "../utils/variables";
 import { AvailableReferencesInline } from "./shared/available-references-inline";
 import { BaseNode, BaseNodeContent, BaseNodeHeader, BaseNodeHeaderTitle } from "./rf-ui/base-node";
@@ -56,10 +57,12 @@ function updateOptionAt(
   );
 }
 
-function AuxVariableBadges({ llmId }: { llmId: string }): ReactElement | null {
-  const configs = useRecipeStudioStore((state) => state.configs);
-  const vars = getAvailableVariableEntries(configs, llmId);
-  return <AvailableReferencesInline entries={vars} />;
+function AuxVariableBadges({
+  entries,
+}: {
+  entries: ReturnType<typeof getAvailableVariableEntries>;
+}): ReactElement | null {
+  return <AvailableReferencesInline entries={entries} />;
 }
 
 function AuxNodeBase({
@@ -67,6 +70,7 @@ function AuxNodeBase({
   data,
 }: NodeProps<RecipeGraphAuxNodeType>): ReactElement | null {
   const config = useRecipeStudioStore((state) => state.configs[data.llmId]);
+  const configs = useRecipeStudioStore((state) => state.configs);
   const updateConfig = useRecipeStudioStore((state) => state.updateConfig);
   const updateNodeInternals = useUpdateNodeInternals();
 
@@ -117,6 +121,10 @@ function AuxNodeBase({
 
   if (data.kind === "llm-prompt-input") {
     const value = data.field === "prompt" ? config.prompt : config.system_prompt;
+    const variableEntries = getAvailableVariableEntries(configs, data.llmId);
+    const availableRefs = variableEntries.map((entry) => entry.name);
+    const hasInvalidRefs =
+      findInvalidJinjaReferences(value, availableRefs).length > 0;
     return (
       <BaseNode className="corner-squircle w-full min-w-0 rounded-lg border-border/60 bg-card shadow-sm">
         <BaseNodeHeader className="border-b border-border/50 px-3 py-2">
@@ -125,6 +133,7 @@ function AuxNodeBase({
         <BaseNodeContent className="gap-2 px-3 py-2">
           <Textarea
             className="corner-squircle nodrag nowheel max-h-40 min-h-[88px] w-full resize-none overflow-y-auto text-xs"
+            aria-invalid={hasInvalidRefs}
             value={value}
             onChange={(event) =>
               updateConfig(data.llmId, {
@@ -132,7 +141,7 @@ function AuxNodeBase({
               } as Partial<LlmConfig>)
             }
           />
-          <AuxVariableBadges llmId={data.llmId} />
+          <AuxVariableBadges entries={variableEntries} />
         </BaseNodeContent>
         {sourceHandles}
       </BaseNode>
