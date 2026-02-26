@@ -140,10 +140,8 @@ def run_loading_profiler():
     torch.mps.empty_cache()
     time.sleep(2)
     
-    print("\nTesting 4-bit loading (MLX)... (not available - skipping)")
-    print("  Skipped: 4-bit MLX loading requires proper MLX installation")
-    result_4bit = {"success": False, "error": "MLX not properly installed", 
-                  "load_time_sec": 0, "memory_active_mb": 0, "memory_reserved_mb": 0}
+    print("\nTesting 4-bit loading (MLX)...")
+    result_4bit = profile_model_loading(model_name, load_in_4bit=True)
     
     if result_4bit["success"]:
         print(f"  Load time: {result_4bit['load_time_sec']}s")
