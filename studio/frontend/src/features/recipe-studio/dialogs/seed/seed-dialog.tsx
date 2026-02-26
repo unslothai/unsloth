@@ -253,7 +253,6 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
           dataset_name: datasetName,
           hf_token: config.hf_token?.trim() || undefined,
           subset: undefined,
-          split: "train",
           preview_size: 10,
         });
         onUpdate({

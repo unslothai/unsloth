@@ -173,7 +173,8 @@ function BlockSheetButton({
       ) : trailing === "drag" ? (
         <HugeiconsIcon
           icon={DragDropVerticalIcon}
-          className="size-5 text-primary/80"
+          strokeWidth={3.5}
+          className="size-5 text-foreground"
         />
       ) : null}
     </button>
@@ -278,8 +279,7 @@ export function BlockSheet({
       event.dataTransfer.setData("text/plain", serialized);
       event.dataTransfer.effectAllowed = "copy";
     };
-  const getTrailing = (kind: SheetKind): "drag" | "none" =>
-    kind === "sampler" || kind === "seed" || kind === "llm" ? "drag" : "none";
+  const getTrailing = (_kind: SheetKind): "drag" => "drag";
   const onBlockClick = (kind: SheetKind, type: BlockType) => {
     setSheetOpen(false);
     if (kind === "sampler") {
@@ -388,9 +388,17 @@ export function BlockSheet({
                     title={item.title}
                     description={item.description}
                     isActive={index === 0}
+                    draggable={item.kind === "expression" || item.kind === "note"}
+                    onDragStart={
+                      item.kind === "expression" && expressionBlocks[0]
+                        ? buildDragStart("expression", expressionBlocks[0].type)
+                        : item.kind === "note" && noteBlocks[0]
+                          ? buildDragStart("note", noteBlocks[0].type)
+                          : undefined
+                    }
                     trailing={
                       item.kind === "expression" || item.kind === "note"
-                        ? "none"
+                        ? "drag"
                         : "chevron"
                     }
                     onClick={() => {
