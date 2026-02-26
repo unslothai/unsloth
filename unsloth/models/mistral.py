@@ -25,6 +25,7 @@ from ..utils.attention_dispatch import (
     AttentionConfig,
     AttentionContext,
     run_attention,
+    SDPA,
     select_attention_backend,
 )
 from .llama import (
@@ -116,7 +117,9 @@ def MistralAttention_fast_forward(
     use_varlen = (
         seq_info is not None and past_key_value is None and window_size == (-1, -1)
     )
-    backend = select_attention_backend(use_varlen)
+    backend = (
+        SDPA if attention_mask is not None else select_attention_backend(use_varlen)
+    )
     attention_config = AttentionConfig(
         backend = backend,
         n_kv_heads = n_kv_heads,
@@ -217,13 +220,18 @@ def MistralForCausalLM_fast_forward(
                     bsz, 1, q_len, q_len
                 )
             else:
-                # attention_mask should be [bsz, 1, q_len, q_len] or broadcastable
-                # Add causal mask to existing attention mask
                 if attention_mask.dim() == 2:
-                    # [bsz, seq_len] -> [bsz, 1, 1, seq_len]
-                    attention_mask = attention_mask[:, None, None, :]
-                    attention_mask = attention_mask.expand(bsz, 1, q_len, q_len)
-                attention_mask = attention_mask + causal_mask_values[None, None, :, :]
+                    # Convert 0/1 padding mask to additive format: 1->0 (keep), 0->-inf (mask)
+                    padding_mask = torch.where(
+                        attention_mask[:, None, None, :].bool(),
+                        0.0,
+                        -torch.inf,
+                    )
+                    attention_mask = causal_mask_values[None, None, :, :] + padding_mask
+                else:
+                    attention_mask = (
+                        attention_mask + causal_mask_values[None, None, :, :]
+                    )
 
             attention_mask = attention_mask.to(
                 dtype = _get_dtype(dtype_from_config(self.config))

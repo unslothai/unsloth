@@ -7,7 +7,7 @@ name = "unsloth"
 dynamic = ["version"]
 description = "2-5X faster training, reinforcement learning & finetuning"
 readme = "README.md"
-requires-python = ">=3.9,<3.14"
+requires-python = ">=3.9,<3.15"
 license = "Apache-2.0"
 keywords = ["ai", "llm", "reinforcement learning", "machine learning", "artificial intelligence", "pytorch"]
 authors = [

@@ -21,6 +21,7 @@ from ..utils.attention_dispatch import (
     AttentionConfig,
     AttentionContext,
     run_attention,
+    SDPA,
     select_attention_backend,
 )
 from .llama import (
@@ -139,7 +140,9 @@ def Qwen3Attention_fast_forward(
 
     # Attention module
     use_varlen = seq_info is not None and past_key_value is None
-    backend = select_attention_backend(use_varlen)
+    backend = (
+        SDPA if attention_mask is not None else select_attention_backend(use_varlen)
+    )
     attention_config = AttentionConfig(
         backend = backend,
         n_kv_heads = n_kv_heads,
@@ -181,6 +184,7 @@ def Qwen3Attention_fast_forward_inference(
     position_ids,
     do_prefill = False,
     attention_mask = None,
+    **kwargs,
 ):
     """
     https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L406
@@ -249,7 +253,7 @@ def Qwen3Attention_fast_forward_inference(
 
         # Mistral Nemo 12b has weird dimensions
         if attention_size != hidden_size:
-            self.temp_O = torch.empty((1, bsz, hidden_size), dtype = dtype, device = device)
+            self.temp_O = torch.empty((bsz, 1, hidden_size), dtype = dtype, device = device)
         else:
             self.temp_O = self.temp_QA[1][:, :, :hidden_size]
 
@@ -329,24 +333,42 @@ def Qwen3Attention_fast_forward_inference(
     # Handle sliding windows
     sliding_window = getattr(self.config, "sliding_window", None)
     if sliding_window is not None and kv_seq_len > sliding_window:
-        # From https://github.com/huggingface/transformers/blob/main/src/transformers/models/mistral/modeling_mistral.py#L193
-        slicing_tokens = 1 - sliding_window
-        Knn = Kn[:, :, slicing_tokens:, :]  # .contiguous()
-        Vnn = Vn[:, :, slicing_tokens:, :]  # .contiguous()
+        start = kv_seq_len - sliding_window
+        Knn = Kn[:, :, start:, :]  # .contiguous()
+        Vnn = Vn[:, :, start:, :]  # .contiguous()
+        if attention_mask is not None:
+            attention_mask = attention_mask[..., start:]
     else:
         Knn, Vnn = Kn, Vn
 
     # when qlen==vlen and attn_mask is None, we should use causal attention
     Q_len = Qn.shape[-2]
     K_len = Knn.shape[-2]
+    if attention_mask is not None and attention_mask.dim() == 2:
+        attention_mask = attention_mask[:, None, None, :].to(torch.bool)
+    elif (
+        attention_mask is not None
+        and attention_mask.dim() == 4
+        and attention_mask.dtype != torch.bool
+    ):
+        attention_mask = attention_mask.eq(0)
     if attention_mask is None and Q_len == K_len:
         is_causal = True
     else:
         is_causal = False
+    use_sdpa_gqa = SDPA_HAS_GQA
+    if (
+        use_sdpa_gqa
+        and isinstance(attention_mask, torch.Tensor)
+        and attention_mask.dim() >= 3
+        and attention_mask.shape[0] > 1
+    ):
+        # Avoid SDPA GQA drift for batched masked decode.
+        use_sdpa_gqa = False
 
     # Grouped query attention
     _, _, cached_len, _ = Knn.shape
-    if bsz == 1 or not SDPA_HAS_GQA and n_groups != 1:
+    if bsz == 1 or ((not use_sdpa_gqa) and n_groups != 1):
         Knn = Knn[:, :, None, :, :].expand(
             bsz, n_kv_heads, n_groups, cached_len, head_dim
         )
@@ -355,9 +377,6 @@ def Qwen3Attention_fast_forward_inference(
         )
         Knn = Knn.reshape(bsz, n_heads, cached_len, head_dim)
         Vnn = Vnn.reshape(bsz, n_heads, cached_len, head_dim)
-    # else:
-    #     Knn, Vnn = Knn, Vnn
-    # pass
 
     # Attention
     if bsz == 1:
@@ -366,13 +385,12 @@ def Qwen3Attention_fast_forward_inference(
         A = torch_matmul(
             Qn, Knn.transpose(2, 3), out = self.attention[:, :, :, :cached_len]
         )
-        # if attention_mask is not None: A += attention_mask # Must add attention_mask for batched
         A[:] = torch_nn_functional_softmax(
             A, dim = -1, dtype = torch.float32
         )  # .to(A.dtype)
         A = torch_matmul(A, Vnn, out = Qn)
     else:
-        if SDPA_HAS_GQA:
+        if use_sdpa_gqa:
             A = scaled_dot_product_attention(
                 Qn,
                 Knn,
