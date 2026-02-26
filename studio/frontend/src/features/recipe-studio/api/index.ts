@@ -15,6 +15,8 @@ export type JobStatusResponse = {
   stage?: string | null;
   // biome-ignore lint/style/useNamingConvention: api schema
   current_column?: string | null;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  completed_columns?: string[] | null;
   batch?: {
     idx?: number | null;
     total?: number | null;

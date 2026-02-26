@@ -12,9 +12,24 @@ import {
   type ReactFlowInstance,
 } from "@xyflow/react";
 import {
+  BalanceScaleIcon,
+  Clock01Icon,
+  CodeIcon,
+  CodeSimpleIcon,
   CookBookIcon,
+  DiceFaces03Icon,
+  EqualSignIcon,
+  FingerPrintIcon,
+  FunctionIcon,
+  Parabola02Icon,
+  PencilEdit02Icon,
+  Plant01Icon,
   PlusSignIcon,
+  Shield02Icon,
+  Tag01Icon,
+  TagsIcon,
   TestTube01Icon,
+  UserAccountIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -51,6 +66,7 @@ import { useRecipeStudioActions } from "./hooks/use-recipe-studio-actions";
 import { useRecipeStudioStore } from "./stores/recipe-studio";
 import type {
   LlmType,
+  NodeConfig,
   RecipeNode as RecipeBuilderNode,
   RecipeNodeData,
   SamplerType,
@@ -58,6 +74,10 @@ import type {
 import type { SeedBlockType } from "./blocks/registry";
 import { deriveDisplayGraph } from "./utils/graph/derive-display-graph";
 import { getFitNodeIdsIgnoringNotes } from "./utils/graph/fit-view";
+import {
+  deriveGraphRuntimeVisualState,
+  pickLatestActiveExecution,
+} from "./utils/graph/runtime-visual-state";
 import { buildRecipePayload } from "./utils/payload";
 import type { RecipePayload } from "./utils/payload/types";
 import { buildDefaultSchemaTransform } from "./utils/processors";
@@ -73,6 +93,7 @@ import type { RecipeStudioView } from "./execution-types";
 
 const NODE_TYPES: NodeTypes = { builder: RecipeNode, aux: RecipeGraphAuxNode };
 const EDGE_TYPES: EdgeTypes = { canvas: DataEdge, semantic: RecipeGraphSemanticEdge };
+type IconType = typeof CodeIcon;
 const SUPPORTED_DRAG_KINDS: RecipeBlockDragPayload["kind"][] = [
   "sampler",
   "seed",
@@ -80,6 +101,51 @@ const SUPPORTED_DRAG_KINDS: RecipeBlockDragPayload["kind"][] = [
   "expression",
   "note",
 ];
+
+const SAMPLER_ICONS: Record<SamplerType, IconType> = {
+  category: Tag01Icon,
+  subcategory: TagsIcon,
+  uniform: EqualSignIcon,
+  gaussian: Parabola02Icon,
+  bernoulli: EqualSignIcon,
+  datetime: Clock01Icon,
+  timedelta: Clock01Icon,
+  uuid: FingerPrintIcon,
+  person: UserAccountIcon,
+  person_from_faker: UserAccountIcon,
+};
+
+const LLM_ICONS: Record<LlmType, IconType> = {
+  text: PencilEdit02Icon,
+  structured: CodeIcon,
+  code: CodeSimpleIcon,
+  judge: BalanceScaleIcon,
+};
+
+function resolveExecutionColumnIcon(config: NodeConfig | null): IconType {
+  if (!config) {
+    return DiceFaces03Icon;
+  }
+  if (config.kind === "sampler") {
+    return SAMPLER_ICONS[config.sampler_type];
+  }
+  if (config.kind === "llm") {
+    return LLM_ICONS[config.llm_type];
+  }
+  if (config.kind === "expression") {
+    return FunctionIcon;
+  }
+  if (config.kind === "seed") {
+    return Plant01Icon;
+  }
+  if (config.kind === "model_provider") {
+    return Shield02Icon;
+  }
+  if (config.kind === "model_config") {
+    return Plant01Icon;
+  }
+  return PencilEdit02Icon;
+}
 
 function parseRecipeBlockDragPayload(raw: string): RecipeBlockDragPayload | null {
   try {
@@ -163,6 +229,7 @@ export function RecipeStudioPage({
     setLayoutDirection,
     applyLayout,
     setAuxNodePosition,
+    setExecutionLocked,
   } = useRecipeStudioStore(
     useShallow((state) => ({
       nodes: state.nodes,
@@ -198,6 +265,7 @@ export function RecipeStudioPage({
       setLayoutDirection: state.setLayoutDirection,
       applyLayout: state.applyLayout,
       setAuxNodePosition: state.setAuxNodePosition,
+      setExecutionLocked: state.setExecutionLocked,
     })),
   );
   const [sheetContainer, setSheetContainer] = useState<HTMLDivElement | null>(
@@ -226,28 +294,6 @@ export function RecipeStudioPage({
   const baseEdgeIds = useMemo(
     () => new Set(edges.map((edge) => edge.id)),
     [edges],
-  );
-
-  const displayGraph = useMemo(() => {
-    return deriveDisplayGraph({
-      nodes,
-      edges,
-      configs,
-      layoutDirection,
-      auxNodePositions,
-      llmAuxVisibility,
-    });
-  }, [
-    auxNodePositions,
-    configs,
-    edges,
-    layoutDirection,
-    llmAuxVisibility,
-    nodes,
-  ]);
-  const displayNodeIds = useMemo(
-    () => displayGraph.nodes.map((node) => node.id),
-    [displayGraph.nodes],
   );
 
   const handleNodeClick = useCallback(
@@ -418,10 +464,6 @@ export function RecipeStudioPage({
     setLayoutDirection(layoutDirection === "LR" ? "TB" : "LR");
   }, [layoutDirection, setLayoutDirection]);
 
-  const toggleInteractive = useCallback(() => {
-    setInteractive((value) => !value);
-  }, []);
-
   const payloadResult = useMemo(
     () =>
       buildRecipePayload(
@@ -494,6 +536,73 @@ export function RecipeStudioPage({
     onExecutionStart: handleExecutionStart,
     onPreviewSuccess: handlePreviewSuccess,
   });
+  const activeExecution = useMemo(
+    () => pickLatestActiveExecution(executions),
+    [executions],
+  );
+  const runtimeVisualState = useMemo(
+    () =>
+      deriveGraphRuntimeVisualState({
+        activeExecution,
+        configs,
+        edges,
+      }),
+    [activeExecution, configs, edges],
+  );
+  const displayGraph = useMemo(
+    () =>
+      deriveDisplayGraph({
+        nodes,
+        edges,
+        configs,
+        layoutDirection,
+        auxNodePositions,
+        llmAuxVisibility,
+        runtime: runtimeVisualState,
+      }),
+    [
+      auxNodePositions,
+      configs,
+      edges,
+      layoutDirection,
+      llmAuxVisibility,
+      nodes,
+      runtimeVisualState,
+    ],
+  );
+  const executionLocked = runtimeVisualState.executionLocked;
+  const canvasInteractive = interactive && !executionLocked;
+  const currentColumnConfig = useMemo(() => {
+    const columnName = activeExecution?.current_column?.trim();
+    if (!columnName) {
+      return null;
+    }
+    for (const config of Object.values(configs)) {
+      if (config.name.trim() === columnName) {
+        return config;
+      }
+    }
+    return null;
+  }, [activeExecution?.current_column, configs]);
+  const currentColumnIcon = useMemo(
+    () => resolveExecutionColumnIcon(currentColumnConfig),
+    [currentColumnConfig],
+  );
+  const displayNodeIds = useMemo(
+    () => displayGraph.nodes.map((node) => node.id),
+    [displayGraph.nodes],
+  );
+
+  const toggleInteractive = useCallback(() => {
+    if (executionLocked) {
+      return;
+    }
+    setInteractive((value) => !value);
+  }, [executionLocked]);
+
+  useEffect(() => {
+    setExecutionLocked(executionLocked);
+  }, [executionLocked, setExecutionLocked]);
 
   const openProcessorsFromSheet = useCallback(() => {
     if (
@@ -584,9 +693,9 @@ export function RecipeStudioPage({
                 onNodeClick={handleNodeClick}
                 onNodeDoubleClick={handleNodeDoubleClick}
                 isValidConnection={isValidConnection}
-                nodesDraggable={interactive}
-                nodesConnectable={interactive}
-                elementsSelectable={interactive}
+                nodesDraggable={canvasInteractive}
+                nodesConnectable={canvasInteractive}
+                elementsSelectable={canvasInteractive}
                 fitView={false}
                 className="h-full w-full rounded-t-none"
               >
@@ -647,19 +756,38 @@ export function RecipeStudioPage({
                   />
                 </Panel>
                 <ViewportControls
-                  interactive={interactive}
+                  interactive={canvasInteractive}
+                  lockDisabled={executionLocked}
                   onToggleInteractive={toggleInteractive}
                 />
+                {runtimeVisualState.batch && (
+                  <Panel position="top-center" className="m-3">
+                    <div className="rounded-lg border border-border/70 bg-card/95 px-3 py-2 text-xs shadow-sm">
+                      <p className="font-medium text-foreground">
+                        Batch {runtimeVisualState.batch.idx ?? "--"}/
+                        {runtimeVisualState.batch.total}
+                      </p>
+                      {activeExecution?.current_column && (
+                        <div className="mt-0.5 flex items-center gap-1.5 text-muted-foreground">
+                          <HugeiconsIcon icon={currentColumnIcon} className="size-3.5" />
+                          <p>Column: {activeExecution.current_column}</p>
+                        </div>
+                      )}
+                    </div>
+                  </Panel>
+                )}
                 <div className="pointer-events-none absolute inset-x-0 bottom-3 z-20 flex justify-center">
                   <div className="pointer-events-auto flex items-center gap-2">
                     <Button
                       type="button"
                       className="h-11 px-5"
                       onClick={() => openRunDialog(runDialogKind)}
-                      disabled={previewLoading || fullLoading}
+                      disabled={previewLoading || fullLoading || executionLocked}
                     >
                       <HugeiconsIcon icon={CookBookIcon} className="size-4" />
-                      {previewLoading || fullLoading ? "Running..." : "Run"}
+                      {previewLoading || fullLoading || executionLocked
+                        ? "Running..."
+                        : "Run"}
                     </Button>
                     <Button
                       type="button"
@@ -669,7 +797,7 @@ export function RecipeStudioPage({
                         openRunDialog(runDialogKind);
                         void validateFromDialog();
                       }}
-                      disabled={validateLoading}
+                      disabled={validateLoading || executionLocked}
                     >
                       <HugeiconsIcon icon={TestTube01Icon} className="size-4" />
                       {validateLoading ? "Validating..." : "Validate"}
@@ -698,6 +826,7 @@ export function RecipeStudioPage({
         open={dialogOpen}
         onOpenChange={setDialogOpen}
         config={config}
+        readOnly={executionLocked}
         categoryOptions={dialogOptions.categoryOptions}
         modelConfigAliases={dialogOptions.modelConfigAliases}
         modelProviderOptions={dialogOptions.modelProviderOptions}

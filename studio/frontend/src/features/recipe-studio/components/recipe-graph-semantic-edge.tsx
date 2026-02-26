@@ -12,7 +12,9 @@ export const RecipeGraphSemanticEdge = memo(function RecipeGraphSemanticEdge({
   style,
   markerEnd,
   selected,
+  data,
 }: EdgeProps): ReactElement {
+  const isActive = Boolean((data as { active?: boolean } | undefined)?.active);
   const [path] = getSmoothStepPath({
     sourceX,
     sourceY,
@@ -30,12 +32,10 @@ export const RecipeGraphSemanticEdge = memo(function RecipeGraphSemanticEdge({
       path={path}
       markerEnd={markerEnd}
       style={{
-        strokeDasharray: selected ? "7 5" : "6 5",
-        strokeWidth: selected ? 2.3 : 1.8,
-        stroke: selected
-          ? "hsl(var(--primary) / 0.9)"
-          : "hsl(var(--foreground) / 0.38)",
-        opacity: selected ? 1 : 0.92,
+        strokeDasharray: isActive ? "8 6" : selected ? "7 5" : "6 5",
+        strokeWidth: isActive ? 2.4 : selected ? 2.3 : 1.8,
+        stroke: isActive || selected ? "var(--primary)" : "var(--muted-foreground)",
+        opacity: isActive ? 1 : selected ? 0.95 : 0.62,
         ...style,
       }}
     />

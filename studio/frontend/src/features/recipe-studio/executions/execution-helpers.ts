@@ -138,6 +138,11 @@ export function withExecutionDefaults(
     datasetTotal,
     datasetPage,
     datasetPageSize,
+    completed_columns: Array.isArray(record.completed_columns)
+      ? record.completed_columns.filter(
+          (value): value is string => typeof value === "string" && value.trim().length > 0,
+        )
+      : [],
     column_progress: record.column_progress ?? null,
     batch: record.batch ?? null,
   };

@@ -290,6 +290,8 @@ function RecipeGraphNodeBase({
     (state) => state.setLlmAuxVisibility,
   );
   const updateNodeInternals = useUpdateNodeInternals();
+  const executionLocked = Boolean(data.executionLocked);
+  const runtimeState = data.runtimeState ?? "idle";
 
   useEffect(() => {
     updateNodeInternals(id);
@@ -350,9 +352,28 @@ function RecipeGraphNodeBase({
       config.sampler_type === "person_from_faker")
       ? USER_NODE_TONE
       : meta.tone;
+  const runtimeNodeTone =
+    runtimeState === "running"
+      ? "border-primary/70 ring-2 ring-primary/20 shadow-md"
+      : runtimeState === "done"
+        ? "border-emerald-500/60 ring-1 ring-emerald-500/20"
+        : "";
 
   return (
-    <BaseNode className="corner-squircle relative w-full min-w-0 overflow-visible rounded-lg border-border/60 shadow-sm">
+    <BaseNode
+      className={cn(
+        "corner-squircle relative w-full min-w-0 overflow-visible rounded-lg border-border/60 shadow-sm",
+        runtimeNodeTone,
+      )}
+    >
+      {runtimeState === "running" && config?.kind === "llm" && (
+        <div className="pointer-events-none absolute -top-7 right-2 z-20">
+          <span
+            className="block size-6 animate-spin rounded-full border-[3px] border-primary/90 border-t-transparent bg-background"
+            aria-label="Running"
+          />
+        </div>
+      )}
       <NodeResizer
         isVisible={selected}
         minWidth={MIN_NODE_WIDTH}
@@ -391,6 +412,7 @@ function RecipeGraphNodeBase({
               size="xs"
               variant="ghost"
               className="nodrag"
+              disabled={executionLocked}
               onClick={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
@@ -400,14 +422,15 @@ function RecipeGraphNodeBase({
               {llmAuxVisible ? "Hide inputs" : "Show inputs"}
             </Button>
           )}
-          <Button
+            <Button
             type="button"
             size="xs"
             variant="ghost"
-            className="nodrag"
-            onClick={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
+              className="nodrag"
+              disabled={executionLocked}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
               openConfig(id);
             }}
           >
@@ -416,7 +439,12 @@ function RecipeGraphNodeBase({
         </div>
       </BaseNodeHeader>
 
-      <BaseNodeContent className="gap-2 px-3 py-2">
+      <BaseNodeContent
+        className={cn(
+          "gap-2 px-3 py-2",
+          executionLocked && "pointer-events-none opacity-85",
+        )}
+      >
         {nodeBody}
       </BaseNodeContent>
 
