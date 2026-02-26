@@ -1,4 +1,4 @@
-import type { Edge } from "@xyflow/react";
+import type { Edge, XYPosition } from "@xyflow/react";
 import type {
   LayoutDirection,
   ModelConfig,
@@ -70,6 +70,7 @@ export function buildRecipePayload(
   edges: Edge[],
   processors: RecipeProcessorConfig[] = [],
   layoutDirection: LayoutDirection = "LR",
+  auxNodePositions: Record<string, XYPosition> = {},
 ): RecipePayloadResult {
   const errors: string[] = [];
   const columns: Record<string, unknown>[] = [];
@@ -270,6 +271,27 @@ export function buildRecipePayload(
       },
     ];
   });
+  const uiAuxNodes = Object.entries(auxNodePositions).flatMap(
+    ([auxId, position]) => {
+      const match = /^aux-([^-]+)-(.+)$/.exec(auxId);
+      if (!match) {
+        return [];
+      }
+      const [, llmId, key] = match;
+      const llmConfig = configs[llmId];
+      if (!(llmConfig && llmConfig.kind === "llm")) {
+        return [];
+      }
+      return [
+        {
+          llm: llmConfig.name,
+          key,
+          x: position.x,
+          y: position.y,
+        },
+      ];
+    },
+  );
   const recipeProcessors = buildProcessors(processors, errors);
   const seedConfig = firstSeed ? buildSeedConfig(firstSeed, errors) : undefined;
   const seedDropProcessor = firstSeed
@@ -306,6 +328,7 @@ export function buildRecipePayload(
         nodes: uiNodes,
         edges: uiEdges,
         layout_direction: layoutDirection,
+        ...(uiAuxNodes.length > 0 && { aux_nodes: uiAuxNodes }),
         ...(firstSeed && { seed_source_type: firstSeed.seed_source_type }),
         ...(firstSeed && { seed_columns: firstSeed.seed_columns ?? [] }),
         ...(firstSeed && {
