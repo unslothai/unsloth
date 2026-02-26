@@ -3,32 +3,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-def _to_jsonable(value: Any) -> Any:
-    # pydantic/fastapi can't serialize numpy arrays/scalars.
-    try:
-        import numpy as np  # type: ignore
-    except Exception:  # pragma: no cover
-        np = None  # type: ignore
-
-    if np is not None:
-        if isinstance(value, np.ndarray):
-            return value.tolist()
-        if isinstance(value, np.generic):
-            return value.item()
-
-    if isinstance(value, dict):
-        return {str(k): _to_jsonable(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple, set)):
-        return [_to_jsonable(v) for v in value]
-
-    # pandas Timestamp/date-like
-    if hasattr(value, "isoformat") and callable(value.isoformat):
-        try:
-            return value.isoformat()
-        except Exception:
-            pass
-
-    return value
+from .jsonable import to_jsonable
 
 
 def build_model_providers(recipe: dict[str, Any]):
@@ -158,17 +133,17 @@ def preview_recipe(
     dataset: list[dict[str, Any]] = []
     if results.dataset is not None:
         raw_rows = results.dataset.to_dict(orient="records")
-        dataset = [_to_jsonable(row) for row in raw_rows]
+        dataset = [to_jsonable(row) for row in raw_rows]
 
     artifacts = (
         None
         if results.processor_artifacts is None
-        else _to_jsonable(results.processor_artifacts)
+        else to_jsonable(results.processor_artifacts)
     )
     analysis = (
         None
         if results.analysis is None
-        else _to_jsonable(results.analysis.model_dump(mode="json"))
+        else to_jsonable(results.analysis.model_dump(mode="json"))
     )
 
     return dataset, artifacts, analysis
