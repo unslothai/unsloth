@@ -69,13 +69,14 @@ if [ "$NEED_NODE" = true ]; then
 
     # Load nvm (source ~/.bashrc won't work inside a script)
     export NVM_DIR="$HOME/.nvm"
+    set +u
     [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
 
     # ── 3. Install Node LTS ──
     echo "Installing Node LTS..."
     run_quiet "nvm install" nvm install --lts
     nvm use --lts > /dev/null 2>&1
-
+    set -u
     # ── 4. Verify versions ──
     NODE_MAJOR=$(node -v | sed 's/v//' | cut -d. -f1)
     NPM_MAJOR=$(npm -v | cut -d. -f1)
