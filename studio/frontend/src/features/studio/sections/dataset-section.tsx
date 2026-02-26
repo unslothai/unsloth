@@ -75,6 +75,7 @@ export function DatasetSection() {
     datasetEvalSplit,
     setDatasetEvalSplit,
     hfToken,
+    modelType,
   } = useTrainingConfigStore(
     useShallow((s) => ({
       dataset: s.dataset,
@@ -88,6 +89,7 @@ export function DatasetSection() {
       datasetEvalSplit: s.datasetEvalSplit,
       setDatasetEvalSplit: s.setDatasetEvalSplit,
       hfToken: s.hfToken,
+      modelType: s.modelType,
     })),
   );
 
@@ -116,6 +118,7 @@ export function DatasetSection() {
     fetchMore,
     error: hfSearchError,
   } = useHfDatasetSearch(debouncedQuery, {
+    modelType,
     accessToken: hfToken || undefined,
   });
 

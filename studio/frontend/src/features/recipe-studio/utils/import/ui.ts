@@ -7,14 +7,23 @@ import { isRecord, readString } from "./helpers";
 type UiInput = {
   nodes?: unknown;
   edges?: unknown;
+  aux_nodes?: unknown;
   layout_direction?: unknown;
   layoutDirection?: unknown;
+};
+
+type ParsedAuxNode = {
+  llm: string;
+  key: string;
+  x: number;
+  y: number;
 };
 
 export function parseUi(
   ui: UiInput | null,
 ): {
   layouts: Map<string, { x: number; y: number; width?: number }>;
+  auxNodes: ParsedAuxNode[];
   edges: Array<{
     from: string;
     to: string;
@@ -25,6 +34,7 @@ export function parseUi(
   layoutDirection: "LR" | "TB" | null;
 } {
   const layouts = new Map<string, { x: number; y: number; width?: number }>();
+  const auxNodes: ParsedAuxNode[] = [];
   const edges: Array<{
     from: string;
     to: string;
@@ -72,6 +82,21 @@ export function parseUi(
       }
     }
   }
+  if (ui && Array.isArray(ui.aux_nodes)) {
+    for (const node of ui.aux_nodes) {
+      if (!isRecord(node)) {
+        continue;
+      }
+      const llm = readString(node.llm);
+      const key = readString(node.key);
+      const x = typeof node.x === "number" ? node.x : null;
+      const y = typeof node.y === "number" ? node.y : null;
+      if (!(llm && key && x !== null && y !== null)) {
+        continue;
+      }
+      auxNodes.push({ llm, key, x, y });
+    }
+  }
   const layoutDirectionRaw =
     readString(ui?.layout_direction) ?? readString(ui?.layoutDirection);
   const layoutDirection =
@@ -81,7 +106,12 @@ export function parseUi(
         ? "LR"
         : null;
 
-  return { layouts, edges: edges.length > 0 ? edges : null, layoutDirection };
+  return {
+    layouts,
+    auxNodes,
+    edges: edges.length > 0 ? edges : null,
+    layoutDirection,
+  };
 }
 
 export function buildNodes(

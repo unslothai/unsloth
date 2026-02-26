@@ -52,6 +52,13 @@ export type RecipePayload = {
     layout_direction?: "LR" | "TB";
     // ui-only, used to preserve seed block mode across imports/refresh
     seed_source_type?: "hf" | "local" | "unstructured";
+    // ui-only, persisted aux node positions by llm name + aux key
+    aux_nodes?: Array<{
+      llm: string;
+      key: string;
+      x: number;
+      y: number;
+    }>;
     // ui-only, seed metadata cached for refresh/import UX
     seed_columns?: string[];
     seed_drop_columns?: string[];

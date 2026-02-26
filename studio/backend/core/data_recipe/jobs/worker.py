@@ -7,6 +7,8 @@ import traceback
 from pathlib import Path
 from typing import Any
 
+from ..jsonable import to_jsonable
+from .constants import EVENT_JOB_COMPLETED, EVENT_JOB_ERROR, EVENT_JOB_STARTED
 from ..service import build_config_builder, create_data_designer
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[5]
@@ -28,34 +30,8 @@ class _QueueLogHandler(logging.Handler):
                 "message": record.getMessage(),
             }
             self._q.put(event)
-        except Exception:
+        except (OSError, RuntimeError, ValueError):
             pass
-
-
-def _to_jsonable(value: Any) -> Any:
-    try:
-        import numpy as np  # type: ignore
-    except Exception:  # pragma: no cover
-        np = None  # type: ignore
-
-    if np is not None:
-        if isinstance(value, np.ndarray):
-            return value.tolist()
-        if isinstance(value, np.generic):
-            return value.item()
-
-    if isinstance(value, dict):
-        return {str(k): _to_jsonable(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple, set)):
-        return [_to_jsonable(v) for v in value]
-
-    if hasattr(value, "isoformat") and callable(value.isoformat):
-        try:
-            return value.isoformat()
-        except Exception:
-            pass
-
-    return value
 
 
 def run_job_process(
@@ -68,7 +44,7 @@ def run_job_process(
     Subprocess entrypoint.
     Sends events to `event_queue`.
     """
-    event_queue.put({"type": "job.started", "ts": time.time()})
+    event_queue.put({"type": EVENT_JOB_STARTED, "ts": time.time()})
 
     try:
         from data_designer.config.run_config import RunConfig
@@ -103,21 +79,21 @@ def run_job_process(
             analysis = (
                 None
                 if results.analysis is None
-                else _to_jsonable(results.analysis.model_dump(mode="json"))
+                else to_jsonable(results.analysis.model_dump(mode="json"))
             )
             dataset = (
                 []
                 if results.dataset is None
-                else _to_jsonable(results.dataset.to_dict(orient="records"))
+                else to_jsonable(results.dataset.to_dict(orient="records"))
             )
             processor_artifacts = (
                 None
                 if results.processor_artifacts is None
-                else _to_jsonable(results.processor_artifacts)
+                else to_jsonable(results.processor_artifacts)
             )
             event_queue.put(
                 {
-                    "type": "job.completed",
+                    "type": EVENT_JOB_COMPLETED,
                     "ts": time.time(),
                     "analysis": analysis,
                     "dataset": dataset,
@@ -128,13 +104,13 @@ def run_job_process(
             )
         else:
             results = designer.create(builder, num_records=rows, dataset_name=dataset_name)
-            analysis = _to_jsonable(results.load_analysis().model_dump(mode="json"))
+            analysis = to_jsonable(results.load_analysis().model_dump(mode="json"))
             if merge_batches:
                 _merge_batches_to_single_parquet(results.artifact_storage.base_dataset_path)
             artifact_path = str(results.artifact_storage.base_dataset_path)
             event_queue.put(
                 {
-                    "type": "job.completed",
+                    "type": EVENT_JOB_COMPLETED,
                     "ts": time.time(),
                     "analysis": analysis,
                     "artifact_path": artifact_path,
@@ -144,7 +120,7 @@ def run_job_process(
     except Exception as exc:
         event_queue.put(
             {
-                "type": "job.error",
+                "type": EVENT_JOB_ERROR,
                 "ts": time.time(),
                 "error": str(exc),
                 "stack": traceback.format_exc(limit=20),
@@ -160,7 +136,7 @@ def _merge_batches_to_single_parquet(base_dataset_path: Path) -> None:
 
     try:
         from data_designer.config.utils.io_helpers import read_parquet_dataset
-    except Exception:
+    except ImportError:
         return
 
     dataframe = read_parquet_dataset(parquet_dir)
