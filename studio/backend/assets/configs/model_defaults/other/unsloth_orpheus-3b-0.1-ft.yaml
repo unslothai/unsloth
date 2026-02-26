@@ -3,7 +3,10 @@
 # Also applies to: unsloth/orpheus-3b-0.1-ft-unsloth-bnb-4bit, canopylabs/orpheus-3b-0.1-ft, unsloth/orpheus-3b-0.1-ft-bnb-4bit
 # added inference parameters from unsloth notebook
 
+audio_type: snac
+
 training:
+  eval_steps: 0
   max_seq_length: 2048
   # num_epochs: 4
   num_epochs: 0

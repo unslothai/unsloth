@@ -179,6 +179,7 @@ async def start_training(
             "finetune_attention_modules": request.finetune_attention_modules,
             "finetune_mlp_modules": request.finetune_mlp_modules,
             "is_dataset_multimodal": request.is_dataset_multimodal,
+            "is_dataset_audio": request.is_dataset_audio,
             "enable_wandb": request.enable_wandb,
             "wandb_token": request.wandb_token or "",
             "wandb_project": request.wandb_project or "",

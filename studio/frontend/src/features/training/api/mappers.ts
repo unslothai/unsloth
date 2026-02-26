@@ -58,6 +58,7 @@ export function buildTrainingStartPayload(
     finetune_attention_modules: config.finetuneAttentionModules,
     finetune_mlp_modules: config.finetuneMLPModules,
     is_dataset_multimodal: !!config.isDatasetMultimodal,
+    is_dataset_audio: config.isDatasetAudio,
     enable_wandb: config.enableWandb,
     wandb_token: config.enableWandb ? config.wandbToken.trim() || null : null,
     wandb_project: config.enableWandb
