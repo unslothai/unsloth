@@ -714,13 +714,18 @@ def scan_exported_models(exports_dir: str = "./exports") -> List[Tuple[str, str,
                 elif has_gguf:
                     export_type = "gguf"
                     gguf_list = list(checkpoint_dir.glob("*.gguf"))
-                    export_meta = checkpoint_dir / "export_metadata.json"
-                    try:
-                        if export_meta.exists():
-                            meta = json.loads(export_meta.read_text())
-                            base_model = meta.get("base_model")
-                    except Exception:
-                        pass
+                    # Check checkpoint_dir first, then fall back to parent run_dir
+                    # (export.py writes metadata to the top-level export directory)
+                    for meta_dir in (checkpoint_dir, run_dir):
+                        export_meta = meta_dir / "export_metadata.json"
+                        try:
+                            if export_meta.exists():
+                                meta = json.loads(export_meta.read_text())
+                                base_model = meta.get("base_model")
+                                if base_model:
+                                    break
+                        except Exception:
+                            pass
 
                     display_name = f"{run_dir.name} / {checkpoint_dir.name}"
                     model_path = str(gguf_list[0]) if gguf_list else str(checkpoint_dir)
