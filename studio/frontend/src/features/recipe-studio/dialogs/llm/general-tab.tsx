@@ -147,7 +147,7 @@ export function LlmGeneralTab({
         />
         <Textarea
           id={promptId}
-          className="corner-squircle nodrag"
+          className="corner-squircle nodrag max-h-[600px] overflow-auto"
           value={config.prompt}
           onChange={(event) => onUpdate({ prompt: event.target.value })}
         />
@@ -177,7 +177,7 @@ export function LlmGeneralTab({
         />
         <Textarea
           id={systemPromptId}
-          className="corner-squircle nodrag"
+          className="corner-squircle nodrag max-h-[600px] overflow-auto"
           value={config.system_prompt}
           onChange={(event) => onUpdate({ system_prompt: event.target.value })}
         />

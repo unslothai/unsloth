@@ -14,25 +14,25 @@ export function InlineModel(props: InlineModelProps): ReactElement {
   if (props.config.kind === "model_provider") {
     return (
       <div className="grid gap-3 sm:grid-cols-2">
-        <InlineField label="Provider type">
-          <Input
-            className="nodrag h-8 w-full text-xs"
-            placeholder="openai-compatible"
-            value={props.config.provider_type}
-            onChange={(event) =>
-              props.onUpdate({
-                // biome-ignore lint/style/useNamingConvention: api schema
-                provider_type: event.target.value,
-              })
-            }
-          />
-        </InlineField>
         <InlineField label="Endpoint">
           <Input
             className="nodrag h-8 w-full text-xs"
             placeholder="https://api.example.com/v1"
             value={props.config.endpoint}
             onChange={(event) => props.onUpdate({ endpoint: event.target.value })}
+          />
+        </InlineField>
+        <InlineField label="API key">
+          <Input
+            className="nodrag h-8 w-full text-xs"
+            placeholder="Optional"
+            value={props.config.api_key ?? ""}
+            onChange={(event) =>
+              props.onUpdate({
+                // biome-ignore lint/style/useNamingConvention: api schema
+                api_key: event.target.value,
+              })
+            }
           />
         </InlineField>
       </div>
