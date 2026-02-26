@@ -106,7 +106,9 @@ echo "✅ Frontend built to studio/frontend/dist"
 echo ""
 echo "Setting up Python environment..."
 
-# ── 6a. Discover best Python <= 3.12.x ──
+# ── 6a. Discover best Python >= 3.11 and < 3.14 (i.e. 3.11.x, 3.12.x, or 3.13.x) ──
+MIN_PY_MINOR=11   # minimum minor version (>= 3.11)
+MAX_PY_MINOR=13   # maximum minor version (< 3.14)
 BEST_PY=""
 BEST_MAJOR=0
 BEST_MINOR=0
@@ -116,7 +118,7 @@ for candidate in $(compgen -c python3 2>/dev/null | grep -E '^python3(\.[0-9]+)?
     if ! command -v "$candidate" &>/dev/null; then
         continue
     fi
-    # Get version string, e.g. "Python 3.11.5"
+    # Get version string, e.g. "Python 3.12.5"
     ver_str=$("$candidate" --version 2>&1 | awk '{print $2}')
     py_major=$(echo "$ver_str" | cut -d. -f1)
     py_minor=$(echo "$ver_str" | cut -d. -f2)
@@ -126,8 +128,13 @@ for candidate in $(compgen -c python3 2>/dev/null | grep -E '^python3(\.[0-9]+)?
         continue
     fi
 
-    # Skip versions above 3.12
-    if [ "$py_minor" -gt 12 ] 2>/dev/null; then
+    # Skip versions below 3.12 (require > 3.11)
+    if [ "$py_minor" -lt "$MIN_PY_MINOR" ] 2>/dev/null; then
+        continue
+    fi
+
+    # Skip versions above 3.13 (require < 3.14)
+    if [ "$py_minor" -gt "$MAX_PY_MINOR" ] 2>/dev/null; then
         continue
     fi
 
@@ -140,7 +147,7 @@ for candidate in $(compgen -c python3 2>/dev/null | grep -E '^python3(\.[0-9]+)?
 done
 
 if [ -z "$BEST_PY" ]; then
-    echo "❌ ERROR: No Python version <= 3.12.x found on this system."
+    echo "❌ ERROR: No Python version between 3.${MIN_PY_MINOR} and 3.${MAX_PY_MINOR} found on this system."
     echo "   Detected Python 3 installations:"
     for candidate in $(compgen -c python3 2>/dev/null | grep -E '^python3(\.[0-9]+)?$' | sort -u); do
         if command -v "$candidate" &>/dev/null; then
@@ -148,13 +155,13 @@ if [ -z "$BEST_PY" ]; then
         fi
     done
     echo ""
-    echo "   Please install Python <= 3.12.x for maximum compatibility."
+    echo "   Please install Python 3.${MIN_PY_MINOR} or 3.${MAX_PY_MINOR}."
     echo "   For example:  sudo apt install python3.12 python3.12-venv"
     exit 1
 fi
 
 BEST_VER=$("$BEST_PY" --version 2>&1 | awk '{print $2}')
-echo "✅ Using $BEST_PY ($BEST_VER) — compatible (≤ 3.12.x)"
+echo "✅ Using $BEST_PY ($BEST_VER) — compatible (3.${MIN_PY_MINOR}.x – 3.${MAX_PY_MINOR}.x)"
 
 REQ_ROOT="$SCRIPT_DIR/studio/backend/requirements"
 SINGLE_ENV_CONSTRAINTS="$REQ_ROOT/single-env/constraints.txt"
