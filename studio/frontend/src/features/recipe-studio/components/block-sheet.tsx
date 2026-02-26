@@ -17,12 +17,18 @@ import {
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactElement, useMemo, useState } from "react";
+import {
+  type DragEvent as ReactDragEvent,
+  type ReactElement,
+  useMemo,
+  useState,
+} from "react";
 import { RECIPE_FLOATING_ICON_BUTTON_CLASS } from "./recipe-floating-icon-button-class";
 import type { LlmType, SamplerType } from "../types";
 import {
   BLOCK_GROUPS,
   getBlocksForKind,
+  type BlockType,
   type SeedBlockType,
 } from "../blocks/registry";
 
@@ -60,6 +66,12 @@ type BlockSheetProps = {
   copied: boolean;
   onCopy: () => void;
   onImport: () => void;
+};
+
+export const RECIPE_BLOCK_DND_MIME = "application/x-recipe-studio-block";
+export type RecipeBlockDragPayload = {
+  kind: SheetKind;
+  type: BlockType;
 };
 
 function getSheetTitle(sheetView: SheetView): string {
@@ -110,22 +122,30 @@ function BlockSheetButton({
   description,
   onClick,
   isActive = false,
+  draggable = false,
+  onDragStart,
+  showChevron = true,
 }: {
   icon: typeof Database02Icon;
   title: string;
   description: string;
   onClick: () => void;
   isActive?: boolean;
+  draggable?: boolean;
+  onDragStart?: (event: ReactDragEvent<HTMLButtonElement>) => void;
+  showChevron?: boolean;
 }): ReactElement {
   return (
     <button
       type="button"
       onClick={onClick}
+      draggable={draggable}
+      onDragStart={onDragStart}
       className={`flex w-full items-center gap-3 border-l-2 bg-background px-3 py-3 text-left transition hover:bg-muted/35 ${
         isActive
           ? "border-emerald-500"
           : "border-transparent hover:border-border/60"
-      }`}
+      } ${draggable ? "cursor-grab active:cursor-grabbing" : ""}`}
     >
       <div className="flex size-9 items-center justify-center rounded-xl text-foreground/70">
         <HugeiconsIcon icon={icon} className="size-5" />
@@ -134,10 +154,12 @@ function BlockSheetButton({
         <p className="text-sm font-semibold text-foreground">{title}</p>
         <p className="text-[11px] text-muted-foreground">{description}</p>
       </div>
-      <HugeiconsIcon
-        icon={ArrowRight01Icon}
-        className="size-3.5 text-muted-foreground"
-      />
+      {showChevron ? (
+        <HugeiconsIcon
+          icon={ArrowRight01Icon}
+          className="size-3.5 text-muted-foreground"
+        />
+      ) : null}
     </button>
   );
 }
@@ -174,6 +196,16 @@ export function BlockSheet({
     }
     onOpenChange?.(nextOpen);
   };
+
+  const buildDragStart =
+    (kind: SheetKind, type: BlockType) =>
+    (event: ReactDragEvent<HTMLButtonElement>) => {
+      const payload: RecipeBlockDragPayload = { kind, type };
+      const serialized = JSON.stringify(payload);
+      event.dataTransfer.setData(RECIPE_BLOCK_DND_MIME, serialized);
+      event.dataTransfer.setData("text/plain", serialized);
+      event.dataTransfer.effectAllowed = "copy";
+    };
 
   return (
     <div className="flex flex-col items-end gap-2">
@@ -275,6 +307,9 @@ export function BlockSheet({
                       title={item.title}
                       description={item.description}
                       isActive={index === 0}
+                      draggable={true}
+                      onDragStart={buildDragStart(item.kind, item.type)}
+                      showChevron={!(sheetView === "expression" || sheetView === "note")}
                       onClick={() => {
                         setSheetOpen(false);
                         if (item.kind === "sampler") {

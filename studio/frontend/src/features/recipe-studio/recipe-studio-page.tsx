@@ -18,6 +18,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
+  type DragEvent as ReactDragEvent,
   type ReactElement,
   useCallback,
   useEffect,
@@ -28,7 +29,11 @@ import {
 import { useShallow } from "zustand/react/shallow";
 import "@xyflow/react/dist/style.css";
 import { RecipeGraphAuxNode, type RecipeGraphAuxNodeData } from "./components/recipe-graph-aux-node";
-import { BlockSheet } from "./components/block-sheet";
+import {
+  BlockSheet,
+  RECIPE_BLOCK_DND_MIME,
+  type RecipeBlockDragPayload,
+} from "./components/block-sheet";
 import { LayoutControls } from "./components/controls/layout-controls";
 import { ViewportControls } from "./components/controls/viewport-controls";
 import { ExecutionsView } from "./components/executions/executions-view";
@@ -45,9 +50,12 @@ import { ProcessorsDialog } from "./dialogs/processors-dialog";
 import { useRecipeStudioActions } from "./hooks/use-recipe-studio-actions";
 import { useRecipeStudioStore } from "./stores/recipe-studio";
 import type {
+  LlmType,
   RecipeNode as RecipeBuilderNode,
   RecipeNodeData,
+  SamplerType,
 } from "./types";
+import type { SeedBlockType } from "./blocks/registry";
 import { deriveDisplayGraph } from "./utils/graph/derive-display-graph";
 import { getFitNodeIdsIgnoringNotes } from "./utils/graph/fit-view";
 import { buildRecipePayload } from "./utils/payload";
@@ -166,6 +174,7 @@ export function RecipeStudioPage({
   const [sheetContainer, setSheetContainer] = useState<HTMLDivElement | null>(
     null,
   );
+  const flowContainerRef = useRef<HTMLDivElement | null>(null);
   const [blockSheetOpen, setBlockSheetOpen] = useState(false);
   const [activeView, setActiveView] = useState<RecipeStudioView>("editor");
   const [processorsOpen, setProcessorsOpen] = useState(false);
@@ -258,6 +267,138 @@ export function RecipeStudioPage({
     },
     [baseEdgeIds, onEdgesChange],
   );
+
+  const handleDragOver = useCallback((event: ReactDragEvent<HTMLDivElement>) => {
+    if (
+      !event.dataTransfer.types.includes(RECIPE_BLOCK_DND_MIME) &&
+      !event.dataTransfer.types.includes("text/plain")
+    ) {
+      return;
+    }
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  }, []);
+
+  const handleDrop = useCallback(
+    (event: ReactDragEvent<HTMLDivElement>) => {
+      if (!reactFlowInstance) {
+        return;
+      }
+      const raw =
+        event.dataTransfer.getData(RECIPE_BLOCK_DND_MIME) ||
+        event.dataTransfer.getData("text/plain");
+      if (!raw) {
+        return;
+      }
+      let payload: RecipeBlockDragPayload | null = null;
+      try {
+        const parsed = JSON.parse(raw) as {
+          kind?: RecipeBlockDragPayload["kind"];
+          type?: RecipeBlockDragPayload["type"];
+        };
+        if (
+          parsed.kind &&
+          parsed.type &&
+          (parsed.kind === "sampler" ||
+            parsed.kind === "seed" ||
+            parsed.kind === "llm" ||
+            parsed.kind === "expression" ||
+            parsed.kind === "note")
+        ) {
+          payload = {
+            kind: parsed.kind,
+            type: parsed.type,
+          };
+        }
+      } catch {
+        payload = null;
+      }
+      if (!payload) {
+        return;
+      }
+      event.preventDefault();
+      const position = reactFlowInstance.screenToFlowPosition({
+        x: event.clientX,
+        y: event.clientY,
+      });
+
+      if (payload.kind === "sampler") {
+        addSamplerNode(payload.type as SamplerType, position, false);
+        return;
+      }
+      if (payload.kind === "seed") {
+        addSeedNode(payload.type as SeedBlockType, position, false);
+        return;
+      }
+      if (payload.kind === "expression") {
+        addExpressionNode(position, false);
+        return;
+      }
+      if (payload.kind === "note") {
+        addMarkdownNoteNode(position, false);
+        return;
+      }
+      if (payload.type === "model_provider") {
+        addModelProviderNode(position, false);
+        return;
+      }
+      if (payload.type === "model_config") {
+        addModelConfigNode(position, false);
+        return;
+      }
+      addLlmNode(payload.type as LlmType, position, false);
+    },
+    [
+      addExpressionNode,
+      addLlmNode,
+      addMarkdownNoteNode,
+      addModelConfigNode,
+      addModelProviderNode,
+      addSamplerNode,
+      addSeedNode,
+      reactFlowInstance,
+    ],
+  );
+  const getViewportCenterPosition = useCallback(() => {
+    if (!reactFlowInstance || !flowContainerRef.current) {
+      return undefined;
+    }
+    const rect = flowContainerRef.current.getBoundingClientRect();
+    return reactFlowInstance.screenToFlowPosition({
+      x: rect.left + rect.width / 2,
+      y: rect.top + rect.height / 2,
+    });
+  }, [reactFlowInstance]);
+  const handleAddSamplerFromSheet = useCallback(
+    (type: SamplerType) => {
+      addSamplerNode(type, getViewportCenterPosition());
+    },
+    [addSamplerNode, getViewportCenterPosition],
+  );
+  const handleAddSeedFromSheet = useCallback(
+    (type: SeedBlockType) => {
+      addSeedNode(type, getViewportCenterPosition());
+    },
+    [addSeedNode, getViewportCenterPosition],
+  );
+  const handleAddLlmFromSheet = useCallback(
+    (type: LlmType) => {
+      addLlmNode(type, getViewportCenterPosition());
+    },
+    [addLlmNode, getViewportCenterPosition],
+  );
+  const handleAddModelProviderFromSheet = useCallback(() => {
+    addModelProviderNode(getViewportCenterPosition());
+  }, [addModelProviderNode, getViewportCenterPosition]);
+  const handleAddModelConfigFromSheet = useCallback(() => {
+    addModelConfigNode(getViewportCenterPosition());
+  }, [addModelConfigNode, getViewportCenterPosition]);
+  const handleAddExpressionFromSheet = useCallback(() => {
+    addExpressionNode(getViewportCenterPosition());
+  }, [addExpressionNode, getViewportCenterPosition]);
+  const handleAddMarkdownNoteFromSheet = useCallback(() => {
+    addMarkdownNoteNode(getViewportCenterPosition());
+  }, [addMarkdownNoteNode, getViewportCenterPosition]);
 
   const configList = useMemo(() => Object.values(configs), [configs]);
   const config = activeConfigId ? configs[activeConfigId] : null;
@@ -416,10 +557,12 @@ export function RecipeStudioPage({
               void persistRecipe();
             }}
           />
-          <div className="h-[75vh] w-full rounded-t-none">
+          <div className="h-[75vh] w-full rounded-t-none" ref={flowContainerRef}>
             {activeView === "editor" ? (
               <ReactFlow<Node<RecipeNodeData | RecipeGraphAuxNodeData>, Edge>
                 onInit={setReactFlowInstance}
+                onDragOver={handleDragOver}
+                onDrop={handleDrop}
                 nodes={displayGraph.nodes}
                 edges={displayGraph.edges}
                 nodeTypes={NODE_TYPES}
@@ -483,13 +626,13 @@ export function RecipeStudioPage({
                     onViewChange={setSheetView}
                     open={blockSheetOpen}
                     onOpenChange={setBlockSheetOpen}
-                    onAddSampler={addSamplerNode}
-                    onAddSeed={addSeedNode}
-                    onAddLlm={addLlmNode}
-                    onAddModelProvider={addModelProviderNode}
-                    onAddModelConfig={addModelConfigNode}
-                    onAddExpression={addExpressionNode}
-                    onAddMarkdownNote={addMarkdownNoteNode}
+                    onAddSampler={handleAddSamplerFromSheet}
+                    onAddSeed={handleAddSeedFromSheet}
+                    onAddLlm={handleAddLlmFromSheet}
+                    onAddModelProvider={handleAddModelProviderFromSheet}
+                    onAddModelConfig={handleAddModelConfigFromSheet}
+                    onAddExpression={handleAddExpressionFromSheet}
+                    onAddMarkdownNote={handleAddMarkdownNoteFromSheet}
                     onOpenProcessors={openProcessorsFromSheet}
                     copied={copied}
                     onCopy={copyRecipe}
