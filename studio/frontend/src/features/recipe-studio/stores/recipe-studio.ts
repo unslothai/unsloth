@@ -26,9 +26,17 @@ import {
 } from "../blocks/registry";
 import { deriveDisplayGraph } from "../utils/graph/derive-display-graph";
 import { applyRecipeConnection, isValidRecipeConnection } from "../utils/graph";
-import { HANDLE_IDS, remapRecipeEdgeHandlesForLayout } from "../utils/handles";
+import {
+  HANDLE_IDS,
+  normalizeRecipeHandleId,
+  remapRecipeEdgeHandlesForLayout,
+} from "../utils/handles";
 import type { RecipeSnapshot } from "../utils/import";
 import { getLayoutedElements } from "../utils/layout";
+import {
+  centerModelInfraNodes,
+  optimizeModelInfraEdgeHandles,
+} from "./helpers/model-infra-layout";
 import { applyEdgeRemovals, applyNodeRemovals } from "./helpers/removals";
 import {
   applyRenameToConfigs,
@@ -206,6 +214,17 @@ function connectSemantic(
   };
 }
 
+function isModelSemanticEdge(edge: Edge, configs: Record<string, NodeConfig>): boolean {
+  const source = configs[edge.source];
+  const target = configs[edge.target];
+  return Boolean(
+    source &&
+      target &&
+      ((source.kind === "model_provider" && target.kind === "model_config") ||
+        (source.kind === "model_config" && target.kind === "llm")),
+  );
+}
+
 export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
   ...INITIAL_STATE,
   setSheetView: (view) => set({ sheetView: view }),
@@ -217,10 +236,19 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
   setLayoutDirection: (direction) =>
     set((state) => ({
       layoutDirection: direction,
-      edges: state.edges.map((edge) => ({
-        ...edge,
-        ...remapRecipeEdgeHandlesForLayout(edge, direction),
-      })),
+      edges: state.edges.map((edge) => {
+        if (isModelSemanticEdge(edge, state.configs)) {
+          return {
+            ...edge,
+            sourceHandle: normalizeRecipeHandleId(edge.sourceHandle),
+            targetHandle: normalizeRecipeHandleId(edge.targetHandle),
+          };
+        }
+        return {
+          ...edge,
+          ...remapRecipeEdgeHandlesForLayout(edge, direction),
+        };
+      }),
       nodes: applyLayoutDirectionToNodes(
         state.nodes,
         state.configs,
@@ -253,10 +281,23 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
         }
         return { ...node, position };
       });
+      const centeredNodes = centerModelInfraNodes(
+        nextNodes,
+        state.edges,
+        state.configs,
+        state.layoutDirection,
+      );
+      const optimizedEdges = optimizeModelInfraEdgeHandles(
+        state.edges,
+        centeredNodes,
+        state.configs,
+        state.layoutDirection,
+      );
       return {
         auxNodePositions: {},
+        edges: optimizedEdges,
         nodes: applyLayoutDirectionToNodes(
-          nextNodes,
+          centeredNodes,
           state.configs,
           state.layoutDirection,
         ),
