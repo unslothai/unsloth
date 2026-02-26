@@ -449,6 +449,9 @@ class ExportBackend:
                     shutil.rmtree(model_save_path, ignore_errors=True)
                     logger.info("Cleaned up intermediate HF model files")
 
+                # Write export metadata so the Chat page can identify the base model
+                self._write_export_metadata(abs_save_dir)
+
                 logger.info(f"GGUF model saved successfully in {abs_save_dir}")
 
             # Push to hub if requested
