@@ -7,11 +7,13 @@ import { RECIPE_FLOATING_ICON_BUTTON_CLASS } from "../recipe-floating-icon-butto
 
 type ViewportControlsProps = {
   interactive: boolean;
+  lockDisabled?: boolean;
   onToggleInteractive: () => void;
 };
 
 export function ViewportControls({
   interactive,
+  lockDisabled = false,
   onToggleInteractive,
 }: ViewportControlsProps): ReactElement {
   const { zoomIn, zoomOut, fitView, getNodes } = useReactFlow();
@@ -68,6 +70,7 @@ export function ViewportControls({
         variant="ghost"
         size="icon"
         className={RECIPE_FLOATING_ICON_BUTTON_CLASS}
+        disabled={lockDisabled}
         onClick={onToggleInteractive}
         aria-label={interactive ? "Lock interaction" : "Unlock interaction"}
       >

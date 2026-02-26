@@ -52,6 +52,8 @@ export type RecipeExecutionRecord = {
   stage: string | null;
   // biome-ignore lint/style/useNamingConvention: backend schema
   current_column: string | null;
+  // biome-ignore lint/style/useNamingConvention: backend schema
+  completed_columns: string[];
   progress: RecipeExecutionProgress | null;
   // biome-ignore lint/style/useNamingConvention: backend schema
   column_progress: RecipeExecutionProgress | null;

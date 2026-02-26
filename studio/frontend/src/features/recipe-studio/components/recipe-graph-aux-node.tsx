@@ -25,12 +25,14 @@ type PromptInputNodeData = {
   llmId: string;
   field: PromptField;
   title: string;
+  executionLocked?: boolean;
 };
 
 type JudgeScoreNodeData = {
   kind: "llm-judge-score";
   llmId: string;
   scoreIndex: number;
+  executionLocked?: boolean;
 };
 
 export type RecipeGraphAuxNodeData = PromptInputNodeData | JudgeScoreNodeData;
@@ -81,6 +83,7 @@ function AuxNodeBase({
   if (!(config && config.kind === "llm")) {
     return null;
   }
+  const executionLocked = Boolean(data.executionLocked);
 
   const sourceHandles = (
     <>
@@ -135,6 +138,7 @@ function AuxNodeBase({
             className="corner-squircle nodrag nowheel max-h-40 min-h-[88px] w-full resize-none overflow-y-auto text-xs"
             aria-invalid={hasInvalidRefs}
             value={value}
+            disabled={executionLocked}
             onChange={(event) =>
               updateConfig(data.llmId, {
                 [data.field]: event.target.value,
@@ -193,7 +197,14 @@ function AuxNodeBase({
         <BaseNodeHeaderTitle className="text-xs">
           {score.name.trim() || `Scorer ${data.scoreIndex + 1}`}
         </BaseNodeHeaderTitle>
-        <Button type="button" size="xs" variant="ghost" className="nodrag" onClick={removeScore}>
+        <Button
+          type="button"
+          size="xs"
+          variant="ghost"
+          className="nodrag"
+          disabled={executionLocked}
+          onClick={removeScore}
+        >
           Remove
         </Button>
       </BaseNodeHeader>
@@ -202,12 +213,14 @@ function AuxNodeBase({
           className="nodrag h-7 w-full text-xs"
           placeholder="Score name"
           value={score.name}
+          disabled={executionLocked}
           onChange={(event) => updateScore({ name: event.target.value })}
         />
         <Textarea
           className="corner-squircle nodrag nowheel max-h-32 min-h-[56px] w-full resize-none overflow-y-auto text-xs"
           placeholder="Score description"
           value={score.description}
+          disabled={executionLocked}
           onChange={(event) => updateScore({ description: event.target.value })}
         />
         <div className="space-y-1">
@@ -217,6 +230,7 @@ function AuxNodeBase({
                 className="nodrag h-7 text-xs"
                 placeholder="Value"
                 value={option.value}
+                disabled={executionLocked}
                 onChange={(event) =>
                   updateOption(optionIndex, { value: event.target.value })
                 }
@@ -225,6 +239,7 @@ function AuxNodeBase({
                 className="nodrag h-7 text-xs"
                 placeholder="Description"
                 value={option.description}
+                disabled={executionLocked}
                 onChange={(event) =>
                   updateOption(optionIndex, {
                     description: event.target.value,
@@ -236,13 +251,21 @@ function AuxNodeBase({
                 size="xs"
                 variant="ghost"
                 className="nodrag"
+                disabled={executionLocked}
                 onClick={() => removeOption(optionIndex)}
               >
                 x
               </Button>
             </div>
           ))}
-          <Button type="button" size="xs" variant="outline" className="nodrag mt-1" onClick={addOption}>
+          <Button
+            type="button"
+            size="xs"
+            variant="outline"
+            className="nodrag mt-1"
+            disabled={executionLocked}
+            onClick={addOption}
+          >
             Add option
           </Button>
         </div>

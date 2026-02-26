@@ -43,6 +43,8 @@ export type RecipeNodeData = {
     | "model_provider"
     | "model_config";
   layoutDirection?: LayoutDirection;
+  runtimeState?: "idle" | "running" | "done";
+  executionLocked?: boolean;
 };
 
 export type RecipeNode = Node<RecipeNodeData, "builder">;

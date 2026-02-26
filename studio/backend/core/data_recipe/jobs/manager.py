@@ -138,6 +138,7 @@ class JobManager:
                 "status": job.status,
                 "stage": job.stage,
                 "current_column": job.current_column,
+                "completed_columns": list(job.completed_columns),
                 "batch": {"idx": job.batch.idx, "total": job.batch.total},
                 "progress": {
                     "done": job.progress.done,
