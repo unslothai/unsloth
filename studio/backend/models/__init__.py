@@ -52,6 +52,13 @@ from .responses import (
     LoRABaseModelResponse,
     VisionCheckResponse,
 )
+from .data_recipe import (
+    RecipePayload,
+    PreviewResponse,
+    ValidateError,
+    ValidateResponse,
+    JobCreateResponse,
+)
 
 __all__ = [
     # Training schemas
@@ -98,4 +105,10 @@ __all__ = [
     "TrainingMetricsResponse",
     "LoRABaseModelResponse",
     "VisionCheckResponse",
+    # Data recipe
+    "RecipePayload",
+    "PreviewResponse",
+    "ValidateError",
+    "ValidateResponse",
+    "JobCreateResponse",
 ]

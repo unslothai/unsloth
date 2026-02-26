@@ -3,6 +3,7 @@ export interface BackendModelDetails {
   name?: string | null;
   is_vision?: boolean;
   is_lora?: boolean;
+  is_gguf?: boolean;
 }
 
 export interface ListModelsResponse {
@@ -14,6 +15,8 @@ export interface BackendLoraInfo {
   display_name: string;
   adapter_path: string;
   base_model?: string | null;
+  source?: "training" | "exported" | null;
+  export_type?: "lora" | "merged" | null;
 }
 
 export interface ListLorasResponse {
@@ -27,6 +30,20 @@ export interface LoadModelRequest {
   max_seq_length: number;
   load_in_4bit: boolean;
   is_lora: boolean;
+  gguf_variant?: string | null;
+}
+
+export interface GgufVariantDetail {
+  filename: string;
+  quant: string;
+  size_bytes: number;
+}
+
+export interface GgufVariantsResponse {
+  repo_id: string;
+  variants: GgufVariantDetail[];
+  has_vision: boolean;
+  default_variant: string | null;
 }
 
 export interface LoadModelResponse {
@@ -35,6 +52,7 @@ export interface LoadModelResponse {
   display_name: string;
   is_vision: boolean;
   is_lora: boolean;
+  is_gguf?: boolean;
   inference?: {
     temperature?: number;
     top_p?: number;
@@ -50,6 +68,7 @@ export interface UnloadModelRequest {
 export interface InferenceStatusResponse {
   active_model: string | null;
   is_vision: boolean;
+  is_gguf?: boolean;
   loading: string[];
   loaded: string[];
 }
