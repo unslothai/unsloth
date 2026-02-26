@@ -572,6 +572,7 @@ export function RecipeStudioPage({
   );
   const executionLocked = runtimeVisualState.executionLocked;
   const canvasInteractive = interactive && !executionLocked;
+  const runBusy = previewLoading || fullLoading || executionLocked;
   const currentColumnConfig = useMemo(() => {
     const columnName = activeExecution?.current_column?.trim();
     if (!columnName) {
@@ -782,12 +783,10 @@ export function RecipeStudioPage({
                       type="button"
                       className="h-11 px-5"
                       onClick={() => openRunDialog(runDialogKind)}
-                      disabled={previewLoading || fullLoading || executionLocked}
+                      disabled={runBusy}
                     >
                       <HugeiconsIcon icon={CookBookIcon} className="size-4" />
-                      {previewLoading || fullLoading || executionLocked
-                        ? "Running..."
-                        : "Run"}
+                      {runBusy ? "Running..." : "Run"}
                     </Button>
                     <Button
                       type="button"

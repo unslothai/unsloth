@@ -422,15 +422,15 @@ function RecipeGraphNodeBase({
               {llmAuxVisible ? "Hide inputs" : "Show inputs"}
             </Button>
           )}
-            <Button
+          <Button
             type="button"
             size="xs"
             variant="ghost"
-              className="nodrag"
-              disabled={executionLocked}
-              onClick={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
+            className="nodrag"
+            disabled={executionLocked}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
               openConfig(id);
             }}
           >
