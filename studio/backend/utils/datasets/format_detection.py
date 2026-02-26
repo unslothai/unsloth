@@ -326,45 +326,51 @@ def detect_custom_format_heuristic(dataset):
 
 def detect_multimodal_dataset(dataset):
     """
-    Detects if dataset contains multimodal data (images/vision).
+    Detects if dataset contains multimodal data (images and/or audio).
 
-    Two-pass approach:
-      1. Column-name heuristic (fast): checks for keywords like 'image', 'img', 'pixel'.
-      2. Value-type inspection (reliable): checks if actual values are PIL Images,
-         bytes with image headers, or HF Image-feature dicts.
+    Two-pass approach for each modality:
+      1. Column-name heuristic (fast): checks for keywords.
+      2. Value-type inspection (reliable): checks actual sample values.
 
     Returns:
         dict: {
             "is_multimodal": bool,
             "multimodal_columns": list of column names containing image data,
-            "modality_types": list of detected types (e.g., ["image", "pixel"])
+            "modality_types": list of detected types (e.g., ["image", "audio"]),
+            "is_audio": bool,
+            "audio_columns": list of column names containing audio data,
+            "detected_audio_column": str or None,
+            "detected_text_column": str or None,
         }
     """
     sample = next(iter(dataset))
     column_names = list(sample.keys())
 
-    # Keywords that indicate multimodal/image data
-    multimodal_keywords = [
+    # Keywords that indicate image data
+    image_keywords = [
         'image', 'img', 'pixel',
         'jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif', 'tiff', 'svg',
         'photo', 'pic', 'picture', 'visual',
     ]
 
+    # Keywords that indicate audio data
+    audio_keywords = ['audio', 'speech', 'wav', 'waveform', 'sound']
+
     multimodal_columns = []
+    audio_columns = []
     modality_types = set()
 
-    # ── Pass 1: column-name heuristic ───────────────────────
+    # ── Image detection ─────────────────────────────────────
+    # Pass 1: column-name heuristic
     for col_name in column_names:
         col_lower = col_name.lower()
-
-        for keyword in multimodal_keywords:
+        for keyword in image_keywords:
             if keyword in col_lower:
                 multimodal_columns.append(col_name)
                 modality_types.add(keyword)
-                break  # Don't check other keywords for this column
+                break
 
-    # ── Pass 2: inspect actual values ───────────────────────
-    # Catches columns with non-obvious names (e.g. "jpg", "photo", "pic")
+    # Pass 2: inspect actual values
     already_detected = set(multimodal_columns)
     for col_name in column_names:
         if col_name in already_detected:
@@ -374,10 +380,61 @@ def detect_multimodal_dataset(dataset):
             multimodal_columns.append(col_name)
             modality_types.add("image")
 
+    # ── Audio detection ─────────────────────────────────────
+    # Pass 1: column-name heuristic
+    for col_name in column_names:
+        col_lower = col_name.lower()
+        for keyword in audio_keywords:
+            if keyword in col_lower:
+                audio_columns.append(col_name)
+                modality_types.add("audio")
+                break
+
+    # Pass 2: inspect actual values (catches non-obvious column names)
+    already_audio = set(audio_columns)
+    for col_name in column_names:
+        if col_name in already_audio:
+            continue
+        value = sample[col_name]
+        if _is_audio_value(value):
+            audio_columns.append(col_name)
+            modality_types.add("audio")
+
+    # Filter out columns that are actually audio from the image list
+    # (e.g. a column named "audio" with {"bytes", "path"} could match _is_image_value)
+    if audio_columns:
+        audio_set = set(audio_columns)
+        multimodal_columns = [c for c in multimodal_columns if c not in audio_set]
+
+    # Detect text column for audio datasets
+    detected_text_col = None
+    if audio_columns:
+        text_keywords = ['text', 'sentence', 'transcript', 'transcription', 'label']
+        for col_name in column_names:
+            if col_name.lower() in text_keywords:
+                detected_text_col = col_name
+                break
+
+    is_audio = len(audio_columns) > 0
+
+    # Detect speaker_id column for TTS datasets (CSM, Orpheus, Spark)
+    detected_speaker_col = None
+    if audio_columns:
+        speaker_keywords = ['source', 'speaker', 'speaker_id']
+        for col_name in column_names:
+            if col_name.lower() in speaker_keywords:
+                detected_speaker_col = col_name
+                break
+
     return {
-        "is_multimodal": len(multimodal_columns) > 0,
+        "is_multimodal": len(multimodal_columns) > 0 or is_audio,
         "multimodal_columns": multimodal_columns,
-        "modality_types": list(modality_types)
+        "modality_types": list(modality_types),
+        "is_audio": is_audio,
+        "audio_columns": audio_columns,
+        "detected_audio_column": audio_columns[0] if audio_columns else None,
+        "detected_text_column": detected_text_col,
+        "detected_speaker_column": detected_speaker_col,
     }
 
 
@@ -395,14 +452,44 @@ def _is_image_value(value) -> bool:
         pass
 
     # HF datasets Image feature stores decoded images as PIL or dicts with
-    # {"bytes": b"...", "path": "..."} when not yet decoded
+    # {"bytes": b"...", "path": "..."} when not yet decoded.
+    # Exclude audio dicts (decoded audio has "array" + "sampling_rate").
     if isinstance(value, dict):
+        if "array" in value and "sampling_rate" in value:
+            return False  # This is audio, not image
         if "bytes" in value and "path" in value:
+            # Check path extension to exclude audio files
+            path = value.get("path") or ""
+            if isinstance(path, str) and any(path.lower().endswith(ext) for ext in _AUDIO_EXTENSIONS):
+                return False
             return True
 
     # Raw bytes with a known image magic header
     if isinstance(value, (bytes, bytearray)):
         return _has_image_header(value)
+
+    return False
+
+
+_AUDIO_EXTENSIONS = (
+    ".wav", ".mp3", ".flac", ".ogg", ".opus", ".m4a", ".aac", ".wma", ".webm",
+)
+
+
+def _is_audio_value(value) -> bool:
+    """Check if a single sample value looks like audio data."""
+    if value is None:
+        return False
+
+    # HF datasets Audio feature: decoded → {"array": np.ndarray, "sampling_rate": int}
+    if isinstance(value, dict):
+        if "array" in value and "sampling_rate" in value:
+            return True
+        # Undecoded/streaming → {"bytes": b"...", "path": "some.wav"}
+        if "bytes" in value or "path" in value:
+            path = value.get("path") or ""
+            if isinstance(path, str) and any(path.lower().endswith(ext) for ext in _AUDIO_EXTENSIONS):
+                return True
 
     return False
 

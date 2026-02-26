@@ -65,13 +65,22 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
     
     # Auto-detect multimodal data regardless of is_vlm flag
     multimodal_info = detect_multimodal_dataset(dataset)
-    if multimodal_info["is_multimodal"]:
-        is_vlm = True  # Route to VLM detection automatically
-    
+    is_audio = multimodal_info.get("is_audio", False)
+
+    if multimodal_info["is_multimodal"] and not is_audio:
+        is_vlm = True  # Route to VLM detection for image datasets only
+
+    # Common audio fields for all return paths
+    audio_fields = {
+        "is_audio": is_audio,
+        "detected_audio_column": multimodal_info.get("detected_audio_column"),
+        "detected_speaker_column": multimodal_info.get("detected_speaker_column"),
+    }
+
     if is_vlm:
         vlm_structure = detect_vlm_dataset_structure(dataset)
         requires_mapping = vlm_structure["format"] == "unknown"
-        
+
         return {
             "requires_manual_mapping": requires_mapping,
             "detected_format": vlm_structure["format"],
@@ -81,50 +90,69 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
             "detected_text_column": vlm_structure.get("text_column"),
             "is_multimodal": multimodal_info["is_multimodal"],
             "multimodal_columns": multimodal_info.get("multimodal_columns"),
+            **audio_fields,
         }
-    else:
-        # LLM flow
-        detected = detect_dataset_format(dataset)
-        
-        # If format is unknown, try heuristic detection
-        if detected["format"] == "unknown":
-            heuristic_mapping = detect_custom_format_heuristic(dataset)
-            if heuristic_mapping:
-                # Heuristic succeeded - no manual mapping needed
-                return {
-                    "requires_manual_mapping": False,
-                    "detected_format": "custom_heuristic",
-                    "columns": columns,
-                    "suggested_mapping": heuristic_mapping,
-                    "detected_image_column": None,
-                    "detected_text_column": None,
-                    "is_multimodal": False,
-                    "multimodal_columns": None,
-                }
-            else:
-                # Both detection and heuristic failed
-                return {
-                    "requires_manual_mapping": True,
-                    "detected_format": "unknown",
-                    "columns": columns,
-                    "suggested_mapping": None,
-                    "detected_image_column": None,
-                    "detected_text_column": None,
-                    "is_multimodal": False,
-                    "multimodal_columns": None,
-                }
-        
-        # Known format detected
+
+    if is_audio:
+        # Audio dataset — require manual mapping only when columns can't be auto-detected
+        detected_audio = multimodal_info.get("detected_audio_column")
+        detected_text = multimodal_info.get("detected_text_column")
+        needs_mapping = not detected_audio or not detected_text
         return {
-            "requires_manual_mapping": False,
-            "detected_format": detected["format"],
+            "requires_manual_mapping": needs_mapping,
+            "detected_format": "audio",
             "columns": columns,
             "suggested_mapping": None,
             "detected_image_column": None,
-            "detected_text_column": None,
-            "is_multimodal": False,
-            "multimodal_columns": None,
+            "detected_text_column": multimodal_info.get("detected_text_column"),
+            "is_multimodal": True,
+            "multimodal_columns": multimodal_info.get("audio_columns"),
+            **audio_fields,
         }
+
+    # LLM flow
+    detected = detect_dataset_format(dataset)
+
+    # If format is unknown, try heuristic detection
+    if detected["format"] == "unknown":
+        heuristic_mapping = detect_custom_format_heuristic(dataset)
+        if heuristic_mapping:
+            return {
+                "requires_manual_mapping": False,
+                "detected_format": "custom_heuristic",
+                "columns": columns,
+                "suggested_mapping": heuristic_mapping,
+                "detected_image_column": None,
+                "detected_text_column": None,
+                "is_multimodal": False,
+                "multimodal_columns": None,
+                **audio_fields,
+            }
+        else:
+            return {
+                "requires_manual_mapping": True,
+                "detected_format": "unknown",
+                "columns": columns,
+                "suggested_mapping": None,
+                "detected_image_column": None,
+                "detected_text_column": None,
+                "is_multimodal": False,
+                "multimodal_columns": None,
+                **audio_fields,
+            }
+
+    # Known format detected
+    return {
+        "requires_manual_mapping": False,
+        "detected_format": detected["format"],
+        "columns": columns,
+        "suggested_mapping": None,
+        "detected_image_column": None,
+        "detected_text_column": None,
+        "is_multimodal": False,
+        "multimodal_columns": None,
+        **audio_fields,
+    }
 
 # Normalise any format-specific role to canonical chatml (user/assistant/system)
 _TO_CHATML = {

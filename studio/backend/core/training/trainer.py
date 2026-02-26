@@ -111,6 +111,41 @@ class UnslothTrainer:
                 except Exception as e:
                     logger.error(f"Error in progress callback: {e}")
 
+    def _resolve_audio_columns(self, dataset, custom_format_mapping: dict = None):
+        """Resolve audio, text, and speaker columns from user mapping or hardcoded fallback.
+
+        Returns:
+            dict with keys: audio_col, text_col, speaker_col (speaker_col may be None)
+        """
+        cols = dataset.column_names
+
+        if custom_format_mapping:
+            audio_col = None
+            text_col = None
+            speaker_col = None
+            for col, role in custom_format_mapping.items():
+                if role == "audio":
+                    audio_col = col
+                elif role == "text":
+                    text_col = col
+                elif role == "speaker_id":
+                    speaker_col = col
+            # Use mapping if both required columns exist in the dataset
+            if audio_col and audio_col in cols and text_col and text_col in cols:
+                return {"audio_col": audio_col, "text_col": text_col, "speaker_col": speaker_col}
+
+        # Hardcoded fallback (existing behavior)
+        audio_col = next((c for c in cols if c.lower() in ("audio", "speech")), None)
+        text_col = next((c for c in cols if c.lower() in ("text", "sentence", "transcript", "transcription")), None)
+
+        speaker_col = None
+        if "source" in cols:
+            speaker_col = "source"
+        elif "speaker_id" in cols:
+            speaker_col = "speaker_id"
+
+        return {"audio_col": audio_col, "text_col": text_col, "speaker_col": speaker_col}
+
     def _resolve_audio_type(self, model_name: str) -> Optional[str]:
         """Resolve audio_type from YAML model config. Returns None for non-audio models."""
         try:
@@ -150,12 +185,11 @@ class UnslothTrainer:
             self._audio_type = self._resolve_audio_type(model_name)
             self.is_audio = self._audio_type is not None
 
-            # Detect if this is a vision model AND dataset is multimodal
-            # A vision-capable model with a text-only dataset should use FastLanguageModel
-            self.is_vlm = not self.is_audio and is_vision_model(model_name) and is_dataset_multimodal
             # Audio VLM: multimodal model (e.g. Gemma 3N) trained on audio data
-            # Uses FastModel + SFTTrainer with audio collator (same pattern as VLM)
+            # Uses FastModel + SFTTrainer with audio collator
             self.is_audio_vlm = not self.is_audio and is_vision_model(model_name) and is_dataset_audio
+            # VLM: vision model with image dataset (mutually exclusive with audio VLM)
+            self.is_vlm = not self.is_audio and not self.is_audio_vlm and is_vision_model(model_name) and is_dataset_multimodal
             self.model_name = model_name
 
             logger.info(f"Audio type: {self._audio_type}")
@@ -693,7 +727,7 @@ class UnslothTrainer:
         CsmForConditionalGeneration.forward = _fixed_csm_forward
         print("Applied CSM forward fix (class + instance level)\n")
 
-    def _preprocess_csm_dataset(self, dataset):
+    def _preprocess_csm_dataset(self, dataset, custom_format_mapping=None):
         """Preprocess dataset for CSM TTS training (exact notebook copy)."""
         from transformers import AutoProcessor
         from datasets import Audio
@@ -701,22 +735,20 @@ class UnslothTrainer:
 
         processor = AutoProcessor.from_pretrained(self.model_name)
 
-        # Resolve speaker key
-        speaker_key = "source"
-        if "source" not in dataset.column_names and "speaker_id" not in dataset.column_names:
-            print("No speaker found, adding default 'source' of 0 for all examples\n")
-            dataset = dataset.add_column("source", ["0"] * len(dataset))
-        elif "source" not in dataset.column_names and "speaker_id" in dataset.column_names:
-            speaker_key = "speaker_id"
-
-        # Resolve audio and text columns
-        audio_col = next((c for c in dataset.column_names if c in ("audio", "Audio")), None)
-        text_col = next((c for c in dataset.column_names if c in ("text", "sentence", "transcript")), None)
+        # Resolve columns from user mapping or hardcoded fallback
+        resolved = self._resolve_audio_columns(dataset, custom_format_mapping)
+        audio_col = resolved["audio_col"]
+        text_col = resolved["text_col"]
+        speaker_key = resolved["speaker_col"]
 
         if audio_col is None:
             raise ValueError(f"No audio column found in dataset. Columns: {dataset.column_names}")
         if text_col is None:
             raise ValueError(f"No text column found in dataset. Columns: {dataset.column_names}")
+        if speaker_key is None:
+            print("No speaker found, adding default 'source' of 0 for all examples\n")
+            dataset = dataset.add_column("source", ["0"] * len(dataset))
+            speaker_key = "source"
 
         print(f"CSM preprocessing: audio_col='{audio_col}', text_col='{text_col}', speaker_key='{speaker_key}'\n")
 
@@ -773,7 +805,7 @@ class UnslothTrainer:
         print(f"CSM preprocessing complete: {len(processed)} examples\n")
         return processed
 
-    def _format_audio_vlm_dataset(self, dataset):
+    def _format_audio_vlm_dataset(self, dataset, custom_format_mapping=None):
         """Format dataset as audio chat messages for multimodal models (e.g. Gemma 3N).
 
         Expects columns: audio (Audio), text (str).
@@ -781,14 +813,16 @@ class UnslothTrainer:
         """
         from datasets import Audio
 
-        # Detect audio and text columns
-        cols = dataset.column_names
-        audio_col = next((c for c in cols if c.lower() in ("audio", "speech")), None)
-        text_col = next((c for c in cols if c.lower() in ("text", "sentence", "transcript", "transcription")), None)
+        resolved = self._resolve_audio_columns(dataset, custom_format_mapping)
+        audio_col = resolved["audio_col"]
+        text_col = resolved["text_col"]
         if not audio_col or not text_col:
             raise ValueError(
-                f"Audio VLM dataset needs 'audio' and 'text' columns, got: {cols}"
+                f"Audio VLM dataset needs 'audio' and 'text' columns, got: {dataset.column_names}"
             )
+
+        # Store resolved audio column name for the collator closure
+        self._audio_vlm_audio_col = audio_col
 
         # Cast audio to 16kHz (standard for speech models)
         dataset = dataset.cast_column(audio_col, Audio(sampling_rate=16000))
@@ -818,7 +852,7 @@ class UnslothTrainer:
         print(f"Audio VLM dataset formatted: {len(dataset)} examples\n")
         return dataset
 
-    def _preprocess_snac_dataset(self, dataset):
+    def _preprocess_snac_dataset(self, dataset, custom_format_mapping=None):
         """Preprocess dataset for Orpheus TTS training with SNAC codec.
 
         Mirrors Orpheus_(3B)-TTS.ipynb: encode audio with SNAC (24kHz, 3 hierarchical
@@ -844,14 +878,14 @@ class UnslothTrainer:
         END_OF_TEXT     = 128009
         AUDIO_OFFSET    = 128266
 
-        # Resolve audio and text columns (reuse CSM pattern)
-        cols = dataset.column_names
-        audio_col = next((c for c in cols if c.lower() in ("audio", "speech")), None)
-        text_col = next((c for c in cols if c.lower() in ("text", "sentence", "transcript", "transcription")), None)
-        has_source = "source" in cols
+        resolved = self._resolve_audio_columns(dataset, custom_format_mapping)
+        audio_col = resolved["audio_col"]
+        text_col = resolved["text_col"]
+        speaker_col = resolved["speaker_col"]
+        has_source = speaker_col is not None
         if not audio_col or not text_col:
             raise ValueError(
-                f"SNAC dataset needs 'audio' and 'text' columns, got: {cols}"
+                f"SNAC dataset needs 'audio' and 'text' columns, got: {dataset.column_names}"
             )
 
         # Get dataset sample rate from first example
@@ -923,7 +957,7 @@ class UnslothTrainer:
                 all_codes = deduped
 
                 # --- Build text tokens (notebook lines 217-224) ---
-                text_prompt = f"{example['source']}: {text}" if has_source and example.get("source") else text
+                text_prompt = f"{example[speaker_col]}: {text}" if has_source and example.get(speaker_col) else text
                 text_ids = tokenizer.encode(text_prompt, add_special_tokens=True)
                 text_ids.append(END_OF_TEXT)
 
@@ -979,7 +1013,7 @@ class UnslothTrainer:
               f"({skipped} skipped)\n")
         return result_dataset
 
-    def _preprocess_bicodec_dataset(self, dataset):
+    def _preprocess_bicodec_dataset(self, dataset, custom_format_mapping=None):
         """Preprocess dataset for Spark-TTS training with BiCodec tokenizer.
 
         Mirrors Spark_TTS_(0_5B).ipynb: encode audio with BiCodec (semantic + global tokens),
@@ -1013,13 +1047,14 @@ class UnslothTrainer:
         from sparktts.utils.audio import audio_volume_normalize
 
         # Resolve audio and text columns
-        cols = dataset.column_names
-        audio_col = next((c for c in cols if c.lower() in ("audio", "speech")), None)
-        text_col = next((c for c in cols if c.lower() in ("text", "sentence", "transcript", "transcription")), None)
-        has_source = "source" in cols
+        resolved = self._resolve_audio_columns(dataset, custom_format_mapping)
+        audio_col = resolved["audio_col"]
+        text_col = resolved["text_col"]
+        speaker_col = resolved["speaker_col"]
+        has_source = speaker_col is not None
         if not audio_col or not text_col:
             raise ValueError(
-                f"BiCodec dataset needs 'audio' and 'text' columns, got: {cols}"
+                f"BiCodec dataset needs 'audio' and 'text' columns, got: {dataset.column_names}"
             )
 
         # Load BiCodec tokenizer
@@ -1117,7 +1152,7 @@ class UnslothTrainer:
                 )
 
                 # Format text with source prefix if available
-                text_content = f"{example['source']}: {text}" if has_source and example.get("source") else text
+                text_content = f"{example[speaker_col]}: {text}" if has_source and example.get(speaker_col) else text
 
                 formatted = "".join([
                     "<|task_tts|>",
@@ -1166,7 +1201,7 @@ class UnslothTrainer:
         print(f"Sample text length: {len(sample)} chars\n")
         return result_dataset
 
-    def _preprocess_whisper_dataset(self, dataset, eval_split=None):
+    def _preprocess_whisper_dataset(self, dataset, eval_split=None, custom_format_mapping=None):
         """Preprocess dataset for Whisper speech-to-text training.
 
         Mirrors Whisper.ipynb: extract audio features with Whisper's feature
@@ -1177,13 +1212,12 @@ class UnslothTrainer:
 
         WHISPER_SAMPLE_RATE = 16000
 
-        # Resolve audio and text columns
-        cols = dataset.column_names
-        audio_col = next((c for c in cols if c.lower() in ("audio", "speech")), None)
-        text_col = next((c for c in cols if c.lower() in ("text", "sentence", "transcript", "transcription")), None)
+        resolved = self._resolve_audio_columns(dataset, custom_format_mapping)
+        audio_col = resolved["audio_col"]
+        text_col = resolved["text_col"]
         if not audio_col or not text_col:
             raise ValueError(
-                f"Whisper dataset needs 'audio' and 'text' columns, got: {cols}"
+                f"Whisper dataset needs 'audio' and 'text' columns, got: {dataset.column_names}"
             )
 
         # Cast audio to 16kHz (Whisper's expected sample rate)
@@ -1355,20 +1389,21 @@ class UnslothTrainer:
 
             # ========== AUDIO MODELS: custom preprocessing ==========
             if self._audio_type == 'csm':
-                processed = self._preprocess_csm_dataset(dataset)
-                # CSM returns a ready-to-train Dataset (not a dict) with no eval
+                processed = self._preprocess_csm_dataset(dataset, custom_format_mapping)
                 return (processed, None)
 
             elif self._audio_type == 'whisper':
-                train_data, eval_data = self._preprocess_whisper_dataset(dataset, eval_split=eval_split)
+                train_data, eval_data = self._preprocess_whisper_dataset(
+                    dataset, eval_split=eval_split, custom_format_mapping=custom_format_mapping
+                )
                 return (train_data, eval_data)
 
             elif self._audio_type == 'snac':
-                processed = self._preprocess_snac_dataset(dataset)
+                processed = self._preprocess_snac_dataset(dataset, custom_format_mapping)
                 return (processed, None)
 
             elif self._audio_type == 'bicodec':
-                processed = self._preprocess_bicodec_dataset(dataset)
+                processed = self._preprocess_bicodec_dataset(dataset, custom_format_mapping)
                 return (processed, None)
 
             elif self._audio_type in ('xcodec2', 'dac'):
@@ -1376,8 +1411,7 @@ class UnslothTrainer:
                 raise NotImplementedError(f"Audio dataset preprocessing for '{self._audio_type}' not yet implemented")
 
             elif self.is_audio_vlm:
-                # Audio VLM (e.g. Gemma 3N): format as chat messages with audio content
-                formatted = self._format_audio_vlm_dataset(dataset)
+                formatted = self._format_audio_vlm_dataset(dataset, custom_format_mapping)
                 return (formatted, None)
 
             # ========== FORMAT FIRST ==========
@@ -1438,7 +1472,7 @@ class UnslothTrainer:
             from datasets import get_dataset_split_names
             load_kwargs = {"path": dataset_source}
             if subset:
-                load_kwargs["name"] = subset
+                load_kwargs["config_name"] = subset
             available_splits = get_dataset_split_names(**load_kwargs)
             print(f"Available splits: {available_splits}\n")
 
@@ -1517,6 +1551,22 @@ class UnslothTrainer:
         if self.model is None or self.tokenizer is None:
             self._update_progress(error="Model not loaded")
             return False
+
+        # Pre-import heavy transformers modules on the main thread.
+        # Unsloth's patched_import hook (deepseek_v3_moe.py) is not thread-safe
+        # with Python's importlib cache, causing KeyError: 'size' if these are
+        # first imported inside the worker thread.
+        import transformers  # noqa: F401 – ensures submodules are cached
+        from transformers import (  # noqa: F401
+            Trainer as _HFTrainer,
+            TrainingArguments as _TrainingArguments,
+            TrainerCallback as _TrainerCallback,
+        )
+        if self._audio_type == 'whisper':
+            from transformers import (  # noqa: F401
+                Seq2SeqTrainer as _Seq2SeqTrainer,
+                Seq2SeqTrainingArguments as _Seq2SeqTrainingArguments,
+            )
 
         # Start training in separate thread
         self.training_thread = threading.Thread(
@@ -1970,7 +2020,7 @@ class UnslothTrainer:
                     "model": self.model,
                     "train_dataset": train_ds,
                     "data_collator": data_collator,
-                    "tokenizer": self.tokenizer.feature_extractor,
+                    "processing_class": self.tokenizer.feature_extractor,
                     "args": Seq2SeqTrainingArguments(**whisper_training_args),
                 }
                 if eval_dataset:
@@ -2293,20 +2343,13 @@ class UnslothTrainer:
                     self._update_progress(error=error_msg, is_training=False)
                     return
 
-            elif self.is_vlm:
-                # Standard VLM collator
-                print("Using UnslothVisionDataCollator for vision model\n")
-                from unsloth.trainer import UnslothVisionDataCollator
-
-                FastVisionModel.for_training(self.model)
-                data_collator = UnslothVisionDataCollator(self.model, self.tokenizer)
-                print("Vision data collator configured\n")
-
             elif self.is_audio_vlm:
                 # Audio VLM collator (e.g. Gemma 3N with audio data)
                 # Mirrors the collate_fn from Gemma3N_(4B)-Audio notebook
                 print("Configuring audio VLM data collator...\n")
                 processor = self.tokenizer  # FastModel returns processor as tokenizer
+
+                audio_col_name = getattr(self, '_audio_vlm_audio_col', 'audio')
 
                 def audio_vlm_collate_fn(examples):
                     texts = []
@@ -2316,7 +2359,7 @@ class UnslothTrainer:
                             example["messages"], tokenize=False, add_generation_prompt=False
                         ).strip()
                         texts.append(text)
-                        audios.append(example["audio"]["array"])
+                        audios.append(example[audio_col_name]["array"])
 
                     batch = processor(
                         text=texts, audio=audios, return_tensors="pt", padding=True
@@ -2334,6 +2377,15 @@ class UnslothTrainer:
 
                 data_collator = audio_vlm_collate_fn
                 print("Audio VLM data collator configured\n")
+
+            elif self.is_vlm:
+                # Standard VLM collator (images)
+                print("Using UnslothVisionDataCollator for vision model\n")
+                from unsloth.trainer import UnslothVisionDataCollator
+
+                FastVisionModel.for_training(self.model)
+                data_collator = UnslothVisionDataCollator(self.model, self.tokenizer)
+                print("Vision data collator configured\n")
 
             # ========== TRAINING CONFIGURATION ==========
             # Handle epochs vs max_steps properly
@@ -2443,19 +2495,28 @@ class UnslothTrainer:
 
             print("Training configuration prepared\n")
             # ========== TRAINER INITIALIZATION ==========
-            if self.is_vlm or self.is_audio_vlm:
-                # VLM: dataset is dict wrapper from format_and_template_dataset
-                # Audio VLM: dataset is raw Dataset from _format_audio_vlm_dataset
+            if self.is_audio_vlm:
+                # Audio VLM (e.g. Gemma 3N + audio): raw Dataset from _format_audio_vlm_dataset
+                # Notebook uses processing_class=processor.tokenizer (text tokenizer only)
+                train_dataset = dataset if isinstance(dataset, Dataset) else dataset['dataset']
+                processing_class = self.tokenizer.tokenizer if hasattr(self.tokenizer, 'tokenizer') else self.tokenizer
+                trainer_kwargs = {
+                    "model": self.model,
+                    "train_dataset": train_dataset,
+                    "processing_class": processing_class,
+                    "data_collator": data_collator,
+                    "args": SFTConfig(**config_args),
+                }
+                if eval_dataset is not None:
+                    trainer_kwargs["eval_dataset"] = eval_dataset
+                self.trainer = SFTTrainer(**trainer_kwargs)
+            elif self.is_vlm:
+                # Image VLM: dataset is dict wrapper from format_and_template_dataset
                 train_dataset = dataset['dataset'] if isinstance(dataset, dict) else dataset
                 trainer_kwargs = {
                     "model": self.model,
-<<<<<<< HEAD
-                    "train_dataset": dataset['dataset'],
-                    "processing_class": self.tokenizer,
-=======
                     "train_dataset": train_dataset,
-                    "processing_class": self.tokenizer.tokenizer,
->>>>>>> 0a7e75e (Adding support for audio llms)
+                    "processing_class": self.tokenizer,
                     "data_collator": data_collator,
                     "args": SFTConfig(**config_args),
                 }
@@ -2650,11 +2711,7 @@ class UnslothTrainer:
             progress_callback = ProgressCallback(self)
             self.trainer.add_callback(progress_callback)
 
-<<<<<<< HEAD
-            num_samples = len(self.trainer.train_dataset)
-=======
             num_samples = len(dataset['dataset'] if isinstance(dataset, dict) else dataset)
->>>>>>> 0a7e75e (Adding support for audio llms)
             batch_size = training_args.get('batch_size', 2)
             grad_accum = training_args.get('gradient_accumulation_steps', 4)
             num_epochs = training_args.get('num_epochs', 3)

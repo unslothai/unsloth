@@ -212,10 +212,13 @@ def check_format(request: CheckFormatRequest):
             detected_format=result["detected_format"],
             columns=result["columns"],
             is_multimodal=result.get("is_multimodal", False),
+            is_audio=result.get("is_audio", False),
             multimodal_columns=result.get("multimodal_columns"),
             suggested_mapping=result.get("suggested_mapping"),
             detected_image_column=result.get("detected_image_column"),
+            detected_audio_column=result.get("detected_audio_column"),
             detected_text_column=result.get("detected_text_column"),
+            detected_speaker_column=result.get("detected_speaker_column"),
             preview_samples=preview_samples,
             total_rows=total_rows,
         )
