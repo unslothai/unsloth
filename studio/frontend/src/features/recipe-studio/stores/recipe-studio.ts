@@ -79,13 +79,21 @@ type RecipeStudioState = {
   setLayoutDirection: (direction: LayoutDirection) => void;
   applyLayout: () => void;
   setLlmAuxVisibility: (id: string, visible: boolean) => void;
-  addSamplerNode: (type: SamplerType) => void;
-  addSeedNode: (type: SeedBlockType) => void;
-  addLlmNode: (type: LlmType) => void;
-  addModelProviderNode: () => void;
-  addModelConfigNode: () => void;
-  addExpressionNode: () => void;
-  addMarkdownNoteNode: () => void;
+  addSamplerNode: (
+    type: SamplerType,
+    position?: XYPosition,
+    openDialog?: boolean,
+  ) => void;
+  addSeedNode: (
+    type: SeedBlockType,
+    position?: XYPosition,
+    openDialog?: boolean,
+  ) => void;
+  addLlmNode: (type: LlmType, position?: XYPosition, openDialog?: boolean) => void;
+  addModelProviderNode: (position?: XYPosition, openDialog?: boolean) => void;
+  addModelConfigNode: (position?: XYPosition, openDialog?: boolean) => void;
+  addExpressionNode: (position?: XYPosition, openDialog?: boolean) => void;
+  addMarkdownNoteNode: (position?: XYPosition, openDialog?: boolean) => void;
   updateConfig: (id: string, patch: Partial<NodeConfig>) => void;
   loadRecipe: (snapshot: RecipeSnapshot) => void;
   setAuxNodePosition: (id: string, position: XYPosition) => void;
@@ -130,6 +138,8 @@ function buildAddedNodeState(
   state: RecipeStudioState,
   kind: BlockKind,
   type: BlockType,
+  position?: XYPosition,
+  openDialog = true,
 ): Partial<RecipeStudioState> | RecipeStudioState {
   const id = `n${state.nextId}`;
   const existing = Object.values(state.configs);
@@ -138,7 +148,13 @@ function buildAddedNodeState(
     return state;
   }
   const config = definition.createConfig(id, existing);
-  return buildNodeUpdate(state, config, state.layoutDirection);
+  return buildNodeUpdate(
+    state,
+    config,
+    state.layoutDirection,
+    position,
+    openDialog,
+  );
 }
 
 function getAddedNodeContext(
@@ -316,15 +332,23 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
         },
       };
     }),
-  addSamplerNode: (type) =>
-    set((state) => buildAddedNodeState(state, "sampler", type)),
-  addSeedNode: (type) =>
+  addSamplerNode: (type, position, openDialog = true) =>
+    set((state) =>
+      buildAddedNodeState(state, "sampler", type, position, openDialog),
+    ),
+  addSeedNode: (type, position, openDialog = true) =>
     set((state) => {
       const existing = Object.values(state.configs).find(
         (config) => config.kind === "seed",
       );
       if (!existing) {
-        return buildAddedNodeState(state, "seed", type);
+        return buildAddedNodeState(
+          state,
+          "seed",
+          type,
+          position,
+          openDialog,
+        );
       }
       let nextSourceType: SeedSourceType = "hf";
       if (type === "seed_local") {
@@ -362,13 +386,22 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
           state.layoutDirection,
         ),
         activeConfigId: existing.id,
-        dialogOpen: true,
+        dialogOpen: openDialog,
       };
     }),
-  addLlmNode: (type) => set((state) => buildAddedNodeState(state, "llm", type)),
-  addModelProviderNode: () =>
+  addLlmNode: (type, position, openDialog = true) =>
+    set((state) =>
+      buildAddedNodeState(state, "llm", type, position, openDialog),
+    ),
+  addModelProviderNode: (position, openDialog = true) =>
     set((state) => {
-      const added = buildAddedNodeState(state, "llm", "model_provider");
+      const added = buildAddedNodeState(
+        state,
+        "llm",
+        "model_provider",
+        position,
+        openDialog,
+      );
       const context = getAddedNodeContext(added);
       if (!context) {
         return added;
@@ -380,7 +413,7 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
           config.kind === "model_config" &&
           !config.provider.trim(),
       );
-      if (unboundModelConfigs.length > 0) {
+      if (!position && unboundModelConfigs.length > 0) {
         nodes = placeNodeNear(
           nodes,
           context.newNodeId,
@@ -401,9 +434,15 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
       }
       return { ...added, nodes, edges, configs };
     }),
-  addModelConfigNode: () =>
+  addModelConfigNode: (position, openDialog = true) =>
     set((state) => {
-      const added = buildAddedNodeState(state, "llm", "model_config");
+      const added = buildAddedNodeState(
+        state,
+        "llm",
+        "model_config",
+        position,
+        openDialog,
+      );
       const context = getAddedNodeContext(added);
       if (!context) {
         return added;
@@ -416,7 +455,7 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
       const unboundLlms = Object.values(configs).filter(
         (config) => config.kind === "llm" && !config.model_alias.trim(),
       );
-      if (providers.length === 1) {
+      if (!position && providers.length === 1) {
         nodes = placeNodeNear(
           nodes,
           context.newNodeId,
@@ -424,7 +463,7 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
           state.layoutDirection,
           "after",
         );
-      } else if (unboundLlms.length > 0) {
+      } else if (!position && unboundLlms.length > 0) {
         nodes = placeNodeNear(
           nodes,
           context.newNodeId,
@@ -455,10 +494,26 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
       }
       return { ...added, nodes, edges, configs };
     }),
-  addExpressionNode: () =>
-    set((state) => buildAddedNodeState(state, "expression", "expression")),
-  addMarkdownNoteNode: () =>
-    set((state) => buildAddedNodeState(state, "note", "markdown_note")),
+  addExpressionNode: (position, openDialog = true) =>
+    set((state) =>
+      buildAddedNodeState(
+        state,
+        "expression",
+        "expression",
+        position,
+        openDialog,
+      ),
+    ),
+  addMarkdownNoteNode: (position, openDialog = true) =>
+    set((state) =>
+      buildAddedNodeState(
+        state,
+        "note",
+        "markdown_note",
+        position,
+        openDialog,
+      ),
+    ),
   loadRecipe: (snapshot) =>
     set((state) => ({
       configs: snapshot.configs,
