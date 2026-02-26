@@ -4,6 +4,18 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from .constants import (
+    STAGE_BATCH,
+    STAGE_COLUMN_CONFIG,
+    STAGE_CREATE,
+    STAGE_DAG,
+    STAGE_GENERATING,
+    STAGE_HEALTHCHECK,
+    STAGE_PREVIEW,
+    STAGE_PROFILING,
+    STAGE_SAMPLING,
+    USAGE_RESET_STAGES,
+)
 from .types import Job, ModelUsage, Progress
 
 
@@ -27,8 +39,7 @@ class ParsedUpdate:
     usage_rpm: float | None = None
     usage_section_start: bool | None = None
 
-# welp, best effort to parse the logs and convert them to structured information so we can access it and read it properly on the client
-# i couldnt find what datadesigner do for progress tracking besides the logs so il probably raise a pr in their repo to add some sort of progress monitoring
+# kinda of a bummber but currently only option, Best effort parser from data-designer logs -> structured status for UI.
 _RE_SAMPLERS = re.compile(
     r"Preparing samplers to generate (?P<rows>\d+) records across (?P<cols>\d+) columns"
 )
@@ -52,31 +63,31 @@ def parse_log_message(msg: str) -> ParsedUpdate | None:
     m = _RE_SAMPLERS.search(msg)
     if m:
         return ParsedUpdate(
-            stage="sampling",
+            stage=STAGE_SAMPLING,
             rows=int(m.group("rows")),
             cols=int(m.group("cols")),
         )
 
     if "Sorting column configs into a Directed Acyclic Graph" in msg:
-        return ParsedUpdate(stage="dag")
+        return ParsedUpdate(stage=STAGE_DAG)
     if "Running health checks for models" in msg:
-        return ParsedUpdate(stage="healthcheck")
+        return ParsedUpdate(stage=STAGE_HEALTHCHECK)
     if "Preview generation in progress" in msg:
-        return ParsedUpdate(stage="preview")
+        return ParsedUpdate(stage=STAGE_PREVIEW)
     if "Creating Data Designer dataset" in msg:
-        return ParsedUpdate(stage="create")
+        return ParsedUpdate(stage=STAGE_CREATE)
     if "Measuring dataset column statistics" in msg:
-        return ParsedUpdate(stage="profiling")
+        return ParsedUpdate(stage=STAGE_PROFILING)
 
     m = _RE_COLCFG.search(msg)
     if m:
         col = m.group("col")
-        return ParsedUpdate(stage="column_config", current_column=col)
+        return ParsedUpdate(stage=STAGE_COLUMN_CONFIG, current_column=col)
 
     m = _RE_PROCESSING_COL.search(msg)
     if m:
         col = m.group("col")
-        return ParsedUpdate(stage="generating", current_column=col)
+        return ParsedUpdate(stage=STAGE_GENERATING, current_column=col)
 
     m = _RE_PROGRESS.search(msg)
     if m:
@@ -89,12 +100,12 @@ def parse_log_message(msg: str) -> ParsedUpdate | None:
             rate=float(m.group("rate")),
             eta_sec=float(m.group("eta")),
         )
-        return ParsedUpdate(stage="generating", progress=p)
+        return ParsedUpdate(stage=STAGE_GENERATING, progress=p)
 
     m = _RE_BATCH.search(msg)
     if m:
         return ParsedUpdate(
-            stage="batch",
+            stage=STAGE_BATCH,
             batch_idx=int(m.group("idx")),
             batch_total=int(m.group("total")),
         )
@@ -132,7 +143,7 @@ def apply_update(job: Job, update: ParsedUpdate) -> None:
         job.stage = update.stage
     if update.current_column is not None:
         job.current_column = update.current_column
-        if update.stage == "generating" and update.current_column not in job._seen_generation_columns:
+        if update.stage == STAGE_GENERATING and update.current_column not in job._seen_generation_columns:
             job._seen_generation_columns.append(update.current_column)
     if update.rows is not None:
         job.rows = update.rows
@@ -146,16 +157,8 @@ def apply_update(job: Job, update: ParsedUpdate) -> None:
     if update.batch_total is not None:
         job.batch.total = update.batch_total
 
-    if update.stage in {
-        "profiling",
-        "generating",
-        "sampling",
-        "healthcheck",
-        "dag",
-        "create",
-        "preview",
-    }:
-        # usage summary is a short block; reset once we move into the next stage.
+    if update.stage in USAGE_RESET_STAGES:
+        # usage summary is a short block so we reset once we move into the next stage.
         job._in_usage_summary = False
 
     if update.usage_section_start is not None:

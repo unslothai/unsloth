@@ -1,4 +1,7 @@
 const JINJA_REF_RE = /{{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*}}/g;
+const JINJA_EXPR_RE = /{{\s*([^{}]+?)\s*}}/g;
+const SIMPLE_JINJA_EXPR_RE = /^[a-zA-Z_][a-zA-Z0-9_.]*$/;
+const PLAIN_JINJA_EXPR_RE = /^[a-zA-Z0-9_.\s-]+$/;
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -15,6 +18,37 @@ export function extractRefs(template: string): string[] {
     }
   }
   return Array.from(refs);
+}
+
+export function findInvalidJinjaReferences(
+  template: string,
+  validReferences: string[],
+): string[] {
+  if (!template) {
+    return [];
+  }
+  const validSet = new Set(
+    validReferences.map((name) => name.trim()).filter(Boolean),
+  );
+  const invalid = new Set<string>();
+
+  for (const match of template.matchAll(JINJA_EXPR_RE)) {
+    const expr = (match[1] ?? "").trim();
+    if (!expr) {
+      continue;
+    }
+    if (SIMPLE_JINJA_EXPR_RE.test(expr)) {
+      if (!validSet.has(expr)) {
+        invalid.add(expr);
+      }
+      continue;
+    }
+    if (PLAIN_JINJA_EXPR_RE.test(expr)) {
+      invalid.add(expr);
+    }
+  }
+
+  return Array.from(invalid);
 }
 
 export function replaceRef(
