@@ -94,7 +94,6 @@ export function RecipeStudioPage({
     nodes,
     edges,
     auxNodePositions,
-    auxNodeSizes,
     llmAuxVisibility,
     configs,
     processors,
@@ -125,15 +124,11 @@ export function RecipeStudioPage({
     setLayoutDirection,
     applyLayout,
     setAuxNodePosition,
-    setAuxNodeSize,
-    syncAuxNodePositions,
-    syncAuxNodeSizes,
   } = useRecipeStudioStore(
     useShallow((state) => ({
       nodes: state.nodes,
       edges: state.edges,
       auxNodePositions: state.auxNodePositions,
-      auxNodeSizes: state.auxNodeSizes,
       llmAuxVisibility: state.llmAuxVisibility,
       configs: state.configs,
       processors: state.processors,
@@ -164,9 +159,6 @@ export function RecipeStudioPage({
       setLayoutDirection: state.setLayoutDirection,
       applyLayout: state.applyLayout,
       setAuxNodePosition: state.setAuxNodePosition,
-      setAuxNodeSize: state.setAuxNodeSize,
-      syncAuxNodePositions: state.syncAuxNodePositions,
-      syncAuxNodeSizes: state.syncAuxNodeSizes,
     })),
   );
   const [sheetContainer, setSheetContainer] = useState<HTMLDivElement | null>(
@@ -202,12 +194,10 @@ export function RecipeStudioPage({
       configs,
       layoutDirection,
       auxNodePositions,
-      auxNodeSizes,
       llmAuxVisibility,
     });
   }, [
     auxNodePositions,
-    auxNodeSizes,
     configs,
     edges,
     layoutDirection,
@@ -218,12 +208,6 @@ export function RecipeStudioPage({
     () => displayGraph.nodes.map((node) => node.id),
     [displayGraph.nodes],
   );
-  useEffect(() => {
-    syncAuxNodePositions(displayGraph.auxNodeIds, displayGraph.auxDefaults);
-  }, [displayGraph.auxDefaults, displayGraph.auxNodeIds, syncAuxNodePositions]);
-  useEffect(() => {
-    syncAuxNodeSizes(displayGraph.auxNodeIds);
-  }, [displayGraph.auxNodeIds, syncAuxNodeSizes]);
 
   const handleNodeClick = useCallback(
     (_: unknown, node: Node<RecipeNodeData | RecipeGraphAuxNodeData>) => {
@@ -250,7 +234,7 @@ export function RecipeStudioPage({
 
   const handleNodesChange = useCallback(
     (changes: NodeChange<Node<RecipeNodeData | RecipeGraphAuxNodeData>>[]) => {
-      applyAuxNodeChanges(changes, { setAuxNodePosition, setAuxNodeSize });
+      applyAuxNodeChanges(changes, { setAuxNodePosition });
       const next = filterNodeChangesByIds(
         changes as NodeChange<RecipeBuilderNode>[],
         baseNodeIds,
@@ -259,7 +243,7 @@ export function RecipeStudioPage({
         onNodesChange(next);
       }
     },
-    [baseNodeIds, onNodesChange, setAuxNodePosition, setAuxNodeSize],
+    [baseNodeIds, onNodesChange, setAuxNodePosition],
   );
 
   const handleEdgesChange = useCallback(
@@ -288,8 +272,16 @@ export function RecipeStudioPage({
   }, []);
 
   const payloadResult = useMemo(
-    () => buildRecipePayload(configs, nodes, edges, processors, layoutDirection),
-    [configs, edges, layoutDirection, nodes, processors],
+    () =>
+      buildRecipePayload(
+        configs,
+        nodes,
+        edges,
+        processors,
+        layoutDirection,
+        auxNodePositions,
+      ),
+    [auxNodePositions, configs, edges, layoutDirection, nodes, processors],
   );
   const getCurrentPayloadFromStore = useCallback((): RecipePayload => {
     const state = useRecipeStudioStore.getState();
@@ -299,6 +291,7 @@ export function RecipeStudioPage({
       state.edges,
       state.processors,
       state.layoutDirection,
+      state.auxNodePositions,
     ).payload;
   }, []);
   const {

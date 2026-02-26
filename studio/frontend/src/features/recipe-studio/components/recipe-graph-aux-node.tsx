@@ -4,19 +4,15 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Handle,
-  NodeResizer,
+  Position,
   type Node,
   type NodeProps,
   useUpdateNodeInternals,
 } from "@xyflow/react";
 import { memo, type ReactElement, useEffect } from "react";
-import { MAX_NODE_WIDTH, MIN_NODE_WIDTH } from "../constants";
 import { useRecipeStudioStore } from "../stores/recipe-studio";
-import type { LayoutDirection, LlmConfig, Score, ScoreOption } from "../types";
-import {
-  AUX_HANDLE_CLASS,
-  getAuxSourceHandlePosition,
-} from "../utils/handle-layout";
+import type { LlmConfig, Score, ScoreOption } from "../types";
+import { AUX_HANDLE_CLASS } from "../utils/handle-layout";
 import { HANDLE_IDS } from "../utils/handles";
 import { getAvailableVariableEntries } from "../utils/variables";
 import { BaseNode, BaseNodeContent, BaseNodeHeader, BaseNodeHeaderTitle } from "./rf-ui/base-node";
@@ -28,14 +24,12 @@ type PromptInputNodeData = {
   llmId: string;
   field: PromptField;
   title: string;
-  layoutDirection: LayoutDirection;
 };
 
 type JudgeScoreNodeData = {
   kind: "llm-judge-score";
   llmId: string;
   scoreIndex: number;
-  layoutDirection: LayoutDirection;
 };
 
 export type RecipeGraphAuxNodeData = PromptInputNodeData | JudgeScoreNodeData;
@@ -104,24 +98,47 @@ function AuxNodeBase({
     return null;
   }
 
-  const sourcePosition = getAuxSourceHandlePosition(data.layoutDirection);
+  const sourceHandles = (
+    <>
+      <Handle
+        id={HANDLE_IDS.llmInputOutLeft}
+        type="source"
+        position={Position.Left}
+        isConnectable={false}
+        isConnectableStart={false}
+        className={AUX_HANDLE_CLASS}
+      />
+      <Handle
+        id={HANDLE_IDS.llmInputOutRight}
+        type="source"
+        position={Position.Right}
+        isConnectable={false}
+        isConnectableStart={false}
+        className={AUX_HANDLE_CLASS}
+      />
+      <Handle
+        id={HANDLE_IDS.llmInputOutTop}
+        type="source"
+        position={Position.Top}
+        isConnectable={false}
+        isConnectableStart={false}
+        className={AUX_HANDLE_CLASS}
+      />
+      <Handle
+        id={HANDLE_IDS.llmInputOutBottom}
+        type="source"
+        position={Position.Bottom}
+        isConnectable={false}
+        isConnectableStart={false}
+        className={AUX_HANDLE_CLASS}
+      />
+    </>
+  );
 
   if (data.kind === "llm-prompt-input") {
     const value = data.field === "prompt" ? config.prompt : config.system_prompt;
     return (
       <BaseNode className="corner-squircle w-full min-w-0 rounded-lg border-border/60 bg-card shadow-sm">
-        <NodeResizer
-          isVisible={true}
-          minWidth={MIN_NODE_WIDTH}
-          minHeight={120}
-          maxWidth={MAX_NODE_WIDTH}
-          maxHeight={520}
-          color="var(--primary)"
-          lineClassName="!border-transparent !shadow-none"
-          lineStyle={{ opacity: 0 }}
-          handleClassName="!h-3 !w-3 !border-transparent !bg-transparent"
-          handleStyle={{ opacity: 0 }}
-        />
         <BaseNodeHeader className="border-b border-border/50 px-3 py-2">
           <BaseNodeHeaderTitle className="text-xs">{data.title}</BaseNodeHeaderTitle>
         </BaseNodeHeader>
@@ -137,14 +154,7 @@ function AuxNodeBase({
           />
           <AuxVariableBadges llmId={data.llmId} />
         </BaseNodeContent>
-        <Handle
-          id={HANDLE_IDS.llmInputOut}
-          type="source"
-          position={sourcePosition}
-          isConnectable={false}
-          isConnectableStart={false}
-          className={AUX_HANDLE_CLASS}
-        />
+        {sourceHandles}
       </BaseNode>
     );
   }
@@ -190,18 +200,6 @@ function AuxNodeBase({
 
   return (
     <BaseNode className="corner-squircle w-full min-w-0 rounded-lg border-border/60 bg-card shadow-sm">
-      <NodeResizer
-        isVisible={true}
-        minWidth={MIN_NODE_WIDTH}
-        minHeight={120}
-        maxWidth={MAX_NODE_WIDTH}
-        maxHeight={640}
-        color="var(--primary)"
-        lineClassName="!border-transparent !shadow-none"
-        lineStyle={{ opacity: 0 }}
-        handleClassName="!h-3 !w-3 !border-transparent !bg-transparent"
-        handleStyle={{ opacity: 0 }}
-      />
       <BaseNodeHeader className="border-b border-border/50 px-3 py-2">
         <BaseNodeHeaderTitle className="text-xs">
           {score.name.trim() || `Scorer ${data.scoreIndex + 1}`}
@@ -260,14 +258,7 @@ function AuxNodeBase({
           </Button>
         </div>
       </BaseNodeContent>
-      <Handle
-        id={HANDLE_IDS.llmInputOut}
-        type="source"
-        position={sourcePosition}
-        isConnectable={false}
-        isConnectableStart={false}
-        className={AUX_HANDLE_CLASS}
-      />
+      {sourceHandles}
     </BaseNode>
   );
 }
