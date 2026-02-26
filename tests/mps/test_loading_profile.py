@@ -47,7 +47,10 @@ def profile_model_loading(model_name, load_in_4bit=False, max_seq_length=128):
     gc.collect()
     if torch.backends.mps.is_available():
         torch.mps.empty_cache()
-        torch.mps.reset_peak_memory_stats()
+        try:
+            torch.mps.reset_peak_memory_stats()
+        except AttributeError:
+            pass
     
     mem_before = get_mps_memory_mb()
     
