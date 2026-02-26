@@ -175,8 +175,10 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           .then((res) => {
             if (controller.signal.aborted) return;
             const isMultimodal = !!res.is_multimodal;
+            const isAudio = !!res.is_audio;
             const updates: Record<string, unknown> = {
               isDatasetMultimodal: isMultimodal,
+              isDatasetAudio: isAudio,
               isCheckingDataset: false,
             };
             if (!_trainOnCompletionsManuallySet) {
