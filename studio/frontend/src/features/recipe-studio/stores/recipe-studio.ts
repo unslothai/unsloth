@@ -258,6 +258,12 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
   applyLayout: () =>
     set((state) => {
       const isTopBottom = state.layoutDirection === "TB";
+      const noteNodeIds = new Set(
+        Object.values(state.configs)
+          .filter((config) => config.kind === "markdown_note")
+          .map((config) => config.id),
+      );
+
       const displayGraph = deriveDisplayGraph({
         nodes: state.nodes,
         edges: state.edges,
@@ -266,7 +272,14 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
         auxNodePositions: {},
         llmAuxVisibility: state.llmAuxVisibility,
       });
-      const { nodes } = getLayoutedElements(displayGraph.nodes, displayGraph.edges, {
+      const layoutNodes = displayGraph.nodes.filter(
+        (node) => !noteNodeIds.has(node.id),
+      );
+      const layoutNodeIds = new Set(layoutNodes.map((node) => node.id));
+      const layoutEdges = displayGraph.edges.filter(
+        (edge) => layoutNodeIds.has(edge.source) && layoutNodeIds.has(edge.target),
+      );
+      const { nodes } = getLayoutedElements(layoutNodes, layoutEdges, {
         direction: state.layoutDirection,
         nodesep: isTopBottom ? 120 : 80,
         ranksep: isTopBottom ? 140 : 80,
@@ -275,6 +288,9 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
         nodes.map((node) => [node.id, node.position] as const),
       );
       const nextNodes = state.nodes.map((node) => {
+        if (noteNodeIds.has(node.id)) {
+          return node;
+        }
         const position = layoutedPositions.get(node.id);
         if (!position) {
           return node;

@@ -48,6 +48,7 @@ import type {
   RecipeNodeData,
 } from "./types";
 import { deriveDisplayGraph } from "./utils/graph/derive-display-graph";
+import { getFitNodeIdsIgnoringNotes } from "./utils/graph/fit-view";
 import { buildRecipePayload } from "./utils/payload";
 import type { RecipePayload } from "./utils/payload/types";
 import { buildDefaultSchemaTransform } from "./utils/processors";
@@ -370,7 +371,10 @@ export function RecipeStudioPage({
     let frame2 = 0;
     const frame1 = window.requestAnimationFrame(() => {
       frame2 = window.requestAnimationFrame(() => {
-        reactFlowInstance.fitView({ duration: 250 });
+        reactFlowInstance.fitView({
+          duration: 250,
+          nodes: getFitNodeIdsIgnoringNotes(reactFlowInstance.getNodes()),
+        });
       });
     });
     return () => {
@@ -421,7 +425,7 @@ export function RecipeStudioPage({
                 nodesDraggable={interactive}
                 nodesConnectable={interactive}
                 elementsSelectable={interactive}
-                fitView={true}
+                fitView={false}
                 className="h-full w-full rounded-t-none"
               >
                 <LayoutControls
