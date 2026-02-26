@@ -75,7 +75,7 @@ function toLoraSummary(lora: {
   adapter_path: string;
   base_model?: string | null;
   source?: "training" | "exported" | null;
-  export_type?: "lora" | "merged" | null;
+  export_type?: "lora" | "merged" | "gguf" | null;
 }): ChatLoraSummary {
   const idTail = lora.adapter_path.split("/").filter(Boolean).at(-1) ?? "";
   const updatedAt =

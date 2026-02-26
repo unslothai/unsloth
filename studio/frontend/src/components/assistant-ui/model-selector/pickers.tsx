@@ -525,9 +525,12 @@ export function LoraModelPicker({
                 {adapters.map((adapter) => {
                   const isExported = adapter.source === "exported";
                   const isMerged = adapter.exportType === "merged";
-                  const tag = isExported
-                    ? isMerged ? "Merged" : "LoRA"
-                    : "LoRA";
+                  const isGguf = adapter.exportType === "gguf";
+                  const tag = isGguf
+                    ? "GGUF"
+                    : isExported
+                      ? isMerged ? "Merged" : "LoRA"
+                      : "LoRA";
                   const meta = isExported ? `${tag} · Exported` : tag;
                   return (
                     <ModelRow
@@ -537,7 +540,7 @@ export function LoraModelPicker({
                       selected={value === adapter.id}
                       onClick={() => onSelect(adapter.id, {
                         source: isExported ? "exported" : "lora",
-                        isLora: !isMerged,
+                        isLora: !isMerged && !isGguf,
                       })}
                     />
                   );

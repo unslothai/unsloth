@@ -79,6 +79,7 @@ export function DatasetStep() {
     setDatasetEvalSplit,
     uploadedFile,
     setUploadedFile,
+    modelType,
   } = useTrainingConfigStore(
     useShallow((s) => ({
       hfToken: s.hfToken,
@@ -97,6 +98,7 @@ export function DatasetStep() {
       setDatasetEvalSplit: s.setDatasetEvalSplit,
       uploadedFile: s.uploadedFile,
       setUploadedFile: s.setUploadedFile,
+      modelType: s.modelType,
     })),
   );
 
@@ -110,6 +112,7 @@ export function DatasetStep() {
     fetchMore,
     error: hfSearchError,
   } = useHfDatasetSearch(debouncedQuery, {
+    modelType,
     accessToken: hfToken || undefined,
   });
 
