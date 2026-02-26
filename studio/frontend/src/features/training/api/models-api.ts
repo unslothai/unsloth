@@ -46,6 +46,7 @@ interface BackendLoggingDefaults {
 }
 
 export interface BackendModelConfig {
+  audio_type?: string | null;
   training?: BackendTrainingDefaults;
   lora?: BackendLoraDefaults;
   logging?: BackendLoggingDefaults;

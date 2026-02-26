@@ -36,6 +36,7 @@ const initialState: TrainingConfigState = {
   modelDefaultsAppliedFor: null,
   isCheckingDataset: false,
   isDatasetMultimodal: null,
+  isDatasetAudio: false,
   ...DEFAULT_HYPERPARAMS,
 };
 
@@ -57,6 +58,7 @@ const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> = new Set
   "modelDefaultsAppliedFor",
   "isCheckingDataset",
   "isDatasetMultimodal",
+  "isDatasetAudio",
   "trainOnCompletions",
 ]);
 
@@ -205,6 +207,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             selectedModel: null,
             isCheckingVision: false,
             isVisionModel: false,
+            isDatasetAudio: false,
             isLoadingModelDefaults: false,
             modelDefaultsError: null,
             modelDefaultsAppliedFor: null,
@@ -220,6 +223,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             set({
               isCheckingVision: false,
               isVisionModel: false,
+              isDatasetAudio: false,
               isLoadingModelDefaults: false,
               modelDefaultsError: null,
               modelDefaultsAppliedFor: null,
