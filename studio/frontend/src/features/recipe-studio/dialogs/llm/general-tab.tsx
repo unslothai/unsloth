@@ -14,8 +14,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { type ReactElement, type RefObject } from "react";
+import { type ReactElement, type RefObject, useMemo } from "react";
+import { useRecipeStudioStore } from "../../stores/recipe-studio";
 import type { LlmConfig } from "../../types";
+import { findInvalidJinjaReferences } from "../../utils/refs";
+import { getAvailableVariables } from "../../utils/variables";
 import { AvailableVariables } from "../shared/available-variables";
 import { FieldLabel } from "../shared/field-label";
 import { NameField } from "../shared/name-field";
@@ -54,6 +57,7 @@ export function LlmGeneralTab({
   modelAliasAnchorRef,
   onUpdate,
 }: LlmGeneralTabProps): ReactElement {
+  const configs = useRecipeStudioStore((state) => state.configs);
   const modelAliasId = `${config.id}-model-alias`;
   const codeLangId = `${config.id}-code-lang`;
   const promptId = `${config.id}-prompt`;
@@ -61,6 +65,26 @@ export function LlmGeneralTab({
   const systemPromptId = `${config.id}-system-prompt`;
   const hasModelConfigs = modelConfigAliases.length > 0;
   const hasModelProviders = modelProviderOptions.length > 0;
+  const validReferences = useMemo(
+    () => getAvailableVariables(configs, config.id),
+    [configs, config.id],
+  );
+  const invalidPromptRefs = useMemo(
+    () => findInvalidJinjaReferences(config.prompt, validReferences),
+    [config.prompt, validReferences],
+  );
+  const invalidSystemRefs = useMemo(
+    () => findInvalidJinjaReferences(config.system_prompt, validReferences),
+    [config.system_prompt, validReferences],
+  );
+  const invalidPromptText = invalidPromptRefs
+    .slice(0, 3)
+    .map((ref) => `{{ ${ref} }}`)
+    .join(", ");
+  const invalidSystemText = invalidSystemRefs
+    .slice(0, 3)
+    .map((ref) => `{{ ${ref} }}`)
+    .join(", ");
 
   return (
     <div className="space-y-4">
@@ -148,9 +172,18 @@ export function LlmGeneralTab({
         <Textarea
           id={promptId}
           className="corner-squircle nodrag max-h-[450px] overflow-auto"
+          aria-invalid={invalidPromptRefs.length > 0}
           value={config.prompt}
           onChange={(event) => onUpdate({ prompt: event.target.value })}
         />
+        {invalidPromptRefs.length > 0 && (
+          <p className="text-xs text-destructive">
+            Unknown reference: {invalidPromptText}
+            {invalidPromptRefs.length > 3
+              ? ` +${invalidPromptRefs.length - 3} more`
+              : ""}
+          </p>
+        )}
       </div>
       {config.llm_type === "structured" && (
         <div className="grid gap-2">
@@ -178,9 +211,18 @@ export function LlmGeneralTab({
         <Textarea
           id={systemPromptId}
           className="corner-squircle nodrag max-h-[450px] overflow-auto"
+          aria-invalid={invalidSystemRefs.length > 0}
           value={config.system_prompt}
           onChange={(event) => onUpdate({ system_prompt: event.target.value })}
         />
+        {invalidSystemRefs.length > 0 && (
+          <p className="text-xs text-destructive">
+            Unknown reference: {invalidSystemText}
+            {invalidSystemRefs.length > 3
+              ? ` +${invalidSystemRefs.length - 3} more`
+              : ""}
+          </p>
+        )}
       </div>
     </div>
   );
