@@ -213,6 +213,7 @@ MODEL_NAME_MAPPING = {
         "unsloth/Nemotron-3-Nano-30B-A3B",
     ],
     "unsloth_orpheus-3b-0.1-ft.yaml": [
+        "unsloth/orpheus-3b-0.1-ft",
         "unsloth/orpheus-3b-0.1-ft-unsloth-bnb-4bit",
         "canopylabs/orpheus-3b-0.1-ft",
         "unsloth/orpheus-3b-0.1-ft-bnb-4bit",
@@ -317,9 +318,11 @@ MODEL_NAME_MAPPING = {
     ],
     "sesame_csm-1b.yaml": [
         "sesame/csm-1b",
+        "unsloth/csm-1b",
     ],
     "Spark-TTS-0.5B_LLM.yaml": [
         "Spark-TTS-0.5B/LLM",
+        "unsloth/Spark-TTS-0.5B",
     ],
     "unsloth_tinyllama-bnb-4bit.yaml": [
         "unsloth/tinyllama",

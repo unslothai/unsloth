@@ -60,6 +60,7 @@ export interface TrainingConfigState {
   modelDefaultsAppliedFor: string | null;
   isCheckingDataset: boolean;
   isDatasetMultimodal: boolean | null;
+  isDatasetAudio: boolean;
   finetuneVisionLayers: boolean;
   finetuneLanguageLayers: boolean;
   finetuneAttentionModules: boolean;
