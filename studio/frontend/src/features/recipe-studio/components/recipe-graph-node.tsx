@@ -42,6 +42,7 @@ import { InlineLlm } from "./inline/inline-llm";
 import { InlineModel } from "./inline/inline-model";
 import { isInlineConfig } from "./inline/inline-policy";
 import { InlineSampler } from "./inline/inline-sampler";
+import { InlineSeed } from "./inline/inline-seed";
 import {
   BaseNode,
   BaseNodeContent,
@@ -218,7 +219,7 @@ function getConfigSummary(config: NodeConfig | undefined): string {
       return "Set HF dataset repo";
     }
     if (seedSourceType === "local") {
-      return "Upload CSV/JSON file";
+      return "Upload structured file";
     }
     return "Upload PDF/DOCX/TXT file";
   }
@@ -256,6 +257,9 @@ function renderNodeBody(
     }
     if (config.kind === "expression") {
       return <InlineExpression config={config} onUpdate={onUpdate} />;
+    }
+    if (config.kind === "seed") {
+      return <InlineSeed config={config} onUpdate={onUpdate} />;
     }
   }
 
