@@ -138,6 +138,7 @@ const INCOMPATIBLE_TASKS_ALL_MODELS = new Set([
 ]);
 
 const PRETRAINING_PLAIN_TAGS = new Set(["pretraining", "pre-training"]);
+const OCR_PLAIN_TAGS = new Set(["ocr", "document-ocr"]);
 
 const PRETRAINING_SIZE_CATEGORIES = new Set([
   "100M<n<1B",
@@ -145,6 +146,13 @@ const PRETRAINING_SIZE_CATEGORIES = new Set([
   "10B<n<100B",
   "100B<n<1T",
   "n>1T",
+]);
+
+const OCR_OR_VISION_TEXT_TASKS = new Set([
+  "image-to-text",
+  "image-captioning",
+  "visual-question-answering",
+  "document-question-answering",
 ]);
 
 const INCOMPATIBLE_TASKS_BY_MODEL: Record<ModelType, Set<string>> = {
@@ -232,6 +240,16 @@ function rankDatasetRelevance(
 ): DatasetRelevance {
   if (isPretrainingDataset(dataset)) return "incompatible";
 
+  // Keep OCR / vision-text corpora out of non-vision defaults.
+  if (modelType !== "vision") {
+    if (
+      dataset.plainTags.some((t) => OCR_PLAIN_TAGS.has(t.toLowerCase())) ||
+      dataset.taskCategories.some((t) => OCR_OR_VISION_TEXT_TASKS.has(t))
+    ) {
+      return "incompatible";
+    }
+  }
+
   const { taskCategories } = dataset;
   if (taskCategories.length === 0) return "neutral";
 
@@ -246,6 +264,13 @@ function rankDatasetRelevance(
   )
     return "incompatible";
   return "neutral";
+}
+
+function isOcrOrVisionTextDataset(dataset: HfDatasetResult): boolean {
+  return (
+    dataset.plainTags.some((t) => OCR_PLAIN_TAGS.has(t.toLowerCase())) ||
+    dataset.taskCategories.some((t) => OCR_OR_VISION_TEXT_TASKS.has(t))
+  );
 }
 
 export function useHfDatasetSearch(
@@ -267,12 +292,17 @@ export function useHfDatasetSearch(
   const search = useHfPaginatedSearch(createIter, mapDataset);
 
   const results = useMemo(() => {
-    if (!modelType) return search.results;
+    const hideOcr = modelType !== "vision";
+    const baseResults = hideOcr
+      ? search.results.filter((ds) => !isOcrOrVisionTextDataset(ds))
+      : search.results;
+
+    if (!modelType) return baseResults;
 
     const boosted: HfDatasetResult[] = [];
     const neutral: HfDatasetResult[] = [];
 
-    for (const ds of search.results) {
+    for (const ds of baseResults) {
       const relevance = rankDatasetRelevance(ds, modelType);
       if (relevance === "boosted") boosted.push(ds);
       else if (relevance !== "incompatible") neutral.push(ds);
