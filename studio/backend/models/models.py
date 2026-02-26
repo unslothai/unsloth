@@ -63,7 +63,7 @@ class LoRAInfo(BaseModel):
     adapter_path: str = Field(..., description="Path to the LoRA adapter or exported model")
     base_model: Optional[str] = Field(None, description="Base model identifier")
     source: Optional[str] = Field(None, description="'training' or 'exported'")
-    export_type: Optional[str] = Field(None, description="'lora' or 'merged' (for exports)")
+    export_type: Optional[str] = Field(None, description="'lora', 'merged', or 'gguf' (for exports)")
 
 
 class LoRAScanResponse(BaseModel):

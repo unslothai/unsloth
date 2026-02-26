@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   Sheet,
   SheetContent,
@@ -12,17 +13,24 @@ import {
   CodeIcon,
   Copy02Icon,
   type Database02Icon,
+  DragDropVerticalIcon,
   PlusSignIcon,
   Tick02Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactElement, useMemo, useState } from "react";
+import {
+  type DragEvent as ReactDragEvent,
+  type ReactElement,
+  useMemo,
+  useState,
+} from "react";
 import { RECIPE_FLOATING_ICON_BUTTON_CLASS } from "./recipe-floating-icon-button-class";
 import type { LlmType, SamplerType } from "../types";
 import {
   BLOCK_GROUPS,
   getBlocksForKind,
+  type BlockType,
   type SeedBlockType,
 } from "../blocks/registry";
 
@@ -60,6 +68,12 @@ type BlockSheetProps = {
   copied: boolean;
   onCopy: () => void;
   onImport: () => void;
+};
+
+export const RECIPE_BLOCK_DND_MIME = "application/x-recipe-studio-block";
+export type RecipeBlockDragPayload = {
+  kind: SheetKind;
+  type: BlockType;
 };
 
 function getSheetTitle(sheetView: SheetView): string {
@@ -103,6 +117,15 @@ const ROOT_GROUPS: RootGroup[] = [
     icon: CodeIcon,
   },
 ];
+const SEARCHABLE_KINDS: SheetKind[] = [
+  "sampler",
+  "seed",
+  "llm",
+  "expression",
+  "note",
+];
+const PROCESSOR_TITLE = "Schema Transform";
+const PROCESSOR_DESCRIPTION = "Transform final dataset schema.";
 
 function BlockSheetButton({
   icon,
@@ -110,22 +133,30 @@ function BlockSheetButton({
   description,
   onClick,
   isActive = false,
+  draggable = false,
+  onDragStart,
+  trailing = "chevron",
 }: {
   icon: typeof Database02Icon;
   title: string;
   description: string;
   onClick: () => void;
   isActive?: boolean;
+  draggable?: boolean;
+  onDragStart?: (event: ReactDragEvent<HTMLButtonElement>) => void;
+  trailing?: "chevron" | "drag" | "none";
 }): ReactElement {
   return (
     <button
       type="button"
       onClick={onClick}
+      draggable={draggable}
+      onDragStart={onDragStart}
       className={`flex w-full items-center gap-3 border-l-2 bg-background px-3 py-3 text-left transition hover:bg-muted/35 ${
         isActive
           ? "border-emerald-500"
           : "border-transparent hover:border-border/60"
-      }`}
+      } ${draggable ? "cursor-grab active:cursor-grabbing" : ""}`}
     >
       <div className="flex size-9 items-center justify-center rounded-xl text-foreground/70">
         <HugeiconsIcon icon={icon} className="size-5" />
@@ -134,10 +165,18 @@ function BlockSheetButton({
         <p className="text-sm font-semibold text-foreground">{title}</p>
         <p className="text-[11px] text-muted-foreground">{description}</p>
       </div>
-      <HugeiconsIcon
-        icon={ArrowRight01Icon}
-        className="size-3.5 text-muted-foreground"
-      />
+      {trailing === "chevron" ? (
+        <HugeiconsIcon
+          icon={ArrowRight01Icon}
+          className="size-3.5 text-muted-foreground"
+        />
+      ) : trailing === "drag" ? (
+        <HugeiconsIcon
+          icon={DragDropVerticalIcon}
+          strokeWidth={3.5}
+          className="size-5 text-foreground"
+        />
+      ) : null}
     </button>
   );
 }
@@ -162,17 +201,112 @@ export function BlockSheet({
 }: BlockSheetProps): ReactElement {
   const sheetTitle = getSheetTitle(sheetView);
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
+  const [search, setSearch] = useState("");
   const expressionBlocks = useMemo(() => getBlocksForKind("expression"), []);
   const noteBlocks = useMemo(() => getBlocksForKind("note"), []);
   const seedBlocks = useMemo(() => getBlocksForKind("seed"), []);
   const isControlled = typeof open === "boolean";
   const sheetOpen = isControlled ? (open as boolean) : uncontrolledOpen;
+  const normalizedSearch = search.trim().toLowerCase();
+  const hasSearch = normalizedSearch.length > 0;
+  const isProcessorView = sheetView === "processor";
+  const isRootView = sheetView === "root";
+  const isScopedBlockView = !isRootView && !isProcessorView;
 
   const setSheetOpen = (nextOpen: boolean) => {
     if (!isControlled) {
       setUncontrolledOpen(nextOpen);
     }
     onOpenChange?.(nextOpen);
+  };
+  const matchesSearch = (title: string, description: string) =>
+    title.toLowerCase().includes(normalizedSearch) ||
+    description.toLowerCase().includes(normalizedSearch);
+
+  const searchableBlocks = useMemo(
+    () => SEARCHABLE_KINDS.flatMap((kind) => getBlocksForKind(kind)),
+    [],
+  );
+  const rootSearchBlocks = useMemo(() => {
+    if (!hasSearch) {
+      return [];
+    }
+    return searchableBlocks.filter((item) =>
+      matchesSearch(item.title, item.description),
+    );
+  }, [hasSearch, searchableBlocks, normalizedSearch]);
+
+  const scopedBlocks = useMemo(() => {
+    if (!isScopedBlockView) {
+      return [];
+    }
+    const blocks = getBlocksForKind(VIEW_KIND[sheetView] ?? "sampler");
+    if (!hasSearch) {
+      return blocks;
+    }
+    return blocks.filter((item) => matchesSearch(item.title, item.description));
+  }, [hasSearch, isScopedBlockView, normalizedSearch, sheetView]);
+
+  const rootGroups = useMemo(() => {
+    if (!hasSearch) {
+      return ROOT_GROUPS;
+    }
+    return ROOT_GROUPS.filter((group) => {
+      if (matchesSearch(group.title, group.description)) {
+        return true;
+      }
+      if (group.kind === "processor") {
+        return matchesSearch(PROCESSOR_TITLE, PROCESSOR_DESCRIPTION);
+      }
+      return getBlocksForKind(group.kind).some((item) =>
+        matchesSearch(item.title, item.description),
+      );
+    });
+  }, [hasSearch, normalizedSearch]);
+  const showNoMatches =
+    (isRootView && hasSearch && rootSearchBlocks.length === 0) ||
+    (isScopedBlockView && scopedBlocks.length === 0) ||
+    (isProcessorView &&
+      hasSearch &&
+      !matchesSearch(PROCESSOR_TITLE, PROCESSOR_DESCRIPTION));
+
+  const buildDragStart =
+    (kind: SheetKind, type: BlockType) =>
+    (event: ReactDragEvent<HTMLButtonElement>) => {
+      const payload: RecipeBlockDragPayload = { kind, type };
+      const serialized = JSON.stringify(payload);
+      event.dataTransfer.setData(RECIPE_BLOCK_DND_MIME, serialized);
+      event.dataTransfer.setData("text/plain", serialized);
+      event.dataTransfer.effectAllowed = "copy";
+    };
+  const getTrailing = (_kind: SheetKind): "drag" => "drag";
+  const onBlockClick = (kind: SheetKind, type: BlockType) => {
+    setSheetOpen(false);
+    if (kind === "sampler") {
+      onAddSampler(type as SamplerType);
+      return;
+    }
+    if (kind === "seed") {
+      onAddSeed(type as SeedBlockType);
+      return;
+    }
+    if (kind === "llm") {
+      if (type === "model_provider") {
+        onAddModelProvider();
+        return;
+      }
+      if (type === "model_config") {
+        onAddModelConfig();
+        return;
+      }
+      onAddLlm(type as LlmType);
+      return;
+    }
+    if (kind === "expression") {
+      onAddExpression();
+      return;
+    }
+    onAddMarkdownNote();
   };
 
   return (
@@ -183,6 +317,7 @@ export function BlockSheet({
           setSheetOpen(nextOpen);
           if (nextOpen) {
             onViewChange("root");
+            setSearch("");
           }
         }}
       >
@@ -206,7 +341,7 @@ export function BlockSheet({
           className="absolute gap-0 p-0 shadow-none"
           overlayClassName="bg-transparent pointer-events-none backdrop-blur-none supports-backdrop-filter:backdrop-blur-none"
         >
-          <SheetHeader className="border-b border-border/60 px-6 py-5">
+          <SheetHeader className="px-6 py-5">
             <div className="flex items-center gap-2">
               {sheetView !== "root" && (
                 <Button
@@ -220,17 +355,52 @@ export function BlockSheet({
               )}
               <SheetTitle>{sheetTitle}</SheetTitle>
             </div>
+            <Input
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Search blocks..."
+              className="corner-squircle mt-3 h-9"
+            />
           </SheetHeader>
           <div className=" py-4">
             <div className="mt-4 flex flex-col gap-2">
-              {sheetView === "root" &&
-                ROOT_GROUPS.map((item, index) => (
+              {isRootView &&
+                hasSearch &&
+                rootSearchBlocks.map((item, index) => (
+                  <BlockSheetButton
+                    key={`${item.kind}:${item.type}`}
+                    icon={item.icon}
+                    title={item.title}
+                    description={item.description}
+                    isActive={index === 0}
+                    draggable={true}
+                    onDragStart={buildDragStart(item.kind, item.type)}
+                    trailing={getTrailing(item.kind)}
+                    onClick={() => onBlockClick(item.kind, item.type)}
+                  />
+                ))}
+              {isRootView &&
+                !hasSearch &&
+                rootGroups.map((item, index) => (
                   <BlockSheetButton
                     key={item.kind}
                     icon={item.icon}
                     title={item.title}
                     description={item.description}
                     isActive={index === 0}
+                    draggable={item.kind === "expression" || item.kind === "note"}
+                    onDragStart={
+                      item.kind === "expression" && expressionBlocks[0]
+                        ? buildDragStart("expression", expressionBlocks[0].type)
+                        : item.kind === "note" && noteBlocks[0]
+                          ? buildDragStart("note", noteBlocks[0].type)
+                          : undefined
+                    }
+                    trailing={
+                      item.kind === "expression" || item.kind === "note"
+                        ? "drag"
+                        : "chevron"
+                    }
                     onClick={() => {
                       if (item.kind === "processor") {
                         setSheetOpen(false);
@@ -256,18 +426,20 @@ export function BlockSheet({
                     }}
                   />
                 ))}
-              {sheetView === "processor" && (
-                <BlockSheetButton
-                  icon={CodeIcon}
-                  title="Schema Transform"
-                  description="Transform final dataset schema."
-                  isActive={true}
-                  onClick={onOpenProcessors}
-                />
+              {isProcessorView && (
+                (!hasSearch ||
+                  matchesSearch(PROCESSOR_TITLE, PROCESSOR_DESCRIPTION)) && (
+                  <BlockSheetButton
+                    icon={CodeIcon}
+                    title={PROCESSOR_TITLE}
+                    description={PROCESSOR_DESCRIPTION}
+                    isActive={true}
+                    onClick={onOpenProcessors}
+                  />
+                )
               )}
-              {sheetView !== "root" &&
-                sheetView !== "processor" &&
-                getBlocksForKind(VIEW_KIND[sheetView] ?? "sampler").map(
+              {isScopedBlockView &&
+                scopedBlocks.map(
                   (item, index) => (
                     <BlockSheetButton
                       key={item.type}
@@ -275,29 +447,18 @@ export function BlockSheet({
                       title={item.title}
                       description={item.description}
                       isActive={index === 0}
-                      onClick={() => {
-                        setSheetOpen(false);
-                        if (item.kind === "sampler") {
-                          onAddSampler(item.type as SamplerType);
-                        } else if (item.kind === "seed") {
-                          onAddSeed(item.type as SeedBlockType);
-                        } else if (item.kind === "llm") {
-                          if (item.type === "model_provider") {
-                            onAddModelProvider();
-                          } else if (item.type === "model_config") {
-                            onAddModelConfig();
-                          } else {
-                            onAddLlm(item.type as LlmType);
-                          }
-                        } else if (item.kind === "expression") {
-                          onAddExpression();
-                        } else {
-                          onAddMarkdownNote();
-                        }
-                      }}
+                      draggable={true}
+                      onDragStart={buildDragStart(item.kind, item.type)}
+                      trailing={getTrailing(item.kind)}
+                      onClick={() => onBlockClick(item.kind, item.type)}
                     />
                   ),
                 )}
+              {showNoMatches && (
+                <p className="px-3 py-2 text-xs text-muted-foreground">
+                  No blocks match.
+                </p>
+              )}
             </div>
           </div>
         </SheetContent>

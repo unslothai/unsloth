@@ -26,10 +26,17 @@ import {
 } from "../blocks/registry";
 import { deriveDisplayGraph } from "../utils/graph/derive-display-graph";
 import { applyRecipeConnection, isValidRecipeConnection } from "../utils/graph";
-import { HANDLE_IDS, remapRecipeEdgeHandlesForLayout } from "../utils/handles";
+import {
+  HANDLE_IDS,
+  normalizeRecipeHandleId,
+  remapRecipeEdgeHandlesForLayout,
+} from "../utils/handles";
 import type { RecipeSnapshot } from "../utils/import";
 import { getLayoutedElements } from "../utils/layout";
-import { syncPositionsRecord, syncSizesRecord } from "./helpers/aux-sync";
+import {
+  centerModelInfraNodes,
+  optimizeModelInfraEdgeHandles,
+} from "./helpers/model-infra-layout";
 import { applyEdgeRemovals, applyNodeRemovals } from "./helpers/removals";
 import {
   applyRenameToConfigs,
@@ -53,7 +60,6 @@ type RecipeStudioState = {
   nodes: RecipeNode[];
   edges: Edge[];
   auxNodePositions: Record<string, XYPosition>;
-  auxNodeSizes: Record<string, { width: number; height: number }>;
   llmAuxVisibility: Record<string, boolean>;
   configs: Record<string, NodeConfig>;
   processors: RecipeProcessorConfig[];
@@ -73,25 +79,24 @@ type RecipeStudioState = {
   setLayoutDirection: (direction: LayoutDirection) => void;
   applyLayout: () => void;
   setLlmAuxVisibility: (id: string, visible: boolean) => void;
-  addSamplerNode: (type: SamplerType) => void;
-  addSeedNode: (type: SeedBlockType) => void;
-  addLlmNode: (type: LlmType) => void;
-  addModelProviderNode: () => void;
-  addModelConfigNode: () => void;
-  addExpressionNode: () => void;
-  addMarkdownNoteNode: () => void;
+  addSamplerNode: (
+    type: SamplerType,
+    position?: XYPosition,
+    openDialog?: boolean,
+  ) => void;
+  addSeedNode: (
+    type: SeedBlockType,
+    position?: XYPosition,
+    openDialog?: boolean,
+  ) => void;
+  addLlmNode: (type: LlmType, position?: XYPosition, openDialog?: boolean) => void;
+  addModelProviderNode: (position?: XYPosition, openDialog?: boolean) => void;
+  addModelConfigNode: (position?: XYPosition, openDialog?: boolean) => void;
+  addExpressionNode: (position?: XYPosition, openDialog?: boolean) => void;
+  addMarkdownNoteNode: (position?: XYPosition, openDialog?: boolean) => void;
   updateConfig: (id: string, patch: Partial<NodeConfig>) => void;
   loadRecipe: (snapshot: RecipeSnapshot) => void;
   setAuxNodePosition: (id: string, position: XYPosition) => void;
-  setAuxNodeSize: (
-    id: string,
-    size: { width: number; height: number },
-  ) => void;
-  syncAuxNodePositions: (
-    activeIds: string[],
-    defaults: Record<string, XYPosition>,
-  ) => void;
-  syncAuxNodeSizes: (activeIds: string[]) => void;
   onNodesChange: (changes: NodeChange<RecipeNode>[]) => void;
   onEdgesChange: (changes: EdgeChange<Edge>[]) => void;
   onConnect: (connection: Connection) => void;
@@ -102,7 +107,6 @@ const INITIAL_STATE = {
   nodes: [],
   edges: [],
   auxNodePositions: {},
-  auxNodeSizes: {},
   llmAuxVisibility: {},
   configs: {},
   processors: [],
@@ -118,7 +122,6 @@ const INITIAL_STATE = {
   | "nodes"
   | "edges"
   | "auxNodePositions"
-  | "auxNodeSizes"
   | "llmAuxVisibility"
   | "configs"
   | "processors"
@@ -135,6 +138,8 @@ function buildAddedNodeState(
   state: RecipeStudioState,
   kind: BlockKind,
   type: BlockType,
+  position?: XYPosition,
+  openDialog = true,
 ): Partial<RecipeStudioState> | RecipeStudioState {
   const id = `n${state.nextId}`;
   const existing = Object.values(state.configs);
@@ -143,7 +148,13 @@ function buildAddedNodeState(
     return state;
   }
   const config = definition.createConfig(id, existing);
-  return buildNodeUpdate(state, config, state.layoutDirection);
+  return buildNodeUpdate(
+    state,
+    config,
+    state.layoutDirection,
+    position,
+    openDialog,
+  );
 }
 
 function getAddedNodeContext(
@@ -219,6 +230,17 @@ function connectSemantic(
   };
 }
 
+function isModelSemanticEdge(edge: Edge, configs: Record<string, NodeConfig>): boolean {
+  const source = configs[edge.source];
+  const target = configs[edge.target];
+  return Boolean(
+    source &&
+      target &&
+      ((source.kind === "model_provider" && target.kind === "model_config") ||
+        (source.kind === "model_config" && target.kind === "llm")),
+  );
+}
+
 export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
   ...INITIAL_STATE,
   setSheetView: (view) => set({ sheetView: view }),
@@ -230,10 +252,19 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
   setLayoutDirection: (direction) =>
     set((state) => ({
       layoutDirection: direction,
-      edges: state.edges.map((edge) => ({
-        ...edge,
-        ...remapRecipeEdgeHandlesForLayout(edge, direction),
-      })),
+      edges: state.edges.map((edge) => {
+        if (isModelSemanticEdge(edge, state.configs)) {
+          return {
+            ...edge,
+            sourceHandle: normalizeRecipeHandleId(edge.sourceHandle),
+            targetHandle: normalizeRecipeHandleId(edge.targetHandle),
+          };
+        }
+        return {
+          ...edge,
+          ...remapRecipeEdgeHandlesForLayout(edge, direction),
+        };
+      }),
       nodes: applyLayoutDirectionToNodes(
         state.nodes,
         state.configs,
@@ -243,13 +274,13 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
   applyLayout: () =>
     set((state) => {
       const isTopBottom = state.layoutDirection === "TB";
+
       const displayGraph = deriveDisplayGraph({
         nodes: state.nodes,
         edges: state.edges,
         configs: state.configs,
         layoutDirection: state.layoutDirection,
-        auxNodePositions: state.auxNodePositions,
-        auxNodeSizes: state.auxNodeSizes,
+        auxNodePositions: {},
         llmAuxVisibility: state.llmAuxVisibility,
       });
       const { nodes } = getLayoutedElements(displayGraph.nodes, displayGraph.edges, {
@@ -267,27 +298,23 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
         }
         return { ...node, position };
       });
-      const nextAuxNodePositions: Record<string, XYPosition> = {};
-      for (const auxId of displayGraph.auxNodeIds) {
-        const existing = state.auxNodePositions[auxId];
-        const layouted = layoutedPositions.get(auxId);
-        if (layouted) {
-          nextAuxNodePositions[auxId] = layouted;
-          continue;
-        }
-        if (existing) {
-          nextAuxNodePositions[auxId] = existing;
-          continue;
-        }
-        const fallback = displayGraph.auxDefaults[auxId];
-        if (fallback) {
-          nextAuxNodePositions[auxId] = fallback;
-        }
-      }
+      const centeredNodes = centerModelInfraNodes(
+        nextNodes,
+        state.edges,
+        state.configs,
+        state.layoutDirection,
+      );
+      const optimizedEdges = optimizeModelInfraEdgeHandles(
+        state.edges,
+        centeredNodes,
+        state.configs,
+        state.layoutDirection,
+      );
       return {
-        auxNodePositions: nextAuxNodePositions,
+        auxNodePositions: {},
+        edges: optimizedEdges,
         nodes: applyLayoutDirectionToNodes(
-          nextNodes,
+          centeredNodes,
           state.configs,
           state.layoutDirection,
         ),
@@ -305,15 +332,23 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
         },
       };
     }),
-  addSamplerNode: (type) =>
-    set((state) => buildAddedNodeState(state, "sampler", type)),
-  addSeedNode: (type) =>
+  addSamplerNode: (type, position, openDialog = true) =>
+    set((state) =>
+      buildAddedNodeState(state, "sampler", type, position, openDialog),
+    ),
+  addSeedNode: (type, position, openDialog = true) =>
     set((state) => {
       const existing = Object.values(state.configs).find(
         (config) => config.kind === "seed",
       );
       if (!existing) {
-        return buildAddedNodeState(state, "seed", type);
+        return buildAddedNodeState(
+          state,
+          "seed",
+          type,
+          position,
+          openDialog,
+        );
       }
       let nextSourceType: SeedSourceType = "hf";
       if (type === "seed_local") {
@@ -351,13 +386,22 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
           state.layoutDirection,
         ),
         activeConfigId: existing.id,
-        dialogOpen: true,
+        dialogOpen: openDialog,
       };
     }),
-  addLlmNode: (type) => set((state) => buildAddedNodeState(state, "llm", type)),
-  addModelProviderNode: () =>
+  addLlmNode: (type, position, openDialog = true) =>
+    set((state) =>
+      buildAddedNodeState(state, "llm", type, position, openDialog),
+    ),
+  addModelProviderNode: (position, openDialog = true) =>
     set((state) => {
-      const added = buildAddedNodeState(state, "llm", "model_provider");
+      const added = buildAddedNodeState(
+        state,
+        "llm",
+        "model_provider",
+        position,
+        openDialog,
+      );
       const context = getAddedNodeContext(added);
       if (!context) {
         return added;
@@ -369,7 +413,7 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
           config.kind === "model_config" &&
           !config.provider.trim(),
       );
-      if (unboundModelConfigs.length > 0) {
+      if (!position && unboundModelConfigs.length > 0) {
         nodes = placeNodeNear(
           nodes,
           context.newNodeId,
@@ -390,9 +434,15 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
       }
       return { ...added, nodes, edges, configs };
     }),
-  addModelConfigNode: () =>
+  addModelConfigNode: (position, openDialog = true) =>
     set((state) => {
-      const added = buildAddedNodeState(state, "llm", "model_config");
+      const added = buildAddedNodeState(
+        state,
+        "llm",
+        "model_config",
+        position,
+        openDialog,
+      );
       const context = getAddedNodeContext(added);
       if (!context) {
         return added;
@@ -405,7 +455,7 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
       const unboundLlms = Object.values(configs).filter(
         (config) => config.kind === "llm" && !config.model_alias.trim(),
       );
-      if (providers.length === 1) {
+      if (!position && providers.length === 1) {
         nodes = placeNodeNear(
           nodes,
           context.newNodeId,
@@ -413,7 +463,7 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
           state.layoutDirection,
           "after",
         );
-      } else if (unboundLlms.length > 0) {
+      } else if (!position && unboundLlms.length > 0) {
         nodes = placeNodeNear(
           nodes,
           context.newNodeId,
@@ -444,10 +494,26 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
       }
       return { ...added, nodes, edges, configs };
     }),
-  addExpressionNode: () =>
-    set((state) => buildAddedNodeState(state, "expression", "expression")),
-  addMarkdownNoteNode: () =>
-    set((state) => buildAddedNodeState(state, "note", "markdown_note")),
+  addExpressionNode: (position, openDialog = true) =>
+    set((state) =>
+      buildAddedNodeState(
+        state,
+        "expression",
+        "expression",
+        position,
+        openDialog,
+      ),
+    ),
+  addMarkdownNoteNode: (position, openDialog = true) =>
+    set((state) =>
+      buildAddedNodeState(
+        state,
+        "note",
+        "markdown_note",
+        position,
+        openDialog,
+      ),
+    ),
   loadRecipe: (snapshot) =>
     set((state) => ({
       configs: snapshot.configs,
@@ -461,8 +527,7 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
       layoutDirection: snapshot.layoutDirection,
       nextId: snapshot.nextId,
       nextY: snapshot.nextY,
-      auxNodePositions: {},
-      auxNodeSizes: {},
+      auxNodePositions: snapshot.auxNodePositions ?? {},
       llmAuxVisibility: {},
       activeConfigId: null,
       dialogOpen: false,
@@ -481,36 +546,6 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
           [id]: position,
         },
       };
-    }),
-  setAuxNodeSize: (id, size) =>
-    set((state) => {
-      const width = Math.max(1, size.width);
-      const height = Math.max(1, size.height);
-      const current = state.auxNodeSizes[id];
-      if (current && current.width === width && current.height === height) {
-        return state;
-      }
-      return {
-        auxNodeSizes: {
-          ...state.auxNodeSizes,
-          [id]: { width, height },
-        },
-      };
-    }),
-  syncAuxNodePositions: (activeIds, defaults) =>
-    set((state) => {
-      const next = syncPositionsRecord(state.auxNodePositions, activeIds, defaults);
-      if (next === state.auxNodePositions) {
-        return state;
-      }
-      return {
-        auxNodePositions: next,
-      };
-    }),
-  syncAuxNodeSizes: (activeIds) =>
-    set((state) => {
-      const next = syncSizesRecord(state.auxNodeSizes, activeIds);
-      return next === state.auxNodeSizes ? state : { auxNodeSizes: next };
     }),
   updateConfig: (id, patch) => {
     const applyUpdate = (state: RecipeStudioState) => {
