@@ -437,17 +437,19 @@ class ExportBackend:
                     shutil.move(src, dest)
                     logger.info(f"Relocated GGUF: {os.path.basename(src)} → {abs_save_dir}/")
 
-                # Also check model_save_path for any .gguf files
-                if os.path.isdir(model_save_path):
-                    for src in glob.glob(os.path.join(model_save_path, "*.gguf")):
-                        dest = os.path.join(abs_save_dir, os.path.basename(src))
-                        shutil.move(src, dest)
-                        logger.info(f"Relocated GGUF: {os.path.basename(src)} → {abs_save_dir}/")
-
-                    # Clean up intermediate HF model files (safetensors, config, etc.)
-                    # since we only need the final .gguf output
-                    shutil.rmtree(model_save_path, ignore_errors=True)
-                    logger.info("Cleaned up intermediate HF model files")
+                # Flatten any .gguf files from subdirectories into abs_save_dir.
+                # save_pretrained_gguf may create subdirs (e.g. model_gguf/)
+                # with a name different from model_save_path.
+                for sub in list(Path(abs_save_dir).iterdir()):
+                    if not sub.is_dir():
+                        continue
+                    for src in sub.glob("*.gguf"):
+                        dest = os.path.join(abs_save_dir, src.name)
+                        shutil.move(str(src), dest)
+                        logger.info(f"Relocated GGUF: {src.name} → {abs_save_dir}/")
+                    # Clean up the subdirectory (intermediate HF files, etc.)
+                    shutil.rmtree(str(sub), ignore_errors=True)
+                    logger.info(f"Cleaned up subdirectory: {sub.name}")
 
                 # Write export metadata so the Chat page can identify the base model
                 self._write_export_metadata(abs_save_dir)
