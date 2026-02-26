@@ -13,35 +13,21 @@ from typing import Any
 
 import multiprocessing as mp
 
+from ..jsonable import to_jsonable
+from .constants import (
+    EVENT_JOB_CANCELLING,
+    EVENT_JOB_CANCELLED,
+    EVENT_JOB_COMPLETED,
+    EVENT_JOB_ENQUEUED,
+    EVENT_JOB_ERROR,
+    EVENT_JOB_STARTED,
+)
 from .parse import apply_update, coerce_event, parse_log_message
 from .types import Job
 from .worker import run_job_process
 
 
 _CTX = mp.get_context("spawn")
-
-def _to_jsonable(value: Any) -> Any:
-    try:
-        import numpy as np  # type: ignore
-    except Exception:  # pragma: no cover
-        np = None  # type: ignore
-
-    if np is not None:
-        if isinstance(value, np.ndarray):
-            return value.tolist()
-        if isinstance(value, np.generic):
-            return value.item()
-
-    if isinstance(value, dict):
-        return {str(k): _to_jsonable(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple, set)):
-        return [_to_jsonable(v) for v in value]
-    if hasattr(value, "isoformat") and callable(value.isoformat):
-        try:
-            return value.isoformat()
-        except Exception:
-            pass
-    return value
 
 
 @dataclass
@@ -123,7 +109,7 @@ class JobManager:
             self._pump_thread = threading.Thread(target=self._pump_loop, daemon=True)
             self._pump_thread.start()
 
-            self._emit({"type": "job.enqueued", "ts": time.time(), "job_id": job_id})
+            self._emit({"type": EVENT_JOB_ENQUEUED, "ts": time.time(), "job_id": job_id})
             return job_id
 
     def cancel(self, job_id: str) -> bool:
@@ -134,15 +120,15 @@ class JobManager:
             if self._proc is None or not self._proc.is_alive():
                 return True
             self._job.status = "cancelling"
-            self._emit({"type": "job.cancelling", "ts": time.time(), "job_id": job_id})
+            self._emit({"type": EVENT_JOB_CANCELLING, "ts": time.time(), "job_id": job_id})
             try:
                 self._proc.terminate()
-            except Exception:
+            except (AttributeError, OSError):
                 pass
             return True
 
     def get_status(self, job_id: str) -> dict | None:
-        """UI-friendly snapshot. Poll this if you don't want SSE."""
+        """UI friendly snapshot that we need. Alternative to sse kinda of and structured"""
         with self._lock:
             if self._job is None or self._job.job_id != job_id:
                 return None
@@ -304,7 +290,7 @@ class JobManager:
                 ).fetchdf()
             finally:
                 conn.close()
-        except Exception:
+        except (RuntimeError, ValueError, duckdb.Error):
             return None
 
         for helper_col in ("filename", "__row_num__"):
@@ -312,7 +298,7 @@ class JobManager:
                 dataframe = dataframe.drop(columns=[helper_col])
 
         rows = dataframe.to_dict(orient="records")
-        return {"dataset": _to_jsonable(rows), "total": total}
+        return {"dataset": to_jsonable(rows), "total": total}
 
     @staticmethod
     def _load_dataset_page_with_data_designer(
@@ -326,7 +312,7 @@ class JobManager:
         dataframe = read_parquet_dataset(parquet_dir)
         total = int(len(dataframe.index))
         rows = dataframe.iloc[offset:offset + limit].to_dict(orient="records")
-        return {"dataset": _to_jsonable(rows), "total": total}
+        return {"dataset": to_jsonable(rows), "total": total}
 
     def subscribe(self, job_id: str, *, after_seq: int | None = None) -> Subscription | None:
         """SSE subscribe: get replay buffer + live events stream."""
@@ -355,7 +341,7 @@ class JobManager:
         for q in self._subs:
             try:
                 q.put_nowait(event)
-            except Exception:
+            except queue.Full:
                 stale.append(q)
         if stale:
             self._subs = [q for q in self._subs if q not in stale]
@@ -374,7 +360,7 @@ class JobManager:
             return coerce_event(q.get(timeout=timeout_sec))
         except queue.Empty:
             return None
-        except Exception:
+        except (EOFError, OSError, ValueError):
             return None
 
     @staticmethod
@@ -386,7 +372,7 @@ class JobManager:
                 events.append(coerce_event(q.get_nowait()))
             except queue.Empty:
                 return events
-            except Exception:
+            except (EOFError, OSError, ValueError):
                 return events
 
     def _pump_loop(self) -> None:
@@ -416,13 +402,10 @@ class JobManager:
                         self._job.status = "error"
                         self._job.error = self._job.error or "process exited"
                     self._job.finished_at = time.time()
-                    self._emit(
-                        {
-                            "type": f"job.{self._job.status}",
-                            "ts": time.time(),
-                            "job_id": self._job.job_id,
-                        }
+                    event_type = (
+                        EVENT_JOB_CANCELLED if self._job.status == "cancelled" else EVENT_JOB_ERROR
                     )
+                    self._emit({"type": event_type, "ts": time.time(), "job_id": self._job.job_id})
             return
 
     def _handle_event(self, job: Job, event: dict) -> None:
@@ -433,9 +416,9 @@ class JobManager:
         with self._lock:
             if self._job is None or self._job.job_id != job.job_id:
                 return
-            if et == "job.started":
+            if et == EVENT_JOB_STARTED:
                 self._job.status = "active"
-            if et == "job.completed":
+            if et == EVENT_JOB_COMPLETED:
                 self._job.status = "completed"
                 self._job.finished_at = time.time()
                 self._job.analysis = event.get("analysis")
@@ -445,7 +428,7 @@ class JobManager:
                 if self._job.progress.total and self._job.progress.total > 0:
                     self._job.progress.done = self._job.progress.total
                     self._job.progress.percent = 100.0
-            if et == "job.error":
+            if et == EVENT_JOB_ERROR:
                 self._job.status = "error"
                 self._job.finished_at = time.time()
                 self._job.error = event.get("error") or "error"
