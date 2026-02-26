@@ -3217,18 +3217,18 @@ def patch_unsloth_zoo_saving():
     if has_merge_and_overwrite:
         original_merge_and_overwrite = unsloth_zoo.saving_utils.merge_and_overwrite_lora
 
-    def _mps_safe_merge_and_overwrite_lora(*args, **kwargs):
-        print("DEBUG: _mps_safe_merge_and_overwrite_lora called")
+    def _mlx_safe_merge_and_overwrite_lora(*args, **kwargs):
+        print("DEBUG: _mlx_safe_merge_and_overwrite_lora called")
         from unsloth.device_utils import DEVICE_TYPE
-        if not torch.cuda.is_available() or DEVICE_TYPE == "mps":
-            print("DEBUG: Applying MPS safety patches for merge_and_overwrite_lora")
+        if not torch.cuda.is_available() or DEVICE_TYPE == "mlx":
+            print("DEBUG: Applying MLX safety patches for merge_and_overwrite_lora")
             # Temporarily replace torch.cuda functions with safe no-ops
             _orig_empty_cache = torch.cuda.empty_cache
             _orig_synchronize = getattr(torch.cuda, "synchronize", None)
             _orig_get_device_name = getattr(torch.cuda, "get_device_name", None)
 
             def _noop(*a, **kw): pass
-            def _safe_get_device_name(*a, **kw): return "Apple Silicon (MPS)"
+            def _safe_get_device_name(*a, **kw): return "Apple Silicon (MLX)"
 
             torch.cuda.empty_cache = _noop
             if _orig_synchronize is not None:
@@ -3238,10 +3238,10 @@ def patch_unsloth_zoo_saving():
 
             try:
                 ret = original_merge_and_overwrite(*args, **kwargs)
-                print("DEBUG: _mps_safe_merge_and_overwrite_lora finished successfully")
+                print("DEBUG: _mlx_safe_merge_and_overwrite_lora finished successfully")
                 return ret
             except Exception as e:
-                print(f"DEBUG: Crash in _mps_safe_merge_and_overwrite_lora: {e}")
+                print(f"DEBUG: Crash in _mlx_safe_merge_and_overwrite_lora: {e}")
                 raise e
             finally:
                 # Restore original functions
@@ -3254,7 +3254,7 @@ def patch_unsloth_zoo_saving():
             return original_merge_and_overwrite(*args, **kwargs)
 
     if has_merge_and_overwrite:
-        unsloth_zoo.saving_utils.merge_and_overwrite_lora = _mps_safe_merge_and_overwrite_lora
+        unsloth_zoo.saving_utils.merge_and_overwrite_lora = _mlx_safe_merge_and_overwrite_lora
         print("DEBUG: Patched merge_and_overwrite_lora")
 
     # Patch 3: Bypass GGUF apt-get check on macOS

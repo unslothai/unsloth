@@ -823,7 +823,7 @@ class FastBaseModel:
                 # attn_implementation   = attn_implementation,
                 **kwargs,
             )
-            if DEVICE_TYPE == "mps" and device_map is None:
+            if DEVICE_TYPE == "mlx" and device_map is None:
                 model = model.to("mps")
                 if hasattr(model, "hf_device_map"): del model.hf_device_map
 

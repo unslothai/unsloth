@@ -337,7 +337,7 @@ class UnslothMockLoader(Loader):
 _PATCH_APPLIED = False
 
 
-def patch_unsloth_zoo_for_mps() -> bool:
+def patch_unsloth_zoo_for_mlx() -> bool:
     global _PATCH_APPLIED
     if _PATCH_APPLIED:
         return True

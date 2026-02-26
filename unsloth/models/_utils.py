@@ -146,15 +146,15 @@ from unsloth_zoo.loss_utils import (
     unsloth_fused_ce_loss,
 )
 
-# Patch unsloth_zoo's fused cross entropy loss for MPS to avoid CUDA mem_get_info calls
-if DEVICE_TYPE == "mps":
+# Patch unsloth_zoo's fused cross entropy loss for MLX to avoid CUDA mem_get_info calls
+if DEVICE_TYPE == "mlx":
     try:
         import unsloth_zoo.fused_losses.cross_entropy_loss as ce_loss_mod
 
-        def _mps_get_chunk_multiplier(vocab_size, target_gb):
+        def _mlx_get_chunk_multiplier(vocab_size, target_gb):
             return 1.0
 
-        ce_loss_mod._get_chunk_multiplier = _mps_get_chunk_multiplier
+        ce_loss_mod._get_chunk_multiplier = _mlx_get_chunk_multiplier
     except:
         pass
 from unsloth_zoo.vision_utils import (
@@ -468,8 +468,8 @@ elif DEVICE_TYPE == "xpu":
     else:
         torch_amp_custom_fwd = torch.amp.custom_fwd(device_type="xpu")
         torch_amp_custom_bwd = torch.amp.custom_bwd(device_type="xpu")
-elif DEVICE_TYPE == "mps":
-    # MPS does not have native AMP support yet - use identity decorators
+elif DEVICE_TYPE == "mlx":
+    # MLX does not have native AMP support yet - use identity decorators
     def _identity_decorator(fn):
         return fn
 
@@ -629,7 +629,7 @@ elif DEVICE_TYPE == "hip":
             HAS_FLASH_ATTENTION = False
 elif DEVICE_TYPE == "xpu":
     SUPPORTS_BFLOAT16 = True
-elif DEVICE_TYPE == "mps":
+elif DEVICE_TYPE == "mlx":
     try:
         test_tensor = torch.tensor([1.0], dtype=torch.bfloat16, device="mps")
         _ = test_tensor + test_tensor
@@ -895,10 +895,10 @@ def prepare_model_for_kbit_training(
     use_gradient_checkpointing: Optional = True,
     use_reentrant: Optional[bool] = None,
 ) -> Any:
-    # MPS (Apple Silicon) requires use_reentrant=False for gradient checkpointing
+    # MLX (Apple Silicon) requires use_reentrant=False for gradient checkpointing
     # to avoid "element 0 of tensors does not require grad" error
     if use_reentrant is None:
-        use_reentrant = DEVICE_TYPE != "mps"
+        use_reentrant = DEVICE_TYPE != "mlx"
     return prepare_model_for_training(
         model=model,
         use_gradient_checkpointing=use_gradient_checkpointing,
@@ -1217,15 +1217,15 @@ transformers.utils.quantization_config.BitsAndBytesConfig.__init__ = (
     _BitsAndBytesConfig__init__
 )
 
-# Patch post_init to skip bitsandbytes version check on MPS
-if DEVICE_TYPE == "mps":
+# Patch post_init to skip bitsandbytes version check on MLX
+if DEVICE_TYPE == "mlx":
     _original_post_init = (
         transformers.utils.quantization_config.BitsAndBytesConfig.post_init
     )
 
-    def _mps_safe_post_init(self):
-        """MPS-safe post_init that skips bitsandbytes version checks."""
-        # Skip the version check entirely on MPS - we use MLX quantization instead
+    def _mlx_safe_post_init(self):
+        """MLX-safe post_init that skips bitsandbytes version checks."""
+        # Skip the version check entirely on MLX - we use MLX quantization instead
         if self.load_in_4bit:
             # Set defaults without checking bitsandbytes version
             if self.bnb_4bit_compute_dtype is None:
@@ -1235,11 +1235,11 @@ if DEVICE_TYPE == "mps":
             # Skip all bitsandbytes-specific validation
             return
         if self.load_in_8bit:
-            # 8-bit not supported on MPS
+            # 8-bit not supported on MLX
             return
 
     transformers.utils.quantization_config.BitsAndBytesConfig.post_init = (
-        _mps_safe_post_init
+        _mlx_safe_post_init
     )
 
     # Also patch the HfQuantizer validate_environment to skip bnb checks
@@ -1247,53 +1247,53 @@ if DEVICE_TYPE == "mps":
         from transformers.quantizers.quantizer_bnb_4bit import Bnb4BitHfQuantizer
         from transformers.quantizers.quantizer_bnb_8bit import Bnb8BitHfQuantizer
 
-        def _mps_validate_environment_noop(self, *args, **kwargs):
-            """No-op validation for MPS - we handle quantization via MLX."""
+        def _mlx_validate_environment_noop(self, *args, **kwargs):
+            """No-op validation for MLX - we handle quantization via MLX."""
             pass
 
-        Bnb4BitHfQuantizer.validate_environment = _mps_validate_environment_noop
-        Bnb8BitHfQuantizer.validate_environment = _mps_validate_environment_noop
+        Bnb4BitHfQuantizer.validate_environment = _mlx_validate_environment_noop
+        Bnb8BitHfQuantizer.validate_environment = _mlx_validate_environment_noop
 
         # Also need to patch update_torch_dtype to not crash
-        def _mps_update_torch_dtype(self, torch_dtype):
+        def _mlx_update_torch_dtype(self, torch_dtype):
             import torch
 
             if torch_dtype is None:
                 torch_dtype = torch.float16
             return torch_dtype
 
-        Bnb4BitHfQuantizer.update_torch_dtype = _mps_update_torch_dtype
-        Bnb8BitHfQuantizer.update_torch_dtype = _mps_update_torch_dtype
+        Bnb4BitHfQuantizer.update_torch_dtype = _mlx_update_torch_dtype
+        Bnb8BitHfQuantizer.update_torch_dtype = _mlx_update_torch_dtype
 
         # Patch the model processing methods to skip bnb linear replacement
-        def _mps_process_model_before_noop(self, model, *args, **kwargs):
-            """Skip bitsandbytes linear replacement on MPS - we use MLX quantization."""
+        def _mlx_process_model_before_noop(self, model, *args, **kwargs):
+            """Skip bitsandbytes linear replacement on MLX - we use MLX quantization."""
             return model
 
-        def _mps_process_model_after_noop(self, model, *args, **kwargs):
-            """Skip bitsandbytes post-processing on MPS."""
+        def _mlx_process_model_after_noop(self, model, *args, **kwargs):
+            """Skip bitsandbytes post-processing on MLX."""
             return model
 
-        def _mps_is_serializable(self, *args, **kwargs):
+        def _mlx_is_serializable(self, *args, **kwargs):
             return True
 
-        def _mps_is_trainable(self, *args, **kwargs):
+        def _mlx_is_trainable(self, *args, **kwargs):
             return True
 
         Bnb4BitHfQuantizer._process_model_before_weight_loading = (
-            _mps_process_model_before_noop
+            _mlx_process_model_before_noop
         )
         Bnb4BitHfQuantizer._process_model_after_weight_loading = (
-            _mps_process_model_after_noop
+            _mlx_process_model_after_noop
         )
         Bnb4BitHfQuantizer.is_serializable = property(lambda self: True)
         Bnb4BitHfQuantizer.is_trainable = property(lambda self: True)
 
         Bnb8BitHfQuantizer._process_model_before_weight_loading = (
-            _mps_process_model_before_noop
+            _mlx_process_model_before_noop
         )
         Bnb8BitHfQuantizer._process_model_after_weight_loading = (
-            _mps_process_model_after_noop
+            _mlx_process_model_after_noop
         )
         Bnb8BitHfQuantizer.is_serializable = property(lambda self: True)
         Bnb8BitHfQuantizer.is_trainable = property(lambda self: True)
@@ -1632,6 +1632,10 @@ def patch_gradient_accumulation_fix(Trainer):
     # Fixes gradient accumulation
     # Fixes Output 0 of UnslothFusedLossBackward is a view and is being modified inplace.
     import inspect
+
+    # Skip if Trainer is a MockModule (e.g., on MPS with partial mocking)
+    if getattr(Trainer, "_unsloth_mock", False):
+        return
 
     if hasattr(Trainer, "get_batch_samples"):
         if Trainer.get_batch_samples.__name__ == "_unsloth_get_batch_samples":

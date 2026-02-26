@@ -15,6 +15,7 @@
 __all__ = [
     "is_hip",
     "is_mps",
+    "is_mlx",
     "get_device_type",
     "DEVICE_TYPE",
     "DEVICE_TYPE_TORCH",
@@ -42,6 +43,12 @@ def is_mps():
 
 
 @functools.cache
+def is_mlx():
+    """Check if Apple MLX backend is available (includes MPS check)."""
+    return is_mps()  # MLX requires MPS to be available
+
+
+@functools.cache
 def get_device_type():
     if hasattr(torch, "cuda") and torch.cuda.is_available():
         if is_hip():
@@ -49,8 +56,8 @@ def get_device_type():
         return "cuda"
     elif hasattr(torch, "xpu") and torch.xpu.is_available():
         return "xpu"
-    elif is_mps():
-        return "mps"
+    elif is_mlx():
+        return "mlx"
     # Check torch.accelerator
     if hasattr(torch, "accelerator"):
         if not torch.accelerator.is_available():
@@ -65,10 +72,10 @@ def get_device_type():
                 f"Please reinstall torch - it's most likely broken :("
             )
     raise NotImplementedError(
-        "Unsloth currently only works on NVIDIA, AMD, Intel GPUs, and Apple Silicon (MPS).\n"
+        "Unsloth currently only works on NVIDIA, AMD, Intel GPUs, and Apple Silicon (MLX).\n"
         "If you're on a Mac with Apple Silicon, ensure you have:\n"
         "  1. PyTorch 2.1+ installed: pip install torch>=2.1.0\n"
-        '  2. MPS backend available: python -c "import torch; print(torch.backends.mps.is_available())"'
+        '  2. MLX backend available: python -c "import torch; print(torch.backends.mps.is_available())"'
     )
 
 
@@ -85,8 +92,8 @@ def get_device_count():
         return torch.cuda.device_count()
     elif DEVICE_TYPE == "xpu":
         return torch.xpu.device_count()
-    elif DEVICE_TYPE == "mps":
-        # MPS follows a single-GPU paradigm on Apple Silicon
+    elif DEVICE_TYPE == "mlx":
+        # MLX follows a single-GPU paradigm on Apple Silicon
         return 1
     else:
         return 1

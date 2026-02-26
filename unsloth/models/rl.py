@@ -480,8 +480,14 @@ def _patch_trl_rl_trainers(trainer_file="grpo_trainer"):
         return
 
     # Get old source
-    old_RLTrainer_source = inspect.getsource(RLTrainer)
-    old_RLConfig_source = inspect.getsource(RLConfig)
+    try:
+        old_RLTrainer_source = inspect.getsource(RLTrainer)
+        old_RLConfig_source = inspect.getsource(RLConfig)
+    except (TypeError, OSError):
+        logger.info(
+            f"Unsloth: Could not get source for {RLTrainer_name} or {RLConfig_name} - skipping patch"
+        )
+        return
 
     all_imports = dir(trainer)
     # Fix _deprecate_arguments not getting imported so stop __ but not _
@@ -1204,7 +1210,13 @@ def _patch_trl_rl_trainers(trainer_file="grpo_trainer"):
 
 
 def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, imports):
-    init = inspect.getsource(RLTrainer.__init__)
+    try:
+        init = inspect.getsource(RLTrainer.__init__)
+    except (TypeError, OSError):
+        logger.info(
+            f"Unsloth: Could not get source for {RLTrainer_name}.__init__ - skipping patch"
+        )
+        return None, {}
     old_init = init
 
     # Remove brackets in comments since it interferes ie (...)
@@ -1390,7 +1402,13 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
 
     # Search for vLLM calling in all child functions
     functions = dir(RLTrainer)
-    RLTrainer_source = inspect.getsource(RLTrainer)
+    try:
+        RLTrainer_source = inspect.getsource(RLTrainer)
+    except (TypeError, OSError):
+        logger.info(
+            f"Unsloth: Could not get source for {RLTrainer_name} - skipping function patching"
+        )
+        return init, {}
     functions = [x for x in functions if f"def {x}" in RLTrainer_source]
 
     changed = {

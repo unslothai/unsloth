@@ -85,14 +85,14 @@ from importlib.metadata import version as importlib_version
 from importlib.metadata import PackageNotFoundError
 
 # ==============================================================================
-# Apple Silicon MPS Patch - MUST be applied before unsloth_zoo import
+# Apple Silicon MLX Patch - MUST be applied before unsloth_zoo import
 # ==============================================================================
 # unsloth_zoo.device_type raises NotImplementedError on Apple Silicon.
-# This patch injects a mock device_type module that returns "mps".
-from .patches import patch_unsloth_zoo_for_mps
+# This patch injects a mock device_type module that returns "mlx".
+from .patches import patch_unsloth_zoo_for_mlx
 
-_mps_patched = patch_unsloth_zoo_for_mps()
-del patch_unsloth_zoo_for_mps
+_mlx_patched = patch_unsloth_zoo_for_mlx()
+del patch_unsloth_zoo_for_mlx
 
 # Check for unsloth_zoo
 try:
@@ -222,7 +222,7 @@ elif DEVICE_TYPE == "mps":
         SUPPORTS_BFLOAT16 = False
 
     print(
-        f"Unsloth: Running on Apple Silicon (MPS)\n"
+        f"Unsloth: Running on Apple Silicon (MLX)\n"
         f"   bfloat16 support: {SUPPORTS_BFLOAT16}\n"
         f"   Note: 16-bit LoRA and full finetuning work."
     )
