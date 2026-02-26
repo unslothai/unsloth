@@ -285,7 +285,7 @@ export function RunDialog({
         position="absolute"
         overlayPosition="absolute"
         overlayClassName="bg-transparent"
-        className="corner-squircle sm:max-w-2xl"
+        className="corner-squircle sm:max-w-2xl shadow-border"
       >
         <DialogHeader>
           <DialogTitle>{kindLabel} settings</DialogTitle>
@@ -294,7 +294,7 @@ export function RunDialog({
           </p>
         </DialogHeader>
 
-        <div className="flex items-center justify-between rounded-xl border bg-muted/20 px-3 py-2 text-sm">
+        <div className="flex items-center justify-between text-sm">
           <span className="font-medium text-foreground">Preview mode</span>
           <Switch
             checked={kind === "preview"}
