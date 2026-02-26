@@ -26,17 +26,15 @@ if platform.system() == "Darwin" and patcher is not None:
 def is_mlx_available():
     """Check if MLX is available and not mocked."""
     try:
+        from unsloth.kernels.mlx import utils
+        if not getattr(utils, "_MLX_AVAILABLE", False):
+            return False
         import mlx
-        if getattr(mlx, "_unsloth_mock", False):
-            return False
-        import mlx.core
-        if getattr(mlx.core, "_unsloth_mock", False):
-            return False
         type_name = type(mlx).__name__
         if "Mock" in type_name:
             return False
         return True
-    except (ImportError, AttributeError):
+    except ImportError:
         return False
 
 
