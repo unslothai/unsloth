@@ -27,11 +27,13 @@ def is_mlx_available():
     """Check if MLX is available and not mocked."""
     try:
         import mlx
-        if hasattr(mlx, '_unsloth_mock') and mlx._unsloth_mock:
+        if getattr(mlx, "_unsloth_mock", False):
             return False
-        from unsloth.kernels.mlx.utils import is_mlx_available as _check_mlx
-        return _check_mlx()
-    except ImportError:
+        import mlx.core
+        if getattr(mlx.core, "_unsloth_mock", False):
+            return False
+        return True
+    except (ImportError, AttributeError):
         return False
 
 
