@@ -385,3 +385,69 @@ def get_gpu_utilization() -> Dict[str, Any]:
         "power_limit_w": power_limit,
         "power_utilization_pct": power_pct,
     }
+
+
+# ========== Multi-GPU Detection & Safe num_proc ==========
+
+_physical_gpu_count: Optional[int] = None
+
+def get_physical_gpu_count() -> int:
+    """
+    Return the number of physical NVIDIA GPUs on the machine.
+
+    Uses ``nvidia-smi -L`` which is NOT affected by CUDA_VISIBLE_DEVICES,
+    so it always reflects the true hardware count.
+    Result is cached after the first call.
+    """
+    global _physical_gpu_count
+    if _physical_gpu_count is not None:
+        return _physical_gpu_count
+
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["nvidia-smi", "-L"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            _physical_gpu_count = len(result.stdout.strip().splitlines())
+        else:
+            _physical_gpu_count = 1
+    except Exception:
+        _physical_gpu_count = 1
+
+    return _physical_gpu_count
+
+
+def safe_num_proc(desired: Optional[int] = None) -> int:
+    """
+    Return a safe ``num_proc`` for ``dataset.map()`` calls.
+
+    On multi-GPU machines the NVIDIA driver spawns extra background threads,
+    making ``os.fork()`` prone to deadlocks when many workers are created.
+    This helper caps ``num_proc`` to 4 on such machines.
+
+    On single-GPU (or CPU-only) machines the original value is returned
+    unchanged.
+
+    Args:
+        desired: The num_proc you *want*. If None, auto-computes from
+                 ``os.cpu_count()``.
+
+    Returns:
+        A safe integer ≥ 1.
+    """
+    import os
+
+    if desired is None or not isinstance(desired, int):
+        desired = max(1, os.cpu_count() // 3)
+
+    if get_physical_gpu_count() > 1:
+        capped = min(4, desired)
+        print(
+            f"⚙️ Multi-GPU detected ({get_physical_gpu_count()} GPUs) — "
+            f"capping num_proc {desired} → {capped} to avoid fork deadlocks"
+        )
+        return capped
+
+    return desired

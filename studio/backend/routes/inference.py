@@ -23,6 +23,7 @@ if str(backend_path) not in sys.path:
 # Import backend functions
 try:
     from core.inference import get_inference_backend
+    from core.inference.llama_cpp import LlamaCppBackend
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
 except ImportError:
@@ -30,6 +31,7 @@ except ImportError:
     if str(parent_backend) not in sys.path:
         sys.path.insert(0, str(parent_backend))
     from core.inference import get_inference_backend
+    from core.inference.llama_cpp import LlamaCppBackend
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
 
@@ -61,60 +63,126 @@ if not logger.handlers:
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
 
+# GGUF inference backend (llama-server)
+_llama_cpp_backend = LlamaCppBackend()
+
+def get_llama_cpp_backend() -> LlamaCppBackend:
+    return _llama_cpp_backend
+
 
 @router.post("/load", response_model=LoadResponse)
 async def load_model(request: LoadRequest):
     """
     Load a model for inference.
-    
+
     The model_path should be a clean identifier from GET /models/list.
     Returns inference configuration parameters (temperature, top_p, top_k, min_p)
     from the model's YAML config, falling back to default.yaml for missing values.
+
+    GGUF models are loaded via llama-server (llama.cpp) instead of Unsloth.
     """
     try:
-        backend = get_inference_backend()
-        
         # Create config using clean factory method
         # is_lora is auto-detected from adapter_config.json on disk/HF
         config = ModelConfig.from_identifier(
             model_id=request.model_path,
             hf_token=request.hf_token,
+            gguf_variant=request.gguf_variant,
         )
-        
+
         if not config:
             raise HTTPException(
                 status_code=400,
                 detail=f"Invalid model identifier: {request.model_path}"
             )
-        
-        # Load the model
+
+        # ── GGUF path: load via llama-server ──────────────────────
+        if config.is_gguf:
+            llama_backend = get_llama_cpp_backend()
+            unsloth_backend = get_inference_backend()
+
+            # Unload any active Unsloth model first to free VRAM
+            if unsloth_backend.active_model_name:
+                logger.info(f"Unloading Unsloth model '{unsloth_backend.active_model_name}' before loading GGUF")
+                unsloth_backend.unload_model(unsloth_backend.active_model_name)
+
+            # Route to HF mode or local mode based on config
+            if config.gguf_hf_repo:
+                # HF mode: llama-server downloads via -hf "repo:quant"
+                success = llama_backend.load_model(
+                    hf_repo=config.gguf_hf_repo,
+                    hf_variant=config.gguf_variant,
+                    hf_token=request.hf_token,
+                    model_identifier=config.identifier,
+                    is_vision=config.is_vision,
+                    n_ctx=request.max_seq_length,
+                )
+            else:
+                # Local mode: llama-server loads via -m <path>
+                success = llama_backend.load_model(
+                    gguf_path=config.gguf_file,
+                    model_identifier=config.identifier,
+                    is_vision=config.is_vision,
+                    n_ctx=request.max_seq_length,
+                )
+
+            if not success:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to load GGUF model: {config.display_name}"
+                )
+
+            logger.info(f"Loaded GGUF model via llama-server: {config.identifier}")
+
+            inference_config = load_inference_config(config.identifier)
+
+            return LoadResponse(
+                status="loaded",
+                model=config.identifier,
+                display_name=config.display_name,
+                is_vision=config.is_vision,
+                is_lora=False,
+                is_gguf=True,
+                inference=inference_config,
+            )
+
+        # ── Standard path: load via Unsloth/transformers ──────────
+        backend = get_inference_backend()
+
+        # Unload any active GGUF model first
+        llama_backend = get_llama_cpp_backend()
+        if llama_backend.is_loaded:
+            logger.info("Unloading GGUF model before loading Unsloth model")
+            llama_backend.unload_model()
+
         success = backend.load_model(
             config=config,
             max_seq_length=request.max_seq_length,
             load_in_4bit=request.load_in_4bit,
             hf_token=request.hf_token,
         )
-        
+
         if not success:
             raise HTTPException(
                 status_code=500,
                 detail=f"Failed to load model: {config.display_name}"
             )
-        
+
         logger.info(f"Loaded model: {config.identifier}")
-        
+
         # Load inference configuration parameters
         inference_config = load_inference_config(config.identifier)
-        
+
         return LoadResponse(
             status="loaded",
             model=config.identifier,
             display_name=config.display_name,
             is_vision=config.is_vision,
             is_lora=config.is_lora,
+            is_gguf=False,
             inference=inference_config,
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -129,13 +197,22 @@ async def load_model(request: LoadRequest):
 async def unload_model(request: UnloadRequest):
     """
     Unload a model from memory.
+    Routes to the correct backend (llama-server for GGUF, Unsloth otherwise).
     """
     try:
+        # Check if the GGUF backend has this model loaded
+        llama_backend = get_llama_cpp_backend()
+        if llama_backend.is_loaded and llama_backend.model_identifier == request.model_path:
+            llama_backend.unload_model()
+            logger.info(f"Unloaded GGUF model: {request.model_path}")
+            return UnloadResponse(status="unloaded", model=request.model_path)
+
+        # Otherwise, unload from Unsloth backend
         backend = get_inference_backend()
         backend.unload_model(request.model_path)
         logger.info(f"Unloaded model: {request.model_path}")
         return UnloadResponse(status="unloaded", model=request.model_path)
-        
+
     except Exception as e:
         logger.error(f"Error unloading model: {e}", exc_info=True)
         raise HTTPException(
@@ -221,22 +298,37 @@ async def generate_stream(request: GenerateRequest):
 async def get_status():
     """
     Get current inference backend status.
+    Reports whichever backend (Unsloth or llama-server) is currently active.
     """
     try:
+        llama_backend = get_llama_cpp_backend()
+
+        # If a GGUF model is loaded via llama-server, report that
+        if llama_backend.is_loaded:
+            return InferenceStatusResponse(
+                active_model=llama_backend.model_identifier,
+                is_vision=llama_backend.is_vision,
+                is_gguf=True,
+                loading=[],
+                loaded=[llama_backend.model_identifier],
+            )
+
+        # Otherwise, report Unsloth backend status
         backend = get_inference_backend()
-        
+
         is_vision = False
         if backend.active_model_name:
             model_info = backend.models.get(backend.active_model_name, {})
             is_vision = model_info.get("is_vision", False)
-        
+
         return InferenceStatusResponse(
             active_model=backend.active_model_name,
             is_vision=is_vision,
+            is_gguf=False,
             loading=list(getattr(backend, 'loading_models', set())),
             loaded=list(backend.models.keys()),
         )
-        
+
     except Exception as e:
         logger.error(f"Error getting status: {e}", exc_info=True)
         raise HTTPException(
@@ -315,29 +407,163 @@ async def openai_chat_completions(payload: ChatCompletionRequest, request: Reque
 
     Streaming (default):  returns SSE chunks matching OpenAI's format.
     Non-streaming:        returns a single ChatCompletion JSON object.
-    """
-    backend = get_inference_backend()
 
-    if not backend.active_model_name:
-        raise HTTPException(
-            status_code=400,
-            detail="No model loaded. Call POST /inference/load first.",
-        )
+    Automatically routes to the correct backend:
+    - GGUF models → llama-server via LlamaCppBackend
+    - Other models → Unsloth/transformers via InferenceBackend
+    """
+    llama_backend = get_llama_cpp_backend()
+    using_gguf = llama_backend.is_loaded
+
+    # ── Determine which backend is active ─────────────────────
+    if using_gguf:
+        model_name = llama_backend.model_identifier or payload.model
+    else:
+        backend = get_inference_backend()
+        if not backend.active_model_name:
+            raise HTTPException(
+                status_code=400,
+                detail="No model loaded. Call POST /inference/load first.",
+            )
+        model_name = backend.active_model_name or payload.model
 
     # ── Parse messages (handles multimodal content parts) ─────
     system_prompt, chat_messages, extracted_image_b64 = _extract_content_parts(
         payload.messages
     )
 
-    # If no non-system messages were provided, error out
     if not chat_messages:
         raise HTTPException(
             status_code=400,
             detail="At least one non-system message is required.",
         )
 
-    # ── Decode image (from content parts OR legacy field) ─────
-    # Content-part images take priority; fall back to legacy field
+    # ── GGUF path: proxy to llama-server /v1/chat/completions ──
+    if using_gguf:
+        # Reject images if this GGUF model doesn't support vision
+        image_b64 = extracted_image_b64 or payload.image_base64
+        if image_b64 and not llama_backend.is_vision:
+            raise HTTPException(
+                status_code=400,
+                detail="Image provided but current GGUF model does not support vision.",
+            )
+
+        # Build message list with system prompt prepended
+        gguf_messages = []
+        if system_prompt:
+            gguf_messages.append({"role": "system", "content": system_prompt})
+        gguf_messages.extend(chat_messages)
+
+        cancel_event = threading.Event()
+
+        completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+        created = int(time.time())
+
+        def gguf_generate():
+            return llama_backend.generate_chat_completion(
+                messages=gguf_messages,
+                image_b64=image_b64,
+                temperature=payload.temperature,
+                top_p=payload.top_p,
+                top_k=payload.top_k,
+                min_p=payload.min_p,
+                max_tokens=payload.max_tokens or 512,
+                repetition_penalty=payload.repetition_penalty,
+                cancel_event=cancel_event,
+            )
+
+        if payload.stream:
+            async def gguf_stream_chunks():
+                try:
+                    # First chunk: role
+                    first_chunk = ChatCompletionChunk(
+                        id=completion_id,
+                        created=created,
+                        model=model_name,
+                        choices=[ChunkChoice(
+                            delta=ChoiceDelta(role="assistant"),
+                            finish_reason=None,
+                        )],
+                    )
+                    yield f"data: {first_chunk.model_dump_json(exclude_none=True)}\n\n"
+
+                    # Content chunks — llama backend yields cumulative text
+                    prev_text = ""
+                    for cumulative in gguf_generate():
+                        if await request.is_disconnected():
+                            cancel_event.set()
+                            return
+                        new_text = cumulative[len(prev_text):]
+                        prev_text = cumulative
+                        if not new_text:
+                            continue
+                        chunk = ChatCompletionChunk(
+                            id=completion_id,
+                            created=created,
+                            model=model_name,
+                            choices=[ChunkChoice(
+                                delta=ChoiceDelta(content=new_text),
+                                finish_reason=None,
+                            )],
+                        )
+                        yield f"data: {chunk.model_dump_json(exclude_none=True)}\n\n"
+
+                    # Final chunk
+                    final_chunk = ChatCompletionChunk(
+                        id=completion_id,
+                        created=created,
+                        model=model_name,
+                        choices=[ChunkChoice(
+                            delta=ChoiceDelta(),
+                            finish_reason="stop",
+                        )],
+                    )
+                    yield f"data: {final_chunk.model_dump_json(exclude_none=True)}\n\n"
+                    yield "data: [DONE]\n\n"
+
+                except asyncio.CancelledError:
+                    cancel_event.set()
+                    raise
+                except Exception as e:
+                    logger.error(f"Error during GGUF streaming: {e}", exc_info=True)
+                    error_chunk = {
+                        "error": {"message": str(e), "type": "server_error"},
+                    }
+                    yield f"data: {json.dumps(error_chunk)}\n\n"
+
+            return StreamingResponse(
+                gguf_stream_chunks(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                },
+            )
+        else:
+            try:
+                full_text = ""
+                for token in gguf_generate():
+                    full_text = token
+
+                response = ChatCompletion(
+                    id=completion_id,
+                    created=created,
+                    model=model_name,
+                    choices=[CompletionChoice(
+                        message=CompletionMessage(content=full_text),
+                        finish_reason="stop",
+                    )],
+                )
+                return JSONResponse(content=response.model_dump())
+
+            except Exception as e:
+                logger.error(f"Error during GGUF completion: {e}", exc_info=True)
+                raise HTTPException(status_code=500, detail=str(e))
+
+    # ── Standard Unsloth path ─────────────────────────────────
+
+    # Decode image (from content parts OR legacy field)
     image_b64 = extracted_image_b64 or payload.image_base64
     image = None
 
@@ -363,7 +589,7 @@ async def openai_chat_completions(payload: ChatCompletionRequest, request: Reque
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Failed to decode image: {e}")
 
-    # ── Shared generation kwargs ──────────────────────────────
+    # Shared generation kwargs
     gen_kwargs = dict(
         messages=chat_messages,
         system_prompt=system_prompt,
@@ -376,11 +602,10 @@ async def openai_chat_completions(payload: ChatCompletionRequest, request: Reque
         repetition_penalty=payload.repetition_penalty,
     )
 
-    # ── Choose generation path (adapter-controlled or standard) ──
+    # Choose generation path (adapter-controlled or standard)
     cancel_event = threading.Event()
 
     if payload.use_adapter is not None:
-        # Compare mode: toggle adapter state atomically with generation
         def generate():
             return backend.generate_with_adapter_control(
                 use_adapter=payload.use_adapter,
@@ -388,11 +613,9 @@ async def openai_chat_completions(payload: ChatCompletionRequest, request: Reque
                 **gen_kwargs,
             )
     else:
-        # Standard path: no adapter toggling
         def generate():
             return backend.generate_chat_response(cancel_event=cancel_event, **gen_kwargs)
 
-    model_name = backend.active_model_name or payload.model
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     created = int(time.time())
 
@@ -400,7 +623,6 @@ async def openai_chat_completions(payload: ChatCompletionRequest, request: Reque
     if payload.stream:
         async def stream_chunks():
             try:
-                # First chunk: send the role
                 first_chunk = ChatCompletionChunk(
                     id=completion_id,
                     created=created,
@@ -412,8 +634,6 @@ async def openai_chat_completions(payload: ChatCompletionRequest, request: Reque
                 )
                 yield f"data: {first_chunk.model_dump_json(exclude_none=True)}\n\n"
 
-                # Content chunks — generate_chat_response yields cumulative
-                # text, so we diff to get incremental deltas.
                 prev_text = ""
                 for cumulative in generate():
                     if await request.is_disconnected():
@@ -435,7 +655,6 @@ async def openai_chat_completions(payload: ChatCompletionRequest, request: Reque
                     )
                     yield f"data: {chunk.model_dump_json(exclude_none=True)}\n\n"
 
-                # Final chunk: finish_reason = stop
                 final_chunk = ChatCompletionChunk(
                     id=completion_id,
                     created=created,
@@ -475,7 +694,7 @@ async def openai_chat_completions(payload: ChatCompletionRequest, request: Reque
         try:
             full_text = ""
             for token in generate():
-                full_text = token  # generate_stream yields cumulative text
+                full_text = token
 
             response = ChatCompletion(
                 id=completion_id,

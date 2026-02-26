@@ -11,7 +11,6 @@ export interface HfModelResult {
 }
 
 const EXCLUDED_TAGS = new Set([
-  "gguf",
   "gptq",
   "awq",
   "exl2",
@@ -45,22 +44,27 @@ function withPopularitySort(
   return fetch(url, init);
 }
 
-function mapModel(raw: unknown): HfModelResult | null {
-  const m = raw as {
-    name: string;
-    downloads: number;
-    likes: number;
-    safetensors?: { total: number };
-    tags?: string[];
-  };
-  if (m.tags?.some((t) => EXCLUDED_TAGS.has(t))) {
-    return null;
-  }
-  return {
-    id: m.name,
-    downloads: m.downloads,
-    likes: m.likes,
-    totalParams: m.safetensors?.total,
+function makeMapModel(excludeGguf: boolean) {
+  return (raw: unknown): HfModelResult | null => {
+    const m = raw as {
+      name: string;
+      downloads: number;
+      likes: number;
+      safetensors?: { total: number };
+      tags?: string[];
+    };
+    if (m.tags?.some((t) => EXCLUDED_TAGS.has(t))) {
+      return null;
+    }
+    if (excludeGguf && m.tags?.includes("gguf")) {
+      return null;
+    }
+    return {
+      id: m.name,
+      downloads: m.downloads,
+      likes: m.likes,
+      totalParams: m.safetensors?.total,
+    };
   };
 }
 
@@ -113,9 +117,9 @@ async function* mergedModelIterator(
 
 export function useHfModelSearch(
   query: string,
-  options?: { task?: PipelineType; accessToken?: string },
+  options?: { task?: PipelineType; accessToken?: string; excludeGguf?: boolean },
 ) {
-  const { task, accessToken } = options ?? {};
+  const { task, accessToken, excludeGguf = false } = options ?? {};
 
   const createIter = useCallback(
     () => {
@@ -135,6 +139,7 @@ export function useHfModelSearch(
     [query, task, accessToken],
   );
 
+  const mapModel = useMemo(() => makeMapModel(excludeGguf), [excludeGguf]);
   const search = useHfPaginatedSearch(createIter, mapModel);
 
   // Secondary sort guarantee: unsloth models always float to the top

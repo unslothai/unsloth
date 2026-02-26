@@ -7,6 +7,7 @@ import * as React from "react";
 import { createContext, useContext, useState } from "react";
 
 import { Button } from "@/components/ui/button";
+import { useDialogPortalContainer } from "@/components/ui/dialog";
 import {
   InputGroup,
   InputGroupAddon,
@@ -146,14 +147,18 @@ function ComboboxContent({
   align = "start",
   alignOffset = 0,
   anchor,
+  container,
   ...props
 }: ComboboxPrimitive.Popup.Props &
   Pick<
     ComboboxPrimitive.Positioner.Props,
     "side" | "align" | "sideOffset" | "alignOffset" | "anchor"
-  >): React.ReactElement {
+  > & {
+    container?: HTMLElement | null;
+  }): React.ReactElement {
+  const dialogContainer = useDialogPortalContainer();
   return (
-    <ComboboxPrimitive.Portal>
+    <ComboboxPrimitive.Portal container={container ?? dialogContainer ?? undefined}>
       <ComboboxPrimitive.Positioner
         side={side}
         sideOffset={sideOffset}

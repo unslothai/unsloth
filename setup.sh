@@ -155,43 +155,48 @@ fi
 BEST_VER=$("$BEST_PY" --version 2>&1 | awk '{print $2}')
 echo "✅ Using $BEST_PY ($BEST_VER) — compatible (≤ 3.12.x)"
 
-if [ "$IS_COLAB" = true ]; then
-    # Colab: install packages directly without venv
+REQ_ROOT="$SCRIPT_DIR/studio/backend/requirements"
+SINGLE_ENV_CONSTRAINTS="$REQ_ROOT/single-env/constraints.txt"
+SINGLE_ENV_DATA_DESIGNER="$REQ_ROOT/single-env/data-designer.txt"
+SINGLE_ENV_DATA_DESIGNER_DEPS="$REQ_ROOT/single-env/data-designer-deps.txt"
+SINGLE_ENV_PATCH="$REQ_ROOT/single-env/patch_metadata.py"
+
+install_python_stack() {
     run_quiet "pip upgrade" pip install --upgrade pip
     echo "   Installing unsloth-zoo + unsloth..."
-    run_quiet "pip install unsloth" pip install -r "$SCRIPT_DIR/studio/backend/requirements/base.txt"
+    run_quiet "pip install unsloth" pip install --no-cache-dir -c "$SINGLE_ENV_CONSTRAINTS" -r "$REQ_ROOT/base.txt"
     echo "   Installing additional unsloth dependencies..."
-    run_quiet "pip install extras" pip install --no-cache-dir -r "$SCRIPT_DIR/studio/backend/requirements/extras.txt"
-    run_quiet "pip install extras" pip install --no-deps --no-cache-dir -r "$SCRIPT_DIR/studio/backend/requirements/extras-no-deps.txt"
-    run_quiet "pip install torchao+transformers" pip install --force-reinstall --no-cache-dir -r "$SCRIPT_DIR/studio/backend/requirements/overrides.txt"
-    run_quiet "pip install triton_kernels" pip install --no-deps -r "$SCRIPT_DIR/studio/backend/requirements/triton-kernels.txt"
+    run_quiet "pip install extras" pip install --no-cache-dir -c "$SINGLE_ENV_CONSTRAINTS" -r "$REQ_ROOT/extras.txt"
+    run_quiet "pip install torchao+transformers" pip install --force-reinstall --no-cache-dir -c "$SINGLE_ENV_CONSTRAINTS" -r "$REQ_ROOT/overrides.txt"
+    run_quiet "pip install triton_kernels" pip install --no-deps --no-cache-dir -r "$REQ_ROOT/triton-kernels.txt"
     # Patch: override llama_cpp.py with fix from unsloth-zoo branch
     LLAMA_CPP_DST="$(pip show unsloth-zoo | grep -i '^Location:' | awk '{print $2}')/unsloth_zoo/llama_cpp.py"
     curl -sSL "https://raw.githubusercontent.com/unslothai/unsloth-zoo/refs/heads/main/unsloth_zoo/llama_cpp.py" \
         -o "$LLAMA_CPP_DST"
+    # Patch: override vision.py with fix from unsloth PR: https://github.com/unslothai/unsloth/pull/4091 until next pypi release
+    VISION_DST="$(pip show unsloth | grep -i '^Location:' | awk '{print $2}')/unsloth/models/vision.py"
+    curl -sSL "https://raw.githubusercontent.com/unslothai/unsloth/80e0108a684c882965a02a8ed851e3473c1145ab/unsloth/models/vision.py" \
+        -o "$VISION_DST"
     echo "   Installing studio dependencies..."
-    run_quiet "pip install studio" pip install -r "$SCRIPT_DIR/studio/backend/requirements/studio.txt"
+    run_quiet "pip install studio" pip install --no-cache-dir -c "$SINGLE_ENV_CONSTRAINTS" -r "$REQ_ROOT/studio.txt"
+    echo "   Installing data-designer dependencies..."
+    run_quiet "pip install data-designer deps" pip install --no-cache-dir -c "$SINGLE_ENV_CONSTRAINTS" -r "$SINGLE_ENV_DATA_DESIGNER_DEPS"
+    echo "   Installing data-designer..."
+    run_quiet "pip install data-designer" pip install --no-cache-dir --no-deps -c "$SINGLE_ENV_CONSTRAINTS" -r "$SINGLE_ENV_DATA_DESIGNER"
+    run_quiet "patch single-env metadata" python "$SINGLE_ENV_PATCH"
+    run_quiet "pip check" pip check
     echo "✅ Python dependencies installed"
+}
+
+if [ "$IS_COLAB" = true ]; then
+    # Colab: install packages directly without venv
+    install_python_stack
 else
     # Local: create venv (always start fresh to preserve correct install order)
     rm -rf .venv
     "$BEST_PY" -m venv .venv
     source .venv/bin/activate
-    run_quiet "pip upgrade" pip install --upgrade pip
-    echo "   Installing unsloth-zoo + unsloth..."
-    run_quiet "pip install unsloth" pip install -r "$SCRIPT_DIR/studio/backend/requirements/base.txt"
-    echo "   Installing additional unsloth dependencies..."
-    run_quiet "pip install extras" pip install --no-cache-dir -r "$SCRIPT_DIR/studio/backend/requirements/extras.txt"
-    run_quiet "pip install extras" pip install --no-deps --no-cache-dir -r "$SCRIPT_DIR/studio/backend/requirements/extras-no-deps.txt"
-    run_quiet "pip install torchao+transformers" pip install --force-reinstall --no-cache-dir -r "$SCRIPT_DIR/studio/backend/requirements/overrides.txt"
-    run_quiet "pip install triton_kernels" pip install --no-deps -r "$SCRIPT_DIR/studio/backend/requirements/triton-kernels.txt"
-    # Patch: override llama_cpp.py with fix from unsloth-zoo branch
-    LLAMA_CPP_DST="$(pip show unsloth-zoo | grep -i '^Location:' | awk '{print $2}')/unsloth_zoo/llama_cpp.py"
-    curl -sSL "https://raw.githubusercontent.com/unslothai/unsloth-zoo/refs/heads/main/unsloth_zoo/llama_cpp.py" \
-        -o "$LLAMA_CPP_DST"
-    echo "   Installing studio dependencies..."
-    run_quiet "pip install studio" pip install -r "$SCRIPT_DIR/studio/backend/requirements/studio.txt"
-    echo "✅ Python dependencies installed"
+    install_python_stack
     
     # ── 7. WSL: pre-install GGUF build dependencies ──
     # On WSL, sudo requires a password and can't be entered during GGUF export
@@ -206,7 +211,99 @@ else
     fi
 fi
 
-# ── 8. Add shell alias (skip in Colab) ──
+# ── 8. Build llama.cpp binaries for GGUF inference + export ──
+# Builds in-tree at $REPO/llama.cpp/. This directory is shared with
+# unsloth-zoo's GGUF export pipeline. We build:
+#   - llama-server: for GGUF model inference
+#   - llama-quantize: for GGUF export quantization (symlinked to root for check_llama_cpp())
+LLAMA_SERVER_BIN="$SCRIPT_DIR/llama.cpp/build/bin/llama-server"
+if [ -f "$LLAMA_SERVER_BIN" ]; then
+    echo ""
+    echo "✅ llama-server already exists at $LLAMA_SERVER_BIN"
+else
+    # Check prerequisites
+    if ! command -v cmake &>/dev/null; then
+        echo ""
+        echo "⚠️  cmake not found — skipping llama-server build (GGUF inference won't be available)"
+        echo "   Install cmake and re-run setup.sh to enable GGUF inference."
+    elif ! command -v git &>/dev/null; then
+        echo ""
+        echo "⚠️  git not found — skipping llama-server build (GGUF inference won't be available)"
+    else
+        echo ""
+        echo "Building llama-server for GGUF inference..."
+        LLAMA_CPP_DIR="$SCRIPT_DIR/llama.cpp"
+
+        BUILD_OK=true
+        if [ -d "$LLAMA_CPP_DIR/.git" ]; then
+            echo "   llama.cpp repo already cloned, pulling latest..."
+            run_quiet "pull llama.cpp" git -C "$LLAMA_CPP_DIR" pull || true
+        else
+            # Remove any non-git llama.cpp directory (stale build artifacts)
+            rm -rf "$LLAMA_CPP_DIR"
+            run_quiet "clone llama.cpp" git clone --depth 1 https://github.com/ggml-org/llama.cpp.git "$LLAMA_CPP_DIR" || BUILD_OK=false
+        fi
+
+        if [ "$BUILD_OK" = true ]; then
+            CMAKE_ARGS=""
+            # Detect CUDA: check nvcc on PATH, then common install locations
+            NVCC_PATH=""
+            if command -v nvcc &>/dev/null; then
+                NVCC_PATH="$(command -v nvcc)"
+            elif [ -x /usr/local/cuda/bin/nvcc ]; then
+                NVCC_PATH="/usr/local/cuda/bin/nvcc"
+                export PATH="/usr/local/cuda/bin:$PATH"
+            elif ls /usr/local/cuda-*/bin/nvcc &>/dev/null 2>&1; then
+                # Pick the newest cuda-XX.X directory
+                NVCC_PATH="$(ls -d /usr/local/cuda-*/bin/nvcc 2>/dev/null | sort -V | tail -1)"
+                export PATH="$(dirname "$NVCC_PATH"):$PATH"
+            fi
+
+            if [ -n "$NVCC_PATH" ]; then
+                echo "   Building with CUDA support (nvcc: $NVCC_PATH)..."
+                CMAKE_ARGS="-DGGML_CUDA=ON"
+            elif [ -d /usr/local/cuda ] || nvidia-smi &>/dev/null; then
+                echo "   CUDA driver detected but nvcc not found — building CPU-only"
+                echo "   To enable GPU: install cuda-toolkit or add nvcc to PATH"
+            else
+                echo "   Building CPU-only (no CUDA detected)..."
+            fi
+
+            NCPU=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+
+            run_quiet "cmake llama.cpp" cmake -S "$LLAMA_CPP_DIR" -B "$LLAMA_CPP_DIR/build" $CMAKE_ARGS || BUILD_OK=false
+        fi
+
+        if [ "$BUILD_OK" = true ]; then
+            run_quiet "build llama-server" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-server -j"$NCPU" || BUILD_OK=false
+        fi
+
+        # Also build llama-quantize (needed by unsloth-zoo's GGUF export pipeline)
+        if [ "$BUILD_OK" = true ]; then
+            run_quiet "build llama-quantize" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-quantize -j"$NCPU" || true
+            # Symlink to llama.cpp root — check_llama_cpp() looks for the binary there
+            QUANTIZE_BIN="$LLAMA_CPP_DIR/build/bin/llama-quantize"
+            if [ -f "$QUANTIZE_BIN" ]; then
+                ln -sf build/bin/llama-quantize "$LLAMA_CPP_DIR/llama-quantize"
+            fi
+        fi
+
+        if [ "$BUILD_OK" = true ]; then
+            if [ -f "$LLAMA_SERVER_BIN" ]; then
+                echo "✅ llama-server built at $LLAMA_SERVER_BIN"
+            else
+                echo "⚠️  llama-server binary not found after build — GGUF inference won't be available"
+            fi
+            if [ -f "$LLAMA_CPP_DIR/llama-quantize" ]; then
+                echo "✅ llama-quantize available for GGUF export"
+            fi
+        else
+            echo "⚠️  llama-server build failed — GGUF inference won't be available, but everything else works"
+        fi
+    fi
+fi
+
+# ── 9. Add shell alias (skip in Colab) ──
 # Note: venv activation does NOT persist across terminal sessions.
 # This alias hardcodes the venv python path so users don't need to activate.
 if [ "$IS_COLAB" = false ]; then

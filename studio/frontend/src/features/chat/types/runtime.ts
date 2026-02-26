@@ -15,7 +15,7 @@ export const DEFAULT_INFERENCE_PARAMS: InferenceParams = {
   topK: 50,
   minP: 0.01,
   repetitionPenalty: 1.1,
-  maxTokens: 512,
+  maxTokens: 4092,
   systemPrompt: "",
   checkpoint: "",
 };
@@ -26,6 +26,7 @@ export interface ChatModelSummary {
   description?: string;
   isVision: boolean;
   isLora: boolean;
+  isGguf?: boolean;
 }
 
 export interface ChatLoraSummary {
@@ -33,4 +34,6 @@ export interface ChatLoraSummary {
   name: string;
   baseModel: string;
   updatedAt?: number;
+  source?: "training" | "exported";
+  exportType?: "lora" | "merged";
 }

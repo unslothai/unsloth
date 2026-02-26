@@ -10,6 +10,12 @@ import { useTrainingRuntimeStore } from "../stores/training-runtime-store";
 import type { TrainingConfigState } from "../types/config";
 import { toast } from "sonner";
 
+/** Chatml → format-specific role remap (only for formats that differ from chatml). */
+const ROLE_REMAP: Record<string, Record<string, string>> = {
+  alpaca: { user: "instruction", system: "input", assistant: "output" },
+  sharegpt: { user: "human", assistant: "gpt", system: "system" },
+};
+
 export function useTrainingActions() {
   const isStarting = useTrainingRuntimeStore((state) => state.isStarting);
   const startError = useTrainingRuntimeStore((state) => state.startError);
@@ -30,7 +36,7 @@ export function useTrainingActions() {
 
     try {
       const datasetName = getDatasetName(config);
-      const isVlm = config.isVisionModel && config.isDatasetMultimodal === true;
+      let isVlm = config.isVisionModel && config.isDatasetMultimodal === true;
 
       if (datasetName) {
         const check = await checkDatasetFormat({
@@ -41,19 +47,26 @@ export function useTrainingActions() {
           isVlm,
         });
 
-        if (check.requires_manual_mapping && !hasManualMapping(config)) {
-          const hintInput = isVlm
-            ? check.detected_image_column
-            : pickRoleColumn(check.suggested_mapping, "user");
-          const hintOutput = isVlm
-            ? check.detected_text_column
-            : pickRoleColumn(check.suggested_mapping, "assistant");
+        // Backend auto-detects multimodal even if we didn't know yet
+        if (check.is_multimodal && config.isVisionModel) {
+          isVlm = true;
+        }
 
-          if (hintInput || hintOutput) {
-            useTrainingConfigStore.getState().setDatasetManualMapping({
-              input: hintInput ?? null,
-              output: hintOutput ?? null,
-            });
+        if (check.requires_manual_mapping && !hasManualMapping(config, isVlm)) {
+          // Pre-fill from suggested_mapping or VLM detected columns
+          const hint: Record<string, string> = {};
+          if (check.suggested_mapping) {
+            const table = ROLE_REMAP[config.datasetFormat];
+            for (const [col, role] of Object.entries(check.suggested_mapping)) {
+              hint[col] = table ? (table[role] ?? role) : role;
+            }
+          } else if (isVlm) {
+            if (check.detected_image_column) hint[check.detected_image_column] = "image";
+            if (check.detected_text_column) hint[check.detected_text_column] = "text";
+          }
+
+          if (Object.keys(hint).length > 0) {
+            useTrainingConfigStore.getState().setDatasetManualMapping(hint);
           }
 
           runtimeStore.setStarting(false);
@@ -130,19 +143,14 @@ function getDatasetName(config: TrainingConfigState): string | null {
     : config.uploadedFile;
 }
 
-function hasManualMapping(config: TrainingConfigState): boolean {
-  return (
-    !!config.datasetManualMapping.input && !!config.datasetManualMapping.output
-  );
-}
-
-function pickRoleColumn(
-  mapping: Record<string, string> | null | undefined,
-  role: string,
-): string | null {
-  if (!mapping) return null;
-  for (const [col, mappedRole] of Object.entries(mapping)) {
-    if (mappedRole === role) return col;
+function hasManualMapping(config: TrainingConfigState, isVlm = false): boolean {
+  const mapping = config.datasetManualMapping;
+  const roles = new Set(Object.values(mapping));
+  if (isVlm) {
+    return roles.has("image") && roles.has("text");
   }
-  return null;
+  const fmt = config.datasetFormat;
+  if (fmt === "alpaca") return roles.has("instruction") && roles.has("output");
+  if (fmt === "sharegpt") return roles.has("human") && roles.has("gpt");
+  return roles.has("user") && roles.has("assistant");
 }
