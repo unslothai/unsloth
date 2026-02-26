@@ -141,6 +141,8 @@ const PRETRAINING_PLAIN_TAGS = new Set(["pretraining", "pre-training"]);
 const OCR_PLAIN_TAGS = new Set(["ocr", "document-ocr"]);
 
 const PRETRAINING_SIZE_CATEGORIES = new Set([
+  "5M<n<10M",
+  "10M<n<100M",
   "100M<n<1B",
   "1B<n<10B",
   "10B<n<100B",
