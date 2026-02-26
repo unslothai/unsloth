@@ -113,6 +113,15 @@ export function AvailableReferencesInline({
               +{hiddenCount} more
             </button>
           )}
+          {expanded && collapsedCount < entries.length && (
+            <button
+              type="button"
+              className="corner-squircle h-4 px-1.5 text-[10px] text-muted-foreground hover:text-foreground"
+              onClick={() => setExpanded(false)}
+            >
+              Show less
+            </button>
+          )}
         </div>
       </div>
     </div>
