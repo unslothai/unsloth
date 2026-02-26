@@ -97,6 +97,8 @@ const NODE_META = {
     tone: "bg-orange-50 text-orange-600 border-orange-100",
   },
 } as const;
+const USER_NODE_TONE =
+  "bg-amber-50 text-amber-700 border-amber-100 dark:bg-amber-950/30 dark:text-amber-300 dark:border-amber-900/60";
 
 const SAMPLER_ICONS: Record<SamplerType, IconType> = {
   category: Tag01Icon,
@@ -342,6 +344,12 @@ function RecipeGraphNodeBase({
     (Boolean(config.prompt.trim()) ||
       Boolean(config.system_prompt.trim()) ||
       Boolean((config.scores?.length ?? 0) > 0));
+  const iconTone =
+    config?.kind === "sampler" &&
+    (config.sampler_type === "person" ||
+      config.sampler_type === "person_from_faker")
+      ? USER_NODE_TONE
+      : meta.tone;
 
   return (
     <BaseNode className="corner-squircle relative w-full min-w-0 overflow-visible rounded-lg border-border/60 shadow-sm">
@@ -362,7 +370,7 @@ function RecipeGraphNodeBase({
           <div
             className={cn(
               "corner-squircle flex size-7 items-center justify-center rounded-md border",
-              meta.tone,
+              iconTone,
             )}
           >
             <HugeiconsIcon icon={icon} className="size-3.5" />
