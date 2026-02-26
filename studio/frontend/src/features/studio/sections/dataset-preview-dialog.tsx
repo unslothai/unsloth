@@ -64,13 +64,14 @@ export function DatasetPreviewDialog({
 
   // If the backend reports multimodal data, treat as VLM even if the prop
   // hasn't caught up yet (isDatasetMultimodal may still be null in the store).
-  const effectiveIsVlm = isVlm || !!data?.is_multimodal;
+  const effectiveIsAudio = !!data?.is_audio;
+  const effectiveIsVlm = !effectiveIsAudio && (isVlm || !!data?.is_multimodal);
 
   const hasHeuristicMapping = !data?.requires_manual_mapping && !!data?.suggested_mapping;
   const mappingEnabled = !!data?.requires_manual_mapping || hasHeuristicMapping;
   const showMappingFooter = mode === "mapping" && mappingEnabled;
-  const mappingOk = isMappingComplete(manualMapping, effectiveIsVlm, datasetFormat);
-  const availableRoles = getAvailableRoles(effectiveIsVlm, datasetFormat);
+  const mappingOk = isMappingComplete(manualMapping, effectiveIsVlm, datasetFormat, effectiveIsAudio);
+  const availableRoles = getAvailableRoles(effectiveIsVlm, datasetFormat, effectiveIsAudio);
   const isHfDataset = !!datasetName && datasetName.includes("/");
 
   // When format changes, remap existing mapping roles to the new format's role names
@@ -150,7 +151,7 @@ export function DatasetPreviewDialog({
     if (!data?.requires_manual_mapping && !data?.suggested_mapping) return;
     // Don't overwrite if mapping already has entries
     if (Object.keys(manualMapping).length > 0) return;
-    const derived = deriveDefaultMapping(data, effectiveIsVlm, datasetFormat);
+    const derived = deriveDefaultMapping(data, effectiveIsVlm, datasetFormat, effectiveIsAudio);
     if (Object.keys(derived).length === 0) return;
     setManualMapping(derived);
   }, [open, datasetName, data, effectiveIsVlm, datasetFormat, manualMapping, setManualMapping]);
@@ -346,6 +347,7 @@ export function DatasetPreviewDialog({
                   mappingOk={mappingOk}
                   autoDetected={hasHeuristicMapping}
                   isVlm={effectiveIsVlm}
+                  isAudio={effectiveIsAudio}
                   format={datasetFormat}
                 />
               )}

@@ -4,7 +4,6 @@ import type { TrainingConfigState } from "../types/config";
 type ModelDefaultsPatch = Partial<
   Pick<
     TrainingConfigState,
-    | "isDatasetAudio"
     | "epochs"
     | "contextLength"
     | "learningRate"
@@ -79,9 +78,6 @@ export function mapBackendModelConfigToTrainingPatch(
   const training = config.training;
   const lora = config.lora;
   const logging = config.logging;
-
-  // Audio models: set isDatasetAudio based on audio_type from YAML
-  patch.isDatasetAudio = typeof config.audio_type === "string" && config.audio_type.length > 0;
 
   const maxSeqLength = toNumber(training?.max_seq_length);
   if (maxSeqLength !== undefined) patch.contextLength = maxSeqLength;
