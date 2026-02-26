@@ -2,23 +2,27 @@ import { SectionCard } from "@/components/section-card";
 import { Button } from "@/components/ui/button";
 import { ChartContainer } from "@/components/ui/chart";
 import type { ChartConfig } from "@/components/ui/chart";
-import { Checkbox } from "@/components/ui/checkbox";
 import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
-import { Input } from "@/components/ui/input";
-import { useTrainingActions, useTrainingConfigStore } from "@/features/training";
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
+  parseYamlConfig,
+  serializeConfigToYaml,
+  useTrainingActions,
+  useTrainingConfigStore,
+} from "@/features/training";
 import {
   Archive04Icon,
-  ArrowDown01Icon,
   ChartAverageIcon,
   CleanIcon,
+  CloudUploadIcon,
   Rocket01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useState } from "react";
+import { useRef } from "react";
+import { toast } from "sonner";
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts";
 
 const chartConfig = {
@@ -37,10 +41,55 @@ const placeholderData = [
 export function TrainingSection() {
   const store = useTrainingConfigStore();
   const { isStarting, startError, startTrainingRun } = useTrainingActions();
-  const [logOpen, setLogOpen] = useState(false);
   const isIncompatible =
     !store.isVisionModel && store.isDatasetMultimodal === true;
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = "";
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const config = parseYamlConfig(reader.result as string);
+        store.applyConfigPatch(config);
+        toast.success("Config loaded", { description: file.name });
+      } catch (err) {
+        toast.error("Failed to load config", {
+          description:
+            err instanceof Error ? err.message : "Invalid YAML file",
+        });
+      }
+    };
+    reader.onerror = () => {
+      toast.error("Failed to read file");
+    };
+    reader.readAsText(file);
+  };
+
+  const handleSaveConfig = () => {
+    const yamlStr = serializeConfigToYaml(store, store.isVisionModel);
+    const blob = new Blob([yamlStr], { type: "text/yaml" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+
+    const model = (store.selectedModel ?? "model").split("/").pop();
+    const method = store.trainingMethod ?? "qlora";
+    const dataset = (store.dataset ?? "dataset").split("/").pop();
+    const timestamp = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 19);
+    a.download = `${model}_${method}_${dataset}_${timestamp}.yaml`;
+
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleResetConfig = () => {
+    store.resetToModelDefaults();
+    toast.success("Parameters reset to model defaults");
+  };
 
   return (
     <div data-tour="studio-training" className="col-span-1 xl:col-span-4">
@@ -49,7 +98,7 @@ export function TrainingSection() {
         title="Training"
         description="Monitor and control training"
         accent="blue"
-        className="md:min-h-[450px]"
+        className="md:min-h-[470px]"
       >
         <div className="flex flex-col gap-4">
         {/* Loss chart */}
@@ -115,100 +164,61 @@ export function TrainingSection() {
           </p>
         )}
 
-        {/* Save / Clear */}
-        <div className="grid grid-cols-2 gap-2">
-          <Button
-            data-tour="studio-save"
-            variant="outline"
-            size="sm"
-            className="cursor-pointer"
-          >
-            <HugeiconsIcon icon={Archive04Icon} className="size-3.5" /> Save
-            Config
-          </Button>
-          <Button variant="outline" size="sm" className="cursor-pointer">
-            <HugeiconsIcon icon={CleanIcon} className="size-3.5" /> Clear
-          </Button>
+        {/* Upload / Save / Reset */}
+        <p className="text-xs text-muted-foreground">Training Config</p>
+        <div className="grid grid-cols-3 gap-2">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="outline"
+                size="sm"
+                className="cursor-pointer"
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <HugeiconsIcon icon={CloudUploadIcon} className="size-3.5" />
+                Upload
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Load a saved YAML config</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                data-tour="studio-save"
+                variant="outline"
+                size="sm"
+                className="cursor-pointer"
+                onClick={handleSaveConfig}
+              >
+                <HugeiconsIcon icon={Archive04Icon} className="size-3.5" />
+                Save
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Download current config as YAML</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="outline"
+                size="sm"
+                className="cursor-pointer"
+                onClick={handleResetConfig}
+                disabled={!store.selectedModel}
+              >
+                <HugeiconsIcon icon={CleanIcon} className="size-3.5" />
+                Reset
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Reset to model defaults</TooltipContent>
+          </Tooltip>
         </div>
-
-        {/* Logging */}
-        <Collapsible open={logOpen} onOpenChange={setLogOpen}>
-          <CollapsibleTrigger className="flex w-full cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
-            <HugeiconsIcon
-              icon={ArrowDown01Icon}
-              className={`size-3.5 transition-transform ${logOpen ? "rotate-180" : ""}`}
-            />
-            Logging
-          </CollapsibleTrigger>
-          <CollapsibleContent className="mt-3 flex flex-col gap-3">
-            {/* W&B */}
-            <div className="flex items-center gap-2">
-              <Checkbox
-                id="wandb"
-                checked={store.enableWandb}
-                onCheckedChange={(v) => store.setEnableWandb(!!v)}
-              />
-              <label
-                htmlFor="wandb"
-                className="text-xs cursor-pointer text-muted-foreground"
-              >
-                Weights & Biases
-              </label>
-            </div>
-            {store.enableWandb && (
-              <div className="flex flex-col gap-2 pl-6">
-                <Input
-                  placeholder="W&B API Token"
-                  type="password"
-                  value={store.wandbToken}
-                  onChange={(e) => store.setWandbToken(e.target.value)}
-                />
-                <Input
-                  placeholder="Project name"
-                  value={store.wandbProject}
-                  onChange={(e) => store.setWandbProject(e.target.value)}
-                />
-              </div>
-            )}
-
-            {/* TensorBoard */}
-            <div className="flex items-center gap-2">
-              <Checkbox
-                id="tensorboard"
-                checked={store.enableTensorboard}
-                onCheckedChange={(v) => store.setEnableTensorboard(!!v)}
-              />
-              <label
-                htmlFor="tensorboard"
-                className="text-xs cursor-pointer text-muted-foreground"
-              >
-                TensorBoard
-              </label>
-            </div>
-            {store.enableTensorboard && (
-              <div className="flex flex-col gap-2 pl-6">
-                <Input
-                  placeholder="Log directory"
-                  value={store.tensorboardDir}
-                  onChange={(e) => store.setTensorboardDir(e.target.value)}
-                />
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-medium text-muted-foreground">
-                    Log frequency
-                  </span>
-                  <Input
-                    type="number"
-                    value={store.logFrequency}
-                    onChange={(e) =>
-                      store.setLogFrequency(Number(e.target.value))
-                    }
-                    className="w-24"
-                  />
-                </div>
-              </div>
-            )}
-          </CollapsibleContent>
-        </Collapsible>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".yaml,.yml"
+          className="hidden"
+          onChange={handleFileUpload}
+        />
         </div>
       </SectionCard>
     </div>

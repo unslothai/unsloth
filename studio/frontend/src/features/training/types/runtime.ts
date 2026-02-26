@@ -95,9 +95,11 @@ export interface TrainingRuntimeState {
   gradNormHistory: TrainingSeriesPoint[];
   evalLossHistory: TrainingSeriesPoint[];
   resetGeneration: number;
+  stopRequested: boolean;
 }
 
 export interface TrainingRuntimeActions {
+  setStopRequested: (value: boolean) => void;
   setHydrating: (value: boolean) => void;
   setHasHydrated: (value: boolean) => void;
   setStarting: (value: boolean) => void;

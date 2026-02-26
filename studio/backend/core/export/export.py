@@ -2,6 +2,7 @@
 """
 Export backend - handles model exporting in various formats
 """
+import json
 import logging
 import os
 from pathlib import Path
@@ -200,6 +201,18 @@ class ExportBackend:
             logger.error(traceback.format_exc())
             return False, f"Failed to load checkpoint: {str(e)}"
 
+    def _write_export_metadata(self, save_directory: str):
+        """Write export_metadata.json with base model info for Chat page discovery."""
+        try:
+            base_model = get_base_model_from_lora(self.current_checkpoint) if self.current_checkpoint else None
+            metadata = {"base_model": base_model}
+            metadata_path = os.path.join(save_directory, "export_metadata.json")
+            with open(metadata_path, "w") as f:
+                json.dump(metadata, f, indent=2)
+            logger.info(f"Wrote export metadata to {metadata_path}")
+        except Exception as e:
+            logger.warning(f"Could not write export metadata: {e}")
+
     def export_merged_model(self,
                            save_directory: str,
                            format_type: str = "16-bit (FP16)",
@@ -244,6 +257,9 @@ class ExportBackend:
                     self.current_tokenizer,
                     save_method=save_method
                 )
+
+                # Write export metadata so the Chat page can identify the base model
+                self._write_export_metadata(save_directory)
                 logger.info(f"Model saved successfully to {save_directory}")
 
             # Push to hub if requested
@@ -297,6 +313,9 @@ class ExportBackend:
 
                 self.current_model.save_pretrained(save_directory)
                 self.current_tokenizer.save_pretrained(save_directory)
+
+                # Write export metadata so the Chat page can identify the base model
+                self._write_export_metadata(save_directory)
                 logger.info(f"Model saved successfully to {save_directory}")
 
             # Push to hub if requested
@@ -378,53 +397,30 @@ class ExportBackend:
 
             # Save locally if requested
             if save_directory:
-                logger.info(f"Saving GGUF model locally to: {save_directory}")
+                # Resolve to absolute path so unsloth's relative-path internals
+                # (check_llama_cpp, use_local_gguf, _download_convert_hf_to_gguf)
+                # all resolve against the repo root cwd, NOT the export directory.
+                abs_save_dir = os.path.abspath(save_directory)
+                logger.info(f"Saving GGUF model locally to: {abs_save_dir}")
 
                 # Create the directory if it doesn't exist
-                os.makedirs(save_directory, exist_ok=True)
+                os.makedirs(abs_save_dir, exist_ok=True)
 
-                # Get the base filename for the GGUF file
-                import shutil
-                original_dir = os.getcwd()
+                # On WSL, patch out sudo check before llama.cpp build
+                _apply_wsl_sudo_patch()
 
-                try:
-                    # Change to target directory
-                    os.chdir(save_directory)
-                    logger.info(f"Changed directory to: {save_directory}")
+                # Pass absolute path — no os.chdir needed.
+                # unsloth saves model files into this directory, while
+                # check_llama_cpp("llama.cpp") resolves against cwd (repo root)
+                # where setup.sh already built llama.cpp with quantizer.
+                model_save_path = os.path.join(abs_save_dir, "model")
+                self.current_model.save_pretrained_gguf(
+                    model_save_path,
+                    self.current_tokenizer,
+                    quantization_method=quant_method
+                )
 
-                    # On WSL, patch out sudo check before llama.cpp build
-                    _apply_wsl_sudo_patch()
-
-                    # Now save (will save in current directory)
-                    self.current_model.save_pretrained_gguf(
-                        "model",  # Base filename
-                        self.current_tokenizer,
-                        quantization_method=quant_method
-                    )
-
-                    logger.info(f"GGUF model saved successfully in {save_directory}")
-
-                    # Check if llama.cpp directory was created here
-                    llama_cpp_in_target = os.path.join(save_directory, "llama.cpp")
-                    llama_cpp_in_original = os.path.join(original_dir, "llama.cpp")
-
-                    if os.path.exists(llama_cpp_in_target):
-                        logger.info(f"Found llama.cpp directory in {save_directory}")
-
-                        # Remove llama.cpp from original directory if it exists
-                        if os.path.exists(llama_cpp_in_original):
-                            logger.info(f"Removing existing llama.cpp in {original_dir}")
-                            shutil.rmtree(llama_cpp_in_original)
-
-                        # Move llama.cpp back to original directory
-                        logger.info(f"Moving llama.cpp to {original_dir}")
-                        shutil.move(llama_cpp_in_target, llama_cpp_in_original)
-                        logger.info(f"Successfully moved llama.cpp back to original directory")
-
-                finally:
-                    # Always change back to original directory
-                    os.chdir(original_dir)
-                    logger.info(f"Changed back to original directory: {original_dir}")
+                logger.info(f"GGUF model saved successfully in {abs_save_dir}")
 
             # Push to hub if requested
             if push_to_hub:

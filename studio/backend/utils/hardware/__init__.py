@@ -13,6 +13,8 @@ from .hardware import (
     get_gpu_summary,
     get_package_versions,
     get_gpu_utilization,
+    get_physical_gpu_count,
+    safe_num_proc,
 )
 
 __all__ = [
@@ -27,4 +29,6 @@ __all__ = [
     'get_gpu_summary',
     'get_package_versions',
     'get_gpu_utilization',
+    'get_physical_gpu_count',
+    'safe_num_proc',
 ]
