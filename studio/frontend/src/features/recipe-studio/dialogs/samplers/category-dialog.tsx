@@ -133,12 +133,15 @@ export function CategoryDialog({
                   Add values first, then set optional weights.
                 </p>
               ) : (
-                <div className="grid gap-2">
+                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
                   {(config.values ?? []).map((value, index) => (
-                    <div key={`${value}-weight`} className="flex items-center gap-3">
-                      <span className="max-w-20 truncate text-xs text-muted-foreground">
+                    <div key={`${value}-weight`} className="space-y-1">
+                      <p
+                        className="truncate text-xs text-muted-foreground"
+                        title={value}
+                      >
                         {value}
-                      </span>
+                      </p>
                       <Input
                         type="number"
                         className="nodrag w-full"
@@ -236,15 +239,18 @@ export function CategoryDialog({
                   <p className="text-xs font-semibold uppercase text-muted-foreground">
                     Rule weights (optional)
                   </p>
-                  <div className="grid gap-2">
+                  <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
                     {(params.values ?? []).map((value, index) => (
                       <div
                         key={`${condition}-${value}-${index}-weight`}
-                        className="flex items-center gap-3"
+                        className="space-y-1"
                       >
-                        <span className="w-28 truncate text-xs text-muted-foreground">
+                        <p
+                          className="truncate text-xs text-muted-foreground"
+                          title={value}
+                        >
                           {value}
-                        </span>
+                        </p>
                         <Input
                           type="number"
                           className="nodrag"
