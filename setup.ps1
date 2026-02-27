@@ -15,8 +15,8 @@ $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $PackageDir = Split-Path -Parent $ScriptDir
 
-# Detect if running from pip install (no frontend/ dir two levels up)
-$FrontendDir = Join-Path $ScriptDir "..\..\frontend"
+# Detect if running from pip install (no studio/frontend/ dir in repo)
+$FrontendDir = Join-Path $ScriptDir "studio\frontend"
 $IsPipInstall = -not (Test-Path $FrontendDir)
 
 # ─────────────────────────────────────────────
@@ -388,20 +388,13 @@ Write-Host ""
 if ($IsPipInstall) {
     Write-Host "[OK] Running from pip install - frontend already bundled, skipping build" -ForegroundColor Green
 } else {
-    $RepoRoot = (Resolve-Path (Join-Path $ScriptDir "..\..")).Path
-
     Write-Host ""
     Write-Host "Building frontend..." -ForegroundColor Cyan
-    Push-Location (Join-Path $RepoRoot "frontend")
+    Push-Location $FrontendDir
     npm install 2>&1 | Out-Null
     npm run build 2>&1 | Out-Null
     Pop-Location
-
-    $PackageBuildDir = Join-Path $PackageDir "studio\frontend\build"
-    if (Test-Path $PackageBuildDir) { Remove-Item -Recurse -Force $PackageBuildDir }
-    Copy-Item -Recurse (Join-Path $RepoRoot "frontend\build") $PackageBuildDir
-
-    Write-Host "[OK] Frontend built" -ForegroundColor Green
+    Write-Host "[OK] Frontend built to studio/frontend/dist" -ForegroundColor Green
 }
 
 # ==========================================================================
