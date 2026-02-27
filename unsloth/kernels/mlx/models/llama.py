@@ -85,7 +85,7 @@ class MLXRotaryEmbedding:
         return self._cos_cached, self._sin_cached
 
 
-class MLXAttention:
+class MLXAttention(mnn.Module):
     """MLX-native Multi-Head Attention with optional LoRA."""
 
     def __init__(
@@ -94,6 +94,7 @@ class MLXAttention:
         layer_idx: Optional[int] = None,
         lora_config: Optional[LoRAConfig] = None,
     ):
+        super().__init__()
         self.config = config
         self.layer_idx = layer_idx
         self.attention_dropout = 0.0
@@ -235,7 +236,7 @@ class MLXAttention:
         return x.reshape(bsz, num_kv_heads * n_rep, seq_len, head_dim)
 
 
-class MLXMLP:
+class MLXMLP(mnn.Module):
     """MLX-native MLP with SwiGLU activation."""
 
     def __init__(
@@ -243,6 +244,7 @@ class MLXMLP:
         config: MLXModelConfig,
         lora_config: Optional[LoRAConfig] = None,
     ):
+        super().__init__()
         self.config = config
         self.hidden_size = config.hidden_size
         self.intermediate_size = config.intermediate_size
@@ -296,7 +298,7 @@ class MLXMLP:
         return down
 
 
-class MLXLlamaDecoderLayer:
+class MLXLlamaDecoderLayer(mnn.Module):
     """MLX-native Llama decoder layer."""
 
     def __init__(
@@ -305,6 +307,7 @@ class MLXLlamaDecoderLayer:
         layer_idx: int,
         lora_config: Optional[LoRAConfig] = None,
     ):
+        super().__init__()
         self.config = config
         self.layer_idx = layer_idx
         self.hidden_size = config.hidden_size
@@ -352,7 +355,7 @@ class MLXLlamaDecoderLayer:
         return outputs
 
 
-class MLXLlamaModel:
+class MLXLlamaModel(mnn.Module):
     """MLX-native Llama model (without language model head)."""
 
     def __init__(
@@ -360,6 +363,7 @@ class MLXLlamaModel:
         config: MLXModelConfig,
         lora_config: Optional[LoRAConfig] = None,
     ):
+        super().__init__()
         self.config = config
         self.lora_config = lora_config
         self.padding_idx = config.pad_token_id
@@ -413,7 +417,7 @@ class MLXLlamaModel:
         return hidden_states, past_key_values
 
 
-class MLXLlamaForCausalLM:
+class MLXLlamaForCausalLM(mnn.Module):
     """MLX-native Llama model with language model head."""
 
     def __init__(
@@ -421,6 +425,7 @@ class MLXLlamaForCausalLM:
         config: MLXModelConfig,
         lora_config: Optional[LoRAConfig] = None,
     ):
+        super().__init__()
         self.config = config
         self.lora_config = lora_config
 
@@ -471,62 +476,6 @@ class MLXLlamaForCausalLM:
             logits = self.lm_head(hidden_states)
 
         return logits, loss
-
-    def parameters(self) -> dict:
-        """Return all model parameters as a dictionary."""
-        params = {}
-        for name, value in vars(self.model).items():
-            if isinstance(value, mx.array):
-                params[name] = value
-            elif hasattr(value, "weight"):
-                params[f"{name}.weight"] = value.weight
-                if hasattr(value, "bias") and value.bias is not None:
-                    params[f"{name}.bias"] = value.bias
-        params["lm_head.weight"] = self.lm_head.weight
-        return params
-
-    def trainable_parameters(self) -> dict:
-        """Return only trainable parameters (LoRA params if LoRA enabled)."""
-        trainable = {}
-        for name, module in self.named_modules():
-            if hasattr(module, "lora_A") and hasattr(module, "lora_B"):
-                trainable[f"{name}.lora_A"] = module.lora_A
-                trainable[f"{name}.lora_B"] = module.lora_B
-        if not trainable:
-            return self.parameters()
-        return trainable
-
-    def update(self, params: dict):
-        """Update model parameters from a dictionary."""
-        for key, value in params.items():
-            parts = key.split(".")
-            obj = self
-            for part in parts[:-1]:
-                if hasattr(obj, part):
-                    obj = getattr(obj, part)
-                elif hasattr(obj, "model") and hasattr(obj.model, part):
-                    obj = getattr(obj.model, part)
-                else:
-                    break
-            else:
-                final_key = parts[-1]
-                if hasattr(obj, final_key):
-                    setattr(obj, final_key, value)
-
-    def named_modules(self) -> list:
-        """Yield (name, module) pairs for all submodules."""
-        modules = []
-        for name, value in vars(self).items():
-            if hasattr(value, "weight") or hasattr(value, "lora_A"):
-                modules.append((name, value))
-        for name, value in vars(self.model).items():
-            if hasattr(value, "weight") or hasattr(value, "lora_A"):
-                modules.append((name, value))
-            elif hasattr(value, "self_attn"):
-                modules.append((f"{name}.self_attn", value.self_attn))
-            elif hasattr(value, "mlp"):
-                modules.append((f"{name}.mlp", value.mlp))
-        return modules
 
     def generate(
         self,
