@@ -468,8 +468,8 @@ elif DEVICE_TYPE == "xpu":
     else:
         torch_amp_custom_fwd = torch.amp.custom_fwd(device_type="xpu")
         torch_amp_custom_bwd = torch.amp.custom_bwd(device_type="xpu")
-elif DEVICE_TYPE == "mlx":
-    # MLX does not have native AMP support yet - use identity decorators
+elif DEVICE_TYPE in ("mps", "mlx"):
+    # MPS/MLX does not have native AMP support yet - use identity decorators
     def _identity_decorator(fn):
         return fn
 

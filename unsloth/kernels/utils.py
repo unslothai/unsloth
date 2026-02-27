@@ -65,23 +65,25 @@ if DEVICE_TYPE == "xpu" and Version(torch.__version__) < Version("2.6.0"):
         "Intel xpu currently supports unsloth with torch.version >= 2.6.0"
     )
 
-if Version(torch.__version__) < Version("2.4.0"):
-    torch_amp_custom_fwd = torch.cuda.amp.custom_fwd
-    torch_amp_custom_bwd = torch.cuda.amp.custom_bwd
-else:
-    torch_amp_custom_fwd = torch.amp.custom_fwd(device_type="cuda")
-    torch_amp_custom_bwd = torch.amp.custom_bwd(device_type="cuda")
-
-if DEVICE_TYPE == "xpu":
-    torch_amp_custom_fwd = torch.amp.custom_fwd(device_type="xpu")
-    torch_amp_custom_bwd = torch.amp.custom_bwd(device_type="xpu")
-elif DEVICE_TYPE == "mps":
-    # MPS does not have native AMP support yet - use identity decorators
+# Set up AMP decorators based on device type
+if DEVICE_TYPE in ("mps", "mlx"):
+    # MPS/MLX does not have native AMP support yet - use identity decorators
     def _identity_decorator(fn):
         return fn
 
     torch_amp_custom_fwd = _identity_decorator
     torch_amp_custom_bwd = _identity_decorator
+elif DEVICE_TYPE == "xpu":
+    torch_amp_custom_fwd = torch.amp.custom_fwd(device_type="xpu")
+    torch_amp_custom_bwd = torch.amp.custom_bwd(device_type="xpu")
+else:
+    # CUDA/HIP
+    if Version(torch.__version__) < Version("2.4.0"):
+        torch_amp_custom_fwd = torch.cuda.amp.custom_fwd
+        torch_amp_custom_bwd = torch.cuda.amp.custom_bwd
+    else:
+        torch_amp_custom_fwd = torch.amp.custom_fwd(device_type="cuda")
+        torch_amp_custom_bwd = torch.amp.custom_bwd(device_type="cuda")
 
 
 # tl.math.tanh now is libdevice.tanh
