@@ -371,7 +371,11 @@ class FastLanguageModel(FastLlamaModel):
         fp8_mode = None
         if not use_exact_model_name:
             new_model_name = get_model_name(
-                model_name, load_in_4bit = load_in_4bit, load_in_fp8 = load_in_fp8, token = token, trust_remote_code=trust_remote_code
+                model_name,
+                load_in_4bit = load_in_4bit,
+                load_in_fp8 = load_in_fp8,
+                token = token,
+                trust_remote_code = trust_remote_code,
             )
             if new_model_name is None and load_in_fp8 != False:
                 fp8_mode = _get_fp8_mode_and_check_settings(
@@ -524,7 +528,13 @@ class FastLanguageModel(FastLlamaModel):
             # Check base model again for PEFT
             model_name = peft_config.base_model_name_or_path
             if not use_exact_model_name:
-                model_name = get_model_name(model_name, load_in_4bit = load_in_4bit, load_in_fp8 = load_in_fp8, token = token, trust_remote_code=trust_remote_code)
+                model_name = get_model_name(
+                    model_name,
+                    load_in_4bit = load_in_4bit,
+                    load_in_fp8 = load_in_fp8,
+                    token = token,
+                    trust_remote_code = trust_remote_code,
+                )
             # Check if pre-quantized models are allowed
             # For eg AMD Instinct GPUs need blocksize = 128, but our pre-quants are blocksize = 64
             if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(

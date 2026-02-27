@@ -2583,9 +2583,6 @@ def patch_hf_quantizer():
 patch_hf_quantizer()
 
 
-
-
-
 def verify_fp8_support_if_applicable(model_config):
     quant_method = get_quant_type(model_config)
     if quant_method in ["fbgemm_fp8", "fp8"] and DEVICE_TYPE != "cuda":

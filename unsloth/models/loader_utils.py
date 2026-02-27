@@ -218,7 +218,13 @@ def _resolve_with_mappers(
     )
 
 
-def get_model_name(model_name, load_in_4bit = True, load_in_fp8 = False, token = None, trust_remote_code = False):
+def get_model_name(
+    model_name,
+    load_in_4bit = True,
+    load_in_fp8 = False,
+    token = None,
+    trust_remote_code = False,
+):
     assert load_in_fp8 in (True, False, "block")
     new_model_name = _resolve_with_mappers(
         model_name = model_name,
