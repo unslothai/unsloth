@@ -331,10 +331,10 @@ export function ModelSection() {
                     const source =
                       model?.source === "hf_cache" ? "HF cache" : "Local dir";
                     return (
-                      <ComboboxItem key={id} value={id} className="justify-between">
+                      <ComboboxItem key={id} value={id} className="gap-2">
                         <Tooltip>
                           <TooltipTrigger asChild={true}>
-                            <span className="min-w-0 flex-1 truncate">
+                            <span className="block min-w-0 flex-1 truncate">
                               {model?.display_name ?? id}
                             </span>
                           </TooltipTrigger>
@@ -342,7 +342,7 @@ export function ModelSection() {
                             {model?.path ?? id}
                           </TooltipContent>
                         </Tooltip>
-                        <span className="shrink-0 text-[10px] text-muted-foreground">
+                        <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
                           {source}
                         </span>
                       </ComboboxItem>
@@ -446,11 +446,11 @@ export function ModelSection() {
                         <ComboboxItem
                           key={id}
                           value={id}
-                          className={`justify-between ${exceeds ? "opacity-50" : ""}`}
+                          className={`gap-2 ${exceeds ? "opacity-50" : ""}`}
                         >
                           <Tooltip>
                             <TooltipTrigger asChild={true}>
-                              <span className={`min-w-0 flex-1 truncate ${exceeds ? "line-through decoration-muted-foreground/50" : ""}`}>
+                              <span className={`block min-w-0 flex-1 truncate ${exceeds ? "line-through decoration-muted-foreground/50" : ""}`}>
                                 {id}
                               </span>
                             </TooltipTrigger>
@@ -470,7 +470,7 @@ export function ModelSection() {
                               )}
                             </TooltipContent>
                           </Tooltip>
-                          <span className="flex items-center gap-1.5 shrink-0">
+                          <span className="ml-auto flex items-center gap-1.5 shrink-0">
                             {fitStatus === "exceeds" && (
                               <span className="text-[9px] font-medium text-red-400">
                                 OOM
