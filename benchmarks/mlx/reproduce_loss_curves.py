@@ -139,7 +139,6 @@ def run_training(
     batch_size: int,
     seq_length: int,
     use_cce: bool,
-    wandb_project: str = "unsloth-mlx-loss-curves",
     run_name: str = None,
 ):
     """Run a single training sprint and return the list of losses."""
@@ -185,18 +184,11 @@ def run_training(
         def on_log(self, args, state, control, logs=None, **kwargs):
             if logs and "loss" in logs:
                 loss_logger.losses.append(logs["loss"])
-
-    if wandb_project:
-        wandb.init(
-            project=wandb_project,
-            name=run_name,
-            config={
-                "model_id": model_id,
-                "batch_size": batch_size,
-                "seq_length": seq_length,
-                "use_cce": use_cce,
-            },
-        )
+                if wandb.run is not None:
+                    # Log to W&B so all lines appear on the same step axis
+                    wandb.log(
+                        {f"loss/{run_name}": logs["loss"], "step": state.global_step}
+                    )
 
     trainer = SFTTrainer(
         model=model,
@@ -218,8 +210,7 @@ def run_training(
             lr_scheduler_type="linear",
             seed=3407,
             output_dir=f"outputs_{use_cce}",
-            report_to="wandb" if wandb_project else "none",
-            run_name=run_name if wandb_project else None,
+            report_to="none",
         ),
         callbacks=[HFLoggingCallback()],
     )
@@ -232,9 +223,6 @@ def run_training(
     # Clean up model to free VRAM immediately
     del trainer, model, tokenizer
     clear_memory()
-
-    if wandb_project:
-        wandb.finish()
 
     return loss_logger.losses
 
@@ -258,6 +246,13 @@ def main():
         configs_to_run = [CONFIGS[args.config]]
     elif args.model is not None:
         configs_to_run = [c for c in CONFIGS if c["model_id"] == args.model]
+
+    # Initialize a single W&B run for all configurations
+    wandb.init(
+        project="unsloth-mlx-loss-curves",
+        name="Baseline_vs_CCE_benchmark",
+        config={"configs_run": len(configs_to_run)},
+    )
 
     for idx, cfg in enumerate(configs_to_run):
         key = f"{cfg['name']}_b{cfg['batch']}_s{cfg['seq']}"
@@ -343,6 +338,9 @@ def main():
             out_file = f"loss_curves_{key}.png"
             plt.savefig(out_file, dpi=300)
             print(f"Saved single plot to {out_file}")
+
+    if wandb.run is not None:
+        wandb.finish()
 
 
 if __name__ == "__main__":
