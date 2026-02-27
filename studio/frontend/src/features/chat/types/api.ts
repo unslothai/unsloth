@@ -69,6 +69,7 @@ export interface InferenceStatusResponse {
   active_model: string | null;
   is_vision: boolean;
   is_gguf?: boolean;
+  gguf_variant?: string | null;
   loading: string[];
   loaded: string[];
 }

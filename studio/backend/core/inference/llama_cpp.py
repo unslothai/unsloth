@@ -62,6 +62,10 @@ class LlamaCppBackend:
     def is_vision(self) -> bool:
         return self._is_vision
 
+    @property
+    def hf_variant(self) -> Optional[str]:
+        return self._hf_variant
+
     # ── Binary discovery ──────────────────────────────────────────
 
     @staticmethod

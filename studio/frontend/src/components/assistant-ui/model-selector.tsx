@@ -27,6 +27,7 @@ interface ModelSelectorProps {
   loraModels?: LoraModelOption[];
   value?: string;
   defaultValue?: string;
+  activeGgufVariant?: string | null;
   onValueChange?: (value: string, meta: ModelSelectorChangeMeta) => void;
   onEject?: () => void;
   variant?: "outline" | "ghost" | "muted";
@@ -158,6 +159,7 @@ export function ModelSelector({
   loraModels = [],
   value,
   defaultValue,
+  activeGgufVariant,
   onValueChange,
   onEject,
   variant = "outline",
@@ -202,9 +204,15 @@ export function ModelSelector({
     return all;
   }, [loraModels, models]);
 
-  const currentModel = selected
-    ? optionById.get(selected) ?? { id: selected, name: selected }
-    : undefined;
+  const currentModel = useMemo(() => {
+    if (!selected) return undefined;
+    const found = optionById.get(selected);
+    if (activeGgufVariant) {
+      const desc = `GGUF · ${activeGgufVariant}`;
+      return found ? { ...found, description: desc } : { id: selected, name: selected, description: desc };
+    }
+    return found ?? { id: selected, name: selected };
+  }, [selected, optionById, activeGgufVariant]);
 
   function handleSelect(id: string, meta: ModelSelectorChangeMeta) {
     if (onValueChange) {
