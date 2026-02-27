@@ -255,10 +255,10 @@ export function DatasetStep() {
                     <ComboboxList className="p-1 !max-h-none !overflow-visible">
                       {(id: string) => {
                         return (
-                          <ComboboxItem key={id} value={id}>
+                          <ComboboxItem key={id} value={id} className="gap-2">
                             <Tooltip>
                               <TooltipTrigger asChild={true}>
-                                <span className="min-w-0 flex-1 truncate">
+                                <span className="block min-w-0 flex-1 truncate">
                                   {id}
                                 </span>
                               </TooltipTrigger>
