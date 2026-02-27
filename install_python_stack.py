@@ -116,9 +116,7 @@ def pip_install(
         # Clean up temp file if we created one
         if actual_req is not None and actual_req != req:
             actual_req.unlink(missing_ok=True)
-    if req is not None and actual_req != req:
-        skipped = WINDOWS_SKIP_PACKAGES
-        print(_cyan(f"   (Skipped on Windows: {', '.join(skipped)})"))
+
 
 
 def download_file(url: str, dest: Path) -> None:
