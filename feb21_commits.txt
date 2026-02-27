@@ -1,0 +1,37 @@
+﻿fb3f61ea | Fix MLX: only compute gradients for trainable LoRA params
+d501952d | Add keys to lora_config for proper layer conversion
+4d0ec6ad | Fix: use linear_to_lora alias instead of original name
+6c0be57d | Fix mlx_lm: linear_to_lora_layers modifies in place, returns None
+93b5720d | Fix mlx labels: use input_ids directly (MLX arrays are immutable)
+2e6f3828 | Fix mlx array copy using mx.copy
+ff8d0752 | Fix tokenizer vocab_size for mlx_lm
+30d72362 | Fix mlx_lm linear_to_lora_layers API call with num_layers arg
+a6f85744 | Fix mlx_lm import: use linear_to_lora_layers from mlx_lm.lora
+8ac0dff0 | Fix mlx_lm import paths for v0.30.7
+41de5781 | Fix dtype_from_config to handle config objects without .get()
+61c88e5f | Fix dtype_from_config lambda to accept optional key arg
+534e7163 | Fix _get_dtype lambda that required key argument
+da62eb1a | Fix _get_dtype to accept optional args
+9dc75cc1 | Add _get_dtype mock for MPS
+fd96f1b7 | Fix prepare_model_for_training lambda to accept kwargs
+42d57af7 | Fix peft.bnb import and MLX tuner fallback
+27b90064 | Fix: set submodules as attributes on parent unsloth_zoo module
+bde823b0 | Fix patch_model_and_tokenizer mock - use proper function
+0d102ddf | Add gradient_checkpointing mock for MPS
+0236cf07 | Fix tokenizer_utils mock in patcher.py
+7ffda2ad | Fix MPS mock imports: patch_tokenizer and MLX tuner fallback
+70abb077 | fix(apple-silicon): fix MockModule TypeError and resolve MLX benchmark import issue
+f99503e6 | fix(apple-silicon): fix _get_dtype TypeError and harden MLX benchmark imports
+9463f4bb | fix(apple-silicon): resolve get_transformers_model_type TypeError and fix MLX benchmark import
+3ef9bf99 | fix(apple-silicon): fix InvalidVersion by hardening Version class and fixing trl version check in trainer.py
+bc3dc163 | fix(apple-silicon): fix ImportError: cannot import name 'Linear4bit' from 'peft.tuners.lora'
+7220a00b | fix(apple-silicon): resolve inspect.getsource TypeError by hardening MockModule specialization and adding safety check in RL replacements
+a5db9cda | Fix grpo_compute_loss_slow to use safe_getsource
+9e254ee0 | Add safe_getsource wrapper to handle mocked modules in rl.py
+fd3f425e | Add safe getsource wrapper to handle mocked modules on Mac
+138be906 | Import unsloth at top of benchmark for proper patching
+f89b12c6 | Fix Version comparison in patcher and add mlx_lm check
+b4d7e6fc | Add Mac patcher import and fix LoRA target modules for LLaMA 1B
+e360214c | Add LLaMA 1B benchmark comparing PyTorch+Unsloth vs MLX
+fb090c4d | Fix MLX SimpleTransformer to inherit from nn.Module
+6a7ebbb9 | Add PyTorch vs MLX training benchmark script
