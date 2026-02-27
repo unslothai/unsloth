@@ -3414,7 +3414,7 @@ def patch_unsloth_zoo_saving():
     # Line 2620 does `from unsloth_zoo.saving_utils import merge_and_overwrite_lora`
     # which creates a local reference that is NOT affected by patching the zoo module.
     # We must update the globals() of THIS module so the call at line 2754 uses our wrapper.
-    globals()["merge_and_overwrite_lora"] = _mps_safe_merge_and_overwrite_lora
+    globals()["merge_and_overwrite_lora"] = _mlx_safe_merge_and_overwrite_lora
     
     # CRITICAL: Patch check_llama_cpp and install_llama_cpp in unsloth_zoo.llama_cpp module
     # This is needed because save_to_gguf from unsloth_zoo.saving_utils calls these directly

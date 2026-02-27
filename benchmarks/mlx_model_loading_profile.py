@@ -172,40 +172,21 @@ def profile_mlx_model_loading(
     try:
         import mlx.core as mx
         
-        if bits == 4 or use_quantization:
+        print(f"Loading {model_name} in {bits}-bit MLX...")
+        
+        try:
+            from mlx_lm import load as mlx_load
+            model, tokenizer = mlx_load(model_name)
+        except ImportError:
+            print("mlx-lm not installed, trying mlx.utils.load...")
+            from mlx.utils import load
+            model = load(model_name)
+            tokenizer = None
+        except Exception as e:
+            print(f"mlx-lm load failed: {e}")
             from unsloth.kernels.mlx.models.llama import create_llama_model
-            from unsloth.kernels.mlx.loader import load_model_mlx
-            
-            print(f"Loading {model_name} in 4-bit MLX...")
-            
-            try:
-                model = load_model_mlx(
-                    model_name,
-                    quantize_bits=4,
-                    lora_rank=lora_rank if lora_rank > 0 else None,
-                )
-            except Exception as e:
-                print(f"4-bit loading failed, trying alternative method: {e}")
-                from mlx.utils import load
-                from huggingface_hub import hf_hub_download
-                from mlx_lm import load as mlx_load
-                
-                model, tokenizer = mlx_load(model_name)
-        else:
-            from unsloth.kernels.mlx.loader import load_model_mlx
-            
-            print(f"Loading {model_name} in 16-bit MLX...")
-            
-            try:
-                model = load_model_mlx(
-                    model_name,
-                    dtype=mx.float16,
-                    lora_rank=lora_rank if lora_rank > 0 else None,
-                )
-            except Exception as e:
-                print(f"MLX loading failed, trying mlx-lm: {e}")
-                from mlx_lm import load as mlx_load
-                model, tokenizer = mlx_load(model_name)
+            model = create_llama_model(model_name, dtype=mx.float16)
+            tokenizer = None
         
         mx.eval(model.parameters() if hasattr(model, 'parameters') else model)
         
