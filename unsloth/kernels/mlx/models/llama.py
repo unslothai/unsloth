@@ -466,7 +466,7 @@ class MLXLlamaForCausalLM:
                 logits = self.lm_head(hidden_states)
                 shift_logits = logits[..., :-1, :].reshape(-1, self.vocab_size)
                 shift_labels = labels[..., 1:].reshape(-1)
-                loss = mx.nn.losses.cross_entropy(shift_logits, shift_labels, reduction="mean")
+                loss = mnn.losses.cross_entropy(shift_logits, shift_labels, reduction="mean")
         else:
             logits = self.lm_head(hidden_states)
 
