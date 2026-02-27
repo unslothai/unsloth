@@ -7,7 +7,6 @@ import {
   getDefaultDataTargetHandle,
   getDefaultSemanticSourceHandle,
   getDefaultSemanticTargetHandle,
-  getLlmJudgeScoreHandleId,
   HANDLE_IDS,
   isDataSourceHandle,
   isDataTargetHandle,
@@ -24,15 +23,12 @@ type DisplayGraphInput = {
   configs: Record<string, NodeConfig>;
   layoutDirection: LayoutDirection;
   auxNodePositions: Record<string, XYPosition>;
-  auxNodeSizes: Record<string, { width: number; height: number }>;
   llmAuxVisibility: Record<string, boolean>;
 };
 
 export type DisplayGraph = {
   nodes: Array<Node<RecipeNode["data"] | RecipeGraphAuxNodeData>>;
   edges: Edge[];
-  auxNodeIds: string[];
-  auxDefaults: Record<string, XYPosition>;
 };
 
 function normalizeEdge(
@@ -99,7 +95,6 @@ function normalizeEdge(
 
 type AuxNodeItem = {
   key: string;
-  targetHandle: string;
   data: RecipeGraphAuxNodeData;
 };
 
@@ -136,33 +131,227 @@ function findNonOverlappingPosition(
   preferred: XYPosition,
   width: number,
   height: number,
-  direction: LayoutDirection,
   occupied: Rect[],
 ): XYPosition {
-  const primaryStep =
-    direction === "TB"
-      ? { x: 0, y: -(height + 24) }
-      : { x: -(width + 24), y: 0 };
-  const lateralUnit =
-    direction === "TB"
-      ? { x: Math.max(48, Math.round(width * 0.3)), y: 0 }
-      : { x: 0, y: Math.max(40, Math.round(height * 0.35)) };
-  const lateralPattern = [0, 1, -1, 2, -2];
-
-  for (let ring = 0; ring <= 8; ring += 1) {
-    for (const lateral of lateralPattern) {
-      const candidate = {
-        x: preferred.x + primaryStep.x * ring + lateralUnit.x * lateral,
-        y: preferred.y + primaryStep.y * ring + lateralUnit.y * lateral,
-      };
-      const rect = toRect(candidate, width, height);
-      if (!occupied.some((other) => intersects(rect, other))) {
-        return candidate;
+  const step = 24;
+  for (let ring = 0; ring <= 10; ring += 1) {
+    for (let dx = -ring; dx <= ring; dx += 1) {
+      for (let dy = -ring; dy <= ring; dy += 1) {
+        if (ring > 0 && Math.max(Math.abs(dx), Math.abs(dy)) !== ring) {
+          continue;
+        }
+        const candidate = {
+          x: preferred.x + dx * step,
+          y: preferred.y + dy * step,
+        };
+        const rect = toRect(candidate, width, height);
+        if (!occupied.some((other) => intersects(rect, other))) {
+          return candidate;
+        }
       }
     }
   }
-
   return preferred;
+}
+
+type HandleSide = "left" | "right" | "top" | "bottom";
+
+const SIDE_TO_TARGET_HANDLE: Record<HandleSide, string> = {
+  left: HANDLE_IDS.dataIn,
+  right: HANDLE_IDS.dataInRight,
+  top: HANDLE_IDS.dataInTop,
+  bottom: HANDLE_IDS.dataInBottom,
+};
+
+function getTargetSide(
+  handleId: string | null | undefined,
+  direction: LayoutDirection,
+): HandleSide {
+  const normalized = normalizeRecipeHandleId(handleId);
+  if (!normalized) {
+    return direction === "TB" ? "top" : "left";
+  }
+  if (
+    normalized === HANDLE_IDS.dataInRight ||
+    normalized === HANDLE_IDS.semanticInRight
+  ) {
+    return "right";
+  }
+  if (
+    normalized === HANDLE_IDS.dataInBottom ||
+    normalized === HANDLE_IDS.semanticInBottom
+  ) {
+    return "bottom";
+  }
+  if (
+    normalized === HANDLE_IDS.dataInTop ||
+    normalized === HANDLE_IDS.semanticInTop
+  ) {
+    return "top";
+  }
+  return "left";
+}
+
+function getSourceSide(
+  handleId: string | null | undefined,
+  direction: LayoutDirection,
+): HandleSide {
+  const normalized = normalizeRecipeHandleId(handleId);
+  if (!normalized) {
+    return direction === "TB" ? "bottom" : "right";
+  }
+  if (
+    normalized === HANDLE_IDS.dataOutLeft ||
+    normalized === HANDLE_IDS.semanticOutLeft
+  ) {
+    return "left";
+  }
+  if (
+    normalized === HANDLE_IDS.dataOutTop ||
+    normalized === HANDLE_IDS.semanticOutTop
+  ) {
+    return "top";
+  }
+  if (
+    normalized === HANDLE_IDS.dataOutBottom ||
+    normalized === HANDLE_IDS.semanticOutBottom
+  ) {
+    return "bottom";
+  }
+  return "right";
+}
+
+function pickAuxTargetHandle(
+  llmId: string,
+  direction: LayoutDirection,
+  edges: Edge[],
+): string {
+  const occupied = new Set<HandleSide>();
+  for (const edge of edges) {
+    if (edge.source.startsWith("aux-") || edge.target.startsWith("aux-")) {
+      continue;
+    }
+    if (edge.target === llmId) {
+      occupied.add(getTargetSide(edge.targetHandle, direction));
+    }
+    if (edge.source === llmId) {
+      occupied.add(getSourceSide(edge.sourceHandle, direction));
+    }
+  }
+
+  const priority: HandleSide[] =
+    direction === "LR"
+      ? ["left", "right", "bottom", "top"]
+      : ["top", "bottom", "right", "left"];
+  for (const side of priority) {
+    if (!occupied.has(side)) {
+      return SIDE_TO_TARGET_HANDLE[side];
+    }
+  }
+
+  const fallback: HandleSide = direction === "LR" ? "bottom" : "right";
+  return SIDE_TO_TARGET_HANDLE[fallback];
+}
+
+function getHandleSideFromTargetHandle(targetHandle: string): HandleSide {
+  if (targetHandle === HANDLE_IDS.dataInRight) {
+    return "right";
+  }
+  if (targetHandle === HANDLE_IDS.dataInTop) {
+    return "top";
+  }
+  if (targetHandle === HANDLE_IDS.dataInBottom) {
+    return "bottom";
+  }
+  return "left";
+}
+
+function pickAuxSourceHandle(
+  auxPosition: XYPosition,
+  auxWidth: number,
+  auxHeight: number,
+  llmPosition: XYPosition,
+  llmWidth: number,
+  llmHeight: number,
+): string {
+  const auxCenter = {
+    x: auxPosition.x + auxWidth / 2,
+    y: auxPosition.y + auxHeight / 2,
+  };
+  const llmCenter = {
+    x: llmPosition.x + llmWidth / 2,
+    y: llmPosition.y + llmHeight / 2,
+  };
+  const dx = llmCenter.x - auxCenter.x;
+  const dy = llmCenter.y - auxCenter.y;
+
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    return dx >= 0 ? HANDLE_IDS.llmInputOutRight : HANDLE_IDS.llmInputOutLeft;
+  }
+  return dy >= 0 ? HANDLE_IDS.llmInputOutBottom : HANDLE_IDS.llmInputOutTop;
+}
+
+type AppendAuxNodeAndEdgeInput = {
+  auxNodes: Node<RecipeGraphAuxNodeData>[];
+  auxEdges: Edge[];
+  entry: {
+    item: AuxNodeItem;
+    auxId: string;
+    width: number;
+    height: number;
+  };
+  position: XYPosition;
+  parentNode: Node<RecipeNode["data"] | RecipeGraphAuxNodeData>;
+  parentWidth: number;
+  parentHeight: number;
+  auxTargetHandle: string;
+};
+
+function appendAuxNodeAndEdge({
+  auxNodes,
+  auxEdges,
+  entry,
+  position,
+  parentNode,
+  parentWidth,
+  parentHeight,
+  auxTargetHandle,
+}: AppendAuxNodeAndEdgeInput): void {
+  auxNodes.push({
+    id: entry.auxId,
+    type: "aux",
+    data: entry.item.data,
+    position,
+    width: entry.width,
+    height: entry.height,
+    style: {
+      width: entry.width,
+      height: entry.height,
+    },
+    draggable: true,
+    selectable: true,
+    focusable: true,
+    connectable: false,
+  });
+
+  auxEdges.push({
+    id: `e-${entry.auxId}-${parentNode.id}`,
+    source: entry.auxId,
+    sourceHandle: pickAuxSourceHandle(
+      position,
+      entry.width,
+      entry.height,
+      parentNode.position,
+      parentWidth,
+      parentHeight,
+    ),
+    target: parentNode.id,
+    targetHandle: auxTargetHandle,
+    type: "canvas",
+    data: { path: "auto" },
+    selectable: false,
+    focusable: false,
+  });
 }
 
 export function deriveDisplayGraph({
@@ -171,7 +360,6 @@ export function deriveDisplayGraph({
   configs,
   layoutDirection,
   auxNodePositions,
-  auxNodeSizes,
   llmAuxVisibility,
 }: DisplayGraphInput): DisplayGraph {
   const displayNodes = nodes.map((node) => {
@@ -190,8 +378,6 @@ export function deriveDisplayGraph({
   });
   const auxNodes: Node<RecipeGraphAuxNodeData>[] = [];
   const auxEdges: Edge[] = [];
-  const auxDefaults: Record<string, XYPosition> = {};
-  const auxNodeIds: string[] = [];
   const occupiedRects: Rect[] = displayNodes.map((node) =>
     toRect(
       node.position,
@@ -209,18 +395,18 @@ export function deriveDisplayGraph({
       continue;
     }
     const llmDirection = node.data.layoutDirection ?? layoutDirection;
+    const auxTargetHandle = pickAuxTargetHandle(node.id, llmDirection, edges);
+    const auxTargetSide = getHandleSideFromTargetHandle(auxTargetHandle);
     const items: AuxNodeItem[] = [];
 
     if (config.system_prompt.trim()) {
       items.push({
         key: "system",
-        targetHandle: HANDLE_IDS.llmSystemIn,
         data: {
           kind: "llm-prompt-input",
           llmId: config.id,
           field: "system_prompt",
           title: "System Prompt",
-          layoutDirection: llmDirection,
         },
       });
     }
@@ -228,13 +414,11 @@ export function deriveDisplayGraph({
     if (config.prompt.trim()) {
       items.push({
         key: "prompt",
-        targetHandle: HANDLE_IDS.llmPromptIn,
         data: {
           kind: "llm-prompt-input",
           llmId: config.id,
           field: "prompt",
           title: "Prompt",
-          layoutDirection: llmDirection,
         },
       });
     }
@@ -243,12 +427,10 @@ export function deriveDisplayGraph({
       (config.scores ?? []).forEach((_score, scoreIndex) => {
         items.push({
           key: `score-${scoreIndex}`,
-          targetHandle: getLlmJudgeScoreHandleId(scoreIndex),
           data: {
             kind: "llm-judge-score",
             llmId: config.id,
             scoreIndex,
-            layoutDirection: llmDirection,
           },
         });
       });
@@ -262,19 +444,20 @@ export function deriveDisplayGraph({
     const parentHeight = readNodeHeight(node) ?? DEFAULT_NODE_HEIGHT;
     const itemsWithLayout = items.map((item) => {
       const auxId = `aux-${node.id}-${item.key}`;
-      const savedSize = auxNodeSizes[auxId];
       return {
         item,
         auxId,
-        width: savedSize?.width ?? DEFAULT_NODE_WIDTH,
-        height: savedSize?.height ?? DEFAULT_NODE_HEIGHT,
+        width: DEFAULT_NODE_WIDTH,
+        height: DEFAULT_NODE_HEIGHT,
       };
     });
 
     const gap = 24;
     const sideOffset = 48;
+    const stackHorizontal =
+      auxTargetSide === "top" || auxTargetSide === "bottom";
 
-    if (llmDirection === "TB") {
+    if (stackHorizontal) {
       const totalWidth =
         itemsWithLayout.reduce((sum, entry) => sum + entry.width, 0) +
         (itemsWithLayout.length - 1) * gap;
@@ -284,51 +467,30 @@ export function deriveDisplayGraph({
       for (const entry of itemsWithLayout) {
         const preferredPosition = {
           x: xCursor,
-          y: node.position.y - entry.height - sideOffset,
+          y:
+            auxTargetSide === "top"
+              ? node.position.y - entry.height - sideOffset
+              : node.position.y + parentHeight + sideOffset,
         };
         const defaultPosition = findNonOverlappingPosition(
           preferredPosition,
           entry.width,
           entry.height,
-          llmDirection,
           occupiedRects,
         );
         const position = auxNodePositions[entry.auxId] ?? defaultPosition;
         xCursor += entry.width + gap;
 
-        auxNodeIds.push(entry.auxId);
-        if (!auxNodePositions[entry.auxId]) {
-          auxDefaults[entry.auxId] = defaultPosition;
-        }
         occupiedRects.push(toRect(position, entry.width, entry.height));
-
-        auxNodes.push({
-          id: entry.auxId,
-          type: "aux",
-          data: entry.item.data,
+        appendAuxNodeAndEdge({
+          auxNodes,
+          auxEdges,
+          entry,
           position,
-          width: entry.width,
-          height: entry.height,
-          style: {
-            width: entry.width,
-            height: entry.height,
-          },
-          draggable: true,
-          selectable: true,
-          focusable: true,
-          connectable: true,
-        });
-
-        auxEdges.push({
-          id: `e-${entry.auxId}-${node.id}`,
-          source: entry.auxId,
-          sourceHandle: HANDLE_IDS.llmInputOut,
-          target: node.id,
-          targetHandle: entry.item.targetHandle,
-          type: "canvas",
-          data: { path: "auto" },
-          selectable: false,
-          focusable: false,
+          parentNode: node,
+          parentWidth,
+          parentHeight,
+          auxTargetHandle,
         });
       }
       continue;
@@ -338,7 +500,10 @@ export function deriveDisplayGraph({
       itemsWithLayout.reduce((sum, entry) => sum + entry.height, 0) +
       (itemsWithLayout.length - 1) * gap;
     const maxWidth = Math.max(...itemsWithLayout.map((entry) => entry.width));
-    const baseX = node.position.x - maxWidth - sideOffset;
+    const baseX =
+      auxTargetSide === "right"
+        ? node.position.x + parentWidth + sideOffset
+        : node.position.x - maxWidth - sideOffset;
     let yCursor = node.position.y + (parentHeight - totalHeight) / 2;
 
     for (const entry of itemsWithLayout) {
@@ -350,45 +515,21 @@ export function deriveDisplayGraph({
         preferredPosition,
         entry.width,
         entry.height,
-        llmDirection,
         occupiedRects,
       );
       const position = auxNodePositions[entry.auxId] ?? defaultPosition;
       yCursor += entry.height + gap;
 
-      auxNodeIds.push(entry.auxId);
-      if (!auxNodePositions[entry.auxId]) {
-        auxDefaults[entry.auxId] = defaultPosition;
-      }
       occupiedRects.push(toRect(position, entry.width, entry.height));
-
-      auxNodes.push({
-        id: entry.auxId,
-        type: "aux",
-        data: entry.item.data,
+      appendAuxNodeAndEdge({
+        auxNodes,
+        auxEdges,
+        entry,
         position,
-        width: entry.width,
-        height: entry.height,
-        style: {
-          width: entry.width,
-          height: entry.height,
-        },
-        draggable: true,
-        selectable: true,
-        focusable: true,
-        connectable: true,
-      });
-
-      auxEdges.push({
-        id: `e-${entry.auxId}-${node.id}`,
-        source: entry.auxId,
-        sourceHandle: HANDLE_IDS.llmInputOut,
-        target: node.id,
-        targetHandle: entry.item.targetHandle,
-        type: "canvas",
-        data: { path: "auto" },
-        selectable: false,
-        focusable: false,
+        parentNode: node,
+        parentWidth,
+        parentHeight,
+        auxTargetHandle,
       });
     }
   }
@@ -398,7 +539,5 @@ export function deriveDisplayGraph({
     edges: [...edges, ...auxEdges].map((edge) =>
       normalizeEdge(edge, configs, layoutDirection),
     ),
-    auxNodeIds,
-    auxDefaults,
   };
 }

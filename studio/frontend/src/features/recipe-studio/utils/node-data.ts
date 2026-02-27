@@ -41,18 +41,18 @@ export function nodeDataFromConfig(
   }
   if (config.kind === "seed") {
     const seedSourceType = config.seed_source_type ?? "hf";
-    const subtype =
+    const sourceLabel =
       seedSourceType === "hf"
-        ? "Hugging Face"
+        ? "Hugging Face dataset"
         : seedSourceType === "local"
-          ? "Local File"
-          : "Unstructured";
+          ? "Structured file"
+          : "Unstructured document";
     return {
       title: "Seed",
       kind: "seed",
-      subtype,
+      subtype: sourceLabel,
       blockType: "seed",
-      name: config.name,
+      name: sourceLabel,
       layoutDirection,
     };
   }

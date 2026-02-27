@@ -27,6 +27,9 @@ export function getConfigUiMode(
     }
     return "dialog";
   }
+  if (config.kind === "seed") {
+    return "inline";
+  }
   if (config.kind === "expression") {
     return "inline";
   }

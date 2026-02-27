@@ -1,7 +1,15 @@
 import { Button } from "@/components/ui/button";
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type KeyboardEvent, type ReactElement, useId, useMemo, useState } from "react";
+import {
+  type KeyboardEvent,
+  type ReactElement,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 type ChipInputProps = {
   values: string[];
@@ -19,11 +27,27 @@ export function ChipInput({
   suggestions,
 }: ChipInputProps): ReactElement {
   const [draft, setDraft] = useState("");
+  const [isWrapped, setIsWrapped] = useState(false);
+  const containerRef = useRef<HTMLDivElement | null>(null);
   const listId = useId();
   const suggestionSet = useMemo(
     () => new Set((suggestions ?? []).map((value) => value.trim())),
     [suggestions],
   );
+
+  useEffect(() => {
+    const element = containerRef.current;
+    if (!element) {
+      return;
+    }
+    const syncWrapped = () => {
+      setIsWrapped(element.clientHeight > 44);
+    };
+    syncWrapped();
+    const observer = new ResizeObserver(syncWrapped);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [values.length, draft]);
 
   function addValue(rawValue: string, allowAny: boolean): void {
     const trimmed = rawValue.trim();
@@ -55,7 +79,10 @@ export function ChipInput({
   }
 
   return (
-    <div className="bg-input/30 border-input focus-within:border-ring focus-within:ring-ring/50 flex min-h-9 flex-wrap items-center gap-1.5 rounded-4xl border bg-clip-padding px-1.5 py-1.5 text-sm transition-colors focus-within:ring-[3px]">
+    <div
+      ref={containerRef}
+      className={`bg-input/30 border-input focus-within:border-ring focus-within:ring-ring/50 flex min-h-9 flex-wrap items-center gap-1.5 border bg-clip-padding px-1.5 py-1.5 text-sm transition-colors focus-within:ring-[3px] ${isWrapped ? "corner-squircle rounded-xl" : "rounded-4xl"}`}
+    >
       {values.map((value, index) => (
         <span
           key={`${value}-${index}`}

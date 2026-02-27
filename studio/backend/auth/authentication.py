@@ -1,5 +1,5 @@
 import secrets
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import Depends, HTTPException, status
@@ -34,7 +34,7 @@ def create_access_token(
     Tokens are valid across restarts because SECRET_KEY is stored in SQLite.
     """
     to_encode = {"sub": subject}
-    expire = datetime.now(UTC) + (
+    expire = datetime.now(timezone.utc) + (
         expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     )
     to_encode.update({"exp": expire})
@@ -48,7 +48,7 @@ def create_refresh_token(subject: str) -> str:
     Refresh tokens are opaque (not JWTs) and expire after REFRESH_TOKEN_EXPIRE_DAYS.
     """
     token = secrets.token_urlsafe(48)
-    expires_at = datetime.now(UTC) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    expires_at = datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
     save_refresh_token(token, subject, expires_at.isoformat())
     return token
 
