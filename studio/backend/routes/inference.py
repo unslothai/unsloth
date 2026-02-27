@@ -309,6 +309,7 @@ async def get_status():
                 active_model=llama_backend.model_identifier,
                 is_vision=llama_backend.is_vision,
                 is_gguf=True,
+                gguf_variant=llama_backend.hf_variant,
                 loading=[],
                 loaded=[llama_backend.model_identifier],
             )

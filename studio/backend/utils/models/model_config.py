@@ -491,21 +491,28 @@ def _extract_quant_label(filename: str) -> str:
     Extract quantization label like Q4_K_M, IQ4_XS, BF16 from a GGUF filename.
 
     Examples:
-        "gemma-3-4b-it-Q4_K_M.gguf" → "Q4_K_M"
-        "model-IQ4_NL.gguf"          → "IQ4_NL"
-        "model-BF16.gguf"            → "BF16"
-        "model-UD-IQ1_S.gguf"        → "UD-IQ1_S"
+        "gemma-3-4b-it-Q4_K_M.gguf"          → "Q4_K_M"
+        "model-IQ4_NL.gguf"                   → "IQ4_NL"
+        "model-BF16.gguf"                     → "BF16"
+        "model-UD-IQ1_S.gguf"                 → "UD-IQ1_S"
+        "model-UD-TQ1_0.gguf"                 → "UD-TQ1_0"
+        "MXFP4_MOE/model-MXFP4_MOE-0001.gguf"→ "MXFP4_MOE"
     """
     import re
-    stem = filename.rsplit(".", 1)[0]  # Remove .gguf
-    # Match known quantization patterns (UD- prefix, IQ, Q, BF/F variants)
+    # Use only the basename (rfilename may include directory)
+    basename = filename.rsplit("/", 1)[-1]
+    # Strip .gguf and any shard suffix (-00001-of-00010)
+    stem = re.sub(r'-\d{3,}-of-\d{3,}', '', basename.rsplit(".", 1)[0])
+    # Match known quantization patterns
     match = re.search(
         r'(UD-)?'  # Optional UD- prefix (Ultra Discrete)
-        r'(IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?'  # IQ variants: IQ4_XS, IQ4_NL, IQ1_S
-        r'|Q[0-9]+_K_[A-Z]+'                  # K-quant: Q4_K_M, Q3_K_S
-        r'|Q[0-9]+_[0-9]+'                    # Standard: Q8_0, Q5_1
-        r'|Q[0-9]+_K'                          # Short K-quant: Q6_K
-        r'|BF16|F16|F32)',                     # Full precision
+        r'(MXFP[0-9]+(?:_[A-Z0-9]+)*'         # MXFP variants: MXFP4, MXFP4_MOE
+        r'|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?'    # IQ variants: IQ4_XS, IQ4_NL, IQ1_S
+        r'|TQ[0-9]+_[0-9]+'                    # Ternary quant: TQ1_0, TQ2_0
+        r'|Q[0-9]+_K_[A-Z]+'                   # K-quant: Q4_K_M, Q3_K_S
+        r'|Q[0-9]+_[0-9]+'                     # Standard: Q8_0, Q5_1
+        r'|Q[0-9]+_K'                           # Short K-quant: Q6_K
+        r'|BF16|F16|F32)',                      # Full precision
         stem, re.IGNORECASE,
     )
     if match:
@@ -534,6 +541,9 @@ def list_gguf_variants(
     variants: list[GgufVariantInfo] = []
     has_vision = False
 
+    quant_totals: dict[str, int] = {}      # quant -> total bytes
+    quant_first_file: dict[str, str] = {}  # quant -> first filename (for display)
+
     for sibling in info.siblings:
         fname = sibling.rfilename
         if not fname.endswith(".gguf"):
@@ -546,10 +556,15 @@ def list_gguf_variants(
             continue
 
         quant = _extract_quant_label(fname)
+        quant_totals[quant] = quant_totals.get(quant, 0) + size
+        if quant not in quant_first_file:
+            quant_first_file[quant] = fname
+
+    for quant, total_size in quant_totals.items():
         variants.append(GgufVariantInfo(
-            filename=fname,
+            filename=quant_first_file[quant],
             quant=quant,
-            size_bytes=size,
+            size_bytes=total_size,
         ))
 
     return variants, has_vision

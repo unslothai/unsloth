@@ -59,6 +59,7 @@ class InferenceStatusResponse(BaseModel):
     active_model: Optional[str] = Field(None, description="Currently active model identifier")
     is_vision: bool = Field(False, description="Whether the active model is a vision model")
     is_gguf: bool = Field(False, description="Whether the active model is a GGUF model (llama.cpp)")
+    gguf_variant: Optional[str] = Field(None, description="GGUF quantization variant (e.g. Q4_K_M)")
     loading: List[str] = Field(default_factory=list, description="Models currently being loaded")
     loaded: List[str] = Field(default_factory=list, description="Models currently loaded")
 
