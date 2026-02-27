@@ -530,7 +530,7 @@ def list_gguf_variants(
     """
     from huggingface_hub import model_info as hf_model_info
 
-    info = hf_model_info(repo_id, token=hf_token)
+    info = hf_model_info(repo_id, token=hf_token, files_metadata=True)
     variants: list[GgufVariantInfo] = []
     has_vision = False
 
