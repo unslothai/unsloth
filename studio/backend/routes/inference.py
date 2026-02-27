@@ -5,7 +5,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse, JSONResponse
 from typing import Optional
 import json
@@ -50,6 +50,7 @@ from models.inference import (
     CompletionChoice,
     CompletionMessage,
 )
+from auth.authentication import get_current_subject
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -71,7 +72,10 @@ def get_llama_cpp_backend() -> LlamaCppBackend:
 
 
 @router.post("/load", response_model=LoadResponse)
-async def load_model(request: LoadRequest):
+async def load_model(
+    request: LoadRequest,
+    current_subject: str = Depends(get_current_subject),
+):
     """
     Load a model for inference.
 
@@ -194,7 +198,10 @@ async def load_model(request: LoadRequest):
 
 
 @router.post("/unload", response_model=UnloadResponse)
-async def unload_model(request: UnloadRequest):
+async def unload_model(
+    request: UnloadRequest,
+    current_subject: str = Depends(get_current_subject),
+):
     """
     Unload a model from memory.
     Routes to the correct backend (llama-server for GGUF, Unsloth otherwise).
@@ -222,7 +229,10 @@ async def unload_model(request: UnloadRequest):
 
 
 @router.post("/generate/stream")
-async def generate_stream(request: GenerateRequest):
+async def generate_stream(
+    request: GenerateRequest,
+    current_subject: str = Depends(get_current_subject),
+):
     """
     Generate a chat response with Server-Sent Events (SSE) streaming.
     
@@ -295,7 +305,9 @@ async def generate_stream(request: GenerateRequest):
 
 
 @router.get("/status", response_model=InferenceStatusResponse)
-async def get_status():
+async def get_status(
+    current_subject: str = Depends(get_current_subject),
+):
     """
     Get current inference backend status.
     Reports whichever backend (Unsloth or llama-server) is currently active.
@@ -398,7 +410,11 @@ def _extract_content_parts(
 
 
 @router.post("/chat/completions")
-async def openai_chat_completions(payload: ChatCompletionRequest, request: Request):
+async def openai_chat_completions(
+    payload: ChatCompletionRequest,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
     """
     OpenAI-compatible chat completions endpoint.
 
