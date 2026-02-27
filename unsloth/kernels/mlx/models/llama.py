@@ -53,7 +53,7 @@ def apply_rotary_pos_emb(q: mx.array, k: mx.array, cos: mx.array, sin: mx.array)
     return q, k
 
 
-class MLXRotaryEmbedding(mnn.Module):
+class MLXRotaryEmbedding:
     """MLX-native Rotary Positional Embedding."""
 
     def __init__(
@@ -63,7 +63,6 @@ class MLXRotaryEmbedding(mnn.Module):
         base: float = 10000.0,
         dtype: type = mx.float32,
     ):
-        super().__init__()
         self.dim = dim
         self.max_position_embeddings = max_position_embeddings
         self.base = base
