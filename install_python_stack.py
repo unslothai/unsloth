@@ -11,8 +11,11 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import tempfile
 import urllib.request
 from pathlib import Path
+
+IS_WINDOWS = sys.platform == "win32"
 
 # ── Paths ──────────────────────────────────────────────────────────────
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -20,16 +23,41 @@ REQ_ROOT = SCRIPT_DIR / "studio" / "backend" / "requirements"
 SINGLE_ENV = REQ_ROOT / "single-env"
 CONSTRAINTS = SINGLE_ENV / "constraints.txt"
 
-# ── Helpers ────────────────────────────────────────────────────────────
+# ── Color support ──────────────────────────────────────────────────────
+
+def _enable_colors() -> bool:
+    """Try to enable ANSI color support. Returns True if available."""
+    if not hasattr(sys.stdout, "fileno"):
+        return False
+    try:
+        if not os.isatty(sys.stdout.fileno()):
+            return False
+    except Exception:
+        return False
+    if IS_WINDOWS:
+        try:
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            # Enable ENABLE_VIRTUAL_TERMINAL_PROCESSING (0x0004) on stdout
+            handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+            mode = ctypes.c_ulong()
+            kernel32.GetConsoleMode(handle, ctypes.byref(mode))
+            kernel32.SetConsoleMode(handle, mode.value | 0x0004)
+            return True
+        except Exception:
+            return False
+    return True  # Unix terminals support ANSI by default
+
+_HAS_COLOR = _enable_colors()
 
 def _green(msg: str) -> str:
-    return f"\033[92m{msg}\033[0m"
+    return f"\033[92m{msg}\033[0m" if _HAS_COLOR else msg
 
 def _cyan(msg: str) -> str:
-    return f"\033[96m{msg}\033[0m"
+    return f"\033[96m{msg}\033[0m" if _HAS_COLOR else msg
 
 def _red(msg: str) -> str:
-    return f"\033[91m{msg}\033[0m"
+    return f"\033[91m{msg}\033[0m" if _HAS_COLOR else msg
 
 
 def run(label: str, cmd: list[str], *, quiet: bool = True) -> None:
@@ -47,6 +75,25 @@ def run(label: str, cmd: list[str], *, quiet: bool = True) -> None:
         sys.exit(result.returncode)
 
 
+# Packages to skip on Windows (require special build steps)
+WINDOWS_SKIP_PACKAGES = {"open_spiel"}
+
+
+def _filter_requirements(req: Path, skip: set[str]) -> Path:
+    """Return a temp copy of a requirements file with certain packages removed."""
+    lines = req.read_text(encoding="utf-8").splitlines(keepends=True)
+    filtered = [
+        line for line in lines
+        if not any(line.strip().lower().startswith(pkg) for pkg in skip)
+    ]
+    tmp = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".txt", delete=False, encoding="utf-8",
+    )
+    tmp.writelines(filtered)
+    tmp.close()
+    return Path(tmp.name)
+
+
 def pip_install(
     label: str,
     *args: str,
@@ -58,9 +105,20 @@ def pip_install(
     cmd.extend(args)
     if constrain and CONSTRAINTS.is_file():
         cmd.extend(["-c", str(CONSTRAINTS)])
-    if req is not None:
-        cmd.extend(["-r", str(req)])
-    run(label, cmd)
+    actual_req = req
+    if req is not None and IS_WINDOWS and WINDOWS_SKIP_PACKAGES:
+        actual_req = _filter_requirements(req, WINDOWS_SKIP_PACKAGES)
+    if actual_req is not None:
+        cmd.extend(["-r", str(actual_req)])
+    try:
+        run(label, cmd)
+    finally:
+        # Clean up temp file if we created one
+        if actual_req is not None and actual_req != req:
+            actual_req.unlink(missing_ok=True)
+    if req is not None and actual_req != req:
+        skipped = WINDOWS_SKIP_PACKAGES
+        print(_cyan(f"   (Skipped on Windows: {', '.join(skipped)})"))
 
 
 def download_file(url: str, dest: Path) -> None:

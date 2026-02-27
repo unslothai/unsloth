@@ -479,7 +479,7 @@ pip install --upgrade pip 2>&1 | Out-Null
 # The CUDA tag is chosen based on the driver's max supported CUDA version.
 $CuTag = Get-PytorchCudaTag
 Write-Host "   Installing PyTorch with CUDA support ($CuTag)..." -ForegroundColor Cyan
-pip install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/$CuTag"
+pip install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/$CuTag" 2>&1 | Out-Null
 
 # Ordered heavy dependency installation — shared cross-platform script
 Write-Host "   Running ordered dependency installation..." -ForegroundColor Cyan
@@ -646,15 +646,60 @@ if (Test-Path $LlamaServerBin) {
 }
 
 # ============================================
+# Add shell aliases (PowerShell profile + cmd batch files)
+# ============================================
+Write-Host ""
+$RepoDir = $PSScriptRoot
+$VenvPython = Join-Path $RepoDir ".venv\Scripts\python.exe"
+$CliScript = Join-Path $RepoDir "cli.py"
+$FrontendDist = Join-Path $RepoDir "studio\frontend\dist"
+$AliasAdded = $false
+
+# --- PowerShell profile: add functions ---
+$ProfileDir = Split-Path $PROFILE -Parent
+if (-not (Test-Path $ProfileDir)) { New-Item -ItemType Directory -Path $ProfileDir -Force | Out-Null }
+if (-not (Test-Path $PROFILE)) { New-Item -ItemType File -Path $PROFILE -Force | Out-Null }
+
+if (-not (Select-String -Path $PROFILE -Pattern "unsloth-studio" -Quiet -ErrorAction SilentlyContinue)) {
+    $block = @"
+
+# Unsloth Studio launcher
+function unsloth-studio { & "$VenvPython" "$CliScript" studio -f "$FrontendDist" @args }
+function unsloth-ui     { & "$VenvPython" "$CliScript" studio -f "$FrontendDist" @args }
+"@
+    Add-Content -Path $PROFILE -Value $block
+    Write-Host "[OK] Aliases 'unsloth-studio' and 'unsloth-ui' added to $PROFILE" -ForegroundColor Green
+    $AliasAdded = $true
+} else {
+    Write-Host "[OK] Aliases 'unsloth-studio' and 'unsloth-ui' already exist in $PROFILE" -ForegroundColor Green
+}
+
+# --- cmd.exe: create batch files on PATH so they work from regular terminal ---
+$BatDir = Join-Path $RepoDir ".venv\Scripts"
+foreach ($name in @("unsloth-studio", "unsloth-ui")) {
+    $batPath = Join-Path $BatDir "$name.bat"
+    if (-not (Test-Path $batPath)) {
+        Set-Content -Path $batPath -Value "@echo off`r`n`"$VenvPython`" `"$CliScript`" studio -f `"$FrontendDist`" %*"
+    }
+}
+Write-Host "[OK] Batch launchers created in $BatDir (works from cmd.exe when venv is on PATH)" -ForegroundColor Green
+
+# ============================================
 # Done
 # ============================================
 Write-Host ""
 Write-Host "+==============================================+" -ForegroundColor Green
 Write-Host "|           Setup Complete!                    |" -ForegroundColor Green
 Write-Host "|                                              |" -ForegroundColor Green
-Write-Host "|  Activate venv:                              |" -ForegroundColor Green
-Write-Host "|    cmd:  .venv\Scripts\activate.bat          |" -ForegroundColor Green
-Write-Host "|    PS:   .\.venv\Scripts\Activate.ps1        |" -ForegroundColor Green
+if ($AliasAdded) {
+    Write-Host "|  PowerShell: run '. `$PROFILE'               |" -ForegroundColor Green
+    Write-Host "|  or open a new terminal, then:              |" -ForegroundColor Green
+} else {
+    Write-Host "|  Launch with:                                |" -ForegroundColor Green
+}
 Write-Host "|                                              |" -ForegroundColor Green
-Write-Host "|  Then run: unsloth-roland-test studio        |" -ForegroundColor Green
+Write-Host "|  unsloth-studio -H 0.0.0.0 -p 8000          |" -ForegroundColor Green
+Write-Host "|                                              |" -ForegroundColor Green
+Write-Host "|  cmd.exe: .venv\Scripts\activate.bat         |" -ForegroundColor Green
+Write-Host "|           unsloth-studio -H 0.0.0.0 -p 8000 |" -ForegroundColor Green
 Write-Host "+==============================================+" -ForegroundColor Green
