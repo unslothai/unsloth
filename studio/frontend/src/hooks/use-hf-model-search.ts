@@ -133,8 +133,8 @@ export function useHfModelSearch(
           ...(accessToken ? { credentials: { accessToken } } : {}),
         }) as AsyncGenerator<unknown>;
       }
-      // Dual-query: unsloth first, then general
-      return mergedModelIterator(trimmed, task, accessToken) as AsyncGenerator<unknown>;
+      // Typed query: disable task filter so explicitly searched models still appear even if HF task metadata is wrong/missing.
+      return mergedModelIterator(trimmed, undefined, accessToken) as AsyncGenerator<unknown>;
     },
     [query, task, accessToken],
   );
