@@ -70,6 +70,7 @@ import functools
 import os
 import gc
 import math
+import time
 from typing import Optional, Tuple, List, Union
 import re, inspect, sys
 import contextlib
@@ -293,8 +294,155 @@ def unsloth_base_fast_generate(
                 pass
 
     # DO INFERENCE
+    # Track metrics if enabled
+    collector = None
+    request_id = None
+    prompt_tokens_per_sequence = input_ids.shape[-1] if input_ids is not None else 0
+    prompt_batch_size = input_ids.shape[0] if input_ids.dim() > 1 else 1
+    num_prompt_tokens = prompt_tokens_per_sequence * prompt_batch_size
+    max_tokens = kwargs.get("max_new_tokens") or kwargs.get("max_length")
+
+    try:
+        from unsloth.metrics.stats import get_stats_collector
+        from unsloth.metrics.prometheus import get_metrics_registry, _metrics_enabled
+        import uuid
+
+        collector = get_stats_collector()
+        if collector.is_enabled():
+            request_id = str(uuid.uuid4())
+            collector.inference_stats.start_request(
+                request_id = request_id,
+                num_prompt_tokens = num_prompt_tokens,
+                max_tokens = max_tokens,
+            )
+            collector.inference_stats.record_scheduled(request_id)
+
+            # Update Prometheus counters
+            if _metrics_enabled:
+                registry = get_metrics_registry()
+                if registry:
+                    registry["inference"]["prompt_tokens_total"].inc(num_prompt_tokens)
+                    registry["inference"]["prompt_tokens"].observe(num_prompt_tokens)
+    except Exception:
+        # Metrics collection is optional, continue even if it fails
+        collector = None
+        request_id = None
+
+    start_time = time.time()
+    first_token_seen = False
+
     with torch.inference_mode(), autocaster:
         output = self._old_generate(*args, **kwargs)
+
+    # Record metrics after generation
+    if collector and request_id:
+        try:
+            end_time = time.time()
+            e2e_latency = end_time - start_time
+
+            # Calculate generated tokens
+            num_generation_tokens = 0
+            effective_prompt_tokens = num_prompt_tokens
+            if isinstance(output, torch.Tensor):
+                output_batch_size = output.shape[0] if output.dim() > 1 else 1
+                if output_batch_size != prompt_batch_size:
+                    effective_prompt_tokens = (
+                        prompt_tokens_per_sequence * output_batch_size
+                    )
+                if output.dim() > 1:
+                    total_tokens = output.shape[-1] * output.shape[0]
+                else:
+                    total_tokens = output.shape[-1]
+                num_generation_tokens = max(0, total_tokens - effective_prompt_tokens)
+            elif isinstance(output, dict) and "sequences" in output:
+                # Handle ModelOutput when return_dict_in_generate=True
+                sequences = output["sequences"]
+                if isinstance(sequences, torch.Tensor):
+                    output_batch_size = sequences.shape[0] if sequences.dim() > 1 else 1
+                    if output_batch_size != prompt_batch_size:
+                        effective_prompt_tokens = (
+                            prompt_tokens_per_sequence * output_batch_size
+                        )
+                    if sequences.dim() > 1:
+                        total_tokens = sequences.shape[-1] * sequences.shape[0]
+                    else:
+                        total_tokens = sequences.shape[-1]
+                    num_generation_tokens = max(
+                        0, total_tokens - effective_prompt_tokens
+                    )
+            elif hasattr(output, "sequences"):
+                # Handle ModelOutput object directly
+                sequences = output.sequences
+                if isinstance(sequences, torch.Tensor):
+                    output_batch_size = sequences.shape[0] if sequences.dim() > 1 else 1
+                    if output_batch_size != prompt_batch_size:
+                        effective_prompt_tokens = (
+                            prompt_tokens_per_sequence * output_batch_size
+                        )
+                    if sequences.dim() > 1:
+                        total_tokens = sequences.shape[-1] * sequences.shape[0]
+                    else:
+                        total_tokens = sequences.shape[-1]
+                    num_generation_tokens = max(
+                        0, total_tokens - effective_prompt_tokens
+                    )
+
+            # Estimate timing (simplified)
+            # Note: These are estimations. For more accurate metrics, consider hooking into
+            # the generation process itself (e.g., via LogitsProcessor or StoppingCriteria)
+            if num_generation_tokens > 0:
+                # Estimate first token time
+                estimated_first_token_time = start_time + (
+                    e2e_latency / (num_generation_tokens + 1)
+                )
+                collector.inference_stats.record_first_token(
+                    request_id, timestamp = estimated_first_token_time
+                )
+
+                # Record tokens (simplified - records all at once after generation)
+                for _ in range(num_generation_tokens):
+                    collector.inference_stats.record_token(request_id)
+
+            # Determine finish reason (simplified - could be improved)
+            finish_reason = "stop"  # Default
+            if hasattr(output, "finish_reason"):
+                output_reason = getattr(output, "finish_reason")
+                if output_reason is not None:
+                    finish_reason = output_reason
+            elif isinstance(output, dict):
+                output_reason = output.get("finish_reason")
+                if output_reason is not None:
+                    finish_reason = output_reason
+            collector.inference_stats.finish_request(
+                request_id = request_id,
+                finish_reason = finish_reason,
+                num_generation_tokens = num_generation_tokens,
+            )
+
+            # Update Prometheus metrics
+            if _metrics_enabled:
+                registry = get_metrics_registry()
+                if registry:
+                    registry["inference"]["request_total"].labels(
+                        finish_reason = finish_reason
+                    ).inc()
+                    registry["inference"]["generation_tokens_total"].inc(
+                        num_generation_tokens
+                    )
+                    if num_generation_tokens > 0:
+                        registry["inference"]["generation_tokens"].observe(
+                            num_generation_tokens
+                        )
+                        registry["inference"]["request_latency_seconds"].observe(
+                            e2e_latency
+                        )
+                        time_per_token = e2e_latency / num_generation_tokens
+                        registry["inference"]["time_per_output_token_seconds"].observe(
+                            time_per_token
+                        )
+        except Exception:
+            # Metrics collection failed, continue
+            pass
 
     # Delete cached Flex Attention masks to reset inference
     for name, module in self.named_modules():
