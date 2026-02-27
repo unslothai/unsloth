@@ -345,6 +345,8 @@ if ($CudaArch) {
 # ============================================
 # 1f. Node.js / npm (always -- needed regardless of install method)
 # ============================================
+# setup.sh installs Node LTS (v22) via nvm. We enforce the same range here:
+# Node >= 20 AND <= 22 (LTS only), npm >= 11.
 $NeedNode = $true
 try {
     $NodeVersion = (node -v 2>$null)
@@ -353,9 +355,11 @@ try {
         $NodeMajor = [int]($NodeVersion -replace 'v','').Split('.')[0]
         $NpmMajor = [int]$NpmVersion.Split('.')[0]
 
-        if ($NodeMajor -ge 20 -and $NpmMajor -ge 11) {
+        if ($NodeMajor -ge 20 -and $NodeMajor -le 22 -and $NpmMajor -ge 11) {
             Write-Host "[OK] Node $NodeVersion and npm $NpmVersion already meet requirements." -ForegroundColor Green
             $NeedNode = $false
+        } elseif ($NodeMajor -gt 22) {
+            Write-Host "[WARN] Node $NodeVersion is too new (non-LTS). Installing Node LTS..." -ForegroundColor Yellow
         } else {
             Write-Host "[WARN] Node $NodeVersion / npm $NpmVersion too old." -ForegroundColor Yellow
         }
@@ -365,13 +369,13 @@ try {
 }
 
 if ($NeedNode) {
-    Write-Host "Installing Node.js via winget..." -ForegroundColor Cyan
+    Write-Host "Installing Node.js LTS via winget..." -ForegroundColor Cyan
     try {
         winget install OpenJS.NodeJS.LTS --source winget --accept-package-agreements --accept-source-agreements
         Refresh-Environment
     } catch {
         Write-Host "[ERROR] Could not install Node.js automatically." -ForegroundColor Red
-        Write-Host "Please install Node.js >= 20 from https://nodejs.org/" -ForegroundColor Red
+        Write-Host "Please install Node.js LTS (v22) from https://nodejs.org/" -ForegroundColor Red
         exit 1
     }
 }
@@ -395,8 +399,23 @@ if ($IsPipInstall) {
     $prevEAP_npm = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     Push-Location $FrontendDir
+    # Remove stale node_modules to avoid version conflicts
+    if (Test-Path "node_modules") { Remove-Item -Recurse -Force "node_modules" }
     npm install 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Pop-Location
+        $ErrorActionPreference = $prevEAP_npm
+        Write-Host "[ERROR] npm install failed (exit code $LASTEXITCODE)" -ForegroundColor Red
+        Write-Host "   Try running 'npm install' manually in studio/frontend/ to see errors" -ForegroundColor Yellow
+        exit 1
+    }
     npm run build 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Pop-Location
+        $ErrorActionPreference = $prevEAP_npm
+        Write-Host "[ERROR] npm run build failed (exit code $LASTEXITCODE)" -ForegroundColor Red
+        exit 1
+    }
     Pop-Location
     $ErrorActionPreference = $prevEAP_npm
     Write-Host "[OK] Frontend built to studio/frontend/dist" -ForegroundColor Green
