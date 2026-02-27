@@ -346,7 +346,7 @@ if ($CudaArch) {
 # 1f. Node.js / npm (always -- needed regardless of install method)
 # ============================================
 # setup.sh installs Node LTS (v22) via nvm. We enforce the same range here:
-# Node >= 20 AND <= 22 (LTS only), npm >= 11.
+# Node >= 20, npm >= 11.
 $NeedNode = $true
 try {
     $NodeVersion = (node -v 2>$null)
@@ -355,11 +355,9 @@ try {
         $NodeMajor = [int]($NodeVersion -replace 'v','').Split('.')[0]
         $NpmMajor = [int]$NpmVersion.Split('.')[0]
 
-        if ($NodeMajor -ge 20 -and $NodeMajor -le 22 -and $NpmMajor -ge 11) {
+        if ($NodeMajor -ge 20 -and $NpmMajor -ge 11) {
             Write-Host "[OK] Node $NodeVersion and npm $NpmVersion already meet requirements." -ForegroundColor Green
             $NeedNode = $false
-        } elseif ($NodeMajor -gt 22) {
-            Write-Host "[WARN] Node $NodeVersion is too new (non-LTS). Installing Node LTS..." -ForegroundColor Yellow
         } else {
             Write-Host "[WARN] Node $NodeVersion / npm $NpmVersion too old." -ForegroundColor Yellow
         }
@@ -375,7 +373,7 @@ if ($NeedNode) {
         Refresh-Environment
     } catch {
         Write-Host "[ERROR] Could not install Node.js automatically." -ForegroundColor Red
-        Write-Host "Please install Node.js LTS (v22) from https://nodejs.org/" -ForegroundColor Red
+        Write-Host "Please install Node.js >= 20 from https://nodejs.org/" -ForegroundColor Red
         exit 1
     }
 }
@@ -399,8 +397,9 @@ if ($IsPipInstall) {
     $prevEAP_npm = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     Push-Location $FrontendDir
-    # Remove stale node_modules to avoid version conflicts
+    # Remove stale node_modules and package-lock.json to avoid version conflicts
     if (Test-Path "node_modules") { Remove-Item -Recurse -Force "node_modules" }
+    if (Test-Path "package-lock.json") { Remove-Item -Force "package-lock.json" }
     npm install 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) {
         Pop-Location
