@@ -371,10 +371,10 @@ class MLXLlamaModel(mnn.Module):
         self.vocab_size = config.vocab_size
 
         self.embed_tokens = MLXEmbedding(config.vocab_size, config.hidden_size)
-        self.layers = mnn.ModuleList([
+        self.layers = [
             MLXLlamaDecoderLayer(config, idx, lora_config)
             for idx in range(config.num_hidden_layers)
-        ])
+        ]
         self.norm = MLXRMSNorm(config.hidden_size, config.rms_norm_eps)
 
         self.rope_theta = config.rope_theta
