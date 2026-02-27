@@ -5,6 +5,7 @@ import {
   useUpdateNodeInternals,
 } from "@xyflow/react";
 import { Button } from "@/components/ui/button";
+import { getFitNodeIdsIgnoringNotes } from "../../utils/graph/fit-view";
 
 type LayoutControlsProps = {
   direction: "LR" | "TB";
@@ -32,20 +33,29 @@ export function LayoutControls({
     requestAnimationFrame(() => {
       refreshNodeInternals();
       requestAnimationFrame(() => {
-        fitView({ duration: 250 });
+        fitView({
+          duration: 250,
+          nodes: getFitNodeIdsIgnoringNotes(getNodes()),
+        });
       });
     });
-  }, [fitView, onLayout, refreshNodeInternals]);
+  }, [fitView, getNodes, onLayout, refreshNodeInternals]);
 
   const handleToggleDirection = useCallback(() => {
     onToggleDirection();
     requestAnimationFrame(() => {
-      refreshNodeInternals();
+      onLayout();
       requestAnimationFrame(() => {
         refreshNodeInternals();
+        requestAnimationFrame(() => {
+          fitView({
+            duration: 250,
+            nodes: getFitNodeIdsIgnoringNotes(getNodes()),
+          });
+        });
       });
     });
-  }, [onToggleDirection, refreshNodeInternals]);
+  }, [fitView, getNodes, onLayout, onToggleDirection, refreshNodeInternals]);
 
   return (
     <Panel position="top-left" className="m-3 flex items-center gap-2">

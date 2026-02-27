@@ -50,7 +50,7 @@ export function ImportDialog({
         position="absolute"
         overlayPosition="absolute"
         overlayClassName="bg-transparent"
-        className="corner-squircle max-h-[650px] overflow-auto sm:max-w-2xl"
+        className="corner-squircle max-h-[650px] overflow-auto sm:max-w-2xl shadow-border"
       >
         <DialogHeader>
           <DialogTitle>Import recipe</DialogTitle>
@@ -63,7 +63,7 @@ export function ImportDialog({
           />
           <Textarea
             id={payloadId}
-            className="corner-squircle nodrag min-h-[220px]"
+            className="corner-squircle nodrag min-h-[220px] max-h-[450px]"
             placeholder='{"recipe": { "columns": [] }}'
             value={value}
             onChange={(event) => setValue(event.target.value)}

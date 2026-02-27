@@ -2,9 +2,11 @@
 """
 Export backend - handles model exporting in various formats
 """
+import glob
 import json
 import logging
 import os
+import shutil
 from pathlib import Path
 from typing import Optional, Tuple, List
 from peft import PeftModel, PeftModelForCausalLM
@@ -397,53 +399,62 @@ class ExportBackend:
 
             # Save locally if requested
             if save_directory:
-                logger.info(f"Saving GGUF model locally to: {save_directory}")
+                # Resolve to absolute path so unsloth's relative-path internals
+                # (check_llama_cpp, use_local_gguf, _download_convert_hf_to_gguf)
+                # all resolve against the repo root cwd, NOT the export directory.
+                abs_save_dir = os.path.abspath(save_directory)
+                logger.info(f"Saving GGUF model locally to: {abs_save_dir}")
 
                 # Create the directory if it doesn't exist
-                os.makedirs(save_directory, exist_ok=True)
+                os.makedirs(abs_save_dir, exist_ok=True)
 
-                # Get the base filename for the GGUF file
-                import shutil
-                original_dir = os.getcwd()
+                # On WSL, patch out sudo check before llama.cpp build
+                _apply_wsl_sudo_patch()
 
-                try:
-                    # Change to target directory
-                    os.chdir(save_directory)
-                    logger.info(f"Changed directory to: {save_directory}")
+                # Snapshot existing .gguf files in cwd before conversion.
+                # unsloth's convert_to_gguf writes output files relative to
+                # cwd (repo root), so we diff afterwards and relocate them.
+                cwd = os.getcwd()
+                pre_existing_ggufs = set(glob.glob(os.path.join(cwd, "*.gguf")))
 
-                    # On WSL, patch out sudo check before llama.cpp build
-                    _apply_wsl_sudo_patch()
+                # Pass absolute path — no os.chdir needed.
+                # unsloth saves intermediate HF model files into model_save_path,
+                # while check_llama_cpp("llama.cpp") resolves against cwd (repo root)
+                # where setup.sh already built llama.cpp with quantizer.
+                model_save_path = os.path.join(abs_save_dir, "model")
+                self.current_model.save_pretrained_gguf(
+                    model_save_path,
+                    self.current_tokenizer,
+                    quantization_method=quant_method
+                )
 
-                    # Now save (will save in current directory)
-                    self.current_model.save_pretrained_gguf(
-                        "model",  # Base filename
-                        self.current_tokenizer,
-                        quantization_method=quant_method
-                    )
+                # Relocate GGUF artifacts into the export directory.
+                # convert_to_gguf writes .gguf files to cwd (repo root)
+                # because --outfile is a relative path like "model.Q4_K_M.gguf".
+                new_ggufs = set(glob.glob(os.path.join(cwd, "*.gguf"))) - pre_existing_ggufs
+                for src in sorted(new_ggufs):
+                    dest = os.path.join(abs_save_dir, os.path.basename(src))
+                    shutil.move(src, dest)
+                    logger.info(f"Relocated GGUF: {os.path.basename(src)} → {abs_save_dir}/")
 
-                    logger.info(f"GGUF model saved successfully in {save_directory}")
+                # Flatten any .gguf files from subdirectories into abs_save_dir.
+                # save_pretrained_gguf may create subdirs (e.g. model_gguf/)
+                # with a name different from model_save_path.
+                for sub in list(Path(abs_save_dir).iterdir()):
+                    if not sub.is_dir():
+                        continue
+                    for src in sub.glob("*.gguf"):
+                        dest = os.path.join(abs_save_dir, src.name)
+                        shutil.move(str(src), dest)
+                        logger.info(f"Relocated GGUF: {src.name} → {abs_save_dir}/")
+                    # Clean up the subdirectory (intermediate HF files, etc.)
+                    shutil.rmtree(str(sub), ignore_errors=True)
+                    logger.info(f"Cleaned up subdirectory: {sub.name}")
 
-                    # Check if llama.cpp directory was created here
-                    llama_cpp_in_target = os.path.join(save_directory, "llama.cpp")
-                    llama_cpp_in_original = os.path.join(original_dir, "llama.cpp")
+                # Write export metadata so the Chat page can identify the base model
+                self._write_export_metadata(abs_save_dir)
 
-                    if os.path.exists(llama_cpp_in_target):
-                        logger.info(f"Found llama.cpp directory in {save_directory}")
-
-                        # Remove llama.cpp from original directory if it exists
-                        if os.path.exists(llama_cpp_in_original):
-                            logger.info(f"Removing existing llama.cpp in {original_dir}")
-                            shutil.rmtree(llama_cpp_in_original)
-
-                        # Move llama.cpp back to original directory
-                        logger.info(f"Moving llama.cpp to {original_dir}")
-                        shutil.move(llama_cpp_in_target, llama_cpp_in_original)
-                        logger.info(f"Successfully moved llama.cpp back to original directory")
-
-                finally:
-                    # Always change back to original directory
-                    os.chdir(original_dir)
-                    logger.info(f"Changed back to original directory: {original_dir}")
+                logger.info(f"GGUF model saved successfully in {abs_save_dir}")
 
             # Push to hub if requested
             if push_to_hub:

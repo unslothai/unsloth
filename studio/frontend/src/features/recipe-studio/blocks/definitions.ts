@@ -125,7 +125,7 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
   {
     kind: "seed",
     type: "seed_local",
-    title: "Local file",
+    title: "Structured file",
     description: "Upload CSV/JSON/JSONL and use rows as seed context.",
     icon: DocumentCodeIcon,
     dialogKey: "seed",

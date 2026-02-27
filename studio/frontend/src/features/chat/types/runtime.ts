@@ -26,6 +26,7 @@ export interface ChatModelSummary {
   description?: string;
   isVision: boolean;
   isLora: boolean;
+  isGguf?: boolean;
 }
 
 export interface ChatLoraSummary {
@@ -34,5 +35,5 @@ export interface ChatLoraSummary {
   baseModel: string;
   updatedAt?: number;
   source?: "training" | "exported";
-  exportType?: "lora" | "merged";
+  exportType?: "lora" | "merged" | "gguf";
 }
