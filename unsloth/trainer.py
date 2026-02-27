@@ -73,7 +73,7 @@ def _should_auto_padding_free(config) -> bool:
         or getattr(config, "packing", False)
     ):
         return False
-    return not getattr(config, "padding_free", False)
+    return getattr(config, "padding_free", False) is None
 
 
 def _disable_sample_packing(config):
@@ -392,6 +392,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
             packing_active = True
             logger.info("Unsloth: Sample packing enabled for SFTTrainer instance.")
 
+        # Resolve padding_free: None (default) = auto-enable unless env-disabled or packing
         auto_padding_free_active = False
         padding_free_requested = getattr(config_arg, "padding_free", None) is True
         if not blocked:

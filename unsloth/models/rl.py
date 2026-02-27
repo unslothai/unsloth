@@ -1025,6 +1025,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "include_num_input_tokens_seen": False,
         "auto_find_batch_size": False,  # Auto /2 batch size - too many people complained so removing
         "dataloader_pin_memory": True,
+        "padding_free": None,  # None = user didn't set it, allows auto-enable detection
         # Might fail so disable for now
         # "dataloader_persistent_workers" : True, # Keeps dataloader in RAM
         # "dataloader_prefetch_factor"    : 2,
