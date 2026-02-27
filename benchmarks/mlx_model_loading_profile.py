@@ -132,13 +132,28 @@ def get_mlx_memory_stats() -> MemoryStats:
 
 
 def get_pytorch_memory_stats() -> MemoryStats:
-    """Get memory stats from PyTorch (MPS backend)."""
+    """Get memory stats from PyTorch (MPS backend).
+    
+    Note: On Apple Silicon, GPU and CPU share unified memory.
+    torch.mps.current_allocated_memory() only tracks Metal buffers,
+    not the actual model weights in shared memory.
+    We primarily track CPU memory delta as the effective usage.
+    """
     stats = MemoryStats()
     
     try:
         import torch
         if torch.backends.mps.is_available():
-            stats.gpu_memory_gb = torch.mps.current_allocated_memory() / (1024**3)
+            # MPS allocated memory (Metal buffers only)
+            mps_allocated = torch.mps.current_allocated_memory() / (1024**3)
+            stats.gpu_memory_gb = mps_allocated
+            
+            # Also check driver memory stats if available
+            if hasattr(torch.mps, 'driver_allocated_memory'):
+                stats.gpu_memory_gb = max(
+                    stats.gpu_memory_gb,
+                    torch.mps.driver_allocated_memory() / (1024**3)
+                )
     except Exception:
         pass
     
@@ -147,6 +162,28 @@ def get_pytorch_memory_stats() -> MemoryStats:
     stats.total_memory_gb = apple_stats.total_memory_gb
     
     return stats
+
+
+def get_memory_delta(before: MemoryStats, after: MemoryStats) -> MemoryStats:
+    """Calculate memory delta between two snapshots.
+    
+    On Apple Silicon unified memory, CPU memory delta is the real usage
+    since GPU and CPU share the same physical RAM.
+    """
+    # For unified memory, track both but CPU delta is more accurate
+    gpu_delta = max(0, after.gpu_memory_gb - before.gpu_memory_gb)
+    cpu_delta = max(0, after.cpu_memory_gb - before.cpu_memory_gb)
+    
+    # On Apple Silicon, if GPU delta is 0 but CPU increased, 
+    # the memory is in unified memory (report as GPU for consistency)
+    if gpu_delta == 0 and cpu_delta > 0:
+        gpu_delta = cpu_delta
+    
+    return MemoryStats(
+        gpu_memory_gb=gpu_delta,
+        cpu_memory_gb=cpu_delta,
+        total_memory_gb=after.total_memory_gb,
+    )
 
 
 def profile_mlx_model_loading(
@@ -213,11 +250,7 @@ def profile_mlx_model_loading(
     loading_time = time.time() - start_time
     memory_after = get_mlx_memory_stats()
     
-    memory_delta = MemoryStats(
-        gpu_memory_gb=memory_after.gpu_memory_gb - memory_before.gpu_memory_gb,
-        cpu_memory_gb=memory_after.cpu_memory_gb - memory_before.cpu_memory_gb,
-        total_memory_gb=memory_after.total_memory_gb,
-    )
+    memory_delta = get_memory_delta(memory_before, memory_after)
     
     del model
     gc.collect()
@@ -301,11 +334,7 @@ def profile_pytorch_model_loading(
     loading_time = time.time() - start_time
     memory_after = get_pytorch_memory_stats()
     
-    memory_delta = MemoryStats(
-        gpu_memory_gb=memory_after.gpu_memory_gb - memory_before.gpu_memory_gb,
-        cpu_memory_gb=memory_after.cpu_memory_gb - memory_before.cpu_memory_gb,
-        total_memory_gb=memory_after.total_memory_gb,
-    )
+    memory_delta = get_memory_delta(memory_before, memory_after)
     
     del model
     gc.collect()

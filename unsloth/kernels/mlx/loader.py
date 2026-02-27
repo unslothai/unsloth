@@ -24,6 +24,9 @@ def load_mlx_weights(model, weights_path):
     """
     Loads pre-quantized weights from an MLX-format file (safetensors or npz)
     and populates model.param._mlx_cache for zero-copy optimized inference.
+    
+    Returns True if MLX weights were loaded, False if weights are not in MLX format
+    (which is expected for HuggingFace models - they'll be quantized on-the-fly).
     """
     if not os.path.exists(weights_path):
         return False
@@ -57,10 +60,14 @@ def load_mlx_weights(model, weights_path):
             break
 
     if num_layers == 0:
-        print(
-            f"Unsloth: [Warning] Could not detect any layers in MLX weights {os.path.basename(weights_path)}."
+        # This is expected for HuggingFace format weights - they'll be quantized on-the-fly
+        # Only log at debug level since this is normal
+        import logging
+        logger = logging.getLogger("unsloth")
+        logger.debug(
+            f"Weights in {os.path.basename(weights_path)} are in HuggingFace format, "
+            "not MLX-native format. Will quantize on-the-fly."
         )
-        print(f"Unsloth: Available keys (first 10): {list(mlx_weights.keys())[:10]}")
         return False
 
     count = 0
