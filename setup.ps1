@@ -493,6 +493,15 @@ pip install --upgrade pip 2>&1 | Out-Null
 # PyTorch bundles its own CUDA runtime, so this works regardless
 # of whether the CUDA Toolkit is installed yet.
 # The CUDA tag is chosen based on the driver's max supported CUDA version.
+
+# Windows MAX_PATH (260 chars) causes Triton kernel compilation to fail because
+# the auto-generated filenames are extremely long. Use a short cache directory.
+$TorchCacheDir = "C:\tc"
+if (-not (Test-Path $TorchCacheDir)) { New-Item -ItemType Directory -Path $TorchCacheDir -Force | Out-Null }
+$env:TORCHINDUCTOR_CACHE_DIR = $TorchCacheDir
+[Environment]::SetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', $TorchCacheDir, 'User')
+Write-Host "[OK] TORCHINDUCTOR_CACHE_DIR set to $TorchCacheDir (avoids MAX_PATH issues)" -ForegroundColor Green
+
 $CuTag = Get-PytorchCudaTag
 Write-Host "   Installing PyTorch with CUDA support ($CuTag)..." -ForegroundColor Cyan
 pip install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/$CuTag" 2>&1 | Out-Null
