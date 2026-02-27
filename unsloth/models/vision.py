@@ -627,8 +627,8 @@ class FastBaseModel:
         # Re-resolve model_class after potential config change
         try:
             model_class = auto_model._model_mapping[auto_config.__class__]
-        except KeyError:
-            pass
+        except Exception:
+            model_class = None
 
         model_type = str(getattr(auto_config, "model_type", "")).lower()
         if model_type.startswith("gemma3n"):
