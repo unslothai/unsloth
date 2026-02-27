@@ -134,31 +134,54 @@ def get_mlx_memory_stats() -> MemoryStats:
 def get_pytorch_memory_stats() -> MemoryStats:
     """Get memory stats from PyTorch (MPS backend).
     
-    Note: On Apple Silicon, GPU and CPU share unified memory.
-    torch.mps.current_allocated_memory() only tracks Metal buffers,
-    not the actual model weights in shared memory.
-    We primarily track CPU memory delta as the effective usage.
+    On Apple Silicon unified memory:
+    - torch.mps only tracks Metal buffers (partial picture)
+    - resource.ru_maxrss tracks process memory (includes unified memory)
+    - We combine both for accurate tracking
     """
     stats = MemoryStats()
     
+    # Method 1: Process memory via resource module (most reliable for unified memory)
+    # This captures all memory including model weights in unified memory
     try:
-        import torch
-        if torch.backends.mps.is_available():
-            # MPS allocated memory (Metal buffers only)
-            mps_allocated = torch.mps.current_allocated_memory() / (1024**3)
-            stats.gpu_memory_gb = mps_allocated
-            
-            # Also check driver memory stats if available
-            if hasattr(torch.mps, 'driver_allocated_memory'):
-                stats.gpu_memory_gb = max(
-                    stats.gpu_memory_gb,
-                    torch.mps.driver_allocated_memory() / (1024**3)
-                )
+        import resource
+        # ru_maxrss is in bytes on macOS, KB on Linux
+        maxrss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        # On macOS, ru_maxrss is already in bytes
+        stats.cpu_memory_gb = maxrss / (1024**3)
+        stats.peak_cpu_memory_gb = stats.cpu_memory_gb
     except Exception:
         pass
     
+    # Method 2: psutil if available (more detailed, cross-platform)
+    try:
+        import psutil
+        process = psutil.Process()
+        mem_info = process.memory_info()
+        stats.cpu_memory_gb = mem_info.rss / (1024**3)
+        stats.peak_cpu_memory_gb = stats.cpu_memory_gb
+    except ImportError:
+        pass
+    except Exception:
+        pass
+    
+    # Method 3: torch.mps for Metal buffers (GPU-side allocations)
+    try:
+        import torch
+        if torch.backends.mps.is_available():
+            mps_allocated = torch.mps.current_allocated_memory() / (1024**3)
+            stats.gpu_memory_gb = mps_allocated
+            stats.peak_gpu_memory_gb = mps_allocated
+            
+            # driver_allocated_memory may give different view
+            if hasattr(torch.mps, 'driver_allocated_memory'):
+                driver_mem = torch.mps.driver_allocated_memory() / (1024**3)
+                stats.peak_gpu_memory_gb = max(stats.peak_gpu_memory_gb, driver_mem)
+    except Exception:
+        pass
+    
+    # Also get system-wide stats for reference
     apple_stats = get_apple_memory_stats()
-    stats.cpu_memory_gb = apple_stats.cpu_memory_gb
     stats.total_memory_gb = apple_stats.total_memory_gb
     
     return stats
@@ -167,23 +190,67 @@ def get_pytorch_memory_stats() -> MemoryStats:
 def get_memory_delta(before: MemoryStats, after: MemoryStats) -> MemoryStats:
     """Calculate memory delta between two snapshots.
     
-    On Apple Silicon unified memory, CPU memory delta is the real usage
-    since GPU and CPU share the same physical RAM.
+    On Apple Silicon unified memory:
+    - Process memory (cpu_memory_gb) is the most reliable metric
+    - GPU memory only shows Metal buffers, not model weights
+    - We report process memory delta as the "real" GPU memory usage
     """
-    # For unified memory, track both but CPU delta is more accurate
-    gpu_delta = max(0, after.gpu_memory_gb - before.gpu_memory_gb)
+    # Process memory delta (this is the real usage on unified memory)
     cpu_delta = max(0, after.cpu_memory_gb - before.cpu_memory_gb)
     
-    # On Apple Silicon, if GPU delta is 0 but CPU increased, 
-    # the memory is in unified memory (report as GPU for consistency)
+    # GPU memory delta (Metal buffers only)
+    gpu_delta = max(0, after.gpu_memory_gb - before.gpu_memory_gb)
+    
+    # On Apple Silicon, if CPU delta > GPU delta, the difference is
+    # model weights in unified memory (not tracked by torch.mps)
+    # We report unified memory as GPU memory for consistency
     if gpu_delta == 0 and cpu_delta > 0:
         gpu_delta = cpu_delta
+    elif cpu_delta > gpu_delta:
+        # Both have values - CPU delta includes model + other allocations
+        # GPU delta is just Metal buffers
+        # Report the larger value as GPU memory (unified memory semantics)
+        pass  # Keep both values separate for transparency
     
     return MemoryStats(
         gpu_memory_gb=gpu_delta,
         cpu_memory_gb=cpu_delta,
         total_memory_gb=after.total_memory_gb,
+        peak_gpu_memory_gb=after.peak_gpu_memory_gb,
+        peak_cpu_memory_gb=after.peak_cpu_memory_gb,
     )
+
+
+def materialize_model_on_gpu(model, tokenizer=None, seq_length: int = 16):
+    """Force model weights onto GPU by running a dummy forward pass.
+    
+    On Apple Silicon, PyTorch lazily loads weights into unified memory.
+    This function forces materialization by running inference.
+    """
+    try:
+        import torch
+        
+        # Move model to MPS device
+        if hasattr(model, 'to'):
+            model = model.to('mps')
+        
+        # Create dummy input
+        dummy_input = torch.zeros((1, seq_length), dtype=torch.long, device='mps')
+        
+        # Run forward pass to materialize weights
+        with torch.no_grad():
+            if hasattr(model, 'forward'):
+                _ = model(dummy_input)
+            elif hasattr(model, 'generate'):
+                # For generation models
+                _ = model.generate(dummy_input, max_new_tokens=1)
+        
+        # Synchronize to ensure all operations complete
+        if torch.backends.mps.is_available():
+            torch.mps.synchronize()
+            
+    except Exception as e:
+        print(f"Warning: Could not materialize model on GPU: {e}")
 
 
 def profile_mlx_model_loading(
@@ -325,6 +392,17 @@ def profile_pytorch_model_loading(
             )
         
         model_params = sum(p.numel() for p in model.parameters()) / 1e9
+        
+        # Force model weights onto GPU (materialization)
+        # On Apple Silicon, weights are lazily loaded into unified memory
+        # This ensures accurate memory measurement
+        print("Materializing model on GPU...")
+        materialize_model_on_gpu(model, tokenizer, seq_length=32)
+        
+        # Synchronize and measure again after materialization
+        if torch.backends.mps.is_available():
+            torch.mps.synchronize()
+        
         success = True
         
     except Exception as e:
