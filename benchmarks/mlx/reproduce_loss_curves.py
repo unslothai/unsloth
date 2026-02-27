@@ -143,7 +143,7 @@ def run_training_mlx(
         optimizer.update(model, grads)
         
         # Force evaluation
-        mx.eval(params, loss)
+        mx.eval(model, loss)
         
         loss_history.append(float(loss))
         
