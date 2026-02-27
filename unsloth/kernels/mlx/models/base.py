@@ -23,6 +23,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 import mlx.core as mx
+import mlx.nn as mnn
 
 
 @dataclass
@@ -73,7 +74,7 @@ DEFAULT_LORA_TARGET_MODULES = {
 }
 
 
-class MLXLinear:
+class MLXLinear(mnn.Module):
     """MLX-native linear layer."""
 
     def __init__(
@@ -83,6 +84,7 @@ class MLXLinear:
         bias: bool = True,
         dtype: type = mx.float32,
     ):
+        super().__init__()
         self.in_features = in_features
         self.out_features = out_features
         self.dtype = dtype
@@ -125,7 +127,7 @@ class MLXLinear:
         return layer
 
 
-class MLXEmbedding:
+class MLXEmbedding(mnn.Module):
     """MLX-native embedding layer."""
 
     def __init__(
@@ -134,6 +136,7 @@ class MLXEmbedding:
         embedding_dim: int,
         dtype: type = mx.float32,
     ):
+        super().__init__()
         self.num_embeddings = num_embeddings
         self.embedding_dim = embedding_dim
         self.dtype = dtype
@@ -161,7 +164,7 @@ class MLXEmbedding:
         )
 
 
-class MLXRMSNorm:
+class MLXRMSNorm(mnn.Module):
     """MLX-native RMSNorm layer."""
 
     def __init__(
@@ -170,6 +173,7 @@ class MLXRMSNorm:
         eps: float = 1e-6,
         dtype: type = mx.float32,
     ):
+        super().__init__()
         self.hidden_size = hidden_size
         self.eps = eps
         self.dtype = dtype
@@ -193,7 +197,7 @@ class MLXRMSNorm:
         return layer
 
 
-class MLXLayerNorm:
+class MLXLayerNorm(mnn.Module):
     """MLX-native LayerNorm layer."""
 
     def __init__(
@@ -203,6 +207,7 @@ class MLXLayerNorm:
         bias: bool = True,
         dtype: type = mx.float32,
     ):
+        super().__init__()
         self.hidden_size = hidden_size
         self.eps = eps
         self.dtype = dtype
