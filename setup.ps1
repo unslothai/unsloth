@@ -390,10 +390,15 @@ if ($IsPipInstall) {
 } else {
     Write-Host ""
     Write-Host "Building frontend..." -ForegroundColor Cyan
+    # npm writes warnings to stderr; lower ErrorActionPreference so PS doesn't
+    # treat them as terminating errors (same pattern as the pip section below).
+    $prevEAP_npm = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
     Push-Location $FrontendDir
     npm install 2>&1 | Out-Null
     npm run build 2>&1 | Out-Null
     Pop-Location
+    $ErrorActionPreference = $prevEAP_npm
     Write-Host "[OK] Frontend built to studio/frontend/dist" -ForegroundColor Green
 }
 
