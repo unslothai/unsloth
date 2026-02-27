@@ -73,7 +73,7 @@ def _should_auto_padding_free(config) -> bool:
         or getattr(config, "packing", False)
     ):
         return False
-    return getattr(config, "padding_free", False) is None
+    return getattr(config, "padding_free", None) is None
 
 
 def _disable_sample_packing(config):
