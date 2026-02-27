@@ -1640,14 +1640,14 @@ def patch_gradient_accumulation_fix(Trainer):
     if hasattr(Trainer, "get_batch_samples"):
         if Trainer.get_batch_samples.__name__ == "_unsloth_get_batch_samples":
             return
-        if (
-            not inspect.getsource(Trainer.get_batch_samples)
-            .strip()
-            .endswith("return batch_samples, num_items_in_batch")
-        ):
-            raise NotImplementedError(
-                "Unsloth: Please make a Github issue immediately!!"
-            )
+        try:
+            source = inspect.getsource(Trainer.get_batch_samples)
+            if not source.strip().endswith("return batch_samples, num_items_in_batch"):
+                raise NotImplementedError(
+                    "Unsloth: Please make a Github issue immediately!!"
+                )
+        except (TypeError, OSError):
+            return
         else:
             if Trainer.get_batch_samples.__name__ != "_unsloth_get_batch_samples":
                 Trainer.get_batch_samples = _unsloth_get_batch_samples
@@ -1655,7 +1655,10 @@ def patch_gradient_accumulation_fix(Trainer):
             # Also fix passing in num_items_in_batch
             if not hasattr(Trainer, "_old_compute_loss"):
                 # Fix transformers 4.57.0 causing `Output 0 of UnslothFusedLossBackward is a view and is being modified inplace.`
-                function = inspect.getsource(Trainer.compute_loss)
+                try:
+                    function = inspect.getsource(Trainer.compute_loss)
+                except (TypeError, OSError):
+                    return
                 if "loss *=" in function or "loss*=" in function:
                     where = function.find("def")
                     function = function.split("\n")
