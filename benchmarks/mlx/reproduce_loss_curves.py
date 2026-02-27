@@ -139,7 +139,7 @@ def run_training(
     batch_size: int,
     seq_length: int,
     use_cce: bool,
-    wandb_project: str = None,
+    wandb_project: str = "unsloth-mlx-loss-curves",
     run_name: str = None,
 ):
     """Run a single training sprint and return the list of losses."""
@@ -249,12 +249,6 @@ def main():
     parser.add_argument(
         "--config", type=int, help="Specify a config index (0-8) to run just one."
     )
-    parser.add_argument(
-        "--wandb_project",
-        type=str,
-        default=None,
-        help="Weights & Biases project name for logging (optional).",
-    )
     args = parser.parse_args()
 
     results = {}
@@ -277,7 +271,6 @@ def main():
             cfg["batch"],
             cfg["seq"],
             use_cce=False,
-            wandb_project=args.wandb_project,
             run_name=f"{key}_baseline",
         )
         # Train CCE
@@ -286,7 +279,6 @@ def main():
             cfg["batch"],
             cfg["seq"],
             use_cce=True,
-            wandb_project=args.wandb_project,
             run_name=f"{key}_cce",
         )
 
