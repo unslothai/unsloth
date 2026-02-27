@@ -166,7 +166,11 @@ export function ChatSettingsPanel({
   function applyPreset(name: string) {
     const p = presets.find((pr) => pr.name === name);
     if (p) {
-      onParamsChange({ ...p.params, systemPrompt: params.systemPrompt });
+      onParamsChange({
+        ...p.params,
+        systemPrompt: params.systemPrompt,
+        checkpoint: params.checkpoint,
+      });
       setActivePreset(name);
     }
   }
