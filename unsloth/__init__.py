@@ -216,10 +216,17 @@ if DEVICE_TYPE == "cuda":
     del major_version, minor_version
 elif DEVICE_TYPE == "hip":
     SUPPORTS_BFLOAT16 = torch.cuda.is_bf16_supported()
+
+    def is_bf16_supported():
+        return SUPPORTS_BFLOAT16
 elif DEVICE_TYPE == "xpu":
     # torch.xpu.is_bf16_supported() does not have including_emulation
     # set SUPPORTS_BFLOAT16 as torch.xpu.is_bf16_supported()
     SUPPORTS_BFLOAT16 = torch.xpu.is_bf16_supported()
+
+    def is_bf16_supported():
+        return SUPPORTS_BFLOAT16
+
 
 # For Gradio HF Spaces?
 # if "SPACE_AUTHOR_NAME" not in os.environ and "SPACE_REPO_NAME" not in os.environ:

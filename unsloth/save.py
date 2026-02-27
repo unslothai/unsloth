@@ -2045,7 +2045,14 @@ def unsloth_save_pretrained_gguf(
             is_gpt_oss = is_gpt_oss,  # Pass gpt_oss Flag
         )
     except Exception as e:
-        if IS_KAGGLE_ENVIRONMENT:
+        if os.environ.get("UNSLOTH_GGUF_OFFLINE", "0") == "1":
+            print(
+                "Unsloth: GGUF conversion skipped due to offline mode. " f"Reason: {e}"
+            )
+            all_file_locations = []
+            want_full_precision = None
+            is_vlm_update = False
+        elif IS_KAGGLE_ENVIRONMENT:
             raise RuntimeError(
                 f"Unsloth: GGUF conversion failed in Kaggle environment.\n"
                 f"This is likely due to the 20GB disk space limit.\n"
@@ -2059,6 +2066,17 @@ def unsloth_save_pretrained_gguf(
     gguf_directory = f"{save_directory}_gguf"
     modelfile_location = None
     ollama_success = False
+    if not all_file_locations:
+        # Offline or failed GGUF conversion: return early to avoid index errors
+        return {
+            "save_directory": save_directory,
+            "gguf_directory": gguf_directory,
+            "gguf_files": all_file_locations,
+            "modelfile_location": modelfile_location,
+            "want_full_precision": want_full_precision,
+            "is_vlm": is_vlm_update,
+            "fix_bos_token": fix_bos_token,
+        }
     if all_file_locations:
         try:
             if is_vlm_update:
