@@ -221,6 +221,14 @@ elif DEVICE_TYPE == "xpu":
     # set SUPPORTS_BFLOAT16 as torch.xpu.is_bf16_supported()
     SUPPORTS_BFLOAT16 = torch.xpu.is_bf16_supported()
 
+# Backwards compatibility: some notebooks import `unsloth.is_bf16_supported`.
+# Ensure it exists on all backends (HIP / XPU) and has a stable signature.
+if "is_bf16_supported" not in globals():
+
+    def is_bf16_supported(including_emulation = False):
+        return SUPPORTS_BFLOAT16
+
+
 # For Gradio HF Spaces?
 # if "SPACE_AUTHOR_NAME" not in os.environ and "SPACE_REPO_NAME" not in os.environ:
 import triton

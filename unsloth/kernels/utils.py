@@ -109,11 +109,15 @@ def calculate_settings(
 
 
 HAS_CUDA_STREAM = False
-import bitsandbytes as bnb
+try:
+    import bitsandbytes as bnb
 
-# https://github.com/bitsandbytes-foundation/bitsandbytes/pull/1330/files
-HAS_CUDA_STREAM = Version(bnb.__version__) > Version("0.43.3")
-get_ptr = bnb.functional.get_ptr
+    # https://github.com/bitsandbytes-foundation/bitsandbytes/pull/1330/files
+    HAS_CUDA_STREAM = Version(bnb.__version__) > Version("0.43.3")
+    get_ptr = bnb.functional.get_ptr
+except Exception:
+    bnb = None
+    get_ptr = None
 
 if DEVICE_TYPE == "xpu":
     HAS_XPU_STREAM = True
@@ -181,21 +185,32 @@ else:
     CUDA_STREAMS = tuple(CUDA_STREAMS)
     del _CUDA_STREAMS
 
-# Bitsandbytes operations
+# Bitsandbytes operations (optional)
 ctypes_c_int = ctypes.c_int
 ctypes_c_int32 = ctypes.c_int32
-cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
-cdequantize_blockwise_fp16_nf4 = bnb.functional.lib.cdequantize_blockwise_fp16_nf4
-cdequantize_blockwise_bf16_nf4 = bnb.functional.lib.cdequantize_blockwise_bf16_nf4
 
-if DEVICE_TYPE == "xpu":
-    # https://github.com/bitsandbytes-foundation/bitsandbytes/blob/c3b8de268fdb55a88f92feada23fc811a1e6877a/bitsandbytes/backends/xpu/ops.py#L115
-    # for xpu, inference gemv using above link
-    cgemm_4bit_inference_naive_fp16 = bnb.functional.lib.cgemv_4bit_inference_fp16
-    cgemm_4bit_inference_naive_bf16 = bnb.functional.lib.cgemv_4bit_inference_bf16
+if bnb is not None:
+    cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
+    cdequantize_blockwise_fp16_nf4 = bnb.functional.lib.cdequantize_blockwise_fp16_nf4
+    cdequantize_blockwise_bf16_nf4 = bnb.functional.lib.cdequantize_blockwise_bf16_nf4
+
+    if DEVICE_TYPE == "xpu":
+        # https://github.com/bitsandbytes-foundation/bitsandbytes/blob/c3b8de268fdb55a88f92feada23fc811a1e6877a/bitsandbytes/backends/xpu/ops.py#L115
+        cgemm_4bit_inference_naive_fp16 = bnb.functional.lib.cgemv_4bit_inference_fp16
+        cgemm_4bit_inference_naive_bf16 = bnb.functional.lib.cgemv_4bit_inference_bf16
+    else:
+        cgemm_4bit_inference_naive_fp16 = (
+            bnb.functional.lib.cgemm_4bit_inference_naive_fp16
+        )
+        cgemm_4bit_inference_naive_bf16 = (
+            bnb.functional.lib.cgemm_4bit_inference_naive_bf16
+        )
 else:
-    cgemm_4bit_inference_naive_fp16 = bnb.functional.lib.cgemm_4bit_inference_naive_fp16
-    cgemm_4bit_inference_naive_bf16 = bnb.functional.lib.cgemm_4bit_inference_naive_bf16
+    cdequantize_blockwise_fp32 = None
+    cdequantize_blockwise_fp16_nf4 = None
+    cdequantize_blockwise_bf16_nf4 = None
+    cgemm_4bit_inference_naive_fp16 = None
+    cgemm_4bit_inference_naive_bf16 = None
 
 
 torch_device_stream = (
