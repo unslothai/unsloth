@@ -56,8 +56,8 @@ def get_device_type():
         return "cuda"
     elif hasattr(torch, "xpu") and torch.xpu.is_available():
         return "xpu"
-    elif is_mlx():
-        return "mlx"
+    elif is_mps():
+        return "mps"  # Return "mps" for Apple Silicon (MLX uses MPS backend)
     # Check torch.accelerator
     if hasattr(torch, "accelerator"):
         if not torch.accelerator.is_available():
@@ -92,8 +92,8 @@ def get_device_count():
         return torch.cuda.device_count()
     elif DEVICE_TYPE == "xpu":
         return torch.xpu.device_count()
-    elif DEVICE_TYPE == "mlx":
-        # MLX follows a single-GPU paradigm on Apple Silicon
+    elif DEVICE_TYPE == "mps":
+        # MPS/MLX follows a single-GPU paradigm on Apple Silicon
         return 1
     else:
         return 1

@@ -182,9 +182,9 @@ else:
 # INTEL GPU Specific Logic
 if DEVICE_TYPE == "xpu":
     _gpu_getCurrentRawStream = torch._C._xpu_getCurrentRawStream
-elif DEVICE_TYPE == "mps":
-    # MPS uses Metal command queues, not CUDA streams
-    # Return None as MPS synchronizes differently
+elif DEVICE_TYPE in ("mps", "mlx"):
+    # MPS/MLX uses Metal command queues, not CUDA streams
+    # Return None as MPS/MLX synchronizes differently
     def _gpu_getCurrentRawStream(device_index):
         return None
 # NVIDIA GPU Default Logic
@@ -195,8 +195,8 @@ c_void_p = ctypes.c_void_p
 
 
 def _get_tensor_stream(tensor: torch_Tensor) -> c_void_p:
-    if DEVICE_TYPE == "mps":
-        return None  # MPS doesn't use CUDA-style streams
+    if DEVICE_TYPE in ("mps", "mlx"):
+        return None  # MPS/MLX doesn't use CUDA-style streams
     return c_void_p(_gpu_getCurrentRawStream(tensor.device.index))
 
 
