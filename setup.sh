@@ -224,11 +224,10 @@ fi
 # unsloth-zoo's GGUF export pipeline. We build:
 #   - llama-server: for GGUF model inference
 #   - llama-quantize: for GGUF export quantization (symlinked to root for check_llama_cpp())
-LLAMA_SERVER_BIN="$SCRIPT_DIR/llama.cpp/build/bin/llama-server"
-if [ -f "$LLAMA_SERVER_BIN" ]; then
-    echo ""
-    echo "✅ llama-server already exists at $LLAMA_SERVER_BIN"
-else
+LLAMA_CPP_DIR="$SCRIPT_DIR/llama.cpp"
+LLAMA_SERVER_BIN="$LLAMA_CPP_DIR/build/bin/llama-server"
+rm -rf "$LLAMA_CPP_DIR"
+{
     # Check prerequisites
     if ! command -v cmake &>/dev/null; then
         echo ""
@@ -240,17 +239,9 @@ else
     else
         echo ""
         echo "Building llama-server for GGUF inference..."
-        LLAMA_CPP_DIR="$SCRIPT_DIR/llama.cpp"
 
         BUILD_OK=true
-        if [ -d "$LLAMA_CPP_DIR/.git" ]; then
-            echo "   llama.cpp repo already cloned, pulling latest..."
-            run_quiet "pull llama.cpp" git -C "$LLAMA_CPP_DIR" pull || true
-        else
-            # Remove any non-git llama.cpp directory (stale build artifacts)
-            rm -rf "$LLAMA_CPP_DIR"
-            run_quiet "clone llama.cpp" git clone --depth 1 https://github.com/ggml-org/llama.cpp.git "$LLAMA_CPP_DIR" || BUILD_OK=false
-        fi
+        run_quiet "clone llama.cpp" git clone --depth 1 https://github.com/ggml-org/llama.cpp.git "$LLAMA_CPP_DIR" || BUILD_OK=false
 
         if [ "$BUILD_OK" = true ]; then
             CMAKE_ARGS=""
@@ -309,7 +300,7 @@ else
             echo "⚠️  llama-server build failed — GGUF inference won't be available, but everything else works"
         fi
     fi
-fi
+}
 
 # ── 9. Add shell alias (skip in Colab) ──
 # Note: venv activation does NOT persist across terminal sessions.
