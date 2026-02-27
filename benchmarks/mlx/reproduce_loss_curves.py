@@ -101,10 +101,7 @@ def run_training_mlx(
         
     optimizer = opt.Adafactor(learning_rate=LEARNING_RATE)
     
-    def loss_fn(model_params, input_ids, labels):
-        # Set parameters
-        model.update(model_params)
-        
+    def loss_fn(model, input_ids, labels):
         if HAS_UNSLOTH_MLX:
             # Full model forward
             logits, loss = model(
@@ -130,11 +127,8 @@ def run_training_mlx(
 
     loss_history = []
     
-    # Initialize parameters
-    params = model.parameters()
-    
     # Gradient function
-    grad_fn = mx.value_and_grad(loss_fn)
+    grad_fn = nn.value_and_grad(model, loss_fn)
     
     # Pre-generate some data
     data = [get_dummy_data(batch_size, seq_len, v_size) for _ in range(10)]
@@ -143,7 +137,7 @@ def run_training_mlx(
         input_ids, labels = data[i % 10]
         
         # Training step
-        loss, grads = grad_fn(params, input_ids, labels)
+        loss, grads = grad_fn(model, input_ids, labels)
         
         # Update parameters
         optimizer.update(model, grads)

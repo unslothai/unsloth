@@ -53,7 +53,7 @@ def apply_rotary_pos_emb(q: mx.array, k: mx.array, cos: mx.array, sin: mx.array)
     return q, k
 
 
-class MLXRotaryEmbedding:
+class MLXRotaryEmbedding(mnn.Module):
     """MLX-native Rotary Positional Embedding."""
 
     def __init__(
@@ -63,6 +63,7 @@ class MLXRotaryEmbedding:
         base: float = 10000.0,
         dtype: type = mx.float32,
     ):
+        super().__init__()
         self.dim = dim
         self.max_position_embeddings = max_position_embeddings
         self.base = base
@@ -370,10 +371,10 @@ class MLXLlamaModel(mnn.Module):
         self.vocab_size = config.vocab_size
 
         self.embed_tokens = MLXEmbedding(config.vocab_size, config.hidden_size)
-        self.layers = [
+        self.layers = mnn.ModuleList([
             MLXLlamaDecoderLayer(config, idx, lora_config)
             for idx in range(config.num_hidden_layers)
-        ]
+        ])
         self.norm = MLXRMSNorm(config.hidden_size, config.rms_norm_eps)
 
         self.rope_theta = config.rope_theta
