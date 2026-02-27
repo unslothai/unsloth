@@ -20,6 +20,7 @@ const DEFAULT_MODEL_MAX_SEQ_LENGTH = 2048;
 type SelectedModelInput = {
   id: string;
   isLora?: boolean;
+  ggufVariant?: string;
   loadingDescription?: string;
 };
 
@@ -42,11 +43,13 @@ function stripTrailingEpoch(input: string): string {
 function describeModel(model: {
   is_lora?: boolean;
   is_vision?: boolean;
+  is_gguf?: boolean;
 }): string | undefined {
   const tags: string[] = [];
+  if (model.is_gguf) tags.push("GGUF");
   if (model.is_lora) tags.push("LoRA");
   if (model.is_vision) tags.push("Vision");
-  if (!model.is_lora && !model.is_vision) tags.push("Base");
+  if (!model.is_lora && !model.is_vision && !model.is_gguf) tags.push("Base");
   return tags.join(" · ");
 }
 
@@ -55,6 +58,7 @@ function toChatModelSummary(model: {
   name?: string | null;
   is_lora?: boolean;
   is_vision?: boolean;
+  is_gguf?: boolean;
 }): ChatModelSummary {
   return {
     id: model.id,
@@ -62,6 +66,7 @@ function toChatModelSummary(model: {
     description: describeModel(model),
     isLora: Boolean(model.is_lora),
     isVision: Boolean(model.is_vision),
+    isGguf: Boolean(model.is_gguf),
   };
 }
 
@@ -70,7 +75,7 @@ function toLoraSummary(lora: {
   adapter_path: string;
   base_model?: string | null;
   source?: "training" | "exported" | null;
-  export_type?: "lora" | "merged" | null;
+  export_type?: "lora" | "merged" | "gguf" | null;
 }): ChatLoraSummary {
   const idTail = lora.adapter_path.split("/").filter(Boolean).at(-1) ?? "";
   const updatedAt =
@@ -139,7 +144,7 @@ export function useChatModelRuntime() {
       setLoras(lorasRes.loras.map(toLoraSummary));
 
       if (statusRes.active_model) {
-        setCheckpoint(statusRes.active_model);
+        setCheckpoint(statusRes.active_model, statusRes.gguf_variant);
       }
     } catch (error) {
       const message =
@@ -154,7 +159,10 @@ export function useChatModelRuntime() {
   const selectModel = useCallback(
     async (selection: string | SelectedModelInput) => {
       const modelId = typeof selection === "string" ? selection : selection.id;
-      if (!modelId || params.checkpoint === modelId) {
+      const ggufVariant =
+        typeof selection === "string" ? undefined : selection.ggufVariant;
+      const currentVariant = useChatRuntimeStore.getState().activeGgufVariant;
+      if (!modelId || (params.checkpoint === modelId && (ggufVariant ?? null) === (currentVariant ?? null))) {
         return;
       }
 
@@ -193,6 +201,7 @@ export function useChatModelRuntime() {
             max_seq_length: DEFAULT_MODEL_MAX_SEQ_LENGTH,
             load_in_4bit: true,
             is_lora: isLora,
+            gguf_variant: ggufVariant ?? null,
           });
 
           const currentParams = useChatRuntimeStore.getState().params;

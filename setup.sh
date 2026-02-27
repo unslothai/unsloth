@@ -69,13 +69,14 @@ if [ "$NEED_NODE" = true ]; then
 
     # Load nvm (source ~/.bashrc won't work inside a script)
     export NVM_DIR="$HOME/.nvm"
+    set +u
     [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
 
     # ── 3. Install Node LTS ──
     echo "Installing Node LTS..."
     run_quiet "nvm install" nvm install --lts
     nvm use --lts > /dev/null 2>&1
-
+    set -u
     # ── 4. Verify versions ──
     NODE_MAJOR=$(node -v | sed 's/v//' | cut -d. -f1)
     NPM_MAJOR=$(npm -v | cut -d. -f1)
@@ -105,7 +106,9 @@ echo "✅ Frontend built to studio/frontend/dist"
 echo ""
 echo "Setting up Python environment..."
 
-# ── 6a. Discover best Python <= 3.12.x ──
+# ── 6a. Discover best Python >= 3.11 and < 3.14 (i.e. 3.11.x, 3.12.x, or 3.13.x) ──
+MIN_PY_MINOR=11   # minimum minor version (>= 3.11)
+MAX_PY_MINOR=13   # maximum minor version (< 3.14)
 BEST_PY=""
 BEST_MAJOR=0
 BEST_MINOR=0
@@ -115,7 +118,7 @@ for candidate in $(compgen -c python3 2>/dev/null | grep -E '^python3(\.[0-9]+)?
     if ! command -v "$candidate" &>/dev/null; then
         continue
     fi
-    # Get version string, e.g. "Python 3.11.5"
+    # Get version string, e.g. "Python 3.12.5"
     ver_str=$("$candidate" --version 2>&1 | awk '{print $2}')
     py_major=$(echo "$ver_str" | cut -d. -f1)
     py_minor=$(echo "$ver_str" | cut -d. -f2)
@@ -125,8 +128,13 @@ for candidate in $(compgen -c python3 2>/dev/null | grep -E '^python3(\.[0-9]+)?
         continue
     fi
 
-    # Skip versions above 3.12
-    if [ "$py_minor" -gt 12 ] 2>/dev/null; then
+    # Skip versions below 3.12 (require > 3.11)
+    if [ "$py_minor" -lt "$MIN_PY_MINOR" ] 2>/dev/null; then
+        continue
+    fi
+
+    # Skip versions above 3.13 (require < 3.14)
+    if [ "$py_minor" -gt "$MAX_PY_MINOR" ] 2>/dev/null; then
         continue
     fi
 
@@ -139,7 +147,7 @@ for candidate in $(compgen -c python3 2>/dev/null | grep -E '^python3(\.[0-9]+)?
 done
 
 if [ -z "$BEST_PY" ]; then
-    echo "❌ ERROR: No Python version <= 3.12.x found on this system."
+    echo "❌ ERROR: No Python version between 3.${MIN_PY_MINOR} and 3.${MAX_PY_MINOR} found on this system."
     echo "   Detected Python 3 installations:"
     for candidate in $(compgen -c python3 2>/dev/null | grep -E '^python3(\.[0-9]+)?$' | sort -u); do
         if command -v "$candidate" &>/dev/null; then
@@ -147,13 +155,13 @@ if [ -z "$BEST_PY" ]; then
         fi
     done
     echo ""
-    echo "   Please install Python <= 3.12.x for maximum compatibility."
+    echo "   Please install Python 3.${MIN_PY_MINOR} or 3.${MAX_PY_MINOR}."
     echo "   For example:  sudo apt install python3.12 python3.12-venv"
     exit 1
 fi
 
 BEST_VER=$("$BEST_PY" --version 2>&1 | awk '{print $2}')
-echo "✅ Using $BEST_PY ($BEST_VER) — compatible (≤ 3.12.x)"
+echo "✅ Using $BEST_PY ($BEST_VER) — compatible (3.${MIN_PY_MINOR}.x – 3.${MAX_PY_MINOR}.x)"
 
 REQ_ROOT="$SCRIPT_DIR/studio/backend/requirements"
 SINGLE_ENV_CONSTRAINTS="$REQ_ROOT/single-env/constraints.txt"
@@ -211,7 +219,90 @@ else
     fi
 fi
 
-# ── 8. Add shell alias (skip in Colab) ──
+# ── 8. Build llama.cpp binaries for GGUF inference + export ──
+# Builds in-tree at $REPO/llama.cpp/. This directory is shared with
+# unsloth-zoo's GGUF export pipeline. We build:
+#   - llama-server: for GGUF model inference
+#   - llama-quantize: for GGUF export quantization (symlinked to root for check_llama_cpp())
+LLAMA_CPP_DIR="$SCRIPT_DIR/llama.cpp"
+LLAMA_SERVER_BIN="$LLAMA_CPP_DIR/build/bin/llama-server"
+rm -rf "$LLAMA_CPP_DIR"
+{
+    # Check prerequisites
+    if ! command -v cmake &>/dev/null; then
+        echo ""
+        echo "⚠️  cmake not found — skipping llama-server build (GGUF inference won't be available)"
+        echo "   Install cmake and re-run setup.sh to enable GGUF inference."
+    elif ! command -v git &>/dev/null; then
+        echo ""
+        echo "⚠️  git not found — skipping llama-server build (GGUF inference won't be available)"
+    else
+        echo ""
+        echo "Building llama-server for GGUF inference..."
+
+        BUILD_OK=true
+        run_quiet "clone llama.cpp" git clone --depth 1 https://github.com/ggml-org/llama.cpp.git "$LLAMA_CPP_DIR" || BUILD_OK=false
+
+        if [ "$BUILD_OK" = true ]; then
+            CMAKE_ARGS=""
+            # Detect CUDA: check nvcc on PATH, then common install locations
+            NVCC_PATH=""
+            if command -v nvcc &>/dev/null; then
+                NVCC_PATH="$(command -v nvcc)"
+            elif [ -x /usr/local/cuda/bin/nvcc ]; then
+                NVCC_PATH="/usr/local/cuda/bin/nvcc"
+                export PATH="/usr/local/cuda/bin:$PATH"
+            elif ls /usr/local/cuda-*/bin/nvcc &>/dev/null 2>&1; then
+                # Pick the newest cuda-XX.X directory
+                NVCC_PATH="$(ls -d /usr/local/cuda-*/bin/nvcc 2>/dev/null | sort -V | tail -1)"
+                export PATH="$(dirname "$NVCC_PATH"):$PATH"
+            fi
+
+            if [ -n "$NVCC_PATH" ]; then
+                echo "   Building with CUDA support (nvcc: $NVCC_PATH)..."
+                CMAKE_ARGS="-DGGML_CUDA=ON"
+            elif [ -d /usr/local/cuda ] || nvidia-smi &>/dev/null; then
+                echo "   CUDA driver detected but nvcc not found — building CPU-only"
+                echo "   To enable GPU: install cuda-toolkit or add nvcc to PATH"
+            else
+                echo "   Building CPU-only (no CUDA detected)..."
+            fi
+
+            NCPU=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+
+            run_quiet "cmake llama.cpp" cmake -S "$LLAMA_CPP_DIR" -B "$LLAMA_CPP_DIR/build" $CMAKE_ARGS || BUILD_OK=false
+        fi
+
+        if [ "$BUILD_OK" = true ]; then
+            run_quiet "build llama-server" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-server -j"$NCPU" || BUILD_OK=false
+        fi
+
+        # Also build llama-quantize (needed by unsloth-zoo's GGUF export pipeline)
+        if [ "$BUILD_OK" = true ]; then
+            run_quiet "build llama-quantize" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-quantize -j"$NCPU" || true
+            # Symlink to llama.cpp root — check_llama_cpp() looks for the binary there
+            QUANTIZE_BIN="$LLAMA_CPP_DIR/build/bin/llama-quantize"
+            if [ -f "$QUANTIZE_BIN" ]; then
+                ln -sf build/bin/llama-quantize "$LLAMA_CPP_DIR/llama-quantize"
+            fi
+        fi
+
+        if [ "$BUILD_OK" = true ]; then
+            if [ -f "$LLAMA_SERVER_BIN" ]; then
+                echo "✅ llama-server built at $LLAMA_SERVER_BIN"
+            else
+                echo "⚠️  llama-server binary not found after build — GGUF inference won't be available"
+            fi
+            if [ -f "$LLAMA_CPP_DIR/llama-quantize" ]; then
+                echo "✅ llama-quantize available for GGUF export"
+            fi
+        else
+            echo "⚠️  llama-server build failed — GGUF inference won't be available, but everything else works"
+        fi
+    fi
+}
+
+# ── 9. Add shell alias (skip in Colab) ──
 # Note: venv activation does NOT persist across terminal sessions.
 # This alias hardcodes the venv python path so users don't need to activate.
 if [ "$IS_COLAB" = false ]; then

@@ -1,6 +1,11 @@
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import type { ReactElement } from "react";
+import { type ReactElement, useState } from "react";
 import type { ModelProviderConfig } from "../../types";
 import { FieldLabel } from "../shared/field-label";
 import { NameField } from "../shared/name-field";
@@ -14,8 +19,8 @@ export function ModelProviderDialog({
   config,
   onUpdate,
 }: ModelProviderDialogProps): ReactElement {
+  const [optionalOpen, setOptionalOpen] = useState(false);
   const endpointId = `${config.id}-endpoint`;
-  const providerTypeId = `${config.id}-provider-type`;
   const apiKeyEnvId = `${config.id}-api-key-env`;
   const apiKeyId = `${config.id}-api-key`;
   const extraHeadersId = `${config.id}-extra-headers`;
@@ -35,22 +40,6 @@ export function ModelProviderDialog({
       />
       <div className="grid gap-2">
         <FieldLabel
-          label="Provider type"
-          htmlFor={providerTypeId}
-          hint="Provider adapter type, e.g. openai or openrouter."
-        />
-        <Input
-          id={providerTypeId}
-          className="nodrag"
-          placeholder="openai"
-          value={config.provider_type}
-          onChange={(event) =>
-            updateField("provider_type", event.target.value)
-          }
-        />
-      </div>
-      <div className="grid gap-2">
-        <FieldLabel
           label="Endpoint"
           htmlFor={endpointId}
           hint="Base API URL used for model requests."
@@ -61,20 +50,6 @@ export function ModelProviderDialog({
           placeholder="https://..."
           value={config.endpoint}
           onChange={(event) => updateField("endpoint", event.target.value)}
-        />
-      </div>
-      <div className="grid gap-2">
-        <FieldLabel
-          label="API key env (optional)"
-          htmlFor={apiKeyEnvId}
-          hint="Env var name to read secret key from runtime."
-        />
-        <Input
-          id={apiKeyEnvId}
-          className="nodrag"
-          placeholder="OPENAI_API_KEY"
-          value={config.api_key_env ?? ""}
-          onChange={(event) => updateField("api_key_env", event.target.value)}
         />
       </div>
       <div className="grid gap-2">
@@ -90,36 +65,61 @@ export function ModelProviderDialog({
           onChange={(event) => updateField("api_key", event.target.value)}
         />
       </div>
-      <div className="grid gap-2">
-        <FieldLabel
-          label="Extra headers (JSON)"
-          htmlFor={extraHeadersId}
-          hint="Optional request headers merged into every call."
-        />
-        <Textarea
-          id={extraHeadersId}
-          className="corner-squircle nodrag"
-          placeholder='{"X-Header": "value"}'
-          value={config.extra_headers ?? ""}
-          onChange={(event) =>
-            updateField("extra_headers", event.target.value)
-          }
-        />
-      </div>
-      <div className="grid gap-2">
-        <FieldLabel
-          label="Extra body (JSON)"
-          htmlFor={extraBodyId}
-          hint="Optional payload fields merged into requests."
-        />
-        <Textarea
-          id={extraBodyId}
-          className="corner-squircle nodrag"
-          placeholder='{"key": "value"}'
-          value={config.extra_body ?? ""}
-          onChange={(event) => updateField("extra_body", event.target.value)}
-        />
-      </div>
+      <Collapsible open={optionalOpen} onOpenChange={setOptionalOpen}>
+        <CollapsibleTrigger asChild={true}>
+          <button
+            type="button"
+            className="flex w-full items-center justify-between text-left text-xs text-muted-foreground"
+          >
+            <span className="font-semibold uppercase">Optional</span>
+            <span>{optionalOpen ? "Hide" : "Show"}</span>
+          </button>
+        </CollapsibleTrigger>
+        <CollapsibleContent className="mt-3 space-y-4">
+          <div className="grid gap-2">
+            <FieldLabel
+              label="API key env (optional)"
+              htmlFor={apiKeyEnvId}
+              hint="Env var name to read secret key from runtime."
+            />
+            <Input
+              id={apiKeyEnvId}
+              className="nodrag"
+              placeholder="OPENAI_API_KEY"
+              value={config.api_key_env ?? ""}
+              onChange={(event) => updateField("api_key_env", event.target.value)}
+            />
+          </div>
+          <div className="grid gap-2">
+            <FieldLabel
+              label="Extra headers (JSON)"
+              htmlFor={extraHeadersId}
+              hint="Optional request headers merged into every call."
+            />
+            <Textarea
+              id={extraHeadersId}
+              className="corner-squircle nodrag"
+              placeholder='{"X-Header": "value"}'
+              value={config.extra_headers ?? ""}
+              onChange={(event) => updateField("extra_headers", event.target.value)}
+            />
+          </div>
+          <div className="grid gap-2">
+            <FieldLabel
+              label="Extra body (JSON)"
+              htmlFor={extraBodyId}
+              hint="Optional payload fields merged into requests."
+            />
+            <Textarea
+              id={extraBodyId}
+              className="corner-squircle nodrag"
+              placeholder='{"key": "value"}'
+              value={config.extra_body ?? ""}
+              onChange={(event) => updateField("extra_body", event.target.value)}
+            />
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
     </div>
   );
 }

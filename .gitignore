@@ -25,6 +25,12 @@ unsloth_training_checkpoints/
 *.gguf
 *.safetensors
 
+# llama.cpp build (built by setup.sh, shared with unsloth-zoo export)
+llama.cpp/
+
+# Built binaries (llama-server etc.)
+bin/
+
 # IDE / Editors
 .vscode/
 .idea/

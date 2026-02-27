@@ -20,7 +20,6 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
-  Handle,
   NodeResizer,
   Position,
   useUpdateNodeInternals,
@@ -32,18 +31,18 @@ import { useRecipeStudioStore } from "../stores/recipe-studio";
 import type {
   RecipeNode as RecipeGraphNodeType,
   LlmType,
-  LayoutDirection,
   NodeConfig,
   SamplerType,
 } from "../types";
 import { NODE_HANDLE_CLASS } from "../utils/handle-layout";
-import { getLlmJudgeScoreHandleId, HANDLE_IDS } from "../utils/handles";
+import { HANDLE_IDS } from "../utils/handles";
 import { InlineCategoryBadges } from "./inline/inline-category-badges";
 import { InlineExpression } from "./inline/inline-expression";
 import { InlineLlm } from "./inline/inline-llm";
 import { InlineModel } from "./inline/inline-model";
 import { isInlineConfig } from "./inline/inline-policy";
 import { InlineSampler } from "./inline/inline-sampler";
+import { InlineSeed } from "./inline/inline-seed";
 import {
   BaseNode,
   BaseNodeContent,
@@ -220,7 +219,7 @@ function getConfigSummary(config: NodeConfig | undefined): string {
       return "Set HF dataset repo";
     }
     if (seedSourceType === "local") {
-      return "Upload CSV/JSON file";
+      return "Upload structured file";
     }
     return "Upload PDF/DOCX/TXT file";
   }
@@ -259,6 +258,9 @@ function renderNodeBody(
     if (config.kind === "expression") {
       return <InlineExpression config={config} onUpdate={onUpdate} />;
     }
+    if (config.kind === "seed") {
+      return <InlineSeed config={config} onUpdate={onUpdate} />;
+    }
   }
 
   if (config?.kind === "sampler" && config.sampler_type === "category") {
@@ -266,89 +268,6 @@ function renderNodeBody(
   }
 
   return <p className="text-xs text-muted-foreground">{summary}</p>;
-}
-
-type LlmInputHandleItem = {
-  id: string;
-  label: string;
-};
-
-function getLlmInputHandleItems(config: NodeConfig | undefined): LlmInputHandleItem[] {
-  if (!(config && config.kind === "llm")) {
-    return [];
-  }
-  const items: LlmInputHandleItem[] = [];
-  if (config.system_prompt.trim()) {
-    items.push({ id: HANDLE_IDS.llmSystemIn, label: "System" });
-  }
-  if (config.prompt.trim()) {
-    items.push({ id: HANDLE_IDS.llmPromptIn, label: "Prompt" });
-  }
-  if (config.llm_type === "judge") {
-    (config.scores ?? []).forEach((score, index) => {
-      items.push({
-        id: getLlmJudgeScoreHandleId(index),
-        label: score.name.trim() || `Score ${index + 1}`,
-      });
-    });
-  }
-  return items;
-}
-
-type LlmInputHandlesProps = {
-  items: LlmInputHandleItem[];
-  layoutDirection: LayoutDirection;
-};
-
-function LlmInputHandles({
-  items,
-  layoutDirection,
-}: LlmInputHandlesProps): ReactElement | null {
-  if (items.length === 0) {
-    return null;
-  }
-  const isTopBottom = layoutDirection === "TB";
-
-  if (isTopBottom) {
-    return (
-      <div className="flex flex-wrap gap-2 pb-1">
-        {items.map((item) => (
-          <div
-            key={item.id}
-            className="pointer-events-none relative flex min-w-[80px] flex-1 justify-center pt-2"
-          >
-            <Handle
-              id={item.id}
-              type="target"
-              position={Position.Top}
-              className={NODE_HANDLE_CLASS}
-              style={{ left: "50%", top: 0, transform: "translate(-50%, -50%)" }}
-            />
-            <span className="text-[10px] text-muted-foreground">{item.label}</span>
-          </div>
-        ))}
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-1 pb-1">
-      {items.map((item) => (
-        <div key={item.id} className="pointer-events-none relative min-w-0 pl-3">
-          <Handle
-            id={item.id}
-            type="target"
-            position={Position.Left}
-            className={NODE_HANDLE_CLASS}
-            style={{ left: -3, top: "50%", transform: "translate(-50%, -50%)" }}
-          />
-          <span className="block truncate text-[10px] text-muted-foreground">
-            {item.label}
-          </span>
-        </div>
-      ))}
-    </div>
-  );
 }
 
 function RecipeGraphNodeBase({
@@ -418,7 +337,6 @@ function RecipeGraphNodeBase({
     data.kind === "model_config" || data.kind === "model_provider";
   const summary = getConfigSummary(config);
   const nodeBody = renderNodeBody(config, summary, updateConfig);
-  const llmInputHandles = llmAuxVisible ? getLlmInputHandleItems(config) : [];
   const canShowLlmAux =
     config?.kind === "llm" &&
     (Boolean(config.prompt.trim()) ||
@@ -491,7 +409,6 @@ function RecipeGraphNodeBase({
       </BaseNodeHeader>
 
       <BaseNodeContent className="gap-2 px-3 py-2">
-        <LlmInputHandles items={llmInputHandles} layoutDirection={layoutDirection} />
         {nodeBody}
       </BaseNodeContent>
 
@@ -507,11 +424,29 @@ function RecipeGraphNodeBase({
             handleClassName={NODE_HANDLE_CLASS}
           />
           <LabeledHandle
+            id={HANDLE_IDS.dataOutLeft}
+            title="Data output"
+            type="source"
+            position={Position.Left}
+            className="absolute inset-0 pointer-events-none opacity-0"
+            labelClassName="sr-only"
+            handleClassName={NODE_HANDLE_CLASS}
+          />
+          <LabeledHandle
             id={HANDLE_IDS.dataInTop}
             title="Data input"
             type="target"
             position={Position.Top}
             className="absolute inset-0 pointer-events-none"
+            labelClassName="sr-only"
+            handleClassName={NODE_HANDLE_CLASS}
+          />
+          <LabeledHandle
+            id={HANDLE_IDS.dataOutTop}
+            title="Data output"
+            type="source"
+            position={Position.Top}
+            className="absolute inset-0 pointer-events-none opacity-0"
             labelClassName="sr-only"
             handleClassName={NODE_HANDLE_CLASS}
           />
@@ -525,11 +460,29 @@ function RecipeGraphNodeBase({
             handleClassName={NODE_HANDLE_CLASS}
           />
           <LabeledHandle
+            id={HANDLE_IDS.dataInRight}
+            title="Data input"
+            type="target"
+            position={Position.Right}
+            className="absolute inset-0 pointer-events-none opacity-0"
+            labelClassName="sr-only"
+            handleClassName={NODE_HANDLE_CLASS}
+          />
+          <LabeledHandle
             id={HANDLE_IDS.dataOutBottom}
             title="Data output"
             type="source"
             position={Position.Bottom}
             className="absolute inset-0 pointer-events-none"
+            labelClassName="sr-only"
+            handleClassName={NODE_HANDLE_CLASS}
+          />
+          <LabeledHandle
+            id={HANDLE_IDS.dataInBottom}
+            title="Data input"
+            type="target"
+            position={Position.Bottom}
+            className="absolute inset-0 pointer-events-none opacity-0"
             labelClassName="sr-only"
             handleClassName={NODE_HANDLE_CLASS}
           />

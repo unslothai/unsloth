@@ -1,3 +1,4 @@
+import type { XYPosition } from "@xyflow/react";
 import { DEFAULT_NODE_WIDTH } from "../../constants";
 import type {
   RecipeNode,
@@ -40,11 +41,13 @@ export function buildNodeUpdate(
   state: NodeUpdateState,
   config: NodeConfig,
   layoutDirection: LayoutDirection,
+  position?: XYPosition,
+  openDialog = true,
 ): NodeUpdateResult {
   const node: RecipeNode = {
     id: config.id,
     type: "builder",
-    position: { x: 0, y: state.nextY },
+    position: position ?? { x: 0, y: state.nextY },
     data: nodeDataFromConfig(config, layoutDirection),
     style: { width: DEFAULT_NODE_WIDTH },
     selected: true,
@@ -54,9 +57,9 @@ export function buildNodeUpdate(
     configs: { ...state.configs, [config.id]: config },
     nodes: [...state.nodes.map((item) => ({ ...item, selected: false })), node],
     nextId: state.nextId + 1,
-    nextY: state.nextY + 140,
+    nextY: position ? state.nextY : state.nextY + 140,
     activeConfigId: config.id,
-    dialogOpen: mode === "dialog",
+    dialogOpen: openDialog && mode === "dialog",
   };
 }
 

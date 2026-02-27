@@ -68,7 +68,7 @@ export function ProcessorsDialog({
         position="absolute"
         overlayPosition="absolute"
         overlayClassName="bg-transparent"
-        className="corner-squircle max-h-[650px] overflow-auto sm:max-w-2xl"
+        className="corner-squircle max-h-[650px] overflow-auto sm:max-w-2xl shadow-border"
       >
         <VisuallyHidden.Root>
           <DialogTitle>Processors</DialogTitle>

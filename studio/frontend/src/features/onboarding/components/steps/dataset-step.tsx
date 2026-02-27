@@ -38,7 +38,7 @@ import {
   useHfTokenValidation,
   useInfiniteScroll,
 } from "@/hooks";
-import { cn, formatCompact } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 import {
   HfDatasetSubsetSplitSelectors,
   useTrainingConfigStore,
@@ -79,6 +79,7 @@ export function DatasetStep() {
     setDatasetEvalSplit,
     uploadedFile,
     setUploadedFile,
+    modelType,
   } = useTrainingConfigStore(
     useShallow((s) => ({
       hfToken: s.hfToken,
@@ -97,6 +98,7 @@ export function DatasetStep() {
       setDatasetEvalSplit: s.setDatasetEvalSplit,
       uploadedFile: s.uploadedFile,
       setUploadedFile: s.setUploadedFile,
+      modelType: s.modelType,
     })),
   );
 
@@ -110,6 +112,7 @@ export function DatasetStep() {
     fetchMore,
     error: hfSearchError,
   } = useHfDatasetSearch(debouncedQuery, {
+    modelType,
     accessToken: hfToken || undefined,
   });
 
@@ -251,16 +254,8 @@ export function DatasetStep() {
                   >
                     <ComboboxList className="p-1 !max-h-none !overflow-visible">
                       {(id: string) => {
-                        const r = hfResults.find((r) => r.id === id);
-                        const detail = r?.totalExamples
-                          ? `${formatCompact(r.totalExamples)} rows`
-                          : (r?.sizeCategory ?? null);
                         return (
-                          <ComboboxItem
-                            key={id}
-                            value={id}
-                            className="gap-2"
-                          >
+                          <ComboboxItem key={id} value={id} className="gap-2">
                             <Tooltip>
                               <TooltipTrigger asChild={true}>
                                 <span className="block min-w-0 flex-1 truncate">
@@ -274,15 +269,6 @@ export function DatasetStep() {
                                 {id}
                               </TooltipContent>
                             </Tooltip>
-                            {detail ? (
-                              <span className="ml-auto text-[10px] text-muted-foreground shrink-0">
-                                {detail}
-                              </span>
-                            ) : r?.downloads != null ? (
-                              <span className="ml-auto text-[10px] text-muted-foreground shrink-0">
-                                ↓{formatCompact(r.downloads)}
-                              </span>
-                            ) : null}
                           </ComboboxItem>
                         );
                       }}

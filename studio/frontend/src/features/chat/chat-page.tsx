@@ -314,6 +314,7 @@ export function ChatPage(): ReactElement {
   );
   const inferenceParams = useChatRuntimeStore((state) => state.params);
   const setInferenceParams = useChatRuntimeStore((state) => state.setParams);
+  const activeGgufVariant = useChatRuntimeStore((state) => state.activeGgufVariant);
   const autoTitle = useChatRuntimeStore((state) => state.autoTitle);
   const setAutoTitle = useChatRuntimeStore((state) => state.setAutoTitle);
   const modelsFromStore = useChatRuntimeStore((state) => state.models);
@@ -335,10 +336,11 @@ export function ChatPage(): ReactElement {
   }, [inferenceParams.checkpoint, lorasFromStore]);
 
   const handleCheckpointChange = useCallback(
-    (value: string, meta?: { isLora: boolean }) => {
-      const currentCheckpoint =
-        useChatRuntimeStore.getState().params.checkpoint;
-      if (!value || value === currentCheckpoint) return;
+    (value: string, meta?: { isLora: boolean; ggufVariant?: string }) => {
+      const store = useChatRuntimeStore.getState();
+      const currentCheckpoint = store.params.checkpoint;
+      const currentVariant = store.activeGgufVariant;
+      if (!value || (value === currentCheckpoint && (meta?.ggufVariant ?? null) === (currentVariant ?? null))) return;
       void (async () => {
         let switchNote: string | undefined;
         const activeThreadId = await resolveActiveSingleThreadId(view);
@@ -367,10 +369,10 @@ export function ChatPage(): ReactElement {
             duration: 6000,
           });
         }
-
         await selectModel({
           id: value,
           isLora: meta?.isLora,
+          ggufVariant: meta?.ggufVariant,
         });
       })();
     },
@@ -591,6 +593,7 @@ export function ChatPage(): ReactElement {
                 models={models}
                 loraModels={loraModels}
                 value={inferenceParams.checkpoint}
+                activeGgufVariant={activeGgufVariant}
                 onValueChange={handleCheckpointChange}
                 onEject={handleEject}
                 variant="ghost"

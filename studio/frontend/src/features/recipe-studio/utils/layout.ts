@@ -1,6 +1,8 @@
 import dagre from "@dagrejs/dagre";
 import type { Edge, Node } from "@xyflow/react";
+import { DEFAULT_NODE_HEIGHT, DEFAULT_NODE_WIDTH } from "../constants";
 import type { LayoutDirection } from "../types";
+import { readNodeHeight, readNodeWidth } from "./rf-node-dimensions";
 
 type LayoutOptions = {
   direction?: LayoutDirection;
@@ -21,8 +23,8 @@ export function getLayoutedElements<TNode extends Node>(
     nodesep = 80,
     ranksep = 80,
     edgesep = 28,
-    nodeWidth = 220,
-    nodeHeight = 64,
+    nodeWidth = DEFAULT_NODE_WIDTH,
+    nodeHeight = DEFAULT_NODE_HEIGHT,
   } = options;
 
   const graph = new dagre.graphlib.Graph();
@@ -36,8 +38,8 @@ export function getLayoutedElements<TNode extends Node>(
   });
 
   nodes.forEach((node) => {
-    const width = node.measured?.width ?? nodeWidth;
-    const height = node.measured?.height ?? nodeHeight;
+    const width = readNodeWidth(node) ?? nodeWidth;
+    const height = readNodeHeight(node) ?? nodeHeight;
     graph.setNode(node.id, { width, height });
   });
 
@@ -54,8 +56,8 @@ export function getLayoutedElements<TNode extends Node>(
 
   const layoutedNodes = nodes.map((node) => {
     const pos = graph.node(node.id);
-    const width = node.measured?.width ?? nodeWidth;
-    const height = node.measured?.height ?? nodeHeight;
+    const width = readNodeWidth(node) ?? nodeWidth;
+    const height = readNodeHeight(node) ?? nodeHeight;
     return {
       ...node,
       position: {
