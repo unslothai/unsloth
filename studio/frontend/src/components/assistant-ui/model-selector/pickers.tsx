@@ -55,6 +55,7 @@ function ModelRow({
   vramStatus,
   vramEst,
   gpuGb,
+  tooltipText,
 }: {
   label: string;
   meta?: string;
@@ -63,6 +64,7 @@ function ModelRow({
   vramStatus?: VramFitStatus | null;
   vramEst?: number;
   gpuGb?: number;
+  tooltipText?: ReactNode;
 }) {
   const exceeds = vramStatus === "exceeds";
   const showVramTooltip =
@@ -118,6 +120,17 @@ function ModelRow({
         <TooltipContent side="left" className="max-w-xs break-all">
           {label}
           <span className="block text-[10px] mt-1">{vramTooltipText}</span>
+        </TooltipContent>
+      </Tooltip>
+    );
+  }
+
+  if (tooltipText) {
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>{content}</TooltipTrigger>
+        <TooltipContent side="left" className="max-w-xs break-all">
+          {tooltipText}
         </TooltipContent>
       </Tooltip>
     );
@@ -561,6 +574,14 @@ export function LoraModelPicker({
                         source: isExported ? "exported" : "lora",
                         isLora: !isMerged && !isGguf,
                       })}
+                      tooltipText={
+                        <>
+                          <span className="block break-words">{adapter.name}</span>
+                          <span className="block mt-1 text-[10px] text-muted-foreground break-all">
+                            {adapter.id}
+                          </span>
+                        </>
+                      }
                     />
                   );
                 })}
