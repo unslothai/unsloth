@@ -11,6 +11,7 @@ import json
 import argparse
 import matplotlib.pyplot as plt
 import torch
+import wandb
 
 from datasets import load_dataset
 from unsloth import FastLanguageModel
@@ -133,7 +134,14 @@ def prepare_dataset(tokenizer, max_seq_length):
     return dataset
 
 
-def run_training(model_id: str, batch_size: int, seq_length: int, use_cce: bool):
+def run_training(
+    model_id: str,
+    batch_size: int,
+    seq_length: int,
+    use_cce: bool,
+    wandb_project: str = None,
+    run_name: str = None,
+):
     """Run a single training sprint and return the list of losses."""
 
     # 1. Patch Unsloth to toggle CCE.
@@ -178,6 +186,18 @@ def run_training(model_id: str, batch_size: int, seq_length: int, use_cce: bool)
             if logs and "loss" in logs:
                 loss_logger.losses.append(logs["loss"])
 
+    if wandb_project:
+        wandb.init(
+            project=wandb_project,
+            name=run_name,
+            config={
+                "model_id": model_id,
+                "batch_size": batch_size,
+                "seq_length": seq_length,
+                "use_cce": use_cce,
+            },
+        )
+
     trainer = SFTTrainer(
         model=model,
         tokenizer=tokenizer,
@@ -198,7 +218,8 @@ def run_training(model_id: str, batch_size: int, seq_length: int, use_cce: bool)
             lr_scheduler_type="linear",
             seed=3407,
             output_dir=f"outputs_{use_cce}",
-            report_to="none",
+            report_to="wandb" if wandb_project else "none",
+            run_name=run_name if wandb_project else None,
         ),
         callbacks=[HFLoggingCallback()],
     )
@@ -212,6 +233,9 @@ def run_training(model_id: str, batch_size: int, seq_length: int, use_cce: bool)
     del trainer, model, tokenizer
     clear_memory()
 
+    if wandb_project:
+        wandb.finish()
+
     return loss_logger.losses
 
 
@@ -224,6 +248,12 @@ def main():
     )
     parser.add_argument(
         "--config", type=int, help="Specify a config index (0-8) to run just one."
+    )
+    parser.add_argument(
+        "--wandb_project",
+        type=str,
+        default=None,
+        help="Weights & Biases project name for logging (optional).",
     )
     args = parser.parse_args()
 
@@ -243,11 +273,21 @@ def main():
 
         # Train Baseline
         baseline_losses = run_training(
-            cfg["model_id"], cfg["batch"], cfg["seq"], use_cce=False
+            cfg["model_id"],
+            cfg["batch"],
+            cfg["seq"],
+            use_cce=False,
+            wandb_project=args.wandb_project,
+            run_name=f"{key}_baseline",
         )
         # Train CCE
         cce_losses = run_training(
-            cfg["model_id"], cfg["batch"], cfg["seq"], use_cce=True
+            cfg["model_id"],
+            cfg["batch"],
+            cfg["seq"],
+            use_cce=True,
+            wandb_project=args.wandb_project,
+            run_name=f"{key}_cce",
         )
 
         results[key] = {
