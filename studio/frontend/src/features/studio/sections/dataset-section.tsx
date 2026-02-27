@@ -33,7 +33,6 @@ import {
   useHfTokenValidation,
   useInfiniteScroll,
 } from "@/hooks";
-import { formatCompact } from "@/lib/utils";
 import {
   HfDatasetSubsetSplitSelectors,
   useDatasetPreviewDialogStore,
@@ -224,21 +223,8 @@ export function DatasetSection() {
                   >
                     <ComboboxList className="p-1 !max-h-none !overflow-visible">
                       {(id: string) => {
-                        const r = hfResults.find((ds) => ds.id === id);
-                        let detail: string | null = null;
-                        if (r?.totalExamples) {
-                          detail = `${formatCompact(r.totalExamples)} rows`;
-                        } else if (r?.sizeCategory) {
-                          detail = r.sizeCategory;
-                        } else if (r?.downloads != null) {
-                          detail = `↓${formatCompact(r.downloads)}`;
-                        }
                         return (
-                          <ComboboxItem
-                            key={id}
-                            value={id}
-                            className="justify-between"
-                          >
+                          <ComboboxItem key={id} value={id}>
                             <Tooltip>
                               <TooltipTrigger asChild={true}>
                                 <span className="min-w-0 flex-1 truncate">
@@ -252,11 +238,6 @@ export function DatasetSection() {
                                 {id}
                               </TooltipContent>
                             </Tooltip>
-                            {detail && (
-                              <span className="text-[10px] text-muted-foreground shrink-0">
-                                {detail}
-                              </span>
-                            )}
                           </ComboboxItem>
                         );
                       }}
