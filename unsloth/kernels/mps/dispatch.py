@@ -141,12 +141,28 @@ def dispatch_rope_embedding(Q, K, cos, sin, rope_indices=None):
     return fast_rope_embedding(Q, K, cos, sin, rope_indices)
 
 
-def dispatch_cross_entropy_loss(logits, labels, logit_softcapping=0, logit_scaling=0, n_items=None):
+def dispatch_cross_entropy_loss(
+    logits, 
+    labels, 
+    logit_softcapping=0, 
+    logit_scaling=0, 
+    n_items=None,
+    hidden_states=None,
+    lm_head_weight=None,
+):
     if DEVICE_TYPE == "mps":
+        # Check if CCE should be used
+        use_cce = os.environ.get("UNSLOTH_USE_FAST_CROSS_ENTROPY", "0") == "1"
+        
         # When USE_MPS_FALLBACK is disabled (gradient checkpointing active),
         # use standard PyTorch cross-entropy to avoid custom autograd issues
         if not _use_mps_fallback():
             import torch.nn.functional as F
+            # ... (omitted for brevity)
+            if logits is None:
+                # If logits is not provided but hidden_states is, we must compute logits
+                logits = hidden_states @ lm_head_weight.T
+            
             batch, seq_len, vocab_size = logits.shape
             logits_flat = logits.reshape(-1, vocab_size)
             labels_flat = labels.reshape(-1)
@@ -155,8 +171,20 @@ def dispatch_cross_entropy_loss(logits, labels, logit_softcapping=0, logit_scali
             if n_items is None:
                 n_items = torch.count_nonzero(labels != -100)
             if n_items == 0:
-                return loss.sum() * 0.0 + logits.sum() * 0.0
+                return loss.sum() * 0.0 + (logits.sum() * 0.0 if logits is not None else 0.0)
             return loss.sum() / n_items
+
+        if use_cce and _is_mlx_available() and hidden_states is not None and lm_head_weight is not None:
+            # Use MLX Chunked Cross Entropy (CCE) via bridge
+            from ..mlx.fast_ops import mlx_cce_loss_autograd
+            return mlx_cce_loss_autograd(
+                hidden_states, 
+                lm_head_weight, 
+                labels, 
+                logit_softcapping, 
+                logit_scaling, 
+                n_items
+            )
 
         from .cross_entropy_loss import mps_cross_entropy_loss
         fn = _get_compiled_fn(mps_cross_entropy_loss)

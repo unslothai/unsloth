@@ -176,6 +176,100 @@ def fused_cross_entropy_loss(
     )
 
 
+def chunked_cross_entropy_loss(
+    hidden: mx.array,
+    weight: mx.array,
+    targets: mx.array,
+    reduction: str = "mean",
+    ignore_index: int = -100,
+    logit_softcap: float = 0.0,
+    chunk_size: int = 16384,
+) -> mx.array:
+    """Chunked Cross Entropy Loss for memory efficiency.
+    
+    This avoids materializing the full [N, V] logits tensor by processing 
+    the vocabulary or sequence in chunks.
+    
+    Args:
+        hidden: Hidden states [N, D] or [B, S, D]
+        weight: LM head weights [V, D]
+        targets: Target token IDs [N] or [B, S]
+        reduction: Reduction method ('mean', 'sum', or 'none')
+        ignore_index: Label value to ignore
+        logit_softcap: Soft capping factor for logits
+        chunk_size: Size of chunks for manual implementation
+        
+    Returns:
+        Cross-entropy loss
+    """
+    # Try to use optimized mlx.fast.cce_loss if available (from add-cce-loss branch)
+    if hasattr(mx, "fast") and hasattr(mx.fast, "cce_loss"):
+        # Reshape to 2D/1D for cce_loss
+        hidden_2d = hidden.reshape(-1, hidden.shape[-1])
+        targets_1d = targets.reshape(-1)
+        
+        loss = mx.fast.cce_loss(
+            hidden_2d,
+            weight,
+            targets_1d,
+            ignore_index=ignore_index,
+            logit_softcap=logit_softcap,
+        )
+        
+        if reduction == "mean":
+            valid_mask = targets_1d != ignore_index
+            return loss.sum() / mx.maximum(valid_mask.sum(), 1)
+        elif reduction == "sum":
+            return loss.sum()
+        else:
+            # Reshape back to original targets shape if none
+            return loss.reshape(targets.shape)
+
+    # Fallback: Manual chunked implementation
+    # Note: This is still more memory efficient than full logits but slower than mx.fast
+    original_shape = targets.shape
+    hidden = hidden.reshape(-1, hidden.shape[-1])
+    targets = targets.reshape(-1)
+    
+    N, D = hidden.shape
+    V = weight.shape[0]
+    
+    losses = []
+    valid_counts = []
+    
+    # We chunk over the sequence/batch dimension (N)
+    # This keeps [chunk_size, V] logits in memory
+    for i in range(0, N, chunk_size):
+        h_chunk = hidden[i : i + chunk_size]
+        t_chunk = targets[i : i + chunk_size]
+        
+        # Compute logits for this chunk only
+        logits = h_chunk @ weight.T
+        
+        if logit_softcap > 0:
+            logits = logit_softcap * mx.tanh(logits / logit_softcap)
+            
+        # Compute cross entropy for this chunk
+        chunk_loss = cross_entropy_loss(
+            logits, 
+            t_chunk, 
+            reduction="none", 
+            ignore_index=ignore_index
+        )
+        losses.append(chunk_loss)
+        valid_counts.append((t_chunk != ignore_index).sum())
+        
+    all_losses = mx.concatenate(losses)
+    
+    if reduction == "mean":
+        total_valid = mx.array(valid_counts).sum()
+        return all_losses.sum() / mx.maximum(total_valid, 1)
+    elif reduction == "sum":
+        return all_losses.sum()
+    else:
+        return all_losses.reshape(original_shape)
+
+
 def mse_loss(
     predictions: mx.array,
     targets: mx.array,
@@ -376,4 +470,5 @@ __all__ = [
     "contrastive_loss",
     "LossFunction",
     "LanguageModelingLoss",
+    "chunked_cross_entropy_loss",
 ]

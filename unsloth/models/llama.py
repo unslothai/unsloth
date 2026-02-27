@@ -1452,29 +1452,49 @@ def CausalLM_fast_forward(fast_forward_inference):
                 #     logit_softcapping  = logit_softcapping,
                 # )
                 if DEVICE_TYPE == "mps":
-                    # MPS fallback: Standard calculation
-                    # Calculate logits first
-                    logits = self.lm_head(hidden_states.to(dtype))
-                    logits = logits.to(_get_dtype(dtype_from_config(self.config)))
+                    # MPS Optimized CCE / Fallback
+                    use_cce = os.environ.get("UNSLOTH_USE_FAST_CROSS_ENTROPY", "0") == "1"
+                    
+                    if use_cce:
+                        # Use Chunked Cross Entropy to save memory
+                        # Shift hidden_states and labels for causal LM
+                        shift_hidden_states = hidden_states[..., :-1, :].contiguous()
+                        shift_labels = labels[..., 1:].contiguous()
+                        
+                        loss = fast_cross_entropy_loss(
+                            logits=None,
+                            labels=shift_labels,
+                            logit_softcapping=logit_softcapping,
+                            logit_scaling=logit_scaling,
+                            n_items=n_items,
+                            hidden_states=shift_hidden_states,
+                            lm_head_weight=lm_head,
+                        )
+                        logits = None
+                    else:
+                        # MPS fallback: Standard calculation
+                        # Calculate logits first
+                        logits = self.lm_head(hidden_states.to(dtype))
+                        logits = logits.to(_get_dtype(dtype_from_config(self.config)))
 
-                    # Apply softcapping/scaling if needed
-                    if logit_scaling != 0:
-                        logits = logit_scaling * logits
-                    if logit_softcapping != 0:
-                        logits = (1.0 / logit_softcapping) * logits
-                        logits = torch.tanh(logits)
-                        logits = logit_softcapping * logits
+                        # Apply softcapping/scaling if needed
+                        if logit_scaling != 0:
+                            logits = logit_scaling * logits
+                        if logit_softcapping != 0:
+                            logits = (1.0 / logit_softcapping) * logits
+                            logits = torch.tanh(logits)
+                            logits = logit_softcapping * logits
 
-                    # Calculate standard loss
-                    shift_logits = logits[..., :-1, :].contiguous()
-                    shift_labels = labels[..., 1:].contiguous()
-                    loss = torch.nn.functional.cross_entropy(
-                        shift_logits.view(-1, shift_logits.size(-1)),
-                        shift_labels.view(-1),
-                        reduction="sum" if n_items is not None else "mean",
-                    )
-                    if n_items is not None:
-                        loss = loss / n_items
+                        # Calculate standard loss
+                        shift_logits = logits[..., :-1, :].contiguous()
+                        shift_labels = labels[..., 1:].contiguous()
+                        loss = torch.nn.functional.cross_entropy(
+                            shift_logits.view(-1, shift_logits.size(-1)),
+                            shift_labels.view(-1),
+                            reduction="sum" if n_items is not None else "mean",
+                        )
+                        if n_items is not None:
+                            loss = loss / n_items
                 else:
                     loss = unsloth_fused_ce_loss(
                         trainer=None,

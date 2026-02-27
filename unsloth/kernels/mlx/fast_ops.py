@@ -397,6 +397,127 @@ def mlx_scaled_dot_product_attention(
     return mlx_to_torch(Y_mlx, device=Q.device, dtype=Q.dtype)
 
 
+class MLX_CCE_Loss(torch.autograd.Function):
+    """MLX Chunked Cross Entropy Loss with custom autograd for training."""
+
+    @staticmethod
+    def forward(
+        ctx,
+        hidden: "torch.Tensor",
+        weight: "torch.Tensor",
+        targets: "torch.Tensor",
+        logit_softcap: float = 0.0,
+        logit_scaling: float = 0.0,
+        ignore_index: int = -100,
+    ):
+        import mlx.core as mx
+        from .bridge import torch_to_mlx, mlx_to_torch, synchronize_mps
+        from .losses import chunked_cross_entropy_loss
+        
+        synchronize_mps()
+        
+        # Reshape to 2D [N, D] and 1D [N]
+        shape = targets.shape
+        D = hidden.shape[-1]
+        hidden_2d = hidden.reshape(-1, D).contiguous()
+        targets_1d = targets.reshape(-1).contiguous()
+        
+        hidden_mx = torch_to_mlx(hidden_2d)
+        weight_mx = torch_to_mlx(weight.contiguous())
+        targets_mx = torch_to_mlx(targets_1d)
+        
+        if logit_scaling > 0:
+            hidden_mx = hidden_mx * logit_scaling
+            
+        loss_mx = chunked_cross_entropy_loss(
+            hidden_mx,
+            weight_mx,
+            targets_mx,
+            reduction="none",
+            ignore_index=ignore_index,
+            logit_softcap=logit_softcap,
+        )
+        mx.eval(loss_mx)
+        
+        loss = mlx_to_torch(loss_mx, device=hidden.device, dtype=torch.float32)
+        
+        ctx.save_for_backward(hidden_2d, weight, targets_1d)
+        ctx.logit_softcap = logit_softcap
+        ctx.logit_scaling = logit_scaling
+        ctx.ignore_index = ignore_index
+        ctx.original_shape = shape
+        
+        return loss
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        import mlx.core as mx
+        from .bridge import torch_to_mlx, mlx_to_torch, synchronize_mps
+        
+        synchronize_mps()
+        
+        hidden_2d, weight, targets_1d = ctx.saved_tensors
+        
+        hidden_mx = torch_to_mlx(hidden_2d)
+        weight_mx = torch_to_mlx(weight.contiguous())
+        targets_mx = torch_to_mlx(targets_1d)
+        grad_output_mx = torch_to_mlx(grad_output.reshape(-1).contiguous())
+        
+        if ctx.logit_scaling > 0:
+            hidden_mx = hidden_mx * ctx.logit_scaling
+
+        def loss_fn(h, w):
+            from .losses import chunked_cross_entropy_loss
+            loss = chunked_cross_entropy_loss(
+                h, w, targets_mx, 
+                reduction="none", 
+                ignore_index=ctx.ignore_index,
+                logit_softcap=ctx.logit_softcap
+            )
+            return (loss * grad_output_mx).sum()
+            
+        grad_fn = mx.value_and_grad(loss_fn, argnums=[0, 1])
+        _, (grad_h_mx, grad_w_mx) = grad_fn(hidden_mx, weight_mx)
+        mx.eval(grad_h_mx, grad_w_mx)
+        
+        grad_h = mlx_to_torch(grad_h_mx, device=hidden_2d.device, dtype=hidden_2d.dtype)
+        grad_w = mlx_to_torch(grad_w_mx, device=weight.device, dtype=weight.dtype)
+        
+        if ctx.logit_scaling > 0:
+            grad_h = grad_h * ctx.logit_scaling
+            
+        return grad_h.reshape(-1, *ctx.original_shape[1:], hidden_2d.shape[-1]), grad_w, None, None, None, None
+
+
+def mlx_cce_loss_autograd(
+    hidden: "torch.Tensor",
+    weight: "torch.Tensor",
+    targets: "torch.Tensor",
+    logit_softcapping: float = 0,
+    logit_scaling: float = 0,
+    n_items: "Optional[int]" = None,
+    ignore_index: int = -100,
+):
+    """Autograd bridge for MLX Chunked Cross Entropy Loss."""
+    losses = MLX_CCE_Loss.apply(
+        hidden,
+        weight,
+        targets,
+        logit_softcapping,
+        logit_scaling,
+        ignore_index,
+    )
+    
+    if n_items is None:
+        n_items = torch.count_nonzero(targets != ignore_index)
+        
+    if n_items == 0:
+        import torch
+        return losses.sum() * 0.0 + hidden.sum() * 0.0
+        
+    return losses.sum() / n_items
+
+
 class MLXRMSLayerNorm(torch.autograd.Function):
     """MLX-accelerated RMSNorm with custom autograd for training support."""
 
@@ -811,4 +932,5 @@ __all__ = [
     "mlx_geglu_approx",
     "mlx_geglu_approx_autograd",
     "mlx_scaled_dot_product_attention",
+    "mlx_cce_loss_autograd",
 ]

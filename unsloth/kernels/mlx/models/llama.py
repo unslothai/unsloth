@@ -437,6 +437,7 @@ class MLXLlamaForCausalLM:
         past_key_values: Optional[list] = None,
         output_attentions: bool = False,
         use_cache: bool = False,
+        use_cce: bool = False,
     ) -> Tuple[mx.array, mx.array]:
         hidden_states, past_key_values = self.model(
             input_ids=input_ids,
@@ -447,13 +448,27 @@ class MLXLlamaForCausalLM:
             use_cache=use_cache,
         )
 
-        logits = self.lm_head(hidden_states)
-
         loss = None
         if labels is not None:
-            shift_logits = logits[..., :-1, :].reshape(-1, self.vocab_size)
-            shift_labels = labels[..., 1:].reshape(-1)
-            loss = mx.nn.losses.cross_entropy(shift_logits, shift_labels, reduction="mean")
+            if use_cce:
+                from ..losses import chunked_cross_entropy_loss
+                # Shift hidden_states and labels for causal LM
+                shift_hidden_states = hidden_states[..., :-1, :]
+                shift_labels = labels[..., 1:]
+                loss = chunked_cross_entropy_loss(
+                    shift_hidden_states,
+                    self.lm_head.weight,
+                    shift_labels,
+                    reduction="mean"
+                )
+                logits = None # Avoid materializing logits
+            else:
+                logits = self.lm_head(hidden_states)
+                shift_logits = logits[..., :-1, :].reshape(-1, self.vocab_size)
+                shift_labels = labels[..., 1:].reshape(-1)
+                loss = mx.nn.losses.cross_entropy(shift_logits, shift_labels, reduction="mean")
+        else:
+            logits = self.lm_head(hidden_states)
 
         return logits, loss
 

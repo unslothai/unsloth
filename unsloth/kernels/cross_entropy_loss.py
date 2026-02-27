@@ -436,11 +436,15 @@ def fast_cross_entropy_loss(
     logit_softcapping=0,
     logit_scaling=0,
     n_items=None,
+    hidden_states=None,
+    lm_head_weight=None,
 ):
     """
     Arguments:
-        logits: (batch, seq_len, vocab_size)
+        logits: (batch, seq_len, vocab_size) or None if hidden_states is provided
         labels: (batch, seq_len,)
+        hidden_states: (batch, seq_len, hidden_size) optional for CCE
+        lm_head_weight: (vocab_size, hidden_size) optional for CCE
     Returns:
         losses: float
     """
@@ -448,11 +452,22 @@ def fast_cross_entropy_loss(
 
     if DEVICE_TYPE == "mps":
         from .mps.dispatch import dispatch_cross_entropy_loss
-        return dispatch_cross_entropy_loss(logits, labels, logit_softcapping, logit_scaling, n_items)
+        return dispatch_cross_entropy_loss(
+            logits, 
+            labels, 
+            logit_softcapping, 
+            logit_scaling, 
+            n_items,
+            hidden_states=hidden_states,
+            lm_head_weight=lm_head_weight,
+        )
 
-    batch, seq_len, d = logits.shape
-    assert labels.shape == (batch, seq_len)
-
+    batch, seq_len = labels.shape
+    if logits is not None:
+        batch, seq_len, d = logits.shape
+    
+    # [TODO] Implement Triton CCE if hidden_states is provided
+    
     loss = Fast_CrossEntropyLoss.apply(
         logits.view(batch * seq_len, d),
         labels.view(-1),
