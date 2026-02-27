@@ -39,6 +39,8 @@ from .kernels import fast_dequantize, QUANT_STATE, get_lora_parameters_bias
 import subprocess
 import psutil
 import re
+import shlex
+import glob as glob_module
 from transformers.models.llama.modeling_llama import logger
 from .tokenizer_utils import fix_sentencepiece_gguf
 from .models.loader_utils import get_model_name
@@ -927,11 +929,17 @@ def install_python_non_blocking(packages = []):
     return run_installer
 
 
+def _copy_llama_build_bins():
+    for src in glob_module.glob("llama.cpp/build/bin/llama-*"):
+        shutil.copy2(src, "llama.cpp")
+
+
 def try_execute(commands, force_complete = False):
     for command in commands:
+        if isinstance(command, str):
+            command = shlex.split(command)
         with subprocess.Popen(
             command,
-            shell = True,
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
             bufsize = 1,
@@ -990,11 +998,20 @@ def install_llama_cpp_old(version = -10):
 
     # Clone a specific commit
     # Also don't use the GPU!
+    if not re.fullmatch(r"[0-9a-fA-F]+", version):
+        raise RuntimeError(
+            f"*** Unsloth: Invalid git commit hash '{version}'. Please report this ASAP!"
+        )
     commands = [
         "git clone --recursive https://github.com/ggerganov/llama.cpp",
-        f"cd llama.cpp && git reset --hard {version} && git clean -df",
     ]
     try_execute(commands)
+    try_execute(
+        [
+            ["git", "-C", "llama.cpp", "reset", "--hard", version],
+            ["git", "-C", "llama.cpp", "clean", "-df"],
+        ]
+    )
 
     # Try using MAKE
     commands = [
@@ -1006,11 +1023,11 @@ def install_llama_cpp_old(version = -10):
         commands = [
             f"cmake llama.cpp -B llama.cpp/build -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=OFF {CURL_FLAG}",
             f"cmake --build llama.cpp/build --config Release -j{(psutil.cpu_count() or 1)*2} --clean-first --target {' '.join(LLAMA_CPP_TARGETS)}",
-            "cp llama.cpp/build/bin/llama-* llama.cpp",
-            "rm -rf llama.cpp/build",
         ]
 
         try_execute(commands)
+        _copy_llama_build_bins()
+        shutil.rmtree("llama.cpp/build", ignore_errors = True)
 
     # Check if successful
     if not (
@@ -1053,10 +1070,10 @@ def install_llama_cpp_blocking(use_cuda = False):
         commands = [
             f"cmake llama.cpp -B llama.cpp/build -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=OFF {CURL_FLAG}",
             f"cmake --build llama.cpp/build --config Release -j{(psutil.cpu_count() or 1)*2} --clean-first --target {' '.join(LLAMA_CPP_TARGETS)}",
-            "cp llama.cpp/build/bin/llama-* llama.cpp",
-            "rm -rf llama.cpp/build",
         ]
         try_execute(commands)
+        _copy_llama_build_bins()
+        shutil.rmtree("llama.cpp/build", ignore_errors = True)
 
 
 def get_executable(executables):
@@ -2478,12 +2495,17 @@ def unsloth_convert_lora_to_ggml_and_push_to_hub(
     )
     print(f"The output file will be {output_file}")
 
-    command = f"python3 llama.cpp/convert-lora-to-ggml.py {lora_directory_push} {output_file} llama"
+    command = [
+        "python3",
+        "llama.cpp/convert-lora-to-ggml.py",
+        lora_directory_push,
+        output_file,
+        "llama",
+    ]
 
     try:
         with subprocess.Popen(
             command,
-            shell = True,
             stdout = subprocess.PIPE,
             stderr = subprocess.PIPE,
             bufsize = 1,
@@ -2557,12 +2579,17 @@ def unsloth_convert_lora_to_ggml_and_save_locally(
     )
     print(f"The output file will be {output_file}")
 
-    command = f"python3 llama.cpp/convert-lora-to-ggml.py {save_directory} {output_file} llama"
+    command = [
+        "python3",
+        "llama.cpp/convert-lora-to-ggml.py",
+        save_directory,
+        output_file,
+        "llama",
+    ]
 
     try:
         with subprocess.Popen(
             command,
-            shell = True,
             stdout = subprocess.PIPE,
             stderr = subprocess.PIPE,
             bufsize = 1,
