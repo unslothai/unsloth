@@ -31,6 +31,7 @@ from ..utils.attention_dispatch import (
 from .llama import (
     LlamaRotaryEmbedding,
     LlamaLinearScalingRotaryEmbedding,
+    _slice_position_ids,
 )
 from transformers.models.mistral.modeling_mistral import (
     MistralAttention,
@@ -253,7 +254,7 @@ def MistralForCausalLM_fast_forward(
     # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
     self.model._has_no_labels = labels is None
 
-    if past_key_values is not None:
+    if past_key_values is not None and input_ids.shape[1] == 1:
         outputs = LlamaModel_fast_forward_inference(
             self,
             input_ids,
@@ -262,6 +263,9 @@ def MistralForCausalLM_fast_forward(
             attention_mask = attention_mask,
         )
     else:
+        if position_ids is not None:
+            position_ids = _slice_position_ids(position_ids, input_ids)
+
         outputs = self.model(
             input_ids = input_ids,
             causal_mask = causal_mask,
