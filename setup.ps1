@@ -621,12 +621,44 @@ python "$PSScriptRoot\install_python_stack.py"
 $ErrorActionPreference = $prevEAP
 
 # ==========================================================================
+#  PHASE 3.5: Install vcpkg + curl (for HTTPS support in llama-server)
+# ==========================================================================
+# llama-server needs curl + OpenSSL to download models from HuggingFace via -hf.
+# We use vcpkg to install curl with SSL support.
+$VcpkgDir = Join-Path $PSScriptRoot "vcpkg"
+$VcpkgExe = Join-Path $VcpkgDir "vcpkg.exe"
+
+if (-not (Test-Path $VcpkgExe)) {
+    Write-Host "" 
+    Write-Host "Installing vcpkg (for curl/SSL)..." -ForegroundColor Cyan
+    if (Test-Path $VcpkgDir) { Remove-Item -Recurse -Force $VcpkgDir }
+    git clone --depth 1 https://github.com/microsoft/vcpkg.git $VcpkgDir
+    if ($LASTEXITCODE -eq 0) {
+        & (Join-Path $VcpkgDir "bootstrap-vcpkg.bat") -disableMetrics
+    }
+}
+
+if (Test-Path $VcpkgExe) {
+    # Install curl with SSL support (this also installs OpenSSL as a dependency)
+    $CurlInstalled = & $VcpkgExe list 2>&1 | Select-String "curl"
+    if (-not $CurlInstalled) {
+        Write-Host "   Installing curl[ssl] via vcpkg (includes OpenSSL)..." -ForegroundColor Cyan
+        & $VcpkgExe install "curl[ssl]:x64-windows"
+    }
+    $VcpkgToolchainFile = Join-Path $VcpkgDir "scripts\buildsystems\vcpkg.cmake"
+    Write-Host "[OK] vcpkg ready (toolchain: $VcpkgToolchainFile)" -ForegroundColor Green
+} else {
+    Write-Host "[WARN] vcpkg not available -- llama-server will be built without HTTPS support" -ForegroundColor Yellow
+    $VcpkgToolchainFile = $null
+}
+
+# ==========================================================================
 #  PHASE 4: Build llama.cpp with CUDA for GGUF inference + export
 # ==========================================================================
 # Builds in-tree at $REPO/llama.cpp/ (same as setup.sh on Linux).
 # This directory is already in .gitignore.
 # We build:
-#   - llama-server:   for GGUF model inference
+#   - llama-server:   for GGUF model inference (with HTTPS if vcpkg/curl available)
 #   - llama-quantize: for GGUF export quantization
 # Prerequisites (git, cmake, VS Build Tools, CUDA Toolkit) already installed in Phase 1.
 $LlamaCppDir = Join-Path $PSScriptRoot "llama.cpp"
@@ -690,8 +722,14 @@ if (Test-Path $LlamaServerBin) {
         }
         # Common flags
         $CmakeArgs += '-DBUILD_SHARED_LIBS=OFF'
-        $CmakeArgs += '-DLLAMA_CURL=OFF'
         $CmakeArgs += '-DCMAKE_POLICY_DEFAULT_CMP0194=NEW'
+        # HTTPS support via vcpkg curl + OpenSSL
+        if ($VcpkgToolchainFile -and (Test-Path $VcpkgToolchainFile)) {
+            $CmakeArgs += "-DCMAKE_TOOLCHAIN_FILE=$VcpkgToolchainFile"
+            $CmakeArgs += '-DLLAMA_CURL=ON'
+        } else {
+            $CmakeArgs += '-DLLAMA_CURL=OFF'
+        }
         $CmakeArgs += '-DCMAKE_EXE_LINKER_FLAGS=/NODEFAULTLIB:LIBCMT'
         # CUDA flags (Unsloth-aligned)
         $CmakeArgs += '-DGGML_CUDA=ON'
