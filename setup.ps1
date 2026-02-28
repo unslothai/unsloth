@@ -820,18 +820,16 @@ Write-Host "[OK] Batch launchers created in $BatDir (works from cmd.exe when ven
 # Done
 # ============================================
 Write-Host ""
-Write-Host "+==============================================+" -ForegroundColor Green
-Write-Host "|           Setup Complete!                    |" -ForegroundColor Green
-Write-Host "|                                              |" -ForegroundColor Green
-if ($AliasAdded) {
-    Write-Host "|  PowerShell: run '. `$PROFILE'               |" -ForegroundColor Green
-    Write-Host "|  or open a new terminal, then:              |" -ForegroundColor Green
-} else {
-    Write-Host "|  Launch with:                                |" -ForegroundColor Green
-}
-Write-Host "|                                              |" -ForegroundColor Green
-Write-Host "|  unsloth-studio -H 0.0.0.0 -p 8000          |" -ForegroundColor Green
-Write-Host "|                                              |" -ForegroundColor Green
-Write-Host "|  cmd.exe: .venv\Scripts\activate.bat         |" -ForegroundColor Green
-Write-Host "|           unsloth-studio -H 0.0.0.0 -p 8000 |" -ForegroundColor Green
-Write-Host "+==============================================+" -ForegroundColor Green
+Write-Host "+===============================================+" -ForegroundColor Green
+Write-Host "|           Setup Complete!                     |" -ForegroundColor Green
+Write-Host "|                                               |" -ForegroundColor Green
+Write-Host "|  IMPORTANT: Open a NEW terminal, then:        |" -ForegroundColor Yellow
+Write-Host "|                                               |" -ForegroundColor Green
+Write-Host "|  cmd.exe:                                     |" -ForegroundColor Green
+Write-Host "|    .venv\Scripts\activate.bat                 |" -ForegroundColor Green
+Write-Host "|    unsloth-studio -H 0.0.0.0 -p 8000         |" -ForegroundColor Green
+Write-Host "|                                               |" -ForegroundColor Green
+Write-Host "|  PowerShell:                                  |" -ForegroundColor Green
+Write-Host "|    .venv\Scripts\Activate.ps1                 |" -ForegroundColor Green
+Write-Host "|    unsloth-studio -H 0.0.0.0 -p 8000         |" -ForegroundColor Green
+Write-Host "+===============================================+" -ForegroundColor Green
