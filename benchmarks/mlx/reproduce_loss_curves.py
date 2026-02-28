@@ -151,9 +151,10 @@ def run_training_mlx(
     print(f"  Creating model with {n_layers} layers, hidden={h_size}, vocab={v_size}...")
     print(f"  Batch size: {batch_size}, Seq len: {seq_len}")
     
-    # Gradient function
+    # Gradient function with compilation for better performance
     loss_and_grad_fn = nn.value_and_grad(model, loss_fn)
-    print(f"  Gradient function created.")
+    compiled_train_step = mx.compile(loss_and_grad_fn)
+    print(f"  Gradient function created and compiled.")
 
     # Pre-generate some data
     print(f"  Streaming {DATASET_NAME} data...")
@@ -168,8 +169,8 @@ def run_training_mlx(
         
         input_ids, labels = data[i % 10]
         
-        # Training step - compute loss and gradients
-        loss, grads = loss_and_grad_fn(model, input_ids, labels)
+        # Training step - compute loss and gradients (using compiled function)
+        loss, grads = compiled_train_step(model, input_ids, labels)
         
         # Update model with gradients
         optimizer.update(model, grads)
