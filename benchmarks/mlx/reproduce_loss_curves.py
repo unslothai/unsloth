@@ -16,6 +16,11 @@ import matplotlib.pyplot as plt
 from datasets import load_dataset
 
 try:
+    from transformers import AutoTokenizer
+except ImportError:
+    AutoTokenizer = None
+
+try:
     import wandb
     HAS_WANDB = True
 except ImportError:
@@ -78,16 +83,37 @@ def get_dummy_data(batch_size, seq_len, vocab_size):
     return input_ids, labels
 
 
-def get_streaming_data(batch_size, seq_len, vocab_size, n_samples):
-    """Stream data from the alpaca dataset."""
+def get_streaming_data(batch_size, seq_len, vocab_size, model_id, n_samples):
+    """Stream tokenized data from the alpaca dataset."""
+    if AutoTokenizer is None:
+        raise ImportError("transformers is required. Install with: pip install transformers")
+    
+    print(f"  Loading tokenizer from {model_id}...")
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    
+    print(f"  Loading streaming dataset {DATASET_NAME}...")
     ds = load_dataset(DATASET_NAME, streaming=True)
+    
+    def format_prompt(item):
+        return f"Instruction: {item['instruction']}\n\nInput: {item.get('input', '')}\n\nResponse: {item['output']}"
+    
+    print(f"  Streaming and tokenizing data...")
     for i, item in enumerate(ds["train"]):
         if i >= n_samples:
             break
-        input_ids = mx.random.randint(0, vocab_size, (batch_size, seq_len))
-        labels = mx.random.randint(0, vocab_size, (batch_size, seq_len))
-        mask = mx.random.uniform(shape=(batch_size, seq_len)) < 0.1
-        labels = mx.where(mask, mx.array([-100] * (batch_size * seq_len)).reshape(batch_size, seq_len), labels)
+        text = format_prompt(item)
+        encoded = tokenizer(
+            text,
+            max_length=seq_len,
+            padding="max_length",
+            truncation=True,
+            return_tensors="np"
+        )
+        input_ids = mx.array(encoded["input_ids"])
+        labels = input_ids.copy()
+        # Mask ~10% of tokens as ignore (like original dummy data)
+        mask = mx.random.uniform(shape=labels.shape) < 0.1
+        labels = mx.where(mask, mx.array(-100, dtype=labels.dtype), labels)
         yield input_ids, labels
 
 def run_training_mlx(
@@ -103,7 +129,8 @@ def run_training_mlx(
     v_size = model_cfg.get("v_size", 128256)
     batch_size = model_cfg.get("batch", 8)
     seq_len = model_cfg.get("seq", 512)
-    n_layers = model_cfg.get("n_layers", 12) # Reduced for benchmark speed
+    n_layers = model_cfg.get("n_layers", 12)
+    model_id = model_cfg.get("model_id", "meta-llama/Llama-3.2-1B-Instruct")
     
     print(f"\n--- Running {model_cfg['name']} (CCE={use_cce}) ---")
     
@@ -164,8 +191,8 @@ def run_training_mlx(
     print(f"  Gradient function created and compiled.")
 
     # Pre-generate some data
-    print(f"  Streaming {DATASET_NAME} data...")
-    data_iter = get_streaming_data(batch_size, seq_len, v_size, n_samples=10)
+    print(f"  Streaming {DATASET_NAME} data with tokenizer...")
+    data_iter = get_streaming_data(batch_size, seq_len, v_size, model_id, n_samples=10)
     data = [next(data_iter) for _ in range(10)]
     print(f"  Data ready. Starting training for {steps} steps...")
     
