@@ -235,13 +235,31 @@ class LlamaCppBackend:
 
             logger.info(f"Starting llama-server: {' '.join(cmd)}")
 
-            # Set LD_LIBRARY_PATH so llama-server can find its shared libs
-            # (libmtmd.so, libllama.so, etc.) which live next to the binary
+            # Set library paths so llama-server can find its shared libs and CUDA DLLs
             import os
+            import sys
             env = os.environ.copy()
             binary_dir = str(Path(binary).parent)
-            existing_ld = env.get("LD_LIBRARY_PATH", "")
-            env["LD_LIBRARY_PATH"] = f"{binary_dir}:{existing_ld}" if existing_ld else binary_dir
+
+            if sys.platform == "win32":
+                # On Windows, CUDA DLLs (cublas64_12.dll, cudart64_12.dll, etc.)
+                # must be on PATH. Add CUDA_PATH\bin if available.
+                path_dirs = [binary_dir]
+                cuda_path = os.environ.get("CUDA_PATH", "")
+                if cuda_path:
+                    cuda_bin = os.path.join(cuda_path, "bin")
+                    if os.path.isdir(cuda_bin):
+                        path_dirs.append(cuda_bin)
+                    # Some CUDA installs put DLLs in bin\x64
+                    cuda_bin_x64 = os.path.join(cuda_path, "bin", "x64")
+                    if os.path.isdir(cuda_bin_x64):
+                        path_dirs.append(cuda_bin_x64)
+                existing_path = env.get("PATH", "")
+                env["PATH"] = ";".join(path_dirs) + ";" + existing_path
+            else:
+                # Linux: set LD_LIBRARY_PATH for shared libs next to the binary
+                existing_ld = env.get("LD_LIBRARY_PATH", "")
+                env["LD_LIBRARY_PATH"] = f"{binary_dir}:{existing_ld}" if existing_ld else binary_dir
 
             self._stdout_lines = []
             self._process = subprocess.Popen(
