@@ -94,6 +94,7 @@ def run_training_mlx(
     model_cfg: dict,
     use_cce: bool,
     steps: int = 100,
+    args = None,
 ):
     """Run a single training sprint in MLX and return the list of losses."""
     
@@ -190,7 +191,7 @@ def run_training_mlx(
         else:
             print(f"  Step {i+1}/{steps} | Loss: {float(loss):.4f}")
         
-        if HAS_WANDB:
+        if HAS_WANDB and args and args.wandb:
             wandb.log({"step": i + 1, "loss": float(loss), "step_time": step_time})
     
     print(f"  Done. Total time: {sum(step_times):.2f}s, Avg: {np.mean(step_times):.3f}s/step")
@@ -222,10 +223,10 @@ def main():
         print(f"=======================================================")
 
         # 1. MLX Baseline
-        baseline_losses = run_training_mlx(cfg, use_cce=False, steps=args.steps)
+        baseline_losses = run_training_mlx(cfg, use_cce=False, steps=args.steps, args=args)
         
         # 2. MLX CCE (optimized)
-        cce_losses = run_training_mlx(cfg, use_cce=True, steps=args.steps)
+        cce_losses = run_training_mlx(cfg, use_cce=True, steps=args.steps, args=args)
 
         all_results[key] = {
             "baseline": baseline_losses,
