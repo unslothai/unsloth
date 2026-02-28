@@ -15,6 +15,12 @@ import mlx.optimizers as opt
 import matplotlib.pyplot as plt
 from datasets import load_dataset
 
+try:
+    import wandb
+    HAS_WANDB = True
+except ImportError:
+    HAS_WANDB = False
+
 # Try to import unsloth kernels for MLX
 try:
     from unsloth.kernels.mlx.models.llama import create_llama_model
@@ -177,10 +183,15 @@ def run_training_mlx(
         
         loss_history.append(float(loss))
         
-        # Print every step for first 10, then every 10
+        # Print every step and log to wandb
         if i < 10 or (i + 1) % 10 == 0:
             avg_time = np.mean(step_times[-min(10, len(step_times)):])
             print(f"  Step {i+1}/{steps} | Loss: {float(loss):.4f} | Time: {step_time:.3f}s (avg: {avg_time:.3f}s)")
+        else:
+            print(f"  Step {i+1}/{steps} | Loss: {float(loss):.4f}")
+        
+        if HAS_WANDB:
+            wandb.log({"step": i + 1, "loss": float(loss), "step_time": step_time})
     
     print(f"  Done. Total time: {sum(step_times):.2f}s, Avg: {np.mean(step_times):.3f}s/step")
 
@@ -190,7 +201,13 @@ def main():
     parser = argparse.ArgumentParser("Reproduce CCE Loss Curves in MLX")
     parser.add_argument("--steps", type=int, default=100, help="Number of training steps")
     parser.add_argument("--config", type=int, help="Config index to run (0-2)")
+    parser.add_argument("--wandb", action="store_true", help="Enable wandb logging")
     args = parser.parse_args()
+
+    if HAS_WANDB and args.wandb:
+        wandb.init(project="unsloth-mlx-benchmark", name="mlx-loss-curves")
+    elif not HAS_WANDB and args.wandb:
+        print("Warning: wandb not installed. Install with: pip install wandb")
 
     configs_to_run = CONFIGS
     if args.config is not None:
