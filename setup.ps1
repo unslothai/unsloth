@@ -735,7 +735,6 @@ if (Test-Path $LlamaServerBin) {
         }
         # Common flags
         $CmakeArgs += '-DBUILD_SHARED_LIBS=OFF'
-        $CmakeArgs += '-DCMAKE_POLICY_DEFAULT_CMP0194=NEW'
         # HTTPS support via OpenSSL
         if ($OpenSslAvailable -and $OpenSslRoot) {
             $CmakeArgs += "-DOPENSSL_ROOT_DIR=$OpenSslRoot"
