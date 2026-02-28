@@ -823,13 +823,8 @@ Write-Host ""
 Write-Host "+===============================================+" -ForegroundColor Green
 Write-Host "|           Setup Complete!                     |" -ForegroundColor Green
 Write-Host "|                                               |" -ForegroundColor Green
-Write-Host "|  IMPORTANT: Open a NEW terminal, then:        |" -ForegroundColor Yellow
+Write-Host "|  IMPORTANT: Open a NEW terminal, then run:    |" -ForegroundColor Yellow
 Write-Host "|                                               |" -ForegroundColor Green
-Write-Host "|  cmd.exe:                                     |" -ForegroundColor Green
-Write-Host "|    .venv\Scripts\activate.bat                 |" -ForegroundColor Green
 Write-Host "|    unsloth-studio -H 0.0.0.0 -p 8000         |" -ForegroundColor Green
 Write-Host "|                                               |" -ForegroundColor Green
-Write-Host "|  PowerShell:                                  |" -ForegroundColor Green
-Write-Host "|    .venv\Scripts\Activate.ps1                 |" -ForegroundColor Green
-Write-Host "|    unsloth-studio -H 0.0.0.0 -p 8000         |" -ForegroundColor Green
 Write-Host "+===============================================+" -ForegroundColor Green
