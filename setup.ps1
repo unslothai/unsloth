@@ -621,35 +621,48 @@ python "$PSScriptRoot\install_python_stack.py"
 $ErrorActionPreference = $prevEAP
 
 # ==========================================================================
-#  PHASE 3.5: Install vcpkg + curl (for HTTPS support in llama-server)
+#  PHASE 3.5: Install OpenSSL dev (for HTTPS support in llama-server)
 # ==========================================================================
-# llama-server needs curl + OpenSSL to download models from HuggingFace via -hf.
-# We use vcpkg to install curl with SSL support.
-$VcpkgDir = Join-Path $PSScriptRoot "vcpkg"
-$VcpkgExe = Join-Path $VcpkgDir "vcpkg.exe"
+# llama-server needs OpenSSL to download models from HuggingFace via -hf.
+# ShiningLight.OpenSSL.Dev includes headers + libs that cmake can find.
+$OpenSslAvailable = $false
 
-if (-not (Test-Path $VcpkgExe)) {
-    Write-Host "" 
-    Write-Host "Installing vcpkg (for curl/SSL)..." -ForegroundColor Cyan
-    if (Test-Path $VcpkgDir) { Remove-Item -Recurse -Force $VcpkgDir }
-    git clone --depth 1 https://github.com/microsoft/vcpkg.git $VcpkgDir
-    if ($LASTEXITCODE -eq 0) {
-        & (Join-Path $VcpkgDir "bootstrap-vcpkg.bat") -disableMetrics
+# Check if OpenSSL dev is already installed (look for include dir)
+$OpenSslRoots = @(
+    'C:\Program Files\OpenSSL-Win64',
+    'C:\Program Files\OpenSSL',
+    'C:\OpenSSL-Win64'
+)
+$OpenSslRoot = $null
+foreach ($root in $OpenSslRoots) {
+    if (Test-Path (Join-Path $root 'include\openssl\ssl.h')) {
+        $OpenSslRoot = $root
+        break
     }
 }
 
-if (Test-Path $VcpkgExe) {
-    # Install curl with SSL support (this also installs OpenSSL as a dependency)
-    $CurlInstalled = & $VcpkgExe list 2>&1 | Select-String "curl"
-    if (-not $CurlInstalled) {
-        Write-Host "   Installing curl[ssl] via vcpkg (includes OpenSSL)..." -ForegroundColor Cyan
-        & $VcpkgExe install "curl[ssl]:x64-windows"
-    }
-    $VcpkgToolchainFile = Join-Path $VcpkgDir "scripts\buildsystems\vcpkg.cmake"
-    Write-Host "[OK] vcpkg ready (toolchain: $VcpkgToolchainFile)" -ForegroundColor Green
+if ($OpenSslRoot) {
+    $OpenSslAvailable = $true
+    Write-Host "[OK] OpenSSL dev found at $OpenSslRoot" -ForegroundColor Green
 } else {
-    Write-Host "[WARN] vcpkg not available -- llama-server will be built without HTTPS support" -ForegroundColor Yellow
-    $VcpkgToolchainFile = $null
+    Write-Host "" 
+    Write-Host "Installing OpenSSL dev (for HTTPS in llama-server)..." -ForegroundColor Cyan
+    $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
+    if ($HasWinget) {
+        winget install -e --id ShiningLight.OpenSSL.Dev --accept-package-agreements --accept-source-agreements
+        # Re-check after install
+        foreach ($root in $OpenSslRoots) {
+            if (Test-Path (Join-Path $root 'include\openssl\ssl.h')) {
+                $OpenSslRoot = $root
+                $OpenSslAvailable = $true
+                Write-Host "[OK] OpenSSL dev installed at $OpenSslRoot" -ForegroundColor Green
+                break
+            }
+        }
+    }
+    if (-not $OpenSslAvailable) {
+        Write-Host "[WARN] OpenSSL dev not available -- llama-server will be built without HTTPS" -ForegroundColor Yellow
+    }
 }
 
 # ==========================================================================
@@ -723,10 +736,10 @@ if (Test-Path $LlamaServerBin) {
         # Common flags
         $CmakeArgs += '-DBUILD_SHARED_LIBS=OFF'
         $CmakeArgs += '-DCMAKE_POLICY_DEFAULT_CMP0194=NEW'
-        # HTTPS support via vcpkg curl + OpenSSL
-        if ($VcpkgToolchainFile -and (Test-Path $VcpkgToolchainFile)) {
-            $CmakeArgs += "-DCMAKE_TOOLCHAIN_FILE=$VcpkgToolchainFile"
-            $CmakeArgs += '-DLLAMA_CURL=ON'
+        # HTTPS support via OpenSSL
+        if ($OpenSslAvailable -and $OpenSslRoot) {
+            $CmakeArgs += "-DOPENSSL_ROOT_DIR=$OpenSslRoot"
+            $CmakeArgs += '-DLLAMA_OPENSSL=ON'
         } else {
             $CmakeArgs += '-DLLAMA_CURL=OFF'
         }
