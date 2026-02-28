@@ -1054,6 +1054,19 @@ class FastBaseModel:
             do_forced_float32 = do_forced_float32,
             correct_dtype = correct_dtype,
         )
+
+        # FORCE_FLOAT32 converts all params to float16, but the vision encoder
+        # receives float32 pixel values. Cast it back to float32 to avoid dtype
+        # mismatches in nn.LayerNorm / nn.Linear (e.g. Qwen3.5, Gemma3).
+        if do_forced_float32:
+            _vision_attrs = ("visual", "vision_tower", "vision_model", "vision_encoder")
+            _inner = model.model if hasattr(model, "model") else model
+            for _va in _vision_attrs:
+                _ve = getattr(_inner, _va, None)
+                if _ve is not None:
+                    _ve.to(torch.float32)
+                    break
+
         try:
             model, tokenizer = patch_tokenizer(model, tokenizer)
         except Exception as _patch_err:
