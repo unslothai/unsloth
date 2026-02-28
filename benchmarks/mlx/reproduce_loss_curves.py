@@ -122,7 +122,7 @@ def run_training_mlx(
         
     optimizer = opt.Adafactor(learning_rate=LEARNING_RATE)
     
-    def loss_fn(model, input_ids, labels):
+    def loss_fn(input_ids, labels):
         if HAS_UNSLOTH_MLX:
             # Full model forward
             logits, loss = model(
@@ -146,14 +146,14 @@ def run_training_mlx(
                 shift_labels = labels[..., 1:].reshape(-1)
                 return nn.losses.cross_entropy(shift_logits, shift_labels, reduction="mean")
 
+    # Compile the loss and gradient computation
+    loss_and_grad = nn.value_and_grad(model, loss_fn)
+    compiled_step = mx.compile(loss_and_grad)
+    
     loss_history = []
     
     print(f"  Creating model with {n_layers} layers, hidden={h_size}, vocab={v_size}...")
     print(f"  Batch size: {batch_size}, Seq len: {seq_len}")
-    
-    # Gradient function with compilation for better performance
-    loss_and_grad_fn = nn.value_and_grad(model, loss_fn)
-    compiled_train_step = mx.compile(loss_and_grad_fn)
     print(f"  Gradient function created and compiled.")
 
     # Pre-generate some data
@@ -170,7 +170,7 @@ def run_training_mlx(
         input_ids, labels = data[i % 10]
         
         # Training step - compute loss and gradients (using compiled function)
-        loss, grads = compiled_train_step(model, input_ids, labels)
+        loss, grads = compiled_step(model, input_ids, labels)
         
         # Update model with gradients
         optimizer.update(model, grads)
