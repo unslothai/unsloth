@@ -62,15 +62,6 @@ CONFIGS = [
         "h_size": 2048,
         "v_size": 151936,
     },
-    {
-        "name": "Llama-3.2-3B",
-        "model_id": "unsloth/Llama-3.2-3B-Instruct",
-        "batch": 16,
-        "seq": 512,
-        "n_layers": 28,
-        "h_size": 3072,
-        "v_size": 128256,
-    },
 ]
 
 def get_dummy_data(batch_size, seq_len, vocab_size):
