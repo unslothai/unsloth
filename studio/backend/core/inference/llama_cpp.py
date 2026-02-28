@@ -100,13 +100,13 @@ class LlamaCppBackend:
         if build_path.is_file():
             return str(build_path)
 
-        # 3. Windows MSVC build (setup.ps1 builds here — Release config)
+        # 3. Windows MSVC build (Release config, in-tree — matches setup.ps1)
         if sys.platform == "win32":
-            # In-tree
+            # In-tree (primary — setup.ps1 now builds here)
             win_path = project_root / "llama.cpp" / "build" / "bin" / "Release" / binary_name
             if win_path.is_file():
                 return str(win_path)
-            # ~/.unsloth (setup.ps1 default location)
+            # Legacy: ~/.unsloth (older setup.ps1 versions built here)
             home_path = Path.home() / ".unsloth" / "llama.cpp" / "build" / "bin" / "Release" / binary_name
             if home_path.is_file():
                 return str(home_path)

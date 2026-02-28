@@ -32,6 +32,7 @@ if ($BinaryPath) {
 $RepoRoot = $PSScriptRoot
 $SearchPaths += Join-Path $RepoRoot "llama.cpp\build\bin\Release\llama-server.exe"
 $SearchPaths += Join-Path $RepoRoot "llama.cpp\build\bin\llama-server.exe"
+# Legacy: older setup.ps1 built under ~/.unsloth
 $SearchPaths += Join-Path $env:USERPROFILE ".unsloth\llama.cpp\build\bin\Release\llama-server.exe"
 
 # Check LLAMA_SERVER_PATH env var
