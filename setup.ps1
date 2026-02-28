@@ -328,30 +328,55 @@ try {
 } catch {}
 
 # -- Find a toolkit that's compatible with the driver --
+$IncompatibleToolkit = $null
 if ($DriverMaxCuda) {
     $NvccPath = Find-Nvcc -MaxVersion $DriverMaxCuda
     if ($NvccPath) {
         Write-Host "   [OK] Found compatible CUDA Toolkit (nvcc: $NvccPath)" -ForegroundColor Green
     } else {
-        Write-Host "   No CUDA Toolkit <= $DriverMaxCuda found. Will install..." -ForegroundColor Yellow
+        # Check if there's an incompatible (too new) toolkit installed
+        $AnyNvcc = Find-Nvcc
+        if ($AnyNvcc) {
+            $NvccOut = & $AnyNvcc --version 2>&1 | Out-String
+            if ($NvccOut -match "release\s+([\d]+\.[\d]+)") {
+                $IncompatibleToolkit = $Matches[1]
+            }
+        }
     }
 } else {
     $NvccPath = Find-Nvcc
 }
 
+# -- If incompatible toolkit is blocking, tell user to uninstall it --
+if (-not $NvccPath -and $IncompatibleToolkit) {
+    Write-Host "" -ForegroundColor Red
+    Write-Host "========================================================================" -ForegroundColor Red
+    Write-Host "[ERROR] CUDA Toolkit $IncompatibleToolkit is installed but INCOMPATIBLE" -ForegroundColor Red
+    Write-Host "        with your NVIDIA driver (which supports up to CUDA $DriverMaxCuda)." -ForegroundColor Red
+    Write-Host "" -ForegroundColor Red
+    Write-Host "  This will cause 'failed to initialize CUDA' errors at runtime." -ForegroundColor Red
+    Write-Host "" -ForegroundColor Red
+    Write-Host "  To fix:" -ForegroundColor Yellow
+    Write-Host "    1. Open Control Panel -> Programs -> Uninstall a program" -ForegroundColor Yellow
+    Write-Host "    2. Uninstall 'NVIDIA CUDA Toolkit $IncompatibleToolkit'" -ForegroundColor Yellow
+    Write-Host "    3. Re-run setup.bat (it will install CUDA $DriverMaxCuda automatically)" -ForegroundColor Yellow
+    Write-Host "" -ForegroundColor Yellow
+    Write-Host "  Alternatively, update your NVIDIA driver to one that supports CUDA $IncompatibleToolkit." -ForegroundColor Gray
+    Write-Host "========================================================================" -ForegroundColor Red
+    exit 1
+}
+
+# -- No toolkit at all: install via winget --
 if (-not $NvccPath) {
-    Write-Host "CUDA driver detected but compatible toolkit (nvcc) not found -- installing via winget..." -ForegroundColor Yellow
+    Write-Host "CUDA toolkit (nvcc) not found -- installing via winget..." -ForegroundColor Yellow
     $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
     if ($HasWinget) {
         if ($DriverMaxCuda) {
-            # Try descending compatible versions: 12.9, 12.8, 12.6, 12.5, 12.4, 12.3
+            # Try descending compatible versions
             $drMajor = [int]$DriverMaxCuda.Split('.')[0]
             $drMinor = [int]$DriverMaxCuda.Split('.')[1]
-            $versionsToTry = @()
             for ($m = $drMinor; $m -ge 0; $m--) {
-                $versionsToTry += "$drMajor.$m"
-            }
-            foreach ($ver in $versionsToTry) {
+                $ver = "$drMajor.$m"
                 Write-Host "   Trying CUDA Toolkit $ver via winget..." -ForegroundColor Cyan
                 $prevEAPCuda = $ErrorActionPreference
                 $ErrorActionPreference = "Continue"
@@ -360,7 +385,7 @@ if (-not $NvccPath) {
                 Refresh-Environment
                 $NvccPath = Find-Nvcc -MaxVersion $DriverMaxCuda
                 if ($NvccPath) {
-                    Write-Host "   [OK] CUDA Toolkit installed (nvcc: $NvccPath)" -ForegroundColor Green
+                    Write-Host "   [OK] CUDA Toolkit $ver installed (nvcc: $NvccPath)" -ForegroundColor Green
                     break
                 }
             }
