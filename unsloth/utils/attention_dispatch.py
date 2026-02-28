@@ -171,8 +171,8 @@ def run_attention(
     elif backend == XFORMERS:
         attn_bias = build_xformers_block_causal_mask(
             context.seq_info,
-            sliding_window = sliding_window,
-            base_mask = context.causal_mask,
+            sliding_window=sliding_window,
+            base_mask=context.causal_mask,
         )
 
         Q_t = Q.transpose(1, 2)
@@ -225,7 +225,7 @@ def run_attention(
             Q_mod,
             K_mod,
             V_mod,
-            attn_bias = attn_bias,
+            attn_bias=attn_bias,
             **xformers_kwargs,
         )
 
@@ -241,16 +241,16 @@ def run_attention(
         if context.seq_info is not None and local_mask is None:
             local_mask = build_sdpa_packed_attention_mask(
                 context.seq_info,
-                dtype = Q.dtype,
-                device = Q.device,
-                sliding_window = sliding_window,
+                dtype=Q.dtype,
+                device=Q.device,
+                sliding_window=sliding_window,
             )
         else:
             q_len_local = Q.shape[-2]
             k_len_local = K.shape[-2]
             # ---- SDPA mask normalization for left padding / 2D masks ----
             if local_mask is not None and isinstance(local_mask, torch.Tensor):
-                local_mask = local_mask.to(device = Q.device)
+                local_mask = local_mask.to(device=Q.device)
 
                 if local_mask.dim() == 2:
                     # key padding keep mask: (bsz, k_len), 1/True = real token
@@ -264,9 +264,9 @@ def run_attention(
                         k_len_local - q_len_local
                     )  # works for prefill (0) and decode
                     q_pos = torch.arange(
-                        past_len, past_len + q_len_local, device = Q.device
+                        past_len, past_len + q_len_local, device=Q.device
                     )
-                    k_pos = torch.arange(k_len_local, device = Q.device)
+                    k_pos = torch.arange(k_len_local, device=Q.device)
 
                     causal_keep = (
                         k_pos[None, :] <= q_pos[:, None]
@@ -297,7 +297,7 @@ def run_attention(
                 # Avoid NaNs from fully-masked rows (common with left padding).
                 if local_mask.dtype == torch.bool:
                     no_allowed = ~local_mask.any(
-                        dim = -1, keepdim = True
+                        dim=-1, keepdim=True
                     )  # (bsz,1,q_len,1)
                     local_mask = local_mask | no_allowed
 
