@@ -13,6 +13,7 @@ import mlx.core as mx
 import mlx.nn as nn
 import mlx.optimizers as opt
 import matplotlib.pyplot as plt
+from datasets import load_dataset
 
 # Try to import unsloth kernels for MLX
 try:
@@ -69,6 +70,19 @@ def get_dummy_data(batch_size, seq_len, vocab_size):
     mask = mx.random.uniform(shape=(batch_size, seq_len)) < 0.1
     labels = mx.where(mask, mx.array([-100] * (batch_size * seq_len)).reshape(batch_size, seq_len), labels)
     return input_ids, labels
+
+
+def get_streaming_data(batch_size, seq_len, vocab_size, n_samples):
+    """Stream data from the alpaca dataset."""
+    ds = load_dataset(DATASET_NAME, streaming=True)
+    for i, item in enumerate(ds["train"]):
+        if i >= n_samples:
+            break
+        input_ids = mx.random.randint(0, vocab_size, (batch_size, seq_len))
+        labels = mx.random.randint(0, vocab_size, (batch_size, seq_len))
+        mask = mx.random.uniform(shape=(batch_size, seq_len)) < 0.1
+        labels = mx.where(mask, mx.array([-100] * (batch_size * seq_len)).reshape(batch_size, seq_len), labels)
+        yield input_ids, labels
 
 def run_training_mlx(
     model_cfg: dict,
@@ -135,8 +149,9 @@ def run_training_mlx(
     print(f"  Gradient function created.")
 
     # Pre-generate some data
-    print(f"  Generating dummy data...")
-    data = [get_dummy_data(batch_size, seq_len, v_size) for _ in range(10)]
+    print(f"  Streaming {DATASET_NAME} data...")
+    data_iter = get_streaming_data(batch_size, seq_len, v_size, n_samples=10)
+    data = [next(data_iter) for _ in range(10)]
     print(f"  Data ready. Starting training for {steps} steps...")
     
     step_times = []
