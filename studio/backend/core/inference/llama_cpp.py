@@ -78,10 +78,14 @@ class LlamaCppBackend:
         Search order:
         1. LLAMA_SERVER_PATH environment variable
         2. ./llama.cpp/build/bin/llama-server  (built by setup.sh in-tree)
-        3. llama-server on PATH  (system install)
-        4. ./bin/llama-server  (legacy: extracted binary)
+        3. ~/.unsloth/llama.cpp/build/bin/Release/llama-server  (built by setup.ps1 on Windows)
+        4. llama-server on PATH  (system install)
+        5. ./bin/llama-server  (legacy: extracted binary)
         """
         import os
+        import sys
+
+        binary_name = "llama-server.exe" if sys.platform == "win32" else "llama-server"
 
         # 1. Env var
         env_path = os.environ.get("LLAMA_SERVER_PATH")
@@ -91,18 +95,29 @@ class LlamaCppBackend:
         # Project root: llama_cpp.py → inference/ → core/ → backend/ → studio/ → root
         project_root = Path(__file__).resolve().parents[4]
 
-        # 2. In-tree llama.cpp build (setup.sh builds here)
-        build_path = project_root / "llama.cpp" / "build" / "bin" / "llama-server"
+        # 2. In-tree llama.cpp build (setup.sh builds here on Linux)
+        build_path = project_root / "llama.cpp" / "build" / "bin" / binary_name
         if build_path.is_file():
             return str(build_path)
 
-        # 3. System PATH
+        # 3. Windows MSVC build (setup.ps1 builds here — Release config)
+        if sys.platform == "win32":
+            # In-tree
+            win_path = project_root / "llama.cpp" / "build" / "bin" / "Release" / binary_name
+            if win_path.is_file():
+                return str(win_path)
+            # ~/.unsloth (setup.ps1 default location)
+            home_path = Path.home() / ".unsloth" / "llama.cpp" / "build" / "bin" / "Release" / binary_name
+            if home_path.is_file():
+                return str(home_path)
+
+        # 4. System PATH
         system_path = shutil.which("llama-server")
         if system_path:
             return system_path
 
-        # 4. Legacy: extracted to bin/
-        bin_path = project_root / "bin" / "llama-server"
+        # 5. Legacy: extracted to bin/
+        bin_path = project_root / "bin" / binary_name
         if bin_path.is_file():
             return str(bin_path)
 
