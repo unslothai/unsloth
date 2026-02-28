@@ -127,13 +127,23 @@ def run_training_mlx(
 
     loss_history = []
     
+    print(f"  Creating model with {n_layers} layers, hidden={h_size}, vocab={v_size}...")
+    print(f"  Batch size: {batch_size}, Seq len: {seq_len}")
+    
     # Gradient function
     loss_and_grad_fn = nn.value_and_grad(model, loss_fn)
+    print(f"  Gradient function created.")
 
     # Pre-generate some data
+    print(f"  Generating dummy data...")
     data = [get_dummy_data(batch_size, seq_len, v_size) for _ in range(10)]
+    print(f"  Data ready. Starting training for {steps} steps...")
+    
+    step_times = []
 
     for i in range(steps):
+        t0 = time.time()
+        
         input_ids, labels = data[i % 10]
         
         # Training step - compute loss and gradients
@@ -147,10 +157,17 @@ def run_training_mlx(
         mx.eval(model.parameters())
         mx.eval(optimizer.state)
         
+        step_time = time.time() - t0
+        step_times.append(step_time)
+        
         loss_history.append(float(loss))
         
-        if (i + 1) % 10 == 0:
-            print(f"Step {i+1}/{steps} | Loss: {float(loss):.4f}")
+        # Print every step for first 10, then every 10
+        if i < 10 or (i + 1) % 10 == 0:
+            avg_time = np.mean(step_times[-min(10, len(step_times)):])
+            print(f"  Step {i+1}/{steps} | Loss: {float(loss):.4f} | Time: {step_time:.3f}s (avg: {avg_time:.3f}s)")
+    
+    print(f"  Done. Total time: {sum(step_times):.2f}s, Avg: {np.mean(step_times):.3f}s/step")
 
     return loss_history
 
