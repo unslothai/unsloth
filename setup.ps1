@@ -806,7 +806,7 @@ function unsloth-ui     { & "$VenvPython" "$CliScript" studio -f "$FrontendDist"
     Write-Host "[OK] Aliases 'unsloth-studio' and 'unsloth-ui' already exist in $PROFILE" -ForegroundColor Green
 }
 
-# --- cmd.exe: create batch files on PATH so they work from regular terminal ---
+# --- cmd.exe: create batch files and ensure they're on PATH ---
 $BatDir = Join-Path $RepoDir ".venv\Scripts"
 foreach ($name in @("unsloth-studio", "unsloth-ui")) {
     $batPath = Join-Path $BatDir "$name.bat"
@@ -814,7 +814,17 @@ foreach ($name in @("unsloth-studio", "unsloth-ui")) {
         Set-Content -Path $batPath -Value "@echo off`r`n`"$VenvPython`" `"$CliScript`" studio -f `"$FrontendDist`" %*"
     }
 }
-Write-Host "[OK] Batch launchers created in $BatDir (works from cmd.exe when venv is on PATH)" -ForegroundColor Green
+# Persist .venv\Scripts to User PATH so commands work in new cmd.exe terminals without activation
+$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+if (-not $userPath -or $userPath -notlike "*$BatDir*") {
+    if ($userPath) {
+        [Environment]::SetEnvironmentVariable('Path', "$BatDir;$userPath", 'User')
+    } else {
+        [Environment]::SetEnvironmentVariable('Path', "$BatDir", 'User')
+    }
+    Write-Host "   Persisted $BatDir to User PATH" -ForegroundColor Gray
+}
+Write-Host "[OK] Batch launchers created (works from any new cmd.exe or PowerShell)" -ForegroundColor Green
 
 # ============================================
 # Done
