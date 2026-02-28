@@ -199,16 +199,58 @@ class LlamaCppBackend:
 
             # Build command based on mode
             if hf_repo:
-                hf_spec = f"{hf_repo}:{hf_variant}" if hf_variant else hf_repo
+                # Download the GGUF file ourselves using huggingface_hub
+                # (llama-server's -hf flag requires HTTPS/curl which may not
+                #  be available, e.g. Windows builds with -DLLAMA_CURL=OFF)
+                try:
+                    from huggingface_hub import hf_hub_download
+                except ImportError:
+                    raise RuntimeError(
+                        "huggingface_hub is required for HF model loading. "
+                        "Install it with: pip install huggingface_hub"
+                    )
+
+                # Determine the filename from the variant (e.g., "Q4_K_M" -> find matching file)
+                gguf_filename = None
+                if hf_variant:
+                    # Try common naming patterns
+                    try:
+                        from huggingface_hub import list_repo_files
+                        files = list_repo_files(hf_repo, token=hf_token)
+                        variant_lower = hf_variant.lower()
+                        for f in files:
+                            if f.endswith(".gguf") and variant_lower in f.lower():
+                                gguf_filename = f
+                                break
+                    except Exception as e:
+                        logger.warning(f"Could not list repo files: {e}")
+
+                    if not gguf_filename:
+                        # Fallback: construct common filename pattern
+                        # e.g., "unsloth/gemma-3-4b-it-GGUF" + "Q4_K_M" -> try model name
+                        repo_name = hf_repo.split("/")[-1].replace("-GGUF", "")
+                        gguf_filename = f"{repo_name}-{hf_variant}.gguf"
+
+                logger.info(f"Downloading GGUF: {hf_repo}/{gguf_filename}")
+                try:
+                    local_path = hf_hub_download(
+                        repo_id=hf_repo,
+                        filename=gguf_filename,
+                        token=hf_token,
+                    )
+                except Exception as e:
+                    raise RuntimeError(
+                        f"Failed to download GGUF file '{gguf_filename}' from {hf_repo}: {e}"
+                    )
+
+                logger.info(f"GGUF downloaded to: {local_path}")
                 cmd = [
                     binary,
-                    "-hf", hf_spec,
+                    "-m", local_path,
                     "--port", str(self._port),
                     "-c", str(n_ctx),
                     "-ngl", str(n_gpu_layers),
                 ]
-                if hf_token:
-                    cmd.extend(["--hf-token", hf_token])
             elif gguf_path:
                 if not Path(gguf_path).is_file():
                     raise FileNotFoundError(f"GGUF file not found: {gguf_path}")
@@ -282,9 +324,8 @@ class LlamaCppBackend:
             self._is_vision = is_vision
             self._model_identifier = model_identifier
 
-            # HF mode: llama-server downloads before becoming healthy — need longer timeout
-            timeout = 600.0 if hf_repo else 120.0
-            if not self._wait_for_health(timeout=timeout):
+            # Wait for llama-server to become healthy
+            if not self._wait_for_health(timeout=120.0):
                 self._kill_process()
                 raise RuntimeError(
                     "llama-server failed to start. "
