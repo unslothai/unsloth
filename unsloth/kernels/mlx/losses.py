@@ -62,8 +62,8 @@ def cross_entropy_loss(
     # Clamp labels to valid range for indexing (will be masked out anyway)
     clamped_labels = mx.where(valid_mask, labels, 0)
     
-    # Compute log softmax
-    log_probs = mx.log_softmax(logits, axis=-1)
+    # Compute log softmax (MLX uses log(softmax(x)))
+    log_probs = mx.log(mx.softmax(logits, axis=-1))
     
     if label_smoothing > 0.0:
         # Label smoothing: soft targets
