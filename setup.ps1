@@ -556,12 +556,13 @@ $ErrorActionPreference = $prevEAP
 # ==========================================================================
 #  PHASE 4: Build llama.cpp with CUDA for GGUF inference + export
 # ==========================================================================
-# Builds at ~/.unsloth/llama.cpp/ (persistent across pip upgrades).
+# Builds in-tree at $REPO/llama.cpp/ (same as setup.sh on Linux).
+# This directory is already in .gitignore.
 # We build:
 #   - llama-server:   for GGUF model inference
 #   - llama-quantize: for GGUF export quantization
 # Prerequisites (git, cmake, VS Build Tools, CUDA Toolkit) already installed in Phase 1.
-$LlamaCppDir = Join-Path $env:USERPROFILE ".unsloth\llama.cpp"
+$LlamaCppDir = Join-Path $PSScriptRoot "llama.cpp"
 $BuildDir = Join-Path $LlamaCppDir "build"
 $LlamaServerBin = Join-Path $BuildDir "bin\Release\llama-server.exe"
 
@@ -588,8 +589,6 @@ if (Test-Path $LlamaServerBin) {
     $FailedStep = ""
 
     # -- Step A: Clone or pull llama.cpp --
-    $UnslothDir = Join-Path $env:USERPROFILE ".unsloth"
-    if (-not (Test-Path $UnslothDir)) { New-Item -ItemType Directory -Path $UnslothDir -Force | Out-Null }
 
     if (Test-Path (Join-Path $LlamaCppDir ".git")) {
         Write-Host "   llama.cpp repo already cloned, pulling latest..." -ForegroundColor Gray
