@@ -381,13 +381,10 @@ $CudaToolkitRoot = Split-Path (Split-Path $NvccPath -Parent) -Parent
 # CudaToolkitDir: the MSBuild property that CUDA .targets checks directly
 # Trailing backslash required -- the .targets file appends subpaths to it
 [Environment]::SetEnvironmentVariable('CudaToolkitDir', "$CudaToolkitRoot\", 'Process')
-# Persist CUDA_PATH to User registry if not already set
-$existingSys = [Environment]::GetEnvironmentVariable('CUDA_PATH', 'Machine')
-$existingUsr = [Environment]::GetEnvironmentVariable('CUDA_PATH', 'User')
-if (-not $existingSys -and -not $existingUsr) {
-    [Environment]::SetEnvironmentVariable('CUDA_PATH', $CudaToolkitRoot, 'User')
-    Write-Host "   Persisted CUDA_PATH to user environment" -ForegroundColor Gray
-}
+# Always persist CUDA_PATH to User registry so the compatible toolkit is used
+# in future sessions (overwrites any existing value pointing to a newer, incompatible version)
+[Environment]::SetEnvironmentVariable('CUDA_PATH', $CudaToolkitRoot, 'User')
+Write-Host "   Persisted CUDA_PATH=$CudaToolkitRoot to user environment" -ForegroundColor Gray
 # Ensure nvcc's bin dir is on PATH for this process
 $nvccBinDir = Split-Path $NvccPath -Parent
 if ($env:PATH -notlike "*$nvccBinDir*") {
