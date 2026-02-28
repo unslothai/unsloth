@@ -1136,6 +1136,7 @@ class FastModel(FastBaseModel):
             # Disable torch.compile for model forward; loss compilation is fine.
             # See https://github.com/unslothai/unsloth/issues/3385
             from unsloth.kernels.utils import is_rdna
+
             if is_rdna():
                 os.environ["UNSLOTH_COMPILE_DISABLE"] = "partial"
         # Cohere
