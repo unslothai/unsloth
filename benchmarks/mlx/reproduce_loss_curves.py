@@ -128,25 +128,24 @@ def run_training_mlx(
     loss_history = []
     
     # Gradient function
-    grad_fn = nn.value_and_grad(model, loss_fn)
-    
-    @mx.compile
-    def step(input_ids, labels):
-        loss, grads = grad_fn(model, input_ids, labels)
-        optimizer.update(model, grads)
-        return loss
-    
+    loss_and_grad_fn = nn.value_and_grad(model, loss_fn)
+
     # Pre-generate some data
     data = [get_dummy_data(batch_size, seq_len, v_size) for _ in range(10)]
 
     for i in range(steps):
         input_ids, labels = data[i % 10]
         
-        # Training step
-        loss = step(input_ids, labels)
+        # Training step - compute loss and gradients
+        loss, grads = loss_and_grad_fn(model, input_ids, labels)
         
-        # Force evaluation of everything to prevent graph building up
-        mx.eval(model.parameters(), optimizer.state, loss)
+        # Update model with gradients
+        optimizer.update(model, grads)
+        
+        # Evaluate the loss and updated parameters
+        mx.eval(loss)
+        mx.eval(model.parameters())
+        mx.eval(optimizer.state)
         
         loss_history.append(float(loss))
         
