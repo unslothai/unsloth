@@ -1,3 +1,4 @@
+import { authFetch } from "@/features/auth";
 import type { CheckFormatResponse } from "../types/datasets";
 
 type CheckDatasetFormatArgs = {
@@ -15,7 +16,7 @@ export async function checkDatasetFormat({
   split,
   isVlm,
 }: CheckDatasetFormatArgs): Promise<CheckFormatResponse> {
-  const res = await fetch("/api/datasets/check-format", {
+  const res = await authFetch("/api/datasets/check-format", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
