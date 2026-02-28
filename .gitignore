@@ -28,9 +28,6 @@ unsloth_training_checkpoints/
 # llama.cpp build (built by setup.sh, shared with unsloth-zoo export)
 llama.cpp/
 
-# vcpkg (installed by setup.ps1 for curl/SSL)
-vcpkg/
-
 # Built binaries (llama-server etc.)
 bin/
 
