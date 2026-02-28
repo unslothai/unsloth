@@ -110,7 +110,7 @@ def get_streaming_data(batch_size, seq_len, vocab_size, model_id, n_samples):
             return_tensors="np"
         )
         input_ids = mx.array(encoded["input_ids"])
-        labels = mx.copy(input_ids)
+        labels = mx.array(input_ids)
         # Mask ~10% of tokens as ignore (like original dummy data)
         mask = mx.random.uniform(shape=labels.shape) < 0.1
         labels = mx.where(mask, mx.array(-100, dtype=labels.dtype), labels)
