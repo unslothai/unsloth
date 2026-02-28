@@ -122,7 +122,11 @@ def run_training_mlx(
         
     optimizer = opt.Adafactor(learning_rate=LEARNING_RATE)
     
-    def loss_fn(input_ids, labels):
+    def loss_fn(params, input_ids, labels):
+        # Temporarily set model weights to params for forward pass
+        old_params = dict(model.parameters())
+        model.update(params)
+        
         if HAS_UNSLOTH_MLX:
             # Full model forward
             logits, loss = model(
@@ -130,13 +134,12 @@ def run_training_mlx(
                 labels=labels,
                 use_cce=use_cce
             )
-            return loss
         else:
             # Fallback Linear head
             h = mx.random.normal((batch_size, seq_len, h_size))
             if use_cce:
                 from unsloth.kernels.mlx.losses import chunked_cross_entropy_loss
-                return chunked_cross_entropy_loss(
+                loss = chunked_cross_entropy_loss(
                     h, model.weight, labels,
                     reduction="mean", ignore_index=-100
                 )
@@ -144,7 +147,11 @@ def run_training_mlx(
                 logits = model(h)
                 shift_logits = logits[..., :-1, :].reshape(-1, v_size)
                 shift_labels = labels[..., 1:].reshape(-1)
-                return nn.losses.cross_entropy(shift_logits, shift_labels, reduction="mean")
+                loss = nn.losses.cross_entropy(shift_logits, shift_labels, reduction="mean")
+        
+        # Restore original params
+        model.update(old_params)
+        return loss
 
     # Compile the loss and gradient computation
     loss_and_grad = nn.value_and_grad(model, loss_fn)
