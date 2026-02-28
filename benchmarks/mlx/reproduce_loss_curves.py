@@ -28,7 +28,7 @@ except ImportError:
 
 TRAIN_STEPS = 100
 LEARNING_RATE = 1e-05
-DATASET_NAME = "yahma/alpaca-cleaned"
+DATASET_NAME = "tatsu-lab/alpaca"
 
 # List of models and settings specified in the user's plot
 CONFIGS = [
