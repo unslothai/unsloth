@@ -19,7 +19,7 @@ Write-Host "  llama.cpp Windows Build Test" -ForegroundColor Cyan
 Write-Host "============================================" -ForegroundColor Cyan
 Write-Host ""
 
-# ── Step 1: Locate the binary ──────────────────────────────────────────
+# -- Step 1: Locate the binary ------------------------------------------
 Write-Host "1. Locating llama-server binary..." -ForegroundColor Yellow
 
 $SearchPaths = @()
@@ -69,7 +69,7 @@ if (-not $FoundBinary) {
 
 Write-Host "   [OK] Found: $FoundBinary" -ForegroundColor Green
 
-# ── Step 2: Check file info ────────────────────────────────────────────
+# -- Step 2: Check file info --------------------------------------------
 Write-Host ""
 Write-Host "2. Binary info..." -ForegroundColor Yellow
 
@@ -78,7 +78,7 @@ $sizeMB = [math]::Round($fileInfo.Length / 1MB, 1)
 Write-Host "   Size:     $sizeMB MB" -ForegroundColor Gray
 Write-Host "   Modified: $($fileInfo.LastWriteTime)" -ForegroundColor Gray
 
-# ── Step 3: Check for CUDA symbols ────────────────────────────────────
+# -- Step 3: Check for CUDA symbols ------------------------------------
 Write-Host ""
 Write-Host "3. Checking for CUDA support..." -ForegroundColor Yellow
 
@@ -116,11 +116,11 @@ if ($dumpbin) {
     }
 }
 
-# ── Step 4: Quick startup test ─────────────────────────────────────────
+# -- Step 4: Quick startup test -----------------------------------------
 Write-Host ""
 Write-Host "4. Running startup test (will start and immediately stop)..." -ForegroundColor Yellow
 
-# Start llama-server on a random port with no model — just check it initializes
+# Start llama-server on a random port with no model -- just check it initializes
 $testPort = Get-Random -Minimum 49152 -Maximum 65535
 $proc = $null
 
@@ -153,8 +153,8 @@ try {
             Write-Host ""
             Write-Host "   Rebuild with: cmake -DGGML_CUDA=ON ..." -ForegroundColor Yellow
         } elseif ($allOutput -match "HTTPS is not supported") {
-            # This is expected when LLAMA_CURL=OFF — not a real failure
-            Write-Host "   [OK] Binary started (HTTPS warning is expected — we use local files)" -ForegroundColor Green
+            # This is expected when LLAMA_CURL=OFF -- not a real failure
+            Write-Host "   [OK] Binary started (HTTPS warning is expected -- we use local files)" -ForegroundColor Green
         } else {
             Write-Host "   [WARN] Process exited with code $exitCode" -ForegroundColor Yellow
         }
@@ -196,7 +196,7 @@ try {
     Remove-Item "$env:TEMP\llama_test_stdout.txt" -ErrorAction SilentlyContinue
 }
 
-# ── Step 5: Check llama-quantize ───────────────────────────────────────
+# -- Step 5: Check llama-quantize ---------------------------------------
 Write-Host ""
 Write-Host "5. Checking llama-quantize..." -ForegroundColor Yellow
 
@@ -209,7 +209,7 @@ if (Test-Path $quantizePath) {
     Write-Host "   GGUF export/quantization won't work without it" -ForegroundColor Yellow
 }
 
-# ── Summary ────────────────────────────────────────────────────────────
+# -- Summary ------------------------------------------------------------
 Write-Host ""
 Write-Host "============================================" -ForegroundColor Cyan
 Write-Host "  Summary" -ForegroundColor Cyan
