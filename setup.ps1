@@ -343,23 +343,35 @@ if (-not $NvccPath) {
     Write-Host "CUDA driver detected but compatible toolkit (nvcc) not found -- installing via winget..." -ForegroundColor Yellow
     $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
     if ($HasWinget) {
-        # Install the version matching the driver's max supported CUDA
-        $WingetVersion = if ($DriverMaxCuda) { $DriverMaxCuda } else { $null }
-        if ($WingetVersion) {
-            Write-Host "   Installing CUDA Toolkit $WingetVersion via winget..." -ForegroundColor Cyan
-            winget install --id=Nvidia.CUDA --version=$WingetVersion -e --source winget --accept-package-agreements --accept-source-agreements
+        if ($DriverMaxCuda) {
+            # Try descending compatible versions: 12.9, 12.8, 12.6, 12.5, 12.4, 12.3
+            $drMajor = [int]$DriverMaxCuda.Split('.')[0]
+            $drMinor = [int]$DriverMaxCuda.Split('.')[1]
+            $versionsToTry = @()
+            for ($m = $drMinor; $m -ge 0; $m--) {
+                $versionsToTry += "$drMajor.$m"
+            }
+            foreach ($ver in $versionsToTry) {
+                Write-Host "   Trying CUDA Toolkit $ver via winget..." -ForegroundColor Cyan
+                $prevEAPCuda = $ErrorActionPreference
+                $ErrorActionPreference = "Continue"
+                winget install --id=Nvidia.CUDA --version=$ver -e --source winget --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+                $ErrorActionPreference = $prevEAPCuda
+                Refresh-Environment
+                $NvccPath = Find-Nvcc -MaxVersion $DriverMaxCuda
+                if ($NvccPath) {
+                    Write-Host "   [OK] CUDA Toolkit installed (nvcc: $NvccPath)" -ForegroundColor Green
+                    break
+                }
+            }
         } else {
             Write-Host "   Installing CUDA Toolkit (latest) via winget..." -ForegroundColor Cyan
             winget install --id=Nvidia.CUDA -e --source winget --accept-package-agreements --accept-source-agreements
-        }
-        Refresh-Environment
-        if ($DriverMaxCuda) {
-            $NvccPath = Find-Nvcc -MaxVersion $DriverMaxCuda
-        } else {
+            Refresh-Environment
             $NvccPath = Find-Nvcc
-        }
-        if ($NvccPath) {
-            Write-Host "   [OK] CUDA Toolkit installed (nvcc: $NvccPath)" -ForegroundColor Green
+            if ($NvccPath) {
+                Write-Host "   [OK] CUDA Toolkit installed (nvcc: $NvccPath)" -ForegroundColor Green
+            }
         }
     }
 }
