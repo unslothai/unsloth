@@ -42,6 +42,41 @@ function Refresh-Environment {
 # Find nvcc on PATH, CUDA_PATH, or standard toolkit dirs.
 # Returns the path to nvcc.exe, or $null if not found.
 function Find-Nvcc {
+    param([string]$MaxVersion = "")
+
+    # If MaxVersion is set, we need to find a toolkit <= that version.
+    # CUDA toolkits install side-by-side under C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\vX.Y\
+
+    $toolkitBase = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA'
+
+    if ($MaxVersion -and (Test-Path $toolkitBase)) {
+        $drMajor = [int]$MaxVersion.Split('.')[0]
+        $drMinor = [int]$MaxVersion.Split('.')[1]
+
+        # Get all installed CUDA dirs, sorted descending (highest first)
+        $cudaDirs = Get-ChildItem -Directory $toolkitBase | Where-Object {
+            $_.Name -match '^v(\d+)\.(\d+)'
+        } | Sort-Object { [version]($_.Name -replace '^v','') } -Descending
+
+        foreach ($dir in $cudaDirs) {
+            if ($dir.Name -match '^v(\d+)\.(\d+)') {
+                $tkMajor = [int]$Matches[1]; $tkMinor = [int]$Matches[2]
+                $compatible = ($tkMajor -lt $drMajor) -or ($tkMajor -eq $drMajor -and $tkMinor -le $drMinor)
+                if ($compatible) {
+                    $nvcc = Join-Path $dir.FullName 'bin\nvcc.exe'
+                    if (Test-Path $nvcc) {
+                        return $nvcc
+                    }
+                }
+            }
+        }
+
+        # No compatible side-by-side version found
+        return $null
+    }
+
+    # Fallback: no version constraint — pick latest or whatever is available
+
     # 1. Check nvcc on PATH
     $cmd = Get-Command nvcc -ErrorAction SilentlyContinue
     if ($cmd) { return $cmd.Source }
@@ -55,7 +90,6 @@ function Find-Nvcc {
     }
 
     # 3. Scan standard toolkit directory
-    $toolkitBase = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA'
     if (Test-Path $toolkitBase) {
         $latest = Get-ChildItem -Directory $toolkitBase | Sort-Object Name | Select-Object -Last 1
         if ($latest -and (Test-Path (Join-Path $latest.FullName 'bin\nvcc.exe'))) {
@@ -293,25 +327,16 @@ try {
     }
 } catch {}
 
-$NvccPath = Find-Nvcc
-
-# -- If toolkit is already installed, verify it's compatible with driver --
-if ($NvccPath -and $DriverMaxCuda) {
-    $NvccOut = & $NvccPath --version 2>&1 | Out-String
-    if ($NvccOut -match "release\s+([\d]+)\.([\d]+)") {
-        $ToolkitVersion = "$($Matches[1]).$($Matches[2])"
-        $tkMajor = [int]$Matches[1]; $tkMinor = [int]$Matches[2]
-        $drMajor = [int]$DriverMaxCuda.Split('.')[0]; $drMinor = [int]$DriverMaxCuda.Split('.')[1]
-        if (($tkMajor -gt $drMajor) -or ($tkMajor -eq $drMajor -and $tkMinor -gt $drMinor)) {
-            Write-Host "[WARN] Installed CUDA Toolkit $ToolkitVersion is NEWER than driver supports ($DriverMaxCuda)." -ForegroundColor Yellow
-            Write-Host "       This will cause 'failed to initialize CUDA' at runtime." -ForegroundColor Yellow
-            Write-Host "       Installing compatible CUDA Toolkit $DriverMaxCuda..." -ForegroundColor Cyan
-            # Force reinstall of a compatible version
-            $NvccPath = $null
-        } else {
-            Write-Host "   [OK] CUDA Toolkit $ToolkitVersion is compatible with driver (max $DriverMaxCuda)" -ForegroundColor Green
-        }
+# -- Find a toolkit that's compatible with the driver --
+if ($DriverMaxCuda) {
+    $NvccPath = Find-Nvcc -MaxVersion $DriverMaxCuda
+    if ($NvccPath) {
+        Write-Host "   [OK] Found compatible CUDA Toolkit (nvcc: $NvccPath)" -ForegroundColor Green
+    } else {
+        Write-Host "   No CUDA Toolkit <= $DriverMaxCuda found. Will install..." -ForegroundColor Yellow
     }
+} else {
+    $NvccPath = Find-Nvcc
 }
 
 if (-not $NvccPath) {
@@ -328,7 +353,11 @@ if (-not $NvccPath) {
             winget install --id=Nvidia.CUDA -e --source winget --accept-package-agreements --accept-source-agreements
         }
         Refresh-Environment
-        $NvccPath = Find-Nvcc
+        if ($DriverMaxCuda) {
+            $NvccPath = Find-Nvcc -MaxVersion $DriverMaxCuda
+        } else {
+            $NvccPath = Find-Nvcc
+        }
         if ($NvccPath) {
             Write-Host "   [OK] CUDA Toolkit installed (nvcc: $NvccPath)" -ForegroundColor Green
         }
@@ -337,7 +366,11 @@ if (-not $NvccPath) {
 
 if (-not $NvccPath) {
     Write-Host "[ERROR] CUDA Toolkit (nvcc) is required but could not be found or installed." -ForegroundColor Red
-    Write-Host "        Install CUDA Toolkit from https://developer.nvidia.com/cuda-downloads" -ForegroundColor Yellow
+    if ($DriverMaxCuda) {
+        Write-Host "        Install CUDA Toolkit $DriverMaxCuda from https://developer.nvidia.com/cuda-toolkit-archive" -ForegroundColor Yellow
+    } else {
+        Write-Host "        Install CUDA Toolkit from https://developer.nvidia.com/cuda-downloads" -ForegroundColor Yellow
+    }
     exit 1
 }
 
