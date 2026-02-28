@@ -278,14 +278,55 @@ if ($vsResult) {
 # ============================================
 # 1e. CUDA Toolkit (nvcc for llama.cpp build + env vars)
 # ============================================
+# IMPORTANT: The CUDA Toolkit version must be <= the max CUDA version the
+# NVIDIA driver supports.  nvidia-smi reports this as "CUDA Version: X.Y".
+# If we install a toolkit newer than the driver supports, llama-server will
+# fail at runtime with "ggml_cuda_init: failed to initialize CUDA: (null)".
+
+# -- Detect max CUDA version the driver supports --
+$DriverMaxCuda = $null
+try {
+    $smiOut = nvidia-smi 2>&1 | Out-String
+    if ($smiOut -match "CUDA Version:\s+([\d]+)\.([\d]+)") {
+        $DriverMaxCuda = "$($Matches[1]).$($Matches[2])"
+        Write-Host "   Driver supports up to CUDA $DriverMaxCuda" -ForegroundColor Gray
+    }
+} catch {}
+
 $NvccPath = Find-Nvcc
 
+# -- If toolkit is already installed, verify it's compatible with driver --
+if ($NvccPath -and $DriverMaxCuda) {
+    $NvccOut = & $NvccPath --version 2>&1 | Out-String
+    if ($NvccOut -match "release\s+([\d]+)\.([\d]+)") {
+        $ToolkitVersion = "$($Matches[1]).$($Matches[2])"
+        $tkMajor = [int]$Matches[1]; $tkMinor = [int]$Matches[2]
+        $drMajor = [int]$DriverMaxCuda.Split('.')[0]; $drMinor = [int]$DriverMaxCuda.Split('.')[1]
+        if (($tkMajor -gt $drMajor) -or ($tkMajor -eq $drMajor -and $tkMinor -gt $drMinor)) {
+            Write-Host "[WARN] Installed CUDA Toolkit $ToolkitVersion is NEWER than driver supports ($DriverMaxCuda)." -ForegroundColor Yellow
+            Write-Host "       This will cause 'failed to initialize CUDA' at runtime." -ForegroundColor Yellow
+            Write-Host "       Installing compatible CUDA Toolkit $DriverMaxCuda..." -ForegroundColor Cyan
+            # Force reinstall of a compatible version
+            $NvccPath = $null
+        } else {
+            Write-Host "   [OK] CUDA Toolkit $ToolkitVersion is compatible with driver (max $DriverMaxCuda)" -ForegroundColor Green
+        }
+    }
+}
+
 if (-not $NvccPath) {
-    Write-Host "CUDA driver detected but toolkit (nvcc) not found -- installing via winget..." -ForegroundColor Yellow
+    Write-Host "CUDA driver detected but compatible toolkit (nvcc) not found -- installing via winget..." -ForegroundColor Yellow
     $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
     if ($HasWinget) {
-        Write-Host "   Installing CUDA Toolkit via winget..." -ForegroundColor Cyan
-        winget install --id=Nvidia.CUDA -e --source winget --accept-package-agreements --accept-source-agreements
+        # Install the version matching the driver's max supported CUDA
+        $WingetVersion = if ($DriverMaxCuda) { $DriverMaxCuda } else { $null }
+        if ($WingetVersion) {
+            Write-Host "   Installing CUDA Toolkit $WingetVersion via winget..." -ForegroundColor Cyan
+            winget install --id=Nvidia.CUDA --version=$WingetVersion -e --source winget --accept-package-agreements --accept-source-agreements
+        } else {
+            Write-Host "   Installing CUDA Toolkit (latest) via winget..." -ForegroundColor Cyan
+            winget install --id=Nvidia.CUDA -e --source winget --accept-package-agreements --accept-source-agreements
+        }
         Refresh-Environment
         $NvccPath = Find-Nvcc
         if ($NvccPath) {
