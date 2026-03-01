@@ -523,28 +523,27 @@ if ($NeedNode) {
 Write-Host "[OK] Node $(node -v) | npm $(npm -v)" -ForegroundColor Green
 
 # ============================================
-# 1g. Python (>= 3.10, prefer 3.12)
+# 1g. Python (>= 3.11 and < 3.14, matching setup.sh)
 # ============================================
 $HasPython = $null -ne (Get-Command python -ErrorAction SilentlyContinue)
-$NeedPython = $true
+$PythonOk = $false
 
 if ($HasPython) {
     $PyVer = python --version 2>&1
     if ($PyVer -match "(\d+)\.(\d+)") {
         $PyMajor = [int]$Matches[1]; $PyMinor = [int]$Matches[2]
-        if ($PyMajor -eq 3 -and $PyMinor -ge 10) {
+        if ($PyMajor -eq 3 -and $PyMinor -ge 11 -and $PyMinor -lt 14) {
             Write-Host "[OK] Python $PyVer" -ForegroundColor Green
-            $NeedPython = $false
+            $PythonOk = $true
         } else {
-            Write-Host "[WARN] Python $PyVer is too old (need >= 3.10)" -ForegroundColor Yellow
+            Write-Host "[ERROR] Python $PyVer is outside supported range (need >= 3.11 and < 3.14)." -ForegroundColor Red
+            Write-Host "        Install Python 3.12 from https://python.org/downloads/" -ForegroundColor Yellow
+            exit 1
         }
     }
 } else {
-    Write-Host "[WARN] Python not found." -ForegroundColor Yellow
-}
-
-if ($NeedPython) {
-    Write-Host "Installing Python 3.12 via winget..." -ForegroundColor Cyan
+    # No Python at all -- install 3.12
+    Write-Host "Python not found -- installing Python 3.12 via winget..." -ForegroundColor Yellow
     $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
     if ($HasWinget) {
         winget install -e --id Python.Python.3.12 --source winget --accept-package-agreements --accept-source-agreements
@@ -557,6 +556,7 @@ if ($NeedPython) {
         exit 1
     }
     Write-Host "[OK] Python $(python --version)" -ForegroundColor Green
+    $PythonOk = $true
 }
 
 Write-Host ""
