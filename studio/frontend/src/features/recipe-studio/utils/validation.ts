@@ -1,6 +1,8 @@
 import type { NodeConfig } from "../types";
 import { isValidSex, parseAgeRange, parseIntNumber, parseNumber } from "./parse";
 
+const TRACE_MODES = new Set(["none", "last_message", "all_messages"]);
+
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: validation rules
 export function getConfigErrors(config: NodeConfig | null): string[] {
   if (!config) {
@@ -177,6 +179,12 @@ export function getConfigErrors(config: NodeConfig | null): string[] {
       if (!config.image_context.column_name.trim()) {
         errors.push("Image context column is required.");
       }
+    }
+    if (
+      config.with_trace &&
+      !TRACE_MODES.has(config.with_trace)
+    ) {
+      errors.push("Trace mode must be none, last_message, or all_messages.");
     }
   }
   if (config.kind === "expression") {

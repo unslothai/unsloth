@@ -2,7 +2,60 @@ from __future__ import annotations
 
 import base64
 import io
+from pathlib import Path
 from typing import Any
+
+
+def _pil_to_preview_payload(image: Any) -> dict[str, Any]:
+    buffer = io.BytesIO()
+    image.convert("RGB").save(buffer, format="JPEG", quality=85)
+    return {
+        "type": "image",
+        "mime": "image/jpeg",
+        "width": image.width,
+        "height": image.height,
+        "data": base64.b64encode(buffer.getvalue()).decode("ascii"),
+    }
+
+
+def _open_pil_image_from_bytes(raw_bytes: bytes):
+    from PIL import Image  # type: ignore
+
+    with Image.open(io.BytesIO(raw_bytes)) as image:
+        return image.copy()
+
+
+def _to_pil_from_hf_image_dict(value: Any) -> Any | None:
+    if not isinstance(value, dict):
+        return None
+
+    raw_bytes = value.get("bytes")
+    if isinstance(raw_bytes, (bytes, bytearray)) and len(raw_bytes) > 0:
+        try:
+            return _open_pil_image_from_bytes(bytes(raw_bytes))
+        except (OSError, ValueError):
+            pass
+    if (
+        isinstance(raw_bytes, list)
+        and len(raw_bytes) > 0
+        and all(isinstance(item, int) and 0 <= item <= 255 for item in raw_bytes)
+    ):
+        try:
+            return _open_pil_image_from_bytes(bytes(raw_bytes))
+        except (OSError, ValueError):
+            pass
+
+    path_value = value.get("path")
+    if isinstance(path_value, str) and path_value.strip():
+        try:
+            from PIL import Image  # type: ignore
+
+            with Image.open(Path(path_value)) as image:
+                return image.copy()
+        except (OSError, ValueError, TypeError):
+            return None
+
+    return None
 
 
 def to_jsonable(value: Any) -> Any:
@@ -39,17 +92,12 @@ def _to_preview_image_payload(value: Any) -> dict[str, Any] | None:
         return None
 
     if not isinstance(value, PILImage):
-        return None
+        hf_image = _to_pil_from_hf_image_dict(value)
+        if hf_image is None:
+            return None
+        value = hf_image
 
-    buffer = io.BytesIO()
-    value.convert("RGB").save(buffer, format="JPEG", quality=85)
-    return {
-        "type": "image",
-        "mime": "image/jpeg",
-        "width": value.width,
-        "height": value.height,
-        "data": base64.b64encode(buffer.getvalue()).decode("ascii"),
-    }
+    return _pil_to_preview_payload(value)
 
 
 def to_preview_jsonable(value: Any) -> Any:

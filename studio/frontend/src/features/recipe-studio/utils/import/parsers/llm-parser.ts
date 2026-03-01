@@ -9,6 +9,14 @@ import {
   readString,
 } from "../helpers";
 
+function parseTraceMode(value: unknown): LlmConfig["with_trace"] {
+  const traceRaw = readString(value) ?? "none";
+  if (traceRaw === "last_message" || traceRaw === "all_messages") {
+    return traceRaw;
+  }
+  return "none";
+}
+
 export function parseLlm(
   column: Record<string, unknown>,
   name: string,
@@ -64,6 +72,9 @@ export function parseLlm(
     }
   }
 
+  const withTrace = parseTraceMode(column.with_trace);
+  const extractReasoningContent = column.extract_reasoning_content === true;
+
   return {
     id,
     kind: "llm",
@@ -82,6 +93,10 @@ export function parseLlm(
     output_format: normalizeOutputFormat(column.output_format),
     // biome-ignore lint/style/useNamingConvention: api schema
     tool_alias: readString(column.tool_alias) ?? "",
+    // biome-ignore lint/style/useNamingConvention: api schema
+    with_trace: withTrace,
+    // biome-ignore lint/style/useNamingConvention: api schema
+    extract_reasoning_content: extractReasoningContent,
     scores: llmType === "judge" ? scores : undefined,
     // biome-ignore lint/style/useNamingConvention: ui schema
     image_context: imageContext,
