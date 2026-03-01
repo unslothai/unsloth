@@ -152,6 +152,12 @@ export type LlmToolConfig = {
   timeout_sec?: string;
 };
 
+export type LlmImageContextConfig = {
+  enabled: boolean;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  column_name: string;
+};
+
 export type LlmConfig = {
   id: string;
   kind: "llm";
@@ -175,6 +181,9 @@ export type LlmConfig = {
   // biome-ignore lint/style/useNamingConvention: ui schema
   mcp_providers?: LlmMcpProviderConfig[];
   scores?: Score[];
+  // ui-only, serialized into multi_modal_context for DataDesigner
+  // biome-ignore lint/style/useNamingConvention: ui schema
+  image_context?: LlmImageContextConfig;
 };
 
 export type ModelProviderConfig = {

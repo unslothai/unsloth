@@ -44,6 +44,26 @@ export function parseLlm(
           })
       : [];
 
+  let imageContext: LlmConfig["image_context"] = {
+    enabled: false,
+    // biome-ignore lint/style/useNamingConvention: api schema
+    column_name: "",
+  };
+  if (Array.isArray(column.multi_modal_context)) {
+    const first = column.multi_modal_context.find((entry) => isRecord(entry));
+    if (first && isRecord(first)) {
+      const modality = readString(first.modality);
+      const columnName = readString(first.column_name) ?? "";
+      if (modality === "image" && columnName) {
+        imageContext = {
+          enabled: true,
+          // biome-ignore lint/style/useNamingConvention: api schema
+          column_name: columnName,
+        };
+      }
+    }
+  }
+
   return {
     id,
     kind: "llm",
@@ -63,5 +83,7 @@ export function parseLlm(
     // biome-ignore lint/style/useNamingConvention: api schema
     tool_alias: readString(column.tool_alias) ?? "",
     scores: llmType === "judge" ? scores : undefined,
+    // biome-ignore lint/style/useNamingConvention: ui schema
+    image_context: imageContext,
   };
 }

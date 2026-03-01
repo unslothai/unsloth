@@ -40,6 +40,7 @@ import { type ReactElement, useCallback, useEffect, useMemo, useRef, useState } 
 import { extractText, getDocumentProxy } from "unpdf";
 import { cn } from "@/lib/utils";
 import { inspectSeedDataset, inspectSeedUpload } from "../../api";
+import { resolveImagePreview } from "../../utils/image-preview";
 import type {
   SeedConfig,
   SeedSamplingStrategy,
@@ -252,7 +253,8 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
         const response = await inspectSeedDataset({
           dataset_name: datasetName,
           hf_token: config.hf_token?.trim() || undefined,
-          subset: undefined,
+          split: config.hf_split?.trim() || undefined,
+          subset: config.hf_subset?.trim() || undefined,
           preview_size: 10,
         });
         onUpdate({
@@ -262,8 +264,8 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
             response.columns.includes(name),
           ),
           seed_preview_rows: response.preview_rows ?? [],
-          hf_split: "",
-          hf_subset: "",
+          hf_split: response.split ?? "",
+          hf_subset: response.subset ?? "",
           local_file_name: "",
           unstructured_file_name: "",
         });
@@ -392,6 +394,16 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
   const selectedSeedDropSet = useMemo(
     () => new Set(selectedSeedDropColumns),
     [selectedSeedDropColumns],
+  );
+  const rowHasExpandableText = useCallback(
+    (row: Record<string, unknown>): boolean =>
+      previewColumns.some((columnName) => {
+        if (resolveImagePreview(row[columnName])) {
+          return false;
+        }
+        return isExpandablePreviewValue(stringifyCell(row[columnName]));
+      }),
+    [previewColumns],
   );
 
   return (
@@ -778,15 +790,11 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
                       <TableRow
                         key={`row-${rowIdx}`}
                         className={cn(
-                          previewColumns.some((col) =>
-                            isExpandablePreviewValue(stringifyCell(row[col])),
-                          ) && "cursor-pointer hover:bg-primary/[0.06]",
+                          rowHasExpandableText(row) && "cursor-pointer hover:bg-primary/[0.06]",
                           expandedPreviewRows[rowIdx] && "bg-primary/[0.05]",
                         )}
                         onClick={() => {
-                          const canExpand = previewColumns.some((col) =>
-                            isExpandablePreviewValue(stringifyCell(row[col])),
-                          );
+                          const canExpand = rowHasExpandableText(row);
                           if (!canExpand) {
                             return;
                           }
@@ -802,10 +810,22 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
                             className="max-w-[260px] whitespace-pre-wrap break-words text-xs"
                           >
                             {(() => {
+                              const imagePreview = resolveImagePreview(row[col]);
+                              if (imagePreview?.kind === "ready") {
+                                return (
+                                  <img
+                                    src={imagePreview.src}
+                                    alt={`${col} preview`}
+                                    loading="lazy"
+                                    className="h-20 w-auto max-w-[220px] rounded-md border border-border/60 bg-muted/20 object-contain"
+                                  />
+                                );
+                              }
+                              if (imagePreview?.kind === "too_large") {
+                                return "Image too large to preview";
+                              }
                               const value = stringifyCell(row[col]);
-                              const rowHasExpandableCell = previewColumns.some((columnName) =>
-                                isExpandablePreviewValue(stringifyCell(row[columnName])),
-                              );
+                              const rowHasExpandableCell = rowHasExpandableText(row);
                               const rowExpanded = Boolean(expandedPreviewRows[rowIdx]);
                               return rowHasExpandableCell && !rowExpanded
                                 ? truncatePreviewValue(value)

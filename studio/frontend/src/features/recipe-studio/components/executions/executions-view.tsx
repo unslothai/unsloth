@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
+import { resolveImagePreview } from "../../utils/image-preview";
 import type {
   RecipeExecutionRecord,
 } from "../../execution-types";
@@ -119,9 +120,32 @@ export function ExecutionsView({
       header: name,
       cell: ({ getValue, row }) => {
         const rawValue = getValue();
+        const imagePreview = resolveImagePreview(rawValue);
+        if (imagePreview?.kind === "ready") {
+          return (
+            <div className="max-w-[32rem]">
+              <img
+                src={imagePreview.src}
+                alt={`${name} preview`}
+                loading="lazy"
+                className="h-24 w-auto max-w-[260px] rounded-md border border-border/60 bg-muted/20 object-contain"
+              />
+            </div>
+          );
+        }
+        if (imagePreview?.kind === "too_large") {
+          return (
+            <div className="max-w-[32rem]">
+              <p className="text-xs text-muted-foreground">
+                Image too large to preview
+              </p>
+            </div>
+          );
+        }
         const value = formatCellValue(rawValue);
         const rowExpanded = Boolean(expandedDatasetRows[row.id]);
         const rowHasExpandableCell = visibleDatasetColumnNames.some((columnName) =>
+          !resolveImagePreview(row.original[columnName]) &&
           isExpandableCellValue(formatCellValue(row.original[columnName])),
         );
         const showTruncated = rowHasExpandableCell && !rowExpanded;

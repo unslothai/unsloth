@@ -1,5 +1,27 @@
 import type { LlmConfig, LlmMcpProviderConfig, LlmToolConfig } from "../../types";
 
+function buildImageContext(
+  config: LlmConfig,
+  errors: string[],
+): Array<Record<string, unknown>> | undefined {
+  const imageContext = config.image_context;
+  if (!imageContext?.enabled) {
+    return undefined;
+  }
+  const columnName = imageContext.column_name.trim();
+  if (!columnName) {
+    errors.push(`LLM ${config.name}: image context column is required.`);
+    return undefined;
+  }
+  return [
+    {
+      modality: "image",
+      // biome-ignore lint/style/useNamingConvention: api schema
+      column_name: columnName,
+    },
+  ];
+}
+
 export function buildLlmColumn(
   config: LlmConfig,
   errors: string[],
@@ -13,6 +35,8 @@ export function buildLlmColumn(
     prompt: config.prompt,
     // biome-ignore lint/style/useNamingConvention: api schema
     system_prompt: config.system_prompt || undefined,
+    // biome-ignore lint/style/useNamingConvention: api schema
+    multi_modal_context: buildImageContext(config, errors),
     // biome-ignore lint/style/useNamingConvention: api schema
     tool_alias: toolAlias || undefined,
   };
