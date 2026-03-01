@@ -11,6 +11,9 @@ import {
 type RunMessages = Parameters<ChatModelAdapter["run"]>[0]["messages"];
 type RunMessage = RunMessages[number];
 
+/** Tracks which user messages were sent with an audio file (messageId → filename). */
+export const sentAudioNames = new Map<string, string>();
+
 function collectTextParts(message: RunMessage): string[] {
   const textParts = message.content
     .filter((part) => part.type === "text")
@@ -157,6 +160,11 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       const audioBase64 = findLatestUserAudioBase64(messages);
       // Clear pending audio from store after extracting (consumed on send)
       if (audioBase64) {
+        const audioName = runtime.pendingAudioName;
+        if (audioName) {
+          const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
+          if (lastUserMsg) sentAudioNames.set(lastUserMsg.id, audioName);
+        }
         runtime.clearPendingAudio();
       }
       const useAdapter = await resolveUseAdapter(unstable_threadId);
@@ -165,7 +173,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       const activeModel = runtime.models.find(
         (m) => m.id === params.checkpoint,
       );
-      if (activeModel?.isAudio) {
+      if (activeModel?.isAudio && !activeModel?.hasAudioInput) {
         const threadKey = unstable_threadId || "__default";
         runtime.setThreadRunning(threadKey, true);
         try {

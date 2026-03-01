@@ -443,7 +443,7 @@ def is_audio_model(model_name: str) -> Optional[str]:
     try:
         defaults = load_model_defaults(model_name)
         audio_type = defaults.get('audio_type')
-        if audio_type and isinstance(audio_type, str) and audio_type in ('snac', 'csm', 'bicodec', 'dac'):
+        if audio_type and isinstance(audio_type, str) and audio_type in ('snac', 'csm', 'bicodec', 'dac', 'whisper'):
             logger.info(f"Model {model_name} detected as audio model: audio_type={audio_type}")
             return audio_type
         return None
@@ -914,6 +914,23 @@ def load_model_defaults(model_name: str) -> Dict[str, Any]:
                         logger.info(f"Loaded model defaults from {config_path} (via mapping)")
                         return config
         
+        # If model_name is a local path (e.g. /home/.../Spark-TTS-0.5B/LLM from
+        # adapter_config.json), try matching the last 1-2 path components against
+        # the registry (e.g. "Spark-TTS-0.5B/LLM").
+        if model_name not in _REVERSE_MODEL_MAPPING and (model_name.startswith("/") or model_name.startswith(".")):
+            parts = Path(model_name).parts
+            for depth in [2, 1]:
+                if len(parts) >= depth:
+                    suffix = "/".join(parts[-depth:])
+                    if suffix in _REVERSE_MODEL_MAPPING:
+                        canonical_file = _REVERSE_MODEL_MAPPING[suffix]
+                        for config_path in defaults_dir.rglob(canonical_file):
+                            if config_path.is_file():
+                                with open(config_path, 'r', encoding='utf-8') as f:
+                                    config = yaml.safe_load(f) or {}
+                                    logger.info(f"Loaded model defaults from {config_path} (via path suffix '{suffix}')")
+                                    return config
+
         # Try exact model name match (for backward compatibility)
         model_filename = model_name.replace("/", "_") + ".yaml"
         # Search in subfolders and root
@@ -1162,6 +1179,12 @@ class ModelConfig:
             has_audio_in = has_audio_input_model(identifier)
 
         display_name = Path(path).name if is_local else identifier.split("/")[-1]
+
+        # Audio models are never vision models (e.g. WhisperForConditionalGeneration
+        # and CsmForConditionalGeneration match the ForConditionalGeneration suffix
+        # but are not VLMs).
+        if audio_type_val is not None:
+            vision = False
 
         return cls(
             identifier=identifier,

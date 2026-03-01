@@ -91,6 +91,7 @@ export function DatasetMappingCard({
   mappingOk,
   autoDetected = false,
   isVlm = false,
+  isAudio = false,
   format,
 }: {
   mapping: Record<string, string>;
