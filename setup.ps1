@@ -227,6 +227,40 @@ if (-not $HasNvidiaSmi) {
 Write-Host "[OK] NVIDIA GPU detected" -ForegroundColor Green
 
 # ============================================
+# 1a.5. Windows Long Paths (required for deep node_modules / Python paths)
+# ============================================
+$LongPathsEnabled = $false
+try {
+    $regVal = Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" -Name "LongPathsEnabled" -ErrorAction SilentlyContinue
+    if ($regVal -and $regVal.LongPathsEnabled -eq 1) {
+        $LongPathsEnabled = $true
+    }
+} catch {}
+
+if ($LongPathsEnabled) {
+    Write-Host "[OK] Windows Long Paths enabled" -ForegroundColor Green
+} else {
+    Write-Host "Windows Long Paths not enabled (required for Triton compilation and deep dependency paths)." -ForegroundColor Yellow
+    Write-Host "   Requesting admin access to fix..." -ForegroundColor Yellow
+    try {
+        # Spawn an elevated process to set the registry key (triggers UAC prompt)
+        $proc = Start-Process -FilePath "reg.exe" `
+            -ArgumentList 'add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled /t REG_DWORD /d 1 /f' `
+            -Verb RunAs -Wait -PassThru -ErrorAction Stop
+        if ($proc.ExitCode -eq 0) {
+            $LongPathsEnabled = $true
+            Write-Host "[OK] Windows Long Paths enabled (via UAC)" -ForegroundColor Green
+        } else {
+            Write-Host "[WARN] Failed to enable Long Paths (exit code: $($proc.ExitCode))" -ForegroundColor Yellow
+        }
+    } catch {
+        Write-Host "[WARN] Could not enable Long Paths (UAC was declined or not available)" -ForegroundColor Yellow
+        Write-Host "       Run this manually in an Admin terminal:" -ForegroundColor Yellow
+        Write-Host '       reg add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled /t REG_DWORD /d 1 /f' -ForegroundColor Cyan
+    }
+}
+
+# ============================================
 # 1b. Git (required by pip for git+https:// deps and by npm)
 # ============================================
 $HasGit = $null -ne (Get-Command git -ErrorAction SilentlyContinue)
