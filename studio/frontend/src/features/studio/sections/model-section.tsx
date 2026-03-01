@@ -37,8 +37,7 @@ import { formatCompact } from "@/lib/utils";
 import {
   type TrainingMethod as VramTrainingMethod,
   type VramFitStatus,
-  checkVramFit,
-  estimateLoadingVram,
+  buildModelVramMap,
 } from "@/lib/vram";
 import {
   listLocalModels,
@@ -218,22 +217,23 @@ export function ModelSection() {
   // Keyed by model id so the render callback is a simple O(1) lookup.
   // Re-computes when the training method changes (QLoRA=4-bit vs LoRA/Full=fp16).
   const vramMap = useMemo(() => {
-    const method = trainingMethod as VramTrainingMethod;
+    const fitMap = buildModelVramMap(
+      hfResults,
+      trainingMethod as VramTrainingMethod,
+      gpu,
+    );
     const map = new Map<
       string,
       { est: number; status: VramFitStatus | null; detail: string | null }
     >();
     for (const r of hfResults) {
       const detail = r.totalParams ? formatCompact(r.totalParams) : null;
-      if (r.totalParams) {
-        const est = estimateLoadingVram(r.totalParams, method);
-        const status = gpu.available
-          ? checkVramFit(est, gpu.memoryTotalGb)
-          : null;
-        map.set(r.id, { est, status, detail });
-      } else {
-        map.set(r.id, { est: 0, status: null, detail });
-      }
+      const fit = fitMap.get(r.id);
+      map.set(r.id, {
+        est: fit?.est ?? 0,
+        status: fit?.status ?? null,
+        detail,
+      });
     }
     return map;
   }, [hfResults, gpu, trainingMethod]);
