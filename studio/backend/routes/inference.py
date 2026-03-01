@@ -125,6 +125,7 @@ async def load_model(
                 # Local mode: llama-server loads via -m <path>
                 success = llama_backend.load_model(
                     gguf_path=config.gguf_file,
+                    mmproj_path=config.gguf_mmproj_file,
                     model_identifier=config.identifier,
                     is_vision=config.is_vision,
                     n_ctx=request.max_seq_length,
