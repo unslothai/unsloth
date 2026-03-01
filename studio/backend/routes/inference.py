@@ -569,9 +569,17 @@ async def openai_chat_completions(
         model_name = backend.active_model_name or payload.model
 
         # ── Audio TTS path: auto-route to audio generation ────
+        # (Whisper is ASR not TTS — handled below in audio input path)
         model_info = backend.models.get(backend.active_model_name, {})
-        if model_info.get("is_audio"):
+        if model_info.get("is_audio") and model_info.get("audio_type") != "whisper":
             return await generate_audio(payload, request)
+
+        # ── Whisper without audio: return clear error ──
+        if model_info.get("audio_type") == "whisper" and not payload.audio_base64:
+            raise HTTPException(
+                status_code=400,
+                detail="Whisper models require audio input. Please upload an audio file.",
+            )
 
         # ── Audio INPUT path: decode WAV and route to audio input generation ──
         if payload.audio_base64 and model_info.get("has_audio_input"):
@@ -582,6 +590,11 @@ async def openai_chat_completions(
             created = int(time.time())
 
             def audio_input_generate():
+                if model_info.get("audio_type") == "whisper":
+                    return backend.generate_whisper_response(
+                        audio_array=audio_array,
+                        cancel_event=cancel_event,
+                    )
                 return backend.generate_audio_input_response(
                     messages=chat_messages,
                     system_prompt=system_prompt,

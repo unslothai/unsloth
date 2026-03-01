@@ -1048,7 +1048,7 @@ class UnslothTrainer:
             return formatted
 
         self._update_progress(status_message="Formatting audio VLM dataset...")
-        dataset = dataset.map(format_messages, batched=True, batch_size=4, num_proc=4)
+        dataset = dataset.map(format_messages, batched=True, batch_size=4, num_proc=safe_num_proc(4))
         print(f"Audio VLM dataset formatted: {len(dataset)} examples\n")
         return dataset
 
