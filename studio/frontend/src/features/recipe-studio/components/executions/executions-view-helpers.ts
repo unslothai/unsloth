@@ -3,6 +3,7 @@ import type {
   RecipeExecutionStatus,
 } from "../../execution-types";
 import { isExecutionInProgress } from "../../executions/execution-helpers";
+import { resolveImagePreview } from "../../utils/image-preview";
 
 export type AnalysisColumnStat = {
   column_name: string;
@@ -53,6 +54,18 @@ export function truncateCellValue(value: string): string {
     return value;
   }
   return `${value.slice(0, 180).trimEnd()}...`;
+}
+
+export function hasExpandableTextCell(
+  row: Record<string, unknown>,
+  visibleColumnNames: string[],
+): boolean {
+  return visibleColumnNames.some((columnName) => {
+    if (resolveImagePreview(row[columnName])) {
+      return false;
+    }
+    return isExpandableCellValue(formatCellValue(row[columnName]));
+  });
 }
 
 function parseNumber(value: unknown): number | null {
