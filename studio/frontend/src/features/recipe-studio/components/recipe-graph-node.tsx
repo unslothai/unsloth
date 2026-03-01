@@ -81,6 +81,9 @@ const NODE_META = {
   llm: {
     tone: "bg-sky-50 text-sky-600 border-sky-100",
   },
+  validator: {
+    tone: "bg-rose-50 text-rose-600 border-rose-100",
+  },
   expression: {
     tone: "bg-indigo-50 text-indigo-600 border-indigo-100",
   },
@@ -129,6 +132,9 @@ function resolveNodeIcon(
   }
   if (kind === "llm" && blockType in LLM_ICONS) {
     return LLM_ICONS[blockType as LlmType];
+  }
+  if (kind === "validator") {
+    return Shield02Icon;
   }
   if (kind === "expression") {
     return FunctionIcon;
@@ -198,6 +204,14 @@ function getConfigSummary(config: NodeConfig | undefined): string {
       return `${scoreCount} scorers`;
     }
     return "Prompt/system via linked input nodes";
+  }
+
+  if (config.kind === "validator") {
+    const target = config.target_columns[0]?.trim();
+    if (target) {
+      return `Target: ${target}`;
+    }
+    return "Pick LLM code target";
   }
 
   if (config.kind === "seed") {
@@ -333,12 +347,15 @@ function RecipeGraphNodeBase({
 
   const showDataHandles =
     data.kind === "llm" ||
+    data.kind === "validator" ||
     data.kind === "expression" ||
     data.kind === "sampler" ||
     data.kind === "seed";
-  const showSemanticIn = data.kind === "model_config";
+  const showSemanticIn = data.kind === "model_config" || data.kind === "validator";
   const showSemanticOut =
-    data.kind === "model_config" || data.kind === "model_provider";
+    data.kind === "model_config" ||
+    data.kind === "model_provider" ||
+    data.kind === "validator";
   const summary = getConfigSummary(config);
   const nodeBody = renderNodeBody(config, summary, updateConfig);
   const canShowLlmAux =

@@ -13,6 +13,14 @@ export type SamplerType =
   | "person_from_faker";
 
 export type LlmType = "text" | "structured" | "code" | "judge";
+export type ValidatorCodeLang =
+  | "python"
+  | "sql:sqlite"
+  | "sql:postgres"
+  | "sql:mysql"
+  | "sql:tsql"
+  | "sql:bigquery"
+  | "sql:ansi";
 
 export type ExpressionDtype = "str" | "int" | "float" | "bool";
 
@@ -28,6 +36,7 @@ export type RecipeNodeData = {
   kind:
     | "sampler"
     | "llm"
+    | "validator"
     | "expression"
     | "seed"
     | "note"
@@ -37,6 +46,8 @@ export type RecipeNodeData = {
   blockType:
     | SamplerType
     | LlmType
+    | "validator_python"
+    | "validator_sql"
     | "expression"
     | "seed"
     | "markdown_note"
@@ -234,6 +245,19 @@ export type ExpressionConfig = {
   dtype: ExpressionDtype;
 };
 
+export type ValidatorConfig = {
+  id: string;
+  kind: "validator";
+  name: string;
+  drop?: boolean;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  target_columns: string[];
+  // biome-ignore lint/style/useNamingConvention: api schema
+  code_lang: ValidatorCodeLang;
+  // ui ergonomics (serialized to int in payload)
+  batch_size: string;
+};
+
 export type MarkdownNoteConfig = {
   id: string;
   kind: "markdown_note";
@@ -294,6 +318,7 @@ export type RecipeProcessorConfig = SchemaTransformProcessorConfig;
 export type NodeConfig =
   | SamplerConfig
   | LlmConfig
+  | ValidatorConfig
   | ExpressionConfig
   | MarkdownNoteConfig
   | SeedConfig

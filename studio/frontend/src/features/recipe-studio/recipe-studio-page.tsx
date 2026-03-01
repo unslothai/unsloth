@@ -100,6 +100,7 @@ export function RecipeStudioPage({
     addModelProviderNode,
     addModelConfigNode,
     addExpressionNode,
+    addValidatorNode,
     addMarkdownNoteNode,
     selectConfig,
     openConfig,
@@ -136,6 +137,7 @@ export function RecipeStudioPage({
       addModelProviderNode: state.addModelProviderNode,
       addModelConfigNode: state.addModelConfigNode,
       addExpressionNode: state.addExpressionNode,
+      addValidatorNode: state.addValidatorNode,
       addMarkdownNoteNode: state.addMarkdownNoteNode,
       selectConfig: state.selectConfig,
       openConfig: state.openConfig,
@@ -186,6 +188,7 @@ export function RecipeStudioPage({
     handleAddModelProviderFromSheet,
     handleAddModelConfigFromSheet,
     handleAddExpressionFromSheet,
+    handleAddValidatorFromSheet,
     handleAddMarkdownNoteFromSheet,
   } = useRecipeEditorGraph({
     nodes,
@@ -204,6 +207,7 @@ export function RecipeStudioPage({
     addModelProviderNode,
     addModelConfigNode,
     addExpressionNode,
+    addValidatorNode,
     addMarkdownNoteNode,
   });
 
@@ -521,6 +525,7 @@ export function RecipeStudioPage({
                     onAddModelProvider={handleAddModelProviderFromSheet}
                     onAddModelConfig={handleAddModelConfigFromSheet}
                     onAddExpression={handleAddExpressionFromSheet}
+                    onAddValidator={handleAddValidatorFromSheet}
                     onAddMarkdownNote={handleAddMarkdownNoteFromSheet}
                     onOpenProcessors={openProcessorsFromSheet}
                     copied={copied}

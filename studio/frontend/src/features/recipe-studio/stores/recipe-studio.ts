@@ -52,6 +52,7 @@ type SheetView =
   | "sampler"
   | "seed"
   | "llm"
+  | "validator"
   | "expression"
   | "note"
   | "processor";
@@ -95,6 +96,11 @@ type RecipeStudioState = {
   addModelProviderNode: (position?: XYPosition, openDialog?: boolean) => void;
   addModelConfigNode: (position?: XYPosition, openDialog?: boolean) => void;
   addExpressionNode: (position?: XYPosition, openDialog?: boolean) => void;
+  addValidatorNode: (
+    type: "validator_python" | "validator_sql",
+    position?: XYPosition,
+    openDialog?: boolean,
+  ) => void;
   addMarkdownNoteNode: (position?: XYPosition, openDialog?: boolean) => void;
   updateConfig: (id: string, patch: Partial<NodeConfig>) => void;
   loadRecipe: (snapshot: RecipeSnapshot) => void;
@@ -532,6 +538,19 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
         state,
         "expression",
         "expression",
+        position,
+        openDialog,
+      );
+    }),
+  addValidatorNode: (type, position, openDialog = true) =>
+    set((state) => {
+      if (state.executionLocked) {
+        return state;
+      }
+      return buildAddedNodeState(
+        state,
+        "validator",
+        type,
         position,
         openDialog,
       );

@@ -39,10 +39,17 @@ type SheetView =
   | "sampler"
   | "seed"
   | "llm"
+  | "validator"
   | "expression"
   | "note"
   | "processor";
-type SheetKind = "sampler" | "seed" | "llm" | "expression" | "note";
+type SheetKind =
+  | "sampler"
+  | "seed"
+  | "llm"
+  | "validator"
+  | "expression"
+  | "note";
 type RootSheetView = Exclude<SheetView, "root">;
 type RootGroup = {
   kind: RootSheetView;
@@ -63,6 +70,7 @@ type BlockSheetProps = {
   onAddModelProvider: () => void;
   onAddModelConfig: () => void;
   onAddExpression: () => void;
+  onAddValidator: (type: "validator_python" | "validator_sql") => void;
   onAddMarkdownNote: () => void;
   onOpenProcessors: () => void;
   copied: boolean;
@@ -89,6 +97,9 @@ function getSheetTitle(sheetView: SheetView): string {
   if (sheetView === "expression") {
     return "Expression blocks";
   }
+  if (sheetView === "validator") {
+    return "Validator blocks";
+  }
   if (sheetView === "note") {
     return "Note blocks";
   }
@@ -103,6 +114,7 @@ const VIEW_KIND: Record<SheetView, SheetKind | null> = {
   sampler: "sampler",
   seed: "seed",
   llm: "llm",
+  validator: "validator",
   expression: "expression",
   note: "note",
   processor: null,
@@ -121,6 +133,7 @@ const SEARCHABLE_KINDS: SheetKind[] = [
   "sampler",
   "seed",
   "llm",
+  "validator",
   "expression",
   "note",
 ];
@@ -193,6 +206,7 @@ export function BlockSheet({
   onAddModelProvider,
   onAddModelConfig,
   onAddExpression,
+  onAddValidator,
   onAddMarkdownNote,
   onOpenProcessors,
   copied,
@@ -300,6 +314,10 @@ export function BlockSheet({
         return;
       }
       onAddLlm(type as LlmType);
+      return;
+    }
+    if (kind === "validator") {
+      onAddValidator(type as "validator_python" | "validator_sql");
       return;
     }
     if (kind === "expression") {

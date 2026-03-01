@@ -32,6 +32,7 @@ import {
   buildSamplerColumn,
   buildSeedConfig,
   buildSeedDropProcessor,
+  buildValidatorColumn,
   pickFirstSeedConfig,
 } from "./builders";
 import type { RecipePayloadResult } from "./types";
@@ -40,6 +41,7 @@ import {
   validateModelConfigProviders,
   validateSubcategoryConfigs,
   validateTimedeltaConfigs,
+  validateValidatorConfigs,
   validateUsedProviders,
 } from "./validate";
 import { isLikelyImageValue } from "../image-preview";
@@ -179,6 +181,11 @@ export function buildRecipePayload(
       nameToConfig.set(config.name, config);
       continue;
     }
+    if (config.kind === "validator") {
+      columns.push(buildValidatorColumn(config, errors));
+      nameToConfig.set(config.name, config);
+      continue;
+    }
     if (config.kind === "seed") {
       // SeedConfig is global config (seed_config); seed-dataset columns are added by DataDesigner.
       continue;
@@ -198,6 +205,7 @@ export function buildRecipePayload(
 
   validateSubcategoryConfigs(configs, nameToConfig, errors);
   validateTimedeltaConfigs(configs, nameToConfig, errors);
+  validateValidatorConfigs(configs, nameToConfig, errors);
   validateModelAliasLinks(modelAliases, modelConfigConfigs, errors);
   validateModelConfigProviders(
     modelConfigConfigs,

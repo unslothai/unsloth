@@ -37,6 +37,7 @@ export function ConfigDialog({
   const showDropToggle =
     config?.kind === "sampler" ||
     config?.kind === "llm" ||
+    config?.kind === "validator" ||
     config?.kind === "expression" ||
     (config?.kind === "seed" &&
       (config.seed_source_type ?? "hf") === "unstructured");
