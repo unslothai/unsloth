@@ -104,7 +104,7 @@ export function ExecutionOverviewTab({
                   <span className="font-semibold">{nullRate?.toFixed(1) ?? "--"}%</span>
                 </p>
                 <p className="flex items-center justify-between gap-3">
-                  <span className="text-muted-foreground">Dropped columns</span>
+                  <span className="text-muted-foreground">Side-effect columns</span>
                   <span className="font-semibold">{formatMetricValue(sideEffects.length)}</span>
                 </p>
                 {sideEffects.length > 0 && (
