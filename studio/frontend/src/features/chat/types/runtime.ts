@@ -27,6 +27,9 @@ export interface ChatModelSummary {
   isVision: boolean;
   isLora: boolean;
   isGguf?: boolean;
+  isAudio?: boolean;
+  audioType?: string | null;
+  hasAudioInput?: boolean;
 }
 
 export interface ChatLoraSummary {

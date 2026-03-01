@@ -225,7 +225,10 @@ async def list_models(
                 id=model_name,
                 name=model_name.split("/")[-1] if "/" in model_name else model_name,
                 is_vision=model_data.get("is_vision", False),
-                is_lora=model_data.get("is_lora", False)
+                is_lora=model_data.get("is_lora", False),
+                is_audio=model_data.get("is_audio", False),
+                audio_type=model_data.get("audio_type"),
+                has_audio_input=model_data.get("has_audio_input", False),
             )
             loaded_models.append(model_info)
         

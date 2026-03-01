@@ -10,6 +10,7 @@ import { mermaid } from "@streamdown/mermaid";
 import { Block, type BlockProps, Streamdown } from "streamdown";
 import { useEffect, useRef, useState } from "react";
 import "katex/dist/katex.min.css";
+import { AudioPlayer } from "./audio-player";
 
 const { withSmoothContextProvider, useSmoothStatus } = INTERNAL;
 
@@ -77,10 +78,16 @@ function StreamdownBlock(props: BlockProps) {
 
   return <Block {...props} />;
 }
+const AUDIO_PLAYER_RE = /<audio-player\s+src="([^"]+)"\s*\/>/;
 
 const MarkdownTextImpl = () => {
   const { text } = useMessagePartText();
   const status = useSmoothStatus();
+
+  const audioMatch = text.match(AUDIO_PLAYER_RE);
+  if (audioMatch) {
+    return <AudioPlayer src={audioMatch[1]} />;
+  }
 
   return (
     <div data-status={status.type}>
