@@ -204,6 +204,12 @@ export function makeLlmConfig(
     tool_configs: [],
     // biome-ignore lint/style/useNamingConvention: ui schema
     mcp_providers: [],
+    // biome-ignore lint/style/useNamingConvention: ui schema
+    image_context: {
+      enabled: false,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      column_name: "",
+    },
     scores:
       llmType === "judge"
         ? [

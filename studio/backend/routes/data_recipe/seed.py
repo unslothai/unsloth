@@ -10,6 +10,7 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
+from core.data_recipe.jsonable import to_preview_jsonable
 
 from models.data_recipe import (
     SeedInspectRequest,
@@ -26,13 +27,7 @@ SEED_UPLOAD_DIR = Path.home() / ".cache" / "unsloth" / "data-recipe" / "seed-upl
 
 
 def _serialize_preview_value(value: Any) -> Any:
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    if isinstance(value, dict):
-        return {str(key): _serialize_preview_value(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_serialize_preview_value(item) for item in value]
-    return str(value)
+    return to_preview_jsonable(value)
 
 
 def _serialize_preview_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -63,10 +58,10 @@ def _list_hf_data_files(*, dataset_name: str, token: str | None) -> list[str]:
         return []
 
 
-def _select_best_file(data_files: list[str]) -> str | None:
+def _select_best_file(data_files: list[str], split: str = DEFAULT_SPLIT) -> str | None:
     if not data_files:
         return None
-    split_lower = DEFAULT_SPLIT
+    split_lower = split.lower()
 
     def score(path: str) -> tuple[int, int]:
         name = path.lower()
@@ -85,8 +80,8 @@ def _select_best_file(data_files: list[str]) -> str | None:
     return sorted(data_files, key=score)[0]
 
 
-def _resolve_seed_hf_path(dataset_name: str, data_files: list[str]) -> str | None:
-    selected = _select_best_file(data_files)
+def _resolve_seed_hf_path(dataset_name: str, data_files: list[str], split: str = DEFAULT_SPLIT) -> str | None:
+    selected = _select_best_file(data_files, split)
     if not selected:
         return None
 
@@ -196,7 +191,7 @@ def inspect_seed_dataset(payload: SeedInspectRequest) -> SeedInspectResponse:
     except ImportError as exc:
         raise HTTPException(status_code=500, detail=f"seed inspect dependencies unavailable: {exc}") from exc
 
-    split = DEFAULT_SPLIT
+    split = _normalize_optional_text(payload.split) or DEFAULT_SPLIT
     subset = _normalize_optional_text(payload.subset)
     token = _normalize_optional_text(payload.hf_token)
     preview_size = int(payload.preview_size)
@@ -204,12 +199,12 @@ def inspect_seed_dataset(payload: SeedInspectRequest) -> SeedInspectResponse:
     preview_rows: list[dict[str, Any]] = []
     data_files = _list_hf_data_files(dataset_name=dataset_name, token=token)
 
-    selected_file = _select_best_file(data_files)
+    selected_file = _select_best_file(data_files, split)
     if selected_file:
         try:
             single_file_kwargs = _build_stream_load_kwargs(
                 dataset_name=dataset_name,
-                split=DEFAULT_SPLIT,
+                split=split,
                 subset=subset,
                 token=token,
                 data_file=selected_file,
@@ -246,7 +241,7 @@ def inspect_seed_dataset(payload: SeedInspectRequest) -> SeedInspectResponse:
     if not data_files:
         resolved_path = f"datasets/{dataset_name}/**/*.parquet"
     else:
-        resolved_path = _resolve_seed_hf_path(dataset_name, data_files)
+        resolved_path = _resolve_seed_hf_path(dataset_name, data_files, split)
         if not resolved_path:
             raise HTTPException(status_code=422, detail="unable to resolve seed dataset path")
 
@@ -255,7 +250,7 @@ def inspect_seed_dataset(payload: SeedInspectRequest) -> SeedInspectResponse:
         resolved_path=resolved_path,
         columns=columns,
         preview_rows=preview_rows,
-        split=None,
+        split=split,
         subset=subset,
     )
 

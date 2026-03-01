@@ -7,7 +7,7 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-from ..jsonable import to_jsonable
+from ..jsonable import to_jsonable, to_preview_jsonable
 from .constants import EVENT_JOB_COMPLETED, EVENT_JOB_ERROR, EVENT_JOB_STARTED
 from ..service import build_config_builder, create_data_designer
 
@@ -84,7 +84,7 @@ def run_job_process(
             dataset = (
                 []
                 if results.dataset is None
-                else to_jsonable(results.dataset.to_dict(orient="records"))
+                else to_preview_jsonable(results.dataset.to_dict(orient="records"))
             )
             processor_artifacts = (
                 None

@@ -42,6 +42,7 @@ import {
   validateTimedeltaConfigs,
   validateUsedProviders,
 } from "./validate";
+import { isLikelyImageValue } from "../image-preview";
 
 function pushUniqueJson(
   label: string,
@@ -110,6 +111,30 @@ export function buildRecipePayload(
       continue;
     }
     if (config.kind === "llm") {
+      if (config.image_context?.enabled) {
+        const imageContext = config.image_context;
+        const columnName = imageContext.column_name.trim();
+        if (columnName) {
+          if (firstSeed?.seed_columns && firstSeed.seed_columns.length > 0) {
+            if (!firstSeed.seed_columns.includes(columnName)) {
+              errors.push(
+                `LLM ${config.name}: image context column '${columnName}' not found in seed columns.`,
+              );
+            }
+          }
+          const previewRows = firstSeed?.seed_preview_rows ?? [];
+          if (previewRows.length > 0) {
+            const hasImageLikeValue = previewRows.some((row) =>
+              isLikelyImageValue(row[columnName]),
+            );
+            if (!hasImageLikeValue) {
+              errors.push(
+                `LLM ${config.name}: image context column '${columnName}' has no image-like values in preview rows.`,
+              );
+            }
+          }
+        }
+      }
       columns.push(buildLlmColumn(config, errors));
       for (const provider of config.mcp_providers ?? []) {
         const builtProvider = buildLlmMcpProvider(provider, errors);
