@@ -17,6 +17,17 @@ After fine-tuning your model with Unsloth on Google Colab, you'll need to transf
 
 The most reliable method. Push directly to [Hugging Face](https://huggingface.co/) and download from there. Works with any file size and gives you a permanent, shareable link.
 
+### Authenticate first
+
+Before pushing, log in to Hugging Face from your Colab notebook. This avoids hardcoding tokens in your code:
+
+```python
+from huggingface_hub import login
+login()  # Opens a prompt for your HF token
+```
+
+> **💡 Tip:** You can get a free Hugging Face token at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens). Make sure to create a **write** token.
+
 ### Push GGUF files
 
 ```python
@@ -25,7 +36,6 @@ model.push_to_hub_gguf(
     "your-hf-username/my-model-gguf",  # Replace with your HF username
     tokenizer,
     quantization_method="q4_k_m",
-    token="hf_...",  # Your HF write token
 )
 ```
 
@@ -37,14 +47,12 @@ model.push_to_hub_merged(
     "your-hf-username/my-model-16bit",
     tokenizer,
     save_method="merged_16bit",
-    token="hf_...",
 )
 
 # Or push just the LoRA adapter
 model.push_to_hub(
     "your-hf-username/my-model-lora",
     tokenizer,
-    token="hf_...",
 )
 ```
 
@@ -56,6 +64,9 @@ Once pushed, download using the `huggingface_hub` CLI on your local machine:
 # Install if needed
 pip install huggingface_hub
 
+# Log in (required for private repos or gated models)
+huggingface-cli login
+
 # Download the entire repo
 huggingface-cli download your-hf-username/my-model-gguf --local-dir ./my-model
 
@@ -63,7 +74,7 @@ huggingface-cli download your-hf-username/my-model-gguf --local-dir ./my-model
 huggingface-cli download your-hf-username/my-model-gguf my-model-Q4_K_M.gguf --local-dir ./my-model
 ```
 
-> **💡 Tip:** You can get a free Hugging Face token at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens). Make sure to create a **write** token.
+> **💡 Tip:** If your repo is private or uses a gated model, you must run `huggingface-cli login` first or pass `--token hf_...` to avoid 401/403 errors.
 
 ---
 
@@ -87,7 +98,7 @@ Alternatively, **copy files** if you've already saved to local Colab storage:
 
 ```python
 import shutil
-shutil.copytree("local_directory", "/content/drive/MyDrive/my-model")
+shutil.copytree("local_directory", "/content/drive/MyDrive/my-model", dirs_exist_ok=True)
 ```
 
 ### Troubleshooting Google Drive
@@ -122,9 +133,8 @@ files.download("path/to/your-model.gguf")
 If you use cloud storage (AWS S3, Google Cloud Storage, Azure Blob, etc.), you can install `rclone` in Colab and upload directly.
 
 ```bash
-# Install rclone in Colab (download first, then execute)
-!curl -O https://rclone.org/install.sh
-!sudo bash install.sh
+# Install rclone in Colab (via apt for simplicity and security)
+!sudo apt-get install -y rclone
 
 # Configure (interactive — or provide a pre-made rclone.conf)
 !rclone config
