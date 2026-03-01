@@ -28,7 +28,7 @@ import {
   formatPercent,
   formatStatus,
   formatTimestamp,
-  isExpandableCellValue,
+  hasExpandableTextCell,
   parseAnalysisColumns,
   parseModelUsageRows,
   statusTone,
@@ -144,9 +144,9 @@ export function ExecutionsView({
         }
         const value = formatCellValue(rawValue);
         const rowExpanded = Boolean(expandedDatasetRows[row.id]);
-        const rowHasExpandableCell = visibleDatasetColumnNames.some((columnName) =>
-          !resolveImagePreview(row.original[columnName]) &&
-          isExpandableCellValue(formatCellValue(row.original[columnName])),
+        const rowHasExpandableCell = hasExpandableTextCell(
+          row.original,
+          visibleDatasetColumnNames,
         );
         const showTruncated = rowHasExpandableCell && !rowExpanded;
 

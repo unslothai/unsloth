@@ -6,6 +6,8 @@ type PreviewImagePayload = {
   data?: unknown;
 };
 
+type UnknownRecord = Record<string, unknown>;
+
 export type ImagePreviewResult =
   | { kind: "ready"; src: string }
   | { kind: "too_large"; estimatedBytes: number };
@@ -56,40 +58,43 @@ function toDataUrlFromBase64(base64: string, mime: string): string {
   return `data:${mime};base64,${normalizeBase64(base64)}`;
 }
 
-function resolveImagePayloadObject(
+function isRecord(value: unknown): value is UnknownRecord {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isByteArray(value: unknown): value is number[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    return false;
+  }
+  return value.every(
+    (item) => typeof item === "number" && Number.isInteger(item) && item >= 0 && item <= 255,
+  );
+}
+
+function byteArrayToBase64(bytes: number[]): string {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let idx = 0; idx < bytes.length; idx += chunkSize) {
+    const chunk = bytes.slice(idx, idx + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+  return btoa(binary);
+}
+
+function resolveStringCandidate(
   value: unknown,
   maxBytes: number,
 ): ImagePreviewResult | null {
-  if (!value || typeof value !== "object") {
-    return null;
-  }
-  const payload = value as PreviewImagePayload;
-  if (payload.type !== "image" || typeof payload.data !== "string") {
-    return null;
-  }
-  const mime = typeof payload.mime === "string" ? payload.mime : "image/jpeg";
-  const estimatedBytes = estimateBase64Bytes(payload.data);
-  if (estimatedBytes > maxBytes) {
-    return { kind: "too_large", estimatedBytes };
-  }
-  return {
-    kind: "ready",
-    src: toDataUrlFromBase64(payload.data, mime),
-  };
-}
-
-export function resolveImagePreview(
-  value: unknown,
-  maxBytes = MAX_IMAGE_PREVIEW_BYTES,
-): ImagePreviewResult | null {
-  const payloadPreview = resolveImagePayloadObject(value, maxBytes);
-  if (payloadPreview) {
-    return payloadPreview;
-  }
-
   if (typeof value !== "string") {
     return null;
   }
+  return resolveImagePreviewFromString(value, maxBytes);
+}
+
+function resolveImagePreviewFromString(
+  value: string,
+  maxBytes: number,
+): ImagePreviewResult | null {
   const trimmed = value.trim();
   if (!trimmed) {
     return null;
@@ -119,6 +124,80 @@ export function resolveImagePreview(
     return { kind: "ready", src: toDataUrlFromBase64(trimmed, mime) };
   }
   return null;
+}
+
+function resolveImagePayloadObject(value: unknown, maxBytes: number): ImagePreviewResult | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const payload = value as PreviewImagePayload;
+  if (payload.type === "image" && typeof payload.data === "string") {
+    const mime = typeof payload.mime === "string" ? payload.mime : "image/jpeg";
+    const estimatedBytes = estimateBase64Bytes(payload.data);
+    if (estimatedBytes > maxBytes) {
+      return { kind: "too_large", estimatedBytes };
+    }
+    return {
+      kind: "ready",
+      src: toDataUrlFromBase64(payload.data, mime),
+    };
+  }
+
+  const imageUrl = value.image_url;
+  const directImageUrl = resolveStringCandidate(imageUrl, maxBytes);
+  if (directImageUrl !== null) {
+    return directImageUrl;
+  }
+  if (isRecord(imageUrl)) {
+    const nestedImageUrl = resolveStringCandidate(imageUrl.url, maxBytes);
+    if (nestedImageUrl !== null) {
+      return nestedImageUrl;
+    }
+  }
+
+  const scalarCandidates = [
+    value.url,
+    value.data,
+    value.bytes,
+    value.base64,
+    value.base64_image,
+    value.image,
+    value.path,
+  ];
+  for (const candidate of scalarCandidates) {
+    const resolved = resolveStringCandidate(candidate, maxBytes);
+    if (resolved !== null) {
+      return resolved;
+    }
+  }
+
+  if (isByteArray(value.bytes)) {
+    const resolved = resolveStringCandidate(byteArrayToBase64(value.bytes), maxBytes);
+    if (resolved !== null) {
+      return resolved;
+    }
+  }
+
+  if (isRecord(value.image)) {
+    return resolveImagePayloadObject(value.image, maxBytes);
+  }
+
+  return null;
+}
+
+export function resolveImagePreview(
+  value: unknown,
+  maxBytes = MAX_IMAGE_PREVIEW_BYTES,
+): ImagePreviewResult | null {
+  const payloadPreview = resolveImagePayloadObject(value, maxBytes);
+  if (payloadPreview) {
+    return payloadPreview;
+  }
+
+  if (typeof value !== "string") {
+    return null;
+  }
+  return resolveImagePreviewFromString(value, maxBytes);
 }
 
 export function isLikelyImageValue(value: unknown): boolean {
