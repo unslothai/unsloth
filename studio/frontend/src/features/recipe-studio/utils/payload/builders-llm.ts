@@ -39,6 +39,10 @@ export function buildLlmColumn(
     multi_modal_context: buildImageContext(config, errors),
     // biome-ignore lint/style/useNamingConvention: api schema
     tool_alias: toolAlias || undefined,
+    // biome-ignore lint/style/useNamingConvention: api schema
+    with_trace: config.with_trace ?? "none",
+    // biome-ignore lint/style/useNamingConvention: api schema
+    extract_reasoning_content: config.extract_reasoning_content === true,
   };
 
   if (config.llm_type === "code") {
@@ -103,8 +107,6 @@ export function buildLlmColumn(
     // biome-ignore lint/style/useNamingConvention: api schema
     column_type: "llm-text",
     ...base,
-    // biome-ignore lint/style/useNamingConvention: api schema
-    with_trace: "none",
   };
 }
 

@@ -158,6 +158,8 @@ export type LlmImageContextConfig = {
   column_name: string;
 };
 
+export type LlmTraceType = "none" | "last_message" | "all_messages";
+
 export type LlmConfig = {
   id: string;
   kind: "llm";
@@ -184,6 +186,10 @@ export type LlmConfig = {
   // ui-only, serialized into multi_modal_context for DataDesigner
   // biome-ignore lint/style/useNamingConvention: ui schema
   image_context?: LlmImageContextConfig;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  with_trace?: LlmTraceType;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  extract_reasoning_content?: boolean;
 };
 
 export type ModelProviderConfig = {
