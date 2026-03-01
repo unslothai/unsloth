@@ -220,6 +220,11 @@ MODEL_NAME_MAPPING = {
     ],
     "OuteAI_Llama-OuteTTS-1.0-1B.yaml": [
         "OuteAI/Llama-OuteTTS-1.0-1B",
+        "unsloth/Llama-OuteTTS-1.0-1B",
+        "unsloth/llama-outetts-1.0-1b",
+        "OuteAI/OuteTTS-1.0-0.6B",
+        "unsloth/OuteTTS-1.0-0.6B",
+        "unsloth/outetts-1.0-0.6b",
     ],
     "unsloth_PaddleOCR-VL.yaml": [
         "unsloth/PaddleOCR-VL",
@@ -402,6 +407,10 @@ def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
             logger.info(f"Model {model_name} detected as VLM: has img_processor")
             return True
 
+        # Check 4: Exclude audio models that have ForConditionalGeneration but aren't VLMs
+        # (e.g. CsmForConditionalGeneration, WhisperForConditionalGeneration)
+        # These are handled by is_audio_model() instead
+
         # Check 4: Has image_token_index (common in VLMs for image placeholder tokens)
         if hasattr(config, 'image_token_index'):
             logger.info(f"Model {model_name} detected as VLM: has image_token_index")
@@ -423,6 +432,38 @@ def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
         logger.warning(f"Could not determine if {model_name} is vision model: {e}")
         return False
 pass
+
+
+def is_audio_model(model_name: str) -> Optional[str]:
+    """
+    Check if a model is a TTS audio model by looking up its YAML config.
+
+    Returns the audio_type string ('snac', 'csm', 'bicodec', 'dac') or None.
+    """
+    try:
+        defaults = load_model_defaults(model_name)
+        audio_type = defaults.get('audio_type')
+        if audio_type and isinstance(audio_type, str) and audio_type in ('snac', 'csm', 'bicodec', 'dac'):
+            logger.info(f"Model {model_name} detected as audio model: audio_type={audio_type}")
+            return audio_type
+        return None
+    except Exception as e:
+        logger.debug(f"Could not determine if {model_name} is audio model: {e}")
+        return None
+
+
+def has_audio_input_model(model_name: str) -> bool:
+    """
+    Check if a model accepts audio input (ASR/speech understanding) by looking up its YAML config.
+
+    Returns True if the model has 'audio_input: true' in its defaults.
+    """
+    try:
+        defaults = load_model_defaults(model_name)
+        return bool(defaults.get('audio_input'))
+    except Exception as e:
+        logger.debug(f"Could not determine if {model_name} has audio input: {e}")
+        return False
 
 
 def detect_gguf_model(path: str) -> Optional[str]:
@@ -909,6 +950,9 @@ class ModelConfig:
     is_vision: bool     # Is this a vision model?
     is_lora: bool       # Is this a lora adapter?
     is_gguf: bool = False       # Is this a GGUF model?
+    is_audio: bool = False      # Is this a TTS audio model?
+    audio_type: Optional[str] = None  # Audio codec type: 'snac', 'csm', 'bicodec', 'dac'
+    has_audio_input: bool = False  # Accepts audio input (ASR/speech understanding)
     gguf_file: Optional[str] = None  # Full path to the .gguf file (local mode)
     gguf_hf_repo: Optional[str] = None  # HF repo ID for -hf mode (e.g. "unsloth/gemma-3-4b-it-GGUF")
     gguf_variant: Optional[str] = None  # Quantization variant (e.g. "Q4_K_M")
@@ -944,6 +988,9 @@ class ModelConfig:
             # Check if base model is vision
             is_vision = is_vision_model(base_model, hf_token=hf_token)
 
+            # Check if base model is audio
+            audio_type = is_audio_model(base_model)
+
             display_name = lora_path_obj.name
             identifier = lora_path  # Use path as identifier for local LoRAs
 
@@ -955,6 +1002,8 @@ class ModelConfig:
                 is_cached=True,  # Local LoRAs are always "cached"
                 is_vision=is_vision,
                 is_lora=True,
+                is_audio=audio_type is not None,
+                audio_type=audio_type,
                 base_model=base_model,
             )
 
@@ -1105,11 +1154,15 @@ class ModelConfig:
                 logger.warning(f"Could not determine base model for LoRA '{path}'")
                 return None
             vision = is_vision_model(base_model, hf_token=hf_token)
+            audio_type_val = is_audio_model(base_model)
+            has_audio_in = has_audio_input_model(base_model)
         else:
             vision = is_vision_model(identifier, hf_token=hf_token)
-        
+            audio_type_val = is_audio_model(identifier)
+            has_audio_in = has_audio_input_model(identifier)
+
         display_name = Path(path).name if is_local else identifier.split("/")[-1]
-        
+
         return cls(
             identifier=identifier,
             display_name=display_name,
@@ -1118,6 +1171,9 @@ class ModelConfig:
             is_cached=is_model_cached(identifier) if not is_local else True,
             is_vision=vision,
             is_lora=is_lora,
+            is_audio=audio_type_val is not None,
+            audio_type=audio_type_val,
+            has_audio_input=has_audio_in,
             base_model=base_model,
         )
 

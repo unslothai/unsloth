@@ -54,6 +54,9 @@ class ModelDetails(BaseModel):
     is_vision: bool = Field(False, description="Whether model is a vision model")
     is_lora: bool = Field(False, description="Whether model is a LoRA adapter")
     is_gguf: bool = Field(False, description="Whether model is a GGUF model (llama.cpp format)")
+    is_audio: bool = Field(False, description="Whether model is a TTS audio model")
+    audio_type: Optional[str] = Field(None, description="Audio codec type: snac, csm, bicodec, dac")
+    has_audio_input: bool = Field(False, description="Whether model accepts audio input (ASR)")
     base_model: Optional[str] = Field(None, description="Base model if this is a LoRA adapter")
 
 

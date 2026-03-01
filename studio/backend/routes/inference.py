@@ -52,6 +52,11 @@ from models.inference import (
 )
 from auth.authentication import get_current_subject
 
+import io
+import wave
+import base64
+import numpy as np
+
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
@@ -184,6 +189,9 @@ async def load_model(
             is_vision=config.is_vision,
             is_lora=config.is_lora,
             is_gguf=False,
+            is_audio=config.is_audio,
+            audio_type=config.audio_type,
+            has_audio_input=config.has_audio_input,
             inference=inference_config,
         )
 
@@ -330,14 +338,23 @@ async def get_status(
         backend = get_inference_backend()
 
         is_vision = False
+        is_audio = False
+        audio_type = None
+        has_audio_input = False
         if backend.active_model_name:
             model_info = backend.models.get(backend.active_model_name, {})
             is_vision = model_info.get("is_vision", False)
+            is_audio = model_info.get("is_audio", False)
+            audio_type = model_info.get("audio_type")
+            has_audio_input = model_info.get("has_audio_input", False)
 
         return InferenceStatusResponse(
             active_model=backend.active_model_name,
             is_vision=is_vision,
             is_gguf=False,
+            is_audio=is_audio,
+            audio_type=audio_type,
+            has_audio_input=has_audio_input,
             loading=list(getattr(backend, 'loading_models', set())),
             loaded=list(backend.models.keys()),
         )
@@ -351,8 +368,115 @@ async def get_status(
 
 
 # =====================================================================
+# Audio (TTS) Generation  (/audio/generate)
+# =====================================================================
+
+
+@router.post("/audio/generate")
+async def generate_audio(payload: ChatCompletionRequest, request: Request):
+    """
+    Generate audio (TTS) from the latest user message.
+    Returns a JSON response with base64-encoded WAV audio.
+    Only works when an audio model is loaded.
+    """
+    import base64
+
+    backend = get_inference_backend()
+    if not backend.active_model_name:
+        raise HTTPException(status_code=400, detail="No model loaded.")
+
+    model_info = backend.models.get(backend.active_model_name, {})
+    if not model_info.get("is_audio"):
+        raise HTTPException(status_code=400, detail="Active model is not an audio model.")
+
+    # Extract text from the last user message
+    _, chat_messages, _ = _extract_content_parts(payload.messages)
+    if not chat_messages:
+        raise HTTPException(status_code=400, detail="No messages provided.")
+
+    last_user_msg = next(
+        (m for m in reversed(chat_messages) if m["role"] == "user"), None
+    )
+    if not last_user_msg:
+        raise HTTPException(status_code=400, detail="No user message found.")
+
+    text = last_user_msg["content"]
+
+    try:
+        wav_bytes, sample_rate = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: backend.generate_audio_response(
+                text=text,
+                temperature=payload.temperature,
+                top_p=payload.top_p,
+                top_k=payload.top_k,
+                min_p=payload.min_p,
+                max_new_tokens=payload.max_tokens or 2048,
+                repetition_penalty=payload.repetition_penalty,
+                use_adapter=payload.use_adapter,
+            ),
+        )
+
+        audio_b64 = base64.b64encode(wav_bytes).decode("ascii")
+        completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+
+        return JSONResponse(content={
+            "id": completion_id,
+            "object": "chat.completion.audio",
+            "model": backend.active_model_name,
+            "audio": {
+                "data": audio_b64,
+                "format": "wav",
+                "sample_rate": sample_rate,
+            },
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": f"[Generated audio from: \"{text[:100]}\"]",
+                },
+                "finish_reason": "stop",
+            }],
+        })
+
+    except Exception as e:
+        logger.error(f"Audio generation error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================================
 # OpenAI-Compatible Chat Completions  (/chat/completions)
 # =====================================================================
+
+
+def _decode_audio_base64(b64: str) -> np.ndarray:
+    """Decode base64 audio (any format) → float32 numpy array at 16kHz."""
+    import torch
+    import torchaudio
+    import tempfile
+    import os
+
+    raw = base64.b64decode(b64)
+    # torchaudio.load needs a file path or file-like object with format hint
+    # Write to a temp file so torchaudio can auto-detect the format
+    with tempfile.NamedTemporaryFile(suffix=".audio", delete=False) as tmp:
+        tmp.write(raw)
+        tmp_path = tmp.name
+    try:
+        waveform, sr = torchaudio.load(tmp_path)
+    finally:
+        os.unlink(tmp_path)
+
+    # Convert to mono if stereo
+    if waveform.shape[0] > 1:
+        waveform = waveform.mean(dim=0, keepdim=True)
+
+    # Resample to 16kHz if needed
+    if sr != 16000:
+        resampler = torchaudio.transforms.Resample(orig_freq=sr, new_freq=16000)
+        waveform = resampler(waveform)
+
+    return waveform.squeeze(0).numpy()
 
 
 def _extract_content_parts(
@@ -443,6 +567,79 @@ async def openai_chat_completions(
                 detail="No model loaded. Call POST /inference/load first.",
             )
         model_name = backend.active_model_name or payload.model
+
+        # ── Audio TTS path: auto-route to audio generation ────
+        model_info = backend.models.get(backend.active_model_name, {})
+        if model_info.get("is_audio"):
+            return await generate_audio(payload, request)
+
+        # ── Audio INPUT path: decode WAV and route to audio input generation ──
+        if payload.audio_base64 and model_info.get("has_audio_input"):
+            audio_array = _decode_audio_base64(payload.audio_base64)
+            system_prompt, chat_messages, _ = _extract_content_parts(payload.messages)
+            cancel_event = threading.Event()
+            completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+            created = int(time.time())
+
+            def audio_input_generate():
+                return backend.generate_audio_input_response(
+                    messages=chat_messages,
+                    system_prompt=system_prompt,
+                    audio_array=audio_array,
+                    temperature=payload.temperature,
+                    top_p=payload.top_p,
+                    top_k=payload.top_k,
+                    min_p=payload.min_p,
+                    max_new_tokens=payload.max_tokens or 512,
+                    repetition_penalty=payload.repetition_penalty,
+                    cancel_event=cancel_event,
+                )
+
+            if payload.stream:
+                async def audio_input_stream():
+                    try:
+                        first_chunk = ChatCompletionChunk(
+                            id=completion_id, created=created, model=model_name,
+                            choices=[ChunkChoice(delta=ChoiceDelta(role="assistant"), finish_reason=None)],
+                        )
+                        yield f"data: {first_chunk.model_dump_json(exclude_none=True)}\n\n"
+
+                        for chunk_text in audio_input_generate():
+                            if await request.is_disconnected():
+                                cancel_event.set()
+                                return
+                            if chunk_text:
+                                chunk = ChatCompletionChunk(
+                                    id=completion_id, created=created, model=model_name,
+                                    choices=[ChunkChoice(delta=ChoiceDelta(content=chunk_text), finish_reason=None)],
+                                )
+                                yield f"data: {chunk.model_dump_json(exclude_none=True)}\n\n"
+
+                        final_chunk = ChatCompletionChunk(
+                            id=completion_id, created=created, model=model_name,
+                            choices=[ChunkChoice(delta=ChoiceDelta(), finish_reason="stop")],
+                        )
+                        yield f"data: {final_chunk.model_dump_json(exclude_none=True)}\n\n"
+                        yield "data: [DONE]\n\n"
+                    except asyncio.CancelledError:
+                        cancel_event.set()
+                        raise
+                    except Exception as e:
+                        logger.error(f"Error during audio input streaming: {e}", exc_info=True)
+                        yield f"data: {json.dumps({'error': {'message': str(e), 'type': 'server_error'}})}\n\n"
+
+                return StreamingResponse(
+                    audio_input_stream(),
+                    media_type="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+                )
+            else:
+                full_text = "".join(audio_input_generate())
+                response = ChatCompletion(
+                    id=completion_id, created=created, model=model_name,
+                    choices=[CompletionChoice(message=CompletionMessage(content=full_text), finish_reason="stop")],
+                )
+                return JSONResponse(content=response.model_dump())
 
     # ── Parse messages (handles multimodal content parts) ─────
     system_prompt, chat_messages, extracted_image_b64 = _extract_content_parts(
