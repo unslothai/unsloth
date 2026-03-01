@@ -210,6 +210,10 @@ export function makeLlmConfig(
       // biome-ignore lint/style/useNamingConvention: api schema
       column_name: "",
     },
+    // biome-ignore lint/style/useNamingConvention: api schema
+    with_trace: "none",
+    // biome-ignore lint/style/useNamingConvention: api schema
+    extract_reasoning_content: false,
     scores:
       llmType === "judge"
         ? [

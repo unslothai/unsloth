@@ -6,6 +6,11 @@ import {
   ComboboxItem,
   ComboboxList,
 } from "@/components/ui/combobox";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import { Switch } from "@/components/ui/switch";
 import {
   Select,
@@ -15,7 +20,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { type ReactElement, type RefObject, useMemo } from "react";
+import { type ReactElement, type RefObject, useMemo, useState } from "react";
 import { useRecipeStudioStore } from "../../stores/recipe-studio";
 import { isLikelyImageValue } from "../../utils/image-preview";
 import type { LlmConfig } from "../../types";
@@ -43,6 +48,15 @@ const CODE_LANG_OPTIONS = [
   "sql:bigquery",
   "sql:ansi",
 ];
+
+const TRACE_MODE_OPTIONS = ["none", "last_message", "all_messages"] as const;
+
+function normalizeTraceMode(value: string): LlmConfig["with_trace"] {
+  if (value === "last_message" || value === "all_messages") {
+    return value;
+  }
+  return "none";
+}
 
 type LlmGeneralTabProps = {
   config: LlmConfig;
@@ -120,6 +134,9 @@ export function LlmGeneralTab({
   };
   const imageContextToggleId = `${config.id}-image-context-enabled`;
   const imageContextColumnId = `${config.id}-image-context-column`;
+  const traceModeId = `${config.id}-trace-mode`;
+  const reasoningToggleId = `${config.id}-reasoning-content`;
+  const [advancedOpen, setAdvancedOpen] = useState(false);
 
   return (
     <div className="space-y-4">
@@ -285,6 +302,65 @@ export function LlmGeneralTab({
           </div>
         )}
       </div>
+      <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
+        <CollapsibleTrigger asChild={true}>
+          <button
+            type="button"
+            className="flex w-full items-center justify-between text-left text-xs text-muted-foreground"
+          >
+            <span className="font-semibold uppercase">Advanced</span>
+            <span>{advancedOpen ? "Hide" : "Show"}</span>
+          </button>
+        </CollapsibleTrigger>
+        <CollapsibleContent className="mt-3 space-y-4">
+          <div className="grid gap-2">
+            <FieldLabel
+              label="Trace capture"
+              htmlFor={traceModeId}
+              hint="Adds {column}__trace for debugging/replay."
+            />
+            <Select
+              value={config.with_trace ?? "none"}
+              onValueChange={(value) =>
+                onUpdate({
+                  // biome-ignore lint/style/useNamingConvention: api schema
+                  with_trace: normalizeTraceMode(value),
+                })
+              }
+            >
+              <SelectTrigger className="nodrag w-full" id={traceModeId}>
+                <SelectValue placeholder="Select trace mode" />
+              </SelectTrigger>
+              <SelectContent>
+                {TRACE_MODE_OPTIONS.map((traceMode) => (
+                  <SelectItem key={traceMode} value={traceMode}>
+                    {traceMode}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex items-center justify-between gap-3 rounded-2xl border border-border/60 px-3 py-3">
+            <div>
+              <FieldLabel
+                label="Extract reasoning content"
+                htmlFor={reasoningToggleId}
+                hint="Adds {column}__reasoning_content when model provides it."
+              />
+            </div>
+            <Switch
+              id={reasoningToggleId}
+              checked={config.extract_reasoning_content === true}
+              onCheckedChange={(checked) =>
+                onUpdate({
+                  // biome-ignore lint/style/useNamingConvention: api schema
+                  extract_reasoning_content: checked,
+                })
+              }
+            />
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
       {config.llm_type === "structured" && (
         <div className="grid gap-2">
           <FieldLabel
