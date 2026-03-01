@@ -86,6 +86,15 @@ def is_cdna():
     )
 
 
+@functools.lru_cache(1)
+def is_rdna():
+    """Detect RDNA consumer/workstation GPUs (RDNA3, RDNA3.5, RDNA4)."""
+    if not is_hip():
+        return False
+    arch = triton.runtime.driver.active.get_current_target().arch
+    return arch.startswith("gfx1") and not is_cdna()
+
+
 def calculate_settings(
     n: int,
 ) -> (
@@ -389,7 +398,7 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
             global ABSMAX_BUFFERS
             WEIGHT_BUFFER = WEIGHT_BUFFERS[device_index]
             ABSMAX_BUFFER = ABSMAX_BUFFERS[device_index]
-            if WEIGHT_BUFFER is None:
+            if WEIGHT_BUFFER is None or WEIGHT_BUFFER.dtype != dtype:
                 WEIGHT_BUFFERS[device_index] = WEIGHT_BUFFER = torch_empty(
                     size, dtype=dtype, device=device, requires_grad=False
                 )
@@ -499,7 +508,7 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
             global ABSMAX_BUFFERS
             WEIGHT_BUFFER = WEIGHT_BUFFERS[device_index]
             ABSMAX_BUFFER = ABSMAX_BUFFERS[device_index]
-            if WEIGHT_BUFFER is None:
+            if WEIGHT_BUFFER is None or WEIGHT_BUFFER.dtype != dtype:
                 WEIGHT_BUFFERS[device_index] = WEIGHT_BUFFER = torch_empty(
                     size, dtype=dtype, device=device, requires_grad=False
                 )
