@@ -10,6 +10,8 @@ import type {
   SeedSourceType,
   SamplerConfig,
   SamplerType,
+  ValidatorCodeLang,
+  ValidatorConfig,
 } from "../types";
 import { nextName } from "./naming";
 
@@ -285,6 +287,25 @@ export function makeExpressionConfig(
     drop: false,
     expr: "",
     dtype: "str",
+  };
+}
+
+export function makeValidatorConfig(
+  id: string,
+  codeLang: ValidatorCodeLang,
+  existing: NodeConfig[],
+): ValidatorConfig {
+  const isSql = codeLang.startsWith("sql:");
+  return {
+    id,
+    kind: "validator",
+    name: nextName(existing, isSql ? "validator_sql" : "validator_python"),
+    drop: false,
+    // biome-ignore lint/style/useNamingConvention: api schema
+    target_columns: [],
+    // biome-ignore lint/style/useNamingConvention: api schema
+    code_lang: codeLang,
+    batch_size: "10",
   };
 }
 

@@ -17,7 +17,12 @@ import {
   TagsIcon,
   UserAccountIcon,
 } from "@hugeicons/core-free-icons";
-import type { LlmType, NodeConfig, SamplerType, SeedSourceType } from "../types";
+import type {
+  LlmType,
+  NodeConfig,
+  SamplerType,
+  SeedSourceType,
+} from "../types";
 import {
   makeExpressionConfig,
   makeLlmConfig,
@@ -26,12 +31,21 @@ import {
   makeModelProviderConfig,
   makeSamplerConfig,
   makeSeedConfig,
+  makeValidatorConfig,
 } from "../utils";
 
-export type BlockKind = "sampler" | "llm" | "expression" | "seed" | "note";
+export type BlockKind =
+  | "sampler"
+  | "llm"
+  | "validator"
+  | "expression"
+  | "seed"
+  | "note";
 export type BlockType =
   | SamplerType
   | LlmType
+  | "validator_python"
+  | "validator_sql"
   | "expression"
   | "markdown_note"
   | "seed"
@@ -65,6 +79,7 @@ export type BlockDialogKey =
   | "uuid"
   | "person"
   | "llm"
+  | "validator"
   | "model_provider"
   | "model_config"
   | "expression";
@@ -97,6 +112,12 @@ export const BLOCK_GROUPS: BlockGroup[] = [
     title: "LLM + Models",
     description: "Generation, providers, and model aliases.",
     icon: PencilEdit02Icon,
+  },
+  {
+    kind: "validator",
+    title: "Validators",
+    description: "Validate generated code outputs with built-in engines.",
+    icon: Shield02Icon,
   },
   {
     kind: "expression",
@@ -276,6 +297,25 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
     createConfig: (id, existing) => makeModelConfig(id, existing),
   },
   {
+    kind: "validator",
+    type: "validator_python",
+    title: "Python Validator",
+    description: "Validate Python code columns.",
+    icon: Shield02Icon,
+    dialogKey: "validator",
+    createConfig: (id, existing) => makeValidatorConfig(id, "python", existing),
+  },
+  {
+    kind: "validator",
+    type: "validator_sql",
+    title: "SQL Validator",
+    description: "Validate SQL code columns.",
+    icon: Shield02Icon,
+    dialogKey: "validator",
+    createConfig: (id, existing) =>
+      makeValidatorConfig(id, "sql:sqlite", existing),
+  },
+  {
     kind: "expression",
     type: "expression",
     title: "Expression",
@@ -330,6 +370,13 @@ export function getBlockDefinitionForConfig(
   }
   if (config.kind === "llm") {
     return getBlockDefinition("llm", config.llm_type);
+  }
+  if (config.kind === "validator") {
+    const isSql = config.code_lang.startsWith("sql:");
+    return getBlockDefinition(
+      "validator",
+      isSql ? "validator_sql" : "validator_python",
+    );
   }
   if (config.kind === "model_provider") {
     return getBlockDefinition("llm", "model_provider");

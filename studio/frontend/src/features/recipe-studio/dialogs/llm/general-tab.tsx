@@ -105,6 +105,9 @@ export function LlmGeneralTab({
     () => Object.values(configs).find((item) => item.kind === "seed"),
     [configs],
   );
+  const hasHfSeed = Boolean(
+    seedConfig && (seedConfig.seed_source_type ?? "hf") === "hf",
+  );
   const seedColumns = seedConfig?.seed_columns ?? [];
   const seedPreviewRows = seedConfig?.seed_preview_rows ?? [];
   const imageColumnOptions = useMemo(() => {
@@ -133,7 +136,6 @@ export function LlmGeneralTab({
     column_name: "",
   };
   const imageContextToggleId = `${config.id}-image-context-enabled`;
-  const imageContextColumnId = `${config.id}-image-context-column`;
   const traceModeId = `${config.id}-trace-mode`;
   const reasoningToggleId = `${config.id}-reasoning-content`;
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -237,20 +239,13 @@ export function LlmGeneralTab({
           </p>
         )}
       </div>
-      <div className="space-y-3 rounded-2xl border border-border/60 px-3 py-3">
+      {hasHfSeed && (
         <div className="flex items-center justify-between gap-3">
-          <div>
-            <FieldLabel
-              label="Use image context"
-              htmlFor={imageContextToggleId}
-              hint="Attach one seed image column to this LLM call."
-            />
-            {imageColumnOptions.length > 0 && (
-              <p className="text-xs text-muted-foreground">
-                Suggested image columns: {imageColumnOptions.join(", ")}
-              </p>
-            )}
-          </div>
+          <FieldLabel
+            label="Use image context"
+            htmlFor={imageContextToggleId}
+            hint="Attach one seed image column to this LLM call."
+          />
           <Switch
             id={imageContextToggleId}
             checked={imageContext.enabled}
@@ -269,37 +264,44 @@ export function LlmGeneralTab({
             }}
           />
         </div>
-        {imageContext.enabled && (
-          <div className="grid gap-2">
-            <FieldLabel
-              label="Image column"
-              htmlFor={imageContextColumnId}
-              hint="Seed column containing image values."
-            />
-            <Select
-              value={imageContext.column_name || ""}
-              onValueChange={(value) =>
-                onUpdate({
-                  image_context: {
-                    ...imageContext,
-                    // biome-ignore lint/style/useNamingConvention: api schema
-                    column_name: value,
-                  },
-                })
-              }
-            >
-              <SelectTrigger className="nodrag w-full" id={imageContextColumnId}>
-                <SelectValue placeholder="Select image column" />
-              </SelectTrigger>
-              <SelectContent>
-                {imageColumnOptions.map((columnName) => (
-                  <SelectItem key={columnName} value={columnName}>
-                    {columnName}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
+      )}
+      {config.llm_type === "structured" && (
+        <div className="grid gap-2">
+          <FieldLabel
+            label="Output format (JSON schema)"
+            htmlFor={outputFormatId}
+            hint="Schema used to constrain structured JSON output."
+          />
+          <Textarea
+            id={outputFormatId}
+            className="corner-squircle nodrag"
+            value={config.output_format ?? ""}
+            onChange={(event) =>
+              onUpdate({ output_format: event.target.value })
+            }
+          />
+        </div>
+      )}
+      <div className="grid gap-2">
+        <FieldLabel
+          label="System prompt (optional)"
+          htmlFor={systemPromptId}
+          hint="Global behavior instructions prepended before prompt."
+        />
+        <Textarea
+          id={systemPromptId}
+          className="corner-squircle nodrag max-h-[450px] overflow-auto"
+          aria-invalid={invalidSystemRefs.length > 0}
+          value={config.system_prompt}
+          onChange={(event) => onUpdate({ system_prompt: event.target.value })}
+        />
+        {invalidSystemRefs.length > 0 && (
+          <p className="text-xs text-destructive">
+            Unknown reference: {invalidSystemText}
+            {invalidSystemRefs.length > 3
+              ? ` +${invalidSystemRefs.length - 3} more`
+              : ""}
+          </p>
         )}
       </div>
       <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
@@ -340,14 +342,12 @@ export function LlmGeneralTab({
               </SelectContent>
             </Select>
           </div>
-          <div className="flex items-center justify-between gap-3 rounded-2xl border border-border/60 px-3 py-3">
-            <div>
-              <FieldLabel
-                label="Extract reasoning content"
-                htmlFor={reasoningToggleId}
-                hint="Adds {column}__reasoning_content when model provides it."
-              />
-            </div>
+          <div className="flex items-center justify-between gap-3">
+            <FieldLabel
+              label="Extract reasoning content"
+              htmlFor={reasoningToggleId}
+              hint="Adds {column}__reasoning_content when model provides it."
+            />
             <Switch
               id={reasoningToggleId}
               checked={config.extract_reasoning_content === true}
@@ -361,45 +361,6 @@ export function LlmGeneralTab({
           </div>
         </CollapsibleContent>
       </Collapsible>
-      {config.llm_type === "structured" && (
-        <div className="grid gap-2">
-          <FieldLabel
-            label="Output format (JSON schema)"
-            htmlFor={outputFormatId}
-            hint="Schema used to constrain structured JSON output."
-          />
-          <Textarea
-            id={outputFormatId}
-            className="corner-squircle nodrag"
-            value={config.output_format ?? ""}
-            onChange={(event) =>
-              onUpdate({ output_format: event.target.value })
-            }
-          />
-        </div>
-      )}
-      <div className="grid gap-2">
-        <FieldLabel
-          label="System prompt (optional)"
-          htmlFor={systemPromptId}
-          hint="Global behavior instructions prepended before prompt."
-        />
-        <Textarea
-          id={systemPromptId}
-          className="corner-squircle nodrag max-h-[450px] overflow-auto"
-          aria-invalid={invalidSystemRefs.length > 0}
-          value={config.system_prompt}
-          onChange={(event) => onUpdate({ system_prompt: event.target.value })}
-        />
-        {invalidSystemRefs.length > 0 && (
-          <p className="text-xs text-destructive">
-            Unknown reference: {invalidSystemText}
-            {invalidSystemRefs.length > 3
-              ? ` +${invalidSystemRefs.length - 3} more`
-              : ""}
-          </p>
-        )}
-      </div>
     </div>
   );
 }

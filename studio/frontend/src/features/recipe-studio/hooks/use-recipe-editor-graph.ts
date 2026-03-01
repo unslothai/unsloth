@@ -28,6 +28,7 @@ const SUPPORTED_DRAG_KINDS: RecipeBlockDragPayload["kind"][] = [
   "sampler",
   "seed",
   "llm",
+  "validator",
   "expression",
   "note",
 ];
@@ -67,6 +68,11 @@ type UseRecipeEditorGraphArgs = {
   addModelProviderNode: (position?: XYPosition, openDialog?: boolean) => void;
   addModelConfigNode: (position?: XYPosition, openDialog?: boolean) => void;
   addExpressionNode: (position?: XYPosition, openDialog?: boolean) => void;
+  addValidatorNode: (
+    type: "validator_python" | "validator_sql",
+    position?: XYPosition,
+    openDialog?: boolean,
+  ) => void;
   addMarkdownNoteNode: (position?: XYPosition, openDialog?: boolean) => void;
 };
 
@@ -85,6 +91,9 @@ type UseRecipeEditorGraphResult = {
   handleAddModelProviderFromSheet: () => void;
   handleAddModelConfigFromSheet: () => void;
   handleAddExpressionFromSheet: () => void;
+  handleAddValidatorFromSheet: (
+    type: "validator_python" | "validator_sql",
+  ) => void;
   handleAddMarkdownNoteFromSheet: () => void;
 };
 
@@ -105,6 +114,7 @@ export function useRecipeEditorGraph({
   addModelProviderNode,
   addModelConfigNode,
   addExpressionNode,
+  addValidatorNode,
   addMarkdownNoteNode,
 }: UseRecipeEditorGraphArgs): UseRecipeEditorGraphResult {
   const baseNodeIds = useMemo(() => new Set(nodes.map((node) => node.id)), [nodes]);
@@ -201,6 +211,14 @@ export function useRecipeEditorGraph({
         addExpressionNode(position, false);
         return;
       }
+      if (payload.kind === "validator") {
+        addValidatorNode(
+          payload.type as "validator_python" | "validator_sql",
+          position,
+          false,
+        );
+        return;
+      }
       if (payload.kind === "note") {
         addMarkdownNoteNode(position, false);
         return;
@@ -223,6 +241,7 @@ export function useRecipeEditorGraph({
       addModelProviderNode,
       addSamplerNode,
       addSeedNode,
+      addValidatorNode,
       reactFlowInstance,
     ],
   );
@@ -271,6 +290,13 @@ export function useRecipeEditorGraph({
     addExpressionNode(getViewportCenterPosition());
   }, [addExpressionNode, getViewportCenterPosition]);
 
+  const handleAddValidatorFromSheet = useCallback(
+    (type: "validator_python" | "validator_sql") => {
+      addValidatorNode(type, getViewportCenterPosition());
+    },
+    [addValidatorNode, getViewportCenterPosition],
+  );
+
   const handleAddMarkdownNoteFromSheet = useCallback(() => {
     addMarkdownNoteNode(getViewportCenterPosition());
   }, [addMarkdownNoteNode, getViewportCenterPosition]);
@@ -288,6 +314,7 @@ export function useRecipeEditorGraph({
     handleAddModelProviderFromSheet,
     handleAddModelConfigFromSheet,
     handleAddExpressionFromSheet,
+    handleAddValidatorFromSheet,
     handleAddMarkdownNoteFromSheet,
   };
 }

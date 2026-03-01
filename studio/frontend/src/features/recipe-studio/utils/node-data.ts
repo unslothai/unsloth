@@ -29,6 +29,18 @@ export function nodeDataFromConfig(
       layoutDirection,
     };
   }
+  if (config.kind === "validator") {
+    return {
+      title: "Validator",
+      kind: "validator",
+      subtype: config.code_lang.startsWith("sql:") ? "SQL" : "Python",
+      blockType: config.code_lang.startsWith("sql:")
+        ? "validator_sql"
+        : "validator_python",
+      name: config.name,
+      layoutDirection,
+    };
+  }
   if (config.kind === "markdown_note") {
     return {
       title: "Note",
