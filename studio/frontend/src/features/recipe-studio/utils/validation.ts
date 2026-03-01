@@ -173,6 +173,11 @@ export function getConfigErrors(config: NodeConfig | null): string[] {
         }
       }
     }
+    if (config.image_context?.enabled) {
+      if (!config.image_context.column_name.trim()) {
+        errors.push("Image context column is required.");
+      }
+    }
   }
   if (config.kind === "expression") {
     if (!config.expr.trim()) {

@@ -10,6 +10,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
+import { resolveImagePreview } from "../../utils/image-preview";
 import { isExecutionInProgress } from "../../executions/execution-helpers";
 import type { RecipeExecutionRecord } from "../../execution-types";
 import { formatCellValue, isExpandableCellValue } from "./executions-view-helpers";
@@ -130,6 +131,7 @@ export function ExecutionDataTab({
             data={datasetRowsForTable}
             getRowClassName={(row, _rowIndex, rowId) => {
               const canExpand = visibleDatasetColumnNames.some((columnName) =>
+                !resolveImagePreview(row[columnName]) &&
                 isExpandableCellValue(formatCellValue(row[columnName])),
               );
               if (!canExpand) {
@@ -142,6 +144,7 @@ export function ExecutionDataTab({
             }}
             onRowClick={(row, _rowIndex, rowId) => {
               const canExpand = visibleDatasetColumnNames.some((columnName) =>
+                !resolveImagePreview(row[columnName]) &&
                 isExpandableCellValue(formatCellValue(row[columnName])),
               );
               if (!canExpand || !selectedExecutionIdSafe) {

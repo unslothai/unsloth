@@ -6,6 +6,7 @@ import {
   ComboboxItem,
   ComboboxList,
 } from "@/components/ui/combobox";
+import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -16,6 +17,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { type ReactElement, type RefObject, useMemo } from "react";
 import { useRecipeStudioStore } from "../../stores/recipe-studio";
+import { isLikelyImageValue } from "../../utils/image-preview";
 import type { LlmConfig } from "../../types";
 import { findInvalidJinjaReferences } from "../../utils/refs";
 import { getAvailableVariables } from "../../utils/variables";
@@ -85,6 +87,39 @@ export function LlmGeneralTab({
     .slice(0, 3)
     .map((ref) => `{{ ${ref} }}`)
     .join(", ");
+  const seedConfig = useMemo(
+    () => Object.values(configs).find((item) => item.kind === "seed"),
+    [configs],
+  );
+  const seedColumns = seedConfig?.seed_columns ?? [];
+  const seedPreviewRows = seedConfig?.seed_preview_rows ?? [];
+  const imageColumnOptions = useMemo(() => {
+    if (seedColumns.length === 0) {
+      return [];
+    }
+    const detected = seedColumns.filter((columnName) => {
+      const lower = columnName.toLowerCase();
+      if (
+        lower.includes("image") ||
+        lower.includes("img") ||
+        lower.includes("photo") ||
+        lower.includes("picture") ||
+        lower.includes("base64") ||
+        lower.includes("url")
+      ) {
+        return true;
+      }
+      return seedPreviewRows.some((row) => isLikelyImageValue(row[columnName]));
+    });
+    return detected.length > 0 ? detected : seedColumns;
+  }, [seedColumns, seedPreviewRows]);
+  const imageContext = config.image_context ?? {
+    enabled: false,
+    // biome-ignore lint/style/useNamingConvention: api schema
+    column_name: "",
+  };
+  const imageContextToggleId = `${config.id}-image-context-enabled`;
+  const imageContextColumnId = `${config.id}-image-context-column`;
 
   return (
     <div className="space-y-4">
@@ -183,6 +218,71 @@ export function LlmGeneralTab({
               ? ` +${invalidPromptRefs.length - 3} more`
               : ""}
           </p>
+        )}
+      </div>
+      <div className="space-y-3 rounded-2xl border border-border/60 px-3 py-3">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <FieldLabel
+              label="Use image context"
+              htmlFor={imageContextToggleId}
+              hint="Attach one seed image column to this LLM call."
+            />
+            {imageColumnOptions.length > 0 && (
+              <p className="text-xs text-muted-foreground">
+                Suggested image columns: {imageColumnOptions.join(", ")}
+              </p>
+            )}
+          </div>
+          <Switch
+            id={imageContextToggleId}
+            checked={imageContext.enabled}
+            onCheckedChange={(checked) => {
+              onUpdate({
+                image_context: {
+                  ...imageContext,
+                  enabled: checked,
+                  // biome-ignore lint/style/useNamingConvention: api schema
+                  column_name:
+                    checked && !imageContext.column_name
+                      ? (imageColumnOptions[0] ?? "")
+                      : imageContext.column_name,
+                },
+              });
+            }}
+          />
+        </div>
+        {imageContext.enabled && (
+          <div className="grid gap-2">
+            <FieldLabel
+              label="Image column"
+              htmlFor={imageContextColumnId}
+              hint="Seed column containing image values."
+            />
+            <Select
+              value={imageContext.column_name || ""}
+              onValueChange={(value) =>
+                onUpdate({
+                  image_context: {
+                    ...imageContext,
+                    // biome-ignore lint/style/useNamingConvention: api schema
+                    column_name: value,
+                  },
+                })
+              }
+            >
+              <SelectTrigger className="nodrag w-full" id={imageContextColumnId}>
+                <SelectValue placeholder="Select image column" />
+              </SelectTrigger>
+              <SelectContent>
+                {imageColumnOptions.map((columnName) => (
+                  <SelectItem key={columnName} value={columnName}>
+                    {columnName}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
         )}
       </div>
       {config.llm_type === "structured" && (
