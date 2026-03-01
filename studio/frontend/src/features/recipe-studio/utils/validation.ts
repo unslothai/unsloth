@@ -192,6 +192,21 @@ export function getConfigErrors(config: NodeConfig | null): string[] {
       errors.push("Expression is required.");
     }
   }
+  if (config.kind === "validator") {
+    const targets = (config.target_columns ?? [])
+      .map((value) => value.trim())
+      .filter(Boolean);
+    if (targets.length === 0) {
+      errors.push("Target code column is required.");
+    }
+    const batch = parseIntNumber(config.batch_size);
+    if (batch === null || batch < 1) {
+      errors.push("Batch size must be an integer >= 1.");
+    }
+    if (!config.code_lang.trim()) {
+      errors.push("Validator code language is required.");
+    }
+  }
   if (config.kind === "seed") {
     const seedSourceType = config.seed_source_type ?? "hf";
     if (seedSourceType === "hf" && !config.hf_repo_id.trim()) {

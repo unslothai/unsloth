@@ -66,6 +66,9 @@ function resolveExecutionColumnIcon(config: NodeConfig | null): IconType {
   if (config.kind === "expression") {
     return FunctionIcon;
   }
+  if (config.kind === "validator") {
+    return Shield02Icon;
+  }
   if (config.kind === "seed") {
     return Plant01Icon;
   }

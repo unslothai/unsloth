@@ -7,6 +7,19 @@ export function isSemanticRelation(
   if (source.kind === "model_provider" && target.kind === "model_config") {
     return true;
   }
-  return source.kind === "model_config" && target.kind === "llm";
+  if (source.kind === "model_config" && target.kind === "llm") {
+    return true;
+  }
+  if (
+    source.kind === "llm" &&
+    source.llm_type === "code" &&
+    target.kind === "validator"
+  ) {
+    return true;
+  }
+  return (
+    source.kind === "validator" &&
+    target.kind === "llm" &&
+    target.llm_type === "code"
+  );
 }
-

@@ -73,6 +73,19 @@ export function applyEdgeRemovals(
       }
       next[target.id] = updated;
     }
+    if (
+      source.kind === "validator" &&
+      target.kind === "llm" &&
+      target.llm_type === "code"
+    ) {
+      const sourceUpdated = applyRemovalToConfig(source, target.name);
+      if (sourceUpdated !== source) {
+        if (next === configs) {
+          next = { ...configs };
+        }
+        next[source.id] = sourceUpdated;
+      }
+    }
   }
   return next;
 }

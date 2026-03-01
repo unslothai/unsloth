@@ -78,7 +78,8 @@ type SingleRefRelation =
   | "provider"
   | "model_alias"
   | "reference_column_name"
-  | "subcategory_parent";
+  | "subcategory_parent"
+  | "validator_target_columns";
 
 function getSingleRefRelation(
   source: NodeConfig,
@@ -100,6 +101,13 @@ function getSingleRefRelation(
   }
   if (isCategoryConfig(source) && isSubcategoryConfig(target)) {
     return "subcategory_parent";
+  }
+  if (
+    source.kind === "llm" &&
+    source.llm_type === "code" &&
+    target.kind === "validator"
+  ) {
+    return "validator_target_columns";
   }
   return null;
 }
@@ -125,6 +133,9 @@ function isCompetingIncomingEdge(
   }
   if (relation === "subcategory_parent") {
     return isCategoryConfig(source);
+  }
+  if (relation === "validator_target_columns") {
+    return source.kind === "llm" && source.llm_type === "code";
   }
   return source.kind === "sampler" && source.sampler_type === "datetime";
 }
@@ -220,6 +231,27 @@ function chooseModelSemanticHandles(
   };
 }
 
+function normalizeValidatorSemanticConnection(
+  connection: Connection,
+  source: NodeConfig,
+  target: NodeConfig,
+): Connection {
+  if (
+    source.kind === "validator" &&
+    target.kind === "llm" &&
+    target.llm_type === "code"
+  ) {
+    return {
+      ...connection,
+      source: target.id,
+      target: source.id,
+      sourceHandle: HANDLE_IDS.dataOut,
+      targetHandle: HANDLE_IDS.dataIn,
+    };
+  }
+  return connection;
+}
+
 export function isValidRecipeConnection(
   connection: Connection,
   configs: Record<string, NodeConfig>,
@@ -253,15 +285,30 @@ export function applyRecipeConnection(
   if (!isValidRecipeConnection(connection, configs)) {
     return { edges };
   }
-  const source = connection.source
+  const initialSource = connection.source
     ? configs[connection.source]
     : null;
-  const target = connection.target
+  const initialTarget = connection.target
     ? configs[connection.target]
+    : null;
+  if (!(initialSource && initialTarget)) {
+    return { edges };
+  }
+  const normalizedConnection = normalizeValidatorSemanticConnection(
+    connection,
+    initialSource,
+    initialTarget,
+  );
+  const source = normalizedConnection.source
+    ? configs[normalizedConnection.source]
+    : null;
+  const target = normalizedConnection.target
+    ? configs[normalizedConnection.target]
     : null;
   if (!(source && target)) {
     return { edges };
   }
+
   const semanticRelation = isSemanticRelation(source, target);
   const singleRefRelation = getSingleRefRelation(source, target);
   const nextBaseEdges = singleRefRelation
@@ -271,7 +318,7 @@ export function applyRecipeConnection(
       )
     : edges;
   const resolvedConnection = chooseModelSemanticHandles(
-    connection,
+    normalizedConnection,
     source,
     target,
     nextBaseEdges,
@@ -302,10 +349,28 @@ export function applyRecipeConnection(
     return { edges: nextEdges, configs: { ...configs, [target.id]: next } };
   }
   if (
+    source.kind === "llm" &&
+    source.llm_type === "code" &&
+    target.kind === "validator"
+  ) {
+    const nextCodeLang = (source.code_lang ?? "").trim();
+    const next = {
+      ...target,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      target_columns: [source.name],
+      // biome-ignore lint/style/useNamingConvention: api schema
+      code_lang:
+        (nextCodeLang || target.code_lang) as typeof target.code_lang,
+    };
+    return { edges: nextEdges, configs: { ...configs, [target.id]: next } };
+  }
+  if (
     isLlmConfig(target) &&
+    !semanticRelation &&
     source.kind !== "seed" &&
     source.kind !== "model_provider" &&
-    source.kind !== "model_config"
+    source.kind !== "model_config" &&
+    source.kind !== "validator"
   ) {
     const ref = `{{ ${source.name} }}`;
     const next = {
@@ -316,9 +381,11 @@ export function applyRecipeConnection(
   }
   if (
     isExpressionConfig(target) &&
+    !semanticRelation &&
     source.kind !== "seed" &&
     source.kind !== "model_provider" &&
-    source.kind !== "model_config"
+    source.kind !== "model_config" &&
+    source.kind !== "validator"
   ) {
     const ref = `{{ ${source.name} }}`;
     const next = {

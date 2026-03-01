@@ -3,6 +3,7 @@ import type {
   LlmConfig,
   NodeConfig,
   SamplerConfig,
+  ValidatorConfig,
 } from "../types";
 
 export function isSamplerConfig(
@@ -39,4 +40,10 @@ export function isExpressionConfig(
   config: NodeConfig | null | undefined,
 ): config is ExpressionConfig {
   return Boolean(config && config.kind === "expression");
+}
+
+export function isValidatorConfig(
+  config: NodeConfig | null | undefined,
+): config is ValidatorConfig {
+  return Boolean(config && config.kind === "validator");
 }

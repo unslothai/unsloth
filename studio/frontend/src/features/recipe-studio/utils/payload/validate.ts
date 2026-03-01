@@ -1,4 +1,9 @@
-import type { ModelConfig, ModelProviderConfig, NodeConfig } from "../../types";
+import type {
+  ModelConfig,
+  ModelProviderConfig,
+  NodeConfig,
+  ValidatorConfig,
+} from "../../types";
 
 export function validateSubcategoryConfigs(
   configs: Record<string, NodeConfig>,
@@ -103,6 +108,36 @@ export function validateUsedProviders(
     }
     if (!provider.provider_type.trim()) {
       errors.push(`Model provider ${provider.name}: provider_type is required.`);
+    }
+  }
+}
+
+export function validateValidatorConfigs(
+  configs: Record<string, NodeConfig>,
+  nameToConfig: Map<string, NodeConfig>,
+  errors: string[],
+): void {
+  for (const config of Object.values(configs)) {
+    if (config.kind !== "validator") {
+      continue;
+    }
+    const target = (config as ValidatorConfig).target_columns[0]?.trim();
+    if (!target) {
+      continue;
+    }
+    const targetConfig = nameToConfig.get(target);
+    if (!targetConfig) {
+      errors.push(`Validator ${config.name}: target '${target}' not found.`);
+      continue;
+    }
+    if (targetConfig.kind !== "llm" || targetConfig.llm_type !== "code") {
+      errors.push(`Validator ${config.name}: target '${target}' must be LLM Code.`);
+      continue;
+    }
+    if ((targetConfig.code_lang ?? "").trim() !== config.code_lang.trim()) {
+      errors.push(
+        `Validator ${config.name}: code_lang '${config.code_lang}' must match target '${target}' (${targetConfig.code_lang ?? "unknown"}).`,
+      );
     }
   }
 }
