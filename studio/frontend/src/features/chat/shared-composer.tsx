@@ -1,5 +1,6 @@
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
+import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { useAui } from "@assistant-ui/react";
 import { ArrowUpIcon, HeadphonesIcon, MicIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
@@ -29,8 +30,6 @@ export interface CompareHandle {
 
 const IMAGE_ACCEPT = "image/jpeg,image/png,image/webp,image/gif";
 const MAX_IMAGE_SIZE = 20 * 1024 * 1024;
-const AUDIO_ACCEPT = "audio/wav,audio/mpeg,audio/webm,audio/ogg,audio/flac,audio/mp4";
-const MAX_AUDIO_SIZE = 50 * 1024 * 1024;
 
 function fileToBase64DataURL(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -220,15 +219,10 @@ export function SharedComposer({
       if (!file) continue;
       // Handle audio files
       if (file.type.match(/^audio\//i) && file.size <= MAX_AUDIO_SIZE) {
-        const reader = new FileReader();
-        reader.onload = () => {
-          const result = reader.result as string;
-          const commaIndex = result.indexOf(",");
-          const base64 = commaIndex >= 0 ? result.slice(commaIndex + 1) : result;
+        fileToBase64(file).then((base64) => {
           setPendingAudio({ name: file.name, base64 });
           setPendingAudioStore(base64, file.name);
-        };
-        reader.readAsDataURL(file);
+        });
         continue;
       }
       // Handle image files

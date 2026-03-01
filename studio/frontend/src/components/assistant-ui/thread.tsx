@@ -8,6 +8,8 @@ import { Reasoning, ReasoningGroup } from "@/components/assistant-ui/reasoning";
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
+import { sentAudioNames } from "@/features/chat/api/chat-adapter";
+import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { cn } from "@/lib/utils";
 import {
@@ -164,22 +166,6 @@ const ComposerAnimated: FC = () => {
     </motion.div>
   );
 };
-
-const AUDIO_ACCEPT = "audio/wav,audio/mpeg,audio/webm,audio/ogg,audio/flac,audio/mp4";
-const MAX_AUDIO_SIZE = 50 * 1024 * 1024;
-
-function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result as string;
-      const commaIndex = result.indexOf(",");
-      resolve(commaIndex >= 0 ? result.slice(commaIndex + 1) : result);
-    };
-    reader.onerror = () => reject(new Error("Failed to read file"));
-    reader.readAsDataURL(file);
-  });
-}
 
 const PendingAudioChip: FC = () => {
   const audioName = useChatRuntimeStore((s) => s.pendingAudioName);
@@ -438,6 +424,19 @@ const AssistantActionBar: FC = () => {
   );
 };
 
+const UserMessageAudio: FC = () => {
+  const audioName = useAuiState(({ message }) => sentAudioNames.get(message.id));
+  if (!audioName) return null;
+  return (
+    <div className="col-start-2 flex justify-end">
+      <div className="flex items-center gap-2 rounded-lg border border-foreground/20 bg-muted px-3 py-1.5 text-xs">
+        <HeadphonesIcon className="size-3.5 text-muted-foreground" />
+        <span className="max-w-48 truncate">{audioName}</span>
+      </div>
+    </div>
+  );
+};
+
 const UserMessage: FC = () => {
   return (
     <MessagePrimitive.Root
@@ -445,6 +444,7 @@ const UserMessage: FC = () => {
       data-role="user"
     >
       <UserMessageAttachments />
+      <UserMessageAudio />
 
       <div className="aui-user-message-content-wrapper relative col-start-2 min-w-0">
         <div className="aui-user-message-content wrap-break-word rounded-2xl bg-muted  px-4 py-2.5 text-foreground">
