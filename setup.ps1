@@ -522,6 +522,43 @@ if ($NeedNode) {
 
 Write-Host "[OK] Node $(node -v) | npm $(npm -v)" -ForegroundColor Green
 
+# ============================================
+# 1g. Python (>= 3.10, prefer 3.12)
+# ============================================
+$HasPython = $null -ne (Get-Command python -ErrorAction SilentlyContinue)
+$NeedPython = $true
+
+if ($HasPython) {
+    $PyVer = python --version 2>&1
+    if ($PyVer -match "(\d+)\.(\d+)") {
+        $PyMajor = [int]$Matches[1]; $PyMinor = [int]$Matches[2]
+        if ($PyMajor -eq 3 -and $PyMinor -ge 10) {
+            Write-Host "[OK] Python $PyVer" -ForegroundColor Green
+            $NeedPython = $false
+        } else {
+            Write-Host "[WARN] Python $PyVer is too old (need >= 3.10)" -ForegroundColor Yellow
+        }
+    }
+} else {
+    Write-Host "[WARN] Python not found." -ForegroundColor Yellow
+}
+
+if ($NeedPython) {
+    Write-Host "Installing Python 3.12 via winget..." -ForegroundColor Cyan
+    $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
+    if ($HasWinget) {
+        winget install -e --id Python.Python.3.12 --source winget --accept-package-agreements --accept-source-agreements
+        Refresh-Environment
+    }
+    $HasPython = $null -ne (Get-Command python -ErrorAction SilentlyContinue)
+    if (-not $HasPython) {
+        Write-Host "[ERROR] Python could not be installed automatically." -ForegroundColor Red
+        Write-Host "        Install Python 3.12 from https://python.org/downloads/" -ForegroundColor Yellow
+        exit 1
+    }
+    Write-Host "[OK] Python $(python --version)" -ForegroundColor Green
+}
+
 Write-Host ""
 Write-Host "--- System prerequisites ready ---" -ForegroundColor Green
 Write-Host ""
