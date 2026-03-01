@@ -41,6 +41,8 @@ logging:
   tensorboard_dir: "runs"
   log_frequency: 10
 
+audio_input: true
+
 inference:
   temperature: 1.0
   top_k: 64

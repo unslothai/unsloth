@@ -40,6 +40,8 @@ type ChatRuntimeStore = {
   autoTitle: boolean;
   modelsError: string | null;
   activeGgufVariant: string | null;
+  pendingAudioBase64: string | null;
+  pendingAudioName: string | null;
   setParams: (params: InferenceParams) => void;
   setModels: (models: ChatModelSummary[]) => void;
   setLoras: (loras: ChatLoraSummary[]) => void;
@@ -48,6 +50,8 @@ type ChatRuntimeStore = {
   setModelsError: (error: string | null) => void;
   setCheckpoint: (modelId: string, ggufVariant?: string | null) => void;
   clearCheckpoint: () => void;
+  setPendingAudio: (base64: string, name: string) => void;
+  clearPendingAudio: () => void;
 };
 
 export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
@@ -58,6 +62,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   autoTitle: loadBool(AUTO_TITLE_KEY, false),
   modelsError: null,
   activeGgufVariant: null,
+  pendingAudioBase64: null,
+  pendingAudioName: null,
   setParams: (params) => set({ params }),
   setModels: (models) => set({ models }),
   setLoras: (loras) => set({ loras }),
@@ -93,4 +99,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
       },
       activeGgufVariant: null,
     })),
+  setPendingAudio: (base64, name) =>
+    set({ pendingAudioBase64: base64, pendingAudioName: name }),
+  clearPendingAudio: () =>
+    set({ pendingAudioBase64: null, pendingAudioName: null }),
 }));

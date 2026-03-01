@@ -22,18 +22,19 @@ from dataclasses import dataclass
 import pandas as pd
 from datasets import Dataset, load_dataset
 
-# Add the parent directory to sys.path to import unsloth modules
-#sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from utils.models import is_vision_model
 from utils.datasets import format_and_template_dataset
 from utils.datasets import MODEL_TO_TEMPLATE_MAPPER, TEMPLATE_TO_RESPONSES_MAPPER
 from trl import SFTTrainer, SFTConfig
 
-# Import Unsloth trainers
-#from unsloth_compiled_cache.UnslothSFTTrainer import _UnslothSFTTrainer as SFTTrainer
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Process-level flag: set True after CUDA-heavy audio preprocessing (Whisper/DAC/BiCodec).
+# Once CUDA has been used for audio processing, fork-based multiprocessing (num_proc>1)
+# deadlocks because forked children inherit CUDA's internal thread locks.
+# This flag is never reset — once contaminated, the process stays contaminated.
+_CUDA_AUDIO_PREPROCESSING_DONE = False
 
 @dataclass
 class TrainingProgress:
@@ -111,6 +112,177 @@ class UnslothTrainer:
                 except Exception as e:
                     logger.error(f"Error in progress callback: {e}")
 
+    def _create_progress_callback(self):
+        """Create a TrainerCallback for progress tracking. Reused by all training branches."""
+        from transformers import TrainerCallback
+        trainer_ref = self
+
+        class _ProgressCallback(TrainerCallback):
+            def on_log(self, args, state, control, logs=None, **kwargs):
+                if not logs:
+                    return
+                loss_value = logs.get('loss', logs.get('train_loss', 0.0))
+                current_step = state.global_step
+                grad_norm = logs.get('grad_norm', None)
+
+                elapsed_seconds = None
+                if trainer_ref.training_start_time is not None:
+                    elapsed_seconds = time.time() - trainer_ref.training_start_time
+
+                eta_seconds = None
+                if elapsed_seconds is not None and current_step > 0:
+                    total_steps = trainer_ref.training_progress.total_steps
+                    if total_steps > 0:
+                        steps_remaining = total_steps - current_step
+                        if steps_remaining > 0:
+                            eta_seconds = (elapsed_seconds / current_step) * steps_remaining
+
+                num_tokens = getattr(state, "num_input_tokens_seen", None)
+
+                trainer_ref._update_progress(
+                    step=current_step,
+                    epoch=round(state.epoch, 2) if state.epoch else 0,
+                    loss=loss_value,
+                    learning_rate=logs.get('learning_rate', 0.0),
+                    elapsed_seconds=elapsed_seconds,
+                    eta_seconds=eta_seconds,
+                    grad_norm=grad_norm,
+                    num_tokens=num_tokens,
+                    eval_loss=logs.get('eval_loss', None),
+                    status_message="",
+                )
+
+            def on_epoch_end(self, args, state, control, **kwargs):
+                trainer_ref._update_progress(epoch=state.epoch, step=state.global_step)
+
+            def on_step_end(self, args, state, control, **kwargs):
+                if trainer_ref.should_stop:
+                    print(f"Stop detected at step {state.global_step}\n")
+                    control.should_training_stop = True
+                    return control
+
+        return _ProgressCallback()
+
+    def _calculate_total_steps(self, num_samples, batch_size, grad_accum, num_epochs, max_steps):
+        """Calculate total training steps from dataset size and training params."""
+        if max_steps and max_steps > 0:
+            return max_steps
+        len_dataloader = math.ceil(num_samples / batch_size)
+        steps_per_epoch = max(len_dataloader // grad_accum + int(len_dataloader % grad_accum > 0), 1)
+        return steps_per_epoch * num_epochs
+
+    def _build_audio_training_args(self, training_args, output_dir, *, extra_args=None):
+        """Build training args dict for audio branches.
+
+        Constructs the common config (batch size, lr, warmup, fp16/bf16, etc.)
+        and applies per-branch overrides via extra_args.
+        """
+        batch_size = training_args.get('batch_size', 2)
+        gradient_accumulation_steps = training_args.get('gradient_accumulation_steps', 4)
+        warmup_steps_val = training_args.get('warmup_steps', 5)
+        max_steps_val = training_args.get('max_steps', 0)
+        learning_rate = training_args.get('learning_rate', 2e-4)
+        weight_decay = training_args.get('weight_decay', 0.001)
+        lr_scheduler_type = training_args.get('lr_scheduler_type', 'linear')
+        random_seed = training_args.get('random_seed', 3407)
+        optim_value = training_args.get('optim', 'adamw_8bit')
+
+        config = {
+            "per_device_train_batch_size": batch_size,
+            "gradient_accumulation_steps": gradient_accumulation_steps,
+            "warmup_steps": warmup_steps_val if warmup_steps_val is not None else 5,
+            "learning_rate": learning_rate,
+            "fp16": not is_bfloat16_supported(),
+            "bf16": is_bfloat16_supported(),
+            "logging_steps": 1,
+            "optim": optim_value,
+            "weight_decay": weight_decay,
+            "lr_scheduler_type": lr_scheduler_type,
+            "seed": random_seed,
+            "output_dir": output_dir,
+            "report_to": ["wandb"] if training_args.get('enable_wandb', False) else "none",
+        }
+
+        # max_steps vs epochs
+        if max_steps_val and max_steps_val > 0:
+            config["max_steps"] = max_steps_val
+        else:
+            config["num_train_epochs"] = training_args.get('num_epochs', 3)
+
+        # save_steps
+        save_steps_val = training_args.get('save_steps', 0)
+        if save_steps_val and save_steps_val > 0:
+            config["save_steps"] = save_steps_val
+            config["save_strategy"] = "steps"
+
+        # Apply per-branch overrides
+        if extra_args:
+            config.update(extra_args)
+
+        return config
+
+    def _finalize_training(self, output_dir, label=""):
+        """Save model after training and update progress. Used by all training branches."""
+        if self.should_stop and self.save_on_stop:
+            self.trainer.save_model()
+            self.tokenizer.save_pretrained(output_dir)
+            msg = f"{label} training stopped" if label else "Training stopped"
+            print(f"\n{msg}. Model saved to {output_dir}\n")
+            self._update_progress(
+                is_training=False,
+                status_message=f"Training stopped. Model saved to {output_dir}",
+            )
+        elif self.should_stop:
+            msg = f"{label} training cancelled" if label else "Training cancelled"
+            print(f"\n{msg}.\n")
+            self._update_progress(is_training=False, status_message="Training cancelled.")
+        else:
+            self.trainer.save_model()
+            self.tokenizer.save_pretrained(output_dir)
+            msg = f"{label} training completed" if label else "Training completed"
+            print(f"\n{msg}! Model saved to {output_dir}\n")
+            self._update_progress(
+                is_training=False,
+                is_completed=True,
+                status_message=f"Training completed! Model saved to {output_dir}",
+            )
+
+    def _cleanup_audio_artifacts(self):
+        """Remove sys.path entries and sys.modules from previous audio preprocessing.
+
+        After audio training, cloned repo dirs (OuteTTS, Spark-TTS) remain on
+        sys.path and heavy audio modules (snac, whisper, sparktts, outetts) stay
+        in sys.modules. When the next training run calls dataset.map(num_proc=N),
+        forked child processes inherit this stale state and deadlock.
+        """
+        import sys as _sys
+
+        # Remove cloned audio repo paths from sys.path
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        audio_paths = [
+            os.path.join(base_dir, "inference", "OuteTTS"),  # DAC/OuteTTS
+        ]
+        # Spark-TTS path is relative to the downloaded repo
+        if self._spark_tts_repo_dir:
+            spark_code_dir = os.path.join(os.path.dirname(self._spark_tts_repo_dir), "Spark-TTS")
+            audio_paths.append(spark_code_dir)
+
+        removed_paths = []
+        for path in audio_paths:
+            if path in _sys.path:
+                _sys.path.remove(path)
+                removed_paths.append(path)
+
+        # Remove stale audio modules from sys.modules
+        prefixes = ('snac', 'whisper', 'sparktts', 'outetts')
+        removed_modules = [key for key in _sys.modules if key.startswith(prefixes)]
+        for key in removed_modules:
+            del _sys.modules[key]
+
+        if removed_paths or removed_modules:
+            print(f"Cleaned up audio artifacts: {len(removed_paths)} paths, "
+                  f"{len(removed_modules)} modules\n")
+
     def _resolve_audio_columns(self, dataset, custom_format_mapping: dict = None):
         """Resolve audio, text, and speaker columns from user mapping or hardcoded fallback.
 
@@ -178,6 +350,26 @@ class UnslothTrainer:
             print("\nClearing GPU memory before training...")
             clear_gpu_cache()
 
+            # Clean up sys.path and sys.modules from previous audio preprocessing
+            # to prevent deadlocks when forking worker processes in dataset.map()
+            self._cleanup_audio_artifacts()
+
+            # Reload Unsloth-patched transformers modeling modules before clearing
+            # the compiled cache. unsloth_compile_transformers() sets __UNSLOTH_PATCHED__
+            # on each modeling module and replaces methods with exec'd code.
+            # clear_unsloth_compiled_cache() deletes the disk cache, but the flag
+            # prevents re-compilation — leaving missing cache files. Reloading
+            # restores original class definitions so Unsloth can re-compile cleanly.
+            import sys as _sys
+            import importlib
+            for _key, _mod in list(_sys.modules.items()):
+                if 'transformers.models.' in _key and '.modeling_' in _key:
+                    if hasattr(_mod, '__UNSLOTH_PATCHED__'):
+                        try:
+                            importlib.reload(_mod)
+                        except Exception:
+                            pass  # Non-critical — Unsloth will handle stale modules
+
             # Remove stale compiled cache so the new model gets a fresh one
             from utils.cache_cleanup import clear_unsloth_compiled_cache
             clear_unsloth_compiled_cache()
@@ -191,6 +383,7 @@ class UnslothTrainer:
             # VLM: vision model with image dataset (mutually exclusive with audio VLM)
             self.is_vlm = not self.is_audio and not self.is_audio_vlm and is_vision_model(model_name) and is_dataset_multimodal
             self.model_name = model_name
+            self.max_seq_length = max_seq_length
 
             logger.info(f"Audio type: {self._audio_type}")
             if not self.is_audio:
@@ -302,8 +495,15 @@ class UnslothTrainer:
                 logger.info("Loaded Spark-TTS (bicodec) model")
 
             elif self._audio_type == 'dac':
-                # Phase 2: OuteTTS
-                raise NotImplementedError(f"Audio model type '{self._audio_type}' not yet implemented")
+                # OuteTTS: uses FastModel (not FastLanguageModel) with load_in_4bit=False
+                from unsloth import FastModel
+                self.model, self.tokenizer = FastModel.from_pretrained(
+                    model_name,
+                    max_seq_length=max_seq_length,
+                    load_in_4bit=False,
+                    token=hf_token,
+                )
+                logger.info("Loaded OuteTTS (dac) model (FastModel)")
 
             elif self.is_audio_vlm:
                 # Audio VLM: multimodal model trained on audio (e.g. Gemma 3N)
@@ -865,7 +1065,7 @@ class UnslothTrainer:
         SNAC_MODEL_NAME = "hubertsiuzdak/snac_24khz"
         SNAC_SAMPLE_RATE = 24000
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        max_length = getattr(self, '_max_seq_length', 2048) or 2048
+        max_length = self.max_seq_length or 2048
         tokenizer = self.tokenizer
 
         # Orpheus special token IDs (hardcoded in tokenizer vocabulary)
@@ -1001,7 +1201,12 @@ class UnslothTrainer:
         print("Freeing SNAC codec model from GPU...\n")
         snac_model.to("cpu")
         del snac_model
+        import gc
+        gc.collect()
         torch.cuda.empty_cache()
+
+        global _CUDA_AUDIO_PREPROCESSING_DONE
+        _CUDA_AUDIO_PREPROCESSING_DONE = True
 
         if not processed_examples:
             raise ValueError(
@@ -1185,7 +1390,13 @@ class UnslothTrainer:
         print("Freeing BiCodec tokenizer from GPU...\n")
         audio_tokenizer.model.cpu()
         audio_tokenizer.feature_extractor.cpu()
+        del audio_tokenizer
+        import gc
+        gc.collect()
         torch.cuda.empty_cache()
+
+        global _CUDA_AUDIO_PREPROCESSING_DONE
+        _CUDA_AUDIO_PREPROCESSING_DONE = True
 
         if not processed_examples:
             raise ValueError(
@@ -1199,6 +1410,193 @@ class UnslothTrainer:
         sample = result_dataset[0]["text"]
         print(f"Sample text (first 200 chars): {sample[:200]}...\n")
         print(f"Sample text length: {len(sample)} chars\n")
+        return result_dataset
+
+    def _preprocess_dac_dataset(self, dataset, custom_format_mapping=None):
+        """Preprocess dataset for OuteTTS training with DAC codec.
+
+        Mirrors Oute_TTS_(1B).ipynb DataCreationV3: uses Whisper for word timings,
+        OuteTTS AudioProcessor for speaker representations, PromptProcessor for
+        training prompts. Outputs text strings for SFTTrainer with dataset_text_field="text".
+        """
+        import sys
+        import io
+        import tempfile
+        import torch
+        import numpy as np
+        import soundfile as sf
+        from datasets import Dataset as HFDataset
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        # Clone OuteTTS repo (same as audio_codecs._load_dac)
+        import subprocess
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        outetts_code_dir = os.path.join(base_dir, "inference", "OuteTTS")
+        outetts_pkg = os.path.join(outetts_code_dir, "outetts")
+        if not os.path.isdir(outetts_pkg):
+            self._update_progress(status_message="Cloning OuteTTS code repo...")
+            print(f"Cloning edwko/OuteTTS to {outetts_code_dir}...\n")
+            subprocess.run(
+                ["git", "clone", "--depth", "1", "https://github.com/edwko/OuteTTS", outetts_code_dir],
+                check=True,
+            )
+            for fpath in [
+                os.path.join(outetts_pkg, "models", "gguf_model.py"),
+                os.path.join(outetts_pkg, "interface.py"),
+                os.path.join(outetts_pkg, "__init__.py"),
+            ]:
+                if os.path.exists(fpath):
+                    os.remove(fpath)
+                    print(f"Removed {fpath}\n")
+
+        if outetts_code_dir not in sys.path:
+            sys.path.insert(0, outetts_code_dir)
+
+        from outetts.version.v3.audio_processor import AudioProcessor
+        from outetts.version.v3.prompt_processor import PromptProcessor
+        from outetts.models.config import ModelConfig as OuteTTSModelConfig
+        from outetts.utils.preprocessing import text_normalizations
+
+        # Resolve audio and text columns
+        resolved = self._resolve_audio_columns(dataset, custom_format_mapping)
+        audio_col = resolved["audio_col"]
+        text_col = resolved["text_col"]
+        if not audio_col or not text_col:
+            raise ValueError(
+                f"DAC dataset needs 'audio' and 'text' columns, got: {dataset.column_names}"
+            )
+
+        # Cast audio to 24kHz (notebook: dataset.cast_column("audio", Audio(sampling_rate=24000)))
+        from datasets import Audio
+        dataset = dataset.cast_column(audio_col, Audio(sampling_rate=24000))
+        print("Cast audio column to 24kHz\n")
+
+        # Load Whisper for word timings
+        self._update_progress(status_message="Loading Whisper model for word timings...")
+        print("Loading Whisper model for word timings...\n")
+        import whisper
+        whisper_model = whisper.load_model("turbo", device=device)
+
+        # Load OuteTTS AudioProcessor + PromptProcessor
+        self._update_progress(status_message="Loading OuteTTS AudioProcessor...")
+        print("Loading OuteTTS AudioProcessor...\n")
+        model_tokenizer_path = "OuteAI/Llama-OuteTTS-1.0-1B"
+        dummy_config = OuteTTSModelConfig(
+            tokenizer_path=model_tokenizer_path,
+            device=device,
+            audio_codec_path=None,
+        )
+        audio_processor = AudioProcessor(config=dummy_config)
+        prompt_processor = PromptProcessor(model_tokenizer_path)
+
+        self._update_progress(status_message="Preprocessing audio with OuteTTS...")
+        print(f"DAC preprocessing: audio_col='{audio_col}', text_col='{text_col}'\n")
+
+        processed_examples = []
+        skipped = 0
+        for idx in range(len(dataset)):
+            if self.should_stop:
+                print("Stopped during DAC preprocessing\n")
+                break
+
+            example = dataset[idx]
+            try:
+                text = example.get(text_col)
+                if not text or not isinstance(text, str):
+                    skipped += 1
+                    continue
+
+                audio_data = example.get(audio_col)
+                if audio_data is None or audio_data.get("array") is None:
+                    skipped += 1
+                    continue
+
+                audio_array = np.array(audio_data["array"], dtype=np.float32)
+                sampling_rate = audio_data.get("sampling_rate", 24000)
+
+                # Convert to WAV bytes (Whisper needs a file path)
+                buf = io.BytesIO()
+                sf.write(buf, audio_array, sampling_rate, format="WAV", subtype="FLOAT")
+                buf.seek(0)
+                audio_bytes = buf.getvalue()
+
+                # 1. Get word timings from Whisper
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as tmp:
+                    tmp.write(audio_bytes)
+                    tmp.flush()
+                    whisper_result = whisper_model.transcribe(tmp.name, word_timestamps=True)
+
+                normalized_transcript = text_normalizations(text)
+                words_with_timings = []
+                if whisper_result and "segments" in whisper_result:
+                    for segment in whisper_result["segments"]:
+                        for word_info in segment.get("words", []):
+                            cleaned = word_info["word"].strip()
+                            if cleaned:
+                                words_with_timings.append({
+                                    "word": cleaned,
+                                    "start": float(word_info["start"]),
+                                    "end": float(word_info["end"]),
+                                })
+
+                if not words_with_timings:
+                    skipped += 1
+                    continue
+
+                # 2. Create speaker representation with AudioProcessor
+                speaker_data_dict = {
+                    "audio": {"bytes": audio_bytes},
+                    "text": normalized_transcript,
+                    "words": words_with_timings,
+                }
+                speaker = audio_processor.create_speaker_from_dict(speaker_data_dict)
+                if speaker is None:
+                    skipped += 1
+                    continue
+
+                # 3. Get training prompt from PromptProcessor
+                prompt = prompt_processor.get_training_prompt(speaker)
+                if prompt:
+                    processed_examples.append({"text": prompt})
+
+            except Exception as e:
+                logger.warning(f"Error processing DAC example {idx}: {e}")
+                skipped += 1
+                continue
+
+            if (idx + 1) % 100 == 0:
+                self._update_progress(
+                    status_message=f"Preprocessing audio with OuteTTS... {idx + 1}/{len(dataset)}"
+                )
+
+        # Free Whisper from GPU (notebook: data_processor.whisper_model.to('cpu'))
+        print("Moving Whisper model to CPU...\n")
+        whisper_model.to('cpu')
+        del whisper_model
+        del audio_processor
+        del prompt_processor
+        import gc
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        # Mark process as CUDA-contaminated from audio preprocessing.
+        # Fork-based multiprocessing (num_proc>1) will deadlock after this
+        # because forked children inherit CUDA's internal thread locks from
+        # Whisper/DAC processing that can't be released.
+        global _CUDA_AUDIO_PREPROCESSING_DONE
+        _CUDA_AUDIO_PREPROCESSING_DONE = True
+
+        if not processed_examples:
+            raise ValueError(
+                f"No valid examples after DAC preprocessing (skipped {skipped})"
+            )
+
+        result_dataset = HFDataset.from_list(processed_examples)
+        print(f"DAC preprocessing complete: {len(result_dataset)} examples "
+              f"({skipped} skipped)\n")
+        sample = result_dataset[0]["text"]
+        print(f"Sample text (first 200 chars): {sample[:200]}...\n")
         return result_dataset
 
     def _preprocess_whisper_dataset(self, dataset, eval_split=None, custom_format_mapping=None):
@@ -1404,10 +1802,13 @@ class UnslothTrainer:
 
             elif self._audio_type == 'bicodec':
                 processed = self._preprocess_bicodec_dataset(dataset, custom_format_mapping)
-                return (processed, None)
+                return ({"dataset": processed, "final_format": "audio_bicodec"}, None)
 
-            elif self._audio_type in ('xcodec2', 'dac'):
-                # Phase 2: remaining codec-to-text models
+            elif self._audio_type == 'dac':
+                processed = self._preprocess_dac_dataset(dataset, custom_format_mapping)
+                return ({"dataset": processed, "final_format": "audio_dac"}, None)
+
+            elif self._audio_type == 'xcodec2':
                 raise NotImplementedError(f"Audio dataset preprocessing for '{self._audio_type}' not yet implemented")
 
             elif self.is_audio_vlm:
@@ -1632,671 +2033,98 @@ class UnslothTrainer:
 
             # ========== AUDIO TRAINER BRANCH ==========
             if self._audio_type == 'csm':
-                # CSM uses plain HF Trainer with TrainingArguments (NOT SFTTrainer)
-                # Dataset is already preprocessed — just pass it directly
-                from transformers import Trainer as HFTrainer, TrainingArguments, TrainerCallback
-
-                # --- Fix: Unsloth's forward patch for CsmForConditionalGeneration fails to
-                # apply on transformers>=4.54 due to type annotation mismatches (Optional[],
-                # list vs List, Unpack[TransformersKwargs] vs KWARGS_TYPE). The original
-                # forward passes **kwargs (containing num_items_in_batch, return_dict, etc.)
-                # directly to the depth decoder, which causes depth_decoder_loss=None.
-                # We replicate the critical fixes from the Unsloth patched forward here.
+                # CSM uses plain HF Trainer (NOT SFTTrainer)
+                # Needs remove_unused_columns=False for depth decoder (input_values + cutoffs)
+                from transformers import Trainer as HFTrainer, TrainingArguments
                 self._apply_csm_forward_fix()
 
-                batch_size = training_args.get('batch_size', 2)
-                gradient_accumulation_steps = training_args.get('gradient_accumulation_steps', 4)
-                warmup_steps_val = training_args.get('warmup_steps', 5)
-                max_steps_val = training_args.get('max_steps', 0)
-                learning_rate = training_args.get('learning_rate', 2e-4)
-                weight_decay = training_args.get('weight_decay', 0.001)
-                lr_scheduler_type = training_args.get('lr_scheduler_type', 'linear')
-                random_seed = training_args.get('random_seed', 3407)
-                optim_value = training_args.get('optim', 'adamw_8bit')
-
-                csm_training_args = {
-                    "per_device_train_batch_size": batch_size,
-                    "gradient_accumulation_steps": gradient_accumulation_steps,
-                    "warmup_steps": warmup_steps_val if warmup_steps_val is not None else 5,
-                    "learning_rate": learning_rate,
-                    "fp16": not is_bfloat16_supported(),
-                    "bf16": is_bfloat16_supported(),
-                    "logging_steps": 1,
-                    "optim": optim_value,
-                    "weight_decay": weight_decay,
-                    "lr_scheduler_type": lr_scheduler_type,
-                    "seed": random_seed,
-                    "output_dir": output_dir,
-                    "report_to": ["wandb"] if training_args.get('enable_wandb', False) else "none",
-                    # CSM needs input_values + input_values_cutoffs for depth decoder loss;
-                    # without this, Trainer strips them and depth_decoder_loss becomes None
+                config = self._build_audio_training_args(training_args, output_dir, extra_args={
                     "remove_unused_columns": False,
-                }
-
-                # max_steps vs epochs
-                if max_steps_val and max_steps_val > 0:
-                    csm_training_args["max_steps"] = max_steps_val
-                    print(f"CSM training for {max_steps_val} steps\n")
-                else:
-                    csm_training_args["num_train_epochs"] = training_args.get('num_epochs', 3)
-                    print(f"CSM training for {csm_training_args['num_train_epochs']} epochs\n")
-
-                # save_steps
-                save_steps_val = training_args.get('save_steps', 0)
-                if save_steps_val and save_steps_val > 0:
-                    csm_training_args["save_steps"] = save_steps_val
-                    csm_training_args["save_strategy"] = "steps"
-
-                # The dataset for CSM is a plain Dataset (not a dict)
-                train_ds = dataset
-
-                print(f"CSM training config: {csm_training_args}\n")
-
+                })
                 self.trainer = HFTrainer(
-                    model=self.model,
-                    train_dataset=train_ds,
-                    args=TrainingArguments(**csm_training_args),
+                    model=self.model, train_dataset=dataset,
+                    args=TrainingArguments(**config),
                 )
-                print("CSM Trainer initialized\n")
+                self.trainer.add_callback(self._create_progress_callback())
 
-                # Progress callback (same as standard)
-                class ProgressCallback(TrainerCallback):
-                    def __init__(self, trainer_instance):
-                        self.trainer_instance = trainer_instance
-
-                    def on_log(self, args, state, control, logs=None, **kwargs):
-                        if logs:
-                            loss_value = logs.get('loss', logs.get('train_loss', 0.0))
-                            current_step = state.global_step
-                            grad_norm = logs.get('grad_norm', None)
-
-                            elapsed_seconds = None
-                            if self.trainer_instance.training_start_time is not None:
-                                elapsed_seconds = time.time() - self.trainer_instance.training_start_time
-
-                            eta_seconds = None
-                            if elapsed_seconds is not None and current_step > 0:
-                                total_steps = self.trainer_instance.training_progress.total_steps
-                                if total_steps > 0:
-                                    steps_remaining = total_steps - current_step
-                                    if steps_remaining > 0:
-                                        time_per_step = elapsed_seconds / current_step
-                                        eta_seconds = time_per_step * steps_remaining
-
-                            num_tokens = getattr(state, "num_input_tokens_seen", None)
-
-                            self.trainer_instance._update_progress(
-                                step=current_step,
-                                epoch=round(state.epoch, 2) if state.epoch else 0,
-                                loss=loss_value,
-                                learning_rate=logs.get('learning_rate', 0.0),
-                                elapsed_seconds=elapsed_seconds,
-                                eta_seconds=eta_seconds,
-                                grad_norm=grad_norm,
-                                num_tokens=num_tokens,
-                                eval_loss=logs.get('eval_loss', None),
-                                status_message=""
-                            )
-
-                    def on_epoch_end(self, args, state, control, **kwargs):
-                        self.trainer_instance._update_progress(
-                            epoch=state.epoch,
-                            step=state.global_step
-                        )
-
-                    def on_step_end(self, args, state, control, **kwargs):
-                        if self.trainer_instance.should_stop:
-                            print(f"Stop detected at step {state.global_step}\n")
-                            control.should_training_stop = True
-                            return control
-
-                self.trainer.add_callback(ProgressCallback(self))
-
-                # Calculate total steps
-                num_samples = len(train_ds)
-                grad_accum = training_args.get('gradient_accumulation_steps', 4)
-                num_epochs = training_args.get('num_epochs', 3)
-                len_dataloader = math.ceil(num_samples / batch_size)
-                num_update_steps_per_epoch = max(
-                    len_dataloader // grad_accum + int(len_dataloader % grad_accum > 0), 1
+                batch_size = training_args.get('batch_size', 2)
+                total = self._calculate_total_steps(
+                    len(dataset), batch_size,
+                    training_args.get('gradient_accumulation_steps', 4),
+                    training_args.get('num_epochs', 3),
+                    training_args.get('max_steps', 0),
                 )
-
-                if max_steps_val and max_steps_val > 0:
-                    total_steps = max_steps_val
-                else:
-                    total_steps = num_update_steps_per_epoch * num_epochs
-
-                self._update_progress(total_steps=total_steps)
-                print(f"CSM progress tracking: {total_steps} total steps\n")
-
-                # Train
-                self._update_progress(status_message="Starting CSM training...")
-                print("Starting CSM training...\n")
+                self._update_progress(total_steps=total, status_message="Starting CSM training...")
+                print(f"CSM training config: {config}\n")
                 self.trainer.train()
-
-                # Save
-                if self.should_stop and self.save_on_stop:
-                    self.trainer.save_model()
-                    self.tokenizer.save_pretrained(output_dir)
-                    print(f"\nCSM training stopped. Model saved to {output_dir}\n")
-                    self._update_progress(
-                        is_training=False,
-                        status_message=f"Training stopped. Model saved to {output_dir}",
-                    )
-                elif self.should_stop:
-                    print("\nCSM training cancelled.\n")
-                    self._update_progress(
-                        is_training=False,
-                        status_message="Training cancelled.",
-                    )
-                else:
-                    self.trainer.save_model()
-                    self.tokenizer.save_pretrained(output_dir)
-                    print(f"\nCSM training completed! Model saved to {output_dir}\n")
-                    self._update_progress(
-                        is_training=False,
-                        is_completed=True,
-                        status_message=f"Training completed! Model saved to {output_dir}",
-                    )
-                return  # Exit _train_worker for CSM
+                self._finalize_training(output_dir, "CSM")
+                return
 
             elif self._audio_type == 'snac':
-                # Orpheus: language model with SNAC codec tokens
-                # Dataset is already preprocessed — use plain HF Trainer (same as CSM)
-                from transformers import Trainer as HFTrainer, TrainingArguments, TrainerCallback
+                # Orpheus: language model with SNAC codec tokens — plain HF Trainer
+                from transformers import Trainer as HFTrainer, TrainingArguments
+
+                config = self._build_audio_training_args(training_args, output_dir)
+                self.trainer = HFTrainer(
+                    model=self.model, train_dataset=dataset,
+                    args=TrainingArguments(**config),
+                )
+                self.trainer.add_callback(self._create_progress_callback())
 
                 batch_size = training_args.get('batch_size', 2)
-                gradient_accumulation_steps = training_args.get('gradient_accumulation_steps', 4)
-                warmup_steps_val = training_args.get('warmup_steps', 5)
-                max_steps_val = training_args.get('max_steps', 0)
-                learning_rate = training_args.get('learning_rate', 2e-4)
-                weight_decay = training_args.get('weight_decay', 0.001)
-                lr_scheduler_type = training_args.get('lr_scheduler_type', 'linear')
-                random_seed = training_args.get('random_seed', 3407)
-                optim_value = training_args.get('optim', 'adamw_8bit')
-
-                snac_training_args = {
-                    "per_device_train_batch_size": batch_size,
-                    "gradient_accumulation_steps": gradient_accumulation_steps,
-                    "warmup_steps": warmup_steps_val if warmup_steps_val is not None else 5,
-                    "learning_rate": learning_rate,
-                    "fp16": not is_bfloat16_supported(),
-                    "bf16": is_bfloat16_supported(),
-                    "logging_steps": 1,
-                    "optim": optim_value,
-                    "weight_decay": weight_decay,
-                    "lr_scheduler_type": lr_scheduler_type,
-                    "seed": random_seed,
-                    "output_dir": output_dir,
-                    "report_to": ["wandb"] if training_args.get('enable_wandb', False) else "none",
-                }
-
-                # max_steps vs epochs
-                if max_steps_val and max_steps_val > 0:
-                    snac_training_args["max_steps"] = max_steps_val
-                    print(f"snac training for {max_steps_val} steps\n")
-                else:
-                    snac_training_args["num_train_epochs"] = training_args.get('num_epochs', 3)
-                    print(f"snac training for {snac_training_args['num_train_epochs']} epochs\n")
-
-                # save_steps
-                save_steps_val = training_args.get('save_steps', 0)
-                if save_steps_val and save_steps_val > 0:
-                    snac_training_args["save_steps"] = save_steps_val
-                    snac_training_args["save_strategy"] = "steps"
-
-                train_ds = dataset
-
-                print(f"snac training config: {snac_training_args}\n")
-
-                self.trainer = HFTrainer(
-                    model=self.model,
-                    train_dataset=train_ds,
-                    args=TrainingArguments(**snac_training_args),
+                total = self._calculate_total_steps(
+                    len(dataset), batch_size,
+                    training_args.get('gradient_accumulation_steps', 4),
+                    training_args.get('num_epochs', 3),
+                    training_args.get('max_steps', 0),
                 )
-                print("snac Trainer initialized\n")
-
-                # Progress callback (same as CSM)
-                class ProgressCallback(TrainerCallback):
-                    def __init__(self, trainer_instance):
-                        self.trainer_instance = trainer_instance
-
-                    def on_log(self, args, state, control, logs=None, **kwargs):
-                        if logs:
-                            loss_value = logs.get('loss', logs.get('train_loss', 0.0))
-                            current_step = state.global_step
-                            grad_norm = logs.get('grad_norm', None)
-
-                            elapsed_seconds = None
-                            if self.trainer_instance.training_start_time is not None:
-                                elapsed_seconds = time.time() - self.trainer_instance.training_start_time
-
-                            eta_seconds = None
-                            if elapsed_seconds is not None and current_step > 0:
-                                total_steps = self.trainer_instance.training_progress.total_steps
-                                if total_steps > 0:
-                                    steps_remaining = total_steps - current_step
-                                    if steps_remaining > 0:
-                                        time_per_step = elapsed_seconds / current_step
-                                        eta_seconds = time_per_step * steps_remaining
-
-                            num_tokens = getattr(state, "num_input_tokens_seen", None)
-
-                            self.trainer_instance._update_progress(
-                                step=current_step,
-                                epoch=round(state.epoch, 2) if state.epoch else 0,
-                                loss=loss_value,
-                                learning_rate=logs.get('learning_rate', 0.0),
-                                elapsed_seconds=elapsed_seconds,
-                                eta_seconds=eta_seconds,
-                                grad_norm=grad_norm,
-                                num_tokens=num_tokens,
-                                eval_loss=logs.get('eval_loss', None),
-                                status_message=""
-                            )
-
-                    def on_epoch_end(self, args, state, control, **kwargs):
-                        self.trainer_instance._update_progress(
-                            epoch=state.epoch,
-                            step=state.global_step
-                        )
-
-                    def on_step_end(self, args, state, control, **kwargs):
-                        if self.trainer_instance.should_stop:
-                            print(f"Stop detected at step {state.global_step}\n")
-                            control.should_training_stop = True
-                            return control
-
-                self.trainer.add_callback(ProgressCallback(self))
-
-                # Calculate total steps
-                num_samples = len(train_ds)
-                grad_accum = training_args.get('gradient_accumulation_steps', 4)
-                num_epochs = training_args.get('num_epochs', 3)
-                len_dataloader = math.ceil(num_samples / batch_size)
-                num_update_steps_per_epoch = max(
-                    len_dataloader // grad_accum + int(len_dataloader % grad_accum > 0), 1
-                )
-
-                if max_steps_val and max_steps_val > 0:
-                    total_steps = max_steps_val
-                else:
-                    total_steps = num_update_steps_per_epoch * num_epochs
-
-                self._update_progress(total_steps=total_steps)
-                print(f"snac progress tracking: {total_steps} total steps\n")
-
-                # Train
-                self._update_progress(status_message="Starting snac training...")
-                print("Starting snac training...\n")
+                self._update_progress(total_steps=total, status_message="Starting SNAC training...")
+                print(f"SNAC training config: {config}\n")
                 self.trainer.train()
-
-                # Save
-                if self.should_stop and self.save_on_stop:
-                    self.trainer.save_model()
-                    self.tokenizer.save_pretrained(output_dir)
-                    print(f"\nsnac training stopped. Model saved to {output_dir}\n")
-                    self._update_progress(
-                        is_training=False,
-                        status_message=f"Training stopped. Model saved to {output_dir}",
-                    )
-                elif self.should_stop:
-                    print("\nsnac training cancelled.\n")
-                    self._update_progress(
-                        is_training=False,
-                        status_message="Training cancelled.",
-                    )
-                else:
-                    self.trainer.save_model()
-                    self.tokenizer.save_pretrained(output_dir)
-                    print(f"\nsnac training completed! Model saved to {output_dir}\n")
-                    self._update_progress(
-                        is_training=False,
-                        is_completed=True,
-                        status_message=f"Training completed! Model saved to {output_dir}",
-                    )
-                return  # Exit _train_worker for snac
+                self._finalize_training(output_dir, "SNAC")
+                return
 
             elif self._audio_type == 'whisper':
                 # Whisper: Seq2SeqTrainer with custom speech collator
-                from transformers import Seq2SeqTrainer, Seq2SeqTrainingArguments, TrainerCallback
+                from transformers import Seq2SeqTrainer, Seq2SeqTrainingArguments
                 from utils.datasets import DataCollatorSpeechSeq2SeqWithPadding
 
-                batch_size = training_args.get('batch_size', 1)
-                gradient_accumulation_steps = training_args.get('gradient_accumulation_steps', 4)
-                warmup_steps_val = training_args.get('warmup_steps', 5)
-                max_steps_val = training_args.get('max_steps', 0)
-                learning_rate = training_args.get('learning_rate', 1e-4)
-                weight_decay = training_args.get('weight_decay', 0.001)
-                lr_scheduler_type = training_args.get('lr_scheduler_type', 'linear')
-                random_seed = training_args.get('random_seed', 3407)
-                optim_value = training_args.get('optim', 'adamw_8bit')
                 eval_dataset = training_args.get('eval_dataset', None)
-                eval_steps_val = training_args.get('eval_steps', 5)
-
-                whisper_training_args = {
-                    "per_device_train_batch_size": batch_size,
-                    "gradient_accumulation_steps": gradient_accumulation_steps,
-                    "warmup_steps": warmup_steps_val if warmup_steps_val is not None else 5,
-                    "learning_rate": learning_rate,
-                    "fp16": not is_bfloat16_supported(),
-                    "bf16": is_bfloat16_supported(),
-                    "logging_steps": 1,
-                    "optim": optim_value,
-                    "weight_decay": weight_decay,
-                    "lr_scheduler_type": lr_scheduler_type,
-                    "seed": random_seed,
-                    "output_dir": output_dir,
-                    "report_to": ["wandb"] if training_args.get('enable_wandb', False) else "none",
-                    "remove_unused_columns": False,
-                    "label_names": ["labels"],
-                }
-
-                # Eval config
+                extra = {"remove_unused_columns": False, "label_names": ["labels"]}
                 if eval_dataset:
-                    whisper_training_args["eval_strategy"] = "steps"
-                    whisper_training_args["eval_steps"] = eval_steps_val
+                    extra["eval_strategy"] = "steps"
+                    extra["eval_steps"] = training_args.get('eval_steps', 5)
 
-                # max_steps vs epochs
-                if max_steps_val and max_steps_val > 0:
-                    whisper_training_args["max_steps"] = max_steps_val
-                    print(f"Whisper training for {max_steps_val} steps\n")
-                else:
-                    whisper_training_args["num_train_epochs"] = training_args.get('num_epochs', 3)
-                    print(f"Whisper training for {whisper_training_args['num_train_epochs']} epochs\n")
-
-                # save_steps
-                save_steps_val = training_args.get('save_steps', 0)
-                if save_steps_val and save_steps_val > 0:
-                    whisper_training_args["save_steps"] = save_steps_val
-                    whisper_training_args["save_strategy"] = "steps"
-
-                train_ds = dataset
-                data_collator = DataCollatorSpeechSeq2SeqWithPadding(processor=self.tokenizer)
-
-                print(f"Whisper training config: {whisper_training_args}\n")
+                config = self._build_audio_training_args(training_args, output_dir, extra_args=extra)
 
                 trainer_kwargs = {
                     "model": self.model,
-                    "train_dataset": train_ds,
-                    "data_collator": data_collator,
+                    "train_dataset": dataset,
+                    "data_collator": DataCollatorSpeechSeq2SeqWithPadding(processor=self.tokenizer),
                     "processing_class": self.tokenizer.feature_extractor,
-                    "args": Seq2SeqTrainingArguments(**whisper_training_args),
+                    "args": Seq2SeqTrainingArguments(**config),
                 }
                 if eval_dataset:
                     trainer_kwargs["eval_dataset"] = eval_dataset
 
                 self.trainer = Seq2SeqTrainer(**trainer_kwargs)
-                print("Whisper Seq2SeqTrainer initialized\n")
-
-                # Progress callback (same as CSM/SNAC)
-                class ProgressCallback(TrainerCallback):
-                    def __init__(self, trainer_instance):
-                        self.trainer_instance = trainer_instance
-
-                    def on_log(self, args, state, control, logs=None, **kwargs):
-                        if logs:
-                            loss_value = logs.get('loss', logs.get('train_loss', 0.0))
-                            current_step = state.global_step
-                            grad_norm = logs.get('grad_norm', None)
-
-                            elapsed_seconds = None
-                            if self.trainer_instance.training_start_time is not None:
-                                elapsed_seconds = time.time() - self.trainer_instance.training_start_time
-
-                            eta_seconds = None
-                            if elapsed_seconds is not None and current_step > 0:
-                                total_steps = self.trainer_instance.training_progress.total_steps
-                                if total_steps > 0:
-                                    steps_remaining = total_steps - current_step
-                                    if steps_remaining > 0:
-                                        time_per_step = elapsed_seconds / current_step
-                                        eta_seconds = time_per_step * steps_remaining
-
-                            num_tokens = getattr(state, "num_input_tokens_seen", None)
-
-                            self.trainer_instance._update_progress(
-                                step=current_step,
-                                epoch=round(state.epoch, 2) if state.epoch else 0,
-                                loss=loss_value,
-                                learning_rate=logs.get('learning_rate', 0.0),
-                                elapsed_seconds=elapsed_seconds,
-                                eta_seconds=eta_seconds,
-                                grad_norm=grad_norm,
-                                num_tokens=num_tokens,
-                                eval_loss=logs.get('eval_loss', None),
-                                status_message=""
-                            )
-
-                    def on_epoch_end(self, args, state, control, **kwargs):
-                        self.trainer_instance._update_progress(
-                            epoch=state.epoch,
-                            step=state.global_step
-                        )
-
-                    def on_step_end(self, args, state, control, **kwargs):
-                        if self.trainer_instance.should_stop:
-                            print(f"Stop detected at step {state.global_step}\n")
-                            control.should_training_stop = True
-                            return control
-
-                self.trainer.add_callback(ProgressCallback(self))
-
-                # Calculate total steps
-                num_samples = len(train_ds)
-                grad_accum = training_args.get('gradient_accumulation_steps', 4)
-                num_epochs = training_args.get('num_epochs', 3)
-                len_dataloader = math.ceil(num_samples / batch_size)
-                num_update_steps_per_epoch = max(
-                    len_dataloader // grad_accum + int(len_dataloader % grad_accum > 0), 1
-                )
-
-                if max_steps_val and max_steps_val > 0:
-                    total_steps = max_steps_val
-                else:
-                    total_steps = num_update_steps_per_epoch * num_epochs
-
-                self._update_progress(total_steps=total_steps)
-                print(f"Whisper progress tracking: {total_steps} total steps\n")
-
-                # Train
-                self._update_progress(status_message="Starting Whisper training...")
-                print("Starting Whisper training...\n")
-                self.trainer.train()
-
-                # Save
-                if self.should_stop and self.save_on_stop:
-                    self.trainer.save_model()
-                    self.tokenizer.save_pretrained(output_dir)
-                    print(f"\nWhisper training stopped. Model saved to {output_dir}\n")
-                    self._update_progress(
-                        is_training=False,
-                        status_message=f"Training stopped. Model saved to {output_dir}",
-                    )
-                elif self.should_stop:
-                    print("\nWhisper training cancelled.\n")
-                    self._update_progress(
-                        is_training=False,
-                        status_message="Training cancelled.",
-                    )
-                else:
-                    self.trainer.save_model()
-                    self.tokenizer.save_pretrained(output_dir)
-                    print(f"\nWhisper training completed! Model saved to {output_dir}\n")
-                    self._update_progress(
-                        is_training=False,
-                        is_completed=True,
-                        status_message=f"Training completed! Model saved to {output_dir}",
-                    )
-                return  # Exit _train_worker for Whisper
-
-            elif self._audio_type == 'bicodec':
-                # Spark-TTS: SFTTrainer with dataset_text_field="text"
-                # Dataset is already preprocessed to text strings with BiCodec tokens
-                from transformers import TrainerCallback
+                self.trainer.add_callback(self._create_progress_callback())
 
                 batch_size = training_args.get('batch_size', 2)
-                gradient_accumulation_steps = training_args.get('gradient_accumulation_steps', 4)
-                warmup_steps_val = training_args.get('warmup_steps', 5)
-                max_steps_val = training_args.get('max_steps', 0)
-                learning_rate = training_args.get('learning_rate', 2e-4)
-                weight_decay = training_args.get('weight_decay', 0.001)
-                lr_scheduler_type = training_args.get('lr_scheduler_type', 'linear')
-                random_seed = training_args.get('random_seed', 3407)
-                optim_value = training_args.get('optim', 'adamw_8bit')
-                max_seq_length = training_args.get('max_seq_length', 2048)
-
-                print(f"BiCodec training params: lr={learning_rate}, warmup={warmup_steps_val}, "
-                      f"max_steps={max_steps_val}, batch={batch_size}, max_seq_len={max_seq_length}\n")
-
-                bicodec_training_args = {
-                    "per_device_train_batch_size": batch_size,
-                    "gradient_accumulation_steps": gradient_accumulation_steps,
-                    "warmup_steps": warmup_steps_val if warmup_steps_val is not None else 5,
-                    "learning_rate": learning_rate,
-                    "fp16": False,  # Spark-TTS requires full float32
-                    "bf16": False,  # Spark-TTS requires full float32
-                    "logging_steps": 1,
-                    "optim": optim_value,
-                    "weight_decay": weight_decay,
-                    "lr_scheduler_type": lr_scheduler_type,
-                    "seed": random_seed,
-                    "output_dir": output_dir,
-                    "report_to": ["wandb"] if training_args.get('enable_wandb', False) else "none",
-                }
-
-                # max_steps vs epochs
-                if max_steps_val and max_steps_val > 0:
-                    bicodec_training_args["max_steps"] = max_steps_val
-                    print(f"BiCodec training for {max_steps_val} steps\n")
-                else:
-                    bicodec_training_args["num_train_epochs"] = training_args.get('num_epochs', 3)
-                    print(f"BiCodec training for {bicodec_training_args['num_train_epochs']} epochs\n")
-
-                # save_steps
-                save_steps_val = training_args.get('save_steps', 0)
-                if save_steps_val and save_steps_val > 0:
-                    bicodec_training_args["save_steps"] = save_steps_val
-                    bicodec_training_args["save_strategy"] = "steps"
-
-                train_ds = dataset
-
-                print(f"BiCodec training config: {bicodec_training_args}\n")
-
-                self.trainer = SFTTrainer(
-                    model=self.model,
-                    tokenizer=self.tokenizer,
-                    train_dataset=train_ds,
-                    dataset_text_field="text",
-                    max_seq_length=max_seq_length,
-                    packing=False,
-                    args=SFTConfig(**bicodec_training_args),
+                total = self._calculate_total_steps(
+                    len(dataset), batch_size,
+                    training_args.get('gradient_accumulation_steps', 4),
+                    training_args.get('num_epochs', 3),
+                    training_args.get('max_steps', 0),
                 )
-                print("BiCodec SFTTrainer initialized\n")
-
-                # Progress callback (same pattern as CSM/SNAC)
-                class ProgressCallback(TrainerCallback):
-                    def __init__(self, trainer_instance):
-                        self.trainer_instance = trainer_instance
-
-                    def on_log(self, args, state, control, logs=None, **kwargs):
-                        if logs:
-                            loss_value = logs.get('loss', logs.get('train_loss', 0.0))
-                            current_step = state.global_step
-                            grad_norm = logs.get('grad_norm', None)
-
-                            elapsed_seconds = None
-                            if self.trainer_instance.training_start_time is not None:
-                                elapsed_seconds = time.time() - self.trainer_instance.training_start_time
-
-                            eta_seconds = None
-                            if elapsed_seconds is not None and current_step > 0:
-                                total_steps = self.trainer_instance.training_progress.total_steps
-                                if total_steps > 0:
-                                    steps_remaining = total_steps - current_step
-                                    if steps_remaining > 0:
-                                        time_per_step = elapsed_seconds / current_step
-                                        eta_seconds = time_per_step * steps_remaining
-
-                            num_tokens = getattr(state, "num_input_tokens_seen", None)
-
-                            self.trainer_instance._update_progress(
-                                step=current_step,
-                                epoch=round(state.epoch, 2) if state.epoch else 0,
-                                loss=loss_value,
-                                learning_rate=logs.get('learning_rate', 0.0),
-                                elapsed_seconds=elapsed_seconds,
-                                eta_seconds=eta_seconds,
-                                grad_norm=grad_norm,
-                                num_tokens=num_tokens,
-                                eval_loss=logs.get('eval_loss', None),
-                                status_message=""
-                            )
-
-                    def on_epoch_end(self, args, state, control, **kwargs):
-                        self.trainer_instance._update_progress(
-                            epoch=state.epoch,
-                            step=state.global_step
-                        )
-
-                    def on_step_end(self, args, state, control, **kwargs):
-                        if self.trainer_instance.should_stop:
-                            print(f"Stop detected at step {state.global_step}\n")
-                            control.should_training_stop = True
-                            return control
-
-                self.trainer.add_callback(ProgressCallback(self))
-
-                # Calculate total steps
-                num_samples = len(train_ds)
-                grad_accum = training_args.get('gradient_accumulation_steps', 4)
-                num_epochs = training_args.get('num_epochs', 3)
-                len_dataloader = math.ceil(num_samples / batch_size)
-                num_update_steps_per_epoch = max(
-                    len_dataloader // grad_accum + int(len_dataloader % grad_accum > 0), 1
-                )
-
-                if max_steps_val and max_steps_val > 0:
-                    total_steps = max_steps_val
-                else:
-                    total_steps = num_update_steps_per_epoch * num_epochs
-
-                self._update_progress(total_steps=total_steps)
-                print(f"BiCodec progress tracking: {total_steps} total steps\n")
-
-                # Train
-                self._update_progress(status_message="Starting BiCodec training...")
-                print("Starting BiCodec training...\n")
+                self._update_progress(total_steps=total, status_message="Starting Whisper training...")
+                print(f"Whisper training config: {config}\n")
                 self.trainer.train()
+                self._finalize_training(output_dir, "Whisper")
+                return
 
-                # Save
-                if self.should_stop and self.save_on_stop:
-                    self.trainer.save_model()
-                    self.tokenizer.save_pretrained(output_dir)
-                    print(f"\nBiCodec training stopped. Model saved to {output_dir}\n")
-                    self._update_progress(
-                        is_training=False,
-                        status_message=f"Training stopped. Model saved to {output_dir}",
-                    )
-                elif self.should_stop:
-                    print("\nBiCodec training cancelled.\n")
-                    self._update_progress(
-                        is_training=False,
-                        status_message="Training cancelled.",
-                    )
-                else:
-                    self.trainer.save_model()
-                    self.tokenizer.save_pretrained(output_dir)
-                    print(f"\nBiCodec training completed! Model saved to {output_dir}\n")
-                    self._update_progress(
-                        is_training=False,
-                        is_completed=True,
-                        status_message=f"Training completed! Model saved to {output_dir}",
-                    )
-                return  # Exit _train_worker for BiCodec
-
-            elif self._audio_type is not None:
-                # Remaining audio types not yet implemented
+            elif self._audio_type is not None and self._audio_type not in ('bicodec', 'dac'):
+                # bicodec/dac use the standard SFTTrainer text path below
                 raise NotImplementedError(f"Audio training for '{self._audio_type}' not yet implemented")
 
             # ========== DATA COLLATOR SELECTION ==========
@@ -2388,19 +2216,18 @@ class UnslothTrainer:
                 print("Vision data collator configured\n")
 
             # ========== TRAINING CONFIGURATION ==========
-            # Handle epochs vs max_steps properly
-            max_steps_val = training_args.get('max_steps', 0)
-            num_epochs_val = training_args.get('num_epochs', 3)
-
             # Handle warmup_steps vs warmup_ratio
             warmup_steps_val = training_args.get('warmup_steps', None)
             warmup_ratio_val = training_args.get('warmup_ratio', None)
             
+            lr_value = training_args.get('learning_rate', 2e-4)
+            print(f"[DEBUG] learning_rate from training_args: {lr_value} (type: {type(lr_value).__name__})\n")
+
             config_args = {
                 "per_device_train_batch_size": training_args.get('batch_size', 2),
                 "gradient_accumulation_steps": training_args.get('gradient_accumulation_steps', 4),
                 "num_train_epochs": training_args.get('num_epochs', 3),  # Default to epochs
-                "learning_rate": training_args.get('learning_rate', 2e-4),
+                "learning_rate": lr_value,
                 "fp16": not is_bfloat16_supported(),
                 "bf16": is_bfloat16_supported(),
                 "logging_steps": 1,
@@ -2410,6 +2237,7 @@ class UnslothTrainer:
                 "report_to": ["wandb"] if training_args.get('enable_wandb', False) else "none",
                 "include_num_input_tokens_seen": True,  # Enable token counting
                 "dataset_num_proc": safe_num_proc(max(1, os.cpu_count() // 4)),
+                "max_seq_length": training_args.get('max_seq_length', 2048),
             }
             
             # Add warmup parameter - use warmup_ratio if provided, otherwise warmup_steps
@@ -2491,6 +2319,14 @@ class UnslothTrainer:
                     config_args["packing"] = packing_enabled
                     print(f"Sequence packing: {'enabled' if packing_enabled else 'disabled'}\n")
 
+            # Audio codec overrides — BiCodec/DAC use the text SFTTrainer path
+            if self._audio_type == 'bicodec':
+                config_args["packing"] = False
+                print("Applied BiCodec overrides: packing=False\n")
+            elif self._audio_type == 'dac':
+                config_args["packing"] = False
+                print("Applied DAC overrides: packing=False\n")
+
             print(f"The configuration is: {config_args}")
 
             print("Training configuration prepared\n")
@@ -2555,7 +2391,7 @@ class UnslothTrainer:
 
             # DeepSeek OCR handles this internally in its collator, so skip
             # Audio VLM handles label masking in its collator, so skip
-            if train_on_responses_enabled and not self.is_audio_vlm and not (is_deepseek_ocr or dataset["final_format"].lower() == 'alpaca'):
+            if train_on_responses_enabled and not self.is_audio_vlm and not self.is_audio and not (is_deepseek_ocr or dataset["final_format"].lower() == 'alpaca'):
                 try:
                     print("Configuring train on responses only...\n")
 
@@ -2584,15 +2420,23 @@ class UnslothTrainer:
                     train_on_responses_enabled = False
 
             # Apply train on responses only if we have valid parts
-            if train_on_responses_enabled and instruction_part and response_part and not self.is_audio_vlm and not (is_deepseek_ocr or dataset["final_format"].lower() == 'alpaca'):
+            if train_on_responses_enabled and instruction_part and response_part and not self.is_audio_vlm and not self.is_audio and not (is_deepseek_ocr or dataset["final_format"].lower() == 'alpaca'):
                 try:
                     from unsloth.chat_templates import train_on_responses_only
+
+                    # After CUDA-heavy audio preprocessing (Whisper/DAC/BiCodec/SNAC),
+                    # fork-based multiprocessing deadlocks because children inherit
+                    # CUDA's internal thread locks. Use single-process mode instead.
+                    toro_num_proc = config_args.get("dataset_num_proc", safe_num_proc(max(1, os.cpu_count() // 4)))
+                    if _CUDA_AUDIO_PREPROCESSING_DONE:
+                        toro_num_proc = 1
+                        print("Using single-process train_on_responses (CUDA audio preprocessing detected)\n")
 
                     self.trainer = train_on_responses_only(
                         self.trainer,
                         instruction_part=instruction_part,
                         response_part=response_part,
-                        num_proc=config_args.get("dataset_num_proc", safe_num_proc(max(1, os.cpu_count() // 4))),
+                        num_proc=toro_num_proc,
                     )
                     print("Train on responses only configured successfully\n")
 
@@ -2639,103 +2483,17 @@ class UnslothTrainer:
                 else:
                     print("Training on full sequences (including prompts)\n")
 
-            # Add custom callback for progress tracking
-            from transformers import TrainerCallback
-
-            class ProgressCallback(TrainerCallback):
-                def __init__(self, trainer_instance):
-                    self.trainer_instance = trainer_instance
-
-                def on_train_begin(self, args, state, control, **kwargs):
-                    """Called at the beginning of training"""
-                    pass
-
-                def on_log(self, args, state, control, logs=None, **kwargs):
-                    """Called when logging occurs"""
-                    if logs:
-                        # Get loss from either 'loss' or 'train_loss' key
-                        loss_value = logs.get('loss', logs.get('train_loss', 0.0))
-                        current_step = state.global_step
-                        
-                        # Extract grad_norm from logs (available when gradient clipping is enabled)
-                        grad_norm = logs.get('grad_norm', None)
-                        
-                        # Calculate elapsed_seconds
-                        elapsed_seconds = None
-                        if self.trainer_instance.training_start_time is not None:
-                            elapsed_seconds = time.time() - self.trainer_instance.training_start_time
-                        
-                        # Calculate eta_seconds
-                        eta_seconds = None
-                        if elapsed_seconds is not None and current_step > 0:
-                            total_steps = self.trainer_instance.training_progress.total_steps
-                            if total_steps > 0:
-                                steps_remaining = total_steps - current_step
-                                if steps_remaining > 0:
-                                    time_per_step = elapsed_seconds / current_step
-                                    eta_seconds = time_per_step * steps_remaining
-                        
-                        # Extract num_tokens from TRL SFTTrainer state (real counter)
-                        # Requires include_num_input_tokens_seen=True in SFTConfig
-                        num_tokens = getattr(state, "num_input_tokens_seen", None)
-                        
-                        self.trainer_instance._update_progress(
-                            step=current_step,
-                            epoch=round(state.epoch, 2) if state.epoch else 0,
-                            loss=loss_value,
-                            learning_rate=logs.get('learning_rate', 0.0),
-                            elapsed_seconds=elapsed_seconds,
-                            eta_seconds=eta_seconds,
-                            grad_norm=grad_norm,
-                            num_tokens=num_tokens,
-                            eval_loss=logs.get('eval_loss', None),
-                            status_message=""
-                        )
-
-                def on_epoch_end(self, args, state, control, **kwargs):
-                    """Called at the end of each epoch"""
-                    self.trainer_instance._update_progress(
-                        epoch=state.epoch,
-                        step=state.global_step
-                    )
-
-                def on_step_end(self, args, state, control, **kwargs):
-                    """Called at the end of each step"""
-                    # Check if we should stop training
-                    if self.trainer_instance.should_stop:
-                        print(f"Stop detected at step {state.global_step}\n")
-                        control.should_training_stop = True
-                        return control
-
             # ========== PROGRESS TRACKING ==========
-            progress_callback = ProgressCallback(self)
-            self.trainer.add_callback(progress_callback)
+            self.trainer.add_callback(self._create_progress_callback())
 
             num_samples = len(dataset['dataset'] if isinstance(dataset, dict) else dataset)
             batch_size = training_args.get('batch_size', 2)
-            grad_accum = training_args.get('gradient_accumulation_steps', 4)
-            num_epochs = training_args.get('num_epochs', 3)
-            max_steps_val = training_args.get('max_steps', 0)
-
-            # Step 1: Calculate dataloader length (number of batches)
-            len_dataloader = math.ceil(num_samples / batch_size)
-
-            # Step 2: Calculate steps per epoch (following transformers logic)
-            num_update_steps_per_epoch = max(
-                len_dataloader // grad_accum + int(len_dataloader % grad_accum > 0),
-                1
+            total_steps = self._calculate_total_steps(
+                num_samples, batch_size,
+                training_args.get('gradient_accumulation_steps', 4),
+                training_args.get('num_epochs', 3),
+                training_args.get('max_steps', 0),
             )
-
-            # Step 3: Determine total steps based on max_steps or epochs
-            if max_steps_val and max_steps_val > 0:
-                # Use max_steps if specified
-                total_steps = max_steps_val
-                print(f"Progress tracking: {total_steps} steps (max_steps)\n")
-            else:
-                # Calculate from epochs
-                total_steps = num_update_steps_per_epoch * num_epochs
-                print(f"Progress tracking: {total_steps} steps ({num_epochs} epochs × {num_update_steps_per_epoch} steps/epoch)\n")
-
             self._update_progress(total_steps=total_steps)
 
             # ========== START TRAINING ==========
@@ -2744,32 +2502,7 @@ class UnslothTrainer:
             self.trainer.train()
 
             # ========== SAVE MODEL ==========
-            if self.should_stop and self.save_on_stop:
-                # Stopped by user — save model at current checkpoint
-                self.trainer.save_model()
-                self.tokenizer.save_pretrained(output_dir)
-                print(f"\nTraining stopped. Model saved to {output_dir}\n")
-                self._update_progress(
-                    is_training=False,
-                    status_message=f"Training stopped. Model saved to {output_dir}",
-                )
-            elif self.should_stop:
-                # Cancelled by user — don't save
-                print("\nTraining cancelled.\n")
-                self._update_progress(
-                    is_training=False,
-                    status_message="Training cancelled.",
-                )
-            else:
-                # Normal completion
-                self.trainer.save_model()
-                self.tokenizer.save_pretrained(output_dir)
-                print(f"\nTraining completed! Model saved to {output_dir}\n")
-                self._update_progress(
-                    is_training=False,
-                    is_completed=True,
-                    status_message=f"Training completed! Model saved to {output_dir}",
-                )
+            self._finalize_training(output_dir)
 
         except Exception as e:
             import traceback
