@@ -810,6 +810,18 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             "    os.environ['UNSLOTH_RETURN_LOGITS'] = '1'\n"
         )
         extra_args += logits_check
+        warnings_issued_check = (
+            "if model is not None:\n"
+            "    _warnings_issued = getattr(model, 'warnings_issued', None)\n"
+            "    if _warnings_issued is None:\n"
+            "        model.warnings_issued = {}\n"
+            "    elif not isinstance(_warnings_issued, dict):\n"
+            "        try:\n"
+            "            model.warnings_issued = dict(_warnings_issued)\n"
+            "        except Exception:\n"
+            "            model.warnings_issued = {}\n"
+        )
+        extra_args += warnings_issued_check
 
     # Check max_seq_length
     if "model" in call_args:
