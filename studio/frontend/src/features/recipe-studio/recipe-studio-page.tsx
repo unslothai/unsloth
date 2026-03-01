@@ -164,6 +164,9 @@ export function RecipeStudioPage({
     ReactFlowInstance<Node<RecipeNodeData | RecipeGraphAuxNodeData>, Edge> | null
   >(null);
   const lastProcessedFitTickRef = useRef(0);
+  const previousActiveViewRef = useRef<RecipeStudioView>("editor");
+  const pendingEditorTabFitRef = useRef(false);
+  const viewportMovedSinceAutoFitRef = useRef(true);
   const handleExecutionStart = useCallback(() => {
     setActiveView("executions");
   }, []);
@@ -337,6 +340,53 @@ export function RecipeStudioPage({
     runDialogKind === "preview" ? previewLoading : fullLoading;
 
   useEffect(() => {
+    if (previousActiveViewRef.current !== activeView && activeView === "editor") {
+      pendingEditorTabFitRef.current = true;
+    }
+    previousActiveViewRef.current = activeView;
+  }, [activeView]);
+
+  useEffect(() => {
+    if (
+      !reactFlowInstance ||
+      activeView !== "editor" ||
+      !pendingEditorTabFitRef.current
+    ) {
+      return;
+    }
+    pendingEditorTabFitRef.current = false;
+    if (!viewportMovedSinceAutoFitRef.current) {
+      return;
+    }
+    const targetNodes = getFitNodeIdsIgnoringNotes(reactFlowInstance.getNodes());
+    if (targetNodes.length === 0) {
+      return;
+    }
+    viewportMovedSinceAutoFitRef.current = false;
+    let frame2 = 0;
+    let frame3 = 0;
+    const frame1 = window.requestAnimationFrame(() => {
+      frame2 = window.requestAnimationFrame(() => {
+        frame3 = window.requestAnimationFrame(() => {
+          reactFlowInstance.fitView({
+            duration: 320,
+            nodes: targetNodes,
+          });
+        });
+      });
+    });
+    return () => {
+      window.cancelAnimationFrame(frame1);
+      if (frame2) {
+        window.cancelAnimationFrame(frame2);
+      }
+      if (frame3) {
+        window.cancelAnimationFrame(frame3);
+      }
+    };
+  }, [activeView, reactFlowInstance]);
+
+  useEffect(() => {
     if (!reactFlowInstance || fitViewTick === 0 || activeView !== "editor") {
       return;
     }
@@ -348,6 +398,7 @@ export function RecipeStudioPage({
     if (targetNodes.length === 0) {
       return;
     }
+    viewportMovedSinceAutoFitRef.current = false;
     let frame2 = 0;
     let frame3 = 0;
     const frame1 = window.requestAnimationFrame(() => {
@@ -410,6 +461,11 @@ export function RecipeStudioPage({
                 onNodeClick={handleNodeClick}
                 onNodeDoubleClick={handleNodeDoubleClick}
                 isValidConnection={isValidConnection}
+                onMoveEnd={(event) => {
+                  if (event) {
+                    viewportMovedSinceAutoFitRef.current = true;
+                  }
+                }}
                 nodesDraggable={canvasInteractive}
                 nodesConnectable={canvasInteractive}
                 elementsSelectable={canvasInteractive}
