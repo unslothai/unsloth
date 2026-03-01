@@ -24,8 +24,8 @@ The most reliable method. Push directly to [Hugging Face](https://huggingface.co
 model.push_to_hub_gguf(
     "your-hf-username/my-model-gguf",  # Replace with your HF username
     tokenizer,
-    quantization_method = "q4_k_m",
-    token = "hf_...",  # Your HF write token
+    quantization_method="q4_k_m",
+    token="hf_...",  # Your HF write token
 )
 ```
 
@@ -36,15 +36,15 @@ model.push_to_hub_gguf(
 model.push_to_hub_merged(
     "your-hf-username/my-model-16bit",
     tokenizer,
-    save_method = "merged_16bit",
-    token = "hf_...",
+    save_method="merged_16bit",
+    token="hf_...",
 )
 
 # Or push just the LoRA adapter
 model.push_to_hub(
     "your-hf-username/my-model-lora",
     tokenizer,
-    token = "hf_...",
+    token="hf_...",
 )
 ```
 
@@ -79,7 +79,7 @@ drive.mount('/content/drive')
 model.save_pretrained_gguf(
     "/content/drive/MyDrive/my-model",
     tokenizer,
-    quantization_method = "q4_k_m",
+    quantization_method="q4_k_m",
 )
 ```
 
@@ -122,8 +122,9 @@ files.download("path/to/your-model.gguf")
 If you use cloud storage (AWS S3, Google Cloud Storage, Azure Blob, etc.), you can install `rclone` in Colab and upload directly.
 
 ```bash
-# Install rclone in Colab
-!curl https://rclone.org/install.sh | sudo bash
+# Install rclone in Colab (download first, then execute)
+!curl -O https://rclone.org/install.sh
+!sudo bash install.sh
 
 # Configure (interactive — or provide a pre-made rclone.conf)
 !rclone config
