@@ -41,6 +41,8 @@ class LlamaCppBackend:
         self._is_vision: bool = False
         self._healthy = False
         self._lock = threading.Lock()
+        self._stdout_lines: list[str] = []
+        self._stdout_thread: Optional[threading.Thread] = None
 
         atexit.register(self._cleanup)
 
@@ -115,6 +117,26 @@ class LlamaCppBackend:
             s.bind(("", 0))
             return s.getsockname()[1]
 
+    # ── Stdout drain (prevents pipe deadlock on Windows) ─────────
+
+    def _drain_stdout(self):
+        """
+        Read lines from the subprocess stdout in a background thread.
+
+        This prevents a pipe-buffer deadlock on Windows where the default
+        pipe buffer is only ~4 KB.  Without draining, llama-server blocks
+        on writes and never becomes healthy.
+        """
+        try:
+            for line in self._process.stdout:
+                line = line.rstrip()
+                if line:
+                    self._stdout_lines.append(line)
+                    logger.info(f"[llama-server] {line}")
+        except (ValueError, OSError):
+            # Pipe closed — process is terminating
+            pass
+
     # ── Lifecycle ─────────────────────────────────────────────────
 
     def load_model(
@@ -122,6 +144,8 @@ class LlamaCppBackend:
         *,
         # Local mode: pass a path to a .gguf file
         gguf_path: Optional[str] = None,
+        # Vision projection (mmproj) for local vision models
+        mmproj_path: Optional[str] = None,
         # HF mode: let llama-server download via -hf "repo:quant"
         hf_repo: Optional[str] = None,
         hf_variant: Optional[str] = None,
@@ -186,6 +210,14 @@ class LlamaCppBackend:
             if n_threads is not None:
                 cmd.extend(["--threads", str(n_threads)])
 
+            # Append mmproj for local vision models
+            if mmproj_path:
+                if not Path(mmproj_path).is_file():
+                    logger.warning(f"mmproj file not found: {mmproj_path}")
+                else:
+                    cmd.extend(["--mmproj", mmproj_path])
+                    logger.info(f"Using mmproj for vision: {mmproj_path}")
+
             logger.info(f"Starting llama-server: {' '.join(cmd)}")
 
             # Set LD_LIBRARY_PATH so llama-server can find its shared libs
@@ -196,6 +228,7 @@ class LlamaCppBackend:
             existing_ld = env.get("LD_LIBRARY_PATH", "")
             env["LD_LIBRARY_PATH"] = f"{binary_dir}:{existing_ld}" if existing_ld else binary_dir
 
+            self._stdout_lines = []
             self._process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -203,6 +236,12 @@ class LlamaCppBackend:
                 text=True,
                 env=env,
             )
+
+            # Start background thread to drain stdout and prevent pipe deadlock
+            self._stdout_thread = threading.Thread(
+                target=self._drain_stdout, daemon=True, name="llama-stdout"
+            )
+            self._stdout_thread.start()
 
             self._gguf_path = gguf_path
             self._hf_repo = hf_repo
@@ -256,6 +295,9 @@ class LlamaCppBackend:
             logger.warning(f"Error killing llama-server process: {e}")
         finally:
             self._process = None
+            if self._stdout_thread is not None:
+                self._stdout_thread.join(timeout=2)
+                self._stdout_thread = None
 
     def _cleanup(self):
         """atexit handler to ensure llama-server is terminated."""
@@ -273,8 +315,10 @@ class LlamaCppBackend:
         while time.monotonic() < deadline:
             # Check if process crashed
             if self._process.poll() is not None:
-                # Read remaining output for error info
-                output = self._process.stdout.read() if self._process.stdout else ""
+                # Give the drain thread a moment to collect final output
+                if self._stdout_thread is not None:
+                    self._stdout_thread.join(timeout=2)
+                output = "\n".join(self._stdout_lines[-50:])
                 logger.error(
                     f"llama-server exited with code {self._process.returncode}. "
                     f"Output: {output[:2000]}"
