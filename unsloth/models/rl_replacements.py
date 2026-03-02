@@ -1013,7 +1013,7 @@ def grpo_trainer_compute_loss(function_name, function):
 
         max_left_pad = inputs.get("max_left_pad", 0)
         if per_token_logps is not None:
-            loss, completion_length, mean_kl, delta, flat_is_ratio, coef_1 = (
+            loss, completion_length, mean_kl, delta, flat_is_ratio, coef_1, completion_mask = (
                 grpo_compute_loss_slow(
                     ref_logps,
                     per_token_logps,
@@ -1043,7 +1043,7 @@ def grpo_trainer_compute_loss(function_name, function):
             )
         else:
             if hasattr(self.args, "loss_type"):
-                loss, completion_length, mean_kl, delta, flat_is_ratio, coef_1 = (
+                loss, completion_length, mean_kl, delta, flat_is_ratio, coef_1, completion_mask = (
                     grpo_accumulated_loss(
                         trainer = self,
                         input_ids = _input_ids,
@@ -1075,7 +1075,7 @@ def grpo_trainer_compute_loss(function_name, function):
                 )
             else:
                 # to ensure backwards compatibility with trl 0.15.2 and maybe even 0.17
-                loss, completion_length, mean_kl, coef_1 = grpo_accumulated_loss(
+                loss, completion_length, mean_kl, coef_1, completion_mask = grpo_accumulated_loss(
                     trainer = self,
                     input_ids = _input_ids,
                     logits_to_keep = logits_to_keep,
