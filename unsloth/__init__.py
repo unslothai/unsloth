@@ -66,7 +66,7 @@ if already_imported:
         f"to ensure all optimizations are applied. Your code may run slower or encounter "
         f"memory issues without these optimizations.\n\n"
         f"Please restructure your imports with 'import unsloth' at the top of your file.",
-        stacklevel = 2,
+        stacklevel=2,
     )
 del already_imported, critical_modules
 
@@ -151,6 +151,7 @@ from .import_fixes import (
     patch_vllm_for_notebooks,
     patch_torchcodec_audio_decoder,
     disable_torchcodec_if_broken,
+    patch_transformers_cfg,
 )
 
 fix_xformers_performance_issue()
@@ -172,6 +173,7 @@ fix_executorch()
 patch_vllm_for_notebooks()
 patch_torchcodec_audio_decoder()
 disable_torchcodec_if_broken()
+patch_transformers_cfg()
 
 del fix_xformers_performance_issue
 del fix_vllm_aimv2_issue
@@ -191,6 +193,7 @@ del fix_executorch
 del patch_vllm_for_notebooks
 del patch_torchcodec_audio_decoder
 del disable_torchcodec_if_broken
+del patch_transformers_cfg
 
 # Torch 2.4 has including_emulation
 if DEVICE_TYPE == "cuda":
@@ -200,7 +203,7 @@ if DEVICE_TYPE == "cuda":
     old_is_bf16_supported = torch.cuda.is_bf16_supported
     if "including_emulation" in str(inspect.signature(old_is_bf16_supported)):
 
-        def is_bf16_supported(including_emulation = False):
+        def is_bf16_supported(including_emulation=False):
             return old_is_bf16_supported(including_emulation)
 
         torch.cuda.is_bf16_supported = is_bf16_supported
@@ -311,6 +314,7 @@ from .save import *
 from .chat_templates import *
 from .tokenizer_utils import *
 from .trainer import *
+from .grammars import *
 
 # Export dataprep utilities for CLI and downstream users
 from .dataprep.raw_text import RawTextDataLoader, TextPreprocessor

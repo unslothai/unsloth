@@ -1016,6 +1016,7 @@ extend-exclude = [
 [tool.ruff.lint]
 select = ["E9", "F63", "F7", "F82"]
 ignore = [
+    "E251",
     "E402",
     "E722",
     "F403",
