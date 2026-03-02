@@ -1326,8 +1326,8 @@ def save_to_gguf(
                                 f"Unsloth: Quantization failed for {output_location}\n"
                                 "You might have to compile llama.cpp yourself, then run this again.\n"
                                 "You do not need to close this Python program. Run the following commands in a new terminal:\n"
-                                f"git clone --recursive https://github.com/ggerganov/llama.cpp {LLAMA_CPP_DEFAULT_DIR}\n"
-                                f"cd {LLAMA_CPP_DEFAULT_DIR}\n"
+                                f'git clone --recursive https://github.com/ggerganov/llama.cpp "{LLAMA_CPP_DEFAULT_DIR}"\n'
+                                f'cd "{LLAMA_CPP_DEFAULT_DIR}"\n'
                                 f"cmake -S . -B build -DBUILD_SHARED_LIBS=OFF\n"
                                 f"cmake --build build --config Release\n"
                                 "Once that's done, redo the quantization.\n"
@@ -1338,8 +1338,8 @@ def save_to_gguf(
                                 f"Unsloth: Quantization failed for {output_location}\n"
                                 "You might have to compile llama.cpp yourself, then run this again.\n"
                                 "You do not need to close this Python program. Run the following commands in a new terminal:\n"
-                                f"git clone --recursive https://github.com/ggerganov/llama.cpp {LLAMA_CPP_DEFAULT_DIR}\n"
-                                f"cd {LLAMA_CPP_DEFAULT_DIR} && make clean && make all -j\n"
+                                f'git clone --recursive https://github.com/ggerganov/llama.cpp "{LLAMA_CPP_DEFAULT_DIR}"\n'
+                                f'cd "{LLAMA_CPP_DEFAULT_DIR}" && make clean && make all -j\n'
                                 "Once that's done, redo the quantization.\n"
                                 "Error: {e}"
                             )
