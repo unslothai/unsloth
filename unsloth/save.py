@@ -22,6 +22,8 @@ from unsloth_zoo.llama_cpp import (
     install_llama_cpp,
     check_llama_cpp,
     _download_convert_hf_to_gguf,
+    LLAMA_CPP_DEFAULT_DIR,
+    IS_WINDOWS,
 )
 from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
 from peft.tuners.lora import Linear4bit as Peft_Linear4bit
@@ -1319,16 +1321,28 @@ def save_to_gguf(
                             "Error: {e}"
                         )
                     else:
-                        raise RuntimeError(
-                            f"Unsloth: Quantization failed for {output_location}\n"
-                            "You might have to compile llama.cpp yourself, then run this again.\n"
-                            "You do not need to close this Python program. Run the following commands in a new terminal:\n"
-                            "You must run this in the same folder as you're saving your model.\n"
-                            "git clone --recursive https://github.com/ggerganov/llama.cpp\n"
-                            "cd llama.cpp && make clean && make all -j\n"
-                            "Once that's done, redo the quantization.\n"
-                            "Error: {e}"
-                        )
+                        if IS_WINDOWS:
+                            raise RuntimeError(
+                                f"Unsloth: Quantization failed for {output_location}\n"
+                                "You might have to compile llama.cpp yourself, then run this again.\n"
+                                "You do not need to close this Python program. Run the following commands in a new terminal:\n"
+                                f"git clone --recursive https://github.com/ggerganov/llama.cpp {LLAMA_CPP_DEFAULT_DIR}\n"
+                                f"cd {LLAMA_CPP_DEFAULT_DIR}\n"
+                                f"cmake -S . -B build -DBUILD_SHARED_LIBS=OFF\n"
+                                f"cmake --build build --config Release\n"
+                                "Once that's done, redo the quantization.\n"
+                                "Error: {e}"
+                            )
+                        else:
+                            raise RuntimeError(
+                                f"Unsloth: Quantization failed for {output_location}\n"
+                                "You might have to compile llama.cpp yourself, then run this again.\n"
+                                "You do not need to close this Python program. Run the following commands in a new terminal:\n"
+                                f"git clone --recursive https://github.com/ggerganov/llama.cpp {LLAMA_CPP_DEFAULT_DIR}\n"
+                                f"cd {LLAMA_CPP_DEFAULT_DIR} && make clean && make all -j\n"
+                                "Once that's done, redo the quantization.\n"
+                                "Error: {e}"
+                            )
         print("Unsloth: Model files cleanup...")
         if quants_created:
             all_saved_locations.remove(base_gguf)
@@ -2084,16 +2098,22 @@ def unsloth_save_pretrained_gguf(
             "Unsloth: ##### We removed it in GGUF's chat template for you."
         )
 
+    _exe = ".exe" if IS_WINDOWS else ""
+    if IS_WINDOWS:
+        _bin_dir = os.path.join(LLAMA_CPP_DEFAULT_DIR, "build", "bin", "Release")
+    else:
+        _bin_dir = LLAMA_CPP_DEFAULT_DIR
+
     if is_vlm_update:
         print("\n")
         print(
-            f"Unsloth: example usage for Multimodal LLMs: llama.cpp/llama-mtmd-cli -m {all_file_locations[0]} --mmproj {all_file_locations[-1]}"
+            f"Unsloth: example usage for Multimodal LLMs: {os.path.join(_bin_dir, 'llama-mtmd-cli' + _exe)} -m {all_file_locations[0]} --mmproj {all_file_locations[-1]}"
         )
         print("Unsloth: load image inside llama.cpp runner: /image test_image.jpg")
         print("Unsloth: Prompt model to describe the image")
     else:
         print(
-            f'Unsloth: example usage for text only LLMs: llama.cpp/llama-cli --model {all_file_locations[0]} -p "why is the sky blue?"'
+            f'Unsloth: example usage for text only LLMs: {os.path.join(_bin_dir, "llama-cli" + _exe)} --model {all_file_locations[0]} -p "why is the sky blue?"'
         )
 
     if ollama_success:
@@ -2307,8 +2327,8 @@ tags:
 This model was finetuned and converted to GGUF format using [Unsloth](https://github.com/unslothai/unsloth).
 
 **Example usage**:
-- For text only LLMs:    `./llama.cpp/llama-cli -hf {repo_id} --jinja`
-- For multimodal models: `./llama.cpp/llama-mtmd-cli -hf {repo_id} --jinja`
+- For text only LLMs:    `llama-cli -hf {repo_id} --jinja`
+- For multimodal models: `llama-mtmd-cli -hf {repo_id} --jinja`
 
 ## Available Model files:
 """
