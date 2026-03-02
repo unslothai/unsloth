@@ -93,3 +93,32 @@ export function checkVramFit(
   if (ratio <= 1.0) return "tight";
   return "exceeds";
 }
+
+export interface ModelVramMapInput {
+  id: string;
+  totalParams?: number;
+}
+
+export interface ModelVramMapEntry {
+  est: number;
+  status: VramFitStatus | null;
+}
+
+export function buildModelVramMap(
+  models: ModelVramMapInput[],
+  method: TrainingMethod,
+  gpu: { available: boolean; memoryTotalGb: number },
+): Map<string, ModelVramMapEntry> {
+  const map = new Map<string, ModelVramMapEntry>();
+  for (const model of models) {
+    if (!model.totalParams) {
+      map.set(model.id, { est: 0, status: null });
+      continue;
+    }
+
+    const est = estimateLoadingVram(model.totalParams, method);
+    const status = gpu.available ? checkVramFit(est, gpu.memoryTotalGb) : null;
+    map.set(model.id, { est, status });
+  }
+  return map;
+}
