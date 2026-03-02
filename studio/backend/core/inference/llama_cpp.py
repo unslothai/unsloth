@@ -77,10 +77,11 @@ class LlamaCppBackend:
 
         Search order:
         1. LLAMA_SERVER_PATH environment variable
-        2. ./llama.cpp/build/bin/llama-server  (built by setup.sh in-tree)
-        3. ~/.unsloth/llama.cpp/build/bin/Release/llama-server  (built by setup.ps1 on Windows)
-        4. llama-server on PATH  (system install)
-        5. ./bin/llama-server  (legacy: extracted binary)
+        2. ~/.unsloth/llama.cpp/build/bin/llama-server  (Linux, built by setup.sh)
+        3. ~/.unsloth/llama.cpp/build/bin/Release/llama-server.exe  (Windows, built by setup.ps1)
+        4. ./llama.cpp/build/bin/llama-server  (legacy: in-tree build)
+        5. llama-server on PATH  (system install)
+        6. ./bin/llama-server  (legacy: extracted binary)
         """
         import os
         import sys
@@ -92,31 +93,34 @@ class LlamaCppBackend:
         if env_path and Path(env_path).is_file():
             return env_path
 
-        # Project root: llama_cpp.py → inference/ → core/ → backend/ → studio/ → root
-        project_root = Path(__file__).resolve().parents[4]
+        # 2. ~/.unsloth/llama.cpp (primary — setup.sh / setup.ps1 build here)
+        unsloth_home = Path.home() / ".unsloth" / "llama.cpp"
+        home_linux = unsloth_home / "build" / "bin" / binary_name
+        if home_linux.is_file():
+            return str(home_linux)
 
-        # 2. In-tree llama.cpp build (setup.sh builds here on Linux)
+        # 3. Windows MSVC build has Release subdir
+        if sys.platform == "win32":
+            home_win = unsloth_home / "build" / "bin" / "Release" / binary_name
+            if home_win.is_file():
+                return str(home_win)
+
+        # 4. Legacy: in-tree build (older setup.sh / setup.ps1 versions)
+        project_root = Path(__file__).resolve().parents[4]
         build_path = project_root / "llama.cpp" / "build" / "bin" / binary_name
         if build_path.is_file():
             return str(build_path)
-
-        # 3. Windows MSVC build (Release config, in-tree — matches setup.ps1)
         if sys.platform == "win32":
-            # In-tree (primary — setup.ps1 now builds here)
             win_path = project_root / "llama.cpp" / "build" / "bin" / "Release" / binary_name
             if win_path.is_file():
                 return str(win_path)
-            # Legacy: ~/.unsloth (older setup.ps1 versions built here)
-            home_path = Path.home() / ".unsloth" / "llama.cpp" / "build" / "bin" / "Release" / binary_name
-            if home_path.is_file():
-                return str(home_path)
 
-        # 4. System PATH
+        # 5. System PATH
         system_path = shutil.which("llama-server")
         if system_path:
             return system_path
 
-        # 5. Legacy: extracted to bin/
+        # 6. Legacy: extracted to bin/
         bin_path = project_root / "bin" / binary_name
         if bin_path.is_file():
             return str(bin_path)

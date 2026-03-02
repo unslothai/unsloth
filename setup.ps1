@@ -739,13 +739,16 @@ if ($OpenSslRoot) {
 # ==========================================================================
 #  PHASE 4: Build llama.cpp with CUDA for GGUF inference + export
 # ==========================================================================
-# Builds in-tree at $REPO/llama.cpp/ (same as setup.sh on Linux).
-# This directory is already in .gitignore.
+# Builds at ~/.unsloth/llama.cpp — a single shared location under the user's
+# home directory. This is used by both the inference server and the GGUF
+# export pipeline (unsloth-zoo).
 # We build:
-#   - llama-server:   for GGUF model inference (with HTTPS if vcpkg/curl available)
+#   - llama-server:   for GGUF model inference (with HTTPS if OpenSSL available)
 #   - llama-quantize: for GGUF export quantization
 # Prerequisites (git, cmake, VS Build Tools, CUDA Toolkit) already installed in Phase 1.
-$LlamaCppDir = Join-Path $PSScriptRoot "llama.cpp"
+$UnslothHome = Join-Path $env:USERPROFILE ".unsloth"
+if (-not (Test-Path $UnslothHome)) { New-Item -ItemType Directory -Force $UnslothHome | Out-Null }
+$LlamaCppDir = Join-Path $UnslothHome "llama.cpp"
 $BuildDir = Join-Path $LlamaCppDir "build"
 $LlamaServerBin = Join-Path $BuildDir "bin\Release\llama-server.exe"
 

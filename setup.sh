@@ -197,11 +197,14 @@ else
 fi
 
 # ── 8. Build llama.cpp binaries for GGUF inference + export ──
-# Builds in-tree at $REPO/llama.cpp/. This directory is shared with
-# unsloth-zoo's GGUF export pipeline. We build:
+# Builds at ~/.unsloth/llama.cpp — a single shared location under the user's
+# home directory. This is used by both the inference server and the GGUF
+# export pipeline (unsloth-zoo).
 #   - llama-server: for GGUF model inference
 #   - llama-quantize: for GGUF export quantization (symlinked to root for check_llama_cpp())
-LLAMA_CPP_DIR="$SCRIPT_DIR/llama.cpp"
+UNSLOTH_HOME="$HOME/.unsloth"
+mkdir -p "$UNSLOTH_HOME"
+LLAMA_CPP_DIR="$UNSLOTH_HOME/llama.cpp"
 LLAMA_SERVER_BIN="$LLAMA_CPP_DIR/build/bin/llama-server"
 rm -rf "$LLAMA_CPP_DIR"
 {
