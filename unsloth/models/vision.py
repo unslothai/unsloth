@@ -101,6 +101,7 @@ VLLM_SUPPORTED_VLM = [
     "mistral3",
     "qwen3_vl",
     "qwen3_vl_moe",
+    "idefics3",
 ]
 VLLM_NON_LORA_VLM = [
     "mllama",
@@ -126,6 +127,11 @@ _compile_config = CompileConfig(
     mode = "reduce-overhead",
 )
 _compile_config.disable = True  # Must set manually
+
+from unsloth_zoo.vllm_utils import (
+    convert_lora_modules,
+    return_lora_modules,
+)
 
 try:
     torch_compiler_set_stance = torch.compiler.set_stance
@@ -460,7 +466,7 @@ class FastBaseModel:
         if is_vlm and fast_inference:
             if not any(arch in VLLM_SUPPORTED_VLM for arch in model_types):
                 raise RuntimeError(
-                    f"Unsloth: Fast inference is only supported for Language models and Qwen2.5-VL, Gemma3 among vision models. "
+                    f"Unsloth: Fast inference is only supported for Language models and Qwen2.5-VL, Gemma3, Idefics3 among vision models. "
                     f"Found architectures: {', '.join(model_types)}!"
                 )
 
@@ -493,7 +499,9 @@ class FastBaseModel:
                 vllm_version = ""
         elif DEVICE_TYPE == "hip":
             gpu_stats = torch.cuda.get_device_properties(0)
-            gpu_stats_name = resolve_hip_gpu_stats_name(gpu_stats)
+            gpu_stats_name = (
+                gpu_stats.name + ". " if gpu_stats.name != "" else "AMD GPU Device. "
+            )
             gpu_version = torch.version.hip
             gpu_stats_snippet = f"ROCm Toolkit: {gpu_version}."
             try:
