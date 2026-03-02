@@ -139,6 +139,7 @@ from .import_fixes import (
     fix_vllm_guided_decoding_params,
     fix_vllm_pdl_blackwell,
     fix_triton_compiled_kernel_missing_attrs,
+    fix_rocm_triton_key_error,
     patch_trunc_normal_precision_issue,
     ignore_logger_messages,
     patch_ipykernel_hf_xet,
@@ -151,6 +152,7 @@ from .import_fixes import (
     patch_vllm_for_notebooks,
     patch_torchcodec_audio_decoder,
     disable_torchcodec_if_broken,
+    patch_transformers_cfg,
 )
 
 fix_xformers_performance_issue()
@@ -160,6 +162,7 @@ check_vllm_torch_sm100_compatibility()
 fix_vllm_guided_decoding_params()
 fix_vllm_pdl_blackwell()
 fix_triton_compiled_kernel_missing_attrs()
+fix_rocm_triton_key_error()
 patch_trunc_normal_precision_issue()
 ignore_logger_messages()
 patch_ipykernel_hf_xet()
@@ -172,6 +175,7 @@ fix_executorch()
 patch_vllm_for_notebooks()
 patch_torchcodec_audio_decoder()
 disable_torchcodec_if_broken()
+patch_transformers_cfg()
 
 del fix_xformers_performance_issue
 del fix_vllm_aimv2_issue
@@ -179,6 +183,7 @@ del check_vllm_torch_sm100_compatibility
 del fix_vllm_guided_decoding_params
 del fix_vllm_pdl_blackwell
 del fix_triton_compiled_kernel_missing_attrs
+del fix_rocm_triton_key_error
 del patch_trunc_normal_precision_issue
 del ignore_logger_messages
 del patch_ipykernel_hf_xet
@@ -191,6 +196,7 @@ del fix_executorch
 del patch_vllm_for_notebooks
 del patch_torchcodec_audio_decoder
 del disable_torchcodec_if_broken
+del patch_transformers_cfg
 
 # Torch 2.4 has including_emulation
 if DEVICE_TYPE == "cuda":
@@ -311,6 +317,7 @@ from .save import *
 from .chat_templates import *
 from .tokenizer_utils import *
 from .trainer import *
+from .grammars import *
 
 # Export dataprep utilities for CLI and downstream users
 from .dataprep.raw_text import RawTextDataLoader, TextPreprocessor
