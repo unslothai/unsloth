@@ -103,9 +103,6 @@ function ModelRow({
         {vramStatus === "tight" && (
           <span className="text-[9px] font-medium text-amber-400">TIGHT</span>
         )}
-        {vramStatus === "fits" && (
-          <span className="text-[9px] font-medium text-emerald-500/90">FIT</span>
-        )}
         {meta ? (
           <span className="text-[10px] text-muted-foreground">{meta}</span>
         ) : null}
@@ -252,9 +249,6 @@ function GgufVariantExpander({
               )}
               {fitStatus === "tight" && (
                 <span className="text-[9px] font-medium text-amber-400">TIGHT</span>
-              )}
-              {fitStatus === "fits" && (
-                <span className="text-[9px] font-medium text-emerald-500/90">FIT</span>
               )}
               <span className="text-[10px] text-muted-foreground">
                 {formatBytes(v.size_bytes)}
