@@ -627,10 +627,16 @@ class FastBaseModel:
         # Re-resolve model_class after potential config change
         try:
             model_class = auto_model._model_mapping[auto_config.__class__]
-        except KeyError:
-            pass
+        except Exception:
+            model_class = None
 
-        default_attn_impl = "flex_attention" if flex_attn_impl else "sdpa"
+        model_type = str(getattr(auto_config, "model_type", "")).lower()
+        if model_type.startswith("gemma3n"):
+            # Gemma3N variants initialize timm-based vision towers which do
+            # not support flex_attention, so default to eager unless overridden.
+            default_attn_impl = "eager"
+        else:
+            default_attn_impl = "flex_attention" if flex_attn_impl else "sdpa"
         if not ("attn_implementation" in kwargs):
             kwargs["attn_implementation"] = default_attn_impl
         if not supports_sdpa and kwargs.get("attn_implementation") == "sdpa":
