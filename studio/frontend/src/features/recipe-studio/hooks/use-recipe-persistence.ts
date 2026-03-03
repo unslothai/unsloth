@@ -64,6 +64,23 @@ function stripApiKeys(value: unknown): unknown {
   return output;
 }
 
+function inferHfRepoIdFromPath(pathValue: unknown): string {
+  if (typeof pathValue !== "string") {
+    return "";
+  }
+  const parts = pathValue
+    .trim()
+    .split("/")
+    .filter(Boolean);
+  if (parts.length >= 3 && parts[0] === "datasets") {
+    return `${parts[1]}/${parts[2]}`;
+  }
+  if (parts.length >= 2) {
+    return `${parts[0]}/${parts[1]}`;
+  }
+  return "";
+}
+
 function sanitizeSeedForShare(payload: unknown): unknown {
   if (!payload || typeof payload !== "object") {
     return payload;
@@ -95,11 +112,27 @@ function sanitizeSeedForShare(payload: unknown): unknown {
     typeof ui?.seed_source_type === "string" ? ui.seed_source_type : null;
   const sourceType =
     typeof source?.seed_type === "string" ? source.seed_type : null;
+  const shouldResetHfState =
+    sourceType === "hf" || uiSourceType === "hf";
   const shouldResetLocalState =
     sourceType === "local" ||
     sourceType === "unstructured" ||
     uiSourceType === "local" ||
     uiSourceType === "unstructured";
+
+  if (shouldResetHfState) {
+    const repoId = inferHfRepoIdFromPath(source?.path);
+    if (source && "path" in source) {
+      source.path = repoId;
+    }
+    if (ui) {
+      ui.seed_columns = [];
+      ui.seed_drop_columns = [];
+      ui.seed_preview_rows = [];
+      ui.local_file_name = "";
+      ui.unstructured_file_name = "";
+    }
+  }
 
   if (shouldResetLocalState) {
     if (source && "path" in source) {
