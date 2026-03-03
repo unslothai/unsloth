@@ -1294,12 +1294,17 @@ def disable_broken_wandb():
     """Disable wandb if it's installed but cannot actually import.
 
     wandb can fail to import when there's a protobuf version mismatch
-    (e.g., wandb < 0.19.11 with protobuf >= 6.0). This causes a cascading
-    import failure through trl -> transformers -> wandb that crashes
-    unsloth's import chain.
+    (e.g., wandb < 0.19.11 with protobuf >= 6.0). This causes cascading
+    import failures through trl -> transformers/accelerate -> wandb that
+    crash unsloth's import chain.
 
-    This function tests if wandb can actually import and if not, patches
-    transformers' is_wandb_available() to return False.
+    There are two separate is_wandb_available() functions used by trl:
+      - transformers.integrations.integration_utils.is_wandb_available
+        (used by most trl trainers)
+      - accelerate.utils.imports.is_wandb_available
+        (used by trl/trainer/callbacks.py)
+
+    Both must be patched to fully prevent broken wandb imports.
     """
     if importlib.util.find_spec("wandb") is None:
         return  # wandb not installed, nothing to do
@@ -1307,18 +1312,36 @@ def disable_broken_wandb():
     try:
         import wandb
     except Exception:
-        # wandb is installed but broken - patch transformers to skip it
+        # wandb is installed but broken - patch all checkers to skip it
         logger.info(
             "Unsloth: wandb is installed but broken (likely a protobuf version mismatch). "
             "Disabling wandb to prevent import errors. To fix, run: pip install --upgrade wandb"
         )
+        _wandb_false = lambda: False
+        # Patch transformers' is_wandb_available (used by most trl trainers)
         try:
             import transformers.integrations.integration_utils as tf_integration
 
-            tf_integration.is_wandb_available = lambda: False
+            tf_integration.is_wandb_available = _wandb_false
         except (ImportError, AttributeError):
             pass
-        # Also set env var as fallback for any other code path
+        # Patch accelerate's is_wandb_available (used by trl/trainer/callbacks.py).
+        # Must patch both the source module AND the re-export namespace since
+        # `from accelerate.utils import is_wandb_available` reads from
+        # accelerate.utils, not accelerate.utils.imports.
+        try:
+            import accelerate.utils.imports as acc_imports
+
+            acc_imports.is_wandb_available = _wandb_false
+        except (ImportError, AttributeError):
+            pass
+        try:
+            import accelerate.utils as acc_utils
+
+            acc_utils.is_wandb_available = _wandb_false
+        except (ImportError, AttributeError):
+            pass
+        # Set env var as additional fallback
         os.environ["WANDB_DISABLED"] = "true"
 
 
