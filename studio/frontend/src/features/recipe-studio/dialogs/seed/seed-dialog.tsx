@@ -34,7 +34,6 @@ import {
   TabsList,
   TabsTrigger,
 } from "@/components/ui/tabs";
-import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
 import mammoth from "mammoth";
 import { type ReactElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { extractText, getDocumentProxy } from "unpdf";
@@ -138,22 +137,6 @@ function resolveChunking(config: SeedConfig): {
   return { chunkSize, chunkOverlap };
 }
 
-async function chunkText(
-  input: string,
-  chunkSize: number,
-  chunkOverlap: number,
-): Promise<string[]> {
-  const text = input.replace(/\r\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
-  if (!text) return [];
-
-  const splitter = new RecursiveCharacterTextSplitter({
-    chunkSize,
-    chunkOverlap,
-  });
-  const chunks = await splitter.splitText(text);
-  return chunks.map((chunk) => chunk.trim()).filter(Boolean);
-}
-
 async function fileToBase64Payload(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -184,6 +167,23 @@ async function extractUnstructuredText(file: File): Promise<string> {
     return value;
   }
   throw new Error("Unsupported unstructured file type");
+}
+
+async function toUnstructuredUploadFile(file: File): Promise<File> {
+  const lower = file.name.toLowerCase();
+  if (lower.endsWith(".txt") || lower.endsWith(".md")) {
+    return file;
+  }
+
+  const text = (await extractUnstructuredText(file)).trim();
+  if (!text) {
+    throw new Error("No text found in file.");
+  }
+  const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const stem = file.name.replace(/\.(pdf|docx)$/i, "") || "unstructured_seed";
+  return new File([normalized], `${stem}.txt`, {
+    type: "text/plain",
+  });
 }
 
 export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactElement {
@@ -312,27 +312,19 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
         throw new Error("File too large (max 50MB).");
       }
 
-      const text = await extractUnstructuredText(unstructuredFile);
       const { chunkSize, chunkOverlap } = resolveChunking(config);
-      const chunks = await chunkText(text, chunkSize, chunkOverlap);
-      if (chunks.length === 0) {
-        throw new Error("No text found in file.");
+      const uploadFile = await toUnstructuredUploadFile(unstructuredFile);
+      if (uploadFile.size > MAX_UPLOAD_BYTES) {
+        throw new Error("Processed text is too large (max 50MB).");
       }
-      const jsonl = chunks
-        .map((chunk) => JSON.stringify({ chunk_text: chunk }))
-        .join("\n");
-      const stem =
-        unstructuredFile.name.replace(/\.(pdf|docx|txt)$/i, "") ||
-        "unstructured_seed";
-      const jsonlFile = new File([jsonl], `${stem}.jsonl`, {
-        type: "application/json",
-      });
-
-      const payload = await fileToBase64Payload(jsonlFile);
+      const payload = await fileToBase64Payload(uploadFile);
       const response = await inspectSeedUpload({
-        filename: jsonlFile.name,
+        filename: uploadFile.name,
         content_base64: payload,
         preview_size: 10,
+        seed_source_type: "unstructured",
+        unstructured_chunk_size: chunkSize,
+        unstructured_chunk_overlap: chunkOverlap,
       });
       onUpdate({
         hf_path: response.resolved_path,
@@ -550,7 +542,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
                 </Button>
               </div>
               <p className="text-xs text-muted-foreground">
-                Chunking uses chunk_text only. Max 50MB.
+                File is converted to text, then chunked server-side into chunk_text rows. Max 50MB.
               </p>
               {(unstructuredFile?.name ||
                 config.unstructured_file_name?.trim()) && (

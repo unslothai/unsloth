@@ -49,6 +49,9 @@ class SeedInspectUploadRequest(BaseModel):
     filename: str = Field(min_length=1)
     content_base64: str = Field(min_length=1)
     preview_size: int = Field(default=10, ge=1, le=50)
+    seed_source_type: str | None = None
+    unstructured_chunk_size: int | None = Field(default=None, ge=1, le=20000)
+    unstructured_chunk_overlap: int | None = Field(default=None, ge=0, le=20000)
 
 
 class SeedInspectResponse(BaseModel):
