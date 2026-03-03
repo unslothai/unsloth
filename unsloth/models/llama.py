@@ -2506,27 +2506,29 @@ class FastLlamaModel:
                     del model.hf_device_map
         elif not fast_inference:
             # [MLX] If we are on MPS and it's 4bit/8bit (pre-quantized Hub model),
-            # we MUST load with meta device to avoid size mismatch crashes from transformers
+            # we MUST load with from_config to avoid size mismatch crashes from transformers
             # since it will try to load quantized weights into FP16 structure.
             is_quantized = load_in_4bit or load_in_8bit or "4bit" in model_name.lower() or "8bit" in model_name.lower()
             
-            model = AutoModelForCausalLM.from_pretrained(
-                cfg_model_name if cfg_model_name is not None else model_name,
-                device_map="meta" if (DEVICE_TYPE == "mps" and is_quantized) else device_map,
-                low_cpu_mem_usage=True if (DEVICE_TYPE == "mps" and is_quantized) else True,
-                # torch_dtype             = dtype, # transformers changed torch_dtype to dtype
-                quantization_config=None if DEVICE_TYPE == "mps" else None, # [MLX] Force None on MPS
-                token=token,
-                max_position_embeddings=max_position_embeddings,
-                trust_remote_code=trust_remote_code,
-                attn_implementation="eager",
-                **kwargs,
-            )
-            # [MLX] Move back to CPU (from meta) so Unsloth can continue its patching
             if DEVICE_TYPE == "mps" and is_quantized:
-                # Transformers meta loading creates parameters on 'meta' device.
-                # We need them on a real device for Unsloth's weight loading.
-                model = model.to_empty(device="cpu")
+                # [MLX] Skip loading Hub weights - Unsloth will load them correctly later
+                model = AutoModelForCausalLM.from_config(
+                    model_config,
+                    trust_remote_code=trust_remote_code,
+                    attn_implementation="eager",
+                )
+            else:
+                model = AutoModelForCausalLM.from_pretrained(
+                    cfg_model_name if cfg_model_name is not None else model_name,
+                    device_map=device_map,
+                    # torch_dtype             = dtype, # transformers changed torch_dtype to dtype
+                    quantization_config=None if DEVICE_TYPE == "mps" else None, # [MLX] Force None on MPS
+                    token=token,
+                    max_position_embeddings=max_position_embeddings,
+                    trust_remote_code=trust_remote_code,
+                    attn_implementation="eager",
+                    **kwargs,
+                )
 
             if DEVICE_TYPE == "mlx" and device_map is None:
                 model = model.to("mps")
