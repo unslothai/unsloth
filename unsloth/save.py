@@ -23,6 +23,16 @@ from unsloth_zoo.llama_cpp import (
     check_llama_cpp,
     _download_convert_hf_to_gguf,
 )
+
+# H4: Defensive imports -- these were added in unsloth-zoo PR #526
+# and may not exist on older versions
+try:
+    from unsloth_zoo.llama_cpp import LLAMA_CPP_DEFAULT_DIR, IS_WINDOWS
+except ImportError:
+    import sys
+
+    IS_WINDOWS = sys.platform == "win32"
+    LLAMA_CPP_DEFAULT_DIR = "llama.cpp"
 from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
 from peft.tuners.lora import Linear4bit as Peft_Linear4bit
 from peft.tuners.lora import Linear as Peft_Linear
@@ -257,6 +267,7 @@ def unsloth_save_model(
     # Our functions
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.9,
+    datasets: Optional[List[str]] = None,
 ):
     if token is None:
         token = get_token()
@@ -289,6 +300,7 @@ def unsloth_save_model(
         "save_method",
         "temporary_location",
         "maximum_memory_usage",
+        "datasets",
     ):
         del save_pretrained_settings[deletion]
 
@@ -366,6 +378,7 @@ def unsloth_save_model(
             file_location = None,
             old_username = None,
             private = private,
+            datasets = datasets,
         )
 
         getattr(model, "original_push_to_hub", model.push_to_hub)(
@@ -475,6 +488,7 @@ def unsloth_save_model(
                 file_location = None,
                 old_username = None,
                 private = private,
+                datasets = datasets,
             )
 
         if tokenizer is not None:
@@ -737,6 +751,7 @@ def unsloth_save_model(
             file_location = None,
             old_username = username,
             private = private,
+            datasets = datasets,
         )
 
     # First check if we're pushing to an organization!
@@ -1311,18 +1326,26 @@ def save_to_gguf(
                             "`model.{save_pretrained/push_to_hub}_gguf will use too much disk space.\n"
                             "You can try saving it to the `/tmp` directory for larger disk space.\n"
                             "I suggest you to save the 16bit model first, then use manual llama.cpp conversion.\n"
-                            "Error: {e}"
+                            f"Error: {e}"
                         )
                     else:
+                        if IS_WINDOWS:
+                            build_instructions = (
+                                f'cd "{LLAMA_CPP_DEFAULT_DIR}"\n'
+                                f"cmake -S . -B build -DBUILD_SHARED_LIBS=OFF\n"
+                                f"cmake --build build --config Release"
+                            )
+                        else:
+                            build_instructions = f'cd "{LLAMA_CPP_DEFAULT_DIR}" && make clean && make all -j'
+
                         raise RuntimeError(
                             f"Unsloth: Quantization failed for {output_location}\n"
                             "You might have to compile llama.cpp yourself, then run this again.\n"
                             "You do not need to close this Python program. Run the following commands in a new terminal:\n"
-                            "You must run this in the same folder as you're saving your model.\n"
-                            "git clone --recursive https://github.com/ggerganov/llama.cpp\n"
-                            "cd llama.cpp && make clean && make all -j\n"
+                            f'git clone --recursive https://github.com/ggerganov/llama.cpp "{LLAMA_CPP_DEFAULT_DIR}"\n'
+                            f"{build_instructions}\n"
                             "Once that's done, redo the quantization.\n"
-                            "Error: {e}"
+                            f"Error: {e}"
                         )
         print("Unsloth: Model files cleanup...")
         if quants_created:
@@ -1362,6 +1385,7 @@ def unsloth_save_pretrained_merged(
     tags: List[str] = None,
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.75,
+    datasets: Optional[List[str]] = None,
 ):
     """
     Same as .save_pretrained(...) except 4bit weights are auto
@@ -1403,6 +1427,7 @@ def unsloth_push_to_hub_merged(
     tags: Optional[List[str]] = None,
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.75,
+    datasets: Optional[List[str]] = None,
 ):
     """
     Same as .push_to_hub(...) except 4bit weights are auto
@@ -1480,10 +1505,11 @@ def create_huggingface_repo(
     save_directory,
     token = None,
     private = False,
+    datasets = None,
 ):
     if token is None:
         token = get_token()
-    save_directory, username = _determine_username(save_directory, "", token)
+    save_directory, username = _determine_username(save_directory, None, token)
 
     from huggingface_hub import create_repo
 
@@ -1507,9 +1533,22 @@ def create_huggingface_repo(
             extra = "unsloth",
         )
         card = ModelCard(content)
+        if datasets:
+            card.data.datasets = datasets
         card.push_to_hub(save_directory, token = token)
     except:
-        pass
+        # Repo already exists — update datasets metadata separately
+        if datasets:
+            try:
+                from huggingface_hub import metadata_update
+
+                metadata_update(
+                    save_directory, {"datasets": datasets}, overwrite = True, token = token
+                )
+            except Exception as e:
+                logger.warning_once(
+                    f"Unsloth: Could not update datasets metadata for {save_directory}: {e}"
+                )
     hf_api = HfApi(token = token)
     return save_directory, hf_api
 
@@ -1524,6 +1563,7 @@ def upload_to_huggingface(
     old_username = None,
     private = None,
     create_config = True,
+    datasets = None,
 ):
     save_directory, username = _determine_username(save_directory, old_username, token)
 
@@ -1549,9 +1589,22 @@ def upload_to_huggingface(
             extra = extra,
         )
         card = ModelCard(content)
+        if datasets:
+            card.data.datasets = datasets
         card.push_to_hub(save_directory, token = token)
     except:
-        pass
+        # Repo already exists — update datasets metadata separately
+        if datasets:
+            try:
+                from huggingface_hub import metadata_update
+
+                metadata_update(
+                    save_directory, {"datasets": datasets}, overwrite = True, token = token
+                )
+            except Exception as e:
+                logger.warning_once(
+                    f"Unsloth: Could not update datasets metadata for {save_directory}: {e}"
+                )
 
     if file_location is not None:
         # Now upload file
@@ -1890,6 +1943,20 @@ def unsloth_save_pretrained_gguf(
     arguments["push_to_hub"] = False  # We handle upload ourselves
     # GPT-OSS needs mxfp4 save method
     if is_gpt_oss:
+        if quantization_method is not None:
+            _qm = (
+                quantization_method
+                if isinstance(quantization_method, (list, tuple))
+                else [quantization_method]
+            )
+            _ignored = [q for q in _qm if str(q).lower() != "mxfp4"]
+            if _ignored:
+                logger.warning_once(
+                    f"Unsloth: GPT-OSS does not support GGUF quantization "
+                    f"(requested: {', '.join(str(q) for q in _ignored)}). "
+                    f"Overriding to MXFP4 format. "
+                    f"Pass quantization_method=None to suppress this warning."
+                )
         arguments["save_method"] = "mxfp4"
     else:
         arguments["save_method"] = "merged_16bit"
@@ -2035,16 +2102,22 @@ def unsloth_save_pretrained_gguf(
             "Unsloth: ##### We removed it in GGUF's chat template for you."
         )
 
+    _exe = ".exe" if IS_WINDOWS else ""
+    if IS_WINDOWS:
+        _bin_dir = os.path.join(LLAMA_CPP_DEFAULT_DIR, "build", "bin", "Release")
+    else:
+        _bin_dir = LLAMA_CPP_DEFAULT_DIR
+
     if is_vlm_update:
         print("\n")
         print(
-            f"Unsloth: example usage for Multimodal LLMs: llama.cpp/llama-mtmd-cli -m {all_file_locations[0]} --mmproj {all_file_locations[-1]}"
+            f"Unsloth: example usage for Multimodal LLMs: {os.path.join(_bin_dir, 'llama-mtmd-cli' + _exe)} -m {all_file_locations[0]} --mmproj {all_file_locations[-1]}"
         )
         print("Unsloth: load image inside llama.cpp runner: /image test_image.jpg")
         print("Unsloth: Prompt model to describe the image")
     else:
         print(
-            f'Unsloth: example usage for text only LLMs: llama.cpp/llama-cli --model {all_file_locations[0]} -p "why is the sky blue?"'
+            f'Unsloth: example usage for text only LLMs: {os.path.join(_bin_dir, "llama-cli" + _exe)} --model {all_file_locations[0]} -p "why is the sky blue?"'
         )
 
     if ollama_success:
@@ -2083,6 +2156,7 @@ def unsloth_push_to_hub_gguf(
     tags: Optional[List[str]] = None,
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.85,
+    datasets: Optional[List[str]] = None,
 ):
     """
     Same as .push_to_hub(...) except 4bit weights are auto
@@ -2257,8 +2331,8 @@ tags:
 This model was finetuned and converted to GGUF format using [Unsloth](https://github.com/unslothai/unsloth).
 
 **Example usage**:
-- For text only LLMs:    `./llama.cpp/llama-cli -hf {repo_id} --jinja`
-- For multimodal models: `./llama.cpp/llama-mtmd-cli -hf {repo_id} --jinja`
+- For text only LLMs:    `llama-cli -hf {repo_id} --jinja`
+- For multimodal models: `llama-mtmd-cli -hf {repo_id} --jinja`
 
 ## Available Model files:
 """
@@ -2337,6 +2411,18 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
             )
         except:
             pass
+
+        if datasets:
+            try:
+                from huggingface_hub import metadata_update
+
+                metadata_update(
+                    full_repo_id, {"datasets": datasets}, overwrite = True, token = token
+                )
+            except Exception as e:
+                logger.warning_once(
+                    f"Unsloth: Could not update datasets metadata for {full_repo_id}: {e}"
+                )
 
     except Exception as e:
         raise RuntimeError(f"Failed to upload to Hugging Face Hub: {e}")
@@ -2645,6 +2731,7 @@ def unsloth_generic_save(
     # Our functions
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.9,
+    datasets: Optional[List[str]] = None,
 ):
     if token is None and push_to_hub:
         token = get_token()
@@ -2672,6 +2759,20 @@ def unsloth_generic_save(
         low_disk_space_usage = True,
         use_temp_file = False,
     )
+
+    if push_to_hub and datasets:
+        try:
+            from huggingface_hub import metadata_update
+
+            save_dir, _ = _determine_username(save_directory, None, token)
+            metadata_update(
+                save_dir, {"datasets": datasets}, overwrite = True, token = token
+            )
+        except Exception as e:
+            logger.warning_once(
+                f"Unsloth: Could not update datasets metadata for {save_directory}: {e}"
+            )
+
     return
 
 
@@ -2692,6 +2793,7 @@ def unsloth_generic_save_pretrained_merged(
     tags: List[str] = None,
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.75,
+    datasets: Optional[List[str]] = None,
 ):
     """
     Same as .push_to_hub(...) except 4bit weights are auto
@@ -2733,6 +2835,7 @@ def unsloth_generic_push_to_hub_merged(
     tags: Optional[List[str]] = None,
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.75,
+    datasets: Optional[List[str]] = None,
 ):
     """
     Same as .push_to_hub(...) except 4bit weights are auto

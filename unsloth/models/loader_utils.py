@@ -31,7 +31,6 @@ from .mapper import (
 from transformers import __version__ as transformers_version
 from unsloth.models._utils import TorchAOConfig
 from unsloth_zoo.utils import Version
-from unsloth_zoo.vllm_utils import _get_torchao_fp8_config
 import gc
 
 transformers_version = Version(transformers_version)
@@ -47,6 +46,13 @@ BAD_MAPPINGS = {
     "unsloth/Qwen3-30B-A3B-Base-unsloth-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B-Base".lower(),  # HF loads MoEs too slowly
     "unsloth/Qwen3-30B-A3B-Base-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B-Base".lower(),  # We rather do it on the fly
 }
+
+
+def _get_torchao_fp8_config(fp8_mode):
+    # Import lazily so an optional, broken vLLM install does not break plain `import unsloth`.
+    from unsloth_zoo.vllm_utils import _get_torchao_fp8_config as _impl
+
+    return _impl(fp8_mode)
 
 
 def _get_env_int(keys):
@@ -192,17 +198,41 @@ def _get_new_mapper():
         return {}, {}, {}
 
 
-def get_model_name(model_name, load_in_4bit = True, load_in_fp8 = False):
-    assert load_in_fp8 in (True, False, "block")
-    new_model_name = __get_model_name(
+def _resolve_with_mappers(
+    model_name,
+    load_in_4bit,
+    load_in_fp8,
+    int_to_float,
+    float_to_int,
+    map_to_unsloth_16bit,
+):
+    return __get_model_name(
         model_name = model_name,
         load_in_4bit = load_in_4bit,
-        INT_TO_FLOAT_MAPPER = INT_TO_FLOAT_MAPPER,
-        FLOAT_TO_INT_MAPPER = FLOAT_TO_INT_MAPPER,
-        MAP_TO_UNSLOTH_16bit = MAP_TO_UNSLOTH_16bit,
+        INT_TO_FLOAT_MAPPER = int_to_float,
+        FLOAT_TO_INT_MAPPER = float_to_int,
+        MAP_TO_UNSLOTH_16bit = map_to_unsloth_16bit,
         load_in_fp8 = load_in_fp8,
         FLOAT_TO_FP8_BLOCK_MAPPER = FLOAT_TO_FP8_BLOCK_MAPPER,
         FLOAT_TO_FP8_ROW_MAPPER = FLOAT_TO_FP8_ROW_MAPPER,
+    )
+
+
+def get_model_name(
+    model_name,
+    load_in_4bit = True,
+    load_in_fp8 = False,
+    token = None,
+    trust_remote_code = False,
+):
+    assert load_in_fp8 in (True, False, "block")
+    new_model_name = _resolve_with_mappers(
+        model_name = model_name,
+        load_in_4bit = load_in_4bit,
+        load_in_fp8 = load_in_fp8,
+        int_to_float = INT_TO_FLOAT_MAPPER,
+        float_to_int = FLOAT_TO_INT_MAPPER,
+        map_to_unsloth_16bit = MAP_TO_UNSLOTH_16bit,
     )
     # In the rare case, we convert bad model names to other names
     # For eg too large dynamic quants or MoEs
@@ -222,15 +252,13 @@ def get_model_name(model_name, load_in_4bit = True, load_in_fp8 = False):
         NEW_INT_TO_FLOAT_MAPPER, NEW_FLOAT_TO_INT_MAPPER, NEW_MAP_TO_UNSLOTH_16bit = (
             _get_new_mapper()
         )
-        upgraded_model_name = __get_model_name(
+        upgraded_model_name = _resolve_with_mappers(
             model_name = model_name,
             load_in_4bit = load_in_4bit,
-            INT_TO_FLOAT_MAPPER = NEW_INT_TO_FLOAT_MAPPER,
-            FLOAT_TO_INT_MAPPER = NEW_FLOAT_TO_INT_MAPPER,
-            MAP_TO_UNSLOTH_16bit = NEW_MAP_TO_UNSLOTH_16bit,
             load_in_fp8 = load_in_fp8,
-            FLOAT_TO_FP8_BLOCK_MAPPER = FLOAT_TO_FP8_BLOCK_MAPPER,
-            FLOAT_TO_FP8_ROW_MAPPER = FLOAT_TO_FP8_ROW_MAPPER,
+            int_to_float = NEW_INT_TO_FLOAT_MAPPER,
+            float_to_int = NEW_FLOAT_TO_INT_MAPPER,
+            map_to_unsloth_16bit = NEW_MAP_TO_UNSLOTH_16bit,
         )
         if upgraded_model_name is not None:
             raise NotImplementedError(
@@ -239,10 +267,11 @@ def get_model_name(model_name, load_in_4bit = True, load_in_fp8 = False):
                 'pip install --upgrade --no-cache-dir "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"\n'
                 'pip install --upgrade --no-cache-dir "git+https://github.com/unslothai/unsloth-zoo.git"\n'
             )
-    if load_in_fp8 != False:
-        # Handle on the fly TorchAO FP8 quantization
-        return new_model_name
-    return new_model_name if new_model_name is not None else model_name
+
+    if new_model_name is None:
+        new_model_name = model_name
+
+    return new_model_name
 
 
 def _offline_quantize_to_fp8(model_name: str, fp8_mode: str) -> str:
@@ -343,10 +372,6 @@ def _get_fp8_mode_and_check_settings(
     if fp8_mode not in ["row", "block"]:
         raise ValueError(
             f"Unsloth: `load_in_fp8` can only be 'row' or 'block', got '{fp8_mode}'"
-        )
-    if not fast_inference:
-        raise ValueError(
-            "Unsloth: `load_in_fp8` is only supported for `fast_inference` for now"
         )
     if full_finetuning:
         raise ValueError(
