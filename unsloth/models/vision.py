@@ -30,7 +30,6 @@ from ..kernels import (
     post_patch_loss_function,
 )
 from ._utils import __version__, importlib_version, _prepare_model_for_qat
-from ._utils import _redirect_fp8_to_bf16
 from ._utils import *
 from .loader_utils import _get_fp8_mode_and_check_settings
 from ..save import patch_saving_functions
@@ -612,18 +611,9 @@ class FastBaseModel:
             model_class = None
         flex_attn_impl = prefer_flex_attn_if_supported(model_class, auto_config)
 
-        # Handle FP8 models: redirect to BF16 sibling when the model ships with
-        # FP8 weights (e.g. Ministral-3-3B-Instruct-2512). FP8 weights cannot be
-        # directly loaded by BNB, and the FP8 quantization config can cause issues
-        # even for 16-bit loading.
-        # Redirect is skipped when load_in_fp8 is truthy (True or 'block').
-        model_name, auto_config = _redirect_fp8_to_bf16(
-            model_name,
-            auto_config,
-            load_in_fp8,
-            token,
-            trust_remote_code,
-        )
+        # Handle FP8 models: get_model_name has already redirected this to BF16 sibling if the model ships with
+        # FP8 weights. We just need to update it here for sanity.
+        auto_config.model_name = model_name
         # Re-resolve model_class after potential config change
         try:
             model_class = auto_model._model_mapping[auto_config.__class__]
