@@ -89,6 +89,14 @@ export function executionLabel(kind: "preview" | "full"): string {
   return kind === "preview" ? "Preview" : "Full run";
 }
 
+export function normalizeRunName(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 function executionSortWeight(status: RecipeExecutionStatus): number {
   if (isExecutionInProgress(status)) {
     return 0;
@@ -133,6 +141,7 @@ export function withExecutionDefaults(
 
   return {
     ...record,
+    run_name: normalizeRunName(record.run_name),
     dataset,
     log_lines: logLines,
     datasetTotal,

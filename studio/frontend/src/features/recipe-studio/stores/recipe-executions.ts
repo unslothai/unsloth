@@ -34,6 +34,7 @@ type RecipeExecutionsState = {
   runDialogKind: RecipeExecutionKind;
   previewRows: number;
   fullRows: number;
+  fullRunName: string;
   runErrors: string[];
   runSettings: RecipeRunSettings;
   previewLoading: boolean;
@@ -44,6 +45,7 @@ type RecipeExecutionsState = {
   setRunDialogKind: (kind: RecipeExecutionKind) => void;
   setPreviewRows: (rows: number) => void;
   setFullRows: (rows: number) => void;
+  setFullRunName: (name: string) => void;
   setRunErrors: (errors: string[]) => void;
   setRunSettings: (patch: Partial<RecipeRunSettings>) => void;
   setPreviewLoading: (loading: boolean) => void;
@@ -59,6 +61,7 @@ const INITIAL_STATE = {
   runDialogKind: "preview",
   previewRows: 5,
   fullRows: 1000,
+  fullRunName: "",
   runErrors: [],
   runSettings: DEFAULT_RUN_SETTINGS,
   previewLoading: false,
@@ -71,6 +74,7 @@ const INITIAL_STATE = {
   | "runDialogKind"
   | "previewRows"
   | "fullRows"
+  | "fullRunName"
   | "runErrors"
   | "runSettings"
   | "previewLoading"
@@ -87,6 +91,7 @@ export const useRecipeExecutionsStore = create<RecipeExecutionsState>((set) => (
     set({ previewRows: Number.isFinite(rows) && rows > 0 ? Math.floor(rows) : 1 }),
   setFullRows: (rows) =>
     set({ fullRows: Number.isFinite(rows) && rows > 0 ? Math.floor(rows) : 1 }),
+  setFullRunName: (name) => set({ fullRunName: name }),
   setRunErrors: (errors) => set({ runErrors: errors }),
   setRunSettings: (patch) =>
     set((state) => ({

@@ -261,8 +261,10 @@ export function RecipeStudioPage({
     setRunDialogOpen,
     previewRows,
     fullRows,
+    fullRunName,
     setPreviewRows,
     setFullRows,
+    setFullRunName,
     runErrors,
     runSettings,
     setRunSettings,
@@ -652,6 +654,8 @@ export function RecipeStudioPage({
         kind={runDialogKind}
         onKindChange={setRunDialogKind}
         rows={runDialogRows}
+        fullRunName={fullRunName}
+        onFullRunNameChange={setFullRunName}
         onRowsChange={(rows) => {
           if (runDialogKind === "preview") {
             setPreviewRows(rows);

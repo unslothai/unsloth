@@ -26,6 +26,8 @@ type RunDialogProps = {
   kind: RecipeExecutionKind;
   onKindChange: (kind: RecipeExecutionKind) => void;
   rows: number;
+  fullRunName: string;
+  onFullRunNameChange: (name: string) => void;
   onRowsChange: (rows: number) => void;
   settings: RecipeRunSettings;
   onSettingsChange: (patch: Partial<RecipeRunSettings>) => void;
@@ -207,6 +209,8 @@ export function RunDialog({
   kind,
   onKindChange,
   rows,
+  fullRunName,
+  onFullRunNameChange,
   onRowsChange,
   settings,
   onSettingsChange,
@@ -303,6 +307,23 @@ export function RunDialog({
             }
           />
         </div>
+
+        {kind === "full" && (
+          <div className="grid gap-2">
+            <FieldLabel
+              label="Run name"
+              htmlFor="run-name"
+              hint="Optional label shown in executions list."
+            />
+            <Input
+              id="run-name"
+              type="text"
+              value={fullRunName}
+              onChange={(event) => onFullRunNameChange(event.target.value)}
+              placeholder="Sprint dataset v2"
+            />
+          </div>
+        )}
 
         <div className="grid gap-4 md:grid-cols-2">
           <div className="grid gap-2">

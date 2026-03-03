@@ -114,6 +114,7 @@ export function createBaseExecutionRecord(input: {
   kind: RecipeExecutionKind;
   rows: number;
   currentSignature: string;
+  runName?: string | null;
 }): RecipeExecutionRecord {
   const createdAt = Date.now();
   return {
@@ -121,6 +122,7 @@ export function createBaseExecutionRecord(input: {
     recipeId: input.recipeId,
     jobId: null,
     kind: input.kind,
+    run_name: input.runName ?? null,
     status: "pending",
     rows: input.rows,
     createdAt,

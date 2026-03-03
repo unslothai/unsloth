@@ -15,6 +15,7 @@ import {
   type Database02Icon,
   DragDropVerticalIcon,
   PlusSignIcon,
+  Search01Icon,
   Tick02Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
@@ -373,12 +374,18 @@ export function BlockSheet({
               )}
               <SheetTitle>{sheetTitle}</SheetTitle>
             </div>
-            <Input
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              placeholder="Search blocks..."
-              className="corner-squircle mt-3 h-9"
-            />
+            <div className="relative mt-3">
+              <HugeiconsIcon
+                icon={Search01Icon}
+                className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+              />
+              <Input
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="Search blocks..."
+                className="corner-squircle h-9 pl-8"
+              />
+            </div>
           </SheetHeader>
           <div className=" py-4">
             <div className="mt-4 flex flex-col gap-2">
