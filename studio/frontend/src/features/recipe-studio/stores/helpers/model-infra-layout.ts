@@ -80,6 +80,18 @@ function isConfigToLlmEdge(edge: Edge, configs: Record<string, NodeConfig>): boo
   return source?.kind === "model_config" && target?.kind === "llm";
 }
 
+function isDataToLlmEdge(edge: Edge, configs: Record<string, NodeConfig>): boolean {
+  const source = configs[edge.source];
+  const target = configs[edge.target];
+  return Boolean(
+    source &&
+      target &&
+      source.kind !== "model_config" &&
+      target.kind === "llm" &&
+      edge.type !== "semantic",
+  );
+}
+
 function usageKey(nodeId: string, handleId: string): string {
   return `${nodeId}::${handleId}`;
 }
@@ -236,15 +248,20 @@ export function optimizeModelInfraEdgeHandles(
     const targetHandleBefore = normalizeRecipeHandleId(edge.targetHandle);
     const isModelSemantic =
       isProviderToConfigEdge(edge, configs) || isConfigToLlmEdge(edge, configs);
-    if (!isModelSemantic) {
+    const isLlmDataTarget = isDataToLlmEdge(edge, configs);
+    if (!isModelSemantic && !isLlmDataTarget) {
       nextEdges.push(edge);
       continue;
     }
 
-    if (sourceHandleBefore) {
-      decrementUsage(sourceUsage, edge.source, sourceHandleBefore);
-    }
-    if (targetHandleBefore) {
+    if (isModelSemantic) {
+      if (sourceHandleBefore) {
+        decrementUsage(sourceUsage, edge.source, sourceHandleBefore);
+      }
+      if (targetHandleBefore) {
+        decrementUsage(targetUsage, edge.target, targetHandleBefore);
+      }
+    } else if (targetHandleBefore) {
       decrementUsage(targetUsage, edge.target, targetHandleBefore);
     }
 
@@ -265,12 +282,22 @@ export function optimizeModelInfraEdgeHandles(
       continue;
     }
 
-    const sourceCandidates = getConfigSourceHandleCandidates(direction);
     const targetCandidates = sortPreferredLlmTargetHandles(
       direction,
       nodesById.get(edge.source),
       nodesById.get(edge.target),
     );
+    if (isLlmDataTarget) {
+      const targetHandle = pickHandleByUsage(targetCandidates, edge.target, targetUsage);
+      incrementUsage(targetUsage, edge.target, targetHandle);
+      nextEdges.push({
+        ...edge,
+        targetHandle,
+      });
+      continue;
+    }
+
+    const sourceCandidates = getConfigSourceHandleCandidates(direction);
     const sourceHandle = pickHandleByUsage(sourceCandidates, edge.source, sourceUsage);
     const targetHandle = pickHandleByUsage(targetCandidates, edge.target, targetUsage);
     nextEdges.push(

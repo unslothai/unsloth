@@ -1,10 +1,12 @@
 import { type Edge, addEdge } from "@xyflow/react";
 import type {
+  LayoutDirection,
   ModelConfig,
   NodeConfig,
   SamplerConfig,
   ValidatorConfig,
 } from "../../types";
+import { applyRecipeConnection } from "../../utils/graph";
 import { isCategoryConfig, isSubcategoryConfig } from "../../utils";
 import { HANDLE_IDS } from "../../utils/handles";
 
@@ -26,19 +28,6 @@ function addRecipeEdge(edges: Edge[], source: string, target: string): Edge[] {
       sourceHandle: HANDLE_IDS.dataOut,
       targetHandle: HANDLE_IDS.dataIn,
       type: "canvas",
-    },
-    edges,
-  );
-}
-
-function addSemanticEdge(edges: Edge[], source: string, target: string): Edge[] {
-  return addEdge(
-    {
-      source,
-      target,
-      sourceHandle: HANDLE_IDS.semanticOut,
-      targetHandle: HANDLE_IDS.semanticIn,
-      type: "semantic",
     },
     edges,
   );
@@ -84,6 +73,7 @@ export function syncEdgesForConfigPatch(
   patch: Partial<NodeConfig>,
   configs: Record<string, NodeConfig>,
   edges: Edge[],
+  layoutDirection: LayoutDirection,
 ): Edge[] {
   let nextEdges = edges;
 
@@ -106,6 +96,9 @@ export function syncEdgesForConfigPatch(
   );
   if (current.kind === "model_config" && hasProviderPatch) {
     const nextProvider = (patch as Partial<ModelConfig>).provider ?? "";
+    if (nextProvider.trim() === current.provider.trim()) {
+      return nextEdges;
+    }
     nextEdges = removeTargetEdgesBySource(
       nextEdges,
       configs,
@@ -115,7 +108,18 @@ export function syncEdgesForConfigPatch(
     if (nextProvider) {
       const providerId = findNodeIdByName(configs, nextProvider);
       if (providerId) {
-        nextEdges = addSemanticEdge(nextEdges, providerId, current.id);
+        const result = applyRecipeConnection(
+          {
+            source: providerId,
+            sourceHandle: HANDLE_IDS.semanticOut,
+            target: current.id,
+            targetHandle: HANDLE_IDS.semanticIn,
+          },
+          configs,
+          nextEdges,
+          layoutDirection,
+        );
+        nextEdges = result.edges;
       }
     }
   }
@@ -163,6 +167,9 @@ export function syncEdgesForConfigPatch(
   if (current.kind === "llm" && hasModelAliasPatch) {
     const nextAlias =
       (patch as Partial<NodeConfig> & { model_alias?: string }).model_alias ?? "";
+    if (nextAlias.trim() === current.model_alias.trim()) {
+      return nextEdges;
+    }
     nextEdges = removeTargetEdgesBySource(
       nextEdges,
       configs,
@@ -172,7 +179,18 @@ export function syncEdgesForConfigPatch(
     if (nextAlias) {
       const modelConfigId = findNodeIdByName(configs, nextAlias);
       if (modelConfigId) {
-        nextEdges = addSemanticEdge(nextEdges, modelConfigId, current.id);
+        const result = applyRecipeConnection(
+          {
+            source: modelConfigId,
+            sourceHandle: HANDLE_IDS.semanticOut,
+            target: current.id,
+            targetHandle: HANDLE_IDS.semanticIn,
+          },
+          configs,
+          nextEdges,
+          layoutDirection,
+        );
+        nextEdges = result.edges;
       }
     }
   }

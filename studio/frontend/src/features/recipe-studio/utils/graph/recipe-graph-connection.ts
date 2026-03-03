@@ -1,5 +1,5 @@
 import { type Connection, type Edge, addEdge } from "@xyflow/react";
-import type { NodeConfig, SamplerConfig } from "../../types";
+import type { LayoutDirection, NodeConfig, SamplerConfig } from "../../types";
 import {
   HANDLE_IDS,
   isDataSourceHandle,
@@ -197,20 +197,30 @@ function chooseModelSemanticHandles(
   source: NodeConfig,
   target: NodeConfig,
   edges: Edge[],
+  layoutDirection: LayoutDirection,
 ): Connection {
   if (!isModelSemanticRelation(source, target)) {
     return connection;
   }
 
-  const sourceCandidates = [HANDLE_IDS.semanticOut, HANDLE_IDS.semanticOutBottom];
+  const sourceCandidates =
+    source.kind === "model_config" && target.kind === "llm"
+      ? layoutDirection === "TB"
+        ? [HANDLE_IDS.semanticOut]
+        : [HANDLE_IDS.semanticOutBottom]
+      : layoutDirection === "TB"
+        ? [HANDLE_IDS.semanticOut, HANDLE_IDS.semanticOutBottom]
+        : [HANDLE_IDS.semanticOutBottom, HANDLE_IDS.semanticOut];
   const targetCandidates =
     target.kind === "model_config"
-      ? [HANDLE_IDS.semanticIn, HANDLE_IDS.semanticInTop]
+      ? layoutDirection === "TB"
+        ? [HANDLE_IDS.semanticIn, HANDLE_IDS.semanticInTop]
+        : [HANDLE_IDS.semanticInTop, HANDLE_IDS.semanticIn]
       : [
-          HANDLE_IDS.dataIn,
           HANDLE_IDS.dataInTop,
-          HANDLE_IDS.dataInRight,
           HANDLE_IDS.dataInBottom,
+          HANDLE_IDS.dataIn,
+          HANDLE_IDS.dataInRight,
         ];
 
   const sourceHandle = pickLeastUsedHandle(
@@ -281,6 +291,7 @@ export function applyRecipeConnection(
   connection: Connection,
   configs: Record<string, NodeConfig>,
   edges: Edge[],
+  layoutDirection: LayoutDirection = "LR",
 ): { edges: Edge[]; configs?: Record<string, NodeConfig> } {
   if (!isValidRecipeConnection(connection, configs)) {
     return { edges };
@@ -322,6 +333,7 @@ export function applyRecipeConnection(
     source,
     target,
     nextBaseEdges,
+    layoutDirection,
   );
   const nextEdges = addEdge(
     { ...resolvedConnection, type: semanticRelation ? "semantic" : "canvas" },
