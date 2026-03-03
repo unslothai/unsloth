@@ -168,6 +168,7 @@ SINGLE_ENV_CONSTRAINTS="$REQ_ROOT/single-env/constraints.txt"
 SINGLE_ENV_DATA_DESIGNER="$REQ_ROOT/single-env/data-designer.txt"
 SINGLE_ENV_DATA_DESIGNER_DEPS="$REQ_ROOT/single-env/data-designer-deps.txt"
 SINGLE_ENV_PATCH="$REQ_ROOT/single-env/patch_metadata.py"
+LOCAL_DD_UNSTRUCTURED_PLUGIN="$SCRIPT_DIR/studio/backend/plugins/data-designer-unstructured-seed"
 
 install_python_stack() {
     run_quiet "pip upgrade" pip install --upgrade pip
@@ -191,6 +192,8 @@ install_python_stack() {
     run_quiet "pip install data-designer deps" pip install --no-cache-dir -c "$SINGLE_ENV_CONSTRAINTS" -r "$SINGLE_ENV_DATA_DESIGNER_DEPS"
     echo "   Installing data-designer..."
     run_quiet "pip install data-designer" pip install --no-cache-dir --no-deps -c "$SINGLE_ENV_CONSTRAINTS" -r "$SINGLE_ENV_DATA_DESIGNER"
+    echo "   Installing local data-designer unstructured plugin..."
+    run_quiet "pip install data-designer-unstructured-seed" pip install --no-cache-dir --no-deps -e "$LOCAL_DD_UNSTRUCTURED_PLUGIN"
     run_quiet "patch single-env metadata" python "$SINGLE_ENV_PATCH"
     run_quiet "pip check" pip check
     echo "✅ Python dependencies installed"
