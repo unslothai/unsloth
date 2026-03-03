@@ -423,6 +423,11 @@ def safe_num_proc(desired: Optional[int] = None) -> int:
     """
     Return a safe ``num_proc`` for ``dataset.map()`` calls.
 
+    On Windows, always returns 1 because Python uses ``spawn`` instead of
+    ``fork`` for multiprocessing — the overhead of re-importing torch,
+    transformers, unsloth etc. per worker is typically slower than
+    single-process for normal dataset sizes.
+
     On multi-GPU machines the NVIDIA driver spawns extra background threads,
     making ``os.fork()`` prone to deadlocks when many workers are created.
     This helper caps ``num_proc`` to 4 on such machines.
@@ -438,6 +443,12 @@ def safe_num_proc(desired: Optional[int] = None) -> int:
         A safe integer ≥ 1.
     """
     import os
+    import sys
+
+    # Windows uses 'spawn' for multiprocessing — the overhead of re-importing
+    # torch/transformers/unsloth per worker is typically slower than single-process.
+    if sys.platform == "win32":
+        return 1
 
     if desired is None or not isinstance(desired, int):
         desired = max(1, os.cpu_count() // 3)
