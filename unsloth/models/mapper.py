@@ -1337,6 +1337,9 @@ __INT_TO_FLOAT_MAPPER = \
         "mistralai/Ministral-3-14B-Reasoning-2512",
         "unsloth/Ministral-3-14B-Reasoning-2512-bnb-4bit",
     ),
+    "unsloth/Kimi-K2-Instruct-BF16" : (
+        "unsloth/Kimi-K2-Instruct",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER  = {}
@@ -1344,6 +1347,19 @@ FLOAT_TO_INT_MAPPER  = {}
 MAP_TO_UNSLOTH_16bit = {}
 FLOAT_TO_FP8_BLOCK_MAPPER = {}
 FLOAT_TO_FP8_ROW_MAPPER   = {}
+
+
+def _add_with_lower(mapper, key, value):
+    if key is None:
+        return
+    mapper[key] = value
+    mapper[key.lower()] = value
+
+
+def _add_lower_only(mapper, key, value):
+    if key is None:
+        return
+    mapper[key.lower()] = value
 
 for key, values in __INT_TO_FLOAT_MAPPER.items():
     block, row = None, None
@@ -1355,21 +1371,24 @@ for key, values in __INT_TO_FLOAT_MAPPER.items():
             float8_values = values["8"]
             assert len(float8_values) == 3
             official, block, row = float8_values
-            FLOAT_TO_FP8_BLOCK_MAPPER[key.lower()] = block
-            FLOAT_TO_FP8_ROW_MAPPER[key.lower()] = row
-            FLOAT_TO_FP8_BLOCK_MAPPER[official.lower() + "-dynamic"] = block
-            FLOAT_TO_FP8_ROW_MAPPER[official.lower()] = row
-            FLOAT_TO_FP8_ROW_MAPPER[official.lower() + "-dynamic"] = row
-            FLOAT_TO_FP8_BLOCK_MAPPER[float16_values[0]] = block
-            FLOAT_TO_FP8_BLOCK_MAPPER[float16_values[0].lower()] = block
-            FLOAT_TO_FP8_ROW_MAPPER[float16_values[0]] = block
-            FLOAT_TO_FP8_ROW_MAPPER[float16_values[0].lower()] = block
-            for k in float8_values:
-                FLOAT_TO_FP8_BLOCK_MAPPER[k.lower()] = block
-                FLOAT_TO_FP8_ROW_MAPPER[k.lower()] = row
-            for k in float16_values:
-                FLOAT_TO_FP8_BLOCK_MAPPER[k.lower()] = block
-                FLOAT_TO_FP8_ROW_MAPPER[k.lower()] = row
+            _add_lower_only(FLOAT_TO_FP8_BLOCK_MAPPER, key, block)
+            _add_lower_only(FLOAT_TO_FP8_ROW_MAPPER, key, row)
+            _add_lower_only(FLOAT_TO_FP8_BLOCK_MAPPER, official + "-dynamic", block)
+            _add_lower_only(FLOAT_TO_FP8_ROW_MAPPER, official, row)
+            _add_lower_only(FLOAT_TO_FP8_ROW_MAPPER, official + "-dynamic", row)
+            for k in float8_values + float16_values:
+                _add_lower_only(FLOAT_TO_FP8_BLOCK_MAPPER, k, block)
+                _add_lower_only(FLOAT_TO_FP8_ROW_MAPPER, k, row)
+
+            if float8_values[1] is not None and float8_values[1].startswith("unsloth"):
+                for value in float8_values:
+                    if value is not None:
+                        _add_with_lower(MAP_TO_UNSLOTH_16bit, value, float8_values[1])
+
+            for value in float8_values:
+                if value is not None:
+                    FLOAT_TO_INT_MAPPER[value] = key
+                    FLOAT_TO_INT_MAPPER[value.lower()] = key.lower()
         values = float16_values
     INT_TO_FLOAT_MAPPER[key] = values[0]
 
@@ -1379,27 +1398,16 @@ for key, values in __INT_TO_FLOAT_MAPPER.items():
     # Map to Unsloth version for 16bit versions
     if len(values) == 2:
         if values[0].startswith("unsloth"):
-            MAP_TO_UNSLOTH_16bit[values[1]] = values[0]
-            MAP_TO_UNSLOTH_16bit[values[1].lower()] = values[0]
-            if block is not None:
-                MAP_TO_UNSLOTH_16bit[block] = values[0]
-                MAP_TO_UNSLOTH_16bit[block.lower()] = values[0]
-            if row is not None:
-                MAP_TO_UNSLOTH_16bit[row] = values[0]
-                MAP_TO_UNSLOTH_16bit[row.lower()] = values[0]
+            _add_with_lower(MAP_TO_UNSLOTH_16bit, values[1], values[0])
+            _add_with_lower(MAP_TO_UNSLOTH_16bit, block, values[0])
+            _add_with_lower(MAP_TO_UNSLOTH_16bit, row, values[0])
     elif len(values) == 3:
         # Dynamic Unsloth quantization
         if values[0].startswith("unsloth"):
-            MAP_TO_UNSLOTH_16bit[values[1]] = values[0]
-            MAP_TO_UNSLOTH_16bit[values[1].lower()] = values[0]
-            MAP_TO_UNSLOTH_16bit[values[2]] = values[0]
-            MAP_TO_UNSLOTH_16bit[values[2].lower()] = values[0]
-            if block is not None:
-                MAP_TO_UNSLOTH_16bit[block] = values[0]
-                MAP_TO_UNSLOTH_16bit[block.lower()] = values[0]
-            if row is not None:
-                MAP_TO_UNSLOTH_16bit[row] = values[0]
-                MAP_TO_UNSLOTH_16bit[row.lower()] = values[0]
+            _add_with_lower(MAP_TO_UNSLOTH_16bit, values[1], values[0])
+            _add_with_lower(MAP_TO_UNSLOTH_16bit, values[2], values[0])
+            _add_with_lower(MAP_TO_UNSLOTH_16bit, block, values[0])
+            _add_with_lower(MAP_TO_UNSLOTH_16bit, row, values[0])
         pass
 
     # Get lowercased
