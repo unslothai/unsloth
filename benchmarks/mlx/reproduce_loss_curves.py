@@ -75,7 +75,7 @@ def get_dummy_data(batch_size, seq_len, vocab_size):
 
 
 def get_streaming_data(batch_size, seq_len, vocab_size, model_id, n_samples):
-    """Stream tokenized data from the alpaca dataset."""
+    """Stream tokenized data from the alpaca dataset in batches."""
     if AutoTokenizer is None:
         raise ImportError("transformers is required. Install with: pip install transformers")
     
@@ -89,8 +89,12 @@ def get_streaming_data(batch_size, seq_len, vocab_size, model_id, n_samples):
         return f"Instruction: {item['instruction']}\n\nInput: {item.get('input', '')}\n\nResponse: {item['output']}"
     
     print(f"  Streaming and tokenizing data...")
+    
+    batch_input_ids = []
+    batch_labels = []
+    
     for i, item in enumerate(ds["train"]):
-        if i >= n_samples:
+        if i >= n_samples * batch_size:
             break
         text = format_prompt(item)
         encoded = tokenizer(
@@ -102,10 +106,26 @@ def get_streaming_data(batch_size, seq_len, vocab_size, model_id, n_samples):
         )
         input_ids = mx.array(encoded["input_ids"])
         labels = mx.array(input_ids)
-        # Mask ~10% of tokens as ignore (like original dummy data)
         mask = mx.random.uniform(shape=labels.shape) < 0.1
         labels = mx.where(mask, mx.array(-100, dtype=labels.dtype), labels)
-        yield input_ids, labels
+        
+        batch_input_ids.append(input_ids)
+        batch_labels.append(labels)
+        
+        if len(batch_input_ids) == batch_size:
+            input_ids_batch = mx.stack(batch_input_ids)
+            labels_batch = mx.stack(batch_labels)
+            yield input_ids_batch, labels_batch
+            batch_input_ids = []
+            batch_labels = []
+    
+    if batch_input_ids:
+        while len(batch_input_ids) < batch_size:
+            batch_input_ids.append(mx.zeros((seq_len,), dtype=mx.int64))
+            batch_labels.append(mx.full((seq_len,), -100, dtype=mx.int64))
+        input_ids_batch = mx.stack(batch_input_ids)
+        labels_batch = mx.stack(batch_labels)
+        yield input_ids_batch, labels_batch
 
 def run_training_mlx(
     model_cfg: dict,
