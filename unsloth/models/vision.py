@@ -813,16 +813,27 @@ class FastBaseModel:
                 kwargs.pop("load_in_4bit", None)
                 kwargs.pop("load_in_8bit", None)
 
-            model = auto_model.from_pretrained(
-                model_name,
-                device_map=device_map,
-                # torch_dtype           = torch_dtype, # Transformers removed torch_dtype
-                # quantization_config   = bnb_config,
-                token=token,
-                trust_remote_code=trust_remote_code,
-                # attn_implementation   = attn_implementation,
-                **kwargs,
-            )
+            # [MLX] If we are on MPS and it's 4bit/8bit (pre-quantized Hub model),
+            # we MUST load with from_config to avoid size mismatch crashes from transformers
+            is_quantized = load_in_4bit or load_in_8bit or "4bit" in model_name.lower() or "8bit" in model_name.lower()
+            if DEVICE_TYPE == "mps" and is_quantized:
+                # [MLX] Skip loading Hub weights - Unsloth will load them correctly later
+                model = auto_model.from_config(
+                    model_config,
+                    trust_remote_code=trust_remote_code,
+                    attn_implementation="eager",
+                )
+            else:
+                model = auto_model.from_pretrained(
+                    model_name,
+                    device_map=device_map,
+                    # torch_dtype           = torch_dtype, # Transformers removed torch_dtype
+                    # quantization_config   = bnb_config,
+                    token=token,
+                    trust_remote_code=trust_remote_code,
+                    # attn_implementation   = attn_implementation,
+                    **kwargs,
+                )
             if DEVICE_TYPE == "mlx" and device_map is None:
                 model = model.to("mps")
                 if hasattr(model, "hf_device_map"): del model.hf_device_map
