@@ -210,19 +210,25 @@ def run_training_mlx(
     step_times = []
 
     run_name = f"{model_cfg['name']}_b{model_cfg['batch']}_s{model_cfg['seq']}_CCE{use_cce}"
+    run = None
     if HAS_WANDB and args and args.wandb:
-        wandb.run.name = run_name
-        wandb.config.update({
-            "model_name": model_cfg["name"],
-            "batch_size": model_cfg["batch"],
-            "seq_len": model_cfg["seq"],
-            "hidden_size": model_cfg.get("h_size"),
-            "vocab_size": model_cfg.get("v_size"),
-            "num_layers": model_cfg.get("n_layers"),
-            "use_cce": use_cce,
-            "learning_rate": LEARNING_RATE,
-            "dataset": DATASET_NAME,
-        }, allow_val_change=True)
+        run = wandb.init(
+            project=args.wandb_project,
+            entity=args.wandb_entity,
+            name=run_name,
+            reinit=True,
+            config={
+                "model_name": model_cfg["name"],
+                "batch_size": model_cfg["batch"],
+                "seq_len": model_cfg["seq"],
+                "hidden_size": model_cfg.get("h_size"),
+                "vocab_size": model_cfg.get("v_size"),
+                "num_layers": model_cfg.get("n_layers"),
+                "use_cce": use_cce,
+                "learning_rate": LEARNING_RATE,
+                "dataset": DATASET_NAME,
+            },
+        )
 
     for i in range(steps):
         t0 = time.time()
@@ -264,6 +270,9 @@ def run_training_mlx(
     
     print(f"  Done. Total time: {sum(step_times):.2f}s, Avg: {np.mean(step_times):.3f}s/step")
 
+    if run:
+        run.finish()
+
     return loss_history
 
 def main():
@@ -275,13 +284,7 @@ def main():
     parser.add_argument("--wandb-entity", type=str, default=None, help="Wandb entity/team name")
     args = parser.parse_args()
 
-    if HAS_WANDB and args.wandb:
-        wandb.init(
-            project=args.wandb_project,
-            entity=args.wandb_entity,
-            name="mlx-loss-curves",
-        )
-    elif not HAS_WANDB and args.wandb:
+    if not HAS_WANDB and args.wandb:
         print("Warning: wandb not installed. Install with: pip install wandb")
 
     configs_to_run = CONFIGS
