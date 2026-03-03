@@ -216,20 +216,7 @@ export function makeLlmConfig(
     with_trace: "none",
     // biome-ignore lint/style/useNamingConvention: api schema
     extract_reasoning_content: false,
-    scores:
-      llmType === "judge"
-        ? [
-            {
-              name: "Quality",
-              description: "Overall quality based on the criteria.",
-              options: [
-                { value: "1", description: "Poor" },
-                { value: "3", description: "Acceptable" },
-                { value: "5", description: "Excellent" },
-              ],
-            },
-          ]
-        : undefined,
+    scores: llmType === "judge" ? [] : undefined,
   };
 }
 
@@ -268,7 +255,7 @@ export function makeModelConfig(
     // biome-ignore lint/style/useNamingConvention: api schema
     inference_temperature: "0.7",
     // biome-ignore lint/style/useNamingConvention: api schema
-    inference_max_tokens: "256",
+    inference_max_tokens: "",
     // biome-ignore lint/style/useNamingConvention: api schema
     inference_top_p: "",
     // biome-ignore lint/style/useNamingConvention: api schema

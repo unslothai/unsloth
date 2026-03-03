@@ -46,6 +46,7 @@ export function ModelConfigDialog({
   return (
     <div className="space-y-4">
       <NameField
+        label="Model alias"
         value={config.name}
         onChange={(value) => onUpdate({ name: value })}
       />

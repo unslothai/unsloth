@@ -102,6 +102,29 @@ function truncatePreviewValue(value: string): string {
   return `${value.slice(0, PREVIEW_TRUNCATE_AT)}…`;
 }
 
+function getPreviewEmptyStateCopy(mode: SeedConfig["seed_source_type"]): {
+  title: string;
+  description: string;
+} {
+  if (mode === "local") {
+    return {
+      title: "No local preview yet",
+      description: "Choose a CSV/JSON/JSONL file, then click Load to fetch 10 rows.",
+    };
+  }
+  if (mode === "unstructured") {
+    return {
+      title: "No chunk preview yet",
+      description:
+        "Choose a TXT/PDF/DOCX file, then click Load to extract + preview chunk_text rows.",
+    };
+  }
+  return {
+    title: "No dataset preview yet",
+    description: "Pick a Hugging Face dataset and click Load to fetch 10 sample rows.",
+  };
+}
+
 function parseChunkNumber(
   value: string | undefined,
   fallback: number,
@@ -196,6 +219,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
   const [unstructuredFile, setUnstructuredFile] = useState<File | null>(null);
 
   const mode = config.seed_source_type ?? "hf";
+  const previewEmpty = getPreviewEmptyStateCopy(mode);
 
   useEffect(() => {
     setInspectError(null);
@@ -753,12 +777,14 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
             <div className="flex w-full items-center justify-center">
               <Empty className="max-w-lg">
                 <EmptyHeader>
-                  <EmptyTitle>Seed preview</EmptyTitle>
+                  <EmptyTitle>{previewEmpty.title}</EmptyTitle>
                   <EmptyDescription>
-                    Use the load button next to the source input to fetch 10 rows.
+                    {previewEmpty.description}
                   </EmptyDescription>
                 </EmptyHeader>
-                <EmptyContent />
+                <EmptyContent className="text-xs text-muted-foreground">
+                  Preview appears here after loading source metadata.
+                </EmptyContent>
               </Empty>
             </div>
           ) : (
