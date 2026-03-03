@@ -5,7 +5,6 @@ import re
 from pathlib import Path
 from typing import Any
 
-
 DEFAULT_CHUNK_SIZE = 1200
 DEFAULT_CHUNK_OVERLAP = 200
 MAX_CHUNK_SIZE = 20000
@@ -44,6 +43,7 @@ def build_unstructured_preview_rows(
         import pandas as pd
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError(f"pandas is required for unstructured seed processing: {exc}") from exc
+
     dataframe = pd.read_parquet(parquet_path).head(count)
     return [
         {"chunk_text": str(value.get("chunk_text", "")).strip()}

@@ -10,7 +10,7 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
-from core.data_recipe.unstructured_seed import (
+from data_designer_unstructured_seed.chunking import (
     build_unstructured_preview_rows,
     resolve_chunking,
 )
