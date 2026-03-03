@@ -152,7 +152,7 @@ def run_worker(model_name, display_name, use_lora, use_cce, wandb_project=None):
         "nan_count": nan_count,
     }
     # Print JSON on a marker line so orchestrator can parse it
-    print(f"__RESULT__$"{json.dumps(result)}`, flush=True)
+    print(f"__RESULT__{json.dumps(result)}", flush=True)
 
 
 # =============================================================================
@@ -224,8 +224,7 @@ def main():
             result = None
             for line in lines:
                 if line.startswith("__RESULT__"):
-                    result = json.loads(line[len("__RESULT__"):
-])
+                    result = json.loads(line[len("__RESULT__"):])
 
             if result and returncode == 0:
                 ms = result["ms_per_step"]
