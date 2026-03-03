@@ -1314,6 +1314,7 @@ def disable_broken_wandb():
         )
         try:
             import transformers.integrations.integration_utils as tf_integration
+
             tf_integration.is_wandb_available = lambda: False
         except (ImportError, AttributeError):
             pass
