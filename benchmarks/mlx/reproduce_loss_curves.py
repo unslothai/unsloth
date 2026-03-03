@@ -175,13 +175,7 @@ def run_subprocess(cmd):
     return lines, proc.returncode
 
 
-def main():
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--wandb", action="store_true", help="Enable wandb logging")
-    parser.add_argument("--project", type=str, default="unsloth-mlx-benchmark", help="Wandb project name")
-    args, unknown = parser.parse_known_args()
-
+def main(args):
     print("=" * 80)
     print("Unsloth MLX Benchmark: Baseline+compile vs CCE+compile")
     print("  Gradient Checkpointing: ON | Compile: ON | Isolation: subprocess")
@@ -282,16 +276,18 @@ def main():
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument("--worker", action="store_true")
     parser.add_argument("--model", type=str)
     parser.add_argument("--display_name", type=str)
     parser.add_argument("--use_cce", type=int, default=0)
     parser.add_argument("--use_lora", type=int, default=1)
     parser.add_argument("--wandb_project", type=str, default=None)
-    args, unknown = parser.parse_known_args()
+    parser.add_argument("--wandb", action="store_true")
+    parser.add_argument("--project", type=str, default="unsloth-mlx-benchmark")
+    args = parser.parse_args()
 
     if args.worker:
         run_worker(args.model, args.display_name, bool(args.use_lora), bool(args.use_cce), args.wandb_project)
     else:
-        main()
+        main(args)
