@@ -187,7 +187,6 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
         evalEnabled: payload.eval_enabled ?? state.evalEnabled,
         message: payload.message,
         error: payload.error,
-        startError: null,
         currentStep:
           typeof detailStep === "number" ? Math.max(detailStep, 0) : state.currentStep,
         totalSteps:
