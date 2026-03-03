@@ -1,3 +1,25 @@
+# Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+
+# Note all the kernels that were previously here were moved to unsloth_zoo
+# https://github.com/unslothai/unsloth/pull/4145
+# https://github.com/unslothai/unsloth-zoo/pull/529
+# This exists here just to serve as a backup or a failsafe
+# in case some older version tries to import from here.
+# We do not expect such a case to happen but it doesn't hurt to have it here.
+
 import importlib
 import sys
 
