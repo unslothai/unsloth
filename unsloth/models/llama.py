@@ -2228,6 +2228,8 @@ class FastLlamaModel:
         max_seq_length=None,
         dtype=None,
         load_in_4bit=True,
+        load_in_8bit=False,
+        load_in_16bit=False,
         token=None,
         device_map="sequential",
         rope_scaling=None,
