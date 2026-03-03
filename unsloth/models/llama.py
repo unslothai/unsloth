@@ -3003,7 +3003,9 @@ class FastLlamaModel:
         if hasattr(model, "_need_to_train_embeddings"):
             # Check if embed_tokens/lm_head are already being trained
             # (either as LoRA targets in final_modules or via modules_to_save)
-            _embed_already_trained = train_embed_tokens or "embed_tokens" in final_modules
+            _embed_already_trained = (
+                train_embed_tokens or "embed_tokens" in final_modules
+            )
             _lm_head_already_trained = train_lm_head or "lm_head" in final_modules
             if not _lm_head_already_trained or not _embed_already_trained:
                 print(
