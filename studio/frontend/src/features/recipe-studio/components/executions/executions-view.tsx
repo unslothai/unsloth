@@ -336,7 +336,7 @@ export function ExecutionsView({
         ) : (
           <div className="space-y-4">
             {showProgressPanel && (
-              <div className="space-y-3 rounded-2xl border border-border/60 bg-card/55 p-3">
+              <div className="space-y-3 rounded-2xl border shadow-border border-border/60 bg-card/55 p-3">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <HugeiconsIcon
