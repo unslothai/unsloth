@@ -3001,23 +3001,30 @@ class FastLlamaModel:
 
         # Check if we added new tokens!
         if hasattr(model, "_need_to_train_embeddings"):
-            if not train_lm_head or not train_embed_tokens:
+            # Check if embed_tokens/lm_head are already being trained
+            # (either as LoRA targets in final_modules or via modules_to_save)
+            _embed_already_trained = train_embed_tokens or "embed_tokens" in final_modules
+            _lm_head_already_trained = train_lm_head or "lm_head" in final_modules
+            if not _lm_head_already_trained or not _embed_already_trained:
                 print(
                     "Unsloth: You added new tokens but did not specify if you wanted to "
                     "train the lm_head and embed_tokens.\nWe must turn it on for you."
                 )
-                train_lm_head = True
-                train_embed_tokens = True
 
-                if modules_to_save is None:
-                    modules_to_save = ["embed_tokens"]
-                else:
-                    modules_to_save.append("embed_tokens")
+                # Only add to modules_to_save if not already a LoRA target
+                if not _embed_already_trained:
+                    train_embed_tokens = True
+                    if modules_to_save is None:
+                        modules_to_save = ["embed_tokens"]
+                    elif "embed_tokens" not in modules_to_save:
+                        modules_to_save.append("embed_tokens")
 
-                if modules_to_save is None:
-                    modules_to_save = ["lm_head"]
-                else:
-                    modules_to_save.append("lm_head")
+                if not _lm_head_already_trained:
+                    train_lm_head = True
+                    if modules_to_save is None:
+                        modules_to_save = ["lm_head"]
+                    elif "lm_head" not in modules_to_save:
+                        modules_to_save.append("lm_head")
 
         # Check for Llama-3
         # if hasattr(model._saved_temp_tokenizer, "_using_llama3_template"):
