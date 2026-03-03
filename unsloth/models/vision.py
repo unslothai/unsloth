@@ -627,10 +627,16 @@ class FastBaseModel:
         # Re-resolve model_class after potential config change
         try:
             model_class = auto_model._model_mapping[auto_config.__class__]
-        except KeyError:
-            pass
+        except Exception:
+            model_class = None
 
-        default_attn_impl = "flex_attention" if flex_attn_impl else "sdpa"
+        model_type = str(getattr(auto_config, "model_type", "")).lower()
+        if model_type.startswith("gemma3n"):
+            # Gemma3N variants initialize timm-based vision towers which do
+            # not support flex_attention, so default to eager unless overridden.
+            default_attn_impl = "eager"
+        else:
+            default_attn_impl = "flex_attention" if flex_attn_impl else "sdpa"
         if not ("attn_implementation" in kwargs):
             kwargs["attn_implementation"] = default_attn_impl
         if not supports_sdpa and kwargs.get("attn_implementation") == "sdpa":
@@ -654,18 +660,25 @@ class FastBaseModel:
             raise RuntimeError(
                 "Unsloth: Can only load in 4bit or 8bit or 16bit, not a combination!"
             )
+        _skip_modules = SKIP_QUANTIZATION_MODULES.copy()
+        # Nemotron-H uses 'mixer' (not 'mamba') for Mamba layers.
+        # Mamba fused kernels pass out_proj.weight directly to F.linear,
+        # which fails with quantized Params4bit. Skip out_proj from quantization.
+        if any(mt == "nemotron_h" for mt in (model_types or [])):
+            _skip_modules.append("out_proj")
+
         if load_in_4bit:
             bnb_config = BitsAndBytesConfig(
                 load_in_4bit = True,
                 bnb_4bit_use_double_quant = True,
                 bnb_4bit_quant_type = "nf4",
                 bnb_4bit_compute_dtype = bnb_compute_dtype,
-                llm_int8_skip_modules = SKIP_QUANTIZATION_MODULES.copy(),
+                llm_int8_skip_modules = _skip_modules,
             )
         elif load_in_8bit:
             bnb_config = BitsAndBytesConfig(
                 load_in_8bit = True,
-                llm_int8_skip_modules = SKIP_QUANTIZATION_MODULES.copy(),
+                llm_int8_skip_modules = _skip_modules,
             )
         elif load_in_16bit:
             bnb_config = None
@@ -1041,6 +1054,7 @@ class FastBaseModel:
             do_forced_float32 = do_forced_float32,
             correct_dtype = correct_dtype,
         )
+
         try:
             model, tokenizer = patch_tokenizer(model, tokenizer)
         except Exception as _patch_err:
@@ -1403,9 +1417,15 @@ class FastBaseModel:
             m.for_training = functools.partial(FastBaseModel.for_training, m)
             m.for_inference = functools.partial(FastBaseModel.for_inference, m)
             m = m.model
-        # Set weight[padding_idx] = 0
+        # Set weight[padding_idx] = 0 for embeddings that are NOT tied with the
+        # lm_head. When weights are tied, zeroing the padding row also zeros
+        # the corresponding lm_head row, forcing logit = 0 for the pad token.
         # Only do this if tokenizer is defined since eos_token == pad_token sometimes!
         pad_token_id = getattr(tokenizer, "pad_token_id", None)
+        lm_head = getattr(model, "lm_head", None)
+        lm_head_weight = (
+            getattr(lm_head, "weight", None) if lm_head is not None else None
+        )
         if (
             tokenizer is not None
             and getattr(tokenizer, "eos_token_id", None) != pad_token_id
@@ -1421,6 +1441,13 @@ class FastBaseModel:
                                 module.padding_idx == pad_token_id
                                 and module.padding_idx < module.weight.shape[0]
                             ):
+                                # Skip if tied to lm_head
+                                if (
+                                    lm_head_weight is not None
+                                    and module.weight.data_ptr()
+                                    == lm_head_weight.data_ptr()
+                                ):
+                                    continue
                                 module.weight[module.padding_idx] = 0
         return model
 

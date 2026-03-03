@@ -1007,7 +1007,14 @@ def patch_sft_trainer_tokenizer():
             function = function.replace(replacer, check_text + replacer)
 
         x = [x for x in all_imports if x in function]
-        exec(f"from trl.trainer.sft_trainer import ({','.join(x)})", locals())
+        try:
+            exec(f"from trl.trainer.sft_trainer import ({','.join(x)})", locals())
+        except ImportError:
+            for _item in x:
+                try:
+                    exec(f"from trl.trainer.sft_trainer import {_item}", locals())
+                except ImportError:
+                    pass
         exec(function, locals(), globals())
         exec(
             f"trl.trainer.sft_trainer.SFTTrainer.{function_name} = {function_name}",
