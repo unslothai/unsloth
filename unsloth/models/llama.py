@@ -2509,7 +2509,7 @@ class FastLlamaModel:
                 cfg_model_name if cfg_model_name is not None else model_name,
                 device_map=device_map,
                 # torch_dtype             = dtype, # transformers changed torch_dtype to dtype
-                # quantization_config     = bnb_config,
+                quantization_config=None if DEVICE_TYPE == "mps" else None, # [MLX] Force None on MPS
                 token=token,
                 max_position_embeddings=max_position_embeddings,
                 trust_remote_code=trust_remote_code,
