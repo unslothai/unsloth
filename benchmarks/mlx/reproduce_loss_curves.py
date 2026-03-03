@@ -222,7 +222,7 @@ def run_training_mlx(
             "use_cce": use_cce,
             "learning_rate": LEARNING_RATE,
             "dataset": DATASET_NAME,
-        })
+        }, allow_val_change=True)
 
     for i in range(steps):
         t0 = time.time()
