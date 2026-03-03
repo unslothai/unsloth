@@ -1,3 +1,5 @@
+import { authFetch } from "@/features/auth";
+
 const DEFAULT_BASE = "/api/data-recipe";
 
 export const DATA_DESIGNER_API_BASE =
@@ -146,7 +148,7 @@ async function parseErrorResponse(response: Response): Promise<string> {
 }
 
 async function postJson<T>(path: string, payload: unknown): Promise<T> {
-  const response = await fetch(`${DATA_DESIGNER_API_BASE}${path}`, {
+  const response = await authFetch(`${DATA_DESIGNER_API_BASE}${path}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -162,7 +164,7 @@ async function postJson<T>(path: string, payload: unknown): Promise<T> {
 }
 
 async function getJson<T>(path: string): Promise<T> {
-  const response = await fetch(`${DATA_DESIGNER_API_BASE}${path}`);
+  const response = await authFetch(`${DATA_DESIGNER_API_BASE}${path}`);
   if (!response.ok) {
     throw new Error(await parseErrorResponse(response));
   }
@@ -273,7 +275,7 @@ export async function streamRecipeJobEvents(options: {
     query = `?after=${options.lastEventId}`;
   }
 
-  const response = await fetch(
+  const response = await authFetch(
     `${DATA_DESIGNER_API_BASE}/jobs/${options.jobId}/events${query}`,
     {
       method: "GET",
