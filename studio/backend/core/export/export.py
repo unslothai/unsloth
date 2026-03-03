@@ -418,9 +418,8 @@ class ExportBackend:
                 pre_existing_ggufs = set(glob.glob(os.path.join(cwd, "*.gguf")))
 
                 # Pass absolute path — no os.chdir needed.
-                # unsloth saves intermediate HF model files into model_save_path,
-                # while check_llama_cpp("llama.cpp") resolves against cwd (repo root)
-                # where setup.sh already built llama.cpp with quantizer.
+                # unsloth saves intermediate HF model files into model_save_path.
+                # unsloth-zoo's check_llama_cpp() uses ~/.unsloth/llama.cpp by default.
                 model_save_path = os.path.join(abs_save_dir, "model")
                 self.current_model.save_pretrained_gguf(
                     model_save_path,
