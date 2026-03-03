@@ -39,13 +39,14 @@ type ChatRuntimeStore = {
   runningByThreadId: Record<string, boolean>;
   autoTitle: boolean;
   modelsError: string | null;
+  activeGgufVariant: string | null;
   setParams: (params: InferenceParams) => void;
   setModels: (models: ChatModelSummary[]) => void;
   setLoras: (loras: ChatLoraSummary[]) => void;
   setThreadRunning: (threadId: string, running: boolean) => void;
   setAutoTitle: (enabled: boolean) => void;
   setModelsError: (error: string | null) => void;
-  setCheckpoint: (modelId: string) => void;
+  setCheckpoint: (modelId: string, ggufVariant?: string | null) => void;
   clearCheckpoint: () => void;
 };
 
@@ -56,6 +57,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   runningByThreadId: {},
   autoTitle: loadBool(AUTO_TITLE_KEY, false),
   modelsError: null,
+  activeGgufVariant: null,
   setParams: (params) => set({ params }),
   setModels: (models) => set({ models }),
   setLoras: (loras) => set({ loras }),
@@ -75,12 +77,13 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
       return { autoTitle };
     }),
   setModelsError: (modelsError) => set({ modelsError }),
-  setCheckpoint: (modelId) =>
+  setCheckpoint: (modelId, ggufVariant) =>
     set((state) => ({
       params: {
         ...state.params,
         checkpoint: modelId,
       },
+      activeGgufVariant: ggufVariant ?? null,
     })),
   clearCheckpoint: () =>
     set((state) => ({
@@ -88,5 +91,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
         ...state.params,
         checkpoint: "",
       },
+      activeGgufVariant: null,
     })),
 }));

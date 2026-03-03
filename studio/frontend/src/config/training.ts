@@ -39,6 +39,11 @@ export const MODEL_TYPES: ReadonlyArray<{
   label: string;
   description: string;
 }> = [
+  {
+    value: "text",
+    label: "Text",
+    description: "Language models",
+  },
     {
       value: "vision",
       label: "Vision",
@@ -53,11 +58,6 @@ export const MODEL_TYPES: ReadonlyArray<{
       value: "embeddings",
       label: "Embeddings",
       description: "Text embedding models",
-    },
-    {
-      value: "text",
-      label: "Text",
-      description: "Language models",
     },
   ];
 
