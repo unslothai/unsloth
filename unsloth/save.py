@@ -23,12 +23,14 @@ from unsloth_zoo.llama_cpp import (
     check_llama_cpp,
     _download_convert_hf_to_gguf,
 )
+
 # H4: Defensive imports -- these were added in unsloth-zoo PR #526
 # and may not exist on older versions
 try:
     from unsloth_zoo.llama_cpp import LLAMA_CPP_DEFAULT_DIR, IS_WINDOWS
 except ImportError:
     import sys
+
     IS_WINDOWS = sys.platform == "win32"
     LLAMA_CPP_DEFAULT_DIR = "llama.cpp"
 from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
