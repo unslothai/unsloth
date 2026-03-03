@@ -26,13 +26,13 @@ try:
 except ImportError:
     HAS_WANDB = False
 
-# Try to import unsloth kernels for MLX
-try:
-    from unsloth.kernels.mlx.models.llama import create_llama_model
-    from unsloth.kernels.mlx.losses import chunked_cross_entropy_loss
-    HAS_UNSLOTH_MLX = True
-except ImportError:
-    HAS_UNSLOTH_MLX = False
+# Skip unsloth import to avoid hanging on patching
+# Uncomment if you want to use full model architecture:
+# from unsloth.kernels.mlx.models.llama import create_llama_model
+# from unsloth.kernels.mlx.losses import chunked_cross_entropy_loss
+HAS_UNSLOTH_MLX = False
+create_llama_model = None
+chunked_cross_entropy_loss = None
 
 # ---------------------------------------------------------
 # Training Configuration
