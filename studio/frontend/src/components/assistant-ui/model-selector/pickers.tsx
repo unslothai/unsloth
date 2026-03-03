@@ -55,6 +55,7 @@ function ModelRow({
   vramStatus,
   vramEst,
   gpuGb,
+  tooltipText,
 }: {
   label: string;
   meta?: string;
@@ -63,6 +64,7 @@ function ModelRow({
   vramStatus?: VramFitStatus | null;
   vramEst?: number;
   gpuGb?: number;
+  tooltipText?: ReactNode;
 }) {
   const exceeds = vramStatus === "exceeds";
   const showVramTooltip =
@@ -81,20 +83,20 @@ function ModelRow({
       type="button"
       onClick={onClick}
       className={cn(
-        "flex w-full items-center justify-between gap-2 rounded-md px-2.5 py-1.5 text-left text-sm transition-colors hover:bg-accent",
+        "flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm transition-colors hover:bg-accent",
         selected && "bg-accent/60",
         exceeds && "opacity-50",
       )}
     >
       <span
         className={cn(
-          "min-w-0 flex-1 truncate",
+          "block min-w-0 flex-1 truncate",
           exceeds && "line-through decoration-muted-foreground/50",
         )}
       >
         {label}
       </span>
-      <span className="flex items-center gap-1.5 shrink-0">
+      <span className="ml-auto flex items-center gap-1.5 shrink-0">
         {vramStatus === "exceeds" && (
           <span className="text-[9px] font-medium text-red-400">OOM</span>
         )}
@@ -122,6 +124,17 @@ function ModelRow({
       </Tooltip>
     );
   }
+
+  if (tooltipText) {
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>{content}</TooltipTrigger>
+        <TooltipContent side="left" className="max-w-xs break-all">
+          {tooltipText}
+        </TooltipContent>
+      </Tooltip>
+    );
+  }
   return content;
 }
 
@@ -130,9 +143,11 @@ function ModelRow({
 function GgufVariantExpander({
   repoId,
   onSelect,
+  gpuGb,
 }: {
   repoId: string;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
+  gpuGb?: number;
 }) {
   const [variants, setVariants] = useState<GgufVariantDetail[] | null>(null);
   const [defaultVariant, setDefaultVariant] = useState<string | null>(null);
@@ -209,28 +224,45 @@ function GgufVariantExpander({
           <span className="text-[9px] font-medium text-blue-400">Vision</span>
         )}
       </div>
-      {variants.map((v) => (
-        <button
-          key={v.filename}
-          type="button"
-          onClick={() => handleVariantClick(v.quant)}
-          className={cn(
-            "flex w-full items-center justify-between gap-2 rounded-md px-2.5 py-1 text-left text-sm transition-colors hover:bg-accent",
-          )}
-        >
-          <span className="min-w-0 flex-1 truncate font-mono text-xs">
-            {v.quant}
-            {v.quant === defaultVariant && (
-              <span className="ml-1.5 text-[9px] font-sans font-medium text-primary/70">
-                recommended
-              </span>
+      {variants.map((v) => {
+        const sizeGb = v.size_bytes / (1024 ** 3);
+        const fitStatus = gpuGb != null && gpuGb > 0 && sizeGb > 0
+          ? checkVramFit(sizeGb, gpuGb)
+          : null;
+        return (
+          <button
+            key={v.filename}
+            type="button"
+            onClick={() => handleVariantClick(v.quant)}
+            className={cn(
+              "flex w-full items-center justify-between gap-2 rounded-md px-2.5 py-1 text-left text-sm transition-colors hover:bg-accent",
             )}
-          </span>
-          <span className="text-[10px] text-muted-foreground shrink-0">
-            {formatBytes(v.size_bytes)}
-          </span>
-        </button>
-      ))}
+          >
+            <span className="min-w-0 flex-1 truncate font-mono text-xs">
+              {v.quant}
+              {v.quant === defaultVariant && (
+                <span className="ml-1.5 text-[9px] font-sans font-medium text-primary/70">
+                  recommended
+                </span>
+              )}
+            </span>
+            <span className="flex items-center gap-1.5 shrink-0">
+              {fitStatus === "exceeds" && (
+                <span className="text-[9px] font-medium text-red-400">OOM</span>
+              )}
+              {fitStatus === "tight" && (
+                <span className="text-[9px] font-medium text-amber-400">TIGHT</span>
+              )}
+              {fitStatus === "fits" && (
+                <span className="text-[9px] font-medium text-emerald-500/90">FIT</span>
+              )}
+              <span className="text-[10px] text-muted-foreground">
+                {formatBytes(v.size_bytes)}
+              </span>
+            </span>
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -390,7 +422,7 @@ export function HubModelPicker({
                         gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
                       />
                       {expandedGguf === id && (
-                        <GgufVariantExpander repoId={id} onSelect={onSelect} />
+                        <GgufVariantExpander repoId={id} onSelect={onSelect} gpuGb={gpu.available ? gpu.memoryTotalGb : undefined} />
                       )}
                     </div>
                   );
@@ -425,7 +457,7 @@ export function HubModelPicker({
                         gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
                       />
                       {expandedGguf === id && (
-                        <GgufVariantExpander repoId={id} onSelect={onSelect} />
+                        <GgufVariantExpander repoId={id} onSelect={onSelect} gpuGb={gpu.available ? gpu.memoryTotalGb : undefined} />
                       )}
                     </div>
                   );
@@ -542,6 +574,14 @@ export function LoraModelPicker({
                         source: isExported ? "exported" : "lora",
                         isLora: !isMerged && !isGguf,
                       })}
+                      tooltipText={
+                        <>
+                          <span className="block break-words">{adapter.name}</span>
+                          <span className="block mt-1 text-[10px] text-muted-foreground break-all">
+                            {adapter.id}
+                          </span>
+                        </>
+                      }
                     />
                   );
                 })}
