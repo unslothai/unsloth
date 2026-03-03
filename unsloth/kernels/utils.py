@@ -88,11 +88,13 @@ def is_cdna():
 
 @functools.lru_cache(1)
 def is_rdna():
-    """Detect RDNA consumer/workstation GPUs (RDNA3, RDNA3.5, RDNA4)."""
-    if not is_hip():
-        return False
-    arch = triton.runtime.driver.active.get_current_target().arch
-    return arch.startswith("gfx1") and not is_cdna()
+    """Detect ROCm-supported RDNA consumer/workstation GPUs (RDNA3, RDNA4)."""
+    return is_hip() and triton.runtime.driver.active.get_current_target().arch in (
+        "gfx1100",
+        "gfx1101",
+        "gfx1200",
+        "gfx1201",
+    )
 
 
 def calculate_settings(
