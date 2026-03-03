@@ -6,6 +6,7 @@ type NameFieldProps = {
   id?: string;
   value: string;
   onChange: (value: string) => void;
+  label?: string;
   hint?: string;
 };
 
@@ -13,6 +14,7 @@ export function NameField({
   id,
   value,
   onChange,
+  label,
   hint,
 }: NameFieldProps): ReactElement {
   const fallbackId = useId();
@@ -20,7 +22,7 @@ export function NameField({
   return (
     <div className="grid gap-2">
       <FieldLabel
-        label="Column name"
+        label={label ?? "Column name"}
         htmlFor={inputId}
         hint={
           hint ??

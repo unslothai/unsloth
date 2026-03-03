@@ -1,4 +1,11 @@
 import { Button } from "@/components/ui/button";
+import {
+  Empty,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyTitle,
+} from "@/components/ui/empty";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { type ReactElement } from "react";
@@ -91,14 +98,26 @@ export function LlmScoresTab({
           label="Scorers"
           hint="Rubrics used by LLM Judge to score each generated row."
         />
-        <Button type="button" size="xs" variant="outline" onClick={addScore}>
-          Add scorer
-        </Button>
+        {scores.length > 0 && (
+          <Button type="button" size="xs" variant="outline" onClick={addScore}>
+            Add scorer
+          </Button>
+        )}
       </div>
       {scores.length === 0 && (
-        <p className="text-xs text-muted-foreground">
-          Add at least one scorer.
-        </p>
+        <Empty className="rounded-xl border border-dashed border-border/70 p-5">
+          <EmptyHeader>
+            <EmptyTitle className="text-sm">No scorers yet</EmptyTitle>
+            <EmptyDescription className="text-xs">
+              Add a scorer rubric before running judge generation.
+            </EmptyDescription>
+          </EmptyHeader>
+          <EmptyContent className="max-w-none">
+            <Button type="button" size="sm" onClick={addScore}>
+              Add first scorer
+            </Button>
+          </EmptyContent>
+        </Empty>
       )}
       {scores.map((score, index) => (
         <div
