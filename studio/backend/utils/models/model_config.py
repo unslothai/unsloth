@@ -422,6 +422,32 @@ def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
 pass
 
 
+def _is_mmproj(filename: str) -> bool:
+    """Check if a GGUF filename is a vision projection (mmproj) file."""
+    return "mmproj" in filename.lower()
+
+
+def detect_mmproj_file(path: str) -> Optional[str]:
+    """
+    Find the mmproj (vision projection) GGUF file in a directory.
+
+    Args:
+        path: Directory to search — or a .gguf file (uses its parent dir).
+
+    Returns:
+        Full path to the mmproj .gguf file, or None if not found.
+    """
+    p = Path(path)
+    search_dir = p.parent if p.is_file() else p
+    if not search_dir.is_dir():
+        return None
+
+    for f in search_dir.glob("*.gguf"):
+        if _is_mmproj(f.name):
+            return str(f.resolve())
+    return None
+
+
 def detect_gguf_model(path: str) -> Optional[str]:
     """
     Check if the given local path is or contains a GGUF model file.
@@ -430,6 +456,9 @@ def detect_gguf_model(path: str) -> Optional[str]:
     1. path is a direct .gguf file path
     2. path is a directory containing .gguf files
 
+    Skips mmproj (vision projection) files — those must be passed via
+    ``--mmproj``, not ``-m``.  Use :func:`detect_mmproj_file` instead.
+
     Returns the full path to the .gguf file if found, None otherwise.
     For HuggingFace repo detection, use detect_gguf_model_remote() instead.
     """
@@ -437,11 +466,16 @@ def detect_gguf_model(path: str) -> Optional[str]:
 
     # Case 1: direct .gguf file
     if p.suffix == ".gguf" and p.is_file():
+        if _is_mmproj(p.name):
+            return None
         return str(p.resolve())
 
-    # Case 2: directory containing .gguf files
+    # Case 2: directory containing .gguf files (skip mmproj)
     if p.is_dir():
-        gguf_files = sorted(p.glob("*.gguf"), key=lambda f: f.stat().st_size, reverse=True)
+        gguf_files = sorted(
+            (f for f in p.glob("*.gguf") if not _is_mmproj(f.name)),
+            key=lambda f: f.stat().st_size, reverse=True,
+        )
         if gguf_files:
             return str(gguf_files[0].resolve())
 
@@ -677,7 +711,8 @@ def scan_exported_models(exports_dir: str = "./exports") -> List[Tuple[str, str,
                 continue
 
             # Check for flat GGUF export (e.g. exports/gemma-3-4b-it-finetune-gguf/)
-            gguf_files = list(run_dir.glob("*.gguf"))
+            # Filter out mmproj (vision projection) files — they aren't loadable as main models
+            gguf_files = [f for f in run_dir.glob("*.gguf") if not _is_mmproj(f.name)]
             if gguf_files:
                 base_model = None
                 export_meta = run_dir / "export_metadata.json"
@@ -907,6 +942,7 @@ class ModelConfig:
     is_lora: bool       # Is this a lora adapter?
     is_gguf: bool = False       # Is this a GGUF model?
     gguf_file: Optional[str] = None  # Full path to the .gguf file (local mode)
+    gguf_mmproj_file: Optional[str] = None  # Full path to the mmproj .gguf file (vision projection)
     gguf_hf_repo: Optional[str] = None  # HF repo ID for -hf mode (e.g. "unsloth/gemma-3-4b-it-GGUF")
     gguf_variant: Optional[str] = None  # Quantization variant (e.g. "Q4_K_M")
     base_model: Optional[str] = None  # Base model (for LoRAs)
@@ -1005,16 +1041,44 @@ class ModelConfig:
             if gguf_file:
                 display_name = Path(gguf_file).stem
                 logger.info(f"Detected local GGUF model: {gguf_file}")
+
+                # Detect vision: check if base model is vision, then look for mmproj
+                mmproj_file = None
+                gguf_is_vision = False
+                gguf_dir = Path(gguf_file).parent
+
+                # Determine if this is a vision model from export metadata
+                base_is_vision = False
+                meta_path = gguf_dir / "export_metadata.json"
+                if meta_path.exists():
+                    try:
+                        meta = json.loads(meta_path.read_text())
+                        base = meta.get("base_model")
+                        if base and is_vision_model(base, hf_token=hf_token):
+                            base_is_vision = True
+                            logger.info(f"GGUF base model '{base}' is a vision model")
+                    except Exception as e:
+                        logger.debug(f"Could not read export metadata: {e}")
+
+                # If vision (or mmproj happens to exist), find the mmproj file
+                mmproj_file = detect_mmproj_file(gguf_file)
+                if mmproj_file:
+                    gguf_is_vision = True
+                    logger.info(f"Detected mmproj for vision: {mmproj_file}")
+                elif base_is_vision:
+                    logger.warning(f"Base model is vision but no mmproj file found in {gguf_dir}")
+
                 return cls(
                     identifier=identifier,
                     display_name=display_name,
                     path=path,
                     is_local=True,
                     is_cached=True,
-                    is_vision=False,
+                    is_vision=gguf_is_vision,
                     is_lora=False,
                     is_gguf=True,
                     gguf_file=gguf_file,
+                    gguf_mmproj_file=mmproj_file,
                 )
         else:
             # Check if the HF repo contains GGUF files
