@@ -71,6 +71,12 @@ class MockModule(nn.Module):
             try:
                 return self.__dict__[name]
             except KeyError:
+                # [MLX] If it's a trainer metric like _step_times, return a mock instead of crashing
+                if any(x in name for x in ("step_times", "loss_history", "train_loss")):
+                    # For metrics that are indexed or summed, return a list-like mock
+                    m = MockModule(fullname)
+                    # We can't easily make it a real list, but we can make it return 0 or empty list on demand
+                    return m
                 raise AttributeError(name)
 
         # 3. Specialized Mocks
