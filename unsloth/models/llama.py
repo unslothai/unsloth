@@ -2480,6 +2480,13 @@ class FastLlamaModel:
         kwargs = add_dtype_kwargs(dtype, kwargs)
 
         raise_handler = RaiseUninitialized()
+
+        # [MLX] Strip quantization config if on MPS
+        if DEVICE_TYPE == "mps":
+            kwargs.pop("quantization_config", None)
+            kwargs.pop("load_in_4bit", None)
+            kwargs.pop("load_in_8bit", None)
+
         if num_labels is not None:
             model = AutoModelForSequenceClassification.from_pretrained(
                 cfg_model_name if cfg_model_name is not None else model_name,
