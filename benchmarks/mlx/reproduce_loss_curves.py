@@ -189,6 +189,21 @@ def run_training_mlx(
     
     step_times = []
 
+    run_name = f"{model_cfg['name']}_b{model_cfg['batch']}_s{model_cfg['seq']}_CCE{use_cce}"
+    if HAS_WANDB and args and args.wandb:
+        wandb.run.name = run_name
+        wandb.config.update({
+            "model_name": model_cfg["name"],
+            "batch_size": model_cfg["batch"],
+            "seq_len": model_cfg["seq"],
+            "hidden_size": model_cfg.get("h_size"),
+            "vocab_size": model_cfg.get("v_size"),
+            "num_layers": model_cfg.get("n_layers"),
+            "use_cce": use_cce,
+            "learning_rate": LEARNING_RATE,
+            "dataset": DATASET_NAME,
+        })
+
     for i in range(steps):
         t0 = time.time()
         
@@ -210,15 +225,22 @@ def run_training_mlx(
         
         loss_history.append(float(loss))
         
+        avg_time = np.mean(step_times[-min(10, len(step_times)):])
+        
         # Print every step and log to wandb
         if i < 10 or (i + 1) % 10 == 0:
-            avg_time = np.mean(step_times[-min(10, len(step_times)):])
             print(f"  Step {i+1}/{steps} | Loss: {float(loss):.4f} | Time: {step_time:.3f}s (avg: {avg_time:.3f}s)")
         else:
             print(f"  Step {i+1}/{steps} | Loss: {float(loss):.4f}")
         
         if HAS_WANDB and args and args.wandb:
-            wandb.log({"step": i + 1, "loss": float(loss), "step_time": step_time})
+            wandb.log({
+                "step": i + 1, 
+                "loss": float(loss), 
+                "step_time": step_time,
+                "avg_step_time": avg_time,
+                "use_cce": use_cce,
+            })
     
     print(f"  Done. Total time: {sum(step_times):.2f}s, Avg: {np.mean(step_times):.3f}s/step")
 
@@ -229,10 +251,16 @@ def main():
     parser.add_argument("--steps", type=int, default=100, help="Number of training steps")
     parser.add_argument("--config", type=int, help="Config index to run (0-2)")
     parser.add_argument("--wandb", action="store_true", help="Enable wandb logging")
+    parser.add_argument("--wandb-project", type=str, default="unsloth-mlx-benchmark", help="Wandb project name")
+    parser.add_argument("--wandb-entity", type=str, default=None, help="Wandb entity/team name")
     args = parser.parse_args()
 
     if HAS_WANDB and args.wandb:
-        wandb.init(project="unsloth-mlx-benchmark", name="mlx-loss-curves")
+        wandb.init(
+            project=args.wandb_project,
+            entity=args.wandb_entity,
+            name="mlx-loss-curves",
+        )
     elif not HAS_WANDB and args.wandb:
         print("Warning: wandb not installed. Install with: pip install wandb")
 
@@ -260,7 +288,31 @@ def main():
             "title": f"{cfg['name']} (MLX Native)\nbatch={cfg['batch']}, seq={cfg['seq']}, vocab={cfg['v_size']}"
         }
 
-    # Plot results
+    # Plot results - separate plot for each model with baseline + CCE overlaid
+    for key, res in all_results.items():
+        model_name = res["title"].split(" (")[0]
+        batch = res["title"].split("batch=")[1].split(",")[0] if "batch=" in res["title"] else "?"
+        seq = res["title"].split("seq=")[1].split(",")[0] if "seq=" in res["title"] else "?"
+        
+        fig, ax = plt.subplots(figsize=(10, 6))
+        steps = range(1, len(res["baseline"]) + 1)
+        
+        ax.plot(steps, res["baseline"], label="Baseline (Standard CE)", color="blue", linewidth=2, alpha=0.8)
+        ax.plot(steps, res["cce"], label="CCE (Chunked CE)", color="red", linestyle="--", linewidth=2, alpha=0.8)
+        
+        ax.set_title(f"{model_name} - Batch={batch}, Seq={seq}", fontsize=14)
+        ax.set_xlabel("Step", fontsize=12)
+        ax.set_ylabel("Loss", fontsize=12)
+        ax.legend(fontsize=11)
+        ax.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        filename = f"mlx_loss_{key}.png"
+        plt.savefig(filename, dpi=300)
+        print(f"[OK] Saved plot to {filename}")
+        plt.close()
+
+    # Also save combined plot
     n_configs = len(configs_to_run)
     if n_configs > 0:
         cols = min(n_configs, 3)
@@ -283,7 +335,7 @@ def main():
         plt.tight_layout()
         plt.subplots_adjust(top=0.9)
         plt.savefig("mlx_loss_curves_comparison.png", dpi=300)
-        print("\n[OK] Saved plot to mlx_loss_curves_comparison.png")
+        print("\n[OK] Saved combined plot to mlx_loss_curves_comparison.png")
 
         # Also save JSON results
         with open("mlx_benchmark_results.json", "w") as f:
