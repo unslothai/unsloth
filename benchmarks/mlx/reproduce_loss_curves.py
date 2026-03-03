@@ -207,6 +207,12 @@ def main(args):
         model_results = {}
 
         for label, use_cce in configs:
+            # Skip 8bit models for baseline since they won't load in standard transformers on MPS
+            if "8bit" in model_name.lower() and label == "Baseline+compile":
+                print(f"\n  --- {label} (SKIPPED: 8bit baseline not supported on MPS) ---")
+                model_results[label] = None
+                continue
+
             print(f"\n  --- {label} ---")
 
             cmd = [
