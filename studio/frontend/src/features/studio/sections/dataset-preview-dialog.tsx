@@ -62,10 +62,10 @@ export function DatasetPreviewDialog({
   );
   const { isStarting, startError, startTrainingRun } = useTrainingActions();
 
-  // If the backend reports multimodal data, treat as VLM even if the prop
-  // hasn't caught up yet (isDatasetMultimodal may still be null in the store).
+  // If the backend reports image data, treat as VLM even if the prop
+  // hasn't caught up yet (isDatasetImage may still be null in the store).
   const effectiveIsAudio = !!data?.is_audio;
-  const effectiveIsVlm = !effectiveIsAudio && (isVlm || !!data?.is_multimodal);
+  const effectiveIsVlm = isVlm || !!data?.is_image;
 
   const hasHeuristicMapping = !data?.requires_manual_mapping && !!data?.suggested_mapping;
   const mappingEnabled = !!data?.requires_manual_mapping || hasHeuristicMapping;

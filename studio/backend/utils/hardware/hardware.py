@@ -423,13 +423,12 @@ def safe_num_proc(desired: Optional[int] = None) -> int:
     """
     Return a safe ``num_proc`` for ``dataset.map()`` calls.
 
-    Fork-based multiprocessing deadlocks when CUDA has already been
-    initialized (e.g. after inference).  This helper detects that case
-    and forces ``num_proc=1``.
-
     On multi-GPU machines the NVIDIA driver spawns extra background threads,
     making ``os.fork()`` prone to deadlocks when many workers are created.
     This helper caps ``num_proc`` to 4 on such machines.
+
+    On single-GPU (or CPU-only) machines the original value is returned
+    unchanged.
 
     Args:
         desired: The num_proc you *want*. If None, auto-computes from
@@ -442,14 +441,6 @@ def safe_num_proc(desired: Optional[int] = None) -> int:
 
     if desired is None or not isinstance(desired, int):
         desired = max(1, os.cpu_count() // 3)
-
-    # After inference, CUDA is initialized — forking will deadlock.
-    try:
-        import torch
-        if torch.cuda.is_initialized():
-            return 1
-    except ImportError:
-        pass
 
     if get_physical_gpu_count() > 1:
         capped = min(4, desired)

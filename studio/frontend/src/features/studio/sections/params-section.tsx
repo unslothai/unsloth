@@ -114,7 +114,7 @@ function SliderRow({
 export function ParamsSection(): ReactElement {
   const store = useTrainingConfigStore();
   const isLora = store.trainingMethod !== "full";
-  const showVisionLora = store.isVisionModel && store.isDatasetMultimodal === true;
+  const showVisionLora = store.isVisionModel && store.isDatasetImage === true;
   const [loraOpen, setLoraOpen] = useState(false);
   const [hyperOpen, setHyperOpen] = useState(false);
   const maxStepsSliderMax = Math.max(500, store.maxSteps, 30);

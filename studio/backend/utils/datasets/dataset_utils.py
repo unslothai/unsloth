@@ -67,8 +67,8 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
     multimodal_info = detect_multimodal_dataset(dataset)
     is_audio = multimodal_info.get("is_audio", False)
 
-    if multimodal_info["is_multimodal"] and not is_audio:
-        is_vlm = True  # Route to VLM detection for image datasets only
+    if multimodal_info["is_image"]:
+        is_vlm = True  # Route to VLM detection for image datasets
 
     # Common audio fields for all return paths
     audio_fields = {
@@ -88,7 +88,7 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
             "suggested_mapping": None,
             "detected_image_column": vlm_structure.get("image_column"),
             "detected_text_column": vlm_structure.get("text_column"),
-            "is_multimodal": multimodal_info["is_multimodal"],
+            "is_image": multimodal_info["is_image"],
             "multimodal_columns": multimodal_info.get("multimodal_columns"),
             **audio_fields,
         }
@@ -105,7 +105,7 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
             "suggested_mapping": None,
             "detected_image_column": None,
             "detected_text_column": multimodal_info.get("detected_text_column"),
-            "is_multimodal": True,
+            "is_image": False,
             "multimodal_columns": multimodal_info.get("audio_columns"),
             **audio_fields,
         }
@@ -124,7 +124,7 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
                 "suggested_mapping": heuristic_mapping,
                 "detected_image_column": None,
                 "detected_text_column": None,
-                "is_multimodal": False,
+                "is_image": False,
                 "multimodal_columns": None,
                 **audio_fields,
             }
@@ -136,7 +136,7 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
                 "suggested_mapping": None,
                 "detected_image_column": None,
                 "detected_text_column": None,
-                "is_multimodal": False,
+                "is_image": False,
                 "multimodal_columns": None,
                 **audio_fields,
             }
@@ -149,7 +149,7 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
         "suggested_mapping": None,
         "detected_image_column": None,
         "detected_text_column": None,
-        "is_multimodal": False,
+        "is_image": False,
         "multimodal_columns": None,
         **audio_fields,
     }
@@ -278,7 +278,7 @@ def format_dataset(
                 "chat_column": chat_column,
                 "is_standardized": True,
                 "requires_manual_mapping": False,
-                "is_multimodal": multimodal_info["is_multimodal"],
+                "is_image": multimodal_info["is_image"],
                 "multimodal_info": multimodal_info,
                 "warnings": [f"Applied user-provided column mapping ({format_type}): {custom_format_mapping}"]
             }
@@ -290,7 +290,7 @@ def format_dataset(
                 "chat_column": None,
                 "is_standardized": False,
                 "requires_manual_mapping": True,
-                "is_multimodal": multimodal_info["is_multimodal"],
+                "is_image": multimodal_info["is_image"],
                 "multimodal_info": multimodal_info,
                 "warnings": [f"Failed to apply user mapping: {e}"]
             }
@@ -301,7 +301,7 @@ def format_dataset(
     warnings = []
 
     # Add multimodal warning if detected
-    if multimodal_info["is_multimodal"]:
+    if multimodal_info["is_image"]:
         warnings.append(
             f"Multimodal dataset detected. Found columns: {multimodal_info['multimodal_columns']}"
         )
@@ -318,7 +318,7 @@ def format_dataset(
                 "chat_column": None,
                 "is_standardized": True,
                 "requires_manual_mapping": False,
-                "is_multimodal": multimodal_info["is_multimodal"],
+                "is_image": multimodal_info["is_image"],
                 "multimodal_info": multimodal_info,
                 "warnings": []
             }
@@ -338,7 +338,7 @@ def format_dataset(
                     "chat_column": detected["chat_column"],
                     "is_standardized": True,
                     "requires_manual_mapping": False,
-                    "is_multimodal": multimodal_info["is_multimodal"],
+                    "is_image": multimodal_info["is_image"],
                     "multimodal_info": multimodal_info,
                     "warnings": []
                 }
@@ -351,7 +351,7 @@ def format_dataset(
                     "chat_column": detected["chat_column"],
                     "is_standardized": False,
                     "requires_manual_mapping": True,
-                    "is_multimodal": multimodal_info["is_multimodal"],
+                    "is_image": multimodal_info["is_image"],
                     "multimodal_info": multimodal_info,
                     "warnings": warnings
                 }
@@ -364,7 +364,7 @@ def format_dataset(
                 "chat_column": detected["chat_column"],
                 "is_standardized": True,
                 "requires_manual_mapping": False,
-                "is_multimodal": multimodal_info["is_multimodal"],
+                "is_image": multimodal_info["is_image"],
                 "multimodal_info": multimodal_info,
                 "warnings": warnings
             }
@@ -415,7 +415,7 @@ def format_dataset(
                             "chat_column": "conversations",
                             "is_standardized": True,
                             "requires_manual_mapping": False,
-                            "is_multimodal": multimodal_info["is_multimodal"],
+                            "is_image": multimodal_info["is_image"],
                             "multimodal_info": multimodal_info,
                             "warnings": warnings
                         }
@@ -438,7 +438,7 @@ def format_dataset(
                         "chat_column": detected["chat_column"],
                         "is_standardized": True,
                         "requires_manual_mapping": False,
-                        "is_multimodal": multimodal_info["is_multimodal"],
+                        "is_image": multimodal_info["is_image"],
                         "multimodal_info": multimodal_info,
                         "warnings": warnings
                     }
@@ -453,7 +453,7 @@ def format_dataset(
                 "chat_column": detected["chat_column"],
                 "is_standardized": False,
                 "requires_manual_mapping": True,
-                "is_multimodal": multimodal_info["is_multimodal"],
+                "is_image": multimodal_info["is_image"],
                 "multimodal_info": multimodal_info,
                 "warnings": warnings
             }
@@ -469,7 +469,7 @@ def format_dataset(
                 "chat_column": None,
                 "is_standardized": True,
                 "requires_manual_mapping": False,
-                "is_multimodal": multimodal_info["is_multimodal"],
+                "is_image": multimodal_info["is_image"],
                 "multimodal_info": multimodal_info,
                 "warnings": []
             }
@@ -492,7 +492,7 @@ def format_dataset(
                 "chat_column": None,
                 "is_standardized": True,
                 "requires_manual_mapping": False,
-                "is_multimodal": multimodal_info["is_multimodal"],
+                "is_image": multimodal_info["is_image"],
                 "multimodal_info": multimodal_info,
                 "warnings": []
             }
@@ -506,7 +506,7 @@ def format_dataset(
                 "chat_column": detected["chat_column"],
                 "is_standardized": False,
                 "requires_manual_mapping": True,
-                "is_multimodal": multimodal_info["is_multimodal"],
+                "is_image": multimodal_info["is_image"],
                 "multimodal_info": multimodal_info,
                 "warnings": warnings
             }
@@ -523,7 +523,7 @@ def format_dataset(
                 "chat_column": "conversations",
                 "is_standardized": True,
                 "requires_manual_mapping": False,
-                "is_multimodal": multimodal_info["is_multimodal"],
+                "is_image": multimodal_info["is_image"],
                 "multimodal_info": multimodal_info,
                 "warnings": []
             }
@@ -541,7 +541,7 @@ def format_dataset(
                 "chat_column": detected["chat_column"],
                 "is_standardized": True,
                 "requires_manual_mapping": False,
-                "is_multimodal": multimodal_info["is_multimodal"],
+                "is_image": multimodal_info["is_image"],
                 "multimodal_info": multimodal_info,
                 "warnings": []
             }
@@ -554,7 +554,7 @@ def format_dataset(
                 "chat_column": detected["chat_column"],
                 "is_standardized": True,
                 "requires_manual_mapping": False,
-                "is_multimodal": multimodal_info["is_multimodal"],
+                "is_image": multimodal_info["is_image"],
                 "multimodal_info": multimodal_info,
                 "warnings": []
             }
@@ -575,7 +575,7 @@ def format_dataset(
                         "chat_column": detected["chat_column"],
                         "is_standardized": True,
                         "requires_manual_mapping": False,
-                        "is_multimodal": multimodal_info["is_multimodal"],
+                        "is_image": multimodal_info["is_image"],
                         "multimodal_info": multimodal_info,
                         "warnings": warnings
                     }
@@ -589,7 +589,7 @@ def format_dataset(
                 "chat_column": detected["chat_column"],
                 "is_standardized": False,
                 "requires_manual_mapping": True,
-                "is_multimodal": multimodal_info["is_multimodal"],
+                "is_image": multimodal_info["is_image"],
                 "multimodal_info": multimodal_info,
                 "warnings": warnings
             }
@@ -675,7 +675,7 @@ def format_and_template_dataset(
                         "final_format": "vlm_messages",
                         "chat_column": "messages",
                         "is_vlm": True,
-                        "is_multimodal": True,
+                        "is_image": True,
                         "multimodal_info": multimodal_info,
                         "success": True,
                         "requires_manual_mapping": False,
@@ -797,7 +797,7 @@ def format_and_template_dataset(
             "final_format": "vlm_messages",
             "chat_column": "messages",
             "is_vlm": True,
-            "is_multimodal": multimodal_info["is_multimodal"],
+            "is_image": multimodal_info["is_image"],
             "multimodal_info": multimodal_info,
             "vlm_structure": vlm_structure,
             "success": True,
@@ -826,7 +826,7 @@ def format_and_template_dataset(
         # Gemma emits a leading <bos> that must be stripped for text-only chatml/sharegpt.
         is_alpaca = format_type == "alpaca" or (format_type == "auto" and dataset_info["detected_format"] == "alpaca")
         is_gemma = "gemma" in model_name.lower()
-        if is_gemma and not dataset_info["is_multimodal"] and not is_alpaca:
+        if is_gemma and not dataset_info["is_image"] and not is_alpaca:
             remove_bos_prefix = True
         template_result = apply_chat_template_to_dataset(
             dataset_info=dataset_info,
