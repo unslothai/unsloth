@@ -30,6 +30,7 @@ import { RunValidateFloatingControls } from "./components/controls/run-validate-
 import { ViewportControls } from "./components/controls/viewport-controls";
 import { ExecutionsView } from "./components/executions/executions-view";
 import { InternalsSync } from "./components/graph/internals-sync";
+import { ExecutionProgressIsland } from "./components/runtime/execution-progress-island";
 import { RecipeStudioHeader } from "./components/recipe-studio-header";
 import { RecipeNode } from "./components/recipe-graph-node";
 import { RecipeGraphSemanticEdge } from "./components/recipe-graph-semantic-edge";
@@ -42,16 +43,18 @@ import { useRecipeEditorGraph } from "./hooks/use-recipe-editor-graph";
 import { useRecipeRuntimeVisuals } from "./hooks/use-recipe-runtime-visuals";
 import { useRecipeStudioActions } from "./hooks/use-recipe-studio-actions";
 import { useRecipeStudioStore } from "./stores/recipe-studio";
+import { isExecutionInProgress } from "./executions/execution-helpers";
 import type { RecipeNodeData } from "./types";
 import { getFitNodeIdsIgnoringNotes } from "./utils/graph/fit-view";
 import { buildRecipePayload } from "./utils/payload";
 import type { RecipePayload } from "./utils/payload/types";
 import { buildDefaultSchemaTransform } from "./utils/processors";
 import { buildDialogOptions } from "./utils/recipe-studio-view";
-import type { RecipeStudioView } from "./execution-types";
+import type { RecipeExecutionRecord, RecipeStudioView } from "./execution-types";
 
 const NODE_TYPES: NodeTypes = { builder: RecipeNode, aux: RecipeGraphAuxNode };
 const EDGE_TYPES: EdgeTypes = { canvas: DataEdge, semantic: RecipeGraphSemanticEdge };
+const COMPLETE_ISLAND_VISIBLE_MS = 7_000;
 
 export type PersistRecipeInput = {
   id: string | null;
@@ -162,19 +165,17 @@ export function RecipeStudioPage({
   const [activeView, setActiveView] = useState<RecipeStudioView>("editor");
   const [processorsOpen, setProcessorsOpen] = useState(false);
   const [interactive, setInteractive] = useState(true);
+  const [runtimeIslandMinimized, setRuntimeIslandMinimized] = useState(false);
+  const [recentCompletedExecution, setRecentCompletedExecution] =
+    useState<RecipeExecutionRecord | null>(null);
   const [reactFlowInstance, setReactFlowInstance] = useState<
     ReactFlowInstance<Node<RecipeNodeData | RecipeGraphAuxNodeData>, Edge> | null
   >(null);
   const lastProcessedFitTickRef = useRef(0);
   const previousActiveViewRef = useRef<RecipeStudioView>("editor");
+  const previousActiveExecutionIdRef = useRef<string | null>(null);
   const pendingEditorTabFitRef = useRef(false);
   const viewportMovedSinceAutoFitRef = useRef(true);
-  const handleExecutionStart = useCallback(() => {
-    setActiveView("executions");
-  }, []);
-  const handlePreviewSuccess = useCallback(() => {
-    setActiveView("executions");
-  }, []);
   const {
     handleNodeClick,
     handleNodeDoubleClick,
@@ -291,8 +292,6 @@ export function RecipeStudioPage({
     resetRecipe,
     loadRecipe,
     getCurrentPayloadFromStore,
-    onExecutionStart: handleExecutionStart,
-    onPreviewSuccess: handlePreviewSuccess,
   });
   const {
     activeExecution,
@@ -312,6 +311,7 @@ export function RecipeStudioPage({
   const executionLocked = runtimeVisualState.executionLocked;
   const canvasInteractive = interactive && !executionLocked;
   const runBusy = previewLoading || fullLoading || executionLocked;
+  const islandExecution = activeExecution ?? recentCompletedExecution;
 
   const toggleInteractive = useCallback(() => {
     if (executionLocked) {
@@ -323,6 +323,47 @@ export function RecipeStudioPage({
   useEffect(() => {
     setExecutionLocked(executionLocked);
   }, [executionLocked, setExecutionLocked]);
+
+  useEffect(() => {
+    const activeExecutionId = activeExecution?.id ?? null;
+    if (
+      activeExecutionId &&
+      activeExecutionId !== previousActiveExecutionIdRef.current
+    ) {
+      setRuntimeIslandMinimized(false);
+    }
+    previousActiveExecutionIdRef.current = activeExecutionId;
+  }, [activeExecution?.id]);
+
+  useEffect(() => {
+    if (activeExecution) {
+      setRecentCompletedExecution(null);
+      return;
+    }
+    const latestCompleted = executions.find(
+      (execution) =>
+        execution.status === "completed" && typeof execution.finishedAt === "number",
+    );
+    if (!latestCompleted || typeof latestCompleted.finishedAt !== "number") {
+      setRecentCompletedExecution(null);
+      return;
+    }
+    const elapsedMs = Date.now() - latestCompleted.finishedAt;
+    if (elapsedMs >= COMPLETE_ISLAND_VISIBLE_MS) {
+      setRecentCompletedExecution(null);
+      return;
+    }
+    setRecentCompletedExecution(latestCompleted);
+    const hideTimer = window.setTimeout(() => {
+      setRecentCompletedExecution(null);
+      setActiveView((currentView) =>
+        currentView === "editor" ? "executions" : currentView,
+      );
+    }, COMPLETE_ISLAND_VISIBLE_MS - elapsedMs);
+    return () => {
+      window.clearTimeout(hideTimer);
+    };
+  }, [activeExecution, executions]);
 
   const openProcessorsFromSheet = useCallback(() => {
     if (
@@ -538,22 +579,19 @@ export function RecipeStudioPage({
                   lockDisabled={executionLocked}
                   onToggleInteractive={toggleInteractive}
                 />
-                {runtimeVisualState.batch && (
-                  <Panel position="top-center" className="m-3">
-                    <div className="rounded-lg border border-border/70 bg-card/95 px-3 py-2 text-xs shadow-sm">
-                      <p className="font-medium text-foreground">
-                        Batch {runtimeVisualState.batch.idx ?? "--"}/
-                        {runtimeVisualState.batch.total}
-                      </p>
-                      {activeExecution?.current_column && (
-                        <div className="mt-0.5 flex items-center gap-1.5 text-muted-foreground">
-                          <HugeiconsIcon icon={currentColumnIcon} className="size-3.5" />
-                          <p>Column: {activeExecution.current_column}</p>
-                        </div>
-                      )}
-                    </div>
-                  </Panel>
-                )}
+                {islandExecution &&
+                  (isExecutionInProgress(islandExecution.status) ||
+                    islandExecution.status === "completed") && (
+                    <Panel position="top-center" className="!m-0">
+                      <ExecutionProgressIsland
+                        execution={islandExecution}
+                        currentColumnIcon={currentColumnIcon}
+                        minimized={runtimeIslandMinimized}
+                        onMinimizedChange={setRuntimeIslandMinimized}
+                        onViewExecutions={() => setActiveView("executions")}
+                      />
+                    </Panel>
+                  )}
                 <RunValidateFloatingControls
                   runBusy={runBusy}
                   runDialogKind={runDialogKind}
