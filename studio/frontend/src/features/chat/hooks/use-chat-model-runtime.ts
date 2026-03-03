@@ -144,7 +144,7 @@ export function useChatModelRuntime() {
       setLoras(lorasRes.loras.map(toLoraSummary));
 
       if (statusRes.active_model) {
-        setCheckpoint(statusRes.active_model);
+        setCheckpoint(statusRes.active_model, statusRes.gguf_variant);
       }
     } catch (error) {
       const message =
@@ -159,14 +159,15 @@ export function useChatModelRuntime() {
   const selectModel = useCallback(
     async (selection: string | SelectedModelInput) => {
       const modelId = typeof selection === "string" ? selection : selection.id;
-      if (!modelId || params.checkpoint === modelId) {
+      const ggufVariant =
+        typeof selection === "string" ? undefined : selection.ggufVariant;
+      const currentVariant = useChatRuntimeStore.getState().activeGgufVariant;
+      if (!modelId || (params.checkpoint === modelId && (ggufVariant ?? null) === (currentVariant ?? null))) {
         return;
       }
 
       const explicitIsLora =
         typeof selection === "string" ? undefined : selection.isLora;
-      const ggufVariant =
-        typeof selection === "string" ? undefined : selection.ggufVariant;
       const extraLoadingDescription =
         typeof selection === "string" ? undefined : selection.loadingDescription;
       const model = models.find((entry) => entry.id === modelId);
