@@ -42,7 +42,7 @@ export function TrainingSection() {
   const store = useTrainingConfigStore();
   const { isStarting, startError, startTrainingRun } = useTrainingActions();
   const isIncompatible =
-    !store.isVisionModel && !store.isDatasetAudio && store.isDatasetMultimodal === true;
+    !store.isVisionModel && store.isDatasetImage === true;
     const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {

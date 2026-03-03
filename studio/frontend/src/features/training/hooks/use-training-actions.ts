@@ -36,7 +36,7 @@ export function useTrainingActions() {
 
     try {
       const datasetName = getDatasetName(config);
-      let isVlm = config.isVisionModel && config.isDatasetMultimodal === true;
+      let isVlm = config.isVisionModel && config.isDatasetImage === true;
 
       if (datasetName) {
         const check = await checkDatasetFormat({
@@ -47,17 +47,17 @@ export function useTrainingActions() {
           isVlm,
         });
 
-        // Backend auto-detects multimodal/audio from dataset content.
+        // Backend auto-detects image/audio from dataset content.
         // Sync these flags into the store so buildTrainingStartPayload picks them up.
         const isAudio = !!check.is_audio;
-        const isMultimodal = !!check.is_multimodal;
+        const isImage = !!check.is_image;
 
-        if (isMultimodal && config.isVisionModel) {
+        if (isImage && config.isVisionModel) {
           isVlm = true;
         }
-        if (isMultimodal !== config.isDatasetMultimodal || isAudio !== config.isDatasetAudio) {
+        if (isImage !== config.isDatasetImage || isAudio !== config.isDatasetAudio) {
           useTrainingConfigStore.setState({
-            isDatasetMultimodal: isMultimodal,
+            isDatasetImage: isImage,
             isDatasetAudio: isAudio,
           });
         }

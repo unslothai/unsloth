@@ -334,7 +334,7 @@ def detect_multimodal_dataset(dataset):
 
     Returns:
         dict: {
-            "is_multimodal": bool,
+            "is_image": bool,
             "multimodal_columns": list of column names containing image data,
             "modality_types": list of detected types (e.g., ["image", "audio"]),
             "is_audio": bool,
@@ -427,7 +427,7 @@ def detect_multimodal_dataset(dataset):
                 break
 
     return {
-        "is_multimodal": len(multimodal_columns) > 0 or is_audio,
+        "is_image": len(multimodal_columns) > 0,
         "multimodal_columns": multimodal_columns,
         "modality_types": list(modality_types),
         "is_audio": is_audio,
