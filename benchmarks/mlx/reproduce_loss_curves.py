@@ -12,6 +12,7 @@ import json
 import subprocess
 import sys
 import os
+import time
 
 # =============================================================================
 # CONFIG
@@ -59,11 +60,11 @@ def run_worker(model_name, display_name, use_lora, use_cce, wandb_project=None):
     """Run in a subprocess. Prints training progress to stderr, JSON result to stdout."""
     import gc
     import mlx.core as mx
+    import mlx.optimizers as mx_opt
     from datasets import load_dataset
     from unsloth import FastLanguageModel
-    from unsloth_zoo.mlx_trainer import MLXTrainer, MLXTrainingConfig
-    from unsloth_zoo.mlx_utils import create_batches
-
+    from unsloth.kernels.mlx.trainer import MLXTrainer, TrainingConfig
+    
     # Detect if model is pre-quantized from name
     is_4bit = "4bit" in model_name.lower()
     is_8bit = "8bit" in model_name.lower()
@@ -81,44 +82,92 @@ def run_worker(model_name, display_name, use_lora, use_cce, wandb_project=None):
                             "gate_proj", "up_proj", "down_proj"],
         )
 
-    dataset = load_dataset("emozilla/pg19-test", split="test")
-    batches = create_batches(
-        dataset, tokenizer,
-        batch_size=BATCH_SIZE, max_seq_length=SEQ_LEN,
-        num_batches=WARMUP_STEPS + MEASURE_STEPS + 5, seed=SEED,
-    )
+    # Local dataset loading and batching
+    dataset = load_dataset("emozilla/pg19-test", split="test", streaming=True)
+    
+    def create_batches(n):
+        batch_input_ids = []
+        count = 0
+        for item in dataset:
+            encoded = tokenizer(
+                item["text"],
+                max_length=SEQ_LEN,
+                padding="max_length",
+                truncation=True,
+                return_tensors="np"
+            )
+            batch_input_ids.append(mx.array(encoded["input_ids"][0]))
+            if len(batch_input_ids) == BATCH_SIZE:
+                yield {"input_ids": mx.stack(batch_input_ids)}
+                batch_input_ids = []
+                count += 1
+                if count >= n:
+                    break
 
-    trainer = MLXTrainer(
-        model=model, tokenizer=tokenizer, train_dataset=dataset,
-        args=MLXTrainingConfig(
-            per_device_train_batch_size=BATCH_SIZE,
-            max_steps=WARMUP_STEPS + MEASURE_STEPS,
-            gradient_accumulation_steps=1,
-            learning_rate=LR,
-            optim="adafactor",
-            logging_steps=1,
-            max_seq_length=SEQ_LEN,
-            use_cce=use_cce,
-            compile=True,
-            gradient_checkpointing=True,
-        ),
+    # Use MLX native Adafactor
+    optimizer = mx_opt.Adafactor(learning_rate=LR)
+    
+    # Wrap model forward to use CCE if requested
+    original_forward = model.forward
+    def forward_with_cce(**kwargs):
+        kwargs["use_cce"] = use_cce
+        return original_forward(**kwargs)
+    model.forward = forward_with_cce
+
+    config = TrainingConfig(
+        batch_size=BATCH_SIZE,
+        num_epochs=1,
+        logging_steps=1,
     )
-    trainer._batches = batches
+    
+    trainer = MLXTrainer(
+        model=model,
+        optimizer=optimizer,
+        config=config,
+    )
 
     gc.collect()
     mx.synchronize()
     mx.reset_peak_memory()
 
-    trainer.train()
+    # We manually run the training loop to track per-step metrics accurately
+    loss_history = []
+    step_times = []
+    
+    total_steps = WARMUP_STEPS + MEASURE_STEPS
+    data_iter = create_batches(total_steps)
+    
+    print(f"Starting training loop (warmup={WARMUP_STEPS}, measure={MEASURE_STEPS})...", file=sys.stderr)
+    for i in range(total_steps):
+        try:
+            batch = next(data_iter)
+        except StopIteration:
+            break
+            
+        t0 = time.time()
+        step_result = trainer.training_step(batch)
+        mx.synchronize()
+        t1 = time.time()
+        
+        loss = step_result["loss"]
+        loss_history.append(loss)
+        
+        if i >= WARMUP_STEPS:
+            step_times.append(t1 - t0)
+            
+        if (i + 1) % 5 == 0 or i < 5:
+            print(f"  Step {i+1}/{total_steps} | Loss: {loss:.4f} | Time: {(t1-t0)*1000:.0f}ms", file=sys.stderr)
 
     mx.synchronize()
     peak_gb = mx.get_peak_memory() / 1e9
 
-    measure_times = trainer._step_times[WARMUP_STEPS:]
-    ms_per_step = sum(measure_times) / len(measure_times) * 1000
-    losses = trainer._train_loss_history
-    final_loss = losses[-1]
-    nan_count = sum(1 for l in losses if l != l)
+    if not step_times:
+        ms_per_step = 0
+    else:
+        ms_per_step = (sum(step_times) / len(step_times)) * 1000
+        
+    final_loss = loss_history[-1] if loss_history else 0
+    nan_count = sum(1 for l in loss_history if l != l)
 
     if wandb_project:
         try:
@@ -141,7 +190,7 @@ def run_worker(model_name, display_name, use_lora, use_cce, wandb_project=None):
                     "lr": LR,
                 }
             )
-            for i, loss in enumerate(losses):
+            for i, loss in enumerate(loss_history):
                 wandb.log({"loss": loss, "step": i + 1})
             
             wandb.run.summary["ms_per_step"] = ms_per_step
@@ -159,7 +208,7 @@ def run_worker(model_name, display_name, use_lora, use_cce, wandb_project=None):
         "nan_count": nan_count,
     }
     # Print JSON on a marker line so orchestrator can parse it
-    print(f"__RESULT__{json.dumps(result)}", flush=True)
+    print(f"__RESULT__ {json.dumps(result)}", flush=True)
 
 
 # =============================================================================
