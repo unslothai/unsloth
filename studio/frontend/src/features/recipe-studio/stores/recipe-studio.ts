@@ -223,6 +223,7 @@ function connectSemantic(
   configs: Record<string, NodeConfig>,
   sourceId: string,
   targetId: string,
+  layoutDirection: LayoutDirection,
 ): { edges: Edge[]; configs: Record<string, NodeConfig> } {
   const result = applyRecipeConnection(
     {
@@ -233,6 +234,7 @@ function connectSemantic(
     },
     configs,
     edges,
+    layoutDirection,
   );
   return {
     edges: result.edges,
@@ -460,6 +462,7 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
           configs,
           context.newNodeId,
           unboundModelConfigs[0].id,
+          state.layoutDirection,
         );
         edges = next.edges;
         configs = next.configs;
@@ -513,6 +516,7 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
           configs,
           providers[0].id,
           context.newNodeId,
+          state.layoutDirection,
         );
         edges = next.edges;
         configs = next.configs;
@@ -523,6 +527,7 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
           configs,
           context.newNodeId,
           unboundLlms[0].id,
+          state.layoutDirection,
         );
         edges = next.edges;
         configs = next.configs;
@@ -624,7 +629,13 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
         next,
         state.layoutDirection,
       );
-      const edges = syncEdgesForConfigPatch(current, patch, configs, state.edges);
+      const edges = syncEdgesForConfigPatch(
+        current,
+        patch,
+        configs,
+        state.edges,
+        state.layoutDirection,
+      );
       configs = syncSubcategoryConfigsForCategoryUpdate(
         current,
         next,
@@ -698,6 +709,7 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
         connection,
         state.configs,
         state.edges,
+        state.layoutDirection,
       );
       return result.configs
         ? { edges: result.edges, configs: result.configs }
