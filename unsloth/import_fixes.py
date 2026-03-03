@@ -1290,6 +1290,37 @@ def disable_torchcodec_if_broken():
             pass
 
 
+def disable_broken_wandb():
+    """Disable wandb if it's installed but cannot actually import.
+
+    wandb can fail to import when there's a protobuf version mismatch
+    (e.g., wandb < 0.19.11 with protobuf >= 6.0). This causes a cascading
+    import failure through trl -> transformers -> wandb that crashes
+    unsloth's import chain.
+
+    This function tests if wandb can actually import and if not, patches
+    transformers' is_wandb_available() to return False.
+    """
+    if importlib.util.find_spec("wandb") is None:
+        return  # wandb not installed, nothing to do
+
+    try:
+        import wandb
+    except Exception:
+        # wandb is installed but broken - patch transformers to skip it
+        logger.info(
+            "Unsloth: wandb is installed but broken (likely a protobuf version mismatch). "
+            "Disabling wandb to prevent import errors. To fix, run: pip install --upgrade wandb"
+        )
+        try:
+            import transformers.integrations.integration_utils as tf_integration
+            tf_integration.is_wandb_available = lambda: False
+        except (ImportError, AttributeError):
+            pass
+        # Also set env var as fallback for any other code path
+        os.environ["WANDB_DISABLED"] = "true"
+
+
 CAUSAL_CONV1D_BROKEN = False
 _CAUSAL_CONV1D_PREFIX = "causal_conv1d"
 _CAUSAL_CONV1D_BLOCKER_SENTINEL = "_unsloth_causal_conv1d_blocker"
