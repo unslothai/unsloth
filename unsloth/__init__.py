@@ -151,6 +151,7 @@ from .import_fixes import (
     patch_vllm_for_notebooks,
     patch_torchcodec_audio_decoder,
     disable_torchcodec_if_broken,
+    disable_broken_wandb,
 )
 
 fix_xformers_performance_issue()
@@ -172,6 +173,7 @@ fix_executorch()
 patch_vllm_for_notebooks()
 patch_torchcodec_audio_decoder()
 disable_torchcodec_if_broken()
+disable_broken_wandb()
 
 del fix_xformers_performance_issue
 del fix_vllm_aimv2_issue
@@ -191,6 +193,7 @@ del fix_executorch
 del patch_vllm_for_notebooks
 del patch_torchcodec_audio_decoder
 del disable_torchcodec_if_broken
+del disable_broken_wandb
 
 # Torch 2.4 has including_emulation
 if DEVICE_TYPE == "cuda":
