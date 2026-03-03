@@ -22,15 +22,15 @@ export function ExecutionSidebar({
   onSelectExecution,
 }: ExecutionSidebarProps): ReactElement {
   return (
-    <aside className="w-72 shrink-0 border-r">
-      <div className="flex items-center justify-between border-b px-3 py-2">
+    <aside className="w-72 shrink-0 border-r border-border/60 bg-card/20">
+      <div className="flex items-center justify-between border-b border-border/60 px-3 py-2">
         <p className="text-xs font-semibold uppercase text-muted-foreground">
           Executions
         </p>
       </div>
-      <div className="h-[calc(100%-45px)] overflow-auto p-2">
+      <div className="h-[calc(100%-45px)] space-y-2 overflow-auto p-2">
         {executions.length === 0 ? (
-          <div className="rounded-xl border border-dashed p-3 text-xs text-muted-foreground">
+          <div className="rounded-xl border border-dashed border-border/60 p-3 text-xs text-muted-foreground">
             No executions yet.
           </div>
         ) : (
@@ -40,10 +40,10 @@ export function ExecutionSidebar({
               type="button"
               onClick={() => onSelectExecution(execution.id)}
               className={cn(
-                "mb-2 w-full rounded-xl corner-squircle border border-r-4 p-3 text-left",
+                "w-full rounded-xl corner-squircle border border-r-2 border-border/60 bg-card/60 p-3 text-left transition-colors",
                 selectedExecutionId === execution.id
-                  ? "border-primary/50 bg-primary/5"
-                  : "hover:bg-muted/40",
+                  ? "border-primary/35 bg-primary/[0.045]"
+                  : "hover:bg-muted/25",
                 statusRightBorder(execution.status),
               )}
             >
@@ -52,8 +52,8 @@ export function ExecutionSidebar({
                   {execution.kind}
                 </p>
                 <Badge
-                  variant="secondary"
-                  className={cn("capitalize", statusTone(execution.status))}
+                  variant="outline"
+                  className={cn("capitalize text-[11px]", statusTone(execution.status))}
                 >
                   {formatStatus(execution.status)}
                 </Badge>

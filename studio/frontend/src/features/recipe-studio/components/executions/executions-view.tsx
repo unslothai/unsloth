@@ -26,12 +26,9 @@ import {
   formatCellValue,
   formatDuration,
   formatPercent,
-  formatStatus,
-  formatTimestamp,
   hasExpandableTextCell,
   parseAnalysisColumns,
   parseModelUsageRows,
-  statusTone,
   truncateCellValue,
 } from "./executions-view-helpers";
 
@@ -52,6 +49,10 @@ export function ExecutionsView({
   onCancelExecution,
   onLoadDatasetPage,
 }: ExecutionsViewProps): ReactElement {
+  const formatEta = (value: number | null | undefined): string =>
+    typeof value === "number" && Number.isFinite(value)
+      ? `${value.toLocaleString()} s`
+      : "--";
   const [detailTab, setDetailTab] = useState("overview");
   const [hiddenDatasetColumnsByExecution, setHiddenDatasetColumnsByExecution] = useState<
     Record<string, string[]>
@@ -329,49 +330,13 @@ export function ExecutionsView({
       />
       <section className="min-w-0 flex-1 overflow-auto p-4">
         {!selectedExecution ? (
-          <div className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">
+          <div className="rounded-xl border border-dashed border-border/60 p-4 text-sm text-muted-foreground">
             Select an execution.
           </div>
         ) : (
           <div className="space-y-4">
-            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-              <span className="font-medium capitalize">{selectedExecution.kind} execution</span>
-              <Badge
-                variant="secondary"
-                className={cn("capitalize", statusTone(selectedExecution.status))}
-              >
-                {formatStatus(selectedExecution.status)}
-              </Badge>
-              <span>{selectedExecution.rows} rows</span>
-              <span>Started {formatTimestamp(selectedExecution.createdAt)}</span>
-              <span>
-                Duration {formatDuration(selectedExecution.createdAt, selectedExecution.finishedAt)}
-              </span>
-              {selectedExecution.stage && (
-                <span>
-                  Stage: {selectedExecution.stage}
-                  {selectedExecution.current_column
-                    ? ` | Column: ${selectedExecution.current_column}`
-                    : ""}
-                </span>
-              )}
-              {showBatchProgress && (
-                <span>
-                  Batch {batchIdx ?? "--"}/{batchTotal}
-                </span>
-              )}
-              {isStale && <Badge variant="outline">Recipe changed since this run</Badge>}
-            </div>
-
             {showProgressPanel && (
-              <div
-                className={cn(
-                  "space-y-3 rounded-xl border p-3",
-                  progressComplete
-                    ? "border-emerald-200 bg-emerald-50/50 dark:border-emerald-900/50 dark:bg-emerald-950/25"
-                    : "border-amber-200 bg-amber-50/50 dark:border-amber-900/50 dark:bg-amber-950/25",
-                )}
-              >
+              <div className="space-y-3 rounded-2xl border border-border/60 bg-card/55 p-3">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <HugeiconsIcon
@@ -383,51 +348,29 @@ export function ExecutionsView({
                           : "text-amber-700 dark:text-amber-300",
                       )}
                     />
-                    <p
-                      className={cn(
-                        "text-sm font-semibold",
-                        progressComplete
-                          ? "text-emerald-900 dark:text-emerald-100"
-                          : "text-amber-900 dark:text-amber-100",
-                      )}
-                    >
-                      {progressComplete ? "Run completed" : "Run in progress"}
+                    <p className="text-sm font-semibold text-foreground">
+                      Progress
                     </p>
                   </div>
-                  <p
-                    className={cn(
-                      "text-xs",
-                      progressComplete
-                        ? "text-emerald-800 dark:text-emerald-200"
-                        : "text-amber-800 dark:text-amber-200",
-                    )}
-                  >
-                    {formatPercent(progressPercent)}
+                  <p className="text-xs text-muted-foreground">{formatPercent(progressPercent)}</p>
+                </div>
+                <Progress value={progressPercent} className="h-1" />
+                <div className="grid gap-2 text-xs md:grid-cols-4">
+                  <p className="text-muted-foreground">
+                    Done: <span className="text-foreground">{selectedExecution.progress?.done ?? "--"}</span>
+                  </p>
+                  <p className="text-muted-foreground">
+                    Total: <span className="text-foreground">{selectedExecution.progress?.total ?? "--"}</span>
+                  </p>
+                  <p className="text-muted-foreground">
+                    Rate: <span className="text-foreground">{selectedExecution.progress?.rate ?? "--"} rec/s</span>
+                  </p>
+                  <p className="text-muted-foreground">
+                    ETA: <span className="text-foreground">{formatEta(selectedExecution.progress?.eta_sec)}</span>
                   </p>
                 </div>
-                <Progress value={progressPercent} />
-                <div
-                  className={cn(
-                    "grid gap-2 text-xs md:grid-cols-4",
-                    progressComplete
-                      ? "text-emerald-900 dark:text-emerald-100"
-                      : "text-amber-900 dark:text-amber-100",
-                  )}
-                >
-                  <p>Done: {selectedExecution.progress?.done ?? "--"}</p>
-                  <p>Total: {selectedExecution.progress?.total ?? "--"}</p>
-                  <p>Rate: {selectedExecution.progress?.rate ?? "--"} rec/s</p>
-                  <p>ETA: {selectedExecution.progress?.eta_sec ?? "--"} s</p>
-                </div>
                 {selectedExecution.current_column && selectedExecution.column_progress && (
-                  <p
-                    className={cn(
-                      "text-xs",
-                      progressComplete
-                        ? "text-emerald-900 dark:text-emerald-100"
-                        : "text-amber-900 dark:text-amber-100",
-                    )}
-                  >
+                  <p className="text-xs text-muted-foreground">
                     Column {selectedExecution.current_column}:{" "}
                     {selectedExecution.column_progress.done ?? "--"}/
                     {selectedExecution.column_progress.total ?? "--"} (
@@ -435,17 +378,11 @@ export function ExecutionsView({
                   </p>
                 )}
                 {showBatchProgress && (
-                  <p
-                    className={cn(
-                      "text-xs",
-                      progressComplete
-                        ? "text-emerald-900 dark:text-emerald-100"
-                        : "text-amber-900 dark:text-amber-100",
-                    )}
-                  >
+                  <p className="text-xs text-muted-foreground">
                     Processed batch: {batchIdx ?? "--"}/{batchTotal}
                   </p>
                 )}
+                {isStale && <Badge variant="outline">Recipe changed since this run</Badge>}
               </div>
             )}
 
@@ -467,7 +404,7 @@ export function ExecutionsView({
               isExecutionInProgress(selectedExecution.status)) && (
               <Tabs value={detailTab} onValueChange={setDetailTab}>
                 <div className="flex items-center justify-between gap-2">
-                  <TabsList>
+                  <TabsList className="border border-border/60 bg-card/40">
                     <TabsTrigger value="overview">Overview</TabsTrigger>
                     <TabsTrigger value="columns">Columns</TabsTrigger>
                     <TabsTrigger value="data">Data</TabsTrigger>
