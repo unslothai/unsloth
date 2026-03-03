@@ -30,8 +30,18 @@ from .llama import (
     LlamaLinearScalingRotaryEmbedding,
 )
 from .mistral import *
-from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
-from peft.tuners.lora import Linear4bit as Peft_Linear4bit
+
+try:
+    from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
+except Exception:
+    Bnb_Linear4bit = None
+
+try:
+    from peft.tuners.lora import Linear4bit as Peft_Linear4bit
+except Exception:
+    Peft_Linear4bit = None
+
+_BNB_LINEAR_TYPES = tuple(t for t in (Bnb_Linear4bit, Peft_Linear4bit) if t is not None)
 
 try:
     from transformers.models.granite.modeling_granite import (
@@ -596,7 +606,7 @@ class FastGraniteModel(FastLlamaModel):
         correct_dtype = lm_head.weight.dtype
 
         for name, module in model.named_modules():
-            if isinstance(module, (Bnb_Linear4bit, Peft_Linear4bit)):
+            if _BNB_LINEAR_TYPES and isinstance(module, _BNB_LINEAR_TYPES):
                 weight = module.weight
                 quant_state = weight.quant_state
 

@@ -842,7 +842,10 @@ if is_openai_available():
 
 # =============================================
 # Get Flash Attention v2 if Ampere (RTX 30xx, A100)
-import bitsandbytes as bnb
+try:
+    import bitsandbytes as bnb
+except Exception:
+    bnb = None
 
 from transformers import AutoTokenizer
 from transformers.utils.import_utils import _is_package_available
@@ -2035,7 +2038,14 @@ def patch_tokenizer(model, tokenizer):
 
 
 def patch_fast_lora():
-    import peft.tuners.lora.bnb
+    try:
+        import peft.tuners.lora.bnb
+    except Exception as e:
+        print(
+            "Unsloth: bitsandbytes/peft bnb not available - skipping 4bit LoRA patch.",
+            repr(e),
+        )
+        return
 
     peft.tuners.lora.bnb.Linear4bit.forward = fast_lora_forward
 

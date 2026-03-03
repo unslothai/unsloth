@@ -3099,6 +3099,18 @@ class FastLlamaModel:
         if not SUPPORTS_RSLORA:
             del arguments["use_rslora"]
 
+        # PEFT API compatibility: only pass kwargs supported by the installed peft version.
+        try:
+            import inspect as _inspect
+
+            if (
+                "ensure_weight_tying"
+                not in _inspect.signature(LoraConfig.__init__).parameters
+            ):
+                arguments.pop("ensure_weight_tying", None)
+        except Exception:
+            arguments.pop("ensure_weight_tying", None)
+
         _saved_temp_tokenizer = model._saved_temp_tokenizer
 
         lora_config = LoraConfig(**arguments)
