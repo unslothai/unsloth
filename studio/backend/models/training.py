@@ -65,7 +65,7 @@ class TrainingStartRequest(BaseModel):
     finetune_language_layers: bool = Field(False, description="Finetune language layers")
     finetune_attention_modules: bool = Field(False, description="Finetune attention modules")
     finetune_mlp_modules: bool = Field(False, description="Finetune MLP modules")
-    is_dataset_multimodal: bool = Field(False, description="Whether the dataset contains multimodal (image) data")
+    is_dataset_image: bool = Field(False, description="Whether the dataset contains image data")
     is_dataset_audio: bool = Field(False, description="Whether the dataset contains audio data")
 
     # Logging parameters

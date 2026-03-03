@@ -27,7 +27,7 @@ class CheckFormatResponse(BaseModel):
     requires_manual_mapping: bool
     detected_format: str
     columns: List[str]
-    is_multimodal: bool = False
+    is_image: bool = False
     is_audio: bool = False
     multimodal_columns: Optional[List[str]] = None
     suggested_mapping: Optional[Dict[str, str]] = None

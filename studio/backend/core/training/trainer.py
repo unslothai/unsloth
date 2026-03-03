@@ -30,11 +30,6 @@ from trl import SFTTrainer, SFTConfig
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Process-level flag: set True after CUDA-heavy audio preprocessing (Whisper/DAC/BiCodec).
-# Once CUDA has been used for audio processing, fork-based multiprocessing (num_proc>1)
-# deadlocks because forked children inherit CUDA's internal thread locks.
-# This flag is never reset — once contaminated, the process stays contaminated.
-_CUDA_AUDIO_PREPROCESSING_DONE = False
 
 @dataclass
 class TrainingProgress:
@@ -75,6 +70,7 @@ class UnslothTrainer:
         self.is_audio = False
         self.is_audio_vlm = False  # Multimodal model (e.g. Gemma 3N) trained on audio data
         self._audio_type = None  # 'csm', 'whisper', 'snac', 'xcodec2', 'bicodec', 'dac'
+        self._cuda_audio_used = False  # Set once after audio CUDA preprocessing; never cleared
         self._spark_tts_repo_dir = None  # Path to downloaded Spark-TTS repo (for BiCodecTokenizer)
         self.model_name = None
 
@@ -335,7 +331,7 @@ class UnslothTrainer:
                    max_seq_length: int = 2048,
                    load_in_4bit: bool = True,
                    hf_token: Optional[str] = None,
-                   is_dataset_multimodal: bool = False,
+                   is_dataset_image: bool = False,
                    is_dataset_audio: bool = False) -> bool:
         """Load model for training (supports both text and vision models)"""
         try:
@@ -381,14 +377,14 @@ class UnslothTrainer:
             # Uses FastModel + SFTTrainer with audio collator
             self.is_audio_vlm = not self.is_audio and is_vision_model(model_name) and is_dataset_audio
             # VLM: vision model with image dataset (mutually exclusive with audio VLM)
-            self.is_vlm = not self.is_audio and not self.is_audio_vlm and is_vision_model(model_name) and is_dataset_multimodal
+            self.is_vlm = not self.is_audio and not self.is_audio_vlm and is_vision_model(model_name) and is_dataset_image
             self.model_name = model_name
             self.max_seq_length = max_seq_length
 
             logger.info(f"Audio type: {self._audio_type}")
             if not self.is_audio:
                 logger.info(f"Model architecture is vision: {is_vision_model(model_name)}")
-            logger.info(f"Dataset is multimodal: {is_dataset_multimodal}, audio: {is_dataset_audio}")
+            logger.info(f"Dataset has images: {is_dataset_image}, audio: {is_dataset_audio}")
             logger.info(f"Using VLM path: {self.is_vlm}, Audio VLM: {self.is_audio_vlm}")
 
             # Reset training state for new run
@@ -555,10 +551,26 @@ class UnslothTrainer:
             print("Model loaded successfully")
             return True
 
+        except OSError as e:
+            if "could not get source code" in str(e) and not getattr(self, '_source_code_retried', False):
+                # Unsloth's patching can leave stale state that makes
+                # inspect.getsource() fail when switching model families
+                # (e.g. gemma3 → gemma3n). The load always succeeds on a
+                # second attempt because the failed first call's partial
+                # imports clean up the stale state as a side effect.
+                self._source_code_retried = True
+                print(f"\n'could not get source code' — retrying once...\n")
+                return self.load_model(model_name, max_seq_length, load_in_4bit, hf_token,
+                                       is_dataset_image, is_dataset_audio)
+            logger.error(f"Error loading model: {e}")
+            self._update_progress(error=str(e), is_training=False)
+            return False
         except Exception as e:
             logger.error(f"Error loading model: {e}")
             self._update_progress(error=str(e), is_training=False)
             return False
+        finally:
+            self._source_code_retried = False
 
     def prepare_model_for_training(self,
                                    use_lora: bool = True,
@@ -1204,9 +1216,7 @@ class UnslothTrainer:
         import gc
         gc.collect()
         torch.cuda.empty_cache()
-
-        global _CUDA_AUDIO_PREPROCESSING_DONE
-        _CUDA_AUDIO_PREPROCESSING_DONE = True
+        self._cuda_audio_used = True
 
         if not processed_examples:
             raise ValueError(
@@ -1394,9 +1404,7 @@ class UnslothTrainer:
         import gc
         gc.collect()
         torch.cuda.empty_cache()
-
-        global _CUDA_AUDIO_PREPROCESSING_DONE
-        _CUDA_AUDIO_PREPROCESSING_DONE = True
+        self._cuda_audio_used = True
 
         if not processed_examples:
             raise ValueError(
@@ -1579,13 +1587,7 @@ class UnslothTrainer:
         import gc
         gc.collect()
         torch.cuda.empty_cache()
-
-        # Mark process as CUDA-contaminated from audio preprocessing.
-        # Fork-based multiprocessing (num_proc>1) will deadlock after this
-        # because forked children inherit CUDA's internal thread locks from
-        # Whisper/DAC processing that can't be released.
-        global _CUDA_AUDIO_PREPROCESSING_DONE
-        _CUDA_AUDIO_PREPROCESSING_DONE = True
+        self._cuda_audio_used = True
 
         if not processed_examples:
             raise ValueError(
@@ -2236,7 +2238,7 @@ class UnslothTrainer:
                 "output_dir": output_dir,
                 "report_to": ["wandb"] if training_args.get('enable_wandb', False) else "none",
                 "include_num_input_tokens_seen": True,  # Enable token counting
-                "dataset_num_proc": safe_num_proc(max(1, os.cpu_count() // 4)),
+                "dataset_num_proc": 1 if (self.is_audio or self.is_audio_vlm or self._cuda_audio_used) else safe_num_proc(max(1, os.cpu_count() // 4)),
                 "max_seq_length": training_args.get('max_seq_length', 2048),
             }
             
@@ -2424,19 +2426,11 @@ class UnslothTrainer:
                 try:
                     from unsloth.chat_templates import train_on_responses_only
 
-                    # After CUDA-heavy audio preprocessing (Whisper/DAC/BiCodec/SNAC),
-                    # fork-based multiprocessing deadlocks because children inherit
-                    # CUDA's internal thread locks. Use single-process mode instead.
-                    toro_num_proc = config_args.get("dataset_num_proc", safe_num_proc(max(1, os.cpu_count() // 4)))
-                    if _CUDA_AUDIO_PREPROCESSING_DONE:
-                        toro_num_proc = 1
-                        print("Using single-process train_on_responses (CUDA audio preprocessing detected)\n")
-
                     self.trainer = train_on_responses_only(
                         self.trainer,
                         instruction_part=instruction_part,
                         response_part=response_part,
-                        num_proc=toro_num_proc,
+                        num_proc=config_args["dataset_num_proc"],
                     )
                     print("Train on responses only configured successfully\n")
 

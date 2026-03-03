@@ -116,7 +116,7 @@ class TrainingBackend:
                        train_split: str = "train",
                        eval_split: str = None,
                        eval_steps: float = 0.00,
-                       is_dataset_multimodal: bool = False,
+                       is_dataset_image: bool = False,
                        is_dataset_audio: bool = False) -> bool:
         """
         Start training.
@@ -146,9 +146,6 @@ class TrainingBackend:
             import torch as _torch
             if _torch.cuda.is_available():
                 _torch.cuda.synchronize()
-            # Reset torch dynamo/compiler caches — Unsloth's compiled SFTTrainer
-            # and model.for_training() set class-level state that persists between
-            # runs (e.g. BiCodec text trainer pollutes subsequent VLM runs).
             _torch._dynamo.reset()
             _torch.compiler.reset()
             import gc
@@ -182,7 +179,7 @@ class TrainingBackend:
                 max_seq_length=max_seq_length,
                 load_in_4bit=load_in_4bit if use_lora_actual else False,  # Only 4bit for LoRA
                 hf_token=hf_token if hf_token.strip() else None,
-                is_dataset_multimodal=is_dataset_multimodal,
+                is_dataset_image=is_dataset_image,
                 is_dataset_audio=is_dataset_audio,
             )
 

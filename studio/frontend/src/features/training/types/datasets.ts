@@ -9,7 +9,7 @@ export type CheckFormatResponse = {
   detected_speaker_column?: string | null;
   preview_samples?: Record<string, unknown>[] | null;
   total_rows?: number | null;
-  is_multimodal?: boolean;
+  is_image?: boolean;
   is_audio?: boolean;
   multimodal_columns?: string[] | null;
 };
