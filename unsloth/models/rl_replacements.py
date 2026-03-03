@@ -1157,12 +1157,6 @@ def grpo_trainer_compute_loss(function_name, function):
             if x.shape[1] == 1:  # when importance_sampling_level == "sequence"
                 return x.mean()
             else:
-                if x.shape[1] != completion_mask.shape[1]:
-                    common = min(x.shape[1], completion_mask.shape[1])
-                    x = x[:, :common]
-                    mask = completion_mask[:, :common]
-                    token_count = mask.sum().clamp(min = 1.0)
-                    return (x * mask).sum() / token_count
                 return (x * completion_mask).sum() / completion_token_count
 
         if advantages.dim() == 1:

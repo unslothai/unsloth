@@ -1630,9 +1630,9 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                 if trl_version >= Version("0.23.0"):
                     # We need to set this flag for sleep mode auto working with trl update
                     vllm_setter += (
-                        " " * 8
+                        " " * 12
                         + "if os.environ.get('UNSLOTH_VLLM_STANDBY', '0') == '1':\n"
-                        + " " * 12
+                        + " " * 16
                         + "args.vllm_enable_sleep_mode=True\n"
                     )
 
