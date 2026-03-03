@@ -33,11 +33,17 @@ import {
 import { MODEL_TYPE_TO_HF_TASK } from "@/config/training";
 import {
   useDebouncedValue,
+  useGpuInfo,
   useHfModelSearch,
   useHfTokenValidation,
   useInfiniteScroll,
 } from "@/hooks";
 import { formatCompact } from "@/lib/utils";
+import {
+  type TrainingMethod as VramTrainingMethod,
+  type VramFitStatus,
+  buildModelVramMap,
+} from "@/lib/vram";
 import { useTrainingConfigStore } from "@/features/training";
 import type { TrainingMethod } from "@/types/training";
 import {
@@ -50,6 +56,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 export function ModelSelectionStep() {
+  const gpu = useGpuInfo();
   const {
     modelType,
     selectedModel,
@@ -92,6 +99,24 @@ export function ModelSelectionStep() {
     useHfTokenValidation(hfToken);
 
   const resultIds = useMemo(() => hfResults.map((r) => r.id), [hfResults]);
+
+  // Match Studio behavior: only show exception signals (OOM/TIGHT) in training flows.
+  const vramMap = useMemo(() => {
+    const fitMap = buildModelVramMap(
+      hfResults,
+      trainingMethod as VramTrainingMethod,
+      gpu,
+    );
+    const map = new Map<string, { status: VramFitStatus | null; detail: string | null }>();
+    for (const r of hfResults) {
+      const fit = fitMap.get(r.id);
+      map.set(r.id, {
+        status: fit?.status ?? null,
+        detail: r.totalParams ? formatCompact(r.totalParams) : null,
+      });
+    }
+    return map;
+  }, [hfResults, gpu, trainingMethod]);
 
   const comboboxAnchorRef = useRef<HTMLDivElement>(null);
   const { scrollRef, sentinelRef } = useInfiniteScroll(
@@ -218,19 +243,21 @@ export function ModelSelectionStep() {
               >
                 <ComboboxList className="p-1 !max-h-none !overflow-visible">
                   {(id: string) => {
-                    const r = hfResults.find((r) => r.id === id);
-                    const sizeLabel = r?.totalParams
-                      ? formatCompact(r.totalParams)
-                      : null;
+                    const entry = vramMap.get(id);
+                    const sizeLabel = entry?.detail ?? null;
+                    const fitStatus = entry?.status ?? null;
+                    const exceeds = fitStatus === "exceeds";
                     return (
                       <ComboboxItem
                         key={id}
                         value={id}
-                        className="justify-between"
+                        className={`justify-between ${exceeds ? "opacity-50" : ""}`}
                       >
                         <Tooltip>
                           <TooltipTrigger asChild={true}>
-                            <span className="min-w-0 flex-1 truncate">
+                            <span
+                              className={`min-w-0 flex-1 truncate ${exceeds ? "line-through decoration-muted-foreground/50" : ""}`}
+                            >
                               {id}
                             </span>
                           </TooltipTrigger>
@@ -241,11 +268,23 @@ export function ModelSelectionStep() {
                             {id}
                           </TooltipContent>
                         </Tooltip>
-                        {sizeLabel ? (
-                          <span className="text-xs text-muted-foreground shrink-0">
-                            {sizeLabel}
-                          </span>
-                        ) : null}
+                        <span className="flex items-center gap-1.5 shrink-0">
+                          {fitStatus === "exceeds" && (
+                            <span className="text-[9px] font-medium text-red-400">
+                              OOM
+                            </span>
+                          )}
+                          {fitStatus === "tight" && (
+                            <span className="text-[9px] font-medium text-amber-400">
+                              TIGHT
+                            </span>
+                          )}
+                          {sizeLabel ? (
+                            <span className="text-xs text-muted-foreground">
+                              {sizeLabel}
+                            </span>
+                          ) : null}
+                        </span>
                       </ComboboxItem>
                     );
                   }}
