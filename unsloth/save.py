@@ -22,9 +22,15 @@ from unsloth_zoo.llama_cpp import (
     install_llama_cpp,
     check_llama_cpp,
     _download_convert_hf_to_gguf,
-    LLAMA_CPP_DEFAULT_DIR,
-    IS_WINDOWS,
 )
+# H4: Defensive imports -- these were added in unsloth-zoo PR #526
+# and may not exist on older versions
+try:
+    from unsloth_zoo.llama_cpp import LLAMA_CPP_DEFAULT_DIR, IS_WINDOWS
+except ImportError:
+    import sys
+    IS_WINDOWS = sys.platform == "win32"
+    LLAMA_CPP_DEFAULT_DIR = "llama.cpp"
 from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
 from peft.tuners.lora import Linear4bit as Peft_Linear4bit
 from peft.tuners.lora import Linear as Peft_Linear
@@ -1318,7 +1324,7 @@ def save_to_gguf(
                             "`model.{save_pretrained/push_to_hub}_gguf will use too much disk space.\n"
                             "You can try saving it to the `/tmp` directory for larger disk space.\n"
                             "I suggest you to save the 16bit model first, then use manual llama.cpp conversion.\n"
-                            "Error: {e}"
+                            f"Error: {e}"
                         )
                     else:
                         if IS_WINDOWS:
