@@ -66,21 +66,19 @@ class MockModule(nn.Module):
                 return "unsloth_mock"
             raise AttributeError(name)
 
+        # 3. Specialized Mocks
+        fullname = f"{self.__name__}.{name}"
+
         # 2. Handle nn.Module internals
         if name.startswith("_") and name not in ("_unsloth_mock", "_get_dtype"):
             try:
                 return self.__dict__[name]
             except KeyError:
-                # [MLX] If it's a trainer metric like _step_times, return a mock instead of crashing
+                # [MLX] If it's a trainer metric like _step_times, return a dummy list instead of crashing
+                # This allows slicing like trainer._step_times[WARMUP_STEPS:] to work.
                 if any(x in name for x in ("step_times", "loss_history", "train_loss")):
-                    # For metrics that are indexed or summed, return a list-like mock
-                    m = MockModule(fullname)
-                    # We can't easily make it a real list, but we can make it return 0 or empty list on demand
-                    return m
+                    return [0.0] * 100
                 raise AttributeError(name)
-
-        # 3. Specialized Mocks
-        fullname = f"{self.__name__}.{name}"
 
         # Return proper class type for bnb.nn.Linear* (isinstance compatibility)
         if fullname in ("bitsandbytes.nn.Linear4bit", "bitsandbytes.nn.Linear8bitLt", "bitsandbytes.nn.Linear"):
