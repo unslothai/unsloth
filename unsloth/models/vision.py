@@ -1054,6 +1054,7 @@ class FastBaseModel:
             do_forced_float32 = do_forced_float32,
             correct_dtype = correct_dtype,
         )
+
         try:
             model, tokenizer = patch_tokenizer(model, tokenizer)
         except Exception as _patch_err:
