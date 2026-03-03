@@ -355,8 +355,9 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         re.DOTALL | re.MULTILINE,
     )
 
+    # sanitize_logprob is injected as a module-level function via RLTrainer_replacement
+    # template in rl.py (from RL_REPLACEMENTS), so just reference it directly here.
     replacement_text = (
-        r"\1from trl.scripts.vllm_serve import sanitize_logprob\n"
         r"\1all_logprobs = [\n"
         r"\1    [sanitize_logprob(next(iter(logprob.values()))) for logprob in output.logprobs]\n"
         r"\1    for outputs in all_outputs\n"

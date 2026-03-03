@@ -78,6 +78,9 @@ SUPPORTS_QWEN3_MOE = transformers_version >= Version("4.50.3")
 SUPPORTS_FALCON_H1 = transformers_version >= Version("4.53.0")
 SUPPORTS_GEMMA3N = transformers_version >= Version("4.53.0")
 SUPPORTS_GPTOSS = transformers_version >= Version("4.55.0")
+# Transformers v5 meta-device loading corrupts non-persistent buffers (inv_freq).
+# See _fix_rope_inv_freq() below for details.
+_NEEDS_ROPE_FIX = transformers_version >= Version("5.0.0")
 if SUPPORTS_GEMMA:
     from .gemma import FastGemmaModel
 if SUPPORTS_GEMMA2:
@@ -103,6 +106,7 @@ FORCE_FLOAT32 = [
     "gemma3text",  # Gemma3TextModel (EmbeddingGemma, standalone text-only Gemma3)
     "gemma3n",
     "gpt_oss",
+    "qwen3_5",  # Qwen3.5 RMSNorm uses (1+w) pattern like Gemma3, overflows float16
 ]
 
 global DISABLE_COMPILE_MODEL_NAMES
@@ -119,6 +123,100 @@ DISABLE_SDPA_MODEL_NAMES = [
     "gemma3,",  # Add comma bc gemma3 will match gemma3n
     "gemma3_text",  # Gemma3TextModel (EmbeddingGemma) - substring match, keep underscore
 ]
+
+
+def _fix_rope_inv_freq(model):
+    """Fix inv_freq corruption caused by transformers v5 meta-device loading.
+
+    Transformers v5 initializes models on the meta device, then
+    _move_missing_keys_from_meta_to_device() (modeling_utils.py) replaces ALL
+    non-persistent buffers with torch.empty_like() -- uninitialized memory.
+
+    Vanilla transformers restores inv_freq via _init_weights() which checks for
+    hasattr(module, "original_inv_freq"). Unsloth's LlamaRotaryEmbedding and
+    subclasses do not have this attribute, so inv_freq stays corrupted. This
+    produces wrong positional encodings and causes 5-11x higher training loss.
+
+    This function recomputes inv_freq from the stored base and dim, applies
+    any model-specific scaling, and rebuilds the cos/sin caches.
+
+    Only runs on transformers >= 5.0.0. No-op on v4.
+    """
+    if not _NEEDS_ROPE_FIX:
+        return model
+
+    for name, module in model.named_modules():
+        # Unsloth's LlamaRotaryEmbedding and subclasses (Extended, LinearScaling,
+        # Granite). Native v5 rotary classes (Gemma3, etc.) have original_inv_freq
+        # which v5's _init_weights() uses to restore inv_freq, so they are fine.
+        if (
+            hasattr(module, "inv_freq")
+            and hasattr(module, "base")
+            and hasattr(module, "dim")
+            and hasattr(module, "_apply_inv_freq_scaling")
+            and hasattr(module, "multi_gpu_cos_cached")
+        ):
+            inv_freq = 1.0 / (
+                module.base
+                ** (
+                    torch.arange(
+                        0, module.dim, 2, dtype = torch.int64, device = "cpu"
+                    ).float()
+                    / module.dim
+                )
+            )
+            inv_freq = module._apply_inv_freq_scaling(inv_freq)
+            module.inv_freq = inv_freq
+            for device_idx in range(len(module.multi_gpu_cos_cached)):
+                if module.multi_gpu_cos_cached[device_idx] is not None:
+                    module._set_cos_sin_cache(
+                        seq_len = module.current_rope_size,
+                        device = torch.device(device_idx),
+                        dtype = torch.get_default_dtype(),
+                    )
+
+        # LongRopeRotaryEmbedding (Phi-3.5 style with short_inv_freq + long_inv_freq)
+        elif (
+            hasattr(module, "short_inv_freq")
+            and hasattr(module, "long_inv_freq")
+            and hasattr(module, "base")
+            and hasattr(module, "dim")
+        ):
+            config = getattr(model, "config", None)
+            rope_scaling = getattr(config, "rope_scaling", None) if config else None
+            if rope_scaling is not None:
+                short_factor = rope_scaling.get("short_factor", None)
+                long_factor = rope_scaling.get("long_factor", None)
+                if short_factor is not None and long_factor is not None:
+                    inv_freq_shape = (
+                        torch.arange(
+                            0, module.dim, 2, dtype = torch.int64, device = "cpu"
+                        ).float()
+                        / module.dim
+                    )
+                    sf = torch.tensor(short_factor, device = "cpu", dtype = torch.float32)
+                    lf = torch.tensor(long_factor, device = "cpu", dtype = torch.float32)
+                    module.short_inv_freq = 1.0 / (sf * module.base**inv_freq_shape)
+                    module.long_inv_freq = 1.0 / (lf * module.base**inv_freq_shape)
+
+                    dtype = torch.bfloat16 if is_bfloat16_supported() else torch.float16
+                    t = torch.arange(
+                        module.original_max_position_embeddings,
+                        device = module.short_inv_freq.device,
+                        dtype = torch.int64,
+                    ).float()
+                    freqs = torch.outer(t, module.short_inv_freq)
+                    emb = torch.cat((freqs, freqs), dim = -1)
+                    for device_idx in range(len(module.multi_gpu_short_cos_cached)):
+                        if module.multi_gpu_short_cos_cached[device_idx] is not None:
+                            device_obj = torch.device(device_idx)
+                            module.multi_gpu_short_cos_cached[device_idx] = (
+                                emb.cos() * module.scaling_factor
+                            ).to(dtype = dtype, device = device_obj, non_blocking = True)
+                            module.multi_gpu_short_sin_cached[device_idx] = (
+                                emb.sin() * module.scaling_factor
+                            ).to(dtype = dtype, device = device_obj, non_blocking = True)
+    return model
 
 
 class FastLanguageModel(FastLlamaModel):
@@ -261,12 +359,6 @@ class FastLanguageModel(FastLlamaModel):
                         fast_inference = False
                         break
 
-        # [TODO] For now fast_inference only works with fast_inference ie vLLM
-        if load_in_fp8 != False:
-            if not fast_inference:
-                raise NotImplementedError(
-                    "Unsloth: set `fast_inference = True` when doing `load_in_fp8`."
-                )
         # Check if 4bit is allowed specifically for AMD
         if not ALLOW_BITSANDBYTES and not use_exact_model_name:
             if load_in_4bit or load_in_8bit or model_name.lower().endswith("-bnb-4bit"):
@@ -280,7 +372,11 @@ class FastLanguageModel(FastLlamaModel):
         fp8_mode = None
         if not use_exact_model_name:
             new_model_name = get_model_name(
-                model_name, load_in_4bit = load_in_4bit, load_in_fp8 = load_in_fp8
+                model_name,
+                load_in_4bit = load_in_4bit,
+                load_in_fp8 = load_in_fp8,
+                token = token,
+                trust_remote_code = trust_remote_code,
             )
             if new_model_name is None and load_in_fp8 != False:
                 fp8_mode = _get_fp8_mode_and_check_settings(
@@ -433,7 +529,13 @@ class FastLanguageModel(FastLlamaModel):
             # Check base model again for PEFT
             model_name = peft_config.base_model_name_or_path
             if not use_exact_model_name:
-                model_name = get_model_name(model_name, load_in_4bit)
+                model_name = get_model_name(
+                    model_name,
+                    load_in_4bit = load_in_4bit,
+                    load_in_fp8 = load_in_fp8,
+                    token = token,
+                    trust_remote_code = trust_remote_code,
+                )
             # Check if pre-quantized models are allowed
             # For eg AMD Instinct GPUs need blocksize = 128, but our pre-quants are blocksize = 64
             if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
@@ -691,6 +793,7 @@ class FastLanguageModel(FastLlamaModel):
         if patch_tiled_mlp_choice != "0" or unsloth_tiled_mlp:
             patch_tiled_mlp(model, patch_options_str = patch_tiled_mlp_choice)
 
+        model = _fix_rope_inv_freq(model)
         return model, tokenizer
 
 
@@ -876,13 +979,6 @@ class FastModel(FastBaseModel):
                         fast_inference = False
                         break
 
-        # [TODO] For now fast_inference only works with fast_inference ie vLLM
-        if load_in_fp8 != False:
-            if not fast_inference:
-                raise NotImplementedError(
-                    "Unsloth: set `fast_inference = True` when doing `load_in_fp8`."
-                )
-
         # Find FP8, BnB 4bit, other mapped names
         old_model_name = model_name
         fp8_mode = None
@@ -1046,6 +1142,14 @@ class FastModel(FastBaseModel):
             # Set norms to float32 since anyways they get upcasted to float32
             # common in both gemma-3 and gemma-3n
             os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"
+            # ROCm/HIP: Gemma3 compiled forward produces NaN on RDNA GPUs
+            # (gfx1100, gfx1101, gfx1102, gfx1150, gfx1151, etc.).
+            # Disable torch.compile for model forward; loss compilation is fine.
+            # See https://github.com/unslothai/unsloth/issues/3385
+            from unsloth.kernels.utils import is_rdna
+
+            if is_rdna():
+                os.environ["UNSLOTH_COMPILE_DISABLE"] = "partial"
         # Cohere
         elif "cohere2" in model_types_all and transformers_version < Version(
             "4.50.0.dev0"
@@ -1078,6 +1182,15 @@ class FastModel(FastBaseModel):
         elif "falcon_h1" in model_types_all:
             # Falcon must use float32 Triton ie TRITON_F32_DEFAULT = 'ieee'
             # since Mamba kernels error out on using lower precision
+            os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = (
+                "float16;torch.float32;torch.float16;"
+                "if name.endswith(('q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj', 'head')): module.to(torch.float16)"
+                ";"
+                "os.environ['TRITON_F32_DEFAULT'] = 'ieee'"
+            )
+        elif "nemotron_h" in model_types_all:
+            # NemotronH (hybrid Mamba-2 + Transformer) uses same Mamba kernels as Falcon-H1
+            # Mamba kernels need float32 Triton precision
             os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = (
                 "float16;torch.float32;torch.float16;"
                 "if name.endswith(('q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj', 'head')): module.to(torch.float16)"
@@ -1281,7 +1394,21 @@ class FastModel(FastBaseModel):
         is_vlm = any(x.endswith("ForConditionalGeneration") for x in architectures)
         is_vlm = is_vlm or hasattr(model_config, "vision_config")
         if auto_model is None:
-            auto_model = AutoModelForVision2Seq if is_vlm else AutoModelForCausalLM
+            if is_vlm:
+                # Check if the model's auto_map supports the VLM auto class.
+                # Some VL models (e.g. Nemotron-VL) only register AutoModelForCausalLM
+                # in their auto_map, not AutoModelForImageTextToText/AutoModelForVision2Seq.
+                _auto_map = getattr(model_config, "auto_map", {}) or {}
+                _vlm_class_name = AutoModelForVision2Seq.__name__
+                if (
+                    "AutoModelForCausalLM" in _auto_map
+                    and _vlm_class_name not in _auto_map
+                ):
+                    auto_model = AutoModelForCausalLM
+                else:
+                    auto_model = AutoModelForVision2Seq
+            else:
+                auto_model = AutoModelForCausalLM
 
         load_in_4bit_kwargs = load_in_4bit
         load_in_8bit_kwargs = load_in_8bit
@@ -1398,6 +1525,7 @@ class FastModel(FastBaseModel):
         if patch_tiled_mlp_choice != "0" or unsloth_tiled_mlp:
             patch_tiled_mlp(model, patch_options_str = patch_tiled_mlp_choice)
 
+        model = _fix_rope_inv_freq(model)
         return model, tokenizer
 
 
