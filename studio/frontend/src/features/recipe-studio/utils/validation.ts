@@ -226,6 +226,21 @@ export function getConfigErrors(config: NodeConfig | null): string[] {
       if (config.drop && (config.seed_columns?.length ?? 0) === 0) {
         errors.push("Seed drop needs loaded columns.");
       }
+      const chunkSizeRaw = Number(config.unstructured_chunk_size);
+      const chunkOverlapRaw = Number(config.unstructured_chunk_overlap);
+      if (!Number.isFinite(chunkSizeRaw) || Math.floor(chunkSizeRaw) < 1) {
+        errors.push("Chunk size must be an integer >= 1.");
+      }
+      if (!Number.isFinite(chunkOverlapRaw) || Math.floor(chunkOverlapRaw) < 0) {
+        errors.push("Chunk overlap must be an integer >= 0.");
+      }
+      if (
+        Number.isFinite(chunkSizeRaw) &&
+        Number.isFinite(chunkOverlapRaw) &&
+        Math.floor(chunkOverlapRaw) >= Math.floor(chunkSizeRaw)
+      ) {
+        errors.push("Chunk overlap must be less than chunk size.");
+      }
     } else {
       const selectedDropColumns = (config.seed_drop_columns ?? [])
         .map((value) => value.trim())

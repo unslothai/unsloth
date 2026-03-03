@@ -10,6 +10,10 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
+from core.data_recipe.unstructured_seed import (
+    build_unstructured_preview_rows,
+    resolve_chunking,
+)
 from core.data_recipe.jsonable import to_preview_jsonable
 
 from models.data_recipe import (
@@ -23,6 +27,7 @@ router = APIRouter()
 DATA_EXTS = (".parquet", ".jsonl", ".json", ".csv")
 DEFAULT_SPLIT = "train"
 LOCAL_UPLOAD_EXTS = {".csv", ".json", ".jsonl"}
+UNSTRUCTURED_UPLOAD_EXTS = {".txt", ".md"}
 SEED_UPLOAD_DIR = Path.home() / ".cache" / "unsloth" / "data-recipe" / "seed-uploads"
 
 
@@ -180,6 +185,26 @@ def _read_preview_rows_from_local_file(path: Path, preview_size: int) -> list[di
     return _serialize_preview_rows(rows)
 
 
+def _read_preview_rows_from_unstructured_file(
+    *,
+    path: Path,
+    preview_size: int,
+    chunk_size: int | None,
+    chunk_overlap: int | None,
+) -> list[dict[str, Any]]:
+    size, overlap = resolve_chunking(chunk_size, chunk_overlap)
+    try:
+        rows = build_unstructured_preview_rows(
+            source_path=path,
+            preview_size=preview_size,
+            chunk_size=size,
+            chunk_overlap=overlap,
+        )
+    except (FileNotFoundError, RuntimeError, ValueError, OSError) as exc:
+        raise HTTPException(status_code=422, detail=f"seed inspect failed: {exc}") from exc
+    return _serialize_preview_rows(rows)
+
+
 @router.post("/seed/inspect", response_model=SeedInspectResponse)
 def inspect_seed_dataset(payload: SeedInspectRequest) -> SeedInspectResponse:
     dataset_name = payload.dataset_name.strip()
@@ -257,11 +282,17 @@ def inspect_seed_dataset(payload: SeedInspectRequest) -> SeedInspectResponse:
 
 @router.post("/seed/inspect-upload", response_model=SeedInspectResponse)
 def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectResponse:
+    seed_source_type = _normalize_optional_text(payload.seed_source_type) or "local"
     filename = _sanitize_filename(payload.filename)
     ext = Path(filename).suffix.lower()
-    if ext not in LOCAL_UPLOAD_EXTS:
-        allowed = ", ".join(sorted(LOCAL_UPLOAD_EXTS))
-        raise HTTPException(status_code=400, detail=f"unsupported file type: {ext}. allowed: {allowed}")
+    if seed_source_type == "unstructured":
+        if ext not in UNSTRUCTURED_UPLOAD_EXTS:
+            allowed = ", ".join(sorted(UNSTRUCTURED_UPLOAD_EXTS))
+            raise HTTPException(status_code=400, detail=f"unsupported file type: {ext}. allowed: {allowed}")
+    else:
+        if ext not in LOCAL_UPLOAD_EXTS:
+            allowed = ", ".join(sorted(LOCAL_UPLOAD_EXTS))
+            raise HTTPException(status_code=400, detail=f"unsupported file type: {ext}. allowed: {allowed}")
 
     file_bytes = _decode_base64_payload(payload.content_base64)
     if not file_bytes:
@@ -275,10 +306,18 @@ def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectRespons
     stored_path = SEED_UPLOAD_DIR / stored_name
     stored_path.write_bytes(file_bytes)
 
-    preview_rows = _read_preview_rows_from_local_file(
-        stored_path,
-        int(payload.preview_size),
-    )
+    if seed_source_type == "unstructured":
+        preview_rows = _read_preview_rows_from_unstructured_file(
+            path=stored_path,
+            preview_size=int(payload.preview_size),
+            chunk_size=payload.unstructured_chunk_size,
+            chunk_overlap=payload.unstructured_chunk_overlap,
+        )
+    else:
+        preview_rows = _read_preview_rows_from_local_file(
+            stored_path,
+            int(payload.preview_size),
+        )
     if not preview_rows:
         raise HTTPException(status_code=422, detail="dataset appears empty or unreadable")
     columns = _extract_columns(preview_rows)
