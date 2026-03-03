@@ -74,7 +74,7 @@ export function ConfigDialog({
             <ValidationBanner config={config} />
             <div className={readOnly ? "pointer-events-none opacity-75" : undefined}>
               {showDropToggle && (
-                <div className="flex items-center corner-squircle justify-between gap-3 rounded-2xl border border-border/60 px-3 py-2">
+                <div className="mb-2 flex items-center corner-squircle justify-between gap-3 rounded-2xl border border-border/60 px-3 pt-2 pb-4">
                   <div>
                     <p className="text-sm font-semibold">Drop from final dataset</p>
                     <p className="text-xs text-muted-foreground">

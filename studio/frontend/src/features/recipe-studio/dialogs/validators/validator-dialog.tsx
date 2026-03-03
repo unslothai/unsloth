@@ -1,3 +1,8 @@
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -6,7 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { type ReactElement, useMemo } from "react";
+import { type ReactElement, useMemo, useState } from "react";
 import { useRecipeStudioStore } from "../../stores/recipe-studio";
 import type { ValidatorConfig } from "../../types";
 import { isValidatorCodeLang } from "../../utils/validators/code-lang";
@@ -27,6 +32,7 @@ export function ValidatorDialog({
   const configs = useRecipeStudioStore((state) => state.configs);
   const targetColumnId = `${config.id}-target-column`;
   const batchSizeId = `${config.id}-batch-size`;
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const codeOptions = useMemo(
     () =>
       Object.values(configs)
@@ -46,7 +52,6 @@ export function ValidatorDialog({
     [configs],
   );
   const currentTarget = config.target_columns[0] ?? "";
-  const engineLabel = config.code_lang.startsWith("sql:") ? "SQL" : "Python";
 
   return (
     <div className="space-y-4">
@@ -54,13 +59,6 @@ export function ValidatorDialog({
         value={config.name}
         onChange={(value) => onUpdate({ name: value })}
       />
-      <div className="grid gap-2">
-        <FieldLabel
-          label="Validator engine"
-          hint="Built-in validator type for this block."
-        />
-        <Input value={engineLabel} disabled={true} className="nodrag" />
-      </div>
       <div className="grid gap-2">
         <FieldLabel
           label="Target code column"
@@ -108,19 +106,32 @@ export function ValidatorDialog({
           </p>
         )}
       </div>
-      <div className="grid gap-2">
-        <FieldLabel
-          label="Batch size"
-          htmlFor={batchSizeId}
-          hint="Records per validation batch."
-        />
-        <Input
-          id={batchSizeId}
-          className="nodrag"
-          value={config.batch_size}
-          onChange={(event) => onUpdate({ batch_size: event.target.value })}
-        />
-      </div>
+      <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
+        <CollapsibleTrigger asChild={true}>
+          <button
+            type="button"
+            className="flex w-full items-center justify-between text-left text-xs text-muted-foreground"
+          >
+            <span className="font-semibold uppercase">Advanced</span>
+            <span>{advancedOpen ? "Hide" : "Show"}</span>
+          </button>
+        </CollapsibleTrigger>
+        <CollapsibleContent className="mt-3">
+          <div className="grid gap-2">
+            <FieldLabel
+              label="Batch size"
+              htmlFor={batchSizeId}
+              hint="Records per validation batch."
+            />
+            <Input
+              id={batchSizeId}
+              className="nodrag"
+              value={config.batch_size}
+              onChange={(event) => onUpdate({ batch_size: event.target.value })}
+            />
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
     </div>
   );
 }
