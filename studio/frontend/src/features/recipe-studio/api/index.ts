@@ -89,6 +89,12 @@ export type SeedInspectUploadRequest = {
   content_base64: string;
   // biome-ignore lint/style/useNamingConvention: api schema
   preview_size?: number;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  seed_source_type?: "local" | "unstructured";
+  // biome-ignore lint/style/useNamingConvention: api schema
+  unstructured_chunk_size?: number;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  unstructured_chunk_overlap?: number;
 };
 
 export type SeedInspectResponse = {

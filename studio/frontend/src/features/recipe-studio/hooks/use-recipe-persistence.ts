@@ -97,6 +97,7 @@ function sanitizeSeedForShare(payload: unknown): unknown {
     typeof source?.seed_type === "string" ? source.seed_type : null;
   const shouldResetLocalState =
     sourceType === "local" ||
+    sourceType === "unstructured" ||
     uiSourceType === "local" ||
     uiSourceType === "unstructured";
 

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .jsonable import to_jsonable
+from .unstructured_seed_plugin import ensure_unstructured_seed_plugin_registered
 
 _IMAGE_CONTEXT_PATCHED = False
 
@@ -98,6 +99,8 @@ def _apply_data_designer_image_context_patch() -> None:
     global _IMAGE_CONTEXT_PATCHED
     if _IMAGE_CONTEXT_PATCHED:
         return
+
+    ensure_unstructured_seed_plugin_registered()
 
     try:
         from data_designer.config.models import ImageContext
