@@ -64,8 +64,15 @@ def run_worker(model_name, display_name, use_lora, use_cce, wandb_project=None):
     from unsloth_zoo.mlx_trainer import MLXTrainer, MLXTrainingConfig
     from unsloth_zoo.mlx_utils import create_batches
 
+    # Detect if model is pre-quantized from name
+    is_4bit = "4bit" in model_name.lower()
+    is_8bit = "8bit" in model_name.lower()
+
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name, max_seq_length=SEQ_LEN,
+        model_name, 
+        max_seq_length=SEQ_LEN,
+        load_in_4bit=is_4bit,
+        load_in_8bit=is_8bit,
     )
     if use_lora:
         model = FastLanguageModel.get_peft_model(
