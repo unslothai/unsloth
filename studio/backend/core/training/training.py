@@ -116,7 +116,9 @@ class TrainingBackend:
                        train_split: str = "train",
                        eval_split: str = None,
                        eval_steps: float = 0.00,
-                       is_dataset_multimodal: bool = False) -> bool:
+                       is_dataset_multimodal: bool = False,
+                       dataset_slice_start: int = None,
+                       dataset_slice_end: int = None) -> bool:
         """
         Start training.
 
@@ -224,6 +226,8 @@ class TrainingBackend:
                 train_split=train_split,
                 eval_split=eval_split,
                 eval_steps=eval_steps,
+                dataset_slice_start=dataset_slice_start,
+                dataset_slice_end=dataset_slice_end,
             )
 
             # Unpack: load_and_format_dataset returns (dataset, eval_dataset)
