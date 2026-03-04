@@ -22,7 +22,7 @@ from dataclasses import dataclass
 import pandas as pd
 from datasets import Dataset, load_dataset
 
-from utils.models import is_vision_model
+from utils.models import is_vision_model, detect_audio_type
 from utils.datasets import format_and_template_dataset
 from utils.datasets import MODEL_TO_TEMPLATE_MAPPER, TEMPLATE_TO_RESPONSES_MAPPER
 from trl import SFTTrainer, SFTConfig
@@ -69,7 +69,7 @@ class UnslothTrainer:
         self.is_vlm = False
         self.is_audio = False
         self.is_audio_vlm = False  # Multimodal model (e.g. Gemma 3N) trained on audio data
-        self._audio_type = None  # 'csm', 'whisper', 'snac', 'xcodec2', 'bicodec', 'dac'
+        self._audio_type = None  # 'csm', 'whisper', 'snac', 'bicodec', 'dac'
         self._cuda_audio_used = False  # Set once after audio CUDA preprocessing; never cleared
         self._spark_tts_repo_dir = None  # Path to downloaded Spark-TTS repo (for BiCodecTokenizer)
         self.model_name = None
@@ -314,17 +314,6 @@ class UnslothTrainer:
 
         return {"audio_col": audio_col, "text_col": text_col, "speaker_col": speaker_col}
 
-    def _resolve_audio_type(self, model_name: str) -> Optional[str]:
-        """Resolve audio_type from YAML model config. Returns None for non-audio models."""
-        try:
-            from utils.models.model_config import load_model_defaults
-            defaults = load_model_defaults(model_name)
-            audio_type = defaults.get('audio_type')
-            if audio_type and isinstance(audio_type, str):
-                return audio_type
-        except Exception as e:
-            logger.warning(f"Could not resolve audio_type for {model_name}: {e}")
-        return None
 
     def load_model(self,
                    model_name: str,
@@ -369,23 +358,26 @@ class UnslothTrainer:
             # Remove stale compiled cache so the new model gets a fresh one
             from utils.cache_cleanup import clear_unsloth_compiled_cache
             clear_unsloth_compiled_cache()
-            # Detect audio model type from YAML config
-            self._audio_type = self._resolve_audio_type(model_name)
-            self.is_audio = self._audio_type is not None
+            # Detect audio model type dynamically (config.json + tokenizer)
+            self._audio_type = detect_audio_type(model_name, hf_token)
+            # audio_vlm is detected as an audio_type now, handle it separately
+            if self._audio_type == 'audio_vlm':
+                self.is_audio = False
+                self.is_audio_vlm = is_dataset_audio  # Only use audio VLM path if dataset has audio
+                self._audio_type = None
+            else:
+                self.is_audio = self._audio_type is not None
+                self.is_audio_vlm = False
 
-            # Audio VLM: multimodal model (e.g. Gemma 3N) trained on audio data
-            # Uses FastModel + SFTTrainer with audio collator
-            self.is_audio_vlm = not self.is_audio and is_vision_model(model_name) and is_dataset_audio
-            # VLM: vision model with image dataset (mutually exclusive with audio VLM)
-            self.is_vlm = not self.is_audio and not self.is_audio_vlm and is_vision_model(model_name) and is_dataset_image
+            # VLM: vision model with image dataset (mutually exclusive with audio paths)
+            vision = is_vision_model(model_name) if not self.is_audio else False
+            self.is_vlm = not self.is_audio_vlm and vision and is_dataset_image
             self.model_name = model_name
             self.max_seq_length = max_seq_length
 
-            logger.info(f"Audio type: {self._audio_type}")
-            if not self.is_audio:
-                logger.info(f"Model architecture is vision: {is_vision_model(model_name)}")
+            logger.info(f"Audio type: {self._audio_type}, is_audio: {self.is_audio}, is_audio_vlm: {self.is_audio_vlm}")
             logger.info(f"Dataset has images: {is_dataset_image}, audio: {is_dataset_audio}")
-            logger.info(f"Using VLM path: {self.is_vlm}, Audio VLM: {self.is_audio_vlm}")
+            logger.info(f"Using VLM path: {self.is_vlm}")
 
             # Reset training state for new run
             self._update_progress(
@@ -947,6 +939,11 @@ class UnslothTrainer:
 
         processor = AutoProcessor.from_pretrained(self.model_name)
 
+        # Strip pad_to_multiple_of from tokenizer init_kwargs — fine-tuned models
+        # (e.g. keanteng/sesame-csm-elise) save it in tokenizer_config.json, and
+        # _merge_kwargs leaks it into audio_kwargs where EncodecFeatureExtractor rejects it.
+        processor.tokenizer.init_kwargs.pop('pad_to_multiple_of', None)
+
         # Resolve columns from user mapping or hardcoded fallback
         resolved = self._resolve_audio_columns(dataset, custom_format_mapping)
         audio_col = resolved["audio_col"]
@@ -966,15 +963,27 @@ class UnslothTrainer:
 
         dataset = dataset.cast_column(audio_col, Audio(sampling_rate=24000))
 
-        def preprocess_example(example):
-            conversation = [{
-                "role": str(example[speaker_key]),
-                "content": [
-                    {"type": "text", "text": example.get(text_col, "")},
-                    {"type": "audio", "path": example[audio_col]["array"]},
-                ],
-            }]
+        required_keys = ["input_ids", "attention_mask", "labels", "input_values", "input_values_cutoffs"]
+
+        self._update_progress(status_message="Preprocessing CSM dataset...")
+        processed_examples = []
+        skipped = 0
+        for idx in range(len(dataset)):
+            if self.should_stop:
+                print("Stopped during CSM preprocessing\n")
+                break
+
+            example = dataset[idx]
             try:
+                conversation = [{
+                    "role": str(example[speaker_key]),
+                    "content": [
+                        {"type": "text", "text": example.get(text_col, "")},
+                        {"type": "audio", "path": example[audio_col]["array"]},
+                    ],
+                }]
+                # NOTE: pad_to_multiple_of intentionally omitted from text_kwargs —
+                # CsmProcessor._merge_kwargs leaks it to EncodecFeatureExtractor which rejects it.
                 model_inputs = processor.apply_chat_template(
                     conversation,
                     tokenize=True,
@@ -983,7 +992,6 @@ class UnslothTrainer:
                     text_kwargs={
                         "padding": "max_length",
                         "max_length": 256,
-                        "pad_to_multiple_of": 8,
                         "padding_side": "right",
                     },
                     audio_kwargs={
@@ -993,29 +1001,38 @@ class UnslothTrainer:
                     },
                     common_kwargs={"return_tensors": "pt"},
                 )
+
+                out = {}
+                for k in required_keys:
+                    if k not in model_inputs:
+                        raise KeyError(f"Missing required key '{k}' in model outputs")
+                    out[k] = model_inputs[k][0]
+
+                if not all(isinstance(out[k], torch.Tensor) for k in out):
+                    skipped += 1
+                    continue
+
+                processed_examples.append(out)
+
             except Exception as e:
-                logger.warning(f"Error processing CSM example: {e}")
-                return None
+                logger.warning(f"Error processing CSM example {idx}: {e}")
+                skipped += 1
+                continue
 
-            required = ["input_ids", "attention_mask", "labels", "input_values", "input_values_cutoffs"]
-            out = {}
-            for k in required:
-                if k not in model_inputs:
-                    return None
-                out[k] = model_inputs[k][0]
+            if (idx + 1) % 100 == 0:
+                self._update_progress(
+                    status_message=f"Preprocessing CSM... {idx + 1}/{len(dataset)}"
+                )
 
-            if not all(isinstance(out[k], torch.Tensor) for k in out):
-                return None
-            return out
+        if not processed_examples:
+            raise ValueError(
+                f"No valid examples after CSM preprocessing (skipped {skipped})"
+            )
 
-        self._update_progress(status_message="Preprocessing CSM dataset...")
-        processed = dataset.map(
-            preprocess_example,
-            remove_columns=dataset.column_names,
-            desc="Preprocessing CSM dataset",
-        )
-        print(f"CSM preprocessing complete: {len(processed)} examples\n")
-        return processed
+        result_dataset = Dataset.from_list(processed_examples)
+        print(f"CSM preprocessing complete: {len(result_dataset)} examples "
+              f"({skipped} skipped)\n")
+        return result_dataset
 
     def _format_audio_vlm_dataset(self, dataset, custom_format_mapping=None):
         """Format dataset as audio chat messages for multimodal models (e.g. Gemma 3N).
@@ -1100,7 +1117,11 @@ class UnslothTrainer:
                 f"SNAC dataset needs 'audio' and 'text' columns, got: {dataset.column_names}"
             )
 
-        # Get dataset sample rate from first example
+        # Cast audio column so datasets 4.x AudioDecoder objects are decoded to dicts
+        from datasets import Audio
+        dataset = dataset.cast_column(audio_col, Audio(sampling_rate=SNAC_SAMPLE_RATE))
+
+        # Get dataset sample rate from first example (after cast, always SNAC_SAMPLE_RATE)
         first_audio = dataset[0][audio_col]
         ds_sample_rate = first_audio.get("sampling_rate", SNAC_SAMPLE_RATE) if isinstance(first_audio, dict) else SNAC_SAMPLE_RATE
 
@@ -1271,6 +1292,11 @@ class UnslothTrainer:
             raise ValueError(
                 f"BiCodec dataset needs 'audio' and 'text' columns, got: {dataset.column_names}"
             )
+
+        # Cast audio column so datasets 4.x AudioDecoder objects are decoded to dicts.
+        # Don't resample here — BiCodec's target_sr may differ; the loop handles resampling.
+        from datasets import Audio
+        dataset = dataset.cast_column(audio_col, Audio())
 
         # Load BiCodec tokenizer
         self._update_progress(status_message="Loading BiCodec tokenizer...")
@@ -1809,9 +1835,6 @@ class UnslothTrainer:
             elif self._audio_type == 'dac':
                 processed = self._preprocess_dac_dataset(dataset, custom_format_mapping)
                 return ({"dataset": processed, "final_format": "audio_dac"}, None)
-
-            elif self._audio_type == 'xcodec2':
-                raise NotImplementedError(f"Audio dataset preprocessing for '{self._audio_type}' not yet implemented")
 
             elif self.is_audio_vlm:
                 formatted = self._format_audio_vlm_dataset(dataset, custom_format_mapping)
