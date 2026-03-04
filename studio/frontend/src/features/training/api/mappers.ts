@@ -12,8 +12,12 @@ export function buildTrainingStartPayload(
   config: TrainingConfigState,
 ): TrainingStartRequest {
   const adapterMethod = config.trainingMethod !== "full";
-  const isQlorMethod = config.trainingMethod === "qlora";
+  const isQloraMethod = config.trainingMethod === "qlora";
   const hfDataset = config.datasetSource === "huggingface" ? config.dataset : null;
+  const localDatasets =
+    config.datasetSource === "upload" && config.uploadedFile
+      ? [config.uploadedFile]
+      : [];
   const customFormatMapping =
     Object.keys(config.datasetManualMapping).length > 0 ? config.datasetManualMapping : undefined;
 
@@ -21,13 +25,13 @@ export function buildTrainingStartPayload(
     model_name: config.selectedModel ?? "",
     training_type: toBackendTrainingType(config.trainingMethod),
     hf_token: config.hfToken.trim() || null,
-    load_in_4bit: adapterMethod ? isQlorMethod : false,
+    load_in_4bit: adapterMethod ? isQloraMethod : false,
     max_seq_length: config.contextLength,
     hf_dataset: hfDataset,
     subset: hfDataset ? config.datasetSubset : null,
     train_split: hfDataset ? config.datasetSplit : null,
     eval_split: hfDataset ? config.datasetEvalSplit : null,
-    local_datasets: [],
+    local_datasets: localDatasets,
     format_type: config.datasetFormat,
     custom_format_mapping: customFormatMapping,
     num_epochs: config.epochs,
@@ -69,4 +73,3 @@ export function buildTrainingStartPayload(
       : null,
   };
 }
-
