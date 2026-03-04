@@ -184,6 +184,12 @@ class MLXTrainer:
         Returns:
             Dictionary with loss and other metrics
         """
+        import sys
+        if "torch" in sys.modules:
+            import torch
+            if isinstance(self.model, torch.nn.Module):
+                return self._pytorch_training_step(batch)
+                
         def loss_fn(params):
             """Loss function for gradient computation."""
             # Set model parameters
@@ -267,6 +273,97 @@ class MLXTrainer:
             "loss": float(loss),
             "learning_rate": self.optimizer.learning_rate,
         }
+
+    def _pytorch_training_step(self, batch: dict[str, Any]) -> dict[str, Any]:
+        """Perform a single training step for a PyTorch model using MLX optimizer."""
+        import torch
+        from .bridge import torch_to_mlx, mlx_to_torch
+        
+        self.model.train()
+        
+        if not hasattr(self, "_pytorch_params"):
+            self._pytorch_params = {
+                name: p for name, p in self.model.named_parameters() if p.requires_grad
+            }
+            # For logging/checking
+            # print(f"Found {len(self._pytorch_params)} trainable parameters in PyTorch model.")
+            
+        # Forward pass
+        # For batch, we need to convert mx.array to torch.Tensor
+        torch_batch = {}
+        for k, v in batch.items():
+            if isinstance(v, mx.array):
+                # Ensure we have torch tensors for the model
+                torch_batch[k] = mlx_to_torch(v).to("mps" if torch.backends.mps.is_available() else "cpu")
+            else:
+                torch_batch[k] = v
+                
+        # Handle loss natively via model if possible
+        input_ids = torch_batch["input_ids"]
+        labels = torch_batch.get("labels", input_ids)
+        attention_mask = torch_batch.get("attention_mask")
+        
+        outputs = self.model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            labels=labels,
+        )
+        
+        if hasattr(outputs, "loss") and outputs.loss is not None:
+            loss = outputs.loss
+        elif isinstance(outputs, tuple) and len(outputs) > 1:
+            loss = outputs[1]
+        else:
+            loss = outputs[0] # Fallback
+            
+        # Scale loss for gradient accumulation
+        scaled_loss = loss / self.config.gradient_accumulation_steps
+        
+        # Backward pass
+        scaled_loss.backward()
+        
+        self.accumulation_count += 1
+        
+        if self.accumulation_count >= self.config.gradient_accumulation_steps:
+            # Extract gradients and parameters
+            grads = {}
+            params = {}
+            for name, p in self._pytorch_params.items():
+                if p.grad is not None:
+                    grads[name] = torch_to_mlx(p.grad.contiguous())
+                    params[name] = torch_to_mlx(p.data.contiguous())
+            
+            if grads:
+                # Clip gradients
+                if self.config.max_grad_norm > 0:
+                    from .optimizers import clip_grad_norm
+                    _, grads = clip_grad_norm(grads, self.config.max_grad_norm)
+                    
+                # Update using MLX optimizer
+                params = self.optimizer(grads, params)
+                
+                # Set parameters back
+                for name, p in self._pytorch_params.items():
+                    if name in params:
+                        new_data = mlx_to_torch(params[name], device=p.device, dtype=p.dtype)
+                        p.data.copy_(new_data)
+                    # clear grad
+                    p.grad = None
+                
+            self.accumulation_count = 0
+            self.global_step += 1
+            
+            if self.scheduler is not None:
+                self.scheduler.step(self.global_step)
+                
+        loss_val = loss.item()
+        self.training_loss += loss_val
+        self.loss_history.append(loss_val)
+        
+        return {
+            "loss": loss_val,
+            "learning_rate": self.optimizer.learning_rate,
+        }
     
     def _get_model_params(self) -> dict[str, mx.array]:
         """Get model parameters as a dictionary."""
@@ -282,6 +379,8 @@ class MLXTrainer:
                     params[f"{name}.weight"] = layer.weight
                 if hasattr(layer, "bias") and layer.bias is not None:
                     params[f"{name}.bias"] = layer.bias
+            if not params:
+                params["dummy"] = mx.array([1.0])
             return params
     
     def _set_model_params(self, params: dict[str, mx.array]) -> None:
