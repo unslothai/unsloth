@@ -13,6 +13,7 @@ import {
   ComboboxItem,
   ComboboxList,
 } from "@/components/ui/combobox";
+import { Input } from "@/components/ui/input";
 import { InputGroupAddon } from "@/components/ui/input-group";
 import {
   Select,
@@ -290,10 +291,6 @@ export function DatasetSection() {
           setDatasetSplit={setDatasetSplit}
           datasetEvalSplit={datasetEvalSplit}
           setDatasetEvalSplit={setDatasetEvalSplit}
-          datasetSliceStart={datasetSliceStart}
-          setDatasetSliceStart={setDatasetSliceStart}
-          datasetSliceEnd={datasetSliceEnd}
-          setDatasetSliceEnd={setDatasetSliceEnd}
         />
 
         <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
@@ -305,51 +302,120 @@ export function DatasetSection() {
             Advanced
           </CollapsibleTrigger>
           <CollapsibleContent className="mt-3">
-            <div className="flex flex-col gap-2">
-              <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                Target Format
-                <Tooltip>
-                  <TooltipTrigger asChild={true}>
-                    <button
-                      type="button"
-                      className="text-foreground/70 hover:text-foreground"
-                    >
-                      <HugeiconsIcon
-                        icon={InformationCircleIcon}
-                        className="size-3"
-                      />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    Format of your training data. Auto-detect works for most
-                    datasets.{" "}
-                    <a
-                      href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/datasets-guide"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-primary underline"
-                    >
-                      Read more
-                    </a>
-                  </TooltipContent>
-                </Tooltip>
-              </span>
-              <Select
-                value={datasetFormat}
-                onValueChange={(v) =>
-                  setDatasetFormat(v as typeof datasetFormat)
-                }
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="auto">Auto</SelectItem>
-                  <SelectItem value="alpaca">Alpaca</SelectItem>
-                  <SelectItem value="chatml">ChatML</SelectItem>
-                  <SelectItem value="sharegpt">ShareGPT</SelectItem>
-                </SelectContent>
-              </Select>
+            <div className="flex flex-col gap-4">
+              <div className="flex flex-col gap-2">
+                <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                  Target Format
+                  <Tooltip>
+                    <TooltipTrigger asChild={true}>
+                      <button
+                        type="button"
+                        className="text-foreground/70 hover:text-foreground"
+                      >
+                        <HugeiconsIcon
+                          icon={InformationCircleIcon}
+                          className="size-3"
+                        />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      Format of your training data. Auto-detect works for most
+                      datasets.{" "}
+                      <a
+                        href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/datasets-guide"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-primary underline"
+                      >
+                        Read more
+                      </a>
+                    </TooltipContent>
+                  </Tooltip>
+                </span>
+                <Select
+                  value={datasetFormat}
+                  onValueChange={(v) =>
+                    setDatasetFormat(v as typeof datasetFormat)
+                  }
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="auto">Auto</SelectItem>
+                    <SelectItem value="alpaca">Alpaca</SelectItem>
+                    <SelectItem value="chatml">ChatML</SelectItem>
+                    <SelectItem value="sharegpt">ShareGPT</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="flex flex-col gap-1.5">
+                  <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                    Train Split Start
+                    <Tooltip>
+                      <TooltipTrigger asChild={true}>
+                        <button
+                          type="button"
+                          className="text-foreground/70 hover:text-foreground"
+                        >
+                          <HugeiconsIcon
+                            icon={InformationCircleIcon}
+                            className="size-3"
+                          />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        Only train on a subset of your training split by
+                        specifying a start row index (inclusive, 0-based).
+                        Useful for resuming from a checkpoint or debugging
+                        with a smaller slice. Leave empty to start from the
+                        first row.
+                      </TooltipContent>
+                    </Tooltip>
+                  </span>
+                  <Input
+                    inputMode="numeric"
+                    placeholder="0"
+                    value={datasetSliceStart ?? ""}
+                    onChange={(e) =>
+                      setDatasetSliceStart(e.target.value || null)
+                    }
+                  />
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                    Train Split End
+                    <Tooltip>
+                      <TooltipTrigger asChild={true}>
+                        <button
+                          type="button"
+                          className="text-foreground/70 hover:text-foreground"
+                        >
+                          <HugeiconsIcon
+                            icon={InformationCircleIcon}
+                            className="size-3"
+                          />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        Last row index to include from the training split
+                        (inclusive, 0-based). For example, set Start to 0 and
+                        End to 99 to train on the first 100 rows. Leave empty
+                        to use all remaining rows.
+                      </TooltipContent>
+                    </Tooltip>
+                  </span>
+                  <Input
+                    inputMode="numeric"
+                    placeholder="End"
+                    value={datasetSliceEnd ?? ""}
+                    onChange={(e) =>
+                      setDatasetSliceEnd(e.target.value || null)
+                    }
+                  />
+                </div>
+              </div>
             </div>
           </CollapsibleContent>
         </Collapsible>
