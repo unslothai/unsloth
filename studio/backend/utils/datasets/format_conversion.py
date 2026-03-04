@@ -322,27 +322,41 @@ def convert_to_vlm_format(
         # Return dict with messages
         return {"messages": messages}
 
-    # Convert samples, skipping any with broken/unreachable images
+    # Convert samples, skipping any with broken/unreachable images.
+    # For URL-based datasets, check the first PROBE_SIZE samples early to
+    # fail fast if too many images are broken, before downloading millions.
+    PROBE_SIZE = 5000
+    MAX_FAIL_RATE = 0.3
+
     total = len(dataset)
+    has_urls = isinstance(next(iter(dataset))[image_column], str)
+    probe_needed = has_urls and total > PROBE_SIZE
+
     print(f"🔄 Converting {total} samples to VLM format...")
     converted_list = []
     failed_count = 0
-    for sample in dataset:
+
+    for i, sample in enumerate(dataset):
         try:
             converted_list.append(_convert_single_sample(sample))
         except Exception as e:
             failed_count += 1
 
+        # Early exit check after probing the first batch
+        if probe_needed and (i + 1) == PROBE_SIZE:
+            fail_rate = failed_count / PROBE_SIZE
+            if fail_rate >= MAX_FAIL_RATE:
+                raise ValueError(
+                    f"{fail_rate:.0%} of the first {PROBE_SIZE} images failed to download "
+                    f"({failed_count}/{PROBE_SIZE}). "
+                    "This dataset has too many broken or unreachable image URLs. "
+                    "Consider using a dataset with embedded images instead."
+                )
+            print(f"✅ Probe passed: {failed_count}/{PROBE_SIZE} ({fail_rate:.0%}) failures in first batch, continuing...")
+
     if failed_count > 0:
         fail_rate = failed_count / total
         print(f"⚠️ Skipped {failed_count}/{total} ({fail_rate:.0%}) samples with broken/unreachable images")
-
-        if fail_rate >= 0.3:
-            raise ValueError(
-                f"{fail_rate:.0%} of images failed to download ({failed_count}/{total}). "
-                "This dataset has too many broken or unreachable image URLs to be usable for training. "
-                "Consider using a dataset with embedded images instead."
-            )
 
     if len(converted_list) == 0:
         raise ValueError(
