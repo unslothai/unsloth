@@ -387,6 +387,13 @@ def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     try:
         config = load_model_config(model_name, use_auth=True, token=hf_token)
 
+        # Exclude audio-only models that share ForConditionalGeneration suffix
+        # (e.g. CsmForConditionalGeneration, WhisperForConditionalGeneration)
+        _audio_only_model_types = {'csm', 'whisper'}
+        model_type = getattr(config, 'model_type', None)
+        if model_type in _audio_only_model_types:
+            return False
+
         # Check 1: Architecture class name patterns
         if hasattr(config, 'architectures'):
             is_vlm = any(
@@ -406,10 +413,6 @@ def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
         if hasattr(config, 'img_processor'):
             logger.info(f"Model {model_name} detected as VLM: has img_processor")
             return True
-
-        # Check 4: Exclude audio models that have ForConditionalGeneration but aren't VLMs
-        # (e.g. CsmForConditionalGeneration, WhisperForConditionalGeneration)
-        # These are handled by is_audio_model() instead
 
         # Check 4: Has image_token_index (common in VLMs for image placeholder tokens)
         if hasattr(config, 'image_token_index'):
@@ -434,36 +437,115 @@ def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
 pass
 
 
-def is_audio_model(model_name: str) -> Optional[str]:
-    """
-    Check if a model is a TTS audio model by looking up its YAML config.
+VALID_AUDIO_TYPES = ('snac', 'csm', 'bicodec', 'dac', 'whisper', 'audio_vlm')
 
-    Returns the audio_type string ('snac', 'csm', 'bicodec', 'dac') or None.
+# Cache detection results per session to avoid repeated API calls
+_audio_detection_cache: Dict[str, Optional[str]] = {}
+
+# Tokenizer token patterns → audio_type (all 6 types detected from tokenizer_config.json)
+_AUDIO_TOKEN_PATTERNS = {
+    'csm': lambda tokens: '<|AUDIO|>' in tokens and '<|audio_eos|>' in tokens,
+    'whisper': lambda tokens: '<|startoftranscript|>' in tokens,
+    'audio_vlm': lambda tokens: '<audio_soft_token>' in tokens,
+    'bicodec': lambda tokens: any(t.startswith('<|bicodec_') for t in tokens),
+    'dac': lambda tokens: '<|audio_start|>' in tokens and '<|audio_end|>' in tokens,
+    'snac': lambda tokens: sum(1 for t in tokens if t.startswith('<custom_token_')) > 10000,
+}
+
+
+def detect_audio_type(model_name: str, hf_token: Optional[str] = None) -> Optional[str]:
     """
+    Dynamically detect if a model is an audio model and return its type.
+
+    Fully dynamic — works for any model, not just known ones.
+    Uses tokenizer_config.json special tokens to detect all 6 audio types.
+
+    Returns: audio_type string ('snac', 'csm', 'bicodec', 'dac', 'whisper', 'audio_vlm') or None.
+    """
+    if model_name in _audio_detection_cache:
+        return _audio_detection_cache[model_name]
+
+    result = _detect_audio_from_tokenizer(model_name, hf_token)
+
+    _audio_detection_cache[model_name] = result
+    if result:
+        logger.info(f"Model {model_name} detected as audio model: audio_type={result}")
+    return result
+
+
+def _detect_audio_from_tokenizer(model_name: str, hf_token: Optional[str] = None) -> Optional[str]:
+    """Detect audio type from tokenizer special tokens (for LLM-based audio models).
+
+    First checks local HF cache, then fetches tokenizer_config.json from HuggingFace.
+    Checks added_tokens_decoder for distinctive patterns.
+    """
+    def _check_token_patterns(tok_config: dict) -> Optional[str]:
+        added = tok_config.get('added_tokens_decoder', {})
+        if not added:
+            return None
+        token_contents = [v.get('content', '') for v in added.values()]
+        for audio_type, check_fn in _AUDIO_TOKEN_PATTERNS.items():
+            if check_fn(token_contents):
+                return audio_type
+        return None
+
+    # 1) Check local HF cache first (works for gated/offline models)
     try:
-        defaults = load_model_defaults(model_name)
-        audio_type = defaults.get('audio_type')
-        if audio_type and isinstance(audio_type, str) and audio_type in ('snac', 'csm', 'bicodec', 'dac', 'whisper'):
-            logger.info(f"Model {model_name} detected as audio model: audio_type={audio_type}")
-            return audio_type
+        from huggingface_hub.constants import HF_HUB_CACHE
+        cache_dir = Path(HF_HUB_CACHE)
+        repo_dir_name = f"models--{model_name.replace('/', '--')}"
+        repo_dir = cache_dir / repo_dir_name
+        if repo_dir.exists():
+            snapshots_dir = repo_dir / "snapshots"
+            if snapshots_dir.exists():
+                for snapshot in snapshots_dir.iterdir():
+                    for tok_path in ['tokenizer_config.json', 'LLM/tokenizer_config.json']:
+                        tok_file = snapshot / tok_path
+                        if tok_file.exists():
+                            tok_config = json.loads(tok_file.read_text())
+                            result = _check_token_patterns(tok_config)
+                            if result:
+                                return result
+    except Exception as e:
+        logger.debug(f"Could not check local cache for {model_name}: {e}")
+
+    # 2) Fall back to HuggingFace API
+    try:
+        import requests
+        import os
+
+        paths_to_try = ['tokenizer_config.json', 'LLM/tokenizer_config.json']
+        # Use provided token, or fall back to env
+        token = hf_token or os.environ.get('HF_TOKEN')
+        headers = {}
+        if token:
+            headers['Authorization'] = f'Bearer {token}'
+
+        for tok_path in paths_to_try:
+            url = f"https://huggingface.co/{model_name}/resolve/main/{tok_path}"
+            resp = requests.get(url, headers=headers, timeout=15)
+            if not resp.ok:
+                continue
+
+            tok_config = resp.json()
+            result = _check_token_patterns(tok_config)
+            if result:
+                return result
+
         return None
     except Exception as e:
-        logger.debug(f"Could not determine if {model_name} is audio model: {e}")
+        logger.debug(f"Could not detect audio type from tokenizer for {model_name}: {e}")
         return None
 
 
-def has_audio_input_model(model_name: str) -> bool:
-    """
-    Check if a model accepts audio input (ASR/speech understanding) by looking up its YAML config.
+def is_audio_input_type(audio_type: Optional[str]) -> bool:
+    """Check if an audio_type accepts audio input (ASR/speech understanding).
 
-    Returns True if the model has 'audio_input: true' in its defaults.
+    Whisper (ASR) and audio_vlm (Gemma3n) accept audio input.
     """
-    try:
-        defaults = load_model_defaults(model_name)
-        return bool(defaults.get('audio_input'))
-    except Exception as e:
-        logger.debug(f"Could not determine if {model_name} has audio input: {e}")
-        return False
+    return audio_type in ('whisper', 'audio_vlm')
+
+
 def _is_mmproj(filename: str) -> bool:
     """Check if a GGUF filename is a vision projection (mmproj) file."""
     return "mmproj" in filename.lower()
@@ -1040,7 +1122,7 @@ class ModelConfig:
             is_vision = is_vision_model(base_model, hf_token=hf_token)
 
             # Check if base model is audio
-            audio_type = is_audio_model(base_model)
+            audio_type = detect_audio_type(base_model, hf_token=hf_token)
 
             display_name = lora_path_obj.name
             identifier = lora_path  # Use path as identifier for local LoRAs
@@ -1055,6 +1137,7 @@ class ModelConfig:
                 is_lora=True,
                 is_audio=audio_type is not None,
                 audio_type=audio_type,
+                has_audio_input=is_audio_input_type(audio_type),
                 base_model=base_model,
             )
 
@@ -1232,21 +1315,15 @@ class ModelConfig:
             if not base_model:
                 logger.warning(f"Could not determine base model for LoRA '{path}'")
                 return None
-            vision = is_vision_model(base_model, hf_token=hf_token)
-            audio_type_val = is_audio_model(base_model)
-            has_audio_in = has_audio_input_model(base_model)
+            check_model = base_model
         else:
-            vision = is_vision_model(identifier, hf_token=hf_token)
-            audio_type_val = is_audio_model(identifier)
-            has_audio_in = has_audio_input_model(identifier)
+            check_model = identifier
+
+        vision = is_vision_model(check_model, hf_token=hf_token)
+        audio_type_val = detect_audio_type(check_model, hf_token=hf_token)
+        has_audio_in = is_audio_input_type(audio_type_val)
 
         display_name = Path(path).name if is_local else identifier.split("/")[-1]
-
-        # Audio models are never vision models (e.g. WhisperForConditionalGeneration
-        # and CsmForConditionalGeneration match the ForConditionalGeneration suffix
-        # but are not VLMs).
-        if audio_type_val is not None:
-            vision = False
 
         return cls(
             identifier=identifier,
@@ -1338,4 +1415,3 @@ class ModelConfig:
             is_lora=is_lora,
             base_model=base_model, # This will be None for base models, and populated for LoRAs
         )
-    pass
