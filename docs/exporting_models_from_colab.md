@@ -76,7 +76,7 @@ model.save_pretrained_merged(
 )
 ```
 
-**Available `save_method` options:**
+### Available `save_method` options:
 
 - `"merged_16bit"` -- Merge LoRA into float16 weights. Recommended for GGUF
   conversion, vLLM, and SGLang.
@@ -98,7 +98,7 @@ pipeline: merging LoRA weights, converting to GGUF, and quantizing.
 ```python
 # Save as GGUF with q8_0 quantization (fast conversion, good quality)
 model.save_pretrained_gguf(
-    "my_model_gguf",
+    "my_model",
     tokenizer=tokenizer,
     quantization_method="q8_0",
 )
@@ -111,7 +111,7 @@ one call:
 
 ```python
 model.save_pretrained_gguf(
-    "my_model_gguf",
+    "my_model",
     tokenizer=tokenizer,
     quantization_method=["q4_k_m", "q5_k_m", "q8_0"],
 )
@@ -152,7 +152,7 @@ After exporting, you can create an Ollama model:
 
 ```bash
 # Create a Modelfile
-echo 'FROM ./my_model_gguf/unsloth.Q4_K_M.gguf' > Modelfile
+echo 'FROM ./my_model_gguf/<model-name>.Q4_K_M.gguf' > Modelfile
 
 # Create the Ollama model
 ollama create my-model -f Modelfile
@@ -290,7 +290,7 @@ For files under ~1-2 GB, you can download directly:
 
 ```python
 from google.colab import files
-files.download("my_model_gguf/unsloth.Q4_K_M.gguf")
+files.download("my_model_gguf/<model-name>.Q4_K_M.gguf")
 ```
 
 This often fails or times out for larger files.
@@ -305,7 +305,7 @@ import subprocess
 # Split into 2 GB chunks
 subprocess.run([
     "split", "-b", "2G",
-    "my_model_gguf/unsloth.Q4_K_M.gguf",
+    "my_model_gguf/<model-name>.Q4_K_M.gguf",
     "my_model_gguf/model_part_"
 ])
 
@@ -477,7 +477,7 @@ significant memory.
 ```python
 # Use the maximum_memory_usage parameter to control memory
 model.save_pretrained_gguf(
-    "my_model_gguf",
+    "my_model",
     tokenizer=tokenizer,
     quantization_method="q4_k_m",
     maximum_memory_usage=0.75,  # Use at most 75% of available GPU memory
