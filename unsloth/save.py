@@ -3220,7 +3220,7 @@ def patch_unsloth_zoo_saving():
     def _mlx_safe_merge_and_overwrite_lora(*args, **kwargs):
         print("DEBUG: _mlx_safe_merge_and_overwrite_lora called")
         from unsloth.device_utils import DEVICE_TYPE
-        if not torch.cuda.is_available() or DEVICE_TYPE == "mlx":
+        if not torch.cuda.is_available() or DEVICE_TYPE == "mps":
             print("DEBUG: Applying MLX safety patches for merge_and_overwrite_lora")
             # Temporarily replace torch.cuda functions with safe no-ops
             _orig_empty_cache = torch.cuda.empty_cache

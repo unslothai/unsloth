@@ -62,29 +62,42 @@ def run_worker(model_name, display_name, use_lora, use_cce, wandb_project=None):
     import mlx.core as mx
     import mlx.optimizers as mx_opt
     from datasets import load_dataset
-    from unsloth import FastLanguageModel
+    from transformers import AutoTokenizer
+    from unsloth.kernels.mlx.models import MLXLlamaForCausalLM
+    from unsloth.kernels.mlx.lora import get_peft_model, LoRAConfig as LoRAConfigLora
     from unsloth.kernels.mlx.trainer import MLXTrainer, TrainingConfig
-    
-    # Detect if model is pre-quantized from name
-    is_4bit = "4bit" in model_name.lower()
-    is_8bit = "8bit" in model_name.lower()
 
-    model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name, 
-        max_seq_length=SEQ_LEN,
-        load_in_4bit=is_4bit,
-        load_in_8bit=is_8bit,
-    )
+    # Load tokenizer from HuggingFace
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    # Load pure MLX model (dequantizes 4-bit weights to full precision MLX arrays)
+    print(f"Loading MLX model: {model_name}", file=sys.stderr)
+    model = MLXLlamaForCausalLM.from_pretrained(model_name)
+
     if use_lora:
-        model = FastLanguageModel.get_peft_model(
-            model, r=LORA_RANK, lora_alpha=LORA_ALPHA,
+        lora_config = LoRAConfigLora(
+            r=LORA_RANK,
+            lora_alpha=LORA_ALPHA,
             target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
                             "gate_proj", "up_proj", "down_proj"],
         )
+        model = get_peft_model(model, lora_config)
+
+    # Store use_cce flag on the model so it can be passed during forward
+    model._use_cce = use_cce
+
+    # Wrap __call__ to inject use_cce
+    _original_call = model.__call__
+    def _call_with_cce(*args, **kwargs):
+        kwargs["use_cce"] = use_cce
+        return _original_call(*args, **kwargs)
+    model.__call__ = _call_with_cce
 
     # Local dataset loading and batching
     dataset = load_dataset("emozilla/pg19-test", split="test", streaming=True)
-    
+
     def create_batches(n):
         batch_input_ids = []
         count = 0
@@ -94,7 +107,7 @@ def run_worker(model_name, display_name, use_lora, use_cce, wandb_project=None):
                 max_length=SEQ_LEN,
                 padding="max_length",
                 truncation=True,
-                return_tensors="np"
+                return_tensors="np",
             )
             batch_input_ids.append(mx.array(encoded["input_ids"][0]))
             if len(batch_input_ids) == BATCH_SIZE:
@@ -106,20 +119,13 @@ def run_worker(model_name, display_name, use_lora, use_cce, wandb_project=None):
 
     # Use MLX native Adafactor
     optimizer = mx_opt.Adafactor(learning_rate=LR)
-    
-    # Wrap model forward to use CCE if requested
-    original_forward = model.forward
-    def forward_with_cce(**kwargs):
-        kwargs["use_cce"] = use_cce
-        return original_forward(**kwargs)
-    model.forward = forward_with_cce
 
     config = TrainingConfig(
         batch_size=BATCH_SIZE,
         num_epochs=1,
         logging_steps=1,
     )
-    
+
     trainer = MLXTrainer(
         model=model,
         optimizer=optimizer,

@@ -384,6 +384,14 @@ class MLXTrainer:
                     params[f"{name}.weight"] = layer.weight
                 if hasattr(layer, "bias") and layer.bias is not None:
                     params[f"{name}.bias"] = layer.bias
+                # LoRA parameters (from LoRALinear objects)
+                if hasattr(layer, "lora_A") and layer.lora_A is not None:
+                    params[f"{name}.lora_A"] = layer.lora_A
+                if hasattr(layer, "lora_B") and layer.lora_B is not None:
+                    params[f"{name}.lora_B"] = layer.lora_B
+                if hasattr(layer, "scaling") and isinstance(layer.scaling, (int, float)):
+                    # Store scaling as an array so it can be part of the param dict
+                    params[f"{name}.scaling"] = mx.array(layer.scaling)
             if not params:
                 params["dummy"] = mx.array([1.0])
             return params
@@ -401,6 +409,13 @@ class MLXTrainer:
                     layer.weight = params[weight_key]
                 if bias_key in params and hasattr(layer, "bias"):
                     layer.bias = params[bias_key]
+                # LoRA parameters
+                lora_a_key = f"{name}.lora_A"
+                lora_b_key = f"{name}.lora_B"
+                if lora_a_key in params and hasattr(layer, "lora_A"):
+                    layer.lora_A = params[lora_a_key]
+                if lora_b_key in params and hasattr(layer, "lora_B"):
+                    layer.lora_B = params[lora_b_key]
     
     def _get_layers(self, model: Any, prefix: str = ""):
         """Recursively get all layers in the model."""

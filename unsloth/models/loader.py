@@ -699,13 +699,18 @@ class FastLanguageModel(FastLlamaModel):
             mlx_loaded = False
 
             # Check local file
-            potential_mlx_files = ["model.safetensors", "weights.npz"]
+            _mlx_config = getattr(model, "config", None)
+            potential_mlx_files = [
+                "model.safetensors",
+                "model.safetensors.index.json",
+                "weights.npz",
+            ]
             for f in potential_mlx_files:
                 weights_path = (
                     os.path.join(model_name, f) if os.path.isdir(model_name) else None
                 )
                 if weights_path and os.path.exists(weights_path):
-                    mlx_loaded = load_mlx_weights(model, weights_path)
+                    mlx_loaded = load_mlx_weights(model, weights_path, config=_mlx_config)
                     if mlx_loaded:
                         break
 
@@ -718,7 +723,19 @@ class FastLanguageModel(FastLlamaModel):
                         weights_path = hf_hub_download(
                             repo_id=model_name, filename=f, token=token
                         )
-                        mlx_loaded = load_mlx_weights(model, weights_path)
+                        # For sharded index files, also download the shard files
+                        if f.endswith(".index.json"):
+                            import json
+                            with open(weights_path, "r") as _idx_f:
+                                _idx = json.load(_idx_f)
+                            _shard_files = set(_idx.get("weight_map", {}).values())
+                            for sf in _shard_files:
+                                hf_hub_download(
+                                    repo_id=model_name, filename=sf, token=token
+                                )
+                        mlx_loaded = load_mlx_weights(
+                            model, weights_path, config=_mlx_config
+                        )
                         if mlx_loaded:
                             break
                     except:
@@ -1438,15 +1455,20 @@ class FastModel(FastBaseModel):
 
             # 1. Try to find MLX-native weights in the local path or hub
             mlx_loaded = False
+            _mlx_config = getattr(model, "config", None)
 
             # Check local file
-            potential_mlx_files = ["model.safetensors", "weights.npz"]
+            potential_mlx_files = [
+                "model.safetensors",
+                "model.safetensors.index.json",
+                "weights.npz",
+            ]
             for f in potential_mlx_files:
                 weights_path = (
                     os.path.join(model_name, f) if os.path.isdir(model_name) else None
                 )
                 if weights_path and os.path.exists(weights_path):
-                    mlx_loaded = load_mlx_weights(model, weights_path)
+                    mlx_loaded = load_mlx_weights(model, weights_path, config=_mlx_config)
                     if mlx_loaded:
                         break
 
@@ -1459,7 +1481,19 @@ class FastModel(FastBaseModel):
                         weights_path = hf_hub_download(
                             repo_id=model_name, filename=f, token=token
                         )
-                        mlx_loaded = load_mlx_weights(model, weights_path)
+                        # For sharded index files, also download the shard files
+                        if f.endswith(".index.json"):
+                            import json
+                            with open(weights_path, "r") as _idx_f:
+                                _idx = json.load(_idx_f)
+                            _shard_files = set(_idx.get("weight_map", {}).values())
+                            for sf in _shard_files:
+                                hf_hub_download(
+                                    repo_id=model_name, filename=sf, token=token
+                                )
+                        mlx_loaded = load_mlx_weights(
+                            model, weights_path, config=_mlx_config
+                        )
                         if mlx_loaded:
                             break
                     except:

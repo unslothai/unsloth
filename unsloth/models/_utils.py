@@ -146,8 +146,8 @@ from unsloth_zoo.loss_utils import (
     unsloth_fused_ce_loss,
 )
 
-# Patch unsloth_zoo's fused cross entropy loss for MLX to avoid CUDA mem_get_info calls
-if DEVICE_TYPE == "mlx":
+# Patch unsloth_zoo's fused cross entropy loss for MPS/MLX to avoid CUDA mem_get_info calls
+if DEVICE_TYPE == "mps":
     try:
         import unsloth_zoo.fused_losses.cross_entropy_loss as ce_loss_mod
 
@@ -629,7 +629,7 @@ elif DEVICE_TYPE == "hip":
             HAS_FLASH_ATTENTION = False
 elif DEVICE_TYPE == "xpu":
     SUPPORTS_BFLOAT16 = True
-elif DEVICE_TYPE == "mlx":
+elif DEVICE_TYPE == "mps":
     try:
         test_tensor = torch.tensor([1.0], dtype=torch.bfloat16, device="mps")
         _ = test_tensor + test_tensor
@@ -1220,8 +1220,8 @@ transformers.utils.quantization_config.BitsAndBytesConfig.__init__ = (
     _BitsAndBytesConfig__init__
 )
 
-# Patch post_init to skip bitsandbytes version check on MLX
-if DEVICE_TYPE == "mlx":
+# Patch post_init to skip bitsandbytes version check on MPS/MLX
+if DEVICE_TYPE == "mps":
     _original_post_init = (
         transformers.utils.quantization_config.BitsAndBytesConfig.post_init
     )

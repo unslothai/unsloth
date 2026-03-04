@@ -110,10 +110,22 @@ class MLXAttention(mnn.Module):
                 f"hidden_size {self.hidden_size} must be divisible by num_heads {self.num_heads}"
             )
 
-        self.q_proj = MLXLinear(self.hidden_size, self.hidden_size, bias=False, dtype=mx.float32)
-        self.k_proj = MLXLinear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=False, dtype=mx.float32)
-        self.v_proj = MLXLinear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=False, dtype=mx.float32)
-        self.o_proj = MLXLinear(self.hidden_size, self.hidden_size, bias=False, dtype=mx.float32)
+        # Support explicit head_dim (Qwen3 uses head_dim != hidden_size // num_heads)
+        if config.head_dim is not None:
+            self.head_dim = config.head_dim
+        self.q_size = self.num_heads * self.head_dim
+        self.kv_size = self.num_key_value_heads * self.head_dim
+
+        self.q_proj = MLXLinear(self.hidden_size, self.q_size, bias=False, dtype=mx.float32)
+        self.k_proj = MLXLinear(self.hidden_size, self.kv_size, bias=False, dtype=mx.float32)
+        self.v_proj = MLXLinear(self.hidden_size, self.kv_size, bias=False, dtype=mx.float32)
+        self.o_proj = MLXLinear(self.q_size, self.hidden_size, bias=False, dtype=mx.float32)
+
+        # QK-Norm (used by Qwen3): RMSNorm on Q/K after projection, before RoPE
+        self.qk_norm = getattr(config, "qk_norm", False)
+        if self.qk_norm:
+            self.q_norm = MLXRMSNorm(self.head_dim, config.rms_norm_eps)
+            self.k_norm = MLXRMSNorm(self.head_dim, config.rms_norm_eps)
 
         self.lora_config = lora_config
         self.use_lora = lora_config is not None and lora_config.r > 0
@@ -180,6 +192,11 @@ class MLXAttention(mnn.Module):
         query_states = query_states.reshape(bsz, q_len, self.num_heads, self.head_dim).transpose(0, 2, 1, 3)
         key_states = key_states.reshape(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(0, 2, 1, 3)
         value_states = value_states.reshape(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(0, 2, 1, 3)
+
+        # QK-Norm: normalize Q and K per-head before RoPE (Qwen3)
+        if self.qk_norm:
+            query_states = self.q_norm(query_states)
+            key_states = self.k_norm(key_states)
 
         kv_seq_len = q_len
         if past_key_value is not None:
@@ -506,6 +523,242 @@ class MLXLlamaForCausalLM(mnn.Module):
                 break
 
         return input_ids
+
+
+    @classmethod
+    def from_pretrained(
+        cls,
+        model_name: str,
+        lora_config: Optional[LoRAConfig] = None,
+        token: Optional[str] = None,
+        dtype: type = None,
+    ) -> "MLXLlamaForCausalLM":
+        """
+        Load a pre-trained model from a HuggingFace repo (including mlx-community
+        quantized repos). Weights are dequantized to full precision MLX arrays.
+
+        Args:
+            model_name: HuggingFace model name or local path
+            lora_config: Optional LoRA configuration to apply
+            token: HuggingFace API token
+            dtype: MLX dtype for weights (default: mx.bfloat16 if supported, else mx.float16)
+
+        Returns:
+            MLXLlamaForCausalLM model with loaded weights
+        """
+        import os
+        import json
+
+        if dtype is None:
+            # Use bfloat16 if available (macOS 14.0+ on Apple Silicon)
+            try:
+                test = mx.array([1.0], dtype=mx.bfloat16)
+                dtype = mx.bfloat16
+                del test
+            except Exception:
+                dtype = mx.float16
+
+        # --- 1. Load HuggingFace config ---
+        if os.path.isdir(model_name):
+            config_path = os.path.join(model_name, "config.json")
+        else:
+            from huggingface_hub import hf_hub_download
+            config_path = hf_hub_download(
+                repo_id=model_name, filename="config.json", token=token
+            )
+
+        with open(config_path, "r") as f:
+            hf_config_dict = json.load(f)
+
+        # Build MLXModelConfig from the raw config dict
+        mlx_config = MLXModelConfig(
+            vocab_size=hf_config_dict.get("vocab_size", 32000),
+            hidden_size=hf_config_dict.get("hidden_size", 4096),
+            intermediate_size=hf_config_dict.get("intermediate_size", 11008),
+            num_hidden_layers=hf_config_dict.get("num_hidden_layers", 32),
+            num_attention_heads=hf_config_dict.get("num_attention_heads", 32),
+            num_key_value_heads=hf_config_dict.get("num_key_value_heads", None),
+            max_position_embeddings=hf_config_dict.get("max_position_embeddings", 2048),
+            rms_norm_eps=hf_config_dict.get("rms_norm_eps", 1e-6),
+            rope_theta=hf_config_dict.get("rope_theta", 10000.0),
+            hidden_act=hf_config_dict.get("hidden_act", "silu"),
+            pad_token_id=hf_config_dict.get("pad_token_id", None),
+            bos_token_id=hf_config_dict.get("bos_token_id", 1),
+            eos_token_id=hf_config_dict.get("eos_token_id", 2),
+            tie_word_embeddings=hf_config_dict.get("tie_word_embeddings", False),
+            rope_scaling=hf_config_dict.get("rope_scaling", None),
+            head_dim=hf_config_dict.get("head_dim", None),
+            qk_norm=hf_config_dict.get("qk_norm", False),
+        )
+
+        # Get quantization config if present
+        quant_config = hf_config_dict.get("quantization", {}) or hf_config_dict.get("quantization_config", {})
+        quant_bits = quant_config.get("bits", None)
+        quant_group_size = quant_config.get("group_size", 64)
+
+        # --- 2. Construct the model ---
+        model = cls(mlx_config, lora_config)
+
+        # --- 3. Load weights from safetensors ---
+        weight_files = []
+        if os.path.isdir(model_name):
+            # Local directory
+            index_path = os.path.join(model_name, "model.safetensors.index.json")
+            single_path = os.path.join(model_name, "model.safetensors")
+            if os.path.exists(index_path):
+                with open(index_path, "r") as f:
+                    index = json.load(f)
+                shard_files = sorted(set(index.get("weight_map", {}).values()))
+                weight_files = [os.path.join(model_name, sf) for sf in shard_files]
+            elif os.path.exists(single_path):
+                weight_files = [single_path]
+        else:
+            # Download from HuggingFace Hub
+            from huggingface_hub import hf_hub_download
+            try:
+                index_path = hf_hub_download(
+                    repo_id=model_name,
+                    filename="model.safetensors.index.json",
+                    token=token,
+                )
+                with open(index_path, "r") as f:
+                    index = json.load(f)
+                shard_files = sorted(set(index.get("weight_map", {}).values()))
+                for sf in shard_files:
+                    weight_files.append(
+                        hf_hub_download(repo_id=model_name, filename=sf, token=token)
+                    )
+            except Exception:
+                try:
+                    single_path = hf_hub_download(
+                        repo_id=model_name,
+                        filename="model.safetensors",
+                        token=token,
+                    )
+                    weight_files = [single_path]
+                except Exception:
+                    raise FileNotFoundError(
+                        f"Could not find model weights for {model_name}. "
+                        "Expected model.safetensors or model.safetensors.index.json"
+                    )
+
+        if not weight_files:
+            raise FileNotFoundError(f"No weight files found for {model_name}")
+
+        # Load all weights into a single dict
+        all_weights = {}
+        for wf in weight_files:
+            all_weights.update(mx.load(wf))
+
+        # --- 4. Map weights to model ---
+        _load_weights_to_mlx_model(model, all_weights, mlx_config, quant_bits, quant_group_size, dtype)
+
+        print(f"Unsloth: Loaded MLX model from {model_name} ({len(all_weights)} tensors, dtype={dtype})")
+        return model
+
+
+def _load_weights_to_mlx_model(model, weights, config, quant_bits, quant_group_size, dtype):
+    """
+    Load weights from a safetensors dict into an MLXLlamaForCausalLM.
+    Handles both quantized (weight+scales+biases triplets) and non-quantized weights.
+    Quantized weights are dequantized to the target dtype.
+    """
+
+    def _dequantize_weight(base_key):
+        """Dequantize a weight from packed int + scales + biases."""
+        w = weights.get(f"{base_key}.weight")
+        s = weights.get(f"{base_key}.scales")
+        b = weights.get(f"{base_key}.biases")
+        if w is not None and s is not None:
+            bits = quant_bits or 4
+            gs = quant_group_size or 64
+            # Check for per-layer metadata
+            bits_arr = weights.get(f"{base_key}.bits")
+            if bits_arr is not None:
+                bits = bits_arr.item()
+            gs_arr = weights.get(f"{base_key}.group_size")
+            if gs_arr is not None:
+                gs = gs_arr.item()
+            dequant = mx.dequantize(w, s, b, group_size=gs, bits=bits)
+            return dequant.astype(dtype)
+        elif w is not None:
+            # Non-quantized weight
+            return w.astype(dtype)
+        return None
+
+    def _get_weight(key):
+        """Get a weight, handling both quantized and plain formats."""
+        base_key = key.replace(".weight", "") if key.endswith(".weight") else key
+        # Check if this is a quantized weight (has scales)
+        if f"{base_key}.scales" in weights:
+            return _dequantize_weight(base_key)
+        elif key in weights:
+            return weights[key].astype(dtype)
+        elif f"{base_key}.weight" in weights:
+            return weights[f"{base_key}.weight"].astype(dtype)
+        return None
+
+    loaded = 0
+
+    # embed_tokens
+    w = _get_weight("model.embed_tokens.weight")
+    if w is not None:
+        model.model.embed_tokens.weight = w
+        loaded += 1
+
+    # lm_head
+    w = _get_weight("lm_head.weight")
+    if w is not None:
+        model.lm_head.weight = w
+        loaded += 1
+    elif config.tie_word_embeddings:
+        # Tie lm_head to embed_tokens
+        model.lm_head.weight = model.model.embed_tokens.weight
+        loaded += 1
+
+    # final norm
+    w = _get_weight("model.norm.weight")
+    if w is not None:
+        model.model.norm.weight = w
+        loaded += 1
+
+    # Per-layer weights
+    num_layers = config.num_hidden_layers
+    for i in range(num_layers):
+        prefix = f"model.layers.{i}"
+        layer = model.model.layers[i]
+
+        # Attention projections
+        for proj_name in ["q_proj", "k_proj", "v_proj", "o_proj"]:
+            w = _get_weight(f"{prefix}.self_attn.{proj_name}.weight")
+            if w is not None:
+                getattr(layer.self_attn, proj_name).weight = w
+                loaded += 1
+
+        # QK-Norm weights (Qwen3)
+        if config.qk_norm:
+            for norm_name in ["q_norm", "k_norm"]:
+                w = _get_weight(f"{prefix}.self_attn.{norm_name}.weight")
+                if w is not None:
+                    getattr(layer.self_attn, norm_name).weight = w
+                    loaded += 1
+
+        # MLP projections
+        for proj_name in ["gate_proj", "up_proj", "down_proj"]:
+            w = _get_weight(f"{prefix}.mlp.{proj_name}.weight")
+            if w is not None:
+                getattr(layer.mlp, proj_name).weight = w
+                loaded += 1
+
+        # Layer norms
+        for norm_name in ["input_layernorm", "post_attention_layernorm"]:
+            w = _get_weight(f"{prefix}.{norm_name}.weight")
+            if w is not None:
+                getattr(layer, norm_name).weight = w
+                loaded += 1
+
+    print(f"Unsloth: Mapped {loaded} weight tensors to MLX model.")
+    return loaded
 
 
 def create_llama_model(

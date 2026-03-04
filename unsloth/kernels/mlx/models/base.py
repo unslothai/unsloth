@@ -48,6 +48,40 @@ class MLXModelConfig:
     rope_scaling: Optional[dict] = None
     hidden_act: str = "silu"
     sliding_window: Optional[int] = None
+    head_dim: Optional[int] = None  # Override head_dim (default: hidden_size // num_attention_heads)
+    qk_norm: bool = False  # Qwen3 uses QK-Norm (RMSNorm on Q/K after projection)
+
+    @classmethod
+    def from_hf_config(cls, hf_config) -> "MLXModelConfig":
+        """Create an MLXModelConfig from a HuggingFace PretrainedConfig object."""
+        # Detect QK-Norm: Qwen3 sets head_dim and uses qk_norm
+        qk_norm = getattr(hf_config, "qk_norm", False)
+
+        # Some models (Qwen3) specify head_dim explicitly
+        head_dim = getattr(hf_config, "head_dim", None)
+
+        return cls(
+            vocab_size=hf_config.vocab_size,
+            hidden_size=hf_config.hidden_size,
+            intermediate_size=hf_config.intermediate_size,
+            num_hidden_layers=hf_config.num_hidden_layers,
+            num_attention_heads=hf_config.num_attention_heads,
+            num_key_value_heads=getattr(hf_config, "num_key_value_heads", None),
+            max_position_embeddings=getattr(hf_config, "max_position_embeddings", 2048),
+            rms_norm_eps=getattr(hf_config, "rms_norm_eps", 1e-6),
+            initializer_range=getattr(hf_config, "initializer_range", 0.02),
+            use_cache=getattr(hf_config, "use_cache", True),
+            pad_token_id=getattr(hf_config, "pad_token_id", None),
+            bos_token_id=getattr(hf_config, "bos_token_id", 1),
+            eos_token_id=getattr(hf_config, "eos_token_id", 2),
+            tie_word_embeddings=getattr(hf_config, "tie_word_embeddings", False),
+            rope_theta=getattr(hf_config, "rope_theta", 10000.0),
+            rope_scaling=getattr(hf_config, "rope_scaling", None),
+            hidden_act=getattr(hf_config, "hidden_act", "silu"),
+            sliding_window=getattr(hf_config, "sliding_window", None),
+            head_dim=head_dim,
+            qk_norm=qk_norm,
+        )
 
 
 @dataclass

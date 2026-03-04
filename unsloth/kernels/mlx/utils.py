@@ -132,3 +132,40 @@ def fast_quantize(model):
 
     pbar.close()
     print(f"Unsloth: Quantized {count} layers to 4-bit MLX.")
+
+    # Cache non-quantized layers (embeddings, lm_head, layer norms) as MLX arrays.
+    # This enables the MLX bridge fast-path (bridge.py checks _mlx_cache)
+    # without quantizing these layers which should stay full-precision.
+    from .bridge import torch_to_mlx as _ttmlx
+
+    cached_count = 0
+    for name, module in model.named_modules():
+        if isinstance(module, (torch.nn.Embedding, torch.nn.LayerNorm)):
+            if module.weight.device.type == "meta":
+                continue
+            if not hasattr(module.weight, "_mlx_cache"):
+                module.weight._mlx_cache = _ttmlx(module.weight)
+                cached_count += 1
+        # Also cache lm_head if it's a Linear that was skipped by quantization
+        elif isinstance(module, torch.nn.Linear) and ("head" in name or "embed" in name):
+            if module.weight.device.type == "meta":
+                continue
+            if not hasattr(module.weight, "_mlx_cache"):
+                module.weight._mlx_cache = _ttmlx(module.weight)
+                cached_count += 1
+
+    # Cache RMSNorm weights (used by Llama/Qwen/Gemma etc.)
+    for name, param in model.named_parameters():
+        if hasattr(param, "_mlx_cache"):
+            continue
+        if param.device.type == "meta":
+            continue
+        if any(norm_name in name for norm_name in [
+            "input_layernorm", "post_attention_layernorm",
+            "model.norm", "model.final_layernorm",
+        ]):
+            param._mlx_cache = _ttmlx(param)
+            cached_count += 1
+
+    if cached_count > 0:
+        print(f"Unsloth: Cached {cached_count} non-quantized layers as MLX arrays.")
