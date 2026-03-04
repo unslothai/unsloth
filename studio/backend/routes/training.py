@@ -149,8 +149,6 @@ async def start_training(
             "train_split": request.train_split,
             "eval_split": request.eval_split,
             "eval_steps": request.eval_steps,
-            "dataset_slice_start": request.dataset_slice_start,
-            "dataset_slice_end": request.dataset_slice_end,
             "custom_format_mapping": request.custom_format_mapping,
             "num_epochs": request.num_epochs,
             "learning_rate": request.learning_rate,
