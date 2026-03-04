@@ -293,9 +293,14 @@ class MLXTrainer:
         torch_batch = {}
         for k, v in batch.items():
             if isinstance(v, mx.array):
-                # Ensure we have torch tensors for the model
-                torch_batch[k] = mlx_to_torch(v).to("mps" if torch.backends.mps.is_available() else "cpu")
+                # Ensure we have torch tensors for the model, make contiguous to avoid MPS allocation issues
+                tensor = mlx_to_torch(v)
+                if not tensor.is_contiguous():
+                    tensor = tensor.contiguous()
+                torch_batch[k] = tensor.to("mps" if torch.backends.mps.is_available() else "cpu")
             else:
+                if isinstance(v, torch.Tensor) and not v.is_contiguous():
+                    v = v.contiguous()
                 torch_batch[k] = v
                 
         # Handle loss natively via model if possible
