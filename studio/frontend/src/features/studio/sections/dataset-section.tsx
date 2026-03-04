@@ -13,6 +13,7 @@ import {
   ComboboxItem,
   ComboboxList,
 } from "@/components/ui/combobox";
+import { Input } from "@/components/ui/input";
 import { InputGroupAddon } from "@/components/ui/input-group";
 import {
   Select,
@@ -75,6 +76,10 @@ export function DatasetSection() {
     setDatasetEvalSplit,
     hfToken,
     modelType,
+    datasetSliceStart,
+    setDatasetSliceStart,
+    datasetSliceEnd,
+    setDatasetSliceEnd,
   } = useTrainingConfigStore(
     useShallow((s) => ({
       dataset: s.dataset,
@@ -89,6 +94,10 @@ export function DatasetSection() {
       setDatasetEvalSplit: s.setDatasetEvalSplit,
       hfToken: s.hfToken,
       modelType: s.modelType,
+      datasetSliceStart: s.datasetSliceStart,
+      setDatasetSliceStart: s.setDatasetSliceStart,
+      datasetSliceEnd: s.datasetSliceEnd,
+      setDatasetSliceEnd: s.setDatasetSliceEnd,
     })),
   );
 
@@ -293,51 +302,93 @@ export function DatasetSection() {
             Advanced
           </CollapsibleTrigger>
           <CollapsibleContent className="mt-3">
-            <div className="flex flex-col gap-2">
-              <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                Target Format
-                <Tooltip>
-                  <TooltipTrigger asChild={true}>
-                    <button
-                      type="button"
-                      className="text-foreground/70 hover:text-foreground"
-                    >
-                      <HugeiconsIcon
-                        icon={InformationCircleIcon}
-                        className="size-3"
-                      />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    Format of your training data. Auto-detect works for most
-                    datasets.{" "}
-                    <a
-                      href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/datasets-guide"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-primary underline"
-                    >
-                      Read more
-                    </a>
-                  </TooltipContent>
-                </Tooltip>
-              </span>
-              <Select
-                value={datasetFormat}
-                onValueChange={(v) =>
-                  setDatasetFormat(v as typeof datasetFormat)
-                }
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="auto">Auto</SelectItem>
-                  <SelectItem value="alpaca">Alpaca</SelectItem>
-                  <SelectItem value="chatml">ChatML</SelectItem>
-                  <SelectItem value="sharegpt">ShareGPT</SelectItem>
-                </SelectContent>
-              </Select>
+            <div className="flex flex-col gap-4">
+              <div className="flex flex-col gap-2">
+                <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                  Target Format
+                  <Tooltip>
+                    <TooltipTrigger asChild={true}>
+                      <button
+                        type="button"
+                        className="text-foreground/70 hover:text-foreground"
+                      >
+                        <HugeiconsIcon
+                          icon={InformationCircleIcon}
+                          className="size-3"
+                        />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      Format of your training data. Auto-detect works for most
+                      datasets.{" "}
+                      <a
+                        href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/datasets-guide"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-primary underline"
+                      >
+                        Read more
+                      </a>
+                    </TooltipContent>
+                  </Tooltip>
+                </span>
+                <Select
+                  value={datasetFormat}
+                  onValueChange={(v) =>
+                    setDatasetFormat(v as typeof datasetFormat)
+                  }
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="auto">Auto</SelectItem>
+                    <SelectItem value="alpaca">Alpaca</SelectItem>
+                    <SelectItem value="chatml">ChatML</SelectItem>
+                    <SelectItem value="sharegpt">ShareGPT</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="flex flex-col gap-2">
+                <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                  Index Range
+                  <Tooltip>
+                    <TooltipTrigger asChild={true}>
+                      <button
+                        type="button"
+                        className="text-foreground/70 hover:text-foreground"
+                      >
+                        <HugeiconsIcon
+                          icon={InformationCircleIcon}
+                          className="size-3"
+                        />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      Slice the dataset by row index. Both start and end are
+                      inclusive. Leave empty to use all rows.
+                    </TooltipContent>
+                  </Tooltip>
+                </span>
+                <div className="grid grid-cols-2 gap-2">
+                  <Input
+                    inputMode="numeric"
+                    placeholder="Start"
+                    value={datasetSliceStart ?? ""}
+                    onChange={(e) =>
+                      setDatasetSliceStart(e.target.value || null)
+                    }
+                  />
+                  <Input
+                    inputMode="numeric"
+                    placeholder="End"
+                    value={datasetSliceEnd ?? ""}
+                    onChange={(e) =>
+                      setDatasetSliceEnd(e.target.value || null)
+                    }
+                  />
+                </div>
+              </div>
             </div>
           </CollapsibleContent>
         </Collapsible>
