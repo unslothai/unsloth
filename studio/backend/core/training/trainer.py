@@ -353,7 +353,9 @@ class UnslothTrainer:
                      subset: str = None,
                      train_split: str = "train",
                      eval_split: str = None,
-                     eval_steps: float = 0.00) -> Optional[tuple]:
+                     eval_steps: float = 0.00,
+                     dataset_slice_start: int = None,
+                     dataset_slice_end: int = None) -> Optional[tuple]:
         """
         Load and prepare dataset for training.
 
@@ -444,6 +446,18 @@ class UnslothTrainer:
 
             if dataset is None:
                 raise ValueError("No dataset provided")
+
+            # Apply index range slicing if requested (inclusive on both ends)
+            if dataset_slice_start is not None or dataset_slice_end is not None:
+                total_rows = len(dataset)
+                start = dataset_slice_start if dataset_slice_start is not None else 0
+                end = dataset_slice_end if dataset_slice_end is not None else total_rows - 1
+                # Clamp to valid range
+                start = max(0, min(start, total_rows - 1))
+                end = max(start, min(end, total_rows - 1))
+                dataset = dataset.select(range(start, end + 1))
+                print(f"Sliced dataset to rows [{start}, {end}]: {len(dataset)} of {total_rows} rows\n")
+                self._update_progress(status_message=f"Sliced dataset to {len(dataset)} rows (indices {start}-{end})")
 
             # Check if stopped before applying template
             if self.should_stop:
