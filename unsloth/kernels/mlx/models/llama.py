@@ -230,7 +230,7 @@ class MLXAttention(mnn.Module):
         attn_weights = mx.softmax(attn_weights, axis=-1)
         attn_output = attn_weights @ value_states
 
-        attn_output = attn_output.transpose(0, 2, 1, 3).reshape(bsz, q_len, self.hidden_size)
+        attn_output = attn_output.transpose(0, 2, 1, 3).reshape(bsz, q_len, self.q_size)
         attn_output = self.o_proj(attn_output)
 
         if self.use_lora and hasattr(self, 'lora_o_A') and self.lora_o_A is not None:
