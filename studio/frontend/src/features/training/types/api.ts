@@ -8,6 +8,8 @@ export interface TrainingStartRequest {
   subset: string | null;
   train_split: string | null;
   eval_split: string | null;
+  dataset_slice_start: number | null;
+  dataset_slice_end: number | null;
   local_datasets: string[];
   format_type: string;
   custom_format_mapping?: Record<string, string> | null;
