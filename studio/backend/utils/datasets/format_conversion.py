@@ -254,7 +254,14 @@ def convert_to_vlm_format(
         list: List of dicts with 'messages' field
     """
     from PIL import Image
+    from datasets import Image as datasets_Image
     from .vlm_processing import generate_smart_vlm_instruction
+
+    # Cast string image columns (URLs or local paths) to HF Image() type
+    # so HuggingFace handles downloading, decoding, and caching transparently.
+    sample_value = next(iter(dataset))[image_column]
+    if isinstance(sample_value, str):
+        dataset = dataset.cast_column(image_column, datasets_Image())
 
     # Generate smart instruction if not provided
     if instruction is None:
