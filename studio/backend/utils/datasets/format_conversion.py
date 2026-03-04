@@ -254,14 +254,7 @@ def convert_to_vlm_format(
         list: List of dicts with 'messages' field
     """
     from PIL import Image
-    from datasets import Image as datasets_Image
     from .vlm_processing import generate_smart_vlm_instruction
-
-    # Cast string image columns (URLs or local paths) to HF Image() type
-    # so HuggingFace handles downloading, decoding, and caching transparently.
-    sample_value = next(iter(dataset))[image_column]
-    if isinstance(sample_value, str):
-        dataset = dataset.cast_column(image_column, datasets_Image())
 
     # Generate smart instruction if not provided
     if instruction is None:
@@ -288,12 +281,17 @@ def convert_to_vlm_format(
 
     def _convert_single_sample(sample):
         """Convert a single sample to VLM format."""
-        # Get image (might be PIL Image or path)
+        # Get image (might be PIL Image, local path, or URL)
         image_data = sample[image_column]
 
-        # Handle image paths
         if isinstance(image_data, str):
-            image_data = Image.open(image_data).convert("RGB")
+            if image_data.startswith(("http://", "https://")):
+                import fsspec
+                from io import BytesIO
+                with fsspec.open(image_data, "rb", expand=True) as f:
+                    image_data = Image.open(BytesIO(f.read())).convert("RGB")
+            else:
+                image_data = Image.open(image_data).convert("RGB")
 
         # Get text
         text_data = sample[text_column]
@@ -324,11 +322,35 @@ def convert_to_vlm_format(
         # Return dict with messages
         return {"messages": messages}
 
-    # Use list comprehension and return the LIST directly
-    print(f"🔄 Converting {len(dataset)} samples to VLM format...")
-    converted_list = [_convert_single_sample(sample) for sample in dataset]
+    # Convert samples, skipping any with broken/unreachable images
+    total = len(dataset)
+    print(f"🔄 Converting {total} samples to VLM format...")
+    converted_list = []
+    failed_count = 0
+    for sample in dataset:
+        try:
+            converted_list.append(_convert_single_sample(sample))
+        except Exception as e:
+            failed_count += 1
 
-    print(f"✅ Converted {len(converted_list)} samples")
+    if failed_count > 0:
+        fail_rate = failed_count / total
+        print(f"⚠️ Skipped {failed_count}/{total} ({fail_rate:.0%}) samples with broken/unreachable images")
+
+        if fail_rate >= 0.3:
+            raise ValueError(
+                f"{fail_rate:.0%} of images failed to download ({failed_count}/{total}). "
+                "This dataset has too many broken or unreachable image URLs to be usable for training. "
+                "Consider using a dataset with embedded images instead."
+            )
+
+    if len(converted_list) == 0:
+        raise ValueError(
+            f"All {total} samples failed during VLM conversion — no usable images found. "
+            "This dataset may contain only image URLs that are no longer accessible."
+        )
+
+    print(f"✅ Converted {len(converted_list)}/{total} samples")
 
     # Return list, NOT Dataset
     return converted_list
