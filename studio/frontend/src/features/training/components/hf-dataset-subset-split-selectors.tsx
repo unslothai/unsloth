@@ -5,6 +5,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import {
   Tooltip,
@@ -31,6 +32,10 @@ type Props = {
   setDatasetSplit: (v: string | null) => void;
   datasetEvalSplit: string | null;
   setDatasetEvalSplit: (v: string | null) => void;
+  datasetSliceStart?: string | null;
+  setDatasetSliceStart?: (v: string | null) => void;
+  datasetSliceEnd?: string | null;
+  setDatasetSliceEnd?: (v: string | null) => void;
 };
 
 export function HfDatasetSubsetSplitSelectors({
@@ -44,6 +49,10 @@ export function HfDatasetSubsetSplitSelectors({
   setDatasetSplit,
   datasetEvalSplit,
   setDatasetEvalSplit,
+  datasetSliceStart,
+  setDatasetSliceStart,
+  datasetSliceEnd,
+  setDatasetSliceEnd,
 }: Props) {
   const {
     subsets: hfSubsets,
@@ -155,16 +164,89 @@ export function HfDatasetSubsetSplitSelectors({
               />
             </>
           )}
-          <SelectorDropdown
-            variant={variant}
-            label="Eval Split"
-            tooltip="Select which split to use for evaluation. None means no evaluation during training."
-            value={datasetEvalSplit}
-            onChange={setDatasetEvalSplit}
-            options={hfSplits}
-            placeholder="None"
-            allowNone
-          />
+          {variant === "studio" && setDatasetSliceStart && setDatasetSliceEnd ? (
+            <div className="grid grid-cols-3 gap-3">
+              <SelectorDropdown
+                variant={variant}
+                label="Eval Split"
+                tooltip="Select which split to use for evaluation. None means no evaluation during training."
+                value={datasetEvalSplit}
+                onChange={setDatasetEvalSplit}
+                options={hfSplits}
+                placeholder="None"
+                allowNone
+              />
+              <div className="flex flex-col gap-1.5">
+                <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                  Slice Start
+                  <Tooltip>
+                    <TooltipTrigger asChild={true}>
+                      <button
+                        type="button"
+                        className="text-foreground/70 hover:text-foreground"
+                      >
+                        <HugeiconsIcon
+                          icon={InformationCircleIcon}
+                          className="size-3"
+                        />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      Inclusive start row index. Leave empty to start from the beginning.
+                    </TooltipContent>
+                  </Tooltip>
+                </span>
+                <Input
+                  inputMode="numeric"
+                  placeholder="0"
+                  value={datasetSliceStart ?? ""}
+                  onChange={(e) =>
+                    setDatasetSliceStart(e.target.value || null)
+                  }
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                  Slice End
+                  <Tooltip>
+                    <TooltipTrigger asChild={true}>
+                      <button
+                        type="button"
+                        className="text-foreground/70 hover:text-foreground"
+                      >
+                        <HugeiconsIcon
+                          icon={InformationCircleIcon}
+                          className="size-3"
+                        />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      Inclusive end row index. Leave empty to use all remaining rows.
+                    </TooltipContent>
+                  </Tooltip>
+                </span>
+                <Input
+                  inputMode="numeric"
+                  placeholder="End"
+                  value={datasetSliceEnd ?? ""}
+                  onChange={(e) =>
+                    setDatasetSliceEnd(e.target.value || null)
+                  }
+                />
+              </div>
+            </div>
+          ) : (
+            <SelectorDropdown
+              variant={variant}
+              label="Eval Split"
+              tooltip="Select which split to use for evaluation. None means no evaluation during training."
+              value={datasetEvalSplit}
+              onChange={setDatasetEvalSplit}
+              options={hfSplits}
+              placeholder="None"
+              allowNone
+            />
+          )}
         </>
       )}
     </>
