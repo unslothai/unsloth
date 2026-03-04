@@ -3480,12 +3480,15 @@ class FastLlamaModel:
 
                     # MLP patching
                     mlp_module = layer.mlp
-                    gate_proj = mlp_module.gate_proj
-                    up_proj = mlp_module.up_proj
-                    down_proj = mlp_module.down_proj
+                    gate_proj = getattr(mlp_module, "gate_proj", None)
+                    up_proj = getattr(mlp_module, "up_proj", None)
+                    down_proj = getattr(mlp_module, "down_proj", None)
 
                     if (
-                        hasattr(gate_proj, "lora_A")
+                        gate_proj is not None
+                        and up_proj is not None
+                        and down_proj is not None
+                        and hasattr(gate_proj, "lora_A")
                         and hasattr(up_proj, "lora_A")
                         and hasattr(down_proj, "lora_A")
                         and (getattr(gate_proj, "base_layer", gate_proj).bias is None)
@@ -3522,11 +3525,14 @@ class FastLlamaModel:
                         )
 
                 # QKV attention patching
-                q_proj = layer.self_attn.q_proj
-                k_proj = layer.self_attn.k_proj
-                v_proj = layer.self_attn.v_proj
+                q_proj = getattr(layer.self_attn, "q_proj", None)
+                k_proj = getattr(layer.self_attn, "k_proj", None)
+                v_proj = getattr(layer.self_attn, "v_proj", None)
                 if (
-                    hasattr(q_proj, "lora_A")
+                    q_proj is not None
+                    and k_proj is not None
+                    and v_proj is not None
+                    and hasattr(q_proj, "lora_A")
                     and hasattr(k_proj, "lora_A")
                     and hasattr(v_proj, "lora_A")
                     and (getattr(q_proj, "base_layer", q_proj).bias is None)
@@ -3548,9 +3554,10 @@ class FastLlamaModel:
                         )
 
                 # O attention patching
-                o_proj = layer.self_attn.o_proj
+                o_proj = getattr(layer.self_attn, "o_proj", None)
                 if (
-                    hasattr(o_proj, "lora_A")
+                    o_proj is not None
+                    and hasattr(o_proj, "lora_A")
                     and (getattr(o_proj, "base_layer", o_proj).bias is None)
                     and (len(getattr(o_proj, "lora_magnitude_vector", []) or []) == 0)
                 ):
