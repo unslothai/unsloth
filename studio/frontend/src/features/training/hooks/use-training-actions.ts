@@ -16,6 +16,19 @@ const ROLE_REMAP: Record<string, Record<string, string>> = {
   sharegpt: { user: "human", assistant: "gpt", system: "system" },
 };
 
+function normalizeTrainingStartError(message: string): string {
+  const normalized = message.toLowerCase();
+  const isLegacyDatasetScriptError =
+    normalized.includes("failed to check dataset format") &&
+    normalized.includes("dataset scripts are no longer supported");
+
+  if (isLegacyDatasetScriptError) {
+    return "This Hub dataset relies on a legacy custom script and isn’t supported in this training flow.";
+  }
+
+  return message;
+}
+
 export function useTrainingActions() {
   const isStarting = useTrainingRuntimeStore((state) => state.isStarting);
   const startError = useTrainingRuntimeStore((state) => state.startError);
@@ -79,7 +92,9 @@ export function useTrainingActions() {
       const response = await startTraining(payload);
 
       if (response.status === "error") {
-        runtimeStore.setStartError(response.error || response.message);
+        const rawMessage = response.error || response.message;
+        const safeMessage = normalizeTrainingStartError(rawMessage);
+        runtimeStore.setStartError(safeMessage);
         runtimeStore.setStarting(false);
         return false;
       }
@@ -88,9 +103,10 @@ export function useTrainingActions() {
       await syncTrainingRuntimeFromBackend();
       return true;
     } catch (error) {
-      const message =
+      const rawMessage =
         error instanceof Error ? error.message : "Failed to start training";
-      runtimeStore.setStartError(message);
+      const safeMessage = normalizeTrainingStartError(rawMessage);
+      runtimeStore.setStartError(safeMessage);
       runtimeStore.setStarting(false);
       return false;
     }
