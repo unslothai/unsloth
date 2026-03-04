@@ -368,9 +368,7 @@ export function DatasetSection() {
                       <TooltipContent>
                         Only train on a subset of your training split by
                         specifying a start row index (inclusive, 0-based).
-                        Useful for resuming from a checkpoint or debugging
-                        with a smaller slice. Leave empty to start from the
-                        first row.
+                        Leave empty to start from the first row.
                       </TooltipContent>
                     </Tooltip>
                   </span>
