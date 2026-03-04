@@ -317,7 +317,8 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           set({ datasetManualMapping }),
         setDatasetSliceStart: (datasetSliceStart) => set({ datasetSliceStart }),
         setDatasetSliceEnd: (datasetSliceEnd) => set({ datasetSliceEnd }),
-        setUploadedFile: (uploadedFile) => set({ uploadedFile }),
+        setUploadedFile: (uploadedFile) =>
+          set({ uploadedFile, datasetSliceStart: null, datasetSliceEnd: null }),
         setEpochs: (epochs) => set({ epochs }),
         setContextLength: (contextLength) => set({ contextLength }),
         setLearningRate: (learningRate) => set({ learningRate }),
