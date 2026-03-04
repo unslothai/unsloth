@@ -389,8 +389,8 @@ class Unsloth{RLConfig_name}({RLConfig_name}):
     def __init__({RLConfig_arguments},
         vllm_sampling_params = None,
         unsloth_num_chunks = -1,
-        unsloth_logit_chunk_multiplier = None, 
-        unsloth_grpo_mini_batch = None, 
+        unsloth_logit_chunk_multiplier = None,
+        unsloth_grpo_mini_batch = None,
         {max_seq_length_call}
         **kwargs,
     ):
@@ -1875,11 +1875,21 @@ def patch_trl_openenv():
         function()  # Call the function to apply the patch
     return
 
+def patch_trl_vllm_generation():
+    # trl moved vllm stuff to trl/generation/vllm_generation.py
+    # We need to min_p patch it to not instantiate another vLLM instance if we already have one with fast_inference
+    # Find the instance of self.llm = LLM(..) (multiline) and wrap it around an if clause
+    for function in RL_ADDITIONAL_FUNCTIONS["vllm_generation"]:
+        logger.info(f"Unsloth: Patching trl VLLMGeneration with function: {function.__name__}")
+        function()
+    return
+
 
 def PatchFastRL(algorithm = None, FastLanguageModel = None):
     if FastLanguageModel is not None:
         PatchRL(FastLanguageModel)
     patch_trl_rl_trainers()
     patch_trl_openenv()
+    patch_trl_vllm_generation()
     if type(algorithm) is str and algorithm.islower():
         PatchRLStatistics(algorithm)
