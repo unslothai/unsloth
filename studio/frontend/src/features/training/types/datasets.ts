@@ -11,3 +11,21 @@ export type CheckFormatResponse = {
   multimodal_columns?: string[] | null;
 };
 
+export type LocalDatasetInfo = {
+  metadata?: {
+    actual_num_records?: number | null;
+    target_num_records?: number | null;
+    total_num_batches?: number | null;
+    num_completed_batches?: number | null;
+    columns?: string[] | null;
+  } | null;
+  id: string;
+  label: string;
+  path: string;
+  rows?: number | null;
+  updated_at?: number | null;
+};
+
+export type LocalDatasetsResponse = {
+  datasets: LocalDatasetInfo[];
+};
