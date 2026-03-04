@@ -238,23 +238,50 @@ def convert_alpaca_to_chatml(dataset, batch_size=1000, num_proc=None):
     return dataset.map(_convert, **dataset_map_kwargs)
 
 
+def _format_eta(seconds):
+    """Format seconds into a human-readable ETA string."""
+    if seconds < 60:
+        return f"{seconds:.0f}s"
+    elif seconds < 3600:
+        m, s = divmod(int(seconds), 60)
+        return f"{m}m {s}s"
+    else:
+        h, remainder = divmod(int(seconds), 3600)
+        m, _ = divmod(remainder, 60)
+        return f"{h}h {m}m"
+
+
 def convert_to_vlm_format(
     dataset,
     instruction=None,
     text_column="text",
     image_column="image",
     dataset_name=None,
+    progress_callback=None,
 ):
     """
     Converts simple {image, text} format to VLM messages format.
 
     Returns a LIST, not a HuggingFace Dataset (to preserve PIL Images).
 
+    For URL-based image datasets, runs a 200-sample parallel probe first to
+    estimate download speed and failure rate, then reports time estimate or
+    warning through progress_callback before proceeding with the full conversion.
+
+    Args:
+        progress_callback: Optional callable(status_message=str) to report
+                          progress to the training overlay.
+
     Returns:
         list: List of dicts with 'messages' field
     """
     from PIL import Image
     from .vlm_processing import generate_smart_vlm_instruction
+
+    def _notify(msg):
+        """Send status update to the training overlay if callback is available."""
+        if progress_callback:
+            progress_callback(status_message=msg)
 
     # Generate smart instruction if not provided
     if instruction is None:
@@ -322,48 +349,133 @@ def convert_to_vlm_format(
         # Return dict with messages
         return {"messages": messages}
 
-    # Convert samples, skipping any with broken/unreachable images.
-    # For URL-based datasets, check the first PROBE_SIZE samples early to
-    # fail fast if too many images are broken, before downloading millions.
-    PROBE_SIZE = 5000
-    MAX_FAIL_RATE = 0.3
-
     total = len(dataset)
     has_urls = isinstance(next(iter(dataset))[image_column], str)
-    probe_needed = has_urls and total > PROBE_SIZE
 
+    # ── URL probe: 200 samples with parallel workers to estimate speed + failure rate ──
+    PROBE_SIZE = 200
+    MAX_FAIL_RATE = 0.3
+
+    if has_urls and total > PROBE_SIZE:
+        import time
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from utils.hardware import safe_num_proc
+
+        num_workers = safe_num_proc()
+        _notify(f"Probing {PROBE_SIZE} image URLs with {num_workers} workers...")
+        print(f"🔍 Probing {PROBE_SIZE}/{total} image URLs with {num_workers} workers...")
+
+        probe_samples = [dataset[i] for i in range(PROBE_SIZE)]
+        probe_ok = 0
+        probe_fail = 0
+        probe_start = time.time()
+
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
+            futures = {executor.submit(_convert_single_sample, s): s for s in probe_samples}
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                    probe_ok += 1
+                except Exception:
+                    probe_fail += 1
+
+        probe_elapsed = time.time() - probe_start
+        probe_total = probe_ok + probe_fail
+        fail_rate = probe_fail / probe_total if probe_total > 0 else 0
+        throughput = probe_total / probe_elapsed if probe_elapsed > 0 else 0
+
+        if fail_rate >= MAX_FAIL_RATE:
+            msg = (
+                f"⚠️ {fail_rate:.0%} of the first {PROBE_SIZE} images failed to download "
+                f"({probe_fail}/{probe_total}). "
+                "This dataset has too many broken or unreachable image URLs. "
+                "Consider using a dataset with embedded images instead."
+            )
+            print(msg)
+            _notify(msg)
+            raise ValueError(msg)
+
+        # Estimate total time for remaining samples
+        remaining = total - PROBE_SIZE
+        estimated_seconds = remaining / throughput if throughput > 0 else 0
+        eta_str = _format_eta(estimated_seconds)
+
+        info_msg = (
+            f"Downloading {total:,} images ({num_workers} workers, ~{throughput:.1f} img/s). "
+            f"Estimated time: ~{eta_str}"
+        )
+        if probe_fail > 0:
+            info_msg += f" | {fail_rate:.0%} broken URLs will be skipped"
+
+        print(f"✅ Probe passed: {probe_ok}/{probe_total} ok, {probe_fail} failed ({fail_rate:.0%}), {throughput:.1f} img/s")
+        print(f"⏱️ Estimated time for {total:,} samples: ~{eta_str}")
+        _notify(info_msg)
+
+    # ── Full conversion with progress ──
     from tqdm import tqdm
 
     print(f"🔄 Converting {total} samples to VLM format...")
     converted_list = []
     failed_count = 0
 
-    pbar = tqdm(dataset, total=total, desc="Converting VLM samples", unit="sample")
-    for i, sample in enumerate(pbar):
-        try:
-            converted_list.append(_convert_single_sample(sample))
-        except Exception as e:
-            failed_count += 1
+    if has_urls:
+        # Parallel conversion for URL-based datasets
+        import time
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from utils.hardware import safe_num_proc
 
-        pbar.set_postfix(ok=len(converted_list), failed=failed_count, refresh=False)
+        num_workers = safe_num_proc()
+        batch_size = 500
+        start_time = time.time()
 
-        # Early exit check after probing the first batch
-        if probe_needed and (i + 1) == PROBE_SIZE:
-            fail_rate = failed_count / PROBE_SIZE
-            if fail_rate >= MAX_FAIL_RATE:
-                pbar.close()
-                raise ValueError(
-                    f"{fail_rate:.0%} of the first {PROBE_SIZE} images failed to download "
-                    f"({failed_count}/{PROBE_SIZE}). "
-                    "This dataset has too many broken or unreachable image URLs. "
-                    "Consider using a dataset with embedded images instead."
-                )
-            print(f"✅ Probe passed: {failed_count}/{PROBE_SIZE} ({fail_rate:.0%}) failures in first batch, continuing...")
-    pbar.close()
+        for batch_start in range(0, total, batch_size):
+            batch_end = min(batch_start + batch_size, total)
+            batch_samples = [dataset[i] for i in range(batch_start, batch_end)]
+
+            with ThreadPoolExecutor(max_workers=num_workers) as executor:
+                futures = {executor.submit(_convert_single_sample, s): i for i, s in enumerate(batch_samples)}
+                batch_results = [None] * len(batch_samples)
+                for future in as_completed(futures):
+                    idx = futures[future]
+                    try:
+                        batch_results[idx] = future.result()
+                    except Exception:
+                        failed_count += 1
+
+            converted_list.extend(r for r in batch_results if r is not None)
+
+            # Progress update every batch
+            elapsed = time.time() - start_time
+            done = batch_end
+            rate = done / elapsed if elapsed > 0 else 0
+            remaining_time = (total - done) / rate if rate > 0 else 0
+            eta_str = _format_eta(remaining_time)
+            progress_msg = f"Downloading images: {done:,}/{total:,} ({done*100//total}%) | ~{eta_str} remaining | {failed_count} skipped"
+            print(f"  [{done}/{total}] {rate:.1f} img/s, {failed_count} failed, ETA {eta_str}")
+            _notify(progress_msg)
+    else:
+        # Sequential conversion for local/embedded images (fast, no I/O bottleneck)
+        pbar = tqdm(dataset, total=total, desc="Converting VLM samples", unit="sample")
+        for sample in pbar:
+            try:
+                converted_list.append(_convert_single_sample(sample))
+            except Exception:
+                failed_count += 1
+            pbar.set_postfix(ok=len(converted_list), failed=failed_count, refresh=False)
+        pbar.close()
 
     if failed_count > 0:
         fail_rate = failed_count / total
         print(f"⚠️ Skipped {failed_count}/{total} ({fail_rate:.0%}) samples with broken/unreachable images")
+        # For datasets that skipped the probe (small URL datasets), check fail rate now
+        if has_urls and fail_rate >= MAX_FAIL_RATE:
+            msg = (
+                f"⚠️ {fail_rate:.0%} of images failed to download ({failed_count}/{total}). "
+                "This dataset has too many broken or unreachable image URLs. "
+                "Consider using a dataset with embedded images instead."
+            )
+            _notify(msg)
+            raise ValueError(msg)
 
     if len(converted_list) == 0:
         raise ValueError(
@@ -372,6 +484,7 @@ def convert_to_vlm_format(
         )
 
     print(f"✅ Converted {len(converted_list)}/{total} samples")
+    _notify(f"Converted {len(converted_list):,}/{total:,} images successfully")
 
     # Return list, NOT Dataset
     return converted_list
