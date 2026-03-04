@@ -256,7 +256,7 @@ class MLXTrainer:
                 _, grads = clip_grad_norm(grads, self.config.max_grad_norm)
             
             # Update parameters
-            params = self.optimizer(grads, params)
+            params = self.optimizer.update(grads, params)
             self._set_model_params(params)
             
             self.global_step += 1
