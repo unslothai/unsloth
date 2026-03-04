@@ -250,7 +250,6 @@ export function useRecipeExecutions({
       const { kind, payload, rows, settings, runName } = input;
       const setLoading = kind === "preview" ? setPreviewLoading : setFullLoading;
       const label = executionLabel(kind);
-      const normalizedRunName = kind === "full" ? normalizeRunName(runName) : null;
 
       setLoading(true);
       const baseExecution = createBaseExecutionRecord({
@@ -258,7 +257,7 @@ export function useRecipeExecutions({
         kind,
         rows,
         currentSignature,
-        runName: normalizedRunName,
+        runName,
       });
 
       upsertAndPersist(baseExecution);
@@ -271,6 +270,7 @@ export function useRecipeExecutions({
           kind,
           rows,
           settings,
+          runName,
         });
         const createdJob = await createRecipeJob(jobPayload);
         const executionWithJob = {
@@ -330,11 +330,13 @@ export function useRecipeExecutions({
       }
 
       const normalizedRows = sanitizeExecutionRows(rows, kind);
+      const normalizedRunName = kind === "full" ? normalizeRunName(runName) : null;
       const executionPayload = buildExecutionPayload({
         payload,
         kind,
         rows: normalizedRows,
         settings: runSettings,
+        runName: normalizedRunName,
       });
 
       try {
@@ -359,7 +361,7 @@ export function useRecipeExecutions({
         payload,
         rows: normalizedRows,
         settings: runSettings,
-        runName,
+        runName: normalizedRunName,
       });
     },
     [readExecutablePayload, runExecution, runSettings, setRunErrors],
@@ -403,6 +405,7 @@ export function useRecipeExecutions({
       kind: runDialogKind,
       rows: normalizedRows,
       settings: runSettings,
+      runName: runDialogKind === "full" ? normalizeRunName(fullRunName) : null,
     });
 
     setValidateLoading(true);
@@ -427,6 +430,7 @@ export function useRecipeExecutions({
       setValidateLoading(false);
     }
   }, [
+    fullRunName,
     fullRows,
     payloadErrorMessage,
     payloadResult.errors,
@@ -434,6 +438,7 @@ export function useRecipeExecutions({
     readPayload,
     runDialogKind,
     runSettings,
+    setRunErrors,
   ]);
 
   const openRunDialog = useCallback(

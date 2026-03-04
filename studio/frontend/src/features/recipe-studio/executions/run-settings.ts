@@ -153,13 +153,13 @@ export function buildExecutionPayload(input: {
   kind: RecipeExecutionKind;
   rows: number;
   settings: RecipeRunSettings;
+  runName?: string | null;
 }): RecipePayload {
   const normalizedSettings = normalizeRunSettings(input.settings);
   const payloadWithParallelism = applyGlobalParallelismOverride(
     input.payload,
     normalizedSettings.llmParallelRequests,
   );
-
   return {
     ...payloadWithParallelism,
     run: {
@@ -174,6 +174,8 @@ export function buildExecutionPayload(input: {
         input.kind === "full" &&
         normalizedSettings.batchEnabled &&
         normalizedSettings.mergeBatches,
+      // biome-ignore lint/style/useNamingConvention: backend schema
+      run_name: input.kind === "full" ? (input.runName ?? null) : null,
     },
   };
 }
