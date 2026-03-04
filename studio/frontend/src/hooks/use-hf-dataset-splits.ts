@@ -41,8 +41,7 @@ function normalizeDatasetSplitsError(message: string): string {
   // datasets-server returns technical script/runtime details for legacy datasets.
   if (
     normalized.includes("dataset scripts are no longer supported") ||
-    normalized.includes("runs arbitrary python code") ||
-    normalized.includes(".py")
+    normalized.includes("runs arbitrary python code")
   ) {
     return "We can’t load subset/split options for this Hub dataset because it relies on a legacy custom script.";
   }
