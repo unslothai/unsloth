@@ -279,12 +279,14 @@ def grpo_trainer__generate_single_turn(function_name, function):
         r"(?P=indent)[ \t]+self\.vllm_generation\.sync_weights\(\)\n",
         re.MULTILINE,
     )
+
     def remove_sync_weights_block(match):
         indent = match.group("indent")
         return (
             f"{indent}# Unsloth fast inference LoRA shares weights with vLLM already.\n"
             f"{indent}# Skipping per-step vLLM sync_weights().\n"
         )
+
     function = sync_weights_block.sub(remove_sync_weights_block, function)
 
     # TRL 0.24.0-0.25.1 truncation regression fix
@@ -1398,7 +1400,9 @@ def vllm_generation_init_patch():
         try:
             src = inspect.getsource(method)
         except Exception as e:
-            logger.info(f"Unsloth: Could not get source of VLLMGeneration.{method_name}: {e}")
+            logger.info(
+                f"Unsloth: Could not get source of VLLMGeneration.{method_name}: {e}"
+            )
             return False
 
         src = textwrap.dedent(src)
@@ -1426,6 +1430,7 @@ def vllm_generation_init_patch():
             r"(?P<llm_block>^(?P<indent>[ \t]*)self\.llm\s*=\s*LLM\s*\(\n(?:.*\n)*?^(?P=indent)\))",
             re.MULTILINE,
         )
+
         def replace_llm_block(match):
             indent = match.group("indent")
             llm_block = textwrap.dedent(match.group("llm_block"))
@@ -1434,12 +1439,14 @@ def vllm_generation_init_patch():
                 f"{indent}    # Unsloth already inits vLLM in fast inference mode. Do not redo :)\n"
                 f"{indent}    self.llm = model.vllm_engine\n"
                 f"{indent}    self.unsloth_fast_inference_lora = True\n"
-                f"{indent}else:\n"
-                + textwrap.indent(llm_block, indent + "    ")
+                f"{indent}else:\n" + textwrap.indent(llm_block, indent + "    ")
             )
+
         patched_src, num_replacements = pattern.subn(replace_llm_block, src, count = 1)
         if num_replacements == 0:
-            raise RuntimeError("Unsloth: Warning - regex did not match, VLLMGeneration._init_vllm patch may have failed")
+            raise RuntimeError(
+                "Unsloth: Warning - regex did not match, VLLMGeneration._init_vllm patch may have failed"
+            )
         return patched_src
 
     # has some sync_weights or reload rpc calls.
@@ -1450,6 +1457,7 @@ def vllm_generation_init_patch():
             r"^(?P<def_line>def sync_weights\(self\):\n)(?P<body>(?:.*\n)*)",
             re.MULTILINE,
         )
+
         def replace_sync_weights(match):
             body = match.group("body")
             guard = (
@@ -1458,9 +1466,12 @@ def vllm_generation_init_patch():
                 "        return\n\n"
             )
             return match.group("def_line") + guard + body
+
         patched_src, num_replacements = pattern.subn(replace_sync_weights, src, count = 1)
         if num_replacements == 0:
-            raise RuntimeError("Unsloth: Warning - regex did not match, VLLMGeneration.sync_weights patch may have failed")
+            raise RuntimeError(
+                "Unsloth: Warning - regex did not match, VLLMGeneration.sync_weights patch may have failed"
+            )
         return patched_src
 
     def patch_generate(src):
@@ -1468,12 +1479,18 @@ def vllm_generation_init_patch():
             r"^(?P<indent>[ \t]*)self\.llm\.collective_rpc\(\s*(['\"])reload_weights\2\s*\)\s*$",
             re.MULTILINE,
         )
+
         def replace_reload_weights(match):
             indent = match.group("indent")
             return f'{indent}pass  # self.llm.collective_rpc("reload_weights")'
-        patched_src, num_replacements = pattern.subn(replace_reload_weights, src, count = 1)
+
+        patched_src, num_replacements = pattern.subn(
+            replace_reload_weights, src, count = 1
+        )
         if num_replacements == 0:
-            raise RuntimeError("Unsloth: Warning - regex did not match, VLLMGeneration.generate patch may have failed")
+            raise RuntimeError(
+                "Unsloth: Warning - regex did not match, VLLMGeneration.generate patch may have failed"
+            )
         return patched_src
 
     try:
@@ -1505,5 +1522,6 @@ def vllm_generation_init_patch():
         logger.info("Unsloth: Patched trl VLLMGeneration.sync_weights")
     if generate_patched:
         logger.info("Unsloth: Patched trl VLLMGeneration.generate")
+
 
 RL_ADDITIONAL_FUNCTIONS["vllm_generation"].append(vllm_generation_init_patch)
