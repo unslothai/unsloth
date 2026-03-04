@@ -211,6 +211,21 @@ def check_format(
         else:
             preview_samples = _serialize_preview_rows(preview_slice)
 
+        # Lightweight URL-based image detection for VLM datasets
+        warning = None
+        image_col = result.get("detected_image_column")
+        if image_col and image_col in (result.get("columns") or []):
+            try:
+                sample_val = preview_slice[0][image_col]
+                if isinstance(sample_val, str) and sample_val.startswith(("http://", "https://")):
+                    warning = (
+                        "This dataset contains image URLs instead of embedded images. "
+                        "Images will be downloaded during training, which may be slow for large datasets."
+                    )
+                    logger.info(f"URL-based image column detected: {image_col}")
+            except Exception:
+                pass
+
         return CheckFormatResponse(
             requires_manual_mapping=result["requires_manual_mapping"],
             detected_format=result["detected_format"],
@@ -222,6 +237,7 @@ def check_format(
             detected_text_column=result.get("detected_text_column"),
             preview_samples=preview_samples,
             total_rows=total_rows,
+            warning=warning,
         )
 
     except HTTPException:
