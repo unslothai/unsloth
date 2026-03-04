@@ -4,15 +4,6 @@ import type { TrainingStartRequest } from "../types/api";
 const BACKEND_LORA_TYPE = "LoRA/QLoRA";
 const BACKEND_FULL_TYPE = "Full Finetuning";
 
-function parseSliceValue(value: string | null): number | null {
-  if (value == null) return null;
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  const num = Number(trimmed);
-  if (!Number.isFinite(num) || !Number.isInteger(num)) return null;
-  return num;
-}
-
 export function toBackendTrainingType(trainingMethod: string): string {
   return trainingMethod === "full" ? BACKEND_FULL_TYPE : BACKEND_LORA_TYPE;
 }
@@ -36,8 +27,6 @@ export function buildTrainingStartPayload(
     subset: hfDataset ? config.datasetSubset : null,
     train_split: hfDataset ? config.datasetSplit : null,
     eval_split: hfDataset ? config.datasetEvalSplit : null,
-    dataset_slice_start: parseSliceValue(config.datasetSliceStart),
-    dataset_slice_end: parseSliceValue(config.datasetSliceEnd),
     local_datasets: [],
     format_type: config.datasetFormat,
     custom_format_mapping: customFormatMapping,

@@ -281,17 +281,12 @@ def convert_to_vlm_format(
 
     def _convert_single_sample(sample):
         """Convert a single sample to VLM format."""
-        # Get image (might be PIL Image, local path, or URL)
+        # Get image (might be PIL Image or path)
         image_data = sample[image_column]
 
+        # Handle image paths
         if isinstance(image_data, str):
-            if image_data.startswith(("http://", "https://")):
-                import fsspec
-                from io import BytesIO
-                with fsspec.open(image_data, "rb", expand=True) as f:
-                    image_data = Image.open(BytesIO(f.read())).convert("RGB")
-            else:
-                image_data = Image.open(image_data).convert("RGB")
+            image_data = Image.open(image_data).convert("RGB")
 
         # Get text
         text_data = sample[text_column]
@@ -322,56 +317,11 @@ def convert_to_vlm_format(
         # Return dict with messages
         return {"messages": messages}
 
-    # Convert samples, skipping any with broken/unreachable images.
-    # For URL-based datasets, check the first PROBE_SIZE samples early to
-    # fail fast if too many images are broken, before downloading millions.
-    PROBE_SIZE = 5000
-    MAX_FAIL_RATE = 0.3
+    # Use list comprehension and return the LIST directly
+    print(f"🔄 Converting {len(dataset)} samples to VLM format...")
+    converted_list = [_convert_single_sample(sample) for sample in dataset]
 
-    total = len(dataset)
-    has_urls = isinstance(next(iter(dataset))[image_column], str)
-    probe_needed = has_urls and total > PROBE_SIZE
-
-    from tqdm import tqdm
-
-    print(f"🔄 Converting {total} samples to VLM format...")
-    converted_list = []
-    failed_count = 0
-
-    pbar = tqdm(dataset, total=total, desc="Converting VLM samples", unit="sample")
-    for i, sample in enumerate(pbar):
-        try:
-            converted_list.append(_convert_single_sample(sample))
-        except Exception as e:
-            failed_count += 1
-
-        pbar.set_postfix(ok=len(converted_list), failed=failed_count, refresh=False)
-
-        # Early exit check after probing the first batch
-        if probe_needed and (i + 1) == PROBE_SIZE:
-            fail_rate = failed_count / PROBE_SIZE
-            if fail_rate >= MAX_FAIL_RATE:
-                pbar.close()
-                raise ValueError(
-                    f"{fail_rate:.0%} of the first {PROBE_SIZE} images failed to download "
-                    f"({failed_count}/{PROBE_SIZE}). "
-                    "This dataset has too many broken or unreachable image URLs. "
-                    "Consider using a dataset with embedded images instead."
-                )
-            print(f"✅ Probe passed: {failed_count}/{PROBE_SIZE} ({fail_rate:.0%}) failures in first batch, continuing...")
-    pbar.close()
-
-    if failed_count > 0:
-        fail_rate = failed_count / total
-        print(f"⚠️ Skipped {failed_count}/{total} ({fail_rate:.0%}) samples with broken/unreachable images")
-
-    if len(converted_list) == 0:
-        raise ValueError(
-            f"All {total} samples failed during VLM conversion — no usable images found. "
-            "This dataset may contain only image URLs that are no longer accessible."
-        )
-
-    print(f"✅ Converted {len(converted_list)}/{total} samples")
+    print(f"✅ Converted {len(converted_list)} samples")
 
     # Return list, NOT Dataset
     return converted_list
