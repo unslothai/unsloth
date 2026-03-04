@@ -24,7 +24,6 @@ MODELS = [
     ("mlx-community/Qwen3-0.6B-4bit", "Qwen3-0.6B-4bit", True),
     # --- Small (1-2B) ---
     ("mlx-community/Llama-3.2-1B-Instruct-bf16", "Llama-1B-full", False),
-    ("mlx-community/gemma-2-2b-it-4bit", "Gemma2-2B-4bit", True),
     # --- Medium (3-4B) ---
     ("mlx-community/Llama-3.2-3B-Instruct-4bit", "Llama-3B-4bit", True),
     ("mlx-community/Qwen2.5-3B-Instruct-4bit", "Qwen2.5-3B-4bit", True),
@@ -33,7 +32,6 @@ MODELS = [
     ("mlx-community/Llama-3.2-3B-Instruct-bf16", "Llama-3B-LoRA", True),
     # --- Large (7-9B) ---
     ("mlx-community/Mistral-7B-Instruct-v0.3-4bit", "Mistral-7B-4bit", True),
-    ("mlx-community/Meta-Llama-3.1-8B-Instruct-4bit", "Llama-3.1-8B-4bit", True),
 ]
 
 # (label, use_cce)  — all use compile=True, gradient_checkpointing=True
