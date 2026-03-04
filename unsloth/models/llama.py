@@ -3394,6 +3394,8 @@ class FastLlamaModel:
             apply_lora_mlp = apply_lora_mlp_swiglu
         elif model_type == "qwen3moe":
             apply_lora_mlp = apply_lora_mlp_swiglu
+        elif model_type == "phi3":
+            apply_lora_mlp = apply_lora_mlp_swiglu
         else:
             raise NotImplementedError(f"Unsloth: {model_type} is not yet implemented!")
 
