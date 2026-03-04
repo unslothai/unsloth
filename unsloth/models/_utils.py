@@ -899,7 +899,7 @@ def prepare_model_for_kbit_training(
     # to avoid "element 0 of tensors does not require grad" error
     if use_reentrant is None:
         use_reentrant = DEVICE_TYPE != "mlx"
-    return prepare_model_for_training(
+    out = prepare_model_for_training(
         model=model,
         use_gradient_checkpointing=use_gradient_checkpointing,
         use_reentrant=use_reentrant,
@@ -909,6 +909,9 @@ def prepare_model_for_kbit_training(
         train_lm_head=False,
         float32_mixed_precision=True,
     )
+    if out is None:
+        return model
+    return out
 
 
 # =============================================
