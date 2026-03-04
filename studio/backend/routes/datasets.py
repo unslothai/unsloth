@@ -5,7 +5,7 @@ import base64
 import io
 import sys
 from pathlib import Path
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 import logging
 
 # Add backend directory to path
@@ -15,6 +15,7 @@ if str(backend_path) not in sys.path:
 
 # Import dataset utilities
 from utils.datasets import check_dataset_format
+from auth.authentication import get_current_subject
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -84,7 +85,10 @@ DATA_EXTS = (
 
 
 @router.post("/check-format", response_model=CheckFormatResponse)
-def check_format(request: CheckFormatRequest):
+def check_format(
+    request: CheckFormatRequest,
+    current_subject: str = Depends(get_current_subject),
+):
     """
     Check if a dataset requires manual column mapping.
 
