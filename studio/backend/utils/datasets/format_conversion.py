@@ -332,20 +332,26 @@ def convert_to_vlm_format(
     has_urls = isinstance(next(iter(dataset))[image_column], str)
     probe_needed = has_urls and total > PROBE_SIZE
 
+    from tqdm import tqdm
+
     print(f"🔄 Converting {total} samples to VLM format...")
     converted_list = []
     failed_count = 0
 
-    for i, sample in enumerate(dataset):
+    pbar = tqdm(dataset, total=total, desc="Converting VLM samples", unit="sample")
+    for i, sample in enumerate(pbar):
         try:
             converted_list.append(_convert_single_sample(sample))
         except Exception as e:
             failed_count += 1
 
+        pbar.set_postfix(ok=len(converted_list), failed=failed_count, refresh=False)
+
         # Early exit check after probing the first batch
         if probe_needed and (i + 1) == PROBE_SIZE:
             fail_rate = failed_count / PROBE_SIZE
             if fail_rate >= MAX_FAIL_RATE:
+                pbar.close()
                 raise ValueError(
                     f"{fail_rate:.0%} of the first {PROBE_SIZE} images failed to download "
                     f"({failed_count}/{PROBE_SIZE}). "
@@ -353,6 +359,7 @@ def convert_to_vlm_format(
                     "Consider using a dataset with embedded images instead."
                 )
             print(f"✅ Probe passed: {failed_count}/{PROBE_SIZE} ({fail_rate:.0%}) failures in first batch, continuing...")
+    pbar.close()
 
     if failed_count > 0:
         fail_rate = failed_count / total
