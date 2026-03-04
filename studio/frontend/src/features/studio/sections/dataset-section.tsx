@@ -362,7 +362,7 @@ export function DatasetSection() {
                       }}
                       className="w-full"
                     >
-                      <TabsList className="mb-2 w-full">
+                      <TabsList className=" w-full">
                         <TabsTrigger value="huggingface">Hugging Face</TabsTrigger>
                         <TabsTrigger value="local">Local</TabsTrigger>
                       </TabsList>
