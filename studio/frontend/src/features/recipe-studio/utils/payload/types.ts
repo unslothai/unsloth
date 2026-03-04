@@ -28,6 +28,8 @@ export type RecipePayload = {
     artifact_path?: string;
     // biome-ignore lint/style/useNamingConvention: backend schema
     merge_batches?: boolean;
+    // biome-ignore lint/style/useNamingConvention: backend schema
+    run_name?: string | null;
   };
   ui: {
     nodes: Array<{

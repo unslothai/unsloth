@@ -14,6 +14,17 @@ from models.data_recipe import JobCreateResponse, RecipePayload
 router = APIRouter()
 
 
+def _normalize_run_name(value: Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise HTTPException(status_code=400, detail="invalid run_name: must be a string")
+    trimmed = value.strip()
+    if not trimmed:
+        return None
+    return trimmed[:120]
+
+
 @router.post("/jobs", response_class=JSONResponse, response_model=JobCreateResponse)
 def create_job(payload: RecipePayload):
     recipe = payload.recipe
@@ -27,6 +38,7 @@ def create_job(payload: RecipePayload):
     if execution_type not in {"preview", "full"}:
         raise HTTPException(status_code=400, detail="invalid execution_type: must be 'preview' or 'full'")
     run["execution_type"] = execution_type
+    run["run_name"] = _normalize_run_name(run.get("run_name"))
     run_config_raw = run.get("run_config")
     if run_config_raw is not None:
         try:

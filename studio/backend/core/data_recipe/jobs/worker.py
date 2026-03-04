@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 import time
 import traceback
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +36,27 @@ class _QueueLogHandler(logging.Handler):
             pass
 
 
+def _slugify_run_name(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value)
+    ascii_only = normalized.encode("ascii", "ignore").decode("ascii")
+    slug = re.sub(r"[^a-zA-Z0-9]+", "-", ascii_only).strip("-").lower()
+    if not slug:
+        return ""
+    return slug[:80].strip("-")
+
+
+def _build_dataset_name(*, run_name: str | None, job_id: str, artifact_root: Path) -> str:
+    fallback = f"recipe_{job_id}"
+    slug = _slugify_run_name(run_name or "")
+    base_name = f"recipe_{slug}" if slug else fallback
+    candidate = base_name
+    suffix = 2
+    while (artifact_root / candidate).exists():
+        candidate = f"{base_name}_{suffix}"
+        suffix += 1
+    return candidate
+
+
 def run_job_process(
     *,
     event_queue,
@@ -53,7 +76,13 @@ def run_job_process(
         job_id = str(run.get("_job_id") or "").strip()
         if not job_id:
             job_id = f"{int(time.time())}"
-        dataset_name = f"recipe_{job_id}"
+        run_name_raw = run.get("run_name")
+        run_name = run_name_raw if isinstance(run_name_raw, str) else None
+        dataset_name = _build_dataset_name(
+            run_name=run_name,
+            job_id=job_id,
+            artifact_root=_ARTIFACT_ROOT,
+        )
         merge_batches = bool(run.get("merge_batches"))
         _ARTIFACT_ROOT.mkdir(parents=True, exist_ok=True)
         run_config_raw = run.get("run_config") or {}
