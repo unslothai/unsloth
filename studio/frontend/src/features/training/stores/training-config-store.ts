@@ -311,7 +311,20 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         },
         setDatasetManualMapping: (datasetManualMapping) =>
           set({ datasetManualMapping }),
-        setUploadedFile: (uploadedFile) => set({ uploadedFile }),
+        setUploadedFile: (uploadedFile) => {
+          _datasetCheckController?.abort();
+          _datasetCheckController = null;
+          _trainOnCompletionsManuallySet = false;
+          set({
+            uploadedFile,
+            datasetSubset: null,
+            datasetSplit: null,
+            datasetEvalSplit: null,
+            datasetManualMapping: emptyManualMapping(),
+            isDatasetMultimodal: null,
+            isCheckingDataset: false,
+          });
+        },
         setEpochs: (epochs) => set({ epochs }),
         setContextLength: (contextLength) => set({ contextLength }),
         setLearningRate: (learningRate) => set({ learningRate }),

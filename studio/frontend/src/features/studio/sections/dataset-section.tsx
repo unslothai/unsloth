@@ -22,6 +22,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Tooltip,
   TooltipContent,
@@ -38,6 +39,8 @@ import {
   useDatasetPreviewDialogStore,
   useTrainingConfigStore,
 } from "@/features/training";
+import { listLocalDatasets } from "@/features/training/api/datasets-api";
+import type { LocalDatasetInfo } from "@/features/training/types/datasets";
 import {
   ArrowDown01Icon,
   CloudUploadIcon,
@@ -48,7 +51,7 @@ import {
   ViewIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 function isLikelyLocalDatasetRef(value: string) {
@@ -61,10 +64,20 @@ function isLikelyLocalDatasetRef(value: string) {
   );
 }
 
+function deriveLocalDatasetName(path: string): string {
+  const normalized = path.replaceAll("\\", "/");
+  const parts = normalized.split("/").filter(Boolean);
+  const parquetIndex = parts.lastIndexOf("parquet-files");
+  if (parquetIndex > 0) return parts[parquetIndex - 1];
+  return parts[parts.length - 1] ?? path;
+}
+
 export function DatasetSection() {
   const {
     dataset,
     setDataset,
+    datasetSource,
+    setDatasetSource,
     datasetFormat,
     setDatasetFormat,
     datasetSubset,
@@ -73,12 +86,16 @@ export function DatasetSection() {
     setDatasetSplit,
     datasetEvalSplit,
     setDatasetEvalSplit,
+    uploadedFile,
+    setUploadedFile,
     hfToken,
     modelType,
   } = useTrainingConfigStore(
     useShallow((s) => ({
       dataset: s.dataset,
       setDataset: s.setDataset,
+      datasetSource: s.datasetSource,
+      setDatasetSource: s.setDatasetSource,
       datasetFormat: s.datasetFormat,
       setDatasetFormat: s.setDatasetFormat,
       datasetSubset: s.datasetSubset,
@@ -87,6 +104,8 @@ export function DatasetSection() {
       setDatasetSplit: s.setDatasetSplit,
       datasetEvalSplit: s.datasetEvalSplit,
       setDatasetEvalSplit: s.setDatasetEvalSplit,
+      uploadedFile: s.uploadedFile,
+      setUploadedFile: s.setUploadedFile,
       hfToken: s.hfToken,
       modelType: s.modelType,
     })),
@@ -94,19 +113,65 @@ export function DatasetSection() {
 
   const [inputValue, setInputValue] = useState("");
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [pickerTab, setPickerTab] = useState<"huggingface" | "local">(
+    datasetSource === "upload" ? "local" : "huggingface",
+  );
+  const [localDatasets, setLocalDatasets] = useState<LocalDatasetInfo[]>([]);
+  const [localLoading, setLocalLoading] = useState(false);
+  const [localError, setLocalError] = useState<string | null>(null);
+  const [localSearchActive, setLocalSearchActive] = useState(false);
   const openPreview = useDatasetPreviewDialogStore((s) => s.openPreview);
   const selectingRef = useRef(false);
   const debouncedQuery = useDebouncedValue(inputValue);
 
+  useEffect(() => {
+    setPickerTab(datasetSource === "upload" ? "local" : "huggingface");
+  }, [datasetSource]);
+
+  const refreshLocalDatasets = useCallback(async () => {
+    setLocalLoading(true);
+    setLocalError(null);
+    try {
+      const response = await listLocalDatasets();
+      setLocalDatasets(response.datasets ?? []);
+    } catch (error) {
+      setLocalError(
+        error instanceof Error ? error.message : "Failed to load local datasets.",
+      );
+    } finally {
+      setLocalLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (pickerTab !== "local") return;
+    void refreshLocalDatasets();
+  }, [pickerTab, refreshLocalDatasets]);
+
   function handleDatasetSelect(id: string | null) {
     selectingRef.current = true;
+    setDatasetSource("huggingface");
     setDataset(id);
+    setInputValue(id ?? "");
+    setLocalSearchActive(false);
+  }
+
+  function handleLocalDatasetSelect(path: string) {
+    selectingRef.current = true;
+    setDatasetSource("upload");
+    setUploadedFile(path);
+    const label = localDatasets.find((item) => item.path === path)?.label;
+    setInputValue(label ?? deriveLocalDatasetName(path));
+    setLocalSearchActive(false);
   }
 
   function handleInputChange(val: string) {
     if (selectingRef.current) {
       selectingRef.current = false;
       return;
+    }
+    if (pickerTab === "local") {
+      setLocalSearchActive(true);
     }
     setInputValue(val);
   }
@@ -116,21 +181,73 @@ export function DatasetSection() {
     isLoadingMore,
     fetchMore,
     error: hfSearchError,
-  } = useHfDatasetSearch(debouncedQuery, {
+  } = useHfDatasetSearch(pickerTab === "huggingface" ? debouncedQuery : "", {
     modelType,
     accessToken: hfToken || undefined,
+    enabled: pickerTab === "huggingface",
   });
 
   const { error: tokenValidationError, isChecking: isCheckingToken } =
     useHfTokenValidation(hfToken);
 
-  const resultIds = useMemo(() => {
+  const hfResultIds = useMemo(() => {
     const ids = hfResults.map((r) => r.id);
     if (dataset && !ids.includes(dataset)) {
       ids.push(dataset);
     }
     return ids;
   }, [hfResults, dataset]);
+
+  const localFilteredDatasets = useMemo(() => {
+    const query = localSearchActive ? inputValue.trim().toLowerCase() : "";
+    if (!query) return localDatasets;
+    return localDatasets.filter(
+      (item) =>
+        item.label.toLowerCase().includes(query) ||
+        item.path.toLowerCase().includes(query),
+    );
+  }, [localDatasets, inputValue, localSearchActive]);
+
+  const localPathById = useMemo(() => {
+    return new Map(localDatasets.map((item) => [item.id, item.path]));
+  }, [localDatasets]);
+
+  const localLabelById = useMemo(() => {
+    return new Map(localDatasets.map((item) => [item.id, item.label]));
+  }, [localDatasets]);
+
+  const selectedLocalId = useMemo(() => {
+    if (!uploadedFile) return null;
+    const item = localDatasets.find((entry) => entry.path === uploadedFile);
+    return item?.id ?? deriveLocalDatasetName(uploadedFile);
+  }, [localDatasets, uploadedFile]);
+
+  const localResultIds = useMemo(() => {
+    const ids = localFilteredDatasets.map((item) => item.id);
+    if (selectedLocalId && !ids.includes(selectedLocalId)) {
+      ids.push(selectedLocalId);
+    }
+    return ids;
+  }, [localFilteredDatasets, selectedLocalId]);
+
+  const comboboxItems = pickerTab === "huggingface" ? hfResultIds : localResultIds;
+  const comboboxValue =
+    pickerTab === "huggingface" ? dataset : selectedLocalId;
+  const isHfDatasetSelected =
+    datasetSource === "huggingface" &&
+    !!dataset &&
+    !isLikelyLocalDatasetRef(dataset);
+
+  const selectedDatasetName = datasetSource === "upload" ? uploadedFile : dataset;
+  const selectedLocalDataset = useMemo(() => {
+    if (!uploadedFile) return null;
+    return localDatasets.find((item) => item.path === uploadedFile) ?? null;
+  }, [localDatasets, uploadedFile]);
+  const selectedLocalMetadata = selectedLocalDataset?.metadata ?? null;
+  const selectedLocalColumns = selectedLocalMetadata?.columns ?? [];
+  const selectedLocalRows =
+    selectedLocalDataset?.rows ?? selectedLocalMetadata?.actual_num_records ?? null;
+  const selectedLocalUpdatedAt = selectedLocalDataset?.updated_at ?? null;
 
   const comboboxAnchorRef = useRef<HTMLDivElement>(null);
   const { scrollRef, sentinelRef } = useInfiniteScroll(
@@ -147,7 +264,7 @@ export function DatasetSection() {
         accent="indigo"
         className="md:min-h-[470px] dark:shadow-border"
       >
-        <div className="flex flex-col gap-4">
+        <div className="flex h-full flex-col gap-4">
           <div className="flex flex-col gap-2">
             <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
               Load from Hub
@@ -183,22 +300,47 @@ export function DatasetSection() {
                 if (event.key !== "Enter") return;
                 if (!(event.target instanceof HTMLInputElement)) return;
                 event.preventDefault();
-                if (hfResults.length > 0) {
-                  handleDatasetSelect(hfResults[0].id);
-                } else {
-                  const text = event.target.value.trim();
-                  if (text) handleDatasetSelect(text);
+                if (pickerTab === "huggingface") {
+                  if (hfResults.length > 0) {
+                    handleDatasetSelect(hfResults[0].id);
+                  } else {
+                    const text = event.target.value.trim();
+                    if (text) handleDatasetSelect(text);
+                  }
+                  return;
+                }
+
+                if (localResultIds.length > 0) {
+                  const selectedId = localResultIds[0];
+                  const path = localPathById.get(selectedId);
+                  if (path) {
+                    handleLocalDatasetSelect(path);
+                  }
                 }
               }}
             >
               <Combobox
-                items={resultIds}
-                filteredItems={resultIds}
+                items={comboboxItems}
+                filteredItems={comboboxItems}
                 filter={null}
-                value={dataset}
-                onValueChange={handleDatasetSelect}
+                value={comboboxValue}
+                onValueChange={(value) => {
+                  if (!value) return;
+                  if (pickerTab === "huggingface") {
+                    handleDatasetSelect(value);
+                    return;
+                  }
+                  const path = localPathById.get(value);
+                  if (path) {
+                    handleLocalDatasetSelect(path);
+                  }
+                }}
                 onInputValueChange={handleInputChange}
-                itemToStringValue={(id) => id}
+                itemToStringValue={(id) =>
+                  pickerTab === "local"
+                    ? localLabelById.get(id) ?? id
+                    : id
+                }
                 autoHighlight={true}
               >
                 <ComboboxInput
@@ -210,44 +352,116 @@ export function DatasetSection() {
                   </InputGroupAddon>
                 </ComboboxInput>
                 <ComboboxContent anchor={comboboxAnchorRef}>
-                  {isLoading ? (
-                    <div className="flex items-center justify-center py-4 gap-2 text-xs text-muted-foreground">
-                      <Spinner className="size-4" /> Searching...
-                    </div>
-                  ) : (
-                    <ComboboxEmpty>No datasets found</ComboboxEmpty>
-                  )}
-                  <div
-                    ref={scrollRef}
-                    className="max-h-64 overflow-y-auto overscroll-contain [scrollbar-width:thin]"
-                  >
-                    <ComboboxList className="p-1 !max-h-none !overflow-visible">
-                      {(id: string) => {
-                        return (
-                          <ComboboxItem key={id} value={id} className="gap-2">
-                            <Tooltip>
-                              <TooltipTrigger asChild={true}>
-                                <span className="block min-w-0 flex-1 truncate">
-                                  {id}
-                                </span>
-                              </TooltipTrigger>
-                              <TooltipContent
-                                side="left"
-                                className="max-w-xs break-all"
-                              >
-                                {id}
-                              </TooltipContent>
-                            </Tooltip>
-                          </ComboboxItem>
-                        );
+                  <div className="px-2 pt-2 pb-2">
+                    <Tabs
+                      value={pickerTab}
+                      onValueChange={(value) => {
+                        setPickerTab(value as "huggingface" | "local");
+                        setInputValue("");
+                        setLocalSearchActive(false);
                       }}
-                    </ComboboxList>
-                    <div ref={sentinelRef} className="h-px" />
-                    {isLoadingMore && (
-                      <div className="flex items-center justify-center py-2">
-                        <Spinner className="size-3.5 text-muted-foreground" />
-                      </div>
-                    )}
+                      className="w-full"
+                    >
+                      <TabsList className="mb-2 w-full">
+                        <TabsTrigger value="huggingface">Hugging Face</TabsTrigger>
+                        <TabsTrigger value="local">Local</TabsTrigger>
+                      </TabsList>
+
+                      <TabsContent value="huggingface" className="m-0">
+                        {isLoading ? (
+                          <div className="flex items-center justify-center py-4 gap-2 text-xs text-muted-foreground">
+                            <Spinner className="size-4" /> Searching...
+                          </div>
+                        ) : (
+                          <ComboboxEmpty>No datasets found</ComboboxEmpty>
+                        )}
+                        <div
+                          ref={scrollRef}
+                          className="max-h-64 overflow-y-auto overscroll-contain [scrollbar-width:thin]"
+                        >
+                          <ComboboxList className="p-1 !max-h-none !overflow-visible">
+                            {(id: string) => {
+                              return (
+                                <ComboboxItem key={id} value={id} className="gap-2">
+                                  <Tooltip>
+                                    <TooltipTrigger asChild={true}>
+                                      <span className="block min-w-0 flex-1 truncate">
+                                        {id}
+                                      </span>
+                                    </TooltipTrigger>
+                                    <TooltipContent
+                                      side="left"
+                                      className="max-w-xs break-all"
+                                    >
+                                      {id}
+                                    </TooltipContent>
+                                  </Tooltip>
+                                </ComboboxItem>
+                              );
+                            }}
+                          </ComboboxList>
+                          <div ref={sentinelRef} className="h-px" />
+                          {isLoadingMore && (
+                            <div className="flex items-center justify-center py-2">
+                              <Spinner className="size-3.5 text-muted-foreground" />
+                            </div>
+                          )}
+                        </div>
+                      </TabsContent>
+
+                      <TabsContent value="local" className="m-0">
+                        {localLoading ? (
+                          <div className="flex items-center justify-center py-4 gap-2 text-xs text-muted-foreground">
+                            <Spinner className="size-4" /> Loading local datasets...
+                          </div>
+                        ) : (
+                          <>
+                            {localError ? (
+                              <p className="px-2 py-2 text-xs text-destructive">{localError}</p>
+                            ) : (
+                              <ComboboxEmpty className="px-2 py-3">
+                                <div className="flex w-full flex-col items-center gap-2 text-center">
+                                  <p className="text-xs text-muted-foreground">
+                                    {localDatasets.length === 0
+                                      ? "No local datasets yet."
+                                      : "No local datasets match search."}
+                                  </p>
+                                  {localDatasets.length === 0 ? (
+                                    <Button asChild={true} size="sm" variant="outline">
+                                      <a href="/data-recipes">Open Data Recipes</a>
+                                    </Button>
+                                  ) : null}
+                                </div>
+                              </ComboboxEmpty>
+                            )}
+                            <div className="max-h-64 overflow-y-auto overscroll-contain [scrollbar-width:thin]">
+                              <ComboboxList className="p-1 !max-h-none !overflow-visible">
+                                {(id: string) => {
+                                  const label = localLabelById.get(id) ?? id;
+                                  return (
+                                    <ComboboxItem key={id} value={id} className="gap-2">
+                                      <Tooltip>
+                                        <TooltipTrigger asChild={true}>
+                                          <span className="block min-w-0 flex-1 truncate">
+                                            {label}
+                                          </span>
+                                        </TooltipTrigger>
+                                        <TooltipContent
+                                          side="left"
+                                          className="max-w-xs break-all"
+                                        >
+                                          {label}
+                                        </TooltipContent>
+                                      </Tooltip>
+                                    </ComboboxItem>
+                                  );
+                                }}
+                              </ComboboxList>
+                            </div>
+                          </>
+                        )}
+                      </TabsContent>
+                    </Tabs>
                   </div>
                 </ComboboxContent>
               </Combobox>
@@ -273,8 +487,8 @@ export function DatasetSection() {
 
         <HfDatasetSubsetSplitSelectors
           variant="studio"
-          enabled={!!dataset && !isLikelyLocalDatasetRef(dataset)}
-          datasetName={dataset}
+          enabled={isHfDatasetSelected}
+          datasetName={isHfDatasetSelected ? dataset : null}
           accessToken={hfToken || undefined}
           datasetSubset={datasetSubset}
           setDatasetSubset={setDatasetSubset}
@@ -283,6 +497,59 @@ export function DatasetSection() {
           datasetEvalSplit={datasetEvalSplit}
           setDatasetEvalSplit={setDatasetEvalSplit}
         />
+
+        {datasetSource === "upload" && (
+          <div className="rounded-lg border bg-muted/20 px-3.5 py-3">
+            <div className="mb-3 flex items-center justify-between">
+              <p className="text-xs font-medium text-muted-foreground">Dataset Metadata</p>
+              <p className="text-[10px] text-muted-foreground/80">Data Recipe Output</p>
+            </div>
+
+            {selectedLocalDataset ? (
+              <>
+                <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
+                  <MetadataRow
+                    label="Rows"
+                    value={
+                      typeof selectedLocalRows === "number"
+                        ? selectedLocalRows.toLocaleString()
+                        : "--"
+                    }
+                  />
+                  <MetadataRow
+                    label="Columns"
+                    value={
+                      selectedLocalColumns.length > 0
+                        ? String(selectedLocalColumns.length)
+                        : "--"
+                    }
+                  />
+                  <MetadataRow
+                    label="Batches"
+                    value={
+                      typeof selectedLocalMetadata?.num_completed_batches === "number" &&
+                      typeof selectedLocalMetadata?.total_num_batches === "number"
+                        ? `${selectedLocalMetadata.num_completed_batches}/${selectedLocalMetadata.total_num_batches}`
+                        : "--"
+                    }
+                  />
+                  <MetadataRow
+                    label="Updated"
+                    value={
+                      typeof selectedLocalUpdatedAt === "number"
+                        ? new Date(selectedLocalUpdatedAt * 1000).toLocaleDateString()
+                        : "--"
+                    }
+                  />
+                </div>
+              </>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Select a local dataset to view metadata.
+              </p>
+            )}
+          </div>
+        )}
 
         <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
           <CollapsibleTrigger className="flex w-full cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
@@ -342,59 +609,83 @@ export function DatasetSection() {
           </CollapsibleContent>
         </Collapsible>
 
-        {dataset ? (
-          <div className="flex items-center gap-3 rounded-lg border bg-muted/40 px-3.5 py-3">
-            <div className="rounded-md bg-indigo-500/10 p-1.5">
-              <HugeiconsIcon
-                icon={FileAttachmentIcon}
-                className="size-4 text-indigo-500"
-              />
-            </div>
-            <div className="flex-1 min-w-0">
-              <p className="font-mono text-sm font-medium truncate">
-                {dataset}
-              </p>
-              <p className="text-[10px] text-muted-foreground">
-                Hugging Face Dataset
-                {datasetSubset && ` / ${datasetSubset}`}
-                {datasetSplit && ` / ${datasetSplit}`}
-              </p>
-            </div>
-          </div>
-        ) : (
-          <div className="flex items-center gap-3 rounded-lg border border-dashed bg-muted/20 px-3.5 py-3">
-            <HugeiconsIcon
-              icon={Database02Icon}
-              className="size-4 text-muted-foreground/40"
-            />
-            <span className="text-xs text-muted-foreground">
-              No dataset selected
-            </span>
-          </div>
-        )}
+          <div className="mt-auto flex flex-col gap-4">
+            {selectedDatasetName ? (
+              <div className="flex items-center gap-3 rounded-lg border bg-muted/40 px-3.5 py-3">
+                <div className="rounded-md bg-indigo-500/10 p-1.5">
+                  <HugeiconsIcon
+                    icon={FileAttachmentIcon}
+                    className="size-4 text-indigo-500"
+                  />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="font-mono text-sm font-medium truncate">
+                    {datasetSource === "upload"
+                      ? selectedLocalDataset?.label ??
+                        deriveLocalDatasetName(selectedDatasetName)
+                      : selectedDatasetName}
+                  </p>
+                  <p className="text-[10px] text-muted-foreground">
+                    {datasetSource === "upload" ? (
+                      selectedLocalDataset && typeof selectedLocalDataset.rows === "number" ? (
+                        `${selectedLocalDataset.rows.toLocaleString()} rows`
+                      ) : (
+                        "Local dataset"
+                      )
+                    ) : (
+                      <>
+                        Hugging Face Dataset
+                        {datasetSubset && ` / ${datasetSubset}`}
+                        {datasetSplit && ` / ${datasetSplit}`}
+                      </>
+                    )}
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-center gap-3 rounded-lg border border-dashed bg-muted/20 px-3.5 py-3">
+                <HugeiconsIcon
+                  icon={Database02Icon}
+                  className="size-4 text-muted-foreground/40"
+                />
+                <span className="text-xs text-muted-foreground">
+                  No dataset selected
+                </span>
+              </div>
+            )}
 
-        <div className="grid grid-cols-2 gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            className="cursor-pointer gap-1.5"
-          >
-            <HugeiconsIcon icon={CloudUploadIcon} className="size-3.5" />
-            Upload
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            className="cursor-pointer gap-1.5"
-            disabled={!dataset}
-            onClick={() => openPreview()}
-          >
-            <HugeiconsIcon icon={ViewIcon} className="size-3.5" />
-            View dataset
-          </Button>
-        </div>
+            <div className="grid grid-cols-2 gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                className="cursor-pointer gap-1.5"
+              >
+                <HugeiconsIcon icon={CloudUploadIcon} className="size-3.5" />
+                Upload
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="cursor-pointer gap-1.5"
+                disabled={!selectedDatasetName}
+                onClick={() => openPreview()}
+              >
+                <HugeiconsIcon icon={ViewIcon} className="size-3.5" />
+                View dataset
+              </Button>
+            </div>
+          </div>
       </div>
       </SectionCard>
+    </div>
+  );
+}
+
+function MetadataRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between gap-2 rounded-md bg-background/60 px-2 py-1.5">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="font-medium text-foreground">{value}</span>
     </div>
   );
 }

@@ -85,6 +85,7 @@ export function StudioPage(): ReactElement {
           onOpenChange={(open) => {
             if (!open) closeDialog();
           }}
+          datasetSource={config.datasetSource}
           datasetName={
             config.datasetSource === "huggingface" ? config.dataset : config.uploadedFile
           }
