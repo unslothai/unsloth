@@ -152,6 +152,8 @@ export function ModelSelectionStep() {
           </InputGroupAddon>
           <InputGroupInput
             type="password"
+            autoComplete="new-password"
+            name="hf-token"
             placeholder="hf_..."
             value={hfToken}
             onChange={(e) => setHfToken(e.target.value)}
