@@ -137,7 +137,10 @@ _PURGE_PREFIXES = (
     "trl",
     "accelerate",
     "auto_gptq",
-    "bitsandbytes",
+    # NOTE: bitsandbytes is intentionally EXCLUDED — it registers torch custom
+    # operators at import time via torch.library.define(). Those registrations
+    # live in torch's global operator registry which survives module purge.
+    # Re-importing bitsandbytes after purge → duplicate registration → crash.
     # Our own modules that import from transformers at module level
     # (e.g. model_config.py: `from transformers import AutoConfig`)
     "utils.models",
