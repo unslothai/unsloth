@@ -68,45 +68,51 @@ function findNonOverlappingPosition(
   return preferred;
 }
 
-function isProviderToConfigEdge(edge: Edge, configs: Record<string, NodeConfig>): boolean {
+function isProviderToConfigEdge(
+  edge: Edge,
+  configs: Record<string, NodeConfig>,
+): boolean {
   const source = configs[edge.source];
   const target = configs[edge.target];
   return source?.kind === "model_provider" && target?.kind === "model_config";
 }
 
-function isConfigToLlmEdge(edge: Edge, configs: Record<string, NodeConfig>): boolean {
+function isConfigToLlmEdge(
+  edge: Edge,
+  configs: Record<string, NodeConfig>,
+): boolean {
   const source = configs[edge.source];
   const target = configs[edge.target];
   return source?.kind === "model_config" && target?.kind === "llm";
-}
-
-function isDataToLlmEdge(edge: Edge, configs: Record<string, NodeConfig>): boolean {
-  const source = configs[edge.source];
-  const target = configs[edge.target];
-  return Boolean(
-    source &&
-      target &&
-      source.kind !== "model_config" &&
-      target.kind === "llm" &&
-      edge.type !== "semantic",
-  );
 }
 
 function usageKey(nodeId: string, handleId: string): string {
   return `${nodeId}::${handleId}`;
 }
 
-function incrementUsage(map: Map<string, number>, nodeId: string, handleId: string): void {
+function incrementUsage(
+  map: Map<string, number>,
+  nodeId: string,
+  handleId: string,
+): void {
   const key = usageKey(nodeId, handleId);
   map.set(key, (map.get(key) ?? 0) + 1);
 }
 
-function decrementUsage(map: Map<string, number>, nodeId: string, handleId: string): void {
+function decrementUsage(
+  map: Map<string, number>,
+  nodeId: string,
+  handleId: string,
+): void {
   const key = usageKey(nodeId, handleId);
   map.set(key, Math.max(0, (map.get(key) ?? 0) - 1));
 }
 
-function getUsage(map: Map<string, number>, nodeId: string, handleId: string): number {
+function getUsage(
+  map: Map<string, number>,
+  nodeId: string,
+  handleId: string,
+): number {
   return map.get(usageKey(nodeId, handleId)) ?? 0;
 }
 
@@ -115,7 +121,9 @@ function pickHandleByUsage(
   nodeId: string,
   usageMap: Map<string, number>,
 ): string {
-  const free = candidates.filter((handleId) => getUsage(usageMap, nodeId, handleId) === 0);
+  const free = candidates.filter(
+    (handleId) => getUsage(usageMap, nodeId, handleId) === 0,
+  );
   if (free.length > 0) {
     return free[0];
   }
@@ -152,7 +160,10 @@ function getNodeCenter(node: RecipeNode): { x: number; y: number } {
   };
 }
 
-function collectBounds(ids: string[], nodesById: Map<string, RecipeNode>): Bounds | null {
+function collectBounds(
+  ids: string[],
+  nodesById: Map<string, RecipeNode>,
+): Bounds | null {
   const rects = ids
     .map((id) => nodesById.get(id))
     .flatMap((node) => (node ? [toRect(node)] : []));
@@ -198,20 +209,26 @@ function sortPreferredLlmTargetHandles(
   return [...verticalFirst, HANDLE_IDS.dataIn, HANDLE_IDS.dataInRight];
 }
 
-function getProviderSourceHandleCandidates(direction: LayoutDirection): string[] {
+function getProviderSourceHandleCandidates(
+  direction: LayoutDirection,
+): string[] {
   return direction === "TB"
     ? [HANDLE_IDS.semanticOut, HANDLE_IDS.semanticOutBottom]
     : [HANDLE_IDS.semanticOutBottom, HANDLE_IDS.semanticOut];
 }
 
-function getProviderTargetHandleCandidates(direction: LayoutDirection): string[] {
+function getProviderTargetHandleCandidates(
+  direction: LayoutDirection,
+): string[] {
   return direction === "TB"
     ? [HANDLE_IDS.semanticIn, HANDLE_IDS.semanticInTop]
     : [HANDLE_IDS.semanticInTop, HANDLE_IDS.semanticIn];
 }
 
 function getConfigSourceHandleCandidates(direction: LayoutDirection): string[] {
-  return direction === "TB" ? [HANDLE_IDS.semanticOut] : [HANDLE_IDS.semanticOutBottom];
+  return direction === "TB"
+    ? [HANDLE_IDS.semanticOut]
+    : [HANDLE_IDS.semanticOutBottom];
 }
 
 export function optimizeModelInfraEdgeHandles(
@@ -248,28 +265,31 @@ export function optimizeModelInfraEdgeHandles(
     const targetHandleBefore = normalizeRecipeHandleId(edge.targetHandle);
     const isModelSemantic =
       isProviderToConfigEdge(edge, configs) || isConfigToLlmEdge(edge, configs);
-    const isLlmDataTarget = isDataToLlmEdge(edge, configs);
-    if (!isModelSemantic && !isLlmDataTarget) {
+    if (!isModelSemantic) {
       nextEdges.push(edge);
       continue;
     }
 
-    if (isModelSemantic) {
-      if (sourceHandleBefore) {
-        decrementUsage(sourceUsage, edge.source, sourceHandleBefore);
-      }
-      if (targetHandleBefore) {
-        decrementUsage(targetUsage, edge.target, targetHandleBefore);
-      }
-    } else if (targetHandleBefore) {
+    if (sourceHandleBefore) {
+      decrementUsage(sourceUsage, edge.source, sourceHandleBefore);
+    }
+    if (targetHandleBefore) {
       decrementUsage(targetUsage, edge.target, targetHandleBefore);
     }
 
     if (isProviderToConfigEdge(edge, configs)) {
       const sourceCandidates = getProviderSourceHandleCandidates(direction);
       const targetCandidates = getProviderTargetHandleCandidates(direction);
-      const sourceHandle = pickHandleByUsage(sourceCandidates, edge.source, sourceUsage);
-      const targetHandle = pickHandleByUsage(targetCandidates, edge.target, targetUsage);
+      const sourceHandle = pickHandleByUsage(
+        sourceCandidates,
+        edge.source,
+        sourceUsage,
+      );
+      const targetHandle = pickHandleByUsage(
+        targetCandidates,
+        edge.target,
+        targetUsage,
+      );
       nextEdges.push(
         applyEdgeWithHandles(
           edge,
@@ -287,19 +307,17 @@ export function optimizeModelInfraEdgeHandles(
       nodesById.get(edge.source),
       nodesById.get(edge.target),
     );
-    if (isLlmDataTarget) {
-      const targetHandle = pickHandleByUsage(targetCandidates, edge.target, targetUsage);
-      incrementUsage(targetUsage, edge.target, targetHandle);
-      nextEdges.push({
-        ...edge,
-        targetHandle,
-      });
-      continue;
-    }
-
     const sourceCandidates = getConfigSourceHandleCandidates(direction);
-    const sourceHandle = pickHandleByUsage(sourceCandidates, edge.source, sourceUsage);
-    const targetHandle = pickHandleByUsage(targetCandidates, edge.target, targetUsage);
+    const sourceHandle = pickHandleByUsage(
+      sourceCandidates,
+      edge.source,
+      sourceUsage,
+    );
+    const targetHandle = pickHandleByUsage(
+      targetCandidates,
+      edge.target,
+      targetUsage,
+    );
     nextEdges.push(
       applyEdgeWithHandles(
         edge,
@@ -343,13 +361,19 @@ export function centerModelInfraNodes(
   }
 
   const modelConfigIds = Object.values(configs)
-    .filter((config) => config.kind === "model_config" && nodesById.has(config.id))
+    .filter(
+      (config) => config.kind === "model_config" && nodesById.has(config.id),
+    )
     .map((config) => config.id);
   const modelProviderIds = Object.values(configs)
-    .filter((config) => config.kind === "model_provider" && nodesById.has(config.id))
+    .filter(
+      (config) => config.kind === "model_provider" && nodesById.has(config.id),
+    )
     .map((config) => config.id);
 
-  const occupiedById = new Map(nodes.map((node) => [node.id, toRect(node)] as const));
+  const occupiedById = new Map(
+    nodes.map((node) => [node.id, toRect(node)] as const),
+  );
   const clusterGap = 72;
 
   const placeNode = (nodeId: string, preferred: XYPosition): void => {

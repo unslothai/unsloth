@@ -2,8 +2,8 @@
   "recipe": {
     "model_providers": [
       {
-        "name": "provider_1",
-        "endpoint": "https://openrouter.ai/api/v1",
+        "name": "openai-compatible",
+        "endpoint": "",
         "provider_type": "openai",
         "extra_headers": {},
         "extra_body": {}
@@ -12,12 +12,11 @@
     "mcp_providers": [],
     "model_configs": [
       {
-        "alias": "model_1",
-        "model": "mistralai/ministral-8b-2512",
-        "provider": "provider_1",
+        "alias": "coding-model",
+        "model": "",
+        "provider": "openai-compatible",
         "inference_parameters": {
-          "temperature": 0.7,
-          "max_tokens": 2048
+          "temperature": 0.7
         }
       }
     ],
@@ -66,24 +65,29 @@
         "column_type": "llm-text",
         "name": "instruction",
         "drop": false,
-        "model_alias": "model_1",
+        "model_alias": "coding-model",
         "prompt": "Write one clear Python coding instruction.\nDomain: {{ domain }}\nTask type: {{ task_type }}\n\nKeep it practical and specific.\nReturn only the instruction without any code.",
-        "with_trace": "none"
+        "with_trace": "none",
+        "extract_reasoning_content": false
       },
       {
         "column_type": "llm-code",
         "name": "code_implementation",
         "drop": false,
-        "model_alias": "model_1",
+        "model_alias": "coding-model",
         "prompt": "Write Python code for:\n{{ instruction }}\n\nRequirements:\n- runnable script or function\n- include needed imports\n- short comments only where useful\n- no markdown fences",
+        "with_trace": "none",
+        "extract_reasoning_content": false,
         "code_lang": "python"
       },
       {
         "column_type": "llm-judge",
         "name": "code_judge_result",
         "drop": false,
-        "model_alias": "model_1",
+        "model_alias": "coding-model",
         "prompt": "Evaluate generated Python code against the instruction.\n\nInstruction:\n{{ instruction }}\n\nCode:\n{{ code_implementation }}",
+        "with_trace": "none",
+        "extract_reasoning_content": false,
         "scores": [
           {
             "name": "Correctness",
@@ -110,51 +114,9 @@
   "ui": {
     "nodes": [
       {
-        "id": "provider_1",
-        "x": 1032.6798211423347,
-        "y": -450.4885376732656,
-        "width": 400
-      },
-      {
-        "id": "model_1",
-        "x": 1538.0273166472973,
-        "y": -483.2003290046642,
-        "width": 400
-      },
-      {
-        "id": "domain",
-        "x": 0,
-        "y": 24,
-        "width": 400
-      },
-      {
-        "id": "task_type",
-        "x": 480,
-        "y": 24,
-        "width": 400
-      },
-      {
-        "id": "instruction",
-        "x": 958.8989453654599,
-        "y": -9.971266983459952,
-        "width": 400
-      },
-      {
-        "id": "code_implementation",
-        "x": 1538.788058529745,
-        "y": -45.56493974435071,
-        "width": 400
-      },
-      {
-        "id": "code_judge_result",
-        "x": 2040.9251520522098,
-        "y": -13.362336454344792,
-        "width": 400
-      },
-      {
         "id": "note_1",
-        "x": 1482.1328175027095,
-        "y": 242.4370179053253,
+        "x": 1526,
+        "y": 1790.75,
         "width": 568,
         "node_type": "markdown_note",
         "name": "note_1",
@@ -164,14 +126,56 @@
       },
       {
         "id": "note_2",
-        "x": 2513.2527820497985,
-        "y": -235.2544980991115,
+        "x": 2597.376821192053,
+        "y": 1233.2039735099338,
         "width": 471,
         "node_type": "markdown_note",
         "name": "note_2",
         "markdown": "The **LLM Judge** block evaluates generated outputs with rubric-style scores.\n\n##### Important:\n\n- A judge can have **one or many scores**\n- Each score has:\n  - a name (for example: `Correctness`)\n  - a description\n  - options (value + meaning)\n\n##### Example multi-score setup:\n\n- Correctness\n- Readability\n- Efficiency\n\n##### Why use multiple scores:\n\n- You get richer quality signals than a single pass/fail\n- Easier filtering and weighting later in training data prep\n\n##### Practical pattern:\n\n1. Generate code with LLM Code\n2. Judge with 2-4 focused scores\n3. Keep high-quality rows based on score thresholds\n",
         "note_color": "#FEF3C7",
         "note_opacity": "35"
+      },
+      {
+        "id": "openai-compatible",
+        "x": 1627.1046357615896,
+        "y": 921.0301324503313,
+        "width": 400
+      },
+      {
+        "id": "coding-model",
+        "x": 1627.1046357615894,
+        "y": 1138.910927152318,
+        "width": 400
+      },
+      {
+        "id": "domain",
+        "x": 84,
+        "y": 1600.5,
+        "width": 400
+      },
+      {
+        "id": "task_type",
+        "x": 648,
+        "y": 1600.5,
+        "width": 400
+      },
+      {
+        "id": "instruction",
+        "x": 1128,
+        "y": 1567,
+        "width": 400
+      },
+      {
+        "id": "code_implementation",
+        "x": 1627.1046357615894,
+        "y": 1531.4728476821192,
+        "width": 400
+      },
+      {
+        "id": "code_judge_result",
+        "x": 2124.617218543046,
+        "y": 1567.076490066225,
+        "width": 400
       }
     ],
     "edges": [
@@ -190,11 +194,11 @@
         "target_handle": "data-in"
       },
       {
-        "from": "provider_1",
-        "to": "model_1",
+        "from": "openai-compatible",
+        "to": "coding-model",
         "type": "semantic",
-        "source_handle": "semantic-out",
-        "target_handle": "semantic-in"
+        "source_handle": "semantic-out-bottom",
+        "target_handle": "semantic-in-top"
       },
       {
         "from": "instruction",
@@ -204,14 +208,14 @@
         "target_handle": "data-in"
       },
       {
-        "from": "model_1",
+        "from": "coding-model",
         "to": "instruction",
         "type": "semantic",
         "source_handle": "semantic-out-bottom",
         "target_handle": "data-in-top"
       },
       {
-        "from": "model_1",
+        "from": "coding-model",
         "to": "code_implementation",
         "type": "semantic",
         "source_handle": "semantic-out-bottom",
@@ -225,7 +229,7 @@
         "target_handle": "data-in"
       },
       {
-        "from": "model_1",
+        "from": "coding-model",
         "to": "code_judge_result",
         "type": "semantic",
         "source_handle": "semantic-out-bottom",
