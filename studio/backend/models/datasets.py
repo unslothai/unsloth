@@ -37,3 +37,4 @@ class CheckFormatResponse(BaseModel):
     detected_speaker_column: Optional[str] = None
     preview_samples: Optional[List[Dict]] = None
     total_rows: Optional[int] = None
+    warning: Optional[str] = None
