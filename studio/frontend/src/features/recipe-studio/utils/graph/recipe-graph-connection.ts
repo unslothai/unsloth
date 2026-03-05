@@ -12,7 +12,6 @@ import { isSemanticRelation } from "./relations";
 import {
   isCategoryConfig,
   isExpressionConfig,
-  isLlmConfig,
   isSubcategoryConfig,
 } from "../index";
 import {
@@ -345,6 +344,15 @@ export function applyRecipeConnection(
 
   const semanticRelation = isSemanticRelation(source, target);
   const singleRefRelation = getSingleRefRelation(source, target);
+  if (
+    singleRefRelation === "subcategory_parent" &&
+    isSubcategoryConfig(target)
+  ) {
+    const currentParent = target.subcategory_parent?.trim() ?? "";
+    if (currentParent && currentParent !== source.name) {
+      return { edges };
+    }
+  }
   const nextBaseEdges = singleRefRelation
     ? edges.filter(
         (edge) =>
@@ -402,21 +410,6 @@ export function applyRecipeConnection(
         (
           canUseCodeLangForTarget ? nextCodeLang : target.code_lang
         ) as typeof target.code_lang,
-    };
-    return { edges: nextEdges, configs: { ...configs, [target.id]: next } };
-  }
-  if (
-    isLlmConfig(target) &&
-    !semanticRelation &&
-    source.kind !== "seed" &&
-    source.kind !== "model_provider" &&
-    source.kind !== "model_config" &&
-    source.kind !== "validator"
-  ) {
-    const ref = `{{ ${source.name} }}`;
-    const next = {
-      ...target,
-      prompt: buildTemplateWithRef(target.prompt ?? "", ref),
     };
     return { edges: nextEdges, configs: { ...configs, [target.id]: next } };
   }
