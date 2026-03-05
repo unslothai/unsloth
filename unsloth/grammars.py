@@ -24,7 +24,7 @@ __all__ = [
 ]
 
 # Simple JSON array grammar
-JSON_ARR_GBNF = r"""
+JSON_ARR_GBNF = r'''
 root ::= arr
 value ::= object | array | string | number | ("true" | "false" | "null") ws
 arr ::=
@@ -52,7 +52,7 @@ string ::=
 number ::= ("-"? ([0-9] | [1-9] [0-9]*)) ("." [0-9]+)? ([eE] [-+]? [0-9]+)? ws
 ws ::= ([ 	
 ] ws)?
-"""
+'''
 
 def generate_with_grammar(
     model,
