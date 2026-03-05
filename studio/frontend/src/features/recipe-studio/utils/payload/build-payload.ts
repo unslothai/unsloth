@@ -230,7 +230,7 @@ export function buildRecipePayload(
       modelProviderConfigs.push(config);
       continue;
     }
-    modelConfigs.push(buildModelConfig(config));
+    modelConfigs.push(buildModelConfig(config, errors));
     modelConfigConfigs.push(config);
   }
 
