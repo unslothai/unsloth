@@ -242,8 +242,9 @@ class InferenceOrchestrator:
     ) -> bool:
         """Load a model for inference.
 
-        May spawn a new subprocess if no subprocess exists or if the model
-        needs a different transformers version than what's currently running.
+        Always spawns a fresh subprocess for each model load. This ensures
+        a clean Python interpreter — no stale unsloth patches, torch.compile
+        caches, or inspect.getsource() failures from a previous model.
         """
         from utils.transformers_version import needs_transformers_5
 
@@ -264,41 +265,23 @@ class InferenceOrchestrator:
                 "gguf_variant": getattr(config, "gguf_variant", None),
             }
 
+            # Always kill existing subprocess and spawn fresh.
+            # Reusing a subprocess after unsloth patches torch internals
+            # causes inspect.getsource() failures on the next model load.
             if self._ensure_subprocess_alive():
-                # Cancel any ongoing generation first (user may be loading
-                # a new model while the current one is still generating)
                 self._cancel_generation()
                 time.sleep(0.3)
-                self._drain_queue()
+                self._shutdown_subprocess()
 
-                if needed_major == self._current_transformers_major:
-                    # Reuse existing subprocess — send load command
-                    logger.info(
-                        "Reusing inference subprocess for '%s' (transformers %s.x)",
-                        model_name, needed_major,
-                    )
-                    self._send_cmd({"type": "load", **sub_config})
-                    resp = self._wait_response("loaded", timeout=180)
-                else:
-                    # Version mismatch — kill and respawn
-                    logger.info(
-                        "Transformers version mismatch (have %s.x, need %s.x) — "
-                        "restarting subprocess for '%s'",
-                        self._current_transformers_major, needed_major, model_name,
-                    )
-                    self._shutdown_subprocess()
-                    self._spawn_subprocess(sub_config)
-                    resp = self._wait_response("loaded", timeout=180)
-            else:
-                # No subprocess running — spawn new
-                logger.info(
-                    "Spawning inference subprocess for '%s' (transformers %s.x)",
-                    model_name, needed_major,
-                )
-                if self._proc is not None:
-                    # Dead subprocess — clean up
-                    self._shutdown_subprocess(timeout=2)
-                self._spawn_subprocess(sub_config)
+            elif self._proc is not None:
+                # Dead subprocess — clean up
+                self._shutdown_subprocess(timeout=2)
+
+            logger.info(
+                "Spawning fresh inference subprocess for '%s' (transformers %s.x)",
+                model_name, needed_major,
+            )
+            self._spawn_subprocess(sub_config)
                 resp = self._wait_response("loaded", timeout=180)
 
             # Update local state from response
