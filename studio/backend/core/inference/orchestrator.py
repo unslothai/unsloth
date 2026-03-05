@@ -282,7 +282,7 @@ class InferenceOrchestrator:
                 model_name, needed_major,
             )
             self._spawn_subprocess(sub_config)
-                resp = self._wait_response("loaded", timeout=180)
+            resp = self._wait_response("loaded", timeout=180)
 
             # Update local state from response
             if resp.get("success"):
