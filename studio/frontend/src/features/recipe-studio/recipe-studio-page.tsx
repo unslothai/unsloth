@@ -55,6 +55,8 @@ import type { RecipeExecutionRecord, RecipeStudioView } from "./execution-types"
 const NODE_TYPES: NodeTypes = { builder: RecipeNode, aux: RecipeGraphAuxNode };
 const EDGE_TYPES: EdgeTypes = { canvas: DataEdge, semantic: RecipeGraphSemanticEdge };
 const COMPLETE_ISLAND_VISIBLE_MS = 7_000;
+const TAB_SWITCH_FIT_DELAY_MS = 110;
+const FIT_ANIMATION_MS = 340;
 
 export type PersistRecipeInput = {
   id: string | null;
@@ -175,6 +177,7 @@ export function RecipeStudioPage({
   const previousActiveViewRef = useRef<RecipeStudioView>("editor");
   const previousActiveExecutionIdRef = useRef<string | null>(null);
   const pendingEditorTabFitRef = useRef(false);
+  const forceEditorTabFitRef = useRef(false);
   const viewportMovedSinceAutoFitRef = useRef(true);
   const {
     handleNodeClick,
@@ -386,12 +389,77 @@ export function RecipeStudioPage({
   const runDialogLoading =
     runDialogKind === "preview" ? previewLoading : fullLoading;
 
+  const scheduleFitView = useCallback(
+    ({ delayMs = 0 }: { delayMs?: number } = {}) => {
+      if (!reactFlowInstance) {
+        return () => {};
+      }
+
+      let timeoutId = 0;
+      let frameId = 0;
+      let retryFrameId = 0;
+
+      const fitWithCurrentNodes = () => {
+        const targetNodes = getFitNodeIdsIgnoringNotes(reactFlowInstance.getNodes());
+        if (targetNodes.length === 0) {
+          return false;
+        }
+        viewportMovedSinceAutoFitRef.current = false;
+        reactFlowInstance.fitView({
+          duration: FIT_ANIMATION_MS,
+          nodes: targetNodes,
+        });
+        return true;
+      };
+
+      const runFit = () => {
+        if (fitWithCurrentNodes()) {
+          return;
+        }
+
+        retryFrameId = window.requestAnimationFrame(() => {
+          fitWithCurrentNodes();
+        });
+      };
+
+      const start = () => {
+        frameId = window.requestAnimationFrame(runFit);
+      };
+
+      if (delayMs > 0) {
+        timeoutId = window.setTimeout(start, delayMs);
+      } else {
+        start();
+      }
+
+      return () => {
+        if (timeoutId) {
+          window.clearTimeout(timeoutId);
+        }
+        if (frameId) {
+          window.cancelAnimationFrame(frameId);
+        }
+        if (retryFrameId) {
+          window.cancelAnimationFrame(retryFrameId);
+        }
+      };
+    },
+    [reactFlowInstance],
+  );
+
   useEffect(() => {
     if (previousActiveViewRef.current !== activeView && activeView === "editor") {
       pendingEditorTabFitRef.current = true;
+      forceEditorTabFitRef.current = previousActiveViewRef.current === "executions";
     }
     previousActiveViewRef.current = activeView;
   }, [activeView]);
+
+  useEffect(() => {
+    if (activeView !== "editor" && reactFlowInstance) {
+      setReactFlowInstance(null);
+    }
+  }, [activeView, reactFlowInstance]);
 
   useEffect(() => {
     if (
@@ -402,36 +470,13 @@ export function RecipeStudioPage({
       return;
     }
     pendingEditorTabFitRef.current = false;
-    if (!viewportMovedSinceAutoFitRef.current) {
+    const forceFit = forceEditorTabFitRef.current;
+    forceEditorTabFitRef.current = false;
+    if (!forceFit && !viewportMovedSinceAutoFitRef.current) {
       return;
     }
-    const targetNodes = getFitNodeIdsIgnoringNotes(reactFlowInstance.getNodes());
-    if (targetNodes.length === 0) {
-      return;
-    }
-    viewportMovedSinceAutoFitRef.current = false;
-    let frame2 = 0;
-    let frame3 = 0;
-    const frame1 = window.requestAnimationFrame(() => {
-      frame2 = window.requestAnimationFrame(() => {
-        frame3 = window.requestAnimationFrame(() => {
-          reactFlowInstance.fitView({
-            duration: 320,
-            nodes: targetNodes,
-          });
-        });
-      });
-    });
-    return () => {
-      window.cancelAnimationFrame(frame1);
-      if (frame2) {
-        window.cancelAnimationFrame(frame2);
-      }
-      if (frame3) {
-        window.cancelAnimationFrame(frame3);
-      }
-    };
-  }, [activeView, reactFlowInstance]);
+    return scheduleFitView({ delayMs: TAB_SWITCH_FIT_DELAY_MS });
+  }, [activeView, reactFlowInstance, scheduleFitView]);
 
   useEffect(() => {
     if (!reactFlowInstance || fitViewTick === 0 || activeView !== "editor") {
@@ -441,33 +486,8 @@ export function RecipeStudioPage({
       return;
     }
     lastProcessedFitTickRef.current = fitViewTick;
-    const targetNodes = getFitNodeIdsIgnoringNotes(reactFlowInstance.getNodes());
-    if (targetNodes.length === 0) {
-      return;
-    }
-    viewportMovedSinceAutoFitRef.current = false;
-    let frame2 = 0;
-    let frame3 = 0;
-    const frame1 = window.requestAnimationFrame(() => {
-      frame2 = window.requestAnimationFrame(() => {
-        frame3 = window.requestAnimationFrame(() => {
-          reactFlowInstance.fitView({
-            duration: 320,
-            nodes: targetNodes,
-          });
-        });
-      });
-    });
-    return () => {
-      window.cancelAnimationFrame(frame1);
-      if (frame2) {
-        window.cancelAnimationFrame(frame2);
-      }
-      if (frame3) {
-        window.cancelAnimationFrame(frame3);
-      }
-    };
-  }, [activeView, fitViewTick, reactFlowInstance]);
+    return scheduleFitView();
+  }, [activeView, fitViewTick, reactFlowInstance, scheduleFitView]);
 
   return (
     <div className="min-h-screen bg-background">
