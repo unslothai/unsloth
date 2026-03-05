@@ -7,7 +7,7 @@ import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 import torch
-from utils.hardware import clear_gpu_cache
+from utils.hardware import clear_gpu_cache, safe_num_proc
 torch._dynamo.config.recompile_limit = 64
 from unsloth import FastLanguageModel, FastVisionModel, is_bfloat16_supported
 from unsloth.chat_templates import get_chat_template
@@ -175,6 +175,15 @@ class UnslothTrainer:
                     token=hf_token,
                 )
                 logger.info("Loaded vision model")
+
+                # Diagnostic: check if FastVisionModel returned a real Processor or a raw tokenizer
+                from transformers import ProcessorMixin
+                tok = self.tokenizer
+                has_image_proc = isinstance(tok, ProcessorMixin) or hasattr(tok, "image_processor")
+                print(f"\n[VLM Diagnostic] FastVisionModel returned: {type(tok).__name__}")
+                print(f"[VLM Diagnostic] Is ProcessorMixin: {isinstance(tok, ProcessorMixin)}")
+                print(f"[VLM Diagnostic] Has image_processor: {hasattr(tok, 'image_processor')}")
+                print(f"[VLM Diagnostic] Usable as vision processor: {has_image_proc}\n")
             else:
                 # Load text model - returns (model, tokenizer)
                 self.model, self.tokenizer = FastLanguageModel.from_pretrained(
@@ -345,7 +354,10 @@ class UnslothTrainer:
                      custom_format_mapping: dict = None,
                      subset: str = None,
                      train_split: str = "train",
-                     eval_split: str = None) -> Optional[tuple]:
+                     eval_split: str = None,
+                     eval_steps: float = 0.00,
+                     dataset_slice_start: int = None,
+                     dataset_slice_end: int = None) -> Optional[tuple]:
         """
         Load and prepare dataset for training.
 
@@ -360,6 +372,7 @@ class UnslothTrainer:
             dataset = None
             eval_dataset = None
             has_separate_eval_source = False  # True if eval comes from a separate HF split
+            eval_enabled = eval_steps is not None and eval_steps > 0
 
             if local_datasets:
                 # Load local datasets
@@ -412,26 +425,41 @@ class UnslothTrainer:
                 print(f"Loaded dataset from Hugging Face: {dataset_source}\n")
 
                 # Resolve eval split from a separate HF split (explicit or auto-detected)
-                if eval_split:
-                    # Explicit eval split provided - load it directly
-                    print(f"Loading explicit eval split: '{eval_split}'\n")
-                    eval_load_kwargs = {"path": dataset_source, "split": eval_split}
-                    if subset:
-                        eval_load_kwargs["name"] = subset
-                    eval_dataset = load_dataset(**eval_load_kwargs)
-                    has_separate_eval_source = True
-                    print(f"Loaded eval split '{eval_split}' with {len(eval_dataset)} rows\n")
-                else:
-                    # Auto-detect eval split from HF (returns a separate dataset, or None)
-                    eval_dataset = self._auto_detect_eval_split_from_hf(
-                        dataset_source=dataset_source,
-                        subset=subset,
-                    )
-                    if eval_dataset is not None:
+                if eval_enabled:
+                    if eval_split:
+                        # Explicit eval split provided - load it directly
+                        print(f"Loading explicit eval split: '{eval_split}'\n")
+                        eval_load_kwargs = {"path": dataset_source, "split": eval_split}
+                        if subset:
+                            eval_load_kwargs["name"] = subset
+                        eval_dataset = load_dataset(**eval_load_kwargs)
                         has_separate_eval_source = True
+                        print(f"Loaded eval split '{eval_split}' with {len(eval_dataset)} rows\n")
+                    else:
+                        # Auto-detect eval split from HF (returns a separate dataset, or None)
+                        eval_dataset = self._auto_detect_eval_split_from_hf(
+                            dataset_source=dataset_source,
+                            subset=subset,
+                        )
+                        if eval_dataset is not None:
+                            has_separate_eval_source = True
+                else:
+                    print("Eval disabled (eval_steps <= 0), skipping eval split detection\n")
 
             if dataset is None:
                 raise ValueError("No dataset provided")
+
+            # Apply index range slicing if requested (inclusive on both ends)
+            if dataset_slice_start is not None or dataset_slice_end is not None:
+                total_rows = len(dataset)
+                start = dataset_slice_start if dataset_slice_start is not None else 0
+                end = dataset_slice_end if dataset_slice_end is not None else total_rows - 1
+                # Clamp to valid range
+                start = max(0, min(start, total_rows - 1))
+                end = max(start, min(end, total_rows - 1))
+                dataset = dataset.select(range(start, end + 1))
+                print(f"Sliced dataset to rows [{start}, {end}]: {len(dataset)} of {total_rows} rows\n")
+                self._update_progress(status_message=f"Sliced dataset to {len(dataset)} rows (indices {start}-{end})")
 
             # Check if stopped before applying template
             if self.should_stop:
@@ -449,11 +477,20 @@ class UnslothTrainer:
                 format_type=format_type,
                 dataset_name=dataset_source,
                 custom_format_mapping=custom_format_mapping,
+                progress_callback=self._update_progress,
             )
 
             # Check if stopped during formatting
             if self.should_stop:
                 print("Stopped during dataset formatting\n")
+                return None
+
+            # Abort if dataset formatting/conversion failed
+            if not dataset_info.get("success", True):
+                errors = dataset_info.get("errors", [])
+                error_msg = "; ".join(errors) if errors else "Dataset formatting failed"
+                logger.error(f"Dataset conversion failed: {error_msg}")
+                self._update_progress(error=error_msg)
                 return None
 
             self._update_progress(status_message=f"Dataset formatted and ready for training")
@@ -474,7 +511,7 @@ class UnslothTrainer:
                 )
                 eval_dataset = eval_info["dataset"]
                 print(f"Eval dataset formatted successfully\n")
-            elif not has_separate_eval_source:
+            elif eval_enabled and not has_separate_eval_source:
                 # No separate eval source — split the already-formatted dataset
                 formatted_dataset = dataset_info["dataset"]
                 split_result = self._resolve_eval_split_from_dataset(formatted_dataset)
@@ -545,7 +582,7 @@ class UnslothTrainer:
     def start_training(self,
                        dataset: Dataset,
                        eval_dataset: Dataset = None,
-                       eval_steps: float = 0.01,
+                       eval_steps: float = 0.00,
                        output_dir: str = "./outputs",
                        num_epochs: int = 3,
                        learning_rate: float = 5e-5,
@@ -713,7 +750,7 @@ class UnslothTrainer:
                 "output_dir": output_dir,
                 "report_to": ["wandb"] if training_args.get('enable_wandb', False) else "none",
                 "include_num_input_tokens_seen": True,  # Enable token counting
-                "dataset_num_proc": max(1, os.cpu_count() // 4),
+                "dataset_num_proc": safe_num_proc(max(1, os.cpu_count() // 4)),
             }
             
             # Add warmup parameter - use warmup_ratio if provided, otherwise warmup_steps
@@ -745,12 +782,16 @@ class UnslothTrainer:
 
             # ========== EVAL CONFIGURATION ==========
             eval_dataset = training_args.get('eval_dataset', None)
-            eval_steps_val = training_args.get('eval_steps', 0.01)
+            eval_steps_val = training_args.get('eval_steps', 0.00)
             if eval_dataset is not None:
-                config_args["eval_strategy"] = "steps"
-                config_args["eval_steps"] = eval_steps_val
-                print(f"Evaluation enabled: eval_steps={eval_steps_val} (fraction of total steps)\n")
-                print(f"Eval dataset: {len(eval_dataset)} rows\n")
+                if eval_steps_val > 0:
+                    config_args["eval_strategy"] = "steps"
+                    config_args["eval_steps"] = eval_steps_val
+                    print(f"✅ Evaluation enabled: eval_steps={eval_steps_val} (fraction of total steps)\n")
+                    print(f"Eval dataset: {len(eval_dataset)} rows\n")
+                else:
+                    print(f"⚠️  Eval dataset provided but eval_steps={eval_steps_val} (disabled)\n")
+                    print("To enable evaluation, set eval_steps > 0.0\n")
             else:
                 print("No eval dataset — evaluation disabled\n")
 
@@ -873,7 +914,7 @@ class UnslothTrainer:
                         self.trainer,
                         instruction_part=instruction_part,
                         response_part=response_part,
-                        num_proc=config_args.get("dataset_num_proc", max(1, os.cpu_count() // 4)),
+                        num_proc=config_args.get("dataset_num_proc", safe_num_proc(max(1, os.cpu_count() // 4))),
                     )
                     print("Train on responses only configured successfully\n")
 

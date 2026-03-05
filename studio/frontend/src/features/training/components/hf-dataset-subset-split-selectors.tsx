@@ -29,6 +29,8 @@ type Props = {
   setDatasetSubset: (v: string | null) => void;
   datasetSplit: string | null;
   setDatasetSplit: (v: string | null) => void;
+  datasetEvalSplit: string | null;
+  setDatasetEvalSplit: (v: string | null) => void;
 };
 
 export function HfDatasetSubsetSplitSelectors({
@@ -40,12 +42,13 @@ export function HfDatasetSubsetSplitSelectors({
   setDatasetSubset,
   datasetSplit,
   setDatasetSplit,
+  datasetEvalSplit,
+  setDatasetEvalSplit,
 }: Props) {
   const {
     subsets: hfSubsets,
     splits: hfSplits,
     hasMultipleSubsets,
-    hasMultipleSplits,
     isLoading,
     error,
   } = useHfDatasetSplits(enabled ? datasetName : null, datasetSubset, {
@@ -78,6 +81,8 @@ export function HfDatasetSubsetSplitSelectors({
 
   if (!enabled || !datasetName) return null;
 
+  const showDropdowns = !isLoading && !error && hfSubsets.length > 0;
+
   return (
     <>
       {isLoading && (
@@ -101,171 +106,173 @@ export function HfDatasetSubsetSplitSelectors({
               : "rounded-lg border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-700 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-400"
           }
         >
-          Could not fetch dataset splits: {error}
+          {error}
         </div>
       )}
 
-      {!isLoading && !error && hasMultipleSubsets && (
+      {showDropdowns && (
         <>
-          {variant === "wizard" ? (
-            <Field>
-              <FieldLabel className="flex items-center gap-1.5">
-                Subset
-                <Tooltip>
-                  <TooltipTrigger asChild={true}>
-                    <button
-                      type="button"
-                      className="text-muted-foreground/50 hover:text-muted-foreground"
-                    >
-                      <HugeiconsIcon
-                        icon={InformationCircleIcon}
-                        className="size-3.5"
-                      />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent className="max-w-xs">
-                    This dataset has multiple subsets. Select which one to use
-                    for training.
-                  </TooltipContent>
-                </Tooltip>
-              </FieldLabel>
-              <Select
-                value={datasetSubset ?? ""}
-                onValueChange={(v) => setDatasetSubset(v || null)}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue placeholder="Select a subset..." />
-                </SelectTrigger>
-                <SelectContent>
-                  {hfSubsets.map((subset) => (
-                    <SelectItem key={subset} value={subset}>
-                      {subset}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </Field>
-          ) : (
-            <div className="flex flex-col gap-1.5">
-              <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                Subset
-                <Tooltip>
-                  <TooltipTrigger asChild={true}>
-                    <button
-                      type="button"
-                      className="text-foreground/70 hover:text-foreground"
-                    >
-                      <HugeiconsIcon
-                        icon={InformationCircleIcon}
-                        className="size-3"
-                      />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    This dataset has multiple subsets. Select which one to use
-                    for training.
-                  </TooltipContent>
-                </Tooltip>
-              </span>
-              <Select
-                value={datasetSubset ?? ""}
-                onValueChange={(v) => setDatasetSubset(v || null)}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue placeholder="Select a subset..." />
-                </SelectTrigger>
-                <SelectContent>
-                  {hfSubsets.map((subset) => (
-                    <SelectItem key={subset} value={subset}>
-                      {subset}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+          {variant === "studio" ? (
+            <div className="grid gap-3 sm:grid-cols-2">
+              <SelectorDropdown
+                variant={variant}
+                label="Subset"
+                tooltip="Select which subset (config) of the dataset to use."
+                value={datasetSubset}
+                onChange={setDatasetSubset}
+                options={hfSubsets}
+                placeholder="Select a subset..."
+              />
+              <SelectorDropdown
+                variant={variant}
+                label="Train Split"
+                tooltip="Select which split to use for training."
+                value={datasetSplit}
+                onChange={setDatasetSplit}
+                options={hfSplits}
+                placeholder="Select a split..."
+              />
             </div>
-          )}
-        </>
-      )}
-
-      {!isLoading && !error && hasMultipleSplits && (
-        <>
-          {variant === "wizard" ? (
-            <Field>
-              <FieldLabel className="flex items-center gap-1.5">
-                Split
-                <Tooltip>
-                  <TooltipTrigger asChild={true}>
-                    <button
-                      type="button"
-                      className="text-muted-foreground/50 hover:text-muted-foreground"
-                    >
-                      <HugeiconsIcon
-                        icon={InformationCircleIcon}
-                        className="size-3.5"
-                      />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent className="max-w-xs">
-                    Select which split of the dataset to use for training.
-                  </TooltipContent>
-                </Tooltip>
-              </FieldLabel>
-              <Select
-                value={datasetSplit ?? ""}
-                onValueChange={(v) => setDatasetSplit(v || null)}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue placeholder="Select a split..." />
-                </SelectTrigger>
-                <SelectContent>
-                  {hfSplits.map((split) => (
-                    <SelectItem key={split} value={split}>
-                      {split}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </Field>
           ) : (
-            <div className="flex flex-col gap-1.5">
-              <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                Split
-                <Tooltip>
-                  <TooltipTrigger asChild={true}>
-                    <button
-                      type="button"
-                      className="text-foreground/70 hover:text-foreground"
-                    >
-                      <HugeiconsIcon
-                        icon={InformationCircleIcon}
-                        className="size-3"
-                      />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    Select which split of the dataset to use for training.
-                  </TooltipContent>
-                </Tooltip>
-              </span>
-              <Select
-                value={datasetSplit ?? ""}
-                onValueChange={(v) => setDatasetSplit(v || null)}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue placeholder="Select a split..." />
-                </SelectTrigger>
-                <SelectContent>
-                  {hfSplits.map((split) => (
-                    <SelectItem key={split} value={split}>
-                      {split}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+            <>
+              <SelectorDropdown
+                variant={variant}
+                label="Subset"
+                tooltip="Select which subset (config) of the dataset to use."
+                value={datasetSubset}
+                onChange={setDatasetSubset}
+                options={hfSubsets}
+                placeholder="Select a subset..."
+              />
+              <SelectorDropdown
+                variant={variant}
+                label="Train Split"
+                tooltip="Select which split to use for training."
+                value={datasetSplit}
+                onChange={setDatasetSplit}
+                options={hfSplits}
+                placeholder="Select a split..."
+              />
+            </>
           )}
+          <SelectorDropdown
+            variant={variant}
+            label="Eval Split"
+            tooltip="Select which split to use for evaluation. None means no evaluation during training."
+            value={datasetEvalSplit}
+            onChange={setDatasetEvalSplit}
+            options={hfSplits}
+            placeholder="None"
+            allowNone
+          />
         </>
       )}
     </>
+  );
+}
+
+function SelectorDropdown({
+  variant,
+  label,
+  tooltip,
+  value,
+  onChange,
+  options,
+  placeholder,
+  allowNone = false,
+}: {
+  variant: "wizard" | "studio";
+  label: string;
+  tooltip: string;
+  value: string | null;
+  onChange: (v: string | null) => void;
+  options: string[];
+  placeholder: string;
+  allowNone?: boolean;
+}) {
+  if (variant === "wizard") {
+    return (
+      <Field>
+        <FieldLabel className="flex items-center gap-1.5">
+          {label}
+          <Tooltip>
+            <TooltipTrigger asChild={true}>
+              <button
+                type="button"
+                className="text-muted-foreground/50 hover:text-muted-foreground"
+              >
+                <HugeiconsIcon
+                  icon={InformationCircleIcon}
+                  className="size-3.5"
+                />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-xs">
+              {tooltip}
+            </TooltipContent>
+          </Tooltip>
+        </FieldLabel>
+        <Select
+          value={value ?? "_none"}
+          onValueChange={(v) => onChange(v === "_none" ? null : v)}
+        >
+          <SelectTrigger className="w-full">
+            <SelectValue placeholder={placeholder} />
+          </SelectTrigger>
+          <SelectContent>
+            {allowNone && (
+              <SelectItem value="_none">None</SelectItem>
+            )}
+            {options.map((opt) => (
+              <SelectItem key={opt} value={opt}>
+                {opt}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </Field>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+        {label}
+        <Tooltip>
+          <TooltipTrigger asChild={true}>
+            <button
+              type="button"
+              className="text-foreground/70 hover:text-foreground"
+            >
+              <HugeiconsIcon
+                icon={InformationCircleIcon}
+                className="size-3"
+              />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>
+            {tooltip}
+          </TooltipContent>
+        </Tooltip>
+      </span>
+      <Select
+        value={value ?? "_none"}
+        onValueChange={(v) => onChange(v === "_none" ? null : v)}
+      >
+        <SelectTrigger className="w-full">
+          <SelectValue placeholder={placeholder} />
+        </SelectTrigger>
+        <SelectContent>
+          {allowNone && (
+            <SelectItem value="_none">None</SelectItem>
+          )}
+          {options.map((opt) => (
+            <SelectItem key={opt} value={opt}>
+              {opt}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
   );
 }

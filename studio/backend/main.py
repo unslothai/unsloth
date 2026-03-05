@@ -9,12 +9,20 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from pathlib import Path
 from datetime import datetime
 
 # Import routers
-from routes import training_router, models_router, inference_router, datasets_router, auth_router, export_router
+from routes import (
+    auth_router,
+    data_recipe_router,
+    datasets_router,
+    export_router,
+    inference_router,
+    models_router,
+    training_router,
+)
 from auth import storage
 from utils.hardware import detect_hardware, get_device, DeviceType
 import utils.hardware.hardware as _hw_module
@@ -89,6 +97,7 @@ app.include_router(training_router, prefix="/api/train", tags=["training"])
 app.include_router(models_router, prefix="/api/models", tags=["models"])
 app.include_router(inference_router, prefix="/api/inference", tags=["inference"])
 app.include_router(datasets_router, prefix="/api/datasets", tags=["datasets"])
+app.include_router(data_recipe_router, prefix="/api/data-recipe", tags=["data-recipe"])
 app.include_router(export_router, prefix="/api/export", tags=["export"])
 
 
@@ -154,27 +163,44 @@ async def get_hardware_info():
 
 def setup_frontend(app: FastAPI, build_path: Path):
     """Mount frontend static files (optional)"""
-    if build_path.exists():
-        # Mount assets
-        assets_dir = build_path / "assets"
-        if assets_dir.exists():
-            app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+    if not build_path.exists():
+        return False
 
-        @app.get("/")
-        async def serve_root():
-            return FileResponse(build_path / "index.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+    # Mount assets
+    assets_dir = build_path / "assets"
+    if assets_dir.exists():
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
 
-        @app.get("/{full_path:path}")
-        async def serve_frontend(full_path: str):
-            if full_path.startswith("api"):
-                return {"error": "API endpoint not found"}
+    @app.get("/")
+    async def serve_root():
+        content = (build_path / "index.html").read_bytes()
+        return Response(
+            content=content,
+            media_type="text/html",
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+        )
 
-            file_path = build_path / full_path
-            if file_path.is_file():
-                return FileResponse(file_path)
+    @app.get("/{full_path:path}")
+    async def serve_frontend(full_path: str):
+        if full_path.startswith("api"):
+            return {"error": "API endpoint not found"}
 
-            return FileResponse(build_path / "index.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+        file_path = (build_path / full_path).resolve()
 
-        return True
-    return False
+        # Block path traversal — ensure resolved path stays inside build_path
+        if not str(file_path).startswith(str(build_path.resolve())):
+            return Response(status_code=403)
+
+        if file_path.is_file():
+            return FileResponse(file_path)
+
+        # Serve index.html as bytes — avoids Content-Length mismatch
+        content = (build_path / "index.html").read_bytes()
+        return Response(
+            content=content,
+            media_type="text/html",
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+        )
+
+    return True
 

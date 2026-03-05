@@ -38,7 +38,7 @@ import {
   useHfTokenValidation,
   useInfiniteScroll,
 } from "@/hooks";
-import { cn, formatCompact } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 import {
   HfDatasetSubsetSplitSelectors,
   useTrainingConfigStore,
@@ -75,8 +75,11 @@ export function DatasetStep() {
     setDatasetSubset,
     datasetSplit,
     setDatasetSplit,
+    datasetEvalSplit,
+    setDatasetEvalSplit,
     uploadedFile,
     setUploadedFile,
+    modelType,
   } = useTrainingConfigStore(
     useShallow((s) => ({
       hfToken: s.hfToken,
@@ -91,8 +94,11 @@ export function DatasetStep() {
       setDatasetSubset: s.setDatasetSubset,
       datasetSplit: s.datasetSplit,
       setDatasetSplit: s.setDatasetSplit,
+      datasetEvalSplit: s.datasetEvalSplit,
+      setDatasetEvalSplit: s.setDatasetEvalSplit,
       uploadedFile: s.uploadedFile,
       setUploadedFile: s.setUploadedFile,
+      modelType: s.modelType,
     })),
   );
 
@@ -106,6 +112,7 @@ export function DatasetStep() {
     fetchMore,
     error: hfSearchError,
   } = useHfDatasetSearch(debouncedQuery, {
+    modelType,
     accessToken: hfToken || undefined,
   });
 
@@ -247,19 +254,11 @@ export function DatasetStep() {
                   >
                     <ComboboxList className="p-1 !max-h-none !overflow-visible">
                       {(id: string) => {
-                        const r = hfResults.find((r) => r.id === id);
-                        const detail = r?.totalExamples
-                          ? `${formatCompact(r.totalExamples)} rows`
-                          : (r?.sizeCategory ?? null);
                         return (
-                          <ComboboxItem
-                            key={id}
-                            value={id}
-                            className="justify-between"
-                          >
+                          <ComboboxItem key={id} value={id} className="gap-2">
                             <Tooltip>
                               <TooltipTrigger asChild={true}>
-                                <span className="min-w-0 flex-1 truncate">
+                                <span className="block min-w-0 flex-1 truncate">
                                   {id}
                                 </span>
                               </TooltipTrigger>
@@ -270,15 +269,6 @@ export function DatasetStep() {
                                 {id}
                               </TooltipContent>
                             </Tooltip>
-                            {detail ? (
-                              <span className="text-[10px] text-muted-foreground shrink-0">
-                                {detail}
-                              </span>
-                            ) : r?.downloads != null ? (
-                              <span className="text-[10px] text-muted-foreground shrink-0">
-                                ↓{formatCompact(r.downloads)}
-                              </span>
-                            ) : null}
                           </ComboboxItem>
                         );
                       }}
@@ -304,6 +294,8 @@ export function DatasetStep() {
             setDatasetSubset={setDatasetSubset}
             datasetSplit={datasetSplit}
             setDatasetSplit={setDatasetSplit}
+            datasetEvalSplit={datasetEvalSplit}
+            setDatasetEvalSplit={setDatasetEvalSplit}
           />
         </>
       ) : (
