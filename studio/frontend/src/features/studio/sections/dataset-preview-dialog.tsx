@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import {
   Dialog,
@@ -19,8 +19,11 @@ import { collectPreviewImages, formatCell } from "./dataset-preview-dialog-utils
 import {
   DatasetMappingCard,
   DatasetMappingFooter,
-  HeaderPick,
+  HeaderRolePicker,
   deriveDefaultMapping,
+  getAvailableRoles,
+  isMappingComplete,
+  remapRolesForFormat,
 } from "./dataset-preview-dialog-mapping";
 
 type DatasetPreviewDialogProps = {
@@ -50,26 +53,53 @@ export function DatasetPreviewDialog({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const { manualMapping, setManualMapping } = useTrainingConfigStore(
+  const { manualMapping, setManualMapping, datasetFormat } = useTrainingConfigStore(
     useShallow((s) => ({
       manualMapping: s.datasetManualMapping,
       setManualMapping: s.setDatasetManualMapping,
+      datasetFormat: s.datasetFormat,
     })),
   );
   const { isStarting, startError, startTrainingRun } = useTrainingActions();
 
-  const mappingEnabled = !!data?.requires_manual_mapping;
+  // If the backend reports multimodal data, treat as VLM even if the prop
+  // hasn't caught up yet (isDatasetMultimodal may still be null in the store).
+  const effectiveIsVlm = isVlm || !!data?.is_multimodal;
+
+  const hasHeuristicMapping = !data?.requires_manual_mapping && !!data?.suggested_mapping;
+  const mappingEnabled = !!data?.requires_manual_mapping || hasHeuristicMapping;
   const showMappingFooter = mode === "mapping" && mappingEnabled;
-  const mappingOk = !!manualMapping.input && !!manualMapping.output;
-  const leftLabel = isVlm ? "Image" : "Input";
-  const rightLabel = isVlm ? "Text" : "Output";
+  const mappingOk = isMappingComplete(manualMapping, effectiveIsVlm, datasetFormat);
+  const availableRoles = getAvailableRoles(effectiveIsVlm, datasetFormat);
   const isHfDataset = !!datasetName && datasetName.includes("/");
 
+  // When format changes, remap existing mapping roles to the new format's role names
+  const prevFormatRef = useRef(datasetFormat);
   useEffect(() => {
-    if (!manualMapping.input || !manualMapping.output) return;
-    if (manualMapping.input !== manualMapping.output) return;
-    setManualMapping({ input: manualMapping.input, output: null });
-  }, [manualMapping.input, manualMapping.output, setManualMapping]);
+    const prev = prevFormatRef.current;
+    prevFormatRef.current = datasetFormat;
+    if (prev === datasetFormat) return;
+    if (Object.keys(manualMapping).length === 0) return;
+    setManualMapping(remapRolesForFormat(manualMapping, datasetFormat));
+  }, [datasetFormat]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Handle role change for a column
+  const handleRoleChange = useCallback(
+    (colName: string, role: string | undefined) => {
+      const next = { ...manualMapping };
+      // Remove this column's previous role
+      delete next[colName];
+      if (role) {
+        // Remove any other column that had this role (each role can only be assigned once)
+        for (const [col, r] of Object.entries(next)) {
+          if (r === role) delete next[col];
+        }
+        next[colName] = role;
+      }
+      setManualMapping(next);
+    },
+    [manualMapping, setManualMapping],
+  );
 
   useEffect(() => {
     if (!open || !datasetName) {
@@ -114,14 +144,16 @@ export function DatasetPreviewDialog({
     };
   }, [open, datasetName, hfToken, datasetSubset, datasetSplit, isVlm, initialData]);
 
+  // Pre-fill mapping from suggested_mapping when data arrives
   useEffect(() => {
     if (!open || !datasetName) return;
-    if (!data?.requires_manual_mapping) return;
-    if (manualMapping.input || manualMapping.output) return;
-    const derived = deriveDefaultMapping(data, isVlm);
-    if (!derived.input && !derived.output) return;
+    if (!data?.requires_manual_mapping && !data?.suggested_mapping) return;
+    // Don't overwrite if mapping already has entries
+    if (Object.keys(manualMapping).length > 0) return;
+    const derived = deriveDefaultMapping(data, effectiveIsVlm, datasetFormat);
+    if (Object.keys(derived).length === 0) return;
     setManualMapping(derived);
-  }, [open, datasetName, data, isVlm, manualMapping.input, manualMapping.output, setManualMapping]);
+  }, [open, datasetName, data, effectiveIsVlm, datasetFormat, manualMapping, setManualMapping]);
 
   const rows = data?.preview_samples ?? [];
   const columns = data?.columns ?? [];
@@ -150,32 +182,11 @@ export function DatasetPreviewDialog({
             {colName}
           </span>
           {mappingEnabled && (
-            <div className="flex items-center gap-3">
-              {canShowInputPicker(colName, manualMapping) && (
-                <HeaderPick
-                  label={leftLabel}
-                  checked={manualMapping.input === colName}
-                  onCheckedChange={(checked) => {
-                    setManualMapping({
-                      input: checked ? colName : null,
-                      output: manualMapping.output,
-                    });
-                  }}
-                />
-              )}
-              {canShowOutputPicker(colName, manualMapping) && (
-                <HeaderPick
-                  label={rightLabel}
-                  checked={manualMapping.output === colName}
-                  onCheckedChange={(checked) => {
-                    setManualMapping({
-                      input: manualMapping.input,
-                      output: checked ? colName : null,
-                    });
-                  }}
-                />
-              )}
-            </div>
+            <HeaderRolePicker
+              currentRole={manualMapping[colName]}
+              onRoleChange={(role) => handleRoleChange(colName, role)}
+              availableRoles={availableRoles}
+            />
           )}
         </div>
       ),
@@ -232,12 +243,10 @@ export function DatasetPreviewDialog({
     }));
   }, [
     columns,
-    manualMapping.input,
-    manualMapping.output,
-    setManualMapping,
+    manualMapping,
+    handleRoleChange,
     mappingEnabled,
-    leftLabel,
-    rightLabel,
+    availableRoles,
   ]);
 
   return (
@@ -331,13 +340,20 @@ export function DatasetPreviewDialog({
                 />
               </div>
 
+              {data.warning && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-700 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-400 mb-4 flex items-start gap-2.5">
+                  <HugeiconsIcon icon={AlertCircleIcon} className="size-4 shrink-0 mt-0.5" />
+                  <span>{data.warning}</span>
+                </div>
+              )}
+
               {mappingEnabled && (
                 <DatasetMappingCard
-                  leftLabel={leftLabel}
-                  rightLabel={rightLabel}
+                  mapping={manualMapping}
                   mappingOk={mappingOk}
-                  input={manualMapping.input}
-                  output={manualMapping.output}
+                  autoDetected={hasHeuristicMapping}
+                  isVlm={effectiveIsVlm}
+                  format={datasetFormat}
                 />
               )}
 
@@ -363,8 +379,6 @@ export function DatasetPreviewDialog({
 
                 {showMappingFooter && (
                   <DatasetMappingFooter
-                    leftLabel={leftLabel}
-                    rightLabel={rightLabel}
                     mappingOk={mappingOk}
                     isStarting={isStarting}
                     startError={startError}
@@ -403,20 +417,4 @@ function MetaRow({
       <span className="text-foreground text-[13px] min-w-0">{value}</span>
     </div>
   );
-}
-
-function canShowInputPicker(
-  colName: string,
-  mapping: { input: string | null; output: string | null },
-): boolean {
-  if (mapping.output === colName) return false;
-  return mapping.input == null || mapping.input === colName;
-}
-
-function canShowOutputPicker(
-  colName: string,
-  mapping: { input: string | null; output: string | null },
-): boolean {
-  if (mapping.input === colName) return false;
-  return mapping.output == null || mapping.output === colName;
 }

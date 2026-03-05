@@ -37,8 +37,7 @@ import { formatCompact } from "@/lib/utils";
 import {
   type TrainingMethod as VramTrainingMethod,
   type VramFitStatus,
-  checkVramFit,
-  estimateLoadingVram,
+  buildModelVramMap,
 } from "@/lib/vram";
 import {
   listLocalModels,
@@ -64,9 +63,11 @@ const METHOD_DOTS: Record<string, string> = {
 };
 
 const DARK_TRIGGER =
-  "w-full bg-foreground text-background hover:bg-foreground/85 dark:bg-foreground dark:text-background [&_svg]:text-background/50";
+  "w-full bg-foreground text-background hover:bg-foreground/90 dark:bg-foreground dark:text-background dark:hover:bg-foreground [&_svg]:text-background/50";
 const DARK_CONTENT =
-  "bg-foreground text-background shadow-xl border-background/10 [--accent:rgba(255,255,255,0.1)] [--accent-foreground:white] [&_[data-slot=select-item]]:text-white/70 [&_[data-slot=select-scroll-up-button]]:bg-foreground [&_[data-slot=select-scroll-down-button]]:bg-foreground";
+  "bg-foreground text-background shadow-xl border-background/10 [--accent:rgba(255,255,255,0.1)] [--accent-foreground:white] dark:[--accent:rgba(2,6,23,0.08)] dark:[--accent-foreground:rgb(2,6,23)] [&_[data-slot=select-item]]:text-white/80 dark:[&_[data-slot=select-item]]:text-slate-900 [&_[data-slot=select-scroll-up-button]]:bg-foreground [&_[data-slot=select-scroll-down-button]]:bg-foreground";
+const DARK_COMBOBOX_CONTENT =
+  "bg-foreground text-background shadow-xl border-background/10 dark:[--accent:rgba(2,6,23,0.08)] dark:[--accent-foreground:rgb(2,6,23)] dark:[&_[data-slot=combobox-item]]:text-slate-900 dark:[&_.text-muted-foreground]:text-slate-500";
 
 export function ModelSection() {
   const gpu = useGpuInfo();
@@ -157,6 +158,7 @@ export function ModelSection() {
   } = useHfModelSearch(debouncedQuery, {
     task,
     accessToken: hfToken || undefined,
+    excludeGguf: true,
   });
 
   const { error: tokenValidationError, isChecking: isCheckingToken } =
@@ -170,14 +172,25 @@ export function ModelSection() {
     return ids;
   }, [hfResults, selectedModel]);
 
+  // Filter out GGUF models — they can't be used for training
+  const trainableLocalModels = useMemo(
+    () =>
+      localModels.filter((m) => {
+        if (m.path.endsWith(".gguf")) return false;
+        if (m.id.toLowerCase().includes("-gguf")) return false;
+        return true;
+      }),
+    [localModels],
+  );
+
   const localMetaById = useMemo(() => {
     const map = new Map<string, LocalModelInfo>();
-    for (const model of localModels) map.set(model.id, model);
+    for (const model of trainableLocalModels) map.set(model.id, model);
     return map;
-  }, [localModels]);
+  }, [trainableLocalModels]);
 
   const localResultIds = useMemo(() => {
-    const ids = localModels.map((model) => model.id);
+    const ids = trainableLocalModels.map((model) => model.id);
     const manual = localModelInput.trim();
     if (manual && !ids.includes(manual)) {
       ids.unshift(manual);
@@ -204,22 +217,23 @@ export function ModelSection() {
   // Keyed by model id so the render callback is a simple O(1) lookup.
   // Re-computes when the training method changes (QLoRA=4-bit vs LoRA/Full=fp16).
   const vramMap = useMemo(() => {
-    const method = trainingMethod as VramTrainingMethod;
+    const fitMap = buildModelVramMap(
+      hfResults,
+      trainingMethod as VramTrainingMethod,
+      gpu,
+    );
     const map = new Map<
       string,
       { est: number; status: VramFitStatus | null; detail: string | null }
     >();
     for (const r of hfResults) {
       const detail = r.totalParams ? formatCompact(r.totalParams) : null;
-      if (r.totalParams) {
-        const est = estimateLoadingVram(r.totalParams, method);
-        const status = gpu.available
-          ? checkVramFit(est, gpu.memoryTotalGb)
-          : null;
-        map.set(r.id, { est, status, detail });
-      } else {
-        map.set(r.id, { est: 0, status: null, detail });
-      }
+      const fit = fitMap.get(r.id);
+      map.set(r.id, {
+        est: fit?.est ?? 0,
+        status: fit?.status ?? null,
+        detail,
+      });
     }
     return map;
   }, [hfResults, gpu, trainingMethod]);
@@ -296,7 +310,10 @@ export function ModelSection() {
                   <HugeiconsIcon icon={FolderSearchIcon} className="size-4" />
                 </InputGroupAddon>
               </ComboboxInput>
-              <ComboboxContent anchor={localComboboxAnchorRef}>
+              <ComboboxContent
+                anchor={localComboboxAnchorRef}
+                className={DARK_COMBOBOX_CONTENT}
+              >
                 {isLoadingLocalModels ? (
                   <div className="flex items-center justify-center gap-2 py-4 text-xs text-muted-foreground">
                     <Spinner className="size-4" /> Scanning...
@@ -314,10 +331,10 @@ export function ModelSection() {
                     const source =
                       model?.source === "hf_cache" ? "HF cache" : "Local dir";
                     return (
-                      <ComboboxItem key={id} value={id} className="justify-between">
+                      <ComboboxItem key={id} value={id} className="gap-2">
                         <Tooltip>
                           <TooltipTrigger asChild={true}>
-                            <span className="min-w-0 flex-1 truncate">
+                            <span className="block min-w-0 flex-1 truncate">
                               {model?.display_name ?? id}
                             </span>
                           </TooltipTrigger>
@@ -325,7 +342,7 @@ export function ModelSection() {
                             {model?.path ?? id}
                           </TooltipContent>
                         </Tooltip>
-                        <span className="shrink-0 text-[10px] text-muted-foreground">
+                        <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
                           {source}
                         </span>
                       </ComboboxItem>
@@ -341,8 +358,8 @@ export function ModelSection() {
             <p className="text-[10px] text-red-500">{localModelsError}</p>
           ) : (
             <p className="text-[10px] text-muted-foreground">
-              {localModels.length > 0
-                ? `${localModels.length} local/cached models found`
+              {trainableLocalModels.length > 0
+                ? `${trainableLocalModels.length} local/cached models found`
                 : "No local models found. Enter path manually."}
             </p>
           )}
@@ -429,11 +446,11 @@ export function ModelSection() {
                         <ComboboxItem
                           key={id}
                           value={id}
-                          className={`justify-between ${exceeds ? "opacity-50" : ""}`}
+                          className={`gap-2 ${exceeds ? "opacity-50" : ""}`}
                         >
                           <Tooltip>
                             <TooltipTrigger asChild={true}>
-                              <span className={`min-w-0 flex-1 truncate ${exceeds ? "line-through decoration-muted-foreground/50" : ""}`}>
+                              <span className={`block min-w-0 flex-1 truncate ${exceeds ? "line-through decoration-muted-foreground/50" : ""}`}>
                                 {id}
                               </span>
                             </TooltipTrigger>
@@ -453,7 +470,7 @@ export function ModelSection() {
                               )}
                             </TooltipContent>
                           </Tooltip>
-                          <span className="flex items-center gap-1.5 shrink-0">
+                          <span className="ml-auto flex items-center gap-1.5 shrink-0">
                             {fitStatus === "exceeds" && (
                               <span className="text-[9px] font-medium text-red-400">
                                 OOM

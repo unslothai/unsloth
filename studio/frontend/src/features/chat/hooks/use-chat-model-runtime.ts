@@ -20,6 +20,8 @@ const DEFAULT_MODEL_MAX_SEQ_LENGTH = 2048;
 type SelectedModelInput = {
   id: string;
   isLora?: boolean;
+  ggufVariant?: string;
+  loadingDescription?: string;
 };
 
 const LORA_SUFFIX_RE = /_(\d{9,})$/;
@@ -41,11 +43,13 @@ function stripTrailingEpoch(input: string): string {
 function describeModel(model: {
   is_lora?: boolean;
   is_vision?: boolean;
+  is_gguf?: boolean;
 }): string | undefined {
   const tags: string[] = [];
+  if (model.is_gguf) tags.push("GGUF");
   if (model.is_lora) tags.push("LoRA");
   if (model.is_vision) tags.push("Vision");
-  if (!model.is_lora && !model.is_vision) tags.push("Base");
+  if (!model.is_lora && !model.is_vision && !model.is_gguf) tags.push("Base");
   return tags.join(" · ");
 }
 
@@ -54,6 +58,7 @@ function toChatModelSummary(model: {
   name?: string | null;
   is_lora?: boolean;
   is_vision?: boolean;
+  is_gguf?: boolean;
 }): ChatModelSummary {
   return {
     id: model.id,
@@ -61,6 +66,7 @@ function toChatModelSummary(model: {
     description: describeModel(model),
     isLora: Boolean(model.is_lora),
     isVision: Boolean(model.is_vision),
+    isGguf: Boolean(model.is_gguf),
   };
 }
 
@@ -68,6 +74,8 @@ function toLoraSummary(lora: {
   display_name: string;
   adapter_path: string;
   base_model?: string | null;
+  source?: "training" | "exported" | null;
+  export_type?: "lora" | "merged" | "gguf" | null;
 }): ChatLoraSummary {
   const idTail = lora.adapter_path.split("/").filter(Boolean).at(-1) ?? "";
   const updatedAt =
@@ -78,6 +86,8 @@ function toLoraSummary(lora: {
     name: stripTrailingEpoch(lora.display_name),
     baseModel: lora.base_model || "Unknown base model",
     updatedAt,
+    source: lora.source ?? undefined,
+    exportType: lora.export_type ?? undefined,
   };
 }
 
@@ -134,7 +144,7 @@ export function useChatModelRuntime() {
       setLoras(lorasRes.loras.map(toLoraSummary));
 
       if (statusRes.active_model) {
-        setCheckpoint(statusRes.active_model);
+        setCheckpoint(statusRes.active_model, statusRes.gguf_variant);
       }
     } catch (error) {
       const message =
@@ -149,17 +159,31 @@ export function useChatModelRuntime() {
   const selectModel = useCallback(
     async (selection: string | SelectedModelInput) => {
       const modelId = typeof selection === "string" ? selection : selection.id;
-      if (!modelId || params.checkpoint === modelId) {
+      const ggufVariant =
+        typeof selection === "string" ? undefined : selection.ggufVariant;
+      const currentVariant = useChatRuntimeStore.getState().activeGgufVariant;
+      if (!modelId || (params.checkpoint === modelId && (ggufVariant ?? null) === (currentVariant ?? null))) {
         return;
       }
 
       const explicitIsLora =
         typeof selection === "string" ? undefined : selection.isLora;
+      const extraLoadingDescription =
+        typeof selection === "string" ? undefined : selection.loadingDescription;
       const model = models.find((entry) => entry.id === modelId);
       const lora = loras.find((entry) => entry.id === modelId);
       const isLora =
         explicitIsLora ?? model?.isLora ?? (lora ? true : false);
       const displayName = model?.name || lora?.name || modelId;
+      const currentCheckpoint =
+        useChatRuntimeStore.getState().params.checkpoint;
+      const loadingDescription = [
+        currentCheckpoint ? "Unloading previous model first." : null,
+        extraLoadingDescription ?? null,
+        "This may include downloading. Large models can take a while.",
+      ]
+        .filter(Boolean)
+        .join(" ");
 
       setModelsError(null);
       setLoadingModel({ id: modelId, displayName });
@@ -177,6 +201,7 @@ export function useChatModelRuntime() {
             max_seq_length: DEFAULT_MODEL_MAX_SEQ_LENGTH,
             load_in_4bit: true,
             is_lora: isLora,
+            gguf_variant: ggufVariant ?? null,
           });
 
           const currentParams = useChatRuntimeStore.getState().params;
@@ -193,8 +218,7 @@ export function useChatModelRuntime() {
           success: `${displayName} loaded`,
           error: (err) =>
             err instanceof Error ? err.message : "Failed to load model",
-          description:
-            "This may include downloading. Large models can take a while.",
+          description: loadingDescription,
         });
       } catch (error) {
         setLoadingModel(null);
@@ -220,7 +244,7 @@ export function useChatModelRuntime() {
 
       await toast.promise(performUnload(), {
         loading: "Unloading model",
-        success: "Model unloaded",
+        success: { message: "Model unloaded", duration: 1200 },
         error: (err) =>
           err instanceof Error ? err.message : "Failed to unload model",
         description: "Releases VRAM and resets inference state.",

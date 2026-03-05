@@ -6,8 +6,10 @@ from unsloth.chat_templates import get_chat_template
 from transformers import TextStreamer
 from peft import PeftModel, PeftModelForCausalLM
 
+import json
 import sys
 import torch
+from pathlib import Path
 from typing import Optional, Union, Generator, Tuple
 from utils.models import ModelConfig, get_base_model_from_lora
 from utils.paths import is_model_cached
@@ -112,7 +114,18 @@ class InferenceBackend:
                 # In that case, load the real processor from the base model.
                 from transformers import ProcessorMixin
                 if not (isinstance(processor, ProcessorMixin) or hasattr(processor, "image_processor")):
+                    # For LoRA adapters, use the base model. For local merged exports,
+                    # read export_metadata.json to find the original base model.
                     processor_source = config.base_model if config.is_lora else config.identifier
+                    if not config.is_lora and config.is_local:
+                        _meta_path = Path(config.path) / "export_metadata.json"
+                        try:
+                            if _meta_path.exists():
+                                _meta = json.loads(_meta_path.read_text())
+                                if _meta.get("base_model"):
+                                    processor_source = _meta["base_model"]
+                        except Exception:
+                            pass
                     logger.warning(
                         f"FastVisionModel returned {type(processor).__name__} (no image_processor) "
                         f"for '{model_name}' — loading proper processor from '{processor_source}'"
@@ -255,47 +268,6 @@ class InferenceBackend:
             logger.error(traceback.format_exc())
             return False, None
 
-    def load_adapter(self, base_model_name: str, adapter_path: str, adapter_name: str = None) -> bool:
-        """
-        Load a LoRA adapter onto the base model if it's not already registered.
-        This method is idempotent.
-        """
-        if base_model_name not in self.models:
-            logger.error(f"Base model {base_model_name} not loaded")
-            return False
-
-        model = self.models[base_model_name].get("model")
-        if model is None:
-            logger.error(f"Model object for {base_model_name} is None.")
-            return False
-
-        if adapter_name is None:
-            adapter_name = adapter_path.split("/")[-1].replace(".", "_")
-
-        # If we've loaded this adapter before, we don't need to do anything.
-        if adapter_name in self.models[base_model_name].get("loaded_adapters", {}):
-            logger.info(f"Adapter '{adapter_name}' is already registered. Skipping.")
-            return True
-
-        try:
-            logger.info(f"Loading new adapter '{adapter_name}' from '{adapter_path}' onto {base_model_name}")
-
-            # Unsloth modifies the model in-place and returns None. Do NOT re-assign.
-            model.load_adapter(adapter_path, adapter_name=adapter_name)
-
-            # Update our internal registry so we don't load it again.
-            self.models[base_model_name]["loaded_adapters"][adapter_name] = adapter_path
-
-            total_adapters = len(getattr(model, 'peft_config', {}))
-            logger.info(f"Adapter '{adapter_name}' loaded successfully. (Total adapters on model: {total_adapters})")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to load adapter '{adapter_name}': {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return False
-    pass
-
     def enable_adapter(self, base_model_name: str, adapter_name: str) -> bool:
         """Enable specific adapter (for generation)"""
         if base_model_name not in self.models:
@@ -327,55 +299,6 @@ class InferenceBackend:
         except Exception as e:
             logger.error(f"Failed to disable adapters: {e}")
             return False
-
-    # In backend/inference.py
-
-    def load_for_eval(self, lora_path: str, max_seq_length: int = 2048,
-                     dtype = None, load_in_4bit: bool = True,
-                     hf_token: Optional[str] = None) -> Tuple[bool, Optional[str], Optional[str]]:
-        """
-        Prepare for eval: ensure base model and the specified adapter are loaded.
-        """
-        try:
-            from utils.models import ModelConfig
-            lora_config = ModelConfig.from_lora_path(lora_path, hf_token)
-            if not lora_config:
-                return False, None, None
-
-            base_model_name = lora_config.base_model
-
-            # 1. Load the base model if it's not already in memory (this logic is correct)
-            if base_model_name not in self.models or not self.models[base_model_name].get("model"):
-                logger.info(f"Base model '{base_model_name}' not loaded, loading now.")
-                base_config = ModelConfig.from_ui_selection(base_model_name, None, is_lora=False)
-                if not self.load_model(base_config, max_seq_length, dtype, load_in_4bit, hf_token):
-                    return False, None, None
-            else:
-                logger.info(f"Base model '{base_model_name}' is already in memory.")
-
-            self.active_model_name = base_model_name
-
-            # 2. Delegate to our now-idempotent load_adapter function.
-            # It will handle all cases: first adapter, or subsequent adapters.
-            adapter_name = lora_path.split("/")[-1].replace(".", "_")
-            adapter_success = self.load_adapter(
-                base_model_name=base_model_name,
-                adapter_path=lora_path,
-                adapter_name=adapter_name
-            )
-
-            if not adapter_success:
-                return False, base_model_name, None
-
-            return True, base_model_name, adapter_name
-
-        except Exception as e:
-            logger.error(f"Error during load_for_eval: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return False, None, None
-    pass
-
 
     def load_for_eval(self, lora_path: str, max_seq_length: int = 2048,
                      dtype = None, load_in_4bit: bool = True,
@@ -1258,47 +1181,6 @@ class InferenceBackend:
     def get_loading_model(self) -> Optional[str]:
         """Get name of currently loading model"""
         return next(iter(self.loading_models)) if self.loading_models else None
-
-    def load_model_simple(self,
-                         model_path: str,
-                         hf_token: Optional[str] = None,
-                         max_seq_length: int = 2048,
-                         load_in_4bit: bool = True) -> bool:
-        """
-        Simple model loading wrapper for chat interface.
-        Accepts model path as string and handles ModelConfig creation internally.
-
-        Args:
-            model_path: Model name or path (e.g., "unsloth/llama-3-8b")
-            hf_token: HuggingFace token for gated models
-            max_seq_length: Maximum sequence length
-            load_in_4bit: Whether to use 4-bit quantization
-
-        Returns:
-            bool: True if successful, False otherwise
-        """
-        try:
-            # Create config from string path
-            config = ModelConfig.from_ui_selection(
-                model_path,
-                lora_path=None,  # No LoRA for chat
-                is_lora=False
-            )
-
-            # Call existing load_model with config
-            return self.load_model(
-                config=config,
-                max_seq_length=max_seq_length,
-                dtype=None,  # Auto-detect
-                load_in_4bit=load_in_4bit,
-                hf_token=hf_token
-            )
-
-        except Exception as e:
-            logger.error(f"Error in load_model_simple: {e}")
-            return False
-
-
 
     def load_model_simple(self,
                      model_path: str,

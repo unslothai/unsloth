@@ -5,13 +5,14 @@ import { persist } from "zustand/middleware";
 import { checkDatasetFormat } from "../api/datasets-api";
 import { checkVisionModel, getModelConfig } from "../api/models-api";
 import { mapBackendModelConfigToTrainingPatch } from "../lib/model-defaults";
+import type { BackendModelConfig } from "../api/models-api";
 import type { TrainingConfigState, TrainingConfigStore } from "../types/config";
 
 const MIN_STEP: StepNumber = 1;
 const MAX_STEP: StepNumber = STEPS.length as StepNumber;
 
 function emptyManualMapping(): TrainingConfigState["datasetManualMapping"] {
-  return { input: null, output: null };
+  return {};
 }
 
 const initialState: TrainingConfigState = {
@@ -25,7 +26,10 @@ const initialState: TrainingConfigState = {
   dataset: null,
   datasetSubset: null,
   datasetSplit: null,
+  datasetEvalSplit: null,
   datasetManualMapping: emptyManualMapping(),
+  datasetSliceStart: null,
+  datasetSliceEnd: null,
   uploadedFile: null,
   isCheckingVision: false,
   isVisionModel: false,
@@ -251,7 +255,10 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             dataset,
             datasetSubset: null,
             datasetSplit: null,
+            datasetEvalSplit: null,
             datasetManualMapping: emptyManualMapping(),
+            datasetSliceStart: null,
+            datasetSliceEnd: null,
             isDatasetMultimodal: null,
             isCheckingDataset: false,
           });
@@ -263,6 +270,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           set({
             datasetSubset,
             datasetSplit: null,
+            datasetEvalSplit: null,
             datasetManualMapping: emptyManualMapping(),
             isDatasetMultimodal: null,
             isCheckingDataset: false,
@@ -299,9 +307,18 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           const split = state.datasetSplit || "train";
           runDatasetCheck(datasetName, split);
         },
+        setDatasetEvalSplit: (datasetEvalSplit) => {
+          set({
+            datasetEvalSplit,
+            evalSteps: datasetEvalSplit ? 0.1 : 0,
+          });
+        },
         setDatasetManualMapping: (datasetManualMapping) =>
           set({ datasetManualMapping }),
-        setUploadedFile: (uploadedFile) => set({ uploadedFile }),
+        setDatasetSliceStart: (datasetSliceStart) => set({ datasetSliceStart }),
+        setDatasetSliceEnd: (datasetSliceEnd) => set({ datasetSliceEnd }),
+        setUploadedFile: (uploadedFile) =>
+          set({ uploadedFile, datasetSliceStart: null, datasetSliceEnd: null }),
         setEpochs: (epochs) => set({ epochs }),
         setContextLength: (contextLength) => set({ contextLength }),
         setLearningRate: (learningRate) => set({ learningRate }),
@@ -344,11 +361,21 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         setTargetModules: (targetModules) => set({ targetModules }),
         canProceed: () => canProceedForStep(get()),
         reset: () => set(initialState),
+        resetToModelDefaults: () => {
+          const { selectedModel } = get();
+          if (!selectedModel) return;
+          set({ modelDefaultsAppliedFor: null });
+          loadAndApplyModelDefaults(selectedModel);
+        },
+        applyConfigPatch: (config: BackendModelConfig) => {
+          const patch = mapBackendModelConfigToTrainingPatch(config);
+          set(patch);
+        },
       };
     },
     {
       name: "unsloth_training_config_v1",
-      version: 5,
+      version: 7,
       migrate: (persisted, version) => {
         const s = persisted as Record<string, unknown>;
         if (version < 2 && s.datasetSubset == null && s.datasetConfig != null) {
@@ -363,6 +390,13 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         }
         if (version < 5 && s.lrSchedulerType == null) {
           s.lrSchedulerType = DEFAULT_HYPERPARAMS.lrSchedulerType;
+        }
+        if (version < 6 && s.datasetEvalSplit == null) {
+          s.datasetEvalSplit = null;
+        }
+        if (version < 7) {
+          s.datasetSliceStart ??= null;
+          s.datasetSliceEnd ??= null;
         }
         return s as unknown as TrainingConfigStore;
       },

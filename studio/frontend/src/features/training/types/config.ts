@@ -6,13 +6,12 @@ import type {
   StepNumber,
   TrainingMethod,
 } from "@/types/training";
+import type { BackendModelConfig } from "../api/models-api";
 
 export type LoraVariant = "lora" | "rslora" | "loftq";
 
-export type DatasetManualMapping = {
-  input: string | null;
-  output: string | null;
-};
+/** Column-to-role mapping, e.g. { "problem": "user", "solution": "assistant", "context": "system" } */
+export type DatasetManualMapping = Record<string, string>;
 
 export interface TrainingConfigState {
   currentStep: StepNumber;
@@ -25,7 +24,10 @@ export interface TrainingConfigState {
   dataset: string | null;
   datasetSubset: string | null;
   datasetSplit: string | null;
+  datasetEvalSplit: string | null;
   datasetManualMapping: DatasetManualMapping;
+  datasetSliceStart: string | null;
+  datasetSliceEnd: string | null;
   uploadedFile: string | null;
   epochs: number;
   contextLength: number;
@@ -82,7 +84,10 @@ export interface TrainingConfigActions {
   setDataset: (dataset: string | null) => void;
   setDatasetSubset: (subset: string | null) => void;
   setDatasetSplit: (split: string | null) => void;
+  setDatasetEvalSplit: (split: string | null) => void;
   setDatasetManualMapping: (mapping: DatasetManualMapping) => void;
+  setDatasetSliceStart: (value: string | null) => void;
+  setDatasetSliceEnd: (value: string | null) => void;
   setUploadedFile: (file: string | null) => void;
   setEpochs: (epochs: number) => void;
   setContextLength: (length: number) => void;
@@ -117,6 +122,8 @@ export interface TrainingConfigActions {
   setTargetModules: (value: string[]) => void;
   canProceed: () => boolean;
   reset: () => void;
+  resetToModelDefaults: () => void;
+  applyConfigPatch: (config: BackendModelConfig) => void;
 }
 
 export type TrainingConfigStore = TrainingConfigState & TrainingConfigActions;

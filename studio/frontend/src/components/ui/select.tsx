@@ -5,6 +5,7 @@ import type * as React from "react";
 import { createContext, useContext, useState } from "react";
 
 import { cn } from "@/lib/utils";
+import { useDialogPortalContainer } from "@/components/ui/dialog";
 import {
   ArrowDown01Icon,
   ArrowUp01Icon,
@@ -96,10 +97,14 @@ function SelectContent({
   children,
   position = "item-aligned",
   align = "center",
+  container,
   ...props
-}: React.ComponentProps<typeof SelectPrimitive.Content>) {
+}: React.ComponentProps<typeof SelectPrimitive.Content> & {
+  container?: HTMLElement | null;
+}) {
+  const dialogContainer = useDialogPortalContainer();
   return (
-    <SelectPrimitive.Portal>
+    <SelectPrimitive.Portal container={container ?? dialogContainer ?? undefined}>
       <SelectPrimitive.Content
         data-slot="select-content"
         data-align-trigger={position === "item-aligned"}

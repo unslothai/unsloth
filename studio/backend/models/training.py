@@ -21,7 +21,9 @@ class TrainingStartRequest(BaseModel):
     subset: Optional[str] = None
     train_split: Optional[str] = Field("train", description="Training split name")
     eval_split: Optional[str] = Field(None, description="Eval split name. None = auto-detect")
-    eval_steps: float = Field(0.01, description="Fraction of total steps between evals (0-1)")
+    eval_steps: float = Field(0.00, description="Fraction of total steps between evals (0-1)")
+    dataset_slice_start: Optional[int] = Field(None, description="Inclusive start row index for dataset slicing")
+    dataset_slice_end: Optional[int] = Field(None, description="Inclusive end row index for dataset slicing")
 
     @model_validator(mode="before")
     @classmethod

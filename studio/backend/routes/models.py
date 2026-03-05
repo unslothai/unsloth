@@ -18,12 +18,15 @@ from auth.authentication import get_current_subject
 try:
     from utils.models import (
         scan_trained_loras,
+        scan_exported_models,
         load_model_defaults,
         get_base_model_from_lora,
         is_vision_model,
         scan_checkpoints,
+        list_gguf_variants,
         ModelConfig,
     )
+    from utils.models.model_config import _pick_best_gguf, _extract_quant_label
     from core.inference import get_inference_backend
 except ImportError:
     # Fallback: try to import from parent directory
@@ -32,12 +35,15 @@ except ImportError:
         sys.path.insert(0, str(parent_backend))
     from utils.models import (
         scan_trained_loras,
+        scan_exported_models,
         load_model_defaults,
         get_base_model_from_lora,
         is_vision_model,
         scan_checkpoints,
+        list_gguf_variants,
         ModelConfig,
     )
+    from utils.models.model_config import _pick_best_gguf, _extract_quant_label
     from core.inference import get_inference_backend
 
 from models import (
@@ -51,6 +57,7 @@ from models import (
     LoRAInfo,
     ModelListResponse,
 )
+from models.models import GgufVariantDetail, GgufVariantsResponse
 from models.responses import LoRABaseModelResponse, VisionCheckResponse
 
 router = APIRouter()
@@ -88,6 +95,7 @@ def _scan_models_dir(models_dir: Path) -> List[LocalModelInfo]:
             or (child / "adapter_config.json").exists()
             or any(child.glob("*.safetensors"))
             or any(child.glob("*.bin"))
+            or any(child.glob("*.gguf"))
         )
         if not has_model_files:
             continue
@@ -104,6 +112,23 @@ def _scan_models_dir(models_dir: Path) -> List[LocalModelInfo]:
                 updated_at=updated_at,
             ),
         )
+    # Also scan for standalone .gguf files directly in the models directory
+    for gguf_file in models_dir.glob("*.gguf"):
+        if gguf_file.is_file():
+            try:
+                updated_at = gguf_file.stat().st_mtime
+            except OSError:
+                updated_at = None
+            found.append(
+                LocalModelInfo(
+                    id=str(gguf_file),
+                    display_name=gguf_file.stem,
+                    path=str(gguf_file),
+                    source="models_dir",
+                    updated_at=updated_at,
+                ),
+            )
+
     return found
 
 
@@ -294,35 +319,45 @@ async def get_model_config(
 @router.get("/loras")
 async def scan_loras(
     outputs_dir: str = Query(default="./outputs", description="Directory to scan for LoRA adapters"),
+    exports_dir: str = Query(default="./exports", description="Directory to scan for exported models"),
     current_subject: str = Depends(get_current_subject),
 ):
     """
-    Scan for trained LoRA adapters in the outputs directory.
-    
-    This endpoint wraps the backend scan_trained_loras function.
+    Scan for trained LoRA adapters and exported models.
+
+    Returns both training outputs (from outputs_dir) and exported models
+    (from exports_dir) in a single list, distinguished by source field.
     """
     try:
-        # Call backend scan function
-        trained_loras = scan_trained_loras(outputs_dir=outputs_dir)
-        
-        # Convert to LoRAInfo objects
         lora_list = []
+
+        # Scan training outputs
+        trained_loras = scan_trained_loras(outputs_dir=outputs_dir)
         for display_name, adapter_path in trained_loras:
-            # Get base model if available
             base_model = get_base_model_from_lora(adapter_path)
-            
-            lora_info = LoRAInfo(
+            lora_list.append(LoRAInfo(
                 display_name=display_name,
                 adapter_path=adapter_path,
-                base_model=base_model
-            )
-            lora_list.append(lora_info)
-        
+                base_model=base_model,
+                source="training",
+            ))
+
+        # Scan exported models (merged, LoRA, base — skips GGUF)
+        exported = scan_exported_models(exports_dir=exports_dir)
+        for display_name, model_path, export_type, base_model in exported:
+            lora_list.append(LoRAInfo(
+                display_name=display_name,
+                adapter_path=model_path,
+                base_model=base_model,
+                source="exported",
+                export_type=export_type,
+            ))
+
         return LoRAScanResponse(
             loras=lora_list,
             outputs_dir=outputs_dir
         )
-        
+
     except Exception as e:
         logger.error(f"Error scanning LoRAs: {e}", exc_info=True)
         raise HTTPException(
@@ -397,6 +432,49 @@ async def check_vision_model(
             status_code=500,
             detail=f"Failed to check vision model: {str(e)}"
         )
+
+@router.get("/gguf-variants", response_model=GgufVariantsResponse)
+async def get_gguf_variants(
+    repo_id: str = Query(..., description="HuggingFace repo ID (e.g. 'unsloth/gemma-3-4b-it-GGUF')"),
+    hf_token: Optional[str] = Query(None, description="HuggingFace token for private repos"),
+    current_subject: str = Depends(get_current_subject),
+):
+    """
+    List available GGUF quantization variants for a HuggingFace repo.
+
+    Returns all available quantization variants (Q4_K_M, Q8_0, BF16, etc.)
+    with file sizes, whether the model supports vision, and the recommended
+    default variant.
+    """
+    try:
+        variants, has_vision = list_gguf_variants(repo_id, hf_token=hf_token)
+
+        # Determine default variant
+        filenames = [v.filename for v in variants]
+        best = _pick_best_gguf(filenames)
+        default_variant = _extract_quant_label(best) if best else None
+
+        return GgufVariantsResponse(
+            repo_id=repo_id,
+            variants=[
+                GgufVariantDetail(
+                    filename=v.filename,
+                    quant=v.quant,
+                    size_bytes=v.size_bytes,
+                )
+                for v in variants
+            ],
+            has_vision=has_vision,
+            default_variant=default_variant,
+        )
+
+    except Exception as e:
+        logger.error(f"Error listing GGUF variants for '{repo_id}': {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to list GGUF variants: {str(e)}",
+        )
+
 
 @router.get("/checkpoints", response_model=CheckpointListResponse)
 async def list_checkpoints(
