@@ -46,6 +46,7 @@ export type BlockType =
   | LlmType
   | "validator_python"
   | "validator_sql"
+  | "validator_oxc"
   | "expression"
   | "markdown_note"
   | "seed"
@@ -303,7 +304,8 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
     description: "Validate Python code columns.",
     icon: Shield02Icon,
     dialogKey: "validator",
-    createConfig: (id, existing) => makeValidatorConfig(id, "python", existing),
+    createConfig: (id, existing) =>
+      makeValidatorConfig(id, "code", "python", existing),
   },
   {
     kind: "validator",
@@ -313,7 +315,17 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
     icon: Shield02Icon,
     dialogKey: "validator",
     createConfig: (id, existing) =>
-      makeValidatorConfig(id, "sql:sqlite", existing),
+      makeValidatorConfig(id, "code", "sql:sqlite", existing),
+  },
+  {
+    kind: "validator",
+    type: "validator_oxc",
+    title: "OXC Validator",
+    description: "Validate JavaScript or TypeScript code columns.",
+    icon: Shield02Icon,
+    dialogKey: "validator",
+    createConfig: (id, existing) =>
+      makeValidatorConfig(id, "oxc", "javascript", existing),
   },
   {
     kind: "expression",
@@ -372,6 +384,9 @@ export function getBlockDefinitionForConfig(
     return getBlockDefinition("llm", config.llm_type);
   }
   if (config.kind === "validator") {
+    if (config.validator_type === "oxc") {
+      return getBlockDefinition("validator", "validator_oxc");
+    }
     const isSql = config.code_lang.startsWith("sql:");
     return getBlockDefinition(
       "validator",

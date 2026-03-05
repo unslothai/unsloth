@@ -14,6 +14,10 @@ export type SamplerType =
 
 export type LlmType = "text" | "structured" | "code" | "judge";
 export type ValidatorCodeLang =
+  | "javascript"
+  | "typescript"
+  | "jsx"
+  | "tsx"
   | "python"
   | "sql:sqlite"
   | "sql:postgres"
@@ -21,6 +25,7 @@ export type ValidatorCodeLang =
   | "sql:tsql"
   | "sql:bigquery"
   | "sql:ansi";
+export type ValidatorType = "code" | "oxc";
 
 export type ExpressionDtype = "str" | "int" | "float" | "bool";
 
@@ -48,6 +53,7 @@ export type RecipeNodeData = {
     | LlmType
     | "validator_python"
     | "validator_sql"
+    | "validator_oxc"
     | "expression"
     | "seed"
     | "markdown_note"
@@ -258,6 +264,8 @@ export type ValidatorConfig = {
   drop?: boolean;
   // biome-ignore lint/style/useNamingConvention: api schema
   target_columns: string[];
+  // ui-only
+  validator_type: ValidatorType;
   // biome-ignore lint/style/useNamingConvention: api schema
   code_lang: ValidatorCodeLang;
   // ui ergonomics (serialized to int in payload)

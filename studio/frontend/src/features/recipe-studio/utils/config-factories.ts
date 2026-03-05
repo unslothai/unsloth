@@ -11,6 +11,7 @@ import type {
   SamplerConfig,
   SamplerType,
   ValidatorCodeLang,
+  ValidatorType,
   ValidatorConfig,
 } from "../types";
 import { nextName } from "./naming";
@@ -279,17 +280,26 @@ export function makeExpressionConfig(
 
 export function makeValidatorConfig(
   id: string,
+  validatorType: ValidatorType,
   codeLang: ValidatorCodeLang,
   existing: NodeConfig[],
 ): ValidatorConfig {
-  const isSql = codeLang.startsWith("sql:");
+  const isSql = validatorType === "code" && codeLang.startsWith("sql:");
+  const isOxc = validatorType === "oxc";
+  let namePrefix = "validator_python";
+  if (isSql) {
+    namePrefix = "validator_sql";
+  } else if (isOxc) {
+    namePrefix = "validator_oxc";
+  }
   return {
     id,
     kind: "validator",
-    name: nextName(existing, isSql ? "validator_sql" : "validator_python"),
+    name: nextName(existing, namePrefix),
     drop: false,
     // biome-ignore lint/style/useNamingConvention: api schema
     target_columns: [],
+    validator_type: validatorType,
     // biome-ignore lint/style/useNamingConvention: api schema
     code_lang: codeLang,
     batch_size: "10",
