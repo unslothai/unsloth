@@ -6,6 +6,7 @@ import type {
   ValidatorConfig,
 } from "../../types";
 import { VALIDATOR_OXC_CODE_LANGS } from "../validators/code-lang";
+import { isOxcValidationMode } from "../validators/oxc-mode";
 
 export function validateSubcategoryConfigs(
   configs: Record<string, NodeConfig>,
@@ -147,7 +148,19 @@ export function validateValidatorConfigs(
       );
       continue;
     }
-    if ((targetConfig.code_lang ?? "").trim() !== config.code_lang.trim()) {
+    if (
+      config.validator_type === "oxc" &&
+      !isOxcValidationMode(config.oxc_validation_mode)
+    ) {
+      errors.push(
+        `Validator ${config.name}: oxc_validation_mode '${config.oxc_validation_mode}' is invalid.`,
+      );
+      continue;
+    }
+    if (
+      config.validator_type !== "oxc" &&
+      (targetConfig.code_lang ?? "").trim() !== config.code_lang.trim()
+    ) {
       errors.push(
         `Validator ${config.name}: code_lang '${config.code_lang}' must match target '${target}' (${targetConfig.code_lang ?? "unknown"}).`,
       );

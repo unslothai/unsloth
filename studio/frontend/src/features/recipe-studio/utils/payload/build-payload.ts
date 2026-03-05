@@ -113,7 +113,15 @@ export function buildRecipePayload(
   const toolConfigJsonByAlias = new Map<string, string>();
   const nameSet = new Set<string>();
   const nameToConfig = new Map<string, NodeConfig>();
+  const allNameToConfig = new Map<string, NodeConfig>();
   const firstSeed = pickFirstSeedConfig(configs);
+
+  for (const config of Object.values(configs)) {
+    if (config.kind === "seed") {
+      continue;
+    }
+    allNameToConfig.set(config.name, config);
+  }
 
   for (const node of nodes) {
     const config = configs[node.id];
@@ -205,7 +213,7 @@ export function buildRecipePayload(
       continue;
     }
     if (config.kind === "validator") {
-      columns.push(buildValidatorColumn(config, errors));
+      columns.push(buildValidatorColumn(config, errors, allNameToConfig));
       nameToConfig.set(config.name, config);
       continue;
     }

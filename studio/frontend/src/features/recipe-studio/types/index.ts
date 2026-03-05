@@ -26,6 +26,7 @@ export type ValidatorCodeLang =
   | "sql:bigquery"
   | "sql:ansi";
 export type ValidatorType = "code" | "oxc";
+export type OxcValidationMode = "syntax" | "lint" | "syntax+lint";
 
 export type ExpressionDtype = "str" | "int" | "float" | "bool";
 
@@ -268,6 +269,8 @@ export type ValidatorConfig = {
   validator_type: ValidatorType;
   // biome-ignore lint/style/useNamingConvention: api schema
   code_lang: ValidatorCodeLang;
+  // ui-only (used for OXC validators)
+  oxc_validation_mode: OxcValidationMode;
   // ui ergonomics (serialized to int in payload)
   batch_size: string;
 };

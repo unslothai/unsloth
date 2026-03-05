@@ -302,6 +302,7 @@ export function makeValidatorConfig(
     validator_type: validatorType,
     // biome-ignore lint/style/useNamingConvention: api schema
     code_lang: codeLang,
+    oxc_validation_mode: "syntax",
     batch_size: "10",
   };
 }
