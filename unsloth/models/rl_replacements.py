@@ -1342,12 +1342,21 @@ def openenv_vllm_reload_weights():
         )
         return
 
-    src = inspect.getsource(openenv_utils.generate_rollout_completions)
+    # trl 0.28 changed the function name yet again! Thanks trl :)
+    patch_target_name = "_generate_rollout_completions_colocate"
+    if hasattr(openenv_utils, patch_target_name):
+        patch_target = getattr(openenv_utils, patch_target_name)
+    else:
+        # Older TRL versions may keep sleep/wake logic in the public dispatcher.
+        patch_target_name = "generate_rollout_completions"
+        patch_target = getattr(openenv_utils, patch_target_name)
+
+    src = inspect.getsource(patch_target)
     src = textwrap.dedent(src)
     original_src = src
 
     # Remove the reload_weights call - unsloth handles this differently
-    src = re.sub(r'.*\.collective_rpc\("reload_weights"\).*\n?', "", src)
+    src = re.sub(r'.*\.collective_rpc\(\s*([\'"])reload_weights\1\s*\).*\n?', "", src)
 
     # Change wake_up(tags=["kv_cache"]) to wake_up() - wake everything to set is_sleeping=False
     # This prevents double wake_up issues. Unsloth's allocator skips weights anyway.
@@ -1360,12 +1369,13 @@ def openenv_vllm_reload_weights():
     # Execute and explicitly assign to module
     local_ns = {}
     exec(compile(src, "<unsloth>", "exec"), openenv_utils.__dict__, local_ns)
-    patched_func = local_ns["generate_rollout_completions"]
+    patched_func = local_ns[patch_target_name]
 
-    # Patch both the utils module and the parent openenv module
-    openenv_utils.generate_rollout_completions = patched_func
-    openenv.generate_rollout_completions = patched_func
-    logger.info("Unsloth: Patched trl openenv generate_rollout_completions")
+    # Patch the target function in utils; if dispatcher was patched also update parent module alias.
+    setattr(openenv_utils, patch_target_name, patched_func)
+    if patch_target_name == "generate_rollout_completions":
+        openenv.generate_rollout_completions = patched_func
+    logger.info(f"Unsloth: Patched trl openenv {patch_target_name}")
 
 
 RL_ADDITIONAL_FUNCTIONS["openenv"].append(openenv_vllm_reload_weights)
