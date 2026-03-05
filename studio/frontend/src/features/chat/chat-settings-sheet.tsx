@@ -157,6 +157,7 @@ export function ChatSettingsPanel({
 }: ChatSettingsPanelProps) {
   const [presets, setPresets] = useState<Preset[]>(BUILTIN_PRESETS);
   const [activePreset, setActivePreset] = useState("Default");
+  const isBuiltinPreset = BUILTIN_PRESETS.some((p) => p.name === activePreset);
 
   function set<K extends keyof InferenceParams>(key: K) {
     return (v: InferenceParams[K]) => onParamsChange({ ...params, [key]: v });
@@ -165,7 +166,11 @@ export function ChatSettingsPanel({
   function applyPreset(name: string) {
     const p = presets.find((pr) => pr.name === name);
     if (p) {
-      onParamsChange({ ...p.params, systemPrompt: params.systemPrompt });
+      onParamsChange({
+        ...p.params,
+        systemPrompt: params.systemPrompt,
+        checkpoint: params.checkpoint,
+      });
       setActivePreset(name);
     }
   }
@@ -195,7 +200,7 @@ export function ChatSettingsPanel({
 
   return (
     <aside
-      className={`shrink-0 h-full overflow-hidden bg-sidebar rounded-2xl corner-squircle transition-[width] duration-200 ease-linear ${open ? "w-[17rem] border-sidebar-border" : "w-0"}`}
+      className={`shrink-0 self-start h-[calc(100%-0.875rem)] overflow-hidden bg-muted/70 rounded-2xl corner-squircle transition-[width] duration-200 ease-linear ${open ? "w-[17rem] border-l border-sidebar-border/70" : "w-0"}`}
     >
       <div className="flex h-full w-[17rem] flex-col">
         <div className="flex items-center gap-2 px-4 py-3">
@@ -219,24 +224,7 @@ export function ChatSettingsPanel({
                 <SelectContent>
                   {presets.map((p) => (
                     <SelectItem key={p.name} value={p.name}>
-                      <div className="flex w-full items-center justify-between gap-2">
-                        <span>{p.name}</span>
-                        {!BUILTIN_PRESETS.some((bp) => bp.name === p.name) && (
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              deletePreset(p.name);
-                            }}
-                            className="text-muted-foreground hover:text-destructive"
-                          >
-                            <HugeiconsIcon
-                              icon={Delete02Icon}
-                              className="size-3"
-                            />
-                          </button>
-                        )}
-                      </div>
+                      {p.name}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -249,6 +237,20 @@ export function ChatSettingsPanel({
               >
                 <HugeiconsIcon icon={FloppyDiskIcon} className="size-3.5" />
                 Save
+              </button>
+              <button
+                type="button"
+                onClick={() => deletePreset(activePreset)}
+                disabled={isBuiltinPreset}
+                className="flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs text-muted-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                title={
+                  isBuiltinPreset
+                    ? "Built-in presets cannot be deleted"
+                    : "Delete selected preset"
+                }
+              >
+                <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+                Delete
               </button>
             </div>
           </div>
@@ -320,7 +322,7 @@ export function ChatSettingsPanel({
                 label="Max Tokens"
                 value={params.maxTokens}
                 min={64}
-                max={4096}
+                max={4092}
                 step={64}
                 onChange={set("maxTokens")}
               />

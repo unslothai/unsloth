@@ -3,6 +3,7 @@ import {
   HoverCardContent,
   HoverCardTrigger,
 } from "@/components/ui/hover-card";
+import { AnimatedThemeToggler } from "@/components/ui/animated-theme-toggler";
 import {
   Sheet,
   SheetContent,
@@ -13,9 +14,9 @@ import {
 import { cn } from "@/lib/utils";
 import {
   AiChat02Icon,
-  Analytics01Icon,
   ArrowRight01Icon,
   Book03Icon,
+  ChefHatIcon,
   CursorInfo02Icon,
   PackageIcon,
   ZapIcon,
@@ -23,31 +24,30 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useTrainingRuntimeStore } from "@/features/training";
 import { Link, useRouterState } from "@tanstack/react-router";
-import { AnimatePresence, motion } from "motion/react";
+import { motion } from "motion/react";
 import { useState } from "react";
 import { TOUR_OPEN_EVENT } from "@/features/tour";
 
 const NAV_ITEMS = [
   { label: "Studio", href: "/studio", icon: ZapIcon, enabled: true },
-  { label: "Evaluate", href: "/evaluate", icon: Analytics01Icon, enabled: false },
+  { label: "Recipes", href: "/data-recipes", icon: ChefHatIcon, enabled: true },
   { label: "Export", href: "/export", icon: PackageIcon, enabled: true },
   { label: "Chat", href: "/chat", icon: AiChat02Icon, enabled: true },
 ];
 
+function getTourId(pathname: string): "studio" | "chat" | "export" | null {
+  if (pathname === "/studio") return "studio";
+  if (pathname === "/chat") return "chat";
+  if (pathname === "/export") return "export";
+  return null;
+}
+
 export function Navbar() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const isTrainingRunning = useTrainingRuntimeStore((s) => s.isTrainingRunning);
-  const [logoHovered, setLogoHovered] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
 
-  const tourId =
-    pathname === "/studio"
-      ? "studio"
-      : pathname === "/chat"
-        ? "chat"
-        : pathname === "/export"
-          ? "export"
-          : null;
+  const tourId = getTourId(pathname);
 
   const openTour = () => {
     if (!tourId) return;
@@ -58,37 +58,20 @@ export function Navbar() {
 
   return (
     <header className="relative top-0 z-40 h-16 w-full">
-      <div className="mx-auto flex h-full max-w-7xl items-center justify-between px-4 sm:px-6">
+      <div className="mx-auto grid h-full max-w-7xl grid-cols-[1fr_auto_1fr] items-center px-4 sm:px-6">
         {/* Left: logo */}
-        <div
-          className="relative flex items-center gap-2.5 cursor-pointer select-none"
-          onMouseEnter={() => setLogoHovered(true)}
-          onMouseLeave={() => setLogoHovered(false)}
-        >
-          <motion.img
-            src="https://unsloth.ai/cgi/image/unsloth_sticker_no_shadow_ldN4V4iydw00qSIIWDCUv.png?width=96&quality=80&format=auto"
-            alt="unsloth"
-            className="size-10"
-            animate={{ rotate: logoHovered ? 360 : 0 }}
-            transition={{ duration: 0.5, ease: [0.165, 0.84, 0.44, 1] }}
+        <Link to="/studio" className="flex items-center justify-self-start select-none">
+          <img
+            src="/blacklogo.png"
+            alt="Unsloth"
+            className="h-9 w-auto dark:hidden"
           />
-          <span className="text-xl font-bold tracking-wide font-heading sm:text-2xl">
-            unsloth
-          </span>
-          <AnimatePresence>
-            {logoHovered && (
-              <motion.img
-                src="/Sloth emojis/large sloth wave.png"
-                alt="hi!"
-                className="absolute -bottom-10 left-1 size-10 pointer-events-none"
-                initial={{ y: 10, opacity: 0 }}
-                animate={{ y: 0, opacity: 1 }}
-                exit={{ y: 10, opacity: 0 }}
-                transition={{ duration: 0.25, ease: [0.215, 0.61, 0.355, 1] }}
-              />
-            )}
-          </AnimatePresence>
-        </div>
+          <img
+            src="/whitelogo.png"
+            alt="Unsloth"
+            className="hidden h-9 w-auto dark:block"
+          />
+        </Link>
 
         {/* Center: pill nav */}
         <nav
@@ -96,7 +79,8 @@ export function Navbar() {
           className="hidden items-center rounded-full border border-border bg-card p-1 ring-1 ring-foreground/5 md:flex"
         >
           {NAV_ITEMS.map((item) => {
-            const active = pathname === item.href;
+            const active =
+              pathname === item.href || pathname.startsWith(`${item.href}/`);
             const disabledByTraining =
               isTrainingRunning && item.href !== "/studio";
             if (!item.enabled || disabledByTraining) {
@@ -133,23 +117,21 @@ export function Navbar() {
                   />
                 )}
                 <span className="relative z-10 flex items-center gap-1.5">
-                  <AnimatePresence mode="popLayout">
-                    {active && item.icon && (
-                      <motion.span
-                        key={item.href}
-                        initial={{ width: 0, opacity: 0 }}
-                        animate={{ width: "auto", opacity: 1 }}
-                        exit={{ width: 0, opacity: 0 }}
-                        transition={{ duration: 0.2, ease: [0.165, 0.84, 0.44, 1] }}
-                        className="overflow-hidden"
-                      >
-                        <HugeiconsIcon
-                          icon={item.icon}
-                          className="size-3.5 -mt-px fill-current"
-                        />
-                      </motion.span>
-                    )}
-                  </AnimatePresence>
+                  <span className="inline-flex size-3.5 items-center justify-center overflow-hidden">
+                    <motion.span
+                      initial={false}
+                      animate={{
+                        opacity: active ? 1 : 0,
+                        scale: active ? 1 : 0.9,
+                      }}
+                      transition={{ duration: 0.2, ease: [0.165, 0.84, 0.44, 1] }}
+                    >
+                      <HugeiconsIcon
+                        icon={item.icon}
+                        className="size-3.5 -mt-px"
+                      />
+                    </motion.span>
+                  </span>
                   {item.label}
                 </span>
               </Link>
@@ -158,7 +140,12 @@ export function Navbar() {
         </nav>
 
         {/* Right: docs/tour desktop */}
-        <div className="hidden items-center gap-2 md:flex">
+        <div className="hidden items-center justify-self-end gap-2 md:flex">
+          <AnimatedThemeToggler
+            className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground [&_svg]:size-4"
+            title="Toggle theme"
+            aria-label="Toggle theme"
+          />
           <HoverCard openDelay={200} closeDelay={100}>
             <HoverCardTrigger asChild={true}>
               <a
@@ -193,16 +180,20 @@ export function Navbar() {
             </HoverCardContent>
           </HoverCard>
 
-          {tourId ? (
-            <button
-              type="button"
-              onClick={openTour}
-              className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-              title="Tour"
-            >
-              <HugeiconsIcon icon={CursorInfo02Icon} className="size-4" />
-            </button>
-          ) : null}
+          <button
+            type="button"
+            onClick={tourId ? openTour : undefined}
+            className={cn(
+              "flex h-9 items-center gap-1.5 rounded-md px-3 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
+              !tourId && "invisible pointer-events-none",
+            )}
+            title="Tour"
+            aria-hidden={!tourId}
+            tabIndex={tourId ? 0 : -1}
+          >
+            <HugeiconsIcon icon={CursorInfo02Icon} className="size-4" />
+            <span className="text-sm font-medium">Tour</span>
+          </button>
         </div>
 
         {/* Right: mobile */}

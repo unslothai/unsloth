@@ -53,14 +53,17 @@ class ModelDetails(BaseModel):
     config: Optional[Dict[str, Any]] = Field(None, description="Model configuration dictionary")
     is_vision: bool = Field(False, description="Whether model is a vision model")
     is_lora: bool = Field(False, description="Whether model is a LoRA adapter")
+    is_gguf: bool = Field(False, description="Whether model is a GGUF model (llama.cpp format)")
     base_model: Optional[str] = Field(None, description="Base model if this is a LoRA adapter")
 
 
 class LoRAInfo(BaseModel):
-    """LoRA adapter information"""
+    """LoRA adapter or exported model information"""
     display_name: str = Field(..., description="Display name for the LoRA")
-    adapter_path: str = Field(..., description="Path to the LoRA adapter")
+    adapter_path: str = Field(..., description="Path to the LoRA adapter or exported model")
     base_model: Optional[str] = Field(None, description="Base model identifier")
+    source: Optional[str] = Field(None, description="'training' or 'exported'")
+    export_type: Optional[str] = Field(None, description="'lora', 'merged', or 'gguf' (for exports)")
 
 
 class LoRAScanResponse(BaseModel):
@@ -73,6 +76,21 @@ class ModelListResponse(BaseModel):
     """Response schema for listing models"""
     models: List[ModelDetails] = Field(default_factory=list, description="List of models")
     default_models: List[str] = Field(default_factory=list, description="List of default model IDs")
+
+
+class GgufVariantDetail(BaseModel):
+    """A single GGUF quantization variant in a HuggingFace repo."""
+    filename: str = Field(..., description="GGUF filename (e.g., 'gemma-3-4b-it-Q4_K_M.gguf')")
+    quant: str = Field(..., description="Quantization label (e.g., 'Q4_K_M')")
+    size_bytes: int = Field(0, description="File size in bytes")
+
+
+class GgufVariantsResponse(BaseModel):
+    """Response for listing GGUF quantization variants in a HuggingFace repo."""
+    repo_id: str = Field(..., description="HuggingFace repo ID")
+    variants: List[GgufVariantDetail] = Field(default_factory=list, description="Available GGUF variants")
+    has_vision: bool = Field(False, description="Whether the model has vision support (mmproj files)")
+    default_variant: Optional[str] = Field(None, description="Recommended default quantization variant")
 
 
 class LocalModelInfo(BaseModel):

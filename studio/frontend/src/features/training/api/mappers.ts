@@ -4,6 +4,15 @@ import type { TrainingStartRequest } from "../types/api";
 const BACKEND_LORA_TYPE = "LoRA/QLoRA";
 const BACKEND_FULL_TYPE = "Full Finetuning";
 
+function parseSliceValue(value: string | null): number | null {
+  if (value == null) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const num = Number(trimmed);
+  if (!Number.isFinite(num) || !Number.isInteger(num)) return null;
+  return num;
+}
+
 export function toBackendTrainingType(trainingMethod: string): string {
   return trainingMethod === "full" ? BACKEND_FULL_TYPE : BACKEND_LORA_TYPE;
 }
@@ -14,7 +23,8 @@ export function buildTrainingStartPayload(
   const adapterMethod = config.trainingMethod !== "full";
   const isQlorMethod = config.trainingMethod === "qlora";
   const hfDataset = config.datasetSource === "huggingface" ? config.dataset : null;
-  const customFormatMapping = buildCustomFormatMapping(config);
+  const customFormatMapping =
+    Object.keys(config.datasetManualMapping).length > 0 ? config.datasetManualMapping : undefined;
 
   return {
     model_name: config.selectedModel ?? "",
@@ -23,8 +33,11 @@ export function buildTrainingStartPayload(
     load_in_4bit: adapterMethod ? isQlorMethod : false,
     max_seq_length: config.contextLength,
     hf_dataset: hfDataset,
-    hf_dataset_config: hfDataset ? config.datasetSubset : null,
-    hf_dataset_split: hfDataset ? config.datasetSplit : null,
+    subset: hfDataset ? config.datasetSubset : null,
+    train_split: hfDataset ? config.datasetSplit : null,
+    eval_split: hfDataset ? config.datasetEvalSplit : null,
+    dataset_slice_start: parseSliceValue(config.datasetSliceStart),
+    dataset_slice_end: parseSliceValue(config.datasetSliceEnd),
     local_datasets: [],
     format_type: config.datasetFormat,
     custom_format_mapping: customFormatMapping,
@@ -68,15 +81,3 @@ export function buildTrainingStartPayload(
   };
 }
 
-function buildCustomFormatMapping(
-  config: TrainingConfigState,
-): Record<string, string> | undefined {
-  const { input, output } = config.datasetManualMapping;
-  if (!input || !output) return undefined;
-
-  if (config.isVisionModel && config.isDatasetMultimodal) {
-    return { [input]: "image", [output]: "text" };
-  }
-
-  return { [input]: "user", [output]: "assistant" };
-}
