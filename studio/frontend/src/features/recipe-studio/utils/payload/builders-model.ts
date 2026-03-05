@@ -39,6 +39,7 @@ export function buildModelConfig(
   const temp = config.inference_temperature?.trim();
   const topP = config.inference_top_p?.trim();
   const maxTokens = config.inference_max_tokens?.trim();
+  const timeout = config.inference_timeout?.trim();
   const extraBody = parseJsonObject(
     config.inference_extra_body,
     `Model ${config.name} inference extra_body`,
@@ -63,6 +64,12 @@ export function buildModelConfig(
     if (Number.isFinite(parsed)) {
       // biome-ignore lint/style/useNamingConvention: api schema
       inference.max_tokens = parsed;
+    }
+  }
+  if (timeout) {
+    const parsed = Number(timeout);
+    if (Number.isFinite(parsed)) {
+      inference.timeout = Math.trunc(parsed);
     }
   }
   if (extraBody) {
