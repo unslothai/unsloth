@@ -270,6 +270,9 @@
     @apply font-sans;
     scrollbar-gutter: stable;
   }
+  body[data-scroll-locked] {
+    margin-right: 0 !important;
+  }
   h1,
   h2,
   h3,

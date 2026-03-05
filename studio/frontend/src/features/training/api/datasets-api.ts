@@ -2,6 +2,7 @@ import type {
   CheckFormatResponse,
   LocalDatasetsResponse,
 } from "../types/datasets";
+import { authFetch } from "@/features/auth";
 
 type CheckDatasetFormatArgs = {
   datasetName: string;
@@ -18,7 +19,7 @@ export async function checkDatasetFormat({
   split,
   isVlm,
 }: CheckDatasetFormatArgs): Promise<CheckFormatResponse> {
-  const res = await fetch("/api/datasets/check-format", {
+  const res = await authFetch("/api/datasets/check-format", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -39,7 +40,7 @@ export async function checkDatasetFormat({
 }
 
 export async function listLocalDatasets(): Promise<LocalDatasetsResponse> {
-  const res = await fetch("/api/datasets/local");
+  const res = await authFetch("/api/datasets/local");
   if (!res.ok) {
     const body = await res.json().catch(() => null);
     throw new Error(body?.detail || `Request failed (${res.status})`);

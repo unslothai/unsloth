@@ -9,6 +9,7 @@ export type CheckFormatResponse = {
   total_rows?: number | null;
   is_multimodal?: boolean;
   multimodal_columns?: string[] | null;
+  warning?: string | null;
 };
 
 export type LocalDatasetInfo = {
