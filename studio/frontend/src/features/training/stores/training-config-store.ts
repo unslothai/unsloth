@@ -28,6 +28,8 @@ const initialState: TrainingConfigState = {
   datasetSplit: null,
   datasetEvalSplit: null,
   datasetManualMapping: emptyManualMapping(),
+  datasetSliceStart: null,
+  datasetSliceEnd: null,
   uploadedFile: null,
   isCheckingVision: false,
   isVisionModel: false,
@@ -255,6 +257,8 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             datasetSplit: null,
             datasetEvalSplit: null,
             datasetManualMapping: emptyManualMapping(),
+            datasetSliceStart: null,
+            datasetSliceEnd: null,
             isDatasetMultimodal: null,
             isCheckingDataset: false,
           });
@@ -311,6 +315,8 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         },
         setDatasetManualMapping: (datasetManualMapping) =>
           set({ datasetManualMapping }),
+        setDatasetSliceStart: (datasetSliceStart) => set({ datasetSliceStart }),
+        setDatasetSliceEnd: (datasetSliceEnd) => set({ datasetSliceEnd }),
         setUploadedFile: (uploadedFile) => {
           _datasetCheckController?.abort();
           _datasetCheckController = null;
@@ -321,6 +327,8 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             datasetSplit: null,
             datasetEvalSplit: null,
             datasetManualMapping: emptyManualMapping(),
+            datasetSliceStart: null,
+            datasetSliceEnd: null,
             isDatasetMultimodal: null,
             isCheckingDataset: false,
           });
@@ -381,7 +389,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
     },
     {
       name: "unsloth_training_config_v1",
-      version: 6,
+      version: 7,
       migrate: (persisted, version) => {
         const s = persisted as Record<string, unknown>;
         if (version < 2 && s.datasetSubset == null && s.datasetConfig != null) {
@@ -399,6 +407,10 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         }
         if (version < 6 && s.datasetEvalSplit == null) {
           s.datasetEvalSplit = null;
+        }
+        if (version < 7) {
+          s.datasetSliceStart ??= null;
+          s.datasetSliceEnd ??= null;
         }
         return s as unknown as TrainingConfigStore;
       },
