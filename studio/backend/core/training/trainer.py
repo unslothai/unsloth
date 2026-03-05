@@ -475,11 +475,20 @@ class UnslothTrainer:
                 format_type=format_type,
                 dataset_name=dataset_source,
                 custom_format_mapping=custom_format_mapping,
+                progress_callback=self._update_progress,
             )
 
             # Check if stopped during formatting
             if self.should_stop:
                 print("Stopped during dataset formatting\n")
+                return None
+
+            # Abort if dataset formatting/conversion failed
+            if not dataset_info.get("success", True):
+                errors = dataset_info.get("errors", [])
+                error_msg = "; ".join(errors) if errors else "Dataset formatting failed"
+                logger.error(f"Dataset conversion failed: {error_msg}")
+                self._update_progress(error=error_msg)
                 return None
 
             self._update_progress(status_message=f"Dataset formatted and ready for training")
