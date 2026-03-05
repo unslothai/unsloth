@@ -35,6 +35,36 @@ export interface HfDatasetSplitsResult {
 
 const HF_SPLITS_API = "https://datasets-server.huggingface.co/splits";
 
+function normalizeDatasetSplitsError(message: string): string {
+  const normalized = message.toLowerCase();
+
+  // datasets-server returns technical script/runtime details for legacy datasets.
+  if (
+    normalized.includes("dataset scripts are no longer supported") ||
+    normalized.includes("runs arbitrary python code")
+  ) {
+    return "We can’t load subset/split options for this Hub dataset because it relies on a legacy custom script.";
+  }
+
+  if (
+    normalized.includes("unauthorized") ||
+    normalized.includes("forbidden") ||
+    normalized.includes("access token") ||
+    normalized.includes("private") ||
+    normalized.includes("gated") ||
+    normalized.includes("401") ||
+    normalized.includes("403")
+  ) {
+    return "Unable to load dataset splits. This dataset may be private or gated. Add a Hugging Face token with access and try again.";
+  }
+
+  if (normalized.includes("not found") || normalized.includes("404")) {
+    return "Dataset not found. Check the dataset name and try again.";
+  }
+
+  return "Unable to load dataset split options for this dataset.";
+}
+
 // ---------------------------------------------------------------------------
 // Hook
 // ---------------------------------------------------------------------------
@@ -101,7 +131,18 @@ export function useHfDatasetSplits(
       })
       .catch((err) => {
         if (!controller.signal.aborted) {
-          setError(err.message || "Failed to fetch dataset splits");
+          const rawErrorMessage =
+            err instanceof Error
+              ? err.message
+              : typeof err === "string"
+                ? err
+                : "Failed to fetch dataset splits";
+          console.warn("[useHfDatasetSplits] Failed to fetch dataset splits", {
+            datasetName,
+            message: rawErrorMessage,
+            error: err,
+          });
+          setError(normalizeDatasetSplitsError(rawErrorMessage));
           setEntries([]);
         }
       })

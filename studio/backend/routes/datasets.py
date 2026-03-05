@@ -6,7 +6,7 @@ import io
 import json
 import sys
 from pathlib import Path
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 import logging
 
 # Add backend directory to path
@@ -16,6 +16,7 @@ if str(backend_path) not in sys.path:
 
 # Import dataset utilities
 from utils.datasets import check_dataset_format
+from auth.authentication import get_current_subject
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -257,7 +258,10 @@ def list_local_datasets() -> LocalDatasetsResponse:
 
 
 @router.post("/check-format", response_model=CheckFormatResponse)
-def check_format(request: CheckFormatRequest):
+def check_format(
+    request: CheckFormatRequest,
+    current_subject: str = Depends(get_current_subject),
+):
     """
     Check if a dataset requires manual column mapping.
 
@@ -373,6 +377,21 @@ def check_format(request: CheckFormatRequest):
         else:
             preview_samples = _serialize_preview_rows(preview_slice)
 
+        # Lightweight URL-based image detection for VLM datasets
+        warning = None
+        image_col = result.get("detected_image_column")
+        if image_col and image_col in (result.get("columns") or []):
+            try:
+                sample_val = preview_slice[0][image_col]
+                if isinstance(sample_val, str) and sample_val.startswith(("http://", "https://")):
+                    warning = (
+                        "This dataset contains image URLs instead of embedded images. "
+                        "Images will be downloaded during training, which may be slow for large datasets."
+                    )
+                    logger.info(f"URL-based image column detected: {image_col}")
+            except Exception:
+                pass
+
         return CheckFormatResponse(
             requires_manual_mapping=result["requires_manual_mapping"],
             detected_format=result["detected_format"],
@@ -384,6 +403,7 @@ def check_format(request: CheckFormatRequest):
             detected_text_column=result.get("detected_text_column"),
             preview_samples=preview_samples,
             total_rows=total_rows,
+            warning=warning,
         )
 
     except HTTPException:
