@@ -20,7 +20,7 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { type ReactElement, type RefObject, useMemo, useState } from "react";
+import { type ReactElement, type RefObject, useMemo } from "react";
 import { useRecipeStudioStore } from "../../stores/recipe-studio";
 import type { LlmConfig } from "../../types";
 import { isLikelyImageValue } from "../../utils/image-preview";
@@ -151,7 +151,7 @@ export function LlmGeneralTab({
   }, [imageColumnOptions, imageContext.column_name, seedColumns]);
   const traceModeId = `${config.id}-trace-mode`;
   const reasoningToggleId = `${config.id}-reasoning-content`;
-  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const advancedOpen = config.advancedOpen === true;
 
   return (
     <div className="space-y-4">
@@ -358,7 +358,10 @@ export function LlmGeneralTab({
           </p>
         )}
       </div>
-      <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
+      <Collapsible
+        open={advancedOpen}
+        onOpenChange={(open) => onUpdate({ advancedOpen: open })}
+      >
         <CollapsibleTrigger asChild={true}>
           <button
             type="button"

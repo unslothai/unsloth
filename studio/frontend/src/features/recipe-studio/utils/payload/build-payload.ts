@@ -66,6 +66,29 @@ function pushUniqueJson(
   }
 }
 
+function collectAdvancedOpenByNode(
+  configs: Record<string, NodeConfig>,
+): Record<string, boolean> {
+  const out: Record<string, boolean> = {};
+  for (const config of Object.values(configs)) {
+    if (
+      !(
+        config.kind === "sampler" ||
+        config.kind === "llm" ||
+        config.kind === "validator" ||
+        config.kind === "seed"
+      )
+    ) {
+      continue;
+    }
+    if (config.advancedOpen !== true) {
+      continue;
+    }
+    out[config.name] = true;
+  }
+  return out;
+}
+
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: payload build
 export function buildRecipePayload(
   configs: Record<string, NodeConfig>,
@@ -333,6 +356,7 @@ export function buildRecipePayload(
   if (seedDropProcessor) {
     recipeProcessors.push(seedDropProcessor);
   }
+  const uiAdvancedOpenByNode = collectAdvancedOpenByNode(configs);
 
   return {
     errors,
@@ -386,6 +410,10 @@ export function buildRecipePayload(
           firstSeed.unstructured_chunk_overlap !== undefined && {
             unstructured_chunk_overlap: firstSeed.unstructured_chunk_overlap,
           }),
+        ...(Object.keys(uiAdvancedOpenByNode).length > 0 && {
+          // biome-ignore lint/style/useNamingConvention: ui schema
+          advanced_open_by_node: uiAdvancedOpenByNode,
+        }),
       },
     },
   };
