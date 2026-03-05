@@ -79,27 +79,27 @@ def generate_responses(
     skip_special_tokens: bool = True,
     dtype: torch.dtype = None,
 ):
-    inputs = [tokenizer(prompt, return_tensors="pt") for _ in range(num_generations)]
+    inputs = [tokenizer(prompt, return_tensors = "pt") for _ in range(num_generations)]
     keys = inputs[0].keys()
     batched_inputs = {
-        key: torch.cat([input[key] for input in inputs], dim=0).to(model.device)
+        key: torch.cat([input[key] for input in inputs], dim = 0).to(model.device)
         for key in keys
     }
 
     if dtype is not None:
-        inference_context = torch.autocast(device_type="cuda", dtype=dtype)
+        inference_context = torch.autocast(device_type = "cuda", dtype = dtype)
     else:
         inference_context = nullcontext()
 
     with inference_context:
         outputs = model.generate(
             **batched_inputs,
-            max_new_tokens=max_new_tokens,
-            do_sample=do_sample,
-            temperature=temperature,
+            max_new_tokens = max_new_tokens,
+            do_sample = do_sample,
+            temperature = temperature,
         )
 
-    responses = tokenizer.batch_decode(outputs, skip_special_tokens=skip_special_tokens)
+    responses = tokenizer.batch_decode(outputs, skip_special_tokens = skip_special_tokens)
     return responses
 
 
@@ -117,11 +117,11 @@ def sample_responses(
         model,
         tokenizer,
         prompt,
-        temperature=temperature,
-        num_generations=num_generations,
-        max_new_tokens=max_new_tokens,
-        skip_special_tokens=skip_special_tokens,
-        dtype=dtype,
+        temperature = temperature,
+        num_generations = num_generations,
+        max_new_tokens = max_new_tokens,
+        skip_special_tokens = skip_special_tokens,
+        dtype = dtype,
     )
     return responses
 
@@ -136,32 +136,32 @@ def setup_tokenizer(model_name, fixup_funcs: list[Callable] = []):
 def setup_model(
     model_name,
     quantize: bool = True,
-    dtype=torch.bfloat16,
-    peft_config=None,
+    dtype = torch.bfloat16,
+    peft_config = None,
     autocast_adapter: bool = True,
 ):
     if quantize:
         bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_use_double_quant=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=dtype,
+            load_in_4bit = True,
+            bnb_4bit_use_double_quant = True,
+            bnb_4bit_quant_type = "nf4",
+            bnb_4bit_compute_dtype = dtype,
         )
     else:
         bnb_config = None
 
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
-        device_map="cuda:0",
-        attn_implementation="sdpa",
-        quantization_config=bnb_config,
-        torch_dtype=dtype,
+        device_map = "cuda:0",
+        attn_implementation = "sdpa",
+        quantization_config = bnb_config,
+        torch_dtype = dtype,
     )
     model = prepare_model_for_kbit_training(model) if quantize else model
 
     if peft_config is not None:
         model = get_peft_model(
-            model, peft_config, autocast_adapter_dtype=autocast_adapter
+            model, peft_config, autocast_adapter_dtype = autocast_adapter
         )
 
     return model
@@ -169,19 +169,19 @@ def setup_model(
 
 def get_peft_config(
     lora_rank,
-    lora_alpha=None,
-    lora_dropout=0.0,
-    bias="none",
-    target_modules="all-linear",
+    lora_alpha = None,
+    lora_dropout = 0.0,
+    bias = "none",
+    target_modules = "all-linear",
 ):
     lora_alpha = lora_alpha or 2 * lora_rank
     peft_config = LoraConfig(
-        lora_alpha=lora_alpha,
-        lora_dropout=lora_dropout,
-        r=lora_rank,
-        bias=bias,
-        target_modules=target_modules,
-        task_type="CAUSAL_LM",
+        lora_alpha = lora_alpha,
+        lora_dropout = lora_dropout,
+        r = lora_rank,
+        bias = bias,
+        target_modules = target_modules,
+        task_type = "CAUSAL_LM",
     )
     return peft_config
 
@@ -191,18 +191,18 @@ def setup_trainer(
     tokenizer,
     dataset,
     train_args,
-    peft_config=None,
-    formatting_func=None,
-    collator=None,
+    peft_config = None,
+    formatting_func = None,
+    collator = None,
 ):
     return SFTTrainer(
-        model=model,
-        peft_config=peft_config,
-        train_dataset=dataset,
-        processing_class=tokenizer,
-        formatting_func=formatting_func,
-        data_collator=collator,
-        args=train_args,
+        model = model,
+        peft_config = peft_config,
+        train_dataset = dataset,
+        processing_class = tokenizer,
+        formatting_func = formatting_func,
+        data_collator = collator,
+        args = train_args,
     )
 
 
@@ -212,17 +212,17 @@ def setup_lora(
     dataset,
     peft_config,
     train_args,
-    formatting_func=None,
-    collator=None,
+    formatting_func = None,
+    collator = None,
 ):
     return LoraConfig(
-        model=model,
-        peft_config=peft_config,
-        train_dataset=dataset,
-        processing_class=tokenizer,
-        formatting_func=formatting_func,
-        data_collator=collator,
-        args=train_args,
+        model = model,
+        peft_config = peft_config,
+        train_dataset = dataset,
+        processing_class = tokenizer,
+        formatting_func = formatting_func,
+        data_collator = collator,
+        args = train_args,
     )
 
 
@@ -236,7 +236,7 @@ def convert_weights_back_to_dtype(model, dtype):
             param.data = param.data.to(dtype)
 
 
-def fix_llama3_tokenizer(tokenizer, padding_side="right"):
+def fix_llama3_tokenizer(tokenizer, padding_side = "right"):
     tokenizer.padding_side = padding_side
     added_vocab = tokenizer.get_added_vocab()
     pad_token = [w for w in added_vocab if "pad" in w]
@@ -276,12 +276,12 @@ def _convert_lora_to_linear(module: LoraLayer, adapter_name: str = "default"):
     w_dq = w_dq.to(original_dtype)
 
     new_module = torch.nn.Linear(
-        w_dq.shape[1], w_dq.shape[0], bias=module.base_layer.bias is not None
+        w_dq.shape[1], w_dq.shape[0], bias = module.base_layer.bias is not None
     )
-    new_module.weight.data = torch.nn.Parameter(w_dq, requires_grad=False)
+    new_module.weight.data = torch.nn.Parameter(w_dq, requires_grad = False)
     if module.lora_bias[adapter_name]:
         bias_data = module.base_layer.bias.data + module.lora_B[adapter_name].bias
-        new_module.bias.data = torch.nn.Parameter(bias_data, requires_grad=False)
+        new_module.bias.data = torch.nn.Parameter(bias_data, requires_grad = False)
     return new_module
 
 

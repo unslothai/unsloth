@@ -1252,7 +1252,6 @@ def fix_vllm_pdl_blackwell():
         logger.info(f"Unsloth: Set TRITON_DISABLE_PDL=1 for SM100 ({sm100_gpu_name})")
 
 
-<<<<<<< HEAD
 def patch_openspiel_env_async():
     """Apply nest_asyncio for OpenEnv EnvClient async compatibility.
 

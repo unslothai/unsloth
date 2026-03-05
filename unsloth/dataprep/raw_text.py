@@ -35,7 +35,7 @@ SUPPORTED_FORMATS = {
 
 
 class RawTextDataLoader:
-    def __init__(self, tokenizer, chunk_size=2048, stride=512, return_tokenized=True):
+    def __init__(self, tokenizer, chunk_size = 2048, stride = 512, return_tokenized = True):
         if chunk_size <= 0:
             raise ValueError(f"chunk_size must be positive, got {chunk_size}")
         if stride >= chunk_size:
@@ -52,7 +52,7 @@ class RawTextDataLoader:
         extension = Path(file_path).suffix.lower()
         return SUPPORTED_FORMATS.get(extension, "plain_text")
 
-    def load_from_file(self, file_path, return_tokenized=None):
+    def load_from_file(self, file_path, return_tokenized = None):
         """Load raw text and convert to dataset"""
         if return_tokenized is None:
             return_tokenized = self.return_tokenized
@@ -65,7 +65,7 @@ class RawTextDataLoader:
         )
         return self.create_causal_dataset(chunks)
 
-    def load_from_files(self, file_paths, return_tokenized=None):
+    def load_from_files(self, file_paths, return_tokenized = None):
         """Load multiple text files"""
         if return_tokenized is None:
             return_tokenized = self.return_tokenized
@@ -79,7 +79,7 @@ class RawTextDataLoader:
             all_chunks.extend(chunks)
         return self.create_causal_dataset(all_chunks)
 
-    def chunk_text(self, text, return_tokenized=None):
+    def chunk_text(self, text, return_tokenized = None):
         """Split text into overlapping chunks"""
         if return_tokenized is None:
             return_tokenized = self.return_tokenized
@@ -107,7 +107,7 @@ class RawTextDataLoader:
             # If chunks are text strings (backward compatibility)
             return Dataset.from_dict({"text": chunks})
 
-    def smart_chunk_text(self, text, chunk_size, stride, return_tokenized=True):
+    def smart_chunk_text(self, text, chunk_size, stride, return_tokenized = True):
         """
         Intelligent chunking that:
         1. Respects sentence/paragraph boundaries
@@ -116,7 +116,7 @@ class RawTextDataLoader:
         4. Returns tokenized chunks directly (more efficient) or text chunks
         """
         # First pass: tokenize the entire text to get accurate token counts
-        tokenized = self.tokenizer(text, return_tensors="pt", add_special_tokens=False)
+        tokenized = self.tokenizer(text, return_tensors = "pt", add_special_tokens = False)
         tokens = tokenized["input_ids"]
 
         # Handle different tokenizer return formats
@@ -179,7 +179,7 @@ class RawTextDataLoader:
             else:
                 # Decode back to text (backward compatibility)
                 chunk_text = self.tokenizer.decode(
-                    chunk_tokens, skip_special_tokens=True
+                    chunk_tokens, skip_special_tokens = True
                 )
 
                 # Add EOS token if it's the last chunk or chunk is complete
@@ -200,7 +200,7 @@ class RawTextDataLoader:
 
     def _read_file_by_format(self, file_path, file_format):
         """Read file content based on detected format."""
-        with open(file_path, "r", encoding="utf-8") as f:
+        with open(file_path, "r", encoding = "utf-8") as f:
             if file_format == "plain_text" or file_format == "markdown":
                 return f.read()
             elif file_format == "json_lines":
@@ -261,16 +261,16 @@ class TextPreprocessor:
     def add_structure_tokens(self, text):
         """Add special tokens for structure (chapters, sections)"""
         text = re.sub(
-            r"^# (.+)$", r"<|chapter|>\1<|/chapter|>", text, flags=re.MULTILINE
+            r"^# (.+)$", r"<|chapter|>\1<|/chapter|>", text, flags = re.MULTILINE
         )
         text = re.sub(
-            r"^## (.+)$", r"<|section|>\1<|/section|>", text, flags=re.MULTILINE
+            r"^## (.+)$", r"<|section|>\1<|/section|>", text, flags = re.MULTILINE
         )
         text = re.sub(
-            r"^### (.+)$", r"<|subsection|>\1<|/subsection|>", text, flags=re.MULTILINE
+            r"^### (.+)$", r"<|subsection|>\1<|/subsection|>", text, flags = re.MULTILINE
         )
         text = re.sub(
-            r"```(\w*)\n(.*?)\n```", r"<|code|\1|>\2<|/code|>", text, flags=re.DOTALL
+            r"```(\w*)\n(.*?)\n```", r"<|code|\1|>\2<|/code|>", text, flags = re.DOTALL
         )
         return text
 

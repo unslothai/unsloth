@@ -63,7 +63,7 @@ def test_raw_text_loader():
             self.eos_token = "</s>"
             self.eos_token_id = 2  # Mock EOS token ID
 
-        def __call__(self, text, return_tensors=None, add_special_tokens=False):
+        def __call__(self, text, return_tensors = None, add_special_tokens = False):
             words = text.split()
             token_ids = list(range(len(words)))
 
@@ -85,27 +85,27 @@ def test_raw_text_loader():
                 return {"input_ids": [MockTensor(token_ids)]}
             return {"input_ids": token_ids}
 
-        def decode(self, token_ids, skip_special_tokens=False):
+        def decode(self, token_ids, skip_special_tokens = False):
             return " ".join([f"word_{i}" for i in token_ids])
 
     # Create test file
     test_content = "This is a test file for raw text training. " * 10
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+    with tempfile.NamedTemporaryFile(mode = "w", suffix = ".txt", delete = False) as f:
         f.write(test_content)
         test_file = f.name
 
     try:
         # Test loader
         tokenizer = MockTokenizer()
-        loader = RawTextDataLoader(tokenizer, chunk_size=5, stride=2)
+        loader = RawTextDataLoader(tokenizer, chunk_size = 5, stride = 2)
 
         # Test loading with text output (legacy mode)
-        text_dataset = loader.load_from_file(test_file, return_tokenized=False)
+        text_dataset = loader.load_from_file(test_file, return_tokenized = False)
         assert len(text_dataset) > 0, "Should create at least one chunk"
         assert "text" in text_dataset.column_names, "Dataset should have 'text' column"
 
         # Test loading with tokenized output (new efficient mode)
-        tokenized_dataset = loader.load_from_file(test_file, return_tokenized=True)
+        tokenized_dataset = loader.load_from_file(test_file, return_tokenized = True)
         assert len(tokenized_dataset) > 0, "Should create at least one tokenized chunk"
         assert (
             "input_ids" in tokenized_dataset.column_names
@@ -134,13 +134,13 @@ def test_raw_text_loader():
 
         # Test constructor validation
         try:
-            bad_loader = RawTextDataLoader(tokenizer, chunk_size=0, stride=2)
+            bad_loader = RawTextDataLoader(tokenizer, chunk_size = 0, stride = 2)
             assert False, "Should raise ValueError for chunk_size=0"
         except ValueError as e:
             assert "chunk_size must be positive" in str(e)
 
         try:
-            bad_loader = RawTextDataLoader(tokenizer, chunk_size=5, stride=10)
+            bad_loader = RawTextDataLoader(tokenizer, chunk_size = 5, stride = 10)
             assert False, "Should raise ValueError for stride >= chunk_size"
         except ValueError as e:
             assert "stride" in str(e) and "chunk_size" in str(e)

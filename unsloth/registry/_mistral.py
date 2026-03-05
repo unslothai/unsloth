@@ -23,14 +23,14 @@ class MistralSmallModelInfo(ModelInfo):
 
 
 MistralSmall_2503_Base_Meta = ModelMeta(
-    org="mistralai",
-    base_name="Mistral-Small",
-    instruct_tags=["Base"],
-    model_version=_MISTRAL_SMALL_03_25_VERSION,
-    model_sizes=["24"],
-    model_info_cls=MistralSmallModelInfo,
-    is_multimodal=False,
-    quant_types=[QuantType.NONE, QuantType.UNSLOTH, QuantType.BNB],
+    org = "mistralai",
+    base_name = "Mistral-Small",
+    instruct_tags = ["Base"],
+    model_version = _MISTRAL_SMALL_03_25_VERSION,
+    model_sizes = ["24"],
+    model_info_cls = MistralSmallModelInfo,
+    is_multimodal = False,
+    quant_types = [QuantType.NONE, QuantType.UNSLOTH, QuantType.BNB],
 )
 
 MistralSmall_2503_Instruct_Meta = copy.deepcopy(MistralSmall_2503_Base_Meta)
@@ -54,23 +54,23 @@ def register_mistral_small_models(include_original_model: bool = False):
     if _IS_MISTRAL_SMALL_REGISTERED:
         return
     _register_models(
-        MistralSmall_2503_Base_Meta, include_original_model=include_original_model
+        MistralSmall_2503_Base_Meta, include_original_model = include_original_model
     )
     _register_models(
-        MistralSmall_2503_Instruct_Meta, include_original_model=include_original_model
+        MistralSmall_2503_Instruct_Meta, include_original_model = include_original_model
     )
     _register_models(
-        MistralSmall_2501_Base_Meta, include_original_model=include_original_model
+        MistralSmall_2501_Base_Meta, include_original_model = include_original_model
     )
     _register_models(
-        MistralSmall_2501_Instruct_Meta, include_original_model=include_original_model
+        MistralSmall_2501_Instruct_Meta, include_original_model = include_original_model
     )
 
     _IS_MISTRAL_SMALL_REGISTERED = True
 
 
 def register_mistral_models(include_original_model: bool = False):
-    register_mistral_small_models(include_original_model=include_original_model)
+    register_mistral_small_models(include_original_model = include_original_model)
 
 
 if __name__ == "__main__":
@@ -78,7 +78,7 @@ if __name__ == "__main__":
 
     MODEL_REGISTRY.clear()
 
-    register_mistral_models(include_original_model=True)
+    register_mistral_models(include_original_model = True)
 
     for model_id, model_info in MODEL_REGISTRY.items():
         model_info = _check_model_info(model_id)
