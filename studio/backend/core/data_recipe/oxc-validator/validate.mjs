@@ -100,36 +100,37 @@ function normalizeLintDiagnostic(diagnostic) {
   if (!diagnostic || typeof diagnostic !== "object") {
     return null;
   }
+
+  const readString = (value) =>
+    typeof value === "string" ? value : null;
+  const readInt = (value) =>
+    Number.isInteger(value) ? value : null;
+  const asObject = (value) =>
+    value && typeof value === "object" ? value : null;
+
   const message = String(diagnostic.message || "").trim();
   if (!message) {
     return null;
   }
+
   const severityRaw = String(diagnostic.severity || "").trim().toLowerCase();
   const severity = severityRaw === "error" ? "error" : "warning";
-  const labels = Array.isArray(diagnostic.labels)
-    ? diagnostic.labels.map((label) => {
-        const span = label && typeof label === "object" ? label.span : null;
-        const start =
-          span && typeof span === "object" && Number.isInteger(span.offset)
-            ? span.offset
-            : null;
-        const length =
-          span && typeof span === "object" && Number.isInteger(span.length)
-            ? span.length
-            : null;
-        return {
-          message:
-            label && typeof label === "object" && typeof label.label === "string"
-              ? label.label
-              : null,
-          start,
-          end:
-            start !== null && length !== null
-              ? start + length
-              : null,
-        };
-      })
-    : [];
+
+  const labels = [];
+  if (Array.isArray(diagnostic.labels)) {
+    for (const label of diagnostic.labels) {
+      const labelObj = asObject(label);
+      const span = asObject(labelObj?.span);
+      const start = readInt(span?.offset);
+      const length = readInt(span?.length);
+      labels.push({
+        message: readString(labelObj?.label),
+        start,
+        end: start !== null && length !== null ? start + length : null,
+      });
+    }
+  }
+
   const code = typeof diagnostic.code === "string" ? diagnostic.code : null;
   return {
     message: code ? `${code}: ${message}` : message,

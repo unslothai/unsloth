@@ -260,6 +260,8 @@ export function makeModelConfig(
     // biome-ignore lint/style/useNamingConvention: api schema
     inference_top_p: "",
     // biome-ignore lint/style/useNamingConvention: api schema
+    inference_extra_body: "",
+    // biome-ignore lint/style/useNamingConvention: api schema
     skip_health_check: false,
   };
 }

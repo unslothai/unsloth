@@ -244,6 +244,8 @@ export type ModelConfig = {
   // biome-ignore lint/style/useNamingConvention: api schema
   inference_max_tokens?: string;
   // biome-ignore lint/style/useNamingConvention: api schema
+  inference_extra_body?: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
   skip_health_check?: boolean;
 };
 
