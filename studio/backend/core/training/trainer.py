@@ -2087,12 +2087,17 @@ class UnslothTrainer:
 
             elif self._audio_type == 'snac':
                 # Orpheus: language model with SNAC codec tokens — plain HF Trainer
-                from transformers import Trainer as HFTrainer, TrainingArguments
+                # DataCollatorForSeq2Seq dynamically pads variable-length sequences per batch
+                # (text + audio codes vary in length) and pads labels with -100.
+                from transformers import Trainer as HFTrainer, TrainingArguments, DataCollatorForSeq2Seq
 
                 config = self._build_audio_training_args(training_args, output_dir)
                 self.trainer = HFTrainer(
                     model=self.model, train_dataset=dataset,
                     args=TrainingArguments(**config),
+                    data_collator=DataCollatorForSeq2Seq(
+                        tokenizer=self.tokenizer, padding=True, pad_to_multiple_of=8,
+                    ),
                 )
                 self.trainer.add_callback(self._create_progress_callback())
 
