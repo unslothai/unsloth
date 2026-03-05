@@ -350,7 +350,8 @@ def convert_to_vlm_format(
         return {"messages": messages}
 
     total = len(dataset)
-    has_urls = isinstance(next(iter(dataset))[image_column], str)
+    first_image = next(iter(dataset))[image_column]
+    has_urls = isinstance(first_image, str) and first_image.startswith(("http://", "https://"))
 
     # ── URL probe: 200 samples with parallel workers to estimate speed + failure rate ──
     PROBE_SIZE = 200
