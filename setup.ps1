@@ -691,6 +691,22 @@ python "$PSScriptRoot\install_python_stack.py"
 # Restore ErrorActionPreference after pip/python work
 $ErrorActionPreference = $prevEAP
 
+# ── Pre-install transformers 5.x into .venv_t5/ ──
+# Models like GLM-4.7-Flash need transformers>=5.1.0. Instead of pip-installing
+# at runtime (slow, ~10-15s), we pre-install into a separate directory.
+# The training subprocess just prepends .venv_t5/ to sys.path — instant switch.
+Write-Host ""
+Write-Host "   Pre-installing transformers 5.x for newer model support..." -ForegroundColor Cyan
+$VenvT5Dir = Join-Path $PSScriptRoot ".venv_t5"
+if (Test-Path $VenvT5Dir) { Remove-Item -Recurse -Force $VenvT5Dir }
+New-Item -ItemType Directory -Path $VenvT5Dir -Force | Out-Null
+$prevEAP_t5 = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+pip install --target $VenvT5Dir --no-deps "transformers==5.1.0" 2>&1 | Out-Null
+pip install --target $VenvT5Dir --no-deps "huggingface_hub>=1.3.0" 2>&1 | Out-Null
+$ErrorActionPreference = $prevEAP_t5
+Write-Host "[OK] Transformers 5.x pre-installed to .venv_t5/" -ForegroundColor Green
+
 # ==========================================================================
 #  PHASE 3.5: Install OpenSSL dev (for HTTPS support in llama-server)
 # ==========================================================================
