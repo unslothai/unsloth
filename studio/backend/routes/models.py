@@ -273,17 +273,11 @@ async def get_model_config(
     This endpoint wraps the backend load_model_defaults function.
     """
     try:
-        # Ensure correct transformers version for this model architecture
-        from utils.transformers_version import ensure_transformers_version
-        ensure_transformers_version(model_name)
-
         logger.info(f"Getting model config for: {model_name}")
         # Load model defaults from backend
         config_dict = load_model_defaults(model_name)
-        
-        # Lazy import to pick up fresh transformers after version switch
-        from utils.models import is_vision_model as _is_vision_model
-        is_vision = _is_vision_model(model_name)
+
+        is_vision = is_vision_model(model_name)
         
         # Check if it's a LoRA adapter
         is_lora = False
@@ -411,14 +405,8 @@ async def check_vision_model(
     This endpoint wraps the backend is_vision_model function.
     """
     try:
-        # Ensure correct transformers version for this model architecture
-        from utils.transformers_version import ensure_transformers_version
-        ensure_transformers_version(model_name)
-
         logger.info(f"Checking if vision model: {model_name}")
-        # Lazy import to pick up fresh transformers after version switch
-        from utils.models import is_vision_model as _is_vision_model
-        is_vision = _is_vision_model(model_name)
+        is_vision = is_vision_model(model_name)
         
         logger.info(f"Vision check result for {model_name}: is_vision={is_vision}")
         return VisionCheckResponse(
