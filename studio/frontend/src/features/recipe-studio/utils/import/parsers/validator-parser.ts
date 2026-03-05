@@ -1,35 +1,29 @@
 import type { ValidatorConfig } from "../../../types";
 import { readNumberString } from "../helpers";
 import { normalizeValidatorCodeLang } from "../../validators/code-lang";
+import { normalizeOxcValidationMode } from "../../validators/oxc-mode";
 
 const OXC_VALIDATION_FN_MARKER = "unsloth_oxc_validator";
 
-function parseOxcCodeLang(validationFunctionRaw: string): string {
-  if (!validationFunctionRaw.startsWith(OXC_VALIDATION_FN_MARKER)) {
-    return "";
+function parseOxcValidationMarker(
+  validationFunctionRaw: string,
+): { codeLang: string; mode: string } {
+  const marker = `${OXC_VALIDATION_FN_MARKER}:`;
+  if (!validationFunctionRaw.startsWith(marker)) {
+    return { codeLang: "", mode: "syntax" };
   }
-  const suffix = validationFunctionRaw
-    .slice(OXC_VALIDATION_FN_MARKER.length)
-    .trim();
-  if (!suffix) {
-    return "";
+  const parts = validationFunctionRaw
+    .slice(marker.length)
+    .split(":")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (parts.length < 2) {
+    return { codeLang: "", mode: "syntax" };
   }
-  const normalizedSuffix = suffix.startsWith(":") || suffix.startsWith("_")
-    ? suffix.slice(1).trim().toLowerCase()
-    : suffix.toLowerCase();
-  if (normalizedSuffix === "js") {
-    return "javascript";
-  }
-  if (normalizedSuffix === "ts") {
-    return "typescript";
-  }
-  if (normalizedSuffix === "jsx" || normalizedSuffix === "tsx") {
-    return normalizedSuffix;
-  }
-  if (normalizedSuffix === "javascript" || normalizedSuffix === "typescript") {
-    return normalizedSuffix;
-  }
-  return "";
+  return {
+    codeLang: parts[0],
+    mode: parts[1],
+  };
 }
 
 export function parseValidator(
@@ -54,7 +48,9 @@ export function parseValidator(
   const isOxc =
     String(column.validator_type ?? "").trim() === "local_callable" &&
     validationFunctionRaw.startsWith(OXC_VALIDATION_FN_MARKER);
-  const oxcLang = isOxc ? parseOxcCodeLang(validationFunctionRaw) : "";
+  const marker = isOxc
+    ? parseOxcValidationMarker(validationFunctionRaw)
+    : { codeLang: "", mode: "syntax" };
   return {
     id,
     kind: "validator",
@@ -65,8 +61,11 @@ export function parseValidator(
     validator_type: isOxc ? "oxc" : "code",
     // biome-ignore lint/style/useNamingConvention: api schema
     code_lang: normalizeValidatorCodeLang(
-      isOxc ? oxcLang || "javascript" : params.code_lang,
+      isOxc ? marker.codeLang || "javascript" : params.code_lang,
     ),
+    oxc_validation_mode: isOxc
+      ? normalizeOxcValidationMode(marker.mode)
+      : "syntax",
     batch_size: readNumberString(column.batch_size) || "10",
   };
 }
