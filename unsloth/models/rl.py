@@ -1875,12 +1875,15 @@ def patch_trl_openenv():
         function()  # Call the function to apply the patch
     return
 
+
 def patch_trl_vllm_generation():
     # trl moved vllm stuff to trl/generation/vllm_generation.py
     # We need to min_p patch it to not instantiate another vLLM instance if we already have one with fast_inference
     # Find the instance of self.llm = LLM(..) (multiline) and wrap it around an if clause
     for function in RL_ADDITIONAL_FUNCTIONS["vllm_generation"]:
-        logger.info(f"Unsloth: Patching trl VLLMGeneration with function: {function.__name__}")
+        logger.info(
+            f"Unsloth: Patching trl VLLMGeneration with function: {function.__name__}"
+        )
         function()
     return
 
