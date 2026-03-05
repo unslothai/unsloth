@@ -31,11 +31,19 @@ export function buildModelProvider(
   };
 }
 
-export function buildModelConfig(config: ModelConfig): Record<string, unknown> {
+export function buildModelConfig(
+  config: ModelConfig,
+  errors: string[],
+): Record<string, unknown> {
   const inference: Record<string, unknown> = {};
   const temp = config.inference_temperature?.trim();
   const topP = config.inference_top_p?.trim();
   const maxTokens = config.inference_max_tokens?.trim();
+  const extraBody = parseJsonObject(
+    config.inference_extra_body,
+    `Model ${config.name} inference extra_body`,
+    errors,
+  );
 
   if (temp) {
     const parsed = Number(temp);
@@ -56,6 +64,10 @@ export function buildModelConfig(config: ModelConfig): Record<string, unknown> {
       // biome-ignore lint/style/useNamingConvention: api schema
       inference.max_tokens = parsed;
     }
+  }
+  if (extraBody) {
+    // biome-ignore lint/style/useNamingConvention: api schema
+    inference.extra_body = extraBody;
   }
 
   return {

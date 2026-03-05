@@ -56,6 +56,10 @@ export function parseModelConfig(
     // biome-ignore lint/style/useNamingConvention: api schema
     inference_max_tokens: readNumberString(inference.max_tokens),
     // biome-ignore lint/style/useNamingConvention: api schema
+    inference_extra_body: isRecord(inference.extra_body)
+      ? JSON.stringify(inference.extra_body, null, 2)
+      : "",
+    // biome-ignore lint/style/useNamingConvention: api schema
     skip_health_check:
       typeof model.skip_health_check === "boolean"
         ? model.skip_health_check
