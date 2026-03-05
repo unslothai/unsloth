@@ -36,6 +36,7 @@ export function ModelConfigDialog({
   const tempId = `${config.id}-temperature`;
   const topPId = `${config.id}-top-p`;
   const maxTokensId = `${config.id}-max-tokens`;
+  const timeoutId = `${config.id}-timeout`;
   const extraBodyId = `${config.id}-inference-extra-body`;
   const providerAnchorRef = useRef<HTMLDivElement>(null);
   const providerInputRef = useRef(config.provider);
@@ -123,7 +124,7 @@ export function ModelConfigDialog({
           label="Inference"
           hint="Runtime generation params for this model alias."
         />
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
           <Input
             id={tempId}
             className="nodrag"
@@ -149,6 +150,15 @@ export function ModelConfigDialog({
             value={config.inference_max_tokens ?? ""}
             onChange={(event) =>
               updateField("inference_max_tokens", event.target.value)
+            }
+          />
+          <Input
+            id={timeoutId}
+            className="nodrag"
+            placeholder="Timeout (sec)"
+            value={config.inference_timeout ?? ""}
+            onChange={(event) =>
+              updateField("inference_timeout", event.target.value)
             }
           />
         </div>
