@@ -53,6 +53,7 @@ firebase-debug.log
 # Other
 resources/
 tmp/
+**/node_modules/
 auth.db
 studio/frontend/package-lock.json
 

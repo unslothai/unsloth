@@ -30,13 +30,22 @@ export function nodeDataFromConfig(
     };
   }
   if (config.kind === "validator") {
+    const isOxc = config.validator_type === "oxc";
+    const isSql = config.code_lang.startsWith("sql:");
+    let subtype = "Python";
+    let blockType: RecipeNodeData["blockType"] = "validator_python";
+    if (isOxc) {
+      subtype = "OXC";
+      blockType = "validator_oxc";
+    } else if (isSql) {
+      subtype = "SQL";
+      blockType = "validator_sql";
+    }
     return {
       title: "Validator",
       kind: "validator",
-      subtype: config.code_lang.startsWith("sql:") ? "SQL" : "Python",
-      blockType: config.code_lang.startsWith("sql:")
-        ? "validator_sql"
-        : "validator_python",
+      subtype,
+      blockType,
       name: config.name,
       layoutDirection,
     };

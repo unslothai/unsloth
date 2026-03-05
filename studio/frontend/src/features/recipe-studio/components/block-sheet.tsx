@@ -71,7 +71,9 @@ type BlockSheetProps = {
   onAddModelProvider: () => void;
   onAddModelConfig: () => void;
   onAddExpression: () => void;
-  onAddValidator: (type: "validator_python" | "validator_sql") => void;
+  onAddValidator: (
+    type: "validator_python" | "validator_sql" | "validator_oxc",
+  ) => void;
   onAddMarkdownNote: () => void;
   onOpenProcessors: () => void;
   copied: boolean;
@@ -318,7 +320,9 @@ export function BlockSheet({
       return;
     }
     if (kind === "validator") {
-      onAddValidator(type as "validator_python" | "validator_sql");
+      onAddValidator(
+        type as "validator_python" | "validator_sql" | "validator_oxc",
+      );
       return;
     }
     if (kind === "expression") {

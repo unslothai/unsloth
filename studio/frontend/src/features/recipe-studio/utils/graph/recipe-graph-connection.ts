@@ -15,6 +15,10 @@ import {
   isLlmConfig,
   isSubcategoryConfig,
 } from "../index";
+import {
+  VALIDATOR_OXC_CODE_LANGS,
+  VALIDATOR_SQL_CODE_LANGS,
+} from "../validators/code-lang";
 
 function buildTemplateWithRef(template: string, ref: string): string {
   if (template.includes(ref)) {
@@ -145,6 +149,25 @@ function isModelSemanticRelation(source: NodeConfig, target: NodeConfig): boolea
     (source.kind === "model_provider" && target.kind === "model_config") ||
     (source.kind === "model_config" && target.kind === "llm")
   );
+}
+
+function canApplyCodeLangToValidator(
+  validator: Extract<NodeConfig, { kind: "validator" }>,
+  codeLang: string,
+): boolean {
+  const normalized = codeLang.trim();
+  if (!normalized) {
+    return false;
+  }
+  if (validator.validator_type === "oxc") {
+    return VALIDATOR_OXC_CODE_LANGS.includes(
+      normalized as typeof validator.code_lang,
+    );
+  }
+  if (normalized === "python") {
+    return true;
+  }
+  return VALIDATOR_SQL_CODE_LANGS.includes(normalized as typeof validator.code_lang);
 }
 
 function countHandleUsage(
@@ -366,13 +389,19 @@ export function applyRecipeConnection(
     target.kind === "validator"
   ) {
     const nextCodeLang = (source.code_lang ?? "").trim();
+    const canUseCodeLangForTarget = canApplyCodeLangToValidator(
+      target,
+      nextCodeLang,
+    );
     const next = {
       ...target,
       // biome-ignore lint/style/useNamingConvention: api schema
       target_columns: [source.name],
       // biome-ignore lint/style/useNamingConvention: api schema
       code_lang:
-        (nextCodeLang || target.code_lang) as typeof target.code_lang,
+        (
+          canUseCodeLangForTarget ? nextCodeLang : target.code_lang
+        ) as typeof target.code_lang,
     };
     return { edges: nextEdges, configs: { ...configs, [target.id]: next } };
   }

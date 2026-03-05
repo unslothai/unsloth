@@ -14,7 +14,11 @@ import {
 import { type ReactElement, useMemo } from "react";
 import { useRecipeStudioStore } from "../../stores/recipe-studio";
 import type { ValidatorConfig } from "../../types";
-import { isValidatorCodeLang } from "../../utils/validators/code-lang";
+import {
+  isValidatorCodeLang,
+  VALIDATOR_OXC_CODE_LANGS,
+  VALIDATOR_SQL_CODE_LANGS,
+} from "../../utils/validators/code-lang";
 import { FieldLabel } from "../shared/field-label";
 import { NameField } from "../shared/name-field";
 
@@ -39,6 +43,22 @@ export function ValidatorDialog({
         .flatMap((item) => {
           if (!(item.kind === "llm" && item.llm_type === "code")) {
             return [];
+          }
+          if (config.validator_type === "oxc") {
+            const lang = item.code_lang?.trim() ?? "";
+            if (!VALIDATOR_OXC_CODE_LANGS.includes(lang as typeof config.code_lang)) {
+              return [];
+            }
+          } else {
+            const lang = item.code_lang?.trim() ?? "";
+            if (
+              !(
+                lang === "python" ||
+                VALIDATOR_SQL_CODE_LANGS.includes(lang as typeof config.code_lang)
+              )
+            ) {
+              return [];
+            }
           }
           return [
             {
@@ -102,7 +122,9 @@ export function ValidatorDialog({
         </Select>
         {codeOptions.length === 0 && (
           <p className="text-xs text-muted-foreground">
-            Add an LLM Code block first.
+            {config.validator_type === "oxc"
+              ? "Add an LLM Code block with javascript/typescript first."
+              : "Add an LLM Code block first."}
           </p>
         )}
       </div>

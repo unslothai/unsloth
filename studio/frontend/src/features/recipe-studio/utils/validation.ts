@@ -1,5 +1,6 @@
 import type { NodeConfig } from "../types";
 import { isValidSex, parseAgeRange, parseIntNumber, parseNumber } from "./parse";
+import { VALIDATOR_OXC_CODE_LANGS, VALIDATOR_SQL_CODE_LANGS } from "./validators/code-lang";
 
 const TRACE_MODES = new Set(["none", "last_message", "all_messages"]);
 
@@ -205,6 +206,15 @@ export function getConfigErrors(config: NodeConfig | null): string[] {
     }
     if (!config.code_lang.trim()) {
       errors.push("Validator code language is required.");
+    } else if (config.validator_type === "oxc") {
+      if (!VALIDATOR_OXC_CODE_LANGS.includes(config.code_lang)) {
+        errors.push("OXC validator code language must be javascript/typescript/jsx/tsx.");
+      }
+    } else if (
+      config.code_lang !== "python" &&
+      !VALIDATOR_SQL_CODE_LANGS.includes(config.code_lang)
+    ) {
+      errors.push("Code validator code language must be python or sql dialect.");
     }
   }
   if (config.kind === "seed") {

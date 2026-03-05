@@ -7,6 +7,10 @@ from pathlib import Path
 from typing import Any
 
 from .jsonable import to_jsonable
+from .local_callable_validators import (
+    register_oxc_local_callable_validators,
+    split_oxc_local_callable_validators,
+)
 _IMAGE_CONTEXT_PATCHED = False
 
 
@@ -196,7 +200,14 @@ def build_config_builder(recipe: dict[str, Any]):
         for key, value in recipe.items()
         if key not in {"model_providers", "mcp_providers"}
     }
+    recipe_core, oxc_local_callable_specs = split_oxc_local_callable_validators(
+        recipe_core
+    )
     builder = DataDesignerConfigBuilder.from_config({"data_designer": recipe_core})
+    register_oxc_local_callable_validators(
+        builder=builder,
+        specs=oxc_local_callable_specs,
+    )
 
     # DataDesignerConfigBuilder.from_config currently skips processors.
     # Re-attach explicitly so drop_columns/schema_transform survive API payload.

@@ -69,7 +69,7 @@ type UseRecipeEditorGraphArgs = {
   addModelConfigNode: (position?: XYPosition, openDialog?: boolean) => void;
   addExpressionNode: (position?: XYPosition, openDialog?: boolean) => void;
   addValidatorNode: (
-    type: "validator_python" | "validator_sql",
+    type: "validator_python" | "validator_sql" | "validator_oxc",
     position?: XYPosition,
     openDialog?: boolean,
   ) => void;
@@ -92,7 +92,7 @@ type UseRecipeEditorGraphResult = {
   handleAddModelConfigFromSheet: () => void;
   handleAddExpressionFromSheet: () => void;
   handleAddValidatorFromSheet: (
-    type: "validator_python" | "validator_sql",
+    type: "validator_python" | "validator_sql" | "validator_oxc",
   ) => void;
   handleAddMarkdownNoteFromSheet: () => void;
 };
@@ -213,7 +213,7 @@ export function useRecipeEditorGraph({
       }
       if (payload.kind === "validator") {
         addValidatorNode(
-          payload.type as "validator_python" | "validator_sql",
+          payload.type as "validator_python" | "validator_sql" | "validator_oxc",
           position,
           false,
         );
@@ -291,7 +291,7 @@ export function useRecipeEditorGraph({
   }, [addExpressionNode, getViewportCenterPosition]);
 
   const handleAddValidatorFromSheet = useCallback(
-    (type: "validator_python" | "validator_sql") => {
+    (type: "validator_python" | "validator_sql" | "validator_oxc") => {
       addValidatorNode(type, getViewportCenterPosition());
     },
     [addValidatorNode, getViewportCenterPosition],
