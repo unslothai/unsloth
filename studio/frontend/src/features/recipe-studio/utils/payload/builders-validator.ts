@@ -1,4 +1,5 @@
-import type { ValidatorConfig } from "../../types";
+import type { NodeConfig, ValidatorConfig } from "../../types";
+import { isValidatorCodeLang } from "../validators/code-lang";
 
 const OXC_VALIDATION_FN_MARKER = "unsloth_oxc_validator";
 
@@ -13,6 +14,7 @@ function parseBatchSize(value: string): number {
 export function buildValidatorColumn(
   config: ValidatorConfig,
   errors: string[],
+  nameToConfig?: Map<string, NodeConfig>,
 ): Record<string, unknown> {
   const targetColumns = (config.target_columns ?? [])
     .map((value) => value.trim())
@@ -21,6 +23,19 @@ export function buildValidatorColumn(
     errors.push(`Validator ${config.name}: target code column required.`);
   }
   if (config.validator_type === "oxc") {
+    const targetName = targetColumns[0] ?? "";
+    const targetConfig = targetName ? nameToConfig?.get(targetName) : null;
+    let codeLang = config.code_lang;
+    if (
+      targetConfig &&
+      targetConfig.kind === "llm" &&
+      targetConfig.llm_type === "code"
+    ) {
+      const targetLang = (targetConfig.code_lang ?? "").trim();
+      if (isValidatorCodeLang(targetLang)) {
+        codeLang = targetLang;
+      }
+    }
     return {
       // biome-ignore lint/style/useNamingConvention: api schema
       column_type: "validation",
@@ -34,7 +49,7 @@ export function buildValidatorColumn(
       validator_params: {
         // backend resolves this marker to a real callable.
         // biome-ignore lint/style/useNamingConvention: api schema
-        validation_function: `${OXC_VALIDATION_FN_MARKER}:${config.code_lang}`,
+        validation_function: `${OXC_VALIDATION_FN_MARKER}:${codeLang}:${config.oxc_validation_mode}`,
       },
       // biome-ignore lint/style/useNamingConvention: api schema
       batch_size: parseBatchSize(config.batch_size),

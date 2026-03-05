@@ -3,6 +3,14 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import {
+  Combobox,
+  ComboboxContent,
+  ComboboxEmpty,
+  ComboboxInput,
+  ComboboxItem,
+  ComboboxList,
+} from "@/components/ui/combobox";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -11,7 +19,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { type ReactElement, useMemo } from "react";
+import { type ReactElement, useMemo, useRef } from "react";
 import { useRecipeStudioStore } from "../../stores/recipe-studio";
 import type { ValidatorConfig } from "../../types";
 import {
@@ -19,6 +27,10 @@ import {
   VALIDATOR_OXC_CODE_LANGS,
   VALIDATOR_SQL_CODE_LANGS,
 } from "../../utils/validators/code-lang";
+import {
+  OXC_VALIDATION_MODES,
+  normalizeOxcValidationMode,
+} from "../../utils/validators/oxc-mode";
 import { FieldLabel } from "../shared/field-label";
 import { NameField } from "../shared/name-field";
 
@@ -35,8 +47,11 @@ export function ValidatorDialog({
 }: ValidatorDialogProps): ReactElement {
   const configs = useRecipeStudioStore((state) => state.configs);
   const targetColumnId = `${config.id}-target-column`;
+  const oxcModeId = `${config.id}-oxc-mode`;
   const batchSizeId = `${config.id}-batch-size`;
+  const oxcModeAnchorRef = useRef<HTMLDivElement>(null);
   const advancedOpen = config.advancedOpen === true;
+  const selectedOxcMode = normalizeOxcValidationMode(config.oxc_validation_mode);
   const codeOptions = useMemo(
     () =>
       Object.values(configs)
@@ -128,6 +143,47 @@ export function ValidatorDialog({
           </p>
         )}
       </div>
+      {config.validator_type === "oxc" && (
+        <div className="grid gap-2">
+          <FieldLabel
+            label="Validation mode"
+            htmlFor={oxcModeId}
+            hint="syntax: parser only. lint: oxlint only. syntax+lint: both."
+          />
+          <div ref={oxcModeAnchorRef}>
+            <Combobox
+              items={OXC_VALIDATION_MODES}
+              filteredItems={OXC_VALIDATION_MODES}
+              filter={null}
+              value={selectedOxcMode}
+              onValueChange={(value) =>
+                onUpdate({
+                  oxc_validation_mode: normalizeOxcValidationMode(value),
+                })
+              }
+              itemToStringValue={(value) => value}
+              autoHighlight={true}
+            >
+              <ComboboxInput
+                id={oxcModeId}
+                className="nodrag w-full"
+                placeholder="Select validation mode"
+                readOnly={true}
+              />
+              <ComboboxContent anchor={oxcModeAnchorRef}>
+                <ComboboxEmpty>No modes available</ComboboxEmpty>
+                <ComboboxList>
+                  {(mode: string) => (
+                    <ComboboxItem key={mode} value={mode}>
+                      {mode}
+                    </ComboboxItem>
+                  )}
+                </ComboboxList>
+              </ComboboxContent>
+            </Combobox>
+          </div>
+        </div>
+      )}
       <Collapsible
         open={advancedOpen}
         onOpenChange={(open) => onUpdate({ advancedOpen: open })}

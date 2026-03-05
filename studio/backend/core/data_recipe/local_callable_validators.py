@@ -19,6 +19,7 @@ _OXC_LANG_TO_NODE_LANG = {
     "jsx": "jsx",
     "tsx": "tsx",
 }
+_OXC_VALIDATION_MODES = {"syntax", "lint", "syntax+lint"}
 
 _OXC_TOOL_DIR = Path(__file__).resolve().parent / "oxc-validator"
 _OXC_RUNNER_PATH = _OXC_TOOL_DIR / "validate.mjs"
@@ -31,6 +32,7 @@ class OxcLocalCallableValidatorSpec:
     target_columns: list[str]
     batch_size: int
     code_lang: str
+    validation_mode: str
 
 
 def split_oxc_local_callable_validators(
@@ -45,7 +47,6 @@ def split_oxc_local_callable_validators(
     if not isinstance(sanitized_columns, list):
         return sanitized, []
 
-    llm_code_lang_by_name = _extract_llm_code_lang_by_name(sanitized_columns)
     kept_columns: list[Any] = []
     oxc_specs: list[OxcLocalCallableValidatorSpec] = []
 
@@ -54,10 +55,7 @@ def split_oxc_local_callable_validators(
             kept_columns.append(column)
             continue
 
-        maybe_spec = _parse_oxc_spec(
-            column=column,
-            llm_code_lang_by_name=llm_code_lang_by_name,
-        )
+        maybe_spec = _parse_oxc_spec(column=column)
         if maybe_spec is None:
             kept_columns.append(column)
             continue
@@ -82,7 +80,10 @@ def register_oxc_local_callable_validators(
     )
 
     for spec in specs:
-        validation_function = _build_oxc_validation_function(spec.code_lang)
+        validation_function = _build_oxc_validation_function(
+            spec.code_lang,
+            spec.validation_mode,
+        )
         builder.add_column(
             ValidationColumnConfig(
                 name=spec.name,
@@ -100,7 +101,6 @@ def register_oxc_local_callable_validators(
 def _parse_oxc_spec(
     *,
     column: dict[str, Any],
-    llm_code_lang_by_name: dict[str, str],
 ) -> OxcLocalCallableValidatorSpec | None:
     if str(column.get("column_type") or "").strip() != "validation":
         return None
@@ -129,11 +129,7 @@ def _parse_oxc_spec(
     if not target_columns:
         return None
 
-    code_lang = _resolve_oxc_lang(
-        fn_name=fn_name,
-        target_columns=target_columns,
-        llm_code_lang_by_name=llm_code_lang_by_name,
-    )
+    code_lang, validation_mode = _parse_oxc_validation_marker(fn_name)
     batch_size = _parse_batch_size(column.get("batch_size"))
     drop = bool(column.get("drop") is True)
 
@@ -143,6 +139,7 @@ def _parse_oxc_spec(
         target_columns=target_columns,
         batch_size=batch_size,
         code_lang=code_lang,
+        validation_mode=validation_mode,
     )
 
 
@@ -154,41 +151,27 @@ def _parse_batch_size(value: Any) -> int:
     return parsed if parsed >= 1 else 10
 
 
-def _extract_llm_code_lang_by_name(columns: list[Any]) -> dict[str, str]:
-    out: dict[str, str] = {}
-    for column in columns:
-        if not isinstance(column, dict):
-            continue
-        if str(column.get("column_type") or "").strip() != "llm-code":
-            continue
-        name = str(column.get("name") or "").strip()
-        code_lang = str(column.get("code_lang") or "").strip()
-        if name and code_lang:
-            out[name] = code_lang
-    return out
-
-
-def _resolve_oxc_lang(
-    *,
-    fn_name: str,
-    target_columns: list[str],
-    llm_code_lang_by_name: dict[str, str],
-) -> str:
-    _, _, marker_lang = fn_name.partition(":")
-    marker_lang = marker_lang.strip()
-    if marker_lang in _OXC_LANG_TO_NODE_LANG:
-        return marker_lang
-
-    first_target = target_columns[0]
-    target_lang = llm_code_lang_by_name.get(first_target, "").strip()
-    if target_lang in _OXC_LANG_TO_NODE_LANG:
-        return target_lang
-    return "javascript"
+def _parse_oxc_validation_marker(fn_name: str) -> tuple[str, str]:
+    marker = f"{OXC_VALIDATION_FN_MARKER}:"
+    if not fn_name.startswith(marker):
+        return "javascript", "syntax"
+    suffix = fn_name[len(marker) :]
+    parts = [part.strip() for part in suffix.split(":") if part.strip()]
+    if len(parts) < 2:
+        return "javascript", "syntax"
+    code_lang = parts[0] if parts[0] in _OXC_LANG_TO_NODE_LANG else "javascript"
+    mode = parts[1] if parts[1] in _OXC_VALIDATION_MODES else "syntax"
+    return code_lang, mode
 
 
 @lru_cache(maxsize=8)
-def _build_oxc_validation_function(lang: str):
+def _build_oxc_validation_function(lang: str, validation_mode: str):
     node_lang = _OXC_LANG_TO_NODE_LANG.get(lang, "js")
+    mode = (
+        validation_mode
+        if validation_mode in _OXC_VALIDATION_MODES
+        else "syntax"
+    )
 
     def _validator(df):
         import pandas as pd  # imported lazily for local callable runtime
@@ -204,7 +187,11 @@ def _build_oxc_validation_function(lang: str):
             else ["" if value is None else str(value) for value in df[code_column].tolist()]
         )
 
-        results = _run_oxc_batch(node_lang=node_lang, code_values=code_values)
+        results = _run_oxc_batch(
+            node_lang=node_lang,
+            validation_mode=mode,
+            code_values=code_values,
+        )
         if len(results) != row_count:
             results = _fallback_results(
                 row_count,
@@ -212,11 +199,16 @@ def _build_oxc_validation_function(lang: str):
             )
         return pd.DataFrame(results)
 
-    _validator.__name__ = f"{OXC_VALIDATION_FN_MARKER}_{node_lang}"
+    _validator.__name__ = f"{OXC_VALIDATION_FN_MARKER}_{node_lang}_{mode.replace('+', '_')}"
     return _validator
 
 
-def _run_oxc_batch(*, node_lang: str, code_values: list[str]) -> list[dict[str, Any]]:
+def _run_oxc_batch(
+    *,
+    node_lang: str,
+    validation_mode: str,
+    code_values: list[str],
+) -> list[dict[str, Any]]:
     if not _OXC_RUNNER_PATH.exists():
         return _fallback_results(
             len(code_values),
@@ -225,6 +217,7 @@ def _run_oxc_batch(*, node_lang: str, code_values: list[str]) -> list[dict[str, 
 
     payload = {
         "lang": node_lang,
+        "mode": validation_mode,
         "codes": code_values,
     }
     try:
@@ -265,6 +258,7 @@ def _run_oxc_batch(*, node_lang: str, code_values: list[str]) -> list[dict[str, 
                     "severity": None,
                     "labels": [],
                     "codeframe": None,
+                    "warning_count": 0,
                 }
             )
             continue
@@ -274,6 +268,7 @@ def _run_oxc_batch(*, node_lang: str, code_values: list[str]) -> list[dict[str, 
         severity_raw = item.get("severity")
         labels_raw = item.get("labels")
         codeframe_raw = item.get("codeframe")
+        warning_count_raw = item.get("warning_count")
         out.append(
             {
                 "is_valid": bool(is_valid_raw) if isinstance(is_valid_raw, bool) else False,
@@ -282,6 +277,9 @@ def _run_oxc_batch(*, node_lang: str, code_values: list[str]) -> list[dict[str, 
                 "severity": str(severity_raw) if isinstance(severity_raw, str) else None,
                 "labels": labels_raw if isinstance(labels_raw, list) else [],
                 "codeframe": str(codeframe_raw) if isinstance(codeframe_raw, str) else None,
+                "warning_count": int(warning_count_raw)
+                if isinstance(warning_count_raw, int)
+                else 0,
             }
         )
     return out
@@ -296,6 +294,7 @@ def _fallback_results(row_count: int, message: str) -> list[dict[str, Any]]:
             "severity": None,
             "labels": [],
             "codeframe": None,
+            "warning_count": 0,
         }
         for _ in range(row_count)
     ]
