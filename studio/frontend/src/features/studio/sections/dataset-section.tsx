@@ -54,6 +54,8 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
+const SEARCH_INPUT_REASONS = new Set(["input-change", "input-paste", "input-clear"]);
+
 function isLikelyLocalDatasetRef(value: string) {
   return (
     value.startsWith("/") ||
@@ -111,7 +113,7 @@ export function DatasetSection() {
     })),
   );
 
-  const [inputValue, setInputValue] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [pickerTab, setPickerTab] = useState<"huggingface" | "local">(
     datasetSource === "upload" ? "local" : "huggingface",
@@ -119,10 +121,9 @@ export function DatasetSection() {
   const [localDatasets, setLocalDatasets] = useState<LocalDatasetInfo[]>([]);
   const [localLoading, setLocalLoading] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
-  const [localSearchActive, setLocalSearchActive] = useState(false);
   const openPreview = useDatasetPreviewDialogStore((s) => s.openPreview);
   const selectingRef = useRef(false);
-  const debouncedQuery = useDebouncedValue(inputValue);
+  const debouncedQuery = useDebouncedValue(searchQuery);
 
   useEffect(() => {
     setPickerTab(datasetSource === "upload" ? "local" : "huggingface");
@@ -152,28 +153,28 @@ export function DatasetSection() {
     selectingRef.current = true;
     setDatasetSource("huggingface");
     setDataset(id);
-    setInputValue(id ?? "");
-    setLocalSearchActive(false);
   }
 
   function handleLocalDatasetSelect(path: string) {
     selectingRef.current = true;
     setDatasetSource("upload");
     setUploadedFile(path);
-    const label = localDatasets.find((item) => item.path === path)?.label;
-    setInputValue(label ?? deriveLocalDatasetName(path));
-    setLocalSearchActive(false);
   }
 
-  function handleInputChange(val: string) {
+  function handleInputChange(
+    val: string,
+    eventDetails?: {
+      reason?: string;
+    },
+  ) {
     if (selectingRef.current) {
       selectingRef.current = false;
       return;
     }
-    if (pickerTab === "local") {
-      setLocalSearchActive(true);
+    if (!SEARCH_INPUT_REASONS.has(eventDetails?.reason ?? "")) {
+      return;
     }
-    setInputValue(val);
+    setSearchQuery(val);
   }
   const {
     results: hfResults,
@@ -199,14 +200,14 @@ export function DatasetSection() {
   }, [hfResults, dataset]);
 
   const localFilteredDatasets = useMemo(() => {
-    const query = localSearchActive ? inputValue.trim().toLowerCase() : "";
+    const query = searchQuery.trim().toLowerCase();
     if (!query) return localDatasets;
     return localDatasets.filter(
       (item) =>
         item.label.toLowerCase().includes(query) ||
         item.path.toLowerCase().includes(query),
     );
-  }, [localDatasets, inputValue, localSearchActive]);
+  }, [localDatasets, searchQuery]);
 
   const localPathById = useMemo(() => {
     return new Map(localDatasets.map((item) => [item.id, item.path]));
@@ -324,6 +325,10 @@ export function DatasetSection() {
                 filteredItems={comboboxItems}
                 filter={null}
                 value={comboboxValue}
+                onOpenChange={(open) => {
+                  if (!open) return;
+                  setSearchQuery("");
+                }}
                 onValueChange={(value) => {
                   if (!value) return;
                   if (pickerTab === "huggingface") {
@@ -335,7 +340,9 @@ export function DatasetSection() {
                     handleLocalDatasetSelect(path);
                   }
                 }}
-                onInputValueChange={handleInputChange}
+                onInputValueChange={(value, eventDetails) =>
+                  handleInputChange(value, eventDetails)
+                }
                 itemToStringValue={(id) =>
                   pickerTab === "local"
                     ? localLabelById.get(id) ?? id
@@ -357,8 +364,7 @@ export function DatasetSection() {
                       value={pickerTab}
                       onValueChange={(value) => {
                         setPickerTab(value as "huggingface" | "local");
-                        setInputValue("");
-                        setLocalSearchActive(false);
+                        setSearchQuery("");
                       }}
                       className="w-full"
                     >
