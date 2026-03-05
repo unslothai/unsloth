@@ -106,7 +106,7 @@ export function HfDatasetSubsetSplitSelectors({
               : "rounded-lg border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-700 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-400"
           }
         >
-          Could not fetch dataset splits: {error}
+          {error}
         </div>
       )}
 

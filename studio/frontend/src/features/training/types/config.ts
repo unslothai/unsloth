@@ -26,6 +26,8 @@ export interface TrainingConfigState {
   datasetSplit: string | null;
   datasetEvalSplit: string | null;
   datasetManualMapping: DatasetManualMapping;
+  datasetSliceStart: string | null;
+  datasetSliceEnd: string | null;
   uploadedFile: string | null;
   epochs: number;
   contextLength: number;
@@ -85,6 +87,8 @@ export interface TrainingConfigActions {
   setDatasetSplit: (split: string | null) => void;
   setDatasetEvalSplit: (split: string | null) => void;
   setDatasetManualMapping: (mapping: DatasetManualMapping) => void;
+  setDatasetSliceStart: (value: string | null) => void;
+  setDatasetSliceEnd: (value: string | null) => void;
   setUploadedFile: (file: string | null) => void;
   setEpochs: (epochs: number) => void;
   setContextLength: (length: number) => void;
