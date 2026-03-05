@@ -212,7 +212,7 @@ async function toUnstructuredUploadFile(file: File): Promise<File> {
 export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactElement {
   const [inspectError, setInspectError] = useState<string | null>(null);
   const [isInspecting, setIsInspecting] = useState(false);
-  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const advancedOpen = config.advancedOpen === true;
   const [previewRows, setPreviewRows] = useState<Record<string, unknown>[]>([]);
   const [expandedPreviewRows, setExpandedPreviewRows] = useState<Record<number, boolean>>({});
   const [localFile, setLocalFile] = useState<File | null>(null);
@@ -618,7 +618,10 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
             </div>
           )}
 
-          <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
+          <Collapsible
+            open={advancedOpen}
+            onOpenChange={(openState) => onUpdate({ advancedOpen: openState })}
+          >
             <CollapsibleTrigger asChild={true}>
               <button
                 type="button"

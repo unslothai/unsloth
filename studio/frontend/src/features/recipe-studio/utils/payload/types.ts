@@ -67,6 +67,8 @@ export type RecipePayload = {
     unstructured_file_name?: string;
     unstructured_chunk_size?: string;
     unstructured_chunk_overlap?: string;
+    // ui-only: per-node advanced accordion state
+    advanced_open_by_node?: Record<string, boolean>;
   };
 };
 

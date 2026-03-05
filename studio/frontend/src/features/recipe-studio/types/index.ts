@@ -70,6 +70,8 @@ export type CategoryConditionalParams = {
 export type SamplerConfig = {
   id: string;
   kind: "sampler";
+  // ui-only
+  advancedOpen?: boolean;
   // biome-ignore lint/style/useNamingConvention: api schema
   sampler_type: SamplerType;
   name: string;
@@ -174,6 +176,8 @@ export type LlmTraceType = "none" | "last_message" | "all_messages";
 export type LlmConfig = {
   id: string;
   kind: "llm";
+  // ui-only
+  advancedOpen?: boolean;
   // biome-ignore lint/style/useNamingConvention: api schema
   llm_type: LlmType;
   name: string;
@@ -248,6 +252,8 @@ export type ExpressionConfig = {
 export type ValidatorConfig = {
   id: string;
   kind: "validator";
+  // ui-only
+  advancedOpen?: boolean;
   name: string;
   drop?: boolean;
   // biome-ignore lint/style/useNamingConvention: api schema
@@ -272,6 +278,8 @@ export type MarkdownNoteConfig = {
 export type SeedConfig = {
   id: string;
   kind: "seed";
+  // ui-only
+  advancedOpen?: boolean;
   name: string;
   drop?: boolean;
   // ui-only: explicit per-column drop for structured seed sources (hf/local)

@@ -11,7 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { type ReactElement, useMemo, useState } from "react";
+import { type ReactElement, useMemo } from "react";
 import { useRecipeStudioStore } from "../../stores/recipe-studio";
 import type { ValidatorConfig } from "../../types";
 import { isValidatorCodeLang } from "../../utils/validators/code-lang";
@@ -32,7 +32,7 @@ export function ValidatorDialog({
   const configs = useRecipeStudioStore((state) => state.configs);
   const targetColumnId = `${config.id}-target-column`;
   const batchSizeId = `${config.id}-batch-size`;
-  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const advancedOpen = config.advancedOpen === true;
   const codeOptions = useMemo(
     () =>
       Object.values(configs)
@@ -106,7 +106,10 @@ export function ValidatorDialog({
           </p>
         )}
       </div>
-      <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
+      <Collapsible
+        open={advancedOpen}
+        onOpenChange={(open) => onUpdate({ advancedOpen: open })}
+      >
         <CollapsibleTrigger asChild={true}>
           <button
             type="button"
