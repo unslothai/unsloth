@@ -192,6 +192,22 @@ async def start_training(
             "tensorboard_dir": request.tensorboard_dir or "",
         }
 
+        # Free GPU memory: shut down any running inference subprocess
+        # before training starts (they'd compete for VRAM otherwise)
+        try:
+            from core.inference import get_inference_backend
+            inf_backend = get_inference_backend()
+            if inf_backend.active_model_name:
+                logger.info(
+                    "Unloading inference model '%s' to free GPU memory for training",
+                    inf_backend.active_model_name,
+                )
+                inf_backend._shutdown_subprocess()
+                inf_backend.active_model_name = None
+                inf_backend.models.clear()
+        except Exception as e:
+            logger.warning("Could not unload inference model: %s", e)
+
         # start_training now spawns a subprocess (non-blocking)
         success = backend.start_training(**training_kwargs)
 
