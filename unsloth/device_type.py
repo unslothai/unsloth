@@ -79,16 +79,19 @@ def get_device_count():
 DEVICE_COUNT: int = get_device_count()
 
 # 4-bit quantization requires a block size of 64
-# this is not supported on AMD Instinct GPUs currently
 # | Device Type     | Warp Size | Block Size |
 # |-----------------|-----------|------------|
-# | CUDA            |    32     |     64     |
-# | Radeon (Navi)   |    32     |     64     |
-# | Instinct (MI)   |    64     |    128     |
+# | CUDA            |    32     |     32     |
+# | Radeon (Navi)   |    32     |     32     |
+# | Instinct (MI)   |    64     |     32     |
 #
 # Since bitsandbytes 0.49.0, pre-quantized models with 64 blockwise now works
-# on Radeon GPUs, but not Instinct MI300x for eg [WIP]
+# on Radeon GPUs, but not Instinct MI300x for eg
 # See https://github.com/bitsandbytes-foundation/bitsandbytes/pull/1748
+#
+# Since bitsandbytes 0.49.2, blocksize=64 4-bit quantization is supported on
+# CDNA (MI Instinct / gfx9xx) GPUs as well
+# See https://github.com/bitsandbytes-foundation/bitsandbytes/pull/1856
 
 ALLOW_PREQUANTIZED_MODELS: bool = True
 # HSA_STATUS_ERROR_EXCEPTION checks - sometimes AMD fails for BnB
@@ -104,7 +107,9 @@ if DEVICE_TYPE == "hip":
         ALLOW_BITSANDBYTES = False
     if ALLOW_BITSANDBYTES:
         ALLOW_BITSANDBYTES = Version(bitsandbytes.__version__) > Version("0.48.2.dev0")
-        if Version(bitsandbytes.__version__) > Version("0.49.0"):
+        if Version(bitsandbytes.__version__) >= Version("0.49.2"):
+            pass
+        elif Version(bitsandbytes.__version__) >= Version("0.49.0"):
             try:
                 # Pre-quantized bitsandbytes models use blocksize 64, so we need to check the GPU
                 from bitsandbytes.cextension import ROCM_WARP_SIZE_64
