@@ -42,6 +42,7 @@ class InferenceOrchestrator:
         self._proc: Optional[mp.Process] = None
         self._cmd_queue: Any = None
         self._resp_queue: Any = None
+        self._cancel_event: Any = None  # mp.Event — set to cancel generation instantly
         self._lock = threading.Lock()
 
         # Local state mirrors (updated from subprocess responses)
@@ -74,12 +75,14 @@ class InferenceOrchestrator:
 
         self._cmd_queue = _CTX.Queue()
         self._resp_queue = _CTX.Queue()
+        self._cancel_event = _CTX.Event()
 
         self._proc = _CTX.Process(
             target=run_inference_process,
             kwargs={
                 "cmd_queue": self._cmd_queue,
                 "resp_queue": self._resp_queue,
+                "cancel_event": self._cancel_event,
                 "config": config,
             },
             daemon=True,
@@ -87,26 +90,37 @@ class InferenceOrchestrator:
         self._proc.start()
         logger.info("Inference subprocess started (pid=%s)", self._proc.pid)
 
+    def _cancel_generation(self) -> None:
+        """Cancel any ongoing generation in the subprocess (instant)."""
+        if self._cancel_event is not None:
+            self._cancel_event.set()
+
     def _shutdown_subprocess(self, timeout: float = 10.0) -> None:
         """Gracefully shut down the inference subprocess."""
-        with self._lock:
-            if self._proc is None or not self._proc.is_alive():
-                self._proc = None
-                return
+        if self._proc is None or not self._proc.is_alive():
+            self._proc = None
+            return
 
-            # Send shutdown command
-            try:
-                self._cmd_queue.put({"type": "shutdown"})
-            except (OSError, ValueError):
-                pass
+        # 1. Cancel any ongoing generation first (instant via mp.Event)
+        self._cancel_generation()
+        time.sleep(0.5)  # Brief wait for generation to stop
 
-        # Wait for graceful shutdown
+        # 2. Drain stale responses from queue
+        self._drain_queue()
+
+        # 3. Send shutdown command
+        try:
+            self._cmd_queue.put({"type": "shutdown"})
+        except (OSError, ValueError):
+            pass
+
+        # 4. Wait for graceful shutdown
         try:
             self._proc.join(timeout=timeout)
         except Exception:
             pass
 
-        # Force kill if still alive
+        # 5. Force kill if still alive
         if self._proc is not None and self._proc.is_alive():
             logger.warning("Inference subprocess did not exit gracefully, terminating")
             try:
@@ -125,6 +139,7 @@ class InferenceOrchestrator:
         self._proc = None
         self._cmd_queue = None
         self._resp_queue = None
+        self._cancel_event = None
         logger.info("Inference subprocess shut down")
 
     def _cleanup(self):
@@ -250,6 +265,12 @@ class InferenceOrchestrator:
             }
 
             if self._ensure_subprocess_alive():
+                # Cancel any ongoing generation first (user may be loading
+                # a new model while the current one is still generating)
+                self._cancel_generation()
+                time.sleep(0.3)
+                self._drain_queue()
+
                 if needed_major == self._current_transformers_major:
                     # Reuse existing subprocess — send load command
                     logger.info(
@@ -457,12 +478,10 @@ class InferenceOrchestrator:
                 continue
 
             if rtype == "token":
-                # Check cancel from route
+                # Check cancel from route (e.g. SSE connection closed)
                 if cancel_event is not None and cancel_event.is_set():
-                    try:
-                        self._send_cmd({"type": "cancel", "request_id": request_id})
-                    except RuntimeError:
-                        pass
+                    # Set the subprocess mp.Event — instant, no queue needed
+                    self._cancel_generation()
                     return
                 yield resp.get("text", "")
 
@@ -474,7 +493,8 @@ class InferenceOrchestrator:
                 return
 
     def reset_generation_state(self):
-        """Send cancel/reset to subprocess."""
+        """Cancel any ongoing generation and reset state."""
+        self._cancel_generation()
         if not self._ensure_subprocess_alive():
             return
         try:
