@@ -17,7 +17,6 @@ import logging
 import os
 import queue as _queue
 import sys
-import threading
 import time
 import traceback
 from io import BytesIO
@@ -91,19 +90,6 @@ def _send_response(resp_queue: Any, response: dict) -> None:
         resp_queue.put(response)
     except (OSError, ValueError) as exc:
         logger.error("Failed to send response: %s", exc)
-
-
-def _check_cancel(cmd_queue: Any, cancel_event: threading.Event) -> None:
-    """Non-blocking poll of cmd_queue for cancel commands."""
-    try:
-        cmd = cmd_queue.get_nowait()
-        if cmd and cmd.get("type") == "cancel":
-            cancel_event.set()
-            logger.info("Cancel signal received for request %s", cmd.get("request_id", "*"))
-    except _queue.Empty:
-        pass
-    except (EOFError, OSError):
-        pass
 
 
 def _build_model_config(config: dict):
@@ -201,10 +187,15 @@ def _handle_generate(
     backend,
     cmd: dict,
     resp_queue: Any,
-    cmd_queue: Any,
-    cancel_event: threading.Event,
+    cancel_event,
 ) -> None:
-    """Handle a generate command: stream tokens back via resp_queue."""
+    """Handle a generate command: stream tokens back via resp_queue.
+
+    cancel_event is an mp.Event shared with the parent process.
+    The parent can set it at any time (e.g. user stops generation,
+    or user loads a new model while generating) and generation
+    stops within 1-2 tokens.
+    """
     request_id = cmd.get("request_id", "")
 
     try:
@@ -240,9 +231,9 @@ def _handle_generate(
             generator = backend.generate_chat_response(**gen_kwargs)
 
         for cumulative_text in generator:
-            # Check for cancel commands (non-blocking)
-            _check_cancel(cmd_queue, cancel_event)
+            # cancel_event is an mp.Event — checked instantly, no queue polling
             if cancel_event.is_set():
+                logger.info("Generation cancelled for request %s", request_id)
                 break
 
             _send_response(resp_queue, {
@@ -297,6 +288,7 @@ def run_inference_process(
     *,
     cmd_queue: Any,
     resp_queue: Any,
+    cancel_event,
     config: dict,
 ) -> None:
     """Subprocess entrypoint. Persistent — runs command loop until shutdown.
@@ -304,6 +296,7 @@ def run_inference_process(
     Args:
         cmd_queue: mp.Queue for receiving commands from parent.
         resp_queue: mp.Queue for sending responses to parent.
+        cancel_event: mp.Event shared with parent — set by parent to cancel generation.
         config: Initial configuration dict with model info and project_root.
     """
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -371,7 +364,8 @@ def run_inference_process(
         return
 
     # ── 4. Command loop — process commands until shutdown ──
-    cancel_event = threading.Event()
+    # cancel_event is an mp.Event shared with parent — parent can set it
+    # at any time to cancel generation instantly (no queue polling needed).
     logger.info("Inference subprocess ready, entering command loop")
 
     while True:
@@ -392,7 +386,7 @@ def run_inference_process(
         try:
             if cmd_type == "generate":
                 cancel_event.clear()
-                _handle_generate(backend, cmd, resp_queue, cmd_queue, cancel_event)
+                _handle_generate(backend, cmd, resp_queue, cancel_event)
 
             elif cmd_type == "load":
                 # Load a new model (reusing this subprocess)
@@ -405,8 +399,9 @@ def run_inference_process(
                 _handle_unload(backend, cmd, resp_queue)
 
             elif cmd_type == "cancel":
+                # Redundant with mp.Event but handle gracefully
                 cancel_event.set()
-                logger.info("Cancel signal received")
+                logger.info("Cancel command received")
 
             elif cmd_type == "reset":
                 cancel_event.set()
