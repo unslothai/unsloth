@@ -97,7 +97,7 @@ type RecipeStudioState = {
   addModelConfigNode: (position?: XYPosition, openDialog?: boolean) => void;
   addExpressionNode: (position?: XYPosition, openDialog?: boolean) => void;
   addValidatorNode: (
-    type: "validator_python" | "validator_sql",
+    type: "validator_python" | "validator_sql" | "validator_oxc",
     position?: XYPosition,
     openDialog?: boolean,
   ) => void;

@@ -2,8 +2,10 @@ import type {
   ModelConfig,
   ModelProviderConfig,
   NodeConfig,
+  ValidatorCodeLang,
   ValidatorConfig,
 } from "../../types";
+import { VALIDATOR_OXC_CODE_LANGS } from "../validators/code-lang";
 
 export function validateSubcategoryConfigs(
   configs: Record<string, NodeConfig>,
@@ -132,6 +134,17 @@ export function validateValidatorConfigs(
     }
     if (targetConfig.kind !== "llm" || targetConfig.llm_type !== "code") {
       errors.push(`Validator ${config.name}: target '${target}' must be LLM Code.`);
+      continue;
+    }
+    if (
+      config.validator_type === "oxc" &&
+      !VALIDATOR_OXC_CODE_LANGS.includes(
+        (targetConfig.code_lang ?? "").trim() as ValidatorCodeLang,
+      )
+    ) {
+      errors.push(
+        `Validator ${config.name}: target '${target}' must use javascript/typescript/jsx/tsx.`,
+      );
       continue;
     }
     if ((targetConfig.code_lang ?? "").trim() !== config.code_lang.trim()) {
