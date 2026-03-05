@@ -5,6 +5,7 @@ import type {
   RecipeExecutionStatus,
 } from "../../execution-types";
 import type { NodeConfig } from "../../types";
+import { extractRefs } from "../refs";
 
 const ACTIVE_STATUSES: ReadonlySet<RecipeExecutionStatus> = new Set([
   "pending",
@@ -33,6 +34,47 @@ export type GraphRuntimeVisualState = {
 
 function isAuxEdge(edge: Edge): boolean {
   return edge.source.startsWith("aux-") || edge.target.startsWith("aux-");
+}
+
+function collectTemplateRefs(config: NodeConfig | null): Set<string> {
+  if (!config) {
+    return new Set();
+  }
+  const refs = new Set<string>();
+  if (config.kind === "llm") {
+    for (const ref of extractRefs(config.prompt ?? "")) {
+      refs.add(ref.trim());
+    }
+    for (const ref of extractRefs(config.system_prompt ?? "")) {
+      refs.add(ref.trim());
+    }
+    if (typeof config.output_format === "string") {
+      for (const ref of extractRefs(config.output_format)) {
+        refs.add(ref.trim());
+      }
+    }
+    return refs;
+  }
+  if (config.kind === "expression") {
+    for (const ref of extractRefs(config.expr ?? "")) {
+      refs.add(ref.trim());
+    }
+  }
+  return refs;
+}
+
+function isReversedRuntimeReferenceEdge(input: {
+  edge: Edge;
+  runningNodeId: string;
+  runningTemplateRefs: Set<string>;
+  configs: Record<string, NodeConfig>;
+}): boolean {
+  const { edge, runningNodeId, runningTemplateRefs, configs } = input;
+  if (edge.source !== runningNodeId) {
+    return false;
+  }
+  const targetName = configs[edge.target]?.name?.trim() ?? "";
+  return Boolean(targetName && runningTemplateRefs.has(targetName));
 }
 
 function hasLiveExecutionSignal(execution: RecipeExecutionRecord): boolean {
@@ -121,6 +163,14 @@ export function deriveGraphRuntimeVisualState(input: {
 
   const activeEdgeIds = new Set<string>();
   if (runningNodeId) {
+    const runningConfig = configs[runningNodeId] ?? null;
+    const runningTemplateRefs = collectTemplateRefs(runningConfig);
+    for (const ref of runningTemplateRefs) {
+      const refNodeId = nameToNodeId.get(ref);
+      if (refNodeId && refNodeId !== runningNodeId) {
+        doneNodeIds.add(refNodeId);
+      }
+    }
     for (const upstreamNodeId of collectUpstreamDoneNodeIds({
       rootNodeId: runningNodeId,
       edges,
@@ -129,13 +179,23 @@ export function deriveGraphRuntimeVisualState(input: {
       doneNodeIds.add(upstreamNodeId);
     }
     for (const edge of edges) {
-      if (edge.target !== runningNodeId) {
-        continue;
-      }
       if (isAuxEdge(edge)) {
         continue;
       }
-      activeEdgeIds.add(edge.id);
+      if (edge.target === runningNodeId) {
+        activeEdgeIds.add(edge.id);
+        continue;
+      }
+      if (
+        isReversedRuntimeReferenceEdge({
+          edge,
+          runningNodeId,
+          runningTemplateRefs,
+          configs,
+        })
+      ) {
+        activeEdgeIds.add(edge.id);
+      }
     }
   }
 

@@ -46,8 +46,14 @@ function normalizeEdge(
   configs: Record<string, NodeConfig>,
   layoutDirection: LayoutDirection,
   activeEdgeIds: Set<string>,
+  runningNodeId: string | null,
+  doneNodeIds: Set<string>,
 ): Edge {
-  const isActiveEdge = activeEdgeIds.has(edge.id);
+  const isActiveByRuntimeTarget =
+    Boolean(runningNodeId) &&
+    edge.target === runningNodeId &&
+    !isAuxEdge(edge);
+  const isActiveEdge = activeEdgeIds.has(edge.id) || isActiveByRuntimeTarget;
   const isAux = isAuxEdge(edge);
   if (isAux) {
     return {
@@ -58,13 +64,28 @@ function normalizeEdge(
     };
   }
 
-  const source = configs[edge.source];
-  const target = configs[edge.target];
+  const isActiveReversedRuntimeEdge =
+    Boolean(runningNodeId) &&
+    isActiveEdge &&
+    edge.source === runningNodeId &&
+    doneNodeIds.has(edge.target);
+  const displayEdge = isActiveReversedRuntimeEdge
+    ? {
+        ...edge,
+        source: edge.target,
+        target: edge.source,
+        sourceHandle: getDefaultDataSourceHandle(layoutDirection),
+        targetHandle: getDefaultDataTargetHandle(layoutDirection),
+      }
+    : edge;
+
+  const source = configs[displayEdge.source];
+  const target = configs[displayEdge.target];
   const semantic =
-    edge.type === "semantic" ||
+    displayEdge.type === "semantic" ||
     (Boolean(source && target) && isSemanticRelation(source, target));
-  const sourceHandleNormalized = normalizeRecipeHandleId(edge.sourceHandle);
-  const targetHandleNormalized = normalizeRecipeHandleId(edge.targetHandle);
+  const sourceHandleNormalized = normalizeRecipeHandleId(displayEdge.sourceHandle);
+  const targetHandleNormalized = normalizeRecipeHandleId(displayEdge.targetHandle);
   const semanticSourceDefault =
     source?.kind === "llm"
       ? getDefaultDataSourceHandle(layoutDirection)
@@ -104,11 +125,11 @@ function normalizeEdge(
   }
 
   return {
-    ...edge,
+    ...displayEdge,
     type: semantic ? "semantic" : "canvas",
     data: semantic
-      ? { ...(edge.data ?? {}), active: isActiveEdge }
-      : { ...(edge.data ?? {}), path: "smoothstep", active: isActiveEdge },
+      ? { ...(displayEdge.data ?? {}), active: isActiveEdge }
+      : { ...(displayEdge.data ?? {}), path: "smoothstep", active: isActiveEdge },
     sourceHandle,
     targetHandle,
     animated: isActiveEdge,
@@ -585,7 +606,14 @@ export function deriveDisplayGraph({
   return {
     nodes: [...displayNodes, ...auxNodes],
     edges: [...edges, ...auxEdges].map((edge) =>
-      normalizeEdge(edge, configs, layoutDirection, activeEdgeIds),
+      normalizeEdge(
+        edge,
+        configs,
+        layoutDirection,
+        activeEdgeIds,
+        runningNodeId,
+        doneNodeIds,
+      ),
     ),
   };
 }
