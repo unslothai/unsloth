@@ -180,10 +180,23 @@ else
     # Local: create venv (always start fresh to preserve correct install order)
     rm -rf .venv
     rm -rf .venv_overlay  # Clean up stale transformers version overlay
+    rm -rf .venv_t5       # Will be rebuilt below
     "$BEST_PY" -m venv .venv
     source .venv/bin/activate
     install_python_stack
-    
+
+    # ── 6b. Pre-install transformers 5.x into .venv_t5/ ──
+    # Models like GLM-4.7-Flash need transformers>=5.1.0. Instead of pip-installing
+    # at runtime (slow, ~10-15s), we pre-install into a separate directory.
+    # The training subprocess just prepends .venv_t5/ to sys.path — instant switch.
+    echo ""
+    echo "   Pre-installing transformers 5.x for newer model support..."
+    VENV_T5_DIR="$SCRIPT_DIR/.venv_t5"
+    mkdir -p "$VENV_T5_DIR"
+    run_quiet "pip install transformers 5.x" pip install --target "$VENV_T5_DIR" --no-deps "transformers==5.1.0"
+    run_quiet "pip install huggingface_hub for t5" pip install --target "$VENV_T5_DIR" --no-deps "huggingface_hub>=1.3.0"
+    echo "✅ Transformers 5.x pre-installed to .venv_t5/"
+
     # ── 7. WSL: pre-install GGUF build dependencies ──
     # On WSL, sudo requires a password and can't be entered during GGUF export
     # (runs in a non-interactive subprocess). Install build deps here instead.
