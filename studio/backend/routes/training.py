@@ -306,7 +306,7 @@ async def get_training_status(
     """
     try:
         backend = get_training_backend()
-        job_id: str = getattr(backend, "current_job_id", "")
+        job_id: str = getattr(backend, "current_job_id", "") or ""
 
         # Check if training is active
         is_active = backend.is_training_active()
@@ -455,7 +455,7 @@ async def stream_training_progress(
 
     async def event_generator():
         backend = get_training_backend()
-        job_id: str = getattr(backend, "current_job_id", "")
+        job_id: str = getattr(backend, "current_job_id", "") or ""
 
         # ── Helpers ──────────────────────────────────────────────
         def build_progress(
