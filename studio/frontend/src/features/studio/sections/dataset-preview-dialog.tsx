@@ -341,6 +341,13 @@ export function DatasetPreviewDialog({
                 />
               </div>
 
+              {data.warning && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-700 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-400 mb-4 flex items-start gap-2.5">
+                  <HugeiconsIcon icon={AlertCircleIcon} className="size-4 shrink-0 mt-0.5" />
+                  <span>{data.warning}</span>
+                </div>
+              )}
+
               {mappingEnabled && (
                 <DatasetMappingCard
                   mapping={manualMapping}

@@ -12,5 +12,6 @@ export type CheckFormatResponse = {
   is_image?: boolean;
   is_audio?: boolean;
   multimodal_columns?: string[] | null;
+  warning?: string | null;
 };
 

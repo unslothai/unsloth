@@ -621,6 +621,7 @@ def format_and_template_dataset(
     aliases_for_assistant=["gpt", "assistant", "output",],
     batch_size=1000,
     num_proc=None,
+    progress_callback=None,
 ):
     """
     Convenience function that combines format_dataset and apply_chat_template_to_dataset.
@@ -666,6 +667,7 @@ def format_and_template_dataset(
                         text_column=user_vlm_text_column,
                         image_column=user_vlm_image_column,
                         dataset_name=dataset_name,
+                        progress_callback=progress_callback,
                     )
                     warnings.append(f"Applied user VLM mapping: image='{user_vlm_image_column}', text='{user_vlm_text_column}'")
                     
@@ -762,6 +764,7 @@ def format_and_template_dataset(
                     text_column=vlm_text_column,
                     image_column=vlm_image_column,
                     dataset_name=dataset_name,
+                    progress_callback=progress_callback,
                 )
 
                 if vlm_instruction:

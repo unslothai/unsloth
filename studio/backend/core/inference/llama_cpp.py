@@ -76,33 +76,83 @@ class LlamaCppBackend:
         Locate the llama-server binary.
 
         Search order:
-        1. LLAMA_SERVER_PATH environment variable
-        2. ./llama.cpp/build/bin/llama-server  (built by setup.sh in-tree)
-        3. llama-server on PATH  (system install)
-        4. ./bin/llama-server  (legacy: extracted binary)
+        1.  LLAMA_SERVER_PATH environment variable (direct path to binary)
+        1b. UNSLOTH_LLAMA_CPP_PATH env var (custom llama.cpp install dir)
+        2.  ~/.unsloth/llama.cpp/llama-server        (make build, root dir)
+        3.  ~/.unsloth/llama.cpp/build/bin/llama-server  (cmake build, Linux)
+        4.  ~/.unsloth/llama.cpp/build/bin/Release/llama-server.exe  (cmake build, Windows)
+        5.  ./llama.cpp/llama-server                 (legacy: make build, root dir)
+        6.  ./llama.cpp/build/bin/llama-server        (legacy: cmake in-tree build)
+        7.  llama-server on PATH                     (system install)
+        8.  ./bin/llama-server                       (legacy: extracted binary)
         """
         import os
+        import sys
 
-        # 1. Env var
+        binary_name = "llama-server.exe" if sys.platform == "win32" else "llama-server"
+
+        # 1. Env var — direct path to binary
         env_path = os.environ.get("LLAMA_SERVER_PATH")
         if env_path and Path(env_path).is_file():
             return env_path
 
-        # Project root: llama_cpp.py → inference/ → core/ → backend/ → studio/ → root
-        project_root = Path(__file__).resolve().parents[4]
+        # 1b. UNSLOTH_LLAMA_CPP_PATH — custom llama.cpp install directory
+        custom_llama_cpp = os.environ.get("UNSLOTH_LLAMA_CPP_PATH")
+        if custom_llama_cpp:
+            custom_dir = Path(custom_llama_cpp)
+            # Root dir (make builds)
+            root_bin = custom_dir / binary_name
+            if root_bin.is_file():
+                return str(root_bin)
+            # build/bin/ (cmake builds on Linux)
+            cmake_bin = custom_dir / "build" / "bin" / binary_name
+            if cmake_bin.is_file():
+                return str(cmake_bin)
+            # build/bin/Release/ (cmake builds on Windows)
+            if sys.platform == "win32":
+                win_bin = custom_dir / "build" / "bin" / "Release" / binary_name
+                if win_bin.is_file():
+                    return str(win_bin)
 
-        # 2. In-tree llama.cpp build (setup.sh builds here)
-        build_path = project_root / "llama.cpp" / "build" / "bin" / "llama-server"
+        # 2–4. ~/.unsloth/llama.cpp (primary — setup.sh / setup.ps1 build here)
+        unsloth_home = Path.home() / ".unsloth" / "llama.cpp"
+        # Root dir (make builds copy binaries here)
+        home_root = unsloth_home / binary_name
+        if home_root.is_file():
+            return str(home_root)
+        # build/bin/ (cmake builds on Linux)
+        home_linux = unsloth_home / "build" / "bin" / binary_name
+        if home_linux.is_file():
+            return str(home_linux)
+
+        # 3. Windows MSVC build has Release subdir
+        if sys.platform == "win32":
+            home_win = unsloth_home / "build" / "bin" / "Release" / binary_name
+            if home_win.is_file():
+                return str(home_win)
+
+        # 5–6. Legacy: in-tree build (older setup.sh / setup.ps1 versions)
+        project_root = Path(__file__).resolve().parents[4]
+        # Root dir (make builds)
+        root_path = project_root / "llama.cpp" / binary_name
+        if root_path.is_file():
+            return str(root_path)
+        # build/bin/ (cmake builds)
+        build_path = project_root / "llama.cpp" / "build" / "bin" / binary_name
         if build_path.is_file():
             return str(build_path)
+        if sys.platform == "win32":
+            win_path = project_root / "llama.cpp" / "build" / "bin" / "Release" / binary_name
+            if win_path.is_file():
+                return str(win_path)
 
-        # 3. System PATH
+        # 7. System PATH
         system_path = shutil.which("llama-server")
         if system_path:
             return system_path
 
-        # 4. Legacy: extracted to bin/
-        bin_path = project_root / "bin" / "llama-server"
+        # 8. Legacy: extracted to bin/
+        bin_path = project_root / "bin" / binary_name
         if bin_path.is_file():
             return str(bin_path)
 
@@ -184,16 +234,58 @@ class LlamaCppBackend:
 
             # Build command based on mode
             if hf_repo:
-                hf_spec = f"{hf_repo}:{hf_variant}" if hf_variant else hf_repo
+                # Download the GGUF file ourselves using huggingface_hub
+                # (llama-server's -hf flag requires HTTPS/curl which may not
+                #  be available, e.g. Windows builds with -DLLAMA_CURL=OFF)
+                try:
+                    from huggingface_hub import hf_hub_download
+                except ImportError:
+                    raise RuntimeError(
+                        "huggingface_hub is required for HF model loading. "
+                        "Install it with: pip install huggingface_hub"
+                    )
+
+                # Determine the filename from the variant (e.g., "Q4_K_M" -> find matching file)
+                gguf_filename = None
+                if hf_variant:
+                    # Try common naming patterns
+                    try:
+                        from huggingface_hub import list_repo_files
+                        files = list_repo_files(hf_repo, token=hf_token)
+                        variant_lower = hf_variant.lower()
+                        for f in files:
+                            if f.endswith(".gguf") and variant_lower in f.lower():
+                                gguf_filename = f
+                                break
+                    except Exception as e:
+                        logger.warning(f"Could not list repo files: {e}")
+
+                    if not gguf_filename:
+                        # Fallback: construct common filename pattern
+                        # e.g., "unsloth/gemma-3-4b-it-GGUF" + "Q4_K_M" -> try model name
+                        repo_name = hf_repo.split("/")[-1].replace("-GGUF", "")
+                        gguf_filename = f"{repo_name}-{hf_variant}.gguf"
+
+                logger.info(f"Downloading GGUF: {hf_repo}/{gguf_filename}")
+                try:
+                    local_path = hf_hub_download(
+                        repo_id=hf_repo,
+                        filename=gguf_filename,
+                        token=hf_token,
+                    )
+                except Exception as e:
+                    raise RuntimeError(
+                        f"Failed to download GGUF file '{gguf_filename}' from {hf_repo}: {e}"
+                    )
+
+                logger.info(f"GGUF downloaded to: {local_path}")
                 cmd = [
                     binary,
-                    "-hf", hf_spec,
+                    "-m", local_path,
                     "--port", str(self._port),
                     "-c", str(n_ctx),
                     "-ngl", str(n_gpu_layers),
                 ]
-                if hf_token:
-                    cmd.extend(["--hf-token", hf_token])
             elif gguf_path:
                 if not Path(gguf_path).is_file():
                     raise FileNotFoundError(f"GGUF file not found: {gguf_path}")
@@ -220,13 +312,31 @@ class LlamaCppBackend:
 
             logger.info(f"Starting llama-server: {' '.join(cmd)}")
 
-            # Set LD_LIBRARY_PATH so llama-server can find its shared libs
-            # (libmtmd.so, libllama.so, etc.) which live next to the binary
+            # Set library paths so llama-server can find its shared libs and CUDA DLLs
             import os
+            import sys
             env = os.environ.copy()
             binary_dir = str(Path(binary).parent)
-            existing_ld = env.get("LD_LIBRARY_PATH", "")
-            env["LD_LIBRARY_PATH"] = f"{binary_dir}:{existing_ld}" if existing_ld else binary_dir
+
+            if sys.platform == "win32":
+                # On Windows, CUDA DLLs (cublas64_12.dll, cudart64_12.dll, etc.)
+                # must be on PATH. Add CUDA_PATH\bin if available.
+                path_dirs = [binary_dir]
+                cuda_path = os.environ.get("CUDA_PATH", "")
+                if cuda_path:
+                    cuda_bin = os.path.join(cuda_path, "bin")
+                    if os.path.isdir(cuda_bin):
+                        path_dirs.append(cuda_bin)
+                    # Some CUDA installs put DLLs in bin\x64
+                    cuda_bin_x64 = os.path.join(cuda_path, "bin", "x64")
+                    if os.path.isdir(cuda_bin_x64):
+                        path_dirs.append(cuda_bin_x64)
+                existing_path = env.get("PATH", "")
+                env["PATH"] = ";".join(path_dirs) + ";" + existing_path
+            else:
+                # Linux: set LD_LIBRARY_PATH for shared libs next to the binary
+                existing_ld = env.get("LD_LIBRARY_PATH", "")
+                env["LD_LIBRARY_PATH"] = f"{binary_dir}:{existing_ld}" if existing_ld else binary_dir
 
             self._stdout_lines = []
             self._process = subprocess.Popen(
@@ -249,9 +359,8 @@ class LlamaCppBackend:
             self._is_vision = is_vision
             self._model_identifier = model_identifier
 
-            # HF mode: llama-server downloads before becoming healthy — need longer timeout
-            timeout = 600.0 if hf_repo else 120.0
-            if not self._wait_for_health(timeout=timeout):
+            # Wait for llama-server to become healthy
+            if not self._wait_for_health(timeout=120.0):
                 self._kill_process()
                 raise RuntimeError(
                     "llama-server failed to start. "

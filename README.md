@@ -30,28 +30,119 @@
 
 ## Quick Start
 
-### One-command setup
+### Prerequisites
+
+| Requirement | Linux / WSL | Windows |
+|---|---|---|
+| **GPU** | NVIDIA GPU with working driver | NVIDIA GPU with working driver |
+| **Python** | 3.11 – 3.13 | 3.11 – 3.13 |
+| **Git** | Pre-installed on most distros | Auto-installed by setup script (via `winget`) |
+| **CMake** | Pre-installed or `sudo apt install cmake` | Auto-installed by setup script (via `winget`) |
+| **C++ compiler** | `build-essential` (auto-detected) | Visual Studio Build Tools 2022 (auto-installed by setup script) |
+| **CUDA Toolkit** | Optional — setup auto-detects `nvcc` | Auto-installed by setup script (version matched to driver) |
+
+> [!NOTE]
+> On **WSL**, the setup script will also run `sudo apt-get install build-essential cmake curl git libcurl4-openssl-dev` so that GGUF export works in non-interactive subprocesses. You may be prompted for your password during setup.
+
+---
+
+### Linux / Windows WSL
 
 ```bash
+# 1. Clone the repo
+git clone https://github.com/unslothai/unsloth-studio.git
+cd unsloth-studio
+
+# 2. Run setup (installs Node, builds frontend, creates .venv, builds llama.cpp)
 bash setup.sh
+
+# 3. Open a new terminal (or source your shell rc), then launch:
+unsloth-studio -H 0.0.0.0 -p 8000
 ```
 
-This script will:
-1. Install **Node.js ≥ 20** via nvm (if needed)
-2. Build the frontend to `studio/frontend/dist`
-3. Create a Python virtual environment and install all dependencies (including `unsloth`)
-4. Register a convenient `unsloth-ui` shell alias
+<details>
+<summary><b>What does <code>setup.sh</code> do?</b></summary>
 
-### Launch the studio
+1. Installs **Node.js ≥ 20** via nvm (if needed)
+2. Runs `npm install && npm run build` for the React frontend
+3. Detects the best **Python 3.11 – 3.13** on your system and creates a `.venv`
+4. Installs all Python dependencies (unsloth, PyTorch with CUDA, triton kernels, etc.)
+5. On **WSL**: pre-installs build dependencies via `apt-get`
+6. Clones and builds **llama.cpp** at `~/.unsloth/llama.cpp` (GPU-accelerated if CUDA is found)
+7. Registers `unsloth-studio` and `unsloth-ui` shell aliases in your shell rc (bash, zsh, fish, or ksh)
+
+</details>
+
+---
+
+### Windows (Native)
+
+> [!IMPORTANT]
+> Requires an **NVIDIA GPU** — CPU-only machines are not supported on Windows.
+
+```powershell
+# 1. Clone the repo
+git clone https://github.com/unslothai/unsloth-studio.git
+cd unsloth-studio
+
+# 2. Run setup (Right-click → "Run with PowerShell", or from a terminal):
+.\setup.bat
+# Or directly:
+powershell -ExecutionPolicy Bypass -File setup.ps1
+```
+
+After setup completes, **open a new terminal** and run:
+
+```powershell
+# PowerShell
+unsloth-studio -H 0.0.0.0 -p 8000
+
+# Or cmd.exe
+unsloth-studio -H 0.0.0.0 -p 8000
+```
+
+<details>
+<summary><b>What does <code>setup.ps1</code> do?</b></summary>
+
+1. Enables **Windows Long Paths** (required for deep dependency trees — prompts for UAC)
+2. Auto-installs missing system tools via `winget`: **Git**, **CMake**, **Visual Studio Build Tools 2022**, **CUDA Toolkit** (version-matched to your driver), **Node.js LTS**, **Python 3.12**, **OpenSSL dev**
+3. Builds the React frontend (`npm install && npm run build`)
+4. Creates a `.venv` and installs all Python dependencies (including CUDA-enabled PyTorch from the official index)
+5. Sets `TORCHINDUCTOR_CACHE_DIR=C:\tc` to avoid Windows MAX_PATH issues with Triton
+6. Clones and builds **llama.cpp** at `%USERPROFILE%\.unsloth\llama.cpp` with CUDA + Visual Studio
+7. Registers `unsloth-studio` and `unsloth-ui` commands in both PowerShell profile and `cmd.exe` (via batch files on PATH)
+
+</details>
+
+---
+
+### Google Colab
+
+The setup script auto-detects Colab and installs everything into the existing system Python (no venv):
+
+```python
+!bash setup.sh
+```
+
+---
+
+### Launching the Studio
+
+After setup on any platform, the command is the same:
 
 ```bash
-# After setup, open a new terminal (or source ~/.bashrc), then inside your working directory:
-unsloth-ui -H 0.0.0.0 -p 8000
+unsloth-studio -H 0.0.0.0 -p 8000
 ```
 
-On **first launch**, a one-time setup token is printed to the console. Use it in the browser to create your admin account.
+| Flag | Description |
+|---|---|
+| `-H` / `--host` | Bind address (`0.0.0.0` for all interfaces, `127.0.0.1` for local only) |
+| `-p` / `--port` | Port number (default: `8000`) |
 
-As this repo is in continuous development, please make sure to run the setup.sh file everytime you pull new changes from the repo.
+On **first launch**, a one-time setup token is printed to the console. Open the URL shown in your browser and use this token to create your admin account.
+
+> [!TIP]
+> This repo is in active development. After pulling new changes, **always re-run the setup script** (`bash setup.sh` or `.\setup.bat`) to pick up dependency and build updates.
 
 ## API Reference
 
@@ -105,7 +196,10 @@ new-ui-prototype/
 │       ├── export.py
 │       ├── ui.py
 │       └── studio.py
-├── setup.sh                   # One-command bootstrap script
+├── setup.sh                   # Bootstrap script (Linux / WSL / Colab)
+├── setup.ps1                  # Bootstrap script (Windows native)
+├── setup.bat                  # Wrapper to launch setup.ps1 via double-click
+├── install_python_stack.py    # Cross-platform Python dependency installer
 └── studio/
     ├── backend/
     │   ├── main.py            # FastAPI app & middleware
