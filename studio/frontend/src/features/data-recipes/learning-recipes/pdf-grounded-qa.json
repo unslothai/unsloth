@@ -107,6 +107,12 @@
         "note_opacity": "35"
       },
       {
+        "id": "seed",
+        "x": 484.36210245413577,
+        "y": 1059.99180558796,
+        "width": 400
+      },
+      {
         "id": "provider_1",
         "x": 960,
         "y": 622,
@@ -122,12 +128,6 @@
         "id": "llm_structured_1",
         "x": 960,
         "y": 1077,
-        "width": 400
-      },
-      {
-        "id": "seed_1",
-        "x": 478.48685020808557,
-        "y": 1060.0000000000002,
         "width": 400
       }
     ],
@@ -148,7 +148,7 @@
       },
       {
         "from": "llm_structured_1",
-        "to": "seed_1",
+        "to": "seed",
         "type": "canvas",
         "source_handle": "data-out-left",
         "target_handle": "data-in-right"
