@@ -21,6 +21,15 @@ function Slider({
     [value, defaultValue, min, max],
   );
 
+  // For single-thumb horizontal sliders, render the fill bar as a sibling of
+  // the track (outside its overflow-hidden container) so it can align flush
+  // with the thumb center without being clipped. The Range inside the track
+  // is hidden in this case to avoid double-painting.
+  const isSingleThumb = _values.length === 1;
+  const fillPercent = isSingleThumb
+    ? Math.min(100, Math.max(0, (((_values[0] ?? min) - min) / (max - min)) * 100))
+    : null;
+
   return (
     <SliderPrimitive.Root
       data-slot="slider"
@@ -40,9 +49,19 @@ function Slider({
       >
         <SliderPrimitive.Range
           data-slot="slider-range"
-          className="bg-primary absolute select-none data-horizontal:h-full data-vertical:w-full"
+          className={cn(
+            "bg-primary absolute select-none data-horizontal:h-full data-vertical:w-full",
+            isSingleThumb && "opacity-0",
+          )}
         />
       </SliderPrimitive.Track>
+      {isSingleThumb && (
+        <div
+          aria-hidden={true}
+          className="absolute inset-y-0 left-0 my-auto h-3 rounded-4xl bg-primary pointer-events-none"
+          style={{ width: `${fillPercent}%` }}
+        />
+      )}
       {Array.from({ length: _values.length }, (_, index) => (
         <SliderPrimitive.Thumb
           data-slot="slider-thumb"
