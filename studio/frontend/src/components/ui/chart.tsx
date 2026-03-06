@@ -67,12 +67,12 @@ function ChartContainer({
           : null;
 
       setContainerSize((currentSize) => {
-        if (!currentSize && !nextSize) {
+        if (!nextSize) {
+          // Keep the last valid size once mounted to avoid unmount/remount thrash.
           return currentSize;
         }
         if (
           currentSize &&
-          nextSize &&
           currentSize.width === nextSize.width &&
           currentSize.height === nextSize.height
         ) {
@@ -80,45 +80,25 @@ function ChartContainer({
         }
         return nextSize;
       });
-
-      return nextSize !== null;
     };
 
-    const hasInitialSize = updateSizeState();
+    updateSizeState();
 
     if (typeof ResizeObserver === "undefined") {
-      const handleWindowResize = () => {
-        updateSizeState();
+      const recheckSize = () => {
+        if (document.visibilityState === "visible") {
+          updateSizeState();
+        }
       };
 
-      window.addEventListener("resize", handleWindowResize);
-      window.addEventListener("orientationchange", handleWindowResize);
-
-      let retryId: number | null = null;
-      if (!hasInitialSize) {
-        let retries = 0;
-        const maxRetries = 40;
-        retryId = window.setInterval(() => {
-          const hasMeasuredSize = updateSizeState();
-          retries += 1;
-          if (hasMeasuredSize && retryId !== null) {
-            window.clearInterval(retryId);
-            retryId = null;
-            return;
-          }
-          if (retries >= maxRetries && retryId !== null) {
-            window.clearInterval(retryId);
-            retryId = null;
-          }
-        }, 250);
-      }
+      window.addEventListener("resize", recheckSize);
+      window.addEventListener("orientationchange", recheckSize);
+      document.addEventListener("visibilitychange", recheckSize);
 
       return () => {
-        window.removeEventListener("resize", handleWindowResize);
-        window.removeEventListener("orientationchange", handleWindowResize);
-        if (retryId !== null) {
-          window.clearInterval(retryId);
-        }
+        window.removeEventListener("resize", recheckSize);
+        window.removeEventListener("orientationchange", recheckSize);
+        document.removeEventListener("visibilitychange", recheckSize);
       };
     }
 
