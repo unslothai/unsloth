@@ -20,6 +20,7 @@ _OXC_LANG_TO_NODE_LANG = {
     "tsx": "tsx",
 }
 _OXC_VALIDATION_MODES = {"syntax", "lint", "syntax+lint"}
+_OXC_CODE_SHAPES = {"auto", "module", "snippet"}
 
 _OXC_TOOL_DIR = Path(__file__).resolve().parent / "oxc-validator"
 _OXC_RUNNER_PATH = _OXC_TOOL_DIR / "validate.mjs"
@@ -33,6 +34,7 @@ class OxcLocalCallableValidatorSpec:
     batch_size: int
     code_lang: str
     validation_mode: str
+    code_shape: str
 
 
 def split_oxc_local_callable_validators(
@@ -83,6 +85,7 @@ def register_oxc_local_callable_validators(
         validation_function = _build_oxc_validation_function(
             spec.code_lang,
             spec.validation_mode,
+            spec.code_shape,
         )
         builder.add_column(
             ValidationColumnConfig(
@@ -129,7 +132,7 @@ def _parse_oxc_spec(
     if not target_columns:
         return None
 
-    code_lang, validation_mode = _parse_oxc_validation_marker(fn_name)
+    code_lang, validation_mode, code_shape = _parse_oxc_validation_marker(fn_name)
     batch_size = _parse_batch_size(column.get("batch_size"))
     drop = bool(column.get("drop") is True)
 
@@ -140,6 +143,7 @@ def _parse_oxc_spec(
         batch_size=batch_size,
         code_lang=code_lang,
         validation_mode=validation_mode,
+        code_shape=code_shape,
     )
 
 
@@ -151,27 +155,29 @@ def _parse_batch_size(value: Any) -> int:
     return parsed if parsed >= 1 else 10
 
 
-def _parse_oxc_validation_marker(fn_name: str) -> tuple[str, str]:
+def _parse_oxc_validation_marker(fn_name: str) -> tuple[str, str, str]:
     marker = f"{OXC_VALIDATION_FN_MARKER}:"
     if not fn_name.startswith(marker):
-        return "javascript", "syntax"
+        return "javascript", "syntax", "auto"
     suffix = fn_name[len(marker) :]
     parts = [part.strip() for part in suffix.split(":") if part.strip()]
     if len(parts) < 2:
-        return "javascript", "syntax"
+        return "javascript", "syntax", "auto"
     code_lang = parts[0] if parts[0] in _OXC_LANG_TO_NODE_LANG else "javascript"
     mode = parts[1] if parts[1] in _OXC_VALIDATION_MODES else "syntax"
-    return code_lang, mode
+    code_shape = parts[2] if len(parts) >= 3 and parts[2] in _OXC_CODE_SHAPES else "auto"
+    return code_lang, mode, code_shape
 
 
 @lru_cache(maxsize=8)
-def _build_oxc_validation_function(lang: str, validation_mode: str):
+def _build_oxc_validation_function(lang: str, validation_mode: str, code_shape: str):
     node_lang = _OXC_LANG_TO_NODE_LANG.get(lang, "js")
     mode = (
         validation_mode
         if validation_mode in _OXC_VALIDATION_MODES
         else "syntax"
     )
+    normalized_code_shape = code_shape if code_shape in _OXC_CODE_SHAPES else "auto"
 
     def _validator(df):
         import pandas as pd  # imported lazily for local callable runtime
@@ -190,6 +196,7 @@ def _build_oxc_validation_function(lang: str, validation_mode: str):
         results = _run_oxc_batch(
             node_lang=node_lang,
             validation_mode=mode,
+            code_shape=normalized_code_shape,
             code_values=code_values,
         )
         if len(results) != row_count:
@@ -199,7 +206,9 @@ def _build_oxc_validation_function(lang: str, validation_mode: str):
             )
         return pd.DataFrame(results)
 
-    _validator.__name__ = f"{OXC_VALIDATION_FN_MARKER}_{node_lang}_{mode.replace('+', '_')}"
+    _validator.__name__ = (
+        f"{OXC_VALIDATION_FN_MARKER}_{node_lang}_{mode.replace('+', '_')}_{normalized_code_shape}"
+    )
     return _validator
 
 
@@ -207,6 +216,7 @@ def _run_oxc_batch(
     *,
     node_lang: str,
     validation_mode: str,
+    code_shape: str,
     code_values: list[str],
 ) -> list[dict[str, Any]]:
     if not _OXC_RUNNER_PATH.exists():
@@ -218,6 +228,7 @@ def _run_oxc_batch(
     payload = {
         "lang": node_lang,
         "mode": validation_mode,
+        "code_shape": code_shape,
         "codes": code_values,
     }
     try:

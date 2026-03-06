@@ -6,6 +6,7 @@ import type {
   ValidatorConfig,
 } from "../../types";
 import { VALIDATOR_OXC_CODE_LANGS } from "../validators/code-lang";
+import { isOxcCodeShape } from "../validators/oxc-code-shape";
 import { isOxcValidationMode } from "../validators/oxc-mode";
 
 export function validateSubcategoryConfigs(
@@ -154,6 +155,15 @@ export function validateValidatorConfigs(
     ) {
       errors.push(
         `Validator ${config.name}: oxc_validation_mode '${config.oxc_validation_mode}' is invalid.`,
+      );
+      continue;
+    }
+    if (
+      config.validator_type === "oxc" &&
+      !isOxcCodeShape(config.oxc_code_shape)
+    ) {
+      errors.push(
+        `Validator ${config.name}: oxc_code_shape '${config.oxc_code_shape}' is invalid.`,
       );
       continue;
     }

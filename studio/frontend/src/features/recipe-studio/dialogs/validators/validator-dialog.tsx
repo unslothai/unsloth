@@ -28,6 +28,10 @@ import {
   VALIDATOR_SQL_CODE_LANGS,
 } from "../../utils/validators/code-lang";
 import {
+  OXC_CODE_SHAPES,
+  normalizeOxcCodeShape,
+} from "../../utils/validators/oxc-code-shape";
+import {
   OXC_VALIDATION_MODES,
   normalizeOxcValidationMode,
 } from "../../utils/validators/oxc-mode";
@@ -48,10 +52,13 @@ export function ValidatorDialog({
   const configs = useRecipeStudioStore((state) => state.configs);
   const targetColumnId = `${config.id}-target-column`;
   const oxcModeId = `${config.id}-oxc-mode`;
+  const oxcCodeShapeId = `${config.id}-oxc-code-shape`;
   const batchSizeId = `${config.id}-batch-size`;
   const oxcModeAnchorRef = useRef<HTMLDivElement>(null);
+  const oxcCodeShapeAnchorRef = useRef<HTMLDivElement>(null);
   const advancedOpen = config.advancedOpen === true;
   const selectedOxcMode = normalizeOxcValidationMode(config.oxc_validation_mode);
+  const selectedOxcCodeShape = normalizeOxcCodeShape(config.oxc_code_shape);
   const codeOptions = useMemo(
     () =>
       Object.values(configs)
@@ -144,43 +151,84 @@ export function ValidatorDialog({
         )}
       </div>
       {config.validator_type === "oxc" && (
-        <div className="grid gap-2">
-          <FieldLabel
-            label="Validation mode"
-            htmlFor={oxcModeId}
-            hint="syntax: parser only. lint: oxlint only. syntax+lint: both."
-          />
-          <div ref={oxcModeAnchorRef}>
-            <Combobox
-              items={OXC_VALIDATION_MODES}
-              filteredItems={OXC_VALIDATION_MODES}
-              filter={null}
-              value={selectedOxcMode}
-              onValueChange={(value) =>
-                onUpdate({
-                  oxc_validation_mode: normalizeOxcValidationMode(value),
-                })
-              }
-              itemToStringValue={(value) => value}
-              autoHighlight={true}
-            >
-              <ComboboxInput
-                id={oxcModeId}
-                className="nodrag w-full"
-                placeholder="Select validation mode"
-                readOnly={true}
-              />
-              <ComboboxContent anchor={oxcModeAnchorRef}>
-                <ComboboxEmpty>No modes available</ComboboxEmpty>
-                <ComboboxList>
-                  {(mode: string) => (
-                    <ComboboxItem key={mode} value={mode}>
-                      {mode}
-                    </ComboboxItem>
-                  )}
-                </ComboboxList>
-              </ComboboxContent>
-            </Combobox>
+        <div className="grid gap-3">
+          <div className="grid gap-2">
+            <FieldLabel
+              label="Validation mode"
+              htmlFor={oxcModeId}
+              hint="syntax: parser only. lint: oxlint only. syntax+lint: both."
+            />
+            <div ref={oxcModeAnchorRef}>
+              <Combobox
+                items={OXC_VALIDATION_MODES}
+                filteredItems={OXC_VALIDATION_MODES}
+                filter={null}
+                value={selectedOxcMode}
+                onValueChange={(value) =>
+                  onUpdate({
+                    oxc_validation_mode: normalizeOxcValidationMode(value),
+                  })
+                }
+                itemToStringValue={(value) => value}
+                autoHighlight={true}
+              >
+                <ComboboxInput
+                  id={oxcModeId}
+                  className="nodrag w-full"
+                  placeholder="Select validation mode"
+                  readOnly={true}
+                />
+                <ComboboxContent anchor={oxcModeAnchorRef}>
+                  <ComboboxEmpty>No modes available</ComboboxEmpty>
+                  <ComboboxList>
+                    {(mode: string) => (
+                      <ComboboxItem key={mode} value={mode}>
+                        {mode}
+                      </ComboboxItem>
+                    )}
+                  </ComboboxList>
+                </ComboboxContent>
+              </Combobox>
+            </div>
+          </div>
+          <div className="grid gap-2">
+            <FieldLabel
+              label="Code shape"
+              htmlFor={oxcCodeShapeId}
+              hint="auto: detect module/snippet. module: strict file. snippet: wrapped fragment."
+            />
+            <div ref={oxcCodeShapeAnchorRef}>
+              <Combobox
+                items={OXC_CODE_SHAPES}
+                filteredItems={OXC_CODE_SHAPES}
+                filter={null}
+                value={selectedOxcCodeShape}
+                onValueChange={(value) =>
+                  onUpdate({
+                    oxc_code_shape: normalizeOxcCodeShape(value),
+                  })
+                }
+                itemToStringValue={(value) => value}
+                autoHighlight={true}
+              >
+                <ComboboxInput
+                  id={oxcCodeShapeId}
+                  className="nodrag w-full"
+                  placeholder="Select code shape"
+                  readOnly={true}
+                />
+                <ComboboxContent anchor={oxcCodeShapeAnchorRef}>
+                  <ComboboxEmpty>No code-shape options</ComboboxEmpty>
+                  <ComboboxList>
+                    {(shape: string) => (
+                      <ComboboxItem key={shape} value={shape}>
+                        {shape}
+                      </ComboboxItem>
+                    )}
+                  </ComboboxList>
+                </ComboboxContent>
+              </Combobox>
+            </div>
           </div>
         </div>
       )}

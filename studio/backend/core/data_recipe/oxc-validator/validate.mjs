@@ -13,6 +13,9 @@ const LANG_TO_EXT = {
 };
 
 const VALIDATION_MODES = new Set(["syntax", "lint", "syntax+lint"]);
+const CODE_SHAPES = new Set(["auto", "module", "snippet"]);
+const SNIPPET_PREFIX = "(() => {\n";
+const SNIPPET_SUFFIX = "\n})();\nexport {};\n";
 const TOOL_DIR = dirname(fileURLToPath(import.meta.url));
 
 function mapLang(value) {
@@ -40,6 +43,14 @@ function mapMode(value) {
   return "syntax";
 }
 
+function mapCodeShape(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (CODE_SHAPES.has(normalized)) {
+    return normalized;
+  }
+  return "auto";
+}
+
 function parseFileIndex(filePath) {
   if (typeof filePath !== "string") {
     return null;
@@ -50,6 +61,52 @@ function parseFileIndex(filePath) {
   }
   const parsed = Number.parseInt(match[1], 10);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function toCodeString(code) {
+  return typeof code === "string" ? code : String(code ?? "");
+}
+
+function makeValidationEntry({ code, index, lang, codeShape }) {
+  const source = toCodeString(code);
+  if (codeShape === "snippet") {
+    return {
+      index,
+      lang,
+      code: `${SNIPPET_PREFIX}${source}${SNIPPET_SUFFIX}`,
+      offset: SNIPPET_PREFIX.length,
+    };
+  }
+  return {
+    index,
+    lang,
+    code: source,
+    offset: 0,
+  };
+}
+
+function shiftOffset(value, offset) {
+  if (!Number.isInteger(value)) {
+    return null;
+  }
+  const shifted = value - offset;
+  return shifted >= 0 ? shifted : null;
+}
+
+function remapDiagnosticOffsets(diagnostic, offset) {
+  if (!diagnostic || typeof diagnostic !== "object" || offset <= 0) {
+    return diagnostic;
+  }
+  return {
+    ...diagnostic,
+    labels: Array.isArray(diagnostic.labels)
+      ? diagnostic.labels.map((label) => ({
+          ...label,
+          start: shiftOffset(label.start, offset),
+          end: shiftOffset(label.end, offset),
+        }))
+      : [],
+  };
 }
 
 function normalizeParserError(error) {
@@ -160,48 +217,140 @@ function makeResult({
   };
 }
 
-function validateSyntaxOne({ code, lang, index }) {
-  const ext = LANG_TO_EXT[lang] ?? "js";
-  const filename = `snippet_${index}.${ext}`;
-  const source = typeof code === "string" ? code : String(code ?? "");
+function syntaxResultFromErrors(errors) {
+  const first = errors[0] ?? null;
+  return makeResult({
+    isValid: errors.length === 0,
+    errorCount: errors.length,
+    warningCount: 0,
+    message: errors.slice(0, 3).map((error) => error.message).join(" | "),
+    severity: first ? first.severity : null,
+    labels: first ? first.labels : [],
+    codeframe: first ? first.codeframe : null,
+  });
+}
 
+function runSyntaxParse(entry) {
+  const ext = LANG_TO_EXT[entry.lang] ?? "js";
+  const filename = `snippet_${entry.index}.${ext}`;
   try {
-    const parsed = parseSync(filename, source, {
-      lang,
+    const parsed = parseSync(filename, entry.code, {
+      lang: entry.lang,
       sourceType: "module",
       showSemanticErrors: true,
     });
     const errors = Array.isArray(parsed?.errors)
-      ? parsed.errors.map(normalizeParserError).filter(Boolean)
+      ? parsed.errors
+          .map(normalizeParserError)
+          .filter(Boolean)
+          .map((error) => remapDiagnosticOffsets(error, entry.offset))
       : [];
-    const first = errors[0] ?? null;
-    return makeResult({
-      isValid: errors.length === 0,
-      errorCount: errors.length,
-      warningCount: 0,
-      message: errors.slice(0, 3).map((error) => error.message).join(" | "),
-      severity: first ? first.severity : null,
-      labels: first ? first.labels : [],
-      codeframe: first ? first.codeframe : null,
-    });
+    return errors;
   } catch (error) {
-    const normalized = normalizeParserError(error);
-    return makeResult({
-      isValid: false,
-      errorCount: 1,
-      warningCount: 0,
-      message: normalized.message,
-      severity: normalized.severity,
-      labels: normalized.labels,
-      codeframe: normalized.codeframe,
-    });
+    return [
+      remapDiagnosticOffsets(
+        normalizeParserError(error),
+        entry.offset,
+      ),
+    ];
   }
 }
 
-function fallbackLintResults(indexedCodes, message) {
+function pickPreferredErrorList(firstErrors, secondErrors) {
+  if (secondErrors.length < firstErrors.length) {
+    return secondErrors;
+  }
+  return firstErrors;
+}
+
+function validateSyntaxOne({ code, lang, index, codeShape }) {
+  if (codeShape !== "auto") {
+    const lintEntry = makeValidationEntry({
+      code,
+      index,
+      lang,
+      codeShape,
+    });
+    const errors = runSyntaxParse(lintEntry);
+    return {
+      result: syntaxResultFromErrors(errors),
+      lintEntry,
+    };
+  }
+
+  const moduleEntry = makeValidationEntry({
+    code,
+    index,
+    lang,
+    codeShape: "module",
+  });
+  const moduleErrors = runSyntaxParse(moduleEntry);
+  if (moduleErrors.length === 0) {
+    return {
+      result: syntaxResultFromErrors(moduleErrors),
+      lintEntry: moduleEntry,
+    };
+  }
+
+  const snippetEntry = makeValidationEntry({
+    code,
+    index,
+    lang,
+    codeShape: "snippet",
+  });
+  const snippetErrors = runSyntaxParse(snippetEntry);
+  if (snippetErrors.length === 0) {
+    return {
+      result: syntaxResultFromErrors(snippetErrors),
+      lintEntry: snippetEntry,
+    };
+  }
+
+  const chosenErrors = pickPreferredErrorList(moduleErrors, snippetErrors);
+  const lintEntry = chosenErrors === snippetErrors ? snippetEntry : moduleEntry;
+  return {
+    result: syntaxResultFromErrors(chosenErrors),
+    lintEntry,
+  };
+}
+
+function resolveLintEntry({ code, lang, index, codeShape }) {
+  if (codeShape !== "auto") {
+    return makeValidationEntry({
+      code,
+      index,
+      lang,
+      codeShape,
+    });
+  }
+
+  const moduleEntry = makeValidationEntry({
+    code,
+    index,
+    lang,
+    codeShape: "module",
+  });
+  if (runSyntaxParse(moduleEntry).length === 0) {
+    return moduleEntry;
+  }
+
+  const snippetEntry = makeValidationEntry({
+    code,
+    index,
+    lang,
+    codeShape: "snippet",
+  });
+  if (runSyntaxParse(snippetEntry).length === 0) {
+    return snippetEntry;
+  }
+
+  return moduleEntry;
+}
+
+function fallbackLintResults(entries, message) {
   return new Map(
-    indexedCodes.map((item) => [
-      item.index,
+    entries.map((entry) => [
+      entry.index,
       makeResult({
         isValid: false,
         errorCount: 1,
@@ -213,18 +362,18 @@ function fallbackLintResults(indexedCodes, message) {
   );
 }
 
-function runLintBatch(indexedCodes, lang) {
-  if (indexedCodes.length === 0) {
+function runLintBatch(entries) {
+  if (entries.length === 0) {
     return new Map();
   }
 
-  const ext = LANG_TO_EXT[lang] ?? "js";
+  const entryByIndex = new Map(entries.map((entry) => [entry.index, entry]));
   const tempDir = mkdtempSync(join(tmpdir(), "oxlint-"));
   try {
-    for (const item of indexedCodes) {
-      const filePath = join(tempDir, `snippet_${item.index}.${ext}`);
-      const source = typeof item.code === "string" ? item.code : String(item.code ?? "");
-      writeFileSync(filePath, source, "utf8");
+    for (const entry of entries) {
+      const ext = LANG_TO_EXT[entry.lang] ?? "js";
+      const filePath = join(tempDir, `snippet_${entry.index}.${ext}`);
+      writeFileSync(filePath, entry.code, "utf8");
     }
 
     const oxlintBin = join(TOOL_DIR, "node_modules", ".bin", "oxlint");
@@ -234,7 +383,7 @@ function runLintBatch(indexedCodes, lang) {
     });
     if (exec.error) {
       return fallbackLintResults(
-        indexedCodes,
+        entries,
         `oxlint execution failed: ${exec.error.message}`,
       );
     }
@@ -242,7 +391,7 @@ function runLintBatch(indexedCodes, lang) {
     if (!stdout) {
       const stderr = String(exec.stderr || "").trim();
       return fallbackLintResults(
-        indexedCodes,
+        entries,
         stderr || "oxlint returned empty output",
       );
     }
@@ -251,7 +400,7 @@ function runLintBatch(indexedCodes, lang) {
     try {
       parsed = JSON.parse(stdout);
     } catch {
-      return fallbackLintResults(indexedCodes, "oxlint JSON parse failed");
+      return fallbackLintResults(entries, "oxlint JSON parse failed");
     }
 
     const rawDiagnostics = Array.isArray(parsed?.diagnostics)
@@ -260,10 +409,6 @@ function runLintBatch(indexedCodes, lang) {
     const byIndex = new Map();
 
     for (const diag of rawDiagnostics) {
-      const normalized = normalizeLintDiagnostic(diag);
-      if (!normalized) {
-        continue;
-      }
       const filenameRaw =
         typeof diag?.filename === "string" ? diag.filename : "";
       const filename = filenameRaw.startsWith("file://")
@@ -273,14 +418,20 @@ function runLintBatch(indexedCodes, lang) {
       if (index === null) {
         continue;
       }
+      const normalized = normalizeLintDiagnostic(diag);
+      if (!normalized) {
+        continue;
+      }
+      const entry = entryByIndex.get(index);
+      const remapped = remapDiagnosticOffsets(normalized, entry?.offset ?? 0);
       const list = byIndex.get(index) ?? [];
-      list.push(normalized);
+      list.push(remapped);
       byIndex.set(index, list);
     }
 
     const results = new Map();
-    for (const item of indexedCodes) {
-      const diagnostics = byIndex.get(item.index) ?? [];
+    for (const entry of entries) {
+      const diagnostics = byIndex.get(entry.index) ?? [];
       const errorDiagnostics = diagnostics.filter(
         (diag) => diag.severity === "error",
       );
@@ -291,7 +442,7 @@ function runLintBatch(indexedCodes, lang) {
       const messageSource =
         errorDiagnostics.length > 0 ? errorDiagnostics : warningDiagnostics;
       results.set(
-        item.index,
+        entry.index,
         makeResult({
           isValid: errorDiagnostics.length === 0,
           errorCount: errorDiagnostics.length,
@@ -308,7 +459,7 @@ function runLintBatch(indexedCodes, lang) {
     }
     return results;
   } catch (error) {
-    return fallbackLintResults(indexedCodes, `oxlint execution failed: ${error}`);
+    return fallbackLintResults(entries, `oxlint execution failed: ${error}`);
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
@@ -326,16 +477,21 @@ function readStdin() {
   });
 }
 
-function runValidation({ codes, lang, mode }) {
+function runValidation({ codes, lang, mode, codeShape }) {
   if (mode === "syntax") {
-    return codes.map((code, index) => validateSyntaxOne({ code, lang, index }));
+    return codes.map((code, index) =>
+      validateSyntaxOne({ code, lang, index, codeShape }).result,
+    );
   }
+
   if (mode === "lint") {
-    const indexedCodes = codes.map((code, index) => ({ index, code }));
-    const lintMap = runLintBatch(indexedCodes, lang);
-    return indexedCodes.map(
-      (item) =>
-        lintMap.get(item.index) ??
+    const entries = codes.map((code, index) =>
+      resolveLintEntry({ code, lang, index, codeShape }),
+    );
+    const lintMap = runLintBatch(entries);
+    return entries.map(
+      (entry) =>
+        lintMap.get(entry.index) ??
         makeResult({
           isValid: true,
           errorCount: 0,
@@ -344,20 +500,20 @@ function runValidation({ codes, lang, mode }) {
     );
   }
 
-  const syntaxResults = codes.map((code, index) =>
-    validateSyntaxOne({ code, lang, index }),
+  const syntaxRuns = codes.map((code, index) =>
+    validateSyntaxOne({ code, lang, index, codeShape }),
   );
-  const lintTargets = codes
-    .map((code, index) => ({ index, code }))
-    .filter((item) => syntaxResults[item.index]?.is_valid === true);
-  const lintMap = runLintBatch(lintTargets, lang);
+  const lintTargets = syntaxRuns
+    .filter((run) => run.result.is_valid === true)
+    .map((run) => run.lintEntry);
+  const lintMap = runLintBatch(lintTargets);
 
-  return syntaxResults.map((syntaxResult, index) => {
-    if (syntaxResult.is_valid !== true) {
-      return syntaxResult;
+  return syntaxRuns.map((run) => {
+    if (run.result.is_valid !== true) {
+      return run.result;
     }
     return (
-      lintMap.get(index) ??
+      lintMap.get(run.lintEntry.index) ??
       makeResult({
         isValid: true,
         errorCount: 0,
@@ -389,8 +545,9 @@ async function main() {
 
   const lang = mapLang(payload?.lang);
   const mode = mapMode(payload?.mode);
+  const codeShape = mapCodeShape(payload?.code_shape);
   const codes = Array.isArray(payload?.codes) ? payload.codes : [];
-  const out = runValidation({ codes, lang, mode });
+  const out = runValidation({ codes, lang, mode, codeShape });
   process.stdout.write(JSON.stringify(out));
 }
 
@@ -398,3 +555,4 @@ main().catch((error) => {
   process.stderr.write(String(error?.stack || error));
   process.exit(1);
 });
+
