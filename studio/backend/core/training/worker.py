@@ -51,7 +51,7 @@ def _activate_transformers_version(model_name: str, project_root: str) -> None:
             )
             sp.run(
                 [sys.executable, "-m", "pip", "install", "--target", venv_t5,
-                 "--no-deps", "huggingface_hub==0.36.0"],
+                 "--no-deps", "huggingface_hub==1.3.0"],
                 stdout=sp.PIPE, stderr=sp.STDOUT,
             )
             if os.path.isdir(venv_t5):
