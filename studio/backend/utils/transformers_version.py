@@ -48,7 +48,7 @@ TRANSFORMERS_5_MODEL_SUBSTRINGS: tuple[str, ...] = (
     "ministral-3-",       # Ministral-3-{3,8,14}B-{Instruct,Reasoning,Base}-2512
     "glm-4.7-flash",      # GLM-4.7-Flash
     "qwen3-30b-a3b",      # Qwen3-30B-A3B-Instruct-2507 and variants
-    "qwen3.5-35b-a3b",   # Qwen3.5-35B-A3B and variants
+    "qwen3.5",            # Qwen3.5 family (35B-A3B, etc.)
     "qwen3-next",         # Qwen3-Next and variants
     "tiny_qwen3_moe",     # imdatta0/tiny_qwen3_moe_2.8B_0.7B
 )
