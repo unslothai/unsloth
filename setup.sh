@@ -194,7 +194,7 @@ else
     VENV_T5_DIR="$SCRIPT_DIR/.venv_t5"
     mkdir -p "$VENV_T5_DIR"
     run_quiet "pip install transformers 5.x" pip install --target "$VENV_T5_DIR" --no-deps "transformers==5.1.0"
-    run_quiet "pip install huggingface_hub for t5" pip install --target "$VENV_T5_DIR" --no-deps "huggingface_hub>=1.3.0"
+    run_quiet "pip install huggingface_hub for t5" pip install --target "$VENV_T5_DIR" --no-deps "huggingface_hub==0.36.0"
     echo "✅ Transformers 5.x pre-installed to .venv_t5/"
 
     # ── 7. WSL: pre-install GGUF build dependencies ──
