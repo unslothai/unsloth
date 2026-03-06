@@ -267,6 +267,7 @@ def _run_oxc_batch(
                     "error_count": 1,
                     "error_message": "Invalid OXC result entry.",
                     "severity": None,
+                    "code": None,
                     "labels": [],
                     "codeframe": None,
                     "warning_count": 0,
@@ -277,6 +278,7 @@ def _run_oxc_batch(
         error_count_raw = item.get("error_count")
         message_raw = item.get("error_message")
         severity_raw = item.get("severity")
+        code_raw = item.get("code")
         labels_raw = item.get("labels")
         codeframe_raw = item.get("codeframe")
         warning_count_raw = item.get("warning_count")
@@ -286,6 +288,7 @@ def _run_oxc_batch(
                 "error_count": int(error_count_raw) if isinstance(error_count_raw, int) else 0,
                 "error_message": str(message_raw or ""),
                 "severity": str(severity_raw) if isinstance(severity_raw, str) else None,
+                "code": str(code_raw) if isinstance(code_raw, str) else None,
                 "labels": labels_raw if isinstance(labels_raw, list) else [],
                 "codeframe": str(codeframe_raw) if isinstance(codeframe_raw, str) else None,
                 "warning_count": int(warning_count_raw)
@@ -303,6 +306,7 @@ def _fallback_results(row_count: int, message: str) -> list[dict[str, Any]]:
             "error_count": 1,
             "error_message": message,
             "severity": None,
+            "code": None,
             "labels": [],
             "codeframe": None,
             "warning_count": 0,

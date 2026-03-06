@@ -16,6 +16,7 @@ const VALIDATION_MODES = new Set(["syntax", "lint", "syntax+lint"]);
 const CODE_SHAPES = new Set(["auto", "module", "snippet"]);
 const SNIPPET_PREFIX = "(() => {\n";
 const SNIPPET_SUFFIX = "\n})();\nexport {};\n";
+const OXLINT_SUPPRESSED_RULES = ["no-unused-vars", "no-new-array"];
 const TOOL_DIR = dirname(fileURLToPath(import.meta.url));
 
 function mapLang(value) {
@@ -112,6 +113,7 @@ function remapDiagnosticOffsets(diagnostic, offset) {
 function normalizeParserError(error) {
   if (typeof error === "string") {
     return {
+      code: null,
       message: error.trim() || "Unknown parser error",
       severity: null,
       labels: [],
@@ -120,12 +122,14 @@ function normalizeParserError(error) {
   }
   if (!error || typeof error !== "object") {
     return {
+      code: null,
       message: "Unknown parser error",
       severity: null,
       labels: [],
       codeframe: null,
     };
   }
+  const code = typeof error.code === "string" ? error.code : null;
   const message = String(error.message || error.reason || "").trim() || "Unknown parser error";
   const severity = typeof error.severity === "string" ? error.severity : null;
   const labels = Array.isArray(error.labels)
@@ -146,6 +150,7 @@ function normalizeParserError(error) {
     : [];
   const codeframe = typeof error.codeframe === "string" ? error.codeframe : null;
   return {
+    code,
     message,
     severity,
     labels,
@@ -190,6 +195,7 @@ function normalizeLintDiagnostic(diagnostic) {
 
   const code = typeof diagnostic.code === "string" ? diagnostic.code : null;
   return {
+    code,
     message: code ? `${code}: ${message}` : message,
     severity,
     labels,
@@ -203,6 +209,7 @@ function makeResult({
   warningCount = 0,
   message = "",
   severity = null,
+  code = null,
   labels = [],
   codeframe = null,
 }) {
@@ -212,6 +219,7 @@ function makeResult({
     warning_count: Number.isInteger(warningCount) ? warningCount : 0,
     error_message: String(message || ""),
     severity: typeof severity === "string" ? severity : null,
+    code: typeof code === "string" ? code : null,
     labels: Array.isArray(labels) ? labels : [],
     codeframe: typeof codeframe === "string" ? codeframe : null,
   };
@@ -225,6 +233,7 @@ function syntaxResultFromErrors(errors) {
     warningCount: 0,
     message: errors.slice(0, 3).map((error) => error.message).join(" | "),
     severity: first ? first.severity : null,
+    code: first ? first.code : null,
     labels: first ? first.labels : [],
     codeframe: first ? first.codeframe : null,
   });
@@ -377,7 +386,13 @@ function runLintBatch(entries) {
     }
 
     const oxlintBin = join(TOOL_DIR, "node_modules", ".bin", "oxlint");
-    const exec = spawnSync(oxlintBin, ["--format", "json", tempDir], {
+    const oxlintArgs = [
+      ...OXLINT_SUPPRESSED_RULES.flatMap((rule) => ["-A", rule]),
+      "--format",
+      "json",
+      tempDir,
+    ];
+    const exec = spawnSync(oxlintBin, oxlintArgs, {
       encoding: "utf8",
       cwd: TOOL_DIR,
     });
@@ -452,6 +467,7 @@ function runLintBatch(entries) {
             .map((diag) => diag.message)
             .join(" | "),
           severity: top ? top.severity : null,
+          code: top ? top.code : null,
           labels: top ? top.labels : [],
           codeframe: top ? top.codeframe : null,
         }),
@@ -555,4 +571,3 @@ main().catch((error) => {
   process.stderr.write(String(error?.stack || error));
   process.exit(1);
 });
-

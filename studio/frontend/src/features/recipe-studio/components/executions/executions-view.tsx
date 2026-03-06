@@ -284,9 +284,32 @@ export function ExecutionsView({
     return formatDuration(selectedExecution.createdAt, selectedExecution.finishedAt);
   }, [selectedExecution]);
   const showSummaryCards = selectedExecution?.status === "completed";
-  const showProgressPanel =
-    selectedExecution?.status === "completed" ||
-    (selectedExecution ? isExecutionInProgress(selectedExecution.status) : false);
+  const hasProgressSnapshot = Boolean(
+    selectedExecution?.progress &&
+      (typeof selectedExecution.progress.done === "number" ||
+        typeof selectedExecution.progress.total === "number" ||
+        typeof selectedExecution.progress.percent === "number" ||
+        typeof selectedExecution.progress.rate === "number" ||
+        typeof selectedExecution.progress.eta_sec === "number"),
+  ) || Boolean(
+    selectedExecution?.column_progress &&
+      (typeof selectedExecution.column_progress.done === "number" ||
+        typeof selectedExecution.column_progress.total === "number" ||
+        typeof selectedExecution.column_progress.percent === "number"),
+  ) || Boolean(
+    selectedExecution?.batch &&
+      (typeof selectedExecution.batch.idx === "number" ||
+        typeof selectedExecution.batch.total === "number"),
+  );
+  const selectedStatus = selectedExecution?.status ?? null;
+  const isSelectedExecutionInProgress = selectedStatus
+    ? isExecutionInProgress(selectedStatus)
+    : false;
+  const showProgressPanel = Boolean(selectedExecution) && (
+    selectedStatus === "completed" ||
+    isSelectedExecutionInProgress ||
+    hasProgressSnapshot
+  );
   const progressComplete = selectedExecution?.status === "completed";
   const progressPercent = selectedExecution?.progress?.percent ?? (progressComplete ? 100 : 0);
   const batchTotal = selectedExecution?.batch?.total ?? null;
@@ -400,118 +423,115 @@ export function ExecutionsView({
               </div>
             )}
 
-            {(selectedExecution.status === "completed" ||
-              isExecutionInProgress(selectedExecution.status)) && (
-              <Tabs value={detailTab} onValueChange={setDetailTab}>
-                <div className="flex items-center justify-between gap-2">
-                  <TabsList className="border border-border/60 bg-card/40">
-                    <TabsTrigger value="overview">Overview</TabsTrigger>
-                    <TabsTrigger value="columns">Columns</TabsTrigger>
-                    <TabsTrigger value="data">Data</TabsTrigger>
-                    <TabsTrigger value="raw">Raw</TabsTrigger>
-                  </TabsList>
-                  {canCancel && (
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      onClick={() => onCancelExecution(selectedExecution.id)}
-                    >
-                      Cancel
-                    </Button>
-                  )}
-                </div>
-                <TabsContent value="overview">
-                  <ExecutionOverviewTab
-                    execution={selectedExecution}
-                    showSummaryCards={showSummaryCards}
-                    recordsMetric={recordsMetric}
-                    totalMetric={totalMetric}
-                    runDuration={runDuration}
-                    columnCount={columnCount}
-                    llmColumnCount={llmColumnCount}
-                    nullRate={nullRate}
-                    sideEffects={sideEffects}
-                    lowUniquenessColumns={lowUniquenessColumns}
-                    modelUsageRows={modelUsageRows}
-                    terminalLines={terminalLines}
-                    terminalRef={terminalRef}
-                    onTerminalScroll={(event) => {
-                      const element = event.currentTarget;
-                      const distanceFromBottom =
-                        element.scrollHeight - element.scrollTop - element.clientHeight;
-                      shouldStickTerminalToBottomRef.current =
-                        distanceFromBottom <= TERMINAL_STICKY_BOTTOM_THRESHOLD_PX;
-                    }}
-                  />
-                </TabsContent>
-                <TabsContent value="columns">
-                  <ExecutionColumnsTab analysisColumns={analysisColumns} />
-                </TabsContent>
-                <TabsContent value="data">
-                  <ExecutionDataTab
-                    execution={selectedExecution}
-                    datasetColumnNames={datasetColumnNames}
-                    hiddenDatasetColumns={hiddenDatasetColumns}
-                    canPageDataset={canPageDataset}
-                    currentDatasetPage={currentDatasetPage}
-                    totalPages={totalPages}
-                    tableColumns={tableColumns}
-                    datasetRowsForTable={datasetRowsForTable}
-                    visibleDatasetColumnNames={visibleDatasetColumnNames}
-                    expandedDatasetRows={expandedDatasetRows}
-                    selectedExecutionIdSafe={selectedExecutionIdSafe}
-                    onSetHiddenColumns={(updater) => {
+            <Tabs value={detailTab} onValueChange={setDetailTab}>
+              <div className="flex items-center justify-between gap-2">
+                <TabsList className="border border-border/60 bg-card/40">
+                  <TabsTrigger value="overview">Overview</TabsTrigger>
+                  <TabsTrigger value="columns">Columns</TabsTrigger>
+                  <TabsTrigger value="data">Data</TabsTrigger>
+                  <TabsTrigger value="raw">Raw</TabsTrigger>
+                </TabsList>
+                {canCancel && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => onCancelExecution(selectedExecution.id)}
+                  >
+                    Cancel
+                  </Button>
+                )}
+              </div>
+              <TabsContent value="overview">
+                <ExecutionOverviewTab
+                  execution={selectedExecution}
+                  showSummaryCards={showSummaryCards}
+                  recordsMetric={recordsMetric}
+                  totalMetric={totalMetric}
+                  runDuration={runDuration}
+                  columnCount={columnCount}
+                  llmColumnCount={llmColumnCount}
+                  nullRate={nullRate}
+                  sideEffects={sideEffects}
+                  lowUniquenessColumns={lowUniquenessColumns}
+                  modelUsageRows={modelUsageRows}
+                  terminalLines={terminalLines}
+                  terminalRef={terminalRef}
+                  onTerminalScroll={(event) => {
+                    const element = event.currentTarget;
+                    const distanceFromBottom =
+                      element.scrollHeight - element.scrollTop - element.clientHeight;
+                    shouldStickTerminalToBottomRef.current =
+                      distanceFromBottom <= TERMINAL_STICKY_BOTTOM_THRESHOLD_PX;
+                  }}
+                />
+              </TabsContent>
+              <TabsContent value="columns">
+                <ExecutionColumnsTab analysisColumns={analysisColumns} />
+              </TabsContent>
+              <TabsContent value="data">
+                <ExecutionDataTab
+                  execution={selectedExecution}
+                  datasetColumnNames={datasetColumnNames}
+                  hiddenDatasetColumns={hiddenDatasetColumns}
+                  canPageDataset={canPageDataset}
+                  currentDatasetPage={currentDatasetPage}
+                  totalPages={totalPages}
+                  tableColumns={tableColumns}
+                  datasetRowsForTable={datasetRowsForTable}
+                  visibleDatasetColumnNames={visibleDatasetColumnNames}
+                  expandedDatasetRows={expandedDatasetRows}
+                  selectedExecutionIdSafe={selectedExecutionIdSafe}
+                  onSetHiddenColumns={(updater) => {
+                    const selectedId = selectedExecution.id;
+                    setHiddenDatasetColumnsByExecution((current) => {
+                      const currentColumns = current[selectedId] ?? [];
+                      return {
+                        ...current,
+                        [selectedId]: updater(currentColumns),
+                      };
+                    });
+                  }}
+                  onPrevPage={() => {
+                    if (selectedExecution.kind === "preview") {
                       const selectedId = selectedExecution.id;
-                      setHiddenDatasetColumnsByExecution((current) => {
-                        const currentColumns = current[selectedId] ?? [];
-                        return {
-                          ...current,
-                          [selectedId]: updater(currentColumns),
-                        };
-                      });
-                    }}
-                    onPrevPage={() => {
-                      if (selectedExecution.kind === "preview") {
-                        const selectedId = selectedExecution.id;
-                        setPreviewDatasetPageByExecution((current) => ({
-                          ...current,
-                          [selectedId]: Math.max(1, currentDatasetPage - 1),
-                        }));
-                        return;
-                      }
-                      onLoadDatasetPage(selectedExecution.id, currentDatasetPage - 1);
-                    }}
-                    onNextPage={() => {
-                      if (selectedExecution.kind === "preview") {
-                        const selectedId = selectedExecution.id;
-                        setPreviewDatasetPageByExecution((current) => ({
-                          ...current,
-                          [selectedId]: Math.min(totalPages, currentDatasetPage + 1),
-                        }));
-                        return;
-                      }
-                      onLoadDatasetPage(selectedExecution.id, currentDatasetPage + 1);
-                    }}
-                    onToggleRowExpanded={(rowId) => {
-                      setExpandedDatasetRowsByExecution((current) => {
-                        const rows = current[selectedExecution.id] ?? {};
-                        return {
-                          ...current,
-                          [selectedExecution.id]: {
-                            ...rows,
-                            [rowId]: !rows[rowId],
-                          },
-                        };
-                      });
-                    }}
-                  />
-                </TabsContent>
-                <TabsContent value="raw">
-                  <ExecutionRawTab rawExecution={rawExecution} />
-                </TabsContent>
-              </Tabs>
-            )}
+                      setPreviewDatasetPageByExecution((current) => ({
+                        ...current,
+                        [selectedId]: Math.max(1, currentDatasetPage - 1),
+                      }));
+                      return;
+                    }
+                    onLoadDatasetPage(selectedExecution.id, currentDatasetPage - 1);
+                  }}
+                  onNextPage={() => {
+                    if (selectedExecution.kind === "preview") {
+                      const selectedId = selectedExecution.id;
+                      setPreviewDatasetPageByExecution((current) => ({
+                        ...current,
+                        [selectedId]: Math.min(totalPages, currentDatasetPage + 1),
+                      }));
+                      return;
+                    }
+                    onLoadDatasetPage(selectedExecution.id, currentDatasetPage + 1);
+                  }}
+                  onToggleRowExpanded={(rowId) => {
+                    setExpandedDatasetRowsByExecution((current) => {
+                      const rows = current[selectedExecution.id] ?? {};
+                      return {
+                        ...current,
+                        [selectedExecution.id]: {
+                          ...rows,
+                          [rowId]: !rows[rowId],
+                        },
+                      };
+                    });
+                  }}
+                />
+              </TabsContent>
+              <TabsContent value="raw">
+                <ExecutionRawTab rawExecution={rawExecution} />
+              </TabsContent>
+            </Tabs>
           </div>
         )}
       </section>
