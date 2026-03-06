@@ -58,20 +58,68 @@ function ChartContainer({
 
     const updateSizeState = () => {
       const { width, height } = element.getBoundingClientRect();
-      if (width > 0 && height > 0) {
-        setContainerSize({
-          width: Math.round(width),
-          height: Math.round(height),
-        });
-        return;
-      }
-      setContainerSize(null);
+      const nextSize =
+        width > 0 && height > 0
+          ? {
+              width: Math.round(width),
+              height: Math.round(height),
+            }
+          : null;
+
+      setContainerSize((currentSize) => {
+        if (!currentSize && !nextSize) {
+          return currentSize;
+        }
+        if (
+          currentSize &&
+          nextSize &&
+          currentSize.width === nextSize.width &&
+          currentSize.height === nextSize.height
+        ) {
+          return currentSize;
+        }
+        return nextSize;
+      });
+
+      return nextSize !== null;
     };
 
-    updateSizeState();
+    const hasInitialSize = updateSizeState();
 
     if (typeof ResizeObserver === "undefined") {
-      return;
+      const handleWindowResize = () => {
+        updateSizeState();
+      };
+
+      window.addEventListener("resize", handleWindowResize);
+      window.addEventListener("orientationchange", handleWindowResize);
+
+      let retryId: number | null = null;
+      if (!hasInitialSize) {
+        let retries = 0;
+        const maxRetries = 40;
+        retryId = window.setInterval(() => {
+          const hasMeasuredSize = updateSizeState();
+          retries += 1;
+          if (hasMeasuredSize && retryId !== null) {
+            window.clearInterval(retryId);
+            retryId = null;
+            return;
+          }
+          if (retries >= maxRetries && retryId !== null) {
+            window.clearInterval(retryId);
+            retryId = null;
+          }
+        }, 250);
+      }
+
+      return () => {
+        window.removeEventListener("resize", handleWindowResize);
+        window.removeEventListener("orientationchange", handleWindowResize);
+        if (retryId !== null) {
+          window.clearInterval(retryId);
+        }
+      };
     }
 
     const observer = new ResizeObserver(() => {
