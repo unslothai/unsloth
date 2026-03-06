@@ -77,6 +77,7 @@ export function DatasetSection() {
     hfToken,
     modelType,
     isVisionModel,
+    isCheckingVision,
     datasetSliceStart,
     setDatasetSliceStart,
     datasetSliceEnd,
@@ -96,6 +97,7 @@ export function DatasetSection() {
       hfToken: s.hfToken,
       modelType: s.modelType,
       isVisionModel: s.isVisionModel,
+      isCheckingVision: s.isCheckingVision,
       datasetSliceStart: s.datasetSliceStart,
       setDatasetSliceStart: s.setDatasetSliceStart,
       datasetSliceEnd: s.datasetSliceEnd,
@@ -122,7 +124,7 @@ export function DatasetSection() {
     setInputValue(val);
   }
 
-  const effectiveModelType = isVisionModel ? "vision" : modelType;
+  const effectiveModelType = !isCheckingVision && isVisionModel ? "vision" : modelType;
 
   const {
     results: hfResults,
