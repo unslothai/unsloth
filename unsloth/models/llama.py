@@ -25,7 +25,8 @@ from ._utils import move_to_device
 from ._utils import (
     _get_inference_mode_context_manager,
     _prepare_model_for_qat,
-    _redirect_fp8_to_bf16,
+    is_bfloat16_supported,
+    get_quant_type,
 )
 from .loader_utils import _get_fp8_mode_and_check_settings
 from ..utils.packing import (
@@ -2331,15 +2332,6 @@ class FastLlamaModel:
             token = token,
             attn_implementation = "sdpa",
         )
-        # Handle FP8 models: redirect to BF16 sibling when the model ships with
-        # FP8 weights. Redirect is skipped when load_in_fp8 is truthy (True or 'block').
-        model_name, model_config = _redirect_fp8_to_bf16(
-            model_name,
-            model_config,
-            load_in_fp8,
-            token,
-            trust_remote_code,
-        )
         model_config.model_name = model_name
         model_max_seq_length = model_config.max_position_embeddings
 
@@ -2957,6 +2949,7 @@ class FastLlamaModel:
 
         accepted_modules = frozenset(
             (
+                "lm_head",
                 "q_proj",
                 "k_proj",
                 "v_proj",
@@ -2975,18 +2968,7 @@ class FastLlamaModel:
         train_embed_tokens = False
         final_modules = []
         for module in target_modules:
-            if module == "lm_head":
-                # logger.warning_once(
-                #     "Unsloth: `lm_head` should be placed in `modules_to_save` and not `target_modules`. "\
-                #     "Luckily, we shall do it for you!"
-                # )
-                train_lm_head = True
-                if modules_to_save is None:
-                    modules_to_save = ["lm_head"]
-                else:
-                    modules_to_save.append("lm_head")
-
-            elif module == "embed_tokens":
+            if module == "embed_tokens":
                 # logger.warning_once(
                 #     "Unsloth: `embed_tokens` should be placed in `modules_to_save` and not `target_modules`. "\
                 #     "Luckily, we shall do it for you!"
@@ -3011,23 +2993,32 @@ class FastLlamaModel:
 
         # Check if we added new tokens!
         if hasattr(model, "_need_to_train_embeddings"):
-            if not train_lm_head or not train_embed_tokens:
+            # Check if embed_tokens/lm_head are already being trained
+            # (either as LoRA targets in final_modules or via modules_to_save)
+            _embed_already_trained = (
+                train_embed_tokens or "embed_tokens" in final_modules
+            )
+            _lm_head_already_trained = train_lm_head or "lm_head" in final_modules
+            if not _lm_head_already_trained or not _embed_already_trained:
                 print(
                     "Unsloth: You added new tokens but did not specify if you wanted to "
                     "train the lm_head and embed_tokens.\nWe must turn it on for you."
                 )
-                train_lm_head = True
-                train_embed_tokens = True
 
-                if modules_to_save is None:
-                    modules_to_save = ["embed_tokens"]
-                else:
-                    modules_to_save.append("embed_tokens")
+                # Only add to modules_to_save if not already a LoRA target
+                if not _embed_already_trained:
+                    train_embed_tokens = True
+                    if modules_to_save is None:
+                        modules_to_save = ["embed_tokens"]
+                    elif "embed_tokens" not in modules_to_save:
+                        modules_to_save.append("embed_tokens")
 
-                if modules_to_save is None:
-                    modules_to_save = ["lm_head"]
-                else:
-                    modules_to_save.append("lm_head")
+                if not _lm_head_already_trained:
+                    train_lm_head = True
+                    if modules_to_save is None:
+                        modules_to_save = ["lm_head"]
+                    elif "lm_head" not in modules_to_save:
+                        modules_to_save.append("lm_head")
 
         # Check for Llama-3
         # if hasattr(model._saved_temp_tokenizer, "_using_llama3_template"):

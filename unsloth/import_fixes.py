@@ -1323,6 +1323,61 @@ def disable_torchcodec_if_broken():
             pass
 
 
+def disable_broken_wandb():
+    """Disable wandb if it's installed but cannot actually import.
+
+    wandb can fail to import when there's a protobuf version mismatch
+    (e.g., wandb < 0.19.11 with protobuf >= 6.0). This causes cascading
+    import failures through trl -> transformers/accelerate -> wandb that
+    crash unsloth's import chain.
+
+    There are two separate is_wandb_available() functions used by trl:
+      - transformers.integrations.integration_utils.is_wandb_available
+        (used by most trl trainers)
+      - accelerate.utils.imports.is_wandb_available
+        (used by trl/trainer/callbacks.py)
+
+    Both must be patched to fully prevent broken wandb imports.
+    """
+    if importlib.util.find_spec("wandb") is None:
+        return  # wandb not installed, nothing to do
+
+    try:
+        import wandb
+    except Exception:
+        # wandb is installed but broken - patch all checkers to skip it
+        logger.info(
+            "Unsloth: wandb is installed but broken (likely a protobuf version mismatch). "
+            "Disabling wandb to prevent import errors. To fix, run: pip install --upgrade wandb"
+        )
+        _wandb_false = lambda: False
+        # Patch transformers' is_wandb_available (used by most trl trainers)
+        try:
+            import transformers.integrations.integration_utils as tf_integration
+
+            tf_integration.is_wandb_available = _wandb_false
+        except (ImportError, AttributeError):
+            pass
+        # Patch accelerate's is_wandb_available (used by trl/trainer/callbacks.py).
+        # Must patch both the source module AND the re-export namespace since
+        # `from accelerate.utils import is_wandb_available` reads from
+        # accelerate.utils, not accelerate.utils.imports.
+        try:
+            import accelerate.utils.imports as acc_imports
+
+            acc_imports.is_wandb_available = _wandb_false
+        except (ImportError, AttributeError):
+            pass
+        try:
+            import accelerate.utils as acc_utils
+
+            acc_utils.is_wandb_available = _wandb_false
+        except (ImportError, AttributeError):
+            pass
+        # Set env var as additional fallback
+        os.environ["WANDB_DISABLED"] = "true"
+
+
 CAUSAL_CONV1D_BROKEN = False
 _CAUSAL_CONV1D_PREFIX = "causal_conv1d"
 _CAUSAL_CONV1D_BLOCKER_SENTINEL = "_unsloth_causal_conv1d_blocker"
